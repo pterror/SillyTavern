@@ -77,7 +77,7 @@ test('/api/groups/batch and /api/groups/all send tag_ids in JS sort order', asyn
     const group = { id: '1001', name: 'Group 1001', members: [], chats: [], fav: false };
     fs.writeFileSync(path.join(directories.groups, '1001.json'), JSON.stringify(group));
     await metadataDb.upsertGroupRow(directories, '1001', group.name, { fav: false, group });
-    await metadataDb.setEntityTagIdsMany(directories, { 1001: [HIGH_BMP, ASTRAL] });
+    for (const tagId of [HIGH_BMP, ASTRAL]) expect(await metadataDb.assignEntityTag(directories, '1001', tagId)).toBe('ok');
 
     const [batched] = await postJson('/api/groups/batch', { ids: ['1001'] });
     expect(batched.tag_ids).toEqual(JS_SORTED);

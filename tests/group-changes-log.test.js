@@ -201,17 +201,6 @@ const WRITERS = [
         rows: ['1001'],
     },
     {
-        name: 'setEntityTagIdsMany',
-        setup: async () => {
-            await saveTags(['x', 'y']);
-            await seedGroup('1001');
-            await seedGroup('1002');
-            await metadataDb.setEntityTagIdsMany(directories, { 1002: ['x'] });
-        },
-        act: () => metadataDb.setEntityTagIdsMany(directories, { 1001: ['x', 'y'], 1002: ['x'] }),
-        rows: ['1001'],
-    },
-    {
         name: 'migrateTagsJsonIfNeeded',
         setup: async () => {
             await saveTags(['x']);
@@ -350,7 +339,7 @@ describe('the groups version log', () => {
     test('writeGroupFileAndRow: when the upsert fails no log row lands either', async () => {
         await seedGroup('1001');
 
-        failWriteMatching = /INSERT INTO groups/;
+        failWriteMatching = /^\s*INSERT INTO groups\b|^UPDATE groups SET name\b/;
         const added = await addedBy(() => writeThroughStore({ id: '1001', name: 'renamed', members: [], chats: [] }));
         failWriteMatching = null;
 

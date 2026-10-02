@@ -10,6 +10,7 @@ import sanitize from 'sanitize-filename';
 
 import { color, delay, generateTimestamp, getConfigValue, mapWithConcurrency, parseCreateDateToEpochMs } from './util.js';
 import { ProgressLog } from './progress-log.js';
+import { changedValues, writeRowIfChanged } from './row-values.js';
 import extract from 'png-chunks-extract';
 import { parse as parseCharacterCard, read as readCharacterCardFromBuffer, readCharaChunkPristineFromChunks, computeAvatarIdentityHashFromChunks } from './character-card-parser.js';
 import { getCharaCardV2, computeContentIdentityHash } from './character-card-normalize.js';
@@ -883,7 +884,7 @@ function migrateCreateDateColumn(db) {
                         unparseable.push({ id: row.id, value: row.create_date });
                         continue;
                     }
-                    db.run('UPDATE characters SET create_date_ms = @createDateMs WHERE id = @id', { id: row.id, createDateMs: ms });
+                    writeRowIfChanged(db, 'characters', { id: row.id }, { create_date_ms: ms });
                 }
 
                 lastId = chunk[chunk.length - 1].id;
@@ -981,12 +982,13 @@ function migrateGroupsColumns(db, directories) {
                     const group = JSON.parse(raw);
                     const stat = fs.statSync(filePath);
                     inItemSavepoint(db, () => {
-                        const { changes } = db.run(
-                            `UPDATE groups SET name = @name, name_fold = @nameFold, fav = @fav, date_added = @dateAdded
-                                WHERE id = @id AND (name IS NOT @name OR name_fold IS NOT @nameFold OR fav IS NOT @fav OR date_added IS NOT @dateAdded)`,
-                            { id, name: group.name ?? '', nameFold: foldName(group.name), fav: normalizeFav(group.fav) ? 1 : 0, dateAdded: Math.round(stat.birthtimeMs) },
-                        );
-                        if (changes > 0) insertGroupChange(db, id);
+                        const changed = writeRowIfChanged(db, 'groups', { id }, {
+                            name: group.name ?? '',
+                            name_fold: foldName(group.name),
+                            fav: normalizeFav(group.fav) ? 1 : 0,
+                            date_added: Math.round(stat.birthtimeMs),
+                        });
+                        if (changed) insertGroupChange(db, id);
                     });
                 } catch (err) {
                     console.error(`[character-metadata] Column-migration backfill failed to process group ${id}, leaving it at its zeroed defaults:`, /** @type {any} */ (err).message);
@@ -1041,17 +1043,12 @@ function migrateGroupDigestColumns(db, directories) {
                     const tagIds = tagEntityTypeOf(id) === 'group' ? Array.from(/** @type {Iterable<{ tag_id: string }>} */ (db.iterate('SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id', { id })), r => r.tag_id) : [];
                     const fingerprintSource = { ...group, tag_ids: tagIds };
                     inItemSavepoint(db, () => {
-                        const { changes } = db.run(
-                            `UPDATE groups SET digest_fav = @favHash, digest_tag_ids = @tagIdsHash, digest_content = @contentHash
-                                WHERE id = @id AND (digest_fav IS NOT @favHash OR digest_tag_ids IS NOT @tagIdsHash OR digest_content IS NOT @contentHash)`,
-                            {
-                                id,
-                                favHash: groupDigestFavHash(fingerprintSource),
-                                tagIdsHash: groupDigestTagIdsHash(fingerprintSource),
-                                contentHash: groupDigestContentHash(fingerprintSource),
-                            },
-                        );
-                        if (changes > 0) insertGroupChange(db, id);
+                        const changed = writeRowIfChanged(db, 'groups', { id }, {
+                            digest_fav: groupDigestFavHash(fingerprintSource),
+                            digest_tag_ids: groupDigestTagIdsHash(fingerprintSource),
+                            digest_content: groupDigestContentHash(fingerprintSource),
+                        });
+                        if (changed) insertGroupChange(db, id);
                     });
                 } catch (err) {
                     console.error(`[character-metadata] Group digest backfill failed for ${id}, leaving digests NULL (hash-mode falls back to computing live):`, /** @type {any} */ (err).message);
@@ -1140,10 +1137,7 @@ function migrateCharacterDigestColumns(db) {
                 try {
                     const shallow = JSON.parse(row.shallow_json);
                     const { digest_fav, digest_tag_ids, digest_content } = digestColumnsForShallow(shallow);
-                    db.run(
-                        'UPDATE characters SET digest_fav = @digest_fav, digest_tag_ids = @digest_tag_ids, digest_content = @digest_content WHERE id = @id',
-                        { id: row.id, digest_fav, digest_tag_ids, digest_content },
-                    );
+                    writeRowIfChanged(db, 'characters', { id: row.id }, { digest_fav, digest_tag_ids, digest_content });
                 } catch (err) {
                     console.error(`[character-metadata] Character digest backfill failed for ${row.id}, leaving it at its zeroed defaults:`, /** @type {any} */ (err).message);
                 }
@@ -1217,7 +1211,7 @@ function migrateCardJsonColumn(db, directories) {
                         unresolved.push(row.id);
                         continue;
                     }
-                    db.run('UPDATE characters SET card_json = @cardJson WHERE id = @id', { id: row.id, cardJson });
+                    writeRowIfChanged(db, 'characters', { id: row.id }, { card_json: cardJson });
                     backfilled++;
                 }
 
@@ -1507,7 +1501,7 @@ async function getEntry(directories) {
     const isNewStore = !fs.existsSync(getDbPath(directories));
     const db = engine.openDatabase(getDbPath(directories));
     db.exec(SCHEMA_SQL);
-    if (isNewStore) db.run(UPSERT_META_VALUE_SQL, { key: TAGS_SEED_PENDING_KEY, value: String(Date.now()) });
+    if (isNewStore) setMetaSync(db, TAGS_SEED_PENDING_KEY, String(Date.now()));
     migrateContentHashColumn(db);
     migrateContentIdentityColumns(db);
     migrateAvatarIdentityColumn(db);
@@ -1626,12 +1620,6 @@ function digestColumnsForShallow(shallow) {
  * @param {Record<string, unknown>} [extraColumns] Other columns to SET in the same statement (e.g. fav,
  * active_chat) so a caller's other column writes stay atomic with the shallow_json write.
  */
-/**
- * @param {unknown} value
- * @param {unknown} stored
- */
-const sameStoredValue = (value, stored) => (value ?? null) === (stored ?? null);
-
 function writeShallowJson(db, id, shallow, fields, extraColumns = {}) {
     // Absent means never filled (backfillTagIdsInShallowJson() finds such rows by the missing key), so it is filled
     // from character_tags rather than stored as [].
@@ -1656,11 +1644,12 @@ function writeShallowJson(db, id, shallow, fields, extraColumns = {}) {
     const compared = { shallow_json: shallowJson, ...digests, ...extraColumns };
     const stored = /** @type {Record<string, any> | undefined} */ (db.get(
         `SELECT ${Object.keys(compared).join(', ')} FROM characters WHERE id = @id`, { id }));
-    if (!stored || Object.entries(compared).every(([key, value]) => sameStoredValue(value, stored[key]))) return;
+    if (!stored) return;
+    // Only the columns that changed are written; when none did, nothing is.
+    const changed = changedValues(stored, compared);
+    if (Object.keys(changed).length === 0) return;
     const changeSeq = insertChange(db, id, 'upsert', JSON.stringify(changeFields));
-    const columns = { ...compared, change_seq: Number(changeSeq) };
-    const setSql = Object.keys(columns).map(key => `${key} = @${key}`).join(', ');
-    db.run(`UPDATE characters SET ${setSql} WHERE id = @id`, { ...columns, id });
+    writeRowIfChanged(db, 'characters', { id }, { ...changed, change_seq: Number(changeSeq) }, { current: stored });
 }
 
 /**
@@ -1770,6 +1759,30 @@ function buildRow(id, character, { dateAddedCandidate, contentHash, contentIdent
     };
 }
 
+/** The columns UPSERT_SQL sets on an existing row, other than change_seq. */
+const UPSERT_UPDATED_COLUMNS = ['name', 'name_fold', 'fav', 'create_date', 'data_size', 'world', 'creator', 'version',
+    'creator_notes', 'shallow_json', 'digest_fav', 'digest_tag_ids', 'digest_content', 'content_hash', 'content_identity_hash',
+    'avatar_identity_hash', 'import_poisoned', 'active_chat', 'active_chat_checked', 'card_json'];
+
+/**
+ * The columns of the stored row `row` changes, by the rules UPSERT_SQL sets them on an existing row: the hash columns
+ * and the two flags keep the stored value unless the row brings a new one.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {Record<string, any>} row
+ * @returns {{ stored: Record<string, any>, changed: Record<string, any> }} `changed` is empty when the write would
+ *   change nothing.
+ */
+function rowWriteChangesSync(db, row) {
+    const stored = /** @type {Record<string, any>} */ (db.get(`SELECT ${UPSERT_UPDATED_COLUMNS.join(', ')}, change_seq FROM characters WHERE id = @id`, { id: row.id }));
+    /** @type {Record<string, any>} */
+    const next = {};
+    for (const column of UPSERT_UPDATED_COLUMNS) next[column] = row[column];
+    for (const column of ['content_hash', 'content_identity_hash', 'avatar_identity_hash']) next[column] = row[column] ?? stored[column];
+    next.import_poisoned = row.import_poisoned === 0 ? 0 : stored.import_poisoned;
+    next.active_chat_checked = row.active_chat_checked === 1 ? 1 : stored.active_chat_checked;
+    return { stored, changed: changedValues(stored, next) };
+}
+
 // Meant to run inside db.transaction(...). tagIds only seeds a genuinely new row's tags on first INSERT -
 // character_tags is the source of truth thereafter, so an UPDATE never touches it. fav and active_chat get the
 // same one-time-seed treatment: once a row exists, a stale/foreign value from the card can't override them.
@@ -1778,32 +1791,6 @@ function buildRow(id, character, { dateAddedCandidate, contentHash, contentIdent
  * @param {CharacterUpsertRow} row
  * @param {string[]} tagIds
  */
-/**
- * Whether UPSERT_SQL with `row` would change the stored row: every column it sets, by the same rules it sets them
- * (the hash columns and the two flags keep the stored value unless the row brings a new one). An identical write is
- * skipped whole, so it neither rewrites the row nor logs a change.
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- * @param {Record<string, any>} row
- * @returns {boolean}
- */
-function rowWriteChangesSync(db, row) {
-    const stored = /** @type {Record<string, any> | undefined} */ (db.get(`SELECT name, name_fold, fav, create_date, data_size, world,
-        creator, version, creator_notes, shallow_json, digest_fav, digest_tag_ids, digest_content, content_hash,
-        content_identity_hash, avatar_identity_hash, import_poisoned, active_chat, active_chat_checked, card_json
-        FROM characters WHERE id = @id`, { id: row.id }));
-    if (!stored) return true;
-    for (const column of ['name', 'name_fold', 'fav', 'create_date', 'data_size', 'world', 'creator', 'version', 'creator_notes',
-        'shallow_json', 'digest_fav', 'digest_tag_ids', 'digest_content', 'active_chat', 'card_json']) {
-        if (!sameStoredValue(row[column], stored[column])) return true;
-    }
-    for (const column of ['content_hash', 'content_identity_hash', 'avatar_identity_hash']) {
-        if ((row[column] ?? null) !== null && row[column] !== stored[column]) return true;
-    }
-    if (row.import_poisoned === 0 && stored.import_poisoned !== 0) return true;
-    if (row.active_chat_checked === 1 && stored.active_chat_checked !== 1) return true;
-    return false;
-}
-
 function writeRowSync(db, row, tagIds) {
     const existingRow = (/** @type {{ fav: number, active_chat: NodeId, shallow_json: string, chat_size: number, date_last_chat: number, date_added: number } | undefined} */ (db.get('SELECT fav, active_chat, shallow_json, chat_size, date_last_chat, date_added FROM characters WHERE id = @id', { id: row.id })));
     const existed = !!existingRow;
@@ -1840,14 +1827,21 @@ function writeRowSync(db, row, tagIds) {
         };
     }
 
-    if (existed && !rowWriteChangesSync(db, row)) return;
+    if (existed) {
+        // Only the columns this write changes are written; a write that changes none writes nothing.
+        const { stored, changed } = rowWriteChangesSync(db, row);
+        if (Object.keys(changed).length === 0) return;
+        const changeSeq = Number(insertChange(db, row.id, 'upsert', null));
+        writeRowIfChanged(db, 'characters', { id: row.id }, { ...changed, change_seq: changeSeq }, { current: stored });
+        return;
+    }
 
     const lastInsertRowid = insertChange(db, row.id, 'upsert', null);
     db.run(UPSERT_SQL, { ...row, changeSeq: Number(lastInsertRowid) });
 
-    if (!existed) queueChatStatsReconcileSync(db, 'character', row.id);
+    queueChatStatsReconcileSync(db, 'character', row.id);
 
-    if (!existed && tagIds.length > 0) {
+    if (tagIds.length > 0) {
         const deletions = readTagDeletionsSync(db);
         const { tagIds: toAssign, dropped } = resolveTagIdsToAssign(tagIds, deletions);
         for (const tagId of toAssign) {
@@ -2553,7 +2547,7 @@ export async function bootstrapIfNeeded(directories) {
     if (already) return;
 
     if (!fs.existsSync(directories.characters)) {
-        entry.db.run('INSERT INTO meta (key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value', { key: 'bootstrap_completed', value: String(Date.now()) });
+        setMetaSync(entry.db, 'bootstrap_completed', String(Date.now()));
         return;
     }
 
@@ -2603,7 +2597,7 @@ export async function bootstrapIfNeeded(directories) {
 
     if (files.length > 0) progress.finish();
 
-    entry.db.run('INSERT INTO meta (key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value', { key: 'bootstrap_completed', value: String(Date.now()) });
+    setMetaSync(entry.db, 'bootstrap_completed', String(Date.now()));
 }
 
 // Backfills content_identity_hash for poisoned rows without clearing import_poisoned (see SCHEMA_SQL). Reads
@@ -2652,7 +2646,8 @@ export async function backfillContentIdentityHashes(directories) {
             if (updates.length > 0) {
                 entry.db.transaction(() => {
                     for (const { id, hash, avatarHash } of updates) {
-                        entry.db.run('UPDATE characters SET content_identity_hash = @hash, avatar_identity_hash = COALESCE(avatar_identity_hash, @avatarHash) WHERE id = @id', { hash, avatarHash, id });
+                        const stored = /** @type {{ avatar_identity_hash: string | null } | undefined} */ (entry.db.get('SELECT avatar_identity_hash FROM characters WHERE id = @id', { id }));
+                        writeRowIfChanged(entry.db, 'characters', { id }, { content_identity_hash: hash, avatar_identity_hash: stored?.avatar_identity_hash ?? avatarHash });
                     }
                 });
             }
@@ -2708,10 +2703,8 @@ export async function backfillActiveChatFromCards(directories) {
             if (resolved.length > 0) {
                 entry.db.transaction(() => {
                     for (const { id, chat } of resolved) {
-                        entry.db.run(
-                            'UPDATE characters SET active_chat = @chat, active_chat_checked = 1 WHERE id = @id AND active_chat_checked = 0',
-                            { chat: chat ?? null, id },
-                        );
+                        const stored = /** @type {{ active_chat_checked: number } | undefined} */ (entry.db.get('SELECT active_chat_checked FROM characters WHERE id = @id', { id }));
+                        if (stored && stored.active_chat_checked === 0) writeRowIfChanged(entry.db, 'characters', { id }, { active_chat: chat ?? null, active_chat_checked: 1 });
                     }
                 });
             }
@@ -2727,7 +2720,15 @@ export async function backfillActiveChatFromCards(directories) {
 
 const MIGRATION_BATCH_PAUSE_MS = 10;
 const MIGRATION_PASSIVE_CHECKPOINT_EVERY_BATCHES = 10;
-const UPSERT_META_VALUE_SQL = 'INSERT INTO meta (key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value';
+/**
+ * Sets a meta value, writing nothing when it already holds that value.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} key
+ * @param {string} value
+ */
+function setMetaSync(db, key, value) {
+    writeRowIfChanged(db, 'meta', { key }, { value }, { insert: true });
+}
 
 /** @typedef {{ batches: number, rowsChanged: number }} CharacterPassResult */
 
@@ -2795,7 +2796,7 @@ async function runResumableCharacterPass(db, { table = 'characters', doneKey, do
                     batchChanged++;
                 }
             }
-            db.run(UPSERT_META_VALUE_SQL, { key: progressKey, value: ids[ids.length - 1] });
+            setMetaSync(db, progressKey, ids[ids.length - 1]);
         });
         onBatchCommitted?.();
         batches++;
@@ -2814,7 +2815,7 @@ async function runResumableCharacterPass(db, { table = 'characters', doneKey, do
     db.transaction(() => {
         finish?.();
         if (rowsFailed === 0) {
-            db.run(UPSERT_META_VALUE_SQL, { key: doneKey, value: doneValue });
+            setMetaSync(db, doneKey, doneValue);
         }
         db.run('DELETE FROM meta WHERE key = @key', { key: progressKey });
     });
@@ -2888,7 +2889,7 @@ export async function normalizeCharacterFavIfNeeded(directories) {
             }
             const { digest_fav } = digestColumnsForShallow(shallow);
             if (Number(row.digest_fav) === digest_fav) return null;
-            return () => entry.db.run('UPDATE characters SET digest_fav = @digest_fav WHERE id = @id', { id, digest_fav });
+            return () => writeRowIfChanged(entry.db, 'characters', { id }, { digest_fav });
         },
     });
 }
@@ -2939,107 +2940,6 @@ function knownEntityIdsOf(db, table, ids) {
         known.add(/** @type {{ id: string }} */ (row).id);
     }
     return known;
-}
-
-// Diffs tags.json's tag_map against character_tags and applies only the delta, since most rows already agree.
-// A tag write from a request between batches may be undone from the tags.json copy read at the start.
-/**
- * @param {import('./users.js').UserDirectoryList} directories
- */
-export async function resyncTags(directories) {
-    const entry = await getEntry(directories);
-    if (!entry) return;
-
-    const { tag_map } = readTagsData(directories);
-
-    // No dangling rows for characters this store doesn't have.
-    for await (const rows of streamRows(entry.db, {
-        firstPageSql: 'SELECT rowid AS rid, character_id, tag_id FROM character_tags ORDER BY rowid LIMIT @limit',
-        firstPageParams: {},
-        nextPageSql: 'SELECT rowid AS rid, character_id, tag_id FROM character_tags WHERE rowid > @after ORDER BY rowid LIMIT @limit',
-        nextPageParams: {},
-        keyColumn: 'rid',
-    })) {
-        const page = /** @type {{ rid: number, character_id: string, tag_id: string }[]} */ (rows);
-        const pageIds = [...new Set(page.map(r => r.character_id))];
-        /** @type {Set<string>} */
-        const known = new Set();
-        for (let i = 0; i < pageIds.length; i += FAV_LOOKUP_BATCH_SIZE) {
-            for (const id of knownEntityIdsOf(entry.db, 'characters', pageIds.slice(i, i + FAV_LOOKUP_BATCH_SIZE))) known.add(id);
-        }
-        // null: the character's tag_map value isn't an array, so its rows are left as they are (warned below).
-        /** @type {Map<string, Set<string> | null>} */
-        const wantedByCharacter = new Map();
-        for (const id of known) {
-            const value = Object.hasOwn(tag_map, id) ? tag_map[id] : [];
-            wantedByCharacter.set(id, Array.isArray(value) ? new Set(value) : null);
-        }
-        const toRemove = page.filter((r) => {
-            const wanted = wantedByCharacter.get(r.character_id);
-            return wanted !== null && !(wanted?.has(r.tag_id) ?? false);
-        });
-        if (toRemove.length > 0) {
-            entry.db.transaction(() => {
-                /** @type {Set<string>} */
-                const touchedCharacterIds = new Set();
-                for (const row of toRemove) {
-                    entry.db.run('DELETE FROM character_tags WHERE character_id = @characterId AND tag_id = @tagId', { characterId: row.character_id, tagId: row.tag_id });
-                    touchedCharacterIds.add(row.character_id);
-                }
-                for (const characterId of touchedCharacterIds) {
-                    syncShallowTagIdsFromTable(entry.db, characterId);
-                }
-            });
-        }
-        await new Promise(resolve => setImmediate(resolve));
-    }
-
-    /** @type {string[]} */
-    let batch = [];
-    const applyAdditions = async () => {
-        const known = [...knownEntityIdsOf(entry.db, 'characters', batch)];
-        batch = [];
-        if (known.length === 0) return;
-        /** @type {Map<string, Set<string>>} */
-        const currentByCharacter = new Map(known.map(id => [id, new Set()]));
-        const placeholders = known.map(() => '?').join(',');
-        for (const row of entry.db.iterate(`SELECT character_id, tag_id FROM character_tags WHERE character_id IN (${placeholders})`, known)) {
-            const { character_id, tag_id } = /** @type {{ character_id: string, tag_id: string }} */ (row);
-            currentByCharacter.get(character_id)?.add(tag_id);
-        }
-        /** @type {{ characterId: string, tagId: string }[]} */
-        const toAdd = [];
-        for (const characterId of known) {
-            const current = /** @type {Set<string>} */ (currentByCharacter.get(characterId));
-            for (const tagId of new Set(tag_map[characterId])) {
-                if (!current.has(tagId)) toAdd.push({ characterId, tagId });
-            }
-        }
-        if (toAdd.length > 0) {
-            entry.db.transaction(() => {
-                /** @type {Set<string>} */
-                const touchedCharacterIds = new Set();
-                for (const params of toAdd) {
-                    entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@characterId, @tagId)', params);
-                    touchedCharacterIds.add(params.characterId);
-                }
-                for (const characterId of touchedCharacterIds) {
-                    syncShallowTagIdsFromTable(entry.db, characterId);
-                }
-            });
-        }
-        await new Promise(resolve => setImmediate(resolve));
-    };
-    for (const characterId in tag_map) {
-        if (!Object.hasOwn(tag_map, characterId)) continue;
-        if (!Array.isArray(tag_map[characterId])) {
-            warnTagMapEntryNotArray(characterId, tag_map[characterId], 'its existing tags were left as they are');
-            continue;
-        }
-        batch.push(characterId);
-        if (batch.length >= FAV_LOOKUP_BATCH_SIZE) await applyAdditions();
-    }
-    if (batch.length > 0) await applyAdditions();
 }
 
 // Existing files are never re-read: card_json is authoritative, so only files with no row are parsed.
@@ -3133,10 +3033,7 @@ export async function reconcile(directories) {
         }
     }
 
-    entry.db.run(
-        'INSERT INTO meta (key, value) VALUES (\'last_reconcile_dir_mtime_ms\', @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
-        { value: String(currentDirMtimeMs) },
-    );
+    setMetaSync(entry.db, 'last_reconcile_dir_mtime_ms', String(currentDirMtimeMs));
 }
 
 // Emitted on characterChangeEmitter as (root) when tag_changes rows were added for that store: its clients ask for
@@ -3441,11 +3338,12 @@ export async function findCharacterIdByIdentityHashes(directories, contentIdenti
             continue;
         }
 
-        // COALESCE-guarded so a concurrent live write for this row always wins over this stale read.
-        entry.db.run(
-            'UPDATE characters SET avatar_identity_hash = COALESCE(avatar_identity_hash, @hash) WHERE id = @id',
-            { hash: rowAvatarHash, id },
-        );
+        // Only filled when empty, read and written in one transaction, so a concurrent live write always wins over
+        // this stale read.
+        entry.db.transaction(() => {
+            const stored = /** @type {{ avatar_identity_hash: string | null } | undefined} */ (entry.db.get('SELECT avatar_identity_hash FROM characters WHERE id = @id', { id }));
+            if (stored && stored.avatar_identity_hash === null) writeRowIfChanged(entry.db, 'characters', { id }, { avatar_identity_hash: rowAvatarHash });
+        });
 
         if (rowAvatarHash === avatarIdentityHash) return id;
     }
@@ -3477,15 +3375,7 @@ export async function setLocalImportSkip(directories, sourcePath, mtimeMs, reaso
     const entry = await getEntry(directories);
     if (!entry) return;
 
-    entry.db.run(
-        `INSERT INTO local_import_skips (source_path, mtime_ms, reason, checked_at)
-         VALUES (@sourcePath, @mtimeMs, @reason, @checkedAt)
-         ON CONFLICT(source_path) DO UPDATE SET
-            mtime_ms = excluded.mtime_ms,
-            reason = excluded.reason,
-            checked_at = excluded.checked_at`,
-        { sourcePath, mtimeMs, reason, checkedAt: Date.now() },
-    );
+    writeRowIfChanged(entry.db, 'local_import_skips', { source_path: sourcePath }, { mtime_ms: mtimeMs, reason, checked_at: Date.now() }, { insert: true });
 }
 
 /**
@@ -3567,12 +3457,7 @@ export async function setLocalImportMtime(directories, sourcePath, mtimeMs, dupl
     const entry = await getEntry(directories);
     if (!entry) return;
 
-    entry.db.run(
-        `INSERT INTO local_import_mtimes (source_path, mtime_ms, duplicate_of)
-         VALUES (@sourcePath, @mtimeMs, @duplicateOf)
-         ON CONFLICT(source_path) DO UPDATE SET mtime_ms = excluded.mtime_ms, duplicate_of = excluded.duplicate_of`,
-        { sourcePath, mtimeMs, duplicateOf },
-    );
+    writeRowIfChanged(entry.db, 'local_import_mtimes', { source_path: sourcePath }, { mtime_ms: mtimeMs, duplicate_of: duplicateOf }, { insert: true });
 }
 
 /**
@@ -3628,7 +3513,6 @@ export async function getMetaValue(directories, key) {
     return row ? String(row.value) : null;
 }
 
-const UPSERT_META_SQL = 'INSERT INTO meta (key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value';
 
 /**
  * @param {import('./users.js').UserDirectoryList} directories
@@ -3638,7 +3522,7 @@ const UPSERT_META_SQL = 'INSERT INTO meta (key, value) VALUES (@key, @value) ON 
 export async function setMetaValue(directories, key, value) {
     const entry = await getEntry(directories);
     if (!entry) return;
-    entry.db.run(UPSERT_META_SQL, { key, value: String(value) });
+    setMetaSync(entry.db, key, String(value));
 }
 
 /**
@@ -3694,15 +3578,15 @@ export async function trySetMetaValuesAndRetryMarks(directories, values, retryMa
     try {
         db.transaction(() => {
             for (const [key, value] of Object.entries(values)) {
-                db.run(UPSERT_META_SQL, { key, value: String(value) });
+                setMetaSync(db, key, String(value));
             }
             for (const { id, mark } of retryMarks) {
                 if (mark) {
-                    db.run(
-                        'INSERT INTO character_index_retries (id, next_attempt_at, delay_ms, last_error) VALUES (@id, @nextAttemptAt, @delayMs, @lastError) '
-                        + 'ON CONFLICT(id) DO UPDATE SET next_attempt_at = excluded.next_attempt_at, delay_ms = excluded.delay_ms, last_error = excluded.last_error',
-                        { id, ...mark },
-                    );
+                    writeRowIfChanged(db, 'character_index_retries', { id }, {
+                        next_attempt_at: mark.nextAttemptAt,
+                        delay_ms: mark.delayMs,
+                        last_error: mark.lastError,
+                    }, { insert: true });
                 } else {
                     db.run('DELETE FROM character_index_retries WHERE id = ?', [id]);
                 }
@@ -4106,7 +3990,7 @@ export async function isIdMigrationTargetTaken(directories, newId) {
 export async function markIdMigrationComplete(directories, oldId) {
     const entry = await getEntry(directories);
     if (!entry) return;
-    entry.db.run('UPDATE id_migration SET completed = 1 WHERE old_id = @oldId', { oldId });
+    writeRowIfChanged(entry.db, 'id_migration', { old_id: oldId }, { completed: 1 });
 }
 
 /**
@@ -4341,94 +4225,6 @@ export async function unassignEntityTag(directories, id, tagId) {
         }
     });
     return 'ok';
-}
-
-// Bulk counterpart to assignEntityTag()/unassignEntityTag(): those two only add/remove one tag on one entity
-// at a time, which is fine for interactive UI clicks but means a multi-entity restore (e.g. from a tag backup
-// file) would otherwise have to loop a single-tag call per tag per entity. This replaces each listed entity's
-// whole tag set in one transaction instead. Same existence-then-write shape and shallow_json/digest upkeep as
-// assignEntityTag()/unassignEntityTag(), just batched.
-/**
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {Record<string, string[]>} tagIdsByEntity Entity id -> full desired tag id list (replaces, not merges, each entity's assignments).
- * @returns {Promise<Record<string, 'ok' | 'not_found'> | null>}
- */
-export async function setEntityTagIdsMany(directories, tagIdsByEntity) {
-    const entry = await getEntry(directories);
-    if (!entry) return null;
-
-    const ids = Object.keys(tagIdsByEntity);
-    const idsOfType = (/** @type {'character' | 'group'} */ type) => ids.filter(id => tagEntityTypeOf(id) === type);
-
-    // Each id is only looked for in its own type's table (tagEntityTypeOf()).
-    /** @type {Set<string>} */
-    const characterIds = new Set();
-    /** @type {Set<string>} */
-    const groupIds = new Set();
-    for (const [table, typeIds, found] of /** @type {const} */ ([['characters', idsOfType('character'), characterIds], ['groups', idsOfType('group'), groupIds]])) {
-        for (let i = 0; i < typeIds.length; i += BATCH_FLUSH_SIZE) {
-            const chunk = typeIds.slice(i, i + BATCH_FLUSH_SIZE);
-            const placeholders = chunk.map(() => '?').join(',');
-            for (const row of /** @type {Iterable<{ id: string }>} */ (entry.db.iterate(`SELECT id FROM ${table} WHERE id IN (${placeholders})`, chunk))) {
-                found.add(row.id);
-            }
-        }
-    }
-
-    /** @type {Record<string, 'ok' | 'not_found'>} */
-    const result = {};
-    /** @type {{ id: string, row: PendingRow }[]} */
-    let flushed = [];
-    /** @type {Map<string, string[]>} */
-    let notAssigned = new Map();
-
-    entry.db.transaction(() => {
-        // Reset here: a transaction that hits busy is rolled back and rerun.
-        flushed = [];
-        notAssigned = new Map();
-        const deletions = readTagDeletionsSync(entry.db);
-        for (const id of ids) {
-            const { tagIds, dropped } = resolveTagIdsToAssign(Array.isArray(tagIdsByEntity[id]) ? tagIdsByEntity[id] : [], deletions);
-            if (dropped.length > 0) notAssigned.set(id, dropped);
-
-            const flushedRow = tagEntityTypeOf(id) === 'character' ? writeBufferedRowSync(entry, id) : undefined;
-            if (flushedRow) flushed.push({ id, row: flushedRow });
-
-            if (characterIds.has(id) || flushedRow) {
-                entry.db.run('DELETE FROM character_tags WHERE character_id = @id', { id });
-                for (const tagId of tagIds) {
-                    entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@id, @tagId)', { id, tagId });
-                }
-                const charRow = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id })));
-                if (charRow) {
-                    const shallow = JSON.parse(charRow.shallow_json);
-                    shallow.tag_ids = tagIds;
-                    writeShallowJson(entry.db, id, shallow, ['tag_ids']);
-                }
-                result[id] = 'ok';
-            } else if (groupIds.has(id)) {
-                /** @type {Set<string>} */
-                const oldTagIds = new Set();
-                for (const r of /** @type {Iterable<{ tag_id: string }>} */ (entry.db.iterate('SELECT tag_id FROM group_tags WHERE group_id = @id', { id }))) oldTagIds.add(r.tag_id);
-                entry.db.run('DELETE FROM group_tags WHERE group_id = @id', { id });
-                for (const tagId of tagIds) {
-                    entry.db.run('INSERT OR IGNORE INTO group_tags (group_id, tag_id) VALUES (@id, @tagId)', { id, tagId });
-                }
-                const tagsChanged = oldTagIds.size !== tagIds.length || tagIds.some(tagId => !oldTagIds.has(tagId));
-                const digestSet = setGroupDigestTagIdsSync(entry.db, id, groupDigestTagIdsHash({ tag_ids: tagIds }));
-                if (tagsChanged || digestSet) insertGroupChange(entry.db, id);
-                result[id] = 'ok';
-            } else {
-                result[id] = 'not_found';
-            }
-        }
-    });
-    for (const { id, row } of flushed) dropFromBuffer(entry, id, row);
-    for (const [id, tagIds] of notAssigned) {
-        if (result[id] === 'ok') warnDeletedTagsNotAssigned(id, tagIds);
-    }
-
-    return result;
 }
 
 /**
@@ -4838,25 +4634,6 @@ const ENTITY_COUNT_TRIGGERS = ENTITY_COUNT_KINDS.flatMap(entityCountTriggers);
 const ENTITY_COUNT_TRIGGERS_SQL = ENTITY_COUNT_TRIGGERS.map(trigger => trigger.sql).join('\n');
 const DROP_ENTITY_COUNT_TRIGGERS_SQL = ENTITY_COUNT_TRIGGERS.map(trigger => `DROP TRIGGER IF EXISTS ${trigger.name};`).join('\n');
 
-const GROUP_UPSERT_SQL = `
-    INSERT INTO groups (id, name, name_fold, fav, date_added, date_last_chat, chat_size, digest_fav, digest_content)
-    VALUES (@id, @name, @nameFold, @fav, @dateAdded, 0, 0, @digestFav, @digestContent)
-    ON CONFLICT(id) DO UPDATE SET
-        name = excluded.name,
-        name_fold = excluded.name_fold,
-        fav = excluded.fav,
-        digest_fav = excluded.digest_fav,
-        digest_content = excluded.digest_content
-    WHERE groups.name IS NOT excluded.name
-        OR groups.name_fold IS NOT excluded.name_fold
-        OR groups.fav IS NOT excluded.fav
-        OR groups.digest_fav IS NOT excluded.digest_fav
-        OR groups.digest_content IS NOT excluded.digest_content
-    -- digest_tag_ids absent: owned by assignEntityTag()/unassignEntityTag()'s group branch, not this upsert.
-    -- date_added absent: write-once. date_last_chat/chat_size absent: owned by applyGroupChatStats(), which follows
-    -- every write to the group's messages, and the backfill passes, not by /create or /edit requests.
-`;
-
 const GROUP_INSERT_IF_MISSING_SQL = `
     INSERT INTO groups (id, name, name_fold, fav, date_added, date_last_chat, chat_size, digest_fav, digest_content)
     VALUES (@id, @name, @nameFold, @fav, @dateAdded, 0, 0, @digestFav, @digestContent)
@@ -4878,18 +4655,25 @@ const GROUP_INSERT_IF_MISSING_SQL = `
 function upsertGroupRowSync(db, { id, name, fav, group, dateAdded, insertOnly = false }) {
     const normalizedFav = normalizeFav(fav);
     const existed = !!db.get('SELECT 1 AS ok FROM groups WHERE id = @id', { id });
-    const changed = db.run(insertOnly ? GROUP_INSERT_IF_MISSING_SQL : GROUP_UPSERT_SQL, {
-        id,
+    if (existed && insertOnly) return false;
+    const values = {
         name: name ?? '',
-        nameFold: foldName(name),
+        name_fold: foldName(name),
         fav: normalizedFav ? 1 : 0,
-        dateAdded,
-        digestFav: groupDigestFavHash({ fav: normalizedFav }),
+        digest_fav: groupDigestFavHash({ fav: normalizedFav }),
         // Round-tripped so the digest is of what the group's JSON file holds, which is what clients hash.
-        digestContent: groupDigestContentHash(group ? JSON.parse(JSON.stringify(group)) : {}),
+        digest_content: groupDigestContentHash(group ? JSON.parse(JSON.stringify(group)) : {}),
+    };
+    // digest_tag_ids isn't written here: owned by assignEntityTag()/unassignEntityTag()'s group branch. date_added is
+    // write-once. date_last_chat/chat_size are owned by applyGroupChatStats(), which follows every write to the
+    // group's messages, and the backfill passes, not by /create or /edit requests.
+    if (existed) return writeRowIfChanged(db, 'groups', { id }, values);
+    const inserted = db.run(GROUP_INSERT_IF_MISSING_SQL, {
+        id, name: values.name, nameFold: values.name_fold, fav: values.fav, dateAdded,
+        digestFav: values.digest_fav, digestContent: values.digest_content,
     }).changes > 0;
-    if (!existed) queueChatStatsReconcileSync(db, 'group', id);
-    return changed;
+    queueChatStatsReconcileSync(db, 'group', id);
+    return inserted;
 }
 
 /**
@@ -4936,7 +4720,7 @@ export async function writeGroupFileAndRow(directories, group, writeFile, { crea
     const filePath = path.join(directories.groups, sanitize(`${id}.json`));
     const rowBefore = groupRowSnapshot(entry.db, id);
     const fileBefore = readFileForComparison(filePath);
-    entry.db.run('UPDATE groups SET digest_content = NULL WHERE id = @id', { id });
+    writeRowIfChanged(entry.db, 'groups', { id }, { digest_content: null });
     writeFile();
     // The file is read too (the groups search index builds from it), so a change to it alone is a group change.
     const fileChanged = !sameFileContents(fileBefore, readFileForComparison(filePath));
@@ -5081,8 +4865,8 @@ export async function applyGroupChatStats(directories, groupId, { sizeChange, ad
     if (!entry) return;
 
     entry.db.transaction(() => {
-        const row = (/** @type {{ date_last_chat: number } | undefined} */ (entry.db.get(
-            'SELECT date_last_chat FROM groups WHERE id = @id', { id: groupId })));
+        const row = (/** @type {{ chat_size: number, date_last_chat: number } | undefined} */ (entry.db.get(
+            'SELECT chat_size, date_last_chat FROM groups WHERE id = @id', { id: groupId })));
         if (!row) {
             console.warn(color.yellow(`[character-metadata] Chat stats change for group ${groupId} (${sizeChange} bytes) not applied: it has no group row.`));
             return;
@@ -5090,8 +4874,7 @@ export async function applyGroupChatStats(directories, groupId, { sizeChange, ad
         const dateLastChat = nextDateLastChat(Number(row.date_last_chat), { addedCreatedAt, readLastCreatedAt });
         if (sizeChange === 0 && dateLastChat === Number(row.date_last_chat)) return;
 
-        entry.db.run('UPDATE groups SET chat_size = chat_size + @sizeChange, date_last_chat = @dateLastChat WHERE id = @id',
-            { sizeChange, dateLastChat, id: groupId });
+        writeRowIfChanged(entry.db, 'groups', { id: groupId }, { chat_size: Number(row.chat_size) + sizeChange, date_last_chat: dateLastChat });
         insertGroupChange(entry.db, groupId);
     });
 }
@@ -5235,7 +5018,7 @@ async function runChatStatsFullPass(directories) {
         const view = await openOwnerStatsView(directories);
         const page = readChatStatsFullPassPage(db, after);
         if (page.length === 0) {
-            db.run(UPSERT_META_SQL, { key: CHAT_STATS_FULL_PASS_META_KEY, value: 'done' });
+            setMetaSync(db, CHAT_STATS_FULL_PASS_META_KEY, 'done');
             progress.finish(`${changed.toLocaleString('en-US')} corrected`);
             return;
         }
@@ -5253,7 +5036,7 @@ async function runChatStatsFullPass(directories) {
             }
             if (performance.now() - started >= CHAT_STATS_QUEUE_BUDGET_MS) break;
         }
-        db.run(UPSERT_META_SQL, { key: CHAT_STATS_FULL_PASS_META_KEY, value: JSON.stringify(after) });
+        setMetaSync(db, CHAT_STATS_FULL_PASS_META_KEY, JSON.stringify(after));
         await delay(CHAT_STATS_QUEUE_PAUSE_MS);
     }
 }
@@ -5465,7 +5248,7 @@ function writeGroupChatStatsSync(db, groupId, stats) {
     if (!row) return false;
     if (Number(row.chat_size) === stats.chatSize && Number(row.date_last_chat) === stats.dateLastChat) return false;
 
-    db.run('UPDATE groups SET chat_size = @chatSize, date_last_chat = @dateLastChat WHERE id = @id', { ...stats, id: groupId });
+    writeRowIfChanged(db, 'groups', { id: groupId }, { chat_size: stats.chatSize, date_last_chat: stats.dateLastChat });
     insertGroupChange(db, groupId);
     return true;
 }
@@ -5529,10 +5312,7 @@ export async function bootstrapGroupsIfNeeded(directories) {
         });
     }
 
-    entry.db.run(
-        'INSERT INTO meta (key, value) VALUES (\'groups_bootstrap_completed\', @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
-        { value: String(Date.now()) },
-    );
+    setMetaSync(entry.db, 'groups_bootstrap_completed', String(Date.now()));
 }
 
 /**
@@ -5650,7 +5430,7 @@ export async function recoverNumericIdGroupsIfNeeded(directories) {
     }
 
     if (filesFailed === 0) {
-        entry.db.run(UPSERT_META_VALUE_SQL, { key: GROUP_NUMERIC_ID_RECOVERY_FLAG, value: String(Date.now()) });
+        setMetaSync(entry.db, GROUP_NUMERIC_ID_RECOVERY_FLAG, String(Date.now()));
     }
     if (!isReadOnlyMode()) entry.db.checkpoint();
     if (filesFailed > 0) {
@@ -5684,10 +5464,10 @@ export async function normalizeGroupFavIfNeeded(directories) {
             if (!entry.db.get('SELECT 1 FROM groups WHERE id = @id', { id })) return null;
             const group = JSON.parse(fs.readFileSync(path.join(directories.groups, sanitize(`${id}.json`)), 'utf8'));
             const fav = normalizeFav(group?.fav);
-            const params = { id, fav: fav ? 1 : 0, digestFav: groupDigestFavHash({ fav }) };
-            if (!entry.db.get('SELECT 1 FROM groups WHERE id = @id AND (fav IS NOT @fav OR digest_fav IS NOT @digestFav)', params)) return null;
+            const values = { fav: fav ? 1 : 0, digest_fav: groupDigestFavHash({ fav }) };
+            if (!entry.db.get('SELECT 1 FROM groups WHERE id = @id AND (fav IS NOT @fav OR digest_fav IS NOT @digestFav)', { id, fav: values.fav, digestFav: values.digest_fav })) return null;
             return () => {
-                entry.db.run('UPDATE groups SET fav = @fav, digest_fav = @digestFav WHERE id = @id', params);
+                writeRowIfChanged(entry.db, 'groups', { id }, values);
                 insertGroupChange(entry.db, id);
             };
         },
@@ -6131,11 +5911,10 @@ function editTagSync(entry, id, patch) {
     const merged = /** @type {TagDefinitionInput} */ ({ ...old, ...(queueOrder ? rest : patch), id });
     if (JSON.stringify(merged) === JSON.stringify(old)) return { refused: null, written: false };
 
-    entry.db.run(
-        `UPDATE tags SET data = @data, name_key = @nameKey, sort_order = @sortOrder, folder_type = @folderType, is_folder = @isFolder
-            WHERE id = @id`,
-        tagRowParams(merged),
-    );
+    const params = tagRowParams(merged);
+    writeRowIfChanged(entry.db, 'tags', { id }, {
+        data: params.data, name_key: params.nameKey, sort_order: params.sortOrder, folder_type: params.folderType, is_folder: params.isFolder,
+    });
     if ((old.name ?? '') !== (merged.name ?? '')) {
         entry.db.run('INSERT INTO tag_name_changes (tag_id) VALUES (@tagId)', { tagId: id });
     }
@@ -6559,7 +6338,7 @@ export async function removeOrphanTagRowsIfNeeded(directories) {
                     }
                     for (const id of changedIds) logTagRowsChanged(db, id);
                     if (state.removed.length === 0) return;
-                    db.run(UPSERT_META_VALUE_SQL, { key: ORPHAN_TAG_ROWS_PROGRESS_KEY, value: JSON.stringify({ table: tagTable, id: last.id, tagId: last.tagId }) });
+                    setMetaSync(db, ORPHAN_TAG_ROWS_PROGRESS_KEY, JSON.stringify({ table: tagTable, id: last.id, tagId: last.tagId }));
                 });
                 if (state.removed.length > 0) {
                     progressSaved = true;
@@ -6575,7 +6354,7 @@ export async function removeOrphanTagRowsIfNeeded(directories) {
     }
 
     db.transaction(() => {
-        db.run(UPSERT_META_VALUE_SQL, { key: ORPHAN_TAG_ROWS_REMOVED_FLAG, value: String(Date.now()) });
+        setMetaSync(db, ORPHAN_TAG_ROWS_REMOVED_FLAG, String(Date.now()));
         if (progressSaved) db.run('DELETE FROM meta WHERE key = @key', { key: ORPHAN_TAG_ROWS_PROGRESS_KEY });
     });
     if (!isReadOnlyMode()) db.checkpoint();
@@ -6635,7 +6414,7 @@ export async function refreshGroupDigestTagIdsIfNeeded(directories) {
                     insertGroupChange(db, id);
                 }
                 if (state.set.length === 0) return;
-                db.run(UPSERT_META_VALUE_SQL, { key: GROUP_DIGEST_TAG_IDS_PROGRESS_KEY, value: JSON.stringify({ id: last }) });
+                setMetaSync(db, GROUP_DIGEST_TAG_IDS_PROGRESS_KEY, JSON.stringify({ id: last }));
             });
             if (state.set.length > 0) {
                 progressSaved = true;
@@ -6650,7 +6429,7 @@ export async function refreshGroupDigestTagIdsIfNeeded(directories) {
     }
 
     db.transaction(() => {
-        db.run(UPSERT_META_VALUE_SQL, { key: GROUP_DIGEST_TAG_IDS_REFRESHED_FLAG, value: String(Date.now()) });
+        setMetaSync(db, GROUP_DIGEST_TAG_IDS_REFRESHED_FLAG, String(Date.now()));
         if (progressSaved) db.run('DELETE FROM meta WHERE key = @key', { key: GROUP_DIGEST_TAG_IDS_PROGRESS_KEY });
     });
     if (!isReadOnlyMode()) db.checkpoint();
@@ -6818,8 +6597,7 @@ export async function fillTagSortTablesIfNeeded(directories) {
                     );
                     state.inserted = Number(result.changes);
                 }
-                db.run('INSERT INTO meta (key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
-                    { key: uptoKey, value: done ? '\u0000done' : /** @type {string} */ (last) });
+                setMetaSync(db, uptoKey, done ? '\u0000done' : /** @type {string} */ (last));
             });
             batches++;
             rowsChanged += state.inserted;
@@ -6904,8 +6682,7 @@ export async function fillRandomRanksIfNeeded(directories) {
                         state.inserted++;
                     }
                 }
-                db.run('INSERT INTO meta (key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
-                    { key: uptoKey, value: done ? '\u0000done' : /** @type {string} */ (last) });
+                setMetaSync(db, uptoKey, done ? '\u0000done' : /** @type {string} */ (last));
             });
             batches++;
             rowsChanged += state.inserted;
@@ -7033,7 +6810,7 @@ function nameOrderWindow(db, dir, row, size) {
 function placeNameOrderRow(db, dir, row) {
     const pos = namePosColumn(dir);
     const write = (/** @type {NameOrderRow} */ r, /** @type {number} */ value) => {
-        db.run(`UPDATE name_order SET ${pos} = @value WHERE kind = @kind AND entity_id = @id`, { value, kind: r.kind, id: r.entity_id });
+        writeRowIfChanged(db, 'name_order', { kind: r.kind, entity_id: r.entity_id }, { [pos]: value });
     };
     const before = nameOrderRowsBefore(db, dir, row.name_fold, row.tie_key, 1);
     const after = nameOrderRowsAfter(db, dir, row.name_fold, row.tie_key, 1);
@@ -7118,8 +6895,7 @@ export async function fillNameOrderIfNeeded(directories) {
         return saved ? JSON.parse(saved.value) : null;
     };
     /** @param {string} phase @param {unknown} value */
-    const writeUpto = (phase, value) => db.run('INSERT INTO meta (key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
-        { key: `${NAME_ORDER_FILL_UPTO_KEY}${phase}`, value: JSON.stringify(value) });
+    const writeUpto = (phase, value) => setMetaSync(db, `${NAME_ORDER_FILL_UPTO_KEY}${phase}`, JSON.stringify(value));
     const pause = async () => {
         batches++;
         if (batches % MIGRATION_PASSIVE_CHECKPOINT_EVERY_BATCHES === 0 && !isReadOnlyMode()) db.get('PRAGMA wal_checkpoint(PASSIVE)');
@@ -7167,8 +6943,8 @@ export async function fillNameOrderIfNeeded(directories) {
                 : { rank: upto.rank + rows.length, nameFold: last.name_fold, tieKey: last.tie_key };
             const from = upto.rank;
             db.transaction(() => {
-                rows.forEach((r, i) => db.run(`UPDATE name_order SET ${pos} = @value WHERE kind = @kind AND entity_id = @id`,
-                    { value: (from + i + 1) * NAME_ORDER_SPACING, kind: r.kind, id: r.entity_id }));
+                rows.forEach((r, i) => writeRowIfChanged(db, 'name_order', { kind: r.kind, entity_id: r.entity_id },
+                    { [pos]: (from + i + 1) * NAME_ORDER_SPACING }));
                 writeUpto(phase, next);
             });
             rowsChanged += rows.length;
@@ -7313,13 +7089,13 @@ export async function fillEntityCountsIfNeeded(directories) {
                         db.run(`INSERT INTO entity_tag_counts (tag_id, kind, fav, count) VALUES (@tagId, @name, @fav, @n)
                             ON CONFLICT (tag_id, kind, fav) DO UPDATE SET count = count + excluded.count`, { tagId, name, fav, n });
                     }
-                    db.run('UPDATE entity_count_fill SET upto = @last WHERE kind = @name', { name, last });
+                    writeRowIfChanged(db, 'entity_count_fill', { kind: name }, { upto: last });
                 }
                 const more = last === null
                     ? db.get(`SELECT 1 FROM ${table} LIMIT 1`)
                     : db.get(`SELECT 1 FROM ${table} WHERE id > @last LIMIT 1`, { last });
                 if (!more) {
-                    db.run('UPDATE entity_count_fill SET done = 1 WHERE kind = @name', { name });
+                    writeRowIfChanged(db, 'entity_count_fill', { kind: name }, { done: 1 });
                     state.done = true;
                 }
             });
@@ -7356,10 +7132,7 @@ export async function migrateTagsJsonIfNeeded(directories) {
 
     const tagsJsonPath = path.join(directories.root, TAGS_FILE);
     if (!fs.existsSync(tagsJsonPath)) {
-        entry.db.run(
-            'INSERT INTO meta (key, value) VALUES (\'tags_json_migrated\', @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
-            { value: String(Date.now()) },
-        );
+        setMetaSync(entry.db, 'tags_json_migrated', String(Date.now()));
         return { batches: 0, rowsChanged: 0 };
     }
     // An install that had a tags.json, readable or not, isn't fresh, so it never gets the default tags.
@@ -7397,10 +7170,7 @@ export async function migrateTagsJsonIfNeeded(directories) {
     const batches = 1 + imported.batches;
     const rowsChanged = insertedDefinitions + imported.rowsChanged;
     if (imported.failedKeys === 0) {
-        entry.db.run(
-            'INSERT INTO meta (key, value) VALUES (\'tags_json_migrated\', @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
-            { value: String(Date.now()) },
-        );
+        setMetaSync(entry.db, 'tags_json_migrated', String(Date.now()));
     }
     if (!isReadOnlyMode()) entry.db.checkpoint();
 
@@ -7718,7 +7488,7 @@ export async function migrateSettingsTagsIfNeeded(directories) {
     seedDefaultTagsIfPendingSync(entry, seedCheck);
 
     if (!sourceLeft) {
-        entry.db.run(UPSERT_META_VALUE_SQL, { key: SETTINGS_TAGS_MIGRATED_FLAG, value: String(Date.now()) });
+        setMetaSync(entry.db, SETTINGS_TAGS_MIGRATED_FLAG, String(Date.now()));
         // A restore may have written a source after it was looked for, and cleared the mark before it was set.
         if ([legacyPath, ...keyFiles.map(file => file.filePath)].some(filePath => fs.existsSync(filePath))) {
             entry.db.run('DELETE FROM meta WHERE key = @key', { key: SETTINGS_TAGS_MIGRATED_FLAG });
@@ -8336,7 +8106,7 @@ function syncGroupDigestTagIdsFromTable(db, groupId) {
  * @returns {boolean} Whether the group's row existed and held a different value.
  */
 function setGroupDigestTagIdsSync(db, groupId, digestTagIds) {
-    return db.run('UPDATE groups SET digest_tag_ids = @digestTagIds WHERE id = @id AND digest_tag_ids IS NOT @digestTagIds', { id: groupId, digestTagIds }).changes > 0;
+    return writeRowIfChanged(db, 'groups', { id: groupId }, { digest_tag_ids: digestTagIds });
 }
 
 /**
@@ -8487,7 +8257,7 @@ export async function fillTagNameKeysIfNeeded(directories) {
                 } catch {
                     // Unparseable: it has no name to match, so it gets the key no card tag name has.
                 }
-                entry.db.run('UPDATE tags SET name_key = @key WHERE id = @id', { id, key: tagDefinitionNameKey(tag) });
+                writeRowIfChanged(entry.db, 'tags', { id }, { name_key: tagDefinitionNameKey(tag) });
                 filled++;
             }
         });
@@ -8607,18 +8377,17 @@ export async function fillTagDerivedColumnsIfNeeded(directories) {
                     const name = /** @type {Record<string, unknown>} */ (tag).name;
                     state.unordered.push(`  ${id} (${typeof name === 'string' ? name : JSON.stringify(name)}): ${JSON.stringify(rawOrder)}`);
                 }
-                state.changed += db.run(`UPDATE tags SET sort_order = @sortOrder, folder_type = @folderType, is_folder = @isFolder,
-                        usage_count = COALESCE((SELECT count FROM tag_usage WHERE tag_id = tags.id), 0)
-                    WHERE rowid = @rowid AND (sort_order IS NOT @sortOrder OR folder_type IS NOT @folderType OR is_folder IS NOT @isFolder
-                        OR usage_count IS NOT COALESCE((SELECT count FROM tag_usage WHERE tag_id = tags.id), 0))`,
-                { rowid, sortOrder, folderType, isFolder }).changes;
+                const usage = /** @type {{ count: number } | undefined} */ (db.get('SELECT count FROM tag_usage WHERE tag_id = @id', { id }));
+                if (writeRowIfChanged(db, 'tags', { rowid }, {
+                    sort_order: sortOrder, folder_type: folderType, is_folder: isFolder, usage_count: usage?.count ?? 0,
+                })) state.changed++;
             }
             if (page.length > 0) {
                 state.last = page[page.length - 1].rowid;
-                db.run(UPSERT_META_VALUE_SQL, { key: TAG_DERIVED_COLUMNS_FILL_UPTO_KEY, value: String(state.last) });
+                setMetaSync(db, TAG_DERIVED_COLUMNS_FILL_UPTO_KEY, String(state.last));
             }
             if (page.length < TAG_DERIVED_COLUMNS_FILL_BATCH_SIZE) {
-                db.run(UPSERT_META_VALUE_SQL, { key: TAG_DERIVED_COLUMNS_FILLED_FLAG, value: String(Date.now()) });
+                setMetaSync(db, TAG_DERIVED_COLUMNS_FILLED_FLAG, String(Date.now()));
                 db.run('DELETE FROM meta WHERE key = @key', { key: TAG_DERIVED_COLUMNS_FILL_UPTO_KEY });
                 state.done = true;
             }
@@ -8704,7 +8473,7 @@ function parseTagObject(data) {
  */
 function writeTagSortOrderSync(db, rowid, tag, sortOrder) {
     tag.sort_order = sortOrder;
-    db.run('UPDATE tags SET data = @data, sort_order = @sortOrder WHERE rowid = @rowid', { rowid, data: JSON.stringify(tag), sortOrder: tagDerivedColumns(tag).sortOrder });
+    writeRowIfChanged(db, 'tags', { rowid }, { data: JSON.stringify(tag), sort_order: tagDerivedColumns(tag).sortOrder });
 }
 
 /**
@@ -8923,7 +8692,7 @@ export async function fillTagSortOrdersIfNeeded(directories) {
         await delay(MIGRATION_BATCH_PAUSE_MS);
     };
     /** @param {typeof at} next */
-    const saveAt = next => db.run(UPSERT_META_VALUE_SQL, { key: TAG_SORT_ORDERS_FILL_AT_KEY, value: JSON.stringify(next) });
+    const saveAt = next => setMetaSync(db, TAG_SORT_ORDERS_FILL_AT_KEY, JSON.stringify(next));
 
     while (at.phase === 'unordered') {
         const from = at;
@@ -9026,7 +8795,7 @@ export async function fillTagSortOrdersIfNeeded(directories) {
             }
             state.done = atEnd;
             if (state.done) {
-                db.run(UPSERT_META_VALUE_SQL, { key: TAG_SORT_ORDERS_FILLED_FLAG, value: String(Date.now()) });
+                setMetaSync(db, TAG_SORT_ORDERS_FILLED_FLAG, String(Date.now()));
                 db.run('DELETE FROM meta WHERE key = @key', { key: TAG_SORT_ORDERS_FILL_AT_KEY });
             } else {
                 saveAt({ phase: 'ties', s: state.s });
@@ -9307,7 +9076,7 @@ function foldTagPendingSync(db) {
         foldTagPendingEntrySync(db, pending);
         folded = pending.seq;
     }
-    if (folded !== start) db.run(UPSERT_META_VALUE_SQL, { key: TAG_PENDING_FOLDED_SEQ_KEY, value: String(folded) });
+    if (folded !== start) setMetaSync(db, TAG_PENDING_FOLDED_SEQ_KEY, String(folded));
 }
 
 /**
@@ -9395,7 +9164,7 @@ function refoldTagPendingSync(db) {
     // An emptied queue has emptied the places with it (trg_tag_pending_moves_emptied).
     if (!db.get('SELECT 1 FROM tag_pending_moves LIMIT 1')) return;
     db.run('DELETE FROM tag_pending_places');
-    db.run(UPSERT_META_VALUE_SQL, { key: TAG_PENDING_FOLDED_SEQ_KEY, value: '0' });
+    setMetaSync(db, TAG_PENDING_FOLDED_SEQ_KEY, '0');
     foldTagPendingSync(db);
 }
 
@@ -9420,8 +9189,10 @@ function tagGapKeyBesideSync(db, place, g) {
     if (next === null) return at + g;
     let key = (at + next) / 2;
     if (key === at || key === next) {
+        // Only the rows whose number moves are written.
         db.run(`UPDATE tag_pending_places SET i = numbered.n FROM (SELECT tag_id, ROW_NUMBER() OVER (ORDER BY i) AS n
-            FROM tag_pending_places WHERE ${where}) AS numbered WHERE tag_pending_places.tag_id = numbered.tag_id`, space);
+            FROM tag_pending_places WHERE ${where}) AS numbered
+            WHERE tag_pending_places.tag_id = numbered.tag_id AND tag_pending_places.i IS NOT numbered.n`, space);
         ({ at, next } = read());
         key = next === null ? at + g : (at + next) / 2;
     }
@@ -9646,8 +9417,8 @@ export async function reorderTagDefinitions(directories, id, placement, mode) {
         const passId = (last ? Number(last.value) : 0) + 1;
         /** @type {TagReorderPass} */
         const pass = { id: passId, mode: /** @type {TagReorderMode} */ (mode), at: null };
-        db.run(UPSERT_META_VALUE_SQL, { key: TAG_REORDER_PASS_LAST_ID_KEY, value: String(passId) });
-        db.run(UPSERT_META_VALUE_SQL, { key: TAG_REORDER_PASS_KEY, value: JSON.stringify(pass) });
+        setMetaSync(db, TAG_REORDER_PASS_LAST_ID_KEY, String(passId));
+        setMetaSync(db, TAG_REORDER_PASS_KEY, JSON.stringify(pass));
         queueTagMoveSync(db, id, side, anchorId);
     });
     warnStaleDeletedTagSave(refused.filter(r => r.reason === 'deleted').map(r => r.id));
@@ -9940,7 +9711,7 @@ export async function runTagReorderPassIfNeeded(directories) {
                 }
             }
 
-            if (next !== null) db.run(UPSERT_META_VALUE_SQL, { key: TAG_REORDER_PASS_KEY, value: JSON.stringify({ ...pass, at: next }) });
+            if (next !== null) setMetaSync(db, TAG_REORDER_PASS_KEY, JSON.stringify({ ...pass, at: next }));
         });
         const { pass } = state;
         if (!pass) break;
@@ -11750,7 +11521,7 @@ export async function isMigrationMarkedComplete(directories, key) {
 export async function markMigrationComplete(directories, key) {
     const entry = await getEntry(directories);
     if (!entry) return;
-    entry.db.run('INSERT INTO meta (key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value', { key, value: String(Date.now()) });
+    setMetaSync(entry.db, key, String(Date.now()));
 }
 
 /**
@@ -11762,7 +11533,7 @@ export async function markMigrationComplete(directories, key) {
 export async function addMigrationPending(directories, migration, id) {
     const entry = await getEntry(directories);
     if (!entry) return;
-    entry.db.run('INSERT INTO migration_pending (migration, id, settled) VALUES (@migration, @id, 0) ON CONFLICT(migration, id) DO UPDATE SET settled = 0', { migration, id });
+    writeRowIfChanged(entry.db, 'migration_pending', { migration, id }, { settled: 0 }, { insert: true });
 }
 
 /**
@@ -11775,7 +11546,7 @@ export async function addMigrationPending(directories, migration, id) {
 export async function setMigrationPendingSettled(directories, migration, id, settled) {
     const entry = await getEntry(directories);
     if (!entry) return;
-    entry.db.run('UPDATE migration_pending SET settled = @settled WHERE migration = @migration AND id = @id', { settled: settled ? 1 : 0, migration, id });
+    writeRowIfChanged(entry.db, 'migration_pending', { migration, id }, { settled: settled ? 1 : 0 });
 }
 
 /**
@@ -11842,7 +11613,7 @@ export async function commitMigrationSettled(directories, migration, metaKey, me
         if (metaValue === null) {
             entry.db.run('DELETE FROM meta WHERE key = @key', { key: metaKey });
         } else if (metaValue !== undefined) {
-            entry.db.run(UPSERT_META_SQL, { key: metaKey, value: String(metaValue) });
+            setMetaSync(entry.db, metaKey, String(metaValue));
         }
     });
 }
@@ -13672,8 +13443,7 @@ export async function changeSavedView(directories, id, { name, view }) {
             return;
         }
         const now = Date.now();
-        entry.db.run('UPDATE saved_views SET name = @name, name_fold = @fold, view_json = @json, updated_at = @now WHERE id = @id',
-            { id, name: nextName, fold: foldName(nextName), json: nextJson, now });
+        writeRowIfChanged(entry.db, 'saved_views', { id }, { name: nextName, name_fold: foldName(nextName), view_json: nextJson, updated_at: now });
         bumpSavedViewsVersion(entry.db);
         done.result = { id, name: nextName, view: JSON.parse(nextJson), position: row.position, updatedAt: now };
         done.wrote = true;
@@ -13741,13 +13511,13 @@ export async function moveSavedView(directories, id, { anchor, side }) {
             let next = Math.floor(low) + 2;
             for (const row of /** @type {{ id: string }[]} */ (entry.db.readBounded(
                 'SELECT id FROM saved_views WHERE position >= @low AND id <> @id ORDER BY position, id LIMIT @cap', { low, id, cap: SAVED_VIEWS_RESPACE_MAX }, SAVED_VIEWS_RESPACE_MAX))) {
-                entry.db.run('UPDATE saved_views SET position = @next WHERE id = @rid', { next, rid: row.id });
+                writeRowIfChanged(entry.db, 'saved_views', { id: row.id }, { position: next });
                 next += 2;
             }
             const anchorNow = /** @type {{ position: number }} */ (entry.db.get('SELECT position FROM saved_views WHERE id = @anchor', { anchor }));
             position = side === 'before' ? anchorNow.position - 1 : anchorNow.position + 1;
         }
-        entry.db.run('UPDATE saved_views SET position = @position WHERE id = @id', { id, position });
+        writeRowIfChanged(entry.db, 'saved_views', { id }, { position });
         bumpSavedViewsVersion(entry.db);
         done.outcome = 'moved';
     });

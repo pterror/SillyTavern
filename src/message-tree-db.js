@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 
 import { color } from './util.js';
 import { getSqliteEngine } from './endpoints/sqlite-engine.js';
+import { writeRowIfChanged } from './row-values.js';
 import {
     defineMessageStatsFunctions, fillMessageStatsBatchSync, messageStatsFilledSync, migrateMessageStatsSync,
     readMessageStatsSync, restartMessageStatsFillSync,
@@ -620,8 +621,7 @@ function migrateIdentityHashSync(db) {
             for (;;) {
                 for (const row of chunk) {
                     // Filtered by `parent_id IS NOT NULL` in the SELECT above.
-                    db.run('UPDATE messages SET identity_hash = @hash WHERE id = @id',
-                        { id: row.id, hash: identityHashOf(/** @type {string} */ (row.parent_id), row.content) });
+                    writeRowIfChanged(db, 'messages', { id: row.id }, { identity_hash: identityHashOf(/** @type {string} */ (row.parent_id), row.content) });
                 }
 
                 if (chunk.length < KEYSET_CHUNK) break;
@@ -1032,8 +1032,7 @@ function wouldBlankStoredText(stored, incoming) {
 function updateMessageContentSync(db, id, content) {
     const row = /** @type {Pick<MessageRow, 'parent_id'> | undefined} */ (db.get('SELECT parent_id FROM messages WHERE id = @id', { id }));
     const identityHash = row?.parent_id != null ? identityHashOf(row.parent_id, content) : null;
-    db.run('UPDATE messages SET content = @content, identity_hash = @identityHash WHERE id = @id',
-        { id, content, identityHash });
+    writeRowIfChanged(db, 'messages', { id }, { content, identity_hash: identityHash });
 }
 
 /**
@@ -1042,7 +1041,7 @@ function updateMessageContentSync(db, id, content) {
  * @param {string | null} label
  */
 function labelMessageSync(db, id, label) {
-    db.run('UPDATE messages SET label = @label WHERE id = @id', { id, label });
+    writeRowIfChanged(db, 'messages', { id }, { label });
 }
 
 /**
@@ -1051,7 +1050,7 @@ function labelMessageSync(db, id, label) {
  * @param {string | null} metadata
  */
 function setMetadataSync(db, id, metadata) {
-    db.run('UPDATE messages SET metadata = @metadata WHERE id = @id', { id, metadata });
+    writeRowIfChanged(db, 'messages', { id }, { metadata });
 }
 
 /**
@@ -1081,7 +1080,7 @@ function setDefaultChildSync(db, parentId, childId) {
     // Must be a genuine child — refuse rather than leave a parent pointing outside its own subtree.
     const child = /** @type {Pick<MessageRow, 'parent_id'> | undefined} */ (db.get('SELECT parent_id FROM messages WHERE id = @childId', { childId }));
     if (!child || child.parent_id !== parentId) return false;
-    db.run('UPDATE messages SET default_child_id = @childId WHERE id = @parentId', { parentId, childId });
+    writeRowIfChanged(db, 'messages', { id: parentId }, { default_child_id: childId });
     return true;
 }
 
@@ -1312,7 +1311,7 @@ function createBranchSync(db, { leafId, name, isGroup, metadata }) {
         obj.__is_group = true;
         metaJson = JSON.stringify(obj);
     }
-    db.run('UPDATE messages SET label = @name, metadata = @metaJson WHERE id = @leafId', { leafId, name, metaJson });
+    writeRowIfChanged(db, 'messages', { id: leafId }, { label: name, metadata: metaJson });
 }
 
 // ---------------------------------------------------------------------------
@@ -1703,7 +1702,7 @@ export async function saveChatToTree(directories, ownerId, chatName, chatData, i
  * @param {string} metadataJson
  */
 function db_label(db, id, name, metadataJson) {
-    db.run('UPDATE messages SET label = @name, metadata = @metadataJson WHERE id = @id', { id, name, metadataJson });
+    writeRowIfChanged(db, 'messages', { id }, { label: name, metadata: metadataJson });
 }
 
 /**
@@ -1901,7 +1900,7 @@ export async function endPathAt(directories, ownerId, nodeId) {
         { id: nodeId, ownerId });
     if (!node) return false;
 
-    entry.db.run('UPDATE messages SET default_child_id = NULL WHERE id = @id', { id: nodeId });
+    writeRowIfChanged(entry.db, 'messages', { id: nodeId }, { default_child_id: null });
     return true;
 }
 
@@ -1921,7 +1920,7 @@ export async function endPathAtAnchor(directories, ownerId, owner = undefined) {
     if (!entry) return false;
 
     const anchor = ensureAnchorSync(entry.db, ownerId, Date.now(), owner);
-    entry.db.run('UPDATE messages SET default_child_id = NULL WHERE id = @id', { id: anchor.id });
+    writeRowIfChanged(entry.db, 'messages', { id: anchor.id }, { default_child_id: null });
     return true;
 }
 
@@ -1963,10 +1962,7 @@ export async function chooseCardOpening(directories, ownerId, text, cardIndex) {
     const current = /** @type {{ text_hash: string, card_index: number } | undefined} */ (entry.db.get(
         'SELECT text_hash, card_index FROM opening_choices WHERE owner_id = @ownerId', { ownerId }));
     if (current?.text_hash === textHash && current.card_index === cardIndex) return true;
-    entry.db.run(
-        `INSERT INTO opening_choices (owner_id, text_hash, card_index) VALUES (@ownerId, @textHash, @cardIndex)
-         ON CONFLICT(owner_id) DO UPDATE SET text_hash = excluded.text_hash, card_index = excluded.card_index`,
-        { ownerId, textHash, cardIndex });
+    writeRowIfChanged(entry.db, 'opening_choices', { owner_id: ownerId }, { text_hash: textHash, card_index: cardIndex }, { insert: true });
     return true;
 }
 
@@ -2264,8 +2260,7 @@ export async function graftMessage(directories, ownerId, afterNodeId, beforeNode
         // recomputed, not just the row's parent pointer.
         const beforeContent = /** @type {Pick<MessageRow, 'content'>} */ (entry.db.get('SELECT content FROM messages WHERE id = @id', { id: beforeNodeId })).content;
         const recomputedHash = identityHashOf(newNodeId, beforeContent);
-        entry.db.run('UPDATE messages SET parent_id = @newNodeId, identity_hash = @hash WHERE id = @id',
-            { id: beforeNodeId, newNodeId, hash: recomputedHash });
+        writeRowIfChanged(entry.db, 'messages', { id: beforeNodeId }, { parent_id: newNodeId, identity_hash: recomputedHash });
 
         setDefaultChildSync(entry.db, afterNodeId, newNodeId);
         setDefaultChildSync(entry.db, newNodeId, beforeNodeId);
@@ -2347,8 +2342,7 @@ export async function degraftRange(directories, ownerId, firstNodeId, lastNodeId
     entry.db.transaction(() => {
         const childRow = /** @type {Pick<MessageRow, 'content'>} */ (entry.db.get('SELECT content FROM messages WHERE id = @id', { id: childId }));
         const recomputedHash = identityHashOf(parentId, childRow.content);
-        entry.db.run('UPDATE messages SET parent_id = @parentId, identity_hash = @hash WHERE id = @id',
-            { id: childId, parentId, hash: recomputedHash });
+        writeRowIfChanged(entry.db, 'messages', { id: childId }, { parent_id: parentId, identity_hash: recomputedHash });
         setDefaultChildSync(entry.db, parentId, childId);
     });
 
@@ -2414,10 +2408,8 @@ export async function swapAdjacent(directories, ownerId, upperNodeId, lowerNodeI
     entry.db.transaction(() => {
         // 1. Reparent both swapped endpoints (content untouched, only parent_id/identity_hash change) —
         //    see the ordering note above for why this must happen before any default_child_id write.
-        entry.db.run('UPDATE messages SET parent_id = @grandparentId, identity_hash = @hash WHERE id = @id',
-            { id: lowerNodeId, grandparentId, hash: identityHashOf(grandparentId, lower.content) });
-        entry.db.run('UPDATE messages SET parent_id = @lowerNodeId, identity_hash = @hash WHERE id = @id',
-            { id: upperNodeId, lowerNodeId, hash: identityHashOf(lowerNodeId, upper.content) });
+        writeRowIfChanged(entry.db, 'messages', { id: lowerNodeId }, { parent_id: grandparentId, identity_hash: identityHashOf(grandparentId, lower.content) });
+        writeRowIfChanged(entry.db, 'messages', { id: upperNodeId }, { parent_id: lowerNodeId, identity_hash: identityHashOf(lowerNodeId, upper.content) });
 
         // 1b. childId (whatever followed lowerNodeId before the swap) also needs ITS OWN parent_id
         //     reparented onto upperNodeId - the swap doesn't just move upper/lower, it moves the edge
@@ -2428,8 +2420,7 @@ export async function swapAdjacent(directories, ownerId, upperNodeId, lowerNodeI
         //     lowerNodeId, which would make the default path cycle (lower -> upper -> lower -> ...).
         if (childId !== null) {
             const childRow = /** @type {Pick<MessageRow, 'content'>} */ (entry.db.get('SELECT content FROM messages WHERE id = @id', { id: childId }));
-            entry.db.run('UPDATE messages SET parent_id = @upperNodeId, identity_hash = @hash WHERE id = @id',
-                { id: childId, upperNodeId, hash: identityHashOf(upperNodeId, childRow.content) });
+            writeRowIfChanged(entry.db, 'messages', { id: childId }, { parent_id: upperNodeId, identity_hash: identityHashOf(upperNodeId, childRow.content) });
         }
 
         // 2. Now rewire the default path, top-down: G -> lower -> upper -> C.
@@ -2440,7 +2431,7 @@ export async function swapAdjacent(directories, ownerId, upperNodeId, lowerNodeI
         } else {
             // upperNodeId used to point at lowerNodeId, which is no longer its child —
             // setDefaultChildSync() no-ops on a null childId, so clear it explicitly.
-            entry.db.run('UPDATE messages SET default_child_id = NULL WHERE id = @id', { id: upperNodeId });
+            writeRowIfChanged(entry.db, 'messages', { id: upperNodeId }, { default_child_id: null });
         }
     });
 
@@ -3142,7 +3133,7 @@ export async function renameGroupMemberInMessages(directories, groupOwnerId, old
  * @param {string} metadataJson
  */
 function setNodeMetadataSync(db, id, metadataJson) {
-    db.run('UPDATE messages SET metadata = @m WHERE id = @id', { m: metadataJson, id });
+    writeRowIfChanged(db, 'messages', { id }, { metadata: metadataJson });
 }
 
 /**
@@ -3153,7 +3144,7 @@ function setNodeMetadataSync(db, id, metadataJson) {
  * @param {string} metadataJson
  */
 function labelNodeSync(db, id, label, metadataJson) {
-    db.run('UPDATE messages SET label = @label, metadata = @m WHERE id = @id', { label, m: metadataJson, id });
+    writeRowIfChanged(db, 'messages', { id }, { label, metadata: metadataJson });
 }
 
 /**
@@ -3164,7 +3155,7 @@ function labelNodeSync(db, id, label, metadataJson) {
  * @param {string} identityHash
  */
 function reparentNodeSync(db, id, parentId, identityHash) {
-    db.run('UPDATE messages SET parent_id = @parentId, identity_hash = @h WHERE id = @id', { parentId, h: identityHash, id });
+    writeRowIfChanged(db, 'messages', { id }, { parent_id: parentId, identity_hash: identityHash });
 }
 
 /**
@@ -3174,6 +3165,7 @@ function reparentNodeSync(db, id, parentId, identityHash) {
  * @returns {number} Rows changed (0 or 1).
  */
 function swapDefaultChildSync(db, { id, ownerId, from, to }) {
+    if (from === to) return 0;
     return db.run('UPDATE messages SET default_child_id = @to WHERE id = @id AND owner_id = @ownerId AND default_child_id = @from',
         { to, id, ownerId, from }).changes;
 }

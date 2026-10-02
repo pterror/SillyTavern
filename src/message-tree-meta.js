@@ -1,3 +1,5 @@
+import { writeRowIfChanged } from './row-values.js';
+
 /**
  * The only writer of message-tree.sqlite's `meta` table. Several modules keep keys there (the stats counters' version
  * and fill markers, the token stores' row counts, one-time migrations' markers); they all write through these.
@@ -10,7 +12,7 @@
  * @param {string} value
  */
 export function setTreeMetaSync(db, key, value) {
-    db.run('INSERT INTO meta (key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value', { key, value });
+    writeRowIfChanged(db, 'meta', { key }, { value }, { insert: true });
 }
 
 /**
@@ -20,6 +22,8 @@ export function setTreeMetaSync(db, key, value) {
  * @param {number} delta
  */
 export function addTreeMetaSync(db, key, delta) {
+    // Adding nothing to a value that exists changes nothing.
+    if (delta === 0 && db.get('SELECT 1 FROM meta WHERE key = @key', { key })) return;
     db.run('INSERT INTO meta (key, value) VALUES (@key, @delta) ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + @delta', { key, delta });
 }
 

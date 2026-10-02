@@ -180,13 +180,8 @@ async function seedCharacterWithFile(avatar, overrides = {}) {
  * @param {string} characterId
  * @param {string[]} tagIds
  */
-function assignTags(characterId, tagIds) {
-    // resyncTags() mirrors tags.json's tag_map into character_tags - write tags.json directly (the real write
-    // path phase 3 will eventually replace) and force a resync, same as character-metadata-db.test.js does.
-    const tagsPath = path.join(directories.root, 'tags.json');
-    const existing = fs.existsSync(tagsPath) ? JSON.parse(fs.readFileSync(tagsPath, 'utf-8')) : { tags: [], tag_map: {} };
-    existing.tag_map[characterId] = tagIds;
-    fs.writeFileSync(tagsPath, JSON.stringify(existing));
+async function assignTags(characterId, tagIds) {
+    for (const tagId of tagIds) expect(await metadataDb.assignEntityTag(directories, characterId, tagId)).toBe('ok');
 }
 
 /**
@@ -335,11 +330,7 @@ describe('POST /api/characters/query - filter.includeGroups (extends the design 
         await seedCharacter('Untagged.png', { name: 'Untagged', data: { name: 'Untagged', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
         await seedGroup('TaggedGroup');
         await seedGroup('UntaggedGroup');
-        assignTags('Tagged.png', ['folder-1']);
-        await metadataDb.resyncTags(directories);
-        // Unlike characters, group tag assignments have no tags.json mirror to resync from (resyncTags() is
-        // characters-only - see its own doc comment) - group_tags is assigned directly via the phase-3 write
-        // path, same as groups.js's real /api/tags/assign route would do.
+        await assignTags('Tagged.png', ['folder-1']);
         await metadataDb.assignEntityTag(directories, 'TaggedGroup', 'folder-1');
 
         const response = await postJson('/api/characters/query', { filter: { includeGroups: true, tags: { include: ['folder-1'] } }, sort: { field: 'name' }, page: 1, pageSize: 10 });
@@ -606,9 +597,8 @@ describe('POST /api/characters/query', () => {
     test('filter.tags include with mode "and" requires every tag', async () => {
         await seedCharacter('Both.png');
         await seedCharacter('OneOnly.png', { name: 'OneOnly', data: { name: 'OneOnly', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
-        assignTags('Both.png', ['tag-a', 'tag-b']);
-        assignTags('OneOnly.png', ['tag-a']);
-        await metadataDb.resyncTags(directories);
+        await assignTags('Both.png', ['tag-a', 'tag-b']);
+        await assignTags('OneOnly.png', ['tag-a']);
 
         const response = await postJson('/api/characters/query', { filter: { tags: { include: ['tag-a', 'tag-b'], mode: 'and' } }, page: 1, pageSize: 10 });
         const body = await response.json();
@@ -620,9 +610,8 @@ describe('POST /api/characters/query', () => {
         await seedCharacter('HasA.png', { name: 'HasA', data: { name: 'HasA', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
         await seedCharacter('HasB.png', { name: 'HasB', data: { name: 'HasB', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
         await seedCharacter('HasNeither.png', { name: 'HasNeither', data: { name: 'HasNeither', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
-        assignTags('HasA.png', ['tag-a']);
-        assignTags('HasB.png', ['tag-b']);
-        await metadataDb.resyncTags(directories);
+        await assignTags('HasA.png', ['tag-a']);
+        await assignTags('HasB.png', ['tag-b']);
 
         const response = await postJson('/api/characters/query', { filter: { tags: { include: ['tag-a', 'tag-b'], mode: 'or' } }, sort: { field: 'name' }, page: 1, pageSize: 10 });
         const body = await response.json();
@@ -633,8 +622,7 @@ describe('POST /api/characters/query', () => {
     test('filter.tags exclude removes matching characters', async () => {
         await seedCharacter('Tagged.png');
         await seedCharacter('Untagged.png', { name: 'Untagged', data: { name: 'Untagged', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
-        assignTags('Tagged.png', ['tag-x']);
-        await metadataDb.resyncTags(directories);
+        await assignTags('Tagged.png', ['tag-x']);
 
         const response = await postJson('/api/characters/query', { filter: { tags: { exclude: ['tag-x'] } }, page: 1, pageSize: 10 });
         const body = await response.json();

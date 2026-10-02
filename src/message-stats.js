@@ -1,4 +1,5 @@
 import { deleteTreeMetaSync, setTreeMetaSync } from './message-tree-meta.js';
+import { writeRowIfChanged } from './row-values.js';
 
 /**
  * Per-owner message statistics, derived from the message tree: the stored messages are the only source. Triggers on
@@ -299,10 +300,10 @@ function readRowSync(db, ownerId) {
  * @param {MessageStats} stats
  */
 function writeRowSync(db, ownerId, stats) {
-    db.run(`INSERT INTO owner_message_stats (owner_id, ${COUNTERS.join(', ')}, first_user_at)
-        VALUES (@ownerId, ${COUNTERS.map(c => `@${c}`).join(', ')}, @first_user_at)
-        ON CONFLICT(owner_id) DO UPDATE SET ${COUNTERS.map(c => `${c} = excluded.${c}`).join(', ')}, first_user_at = excluded.first_user_at`,
-    { ownerId, ...stats });
+    /** @type {Record<string, any>} */
+    const values = { first_user_at: stats.first_user_at };
+    for (const c of COUNTERS) values[c] = stats[c];
+    writeRowIfChanged(db, 'owner_message_stats', { owner_id: ownerId }, values, { insert: true });
 }
 
 /**

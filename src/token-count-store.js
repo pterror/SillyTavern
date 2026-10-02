@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 
 import { getMessageTreeDb } from './message-tree-db.js';
 import { addTreeMetaSync, setTreeMetaSync } from './message-tree-meta.js';
+import { writeRowIfChanged } from './row-values.js';
 import { countWithTokenizer, encodeWithTokenizer, encodeWithTokenizerAndChunks, isLlamaCppTokenizer, tokenizerIdentity } from './tokenizer-resolve.js';
 import { countChatCompletionMessages } from './endpoints/tokenizers.js';
 import { delay } from './util.js';
@@ -127,7 +128,7 @@ export async function writeBack(directories, { counts = [], ids = [] }, now = Da
                 inserted.token_counts++;
                 if (countsFill && isBehindFill(countsFill, identity, hash)) inserted.countsBehindFill++;
             } else {
-                db.run('UPDATE token_counts SET last_used = @now WHERE identity = @identity AND text_hash = @hash', { identity, hash, now });
+                writeRowIfChanged(db, 'token_counts', { identity, text_hash: hash }, { last_used: now });
             }
         }
         for (const { identity, hash, ids: tokenIds, chunks = null } of ids) {
@@ -138,8 +139,9 @@ export async function writeBack(directories, { counts = [], ids = [] }, now = Da
                 inserted.token_ids++;
                 if (idsFill && isBehindFill(idsFill, identity, hash)) inserted.idsBehindFill++;
             } else {
-                db.run('UPDATE token_ids SET last_used = @now, chunks = COALESCE(chunks, @chunks) WHERE identity = @identity AND text_hash = @hash',
-                    { identity, hash, chunks: storedChunks, now });
+                const stored = /** @type {{ chunks: string | null } | undefined} */ (db.get(
+                    'SELECT chunks FROM token_ids WHERE identity = @identity AND text_hash = @hash', { identity, hash }));
+                writeRowIfChanged(db, 'token_ids', { identity, text_hash: hash }, { last_used: now, chunks: stored?.chunks ?? storedChunks });
             }
         }
         addToRowCount(db, ROW_COUNT_KEYS.token_counts, inserted.token_counts);

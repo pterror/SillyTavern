@@ -247,12 +247,6 @@ const WRITERS = [
         rows: [['1001', null]],
     },
     {
-        name: 'setEntityTagIdsMany',
-        setup: async () => { await saveTags(['x']); await seedGroup('1001'); },
-        act: () => metadataDb.setEntityTagIdsMany(directories, { 1001: ['x'] }),
-        rows: [['1001', null]],
-    },
-    {
         name: 'migrateTagsJsonIfNeeded',
         setup: async () => {
             await saveTags(['x']);

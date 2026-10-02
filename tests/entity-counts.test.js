@@ -191,9 +191,11 @@ async function runEveryWriteKind() {
     expect(await metadataDb.unassignEntityTag(directories, 'gz1', 't2')).toBe('ok');
     expectCountersExact();
 
-    // Replacing whole tag lists at once.
-    const many = await metadataDb.setEntityTagIdsMany(directories, { 'a2.png': ['t2', 't3'], 'z1.png': ['t3'], 'gb2': ['t3'], 'gz2': [] });
-    expect(many).toEqual({ 'a2.png': 'ok', 'z1.png': 'ok', 'gb2': 'ok', 'gz2': 'ok' });
+    // Moving entities to other tags, and a group to none.
+    for (const [id, tagId] of [['a2.png', 't1'], ['z1.png', 't1'], ['gb2', 't1'], ['gb2', 't2'], ['gz2', 't1']]) {
+        expect(await metadataDb.unassignEntityTag(directories, id, tagId)).toBe('ok');
+    }
+    for (const [id, tagId] of [['a2.png', 't2'], ['a2.png', 't3'], ['z1.png', 't3'], ['gb2', 't3']]) await assign(id, tagId);
     expectCountersExact();
 
     // Rewriting an existing character's card (upsert over the row, fav unchanged).

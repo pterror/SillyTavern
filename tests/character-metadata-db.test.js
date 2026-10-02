@@ -525,17 +525,6 @@ describe('batch import mode', () => {
             await expectLanded('Bob.png', 'Bobby', ['keep']);
         });
 
-        test('setEntityTagIdsMany', async () => {
-            await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
-            await metadataDb.assignEntityTag(directories, 'Bob.png', 'old');
-            await metadataDb.beginBatchImport(directories);
-            await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', editedCardJson('Bobby'), null, null, { fromImport: true });
-
-            expect(await metadataDb.setEntityTagIdsMany(directories, { 'Bob.png': ['a', 'b'] })).toEqual({ 'Bob.png': 'ok' });
-
-            await expectLanded('Bob.png', 'Bobby', ['a', 'b']);
-        });
-
         test('seedCardTagsForSingleCharacter', async () => {
             await metadataDb.fillTagNameKeysIfNeeded(directories);
             await metadataDb.saveTagDefinitions(directories, [{ id: 'elan', name: 'Élan' }]);
@@ -685,7 +674,6 @@ describe('a user write during an open batch import lands in the table right away
     test.each([
         ['assignEntityTag', () => metadataDb.assignEntityTag(directories, 'Bob.png', 'tag3'), ['tag1', 'tag2', 'tag3']],
         ['unassignEntityTag', () => metadataDb.unassignEntityTag(directories, 'Bob.png', 'tag1'), ['tag2']],
-        ['setEntityTagIdsMany', () => metadataDb.setEntityTagIdsMany(directories, { 'Bob.png': ['tag3'] }), ['tag3']],
     ])('%s', async (_label, write, expected) => {
         await bufferImport('Bob.png', 'Bob', ['tag1', 'tag2']);
 
@@ -697,12 +685,6 @@ describe('a user write during an open batch import lands in the table right away
             expect((await metadataDb.getCharacterTagIds(directories, 'Bob.png')).sort()).toEqual(expected);
             expect([...JSON.parse(row.shallow_json).tag_ids].sort()).toEqual(expected);
         });
-    });
-
-    test('setEntityTagIdsMany reports a buffered-only character as found', async () => {
-        await bufferImport('Bob.png', 'Bob');
-
-        expect(await metadataDb.setEntityTagIdsMany(directories, { 'Bob.png': ['tag1'] })).toEqual({ 'Bob.png': 'ok' });
     });
 
     test('renameCharacterRow to a buffered-only new id', async () => {
@@ -1853,63 +1835,22 @@ describe('phase 3 extension: tags.json removal (migration + settings-snapshot ro
     });
 });
 
-describe('resyncTags / tag_usage', () => {
-    test('mirrors tags.json\'s tag_map into character_tags and maintains tag_usage via trigger', async () => {
+describe('tag_usage', () => {
+    test('is maintained by trigger as tags are assigned and unassigned', async () => {
         await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
         await metadataDb.upsertCharacterFromWrite(directories, 'Alice.png', cardJson({ name: 'Alice', data: { name: 'Alice', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } }));
-
-        fs.writeFileSync(path.join(tempDir, 'tags.json'), JSON.stringify({
-            tags: [{ id: 'tag1', name: 'Funny' }],
-            tag_map: { 'Bob.png': ['tag1'], 'Alice.png': ['tag1'] },
-        }));
-
-        await metadataDb.resyncTags(directories);
+        expect(await metadataDb.assignEntityTag(directories, 'Bob.png', 'tag1')).toBe('ok');
+        expect(await metadataDb.assignEntityTag(directories, 'Alice.png', 'tag1')).toBe('ok');
 
         expect(await metadataDb.getCharacterTagIds(directories, 'Bob.png')).toEqual(['tag1']);
         expect(await metadataDb.getCharacterTagIds(directories, 'Alice.png')).toEqual(['tag1']);
         expect(await metadataDb.getTagUsageCount(directories, 'tag1')).toBe(2);
 
-        // Untag one character and resync again - the trigger-maintained count must follow the delta, not just
-        // the additions.
-        fs.writeFileSync(path.join(tempDir, 'tags.json'), JSON.stringify({
-            tags: [{ id: 'tag1', name: 'Funny' }],
-            tag_map: { 'Bob.png': ['tag1'] },
-        }));
-        await metadataDb.resyncTags(directories);
+        // Untagging one character: the trigger-maintained count follows removals, not just additions.
+        expect(await metadataDb.unassignEntityTag(directories, 'Alice.png', 'tag1')).toBe('ok');
 
         expect(await metadataDb.getCharacterTagIds(directories, 'Alice.png')).toEqual([]);
         expect(await metadataDb.getTagUsageCount(directories, 'tag1')).toBe(1);
-    });
-
-    test('applies the delta across more than one page of character_tags and more than one batch of tag_map', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
-        await metadataDb.upsertCharacterFromWrite(directories, 'Alice Smith.png', cardJson({ name: 'Alice Smith' }));
-        await metadataDb.upsertCharacterFromWrite(directories, 'Carol.png', cardJson({ name: 'Carol' }));
-
-        const manyTags = Array.from({ length: 1200 }, (_, i) => `t${i}`);
-        /** @type {Record<string, string[]>} */
-        const tagMap = { 'Bob.png': manyTags, 'Alice Smith.png': ['a'] };
-        for (let i = 0; i < 600; i++) tagMap[`ghost${i}.png`] = ['g'];
-        tagMap['Carol.png'] = ['c'];
-        fs.writeFileSync(path.join(tempDir, 'tags.json'), JSON.stringify({ tags: [], tag_map: tagMap }));
-
-        await metadataDb.resyncTags(directories);
-
-        expect(await metadataDb.getCharacterTagIds(directories, 'Bob.png')).toEqual([...manyTags].sort());
-        expect(await metadataDb.getCharacterTagIds(directories, 'Alice Smith.png')).toEqual(['a']);
-        expect(await metadataDb.getCharacterTagIds(directories, 'Carol.png')).toEqual(['c']);
-        expect(await metadataDb.getTagUsageCount(directories, 'g')).toBe(0);
-
-        fs.writeFileSync(path.join(tempDir, 'tags.json'), JSON.stringify({
-            tags: [],
-            tag_map: { 'Bob.png': ['t5'], 'Alice Smith.png': ['a', 'b'] },
-        }));
-        await metadataDb.resyncTags(directories);
-
-        expect(await metadataDb.getCharacterTagIds(directories, 'Bob.png')).toEqual(['t5']);
-        expect(await metadataDb.getCharacterTagIds(directories, 'Alice Smith.png')).toEqual(['a', 'b']);
-        expect(await metadataDb.getCharacterTagIds(directories, 'Carol.png')).toEqual([]);
-        expect(await metadataDb.getTagUsageCount(directories, 't0')).toBe(0);
     });
 });
 
@@ -1982,26 +1923,6 @@ describe('tags.json tag_map values: a repeated id is stored once, a non-array is
         }
         expect(await storedTagIds('Alice.png')).toEqual({ table: [], shallow: [] });
         expect(await storedTagIds('Carol.png')).toEqual({ table: [], shallow: [] });
-    });
-
-    test('resyncTags leaves a character\'s existing tags alone when its value is not an array', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
-        await metadataDb.upsertCharacterFromWrite(directories, 'Alice.png', cardJson({ name: 'Alice' }));
-        await metadataDb.assignEntityTag(directories, 'Bob.png', 't1');
-        await metadataDb.assignEntityTag(directories, 'Alice.png', 't2');
-        writeTagMap({ 'Bob.png': null, 'Alice.png': 7 });
-
-        const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
-        try {
-            await metadataDb.resyncTags(directories);
-            const messages = warnSpy.mock.calls.map(([message]) => String(message));
-            expect(messages.filter(m => m.includes('Bob.png') && m.includes('null'))).toHaveLength(1);
-            expect(messages.filter(m => m.includes('Alice.png') && m.includes('7'))).toHaveLength(1);
-        } finally {
-            warnSpy.mockRestore();
-        }
-        expect(await storedTagIds('Bob.png')).toEqual({ table: ['t1'], shallow: ['t1'] });
-        expect(await storedTagIds('Alice.png')).toEqual({ table: ['t2'], shallow: ['t2'] });
     });
 
     test('migrateTagsJsonIfNeeded', async () => {
