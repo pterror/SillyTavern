@@ -5719,50 +5719,18 @@ export async function getTagDeletions(directories) {
 const NOT_MARKED_DELETED_SQL = 'id NOT IN (SELECT tag_id FROM tag_deletions)';
 
 /**
- * The tags folder tiles are drawn for, and the closed folders their sub-lists hide entities in. Tags marked deleted
- * are left out of both.
+ * Whether any tag not marked deleted is a closed folder. Reads one row: through the folder indexes once the derived
+ * columns are filled, else from the tags' data.
  * @param {import('./users.js').UserDirectoryList} directories
- * @param {string[]} tileIds Distinct tag ids.
- * @returns {Promise<{ closedByTileId: Map<string, boolean>, closedIds: string[] } | null>} closedByTileId: for each of
- *   `tileIds` that exists, whether its folder_type is CLOSED. closedIds: every closed folder, read in keyset batches.
- *   null when no SQLite engine is usable.
+ * @returns {Promise<boolean | null>} null when no SQLite engine is usable.
  */
-export async function getFolderTileTags(directories, tileIds) {
+export async function hasClosedFolderTags(directories) {
     const entry = await getEntry(directories);
     if (!entry) return null;
-    /** @type {Map<string, boolean>} */
-    const closedByTileId = new Map();
-    const tileRows = /** @type {TagRow[]} */ (entry.db.readBounded(
-        `SELECT id, data FROM tags WHERE id IN (SELECT value FROM json_each(?)) AND ${NOT_MARKED_DELETED_SQL}`,
-        [JSON.stringify(tileIds)],
-        tileIds.length,
-    ));
-    for (const row of tileRows) {
-        /** @type {unknown} */
-        let tag = null;
-        try {
-            tag = JSON.parse(row.data);
-        } catch {
-            // A tag whose data doesn't parse has no folder_type.
-        }
-        closedByTileId.set(row.id, tagDerivedColumns(tag).folderType === 'CLOSED');
-    }
-    // Until the derived columns are filled, folder_type is read from data, as tagDerivedColumns() reads it.
     const closedWhere = tagQueryColumnsReady(entry)
         ? 'is_folder = 1 AND folder_type = \'CLOSED\''
         : 'CASE WHEN json_valid(data) THEN json_extract(data, \'$.folder_type\') END = \'CLOSED\'';
-    /** @type {string[]} */
-    const closedIds = [];
-    for await (const rows of streamRows(entry.db, {
-        firstPageSql: `SELECT id FROM tags WHERE ${closedWhere} AND ${NOT_MARKED_DELETED_SQL} ORDER BY id LIMIT @limit`,
-        firstPageParams: {},
-        nextPageSql: `SELECT id FROM tags WHERE ${closedWhere} AND ${NOT_MARKED_DELETED_SQL} AND id > @after ORDER BY id LIMIT @limit`,
-        nextPageParams: {},
-        keyColumn: 'id',
-    })) {
-        for (const row of /** @type {{ id: string }[]} */ (rows)) closedIds.push(row.id);
-    }
-    return { closedByTileId, closedIds };
+    return !!entry.db.get(`SELECT 1 FROM tags WHERE ${closedWhere} AND ${NOT_MARKED_DELETED_SQL} LIMIT 1`);
 }
 
 /**

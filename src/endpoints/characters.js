@@ -36,7 +36,7 @@ import { mergeSortedWindow } from './tantivy-search.js';
 import { searchGroups, searchGroupIds, searchGroupsSorted, getGroupIndexPosition } from './groups-search-index.js';
 import { getGroupsByIds } from './groups.js';
 import { CHARACTER_INDEX_FAILED_EVENT } from './search-index-coordinator.js';
-import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, findCharacterMatches, findGroupMatches, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, toggleCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, getCurrentSeqAndGroupsVersion, seedCardTagsForSingleCharacter, assignEntityTag, unassignEntityTag, streamCharacterIdsMatching, beginBulkSelection, bulkSelectionExists, addToBulkSelection, removeFromBulkSelection, describeBulkSelection, readBulkSelectionPage, streamBulkSelection, mutualTagIdsOfBulkSelection, dropBulkSelection, getCharacterCardJson, getCharacterChatStats, getCharacterIndexRowsByIds, streamCharacterCardJsonBatches, characterRowExists, characterRowOrPendingExistsSync, getEntityRowsByIds, getFolderTileTags, copyEntityTags, TAG_MOVE_FAILED_EVENT, TAG_ORDER_SETTLED_EVENT, TAG_CHANGES_EVENT, GROUP_CHANGES_EVENT, QUERY_RANGE_COLUMNS, isQueryRangeField, SAVED_VIEWS_EVENT, getTagChangesSeq } from '../character-metadata-db.js';
+import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, findCharacterMatches, findGroupMatches, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, toggleCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, getCurrentSeqAndGroupsVersion, seedCardTagsForSingleCharacter, assignEntityTag, unassignEntityTag, streamCharacterIdsMatching, beginBulkSelection, bulkSelectionExists, addToBulkSelection, removeFromBulkSelection, describeBulkSelection, readBulkSelectionPage, streamBulkSelection, mutualTagIdsOfBulkSelection, dropBulkSelection, getCharacterCardJson, getCharacterChatStats, getCharacterIndexRowsByIds, streamCharacterCardJsonBatches, characterRowExists, characterRowOrPendingExistsSync, getEntityRowsByIds, hasClosedFolderTags, copyEntityTags, TAG_MOVE_FAILED_EVENT, TAG_ORDER_SETTLED_EVENT, TAG_CHANGES_EVENT, GROUP_CHANGES_EVENT, QUERY_RANGE_COLUMNS, isQueryRangeField, SAVED_VIEWS_EVENT, getTagChangesSeq } from '../character-metadata-db.js';
 import { characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash, normalizeFav, SHALLOW_CREATOR_NOTES_HEADER } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
 import { hashGreetingText, opAdd, opAppend, opEdit, opDelete, opMove, opSetDefault, opUnsetDefault, opUnsetDefaultByHash } from '../greeting-ops.js';
@@ -2191,15 +2191,18 @@ router.post('/metadata/batch-import/end', async function (request, response) {
 });
 
 /**
- * Turns `filter.folder` into the filter it means, in place. "none": rows carrying no closed folder tag. A tag id: rows
- * carrying that folder's tag, as a tag include when the tag filter is 'and' (its index drives the walk), else as a
- * `tag:<id>` range, since an 'or' tag filter can't also require one tag.
+ * Turns `filter.folder` into the filter it means, in place. "none": rows carrying no closed folder tag, and no filter
+ * at all while no tag is a closed folder (so the list keeps its counted totals). A tag id: rows carrying that folder's
+ * tag, as a tag include when the tag filter is 'and' (its index drives the walk), else as a `tag:<id>` range, since an
+ * 'or' tag filter can't also require one tag.
+ * @param {import('../users.js').UserDirectoryList} directories
  * @param {{ folder?: string, tags?: { include?: string[], exclude?: string[], mode?: string }, ranges?: import('../character-metadata-db.js').QueryRanges }} filter
  */
-function applyFolderCase(filter) {
+async function applyFolderCase(directories, filter) {
     const folder = /** @type {string} */ (filter.folder);
     delete filter.folder;
     if (folder === 'none') {
+        if (await hasClosedFolderTags(directories) === false) return;
         filter.ranges = { ...filter.ranges, closed_folders: { max: 0 } };
         return;
     }
@@ -2764,7 +2767,7 @@ async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {})
         if (typeof filter.folder !== 'string' || filter.folder === '') {
             return queryReply(400, { error: true, reason: 'invalid-folder', message: 'filter.folder takes "none" or a closed folder\'s tag id.' });
         }
-        applyFolderCase(filter);
+        await applyFolderCase(user.directories, filter);
     }
     const tagSeq = folderNone ? await getTagChangesSeq(user.directories) : null;
     const seed = Number(sort.seed);
@@ -3109,143 +3112,6 @@ async function handleQuery(request, response) {
 
 
 router.post('/query', (request, response) => withSearchTiming(response, () => handleQuery(request, response)));
-
-/** Rows a folder tile's avatar strip shows. */
-export const FOLDER_TILE_STRIP_ROWS = 10;
-export const MAX_FOLDER_TILES_PER_REQUEST = 200;
-
-/**
- * @param {number | string | undefined} total A `/query` total, `~`-prefixed when approximate.
- * @returns {{ value: number, approx: boolean }}
- */
-function parseQueryTotal(total) {
-    const approx = typeof total === 'string' && total.startsWith('~');
-    const value = Number(approx ? total.slice(1) : total);
-    return { value: Number.isFinite(value) ? value : 0, approx };
-}
-
-/**
- * A `/query` hash row as JSON, with the values the binary hash mode's decoder reads for it.
- * @param {any} row
- */
-function hashRowJson(row) {
-    return {
-        id: row.id,
-        isGroup: row.isGroup === true,
-        favHash: row.favHash >>> 0,
-        tagIdsHash: row.tagIdsHash >>> 0,
-        contentHash: row.contentHash >>> 0,
-        date_added: Number(row.date_added ?? 0),
-        create_date: row.create_date === null || row.create_date === undefined ? null : Number(row.create_date),
-        date_last_chat: Number(row.date_last_chat ?? 0),
-        chat_size: Number(row.chat_size ?? 0),
-        data_size: Number(row.data_size ?? 0),
-        chat: row.chat ? String(row.chat) : null,
-    };
-}
-
-/**
- * The folder tiles on screen, in one request: for each tile's tag, the entities in its sub-list as the character
- * list shows them, and how many of those tagged with it are hidden.
- *
- * A tile's sub-list is every character and group tagged with its tag that the list's filters keep: `filter.search`,
- * `filter.fav`, `filter.tags` (every included tag, no excluded one) and `filter.group` (true: only groups, false:
- * no groups). Unless the tile's own folder is closed, an entity tagged with a closed folder that `filter.tags`
- * doesn't include is left out too.
- * - `count`: the sub-list's size. `hidden`: the entities tagged with the tile's tag that aren't in it.
- * - `rows`: the sub-list's first FOLDER_TILE_STRIP_ROWS in `sort`'s order, shaped as `/query`'s rows with
- *   `filter.includeGroups`. With `want: ['hashes']` they come as `hashRows` instead: the rows `/query`'s hash mode
- *   carries, as JSON objects `{ id, isGroup, favHash, tagIdsHash, contentHash, date_added, create_date,
- *   date_last_chat, chat_size, data_size, chat }`, which the browser resolves from its cache.
- * Either number is a `~`-prefixed string when it's an estimate, as `/query`'s `total` is. A tag that doesn't exist
- * or is marked deleted is answered `{ id, missing: true }`. `sort` and the errors it gives are `/query`'s.
- */
-router.post('/folder-tiles', async function (request, response) {
-    try {
-        const body = request.body ?? {};
-        const filter = body.filter ?? {};
-        const sort = body.sort ?? {};
-        const tiles = body.tiles;
-        if (!Array.isArray(tiles) || !tiles.every(id => typeof id === 'string' && id.length > 0)) {
-            return response.status(400).send({ error: true, reason: 'invalid-tiles' });
-        }
-        const want = body.want === undefined ? ['rows'] : body.want;
-        if (!Array.isArray(want) || want.length !== 1 || (want[0] !== 'rows' && want[0] !== 'hashes')) {
-            return response.status(400).send({ error: true, reason: 'invalid-want', message: 'want is ["rows"] or ["hashes"].' });
-        }
-        const wantHashes = want[0] === 'hashes';
-        const tileIds = [...new Set(tiles)];
-        if (tileIds.length > MAX_FOLDER_TILES_PER_REQUEST) {
-            return response.status(400).send({ error: true, reason: 'too-many-tiles', max: MAX_FOLDER_TILES_PER_REQUEST });
-        }
-
-        const tags = await getFolderTileTags(request.user.directories, tileIds);
-        if (tags === null) {
-            return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
-        }
-
-        const include = Array.isArray(filter.tags?.include) ? filter.tags.include.filter(id => typeof id === 'string' && id) : [];
-        const exclude = Array.isArray(filter.tags?.exclude) ? filter.tags.exclude.filter(id => typeof id === 'string' && id) : [];
-        const group = typeof filter.group === 'boolean' ? filter.group : undefined;
-        const hasSearch = typeof filter.search === 'string' && filter.search.trim().length > 0;
-        const baseFilter = {
-            search: filter.search,
-            fav: typeof filter.fav === 'boolean' ? filter.fav : undefined,
-            includeGroups: group !== false,
-        };
-        const runOptions = { groupsOnly: group === true };
-
-        const results = [];
-        for (const id of tileIds) {
-            const closed = tags.closedByTileId.get(id);
-            if (closed === undefined) {
-                results.push({ id, missing: true });
-                continue;
-            }
-            const hiddenBy = closed ? [] : tags.closedIds.filter(closedId => !include.includes(closedId));
-            const tileFilter = {
-                ...baseFilter,
-                tags: { include: [...include, id], exclude: [...new Set([...exclude, ...hiddenBy])], mode: 'and' },
-            };
-            const reply = await runQuery(request.user, { filter: tileFilter, sort, want: [wantHashes ? 'hashes' : 'rows', 'total'], page: 1, pageSize: FOLDER_TILE_STRIP_ROWS }, runOptions);
-            if (!('hashes' in reply) && reply.status !== 200) return response.status(reply.status).send(reply.body);
-            const page = 'hashes' in reply
-                ? { total: reply.hashes.approxTotal ? `~${reply.hashes.total}` : reply.hashes.total, hashRows: reply.hashes.hashRows }
-                : reply.body;
-
-            let count = parseQueryTotal(page.total);
-            if (hasSearch && sort.field === 'search') {
-                // A relevance-ordered page counts only the matches it ranked; a field order counts them all.
-                const counted = /** @type {{ status: number, body: any }} */ (await runQuery(request.user, { filter: tileFilter, sort: { field: 'name', order: 'asc' }, want: ['total'], page: 1, pageSize: 1 }, runOptions));
-                if (counted.status !== 200) return response.status(counted.status).send(counted.body);
-                count = parseQueryTotal(counted.body.total);
-            }
-
-            const tagged = await queryEntities(request.user.directories, { tags: { include: [id] }, wantRows: false, wantTotal: true });
-            if (tagged === null) {
-                return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
-            }
-            const approx = count.approx || tagged.approxTotal;
-            const hidden = Math.max(0, Number(tagged.total ?? 0) - count.value);
-            const tile = {
-                id,
-                count: count.approx ? `~${count.value}` : count.value,
-                hidden: approx ? `~${hidden}` : hidden,
-            };
-            if (wantHashes) {
-                tile.hashRows = (page.hashRows ?? []).map(hashRowJson);
-            } else {
-                // Without groups, /query's rows are bare characters.
-                tile.rows = (page.rows ?? []).map(row => baseFilter.includeGroups ? row : { type: 'character', item: row });
-            }
-            results.push(tile);
-        }
-        return response.send({ tiles: results });
-    } catch (err) {
-        console.error('[characters/folder-tiles] Failed:', err);
-        return response.status(500).send({ error: true });
-    }
-});
 
 /**
  * Explicit repair path for a user's character search index. Forces an immediate full rebuild regardless of the current freshness signature.

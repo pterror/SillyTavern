@@ -10,7 +10,8 @@
  *   a missing end is open.
  * @property {boolean|undefined} group `true` groups only, `false` no groups, `undefined` either.
  * @property {CharacterViewSort} sort
- * @property {string|null} folderCase The closed-folder case shown, `null` for every row.
+ * @property {string|null} folderCase The closed-folder case shown: `'none'` for rows in no closed folder, a closed
+ *   folder's tag id for its rows, `null` for every row ("Tags as Folders" off).
  */
 
 /**
@@ -119,6 +120,7 @@ export function viewToQueryState(view, { includeGroups = false } = {}) {
         randomSeed: view.sort.field === 'random' ? view.sort.seed : undefined,
         includeGroups,
         group: view.group,
+        folder: view.folderCase ?? undefined,
     };
 }
 

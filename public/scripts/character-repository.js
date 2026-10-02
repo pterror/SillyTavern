@@ -35,6 +35,8 @@ import { characterDigestFieldsHash, characterDigestSource, normalizeFav, normali
  * set - groups have their own full-text index, merged server-side with the character one.
  * @property {boolean} [group] - the Groups filter: `true` keeps only groups (with `includeGroups`), `false` only
  * characters. Rows keep the `includeGroups` shape, and `hidden` still counts every entity.
+ * @property {string} [folder] - the closed-folder case: `'none'` keeps rows carrying no closed folder tag, a tag id
+ * keeps that folder's rows.
  */
 
 /**
@@ -89,29 +91,8 @@ const QUERY_ALL_PAGE_SIZE = 2000;
 // The server's FULL_BATCH_MAX (src/endpoints/characters.js).
 const FULL_BATCH_SIZE = 200;
 
-/** Mirrors the server's `MAX_FOLDER_TILES_PER_REQUEST`: `folderTiles()` splits its tiles into requests of this many. */
-export const FOLDER_TILES_PER_REQUEST = 200;
-
 /**
- * @typedef {object} FolderTileFilter - mirrors `POST /api/characters/folder-tiles`'s filter shape.
- * @property {string} [search]
- * @property {boolean} [fav]
- * @property {{include: string[], exclude: string[], mode?: 'and'|'or'}} [tags]
- * @property {boolean} [group] - `true`: only groups, `false`: no groups.
- */
-
-/**
- * @typedef {object} FolderTileResult - one tile as `/folder-tiles` answers it.
- * @property {string} id - the tile's tag id.
- * @property {true} [missing] - the tag doesn't exist or is marked deleted; nothing else is set.
- * @property {number|string} [count] - the tile's sub-list size, `~`-prefixed when approximate.
- * @property {number|string} [hidden] - its tagged entities not in the sub-list, `~`-prefixed when approximate.
- * @property {Array<{type: 'character'|'group', item: object}>} [rows] - the sub-list's first rows, at most what
- * the strip shows.
- */
-
-/**
- * A `/query` or `/folder-tiles` count as a number and whether it's approximate.
+ * A `/query` count as a number and whether it's approximate.
  * @param {number|string|undefined|null} total A plain number, or a `~`-prefixed string when approximate.
  * @returns {{ value: number, approx: boolean }} `value` is 0 when `total` isn't a number.
  */
@@ -135,6 +116,7 @@ export function parseQueryTotal(total) {
  * @property {number} [randomSeed] - required (finite) when `sortField === 'random'`.
  * @property {boolean} [includeGroups] - see `CharacterQueryFilter.includeGroups`.
  * @property {boolean} [group] - see `CharacterQueryFilter.group`; `undefined` for no Groups filter.
+ * @property {string} [folder] - see `CharacterQueryFilter.folder`; `undefined` for no folder case.
  */
 
 /**
@@ -156,6 +138,7 @@ export function buildCharacterQuery({
     randomSeed = undefined,
     includeGroups = false,
     group = undefined,
+    folder = undefined,
 } = {}) {
     /** @type {CharacterQueryFilter} */
     const filter = {};
@@ -169,6 +152,7 @@ export function buildCharacterQuery({
     if (typeof fav === 'boolean') filter.fav = fav;
     if (includeGroups) filter.includeGroups = true;
     if (typeof group === 'boolean') filter.group = group;
+    if (typeof folder === 'string' && folder) filter.folder = folder;
 
     /** @type {CharacterQuerySort|undefined} */
     let sort;
@@ -911,56 +895,6 @@ export class CharacterRepository {
             page++;
         }
         return rows;
-    }
-
-    /**
-     * The folder tiles for `tileIds`, from `POST /api/characters/folder-tiles`, in requests of
-     * FOLDER_TILES_PER_REQUEST sent one after another.
-     *
-     * The strip rows come as hash rows and are resolved as `query()`'s hash mode resolves them: from the cache on a
-     * hash match, otherwise fetched, once per request for an entity on several tiles.
-     * @param {string[]} tileIds - the tiles' tag ids.
-     * @param {FolderTileFilter} filter
-     * @param {CharacterQuerySort} [sort]
-     * @returns {Promise<FolderTileResult[]>} one entry per distinct id, in the order asked.
-     */
-    async folderTiles(tileIds, filter, sort = undefined) {
-        const ids = [...new Set(tileIds)];
-        /** @type {FolderTileResult[]} */
-        const tiles = [];
-        for (let i = 0; i < ids.length; i += FOLDER_TILES_PER_REQUEST) {
-            const fetchStamp = tagFetchStamp();
-            const result = await postJson('/api/characters/folder-tiles', { tiles: ids.slice(i, i + FOLDER_TILES_PER_REQUEST), filter, sort, want: ['hashes'] });
-            const answered = result.tiles ?? [];
-
-            const characterRows = new Map();
-            const groupRows = new Map();
-            for (const tile of answered) {
-                for (const hashRow of tile.hashRows ?? []) {
-                    const byId = hashRow.isGroup ? groupRows : characterRows;
-                    if (!byId.has(hashRow.id)) byId.set(hashRow.id, hashRow);
-                }
-            }
-            const [characters, groups] = await Promise.all([
-                this.#resolveCharacterHashRows([...characterRows.values()]),
-                this.#resolveGroupHashRows([...groupRows.values()]),
-            ]);
-
-            for (const { hashRows, ...tile } of answered) {
-                if (hashRows) {
-                    // A row whose entity was deleted before its fetch is left out, as query() leaves it out.
-                    tile.rows = hashRows
-                        .map(hashRow => {
-                            const item = (hashRow.isGroup ? groups : characters).get(hashRow.id);
-                            return item ? { type: hashRow.isGroup ? 'group' : 'character', item } : undefined;
-                        })
-                        .filter(Boolean);
-                }
-                stampRowsTagFetch(tile, fetchStamp);
-                tiles.push(tile);
-            }
-        }
-        return tiles;
     }
 
     /**
