@@ -4978,6 +4978,15 @@ export async function writeGroupFileAndRow(directories, group, writeFile, { crea
         });
     } catch (err) {
         console.error(`[character-metadata] Could not update the row for group ${id} after writing its file; its digest stays NULL and is recomputed from the file:`, /** @type {any} */ (err).message);
+        // The file changed even though the row didn't: readers must still learn of it, or a cached answer
+        // (`ifToken`, hash hits) keeps showing what the file no longer holds.
+        if (fileChanged) {
+            try {
+                entry.db.transaction(() => insertGroupChange(entry.db, id, path.basename(filePath)));
+            } catch (logErr) {
+                console.error(`[character-metadata] Could not log the change to group ${id}'s file either; other tabs see it on their next full refresh:`, /** @type {any} */ (logErr).message);
+            }
+        }
     }
 }
 
