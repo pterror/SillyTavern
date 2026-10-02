@@ -69,6 +69,7 @@ export function insertMacroSpans(html, values) {
  * @property {(value: string) => Promise<boolean>} saveScenarioField
  * @property {(value: string) => Promise<boolean>} saveCharacterNoteField
  * @property {(value: string) => Promise<boolean>} saveExampleMessagesField
+ * @property {(title: string, text: string) => Promise<boolean>} confirmDiscard Asks before an edit's change is thrown away.
  * @property {(id: string) => void} [onEditStart] Called once a field has entered edit mode.
  * @property {(id: string) => void} [onEditEnd] Called once a field has left edit mode (Done or cancel).
  */
@@ -355,6 +356,40 @@ function cancelEdit() {
     endEdit();
 }
 
+/** Whether the "discard your changes?" question is on screen, so a second Escape doesn't ask again. */
+let askingToDiscard = false;
+
+/**
+ * Escape ends the edit. With autosave off and the text changed, it asks before throwing the change away; saying no
+ * keeps the edit open as it was.
+ */
+async function escapeEdit() {
+    if (deps.power_user.auto_save_msg_edits) {
+        void confirmEdit();
+        return;
+    }
+    const edit = activeEdit;
+    if (String(getTextarea(edit.id).val() ?? '') === edit.original) {
+        cancelEdit();
+        return;
+    }
+    if (askingToDiscard) return;
+    askingToDiscard = true;
+    const { t } = deps;
+    let discard = false;
+    try {
+        discard = await deps.confirmDiscard(t`Discard your changes?`, t`What you typed in this field hasn't been saved.`);
+    } finally {
+        askingToDiscard = false;
+    }
+    if (activeEdit !== edit) return;
+    if (discard) {
+        cancelEdit();
+    } else {
+        focusEditing(edit.id);
+    }
+}
+
 /**
  * Handles Ctrl+Enter / Escape for the field in edit mode, when that field is visible.
  * @param {'confirm'|'escape'} key
@@ -364,10 +399,10 @@ export function handleFieldEditKey(key) {
     if (!activeEdit || !getTextarea(activeEdit.id).is(':visible')) {
         return false;
     }
-    if (key === 'confirm' || deps.power_user.auto_save_msg_edits) {
+    if (key === 'confirm') {
         void confirmEdit();
     } else {
-        cancelEdit();
+        void escapeEdit();
     }
     return true;
 }
@@ -467,6 +502,15 @@ function isOnLightboxImage(target) {
 /** @param {CharacterFieldEditorDeps} dependencies */
 export function initCharacterFieldEditor(dependencies) {
     deps = dependencies;
+
+    // Capture phase, so it runs before the document's own Escape handlers (which close drawers and panels); a
+    // handled Escape is marked with preventDefault, and those handlers leave it alone.
+    document.addEventListener('keydown', (event) => {
+        if (event.key !== 'Escape' || event.isComposing || event.defaultPrevented) return;
+        if (handleFieldEditKey('escape')) {
+            event.preventDefault();
+        }
+    }, { capture: true });
 
     $(document).on('click', '.field_edit_toggle', function () {
         beginEdit(String($(this).attr('data-for')));

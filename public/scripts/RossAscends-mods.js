@@ -1251,7 +1251,7 @@ export function initRossMods() {
             }
         }
 
-        if (event.key == 'Escape') { //closes various panels
+        if (event.key == 'Escape' && !event.defaultPrevented) { //closes various panels
             //dont override Escape hotkey functions from script.js
             //"close edit box" and "cancel stream generation".
             if ($('#curEditTextarea').is(':visible') || $('#mes_stop').is(':visible')) {

@@ -406,14 +406,39 @@ test.describe('character field edit mode', () => {
                 });
             });
 
-            test('Escape restores the text and saves nothing', async ({ page }) => {
+            test('Escape with no change ends the edit and leaves the drawer open', async ({ page }) => {
+                await withCharacter(page, field, 'original', async () => {
+                    await enterEdit(page, field);
+                    const f = fieldLocators(page, field.id);
+                    await f.textarea.press('Escape');
+                    await expectPreviewMode(page, field);
+                    await expect(page.locator('dialog[open]')).toHaveCount(0);
+                    await page.waitForTimeout(1000);
+                    await expect(page.locator('#char-info-panel')).toHaveClass(/\bopenDrawer\b/);
+                });
+            });
+
+            test('Escape with a change asks first; No keeps the edit, Yes restores the text and saves nothing; the drawer stays open', async ({ page }) => {
                 await withCharacter(page, field, 'original', async (avatar) => {
                     await enterEdit(page, field);
                     const saves = recordSaveRequests(page);
                     const f = fieldLocators(page, field.id);
                     await f.textarea.fill('discarded by key');
                     await f.textarea.press('Escape');
+                    const dialog = page.locator('dialog[open]');
+                    await expect(dialog).toContainText('Discard your changes?');
+                    await dialog.locator('.popup-button-cancel').click();
+                    await expect(dialog).toHaveCount(0);
+                    await expectEditMode(page, field);
+                    await expect(f.textarea).toHaveValue('discarded by key');
+                    await page.waitForTimeout(1000);
+                    await expect(page.locator('#char-info-panel')).toHaveClass(/\bopenDrawer\b/);
+
+                    await f.textarea.press('Escape');
+                    await page.locator('dialog[open] .popup-button-ok').click();
                     await expectPreviewMode(page, field);
+                    await page.waitForTimeout(1000);
+                    await expect(page.locator('#char-info-panel')).toHaveClass(/\bopenDrawer\b/);
                     await expect(f.textarea).toHaveValue('original');
                     await expect(f.preview).toContainText('original');
                     expect(saves).toEqual([]);
@@ -447,6 +472,9 @@ test.describe('character field edit mode', () => {
                             await f.textarea.fill('confirmed by escape');
                             await f.textarea.press('Escape');
                             await expectPreviewMode(page, field);
+                            await expect(page.locator('dialog[open]')).toHaveCount(0);
+                            await page.waitForTimeout(1000);
+                            await expect(page.locator('#char-info-panel')).toHaveClass(/\bopenDrawer\b/);
                             await expect(f.preview).toContainText('confirmed by escape');
                             await expect.poll(async () => storedValue(await fetchStoredCharacter(page, avatar), field)).toBe('confirmed by escape');
                         });
@@ -938,6 +966,17 @@ test.describe('character field edit mode', () => {
                 });
             });
         }
+    });
+
+    test('Escape with no field being edited still closes the character info drawer', async ({ page }) => {
+        const field = FIELDS.find(x => x.id === 'description_textarea');
+        await withCharacter(page, field, 'original', async () => {
+            await openInfoTab(page, field.tab);
+            await expect(page.locator('#char-info-panel')).toHaveClass(/\bopenDrawer\b/);
+            await page.evaluate(() => (/** @type {HTMLElement} */ (document.activeElement))?.blur());
+            await page.keyboard.press('Escape');
+            await expect(page.locator('#char-info-panel')).toHaveClass(/\bclosedDrawer\b/);
+        });
     });
 });
 
