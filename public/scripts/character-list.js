@@ -10,6 +10,7 @@ import { filterByTagState, isBogusFolderOpen, getTagBlock, printTagFilters, prin
 import { tagFetchStamp, isFetchedTagIdsCurrent } from './tag-fetch-stamps.js';
 import { FILTER_STATES, FILTER_TYPES, FilterHelper, isFilterState } from './filters.js';
 import { characterRepository, buildCharacterQuery, isInvalidSortFieldError, normalizeQueryRow, parseQueryTotal } from './character-repository.js';
+import { canonicalSearchField, parseSearchText, sameView, serializeSearchText, viewToQueryState } from './character-view.js';
 import { getRandomSortSeed } from './random-sort.js';
 import { t } from './i18n.js';
 import { updatePersonaConnectionsAvatarList } from './personas.js';
@@ -704,33 +705,90 @@ export async function queryWithSortFallback(filter, sort, request) {
     return { sort: fallback, result: await request(fallback) };
 }
 
-// tagFilterData.selected doubles as "which bogus folder is open", so passing it through as filter.tags.include
-// makes an open folder a real paginated filter with no separate wiring needed.
-function buildCharacterQueryFromCurrentFilterState({ includeGroups = false } = {}) {
-    const tagFilterData = entitiesFilter.getFilterData(FILTER_TYPES.TAG) ?? { selected: [], excluded: [] };
-    const favState = entitiesFilter.getFilterData(FILTER_TYPES.FAV);
-    let fav;
-    if (isFilterState(favState, FILTER_STATES.SELECTED)) fav = true;
-    else if (isFilterState(favState, FILTER_STATES.EXCLUDED)) fav = false;
-    const groupState = entitiesFilter.getFilterData(FILTER_TYPES.GROUP);
-    let group;
-    if (isFilterState(groupState, FILTER_STATES.SELECTED)) group = true;
-    else if (isFilterState(groupState, FILTER_STATES.EXCLUDED)) group = false;
+/**
+ * @param {FILTER_STATES[keyof FILTER_STATES]|string} state
+ * @returns {boolean|undefined}
+ */
+function triStateToBoolean(state) {
+    if (isFilterState(state, FILTER_STATES.SELECTED)) return true;
+    if (isFilterState(state, FILTER_STATES.EXCLUDED)) return false;
+    return undefined;
+}
 
+/**
+ * @param {boolean|undefined} value
+ * @returns {string}
+ */
+function booleanToTriState(value) {
+    if (value === true) return FILTER_STATES.SELECTED.key;
+    if (value === false) return FILTER_STATES.EXCLUDED.key;
+    return FILTER_STATES.UNDEFINED.key;
+}
+
+/**
+ * What the character list shows. It is read from `entitiesFilter` and the sort settings, which stay the store, so an
+ * extension setting a filter through upstream's FilterHelper or `power_user.sort_*` changes the view, and a view set
+ * here is what they read back.
+ * @returns {import('./character-view.js').CharacterView}
+ */
+export function getCharacterView() {
+    const tagFilterData = entitiesFilter.getFilterData(FILTER_TYPES.TAG) ?? { selected: [], excluded: [] };
+    const { text, conditions } = parseSearchText(entitiesFilter.getFilterData(FILTER_TYPES.SEARCH) ?? '');
     // With no term the option is about to be deselected (verifyCharactersSearchSortRule()), so the saved sort applies.
     const isSearchSort = hasActiveCharacterSearch() && isSearchSortSelected();
     const isRandom = !isSearchSort && power_user.sort_order === 'random';
-    return buildCharacterQuery({
-        searchTerm: entitiesFilter.getFilterData(FILTER_TYPES.SEARCH) ?? '',
-        tagsInclude: tagFilterData.selected ?? [],
-        tagsExclude: tagFilterData.excluded ?? [],
-        fav,
-        sortField: isSearchSort ? 'search' : (isRandom ? 'random' : power_user.sort_field),
-        sortOrder: power_user.sort_order === 'desc' ? 'desc' : 'asc',
-        randomSeed: isRandom ? getRandomSortSeed(accountStorage) : undefined,
-        includeGroups,
-        group,
-    });
+    /** @type {import('./character-view.js').CharacterViewSort} */
+    const sort = isSearchSort
+        ? { field: 'search', order: 'asc' }
+        : isRandom
+            ? { field: 'random', order: 'asc', seed: getRandomSortSeed(accountStorage) }
+            : { field: power_user.sort_field, order: power_user.sort_order === 'desc' ? 'desc' : 'asc' };
+    return {
+        text,
+        conditions,
+        // tagFilterData.selected doubles as "which bogus folder is open", so an open folder is a tag condition.
+        tags: { include: [...(tagFilterData.selected ?? [])], exclude: [...(tagFilterData.excluded ?? [])] },
+        fav: triStateToBoolean(entitiesFilter.getFilterData(FILTER_TYPES.FAV)),
+        group: triStateToBoolean(entitiesFilter.getFilterData(FILTER_TYPES.GROUP)),
+        sort,
+        folderCase: null,
+    };
+}
+
+/**
+ * Shows `view` in the character list, as a change the user made: one reprint, back to page 1 at the top.
+ * Fields left out keep their current value.
+ * @param {Partial<import('./character-view.js').CharacterView>} view
+ */
+export function setCharacterView(view) {
+    const current = getCharacterView();
+    const next = { ...current, ...view };
+    if (sameView(current, next)) return;
+
+    entitiesFilter.setFilterData(FILTER_TYPES.SEARCH, serializeSearchText(next), true);
+    entitiesFilter.setFilterData(FILTER_TYPES.TAG, { selected: [...next.tags.include], excluded: [...next.tags.exclude] }, true);
+    entitiesFilter.setFilterData(FILTER_TYPES.FAV, booleanToTriState(next.fav), true);
+    entitiesFilter.setFilterData(FILTER_TYPES.GROUP, booleanToTriState(next.group), true);
+    if (JSON.stringify(current.sort) !== JSON.stringify(next.sort) && next.sort.field !== 'search') {
+        const isRandom = next.sort.field === 'random';
+        const option = isRandom
+            ? $('#character_sort_order option[data-order="random"]')
+            : $('#character_sort_order option').filter((_, el) => el.dataset.field === next.sort.field && el.dataset.order === next.sort.order);
+        option.first().prop('selected', true);
+        power_user.sort_field = isRandom ? String(option.data('field') ?? 'name') : next.sort.field;
+        power_user.sort_order = isRandom ? 'random' : next.sort.order;
+        power_user.sort_rule = option.data('rule');
+    }
+    resetListPositionOnNextPrint = true;
+    showViewInSearchBox();
+    printCharactersDebounced();
+}
+
+/** Puts the current view's conditions and text into the search box; set by initCharacterSearch(). */
+let showViewInSearchBox = () => {};
+
+function buildCharacterQueryFromCurrentFilterState({ includeGroups = false } = {}) {
+    return buildCharacterQuery(viewToQueryState(getCharacterView(), { includeGroups }));
 }
 
 // Maps one normalized `/query` row to its `Entity` form.
@@ -1485,21 +1543,6 @@ function showSearchBackend(searchBackend) {
     lastKnownSearchBackend = searchBackend;
 }
 
-// Mirrors the label sets the server's FIELD_LABELS actually accept, so a token only becomes a pill when the server will really treat it as a filter.
-/** @type {Set<string>} */
-const SEARCH_PILL_LABELS = new Set([
-    'name', 'tag', 'tags', 'desc', 'description', 'example', 'scenario', 'personality',
-    'greeting', 'notes', 'creator', 'from', 'by', 'author', 'alt', 'alternate', 'member', 'members', 'id',
-]);
-
-// Alternate spellings that resolve to the same server-side field but should display/store as one canonical label once promoted to a pill.
-/** @type {Record<string, string>} */
-const SEARCH_PILL_LABEL_ALIASES = {
-    from: 'creator',
-    by: 'creator',
-    author: 'creator',
-};
-
 export function initCharacterSearch() {
     // Purely a display/editing convenience - pills are reassembled back into `label:value` text before being sent anywhere.
     /** @type {{ label: string, value: string }[]} */
@@ -1550,15 +1593,24 @@ export function initCharacterSearch() {
         });
     }
 
+    showViewInSearchBox = () => {
+        const { text, conditions } = getCharacterView();
+        searchPills = conditions.map(condition => ({
+            label: `${condition.op === 'not_contains' ? '-' : ''}${condition.field}`,
+            value: condition.value,
+        }));
+        searchInput.val(text);
+        renderPills();
+    };
+
     searchInput.on('input', function () {
         const raw = String($(this).val());
         // A trailing space "completes" the token right before it - if recognized, promote it to a pill.
         if (raw.endsWith(' ')) {
             const trimmed = raw.slice(0, -1);
             const pillMatch = trimmed.match(/(?:^|\s)([A-Za-z][A-Za-z0-9_]*):("[^"]*"|\S+)$/);
-            if (pillMatch && SEARCH_PILL_LABELS.has(pillMatch[1].toLowerCase())) {
-                const rawLabel = pillMatch[1].toLowerCase();
-                const label = SEARCH_PILL_LABEL_ALIASES[rawLabel] ?? rawLabel;
+            const label = pillMatch ? canonicalSearchField(pillMatch[1]) : null;
+            if (pillMatch && label) {
                 searchPills.push({ label, value: pillMatch[2] });
                 renderPills();
                 searchInput.val(trimmed.slice(0, pillMatch.index));
