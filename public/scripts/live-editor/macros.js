@@ -57,7 +57,10 @@ const macroValues = ViewPlugin.fromClass(class {
 
     /** @param {import('@codemirror/view').ViewUpdate} update */
     update(update) {
-        if (update.docChanged || update.selectionSet || update.state.field(renderField) !== update.startState.field(renderField)) {
+        // While an IME composes, the values only move with the text; they're worked out again when it ends.
+        if (update.view.composing) {
+            this.decorations = this.decorations.map(update.changes);
+        } else if (update.docChanged || update.selectionSet || update.state.field(renderField) !== update.startState.field(renderField)) {
             this.decorations = this.build(update.view);
         }
     }
