@@ -9994,6 +9994,19 @@ function endGreetingPagerEdit() {
  * @property {Set<HTMLElement>} editing Rows being edited: focused, open in the maximize editor, or with a save scheduled or in flight.
  * @property {() => void} editEnded Called when a row stops being edited.
  * @property {(avatar: string) => Promise<boolean>} [showCurrentAfterConflict] Shows the server's current greetings after a refused op.
+ * @property {(row: HTMLElement) => void} removeRow Marks the row this popup is removing, so the next list shown takes it out
+ * even when another row has the same text.
+ * @property {(row: HTMLElement, insertIndex: number) => void} moveRow Marks the row this popup is moving, and where it lands.
+ * @property {(defaultIndex: number|null) => void} showLocal Create mode only: shows `model.greetings` with this default.
+ */
+
+/**
+ * What the popup can do with one of its rows without rebuilding it.
+ * @typedef {object} GreetingRow
+ * @property {(index: number) => boolean} setIndex Moves the row to this position; returns whether it changed.
+ * @property {() => void} refreshDefault Shows whether the row is the default.
+ * @property {() => boolean} isCommitted False for a new row that has no text yet.
+ * @property {() => boolean} isEditing Focused, open in the maximize editor, or with a save scheduled or in flight.
  */
 
 /**
@@ -10064,20 +10077,31 @@ function removeGreetingConflictDraft(avatar, draft) {
  * @param {(avatar: string) => Promise<boolean>} showCurrentAfterConflict
  */
 function renderGreetingConflictDrafts(template, avatar, model, showCurrentAfterConflict) {
-    const container = template.find('.greeting-conflict-drafts').empty();
-    for (const draft of readGreetingConflictDrafts(avatar)) {
-        const exists = draft.position < model.greetings.length;
+    const container = template.find('.greeting-conflict-drafts');
+    const drafts = readGreetingConflictDrafts(avatar);
+    const keyOf = (/** @type {GreetingConflictDraft} */ draft) => `${draft.position}\u0000${draft.text}`;
+    const wanted = new Set(drafts.map(keyOf));
+    container.children('.greeting-conflict-draft').each(function () {
+        if (!wanted.has(this.dataset.draftKey)) $(this).remove();
+    });
+    for (const draft of drafts) {
+        const key = keyOf(draft);
+        const existing = container.children('.greeting-conflict-draft').filter(function () { return this.dataset.draftKey === key; });
+        if (existing.length) {
+            labelGreetingConflictDraft(existing, draft, model);
+            continue;
+        }
         const block = $('<div class="greeting-conflict-draft flexFlowColumn flex-container wide100p"></div>');
-        block.append($('<small></small>').text(exists
-            ? t`Your edit to greeting #${draft.position + 1} wasn't saved because someone else changed it. It's kept here until you apply or discard it.`
-            : t`Your edit to greeting #${draft.position + 1} wasn't saved, and that greeting no longer exists. It's kept here until you apply or discard it.`));
+        block[0].dataset.draftKey = key;
+        block.append($('<small class="greeting-conflict-draft-note"></small>'));
         block.append($('<textarea class="text_pole textarea_compact greeting-conflict-draft-text" readonly></textarea>').val(draft.text));
         const buttons = $('<div class="flex-container"></div>');
-        const apply = $('<div class="menu_button greeting-conflict-draft-apply"></div>').text(exists ? t`Replace greeting #${draft.position + 1} with this` : t`Add as a new greeting`);
+        const apply = $('<div class="menu_button greeting-conflict-draft-apply"></div>');
         const discard = $('<div class="menu_button greeting-conflict-draft-discard"></div>').text(t`Discard`);
         buttons.append(apply, discard);
         block.append(buttons);
         container.append(block);
+        labelGreetingConflictDraft(block, draft, model);
 
         discard.on('click', () => {
             removeGreetingConflictDraft(avatar, draft);
@@ -10088,6 +10112,7 @@ function renderGreetingConflictDrafts(template, avatar, model, showCurrentAfterC
             const character = charactersStore.get(avatar);
             if (!character) return;
             apply.addClass('disabled');
+            const exists = draft.position < model.greetings.length;
             await queueGreetingSave(avatar, async () => {
                 const row = /** @type {any} */ (template.find(`.alternate_greetings_list .alternate_greeting[data-index="${draft.position}"]`)[0]);
                 const result = exists && Number.isFinite(row?.greetingHash)
@@ -10109,6 +10134,20 @@ function renderGreetingConflictDrafts(template, avatar, model, showCurrentAfterC
             });
         });
     }
+}
+
+/**
+ * Words a kept edit's note and Apply button for whether its greeting still exists.
+ * @param {JQuery<HTMLElement>} block
+ * @param {GreetingConflictDraft} draft
+ * @param {GreetingsModel} model
+ */
+function labelGreetingConflictDraft(block, draft, model) {
+    const exists = draft.position < model.greetings.length;
+    block.find('.greeting-conflict-draft-note').text(exists
+        ? t`Your edit to greeting #${draft.position + 1} wasn't saved because someone else changed it. It's kept here until you apply or discard it.`
+        : t`Your edit to greeting #${draft.position + 1} wasn't saved, and that greeting no longer exists. It's kept here until you apply or discard it.`);
+    block.find('.greeting-conflict-draft-apply').text(exists ? t`Replace greeting #${draft.position + 1} with this` : t`Add as a new greeting`);
 }
 
 /** @type {((greetings: string[], defaultIndex: number|null) => void)|null} The open greetings popup's re-render, told whenever the pager's greetings are replaced. */
@@ -10299,34 +10338,30 @@ function openAlternateGreetings() {
         setGreetingPagerGreetings(model.greetings, model.defaultIndex, model.greetings.map(hashGreetingText));
     }
 
-    /** @type {{greetings: string[], defaultIndex: number|null}|null} The newest list that arrived while a row was being edited. */
+    /** @type {{greetings: string[], defaultIndex: number|null}|null} A list shown while a row being edited had to stay; shown again when no row is being edited. */
     let pendingRender = null;
+    /** @type {{row: HTMLElement, insertIndex?: number}|null} The row this popup's own op removed or moved, for the next list shown. */
+    let rowHint = null;
     /** @type {GreetingsPopupSession} */
     const session = {
         editing: new Set(),
-        // Checked a task later: focus moving from one row to another blurs the first before it focuses the second,
-        // and redrawing in between would take the second row away as it is focused.
+        // Checked a task later: focus moving from one row to another blurs the first before it focuses the second.
         editEnded: () => setTimeout(() => {
             if (session.editing.size > 0 || !pendingRender) return;
             const { greetings, defaultIndex } = pendingRender;
             pendingRender = null;
-            renderRows(greetings, defaultIndex);
+            showRows(greetings, defaultIndex);
         }),
+        removeRow: (row) => { rowHint = { row }; },
+        moveRow: (row, insertIndex) => { rowHint = { row, insertIndex }; },
+        showLocal: (defaultIndex) => showRows(model.greetings, defaultIndex, { positional: true }),
     };
 
     /**
-     * Redraws every row from this list. While a row is being edited nothing is redrawn: the newest list is applied
-     * when no row is being edited any more, so a row keeps its own text and hash until its edit ends.
      * @param {string[]} greetings
      * @param {number|null} defaultIndex
      */
-    const onGreetingsReplaced = (greetings, defaultIndex) => {
-        if (session.editing.size > 0) {
-            pendingRender = { greetings, defaultIndex };
-            return;
-        }
-        renderRows(greetings, defaultIndex);
-    };
+    const onGreetingsReplaced = (greetings, defaultIndex) => showRows(greetings, defaultIndex);
 
     const popup = new Popup(template, POPUP_TYPE.TEXT, '', {
         wide: true,
@@ -10355,8 +10390,10 @@ function openAlternateGreetings() {
         if (!ok) return false;
         const fresh = cardToGreetingsModel(charactersStore.get(avatar));
         setGreetingPagerGreetings(fresh.greetings, fresh.defaultIndex, fresh.greetings.map(hashGreetingText));
-        await popup.complete(POPUP_RESULT.AFFIRMATIVE);
-        openAlternateGreetings();
+        movesBlocked = false;
+        template.find('.greeting-refresh-failed').hide();
+        template.find('.pick_up_greeting').removeClass('disabled');
+        renderGreetingConflictDrafts(template, avatar, model, showCurrentAfterConflict);
         return true;
     }
 
@@ -10387,7 +10424,7 @@ function openAlternateGreetings() {
     const picker = new PickAndPlace({
         container: template[0],
         // Draft rows aren't in the array yet, so they can be neither picked nor used as an anchor.
-        getItems: () => template.find('.alternate_greetings_list .alternate_greeting:not(.greeting-draft)').toArray().map(row => ({
+        getItems: () => template.find('.alternate_greetings_list .alternate_greeting:not(.greeting-draft):not(.greeting-stale)').toArray().map(row => ({
             key: Number(row.getAttribute('data-index')),
             element: row,
             // The filter's .toggle() is the only thing that hides rows.
@@ -10408,13 +10445,13 @@ function openAlternateGreetings() {
             // The landing index, computed the way the server's opMove computes it.
             const anchor = targetIndex > sourceIndex ? targetIndex - 1 : targetIndex;
             const insertIndex = side === 'before' ? anchor : anchor + 1;
+            const sourceRow = rowAt(sourceIndex);
 
             if (menu_type === 'create') {
                 const [moved] = array.splice(sourceIndex, 1);
                 array.splice(insertIndex, 0, moved);
-                model.defaultIndex = reindexDefaultAfterMove(model.defaultIndex, sourceIndex, insertIndex);
-                await popup.complete(POPUP_RESULT.AFFIRMATIVE);
-                openAlternateGreetings();
+                session.moveRow(sourceRow, insertIndex);
+                session.showLocal(reindexDefaultAfterMove(model.defaultIndex, sourceIndex, insertIndex));
                 return;
             }
 
@@ -10429,6 +10466,7 @@ function openAlternateGreetings() {
                 const result = await postGreetingOp('move', { avatar_url: avatar, source_position: sourceIndex, expected_hash: expectedHash, side, target_position: targetIndex, target_expected_hash: targetExpectedHash });
                 if (!result.ok) {
                     console.error('Greeting move failed', { avatar, sourceIndex, side, targetIndex, status: result.status, reason: result.reason });
+                    picker.cancel();
                     if (result.status === 409) {
                         if (await reloadGreetingsFromServer(avatar)) {
                             toastr.warning(t`The greetings were changed in another session, so this move was not made. The list has been reloaded.`, t`Greeting not moved`);
@@ -10441,31 +10479,102 @@ function openAlternateGreetings() {
                     toastr.error(t`Failed to move the greeting.`, t`Greeting not moved`);
                     return;
                 }
+                session.moveRow(sourceRow, insertIndex);
                 applyGreetingOpSuccess(character, result);
-
-                await popup.complete(POPUP_RESULT.AFFIRMATIVE);
-                openAlternateGreetings();
             });
         },
     });
 
     /**
+     * @param {number} index
+     * @returns {HTMLElement|undefined}
+     */
+    function rowAt(index) {
+        return template.find(`.alternate_greetings_list .alternate_greeting:not(.greeting-draft):not(.greeting-stale)[data-index="${index}"]`)[0];
+    }
+
+    /**
+     * @param {HTMLElement} row
+     * @returns {GreetingRow}
+     */
+    const rowApi = (row) => /** @type {any} */ (row).greetingRow;
+
+    /**
+     * Shows this list by updating the rows already there: a row whose saved text is still in the list stays, with its
+     * typing, focus and scroll, and only moves; a row whose text is gone is removed; a new greeting gets a new row.
+     * A row being edited is never removed: it stays, marked stale, until its edit ends, and then the list is shown again.
      * @param {string[]} greetings
      * @param {number|null} defaultIndex
+     * @param {{positional?: boolean}} [options] `positional`: create mode, where rows have no saved text; the rows
+     * in their order are the list.
      */
-    function renderRows(greetings, defaultIndex) {
-        // The rows already show this list (e.g. after this popup's own save): nothing to redraw.
-        if (defaultIndex === model.defaultIndex && lodash.isEqual(greetings, model.greetings)) return;
-        picker.cancel();
+    function showRows(greetings, defaultIndex, { positional = false } = {}) {
+        const list = template.find('.alternate_greetings_list')[0];
+        let rows = Array.from(list.querySelectorAll(':scope > .alternate_greeting'));
+        const hint = rowHint;
+        rowHint = null;
+        if (hint && rows.includes(hint.row)) {
+            rows.splice(rows.indexOf(hint.row), 1);
+            if (hint.insertIndex === undefined) {
+                hint.row.remove();
+                session.editing.delete(hint.row);
+            } else {
+                const listed = rows.filter(row => rowApi(row).isCommitted() && !row.classList.contains('greeting-stale'));
+                const anchor = listed[hint.insertIndex];
+                const lastListed = listed.at(-1);
+                rows.splice(anchor ? rows.indexOf(anchor) : (lastListed ? rows.indexOf(lastListed) + 1 : 0), 0, hint.row);
+            }
+        }
         model.greetings = greetings.slice();
         model.defaultIndex = defaultIndex;
-        template.find('.alternate_greetings_list').empty();
-        for (let index = 0; index < model.greetings.length; index++) {
-            addAlternateGreeting(template, model.greetings[index], index, getArray, popup, model, index + 1, false, picker, session);
+
+        const candidates = rows.filter(row => rowApi(row).isCommitted());
+        const drafts = rows.filter(row => !rowApi(row).isCommitted());
+        /** @type {HTMLElement[]} */
+        const listed = [];
+        const used = new Set();
+        for (let index = 0; index < greetings.length; index++) {
+            const hash = hashGreetingText(greetings[index]);
+            const row = positional
+                ? candidates[index]
+                : candidates.find(candidate => !used.has(candidate) && /** @type {any} */ (candidate).greetingHash === hash);
+            if (row) {
+                used.add(row);
+                listed.push(row);
+            } else {
+                const created = addAlternateGreeting(template, greetings[index], index, getArray, popup, model, index + 1, false, picker, session);
+                if (movesBlocked) $(created).find('.pick_up_greeting').addClass('disabled');
+                listed.push(created);
+            }
         }
-        if (movesBlocked) {
-            template.find('.pick_up_greeting').addClass('disabled');
+
+        let keptStale = false;
+        const desired = listed.slice();
+        for (const row of candidates) {
+            if (used.has(row)) continue;
+            if (!rowApi(row).isEditing()) {
+                row.remove();
+                continue;
+            }
+            keptStale = true;
+            row.classList.add('greeting-stale');
+            row.removeAttribute('data-index');
+            const before = candidates.slice(0, candidates.indexOf(row)).reverse().find(candidate => desired.includes(candidate));
+            desired.splice(before ? desired.indexOf(before) + 1 : 0, 0, row);
         }
+        desired.push(...drafts);
+
+        let moved = false;
+        listed.forEach((row, index) => {
+            row.classList.remove('greeting-stale');
+            moved = rowApi(row).setIndex(index) || moved;
+        });
+        drafts.forEach((row, offset) => rowApi(row).setIndex(greetings.length + offset));
+        for (const row of desired) rowApi(row).refreshDefault();
+        placeRowsInOrder(list, desired);
+        if (moved && picker.pickedKey !== null) picker.cancel();
+        pendingRender = keptStale ? { greetings: greetings.slice(), defaultIndex } : null;
+
         template.find('.greeting-filter-input').trigger('input');
         updateAlternateGreetingsHintVisibility(template);
     }
@@ -10505,13 +10614,48 @@ function openAlternateGreetings() {
         if (retryButton.hasClass('disabled')) return;
         retryButton.addClass('disabled');
         const avatar = $('.open_alternate_greetings').data('avatar');
-        if (await reloadGreetingsFromServer(avatar)) return;
+        const refreshed = await reloadGreetingsFromServer(avatar);
         retryButton.removeClass('disabled');
-        toastr.error(t`Couldn't refresh the greeting list.`, t`Greeting list not refreshed`);
+        if (!refreshed) toastr.error(t`Couldn't refresh the greeting list.`, t`Greeting list not refreshed`);
     });
 
     popup.show();
     updateAlternateGreetingsHintVisibility(template);
+}
+
+/**
+ * Puts the list's children in this order, moving as few as it can. A row holding focus is never moved, since moving
+ * an element blurs it and resets its scroll.
+ * @param {HTMLElement} list
+ * @param {HTMLElement[]} desired Every child the list should hold, in order.
+ */
+function placeRowsInOrder(list, desired) {
+    const current = Array.from(list.children);
+    const position = desired.map(element => current.indexOf(element));
+    const active = document.activeElement;
+    const weight = desired.map(element => (active && element.contains(active)) ? desired.length + 1 : 1);
+    // The heaviest run of rows already in order stays put; the focused row outweighs all others together.
+    const best = desired.map(() => 0);
+    const previous = desired.map(() => -1);
+    let end = -1;
+    for (let i = 0; i < desired.length; i++) {
+        if (position[i] < 0) continue;
+        best[i] = weight[i];
+        for (let j = 0; j < i; j++) {
+            if (position[j] >= 0 && position[j] < position[i] && best[j] + weight[i] > best[i]) {
+                best[i] = best[j] + weight[i];
+                previous[i] = j;
+            }
+        }
+        if (end < 0 || best[i] > best[end]) end = i;
+    }
+    const stay = new Set();
+    for (let i = end; i >= 0; i = previous[i]) stay.add(desired[i]);
+    let next = null;
+    for (let i = desired.length - 1; i >= 0; i--) {
+        if (!stay.has(desired[i])) list.insertBefore(desired[i], next);
+        next = desired[i];
+    }
 }
 
 /**
@@ -10525,6 +10669,7 @@ function openAlternateGreetings() {
  * @param {boolean} [pending] True for a just-added, still-blank row - not yet a real array entry, so a write while blank never sees it.
  * @param {PickAndPlace} [picker] The popup's pick-and-place, which this row's pick-up button drives.
  * @param {GreetingsPopupSession} [session] The popup's record of which rows are being edited.
+ * @returns {HTMLElement} The row, appended to the list.
  */
 function addAlternateGreeting(template, greeting, index, getArray, popup, model, displayPosition = index + 1, pending = false, picker, session) {
     const greetingBlock = $('#alternate_greeting_form_template .alternate_greeting').clone();
@@ -10606,14 +10751,11 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
                     // Still nothing authored - stays UI-only.
                     return;
                 }
-                index = array.length;
                 array.push(value);
                 committed = true;
                 greetingBlock.removeClass('greeting-draft');
-                greetingBlock.attr('data-index', index);
-                greetingBlock.find('.editor_maximize').attr('data-for', `alternate_greeting_${index}`);
-                greetingBlock.find('.greeting_index').text(index + 1);
-                greetingBlock.find('.set_default_greeting').show();
+                setIndex(array.length - 1);
+                refreshDefault();
                 greetingBlock.find('.pick_up_greeting').show();
 
                 if (menu_type === 'create') return; // synced at popup close, same as every other create-mode field
@@ -10658,6 +10800,35 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
     greetingBlock.find('.editor_maximize').attr('data-for', `alternate_greeting_${index}`);
     greetingBlock.find('.greeting_index').text(displayPosition);
 
+    /**
+     * Moves the row to another position in the list: what its ops target, its id and its shown number.
+     * @param {number} newIndex
+     * @returns {boolean} Whether the position changed.
+     */
+    const setIndex = (newIndex) => {
+        const changed = newIndex !== index;
+        index = newIndex;
+        greetingBlock.attr('data-index', newIndex);
+        greetingBlock.find('.alternate_greeting_text').attr('id', `alternate_greeting_${newIndex}`);
+        greetingBlock.find('.editor_maximize').attr('data-for', `alternate_greeting_${newIndex}`);
+        greetingBlock.find('.greeting_index').text(newIndex + 1);
+        return changed;
+    };
+    /** Shows the default badge and the set/clear buttons for whether this row is now the default. */
+    const refreshDefault = () => {
+        const isDefault = committed && index === model.defaultIndex;
+        greetingBlock.find('.greeting_default_badge').toggle(isDefault);
+        greetingBlock.find('.demote_default_greeting').toggle(isDefault);
+        greetingBlock.find('.set_default_greeting').toggle(committed && !isDefault);
+    };
+    /** @type {GreetingRow} */
+    (/** @type {any} */ (row)).greetingRow = {
+        setIndex,
+        refreshDefault,
+        isCommitted: () => committed,
+        isEditing: () => focused || maximized || saveScheduled || savesInFlight > 0,
+    };
+
     // The maximize editor (opened by a document-level handler after this one) edits this row until its popup closes.
     greetingBlock.find('.editor_maximize').on('click', function () {
         const textareaId = String($(this).attr('data-for'));
@@ -10678,13 +10849,7 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
         });
     });
 
-    // Keyed on whether this row IS the current default, not its position - the default can sit anywhere in the stable order.
-    if (index === model.defaultIndex) {
-        greetingBlock.find('.greeting_default_badge').show();
-        greetingBlock.find('.demote_default_greeting').show();
-    } else if (!pending) {
-        greetingBlock.find('.set_default_greeting').show();
-    }
+    refreshDefault();
     if (pending) {
         greetingBlock.find('.pick_up_greeting').hide();
     }
@@ -10709,9 +10874,8 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
 
         if (menu_type === 'create') {
             array.splice(index, 1);
-            model.defaultIndex = reindexDefaultAfterRemoval(model.defaultIndex, index);
-            await popup.complete(POPUP_RESULT.AFFIRMATIVE);
-            openAlternateGreetings();
+            session.removeRow(row);
+            session.showLocal(reindexDefaultAfterRemoval(model.defaultIndex, index));
             return;
         }
 
@@ -10735,11 +10899,8 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
                 toastr.error(t`Failed to delete the greeting.`, t`Greeting not deleted`);
                 return;
             }
+            session.removeRow(row);
             applyGreetingOpSuccess(character, result);
-
-            // Sync and reopen
-            await popup.complete(POPUP_RESULT.AFFIRMATIVE);
-            openAlternateGreetings();
         });
     });
 
@@ -10772,9 +10933,7 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
         }
 
         if (menu_type === 'create') {
-            model.defaultIndex = index;
-            await popup.complete(POPUP_RESULT.AFFIRMATIVE);
-            openAlternateGreetings();
+            session.showLocal(index);
             return;
         }
 
@@ -10799,9 +10958,6 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
                 return;
             }
             applyGreetingOpSuccess(character, result);
-
-            await popup.complete(POPUP_RESULT.AFFIRMATIVE);
-            openAlternateGreetings();
         });
     });
 
@@ -10811,9 +10967,7 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
         event.stopPropagation();
 
         if (menu_type === 'create') {
-            model.defaultIndex = null;
-            await popup.complete(POPUP_RESULT.AFFIRMATIVE);
-            openAlternateGreetings();
+            session.showLocal(null);
             return;
         }
 
@@ -10838,13 +10992,11 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
                 return;
             }
             applyGreetingOpSuccess(character, result);
-
-            await popup.complete(POPUP_RESULT.AFFIRMATIVE);
-            openAlternateGreetings();
         });
     });
 
     template.find('.alternate_greetings_list').append(greetingBlock);
+    return row;
 }
 
 /**
