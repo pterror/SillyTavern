@@ -9967,7 +9967,123 @@ function endGreetingPagerEdit() {
  * @typedef {object} GreetingsPopupSession
  * @property {Set<HTMLElement>} editing Rows being edited: focused, open in the maximize editor, or with a save scheduled or in flight.
  * @property {() => void} editEnded Called when a row stops being edited.
+ * @property {(avatar: string) => Promise<boolean>} [showCurrentAfterConflict] Shows the server's current greetings after a refused op.
  */
+
+/**
+ * An edit the server refused because the greeting changed elsewhere, kept until the user applies or discards it.
+ * @typedef {object} GreetingConflictDraft
+ * @property {number} position The greeting the edit was for.
+ * @property {string} text What the user had typed.
+ */
+
+/**
+ * @param {string} avatar
+ * @returns {string}
+ */
+function greetingConflictDraftsKey(avatar) {
+    return `GreetingConflictDrafts:${avatar}`;
+}
+
+/**
+ * @param {string} avatar
+ * @returns {GreetingConflictDraft[]}
+ */
+function readGreetingConflictDrafts(avatar) {
+    try {
+        const drafts = JSON.parse(accountStorage.getItem(greetingConflictDraftsKey(avatar)) ?? '[]');
+        return Array.isArray(drafts) ? drafts.filter(draft => Number.isInteger(draft?.position) && typeof draft?.text === 'string') : [];
+    } catch {
+        return [];
+    }
+}
+
+/**
+ * @param {string} avatar
+ * @param {GreetingConflictDraft[]} drafts
+ */
+function writeGreetingConflictDrafts(avatar, drafts) {
+    if (drafts.length > 0) {
+        accountStorage.setItem(greetingConflictDraftsKey(avatar), JSON.stringify(drafts));
+    } else {
+        accountStorage.removeItem(greetingConflictDraftsKey(avatar));
+    }
+}
+
+/**
+ * Keeps a refused edit. A newer refused edit to the same greeting replaces the older one.
+ * @param {string} avatar
+ * @param {GreetingConflictDraft} draft
+ */
+function addGreetingConflictDraft(avatar, draft) {
+    const drafts = readGreetingConflictDrafts(avatar).filter(existing => existing.position !== draft.position);
+    drafts.push(draft);
+    writeGreetingConflictDrafts(avatar, drafts);
+}
+
+/**
+ * @param {string} avatar
+ * @param {GreetingConflictDraft} draft
+ */
+function removeGreetingConflictDraft(avatar, draft) {
+    writeGreetingConflictDrafts(avatar, readGreetingConflictDrafts(avatar).filter(existing => existing.position !== draft.position || existing.text !== draft.text));
+}
+
+/**
+ * Shows the character's refused edits above the list, each with Apply (save it over the greeting's current text,
+ * or as a new greeting if that greeting is gone) and Discard.
+ * @param {JQuery<HTMLElement>} template
+ * @param {string} avatar
+ * @param {GreetingsModel} model
+ * @param {(avatar: string) => Promise<boolean>} showCurrentAfterConflict
+ */
+function renderGreetingConflictDrafts(template, avatar, model, showCurrentAfterConflict) {
+    const container = template.find('.greeting-conflict-drafts').empty();
+    for (const draft of readGreetingConflictDrafts(avatar)) {
+        const exists = draft.position < model.greetings.length;
+        const block = $('<div class="greeting-conflict-draft flexFlowColumn flex-container wide100p"></div>');
+        block.append($('<small></small>').text(exists
+            ? t`Your edit to greeting #${draft.position + 1} wasn't saved because someone else changed it. It's kept here until you apply or discard it.`
+            : t`Your edit to greeting #${draft.position + 1} wasn't saved, and that greeting no longer exists. It's kept here until you apply or discard it.`));
+        block.append($('<textarea class="text_pole textarea_compact greeting-conflict-draft-text" readonly></textarea>').val(draft.text));
+        const buttons = $('<div class="flex-container"></div>');
+        const apply = $('<div class="menu_button greeting-conflict-draft-apply"></div>').text(exists ? t`Replace greeting #${draft.position + 1} with this` : t`Add as a new greeting`);
+        const discard = $('<div class="menu_button greeting-conflict-draft-discard"></div>').text(t`Discard`);
+        buttons.append(apply, discard);
+        block.append(buttons);
+        container.append(block);
+
+        discard.on('click', () => {
+            removeGreetingConflictDraft(avatar, draft);
+            block.remove();
+        });
+        apply.on('click', async () => {
+            if (apply.hasClass('disabled')) return;
+            const character = charactersStore.get(avatar);
+            if (!character) return;
+            apply.addClass('disabled');
+            await queueGreetingSave(avatar, async () => {
+                const row = /** @type {any} */ (template.find(`.alternate_greetings_list .alternate_greeting[data-index="${draft.position}"]`)[0]);
+                const result = exists && Number.isFinite(row?.greetingHash)
+                    ? await postGreetingOp('edit', { avatar_url: avatar, position: draft.position, expected_hash: row.greetingHash, text: draft.text })
+                    : await postGreetingOp('add', { avatar_url: avatar, append: true, text: draft.text });
+                if (result.ok) {
+                    applyGreetingOpSuccess(character, result);
+                    removeGreetingConflictDraft(avatar, draft);
+                    await showCurrentAfterConflict(avatar);
+                    return;
+                }
+                console.error('Applying a kept greeting edit failed', { avatar, position: draft.position, status: result.status, reason: result.reason });
+                if (result.status === 409 && await showCurrentAfterConflict(avatar)) {
+                    toastr.warning(t`Someone else changed this greeting again, so your edit wasn't applied. Showing the current version; your edit is still kept.`, t`Greeting not saved`);
+                    return;
+                }
+                apply.removeClass('disabled');
+                toastr.error(t`Failed to apply your kept edit. It's still kept.`, t`Greeting not saved`);
+            });
+        });
+    }
+}
 
 /** @type {((greetings: string[], defaultIndex: number|null) => void)|null} The open greetings popup's re-render, told whenever the pager's greetings are replaced. */
 let greetingsPopupListener = null;
@@ -10225,6 +10341,23 @@ function openAlternateGreetings() {
         template.find('.greeting-refresh-failed').show();
     }
 
+    /**
+     * After an op was refused because the greetings changed elsewhere: shows the server's current list in place.
+     * If that reload fails, the list is marked stale and moves are blocked until a retry reloads it.
+     * @param {string} avatar
+     * @returns {Promise<boolean>} Whether the current list is now shown.
+     */
+    async function showCurrentAfterConflict(avatar) {
+        if (await reloadGreetingsFromServer(avatar)) return true;
+        blockMoves();
+        return false;
+    }
+    session.showCurrentAfterConflict = showCurrentAfterConflict;
+
+    if (menu_type !== 'create' && avatar !== undefined) {
+        renderGreetingConflictDrafts(template, avatar, model, showCurrentAfterConflict);
+    }
+
     const picker = new PickAndPlace({
         container: template[0],
         // Draft rows aren't in the array yet, so they can be neither picked nor used as an anchor.
@@ -10411,7 +10544,14 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
                 }
                 console.error('Greeting edit failed', { avatar, position: rowIndex, status: result.status, reason: result.reason });
                 if (result.status === 409) {
-                    toastr.error(t`This greeting was changed in another session, so this edit was not saved. Close and reopen this popup to see the current version.`, t`Greeting not saved`);
+                    // What the row shows now, which may be newer than the text this save sent.
+                    const typed = String(greetingBlock.find('.alternate_greeting_text').val());
+                    addGreetingConflictDraft(avatar, { position: rowIndex, text: typed });
+                    if (await session?.showCurrentAfterConflict(avatar)) {
+                        toastr.warning(t`Someone else changed this greeting, so your edit wasn't saved. Showing the current version; your edit is kept at the top of the list.`, t`Greeting not saved`);
+                    } else {
+                        toastr.error(t`Someone else changed this greeting, so your edit wasn't saved, and the list couldn't be refreshed. Your edit is kept and will be shown when the list is refreshed.`, t`Greeting not saved`);
+                    }
                     return;
                 }
                 toastr.error(t`Failed to save the greeting. Your edit is still shown here, but it was not saved.`, t`Greeting not saved`);
@@ -10558,9 +10698,15 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
             const result = await postGreetingOp('delete', { avatar_url: avatar, position: index, expected_hash: expectedHash });
             if (!result.ok) {
                 console.error('Greeting delete failed', { avatar, position: index, status: result.status, reason: result.reason });
-                toastr.error(result.status === 409
-                    ? t`This character was changed in another session, so this greeting was not deleted. Close and reopen this popup to see the current version.`
-                    : t`Failed to delete the greeting.`, t`Greeting not deleted`);
+                if (result.status === 409) {
+                    if (await session?.showCurrentAfterConflict(avatar)) {
+                        toastr.warning(t`Someone else changed these greetings, so nothing was deleted. Showing the current version.`, t`Greeting not deleted`);
+                    } else {
+                        toastr.error(t`Someone else changed these greetings, so nothing was deleted, and the list couldn't be refreshed.`, t`Greeting not deleted`);
+                    }
+                    return;
+                }
+                toastr.error(t`Failed to delete the greeting.`, t`Greeting not deleted`);
                 return;
             }
             applyGreetingOpSuccess(character, result);
@@ -10615,9 +10761,15 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
             const result = await postGreetingOp('default/set', { avatar_url: avatar, position: index, expected_hash: expectedHash });
             if (!result.ok) {
                 console.error('Set default greeting failed', { avatar, position: index, status: result.status, reason: result.reason });
-                toastr.error(result.status === 409
-                    ? t`This character was changed in another session, so the default was not changed. Close and reopen this popup to see the current version.`
-                    : t`Failed to set the default greeting.`, t`Default not changed`);
+                if (result.status === 409) {
+                    if (await session?.showCurrentAfterConflict(avatar)) {
+                        toastr.warning(t`Someone else changed these greetings, so the default wasn't changed. Showing the current version.`, t`Default not changed`);
+                    } else {
+                        toastr.error(t`Someone else changed these greetings, so the default wasn't changed, and the list couldn't be refreshed.`, t`Default not changed`);
+                    }
+                    return;
+                }
+                toastr.error(t`Failed to set the default greeting.`, t`Default not changed`);
                 return;
             }
             applyGreetingOpSuccess(character, result);
@@ -10648,6 +10800,14 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
             const result = await postGreetingOp('default/unset', { avatar_url: avatar, expected_default_hash: expectedDefaultHash });
             if (!result.ok) {
                 console.error('Unset default greeting failed', { avatar, status: result.status, reason: result.reason });
+                if (result.status === 409) {
+                    if (await session?.showCurrentAfterConflict(avatar)) {
+                        toastr.warning(t`Someone else changed these greetings, so the default wasn't cleared. Showing the current version.`, t`Default not changed`);
+                    } else {
+                        toastr.error(t`Someone else changed these greetings, so the default wasn't cleared, and the list couldn't be refreshed.`, t`Default not changed`);
+                    }
+                    return;
+                }
                 toastr.error(t`Failed to clear the default greeting.`, t`Default not changed`);
                 return;
             }
