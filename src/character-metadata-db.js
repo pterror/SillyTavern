@@ -22,6 +22,7 @@ import { legacySettingsPath, settingsDirPath } from './settings-store.js';
 import { normalizeGroupRecord, tagEntityTypeOf } from './group-id.js';
 import { expandTagFilter, resolveTagId, resolveTagIds, NO_TAG_DELETIONS } from './tag-deletions.js';
 import { SEARCH_WORK_CAP, SEARCH_WALK_WINDOW } from './endpoints/search-walk.js';
+import { orderKey, permute, unpermute } from './random-order.js';
 import { characterAvatarsForOwnerId, characterOwnerIdOf, dropOwnerCreatedAtIndex, listOwnersWithoutKind, openOwnerStatsView, recordOwnerKinds } from './message-tree-db.js';
 // getStringHash must match public/scripts/random-sort.js's compareByRandomSeed() exactly, or server/client random-sort ordering diverges.
 import { getStringHash, characterDigestFavHash, characterDigestFieldsHash, characterDigestTagIdsHash, groupDigestFavHash, groupDigestTagIdsHash, groupDigestContentHash, normalizeFav, normalizeTagIds, tagNameKey } from '../public/scripts/hash-utils.js';
@@ -177,6 +178,7 @@ export const allowExpensiveDuplicateFallback = !!getConfigValue('performance.all
  * @property {boolean} [tagFolderUsageIndex] Set once the tags_folder_usage_count index is found, which stays.
  * @property {boolean} [entitySortIndexes] Set once every ENTITY_SORT_INDEXES index is found, which stays.
  * @property {boolean} [tagSortFilled] Set once fillTagSortTablesIfNeeded() has finished, which stays.
+ * @property {boolean} [randomRanksFilled] Set once fillRandomRanksIfNeeded() has finished, which stays.
  * @property {boolean} [tagQueryColumnsReady] Set once tagQueryColumnsReady() is true, which stays true.
  */
 
@@ -1227,6 +1229,7 @@ function migrateCardJsonColumn(db, directories) {
     // unchanged, so the counters and the tag sort rows stay right; getEntry() creates the triggers again after this.
     db.exec(DROP_ENTITY_COUNT_TRIGGERS_SQL);
     db.exec(DROP_TAG_SORT_TRIGGERS_SQL);
+    db.exec(DROP_RANDOM_RANK_TRIGGERS_SQL);
     db.exec('CREATE TABLE characters_new (' + columns.map(c => {
         let def = `${/** @type {string} */ (c.name)} ${/** @type {string} */ (c.type)}`;
         if (c.name === 'card_json' || c.notnull) def += ' NOT NULL';
@@ -1517,6 +1520,8 @@ async function getEntry(directories) {
     db.exec(ENTITY_COUNT_TRIGGERS_SQL);
     db.exec(TAG_SORT_TABLES_SQL);
     db.exec(TAG_SORT_TRIGGERS_SQL);
+    db.exec(RANDOM_RANKS_TABLE_SQL);
+    db.exec(RANDOM_RANK_TRIGGERS_SQL);
     defineRandHash(db);
     /** @type {MetadataDbEntry} */
     const entry = { db, directories, batch: null, bootstrapPromise: null };
@@ -4634,6 +4639,127 @@ const TAG_SORT_FILLED_FLAG = 'tag_sort_tables_filled';
 const TAG_SORT_FILL_UPTO_KEY = 'tag_sort_fill_upto_';
 const TAG_SORT_FILL_BATCH_SIZE = 500;
 
+/**
+ * The random order's numbering (search plan step 7a, 7b): in every space, each member holds a unique rank
+ * 0..size-1. The spaces are the whole list ('a'), each fav value ('f0', 'f1'), each tag (`t<US>tag`) and each tag
+ * and fav value (`t<US>tag<US>f0`), with characters and groups in the same spaces. A removal moves the space's
+ * last member into the freed rank, so the ranks stay dense.
+ */
+const RANDOM_RANKS_TABLE_SQL = `
+    CREATE TABLE IF NOT EXISTS random_ranks (
+        space     TEXT NOT NULL,
+        rank      INTEGER NOT NULL,
+        kind      TEXT NOT NULL,
+        entity_id TEXT NOT NULL,
+        PRIMARY KEY (space, rank)
+    ) WITHOUT ROWID;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_random_ranks_entity ON random_ranks(kind, entity_id, space);`;
+
+/** The separator inside a space name, as SQL and as JS. */
+const RANDOM_SPACE_SEP_SQL = 'char(31)';
+const RANDOM_SPACE_SEP = '\u001f';
+
+/** @param {string} tagId @param {number | null} [fav] */
+function randomSpaceName(tagId, fav) {
+    if (tagId === '') return fav === null || fav === undefined ? 'a' : `f${fav}`;
+    return fav === null || fav === undefined ? `t${RANDOM_SPACE_SEP}${tagId}` : `t${RANDOM_SPACE_SEP}${tagId}${RANDOM_SPACE_SEP}f${fav}`;
+}
+
+/** @param {string} tagSql */
+const randomTagSpaceSql = tagSql => `('t' || ${RANDOM_SPACE_SEP_SQL} || ${tagSql})`;
+/** @param {string} tagSql @param {string} favSql */
+const randomTagFavSpaceSql = (tagSql, favSql) => `('t' || ${RANDOM_SPACE_SEP_SQL} || ${tagSql} || ${RANDOM_SPACE_SEP_SQL} || 'f' || ${favSql})`;
+
+/**
+ * Adds an entity to the spaces a SELECT names (column `sp`), each at rank = size, unless it is there already. Each
+ * space appears once in the SELECT, so one statement never gives two rows the same rank.
+ * @param {string} spacesSql
+ * @param {string} kind
+ * @param {string} idSql
+ */
+function randomRanksAddSql(spacesSql, kind, idSql) {
+    return `
+        INSERT INTO random_ranks (space, rank, kind, entity_id)
+            SELECT s.sp, COALESCE((SELECT MAX(rank) FROM random_ranks WHERE space = s.sp), -1) + 1, '${kind}', ${idSql}
+            FROM (${spacesSql}) s
+            WHERE s.sp IS NOT NULL AND NOT EXISTS (SELECT 1 FROM random_ranks WHERE kind = '${kind}' AND entity_id = ${idSql} AND space = s.sp);`;
+}
+
+/**
+ * Takes an entity out of the spaces of its own rows that `filterSql` keeps: its rank is parked as -1 - rank, each
+ * space's last member takes the freed rank, and the parked row goes.
+ * @param {string} filterSql over the column `space`
+ * @param {string} kind
+ * @param {string} idSql
+ */
+function randomRanksRemoveSql(filterSql, kind, idSql) {
+    const parked = `(SELECT -1 - e.rank FROM random_ranks e WHERE e.space = random_ranks.space AND e.kind = '${kind}' AND e.entity_id = ${idSql} AND e.rank < 0)`;
+    return `
+        UPDATE random_ranks SET rank = -1 - rank WHERE kind = '${kind}' AND entity_id = ${idSql} AND rank >= 0 AND (${filterSql});
+        UPDATE random_ranks SET rank = ${parked}
+            WHERE space IN (SELECT space FROM random_ranks WHERE kind = '${kind}' AND entity_id = ${idSql} AND rank < 0)
+              AND rank = (SELECT MAX(m.rank) FROM random_ranks m WHERE m.space = random_ranks.space)
+              AND rank > ${parked};
+        DELETE FROM random_ranks WHERE kind = '${kind}' AND entity_id = ${idSql} AND rank < 0;`;
+}
+
+/**
+ * @typedef {object} RandomRankKind
+ * @property {'c' | 'g'} code
+ * @property {'character' | 'group'} name
+ * @property {'characters' | 'groups'} table
+ * @property {'character_tags' | 'group_tags'} tagTable
+ * @property {'character_id' | 'group_id'} entityColumn
+ * @property {(column: string) => string} tagRowCounts
+ */
+
+/** @type {RandomRankKind[]} */
+const RANDOM_RANK_KINDS = [
+    { code: 'c', name: 'character', table: 'characters', tagTable: 'character_tags', entityColumn: 'character_id', tagRowCounts: () => 'true' },
+    { code: 'g', name: 'group', table: 'groups', tagTable: 'group_tags', entityColumn: 'group_id', tagRowCounts: groupTagRowIsGroupSql },
+];
+
+/**
+ * The triggers that keep one kind's ranks, whatever writes.
+ * @param {RandomRankKind} kind
+ * @returns {{ name: string, sql: string }[]}
+ */
+function randomRankTriggers({ code, table, tagTable, entityColumn, tagRowCounts }) {
+    const tagSpacesOf = (/** @type {string} */ idSql, /** @type {string} */ favSql) => `
+        SELECT ${randomTagSpaceSql('tag_id')} AS sp FROM ${tagTable} WHERE ${entityColumn} = ${idSql} AND ${tagRowCounts(entityColumn)}
+        UNION ALL
+        SELECT ${randomTagFavSpaceSql('tag_id', favSql)} AS sp FROM ${tagTable} WHERE ${entityColumn} = ${idSql} AND ${tagRowCounts(entityColumn)}`;
+    const ownFavSpaces = (/** @type {string} */ favSql) => `space = 'f' || ${favSql} OR (substr(space, 1, 1) = 't' AND substr(space, -3) = ${RANDOM_SPACE_SEP_SQL} || 'f' || ${favSql})`;
+    const oneTagSpaces = (/** @type {string} */ tagSql) => `space = ${randomTagSpaceSql(tagSql)} OR space = ${randomTagFavSpaceSql(tagSql, '0')} OR space = ${randomTagFavSpaceSql(tagSql, '1')}`;
+    const addTagRow = (/** @type {string} */ ref) => randomRanksAddSql(`
+        SELECT ${randomTagSpaceSql(`${ref}.tag_id`)} AS sp FROM ${table} WHERE id = ${ref}.${entityColumn} AND ${tagRowCounts(`${ref}.${entityColumn}`)}
+        UNION ALL
+        SELECT ${randomTagFavSpaceSql(`${ref}.tag_id`, 'fav')} AS sp FROM ${table} WHERE id = ${ref}.${entityColumn} AND ${tagRowCounts(`${ref}.${entityColumn}`)}`, code, `${ref}.${entityColumn}`);
+    const triggers = [
+        [`trg_${table}_rank_ai`, `AFTER INSERT ON ${table}`,
+            randomRanksAddSql(`SELECT 'a' AS sp UNION ALL SELECT 'f' || NEW.fav ${tagSpacesOf('NEW.id', 'NEW.fav').replace(/^\s*/, 'UNION ALL ')}`, code, 'NEW.id')],
+        [`trg_${table}_rank_ad`, `AFTER DELETE ON ${table}`, randomRanksRemoveSql('1', code, 'OLD.id')],
+        // Entity ids never change by UPDATE (a rename inserts the new row and deletes the old), so OLD.id = NEW.id.
+        [`trg_${table}_rank_au_fav`, `AFTER UPDATE OF fav ON ${table} WHEN OLD.fav IS NOT NEW.fav`,
+            randomRanksRemoveSql(ownFavSpaces('OLD.fav'), code, 'NEW.id')
+            + randomRanksAddSql(`SELECT 'f' || NEW.fav AS sp UNION ALL SELECT ${randomTagFavSpaceSql('tag_id', 'NEW.fav')} AS sp FROM ${tagTable} WHERE ${entityColumn} = NEW.id AND ${tagRowCounts(entityColumn)}`, code, 'NEW.id')],
+        [`trg_${tagTable}_rank_ai`, `AFTER INSERT ON ${tagTable}`, addTagRow('NEW')],
+        [`trg_${tagTable}_rank_ad`, `AFTER DELETE ON ${tagTable}`, randomRanksRemoveSql(oneTagSpaces('OLD.tag_id'), code, `OLD.${entityColumn}`)],
+        [`trg_${tagTable}_rank_au`, `AFTER UPDATE ON ${tagTable}`,
+            randomRanksRemoveSql(oneTagSpaces('OLD.tag_id'), code, `OLD.${entityColumn}`) + addTagRow('NEW')],
+    ];
+    return triggers.map(([name, when, body]) => ({ name, sql: `CREATE TRIGGER IF NOT EXISTS ${name} ${when} BEGIN ${body} END;` }));
+}
+
+const RANDOM_RANK_TRIGGERS = RANDOM_RANK_KINDS.flatMap(randomRankTriggers);
+const RANDOM_RANK_TRIGGERS_SQL = RANDOM_RANK_TRIGGERS.map(trigger => trigger.sql).join('\n');
+const DROP_RANDOM_RANK_TRIGGERS_SQL = RANDOM_RANK_TRIGGERS.map(trigger => `DROP TRIGGER IF EXISTS ${trigger.name};`).join('\n');
+/** meta key: every entity that existed before the rank triggers holds its ranks. */
+const RANDOM_RANKS_FILLED_FLAG = 'random_ranks_filled';
+/** meta key prefix: the last entity id, per kind, the rank fill has numbered. */
+const RANDOM_RANKS_FILL_UPTO_KEY = 'random_ranks_fill_upto_';
+const RANDOM_RANKS_FILL_BATCH_SIZE = 500;
+
 const ENTITY_COUNT_TRIGGERS = ENTITY_COUNT_KINDS.flatMap(entityCountTriggers);
 const ENTITY_COUNT_TRIGGERS_SQL = ENTITY_COUNT_TRIGGERS.map(trigger => trigger.sql).join('\n');
 const DROP_ENTITY_COUNT_TRIGGERS_SQL = ENTITY_COUNT_TRIGGERS.map(trigger => `DROP TRIGGER IF EXISTS ${trigger.name};`).join('\n');
@@ -6625,6 +6751,92 @@ function tagSortTablesReady(entry) {
     if (entry.tagSortFilled === true) return true;
     if (!entry.db.get('SELECT 1 FROM meta WHERE key = @key', { key: TAG_SORT_FILLED_FLAG })) return false;
     entry.tagSortFilled = true;
+    return true;
+}
+
+/**
+ * Gives every entity that existed before the rank triggers its ranks (search plan step 7a), a batch of entities at a
+ * time in id order, pausing between batches; the triggers keep every rank written since. A space an entity already
+ * holds (a trigger put it there) is left alone. The random sort reads the ranks only once this has finished.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<{ batches: number, rowsChanged: number } | undefined>}
+ */
+export async function fillRandomRanksIfNeeded(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+    const { db } = entry;
+    if (db.get('SELECT 1 FROM meta WHERE key = @key', { key: RANDOM_RANKS_FILLED_FLAG })) return { batches: 0, rowsChanged: 0 };
+
+    let batches = 0;
+    let rowsChanged = 0;
+    for (const { code, table, tagTable, entityColumn, tagRowCounts } of RANDOM_RANK_KINDS) {
+        const uptoKey = `${RANDOM_RANKS_FILL_UPTO_KEY}${code}`;
+        const saved = /** @type {{ value: string } | undefined} */ (db.get('SELECT value FROM meta WHERE key = @key', { key: uptoKey }));
+        if (saved?.value === '\u0000done') continue;
+        /** @type {string | null} */
+        let after = saved ? saved.value : null;
+        for (;;) {
+            /** @type {string[]} */
+            const page = [];
+            const rows = after === null
+                ? db.iterate(`SELECT id FROM ${table} ORDER BY id LIMIT @limit`, { limit: RANDOM_RANKS_FILL_BATCH_SIZE })
+                : db.iterate(`SELECT id FROM ${table} WHERE id > @after ORDER BY id LIMIT @limit`, { after, limit: RANDOM_RANKS_FILL_BATCH_SIZE });
+            for (const row of /** @type {Iterable<{ id: string }>} */ (rows)) page.push(row.id);
+            const last = page.length > 0 ? page[page.length - 1] : after;
+            const done = page.length < RANDOM_RANKS_FILL_BATCH_SIZE;
+            const state = { inserted: 0 };
+            db.transaction(() => {
+                // Reset here: a transaction that hits busy is rolled back and rerun.
+                state.inserted = 0;
+                /** @type {Map<string, number>} each touched space's next free rank */
+                const nextRank = new Map();
+                for (const id of page) {
+                    const entity = /** @type {{ fav: number } | undefined} */ (db.get(`SELECT fav FROM ${table} WHERE id = @id`, { id }));
+                    if (!entity) continue;
+                    const fav = Number(entity.fav) ? 1 : 0;
+                    const wanted = [randomSpaceName('', null), randomSpaceName('', fav)];
+                    for (const row of /** @type {Iterable<{ tag_id: string }>} */ (db.iterate(`SELECT tag_id FROM ${tagTable} WHERE ${entityColumn} = @id AND ${tagRowCounts(entityColumn)}`, { id }))) {
+                        wanted.push(randomSpaceName(row.tag_id, null), randomSpaceName(row.tag_id, fav));
+                    }
+                    const held = new Set(Array.from(/** @type {Iterable<{ space: string }>} */ (db.iterate('SELECT space FROM random_ranks WHERE kind = @code AND entity_id = @id', { code, id })), r => r.space));
+                    for (const space of wanted) {
+                        if (held.has(space)) continue;
+                        let rank = nextRank.get(space);
+                        if (rank === undefined) {
+                            rank = Number(/** @type {{ n: number }} */ (db.get('SELECT COALESCE(MAX(rank), -1) + 1 AS n FROM random_ranks WHERE space = @space', { space })).n);
+                        }
+                        db.run('INSERT INTO random_ranks (space, rank, kind, entity_id) VALUES (@space, @rank, @code, @id)', { space, rank, code, id });
+                        nextRank.set(space, rank + 1);
+                        held.add(space);
+                        state.inserted++;
+                    }
+                }
+                db.run('INSERT INTO meta (key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+                    { key: uptoKey, value: done ? '\u0000done' : /** @type {string} */ (last) });
+            });
+            batches++;
+            rowsChanged += state.inserted;
+            if (batches % MIGRATION_PASSIVE_CHECKPOINT_EVERY_BATCHES === 0 && !isReadOnlyMode()) db.get('PRAGMA wal_checkpoint(PASSIVE)');
+            if (done) break;
+            after = last;
+            await delay(MIGRATION_BATCH_PAUSE_MS);
+        }
+    }
+    db.run('INSERT INTO meta (key, value) VALUES (@key, \'1\') ON CONFLICT(key) DO NOTHING', { key: RANDOM_RANKS_FILLED_FLAG });
+    entry.randomRanksFilled = true;
+    if (batches > 0 && !isReadOnlyMode()) db.checkpoint();
+    return { batches, rowsChanged };
+}
+
+/**
+ * Whether the random order's ranks are filled. Stays true once it is.
+ * @param {MetadataDbEntry} entry
+ * @returns {boolean}
+ */
+function randomRanksReady(entry) {
+    if (entry.randomRanksFilled === true) return true;
+    if (!entry.db.get('SELECT 1 FROM meta WHERE key = @key', { key: RANDOM_RANKS_FILLED_FLAG })) return false;
+    entry.randomRanksFilled = true;
     return true;
 }
 
@@ -11603,7 +11815,15 @@ export async function queryCharacters(directories, params = {}) {
         // placeholders strictly in the order they appear in the SQL text.
         const orderArgs = sortField === 'random' ? [Number(seed) || 0] : [];
         const sortColumn = sortField === 'random' ? undefined : QUERYABLE_SORT_COLUMNS[sortField ?? ''];
-        if (sortColumn && entitySortIndexesReady(entry)) {
+        /** @type {{ ids: string[], cursor: string | undefined, more: boolean } | null} */
+        let walkedPage = null;
+        if (sortField === 'random' && randomRanksReady(entry)) {
+            const page = randomOrderPage(entry, {
+                kinds: { character: true, group: false }, tags, fav, world, excludeIds, ids, sortOrder,
+                seed: Number(seed) || 0, offset: numericOffset, limit: numericLimit, cursor: params.cursor, deletions,
+            });
+            walkedPage = { ids: page.entities.map(e => e.id), cursor: page.cursor, more: page.more };
+        } else if (sortColumn && entitySortIndexesReady(entry)) {
             // The same walk as queryEntities()'s sorted page, with characters only: keys through the fav-first sort
             // indexes or the tag sort tables, under the work cap, a cursor to seek from, full rows for the page alone.
             const charWhere = { from, where, args };
@@ -11618,6 +11838,10 @@ export async function queryCharacters(directories, params = {}) {
             const more = walked.more && pageIds.length < numericLimit;
             const ends = { ...(cursorAt?.ends ?? {}), ...walked.ends };
             const cursor = more || pageIds.length === numericLimit ? encodeSortedPageCursor(cursorKey, ends, Math.max(0, skip - walked.rows.length)) : undefined;
+            walkedPage = { ids: pageIds, cursor, more };
+        }
+        if (walkedPage) {
+            const { ids: pageIds, cursor, more } = walkedPage;
             const pageJson = JSON.stringify(pageIds);
             if (wantHashes) {
                 const byId = new Map(Array.from(/** @type {Iterable<HashSourceRow>} */ (entry.db.iterate(`SELECT ${HASH_COLUMNS} FROM characters WHERE id IN (SELECT value FROM json_each(?))`, [pageJson]))).map(r => [r.id, r]));
@@ -12103,7 +12327,21 @@ export async function queryEntities(directories, params = {}) {
         // from using either table's index (full scan + temp B-tree sort).
         const fetchLimit = numericOffset + numericLimit;
 
-        if (sortField === 'random') {
+        if (sortField === 'random' && randomRanksReady(entry)) {
+            const page = randomOrderPage(entry, {
+                kinds: { character: !groupsOnly, group: true }, tags, fav, world, excludeIds, ids, sortOrder,
+                seed: Number(seed) || 0, offset: numericOffset, limit: numericLimit, cursor: params.cursor, deletions,
+            });
+            const rawRows = readEntityRowsInOrder(entry.db, page.entities);
+            if (wantHashes) {
+                hashRows = rawRows.map(toHashRow);
+                resolveFileFallbackHashes(hashRows);
+            } else {
+                rows = rawRows.map(r => toEntityWireRow(r, deletions));
+            }
+            nextCursor = page.cursor;
+            moreRows = page.more;
+        } else if (sortField === 'random') {
             if (handle === undefined || handle === null || handle === '') {
                 throw new Error('queryEntities(): a random sort needs params.handle (the random-sort id cache is keyed by it)');
             }
@@ -12230,6 +12468,211 @@ export async function queryEntities(directories, params = {}) {
     }
 
     return { rows, hashRows, total, approxTotal, seq, groupsVersion, ...(nextCursor !== undefined ? { cursor: nextCursor } : {}), ...(moreRows ? { more: true } : {}) };
+}
+
+/** The random page walk's work cap and window; tests make them small. */
+const randomPageWalk = { cap: SEARCH_WORK_CAP, window: SEARCH_WALK_WINDOW };
+
+/**
+ * Sets the random page walk's work cap and window, so a test can reach the cap with a few rows. Tests only.
+ * @param {{ cap?: number, window?: number } | null} values null restores the defaults.
+ */
+export function _setRandomPageWalkForTests(values) {
+    randomPageWalk.cap = values?.cap ?? SEARCH_WORK_CAP;
+    randomPageWalk.window = values?.window ?? SEARCH_WALK_WINDOW;
+}
+
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} space
+ */
+function randomSpaceSize(db, space) {
+    return Number(/** @type {{ n: number }} */ (db.get('SELECT COALESCE(MAX(rank), -1) + 1 AS n FROM random_ranks WHERE space = @space', { space })).n);
+}
+
+/**
+ * The entities at some ranks of one space.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} space
+ * @param {number[]} ranks
+ * @returns {Map<number, { type: 'character' | 'group', id: string }>}
+ */
+function randomEntitiesAtRanks(db, space, ranks) {
+    /** @type {Map<number, { type: 'character' | 'group', id: string }>} */
+    const byRank = new Map();
+    if (ranks.length === 0) return byRank;
+    for (const row of /** @type {Iterable<{ rank: number, kind: string, entity_id: string }>} */ (db.iterate(
+        'SELECT rank, kind, entity_id FROM random_ranks WHERE space = ? AND rank IN (SELECT value FROM json_each(?))',
+        [space, JSON.stringify(ranks)],
+    ))) {
+        byRank.set(Number(row.rank), { type: row.kind === 'g' ? 'group' : 'character', id: row.entity_id });
+    }
+    return byRank;
+}
+
+/**
+ * The ids among `ids` of one kind that pass a filter's WHERE.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {{ from: string, where: string, args: unknown[] }} built
+ * @param {string[]} ids
+ * @returns {Set<string>}
+ */
+function idsPassing(db, built, ids) {
+    /** @type {Set<string>} */
+    const kept = new Set();
+    if (ids.length === 0) return kept;
+    const clause = built.where ? `${built.where} AND id IN (SELECT value FROM json_each(?))` : 'WHERE id IN (SELECT value FROM json_each(?))';
+    for (const row of /** @type {Iterable<{ id: string }>} */ (db.iterate(`SELECT id FROM ${built.from} ${clause}`, [...built.args, JSON.stringify(ids)]))) {
+        kept.add(row.id);
+    }
+    return kept;
+}
+
+/**
+ * One page of the random order (search plan step 7c): position i of a space shows the entity at rank
+ * permute(i). A filter that is one space (none, fav, one tag, one tag and fav, both kinds) reads the page's
+ * positions directly. Any other filter walks the positions of the smallest space that holds every match and checks
+ * each entity against the whole filter, under the work cap; an id list maps its own ids to their positions instead.
+ * Descending reads the positions from the end.
+ * @param {MetadataDbEntry} entry
+ * @param {object} p
+ * @param {{ character: boolean, group: boolean }} p.kinds
+ * @param {any} p.tags
+ * @param {boolean} [p.fav]
+ * @param {string} [p.world]
+ * @param {string[]} [p.excludeIds]
+ * @param {string[]} [p.ids]
+ * @param {'asc' | 'desc'} [p.sortOrder]
+ * @param {number} p.seed
+ * @param {number} p.offset
+ * @param {number} p.limit
+ * @param {unknown} p.cursor
+ * @param {import('./tag-deletions.js').TagDeletions} p.deletions
+ * @returns {{ entities: { type: 'character' | 'group', id: string }[], more: boolean, cursor: string | undefined }}
+ */
+function randomOrderPage(entry, { kinds, tags, fav, world, excludeIds, ids, sortOrder, seed, offset, limit, cursor, deletions }) {
+    const { db } = entry;
+    const favValue = typeof fav === 'boolean' ? (fav ? 1 : 0) : null;
+    const include = tags && !Array.isArray(tags) && Array.isArray(tags.include) ? [...new Set(tags.include.filter(Boolean).map(String))] : [];
+    const exclude = tags && Array.isArray(tags.exclude) ? tags.exclude.filter(Boolean) : [];
+    const orMode = tags?.mode === 'or';
+    const expanded = !!expandTagFilter(tags, deletions);
+    const descending = sortOrder === 'desc';
+    const key = String(getStringHash(JSON.stringify({ random: true, seed, tags: tags ?? null, fav: favValue, world: world ?? null, excludeIds: excludeIds ?? null, ids: ids ?? null, kinds, sortOrder: descending })));
+    const at = decodeRandomPageCursor(cursor, key);
+    const charWhere = buildWhereClause({ tags, fav, world, excludeIds, ids }, deletions);
+    const groupWhere = buildGroupWhereClause({ tags, fav, excludeIds, ids }, deletions);
+    /** @param {{ type: 'character' | 'group', id: string }[]} candidates */
+    const passing = (candidates) => {
+        const chars = kinds.character ? idsPassing(db, charWhere, candidates.filter(e => e.type === 'character').map(e => e.id)) : new Set();
+        const groups = kinds.group ? idsPassing(db, groupWhere, candidates.filter(e => e.type === 'group').map(e => e.id)) : new Set();
+        return candidates.filter(e => (e.type === 'character' ? chars : groups).has(e.id));
+    };
+
+    // An id list: its own ids, each at its position in the base space, so the read is bounded by the list.
+    if (Array.isArray(ids)) {
+        const space = randomSpaceName('', favValue);
+        const n = randomSpaceSize(db, space);
+        const orderKeyOfSpace = orderKey(seed, space);
+        /** @type {{ type: 'character' | 'group', id: string, position: number }[]} */
+        const placed = [];
+        for (const row of /** @type {Iterable<{ rank: number, kind: string, entity_id: string }>} */ (db.iterate(
+            'SELECT rank, kind, entity_id FROM random_ranks WHERE space = ? AND entity_id IN (SELECT value FROM json_each(?))',
+            [space, JSON.stringify(ids)],
+        ))) {
+            const position = unpermute(Number(row.rank), n, orderKeyOfSpace);
+            placed.push({ type: row.kind === 'g' ? 'group' : 'character', id: row.entity_id, position: descending ? n - 1 - position : position });
+        }
+        placed.sort((a, b) => a.position - b.position);
+        const kept = passing(placed);
+        const start = at ? at.position : offset;
+        const end = Math.min(kept.length, start + limit);
+        return {
+            entities: kept.slice(start, end).map(({ type, id }) => ({ type, id })),
+            more: false,
+            cursor: end - start === limit && end < kept.length ? encodeRandomPageCursor(key, end, 0) : undefined,
+        };
+    }
+
+    const oneSpace = !orMode && !expanded && exclude.length === 0 && include.length <= 1 && (typeof world !== 'string' || world === '') && !(Array.isArray(excludeIds) && excludeIds.length > 0) && kinds.character && kinds.group;
+    if (oneSpace) {
+        const space = randomSpaceName(include[0] ?? '', favValue);
+        const n = randomSpaceSize(db, space);
+        const k = orderKey(seed, space);
+        const start = at ? at.position : offset;
+        const end = Math.min(n, start + limit);
+        /** @type {number[]} */
+        const ranks = [];
+        for (let j = start; j < end; j++) ranks.push(permute(descending ? n - 1 - j : j, n, k));
+        const byRank = randomEntitiesAtRanks(db, space, ranks);
+        const entities = ranks.map(r => byRank.get(r)).filter(e => e !== undefined);
+        return { entities, more: false, cursor: end - start === limit ? encodeRandomPageCursor(key, end, 0) : undefined };
+    }
+
+    // Walked: the smallest space that holds every match drives, and each entity is checked against the whole filter.
+    let space = randomSpaceName('', favValue);
+    if (!orMode && !expanded && include.length > 0) {
+        const sized = include.map(tagId => ({ space: randomSpaceName(tagId, favValue), n: randomSpaceSize(db, randomSpaceName(tagId, favValue)) }));
+        sized.sort((a, b) => a.n - b.n);
+        space = sized[0].space;
+    }
+    const n = randomSpaceSize(db, space);
+    const k = orderKey(seed, space);
+    let skip = at ? at.skip : offset;
+    let j = at ? at.position : 0;
+    let examined = 0;
+    /** @type {{ type: 'character' | 'group', id: string }[]} */
+    const entities = [];
+    while (entities.length < limit && j < n && examined < randomPageWalk.cap) {
+        const windowEnd = Math.min(n, j + randomPageWalk.window, j + (randomPageWalk.cap - examined));
+        /** @type {number[]} */
+        const ranks = [];
+        for (let q = j; q < windowEnd; q++) ranks.push(permute(descending ? n - 1 - q : q, n, k));
+        const byRank = randomEntitiesAtRanks(db, space, ranks);
+        const candidates = ranks.map(r => byRank.get(r)).filter(e => e !== undefined);
+        const kept = passing(candidates);
+        // Walk the kept entities in position order, stopping where the page fills, so the cursor lands right after.
+        const keptKeys = new Set(kept.map(e => `${e.type}:${e.id}`));
+        let q = j;
+        for (const r of ranks) {
+            const e = byRank.get(r);
+            q++;
+            if (!e || !keptKeys.has(`${e.type}:${e.id}`)) continue;
+            if (skip > 0) { skip--; continue; }
+            entities.push(e);
+            if (entities.length === limit) break;
+        }
+        examined += q - j;
+        j = q;
+    }
+    const more = entities.length < limit && j < n;
+    const full = entities.length === limit && j < n;
+    return { entities, more, cursor: more || full ? encodeRandomPageCursor(key, j, skip) : undefined };
+}
+
+/**
+ * @param {string} key
+ * @param {number} position The next position to read.
+ * @param {number} skip How much of a jump's skip is left.
+ */
+function encodeRandomPageCursor(key, position, skip) {
+    return Buffer.from(JSON.stringify({ r: key, p: position, s: skip })).toString('base64url');
+}
+
+/**
+ * @param {unknown} cursor
+ * @param {string} key
+ * @returns {{ position: number, skip: number } | null} null when there's no cursor or it was made for another page.
+ */
+function decodeRandomPageCursor(cursor, key) {
+    if (typeof cursor !== 'string' || cursor === '') return null;
+    try {
+        const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
+        if (parsed?.r !== key || !Number.isInteger(parsed.p) || parsed.p < 0 || !Number.isInteger(parsed.s) || parsed.s < 0) return null;
+        return { position: parsed.p, skip: parsed.s };
+    } catch {
+        return null;
+    }
 }
 
 /**

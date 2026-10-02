@@ -394,9 +394,11 @@ describe('entity counters', () => {
             const before = db.prepare('SELECT total_changes() AS n').get().n;
             db.prepare('UPDATE characters SET fav = 1 WHERE id = ?').run('a1.png');
             // The row, then for each of its 4 counters (entity + 3 tags) at most a decrement, a removal at 0 and an
-            // increment, and its 3 tag sort rows taking the new fav.
+            // increment, its 3 tag sort rows taking the new fav, and the random order's ranks: leaving its 4 spaces
+            // of the old fav value (parking its rank, the last member moving in, the parked row going) and joining
+            // the 4 of the new.
             const writes = db.prepare('SELECT total_changes() AS n').get().n - before;
-            expect(writes).toBeLessThanOrEqual(1 + 4 * 3 + 3);
+            expect(writes).toBeLessThanOrEqual(1 + 4 * 3 + 3 + 4 * 3 + 4);
             expect(counterMismatches(db)).toEqual([]);
         });
     });
