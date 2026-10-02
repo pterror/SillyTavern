@@ -1626,6 +1626,12 @@ function digestColumnsForShallow(shallow) {
  * @param {Record<string, unknown>} [extraColumns] Other columns to SET in the same statement (e.g. fav,
  * active_chat) so a caller's other column writes stay atomic with the shallow_json write.
  */
+/**
+ * @param {unknown} value
+ * @param {unknown} stored
+ */
+const sameStoredValue = (value, stored) => (value ?? null) === (stored ?? null);
+
 function writeShallowJson(db, id, shallow, fields, extraColumns = {}) {
     // Absent means never filled (backfillTagIdsInShallowJson() finds such rows by the missing key), so it is filled
     // from character_tags rather than stored as [].
@@ -1647,13 +1653,12 @@ function writeShallowJson(db, id, shallow, fields, extraColumns = {}) {
     // Everything that can throw is computed before the first write, so a row is written in full or not at all.
     const shallowJson = JSON.stringify(shallow);
     const digests = digestColumnsForShallow(shallow);
+    const compared = { shallow_json: shallowJson, ...digests, ...extraColumns };
+    const stored = /** @type {Record<string, any> | undefined} */ (db.get(
+        `SELECT ${Object.keys(compared).join(', ')} FROM characters WHERE id = @id`, { id }));
+    if (!stored || Object.entries(compared).every(([key, value]) => sameStoredValue(value, stored[key]))) return;
     const changeSeq = insertChange(db, id, 'upsert', JSON.stringify(changeFields));
-    const columns = {
-        shallow_json: shallowJson,
-        change_seq: Number(changeSeq),
-        ...digests,
-        ...extraColumns,
-    };
+    const columns = { ...compared, change_seq: Number(changeSeq) };
     const setSql = Object.keys(columns).map(key => `${key} = @${key}`).join(', ');
     db.run(`UPDATE characters SET ${setSql} WHERE id = @id`, { ...columns, id });
 }
@@ -1773,8 +1778,34 @@ function buildRow(id, character, { dateAddedCandidate, contentHash, contentIdent
  * @param {CharacterUpsertRow} row
  * @param {string[]} tagIds
  */
+/**
+ * Whether UPSERT_SQL with `row` would change the stored row: every column it sets, by the same rules it sets them
+ * (the hash columns and the two flags keep the stored value unless the row brings a new one). An identical write is
+ * skipped whole, so it neither rewrites the row nor logs a change.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {Record<string, any>} row
+ * @returns {boolean}
+ */
+function rowWriteChangesSync(db, row) {
+    const stored = /** @type {Record<string, any> | undefined} */ (db.get(`SELECT name, name_fold, fav, create_date, data_size, world,
+        creator, version, creator_notes, shallow_json, digest_fav, digest_tag_ids, digest_content, content_hash,
+        content_identity_hash, avatar_identity_hash, import_poisoned, active_chat, active_chat_checked, card_json
+        FROM characters WHERE id = @id`, { id: row.id }));
+    if (!stored) return true;
+    for (const column of ['name', 'name_fold', 'fav', 'create_date', 'data_size', 'world', 'creator', 'version', 'creator_notes',
+        'shallow_json', 'digest_fav', 'digest_tag_ids', 'digest_content', 'active_chat', 'card_json']) {
+        if (!sameStoredValue(row[column], stored[column])) return true;
+    }
+    for (const column of ['content_hash', 'content_identity_hash', 'avatar_identity_hash']) {
+        if ((row[column] ?? null) !== null && row[column] !== stored[column]) return true;
+    }
+    if (row.import_poisoned === 0 && stored.import_poisoned !== 0) return true;
+    if (row.active_chat_checked === 1 && stored.active_chat_checked !== 1) return true;
+    return false;
+}
+
 function writeRowSync(db, row, tagIds) {
-    const existingRow = (/** @type {{ fav: number, active_chat: NodeId, shallow_json: string, chat_size: number, date_last_chat: number } | undefined} */ (db.get('SELECT fav, active_chat, shallow_json, chat_size, date_last_chat FROM characters WHERE id = @id', { id: row.id })));
+    const existingRow = (/** @type {{ fav: number, active_chat: NodeId, shallow_json: string, chat_size: number, date_last_chat: number, date_added: number } | undefined} */ (db.get('SELECT fav, active_chat, shallow_json, chat_size, date_last_chat, date_added FROM characters WHERE id = @id', { id: row.id })));
     const existed = !!existingRow;
 
     if (existed) {
@@ -1787,9 +1818,10 @@ function writeRowSync(db, row, tagIds) {
 
         const shallow = JSON.parse(row.shallow_json);
         shallow.tag_ids = normalizeTagIds(currentTagIds);
-        // The UPSERT keeps the row's chat stats, so the saved copy shows those too.
+        // The UPSERT keeps the row's chat stats and its write-once date_added, so the saved copy shows those too.
         shallow.chat_size = existingRow.chat_size;
         shallow.date_last_chat = existingRow.date_last_chat;
+        shallow.date_added = existingRow.date_added;
         if (favChanged) {
             setShallowFav(shallow, !!currentFav);
         }
@@ -1807,6 +1839,8 @@ function writeRowSync(db, row, tagIds) {
             ...digestColumnsForShallow(shallow),
         };
     }
+
+    if (existed && !rowWriteChangesSync(db, row)) return;
 
     const lastInsertRowid = insertChange(db, row.id, 'upsert', null);
     db.run(UPSERT_SQL, { ...row, changeSeq: Number(lastInsertRowid) });
@@ -1830,12 +1864,12 @@ function writeRowSync(db, row, tagIds) {
  * @param {string} id
  */
 function deleteRowSync(db, id) {
-    db.run('DELETE FROM characters WHERE id = @id', { id });
-    db.run('DELETE FROM character_tags WHERE character_id = @id', { id });
-    db.run('DELETE FROM tag_names_held WHERE character_id = @id', { id });
+    let deleted = db.run('DELETE FROM characters WHERE id = @id', { id }).changes;
+    deleted += db.run('DELETE FROM character_tags WHERE character_id = @id', { id }).changes;
+    deleted += db.run('DELETE FROM tag_names_held WHERE character_id = @id', { id }).changes;
     // Cascades: a local_import_mtimes row recorded as duplicate_of this character must not outlive it.
-    db.run('DELETE FROM local_import_mtimes WHERE duplicate_of = @id', { id });
-    insertChange(db, id, 'delete', null);
+    deleted += db.run('DELETE FROM local_import_mtimes WHERE duplicate_of = @id', { id }).changes;
+    if (deleted > 0) insertChange(db, id, 'delete', null);
 }
 
 // tags.json remains the write source of truth for tag assignment; this reads its mirror.
@@ -5019,13 +5053,11 @@ export async function applyCharacterChatStats(directories, avatar, { sizeChange,
         if (dateLastChat !== Number(row.date_last_chat)) fields.push('date_last_chat');
         if (fields.length === 0) return;
 
-        entry.db.run('UPDATE characters SET chat_size = chat_size + @sizeChange, date_last_chat = @dateLastChat WHERE id = @id',
-            { sizeChange, dateLastChat, id: avatar });
-        const chatSize = (/** @type {{ chat_size: number }} */ (entry.db.get('SELECT chat_size FROM characters WHERE id = @id', { id: avatar }))).chat_size;
+        const chatSize = Number(row.chat_size) + sizeChange;
         const shallow = JSON.parse(row.shallow_json);
         shallow.chat_size = chatSize;
         shallow.date_last_chat = dateLastChat;
-        writeShallowJson(entry.db, avatar, shallow, fields);
+        writeShallowJson(entry.db, avatar, shallow, fields, { chat_size: chatSize, date_last_chat: dateLastChat });
     });
 }
 
@@ -5411,11 +5443,10 @@ function writeCharacterChatStatsSync(db, avatar, stats) {
     if (Number(row.date_last_chat) !== stats.dateLastChat) fields.push('date_last_chat');
     if (fields.length === 0) return false;
 
-    db.run('UPDATE characters SET chat_size = @chatSize, date_last_chat = @dateLastChat WHERE id = @id', { ...stats, id: avatar });
     const shallow = JSON.parse(row.shallow_json);
     shallow.chat_size = stats.chatSize;
     shallow.date_last_chat = stats.dateLastChat;
-    writeShallowJson(db, avatar, shallow, fields);
+    writeShallowJson(db, avatar, shallow, fields, { chat_size: stats.chatSize, date_last_chat: stats.dateLastChat });
     return true;
 }
 

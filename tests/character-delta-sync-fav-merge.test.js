@@ -299,6 +299,16 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
         return { cached: new Map([...cache].filter(([key]) => key.endsWith('.png'))), fieldRequests };
     }
 
+    /** @param {string} avatar @returns {boolean} the fav the server stores for this character */
+    function storedFav(avatar) {
+        const db = new mode.Database(path.join(directories.root, 'character-metadata.sqlite'), { readonly: true });
+        try {
+            return db.prepare('SELECT fav FROM characters WHERE id = ?').get(avatar).fav === 1;
+        } finally {
+            db.close();
+        }
+    }
+
     /** Syncs the written character into the cache, then toggles fav through /fav and syncs only that change. */
     async function favMergeAgainstServer(avatar, favSequence) {
         const actual = [];
@@ -312,9 +322,11 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
 
         recordStep('warm', await incrementalSync(), []);
         for (const [index, fav] of favSequence.entries()) {
+            const before = storedFav(avatar);
             await postJson('/api/characters/fav', { avatar, fav });
             // The /fav change arrives as a field-level change, so this exercises the merge, not a whole-record fetch.
-            recordStep(`fav #${index} ${fav}`, await incrementalSync(), [['fav']]);
+            // Setting the fav already stored changes nothing, so there is nothing to sync.
+            recordStep(`fav #${index} ${fav}`, await incrementalSync(), before === fav ? [] : [['fav']]);
         }
         return { actual, expected };
     }

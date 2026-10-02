@@ -267,8 +267,9 @@ describe('reconcile racing bootstrap (regression: initializeMetadataStores() mus
     // bootstrapIfNeeded() over the same directory produces duplicate upserts (one from each pass reaching the
     // same not-yet-bootstrapped file), inflating the change log without a matching row-count increase - this is
     // exactly the seq-vs-character-count mismatch observed on a real, large, in-progress bootstrap. Sequencing
-    // them (what the fix makes the periodic interval actually do) does not.
-    test('running reconcile() concurrently with an in-flight bootstrapIfNeeded() duplicates upserts (seq advances more than once per character)', async () => {
+    // them (what the fix makes the periodic interval actually do) does not. A write that changes nothing writes
+    // nothing, so the overlap doesn't inflate the change log either.
+    test('running reconcile() concurrently with an in-flight bootstrapIfNeeded() logs one change per character (a duplicate write of the same card writes nothing)', async () => {
         // A large-enough file count that the two passes' real async fs I/O actually interleaves (this is what
         // made the bug reliably reproduce on the owner's real ~24k-card library, not a hypothetical) - too few
         // files risks one pass finishing before the other's had a chance to observe any overlap.
@@ -284,10 +285,9 @@ describe('reconcile racing bootstrap (regression: initializeMetadataStores() mus
 
         const currentSeq = await metadataDb.getCurrentSeq(directories);
         const result = await metadataDb.queryCharacters(directories, { wantRows: false, wantTotal: true });
-        // A seq count higher than the final character count means at least one file got processed (parsed +
-        // written) by both passes instead of exactly one - the real duplicate-work symptom this test guards
-        // against, not just lock contention.
-        expect(currentSeq).toBeGreaterThan(result.total);
+        // Both passes may still parse the same file, but the second one's write changes nothing, so it writes
+        // nothing: the change log holds one entry per character either way.
+        expect(currentSeq).toBe(result.total);
     });
 
     test('sequencing reconcile() after bootstrapIfNeeded() resolves (what the fixed periodic interval does) does not duplicate upserts', async () => {

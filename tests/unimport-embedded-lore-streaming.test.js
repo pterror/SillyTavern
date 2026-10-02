@@ -132,8 +132,10 @@ describe('unimport-embedded-lore - streamed linked-world reads', () => {
         const result = await migration.run(directories, { apply: true, log: () => {} });
         expect(result).toMatchObject({ safe: 1, migrated: 1, failed: 0, ambiguous: 2, orphanedWorlds: 1 });
 
-        // The progress line's one COUNT(*) reads no rows out; every read that returns rows is paged.
-        const worldReads = calls.filter(c => c.method !== 'run' && /^\s*SELECT\b/i.test(c.sql) && /\bworld\b/.test(c.sql) && !/^\s*SELECT COUNT\(\*\)/i.test(c.sql));
+        // The progress line's one COUNT(*) reads no rows out; every read that returns rows is paged. A write reading back
+        // the one row it is about to write (by primary key) isn't a read of linked Worlds.
+        const onePrimaryKeyRow = c => c.method === 'get' && /\bWHERE id = @id\s*$/.test(c.sql);
+        const worldReads = calls.filter(c => c.method !== 'run' && /^\s*SELECT\b/i.test(c.sql) && /\bworld\b/.test(c.sql) && !/^\s*SELECT COUNT\(\*\)/i.test(c.sql) && !onePrimaryKeyRow(c));
         expect(worldReads.map(c => c.method)).toEqual(expect.arrayContaining(['iterate', 'get']));
         for (const { method, sql, params, handle } of worldReads) {
             expect(method).not.toBe('all');

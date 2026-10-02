@@ -143,9 +143,11 @@ describe('search-index-worker.js (real worker thread)', () => {
         const reader = await coordinator.getIndex(HANDLE, directories, 'characters');
         expect(searchNames(reader, 'Doomed')).toEqual(['Doomed.png']);
 
-        const keeperJson = await metadataDb.getCharacterCardJson(directories, 'Keeper.png');
+        const keeper = JSON.parse(await metadataDb.getCharacterCardJson(directories, 'Keeper.png'));
+        // Each write changes the card; one that changed nothing would write nothing and queue nothing.
         for (let i = 0; i < 3000; i++) {
-            await metadataDb.upsertCharacterFromWrite(directories, 'Keeper.png', keeperJson);
+            keeper.data.description = `revision ${i}`;
+            await metadataDb.upsertCharacterFromWrite(directories, 'Keeper.png', JSON.stringify(keeper));
         }
         await metadataDb.deleteCharacterRow(directories, 'Doomed.png');
         const deleteSeq = await metadataDb.getCurrentSeq(directories);

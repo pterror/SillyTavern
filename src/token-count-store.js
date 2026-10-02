@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 
 import { getMessageTreeDb } from './message-tree-db.js';
+import { addTreeMetaSync, setTreeMetaSync } from './message-tree-meta.js';
 import { countWithTokenizer, encodeWithTokenizer, encodeWithTokenizerAndChunks, isLlamaCppTokenizer, tokenizerIdentity } from './tokenizer-resolve.js';
 import { countChatCompletionMessages } from './endpoints/tokenizers.js';
 import { delay } from './util.js';
@@ -162,10 +163,7 @@ export async function writeBack(directories, { counts = [], ids = [] }, now = Da
  */
 function addToRowCount(db, key, delta) {
     if (delta === 0) return;
-    db.run(
-        `INSERT INTO meta (key, value) VALUES (@key, @delta)
-         ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + @delta`,
-        { key, delta });
+    addTreeMetaSync(db, key, delta);
 }
 
 /**
@@ -371,8 +369,7 @@ async function setRowCountFromTable(directories, table, { batchRows, pauseMs }) 
         }
         const total = counted + fill.behind;
         if (readRowCount(db, table) !== total) {
-            db.run('INSERT INTO meta (key, value) VALUES (@key, @total) ON CONFLICT(key) DO UPDATE SET value = @total',
-                { key: ROW_COUNT_KEYS[table], total });
+            setTreeMetaSync(db, ROW_COUNT_KEYS[table], String(total));
         }
     } finally {
         rowCountFills.delete(key);
