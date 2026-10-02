@@ -68,7 +68,7 @@ const elementAutoCompleteMap = new WeakMap();
  * @param {MACRO_AUTOCOMPLETE_MODE} [options.autocompleteMode=MACRO_AUTOCOMPLETE_MODE.DEFAULT] - The autocomplete mode.
  * @returns {boolean}
  */
-function shouldActivateMacroAutocomplete(text, cursorPos, { isForced = false, autocompleteMode = MACRO_AUTOCOMPLETE_MODE.DEFAULT } = {}) {
+export function shouldActivateMacroAutocomplete(text, cursorPos, { isForced = false, autocompleteMode = MACRO_AUTOCOMPLETE_MODE.DEFAULT } = {}) {
     // If mode is 'hide', never show autocomplete
     if (autocompleteMode === MACRO_AUTOCOMPLETE_MODE.HIDE) {
         return false;

@@ -1,6 +1,7 @@
 import { state as cmState, view as cmView, commands as cmCommands } from '../../live-editor-lib.js';
 import { markEditorEvent, registerMountedEditor, unregisterMountedEditor } from './registry.js';
 import { chatMarkdownLanguage, liveRendering } from './render.js';
+import { liveMacros } from './macros.js';
 
 const { EditorState, Compartment, Annotation } = cmState;
 const { EditorView, placeholder: placeholderExtension, keymap } = cmView;
@@ -11,6 +12,8 @@ const { history, historyKeymap, defaultKeymap } = cmCommands;
  * @property {Element} [mountAfter] Where the editor goes; the textarea itself by default.
  * @property {import('./grammar.js').GrammarOptions} [grammar] How the field's text is read (chat's options for it).
  * @property {(text: string) => string} [render] The field's render function; without one the text is only styled.
+ * @property {import('./macros.js').MacroOptions} [macros] Filling in macros and suggesting them; without it macros
+ *   are left as written and nothing is suggested.
  * @property {string} [contentClass] Classes the field's preview has, so theme CSS styles the editor's text the same.
  */
 
@@ -135,7 +138,7 @@ export function mountLiveEditor(textarea, options = {}) {
             extensions: [
                 compartments.grammar.of(chatMarkdownLanguage(options.grammar)),
                 compartments.render.of(options.render ? liveRendering({ render: options.render, emojis: options.grammar?.emojis }) : []),
-                compartments.macros.of([]),
+                compartments.macros.of(options.macros ? liveMacros(options.macros) : []),
                 compartments.toolbar.of([]),
                 compartments.paste.of([]),
                 compartments.search.of([]),
