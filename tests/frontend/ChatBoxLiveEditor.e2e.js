@@ -197,4 +197,32 @@ test.describe('the chat box with the live editor', () => {
         await expect(chatBoxEditor(page).locator('.macro-substituted')).toHaveText(user);
         await clearChatBox(page);
     });
+
+    test('text composed with an IME lands whole, and the rest of the box renders again once it ends', async ({ page }) => {
+        await testSetup.awaitST({ page });
+        await openChat(page);
+        const user = await page.evaluate(() => {
+            // @ts-ignore
+            return SillyTavern.getContext().name1;
+        });
+        const errors = [];
+        page.on('pageerror', error => errors.push(error));
+        await expect(chatBoxEditor(page)).toHaveCount(1, { timeout: 10000 });
+        await chatBoxEditor(page).locator('.cm-content').click();
+        await page.keyboard.type('Hi {{user}}');
+        await page.keyboard.press('Escape');
+        await page.keyboard.press('Shift+Enter');
+        await page.keyboard.type('*said* ');
+        const client = await page.context().newCDPSession(page);
+        await client.send('Input.imeSetComposition', { text: 'n', selectionStart: 1, selectionEnd: 1 });
+        await client.send('Input.imeSetComposition', { text: 'ni', selectionStart: 2, selectionEnd: 2 });
+        await client.send('Input.imeSetComposition', { text: 'nihao', selectionStart: 5, selectionEnd: 5 });
+        await client.send('Input.insertText', { text: '你好' });
+        await expect.poll(() => chatBoxValue(page)).toBe('Hi {{user}}\n*said* 你好');
+        await page.keyboard.type('!');
+        await expect.poll(() => chatBoxValue(page)).toBe('Hi {{user}}\n*said* 你好!');
+        await expect(chatBoxEditor(page).locator('.macro-substituted')).toHaveText(user);
+        expect(errors).toEqual([]);
+        await clearChatBox(page);
+    });
 });

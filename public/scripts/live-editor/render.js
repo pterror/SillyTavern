@@ -62,6 +62,9 @@ function cachedRenderFor(render) {
 /** Whether the editor has focus; block decorations come from state, so focus is put there too. */
 const setFocused = StateEffect.define();
 
+/** A composition (IME) ended: everything held back while it ran is worked out again. */
+const compositionEnded = StateEffect.define();
+
 /**
  * Top-level blocks, each running to the line before the next one, so blank lines between belong to the block above
  * and every unit covers whole lines.
@@ -304,8 +307,23 @@ const renderField = StateField.define({
     create: state => computeRenderState(state, false, null, true),
     update(value, tr) {
         let focused = value.focused;
+        let ended = false;
         for (const effect of tr.effects) {
             if (effect.is(setFocused)) focused = effect.value;
+            if (effect.is(compositionEnded)) ended = true;
+        }
+        if (ended) return computeRenderState(tr.state, focused, null, true);
+        // While an IME composes, nothing is rendered again: replacing decorations around the composing text can break
+        // the composition. The units only move with the text until it ends.
+        if (tr.docChanged && tr.isUserEvent('input.type.compose')) {
+            const map = (/** @type {Unit} */ u) => ({ from: tr.changes.mapPos(u.from, -1), to: tr.changes.mapPos(u.to, 1) });
+            const units = value.units.map(map);
+            return {
+                ...value,
+                units,
+                editing: value.editing.map(u => units[value.units.indexOf(u)]),
+                decorations: value.decorations.map(tr.changes),
+            };
         }
         if (!tr.docChanged && !tr.selection && focused === value.focused) return value;
         return computeRenderState(tr.state, focused, value, tr.docChanged);
@@ -334,7 +352,9 @@ const editingStyle = ViewPlugin.fromClass(class {
 
     /** @param {import('@codemirror/view').ViewUpdate} update */
     update(update) {
-        if (update.docChanged || update.selectionSet || update.state.field(renderField) !== update.startState.field(renderField)) {
+        if (update.view.composing) {
+            this.decorations = this.decorations.map(update.changes);
+        } else if (update.docChanged || update.selectionSet || update.state.field(renderField) !== update.startState.field(renderField)) {
             this.decorations = this.build(update.view);
         }
     }
@@ -415,6 +435,15 @@ export function liveRendering(options) {
         renderField,
         editingStyle,
         EditorView.focusChangeEffect.of((_state, focusing) => setFocused.of(focusing)),
+        EditorView.domEventHandlers({
+            compositionend: (_event, view) => {
+                // After CodeMirror has applied the composed text.
+                setTimeout(() => {
+                    if (view.dom.isConnected) view.dispatch({ effects: compositionEnded.of(null) });
+                });
+                return false;
+            },
+        }),
     ];
 }
 
