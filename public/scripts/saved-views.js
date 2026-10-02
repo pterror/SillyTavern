@@ -22,7 +22,7 @@ const PAGE_SIZE = 50;
  *   undefined: the read failed.
  */
 
-/** @type {{ getView: () => import('./character-view.js').CharacterView, setView: (view: import('./character-view.js').CharacterView) => void, sameView: (a: any, b: any) => boolean, headers: () => Record<string, string>, storage: { getItem(key: string): string|null, setItem(key: string, value: string): void, removeItem(key: string): void }, folders: FolderReads } | null} */
+/** @type {{ getView: () => import('./character-view.js').CharacterView, setView: (view: import('./character-view.js').CharacterView) => void, sameView: (a: any, b: any) => boolean, headers: () => Record<string, string>, storage: { getItem(key: string): string|null, setItem(key: string, value: string): void, removeItem(key: string): void }, folders: FolderReads, pinView: (id: string, view: import('./character-view.js').CharacterView | null) => void } | null} */
 let deps = null;
 
 /** An open folder is a built-in view, "tag is <folder>"; its id in the picker is this prefix and the tag id. */
@@ -177,6 +177,7 @@ function applyView(saved) {
     appliedView = saved ? view : null;
     setCurrent(saved ? saved.id : null, saved ? saved.name : t`All characters`);
     deps.setView(view);
+    if (saved && !isFolderViewId(saved.id)) deps.pinView(saved.id, view);
     refreshSavedViewState();
 }
 
@@ -204,6 +205,7 @@ async function saveCurrent() {
     }
     appliedView = fullView(answer.view);
     setCurrent(answer.id, answer.name);
+    deps.pinView(answer.id, appliedView);
     refreshSavedViewState();
     return true;
 }
@@ -398,7 +400,10 @@ function confirmDelete(row, saved) {
     yes.addEventListener('click', async () => {
         const answer = await call('delete', { id: saved.id });
         if (!answer) toastr.error(t`The view could not be deleted.`);
-        else if (saved.id === currentId) setCurrent(null, t`All characters`);
+        else {
+            deps.pinView(saved.id, null);
+            if (saved.id === currentId) setCurrent(null, t`All characters`);
+        }
         await refreshPopover();
     });
     no.addEventListener('click', () => void refreshPopover());
@@ -429,6 +434,7 @@ function makeSaveRow() {
         }
         appliedView = fullView(answer.view);
         setCurrent(answer.id, answer.name);
+        deps.pinView(answer.id, appliedView);
         refreshSavedViewState();
         const target = pendingSwitch ? pendingSwitch.target : undefined;
         pendingSwitch = null;
@@ -567,6 +573,7 @@ export async function onSavedViewsChanged() {
     const answer = await call('get', { id: currentId });
     if (!answer) return;
     if (answer.notFound) {
+        deps.pinView(currentId, null);
         // The list keeps what it shows; with nothing to compare against it now counts as changes to "All characters".
         appliedView = null;
         setCurrent(null, t`All characters`);
@@ -579,6 +586,7 @@ export async function onSavedViewsChanged() {
     if (appliedView && !deps.sameView(appliedView, saved)) {
         const unchanged = deps.sameView(appliedView, deps.getView());
         appliedView = saved;
+        deps.pinView(answer.id, saved);
         // Unsaved changes stay on screen, now measured against the new version.
         if (unchanged) deps.setView(saved);
     }
@@ -596,13 +604,15 @@ export async function onSavedViewsChanged() {
  * @param {{ getItem(key: string): string|null, setItem(key: string, value: string): void, removeItem(key: string): void }} options.storage
  * @param {typeof t} options.translate i18n's `t`.
  * @param {FolderReads} options.folders
+ * @param {(id: string, view: import('./character-view.js').CharacterView | null) => void} options.pinView Keeps a saved
+ *   view's first page pinned in browser storage, or lets go of it when `view` is null.
  */
-export function initSavedViews({ before, getView, setView, sameView, headers, storage, translate, folders }) {
+export function initSavedViews({ before, getView, setView, sameView, headers, storage, translate, folders, pinView }) {
     document.addEventListener('pointerdown', event => {
         if (popover && event.target instanceof Node && !popover.contains(event.target) && !picker?.contains(event.target)) closePopover();
     }, true);
     t = translate;
-    deps = { getView, setView, sameView, headers, storage, folders };
+    deps = { getView, setView, sameView, headers, storage, folders, pinView };
     picker = document.createElement('div');
     picker.id = 'character_view_picker';
     picker.className = 'menu_button view_picker';

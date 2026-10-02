@@ -953,6 +953,26 @@ export function getEntitiesList({ doFilter = false, doSort = true } = {}) {
 }
 
 /**
+ * Keeps a saved view's first page, at the list's page size, pinned in browser storage so opening the view is drawn
+ * at once; null lets go of it.
+ * @param {string} id
+ * @param {import('./character-view.js').CharacterView | null} view
+ */
+async function pinSavedViewPage(id, view) {
+    const owner = `view:${id}`;
+    if (!view) {
+        await characterRepository.unpinPages(owner);
+        return;
+    }
+    const pageSize = Number(accountStorage.getItem('Characters_PerPage')) || per_page_default;
+    // The view on screen is pinned as the list asks for it (a search sorts by relevance there).
+    const { filter, sort } = sameView(getCharacterView(), view)
+        ? buildCharacterQueryFromCurrentFilterState({ includeGroups: true })
+        : buildCharacterQuery(viewToQueryState(view, { includeGroups: true }));
+    await characterRepository.pinPage(owner, filter, sort, 1, pageSize, PAGE_WANT);
+}
+
+/**
  * A page of folders of one type whose names hold `term`, in the tag sort order.
  * @param {string} term
  * @param {string | null} cursor
@@ -1633,6 +1653,7 @@ export function initCharacterSearch() {
             list: (term, cursor) => readFolderPage(term, cursor, 'OPEN'),
             get: id => readFolder(id, 'OPEN'),
         },
+        pinView: (id, view) => void pinSavedViewPage(id, view),
     });
     initFolderSwitcher({
         after: $('#rm_characters_block .rm_tag_controls').get(0),

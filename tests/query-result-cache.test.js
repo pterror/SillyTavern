@@ -63,6 +63,19 @@ describe('query result cache', () => {
         expect(keys()).not.toContain('pinned');
     });
 
+    test('a page pinned before it is kept stays pinned once it is', async () => {
+        await cache.pinQueryCache('view-2', ['later']);
+        await cache.writeQueryCache('later', entryOf(1200));
+        for (const key of ['b', 'c', 'd', 'e']) {
+            await new Promise(resolve => setTimeout(resolve, 5));
+            await cache.writeQueryCache(key, entryOf(1200));
+        }
+        expect(keys()).toContain('later');
+        expect(await cache.pinnedQueryCacheKeys('view-2')).toEqual(['later']);
+        await cache.pinQueryCache('view-2', []);
+        expect(await cache.pinnedQueryCacheKeys('view-2')).toEqual([]);
+    });
+
     test('an entry larger than the whole budget isn\'t kept', async () => {
         await cache.writeQueryCache('huge', entryOf(5 * 1024));
         expect(keys()).toEqual([]);

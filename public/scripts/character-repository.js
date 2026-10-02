@@ -13,7 +13,7 @@ import { getRequestHeaders } from './request-headers.js';
 import { charactersStore } from './character-store.js';
 import { isFetchedTagIdsCurrent, tagFetchStamp } from './tag-fetch-stamps.js';
 import { getCachedEntriesByIds, saveCachedCharacters, getCachedGroupEntriesByIds, saveCachedGroups, getCacheUserHandle } from './character-cache.js';
-import { readQueryCache, writeQueryCache, setQueryCacheUser } from './query-result-cache.js';
+import { readQueryCache, writeQueryCache, setQueryCacheUser, pinQueryCache } from './query-result-cache.js';
 import { characterDigestFieldsHash, characterDigestSource, normalizeFav, normalizeTagIds, shallowCharacterData } from './hash-utils.js';
 
 /**
@@ -469,6 +469,27 @@ function projectCachedCharacter(character, contentHash) {
 }
 
 /** Owns character residency for internal (non-extension) client code. */
+/**
+ * A `/query` request as `query()` sends it: a blank search term dropped, and a relevance sort without one dropped too,
+ * since the route's own rule is that relevance order needs something to rank by. Its JSON is the request's key.
+ * @param {CharacterQueryFilter} filter
+ * @param {CharacterQuerySort|undefined} sort
+ * @param {number} page
+ * @param {number} pageSize
+ * @param {readonly string[]} want
+ * @returns {{filter: CharacterQueryFilter, sort: CharacterQuerySort|undefined, page: number, pageSize: number, want: string[]}}
+ */
+function normalizedQueryRequest(filter, sort, page, pageSize, want) {
+    const search = typeof filter.search === 'string' ? filter.search.trim() : '';
+    const normalizedFilter = search ? { ...filter, search } : (() => {
+        const rest = { ...filter };
+        delete rest.search;
+        return rest;
+    })();
+    const normalizedSort = sort?.field === 'search' && !search ? undefined : sort;
+    return { filter: normalizedFilter, sort: normalizedSort, page, pageSize, want: [...want] };
+}
+
 export class CharacterRepository {
     /** @type {import('./entity-store.js').EntityStore<Character>} */
     store;
@@ -637,16 +658,8 @@ export class CharacterRepository {
      * @returns {Promise<CharacterQueryResult>}
      */
     async query(filter = {}, sort = undefined, page = 1, pageSize = 100, want = DEFAULT_QUERY_WANT, { onFresh } = {}) {
-        // Mirrors the route's own rule: relevance order requires something to rank by, so a blank term
-        // cannot ask for a 'search' sort.
-        const search = typeof filter.search === 'string' ? filter.search.trim() : '';
-        const normalizedFilter = search ? { ...filter, search } : (() => {
-            const rest = { ...filter };
-            delete rest.search;
-            return rest;
-        })();
-        const normalizedSort = sort?.field === 'search' && !search ? undefined : sort;
-        const requestShape = { filter: normalizedFilter, sort: normalizedSort, page, pageSize, want };
+        const requestShape = normalizedQueryRequest(filter, sort, page, pageSize, want);
+        const { filter: normalizedFilter } = requestShape;
         const signature = JSON.stringify(requestShape);
 
         // Hash mode: when `rows` is wanted, transport row data as {id, hash} plus a few live fields instead of
@@ -669,6 +682,30 @@ export class CharacterRepository {
             return stale;
         }
         return this.#fetchQuery(requestShape, signature, cached ?? (kept ? { token: kept.token } : undefined), kept, useHashMode, includeGroups);
+    }
+
+    /**
+     * Keeps the page `query()` would answer for these arguments pinned in browser storage for `owner` (a saved view):
+     * never evicted, so opening it is drawn at once. Lets go of what `owner` pinned before.
+     * @param {string} owner
+     * @param {CharacterQueryFilter} filter
+     * @param {CharacterQuerySort|undefined} sort
+     * @param {number} page
+     * @param {number} pageSize
+     * @param {readonly string[]} want
+     */
+    async pinPage(owner, filter, sort, page, pageSize, want) {
+        setQueryCacheUser(getCacheUserHandle());
+        await pinQueryCache(owner, [JSON.stringify(normalizedQueryRequest(filter, sort, page, pageSize, want))]);
+    }
+
+    /**
+     * Lets go of every page `owner` pinned.
+     * @param {string} owner
+     */
+    async unpinPages(owner) {
+        setQueryCacheUser(getCacheUserHandle());
+        await pinQueryCache(owner, []);
     }
 
     /**
