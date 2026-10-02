@@ -73,7 +73,7 @@ afterEach(async () => {
     fs.rmSync(tempDir, { recursive: true, force: true });
 });
 
-describe('characters-search-index.js: catch-up log line', () => {
+describe('characters-search-index.js: catch-up console output', () => {
     test('a tick reports its seq range, writer mix, backlog and per-phase times', async () => {
         const tantivy = await tantivyEngine.getTantivyModule();
         if (!tantivy) {
@@ -106,58 +106,35 @@ describe('characters-search-index.js: catch-up log line', () => {
         expect(Object.keys(r.phases).sort()).toEqual(['add', 'build', 'commit', 'deletes', 'load', 'persist', 'read', 'tags']);
         expect(r.lockWaitMs).toBe(0);
 
-        const line = searchIndex.formatCatchUpLine(r);
-        expect(line).toMatch(new RegExp(`^\\[search\\] catch-up: seq=${seqBefore}\\.\\.${r.seq} backlog=0 writers=fav:1 tagrenames=0 deletes=0 upserts=1 total_ms=\\d+ read_ms=\\d+ deletes_ms=\\d+ tags_ms=\\d+ load_ms=\\d+ build_ms=\\d+ add_ms=\\d+ commit_ms=\\d+ persist_ms=\\d+ lockwait_ms=0$`));
-        expect(line).not.toContain('\n');
     }, 20000);
 
-    test('the line names the tag-rename cursor only when it moved, and counts an id under each of its fields', () => {
-        const phases = { read: 1, deletes: 2, tags: 3, load: 4, build: 5, add: 6, commit: 7, persist: 8 };
-        const base = {
-            changed: true, deletes: 0, upserts: 3, ms: 40, seq: 20, seqFrom: 10, tagNameSeqFrom: 5, tagNameSeq: 5,
-            backlog: 4, writers: { fav: 2, tag_ids: 1, null: 1 }, tagRenames: 0, phases, lockWaitMs: 9,
-        };
-        expect(searchIndex.formatCatchUpLine(base)).toBe(
-            '[search] catch-up: seq=10..20 backlog=4 writers=fav:2,tag_ids:1,whole-record:1 tagrenames=0 deletes=0 upserts=3 total_ms=40'
-            + ' read_ms=1 deletes_ms=2 tags_ms=3 load_ms=4 build_ms=5 add_ms=6 commit_ms=7 persist_ms=8 lockwait_ms=9');
-        expect(searchIndex.formatCatchUpLine({ ...base, tagNameSeq: 7, tagRenames: 2 }))
-            .toContain('seq=10..20 tagseq=5..7 backlog=4 writers=fav:2,tag_ids:1,whole-record:1 tagrenames=2 ');
+    /** @param {Partial<import('../src/endpoints/characters-search-index.js').TickResult>} over */
+    const tick = over => /** @type {import('../src/endpoints/characters-search-index.js').TickResult} */ ({
+        changed: true, deletes: 0, upserts: 1, ms: 5, seq: 11, seqFrom: 10, tagNameSeqFrom: 5, tagNameSeq: 5,
+        retrySeq: 0, retried: 0, failed: 0, backlog: 0, writers: { fav: 1 }, tagRenames: 0, phases: {}, lockWaitMs: 0, ...over,
     });
 
-    test('a full rebuild batch logs its own progress line, naming failures only when there are some', () => {
-        expect(searchIndex.formatRebuildBatchLine({ batch: 3, cards: 500, failed: 0, doneSoFar: 1500, ms: 42 }))
-            .toBe('[search] full rebuild: batch 3, 500 cards, 1500 done so far, 42 ms');
-        expect(searchIndex.formatRebuildBatchLine({ batch: 1, cards: 7, failed: 2, doneSoFar: 7, ms: 3 }))
-            .toBe('[search] full rebuild: batch 1, 7 cards (2 failed), 7 done so far, 3 ms');
+    test('a catch-up that keeps up logs nothing, however much a tick applied', () => {
+        const lines = [];
+        const progress = new searchIndex.CatchUpProgress(line => lines.push(line));
+        progress.onTick(tick({}));
+        progress.onTick(tick({ upserts: 400, deletes: 30, tagRenames: 2 }));
+        progress.onTick(tick({ persistSkipped: true }));
+        expect(lines).toEqual([]);
     });
 
-    test('a single update logs nothing; several changes, renames, a backlog, a failure or a skipped persist log', () => {
-        const single = {
-            changed: true, deletes: 0, upserts: 1, ms: 5, seq: 11, seqFrom: 10, tagNameSeqFrom: 5, tagNameSeq: 5,
-            retrySeq: 0, retried: 0, failed: 0, backlog: 0, writers: { fav: 1 }, tagRenames: 0, phases: {}, lockWaitMs: 0,
-        };
-        expect(searchIndex.isBatchCatchUp(single)).toBe(false);
-        expect(searchIndex.isBatchCatchUp({ ...single, upserts: 0, deletes: 1 })).toBe(false);
-        expect(searchIndex.isBatchCatchUp({ ...single, upserts: 2 })).toBe(true);
-        expect(searchIndex.isBatchCatchUp({ ...single, deletes: 1 })).toBe(true);
-        expect(searchIndex.isBatchCatchUp({ ...single, tagRenames: 1 })).toBe(true);
-        expect(searchIndex.isBatchCatchUp({ ...single, backlog: 3 })).toBe(true);
-        expect(searchIndex.isBatchCatchUp({ ...single, retried: 1 })).toBe(false);
-        expect(searchIndex.isBatchCatchUp({ ...single, failed: 1 })).toBe(true);
-        expect(searchIndex.isBatchCatchUp({ ...single, persistSkipped: true })).toBe(true);
-    });
-
-    test('a tick whose persist was skipped says so right after persist_ms; one that persisted is unchanged', () => {
-        const phases = { read: 1, deletes: 2, tags: 3, load: 4, build: 5, add: 6, commit: 7, persist: 8 };
-        const base = {
-            changed: true, deletes: 0, upserts: 3, ms: 40, seq: 10, seqFrom: 10, tagNameSeqFrom: 5, tagNameSeq: 5,
-            backlog: 14, writers: { fav: 3 }, tagRenames: 0, phases, lockWaitMs: 0,
-        };
-        expect(searchIndex.formatCatchUpLine({ ...base, persistSkipped: true })).toBe(
-            '[search] catch-up: seq=10..10 backlog=14 writers=fav:3 tagrenames=0 deletes=0 upserts=3 total_ms=40'
-            + ' read_ms=1 deletes_ms=2 tags_ms=3 load_ms=4 build_ms=5 add_ms=6 commit_ms=7 persist_ms=8 persist=skipped lockwait_ms=0');
-        expect(searchIndex.formatCatchUpLine({ ...base, persistSkipped: false })).toBe(searchIndex.formatCatchUpLine(base));
-        expect(searchIndex.formatCatchUpLine(base)).not.toContain('persist=skipped');
+    test('a catch-up with a backlog logs one finished line when the backlog is gone, with no batch numbers', () => {
+        const lines = [];
+        const progress = new searchIndex.CatchUpProgress(line => lines.push(line));
+        progress.onTick(tick({ upserts: 500, backlog: 1000 }));
+        progress.onTick(tick({ upserts: 500, backlog: 500 }));
+        expect(lines).toEqual([]);
+        progress.onTick(tick({ upserts: 500, backlog: 0 }));
+        expect(lines).toHaveLength(1);
+        expect(lines[0]).toMatch(/search index catching up on changes: done, 1,500 in \d+ s/);
+        expect(lines[0]).not.toMatch(/batch/);
+        progress.onTick(tick({}));
+        expect(lines).toHaveLength(1);
     });
 });
 
@@ -196,7 +173,6 @@ describe('characters-search-index.js: persisting the cursors while the database 
         expect(maintainer.seq()).toBe(seqBefore);
         expect(skipped.lockWaitMs).toBe(0);
         expect(await metadataDb.getMetaValue(directories, SEQ_META_KEY)).toBe(persistedBefore);
-        expect(searchIndex.formatCatchUpLine(skipped)).toMatch(/ persist_ms=\d+ persist=skipped lockwait_ms=0$/);
 
         const redone = /** @type {import('../src/endpoints/characters-search-index.js').TickResult} */ (await maintainer.tick());
         expect(redone.persistSkipped).toBe(false);
@@ -204,7 +180,6 @@ describe('characters-search-index.js: persisting the cursors while the database 
         expect(redone.upserts).toBe(1);
         expect(redone.seq).toBeGreaterThan(seqBefore);
         expect(Number(await metadataDb.getMetaValue(directories, SEQ_META_KEY))).toBe(redone.seq);
-        expect(searchIndex.formatCatchUpLine(redone)).not.toContain('persist=skipped');
     }, 20000);
 
     test('a rebuild retries its persist until it lands', async () => {

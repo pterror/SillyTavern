@@ -55,13 +55,22 @@ function showUnimportEmbeddedLoreNotice(helpers, notice) {
     }
     if (skipped.total > 0) {
         const lines = skipped.entries.slice(0, Math.max(NAMED_LIMIT - shown, 0)).map(entry => `${escapeHtml(String(entry.name ?? entry.avatar))}: ${reasonText(helpers, entry)}`);
+        shown += lines.length;
         const rest = Math.max(skipped.total - lines.length, 0);
-        parts.push(t`${skipped.total} character(s) couldn't be checked and were left as they were:`
+        parts.push(t`${skipped.total} character(s) couldn't be checked, so they were left exactly as they were:`
             + (lines.length > 0 ? `<br />${lines.join('<br />')}` : '')
             + (rest > 0 ? `<br />${t`and ${rest} more.`}` : ''));
     }
+    const noWorld = notice.noWorld ?? { total: 0, entries: [] };
+    if (noWorld.total > 0) {
+        parts.push(t`${noWorld.total} character(s) link a lorebook that isn't in your worlds folder, so there was nothing to undo for them. They weren't changed.`);
+    }
     if (parts.length === 0) return;
-    const message = parts.join('<br /><br />') + `<br /><br />${t`The server console lists each one, with details.`}`;
+    const reportLink = notice.hasReport
+        ? `<br /><br /><a href="/api/migrations/report/${encodeURIComponent(String(notice.id))}" download>${t`Download the full list`}</a>`
+        : '';
+    const message = t`This undoes an old import that turned characters' embedded lorebooks into separate lorebook files. Nothing was lost.`
+        + '<br /><br />' + parts.join('<br /><br />') + reportLink;
     let acknowledged = false;
     const acknowledge = () => {
         if (acknowledged) return;

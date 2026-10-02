@@ -395,16 +395,17 @@ describe('reconcile', () => {
         const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
         try {
             await metadataDb.reconcile(directories); // nothing changed since bootstrap
-            const quietCalls = logSpy.mock.calls.filter(args => String(args[0]).includes('[character-metadata] Reconcile'));
+            const quietCalls = logSpy.mock.calls.filter(args => String(args[0]).includes('[character-metadata] adding new card files'));
             expect(quietCalls).toHaveLength(0);
 
             logSpy.mockClear();
             await new Promise(resolve => setTimeout(resolve, 5));
             await writeCardFile('NewCard.png', { name: 'NewCard', data: { name: 'NewCard', description: 'brand new', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
             await metadataDb.reconcile(directories);
-            const summaryCalls = logSpy.mock.calls.filter(args => String(args[0]).includes('[character-metadata] Reconcile complete'));
-            expect(summaryCalls).toHaveLength(1);
-            expect(String(summaryCalls[0][0])).toMatch(/1 new file/);
+            // One new file is a single update, which logs nothing.
+            const summaryCalls = logSpy.mock.calls.filter(args => String(args[0]).includes('[character-metadata] adding new card files'));
+            expect(summaryCalls).toHaveLength(0);
+            expect(await metadataDb.getCharacterMetadataRow(directories, 'NewCard.png')).toBeDefined();
         } finally {
             logSpy.mockRestore();
         }

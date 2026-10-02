@@ -6,8 +6,10 @@ import { color } from '../util.js';
 import { parse as parseCharacterCard, writeCardToFile } from '../character-card-parser.js';
 import { getCharaCardV2 } from '../character-card-normalize.js';
 import { readWorldInfoFile } from '../endpoints/worldinfo.js';
-import { upsertCharacterFromWrite, getCharacterCardJson, streamLinkedWorlds, streamCharactersLinkedToWorld, isWorldLinkedByAnyCharacter, isMigrationMarkedComplete, markMigrationComplete, isBootstrapComplete, addMigrationPending, setMigrationPendingSettled, clearMigrationPending, hasMigrationPending, streamMigrationPending, commitMigrationSettled, flushBatchImport } from '../character-metadata-db.js';
+import { upsertCharacterFromWrite, getCharacterCardJson, streamLinkedWorlds, streamCharactersLinkedToWorld, isWorldLinkedByAnyCharacter, isMigrationMarkedComplete, markMigrationComplete, isBootstrapComplete, addMigrationPending, setMigrationPendingSettled, clearMigrationPending, hasMigrationPending, streamMigrationPending, commitMigrationSettled, flushBatchImport, countCharactersLinkedToAWorld } from '../character-metadata-db.js';
 import { NoticeCollector, noticeKey, readNoticeRaw, parseNotice, serializeNotice, replaceNotice, mergeRetryNotice } from './migration-notices.js';
+import { MigrationReport } from './migration-report.js';
+import { ProgressLog } from '../progress-log.js';
 
 /**
  * One-time reversal for characters auto-linked to a World file by the old importEmbeddedWorldInfo()
@@ -40,8 +42,9 @@ import { NoticeCollector, noticeKey, readNoticeRaw, parseNotice, serializeNotice
  * migration_pending table; a boot after a pass with failed writes retries only those cards, and the
  * migration is marked done only once none is left. On an install where the migration had already
  * finished, a report-only pass runs once and lists the skipped cards without writing anything. Skipped
- * and failed cards are listed on the console and kept in a notice for the UI (migration-notices.js) until
- * the user dismisses it. Before reading the index it waits for isBootstrapComplete(), since that index
+ * and failed cards are kept in a notice for the UI (migration-notices.js) until the user dismisses it; every card the
+ * pass looked at, and what it did with it, is written to the user's full report (migration-report.js), which the
+ * notice links. The console gets progress and a finished line (progress-log.js), and only failed writes by name. Before reading the index it waits for isBootstrapComplete(), since that index
  * isn't populated until the metadata backfill finishes; on timeout it retries next boot without marking done.
  *
  * `run()`/`findCandidates()` also work as a manual CLI: `node src/migrations/unimport-embedded-lore.js
@@ -82,7 +85,7 @@ const NOTICE_ID = 'unimport-embedded-lore';
  */
 
 /**
- * The console line for a card left untouched because it couldn't be checked.
+ * The report line for a card left as it was without being compared.
  * @param {string} avatar
  * @param {string} worldName
  * @param {SkippedCard['reason']} reason
@@ -90,23 +93,26 @@ const NOTICE_ID = 'unimport-embedded-lore';
  * @returns {string}
  */
 function skippedLine(avatar, worldName, reason, detail) {
-    let text;
     switch (reason) {
         case 'world-missing':
-            text = 'its World file doesn\'t exist, so whether it came from an embedded-lore import can\'t be told';
-            break;
+            return `left as it was: ${avatar} links the lorebook "${worldName}", which isn't in your worlds folder, so there was nothing to undo`;
         case 'world-unreadable':
-            text = `its World file couldn't be read (${detail}), so whether it came from an embedded-lore import can't be told`;
-            break;
+            return `couldn't be checked, left as it was: ${avatar} links the lorebook "${worldName}", which couldn't be read (${detail})`;
         case 'world-snapshot-unusable':
-            text = 'its World came from an embedded-lore import but its originalData snapshot has no entries list, so it can\'t be compared or restored';
-            break;
+            return `couldn't be checked, left as it was: ${avatar} links the lorebook "${worldName}", which was made from an embedded lorebook but has no usable copy of the original`;
         case 'card-unreadable':
-            text = `its card couldn't be read (${detail})`;
-            break;
+            return `couldn't be checked, left as it was: ${avatar}: its card couldn't be read (${detail})`;
     }
-    return `[unimport-embedded-lore] SKIPPED, not touched: ${avatar} (linked to "${worldName}") - ${text}`;
+    return `left as it was: ${avatar}`;
 }
+
+/**
+ * Where a pass puts what it did with each card.
+ * @typedef {{ add: (line: string) => void }} ReportSink
+ */
+
+/** @type {ReportSink} */
+const NO_REPORT = { add: () => {} };
 
 /**
  * Classifies the only character linking a World that carries the originalData marker.
@@ -121,7 +127,6 @@ async function classifySoleLinker(directories, avatar, worldName, world, log) {
             ?? await parseCharacterCard(path.join(directories.characters, avatar), 'png');
         card = getCharaCardV2(JSON.parse(rawJson), directories, false);
     } catch (err) {
-        log(color.red(`[unimport-embedded-lore] Failed to read candidate ${avatar}, skipping: ${err.message}`));
         return { safe: [], ambiguous: [], skipped: [{ avatar, worldName, reason: 'card-unreadable', detail: err.message }], notLinked: [] };
     }
 
@@ -155,9 +160,8 @@ async function* classifyWorld(directories, worldName, linkers, log) {
     /** @type {string | undefined} */
     let detail;
     try {
-        world = readWorldInfoFile(directories, worldName, false);
+        world = readWorldInfoFile(directories, worldName, false, { logMissing: false });
     } catch (err) {
-        log(color.red(`[unimport-embedded-lore] Failed to read World "${worldName}": ${err.message}`));
         skipReason = 'world-unreadable';
         detail = err.message;
     }
@@ -252,10 +256,13 @@ async function writeUnimportedCard(directories, avatar, updated, parked) {
 }
 
 /**
- * Unlinks `extensions.world`, restoring `character_book` from `originalData` first if missing. Never touches the World file.
+ * Unlinks `extensions.world`, restoring `character_book` from `originalData` first if missing. Never touches the World
+ * file. A failed write is named on the console; everything else goes to `report`.
+ * @param {(line: string) => void} log
+ * @param {ReportSink} report
  * @returns {Promise<'unimported' | 'not-linked' | 'failed'>}
  */
-async function unimportOne(directories, candidate, log, writeCard) {
+async function unimportOne(directories, candidate, log, report, writeCard) {
     const { avatar, worldName, action } = candidate;
     const avatarPath = path.join(directories.characters, avatar);
 
@@ -265,14 +272,15 @@ async function unimportOne(directories, candidate, log, writeCard) {
         const card = getCharaCardV2(JSON.parse(rawJson), directories, false);
 
         if (card?.data?.extensions?.world !== worldName) {
-            log(color.yellow(`[unimport-embedded-lore] ${avatar} no longer links to "${worldName}" (changed since candidates were computed) - skipping.`));
+            report.add(`nothing to do: ${avatar} no longer links the lorebook "${worldName}"`);
             return 'not-linked';
         }
 
         if (action === 'restore-and-unlink') {
-            const world = readWorldInfoFile(directories, worldName, false);
+            const world = readWorldInfoFile(directories, worldName, false, { logMissing: false });
             if (!Array.isArray(world?.originalData?.entries)) {
-                log(color.red(`[unimport-embedded-lore] ${avatar}: World "${worldName}" no longer has a restorable originalData snapshot - skipping.`));
+                log(color.red(`[unimport-embedded-lore] ${avatar}: the lorebook "${worldName}" no longer has a copy of the original to restore from, so it wasn't changed.`));
+                report.add(`failed, left as it was: ${avatar}: the lorebook "${worldName}" no longer has a copy of the original to restore from`);
                 return 'failed';
             }
             card.data.character_book = world.originalData;
@@ -283,35 +291,29 @@ async function unimportOne(directories, candidate, log, writeCard) {
         const updated = JSON.stringify(card);
         await writeCard(directories, avatar, updated, parked);
 
-        log(color.green(`[unimport-embedded-lore] ${avatar}: unlinked from "${worldName}"${action === 'restore-and-unlink' ? ' and restored its embedded lorebook' : ''}.`));
+        report.add(action === 'restore-and-unlink'
+            ? `undone: ${avatar} got its embedded lorebook back from "${worldName}" and no longer links it`
+            : `undone: ${avatar} no longer links "${worldName}" (its own embedded lorebook is the same)`);
         return 'unimported';
     } catch (err) {
-        log(color.red(`[unimport-embedded-lore] Failed to unimport ${avatar}: ${err.message}`));
+        log(color.red(`[unimport-embedded-lore] ${avatar} couldn't be written: ${err.message}`));
+        report.add(`failed, left as it was: ${avatar} couldn't be written (${err.message}); tried again on the next server start`);
         return 'failed';
     }
 }
 
-const ORPHANED_WORLDS_PER_LINE = 100;
-
 /**
- * Logs the Worlds carrying the originalData marker that no character links as its primary world any more, for
- * manual review, at most ORPHANED_WORLDS_PER_LINE names per line. Streams the worlds folder and asks the index
- * about one World at a time, so neither the folder listing nor the linked Worlds are ever held. An unlinked World
- * file that can't be read gets its own line naming it and the error, and the report goes on past it.
+ * Writes to the report the Worlds made from an embedded lorebook that no character links as its primary world any
+ * more, for manual review. Streams the worlds folder and asks the index about one World at a time, so neither the
+ * folder listing nor the linked Worlds are ever held. An unlinked World file that can't be read is reported too, and
+ * the listing goes on past it.
+ * @param {ReportSink} report
  * @returns {Promise<number>} how many there were
  */
-async function reportOrphanedWorlds(directories, log) {
+async function reportOrphanedWorlds(directories, report) {
     if (!fs.existsSync(directories.worlds)) return 0;
 
     let count = 0;
-    /** @type {string[]} */
-    let names = [];
-    const flush = () => {
-        if (names.length === 0) return;
-        log(color.cyan(`[unimport-embedded-lore] ${names.length} World file(s) came from an embedded-lore import and now have no character linking to them - left in place, review/delete manually if wanted: ${names.join(', ')}`));
-        names = [];
-    };
-
     for await (const dirent of await fsPromises.opendir(directories.worlds)) {
         if (!dirent.name.endsWith('.json')) continue;
         const name = path.parse(dirent.name).name;
@@ -322,119 +324,147 @@ async function reportOrphanedWorlds(directories, log) {
         if (linked) continue;
         let world;
         try {
-            world = readWorldInfoFile(directories, name, false);
+            world = readWorldInfoFile(directories, name, false, { logMissing: false });
         } catch (err) {
-            log(color.yellow(`[unimport-embedded-lore] World file "${dirent.name}" couldn't be read (${err.message}), so whether it came from an embedded-lore import and now has no character linking to it can't be told - left in place.`));
+            report.add(`lorebook not checked: "${dirent.name}" couldn't be read (${err.message}); left in place`);
             await new Promise(resolve => setImmediate(resolve));
             continue;
         }
         if (world?.originalData?.entries) {
-            names.push(name);
+            report.add(`lorebook no character links any more: "${name}" was made from an embedded lorebook; left in place, delete it yourself if you don't need it`);
             count++;
-            if (names.length >= ORPHANED_WORLDS_PER_LINE) flush();
         }
         // Each World is a synchronous file read on the main thread; let requests in between.
         await new Promise(resolve => setImmediate(resolve));
     }
-    flush();
     return count;
 }
 
 /**
- * @typedef {{ safe: number, migrated: number, failed: number, ambiguous: number, skipped: number, notLinked: number }} PassCounts
+ * @typedef {{ safe: number, migrated: number, failed: number, ambiguous: number, skipped: number, noWorld: number, notLinked: number }} PassCounts
  */
-
-const DRY_RUN_SUFFIX = ' (dry run, nothing written - pass --apply to write)';
-const REPORT_ONLY_SUFFIX = ' (report only, nothing written)';
 
 /**
- * Logs the pass's closing line.
- * @param {(line: string) => void} log
+ * The finished line's summary, in plain words.
  * @param {PassCounts} counts
- * @param {string} suffix
+ * @param {{ apply: boolean, reportOnly: boolean }} mode
+ * @returns {string}
  */
-function logDone(log, counts, suffix) {
-    const { safe, migrated, failed, ambiguous, skipped, notLinked } = counts;
-    log(color.green(`[unimport-embedded-lore] Done${suffix}: ${migrated}/${safe} unimported, ${failed} failed, ${ambiguous} left ambiguous, ${skipped} skipped${notLinked > 0 ? `, ${notLinked} no longer linked by their card` : ''}.`));
+function summary(counts, { apply, reportOnly }) {
+    const { safe, migrated, failed, ambiguous, skipped, noWorld } = counts;
+    const parts = [];
+    if (reportOnly) parts.push('report only, nothing written');
+    else if (!apply) parts.push(`dry run, nothing written: ${safe} would be undone`);
+    else parts.push(`${migrated} undone`);
+    if (failed > 0) parts.push(`${failed} couldn't be written`);
+    if (skipped > 0) parts.push(`${skipped} couldn't be checked`);
+    if (ambiguous > 0) parts.push(`${ambiguous} left alone because they can't be told apart safely`);
+    if (noWorld > 0) parts.push(`${noWorld} link a lorebook that isn't in the worlds folder`);
+    return parts.join(', ');
 }
 
 /**
- * One pass over every linked World: logs each ambiguous, skipped and not-linked card, adds the skipped ones to
- * `notice`, and handles each safe card - nothing with `reportOnly`, a DRY RUN line without `apply`, otherwise a
- * write, where a failed write is added to `notice` and passed to `onFailed`.
+ * One pass over every linked World: writes what happens to each card to `report` and adds the skipped ones to
+ * `notice`, and handles each safe card - nothing with `reportOnly`, a "would" line without `apply`, otherwise a
+ * write, where a failed write is named on the console, added to `notice` and passed to `onFailed`.
  * @param {import('../users.js').UserDirectoryList} directories
- * @param {{ apply: boolean, reportOnly: boolean, log: (line: string) => void, notice: NoticeCollector, onFailed: (avatar: string) => Promise<void>, writeCard: typeof writeUnimportedCard }} options
+ * @param {{ apply: boolean, reportOnly: boolean, log: (line: string) => void, report: ReportSink, progress: ProgressLog, notice: NoticeCollector, onFailed: (avatar: string) => Promise<void>, writeCard: typeof writeUnimportedCard }} options
  * @returns {Promise<PassCounts>}
  */
-async function runPass(directories, { apply, reportOnly, log, notice, onFailed, writeCard }) {
-    let safe = 0;
-    let migrated = 0;
-    let failed = 0;
-    let ambiguous = 0;
-    let skipped = 0;
-    let notLinked = 0;
+async function runPass(directories, { apply, reportOnly, log, report, progress, notice, onFailed, writeCard }) {
+    const counts = { safe: 0, migrated: 0, failed: 0, ambiguous: 0, skipped: 0, noWorld: 0, notLinked: 0 };
 
     for await (const findings of findCandidates(directories, log)) {
         for (const { avatar, worldName, reason } of findings.ambiguous) {
-            log(color.yellow(`[unimport-embedded-lore] AMBIGUOUS, not touched: ${avatar} (linked to "${worldName}") - ${reason}`));
+            report.add(`left alone: ${avatar} links "${worldName}": ${reason}`);
         }
-        ambiguous += findings.ambiguous.length;
+        counts.ambiguous += findings.ambiguous.length;
         for (const card of findings.skipped) {
-            log(color.yellow(skippedLine(card.avatar, card.worldName, card.reason, card.detail)));
+            report.add(skippedLine(card.avatar, card.worldName, card.reason, card.detail));
             notice.addSkipped({ avatar: card.avatar, world: card.worldName, reason: card.reason });
+            if (card.reason === 'world-missing') counts.noWorld++;
+            else counts.skipped++;
         }
-        skipped += findings.skipped.length;
         for (const { avatar, worldName } of findings.notLinked) {
-            log(color.yellow(`[unimport-embedded-lore] ${avatar}: the character index lists it as linked to "${worldName}" but its card doesn't link it - nothing to unlink.`));
+            report.add(`nothing to do: ${avatar} is listed as linking "${worldName}", but its card doesn't link it`);
         }
-        notLinked += findings.notLinked.length;
-        safe += findings.safe.length;
+        counts.notLinked += findings.notLinked.length;
+        counts.safe += findings.safe.length;
 
         for (const candidate of findings.safe) {
             if (reportOnly) continue;
             if (!apply) {
                 const { avatar, worldName, action } = candidate;
-                log(color.cyan(`[unimport-embedded-lore] DRY RUN would ${action === 'restore-and-unlink' ? 'restore character_book and unlink' : 'unlink'}: ${avatar} from "${worldName}"`));
+                report.add(`would be undone: ${avatar} from "${worldName}"${action === 'restore-and-unlink' ? ', getting its embedded lorebook back' : ''}`);
                 continue;
             }
-            const outcome = await unimportOne(directories, candidate, log, writeCard);
+            const outcome = await unimportOne(directories, candidate, log, report, writeCard);
             if (outcome === 'unimported') {
-                migrated++;
+                counts.migrated++;
             } else if (outcome === 'not-linked') {
-                notLinked++;
+                counts.notLinked++;
             } else {
-                failed++;
+                counts.failed++;
                 notice.addFailing({ avatar: candidate.avatar, world: candidate.worldName });
                 await onFailed(candidate.avatar);
             }
         }
+        progress.add(findings.ambiguous.length + findings.skipped.length + findings.notLinked.length + findings.safe.length);
     }
 
-    return { safe, migrated, failed, ambiguous, skipped, notLinked };
+    return counts;
+}
+
+/** What every progress and finished line of this pass says it is doing. */
+const PROGRESS_WHAT = '[unimport-embedded-lore] checking characters linked to a lorebook';
+
+/** The report's first line. */
+const REPORT_HEADING = 'Embedded lorebook migration: every character it looked at, and what it did. Only the lines starting with "undone" changed anything; nothing in this list was lost.';
+
+/**
+ * A progress log for one pass over the world-linked characters.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {(line: string) => void} log
+ * @returns {Promise<ProgressLog>}
+ */
+async function openProgress(directories, log) {
+    return new ProgressLog({ what: PROGRESS_WHAT, total: await countCharactersLinkedToAWorld(directories), log });
 }
 
 /**
- * Runs the full unimport pass for one user. Dry run by default - pass `{ apply: true }` to actually write.
+ * Runs the full unimport pass for one user. Dry run by default - pass `{ apply: true }` to actually write. The full
+ * list goes to the user's report.
  * @param {typeof writeUnimportedCard} [options.writeCard] Test hook only.
- * @returns {Promise<{ safe: number, migrated: number, failed: number, ambiguous: number, skipped: number, notLinked: number, orphanedWorlds: number }>} counts
+ * @returns {Promise<{ safe: number, migrated: number, failed: number, ambiguous: number, skipped: number, noWorld: number, notLinked: number, orphanedWorlds: number, reportPath: string }>} counts
  */
 export async function run(directories, options = {}) {
     const log = options.log ?? console.log;
     const apply = options.apply === true;
+    const report = new MigrationReport(directories, NOTICE_ID, REPORT_HEADING);
+    const progress = await openProgress(directories, log);
 
-    const counts = await runPass(directories, {
-        apply,
-        reportOnly: false,
-        log,
-        notice: new NoticeCollector(),
-        onFailed: async () => {},
-        writeCard: options.writeCard ?? writeUnimportedCard,
-    });
+    let counts;
+    let orphanedWorlds;
+    try {
+        counts = await runPass(directories, {
+            apply,
+            reportOnly: false,
+            log,
+            report,
+            progress,
+            notice: new NoticeCollector(),
+            onFailed: async () => {},
+            writeCard: options.writeCard ?? writeUnimportedCard,
+        });
+        orphanedWorlds = await reportOrphanedWorlds(directories, report);
+    } catch (err) {
+        await report.abandon();
+        throw err;
+    }
+    await report.close();
 
-    const orphanedWorlds = await reportOrphanedWorlds(directories, log);
-
-    logDone(log, counts, apply ? '' : DRY_RUN_SUFFIX);
-    return { ...counts, orphanedWorlds };
+    progress.finish(`${summary(counts, { apply, reportOnly: false })}. Full list: ${report.path}`);
+    return { ...counts, orphanedWorlds, reportPath: report.path };
 }
 
 /**
@@ -450,7 +480,6 @@ async function retryOne(directories, avatar, log, writeCard) {
 
     let rawJson = await getCharacterCardJson(directories, avatar);
     if (rawJson === null && !fs.existsSync(avatarPath)) {
-        log(color.yellow(`[unimport-embedded-lore] ${avatar}: no longer exists - nothing to retry.`));
         return { kind: 'resolved' };
     }
     let card;
@@ -459,45 +488,35 @@ async function retryOne(directories, avatar, log, writeCard) {
             rawJson = await parseCharacterCard(avatarPath, 'png');
         }
         card = getCharaCardV2(JSON.parse(rawJson), directories, false);
-    } catch (err) {
-        log(color.red(`[unimport-embedded-lore] Failed to read ${avatar} for retry: ${err.message}`));
-        log(color.yellow(skippedLine(avatar, '', 'card-unreadable', err.message)));
+    } catch {
         return { kind: 'skipped', worldName: '', reason: 'card-unreadable' };
     }
 
     const worldName = card?.data?.extensions?.world;
     if (!worldName) {
-        log(color.yellow(`[unimport-embedded-lore] ${avatar}: no longer linked to a World - nothing to retry.`));
         return { kind: 'resolved' };
     }
 
     let world = null;
     /** @type {SkippedCard['reason'] | null} */
     let skipReason = null;
-    /** @type {string | undefined} */
-    let detail;
     try {
-        world = readWorldInfoFile(directories, worldName, false);
-    } catch (err) {
-        log(color.red(`[unimport-embedded-lore] Failed to read World "${worldName}": ${err.message}`));
+        world = readWorldInfoFile(directories, worldName, false, { logMissing: false });
+    } catch {
         skipReason = 'world-unreadable';
-        detail = err.message;
     }
     if (skipReason === null) {
         if (world === null || world === undefined) {
             skipReason = 'world-missing';
         } else if (typeof world !== 'object' || Array.isArray(world)) {
             skipReason = 'world-unreadable';
-            detail = 'not a JSON object';
         } else if (!world.originalData) {
-            log(color.yellow(`[unimport-embedded-lore] ${avatar}: its World "${worldName}" isn't an embedded-lore import (no originalData) - nothing to retry.`));
             return { kind: 'resolved' };
         } else if (!Array.isArray(world.originalData.entries)) {
             skipReason = 'world-snapshot-unusable';
         }
     }
     if (skipReason !== null) {
-        log(color.yellow(skippedLine(avatar, worldName, skipReason, detail)));
         return { kind: 'skipped', worldName, reason: skipReason };
     }
 
@@ -512,25 +531,17 @@ async function retryOne(directories, avatar, log, writeCard) {
         break;
     }
     if (firstPage.some(id => id !== avatar)) {
-        log(color.yellow(`[unimport-embedded-lore] AMBIGUOUS, not touched: ${avatar} (linked to "${worldName}") - World is currently linked by more than one character - treated as deliberate sharing, not touched`));
         return { kind: 'resolved' };
     }
 
     const findings = await classifySoleLinker(directories, avatar, worldName, world, log);
     if (findings.skipped[0]) {
-        const skippedCard = findings.skipped[0];
-        log(color.yellow(skippedLine(skippedCard.avatar, skippedCard.worldName, skippedCard.reason, skippedCard.detail)));
-        return { kind: 'skipped', worldName, reason: skippedCard.reason };
+        return { kind: 'skipped', worldName, reason: findings.skipped[0].reason };
     }
-    if (findings.notLinked[0]) {
-        log(color.yellow(`[unimport-embedded-lore] ${avatar}: the character index lists it as linked to "${worldName}" but its card doesn't link it - nothing to unlink.`));
+    if (findings.notLinked[0] || findings.ambiguous[0]) {
         return { kind: 'resolved' };
     }
-    if (findings.ambiguous[0]) {
-        log(color.yellow(`[unimport-embedded-lore] AMBIGUOUS, not touched: ${avatar} (linked to "${worldName}") - ${findings.ambiguous[0].reason}`));
-        return { kind: 'resolved' };
-    }
-    const outcome = await unimportOne(directories, findings.safe[0], log, writeCard);
+    const outcome = await unimportOne(directories, findings.safe[0], log, NO_REPORT, writeCard);
     if (outcome === 'unimported') return { kind: 'unimported' };
     if (outcome === 'not-linked') return { kind: 'resolved' };
     return { kind: 'failed', worldName };
@@ -591,7 +602,7 @@ async function retryPending(directories, { log, writeCard }) {
     let value;
     if (merged === null) {
         value = previousRaw === null ? undefined : null;
-    } else if (previous !== null && JSON.stringify({ skipped: merged.skipped, failing: merged.failing }) === JSON.stringify({ skipped: previous.skipped, failing: previous.failing })) {
+    } else if (previous !== null && JSON.stringify({ skipped: merged.skipped, failing: merged.failing, noWorld: merged.noWorld }) === JSON.stringify({ skipped: previous.skipped, failing: previous.failing, noWorld: previous.noWorld })) {
         value = undefined;
     } else {
         value = serializeNotice(previous, merged);
@@ -607,7 +618,8 @@ async function retryPending(directories, { log, writeCard }) {
 
 const BOOT_MIGRATION_KEY = 'unimport_embedded_lore_completed';
 const PASS_COMPLETED_KEY = 'unimport_embedded_lore_pass_completed';
-const SKIPPED_REPORTED_KEY = 'unimport_embedded_lore_skipped_reported';
+// The report-only pass runs once more under this key: the full list moved from the console to the report file.
+const SKIPPED_REPORTED_KEY = 'unimport_embedded_lore_skipped_reported_v2';
 // Generous: a library large enough for this migration to matter can still have its bootstrap backfill
 // running well after the server started listening.
 const BOOTSTRAP_WAIT_TIMEOUT_MS = 30 * 60 * 1000;
@@ -616,11 +628,11 @@ const BOOTSTRAP_POLL_INTERVAL_MS = 5000;
 /**
  * Auto-run entry point (server-main.js calls this, unawaited, after initializeMetadataStores()).
  * Keeps three markers per user: BOOT_MIGRATION_KEY (the migration is done), PASS_COMPLETED_KEY (its full pass
- * ran) and SKIPPED_REPORTED_KEY (its skipped cards were reported). The full pass runs once and records each card
- * whose write failed in the migration_pending table; a boot after a pass with failed writes retries only those
- * cards, and the migration is marked done only once none is left. On an install where the migration had already
- * finished, a report-only pass runs once and lists the skipped cards without writing anything. Skipped and failed
- * cards go to the console and into a notice kept for the UI until the user dismisses it.
+ * ran) and SKIPPED_REPORTED_KEY (its report was written). The full pass runs once and records each card whose write
+ * failed in the migration_pending table; a boot after a pass with failed writes retries only those cards, and the
+ * migration is marked done only once none is left. On an install where the migration had already finished, a
+ * report-only pass runs once and writes the report without changing any card. Skipped and failed cards go into a
+ * notice kept for the UI until the user dismisses it.
  * Waits for isBootstrapComplete() before trusting streamLinkedWorlds(), since that index isn't populated until
  * the metadata backfill finishes; on timeout it returns without marking anything, so the next boot retries.
  * @param {number} [options.bootstrapWaitTimeoutMs] Test hook only.
@@ -638,12 +650,37 @@ export async function runOnceAtBoot(directories, options = {}) {
         const deadline = Date.now() + waitTimeoutMs;
         while (!(await isBootstrapComplete(directories))) {
             if (Date.now() > deadline) {
-                log(color.yellow(`[unimport-embedded-lore] (${directories.root}) Metadata bootstrap still not complete after ${Math.round(waitTimeoutMs / 60000)} minutes - giving up for this boot, will retry next boot.`));
+                log(color.yellow(`[unimport-embedded-lore] (${directories.root}) The character index still isn't ready after ${Math.round(waitTimeoutMs / 60000)} minutes; trying again on the next server start.`));
                 return false;
             }
             await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
         }
         return true;
+    };
+
+    /**
+     * One pass with its report: the report replaces the previous one only if the pass finishes.
+     * @param {{ apply: boolean, reportOnly: boolean, notice: NoticeCollector, onFailed: (avatar: string) => Promise<void> }} mode
+     * @returns {Promise<{ counts: PassCounts, orphanedWorlds: number | null, report: MigrationReport, progress: ProgressLog }>}
+     */
+    const passWithReport = async ({ apply, reportOnly, notice, onFailed }) => {
+        const report = new MigrationReport(directories, NOTICE_ID, REPORT_HEADING);
+        const progress = await openProgress(directories, log);
+        let counts;
+        try {
+            counts = await runPass(directories, { apply, reportOnly, log, report, progress, notice, onFailed, writeCard });
+        } catch (err) {
+            await report.abandon();
+            throw err;
+        }
+        let orphanedWorlds = null;
+        try {
+            orphanedWorlds = await reportOrphanedWorlds(directories, report);
+        } catch (err) {
+            log(color.red(`[unimport-embedded-lore] (${directories.root}) Listing the lorebooks no character links any more failed: ${err.message}`));
+        }
+        await report.close();
+        return { counts, orphanedWorlds, report, progress };
     };
 
     if (await isMigrationMarkedComplete(directories, BOOT_MIGRATION_KEY)) {
@@ -653,19 +690,18 @@ export async function runOnceAtBoot(directories, options = {}) {
         if (!(await waitForBootstrap())) {
             return { status: 'bootstrap-timeout' };
         }
-        log(color.cyan(`[unimport-embedded-lore] (${directories.root}) The migration already ran; listing the cards it skips (report only, nothing written)...`));
         const notice = new NoticeCollector();
-        let counts;
+        let result;
         try {
-            counts = await runPass(directories, { apply: false, reportOnly: true, log, notice, onFailed: async () => {}, writeCard });
+            result = await passWithReport({ apply: false, reportOnly: true, notice, onFailed: async () => {} });
         } catch (err) {
-            log(color.red(`[unimport-embedded-lore] (${directories.root}) Report-only pass failed, will retry next boot: ${err.message}`));
+            log(color.red(`[unimport-embedded-lore] (${directories.root}) Writing the report failed; trying again on the next server start: ${err.message}`));
             return { status: 'error' };
         }
         await replaceNotice(directories, NOTICE_ID, notice);
         await markMigrationComplete(directories, SKIPPED_REPORTED_KEY);
-        logDone(log, counts, REPORT_ONLY_SUFFIX);
-        return { status: 'reported', result: counts };
+        result.progress.finish(`${summary(result.counts, { apply: false, reportOnly: true })}. Full list: ${result.report.path}`);
+        return { status: 'reported', result: result.counts };
     }
 
     if (!(await waitForBootstrap())) {
@@ -673,59 +709,47 @@ export async function runOnceAtBoot(directories, options = {}) {
     }
 
     if (await isMigrationMarkedComplete(directories, PASS_COMPLETED_KEY)) {
-        log(color.cyan(`[unimport-embedded-lore] (${directories.root}) Retrying the cards whose writes failed on an earlier boot...`));
         let result;
         try {
             result = await retryPending(directories, { log, writeCard });
         } catch (err) {
-            log(color.red(`[unimport-embedded-lore] (${directories.root}) Retry of failed cards failed, will retry next boot: ${err.message}`));
+            log(color.red(`[unimport-embedded-lore] (${directories.root}) Retrying the cards that couldn't be written failed; trying again on the next server start: ${err.message}`));
             return { status: 'error' };
         }
         if (!(await hasMigrationPending(directories, NOTICE_ID))) {
             await markMigrationComplete(directories, BOOT_MIGRATION_KEY);
         }
-        log(color.green(`[unimport-embedded-lore] Retry done: ${result.retried} retried, ${result.migrated} unimported, ${result.failed} still failed (retried next boot), ${result.skipped} skipped, ${result.resolved} no longer need it.`));
+        log(color.green(`[unimport-embedded-lore] retried ${result.retried} card(s) that couldn't be written before: ${result.migrated} undone, ${result.failed} still couldn't be written (tried again next start), ${result.skipped} couldn't be checked, ${result.resolved} no longer need it.`));
         return { status: 'retried', result };
     }
 
-    log(color.cyan(`[unimport-embedded-lore] (${directories.root}) Running one-time boot migration...`));
     const notice = new NoticeCollector();
-    let counts;
+    let result;
     try {
         if (await hasMigrationPending(directories, NOTICE_ID)) {
             await clearMigrationPending(directories, NOTICE_ID);
         }
-        counts = await runPass(directories, {
+        result = await passWithReport({
             apply: true,
             reportOnly: false,
-            log,
             notice,
             onFailed: avatar => addMigrationPending(directories, NOTICE_ID, avatar),
-            writeCard,
         });
         // The pass's own card writes are already in the table (only imports wait in the batch buffer); this commits
         // an open import's buffered rows before the markers below are written.
         await flushBatchImport(directories);
     } catch (err) {
-        log(color.red(`[unimport-embedded-lore] (${directories.root}) Boot migration run failed, will retry next boot: ${err.message}`));
+        log(color.red(`[unimport-embedded-lore] (${directories.root}) The migration failed; trying again on the next server start: ${err.message}`));
         return { status: 'error' };
     }
     await replaceNotice(directories, NOTICE_ID, notice);
     await markMigrationComplete(directories, PASS_COMPLETED_KEY);
     await markMigrationComplete(directories, SKIPPED_REPORTED_KEY);
-    if (await hasMigrationPending(directories, NOTICE_ID)) {
-        log(color.yellow(`[unimport-embedded-lore] (${directories.root}) ${counts.failed} card(s) couldn't be written; the migration stays unfinished and retries them on the next boot.`));
-    } else {
+    if (!(await hasMigrationPending(directories, NOTICE_ID))) {
         await markMigrationComplete(directories, BOOT_MIGRATION_KEY);
     }
-    let orphanedWorlds = null;
-    try {
-        orphanedWorlds = await reportOrphanedWorlds(directories, log);
-    } catch (err) {
-        log(color.red(`[unimport-embedded-lore] (${directories.root}) Listing orphaned World files failed: ${err.message}`));
-    }
-    logDone(log, counts, '');
-    return { status: 'ran', result: { ...counts, orphanedWorlds } };
+    result.progress.finish(`${summary(result.counts, { apply: true, reportOnly: false })}. Full list: ${result.report.path}`);
+    return { status: 'ran', result: { ...result.counts, orphanedWorlds: result.orphanedWorlds } };
 }
 
 const isMain = process.argv[1] && import.meta.url === `file://${process.argv[1]}`;

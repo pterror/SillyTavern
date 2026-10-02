@@ -63,7 +63,7 @@ async function pendingRows(migration) {
 }
 
 test('NoticeCollector counts every entry and keeps the first 20', () => {
-    const skipped = Array.from({ length: 25 }, (_, i) => ({ avatar: `s${i}.png`, world: `S${i}`, reason: 'world-missing' }));
+    const skipped = Array.from({ length: 25 }, (_, i) => ({ avatar: `s${i}.png`, world: `S${i}`, reason: 'world-unreadable' }));
     const failing = Array.from({ length: 3 }, (_, i) => ({ avatar: `f${i}.png`, world: `F${i}` }));
     const collector = new notices.NoticeCollector();
     for (const entry of skipped) collector.addSkipped(entry);
@@ -79,11 +79,11 @@ test('NoticeCollector counts every entry and keeps the first 20', () => {
 
 test('replaceNotice stores a notice, a later one gets a higher version, and an empty collector deletes it', async () => {
     const first = new notices.NoticeCollector();
-    first.addSkipped({ avatar: 'a.png', world: 'A', reason: 'world-missing' });
+    first.addSkipped({ avatar: 'a.png', world: 'A', reason: 'world-unreadable' });
     await notices.replaceNotice(directories, NOTICE_ID, first);
     const stored = await notices.readNotice(directories, NOTICE_ID);
     expect(stored).toMatchObject({
-        skipped: { total: 1, entries: [{ avatar: 'a.png', world: 'A', reason: 'world-missing' }] },
+        skipped: { total: 1, entries: [{ avatar: 'a.png', world: 'A', reason: 'world-unreadable' }] },
         failing: { total: 0, entries: [] },
     });
 
@@ -104,7 +104,7 @@ test('replaceNotice stores a notice, a later one gets a higher version, and an e
 
 test('markNoticeSeen clears the notice only for its current version', async () => {
     const collector = new notices.NoticeCollector();
-    collector.addSkipped({ avatar: 'a.png', world: 'A', reason: 'world-missing' });
+    collector.addSkipped({ avatar: 'a.png', world: 'A', reason: 'world-unreadable' });
     await notices.replaceNotice(directories, NOTICE_ID, collector);
     const { version } = await notices.readNotice(directories, NOTICE_ID);
 
@@ -119,14 +119,15 @@ test('mergeRetryNotice adds the skipped lists and replaces the failing list', ()
     expect(notices.mergeRetryNotice(null, new notices.NoticeCollector())).toBeNull();
 
     const x = { avatar: 'x.png', world: 'X' };
-    const y = { avatar: 'y.png', world: 'Y', reason: 'world-missing' };
-    const previousSkipped = Array.from({ length: 20 }, (_, i) => ({ avatar: `p${i}.png`, world: `P${i}`, reason: 'world-missing' }));
+    const y = { avatar: 'y.png', world: 'Y', reason: 'world-unreadable' };
+    const previousSkipped = Array.from({ length: 20 }, (_, i) => ({ avatar: `p${i}.png`, world: `P${i}`, reason: 'world-unreadable' }));
     const previous = { version: 1, skipped: { total: 21, entries: previousSkipped }, failing: { total: 1, entries: [x] } };
     const collector = new notices.NoticeCollector();
     collector.addSkipped(y);
     expect(notices.mergeRetryNotice(previous, collector)).toEqual({
         skipped: { total: 22, entries: previousSkipped },
         failing: { total: 0, entries: [] },
+        noWorld: { total: 0, entries: [] },
     });
 
     const emptyPrevious = { version: 1, skipped: { total: 0, entries: [] }, failing: { total: 1, entries: [x] } };
@@ -137,7 +138,7 @@ test('getNoticesForClient names each listed character from the index, or null wh
     const card = makeCard('Named.png', { name: 'Named Person', data: { ...makeCard('Named.png').data, name: 'Named Person' } });
     await metadataDb.upsertCharacterFromWrite(directories, 'Named.png', JSON.stringify(card), null, null);
     const collector = new notices.NoticeCollector();
-    collector.addSkipped({ avatar: 'Named.png', world: 'Lost', reason: 'world-missing' });
+    collector.addSkipped({ avatar: 'Named.png', world: 'Lost', reason: 'world-unreadable' });
     collector.addFailing({ avatar: 'Gone.png', world: 'W' });
     await notices.replaceNotice(directories, NOTICE_ID, collector);
     const { version } = await notices.readNotice(directories, NOTICE_ID);
@@ -145,9 +146,30 @@ test('getNoticesForClient names each listed character from the index, or null wh
     expect(await notices.getNoticesForClient(directories)).toEqual([{
         id: 'unimport-embedded-lore',
         version,
-        skipped: { total: 1, entries: [{ avatar: 'Named.png', world: 'Lost', reason: 'world-missing', name: 'Named Person' }] },
+        skipped: { total: 1, entries: [{ avatar: 'Named.png', world: 'Lost', reason: 'world-unreadable', name: 'Named Person' }] },
         failing: { total: 1, entries: [{ avatar: 'Gone.png', world: 'W', name: null }] },
+        noWorld: { total: 0, entries: [] },
+        hasReport: false,
     }]);
+});
+
+test('a card whose lorebook file is missing is counted as linking a missing lorebook, not as skipped', async () => {
+    const collector = new notices.NoticeCollector();
+    collector.addSkipped({ avatar: 'a.png', world: 'Gone', reason: 'world-missing' });
+    collector.addSkipped({ avatar: 'b.png', world: 'Bad', reason: 'world-unreadable' });
+    expect(collector.noWorld).toEqual({ total: 1, entries: [{ avatar: 'a.png', world: 'Gone', reason: 'world-missing' }] });
+    expect(collector.skipped.total).toBe(1);
+    await notices.replaceNotice(directories, NOTICE_ID, collector);
+    const stored = await notices.readNotice(directories, NOTICE_ID);
+    expect(stored.noWorld.total).toBe(1);
+    expect(stored.skipped.total).toBe(1);
+
+    const merged = notices.mergeRetryNotice(stored, (() => {
+        const more = new notices.NoticeCollector();
+        more.addSkipped({ avatar: 'c.png', world: 'Gone2', reason: 'world-missing' });
+        return more;
+    })());
+    expect(merged.noWorld.total).toBe(2);
 });
 
 test('migration_pending: add, settle, stream in id order, and commit deletes settled rows with the notice in one call', async () => {

@@ -96,7 +96,7 @@ describe('/api/migrations', () => {
         const card = makeCard('Named.png', { name: 'Named Person', data: { ...makeCard('Named.png').data, name: 'Named Person' } });
         await metadataDb.upsertCharacterFromWrite(directories, 'Named.png', JSON.stringify(card), null, null);
         const collector = new notices.NoticeCollector();
-        collector.addSkipped({ avatar: 'Named.png', world: 'Lost', reason: 'world-missing' });
+        collector.addSkipped({ avatar: 'Named.png', world: 'Lost', reason: 'world-unreadable' });
         collector.addFailing({ avatar: 'Gone.png', world: 'W' });
         await notices.replaceNotice(directories, NOTICE_ID, collector);
         const { version } = await notices.readNotice(directories, NOTICE_ID);
@@ -107,15 +107,28 @@ describe('/api/migrations', () => {
             notices: [{
                 id: 'unimport-embedded-lore',
                 version,
-                skipped: { total: 1, entries: [{ avatar: 'Named.png', world: 'Lost', reason: 'world-missing', name: 'Named Person' }] },
+                skipped: { total: 1, entries: [{ avatar: 'Named.png', world: 'Lost', reason: 'world-unreadable', name: 'Named Person' }] },
                 failing: { total: 1, entries: [{ avatar: 'Gone.png', world: 'W', name: null }] },
+                noWorld: { total: 0, entries: [] },
+                hasReport: false,
             }],
         });
     });
 
+    test('serves the full report once a pass wrote it, and nothing for an unknown id', async () => {
+        expect((await fetch(`${baseUrl}/api/migrations/report/unimport-embedded-lore`)).status).toBe(404);
+        const report = new (await import('../src/migrations/migration-report.js')).MigrationReport(directories, NOTICE_ID, 'heading');
+        report.add('left as it was: A.png');
+        await report.close();
+        const response = await fetch(`${baseUrl}/api/migrations/report/unimport-embedded-lore`);
+        expect(response.status).toBe(200);
+        expect(await response.text()).toBe('heading\n\nleft as it was: A.png\n');
+        expect((await fetch(`${baseUrl}/api/migrations/report/other`)).status).toBe(404);
+    });
+
     test('marks a notice seen only for its current version', async () => {
         const collector = new notices.NoticeCollector();
-        collector.addSkipped({ avatar: 'Ghost.png', world: 'Missing Lore', reason: 'world-missing' });
+        collector.addSkipped({ avatar: 'Ghost.png', world: 'Missing Lore', reason: 'world-unreadable' });
         await notices.replaceNotice(directories, NOTICE_ID, collector);
         const { version } = await notices.readNotice(directories, NOTICE_ID);
 

@@ -233,7 +233,7 @@ describe('refreshGroupDigestTagIdsIfNeeded over many batches', () => {
         // Every copy stale: every page changes digests, so every page saves its position.
         setDigest(all, STALE);
         const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
-        const log = jest.spyOn(console, 'log').mockImplementation(() => {});
+        jest.spyOn(console, 'log').mockImplementation(() => {});
 
         transactionCalls = 0;
         crashAtTransaction = 2;
@@ -251,7 +251,6 @@ describe('refreshGroupDigestTagIdsIfNeeded over many batches', () => {
         warn.mockClear();
         const result = await metadataDb.refreshGroupDigestTagIdsIfNeeded(directories);
 
-        expect(log.mock.calls.map(args => String(args[0])).join('\n')).toMatch(/resuming after/);
         expect(result).toEqual({ batches: 2, rowsChanged: COUNT - 1000 });
         expect(listedIds(warn)).toEqual(all.slice(1000));
         expect(digests()).toEqual(right);

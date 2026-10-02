@@ -33,8 +33,10 @@ test.describe('boot-migration notice', () => {
             failing: { total: 1, entries: [{ avatar: 'b.png', world: 'Bob Lore', name: 'Bob' }] },
             skipped: {
                 total: 23,
-                entries: Array.from({ length: 20 }, (_, i) => ({ avatar: `g${i}.png`, world: `Lost ${i}`, reason: 'world-missing', name: `Ghost ${i}` })),
+                entries: Array.from({ length: 20 }, (_, i) => ({ avatar: `g${i}.png`, world: `Lost ${i}`, reason: 'world-unreadable', name: `Ghost ${i}` })),
             },
+            noWorld: { total: 2538, entries: [{ avatar: 'n.png', world: 'Nowhere', reason: 'world-missing', name: 'Nomad' }] },
+            hasReport: true,
         }]);
         await testSetup.awaitST({ page });
         const toast = noticeToast(page);
@@ -42,12 +44,15 @@ test.describe('boot-migration notice', () => {
         await expect(toast).toBeVisible();
         await expect(toast).toContainText('1 character(s) couldn\'t be updated. This is retried on the next server start:');
         await expect(toast).toContainText('Bob');
-        await expect(toast).toContainText('23 character(s) couldn\'t be checked and were left as they were:');
-        await expect(toast).toContainText('Ghost 0: its lorebook Lost 0 doesn\'t exist');
+        await expect(toast).toContainText('Nothing was lost.');
+        await expect(toast).toContainText('23 character(s) couldn\'t be checked, so they were left exactly as they were:');
+        await expect(toast).toContainText('Ghost 0: its lorebook Lost 0 couldn\'t be read');
         await expect(toast).toContainText('Ghost 18');
         await expect(toast).toContainText('and 4 more.');
-        await expect(toast).toContainText('The server console lists each one, with details.');
+        await expect(toast).toContainText('2538 character(s) link a lorebook that isn\'t in your worlds folder, so there was nothing to undo for them. They weren\'t changed.');
+        await expect(toast.locator('a', { hasText: 'Download the full list' })).toHaveAttribute('href', '/api/migrations/report/unimport-embedded-lore');
         await expect(toast).not.toContainText('Ghost 19');
+        await expect(toast).not.toContainText('server console');
 
         await page.clock.runFor(60000);
         await expect(toast).toBeVisible();
@@ -66,7 +71,7 @@ test.describe('boot-migration notice', () => {
             id: 'unimport-embedded-lore',
             version: 3,
             failing: { total: 0, entries: [] },
-            skipped: { total: 1, entries: [{ avatar: 'g.png', world: 'Lost', reason: 'world-missing', name: 'Ghost' }] },
+            skipped: { total: 1, entries: [{ avatar: 'g.png', world: 'Lost', reason: 'world-unreadable', name: 'Ghost' }] },
         }]);
         await testSetup.awaitST({ page });
         const toast = noticeToast(page);
@@ -81,12 +86,12 @@ test.describe('boot-migration notice', () => {
             id: 'unimport-embedded-lore',
             version: 1,
             failing: { total: 0, entries: [] },
-            skipped: { total: 1, entries: [{ avatar: 'x.png', world: '<i>W</i>', reason: 'world-missing', name: '<b>Bold</b>' }] },
+            skipped: { total: 1, entries: [{ avatar: 'x.png', world: '<i>W</i>', reason: 'world-unreadable', name: '<b>Bold</b>' }] },
         }]);
         await testSetup.awaitST({ page });
         const toast = noticeToast(page);
 
-        await expect(toast).toContainText('<b>Bold</b>: its lorebook <i>W</i> doesn\'t exist');
+        await expect(toast).toContainText('<b>Bold</b>: its lorebook <i>W</i> couldn\'t be read');
         await expect(toast.locator('.toast-message b, .toast-message i')).toHaveCount(0);
     });
 

@@ -107,7 +107,12 @@ async function indexCharacters() {
 const NOTICE_ID = 'unimport-embedded-lore';
 const COMPLETED_KEY = 'unimport_embedded_lore_completed';
 const PASS_COMPLETED_KEY = 'unimport_embedded_lore_pass_completed';
-const SKIPPED_REPORTED_KEY = 'unimport_embedded_lore_skipped_reported';
+const SKIPPED_REPORTED_KEY = 'unimport_embedded_lore_skipped_reported_v2';
+
+/** The user's full report of the last pass, as lines. */
+function readReport() {
+    return fs.readFileSync(path.join(tempDir, 'migration-reports', 'unimport-embedded-lore.txt'), 'utf8').split('\n');
+}
 
 /** The write every indexed card takes (each one is parked in the metadata store). */
 const realWrite = (dirs, avatar, updated) => metadataDb.upsertCharacterFromWrite(dirs, avatar, updated, null, null);
@@ -132,17 +137,19 @@ async function pendingRows() {
 }
 
 describe('unimport-embedded-lore - skipped cards', () => {
-    test('a card linked to a lorebook with no file is listed as skipped, on the console and in the notice, and the migration finishes', async () => {
+    test('a card linked to a lorebook with no file is counted as linking a missing lorebook, in the report and the notice, and the migration finishes', async () => {
         await writeCardFile('Ghost.png', { data: { extensions: { world: 'Missing Lore' } } });
         await indexCharacters();
 
         const lines = [];
         const boot = await migration.runOnceAtBoot(directories, { log: line => lines.push(line) });
         expect(boot.status).toBe('ran');
-        expect(boot.result).toMatchObject({ skipped: 1, failed: 0, migrated: 0 });
-        expect(lines).toContainEqual(expect.stringContaining('SKIPPED, not touched: Ghost.png (linked to "Missing Lore") - its World file doesn\'t exist'));
+        expect(boot.result).toMatchObject({ noWorld: 1, skipped: 0, failed: 0, migrated: 0 });
+        expect(readReport()).toContainEqual('left as it was: Ghost.png links the lorebook "Missing Lore", which isn\'t in your worlds folder, so there was nothing to undo');
+        expect(lines.join('\n')).not.toContain('Ghost.png');
         expect(await notices.readNotice(directories, NOTICE_ID)).toMatchObject({
-            skipped: { total: 1, entries: [{ avatar: 'Ghost.png', world: 'Missing Lore', reason: 'world-missing' }] },
+            noWorld: { total: 1, entries: [{ avatar: 'Ghost.png', world: 'Missing Lore', reason: 'world-missing' }] },
+            skipped: { total: 0, entries: [] },
             failing: { total: 0, entries: [] },
         });
         expect(await isMarked(COMPLETED_KEY)).toBe(true);
@@ -158,7 +165,8 @@ describe('unimport-embedded-lore - skipped cards', () => {
         await migration.runOnceAtBoot(directories, { log: line => lines.push(line) });
         const notice = await notices.readNotice(directories, NOTICE_ID);
         expect(notice.skipped.entries).toEqual([{ avatar: 'Broken.png', world: 'Broken', reason: 'world-unreadable' }]);
-        expect(lines).toContainEqual(expect.stringContaining('SKIPPED, not touched: Broken.png (linked to "Broken") - its World file couldn\'t be read ('));
+        expect(readReport()).toContainEqual(expect.stringContaining('couldn\'t be checked, left as it was: Broken.png links the lorebook "Broken", which couldn\'t be read ('));
+        expect(lines.join('\n')).not.toContain('Broken.png');
     });
 
     test('a World whose originalData has no entries list lists its linkers as world-snapshot-unusable', async () => {
@@ -211,11 +219,12 @@ describe('unimport-embedded-lore - skipped cards', () => {
         const lines = [];
         const boot = await migration.runOnceAtBoot(directories, { log: line => lines.push(line) });
         expect(boot.result).toMatchObject({ skipped: 0, ambiguous: 1, notLinked: 1 });
-        expect(lines).toContainEqual(expect.stringContaining('Dora.png: the character index lists it as linked to "Dora\'s Lorebook" but its card doesn\'t link it - nothing to unlink.'));
+        expect(readReport()).toContainEqual('nothing to do: Dora.png is listed as linking "Dora\'s Lorebook", but its card doesn\'t link it');
+        expect(readReport()).toContainEqual(expect.stringMatching(/^left alone: Carol\.png links "Carol's Lorebook": /));
         expect(await notices.readNotice(directories, NOTICE_ID)).toBeNull();
     });
 
-    test('the notice names the first 20 skipped cards and counts the rest; the console lists every one', async () => {
+    test('the notice names the first 20 and counts the rest; the report lists every one; the console only says how far it got and that it finished', async () => {
         for (let i = 0; i < 25; i++) {
             await writeCardFile(`Ghost${String(i).padStart(2, '0')}.png`, { data: { extensions: { world: `Missing ${i}` } } });
         }
@@ -224,9 +233,16 @@ describe('unimport-embedded-lore - skipped cards', () => {
         const lines = [];
         await migration.runOnceAtBoot(directories, { log: line => lines.push(line) });
         const notice = await notices.readNotice(directories, NOTICE_ID);
-        expect(notice.skipped.total).toBe(25);
-        expect(notice.skipped.entries).toHaveLength(20);
-        expect(lines.filter(line => line.includes('SKIPPED, not touched: Ghost'))).toHaveLength(25);
+        expect(notice.noWorld.total).toBe(25);
+        expect(notice.noWorld.entries).toHaveLength(20);
+        expect(readReport().filter(line => line.startsWith('left as it was: Ghost'))).toHaveLength(25);
+        expect(lines).toHaveLength(1);
+        expect(lines[0]).toMatch(/checking characters linked to a lorebook: done, 25 in \d+ s, 0 undone, 25 link a lorebook that isn't in the worlds folder\. Full list: .*unimport-embedded-lore\.txt/);
+        expect(lines[0]).not.toMatch(/batch/i);
+
+        const second = [];
+        expect((await migration.runOnceAtBoot(directories, { log: line => second.push(line) })).status).toBe('already-complete');
+        expect(second).toEqual([]);
     });
 });
 
@@ -253,7 +269,9 @@ describe('unimport-embedded-lore - failed writes', () => {
         expect(await isMarked(COMPLETED_KEY)).toBe(false);
         expect(await isMarked(PASS_COMPLETED_KEY)).toBe(true);
         expect(await isMarked(SKIPPED_REPORTED_KEY)).toBe(true);
-        expect(lines).toContainEqual(expect.stringContaining('1 card(s) couldn\'t be written; the migration stays unfinished and retries them on the next boot.'));
+        expect(lines).toContainEqual(expect.stringContaining('Bob.png couldn\'t be written: disk full'));
+        expect(readReport()).toContainEqual(expect.stringContaining('failed, left as it was: Bob.png couldn\'t be written (disk full)'));
+        expect(readReport()).toContainEqual(expect.stringContaining('undone: Alice.png'));
         expect(await pendingRows()).toEqual([{ id: 'Bob.png', settled: 0 }]);
         expect(await notices.readNotice(directories, NOTICE_ID)).toMatchObject({
             failing: { total: 1, entries: [{ avatar: 'Bob.png', world: 'Bob\'s Lorebook' }] },
@@ -306,7 +324,7 @@ describe('unimport-embedded-lore - failed writes', () => {
         await migration.runOnceAtBoot(directories, { log });
         const notice = await notices.readNotice(directories, NOTICE_ID);
         expect(notice).toMatchObject({
-            skipped: { total: 1, entries: [{ avatar: 'Ghost.png', world: 'Missing Lore', reason: 'world-missing' }] },
+            noWorld: { total: 1, entries: [{ avatar: 'Ghost.png', world: 'Missing Lore', reason: 'world-missing' }] },
             failing: { total: 0, entries: [] },
         });
         expect(notice.version).toBeGreaterThan(JSON.parse(raw1).version);
@@ -326,7 +344,7 @@ describe('unimport-embedded-lore - failed writes', () => {
         expect(await pendingRows()).toEqual([]);
         expect(await isMarked(COMPLETED_KEY)).toBe(true);
         const notice = await notices.readNotice(directories, NOTICE_ID);
-        expect(notice.skipped.entries).toContainEqual({ avatar: 'Bob.png', world: 'Bob\'s Lorebook', reason: 'world-missing' });
+        expect(notice.noWorld.entries).toContainEqual({ avatar: 'Bob.png', world: 'Bob\'s Lorebook', reason: 'world-missing' });
         expect(notice.failing.total).toBe(0);
     });
 
@@ -363,16 +381,17 @@ describe('unimport-embedded-lore - report-only pass on an install the migration 
         const log = line => lines.push(line);
         const boot = await migration.runOnceAtBoot(directories, { log });
         expect(boot.status).toBe('reported');
-        expect(boot.result).toMatchObject({ skipped: 1, safe: 1, migrated: 0 });
+        expect(boot.result).toMatchObject({ noWorld: 1, safe: 1, migrated: 0 });
         expect(fs.readFileSync(path.join(charactersDir, 'Alice.png')).equals(pngBefore)).toBe(true);
         expect(await metadataDb.getCharacterCardJson(directories, 'Alice.png')).toBe(cardJsonBefore);
         expect(await notices.readNotice(directories, NOTICE_ID)).toMatchObject({
-            skipped: { total: 1, entries: [{ avatar: 'Ghost.png', world: 'Missing Lore', reason: 'world-missing' }] },
+            noWorld: { total: 1, entries: [{ avatar: 'Ghost.png', world: 'Missing Lore', reason: 'world-missing' }] },
             failing: { total: 0, entries: [] },
         });
         expect(await isMarked(SKIPPED_REPORTED_KEY)).toBe(true);
-        expect(lines).toContainEqual(expect.stringContaining('Done (report only, nothing written):'));
-        expect(lines).not.toContainEqual(expect.stringContaining('DRY RUN'));
+        expect(lines).toEqual([expect.stringContaining('done, 2 in')]);
+        expect(lines[0]).toContain('report only, nothing written');
+        expect(readReport().join('\n')).not.toContain('would be undone');
 
         const second = await migration.runOnceAtBoot(directories, { log });
         expect(second.status).toBe('already-complete');
@@ -409,13 +428,12 @@ describe('unimport-embedded-lore - orphan report', () => {
         const boot = await migration.runOnceAtBoot(directories, { log: line => lines.push(line) });
         expect(boot.status).toBe('ran');
         expect(await isMarked(COMPLETED_KEY)).toBe(true);
-        expect(lines).not.toContainEqual(expect.stringContaining('Listing orphaned World files failed:'));
-        expect(lines).toContainEqual(expect.stringContaining('World file "Junk.json" couldn\'t be read ('));
+        expect(lines.join('\n')).not.toContain('failed');
+        const report = readReport();
+        expect(report).toContainEqual(expect.stringContaining('lorebook not checked: "Junk.json" couldn\'t be read ('));
         expect(boot.result.orphanedWorlds).toBe(6);
-        const orphanLine = lines.find(line => line.includes('came from an embedded-lore import and now have no character linking to them'));
         for (const name of ['Alice\'s Lorebook', 'Orphan 0', 'Orphan 1', 'Orphan 2', 'Orphan 3', 'Orphan 4']) {
-            expect(orphanLine).toContain(name);
+            expect(report).toContainEqual(expect.stringContaining(`lorebook no character links any more: "${name}"`));
         }
-        expect(orphanLine).not.toContain('Junk');
     });
 });

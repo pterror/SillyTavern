@@ -149,9 +149,9 @@ describe('reconcile reads the characters folder in batches', () => {
         }
         expect(await metadataDb.getCharacterMetadataRow(directories, 'notes.txt')).toBeUndefined();
 
-        const summary = logSpy.mock.calls.map(args => String(args[0])).filter(line => line.includes('Reconcile complete'));
+        const summary = logSpy.mock.calls.map(args => String(args[0])).filter(line => line.includes('adding new card files'));
         expect(summary).toHaveLength(1);
-        expect(summary[0]).toMatch(/3 new file\(s\) processed in/);
+        expect(summary[0]).toMatch(/adding new card files found in the characters folder: done, 3 in \d+ s/);
     });
 
     test('an empty folder makes no IN read and logs nothing', async () => {
@@ -164,27 +164,27 @@ describe('reconcile reads the characters folder in batches', () => {
 
         expect(calls.filter(c => c.sql.startsWith(EXISTS_SQL_PREFIX))).toEqual([]);
         expect(calls.filter(c => c.method === 'all')).toEqual([]);
-        expect(logSpy.mock.calls.filter(args => String(args[0]).includes('Reconcile'))).toEqual([]);
+        expect(logSpy.mock.calls.filter(args => String(args[0]).includes('adding new card files'))).toEqual([]);
     });
 
-    test('the progress line gives the count processed and a rate, with no total or ETA', async () => {
+    test('the progress line gives the count so far, with no total or ETA, and no batch numbers', async () => {
         await seedKnownCharacter('Known.png');
         await writeCardFile('NewA.png');
         await writeCardFile('NewB.png');
 
-        // Every clock read moves 6s on, past the 5s progress interval.
+        // Every clock read moves 11s on, past the 10s progress interval.
         let now = Date.now();
-        jest.spyOn(Date, 'now').mockImplementation(() => (now += 6000));
+        jest.spyOn(Date, 'now').mockImplementation(() => (now += 11000));
         const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
 
         await metadataDb.reconcile(directories);
 
         // eslint-disable-next-line no-control-regex
         const lines = logSpy.mock.calls.map(args => String(args[0]).replace(/\u001b\[[0-9;]*m/g, ''));
-        const progress = lines.filter(line => line.includes('Reconcile progress'));
+        const progress = lines.filter(line => line.includes('so far'));
         expect(progress).toHaveLength(1);
-        expect(progress[0]).toMatch(/^\[character-metadata\] Reconcile progress: 2 new files processed \(\d+\.\d files\/sec\)$/);
-        expect(progress[0]).not.toMatch(/ETA/);
-        expect(lines.filter(line => line.includes('Reconcile complete'))).toHaveLength(1);
+        expect(progress[0]).toBe('[character-metadata] adding new card files found in the characters folder: 2 so far');
+        expect(lines.filter(line => line.includes(': done, 2 in'))).toHaveLength(1);
+        for (const line of lines) expect(line).not.toMatch(/batch/i);
     });
 });

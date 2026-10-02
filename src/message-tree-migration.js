@@ -3,6 +3,7 @@ import { promises as fsPromises } from 'node:fs';
 import path from 'node:path';
 
 import { color } from './util.js';
+import { ProgressLog } from './progress-log.js';
 import { parseChatFile } from './chat-header.js';
 import { getUserDirectoriesList } from './users.js';
 import { migrateGroupFileMetadataFormat, logGroupMetadataMigrationDone } from './endpoints/groups.js';
@@ -232,7 +233,6 @@ export async function migrateCharacterChats(directories, ownerId, chatDir, isGro
 
     const migrated = migratedFileNames.length;
     const skipped = allFiles.length - migrated;
-    console.log(color.green(`[message-tree] Migrated ${migrated} chats for ${ownerId} (${skipped} skipped, ${errors.length} errors)`));
     for (const error of errors) {
         console.warn(color.yellow(`[message-tree] ${ownerId}: ${error}`));
     }
@@ -411,12 +411,18 @@ export async function migrateAllCharacterChats() {
             continue;
         }
 
-        for (const entry of entries) {
-            if (!entry.isDirectory()) continue;
-            await migrateOwnerOnTouch(directories, {
+        const owners = entries.filter(entry => entry.isDirectory());
+        const progress = new ProgressLog({ what: '[message-tree] moving characters\' chat files into the message tree', total: owners.length });
+        let migrated = 0;
+        for (const entry of owners) {
+            const result = await migrateOwnerOnTouch(directories, {
                 ownerId: entry.name,
                 chatDir: path.join(directories.chats, entry.name),
             });
+            migrated += result.migrated;
+            progress.add();
         }
+        // Owners whose chats were all moved on an earlier boot are only looked at; nothing to say about them.
+        if (migrated > 0) progress.finish(`${migrated.toLocaleString('en-US')} chat file(s) moved`);
     }
 }

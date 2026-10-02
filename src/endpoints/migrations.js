@@ -1,5 +1,8 @@
+import fs from 'node:fs';
+
 import express from 'express';
 import { getNoticesForClient, markNoticeSeen, NOTICE_IDS } from '../migrations/migration-notices.js';
+import { REPORT_IDS, reportPath } from '../migrations/migration-report.js';
 
 export const router = express.Router();
 
@@ -26,4 +29,17 @@ router.post('/notices/seen', async (request, response) => {
         console.error('Could not mark a migration notice as seen:', error);
         return response.sendStatus(500);
     }
+});
+
+/** A migration's full report for this user, as a text file to download. */
+router.get('/report/:id', async (request, response) => {
+    const id = request.params.id;
+    if (!REPORT_IDS.includes(id)) {
+        return response.sendStatus(404);
+    }
+    const file = reportPath(request.user.directories, id);
+    if (!fs.existsSync(file)) {
+        return response.sendStatus(404);
+    }
+    return response.download(file, `${id}.txt`);
 });

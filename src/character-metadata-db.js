@@ -9,6 +9,7 @@ import _ from 'lodash';
 import sanitize from 'sanitize-filename';
 
 import { color, delay, generateTimestamp, getConfigValue, mapWithConcurrency, parseCreateDateToEpochMs } from './util.js';
+import { ProgressLog } from './progress-log.js';
 import extract from 'png-chunks-extract';
 import { parse as parseCharacterCard, read as readCharacterCardFromBuffer, readCharaChunkPristineFromChunks, computeAvatarIdentityHashFromChunks } from './character-card-parser.js';
 import { getCharaCardV2, computeContentIdentityHash } from './character-card-normalize.js';
@@ -163,7 +164,6 @@ const BATCH_IMPORT_FLUSH_SIZE = 500;
 // Shares characterIndexBuildConcurrency with characters-search-index.js's build - same disk-bound workload.
 const BOOTSTRAP_READ_CONCURRENCY = getConfigValue('performance.characterIndexBuildConcurrency', 64, 'number');
 
-const BOOTSTRAP_PROGRESS_LOG_INTERVAL_MS = 5000;
 
 // Backfilling identity hashes requires reading every poisoned row's PNG off disk; this lets an install opt out.
 export const allowExpensiveDuplicateFallback = !!getConfigValue('performance.allowExpensiveDuplicateFallback', true, 'boolean');
@@ -2517,9 +2517,7 @@ export async function bootstrapIfNeeded(directories) {
 
     const { tag_map } = readTagsData(directories);
 
-    const bootstrapStart = Date.now();
-    let lastProgressLog = bootstrapStart;
-    let processedFiles = 0;
+    const progress = new ProgressLog({ what: '[character-metadata] reading character cards into the index', total: files.length });
 
     // Chunked with bounded concurrency per chunk to bound peak memory to one chunk's worth of computed rows.
     for (let i = 0; i < files.length; i += BATCH_FLUSH_SIZE) {
@@ -2550,25 +2548,12 @@ export async function bootstrapIfNeeded(directories) {
             });
         }
 
-        processedFiles += chunkFiles.length;
-
-        const now = Date.now();
-        if (now - lastProgressLog >= BOOTSTRAP_PROGRESS_LOG_INTERVAL_MS) {
-            const elapsedSec = (now - bootstrapStart) / 1000;
-            const rate = processedFiles / elapsedSec;
-            const remaining = files.length - processedFiles;
-            const etaSec = rate > 0 ? Math.round(remaining / rate) : null;
-            console.log(color.cyan(`[character-metadata] Bootstrap progress: ${processedFiles}/${files.length} (${rate.toFixed(1)} cards/sec, ETA ${etaSec === null ? 'unknown' : `${etaSec}s`})`));
-            lastProgressLog = now;
-        }
+        progress.add(chunkFiles.length);
 
         await new Promise(resolve => setImmediate(resolve));
     }
 
-    if (files.length > 0) {
-        const totalSec = (Date.now() - bootstrapStart) / 1000;
-        console.log(color.cyan(`[character-metadata] Bootstrap complete: ${files.length} cards in ${totalSec.toFixed(1)}s (${(files.length / totalSec).toFixed(1)} cards/sec).`));
-    }
+    if (files.length > 0) progress.finish();
 
     entry.db.run('INSERT INTO meta (key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value', { key: 'bootstrap_completed', value: String(Date.now()) });
     await resyncTags(directories);
@@ -2588,9 +2573,7 @@ export async function backfillContentIdentityHashes(directories) {
 
     if (!fs.existsSync(directories.characters)) return;
 
-    const backfillStart = Date.now();
-    let lastProgressLog = backfillStart;
-    let processedRows = 0;
+    const progress = new ProgressLog({ what: '[character-metadata] working out content fingerprints for cards imported with damaged data' });
 
     // Paged by rowid, not id: idx_characters_import_poisoned keeps rowid order within import_poisoned = 1, so a page
     // seeks instead of sorting every match.
@@ -2627,24 +2610,13 @@ export async function backfillContentIdentityHashes(directories) {
                 });
             }
 
-            processedRows += chunkIds.length;
-
-            const now = Date.now();
-            if (now - lastProgressLog >= BOOTSTRAP_PROGRESS_LOG_INTERVAL_MS) {
-                const elapsedSec = (now - backfillStart) / 1000;
-                const rate = processedRows / elapsedSec;
-                console.log(color.cyan(`[character-metadata] Content-identity backfill progress: ${processedRows} rows done (${rate.toFixed(1)} rows/sec)`));
-                lastProgressLog = now;
-            }
+            progress.add(chunkIds.length);
 
             await new Promise(resolve => setImmediate(resolve));
         }
     }
 
-    if (processedRows === 0) return;
-
-    const totalSec = (Date.now() - backfillStart) / 1000;
-    console.log(color.cyan(`[character-metadata] Content-identity backfill complete: processed ${processedRows} poisoned row(s) in ${totalSec.toFixed(1)}s (${(processedRows / totalSec).toFixed(1)} cards/sec).`));
+    if (progress.done > 0) progress.finish();
 }
 
 // Keyed on active_chat_checked, not active_chat IS NULL, since the latter can't distinguish "confirmed no
@@ -2658,9 +2630,7 @@ export async function backfillActiveChatFromCards(directories) {
 
     if (!fs.existsSync(directories.characters)) return;
 
-    const backfillStart = Date.now();
-    let lastProgressLog = backfillStart;
-    let processedRows = 0;
+    const progress = new ProgressLog({ what: '[character-metadata] reading each card\'s last opened chat' });
 
     // Paged by rowid, not id: idx_characters_active_chat_checked keeps rowid order within active_chat_checked = 0, so a
     // page seeks instead of sorting every match.
@@ -2699,24 +2669,13 @@ export async function backfillActiveChatFromCards(directories) {
                 });
             }
 
-            processedRows += chunkIds.length;
-
-            const now = Date.now();
-            if (now - lastProgressLog >= BOOTSTRAP_PROGRESS_LOG_INTERVAL_MS) {
-                const elapsedSec = (now - backfillStart) / 1000;
-                const rate = processedRows / elapsedSec;
-                console.log(color.cyan(`[character-metadata] Active-chat backfill progress: ${processedRows} rows done (${rate.toFixed(1)} rows/sec)`));
-                lastProgressLog = now;
-            }
+            progress.add(chunkIds.length);
 
             await new Promise(resolve => setImmediate(resolve));
         }
     }
 
-    if (processedRows === 0) return;
-
-    const totalSec = (Date.now() - backfillStart) / 1000;
-    console.log(color.cyan(`[character-metadata] Active-chat backfill complete: processed ${processedRows} row(s) in ${totalSec.toFixed(1)}s (${(processedRows / totalSec).toFixed(1)} cards/sec).`));
+    if (progress.done > 0) progress.finish();
 }
 
 const MIGRATION_BATCH_PAUSE_MS = 10;
@@ -2755,15 +2714,17 @@ async function runResumableCharacterPass(db, { table = 'characters', doneKey, do
     const pages = saved
         ? streamRows(db, { firstPageSql: nextPageSql, firstPageParams: { after: saved.value }, nextPageSql, nextPageParams: {}, keyColumn: 'id' })
         : streamRows(db, { firstPageSql: `SELECT id FROM ${table} ORDER BY id LIMIT @limit`, firstPageParams: {}, nextPageSql, nextPageParams: {}, keyColumn: 'id' });
-    if (saved) {
-        console.log(color.cyan(`[character-metadata] ${label}: resuming after ${saved.value}`));
-    }
-
     let batches = 0;
     let rowsChanged = 0;
     let rowsFailed = 0;
-    const start = Date.now();
-    let lastProgressLog = start;
+    const progress = logProgress
+        ? new ProgressLog({
+            what: `[character-metadata] ${label}`,
+            total: Number(/** @type {{ n: number }} */ (saved
+                ? db.get(`SELECT COUNT(*) AS n FROM ${table} WHERE id > @after`, { after: saved.value })
+                : db.get(`SELECT COUNT(*) AS n FROM ${table}`, {})).n),
+        })
+        : null;
     for await (const rows of pages) {
         const ids = /** @type {{ id: string }[]} */ (rows).map(r => r.id);
         let batchChanged = 0;
@@ -2799,11 +2760,7 @@ async function runResumableCharacterPass(db, { table = 'characters', doneKey, do
         if (batches % MIGRATION_PASSIVE_CHECKPOINT_EVERY_BATCHES === 0) {
             if (!isReadOnlyMode()) db.get('PRAGMA wal_checkpoint(PASSIVE)');
         }
-        const now = Date.now();
-        if (logProgress && now - lastProgressLog >= BOOTSTRAP_PROGRESS_LOG_INTERVAL_MS) {
-            console.log(color.cyan(`[character-metadata] ${label} progress: ${batches} batch(es), ${rowsChanged} row(s) changed`));
-            lastProgressLog = now;
-        }
+        progress?.add(ids.length);
         await delay(MIGRATION_BATCH_PAUSE_MS);
     }
 
@@ -2818,9 +2775,7 @@ async function runResumableCharacterPass(db, { table = 'characters', doneKey, do
     if (rowsFailed > 0) {
         console.warn(color.yellow(`[character-metadata] ${label}: ${rowsFailed} row(s) failed (listed above); not marked done, so it runs again from the first row next boot.`));
     }
-    if (logProgress) {
-        console.log(color.cyan(`[character-metadata] ${label} complete: ${batches} batch(es), ${rowsChanged} row(s) changed in ${((Date.now() - start) / 1000).toFixed(1)}s.`));
-    }
+    progress?.finish(`${rowsChanged.toLocaleString('en-US')} changed`);
     return { batches, rowsChanged };
 }
 
@@ -3064,9 +3019,7 @@ export async function reconcile(directories) {
     // The directory is read BATCH_FLUSH_SIZE names at a time, and each batch is checked against the db with one
     // IN (...) read, so neither the file list nor the set of known ids is ever held whole. The number of new files
     // isn't known until the pass ends, so the progress line has no total or ETA.
-    const reconcileStart = Date.now();
-    let lastProgressLog = reconcileStart;
-    let processedFiles = 0;
+    const progress = new ProgressLog({ what: '[character-metadata] adding new card files found in the characters folder' });
 
     /**
      * @param {string[]} batchFiles
@@ -3102,15 +3055,7 @@ export async function reconcile(directories) {
                 }
             }
 
-            processedFiles += newFiles.length;
-
-            const now = Date.now();
-            if (now - lastProgressLog >= BOOTSTRAP_PROGRESS_LOG_INTERVAL_MS) {
-                const elapsedSec = (now - reconcileStart) / 1000;
-                const rate = processedFiles / elapsedSec;
-                console.log(color.cyan(`[character-metadata] Reconcile progress: ${processedFiles} new files processed (${rate.toFixed(1)} files/sec)`));
-                lastProgressLog = now;
-            }
+            progress.add(newFiles.length);
         }
 
         // A pause between batches, so a large folder never holds up requests.
@@ -3132,9 +3077,9 @@ export async function reconcile(directories) {
         await processBatch(batchFiles);
     }
 
-    if (processedFiles > 0) {
-        const totalSec = (Date.now() - reconcileStart) / 1000;
-        console.log(color.cyan(`[character-metadata] Reconcile complete: ${processedFiles} new file(s) processed in ${totalSec.toFixed(1)}s.`));
+    if (progress.done > 0) {
+        // One new file is a single update, which logs nothing.
+        if (progress.done > 1) progress.finish();
 
         if (entry.batch) {
             flushBatch(entry);
@@ -5233,7 +5178,8 @@ async function runChatStatsFullPass(directories) {
     if (saved === 'done') return;
     /** @type {QueuedChatStats | null} */
     let after = saved === undefined ? null : JSON.parse(saved);
-    console.log(color.cyan(`[character-metadata] Counting every character's and group's chat stats once, for ${directories.root}${after ? `, resuming after ${after.kind} ${after.id}` : ''}.`));
+    const progress = new ProgressLog({ what: '[character-metadata] counting chat sizes and last-chat dates', total: countChatStatsFullPassLeft(entry.db, after) });
+    let changed = 0;
 
     for (;;) {
         // Stopped by disposeMetadataStores(); it resumes from the saved row on the next start.
@@ -5245,14 +5191,17 @@ async function runChatStatsFullPass(directories) {
         const page = readChatStatsFullPassPage(db, after);
         if (page.length === 0) {
             db.run(UPSERT_META_SQL, { key: CHAT_STATS_FULL_PASS_META_KEY, value: 'done' });
-            console.log(color.green(`[character-metadata] Counted every character's and group's chat stats for ${directories.root}.`));
+            progress.finish(`${changed.toLocaleString('en-US')} corrected`);
             return;
         }
         const started = performance.now();
         for (const row of page) {
             after = row;
+            progress.add();
             try {
-                if (!reconcileQueuedChatStatsSync(db, view, row)) queueChatStatsReconcileSync(db, row.kind, row.id);
+                const outcome = reconcileQueuedChatStatsSync(db, view, row);
+                if (outcome === 'waiting') queueChatStatsReconcileSync(db, row.kind, row.id);
+                else if (outcome === 'changed') changed++;
             } catch (err) {
                 console.error(color.red(`[character-metadata] Counting the chat stats of ${row.kind} ${row.id} failed; it is queued to be retried:`), err);
                 queueChatStatsReconcileSync(db, row.kind, row.id);
@@ -5262,6 +5211,25 @@ async function runChatStatsFullPass(directories) {
         db.run(UPSERT_META_SQL, { key: CHAT_STATS_FULL_PASS_META_KEY, value: JSON.stringify(after) });
         await delay(CHAT_STATS_QUEUE_PAUSE_MS);
     }
+}
+
+/**
+ * How many character and group rows the full pass has left after `after`.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {QueuedChatStats | null} after
+ * @returns {number}
+ */
+function countChatStatsFullPassLeft(db, after) {
+    const start = after === null ? 0 : CHAT_STATS_FULL_PASS_KINDS.findIndex(k => k.kind === after.kind);
+    let left = 0;
+    for (let i = start; i < CHAT_STATS_FULL_PASS_KINDS.length; i++) {
+        const { table } = CHAT_STATS_FULL_PASS_KINDS[i];
+        const row = /** @type {{ n: number }} */ (after !== null && i === start
+            ? db.get(`SELECT COUNT(*) AS n FROM ${table} WHERE id > @id`, { id: after.id })
+            : db.get(`SELECT COUNT(*) AS n FROM ${table}`, {}));
+        left += Number(row.n);
+    }
+    return left;
 }
 
 /**
@@ -5327,6 +5295,11 @@ export async function chatStatsReconcileIdle(directories) {
  * @param {{ again: boolean }} drain
  */
 async function drainChatStatsQueue(directories, drain) {
+    const first = await getEntry(directories);
+    if (!first) return;
+    const pending = /** @type {{ n: number }} */ (first.db.get('SELECT COUNT(*) AS n FROM chat_stats_pending', {}));
+    const progress = new ProgressLog({ what: '[character-metadata] counting queued chat sizes and last-chat dates', total: Number(pending.n) });
+    let changed = 0;
     do {
         drain.again = false;
         let waiting = 0;
@@ -5344,7 +5317,12 @@ async function drainChatStatsQueue(directories, drain) {
             for (const queued of page) {
                 after = queued;
                 try {
-                    if (!reconcileQueuedChatStatsSync(entry.db, view, queued)) waiting++;
+                    const outcome = reconcileQueuedChatStatsSync(entry.db, view, queued);
+                    if (outcome === 'waiting') waiting++;
+                    else {
+                        progress.add();
+                        if (outcome === 'changed') changed++;
+                    }
                 } catch (err) {
                     console.error(color.red(`[character-metadata] Counting the chat stats of ${queued.kind} ${queued.id} failed; it stays queued:`), err);
                 }
@@ -5357,6 +5335,8 @@ async function drainChatStatsQueue(directories, drain) {
             await delay(CHAT_STATS_QUEUE_RETRY_MS);
         }
     } while (drain.again);
+    // One queued row is a single update, which logs nothing.
+    if (progress.done > 1) progress.finish(`${changed.toLocaleString('en-US')} corrected`);
 }
 
 /**
@@ -5380,11 +5360,12 @@ function readChatStatsQueuePage(db, after) {
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  * @param {import('./message-tree-db.js').OwnerStatsView | null} view null when the tree store is unavailable.
  * @param {QueuedChatStats} queued
- * @returns {boolean} false when it was left queued because a write to its owner has a stats change in flight.
+ * @returns {'waiting' | 'changed' | 'unchanged'} 'waiting' when it was left queued because a write to its owner has a
+ *   stats change in flight.
  */
 function reconcileQueuedChatStatsSync(db, view, { kind, id }) {
     const ownerId = kind === 'group' ? id : characterOwnerIdOf(id);
-    if (view !== null && view.hookInFlight(ownerId)) return false;
+    if (view !== null && view.hookInFlight(ownerId)) return 'waiting';
 
     let stats = { chatSize: 0, dateLastChat: 0 };
     if (view) {
@@ -5396,60 +5377,53 @@ function reconcileQueuedChatStatsSync(db, view, { kind, id }) {
         if (owner?.kind === kind && owner.rowId === id) stats = view.readStats(ownerId);
     }
 
+    const result = { changed: false };
     db.transaction(() => {
-        if (kind === 'character') writeCharacterChatStatsSync(db, id, stats);
-        else writeGroupChatStatsSync(db, id, stats);
+        result.changed = kind === 'character' ? writeCharacterChatStatsSync(db, id, stats) : writeGroupChatStatsSync(db, id, stats);
         db.run('DELETE FROM chat_stats_pending WHERE kind = @kind AND id = @id', { kind, id });
     });
-    return true;
-}
-
-/**
- * @param {string} what
- * @param {{ chat_size: number, date_last_chat: number }} row
- * @param {{ chatSize: number, dateLastChat: number }} stats
- */
-function logChatStatsCorrection(what, row, stats) {
-    console.log(`[character-metadata] Chat stats of ${what} counted from its messages: chat_size ${row.chat_size} -> ${stats.chatSize}, date_last_chat ${row.date_last_chat} -> ${stats.dateLastChat}.`);
+    return result.changed ? 'changed' : 'unchanged';
 }
 
 /**
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  * @param {string} avatar
  * @param {{ chatSize: number, dateLastChat: number }} stats
+ * @returns {boolean} whether the row changed.
  */
 function writeCharacterChatStatsSync(db, avatar, stats) {
     const row = (/** @type {{ chat_size: number, date_last_chat: number, shallow_json: string } | undefined} */ (db.get(
         'SELECT chat_size, date_last_chat, shallow_json FROM characters WHERE id = @id', { id: avatar })));
-    if (!row) return;
+    if (!row) return false;
     /** @type {string[]} */
     const fields = [];
     if (Number(row.chat_size) !== stats.chatSize) fields.push('chat_size');
     if (Number(row.date_last_chat) !== stats.dateLastChat) fields.push('date_last_chat');
-    if (fields.length === 0) return;
+    if (fields.length === 0) return false;
 
     db.run('UPDATE characters SET chat_size = @chatSize, date_last_chat = @dateLastChat WHERE id = @id', { ...stats, id: avatar });
     const shallow = JSON.parse(row.shallow_json);
     shallow.chat_size = stats.chatSize;
     shallow.date_last_chat = stats.dateLastChat;
     writeShallowJson(db, avatar, shallow, fields);
-    logChatStatsCorrection(`character ${avatar}`, row, stats);
+    return true;
 }
 
 /**
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  * @param {string} groupId
  * @param {{ chatSize: number, dateLastChat: number }} stats
+ * @returns {boolean} whether the row changed.
  */
 function writeGroupChatStatsSync(db, groupId, stats) {
     const row = (/** @type {{ chat_size: number, date_last_chat: number } | undefined} */ (db.get(
         'SELECT chat_size, date_last_chat FROM groups WHERE id = @id', { id: groupId })));
-    if (!row) return;
-    if (Number(row.chat_size) === stats.chatSize && Number(row.date_last_chat) === stats.dateLastChat) return;
+    if (!row) return false;
+    if (Number(row.chat_size) === stats.chatSize && Number(row.date_last_chat) === stats.dateLastChat) return false;
 
     db.run('UPDATE groups SET chat_size = @chatSize, date_last_chat = @dateLastChat WHERE id = @id', { ...stats, id: groupId });
     insertGroupChange(db, groupId);
-    logChatStatsCorrection(`group ${groupId}`, row, stats);
+    return true;
 }
 
 // group_tags has no real foreign key; cascade is application code, same as deleteRowSync() for characters.
@@ -6383,7 +6357,6 @@ async function finishDeletedTag(entry, tagId, totals) {
         if (state.outcome === 'rows') continue;
         if (state.outcome === 'finished') {
             totals.wrote = true;
-            console.log(color.cyan(`[character-metadata] Deleted tag ${tagId} (${tagName}): finished.`));
         }
         return;
     }
@@ -6495,9 +6468,6 @@ export async function removeOrphanTagRowsIfNeeded(directories) {
     let progressSaved = !!saved;
     /** @type {{ table: string, id: string, tagId: string } | null} */
     const resumeAt = saved ? JSON.parse(saved.value) : null;
-    if (resumeAt) {
-        console.log(color.cyan(`[character-metadata] ${label}: resuming after ${resumeAt.table} (${resumeAt.id}, ${resumeAt.tagId})`));
-    }
 
     let batches = 0;
     let rowsChanged = 0;
@@ -6591,9 +6561,6 @@ export async function refreshGroupDigestTagIdsIfNeeded(directories) {
     let progressSaved = !!saved;
     /** @type {string | null} */
     let after = saved ? JSON.parse(saved.value).id : null;
-    if (after !== null) {
-        console.log(color.cyan(`[character-metadata] ${label}: resuming after ${after}`));
-    }
 
     let batches = 0;
     let rowsChanged = 0;
@@ -7237,9 +7204,6 @@ export async function fillEntityCountsIfNeeded(directories) {
         if (fill.done === 1) continue;
         /** @type {string | null} */
         let after = fill.upto;
-        if (after !== null) {
-            console.log(color.cyan(`[character-metadata] Entity count fill: resuming ${table} after ${after}`));
-        }
 
         const rangeSql = (/** @type {string} */ column, /** @type {string | null} */ lower) => `${lower === null ? '' : `${column} > @after AND `}${column} <= @last`;
         for (;;) {
@@ -8538,9 +8502,6 @@ export async function fillTagDerivedColumnsIfNeeded(directories) {
     const saved = /** @type {{ value: string } | undefined} */ (db.get('SELECT value FROM meta WHERE key = @key', { key: TAG_DERIVED_COLUMNS_FILL_UPTO_KEY }));
     /** @type {number | null} */
     let after = saved ? Number(saved.value) : null;
-    if (after !== null) {
-        console.log(color.cyan(`[character-metadata] Tag derived columns fill: resuming after rowid ${after}`));
-    }
 
     let batches = 0;
     let rowsChanged = 0;
@@ -8879,7 +8840,6 @@ export async function fillTagSortOrdersIfNeeded(directories) {
     const saved = /** @type {{ value: string } | undefined} */ (db.get('SELECT value FROM meta WHERE key = @key', { key: TAG_SORT_ORDERS_FILL_AT_KEY }));
     /** @type {{ phase: 'unordered', k: string, r: number } | { phase: 'unordered' } | { phase: 'ties', s: number | null }} */
     let at = saved ? JSON.parse(saved.value) : { phase: 'unordered' };
-    if (saved) console.log(color.cyan(`[character-metadata] Tag sort_order fill: resuming at ${saved.value}`));
 
     const totals = { batches: 0, rowsChanged: 0 };
     const pause = async () => {
@@ -9834,10 +9794,8 @@ export async function runTagReorderPassIfNeeded(directories) {
     const recorded = tagReorderPassSync(db);
     if (recorded === null) return totals;
     if (!db.get('SELECT 1 FROM meta WHERE key = @key', { key: TAG_SORT_ORDERS_FILLED_FLAG })) {
-        console.log(color.cyan(`[character-metadata] Tag reorder pass ${recorded.id}: waiting for the tag sort_order fill to finish.`));
         return totals;
     }
-    if (recorded.at !== null) console.log(color.cyan(`[character-metadata] Tag reorder pass ${recorded.id}: resuming at ${JSON.stringify(recorded.at)}`));
     db.exec(TAG_REORDER_PASS_INDEXES_SQL);
 
     const pause = async () => {
@@ -11409,6 +11367,30 @@ export async function streamLinkedWorlds(directories) {
         nextPageParams: {},
         keyColumn: 'world',
     }));
+}
+
+/**
+ * How many character rows there are, for a background pass's progress over them.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<number | null>} `null` if the metadata store is unavailable.
+ */
+export async function countCharacterRows(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    const row = /** @type {{ n: number } | undefined} */ (entry.db.get('SELECT COUNT(*) AS n FROM characters', {}));
+    return Number(row?.n ?? 0);
+}
+
+/**
+ * How many characters link a World, for a background pass's progress over them.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<number | null>} `null` if the metadata store is unavailable.
+ */
+export async function countCharactersLinkedToAWorld(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    const row = /** @type {{ n: number } | undefined} */ (entry.db.get('SELECT COUNT(*) AS n FROM characters WHERE world > \'\'', {}));
+    return Number(row?.n ?? 0);
 }
 
 /** Rows per batch in the bulk selection reads below. */
