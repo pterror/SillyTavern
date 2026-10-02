@@ -4604,8 +4604,14 @@ function printTagFilters(type = tag_filter_type.character) {
         }
     }
 
+    // With folders on, the list has no folder rows for "Show only folders" to keep, so the pill is left out;
+    // with them off it stays as the way to turn folders on.
     let actionTags = Object.values(ACTIONABLE_TAGS);
-    actionTags.find(x => x == ACTIONABLE_TAGS.FOLDER).name = power_user.bogus_folders ? 'Show only folders' : 'Enable \'Tags as Folder\'\n\nAllows characters to be grouped in folders by their assigned tags.\nTags have to be explicitly chosen as folder to show up.\n\nClick here to start';
+    if (power_user.bogus_folders) {
+        actionTags = actionTags.filter(x => x !== ACTIONABLE_TAGS.FOLDER);
+    } else {
+        ACTIONABLE_TAGS.FOLDER.name = 'Enable \'Tags as Folder\'\n\nAllows characters to be grouped in folders by their assigned tags.\nTags have to be explicitly chosen as folder to show up.\n\nClick here to start';
+    }
 
     if (isGroupContext(type)) {
         actionTags = filterActionableTagsForGroupContext(actionTags);
@@ -4614,7 +4620,7 @@ function printTagFilters(type = tag_filter_type.character) {
     const inListActionTags = Object.values(InListActionable);
 
     // Only the action pills are removed and drawn again here; the tag pills are printBigTagFilterList()'s.
-    const actionAndInListTags = [...actionTags, ...inListActionTags];
+    const actionAndInListTags = [...Object.values(ACTIONABLE_TAGS), ...inListActionTags];
     for (const tag of actionAndInListTags) {
         $filterContainer.find(`.tag[id="${tag.id}"]`).remove();
     }

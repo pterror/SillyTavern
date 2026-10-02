@@ -94,6 +94,17 @@ test.describe('folders', () => {
         if (await page.evaluate(() => $('#bogus_folders').prop('checked'))) await setFolders(page, false);
     });
 
+    test('the folder pill only offers to turn folders on; with folders on it is gone', async ({ page }) => {
+        const pill = page.locator('#rm_characters_block .rm_tag_filter .tag.filterByFolder');
+        await expect(pill).toHaveCount(1);
+        await expect(pill.locator('.tag_name')).toHaveAttribute('title', /Enable 'Tags as Folder'/);
+        await setFolders(page, true);
+        await expect(pill).toHaveCount(0);
+        await expect(page.locator('#rm_characters_block .rm_tag_filter .tag.filterByFavorites')).toHaveCount(1);
+        await setFolders(page, false);
+        await expect(pill).toHaveCount(1);
+    });
+
     test('a closed folder\'s characters show under its case, the rest under "No folder"', async ({ page }) => {
         const stamp = Date.now();
         const folderId = `closed-${stamp}`;
