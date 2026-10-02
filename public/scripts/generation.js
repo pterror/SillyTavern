@@ -48,7 +48,7 @@ import { sendSystemMessage, system_message_types } from './system-messages.js';
 import { getTextGenGenerationData, textgenerationwebui_settings as textgen_settings } from './textgen-settings.js';
 import { getFriendlyTokenizerName, getPromptTokenCountAsync, getTokenCountAsync, saveTokenCache, showTrimEstimateWarning } from './tokenizers.js';
 import { ToolManager } from './tool-calling.js';
-import { showTokenizerWarnings } from './tokenizer-notices.js';
+import { showTokenizerWarnings, REPLY_NOT_SAVED_EVENT, REPLY_STORED_EVENT } from './tokenizer-notices.js';
 import { shiftDownByOne, shiftUpByOne, waitUntilCondition } from './utils.js';
 import { stopServerGenerations, takeStreamStopResult } from './generation-stop.js';
 import { getWorldInfoPrompt, wi_anchor_position, world_info_include_names } from './world-info.js';
@@ -121,6 +121,58 @@ function _stampAssistantNodeId(nodeId) {
     }
 }
 
+// The generation whose reply the server just said it couldn't store, until the reply is marked.
+/** @type {string|null} */
+let notSavedGenerationId = null;
+window.addEventListener(REPLY_NOT_SAVED_EVENT, (/** @type {any} */ event) => {
+    notSavedGenerationId = event.detail?.generationId ?? null;
+});
+
+// Marks the reply that just arrived as not stored (`extra.reply_not_saved` = its generation id), when
+// the server said so. Nothing on the page writes it: healDirtyMessages() skips it, and a send after it
+// is refused until the server stores it (REPLY_STORED_EVENT below).
+function _markReplyNotSaved() {
+    const generationId = notSavedGenerationId;
+    notSavedGenerationId = null;
+    if (generationId == null) return;
+    const mesId = chat.length - 1;
+    const msg = /** @type {ChatMessage | undefined} */ (chat[mesId]);
+    if (msg == null) return;
+    updateMessage(mesId, { extra: { ...msg.extra, reply_not_saved: generationId } });
+}
+
+// The server stored a reply it couldn't store at first: the reply takes its node and loses the mark.
+window.addEventListener(REPLY_STORED_EVENT, (/** @type {any} */ event) => {
+    const { generationId, node_id: nodeId, mes } = event.detail ?? {};
+    const mesId = chat.findIndex(m => m.extra?.reply_not_saved === generationId);
+    if (mesId < 0 || !isStoredNodeId(nodeId)) return;
+    const msg = /** @type {ChatMessage} */ (chat[mesId]);
+    const extra = { ...msg.extra };
+    delete extra.reply_not_saved;
+    /** @type {Partial<ChatMessage>} */
+    const updates = { node_id: nodeId, extra };
+    const selected = msg.swipe_id ?? 0;
+    const swipeInfoEntry = Array.isArray(msg.swipe_info) ? /** @type {SwipeInfo | undefined} */ (msg.swipe_info[selected]) : undefined;
+    if (swipeInfoEntry != null) {
+        const swipeInfo = [...msg.swipe_info];
+        swipeInfo[selected] = { ...swipeInfo[selected], node_id: nodeId };
+        updates.swipe_info = swipeInfo;
+    }
+    if (typeof mes === 'string' && mes !== msg.mes) {
+        updates.mes = mes;
+        if (Array.isArray(msg.swipes)) {
+            const swipes = [...msg.swipes];
+            swipes[selected] = mes;
+            updates.swipes = swipes;
+        }
+    }
+    const updated = updateMessage(mesId, updates);
+    if (updated) {
+        _messageSnapshots.set(nodeId, updated);
+        updateMessageBlock(mesId, updated);
+    }
+});
+
 /**
  * Puts the stored text of a stopped reply on the last message, if it differs from what is shown.
  * @param {string|null|undefined} mes
@@ -167,28 +219,21 @@ export async function finishStreamedReplyPersistence({ assistantNodeId, itemizat
         _stampAssistantNodeId(assistantNodeId);
     } else if (stop !== undefined) {
         // A stopped reply: the server stored exactly what it streamed up to the stop, which can be a
-        // little more than arrived here, so the message takes the stored text. Nothing to heal: the
-        // server stored it (or stored nothing because nothing was generated).
+        // little more than arrived here, so the message takes the stored text.
         if (stop && isStoredNodeId(stop.node_id)) {
             _showStoredReplyText(stop.mes);
             _stampAssistantNodeId(stop.node_id);
-        } else if (!stop || stop.state === 'stopping') {
-            console.warn('[stop] The server did not confirm the stop; the saved reply may differ until the chat is reloaded.', stop);
+        } else {
+            if (!stop || stop.state === 'stopping') {
+                console.warn('[stop] The server did not confirm the stop; the saved reply may differ until the chat is reloaded.', stop);
+            }
+            _markReplyNotSaved();
         }
     } else {
-        // Backend/path didn't send assistant_node_id: not a raw-action stream, the server-side
-        // persist failed, or - the common real case - the user stopped the stream before the
-        // trailing assistant_node_id frame arrived (a deliberate abort intentionally never
-        // resumes to fetch it - see ResumableCompactStreamReader.read()'s own AbortError
-        // handling, llamacpp-compact-stream.js). `chat[messageId]` still has no node_id either
-        // way, so `heal: true` is required here, not optional: it's what makes saveChat() run
-        // healDirtyMessages() first, which is what actually calls chatOpAppend() to persist this
-        // trailing message and learn its real node_id - the plain saveChatConditional() below
-        // would otherwise only resave chat_metadata and silently leave chat[messageId].node_id
-        // unset, which then surfaces later as a "node_id is required" error the next time this
-        // message is addressed (e.g. Continue).
-        // eslint-disable-next-line no-restricted-syntax -- see comment above; this IS the direct persistence path for this exact case.
-        await saveChatConditional({ heal: true });
+        // The server stores every reply that lands in the chat. No node id means it couldn't (and said
+        // so, which marks the reply), or the chat isn't stored at all (no character); the page doesn't
+        // write it either way.
+        _markReplyNotSaved();
     }
 }
 
@@ -258,6 +303,15 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
 
     if (main_api == 'kobold' && kai_settings.streaming_kobold && !kai_flags.can_use_streaming) {
         toastr.error(t`Streaming is enabled, but the version of Kobold used does not support token streaming.`, undefined, { timeOut: 10000, preventDuplicates: true });
+        unblockGeneration(type);
+        return Promise.resolve();
+    }
+
+    // A reply the server couldn't store can't be built on: the next message would have nothing stored
+    // to follow. Storing it again is offered on its notice.
+    const unsavedReply = /** @type {ChatMessage | undefined} */ (chat[chat.length - 1]);
+    if (!dryRun && type !== 'quiet' && type !== 'impersonate' && typeof unsavedReply?.extra?.reply_not_saved === 'string') {
+        toastr.error(t`The last reply isn't saved yet. Use "Save it again" on its notice first, or delete it.`, t`Reply not saved`, { preventDuplicates: true });
         unblockGeneration(type);
         return Promise.resolve();
     }
@@ -2687,7 +2741,11 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
 
             // This relies on `saveReply` having been called to add the message to the chat, so it must be last.
             parseAndSaveLogprobs(data, continue_mag);
-            _stampAssistantNodeId(data.assistant_node_id);
+            if (isStoredNodeId(data.assistant_node_id)) {
+                _stampAssistantNodeId(data.assistant_node_id);
+            } else {
+                _markReplyNotSaved();
+            }
             // Non-streaming raw-action response - see finishStreamedReplyPersistence()'s identical
             // streaming-path application of `itemization` for why this exists and the same
             // chat.length-1 convention.

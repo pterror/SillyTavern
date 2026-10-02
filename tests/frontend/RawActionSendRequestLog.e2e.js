@@ -231,6 +231,9 @@ test.describe('raw-action send request log', () => {
             const avatar = await createCharacter(page, `RawActionUnreadable-${stamp}`, `Hello from the greeting ${stamp}.`);
             await openCharacter(page, avatar);
             await connectLlamaCpp(page, unreadable.url);
+            // Earlier tests in the same worker may have saved streaming on.
+            // @ts-ignore
+            await page.evaluate(() => { SillyTavern.getContext().textCompletionSettings.streaming = false; });
             await page.waitForTimeout(SETTLE_MS);
 
             await page.locator('#send_textarea').fill(`Unreadable question ${stamp}?`);
