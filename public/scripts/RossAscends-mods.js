@@ -1121,6 +1121,7 @@ export function initRossMods() {
         // matches the message actually being edited, not necessarily the last one.
         if (event.ctrlKey && event.key == 'Enter') {
             if (handleFieldEditKey('confirm')) {
+                event.preventDefault();
                 return;
             }
             const editMesDone = $('.mes_edit_done:visible');

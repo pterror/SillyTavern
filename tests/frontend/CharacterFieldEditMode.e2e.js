@@ -207,7 +207,22 @@ function fieldLocators(page, id) {
         done: page.locator(`.field_edit_done[data-for="${id}"]`),
         cancel: page.locator(`.field_edit_cancel[data-for="${id}"]`),
         maximize: page.locator(`.field_maximize[data-for="${id}"]`),
+        editor: panel.locator('.cm-editor'),
     };
+}
+
+/**
+ * Replaces a field's text by typing in its editor, as a user does (the textarea itself is hidden while it's mounted).
+ * @param {import('@playwright/test').Page} page
+ * @param {ReturnType<typeof fieldLocators>} f
+ * @param {string} text
+ */
+async function fillField(page, f, text) {
+    await expect(f.editor).toBeVisible();
+    await f.editor.locator('.cm-content').focus();
+    await page.keyboard.press('Control+a');
+    if (text) await page.keyboard.insertText(text);
+    else await page.keyboard.press('Delete');
 }
 
 /**
@@ -355,7 +370,7 @@ test.describe('character field edit mode', () => {
                 await withCharacter(page, field, 'original', async (avatar) => {
                     await enterEdit(page, field);
                     const saves = recordSaveRequests(page);
-                    await fieldLocators(page, field.id).textarea.fill('typed');
+                    await fillField(page, fieldLocators(page, field.id), 'typed');
                     // eslint-disable-next-line playwright/no-wait-for-timeout
                     await page.waitForTimeout(await getAutoSaveTimeout(page) + 2000);
                     expect(saves).toEqual([]);
@@ -370,7 +385,7 @@ test.describe('character field edit mode', () => {
                     await enterEdit(page, field);
                     const saves = recordSaveRequests(page);
                     const f = fieldLocators(page, field.id);
-                    await f.textarea.fill('confirmed');
+                    await fillField(page, f, 'confirmed');
                     await f.done.click();
                     await expectPreviewMode(page, field);
                     await expect(f.preview).toContainText('confirmed');
@@ -383,7 +398,7 @@ test.describe('character field edit mode', () => {
                 await withCharacter(page, field, 'original', async (avatar) => {
                     await enterEdit(page, field);
                     const f = fieldLocators(page, field.id);
-                    await f.textarea.fill('confirmed by key');
+                    await fillField(page, f, 'confirmed by key');
                     await f.textarea.press('Control+Enter');
                     await expectPreviewMode(page, field);
                     await expect(f.preview).toContainText('confirmed by key');
@@ -396,7 +411,7 @@ test.describe('character field edit mode', () => {
                     await enterEdit(page, field);
                     const saves = recordSaveRequests(page);
                     const f = fieldLocators(page, field.id);
-                    await f.textarea.fill('discarded');
+                    await fillField(page, f, 'discarded');
                     await f.cancel.click();
                     await expectPreviewMode(page, field);
                     await expect(f.textarea).toHaveValue('original');
@@ -423,7 +438,7 @@ test.describe('character field edit mode', () => {
                     await enterEdit(page, field);
                     const saves = recordSaveRequests(page);
                     const f = fieldLocators(page, field.id);
-                    await f.textarea.fill('discarded by key');
+                    await fillField(page, f, 'discarded by key');
                     await f.textarea.press('Escape');
                     const dialog = page.locator('dialog[open]');
                     await expect(dialog).toContainText('Discard your changes?');
@@ -453,7 +468,7 @@ test.describe('character field edit mode', () => {
                         await withCharacter(page, field, 'original', async (avatar) => {
                             await enterEdit(page, field);
                             const f = fieldLocators(page, field.id);
-                            await f.textarea.fill('autosaved');
+                            await fillField(page, f, 'autosaved');
                             await expect.poll(async () => storedValue(await fetchStoredCharacter(page, avatar), field), { timeout: 10000 }).toBe('autosaved');
                             await expectEditMode(page, field);
                             await f.cancel.click();
@@ -469,7 +484,7 @@ test.describe('character field edit mode', () => {
                         await withCharacter(page, field, 'original', async (avatar) => {
                             await enterEdit(page, field);
                             const f = fieldLocators(page, field.id);
-                            await f.textarea.fill('confirmed by escape');
+                            await fillField(page, f, 'confirmed by escape');
                             await f.textarea.press('Escape');
                             await expectPreviewMode(page, field);
                             await expect(page.locator('dialog[open]')).toHaveCount(0);
@@ -489,7 +504,7 @@ test.describe('character field edit mode', () => {
                         await withCharacter(page, field, 'original', async (avatar) => {
                             await enterEdit(page, field);
                             const f = fieldLocators(page, field.id);
-                            await f.textarea.fill('kept');
+                            await fillField(page, f, 'kept');
                             await expect.poll(async () => storedValue(await fetchStoredCharacter(page, avatar), field), { timeout: 10000 }).toBe('kept');
                             await f.cancel.click();
                             await expectPreviewMode(page, field);
@@ -511,7 +526,7 @@ test.describe('character field edit mode', () => {
                         await withCharacter(page, field, 'original', async (avatar) => {
                             await enterEdit(page, field);
                             const f = fieldLocators(page, field.id);
-                            await f.textarea.fill('in progress');
+                            await fillField(page, f, 'in progress');
                             await page.evaluate(async (other) => {
                                 const { selectCharacterByAvatar } = await import('/script.js');
                                 await selectCharacterByAvatar(other);
@@ -534,7 +549,7 @@ test.describe('character field edit mode', () => {
                             await openCharacter(page, avatar);
                             await enterEdit(page, field);
                             const f = fieldLocators(page, field.id);
-                            await f.textarea.fill('in progress');
+                            await fillField(page, f, 'in progress');
                             const opened = await page.evaluate(async (groupId) => {
                                 const { openGroupById } = await import('/scripts/group-chats.js');
                                 return openGroupById(groupId);
@@ -561,7 +576,7 @@ test.describe('character field edit mode', () => {
                     await page.locator('#character_name_pole').fill(`FieldEditCreate-${stamp()}`);
                     await enterEdit(page, field);
                     const f = fieldLocators(page, field.id);
-                    await f.textarea.fill('in progress');
+                    await fillField(page, f, 'in progress');
                     /** @type {string[]} */
                     const creates = [];
                     page.on('request', (request) => {
@@ -581,7 +596,7 @@ test.describe('character field edit mode', () => {
                             await expect(page.locator('#chat .mes[mesid="0"]')).toHaveCount(1, { timeout: 10000 });
                             await enterEdit(page, field);
                             const f = fieldLocators(page, field.id);
-                            await f.textarea.fill('in progress');
+                            await fillField(page, f, 'in progress');
                             await page.locator('#chat .mes[mesid="0"] .mes_edit').click();
                             await expectToast(page, FIELD_BLOCKED_TOAST);
                             await expect(page.locator('#curEditTextarea')).toHaveCount(0);
@@ -597,7 +612,7 @@ test.describe('character field edit mode', () => {
                         await withCharacter(page, field, 'original', async () => {
                             await enterEdit(page, field);
                             const f = fieldLocators(page, field.id);
-                            await f.textarea.fill('in progress');
+                            await fillField(page, f, 'in progress');
                             // Its button is on the greeting tab, which can't be opened mid-edit; other code can still press it.
                             await page.locator('.open_alternate_greetings').first().evaluate(el => (/** @type {HTMLElement} */ (el)).click());
                             await expectToast(page, FIELD_BLOCKED_TOAST);
@@ -635,7 +650,7 @@ test.describe('character field edit mode', () => {
                         const mesId = await addUserMessageWithReasoning(page);
                         await enterEdit(page, field);
                         const f = fieldLocators(page, field.id);
-                        await f.textarea.fill('in progress');
+                        await fillField(page, f, 'in progress');
                         await page.locator(`#chat .mes[mesid="${mesId}"] .mes_reasoning_edit`).click();
                         await expectToast(page, FIELD_BLOCKED_TOAST);
                         await expect(page.locator('.reasoning_edit_textarea')).toHaveCount(0);
@@ -669,7 +684,7 @@ test.describe('character field edit mode', () => {
                 await withCharacter(page, field, 'original', async () => {
                     await enterEdit(page, field);
                     const f = fieldLocators(page, field.id);
-                    await f.textarea.fill('in progress');
+                    await fillField(page, f, 'in progress');
                     const tabRadio = (/** @type {string} */ tab) => page.locator(`input[name="charInfoTabs_tab"][value="${tab}"]`);
                     await openInfoTab(page, nextTab);
                     await expect(f.panel).toHaveClass(/\bfield_edit_attention\b/);
@@ -699,7 +714,7 @@ test.describe('character field edit mode', () => {
                 await withCharacter(page, field, 'original', async (avatar) => {
                     await enterEdit(page, field);
                     const f = fieldLocators(page, field.id);
-                    await f.textarea.fill('in progress');
+                    await fillField(page, f, 'in progress');
                     await page.evaluate(async (avatar) => {
                         const { select_selected_character } = await import('/script.js');
                         select_selected_character(avatar);
@@ -722,7 +737,7 @@ test.describe('character field edit mode', () => {
                         });
                         await enterEdit(page, field);
                         const f = fieldLocators(page, field.id);
-                        await f.textarea.fill('in progress');
+                        await fillField(page, f, 'in progress');
                         await page.locator('#chat .mes[mesid="0"] .swipe_right').click();
                         await expect.poll(() => page.evaluate(() => {
                             // @ts-ignore
@@ -912,7 +927,7 @@ test.describe('character field edit mode', () => {
             const f = fieldLocators(page, field.id);
             await f.pencil.click();
             await expectEditMode(page, field);
-            await f.textarea.fill('typed by the user');
+            await fillField(page, f, 'typed by the user');
             await page.evaluate(id => $(`#${id}`).val('written by code').trigger('input'), field.id);
 
             await expect(f.textarea).toHaveValue('typed by the user');
@@ -1135,7 +1150,7 @@ test.describe('expanded editor layer', () => {
         await withCharacter(page, description, 'original', async () => {
             const f = fieldLocators(page, description.id);
             await enterEdit(page, description);
-            await f.textarea.fill('typed text');
+            await fillField(page, f, 'typed text');
             await f.textarea.evaluate(el => (/** @type {HTMLTextAreaElement} */ (el)).setSelectionRange(5, 5));
             await f.maximize.click();
             await expect(layer(page).locator(`#${description.id}`)).toBeVisible();

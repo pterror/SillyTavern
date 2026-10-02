@@ -1,5 +1,5 @@
 import { state as cmState, view as cmView, commands as cmCommands } from '../../live-editor-lib.js';
-import { markEditorEvent, registerMountedEditor, unregisterMountedEditor } from './registry.js';
+import { isEditorEvent, markEditorEvent, registerMountedEditor, unregisterMountedEditor } from './registry.js';
 import { chatMarkdownLanguage, liveRendering } from './render.js';
 import { liveMacros } from './macros.js';
 import { liveFormatting } from './formatting.js';
@@ -36,6 +36,9 @@ const fromTextarea = Annotation.define();
 
 /** Events copied onto the textarea before the editor handles them, so listeners on it run as they did. */
 const FORWARDED = ['keydown', 'keyup', 'keypress', 'mousedown', 'mouseup', 'click', 'dblclick', 'contextmenu', 'copy', 'cut', 'paste'];
+
+/** Keys the open suggestion list takes. */
+const LIST_KEYS = new Set(['Escape', 'Enter', 'Tab', 'ArrowUp', 'ArrowDown', 'PageUp', 'PageDown']);
 
 /** The originals stop at the editor, so code outside sees each one once, as the textarea's. */
 const STOPPED = [...FORWARDED, 'input', 'beforeinput', 'focusin', 'focusout', 'compositionstart', 'compositionupdate', 'compositionend'];
@@ -117,8 +120,10 @@ export function mountLiveEditor(textarea, options = {}) {
 
     const look = readLook(textarea);
 
-    const forwardHandlers = Object.fromEntries(FORWARDED.map(type => [type, (/** @type {Event} */ event) => {
+    const forwardHandlers = Object.fromEntries(FORWARDED.map(type => [type, (/** @type {Event} */ event, /** @type {EditorView} */ editorView) => {
         if (event.defaultPrevented) return false;
+        // While the suggestion list is open, its keys belong to it (Escape closes it, Enter takes a suggestion).
+        if (event instanceof KeyboardEvent && LIST_KEYS.has(event.key) && editorView.dom.querySelector('.cm-tooltip-autocomplete')) return false;
         const copy = copyEvent(event);
         markEditorEvent(copy);
         textarea.dispatchEvent(copy);
@@ -155,6 +160,8 @@ export function mountLiveEditor(textarea, options = {}) {
     const view = new EditorView({
         state: EditorState.create({
             doc: textareaValue.get.call(textarea),
+            // Where the textarea's cursor was, so typing goes on where it was.
+            selection: initialSelection(textarea),
             extensions: [
                 compartments.grammar.of(chatMarkdownLanguage(options.grammar)),
                 compartments.render.of(options.render ? liveRendering({ render: options.render, emojis: options.grammar?.emojis }) : []),
@@ -206,6 +213,15 @@ export function mountLiveEditor(textarea, options = {}) {
     textarea.classList.add('live-editor-textarea');
     const restoreTextarea = proxyTextarea(textarea, view);
 
+    // Code that writes the value through the prototype's setter (going around the textarea's own `value`) and then
+    // fires `input`, as some extensions do, still reaches the editor.
+    const onOutsideInput = (/** @type {Event} */ event) => {
+        if (isEditorEvent(event)) return;
+        const change = diffText(view.state.doc.toString(), textareaValue.get.call(textarea));
+        if (change) view.dispatch({ changes: change, annotations: fromTextarea.of(true) });
+    };
+    textarea.addEventListener('input', onOutsideInput, true);
+
     // Inline styles and classes set on the textarea later (fonts, themes) still reach the editor. The hiding class
     // changes none of the properties copied, so the textarea can be read while hidden.
     const observer = new MutationObserver(() => applyLook(view, readLook(textarea)));
@@ -219,6 +235,7 @@ export function mountLiveEditor(textarea, options = {}) {
             if (destroyed) return;
             destroyed = true;
             observer.disconnect();
+            textarea.removeEventListener('input', onOutsideInput, true);
             for (const type of STOPPED) view.dom.removeEventListener(type, stopAtEditor);
             view.contentDOM.removeEventListener('focus', onContentFocus);
             view.contentDOM.removeEventListener('blur', onContentFocus);
@@ -229,6 +246,18 @@ export function mountLiveEditor(textarea, options = {}) {
             view.dom.remove();
         },
     };
+}
+
+/**
+ * @param {HTMLTextAreaElement} textarea
+ * @returns {{ anchor: number, head: number }}
+ */
+function initialSelection(textarea) {
+    const length = textareaValue.get.call(textarea).length;
+    const clamp = (/** @type {number} */ n) => Math.max(0, Math.min(length, Number(n) || 0));
+    const start = clamp(textarea.selectionStart);
+    const end = clamp(textarea.selectionEnd);
+    return textarea.selectionDirection === 'backward' ? { anchor: end, head: start } : { anchor: start, head: end };
 }
 
 /**

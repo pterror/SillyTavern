@@ -83,7 +83,7 @@ test.describe('live editor mounted on a textarea', () => {
         await page.keyboard.type('c');
         const log = await readLog(page);
         expect(log.input).toEqual([{ value: 'abc', user: true }]);
-        expect(await page.locator('#liveEditorTestTextarea').inputValue()).toBe('abc');
+        await expect(page.locator('#liveEditorTestTextarea')).toHaveValue('abc');
     });
 
     test('a write from code (.val, .value, setRangeText) shows in the editor and fires nothing', async ({ page }) => {
@@ -111,7 +111,7 @@ test.describe('live editor mounted on a textarea', () => {
             textarea.focus();
         });
         await page.keyboard.type('X');
-        expect(await page.locator('#liveEditorTestTextarea').inputValue()).toBe('abXef');
+        await expect(page.locator('#liveEditorTestTextarea')).toHaveValue('abXef');
         const log = await readLog(page);
         expect(log.focus).toBe(1);
         await page.evaluate(() => {
@@ -125,7 +125,7 @@ test.describe('live editor mounted on a textarea', () => {
         await mountOnTestTextarea(page, '');
         await page.locator('#liveEditorTestHost .cm-content').click();
         await page.keyboard.type('aqb');
-        expect(await page.locator('#liveEditorTestTextarea').inputValue()).toBe('ab');
+        await expect(page.locator('#liveEditorTestTextarea')).toHaveValue('ab');
         const log = await readLog(page);
         expect(log.keydownOnTextarea).toEqual(['a', 'q', 'b']);
         expect(log.keydownOnDocument).toEqual(['liveEditorTestTextarea', 'liveEditorTestTextarea', 'liveEditorTestTextarea']);
@@ -150,5 +150,28 @@ test.describe('live editor mounted on a textarea', () => {
             return getFocusedField()?.id;
         });
         expect(id).toBe('liveEditorTestTextarea');
+    });
+});
+
+test.describe('live editor and writes around the textarea\'s value', () => {
+    test.beforeEach(testSetup.awaitST);
+    test.afterEach(async ({ page }) => {
+        await page.evaluate(() => {
+            // @ts-ignore
+            window.liveEditorTest?.editor.destroy();
+            document.getElementById('liveEditorTestHost')?.remove();
+        });
+    });
+
+    test('a write through the prototype\'s value setter followed by input reaches the editor', async ({ page }) => {
+        await mountOnTestTextarea(page, 'before');
+        const doc = await page.evaluate(() => {
+            // @ts-ignore
+            const { editor, textarea } = window.liveEditorTest;
+            Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(textarea, 'after');
+            textarea.dispatchEvent(new Event('input', { bubbles: true }));
+            return editor.view.state.doc.toString();
+        });
+        expect(doc).toBe('after');
     });
 });

@@ -1398,6 +1398,16 @@ async function firstLoadInit() {
         saveCharacterNoteField,
         saveExampleMessagesField,
         confirmDiscard: async (title, text) => Boolean(await Popup.show.confirm(title, text)),
+        uploadImage: async (file) => {
+            const extension = /\.[a-z0-9]+$/i.exec(file.name)?.[0] ?? '';
+            const response = await fetch('/api/files/upload', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ name: `${Date.now()}_${getStringHash(file.name)}${extension}`, data: (await getBase64Async(file)).split(',')[1] }),
+            });
+            if (!response.ok) throw new Error(await response.text());
+            return (await response.json()).path;
+        },
         onEditStart: id => { if (id === 'greeting_field') beginGreetingPagerEdit(); },
         onEditEnd: id => { if (id === 'greeting_field') endGreetingPagerEdit(); },
     });
