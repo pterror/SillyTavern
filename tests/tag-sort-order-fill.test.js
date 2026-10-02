@@ -242,9 +242,9 @@ describe('fillTagSortOrdersIfNeeded: tags without a sort_order', () => {
         expect(displayOrder()).toEqual(before);
 
         metadataDb.disposeMetadataStores();
-        const log = jest.spyOn(console, 'log').mockImplementation(() => {});
-        await metadataDb.fillTagSortOrdersIfNeeded(directories);
-        expect(log.mock.calls.map(args => String(args[0])).join('\n')).toContain('resuming at');
+        const totals = await metadataDb.fillTagSortOrdersIfNeeded(directories);
+        // An uninterrupted fill of these 2500 tags is 6 batches; the first was committed before the stop.
+        expect(totals?.batches).toBe(5);
         expect(displayOrder()).toEqual(before);
         const values = [...live().prepare('SELECT sort_order FROM tags ORDER BY sort_order').pluck().iterate()];
         expect(values).toEqual([...Array(2500).keys()].map(i => i + 1));

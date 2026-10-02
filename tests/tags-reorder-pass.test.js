@@ -274,9 +274,7 @@ describe('runTagReorderPassIfNeeded', () => {
         crashAtTransaction = 0;
         metadataDb.disposeMetadataStores();
 
-        const log = jest.spyOn(console, 'log').mockImplementation(() => {});
         const totals = await metadataDb.runTagReorderPassIfNeeded(directories);
-        expect(log.mock.calls.some(args => String(args[0]).includes('resuming at'))).toBe(true);
         expect(totals.batches).toBe(4);
         const values = [...live().prepare('SELECT sort_order FROM tags ORDER BY name_key').pluck().iterate()];
         expect(values).toEqual(Array.from({ length: 2500 }, (_, i) => i));
