@@ -436,8 +436,8 @@ describe('POST /api/characters/query - filter.includeGroups (extends the design 
 
     test.each([
         ['asc', ['Alexanda.png', 'Alexander.png', 'Alexandra.png', 'Alexandre', 'Same.png', 'Same']],
-        ['desc', ['Same.png', 'Same', 'Alexandre', 'Alexandra.png', 'Alexander.png', 'Alexanda.png']],
-    ])('filter.search sorted by name %s through the search index comes back in full name order, then characters before groups', async (order, expected) => {
+        ['desc', ['Same', 'Same.png', 'Alexandre', 'Alexandra.png', 'Alexander.png', 'Alexanda.png']],
+    ])('filter.search sorted by name %s through the search index comes back in full name order, ascending ties characters before groups, descending reversed', async (order, expected) => {
         const cardFor = name => ({ name, data: { name, description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
         // The first three share their first 6 letters, which the old index sort key couldn't tell apart.
         for (const name of ['Alexandra', 'Alexander', 'Alexanda']) await seedCharacterWithFile(`${name}.png`, cardFor(`Vampire ${name}`));

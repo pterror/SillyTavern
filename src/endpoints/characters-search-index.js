@@ -33,7 +33,7 @@ const TAG_IDS_FIELD = 'tag_ids';
 export const TANTIVY_SORT_FIELDS = new Set([...TANTIVY_FAST_FIELDS, 'name', 'fav']);
 
 // Bump whenever characterToTantivyDoc()'s schema shape or field encoding changes; a mismatch forces a rebuild.
-const TANTIVY_SCHEMA_VERSION = 5;
+const TANTIVY_SCHEMA_VERSION = 6;
 
 // `tag:`/`tags:` maps to both tag-ish fields since BM25_WEIGHTS treats resolved_tags and tags as the same concept.
 const TANTIVY_FIELD_WEIGHTS = Object.fromEntries(BM25_INDEXED_COLUMNS.map((name, i) => [name, BM25_WEIGHTS[i]]));
