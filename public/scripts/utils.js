@@ -19,6 +19,7 @@ import { groupsStore, selected_group } from './group-chats.js';
 import { getCurrentLocale, t } from './i18n.js';
 import { importWorldInfo, updateWorldInfoList, charUpdateAddAuxWorld } from './world-info.js';
 import { getStringHash } from './hash-utils.js';
+import { assetUrl } from './asset-url.js';
 
 export const shiftUpByOne = (e, i, a) => a[i] = e + 1;
 export const shiftDownByOne = (e, i, a) => a[i] = e - 1;
@@ -1706,10 +1707,10 @@ export function loadFileToDocument(url, type) {
         if (type === 'css') {
             element = document.createElement('link');
             element.rel = 'stylesheet';
-            element.href = url;
+            element.href = assetUrl(url);
         } else if (type === 'js') {
             element = document.createElement('script');
-            element.src = url;
+            element.src = assetUrl(url);
         } else {
             reject('Invalid type specified');
             return;
