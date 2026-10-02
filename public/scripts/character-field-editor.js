@@ -3,7 +3,7 @@ import { renderMarkdownLiteralTags } from './marked-processor.js';
 import { refreshCharInfoTabDimming } from './char-info-tab-dimming.js';
 import { keepViewState, openEditorLayer } from './editor-layer.js';
 import { evaluateSafeMacro, insertSafeMacroSpans, substituteSafeMacros } from './safe-macros.js';
-import { isEditorEvent, isUserEvent, mountLiveEditor } from './live-editor/registry.js';
+import { EDITOR_ESCAPE_TAKERS, isEditorEvent, isUserEvent, mountLiveEditor } from './live-editor/registry.js';
 
 // A leaf module: everything it needs from the rest of the app is passed to initCharacterFieldEditor()
 // (and to substituteMacrosWithPlaceholders()), so importing it never adds an import cycle.
@@ -650,7 +650,7 @@ export function initCharacterFieldEditor(dependencies) {
         if (isEditorEvent(event)) return;
         // An open suggestion list or panel in the editor takes the Escape first.
         const editor = /** @type {Element} */ (event.target).closest?.('.cm-editor');
-        if (editor?.querySelector('.cm-tooltip-autocomplete, .cm-panels .cm-search, .cm-panels .live-presets')) return;
+        if (editor?.querySelector(EDITOR_ESCAPE_TAKERS)) return;
         if (handleFieldEditKey('escape')) {
             event.preventDefault();
         }

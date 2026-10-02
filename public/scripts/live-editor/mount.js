@@ -1,5 +1,5 @@
 import { state as cmState, view as cmView, commands as cmCommands } from '../../live-editor-lib.js';
-import { isEditorEvent, markEditorEvent, registerMountedEditor, unregisterMountedEditor } from './registry.js';
+import { EDITOR_ESCAPE_TAKERS, isEditorEvent, markEditorEvent, registerMountedEditor, unregisterMountedEditor } from './registry.js';
 import { chatMarkdownLanguage, liveRendering } from './render.js';
 import { liveMacros } from './macros.js';
 import { liveFormatting } from './formatting.js';
@@ -39,6 +39,9 @@ const fromTextarea = Annotation.define();
 
 /** Events copied onto the textarea before the editor handles them, so listeners on it run as they did. */
 const FORWARDED = ['keydown', 'keyup', 'keypress', 'mousedown', 'mouseup', 'click', 'dblclick', 'contextmenu', 'copy', 'cut', 'paste'];
+
+/** @param {KeyboardEvent} event Whether it's the paste picker's Ctrl+Alt+V (Cmd+Option+V on a Mac). */
+const isPasteCycleKey = (event) => (event.ctrlKey || event.metaKey) && event.altKey && !event.shiftKey && event.code === 'KeyV';
 
 /** Keys the open suggestion list takes. */
 const LIST_KEYS = new Set(['Escape', 'Enter', 'Tab', 'ArrowUp', 'ArrowDown', 'PageUp', 'PageDown']);
@@ -127,6 +130,10 @@ export function mountLiveEditor(textarea, options = {}) {
         if (event.defaultPrevented) return false;
         // While the suggestion list is open, its keys belong to it (Escape closes it, Enter takes a suggestion).
         if (event instanceof KeyboardEvent && LIST_KEYS.has(event.key) && editorView.dom.querySelector('.cm-tooltip-autocomplete')) return false;
+        // Escape goes to an open panel or the paste picker first, not to the field's own Escape (ending the edit).
+        if (event instanceof KeyboardEvent && event.key === 'Escape' && editorView.dom.querySelector(EDITOR_ESCAPE_TAKERS)) return false;
+        // The paste picker's key switches the paste; it isn't the field's.
+        if (event instanceof KeyboardEvent && isPasteCycleKey(event) && editorView.dom.querySelector('.live-paste-picker')) return false;
         const copy = copyEvent(event);
         markEditorEvent(copy);
         textarea.dispatchEvent(copy);

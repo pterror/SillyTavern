@@ -1,5 +1,11 @@
 // Importable without loading CodeMirror: what the rest of the app needs to know about mounted editors.
 
+/**
+ * What, open inside an editor, takes Escape before anything else does: the suggestion list, the find and presets
+ * panels, and the paste picker.
+ */
+export const EDITOR_ESCAPE_TAKERS = '.cm-tooltip-autocomplete, .cm-panels .cm-search, .cm-panels .live-presets, .live-paste-picker';
+
 /** @type {WeakMap<Element, HTMLTextAreaElement>} An editor's root element to the textarea it's mounted on. */
 const mounted = new WeakMap();
 
