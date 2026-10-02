@@ -294,3 +294,87 @@ describe('/query sorted pages: upstream tie order, with and without the sort ind
         expect(second.batches).toBe(0);
     });
 });
+
+describe('/query with characters only: the same walk, cursor and work cap', () => {
+    /** @param {string} sortField @param {'asc'|'desc'} sortOrder @param {boolean | undefined} fav */
+    const expectedCharacters = (sortField, sortOrder, fav) => expected(sortField, sortOrder, fav).filter(e => e.startsWith('character:')).map(e => e.slice('character:'.length));
+
+    test('every sort, direction and fav filter lists in order, and following each page\'s cursor joins up', async () => {
+        await seed();
+        await metadataDb.buildEntitySortIndexesIfNeeded(directories);
+        for (const sortField of SORTS) {
+            for (const sortOrder of ['asc', 'desc']) {
+                for (const fav of FAVS) {
+                    const want = expectedCharacters(sortField, sortOrder, fav);
+                    const all = await metadataDb.queryCharacters(directories, { sortField, sortOrder, fav, offset: 0, limit: 100, wantTotal: false });
+                    expect({ sortField, sortOrder, fav, rows: all.rows.map(r => r.avatar) }).toEqual({ sortField, sortOrder, fav, rows: want });
+                    const followed = [];
+                    let cursor;
+                    for (let offset = 0; offset < want.length + 2; offset += 2) {
+                        const page = await metadataDb.queryCharacters(directories, { sortField, sortOrder, fav, offset, limit: 2, wantTotal: false, cursor });
+                        followed.push(...page.rows.map(r => r.avatar));
+                        if (page.rows.length === 2) expect(page.cursor).toEqual(expect.any(String));
+                        cursor = page.cursor;
+                        if (page.rows.length < 2) break;
+                    }
+                    expect({ sortField, sortOrder, fav, rows: followed }).toEqual({ sortField, sortOrder, fav, rows: want });
+                }
+            }
+        }
+    });
+
+    test('a page walks the sort indexes: no temp b-tree sort, and no group stream', async () => {
+        await seed();
+        await metadataDb.buildEntitySortIndexesIfNeeded(directories);
+        for (const sortField of SORTS) {
+            for (const sortOrder of ['asc', 'desc']) {
+                calls.length = 0;
+                await metadataDb.queryCharacters(directories, { sortField, sortOrder, offset: 0, limit: 3, wantTotal: false });
+                const reads = calls.filter(c => /\bORDER BY\b/.test(c.sql));
+                expect(reads.length).toBeGreaterThan(0);
+                expect(reads.some(c => /\bgroups\b/.test(c.sql))).toBe(false);
+                const db = new Database(dbPath(), { readonly: true });
+                try {
+                    for (const read of reads) {
+                        const plan = db.prepare(`EXPLAIN QUERY PLAN ${read.sql}`).all(...read.params).map(r => r.detail).join(' | ');
+                        expect({ sortField, sortOrder, plan }).toEqual({ sortField, sortOrder, plan: expect.not.stringContaining('TEMP B-TREE') });
+                    }
+                } finally {
+                    db.close();
+                }
+            }
+        }
+    });
+
+    test('past the work cap, a page answers `more` and a cursor, and following them lists everything once', async () => {
+        await seed();
+        await metadataDb.buildEntitySortIndexesIfNeeded(directories);
+        metadataDb._setSortedPageWalkForTests({ cap: 1, window: 1 });
+        try {
+            const want = expectedCharacters('name', 'asc', undefined);
+            const followed = [];
+            let cursor;
+            let sawMore = false;
+            for (let i = 0; i < 50 && followed.length < want.length; i++) {
+                const page = await metadataDb.queryCharacters(directories, { sortField: 'name', sortOrder: 'asc', offset: 0, limit: 100, wantTotal: false, cursor });
+                if (page.more) sawMore = true;
+                followed.push(...page.rows.map(r => r.avatar));
+                cursor = page.cursor;
+                if (!page.more) break;
+            }
+            expect(sawMore).toBe(true);
+            expect(followed).toEqual(want);
+        } finally {
+            metadataDb._setSortedPageWalkForTests(null);
+        }
+    });
+
+    test('hash rows come in the same order as rows', async () => {
+        await seed();
+        await metadataDb.buildEntitySortIndexesIfNeeded(directories);
+        const result = await metadataDb.queryCharacters(directories, { sortField: 'date_added', sortOrder: 'desc', offset: 0, limit: 100, wantTotal: false, wantRows: false, wantHashes: true });
+        expect(result.hashRows.map(r => r.id)).toEqual(expectedCharacters('date_added', 'desc', undefined));
+        expect(result.hashRows[0]).toHaveProperty('chat');
+        expect(result.hashRows[0]).toEqual(expect.objectContaining({ favHash: expect.any(Number), contentHash: expect.any(Number) }));
+    });
+});

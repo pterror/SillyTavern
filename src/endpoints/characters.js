@@ -2977,7 +2977,8 @@ async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {})
         return queryReply(200, payload);
     }
 
-    const result = await timePhase('query_characters', () => queryCharacters(user.directories, queryParams));
+    // A sorted page's cursor lets the next page seek there instead of skipping (search plan step 6).
+    const result = await timePhase('query_characters', () => queryCharacters(user.directories, hasSearch ? queryParams : { ...queryParams, cursor: body.cursor }));
 
     if (result === null) {
         return queryReply(503, { error: true, reason: 'metadata-store-unavailable' });
@@ -2994,12 +2995,17 @@ async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {})
             approxTotal: totalApprox,
             hashRows: result.hashRows,
             searchBackend,
+            more: result.more === true,
+            cursor: result.cursor,
         });
     }
     const payload = { seq: result.seq, token: tokenFor(result) };
     if (wantRows) payload.rows = result.rows;
     if (wantTotal) payload.total = totalApprox ? `~${counted.total}` : counted.total;
     if (searchBackend !== undefined) payload.searchBackend = searchBackend;
+    // Past the work cap: the rows read so far, and the cursor to carry on from (search plan step 1b).
+    if (result.more === true) payload.more = true;
+    if (result.cursor !== undefined) payload.cursor = result.cursor;
     return queryReply(200, payload);
 }
 
