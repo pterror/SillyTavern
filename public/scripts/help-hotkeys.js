@@ -46,6 +46,7 @@ registerHotkey({ category: editing, keys: ['Ctrl+Enter'], label: t`In a characte
 registerHotkey({ category: editing, keys: ['Escape'], label: t`In a character field being edited: stop editing (asks first if your change would be lost; with autosave on, it saves)` });
 registerHotkey({ category: editing, keys: ['Tab', 'Shift+Tab'], label: t`In an expanded editor: indent or unindent` });
 registerHotkey({ category: editing, keys: ['Ctrl+F'], label: t`In the slash command or macro list: jump to its search box` });
+registerHotkey({ category: editing, keys: ['Ctrl+F'], label: t`In a field's editor: find and replace` });
 
 registerHotkey({ category: quickReplies, keys: ['Ctrl+Enter'], label: t`Run the Quick Reply (when that option is ticked in the editor)` });
 registerHotkey({ category: quickReplies, keys: ['F9'], mouse: ['Ctrl+Alt+click'], label: t`Add or remove a breakpoint` });

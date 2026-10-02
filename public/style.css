@@ -7126,3 +7126,63 @@ textarea.live-editor-textarea {
     padding: 4px 6px;
     font-size: calc(var(--mainFontSize) * 0.9);
 }
+
+.cm-editor.live-editor .cm-panels {
+    background: var(--SmartThemeBlurTintColor);
+    color: var(--SmartThemeBodyColor);
+}
+
+.cm-editor.live-editor .cm-panels-bottom {
+    border-top: 1px solid var(--SmartThemeBorderColor);
+}
+
+.cm-editor.live-editor .cm-search input,
+.cm-editor.live-editor .cm-search button {
+    font: inherit;
+    color: inherit;
+}
+
+.cm-editor.live-editor .cm-search input[type="text"],
+.cm-editor.live-editor .cm-search .cm-textfield {
+    background: var(--black30a);
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 5px;
+}
+
+.cm-editor.live-editor .live-presets {
+    padding: 4px 6px;
+    max-height: 40vh;
+    overflow-y: auto;
+}
+
+.cm-editor.live-editor .live-presets-heading {
+    font-weight: bold;
+    margin-top: 6px;
+}
+
+.cm-editor.live-editor .live-presets-row,
+.cm-editor.live-editor .live-presets-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-wrap: wrap;
+}
+
+.cm-editor.live-editor .live-presets-name {
+    flex: 1;
+}
+
+.cm-editor.live-editor .live-presets-button {
+    margin: 1px 0;
+    padding: 2px 8px;
+}
+
+.cm-editor.live-editor .live-presets-new-name {
+    flex: 1;
+    min-width: 10em;
+    margin: 0;
+}
+
+.cm-editor.live-editor .live-presets-status:empty {
+    display: none;
+}
