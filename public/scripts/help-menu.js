@@ -4,7 +4,7 @@
  * drawers stay usable while it's open.
  */
 import { openEditorLayer } from './editor-layer.js';
-import { raiseDrawer, updateDrawerStack } from './drawer-stack.js';
+import { raiseDrawer, drawerStackChanged } from './drawer-stack.js';
 import { renderHotkeys } from './help-hotkeys.js';
 import { findHelpTopic, getHelpTopics, registerHelpTopic } from './help-registry.js';
 import { t } from './i18n.js';
@@ -103,7 +103,7 @@ export function openHelp(name) {
     if (open) {
         open.show(topic.id);
         raiseDrawer(open.layer.element);
-        updateDrawerStack();
+        drawerStackChanged();
         return;
     }
     open = buildPanel(topic.id);
@@ -277,7 +277,7 @@ function buildPanel(firstTopicId) {
     });
     layer.element.classList.add('helpLayer');
     raiseDrawer(layer.element);
-    updateDrawerStack();
+    drawerStackChanged();
     show(firstTopicId);
     return { layer, show };
 }
