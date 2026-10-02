@@ -176,14 +176,27 @@ router.post('/text-models', async (request, response) => {
             },
         });
 
-        let data = await fetchResult.json();
+        let data = await fetchResult.json().catch(() => null);
+
+        // Horde answers an error object (rate limit, bad client agent, maintenance) instead of the model list.
+        // That is a failed fetch: say what Horde said, and don't cache it.
+        if (!fetchResult.ok || !Array.isArray(data)) {
+            const said = (data && typeof data === 'object' && typeof data.message === 'string') ? data.message : fetchResult.statusText;
+            const message = `AI Horde did not send a model list (HTTP ${fetchResult.status}${said ? `: ${said}` : ''}).`;
+            console.warn(message);
+            return response.status(502).send({ error: true, message });
+        }
 
         // attempt to fetch and merge models metadata
         try {
             const metadata = await getHordeTextModelMetadata();
-            data = await mergeModelsAndMetadata(data, metadata);
+            if (metadata && typeof metadata === 'object' && !Array.isArray(metadata)) {
+                data = await mergeModelsAndMetadata(data, metadata);
+            } else {
+                console.warn('AI Horde model metadata was not an object; showing models without it.');
+            }
         } catch (error) {
-            console.error('Failed to fetch metadata:', error);
+            console.warn('Failed to fetch AI Horde model metadata; showing models without it:', error?.message ?? error);
         }
 
         cache.set('models', data);
