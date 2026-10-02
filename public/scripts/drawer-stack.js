@@ -22,6 +22,7 @@ const CHAT_ID = 'sheld';
 /** Floating lists: above every ordered layer while shown. */
 const LIST_SELECTOR = '.ui-menu, .select2-container--open > .select2-dropdown';
 const ORDERED_SELECTOR = `#${CHAT_ID}, ${STACK_DRAWER_SELECTOR}, ${FLOATING_SELECTOR}`;
+const LAYER_SELECTOR = `${ORDERED_SELECTOR}, ${LIST_SELECTOR}`;
 const HOLE_SOURCE = 'drawer-stack';
 /** Past this, the ordered layers are renumbered from 1, keeping the numbers small. */
 const MAX_ORDER = 1000;
@@ -37,6 +38,21 @@ let onVisibilityChanged = () => {};
 /** @type {(el: HTMLElement) => void} */
 let onFront = raiseDrawer;
 let frame = 0;
+/**
+ * The layers in the page, found once and kept until a layer may have come or gone (see initDrawerStack's
+ * `relayer`): querying the whole page several times a frame is what made every drawer move lag with a long list.
+ * @type {{ ordered: HTMLElement[], lists: HTMLElement[], icons: HTMLElement[] } | null}
+ */
+let found = null;
+
+function findLayers() {
+    found ??= {
+        ordered: /** @type {HTMLElement[]} */ ([...document.querySelectorAll(ORDERED_SELECTOR)]),
+        lists: /** @type {HTMLElement[]} */ ([...document.querySelectorAll(LIST_SELECTOR)]),
+        icons: /** @type {HTMLElement[]} */ ([...document.querySelectorAll('[data-stack-front-of]')]),
+    };
+    return found;
+}
 
 /**
  * @param {Element} el
@@ -52,12 +68,12 @@ function stackOn() {
 
 /** @returns {HTMLElement[]} Every layer that takes part in ordering, shown or not. */
 function orderedLayers() {
-    return /** @type {HTMLElement[]} */ ([...document.querySelectorAll(ORDERED_SELECTOR)]);
+    return findLayers().ordered;
 }
 
 /** @returns {HTMLElement[]} The floating lists in the page, shown or not. */
 function listLayers() {
-    return /** @type {HTMLElement[]} */ ([...document.querySelectorAll(LIST_SELECTOR)]);
+    return findLayers().lists;
 }
 
 /**
@@ -111,11 +127,15 @@ function isShown(el) {
     return box.width > 0 && box.height > 0;
 }
 
-/** @returns {HTMLElement[]} The shown layers, bottom first. */
-function shownLayersBottomUp() {
+/**
+ * @param {HTMLElement[]} ordered
+ * @param {HTMLElement[]} lists
+ * @returns {HTMLElement[]} The shown layers, bottom first.
+ */
+function shownLayersBottomUp(ordered, lists) {
     return [
-        ...orderedLayers().filter(isShown).sort(compareOrder),
-        ...listLayers().filter(isShown),
+        ...ordered.filter(isShown).sort(compareOrder),
+        ...lists.filter(isShown),
     ];
 }
 
@@ -141,7 +161,8 @@ function holesIn(box, covers) {
 function clearLayer(el) {
     setHoles(el, HOLE_SOURCE, []);
     const wasCovered = el.classList.contains('stackCovered');
-    el.classList.remove('stackCovered');
+    // Removing a class that isn't there still rewrites the attribute, which wakes this module's own observer.
+    if (wasCovered) el.classList.remove('stackCovered');
     delete el.dataset.stackCut;
     cut.delete(el);
     return wasCovered;
@@ -166,9 +187,12 @@ function cutLayer(el, box, covers) {
     return before !== covered;
 }
 
-/** Floating windows that were hidden at the last update and are shown now come forward. */
-function raiseAppearedWindows() {
-    for (const el of /** @type {HTMLElement[]} */ ([...document.querySelectorAll(FLOATING_SELECTOR)])) {
+/**
+ * Floating windows that were hidden at the last update and are shown now come forward.
+ * @param {HTMLElement[]} ordered
+ */
+function raiseAppearedWindows(ordered) {
+    for (const el of ordered.filter(el => el.matches(FLOATING_SELECTOR))) {
         const shown = isShown(el);
         if (shown && !wasShown.has(el)) raiseDrawer(el);
         if (shown) wasShown.add(el); else wasShown.delete(el);
@@ -180,12 +204,13 @@ function raiseAppearedWindows() {
  * opening, closing or fronting one sees the new state.
  */
 export function updateDrawerStack() {
-    raiseAppearedWindows();
+    const ordered = orderedLayers();
+    raiseAppearedWindows(ordered);
     let changed = false;
     if (!stackOn()) {
         for (const el of [...cut]) changed = clearLayer(el) || changed;
     } else {
-        const bottomUp = shownLayersBottomUp();
+        const bottomUp = shownLayersBottomUp(ordered, listLayers());
         const shown = new Set(bottomUp);
         for (const el of [...cut]) {
             if (!shown.has(el)) changed = clearLayer(el) || changed;
@@ -201,27 +226,31 @@ export function updateDrawerStack() {
             above.push({ el, box });
         }
     }
-    updateFrontIcons();
+    updateFrontIcons(ordered);
     if (changed) onVisibilityChanged();
 }
 
 /**
  * @param {HTMLElement} el An ordered layer
+ * @param {HTMLElement[]} [ordered] Every ordered layer, if already at hand
  * @returns {boolean} Whether it is shown and no shown ordered layer above it covers any part of it. Floating lists
  * don't count: they sit above everything while open and say nothing about which layer was brought forward.
  */
-function isLayerInFront(el) {
+function isLayerInFront(el, ordered = orderedLayers()) {
     if (!isShown(el)) return false;
     const box = el.getBoundingClientRect();
-    return !orderedLayers().some(other => other !== el && !el.contains(other) && isShown(other)
+    return !ordered.some(other => other !== el && !el.contains(other) && isShown(other)
         && compareOrder(el, other) < 0 && holesIn(box, [other.getBoundingClientRect()]).length > 0);
 }
 
-/** Lights each `[data-stack-front-of]` icon while the layer it names is in front; with stacked drawers off, none. */
-function updateFrontIcons() {
-    for (const icon of /** @type {HTMLElement[]} */ ([...document.querySelectorAll('[data-stack-front-of]')])) {
+/**
+ * Lights each `[data-stack-front-of]` icon while the layer it names is in front; with stacked drawers off, none.
+ * @param {HTMLElement[]} ordered
+ */
+function updateFrontIcons(ordered) {
+    for (const icon of findLayers().icons) {
         const layer = document.getElementById(icon.dataset.stackFrontOf ?? '');
-        icon.classList.toggle('stackFront', stackOn() && !!layer && isLayerInFront(layer));
+        icon.classList.toggle('stackFront', stackOn() && !!layer && isLayerInFront(layer, ordered));
     }
 }
 
@@ -240,9 +269,12 @@ function allLayers() {
     return [...orderedLayers(), ...listLayers()];
 }
 
-/** @returns {string} Where the shown layers are, to tell when one moved. */
-function boxesKey() {
-    return allLayers().filter(isShown).map(el => {
+/**
+ * @param {HTMLElement[]} layers
+ * @returns {string} Where the shown layers are, to tell when one moved.
+ */
+function boxesKey(layers) {
+    return layers.filter(isShown).map(el => {
         const r = el.getBoundingClientRect();
         return `${r.left},${r.top},${r.width},${r.height}`;
     }).join(';');
@@ -261,8 +293,9 @@ function scheduleUpdate() {
     if (frame) return;
     frame = requestAnimationFrame(function step() {
         updateDrawerStack();
-        const boxes = boxesKey();
-        const moving = boxes !== lastBoxes || allLayers().some(isAnimating);
+        const layers = allLayers();
+        const boxes = boxesKey(layers);
+        const moving = boxes !== lastBoxes || layers.some(el => isShown(el) && isAnimating(el));
         lastBoxes = boxes;
         frame = moving ? requestAnimationFrame(step) : 0;
     });
@@ -306,21 +339,28 @@ export function initDrawerStack(visibilityChanged, front) {
     const resize = new ResizeObserver(scheduleUpdate);
     // A layer's own class (open, closed, fullscreen), shown menu and inline style (shown, dragged) decide where it is.
     const changed = new MutationObserver(scheduleUpdate);
+    // Layers come and go: a drawer an extension adds (or the content it puts in a drawer), a floating window, a list
+    // made or moved under <body>.
+    const holder = document.getElementById('top-settings-holder');
+    /** @type {MutationObserver} */
+    let drawers;
     const observeLayers = () => {
         resize.disconnect();
         changed.disconnect();
+        drawers.disconnect();
         for (const el of allLayers()) {
             resize.observe(el);
             changed.observe(el, { attributes: true, attributeFilter: ['class', 'style', 'data-active-menu'] });
         }
+        for (const drawer of holder?.children ?? []) drawers.observe(drawer, { childList: true });
     };
     const relayer = () => {
+        found = null;
         observeLayers();
         scheduleUpdate();
     };
+    drawers = new MutationObserver(relayer);
     observeLayers();
-    // Layers come and go: a drawer an extension adds, a floating window, a list made or moved under <body>.
-    const holder = document.getElementById('top-settings-holder');
     if (holder) new MutationObserver(relayer).observe(holder, { childList: true });
     const movingDivs = document.getElementById('movingDivs');
     if (movingDivs) new MutationObserver(relayer).observe(movingDivs, { childList: true });
@@ -329,7 +369,7 @@ export function initDrawerStack(visibilityChanged, front) {
     $(document).on('autocompleteopen autocompleteclose select2:open select2:close', relayer);
     // Animations of a layer itself start without a resize or a class change (a fade, a transform).
     const onLayerAnimation = (/** @type {Event} */ event) => {
-        if (event.target instanceof HTMLElement && allLayers().includes(event.target)) scheduleUpdate();
+        if (event.target instanceof HTMLElement && event.target.matches(LAYER_SELECTOR)) scheduleUpdate();
     };
     document.addEventListener('transitionrun', onLayerAnimation, true);
     document.addEventListener('animationstart', onLayerAnimation, true);
