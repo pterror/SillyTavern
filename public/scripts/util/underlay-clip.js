@@ -92,6 +92,55 @@ export function unionArea(rects) {
 }
 
 /**
+ * How many separate pieces of a `width` × `height` box stay uncovered by `rects`. Pieces touching only at a corner
+ * count as separate. Slivers thinner than `minSide` neither count nor join pieces (a 1px gap left by rounding isn't
+ * something anyone sees), and a piece smaller than `minArea` doesn't count.
+ * @param {number} width
+ * @param {number} height
+ * @param {Rect[]} rects In the box's own coordinates
+ * @param {number} [minSide]
+ * @param {number} [minArea]
+ * @returns {number}
+ */
+export function uncoveredPieces(width, height, rects, minSide = 4, minArea = 64) {
+    const edges = (/** @type {number[]} */ values, /** @type {number} */ size) =>
+        [...new Set([0, size, ...values.map(v => Math.min(size, Math.max(0, v)))])].sort((a, b) => a - b);
+    const xs = edges(rects.flatMap(r => [r.left, r.right]), width);
+    const ys = edges(rects.flatMap(r => [r.top, r.bottom]), height);
+    const nx = xs.length - 1;
+    const ny = ys.length - 1;
+    const open = (/** @type {number} */ i, /** @type {number} */ j) => {
+        if (xs[i + 1] - xs[i] < minSide || ys[j + 1] - ys[j] < minSide) return false;
+        const x = (xs[i] + xs[i + 1]) / 2;
+        const y = (ys[j] + ys[j + 1]) / 2;
+        return !rects.some(r => x > r.left && x < r.right && y > r.top && y < r.bottom);
+    };
+    const seen = new Set();
+    let pieces = 0;
+    for (let i = 0; i < nx; i++) {
+        for (let j = 0; j < ny; j++) {
+            if (seen.has(i * ny + j) || !open(i, j)) continue;
+            let area = 0;
+            const queue = [[i, j]];
+            seen.add(i * ny + j);
+            while (queue.length) {
+                const [ci, cj] = /** @type {number[]} */ (queue.pop());
+                area += (xs[ci + 1] - xs[ci]) * (ys[cj + 1] - ys[cj]);
+                for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+                    const ni = ci + di;
+                    const nj = cj + dj;
+                    if (ni < 0 || nj < 0 || ni >= nx || nj >= ny || seen.has(ni * ny + nj) || !open(ni, nj)) continue;
+                    seen.add(ni * ny + nj);
+                    queue.push([ni, nj]);
+                }
+            }
+            if (area >= minArea) pieces++;
+        }
+    }
+    return pieces;
+}
+
+/**
  * The nearest ancestor of `el` that scrolls (or the document), which the cut stops at.
  * @param {HTMLElement} el
  * @returns {HTMLElement}

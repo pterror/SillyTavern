@@ -296,7 +296,8 @@ function drawerOverlapState(page) {
  */
 function stackState(page) {
     return page.evaluate(() => {
-        const shown = el => el.isConnected && getComputedStyle(el).display !== 'none'
+        // A layer hidden whole (entirely covered, or a fullscreen drawer split apart) shows nowhere and covers nothing.
+        const shown = el => el.isConnected && el.checkVisibility({ visibilityProperty: true })
             && el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0;
         const order = el => Number(el.style.getPropertyValue('--drawerOrder')) || 0;
         const ordered = [...document.querySelectorAll('#sheld, #top-settings-holder > .drawer > .drawer-content, #movingDivs > *, body > .draggable')]
