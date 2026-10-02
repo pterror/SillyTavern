@@ -24,6 +24,7 @@ const {
     writeBack,
     createStoredCounter,
     TOKEN_COUNT_ROW_CAP,
+    LAST_USED_GRANULARITY_MS,
     PRUNE_BATCH_ROWS,
     PRUNE_PAUSE_MS,
     pruneBatch,
@@ -151,19 +152,26 @@ try {
     assert.equal(state.idsRunning, 1);
     assert.ok(state.counts.every(row => row.last_used === 1000));
 
-    // --- writeBack of an unchanged row changes only last_used and leaves the running count ---
-    await writeBack(directories, { counts: [{ identity: idA, hash: textHash, count: 3 }], ids: [{ identity: idA, hash: idsHash, ids: [15496, 995] }] }, 2000);
+    // --- a reused key within LAST_USED_GRANULARITY_MS of its last_used writes nothing ---
+    const DAY = LAST_USED_GRANULARITY_MS;
+    assert.equal(DAY, 24 * 60 * 60 * 1000);
+    const beforeReuse = await inspect();
+    await writeBack(directories, { counts: [{ identity: idA, hash: textHash, count: 3 }], ids: [{ identity: idA, hash: idsHash, ids: [15496, 995] }] }, 1000 + DAY - 1);
+    assert.deepEqual(await inspect(), beforeReuse, 'reused within a day: nothing written');
+
+    // --- writeBack of an unchanged row a day or more later changes only last_used and leaves the running count ---
+    await writeBack(directories, { counts: [{ identity: idA, hash: textHash, count: 3 }], ids: [{ identity: idA, hash: idsHash, ids: [15496, 995] }] }, 1000 + DAY);
     state = await inspect();
     assert.equal(state.countsRunning, 2, 'no row added');
     assert.equal(state.idsRunning, 1, 'no row added');
-    assert.equal(state.counts.find(row => row.text_hash === textHash).last_used, 2000, 'marked used');
+    assert.equal(state.counts.find(row => row.text_hash === textHash).last_used, 1000 + DAY, 'marked used');
     assert.equal(state.counts.find(row => row.text_hash === ccGpt4).last_used, 1000, 'a row not written is untouched');
-    assert.equal(state.ids[0].last_used, 2000);
+    assert.equal(state.ids[0].last_used, 1000 + DAY);
     assert.equal(await readCount(directories, idA, textHash), 3);
     assert.deepEqual(await readIds(directories, idA, idsHash), [15496, 995]);
 
     // An existing key keeps what it holds: only last_used is written to it.
-    await writeBack(directories, { counts: [{ identity: idA, hash: textHash, count: 99 }] }, 3000);
+    await writeBack(directories, { counts: [{ identity: idA, hash: textHash, count: 99 }] }, 2000 + DAY);
     assert.equal(await readCount(directories, idA, textHash), 3);
 
     // --- a mix of new and reused keys, a key twice in one write-back ---
@@ -174,7 +182,7 @@ try {
             { identity: idB, hash: ccTurbo, count: 12 },
             { identity: idB, hash: ccTurbo, count: 12 },
         ],
-    }, 4000);
+    }, 3000 + DAY);
     state = await inspect();
     assert.equal(state.counts.length, 4);
     assert.equal(state.countsRunning, 4, 'raised by the two keys new to the table');
@@ -182,8 +190,8 @@ try {
     assert.equal(await readCount(directories, idB, textHash), 4);
 
     // --- nothing to write: nothing written ---
-    await writeBack(directories, { counts: [], ids: [] }, 5000);
-    await writeBack(directories, {}, 5000);
+    await writeBack(directories, { counts: [], ids: [] }, 4000 + DAY);
+    await writeBack(directories, {}, 4000 + DAY);
     const after = await inspect();
     assert.deepEqual(after, state);
 
@@ -414,13 +422,13 @@ try {
         assert.deepEqual(await readIdsRow(chunksDirs, idC, hashAe), { ids: [0, 1, 2], chunks: ['a', 'é'] }, 'a row without chunks gets them');
         let state = await inspect(chunksRoot);
         assert.equal(state.idsRunning, 1, 'no row added');
-        assert.equal(state.ids[0].last_used, 2000);
+        assert.equal(state.ids[0].last_used, 1000, 'chunks written; last_used within a day left as it was');
 
         await writeBack(chunksDirs, { ids: [{ identity: idC, hash: hashAe, ids: [0, 1, 2], chunks: ['x'] }] }, 3000);
-        await writeBack(chunksDirs, { ids: [{ identity: idC, hash: hashAe, ids: [0, 1, 2] }] }, 4000);
+        await writeBack(chunksDirs, { ids: [{ identity: idC, hash: hashAe, ids: [0, 1, 2] }] }, 1000 + LAST_USED_GRANULARITY_MS);
         assert.deepEqual(await readIdsRow(chunksDirs, idC, hashAe), { ids: [0, 1, 2], chunks: ['a', 'é'] }, 'a row with chunks keeps them');
         state = await inspect(chunksRoot);
-        assert.equal(state.ids[0].last_used, 4000, 'marked used');
+        assert.equal(state.ids[0].last_used, 1000 + LAST_USED_GRANULARITY_MS, 'marked used');
 
         const hashB = tokenKeyHash(TOKEN_KEY_KINDS.IDS, 'b');
         await writeBack(chunksDirs, { ids: [{ identity: idC, hash: hashB, ids: [0], chunks: ['b'] }] }, 5000);

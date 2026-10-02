@@ -28,6 +28,12 @@ const KINDS = new Set(Object.values(TOKEN_KEY_KINDS));
 const ROW_COUNT_KEYS = Object.freeze({ token_counts: 'token_counts_rows', token_ids: 'token_ids_rows' });
 
 /**
+ * How far a reused key's `last_used` may lag before it is written again. `last_used` only orders rows for pruning,
+ * where a day's difference doesn't matter, so a key reused many times a day costs one write a day, not one per use.
+ */
+export const LAST_USED_GRANULARITY_MS = 24 * 60 * 60 * 1000;
+
+/**
  * The `text_hash` of a stored count or ids: sha256 of the kind and the exact text. Everything the result depends on
  * besides the tokenizer has to be in `text`.
  * @param {string} kind One of {@link TOKEN_KEY_KINDS}.
@@ -100,8 +106,8 @@ export async function readIdsRow(directories, identity, hash) {
 
 /**
  * Stores keys new to the tables and marks reused ones used, in one transaction, keeping each table's row count in
- * meta. A key already stored keeps its value; only its `last_used` is written, and its `chunks` when it was stored
- * without them.
+ * meta. A key already stored keeps its value; its `last_used` is written only once it is
+ * {@link LAST_USED_GRANULARITY_MS} or more behind `now`, and its `chunks` when it was stored without them.
  * @param {import('./message-tree-db.js').Directories} directories
  * @param {PendingTokenRows} pending
  * @param {number} [now] The `last_used` to write.
@@ -128,7 +134,11 @@ export async function writeBack(directories, { counts = [], ids = [] }, now = Da
                 inserted.token_counts++;
                 if (countsFill && isBehindFill(countsFill, identity, hash)) inserted.countsBehindFill++;
             } else {
-                writeRowIfChanged(db, 'token_counts', { identity, text_hash: hash }, { last_used: now });
+                const stored = /** @type {{ last_used: number } | undefined} */ (db.get(
+                    'SELECT last_used FROM token_counts WHERE identity = @identity AND text_hash = @hash', { identity, hash }));
+                if (stored && now - Number(stored.last_used) >= LAST_USED_GRANULARITY_MS) {
+                    writeRowIfChanged(db, 'token_counts', { identity, text_hash: hash }, { last_used: now }, { current: stored });
+                }
             }
         }
         for (const { identity, hash, ids: tokenIds, chunks = null } of ids) {
@@ -139,9 +149,12 @@ export async function writeBack(directories, { counts = [], ids = [] }, now = Da
                 inserted.token_ids++;
                 if (idsFill && isBehindFill(idsFill, identity, hash)) inserted.idsBehindFill++;
             } else {
-                const stored = /** @type {{ chunks: string | null } | undefined} */ (db.get(
-                    'SELECT chunks FROM token_ids WHERE identity = @identity AND text_hash = @hash', { identity, hash }));
-                writeRowIfChanged(db, 'token_ids', { identity, text_hash: hash }, { last_used: now, chunks: stored?.chunks ?? storedChunks });
+                const stored = /** @type {{ chunks: string | null, last_used: number } | undefined} */ (db.get(
+                    'SELECT chunks, last_used FROM token_ids WHERE identity = @identity AND text_hash = @hash', { identity, hash }));
+                if (stored) {
+                    const lastUsed = now - Number(stored.last_used) >= LAST_USED_GRANULARITY_MS ? now : Number(stored.last_used);
+                    writeRowIfChanged(db, 'token_ids', { identity, text_hash: hash }, { last_used: lastUsed, chunks: stored.chunks ?? storedChunks }, { current: stored });
+                }
             }
         }
         addToRowCount(db, ROW_COUNT_KEYS.token_counts, inserted.token_counts);
