@@ -2447,19 +2447,21 @@ export async function addAlternatives(directories, ownerId, siblingNodeId, conte
     const list = Array.isArray(contents) ? contents : [contents];
     const parentId = sibling.parent_id;
 
-    /** @type {Map<string, string>} */
-    const byIdentity = new Map();
-    for (const sib of getSiblingsSync(entry.db, parentId, '')) {
-        byIdentity.set(nodeIdentityKey(parentId, sib.content), sib.id);
-    }
-
     /** @type {string[]} */
     const nodeIds = [];
     let added = 0;
     const stats = newWriteStats();
     entry.db.transaction(() => {
-        // Reset here: a transaction that hits busy is rolled back and rerun.
+        // Reset here: a transaction that hits busy is rolled back and rerun. The identity map is built
+        // here too, so a rerun never takes a rolled-back insert for an existing sibling.
         Object.assign(stats, newWriteStats());
+        nodeIds.length = 0;
+        added = 0;
+        /** @type {Map<string, string>} */
+        const byIdentity = new Map();
+        for (const sib of getSiblingsSync(entry.db, parentId, '')) {
+            byIdentity.set(nodeIdentityKey(parentId, sib.content), sib.id);
+        }
         const now = Date.now();
         for (const content of list) {
             const body = sanitizeForStorage(content);
