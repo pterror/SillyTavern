@@ -301,6 +301,29 @@ export async function ensureOpeningRow(mesId = 0) {
     return realId;
 }
 
+/**
+ * Records on the server that the open chat was switched to this card greeting, which has no row, so reopening the
+ * chat shows it rather than the default greeting.
+ * @param {string} text The greeting's text.
+ */
+export async function rememberCardOpening(text) {
+    const character = getCurrentCharacter();
+    if ((selected_group != null && selected_group !== '') || character?.avatar == null || character.avatar === '' || typeof text !== 'string' || text.length === 0) return;
+    const index = cardToGreetingsModel(character).greetings.indexOf(text);
+    if (index < 0) return;
+    try {
+        const response = await fetch('/api/chats/openings/choose', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ avatar_url: character.avatar, text, index }),
+        });
+        if (!response.ok) throw new Error(`/api/chats/openings/choose responded ${response.status}`);
+    } catch (error) {
+        console.warn('[greetings] Could not remember the chosen greeting:', error);
+        toastr.warning(t`The chat couldn't remember the greeting you switched to, so reopening it will show the default greeting.`, t`Greeting not remembered`);
+    }
+}
+
 /** Most of this page's own edits sent to find where the chat lands (the server's limit too). */
 const LANDING_EDITS = 64;
 
@@ -414,7 +437,9 @@ export async function _mergeCardGreetingsIntoOpening({ greetingEdit = null, gree
     // The fallback picks exactly what a fresh load (script.js's _openingFromTree()) would.
     const placeDefault = () => {
         const alternatives = head.alternatives ?? [];
-        let k = alternatives.findIndex(a => isStoredNodeId(a.node_id) && a.node_id === head.default_node_id);
+        let k = head.default_chosen === true ? (head.default_index ?? -1) - (head.offset ?? 0) : -1;
+        if (k >= alternatives.length) k = -1;
+        if (k < 0) k = alternatives.findIndex(a => isStoredNodeId(a.node_id) && a.node_id === head.default_node_id);
         if (k < 0) {
             const { greetings, defaultIndex } = cardToGreetingsModel(character);
             const preferredText = greetings.filter(text => typeof text === 'string' && text.length > 0)[defaultIndex ?? 0];
@@ -454,7 +479,7 @@ export async function _mergeCardGreetingsIntoOpening({ greetingEdit = null, gree
         // The card greeting on screen isn't among the loaded openings: the server works out where it landed.
         const landing = await placeLanding();
         if (landing === null) {
-            toastr.warning(t`The chat couldn't follow the greeting change, so it shows the default greeting.`, t`Greeting not followed`);
+            toastr.warning(t`The chat couldn't follow the greeting change, so it shows the greeting it would open on.`, t`Greeting not followed`);
         }
         landAt = landing ?? -1;
         if (landAt < 0) landAt = placeDefault();

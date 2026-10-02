@@ -7133,7 +7133,9 @@ async function _openingFromTree(cardGreetings, preferredIndex) {
 
     const windowStart = openings.offset ?? 0;
     const preferredText = contents[preferredIndex]?.mes;
-    let chosenOffset = openings.alternatives.findIndex(a => a.node_id && a.node_id === openings.default_node_id);
+    let chosenOffset = openings.default_chosen === true ? (openings.default_index ?? -1) - windowStart : -1;
+    if (chosenOffset >= openings.alternatives.length) chosenOffset = -1;
+    if (chosenOffset < 0) chosenOffset = openings.alternatives.findIndex(a => a.node_id && a.node_id === openings.default_node_id);
     if (chosenOffset < 0 && preferredText !== undefined) {
         chosenOffset = openings.alternatives.findIndex(a => a.mes === preferredText);
     }

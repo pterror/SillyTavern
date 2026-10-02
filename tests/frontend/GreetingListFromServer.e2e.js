@@ -693,15 +693,16 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         expect(opening).toEqual({ mes: g[12], swipe_id: 12 });
     });
 
-    test('when finding where the chat lands fails, a warning says so and the chat shows the default', async ({ page }) => {
+    test('when finding where the chat lands fails, a warning says so and the chat shows what reopening it would', async ({ page }) => {
         const s = stamp();
         const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`, `Three ${s}`];
         await page.route('**/api/chats/openings/land', route => route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: true }) }));
+        // The chat was switched to One, which is deleted: reopening shows the greeting now at One's card position.
         const opening = await chatAfterOtherSession(page, {
-            name: `LandingFails-${s}`, g, shown: 1, defaultRow: 3, expected: g[3],
+            name: `LandingFails-${s}`, g, shown: 1, defaultRow: 3, expected: g[2],
             otherSession: avatar => otherSessionOp(page, 'delete', { avatar_url: avatar, position: 1, expected_hash: hashGreetingText(g[1]) }),
         });
-        expect(opening.mes).toBe(g[3]);
+        expect(opening.mes).toBe(g[2]);
         await expect(page.locator('.toast-warning', { hasText: 'couldn\'t follow' })).toBeVisible({ timeout: 10000 });
     });
 

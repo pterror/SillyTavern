@@ -121,7 +121,24 @@ const SCHEMA_SQL = `
         PRIMARY KEY (identity, text_hash)
     );
     CREATE INDEX IF NOT EXISTS idx_token_ids_last_used ON token_ids(last_used);
+
+    -- The card greeting an owner's chat was last switched to while that greeting has no row (a greeting is only
+    -- given a row once a conversation is opened on it). Cleared when one of the owner's stored openings is
+    -- selected. text_hash is openingTextHash() of the greeting's text; card_index its card position when chosen.
+    CREATE TABLE IF NOT EXISTS opening_choices (
+        owner_id   TEXT PRIMARY KEY,
+        text_hash  TEXT NOT NULL,
+        card_index INTEGER NOT NULL
+    );
 `;
+
+/**
+ * @param {string} text
+ * @returns {string}
+ */
+function openingTextHash(text) {
+    return crypto.createHash('sha256').update(text).digest('hex');
+}
 
 /** SQL to walk from a leaf to the root via recursive CTE, returning the path in root-to-leaf order. */
 const PATH_CTE_SQL = `
@@ -1862,14 +1879,39 @@ export async function selectDefaultChild(directories, childId) {
     const entry = await getEntry(directories);
     if (!entry) return false;
 
-    const child = /** @type {Pick<MessageRow, 'id' | 'parent_id'> | undefined} */ (entry.db.get('SELECT id, parent_id FROM messages WHERE id = @id', { id: childId }));
+    const child = /** @type {Pick<MessageRow, 'id' | 'parent_id' | 'owner_id'> | undefined} */ (entry.db.get('SELECT id, parent_id, owner_id FROM messages WHERE id = @id', { id: childId }));
     if (!child || child.parent_id === null) return false;
 
-    // Already the parent's default - nothing to write.
-    const parent = /** @type {Pick<MessageRow, 'default_child_id'> | undefined} */ (entry.db.get('SELECT default_child_id FROM messages WHERE id = @id', { id: child.parent_id }));
+    const parent = /** @type {Pick<MessageRow, 'default_child_id' | 'parent_id'> | undefined} */ (entry.db.get('SELECT default_child_id, parent_id FROM messages WHERE id = @id', { id: child.parent_id }));
+    // A stored opening chosen replaces a card greeting chosen before it.
+    if (parent && parent.parent_id === null) {
+        entry.db.run('DELETE FROM opening_choices WHERE owner_id = @ownerId', { ownerId: child.owner_id });
+    }
     if (parent?.default_child_id === childId) return true;
 
     setDefaultChildSync(entry.db, child.parent_id, childId);
+    return true;
+}
+
+/**
+ * Records that the owner's chat was switched to a card greeting that has no row, so reopening the chat shows it.
+ * @param {Directories} directories
+ * @param {string} ownerId
+ * @param {string} text The greeting's text.
+ * @param {number} cardIndex Its position on the card.
+ * @returns {Promise<boolean>} False when the tree is unavailable.
+ */
+export async function chooseCardOpening(directories, ownerId, text, cardIndex) {
+    const entry = await getEntry(directories);
+    if (!entry) return false;
+    const textHash = openingTextHash(text);
+    const current = /** @type {{ text_hash: string, card_index: number } | undefined} */ (entry.db.get(
+        'SELECT text_hash, card_index FROM opening_choices WHERE owner_id = @ownerId', { ownerId }));
+    if (current?.text_hash === textHash && current.card_index === cardIndex) return true;
+    entry.db.run(
+        `INSERT INTO opening_choices (owner_id, text_hash, card_index) VALUES (@ownerId, @textHash, @cardIndex)
+         ON CONFLICT(owner_id) DO UPDATE SET text_hash = excluded.text_hash, card_index = excluded.card_index`,
+        { ownerId, textHash, cardIndex });
     return true;
 }
 
@@ -2564,7 +2606,9 @@ export async function setChatMetadata(directories, ownerId, chatName, metadata, 
  * @param {{ offset?: number, limit?: number, around?: TreeChatMessage }} [range] `around` centers the window on the
  *   stored opening with that speaker and text instead of on the default, when one exists.
  * @param {TreeChatMessage[]} [cardGreetings]
- * @returns {Promise<{ has_saved_chats: boolean, total: number, stored: number, default_index: number, default_node_id: string | null, offset: number, alternatives: OpeningAlternativeEntry[] } | null>}
+ * @returns {Promise<{ has_saved_chats: boolean, total: number, stored: number, default_index: number, default_node_id: string | null, default_chosen: boolean, offset: number, alternatives: OpeningAlternativeEntry[] } | null>}
+ *   `default_chosen` is true when the default is a card greeting the chat was switched to (see chooseCardOpening);
+ *   `default_index` is then its index among all openings.
  */
 export async function getOpeningAlternatives(directories, ownerId, range = {}, cardGreetings = []) {
     const entry = await getEntry(directories);
@@ -2594,8 +2638,8 @@ export async function getOpeningAlternatives(directories, ownerId, range = {}, c
         virtual.push(JSON.parse(body));
     }
 
-    const defaultNodeId = anchor?.default_child_id ?? (rows[0]?.id ?? null);
-    const defaultIndex = Math.max(0, rows.findIndex(r => r.id === defaultNodeId));
+    let defaultNodeId = anchor?.default_child_id ?? (rows[0]?.id ?? null);
+    let defaultIndex = Math.max(0, rows.findIndex(r => r.id === defaultNodeId));
 
     // Windowed like a chat load; stored openings first, then card greetings with no row yet (node_id: null).
     const all = [
@@ -2607,6 +2651,25 @@ export async function getOpeningAlternatives(directories, ownerId, range = {}, c
         }),
         ...virtual.map(o => ({ node_id: null, mes: o?.mes ?? '', send_date: o?.send_date, extra: o?.extra ?? {}, name: o?.name, is_user: !!o?.is_user })),
     ];
+
+    // A card greeting chosen since the last stored opening was selected is the default. If its text has changed
+    // since, the greeting now at its card position stands in for it.
+    const choice = /** @type {{ text_hash: string, card_index: number } | undefined} */ (entry.db.get(
+        'SELECT text_hash, card_index FROM opening_choices WHERE owner_id = @ownerId', { ownerId }));
+    let chosen = false;
+    if (choice) {
+        let at = all.findIndex((o, i) => i >= rows.length && openingTextHash(o.mes) === choice.text_hash);
+        const cardTexts = (Array.isArray(cardGreetings) ? cardGreetings : []).map(g => g.mes).filter(t => typeof t === 'string');
+        if (at < 0 && cardTexts.length > 0) {
+            const standIn = cardTexts[Math.min(Math.max(choice.card_index, 0), cardTexts.length - 1)];
+            at = all.findIndex(o => o.mes === standIn);
+        }
+        if (at >= 0) {
+            defaultIndex = at;
+            defaultNodeId = all[at].node_id;
+            chosen = true;
+        }
+    }
 
     const aroundKey = anchor && range.around ? identity(sanitizeForStorage(range.around)) : null;
     const aroundIndex = aroundKey === null ? -1 : rows.findIndex(r => identity(r.content) === aroundKey);
@@ -2624,6 +2687,7 @@ export async function getOpeningAlternatives(directories, ownerId, range = {}, c
         stored: rows.length,
         default_index: defaultIndex,
         default_node_id: defaultNodeId,
+        default_chosen: chosen,
         offset: from,
         alternatives: all.slice(from, to),
     };
