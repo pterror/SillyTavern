@@ -36,7 +36,7 @@ import { mergeSortedWindow } from './tantivy-search.js';
 import { searchGroups, searchGroupIds, searchGroupsSorted, getGroupIndexPosition } from './groups-search-index.js';
 import { getGroupsByIds } from './groups.js';
 import { CHARACTER_INDEX_FAILED_EVENT } from './search-index-coordinator.js';
-import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, findCharacterMatches, findGroupMatches, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, toggleCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, getCurrentSeqAndGroupsVersion, seedCardTagsForSingleCharacter, assignEntityTag, unassignEntityTag, streamCharacterIdsMatching, beginBulkSelection, bulkSelectionExists, addToBulkSelection, removeFromBulkSelection, describeBulkSelection, readBulkSelectionPage, streamBulkSelection, mutualTagIdsOfBulkSelection, dropBulkSelection, getCharacterCardJson, getCharacterChatStats, getCharacterIndexRowsByIds, streamCharacterCardJsonBatches, characterRowExists, characterRowOrPendingExistsSync, getEntityRowsByIds, getFolderTileTags, copyEntityTags, TAG_MOVE_FAILED_EVENT, TAG_ORDER_SETTLED_EVENT, TAG_CHANGES_EVENT, GROUP_CHANGES_EVENT, QUERY_RANGE_COLUMNS, SAVED_VIEWS_EVENT } from '../character-metadata-db.js';
+import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, findCharacterMatches, findGroupMatches, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, toggleCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, getCurrentSeqAndGroupsVersion, seedCardTagsForSingleCharacter, assignEntityTag, unassignEntityTag, streamCharacterIdsMatching, beginBulkSelection, bulkSelectionExists, addToBulkSelection, removeFromBulkSelection, describeBulkSelection, readBulkSelectionPage, streamBulkSelection, mutualTagIdsOfBulkSelection, dropBulkSelection, getCharacterCardJson, getCharacterChatStats, getCharacterIndexRowsByIds, streamCharacterCardJsonBatches, characterRowExists, characterRowOrPendingExistsSync, getEntityRowsByIds, getFolderTileTags, copyEntityTags, TAG_MOVE_FAILED_EVENT, TAG_ORDER_SETTLED_EVENT, TAG_CHANGES_EVENT, GROUP_CHANGES_EVENT, QUERY_RANGE_COLUMNS, isQueryRangeField, SAVED_VIEWS_EVENT, getTagChangesSeq } from '../character-metadata-db.js';
 import { characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash, normalizeFav, SHALLOW_CREATOR_NOTES_HEADER } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
 import { hashGreetingText, opAdd, opAppend, opEdit, opDelete, opMove, opSetDefault, opUnsetDefault, opUnsetDefaultByHash } from '../greeting-ops.js';
@@ -2190,9 +2190,30 @@ router.post('/metadata/batch-import/end', async function (request, response) {
     }
 });
 
+/**
+ * Turns `filter.folder` into the filter it means, in place. "none": rows carrying no closed folder tag. A tag id: rows
+ * carrying that folder's tag, as a tag include when the tag filter is 'and' (its index drives the walk), else as a
+ * `tag:<id>` range, since an 'or' tag filter can't also require one tag.
+ * @param {{ folder?: string, tags?: { include?: string[], exclude?: string[], mode?: string }, ranges?: import('../character-metadata-db.js').QueryRanges }} filter
+ */
+function applyFolderCase(filter) {
+    const folder = /** @type {string} */ (filter.folder);
+    delete filter.folder;
+    if (folder === 'none') {
+        filter.ranges = { ...filter.ranges, closed_folders: { max: 0 } };
+        return;
+    }
+    const include = Array.isArray(filter.tags?.include) ? filter.tags.include : [];
+    if (filter.tags?.mode === 'or' && include.length > 0) {
+        filter.ranges = { ...filter.ranges, [`tag:${folder}`]: { min: 1 } };
+        return;
+    }
+    filter.tags = { ...filter.tags, include: [...new Set([...include, folder])], mode: 'and' };
+}
+
 // Sortable fields this HTTP layer accepts. 'random' and 'search' don't map to a plain SQL column sort.
 /**
- * A /query `filter.ranges`, checked: each key a QUERY_RANGE_COLUMNS field, each bound a finite number. Empty bounds
+ * A /query `filter.ranges`, checked: each key an isQueryRangeField() field, each bound a finite number. Empty bounds
  * are dropped, and no bounds at all is `undefined`.
  * @param {unknown} raw
  * @returns {import('../character-metadata-db.js').QueryRanges | undefined | null} null when it isn't valid.
@@ -2202,7 +2223,7 @@ export function parseQueryRanges(raw) {
     /** @type {import('../character-metadata-db.js').QueryRanges} */
     const ranges = {};
     for (const [field, bound] of Object.entries(raw)) {
-        if (!Object.hasOwn(QUERY_RANGE_COLUMNS, field)) return null;
+        if (!isQueryRangeField(field)) return null;
         if (!bound || typeof bound !== 'object' || Array.isArray(bound)) return null;
         /** @type {{ min?: number, max?: number }} */
         const checked = {};
@@ -2367,9 +2388,11 @@ function sendHashQueryResponse(response, params) {
  * @param {{ seq: number | null | undefined, groupsVersion?: number | null, search: boolean, includeGroups: boolean, position?: import('./search-index-coordinator.js').SearchIndexPosition | null, groupsPosition?: import('./search-index-coordinator.js').GroupsIndexPosition | null }} components
  * @returns {string | null}
  */
-function queryToken({ seq, groupsVersion, search, includeGroups, position, groupsPosition }) {
+function queryToken({ seq, groupsVersion, search, includeGroups, position, groupsPosition, tagSeq = null }) {
     if (!Number.isFinite(seq)) return null;
     const components = [seq];
+    // A "no folder" filter reads tag definitions: a tag turned into a closed folder changes its rows.
+    if (tagSeq !== null) components.push('tags', tagSeq);
     if (includeGroups) {
         if (!Number.isFinite(groupsVersion)) return null;
         components.push(groupsVersion);
@@ -2461,7 +2484,7 @@ async function searchSortedPage(handle, directories, { searchTerm, sortField, so
  * @param {object} params
  * @returns {Promise<QueryReply>}
  */
-async function runSearchWalk(user, { mode, searchTerm, filter, sort, seed, includeGroups, groupsOnly, tagsLeftToSql, indexComplete = false, offset, pageSize, wantRows, wantTotal, wantHashes, cursor }) {
+async function runSearchWalk(user, { mode, searchTerm, filter, sort, seed, includeGroups, groupsOnly, tagsLeftToSql, indexComplete = false, offset, pageSize, wantRows, wantTotal, wantHashes, cursor, tagSeq = null }) {
     const { directories } = user;
     const handle = user.profile.handle;
     const unavailable = () => queryReply(503, { error: true, reason: 'metadata-store-unavailable' });
@@ -2606,7 +2629,7 @@ async function runSearchWalk(user, { mode, searchTerm, filter, sort, seed, inclu
         ? await timePhase('page_rows', () => getEntityRowsByIds(directories, entities, { wantRows, wantHashes }))
         : await timePhase('page_rows', () => queryCharacters(directories, { ids: entities.map(entity => entity.id), wantRows, wantHashes, wantTotal: false }));
     if (read === null) return unavailable();
-    const token = queryToken({ seq: read.seq, groupsVersion: read.groupsVersion, search: true, includeGroups, position, groupsPosition });
+    const token = queryToken({ seq: read.seq, groupsVersion: read.groupsVersion, search: true, includeGroups, position, groupsPosition, tagSeq });
 
     if (wantHashes) {
         let hashRows = read.hashRows;
@@ -2713,7 +2736,8 @@ async function runQuery(user, body, options = {}) {
  * @returns {Promise<QueryReply>}
  */
 async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {}) {
-    const filter = body.filter ?? {};
+    // A copy: ranges and the folder case are rewritten below, and a caller may reuse its body for the next page.
+    const filter = { ...(body.filter ?? {}) };
     const sort = body.sort ?? {};
     const want = Array.isArray(body.want) ? body.want : ['rows', 'total'];
     const includeGroups = filter.includeGroups === true;
@@ -2735,6 +2759,14 @@ async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {})
         }
         filter.ranges = ranges;
     }
+    const folderNone = filter.folder === 'none';
+    if (filter.folder !== undefined) {
+        if (typeof filter.folder !== 'string' || filter.folder === '') {
+            return queryReply(400, { error: true, reason: 'invalid-folder', message: 'filter.folder takes "none" or a closed folder\'s tag id.' });
+        }
+        applyFolderCase(filter);
+    }
+    const tagSeq = folderNone ? await getTagChangesSeq(user.directories) : null;
     const seed = Number(sort.seed);
     if (sort.field === 'random' && !Number.isFinite(seed)) {
         return queryReply(400, { error: true, reason: 'random-seed-required', message: 'sort.field "random" requires a finite sort.seed - design doc §5.3 decision 10, the client mints and persists this (public/scripts/random-sort.js).' });
@@ -2768,7 +2800,7 @@ async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {})
         const current = includeGroups
             ? await getCurrentSeqAndGroupsVersion(user.directories)
             : { seq: await getCurrentSeq(user.directories), groupsVersion: null };
-        const token = queryToken({ seq: current?.seq, groupsVersion: current?.groupsVersion, search: hasSearch, includeGroups, position, groupsPosition });
+        const token = queryToken({ seq: current?.seq, groupsVersion: current?.groupsVersion, search: hasSearch, includeGroups, position, groupsPosition, tagSeq });
         if (token !== null && token === body.ifToken) {
             return queryReply(200, { seq: current.seq, token, unchanged: true });
         }
@@ -2807,7 +2839,7 @@ async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {})
     let searchPosition = null;
     let groupsSearchPosition = null;
     /** @param {{ seq: number, groupsVersion?: number | null }} read The rows' read: its seq and groups version. */
-    const tokenFor = ({ seq, groupsVersion }) => queryToken({ seq, groupsVersion, search: hasSearch, includeGroups, position: searchPosition, groupsPosition: groupsSearchPosition });
+    const tokenFor = ({ seq, groupsVersion }) => queryToken({ seq, groupsVersion, search: hasSearch, includeGroups, position: searchPosition, groupsPosition: groupsSearchPosition, tagSeq });
 
     markSinceStart('prologue');
     if (hasSearch) {
@@ -2839,7 +2871,7 @@ async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {})
             return runSearchWalk(user, {
                 mode: walkMode, searchTerm, filter, sort, seed, includeGroups, groupsOnly, tagsLeftToSql,
                 indexComplete: walkMode === 'rank' && !tagsLeftToSql && !sqlOnlyFilter,
-                offset, pageSize, wantRows, wantTotal, wantHashes, cursor: body.cursor,
+                offset, pageSize, wantRows, wantTotal, wantHashes, cursor: body.cursor, tagSeq,
             });
         }
 
@@ -2892,7 +2924,7 @@ async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {})
             // search): walk it under the work cap like any search the index can't answer whole.
             return runSearchWalk(user, {
                 mode: 'sorted', searchTerm, filter, sort, seed, includeGroups, groupsOnly, tagsLeftToSql: true,
-                offset, pageSize, wantRows, wantTotal, wantHashes, cursor: body.cursor,
+                offset, pageSize, wantRows, wantTotal, wantHashes, cursor: body.cursor, tagSeq,
             });
         }
 
