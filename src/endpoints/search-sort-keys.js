@@ -17,19 +17,19 @@ export const TANTIVY_NAME_FIELDS = ['name_asc', 'name_desc', 'fav_first', 'fav_l
  * The sort keys of one entity, as the characters index stores them and the groups' merge compares them.
  * @param {{ create_date: number, date_added: number, date_last_chat: number, chat_size: number, data_size: number }} values
  * @param {boolean} fav
- * @param {{ asc: number, desc: number } | undefined} positions Its name order positions; 0 when not placed yet.
+ * @param {number | undefined} position Its name order position; 0 when not placed yet.
  */
-export function sortKeysOf(values, fav, positions) {
-    const asc = positions?.asc ?? 0;
-    const desc = positions?.desc ?? 0;
+export function sortKeysOf(values, fav, position) {
+    const asc = position ?? 0;
     /** @type {Record<string, number>} */
     const keys = {};
     for (const field of TANTIVY_FAST_FIELDS) {
         keys[field] = values[field];
         keys[`${field}_asc`] = SORT_KEY_TOP - values[field];
     }
+    // name descending is name ascending reversed, ties included.
     keys.name_asc = SORT_KEY_TOP - asc;
-    keys.name_desc = SORT_KEY_TOP - desc;
+    keys.name_desc = asc;
     // fav desc: favourites first; fav asc: the others first. Names go A to Z inside each in both.
     keys.fav_first = SORT_KEY_TOP - ((fav ? 0 : 1) * NAME_ORDER_LIMIT + asc);
     keys.fav_last = SORT_KEY_TOP - ((fav ? 1 : 0) * NAME_ORDER_LIMIT + asc);

@@ -495,9 +495,9 @@ export async function searchGroups(handle, directories, searchTerm, maxRows, fav
  */
 /**
  * A group's key for a sort, as the characters index stores the same field (sortKeysOf()), read descending.
- * @param {{ asc: number, desc: number } | undefined} positions The group's name order positions.
+ * @param {number | undefined} position The group's name order position.
  */
-function groupSortKey(group, sortField, sortOrder, positions) {
+function groupSortKey(group, sortField, sortOrder, position) {
     const dateAdded = Math.max(0, Number(group.date_added) || 0);
     const keys = sortKeysOf({
         create_date: dateAdded,
@@ -505,7 +505,7 @@ function groupSortKey(group, sortField, sortOrder, positions) {
         date_last_chat: Math.max(0, Number(group.date_last_chat) || 0),
         chat_size: Math.max(0, Number(group.chat_size) || 0),
         data_size: 0,
-    }, Boolean(group.fav), positions);
+    }, Boolean(group.fav), position);
     const field = sortKeyField(sortField, sortOrder);
     if (field === null) throw new Error(`no group sort key for ${sortField}`);
     return keys[field];

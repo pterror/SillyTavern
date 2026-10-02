@@ -63,8 +63,8 @@ function withDb(work) {
 }
 
 /**
- * Every entity in each order as the rule gives it (name_fold, then characters before groups, then the id with a
- * group's as `<id>.json`, in UTF-8 bytes), against the order its positions give.
+ * Every entity in the order the rule gives it (name_fold, then characters before groups, then the id with a group's
+ * as `<id>.json`, in UTF-8 bytes), against the order its positions give. A descending sort reads them reversed.
  */
 function checkOrders() {
     const db = new Database(dbPath(), { readonly: true });
@@ -76,20 +76,15 @@ function checkOrders() {
         const bytes = (/** @type {string} */ s) => Buffer.from(s, 'utf8');
         const byTie = (a, b) => Buffer.compare(bytes(a.tie), bytes(b.tie));
         const asc = [...entities].sort((a, b) => Buffer.compare(bytes(a.nameFold), bytes(b.nameFold)) || byTie(a, b)).map(e => e.key);
-        const desc = [...entities].sort((a, b) => Buffer.compare(bytes(b.nameFold), bytes(a.nameFold)) || byTie(a, b)).map(e => e.key);
-        const rows = db.prepare('SELECT kind, entity_id, pos_asc, pos_desc FROM name_order').all();
+        const rows = db.prepare('SELECT kind, entity_id, pos_asc FROM name_order').all();
         expect(rows).toHaveLength(entities.length);
         for (const r of rows) {
             expect(r.pos_asc).not.toBeNull();
-            expect(r.pos_desc).not.toBeNull();
             expect(r.pos_asc).toBeGreaterThan(0);
             expect(r.pos_asc).toBeLessThan(metadataDb.NAME_ORDER_LIMIT);
         }
-        const byPos = (/** @type {'pos_asc' | 'pos_desc'} */ col) => [...rows].sort((a, b) => a[col] - b[col]).map(r => `${r.kind}|${r.entity_id}`);
-        expect(byPos('pos_asc')).toEqual(asc);
-        expect(byPos('pos_desc')).toEqual(desc);
+        expect([...rows].sort((a, b) => a.pos_asc - b.pos_asc).map(r => `${r.kind}|${r.entity_id}`)).toEqual(asc);
         expect(new Set(rows.map(r => r.pos_asc)).size).toBe(rows.length);
-        expect(new Set(rows.map(r => r.pos_desc)).size).toBe(rows.length);
     } finally {
         db.close();
     }
@@ -103,7 +98,7 @@ async function placeAll() {
 }
 
 describe('character-metadata-db.js: the full name order (search plan step 7f)', () => {
-    test('the fill numbers both orders exactly: shared prefixes, non-Latin names, ties with groups', async () => {
+    test('the fill numbers the order exactly: shared prefixes, non-Latin names, ties with groups', async () => {
         for (const [id, name] of [['Alexandra.png', 'Alexandra'], ['Alexander.png', 'Alexander'], ['Alexanda.png', 'Alexanda'], ['b.png', 'Same'], ['a.png', 'Same'], ['cyr.png', 'аbc'], ['zero.png', '0bc']]) {
             await addCharacter(id, name);
         }
