@@ -10,7 +10,8 @@ import { filterByTagState, isBogusFolderOpen, getTagBlock, printTagFilters, prin
 import { tagFetchStamp, isFetchedTagIdsCurrent } from './tag-fetch-stamps.js';
 import { FILTER_STATES, FILTER_TYPES, FilterHelper, isFilterState } from './filters.js';
 import { characterRepository, buildCharacterQuery, isInvalidSortFieldError, normalizeQueryRow, parseQueryTotal } from './character-repository.js';
-import { canonicalSearchField, parseSearchText, sameView, serializeSearchText, viewToQueryState } from './character-view.js';
+import { parseSearchText, sameView, serializeSearchText, viewToQueryState } from './character-view.js';
+import { initViewPills, makeSearchGuide } from './character-view-pills.js';
 import { getRandomSortSeed } from './random-sort.js';
 import { t } from './i18n.js';
 import { updatePersonaConnectionsAvatarList } from './personas.js';
@@ -394,6 +395,9 @@ export async function printCharacters(fullRefresh = false) {
     // Before printing the personas, we check if we should enable/disable search sorting
     verifyCharactersSearchSortRule();
 
+    // A search set from code (upstream's FilterHelper) shows in the box, unless the user is typing in it.
+    if (!$('#form_character_search_form').get(0)?.contains(document.activeElement)) showViewInSearchBox();
+
     // We are actually always reprinting filters, as it "doesn't hurt", and this way they are always up to date
     printTagFilters(tag_filter_type.character);
     printTagFilters(tag_filter_type.group_members_list);
@@ -759,8 +763,10 @@ export function getCharacterView() {
  * Shows `view` in the character list, as a change the user made: one reprint, back to page 1 at the top.
  * Fields left out keep their current value.
  * @param {Partial<import('./character-view.js').CharacterView>} view
+ * @param {object} [options]
+ * @param {boolean} [options.fromSearchBox] The search box already shows it, so it isn't redrawn.
  */
-export function setCharacterView(view) {
+export function setCharacterView(view, { fromSearchBox = false } = {}) {
     const current = getCharacterView();
     const next = { ...current, ...view };
     if (sameView(current, next)) return;
@@ -780,7 +786,7 @@ export function setCharacterView(view) {
         power_user.sort_rule = option.data('rule');
     }
     resetListPositionOnNextPrint = true;
-    showViewInSearchBox();
+    if (!fromSearchBox) showViewInSearchBox();
     printCharactersDebounced();
 }
 
@@ -1544,12 +1550,8 @@ function showSearchBackend(searchBackend) {
 }
 
 export function initCharacterSearch() {
-    // Purely a display/editing convenience - pills are reassembled back into `label:value` text before being sent anywhere.
-    /** @type {{ label: string, value: string }[]} */
-    let searchPills = [];
-
-    const debouncedCharacterSearch = debounce((searchQuery) => {
-        setFilterDataFromUser(entitiesFilter, FILTER_TYPES.SEARCH, searchQuery);
+    const debouncedCharacterSearch = debounce((/** @type {Partial<import('./character-view.js').CharacterView>} */ view) => {
+        setCharacterView(view, { fromSearchBox: true });
     });
 
     const searchForm = $('#form_character_search_form');
@@ -1559,74 +1561,15 @@ export function initCharacterSearch() {
 
     const storageKey = 'characterSearchFormVisible';
 
-    /** @returns {string} The full reconstructed `label:value ... freetext` search string. */
-    function currentSearchQuery() {
-        const pillText = searchPills.map(pill => `${pill.label}:${pill.value}`).join(' ');
-        const freeText = String(searchInput.val());
-        return [pillText, freeText].filter(Boolean).join(' ');
-    }
-
-    function renderPills() {
-        pillsContainer.empty();
-        searchPills.forEach((pill, index) => {
-            const removeIcon = $('<i>').addClass('fa-solid fa-xmark search_pill_remove').attr('title', t`Remove filter`);
-            removeIcon.on('click', function (event) {
-                event.stopPropagation();
-                searchPills.splice(index, 1);
-                renderPills();
-                debouncedCharacterSearch(currentSearchQuery());
-            });
-            const pillEl = $('<span>').addClass('search_pill')
-                .append($('<span>').addClass('search_pill_label').text(`${pill.label}:`))
-                .append($('<span>').addClass('search_pill_value').text(pill.value))
-                .append(removeIcon);
-            pillEl.on('click', function () {
-                searchPills.splice(index, 1);
-                const editText = `${pill.label}:${pill.value}`;
-                const currentVal = String(searchInput.val());
-                searchInput.val(currentVal ? editText + ' ' + currentVal : editText);
-                renderPills();
-                searchInput.trigger('focus');
-                debouncedCharacterSearch(currentSearchQuery());
-            });
-            pillsContainer.append(pillEl);
-        });
-    }
-
-    showViewInSearchBox = () => {
-        const { text, conditions } = getCharacterView();
-        searchPills = conditions.map(condition => ({
-            label: `${condition.op === 'not_contains' ? '-' : ''}${condition.field}`,
-            value: condition.value,
-        }));
-        searchInput.val(text);
-        renderPills();
-    };
-
-    searchInput.on('input', function () {
-        const raw = String($(this).val());
-        // A trailing space "completes" the token right before it - if recognized, promote it to a pill.
-        if (raw.endsWith(' ')) {
-            const trimmed = raw.slice(0, -1);
-            const pillMatch = trimmed.match(/(?:^|\s)([A-Za-z][A-Za-z0-9_]*):("[^"]*"|\S+)$/);
-            const label = pillMatch ? canonicalSearchField(pillMatch[1]) : null;
-            if (pillMatch && label) {
-                searchPills.push({ label, value: pillMatch[2] });
-                renderPills();
-                searchInput.val(trimmed.slice(0, pillMatch.index));
-            }
-        }
-        debouncedCharacterSearch(currentSearchQuery());
+    showViewInSearchBox = initViewPills({
+        container: pillsContainer,
+        input: searchInput,
+        getView: getCharacterView,
+        translate: t,
+        setView: (view, fromSearchBox) => fromSearchBox ? debouncedCharacterSearch(view) : setCharacterView(view, { fromSearchBox: true }),
     });
-
-    // Backspacing from an empty input removes the last pill as a unit, same as Discord's filter chips.
-    searchInput.on('keydown', function (event) {
-        if (event.key === 'Backspace' && searchInput.val() === '' && searchPills.length > 0) {
-            searchPills.pop();
-            renderPills();
-            debouncedCharacterSearch(currentSearchQuery());
-        }
-    });
+    showViewInSearchBox();
+    $('#character_search_bar_wrapper').after(makeSearchGuide());
 
     searchButton.on('click', function () {
         const newVisibility = !searchForm.is(':visible');
