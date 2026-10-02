@@ -43,7 +43,7 @@ registerHotkey({ category: autocomplete, keys: ['Tab', 'Enter'], label: t`Use th
 registerHotkey({ category: autocomplete, keys: ['Escape'], label: t`Close the suggestions` });
 
 registerHotkey({ category: editing, keys: ['Ctrl+Enter'], label: t`In a character field being edited: save it` });
-registerHotkey({ category: editing, keys: ['Escape'], label: t`In a character field being edited: cancel the edit` });
+registerHotkey({ category: editing, keys: ['Escape'], label: t`In a character field being edited: stop editing (asks first if your change would be lost; with autosave on, it saves)` });
 registerHotkey({ category: editing, keys: ['Tab', 'Shift+Tab'], label: t`In an expanded editor: indent or unindent` });
 registerHotkey({ category: editing, keys: ['Ctrl+F'], label: t`In the slash command or macro list: jump to its search box` });
 
