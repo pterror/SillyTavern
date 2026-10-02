@@ -381,6 +381,24 @@ export async function reflinkAgainstExistingDuplicate(directories, selfAvatar, f
 }
 
 /**
+ * @param {string} filePath
+ * @returns {Promise<boolean>} Whether the file begins with the 8-byte PNG signature.
+ */
+async function startsWithPngSignature(filePath) {
+    let handle;
+    try {
+        handle = await fs.promises.open(filePath, 'r');
+        const head = Buffer.alloc(PNG_SIGNATURE.length);
+        const { bytesRead } = await handle.read(head, 0, head.length, 0);
+        return bytesRead === head.length && head.equals(PNG_SIGNATURE);
+    } catch {
+        return false;
+    } finally {
+        await handle?.close();
+    }
+}
+
+/**
  * Writes the character card to the specified image file.
  * @param {string|Buffer} inputFile - Path to the image file or image buffer
  * @param {string} data - Character card data
@@ -460,8 +478,10 @@ async function writeCharacterData(inputFile, data, outputFile, request, crop = u
             return true;
         }
 
-        // Fast path: unchanged image bytes reflink straight from inputFile instead of a full rewrite.
-        if (!Buffer.isBuffer(inputFile) && crop === undefined) {
+        // Fast path: unchanged image bytes reflink straight from inputFile instead of a full rewrite. Only a PNG
+        // has chunks to splice into; any other upload (jpg, webp, ...) goes straight to the re-encode below,
+        // which converts it to PNG. A file that starts like a PNG but fails here is broken, and that is logged.
+        if (!Buffer.isBuffer(inputFile) && crop === undefined && await startsWithPngSignature(inputFile)) {
             try {
                 const crossReflinkCandidatePath = await findCrossCharacterReflinkCandidate(request.user.directories, `${outputFile}.png`, data);
                 const { avatarIdentityHash } = await writeCardToFile(inputFile, outputImagePath, data, crossReflinkCandidatePath);
