@@ -3588,6 +3588,77 @@ select option[disabled]:not(:checked) {
     opacity: 1;
 }
 
+.view_pill_part {
+    cursor: pointer;
+}
+
+.view_pill_part:hover,
+.view_pill_part:focus-visible {
+    text-decoration: underline;
+}
+
+.view_pill_op {
+    font-style: italic;
+    opacity: 0.85;
+}
+
+.view_pill_value_input {
+    min-width: 6em;
+    padding: 0 2px;
+    margin: 0;
+    font-size: inherit;
+    background: var(--black30a);
+    color: var(--SmartThemeBodyColor);
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 3px;
+}
+
+.view_pill_add {
+    cursor: pointer;
+    opacity: 0.7;
+}
+
+.view_pill_add:hover,
+.view_pill_add:focus-visible {
+    opacity: 1;
+}
+
+.view_pill_popover {
+    position: fixed;
+    z-index: 10001;
+    min-width: 12em;
+    max-height: 50vh;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 6px;
+    background-color: var(--SmartThemeBlurTintColor);
+    backdrop-filter: blur(var(--SmartThemeBlurStrength));
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 6px;
+    box-shadow: 0 2px 10px var(--black50a);
+}
+
+.view_pill_field_list {
+    overflow-y: auto;
+}
+
+.view_pill_field_option {
+    padding: 3px 6px;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.view_pill_field_option:hover {
+    background-color: var(--white20a);
+}
+
+#character_search_guide {
+    cursor: help;
+    opacity: 0.7;
+    align-self: center;
+}
+
 #character_search_bar {
     flex: 1;
     min-width: 60px;

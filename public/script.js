@@ -14541,6 +14541,7 @@ jQuery(async function () {
             '#shadow_popup',
             '.popup',
             '.editorLayer',
+            '.view_pill_popover',
             '#world_popup',
             '.ui-widget',
             '.text_pole',
