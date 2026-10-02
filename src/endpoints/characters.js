@@ -36,7 +36,7 @@ import { mergeSortedWindow } from './tantivy-search.js';
 import { searchGroups, searchGroupIds, searchGroupsSorted, getGroupIndexPosition } from './groups-search-index.js';
 import { getGroupsByIds } from './groups.js';
 import { CHARACTER_INDEX_FAILED_EVENT } from './search-index-coordinator.js';
-import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, findCharacterMatches, findGroupMatches, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, toggleCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, getCurrentSeqAndGroupsVersion, seedCardTagsForSingleCharacter, assignEntityTag, unassignEntityTag, streamCharacterIdsMatching, beginBulkSelection, bulkSelectionExists, addToBulkSelection, removeFromBulkSelection, describeBulkSelection, readBulkSelectionPage, streamBulkSelection, mutualTagIdsOfBulkSelection, dropBulkSelection, getCharacterCardJson, getCharacterChatStats, getCharacterIndexRowsByIds, streamCharacterCardJsonBatches, characterRowExists, characterRowOrPendingExistsSync, getEntityRowsByIds, getFolderTileTags, copyEntityTags, TAG_MOVE_FAILED_EVENT, TAG_ORDER_SETTLED_EVENT, TAG_CHANGES_EVENT, GROUP_CHANGES_EVENT, QUERY_RANGE_COLUMNS } from '../character-metadata-db.js';
+import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, findCharacterMatches, findGroupMatches, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, toggleCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, getCurrentSeqAndGroupsVersion, seedCardTagsForSingleCharacter, assignEntityTag, unassignEntityTag, streamCharacterIdsMatching, beginBulkSelection, bulkSelectionExists, addToBulkSelection, removeFromBulkSelection, describeBulkSelection, readBulkSelectionPage, streamBulkSelection, mutualTagIdsOfBulkSelection, dropBulkSelection, getCharacterCardJson, getCharacterChatStats, getCharacterIndexRowsByIds, streamCharacterCardJsonBatches, characterRowExists, characterRowOrPendingExistsSync, getEntityRowsByIds, getFolderTileTags, copyEntityTags, TAG_MOVE_FAILED_EVENT, TAG_ORDER_SETTLED_EVENT, TAG_CHANGES_EVENT, GROUP_CHANGES_EVENT, QUERY_RANGE_COLUMNS, SAVED_VIEWS_EVENT } from '../character-metadata-db.js';
 import { characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash, normalizeFav, SHALLOW_CREATOR_NOTES_HEADER } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
 import { hashGreetingText, opAdd, opAppend, opEdit, opDelete, opMove, opSetDefault, opUnsetDefault, opUnsetDefaultByHash } from '../greeting-ops.js';
@@ -3400,6 +3400,13 @@ router.get('/changes/stream', function (request, response) {
     const onGroupChanges = _.debounce(() => response.write(`data: ${JSON.stringify({ type: 'groups-changed' })}\n\n`), 500, { maxWait: 2000 });
     characterChangeEmitter.on(GROUP_CHANGES_EVENT, onGroupChanges);
 
+    const writeViewsChanged = _.debounce(() => response.write(`data: ${JSON.stringify({ type: 'views-changed' })}\n\n`), 200, { maxWait: 1000 });
+    const onViewsChanged = (changedRoot) => {
+        if (changedRoot !== root) return;
+        writeViewsChanged();
+    };
+    characterChangeEmitter.on(SAVED_VIEWS_EVENT, onViewsChanged);
+
     const onCharacterIndexFailed = (failedHandle, warning) => {
         if (failedHandle !== handle) return;
         response.write(`data: ${JSON.stringify({ type: 'character-index-failed', ...warning })}\n\n`);
@@ -3414,6 +3421,8 @@ router.get('/changes/stream', function (request, response) {
         characterChangeEmitter.off(TAG_CHANGES_EVENT, onTagChanges);
         writeTagsChanged.cancel();
         characterChangeEmitter.off(GROUP_CHANGES_EVENT, onGroupChanges);
+        characterChangeEmitter.off(SAVED_VIEWS_EVENT, onViewsChanged);
+        writeViewsChanged.cancel();
         onGroupChanges.cancel();
         characterChangeEmitter.off(CHARACTER_INDEX_FAILED_EVENT, onCharacterIndexFailed);
         onChange.cancel();

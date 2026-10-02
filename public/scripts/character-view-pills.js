@@ -527,14 +527,15 @@ export function initViewPills({ container, input, getView, setView, translate, s
         const field = $('<span class="search_pill_label view_pill_part" tabindex="0" role="button">')
             .text(fieldName(condition.field)).attr('title', t`Change the field`);
         field.on('click', () => openFieldPicker(field.get(0), picked => {
-            condition.field = picked;
+            // The pills may have been drawn again from the view since: change the condition at this place.
+            if (conditions[index]) conditions[index] = { ...conditions[index], field: picked };
             render();
             send();
         }));
         const op = $('<span class="view_pill_op view_pill_part" tabindex="0" role="button">')
             .text(opName(condition.op)).attr('title', t`Switch between contains and doesn't contain`);
         op.on('click', () => {
-            condition.op = condition.op === 'contains' ? 'not_contains' : 'contains';
+            if (conditions[index]) conditions[index] = { ...conditions[index], op: conditions[index].op === 'contains' ? 'not_contains' : 'contains' };
             render();
             send();
         });
@@ -548,8 +549,8 @@ export function initViewPills({ container, input, getView, setView, translate, s
                 done = true;
                 editing = -1;
                 const value = String(box.val()).trim();
-                if (keep) condition.value = value;
-                if (!condition.value) conditions.splice(index, 1);
+                if (keep && conditions[index]) conditions[index] = { ...conditions[index], value };
+                if (!conditions[index]?.value) conditions.splice(index, 1);
                 render();
                 send();
             };
