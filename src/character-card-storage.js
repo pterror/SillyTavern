@@ -9,11 +9,14 @@ import crypto from 'node:crypto';
  * may differ; canonicalCardHash() ignores it).
  *
  * Where each value goes:
- * - `columns`: the values the narrow `characters` row holds (name, creator, character_version, fav, world), each
- *   only when it has the type that column holds; otherwise it goes to `extra` so nothing is coerced.
+ * - `columns`: the values the narrow `characters` row holds (`data.name`, `data.creator`, `data.character_version`,
+ *   `data.extensions.fav`, `data.extensions.world`, and the top-level `create_date`), each only when it has the type
+ *   that column holds (`create_date`: a string or a number); otherwise it goes to `extra` so nothing is coerced.
  * - `fields`: every other string-valued key of `data` (description, personality, scenario, first_mes, mes_example,
  *   creator_notes, system_prompt, post_history_instructions, and any unknown string field).
  * - `greetings`: `data.alternate_greetings` and `data.group_only_greetings`, one row per greeting, in order.
+ * - `tags`: the card's own tag names (`data.tags`), one row per name, in order. These are the card's embedded names,
+ *   not the user's tag assignments (`character_tags`).
  * - `extensions`: every key of `data.extensions` except fav and world, its value as JSON.
  * - `extra`: everything else, by path: non-string `data` keys (`data:<key>`), top-level keys other than `data`
  *   (`top:<key>`), and a top-level key whose value is exactly the V1 mirror of its `data` counterpart
@@ -39,9 +42,10 @@ const GREETING_LISTS = Object.freeze(['alternate_greetings', 'group_only_greetin
 
 /**
  * @typedef {object} CardParts
- * @property {{ name?: string, creator?: string, character_version?: string, fav?: boolean, world?: string }} columns
+ * @property {{ name?: string, creator?: string, character_version?: string, fav?: boolean, world?: string, create_date?: string | number }} columns
  * @property {{ field: string, value: string }[]} fields
  * @property {{ list: string, position: number, text: string }[]} greetings
+ * @property {{ position: number, name: string }[]} tags
  * @property {{ key: string, value: string }[]} extensions JSON text per key.
  * @property {{ path: string, value: string | null }[]} extra JSON text per path; null for a mirror marker.
  */
@@ -107,7 +111,7 @@ export function canonicalCardHash(card) {
  */
 export function splitCard(card) {
     /** @type {CardParts} */
-    const parts = { columns: {}, fields: [], greetings: [], extensions: [], extra: [] };
+    const parts = { columns: {}, fields: [], greetings: [], tags: [], extensions: [], extra: [] };
     if (!isPlainObject(card)) {
         parts.extra.push({ path: 'whole', value: JSON.stringify(card) ?? 'null' });
         return parts;
@@ -136,6 +140,10 @@ export function splitCard(card) {
                 value.forEach((text, position) => parts.greetings.push({ list: key, position, text }));
                 continue;
             }
+            if (key === 'tags' && Array.isArray(value) && value.length > 0 && value.every(item => typeof item === 'string')) {
+                value.forEach((name, position) => parts.tags.push({ position, name }));
+                continue;
+            }
             if (typeof value === 'string') {
                 if (COLUMN_KEYS.includes(key)) parts.columns[/** @type {'name'|'creator'|'character_version'} */ (key)] = value;
                 else parts.fields.push({ field: key, value });
@@ -147,6 +155,10 @@ export function splitCard(card) {
 
     for (const [key, value] of Object.entries(card)) {
         if (key === 'data') continue;
+        if (key === 'create_date' && (typeof value === 'string' || typeof value === 'number')) {
+            parts.columns.create_date = value;
+            continue;
+        }
         const mirrorPath = Object.hasOwn(V1_MIRRORS, key) ? V1_MIRRORS[/** @type {keyof typeof V1_MIRRORS} */ (key)] : null;
         if (mirrorPath && isPlainObject(data)) {
             const counterpart = readPath(data, mirrorPath);
@@ -185,6 +197,8 @@ export function assembleCard(parts) {
         const rows = parts.greetings.filter(row => row.list === list).sort((a, b) => a.position - b.position);
         if (rows.length > 0) ensureData()[list] = rows.map(row => row.text);
     }
+    const tagRows = [...parts.tags].sort((a, b) => a.position - b.position);
+    if (tagRows.length > 0) ensureData().tags = tagRows.map(row => row.name);
 
     const hasExtensions = parts.extra.some(row => row.path === 'present:extensions');
     if (hasExtensions) {
@@ -204,6 +218,7 @@ export function assembleCard(parts) {
         if (path === 'top:data') card.data = JSON.parse(/** @type {string} */ (value));
         else if (path.startsWith('top:')) card[path.slice(4)] = JSON.parse(/** @type {string} */ (value));
     }
+    if (columns.create_date !== undefined) card.create_date = columns.create_date;
     if (data !== undefined) card.data = data;
     for (const { path } of parts.extra) {
         if (!path.startsWith('mirror:')) continue;
