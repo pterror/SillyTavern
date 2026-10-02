@@ -1688,6 +1688,18 @@ textarea.autoSetHeight {
     display: none !important;
 }
 
+.field_draft_notice {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 4px;
+    padding: 4px 6px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 5px;
+    font-size: calc(var(--mainFontSize) * 0.9);
+}
+
 .field_preview.field_preview_empty {
     opacity: 0.5;
 }
