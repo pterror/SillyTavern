@@ -1650,6 +1650,12 @@ textarea.autoSetHeight {
     color: var(--SmartThemeMacroColor);
 }
 
+/* A macro the preview doesn't run (it has side effects or randomness), shown as written. */
+.macro_preview_content .macro-raw {
+    color: var(--SmartThemeMacroColor);
+    opacity: 0.6;
+}
+
 .macro_preview_content {
     width: 100%;
     background-color: var(--black30a);

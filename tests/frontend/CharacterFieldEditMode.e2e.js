@@ -966,6 +966,51 @@ test.describe('character field edit mode', () => {
                 });
             });
         }
+
+        for (const [id, engine] of [['creator_notes_textarea', true], ['description_textarea', true], ['description_textarea', false]]) {
+            test(`${id}, ${engine ? 'new' : 'old'} macro engine: the preview fills in safe macros and never runs ones with side effects or randomness`, async ({ page }) => {
+                const field = FIELDS.find(x => x.id === id);
+                const previousEngine = await setPowerUserSetting(page, 'experimental_macro_engine', engine);
+                const key = `pv${stamp().replace(/\D/g, '')}`;
+                // The old engine shows a popup for nested macros, so only the new engine gets one.
+                const nested = engine ? ' {{reverse::{{random::cc::dd}}}}' : '';
+                const text = `{{setvar::${key}::set}}{{incvar::${key}n}}[{{char}}] {{random::aa::bb}}${nested}`;
+                await withCharacter(page, field, text, async (_avatar, name) => {
+                    await openInfoTab(page, field.tab);
+                    const preview = fieldLocators(page, field.id).preview;
+                    await expect(preview.locator('.macro-substituted').first()).toHaveText(name);
+                    await expect(preview.locator('.macro-raw')).toHaveText([
+                        `{{setvar::${key}::set}}`,
+                        `{{incvar::${key}n}}`,
+                        '{{random::aa::bb}}',
+                        ...(engine ? ['{{reverse::{{random::cc::dd}}}}'] : []),
+                    ]);
+                    for (let i = 0; i < 3; i++) {
+                        await enterEdit(page, field);
+                        await fieldLocators(page, field.id).cancel.click();
+                        await expectPreviewMode(page, field);
+                    }
+                    const vars = await page.evaluate((k) => {
+                        // @ts-ignore
+                        const ctx = SillyTavern.getContext();
+                        return [Boolean(ctx.variables.local.has(k)), Boolean(ctx.variables.local.has(`${k}n`))];
+                    }, key);
+                    expect(vars).toEqual([false, false]);
+                });
+                await setPowerUserSetting(page, 'experimental_macro_engine', previousEngine);
+            });
+        }
+
+        // The chat itself runs the greeting's macros when it shows it, so only the preview's rendering is checked.
+        test('greeting_field: the preview shows macros with side effects or randomness as written', async ({ page }) => {
+            const field = FIELDS.find(x => x.id === 'greeting_field');
+            await withCharacter(page, field, '[{{char}}] {{random::aa::bb}}', async (_avatar, name) => {
+                await openInfoTab(page, field.tab);
+                const preview = fieldLocators(page, field.id).preview;
+                await expect(preview.locator('.macro-substituted').first()).toHaveText(name);
+                await expect(preview.locator('.macro-raw')).toHaveText(['{{random::aa::bb}}']);
+            });
+        });
     });
 
     test('Escape with no field being edited still closes the character info drawer', async ({ page }) => {
