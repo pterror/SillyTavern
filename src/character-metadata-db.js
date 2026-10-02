@@ -3743,10 +3743,11 @@ export async function getDueCharacterIndexRetries(directories, now, limit) {
  * page) and `hasMore` says whether rows remain.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {number} sinceSeq
- * @param {{ limit: number }} options
+ * @param {{ limit: number, untilSeq?: number }} options untilSeq: read no row past it, so a page read again later is
+ *   the same page even if rows were added since.
  * @returns {Promise<{ seq: number, tagIds: string[], truncated: boolean, hasMore: boolean } | null>}
  */
-export async function getTagNameChangesSince(directories, sinceSeq, { limit }) {
+export async function getTagNameChangesSince(directories, sinceSeq, { limit, untilSeq }) {
     if (!Number.isInteger(limit) || limit <= 0) {
         throw new TypeError('getTagNameChangesSince() needs a positive integer limit');
     }
@@ -3767,7 +3768,8 @@ export async function getTagNameChangesSince(directories, sinceSeq, { limit }) {
     let lastSeq = null;
     let hasMore = false;
     let read = 0;
-    for (const row of /** @type {Generator<TagNameChangeRow>} */ (entry.db.iterate('SELECT seq, tag_id FROM tag_name_changes WHERE seq > ? ORDER BY seq ASC LIMIT ?', [numericSince, limit + 1]))) {
+    const until = Number.isInteger(untilSeq) ? untilSeq : Number.MAX_SAFE_INTEGER;
+    for (const row of /** @type {Generator<TagNameChangeRow>} */ (entry.db.iterate('SELECT seq, tag_id FROM tag_name_changes WHERE seq > ? AND seq <= ? ORDER BY seq ASC LIMIT ?', [numericSince, until, limit + 1]))) {
         if (read === limit) {
             hasMore = true;
             break;
@@ -3959,13 +3961,14 @@ export async function getEntityTagChangesSince(directories, { sinceSeq, sinceGro
     return { seq: lastSeq, groupsVersion: lastGroupsVersion, endSeq, endGroupsVersion, reset: false, ids: [...ids], hasMore };
 }
 
-/** Ids of the characters carrying any of `tagIds`, in batches, each id once. `tagIds` goes into one IN (...), so
- * the caller bounds it (search-index passes one tag-name-change page).
+/** Ids of the characters carrying any of `tagIds`, in batches in id order, each id once. `tagIds` goes into one
+ * IN (...), so the caller bounds it (search-index passes one tag-name-change page).
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string[]} tagIds
+ * @param {{ after?: string | null }} [options] after: start past this character id.
  * @returns {AsyncGenerator<string[], void, undefined>}
  */
-export async function* streamCharacterIdsForTagIds(directories, tagIds) {
+export async function* streamCharacterIdsForTagIds(directories, tagIds, { after = null } = {}) {
     const entry = await getEntry(directories);
     if (!entry) return;
     const ids = [...new Set(tagIds)];
@@ -3974,9 +3977,10 @@ export async function* streamCharacterIdsForTagIds(directories, tagIds) {
     const params = {};
     ids.forEach((id, i) => { params[`t${i}`] = id; });
     const placeholders = ids.map((_id, i) => `@t${i}`).join(',');
+    const nextPageSql = `SELECT DISTINCT character_id FROM character_tags WHERE tag_id IN (${placeholders}) AND character_id > @after ORDER BY character_id LIMIT @limit`;
     for await (const rows of streamRows(entry.db, {
-        firstPageSql: `SELECT DISTINCT character_id FROM character_tags WHERE tag_id IN (${placeholders}) ORDER BY character_id LIMIT @limit`,
-        firstPageParams: params,
+        firstPageSql: after === null ? `SELECT DISTINCT character_id FROM character_tags WHERE tag_id IN (${placeholders}) ORDER BY character_id LIMIT @limit` : nextPageSql,
+        firstPageParams: after === null ? params : { ...params, after },
         nextPageSql: `SELECT DISTINCT character_id FROM character_tags WHERE tag_id IN (${placeholders}) AND character_id > @after ORDER BY character_id LIMIT @limit`,
         nextPageParams: params,
         keyColumn: 'character_id',

@@ -5,7 +5,9 @@ import os from 'node:os';
 
 // While `clock` is set, every tick() page read returns one log row and moves the fake clock forward by that kind's
 // step, so how many pages each loop takes depends only on the steps and the budget, never on real time.
-/** @type {{ now: number, changeStepMs: number, renameStepMs: number, changePages: number, renamePages: number } | null} */
+// While `clock` is set, the characters carrying renamed tags come one per batch, and each batch moves the clock
+// forward by characterStepMs, so the rename loop can run out of budget partway through a page.
+/** @type {{ now: number, changeStepMs: number, renameStepMs: number, characterStepMs?: number, changePages: number, renamePages: number, renamedCharacters?: string[] } | null} */
 let clock = null;
 
 /** @type {typeof import('../src/endpoints/characters-search-index.js')} */
@@ -60,10 +62,23 @@ beforeAll(async () => {
         }),
         getTagNameChangesSince: jest.fn(async (dirs, sinceSeq, options) => {
             if (!clock) return actualMetadataDb.getTagNameChangesSince(dirs, sinceSeq, options);
-            const page = await actualMetadataDb.getTagNameChangesSince(dirs, sinceSeq, { limit: 1 });
+            const page = await actualMetadataDb.getTagNameChangesSince(dirs, sinceSeq, { ...options, limit: 1 });
             clock.renamePages++;
             clock.now += clock.renameStepMs;
             return page;
+        }),
+        streamCharacterIdsForTagIds: jest.fn(async function* (dirs, tagIds, options) {
+            for await (const batch of actualMetadataDb.streamCharacterIdsForTagIds(dirs, tagIds, options)) {
+                if (!clock?.characterStepMs) {
+                    yield batch;
+                    continue;
+                }
+                for (const id of batch) {
+                    clock.now += clock.characterStepMs;
+                    clock.renamedCharacters?.push(id);
+                    yield [id];
+                }
+            }
         }),
     }));
 
@@ -176,6 +191,52 @@ describe('characters-search-index.js: a tick splits its budget between changes a
         expect(r.changePages).toBe(3);
         expect(r.renamePages).toBe(3);
         expect(r.renamesApplied).toBe(3);
+    }, 20000);
+
+    test('a rename page whose characters outlast the budget is left part done, and later ticks go on from the next character, including after a reopen', async () => {
+        const tantivy = await tantivyEngine.getTantivyModule();
+        if (!tantivy) return;
+        const names = ['A', 'B', 'C', 'D', 'E'].map(n => `Char${n}`);
+        for (const name of names) await writeCard(name);
+        await metadataDb.bootstrapIfNeeded(directories);
+        await metadataDb.saveTagDefinitions(directories, [{ id: 'tag-1', name: 'Tag1' }]);
+        for (const name of names) expect(await metadataDb.assignEntityTag(directories, `${name}.png`, 'tag-1')).toBe('ok');
+        maintainer = searchIndex.createCharacterIndexMaintainer(directories, tantivy, { tickBudgetMs: BUDGET_MS });
+        expect(await maintainer.rebuild()).not.toBeNull();
+        expect((await metadataDb.editTagDefinition(directories, 'tag-1', { name: 'Tag1Renamed' }))?.refused).toEqual([]);
+
+        /** @param {any} m */
+        async function tickRenames(m) {
+            const c = { now: 1_000_000, changeStepMs: 0, renameStepMs: 0, characterStepMs: 40, changePages: 0, renamePages: 0, renamedCharacters: [] };
+            clock = c;
+            jest.spyOn(Date, 'now').mockImplementation(() => c.now);
+            const result = await m.tick();
+            jest.restoreAllMocks();
+            clock = null;
+            const r = /** @type {import('../src/endpoints/characters-search-index.js').TickResult} */ (result);
+            return { characters: c.renamedCharacters, renamesApplied: r.tagNameSeq - r.tagNameSeqFrom };
+        }
+
+        // The rename loop has until 100: characters come at 40, 80, 120, and the one at 120 is past it.
+        const first = await tickRenames(maintainer);
+        expect(first.characters.slice(0, 2)).toEqual(['CharA.png', 'CharB.png']);
+        expect(first.renamesApplied).toBe(0);
+
+        // A reopened maintainer goes on from the persisted position.
+        maintainer.close();
+        maintainer = searchIndex.createCharacterIndexMaintainer(directories, tantivy, { tickBudgetMs: BUDGET_MS });
+        expect(await maintainer.openPersisted()).not.toBeNull();
+        const second = await tickRenames(maintainer);
+        expect(second.characters.slice(0, 2)).toEqual(['CharC.png', 'CharD.png']);
+        expect(second.renamesApplied).toBe(0);
+
+        const third = await tickRenames(maintainer);
+        expect(third.characters).toEqual(['CharE.png']);
+        expect(third.renamesApplied).toBe(1);
+
+        const fourth = await tickRenames(maintainer);
+        expect(fourth.characters).toEqual([]);
+        expect(fourth.renamesApplied).toBe(0);
     }, 20000);
 
     test('the rename loop also gets what the change loop left unused', async () => {
