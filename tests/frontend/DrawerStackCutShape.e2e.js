@@ -103,4 +103,24 @@ test.describe('stacked drawers', () => {
         });
         expect(rewrites).toEqual([]);
     });
+
+    test('picking a character from fullscreen character management brings its chat to the front', async ({ page }) => {
+        await page.setViewportSize({ width: 1400, height: 900 });
+        await loadApp(page);
+        await setStackedDrawers(page, true);
+        await openCharacterManagementDrawer(page);
+        await expect(page.locator('#right-nav-panel')).toHaveClass(/galleryFullscreen/);
+        await page.locator('[data-stack-front-of="sheld"]').click();
+        await page.locator('#rightNavDrawerIcon').click();
+        await expect(page.locator('#chatDrawerIcon')).not.toHaveClass(/stackFront/);
+        await page.locator('#rm_print_characters_block .character_select').first().click();
+        await expect(page.locator('#chatDrawerIcon')).toHaveClass(/stackFront/);
+        await expect(page.locator('#sheld')).not.toHaveAttribute('data-stack-cut', 'true');
+        const hit = await page.evaluate(() => {
+            const box = document.getElementById('sheld').getBoundingClientRect();
+            const el = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+            return document.getElementById('sheld').contains(el);
+        });
+        expect(hit).toBe(true);
+    });
 });

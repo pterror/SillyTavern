@@ -13384,6 +13384,8 @@ jQuery(async function () {
     $(document).on('click', '.character_select', async function () {
         const avatar = $(this).attr('data-avatar');
         await selectCharacterByAvatar(avatar);
+        // Picking a character is picking its conversation: it comes to the front, over a fullscreen list.
+        if (!selected_group && String(this_avatar) === String(avatar)) bringChatForward();
     });
 
     $(document).on('click', '.bogus_folder_select', function () {
