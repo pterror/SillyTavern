@@ -85,6 +85,7 @@ function wrap(db) {
             for (const row of db.prepare(sql).iterate(params ?? {})) out.push(row);
             return out;
         },
+        iterate: (sql, params) => db.prepare(sql).iterate(params ?? {}),
         exec: sql => db.exec(sql),
         run: (sql, params) => db.prepare(sql).run(params ?? {}),
         close: () => db.close(),

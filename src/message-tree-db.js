@@ -6,8 +6,8 @@ import { color } from './util.js';
 import { getSqliteEngine } from './endpoints/sqlite-engine.js';
 import { writeRowIfChanged } from './row-values.js';
 import {
-    defineMessageStatsFunctions, fillMessageStatsBatchSync, messageStatsFilledSync, migrateMessageStatsSync,
-    readMessageStatsSync, restartMessageStatsFillSync,
+    countMessageWriteSync, defineMessageStatsFunctions, deleteMessagesCountedSync, fillMessageStatsBatchSync,
+    messageStatsFilledSync, migrateMessageStatsSync, readMessageStatsSync, restartMessageStatsFillSync,
 } from './message-stats.js';
 
 /**
@@ -990,6 +990,7 @@ function extractLastMes(contentJson) {
  */
 
 /**
+ * Inserts a message row and counts it into the message stats. Runs inside the caller's transaction.
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  * @param {NewRowInput} input
  */
@@ -1009,6 +1010,7 @@ function insertMessageSync(db, { id, parentId, ownerId, content, label, createdA
             metadata: metadata ?? null,
         },
     );
+    countMessageWriteSync(db, null, { id, parent_id: parentId ?? null, owner_id: ownerId, content });
 }
 
 /**
@@ -1030,9 +1032,12 @@ function wouldBlankStoredText(stored, incoming) {
  * @param {string} content
  */
 function updateMessageContentSync(db, id, content) {
-    const row = /** @type {Pick<MessageRow, 'parent_id'> | undefined} */ (db.get('SELECT parent_id FROM messages WHERE id = @id', { id }));
+    const row = /** @type {Pick<MessageRow, 'id' | 'parent_id' | 'owner_id' | 'content'> | undefined} */ (db.get(
+        'SELECT id, parent_id, owner_id, content FROM messages WHERE id = @id', { id }));
     const identityHash = row?.parent_id != null ? identityHashOf(row.parent_id, content) : null;
-    writeRowIfChanged(db, 'messages', { id }, { content, identity_hash: identityHash });
+    if (writeRowIfChanged(db, 'messages', { id }, { content, identity_hash: identityHash }) && row && row.content !== content) {
+        countMessageWriteSync(db, row, { ...row, content });
+    }
 }
 
 /**
@@ -2082,7 +2087,13 @@ export async function editMessage(directories, ownerId, nodeId, content) {
     const entry = await getEntry(directories);
     if (!entry) return { ok: false, reason: 'unavailable' };
     const stats = newWriteStats();
-    const result = editMessageSync(entry.db, ownerId, nodeId, content, stats);
+    /** @type {EditResult} */
+    let result = { ok: false, reason: 'unavailable' };
+    entry.db.transaction(() => {
+        // Reset here: a transaction that hits busy is rolled back and rerun.
+        Object.assign(stats, newWriteStats());
+        result = editMessageSync(entry.db, ownerId, nodeId, content, stats);
+    });
     await reportOwnerWrite(directories, entry.db, ownerId, stats);
     return result;
 }
@@ -2507,7 +2518,7 @@ export async function deleteAlternative(directories, ownerId, nodeId) {
         const child = entry.db.get('SELECT 1 FROM messages WHERE parent_id = @id LIMIT 1', { id: nodeId });
         if (child) { result = { ok: false, reason: 'has descendants' }; return; }
 
-        entry.db.run('DELETE FROM messages WHERE id = @id', { id: nodeId });
+        deleteNodesSync(entry.db, ownerId, [nodeId]);
         stats.sizeChange -= messageLineBytes(node.content);
         stats.deleted = true;
         result = { ok: true };
@@ -3155,7 +3166,11 @@ function labelNodeSync(db, id, label, metadataJson) {
  * @param {string} identityHash
  */
 function reparentNodeSync(db, id, parentId, identityHash) {
-    writeRowIfChanged(db, 'messages', { id }, { parent_id: parentId, identity_hash: identityHash });
+    const row = /** @type {Pick<MessageRow, 'id' | 'parent_id' | 'owner_id' | 'content'> | undefined} */ (db.get(
+        'SELECT id, parent_id, owner_id, content FROM messages WHERE id = @id', { id }));
+    if (writeRowIfChanged(db, 'messages', { id }, { parent_id: parentId, identity_hash: identityHash }) && row && row.parent_id !== parentId) {
+        countMessageWriteSync(db, row, { ...row, parent_id: parentId });
+    }
 }
 
 /**
@@ -3171,8 +3186,9 @@ function swapDefaultChildSync(db, { id, ownerId, from, to }) {
 }
 
 /**
- * Deletes nodes of one owner, in one statement.
- * @param {{ run: (sql: string, params: object) => { changes: number } }} db
+ * Deletes nodes of one owner, in one statement, and counts them out of the message stats. Runs inside the caller's
+ * transaction.
+ * @param {Pick<import('./endpoints/sqlite-engine.js').SqliteEngineHandle, 'get' | 'iterate' | 'run'>} db
  * @param {string} ownerId
  * @param {string[]} ids
  * @returns {number} Rows deleted.
@@ -3180,8 +3196,11 @@ function swapDefaultChildSync(db, { id, ownerId, from, to }) {
 function deleteNodesSync(db, ownerId, ids) {
     if (ids.length === 0) return 0;
     const params = Object.fromEntries(ids.map((id, i) => [`id${i}`, id]));
-    return db.run(`DELETE FROM messages WHERE owner_id = @ownerId AND id IN (${ids.map((_, i) => `@id${i}`).join(', ')})`,
-        { ownerId, ...params }).changes;
+    const where = `owner_id = @ownerId AND id IN (${ids.map((_, i) => `@id${i}`).join(', ')})`;
+    const rows = Array.from(/** @type {Iterable<import('./message-stats.js').StatsMessageRow>} */ (db.iterate(
+        `SELECT id, parent_id, owner_id, content FROM messages WHERE ${where}`, { ownerId, ...params })));
+    if (rows.length === 0) return 0;
+    return deleteMessagesCountedSync(db, rows, () => db.run(`DELETE FROM messages WHERE ${where}`, { ownerId, ...params }).changes);
 }
 
 export {

@@ -2,6 +2,7 @@ import { describe, test, expect, beforeAll, beforeEach, afterEach, jest } from '
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { insertTagRowRaw } from './util/stored-counters.js';
 
 /** @type {typeof import('../src/character-metadata-db.js')} */
 let metadataDb;
@@ -112,10 +113,8 @@ async function assign(id, tagId) {
 
 /** @param {'character_tags' | 'group_tags'} table @param {[string, string][]} rows */
 function insertRaw(table, rows) {
-    const column = table === 'character_tags' ? 'character_id' : 'group_id';
     withRawDb(db => {
-        const insert = db.prepare(`INSERT INTO ${table} (${column}, tag_id) VALUES (?, ?)`);
-        db.transaction(() => { for (const [id, tagId] of rows) insert.run(id, tagId); })();
+        db.transaction(() => { for (const [id, tagId] of rows) insertTagRowRaw(db, table, id, tagId); })();
     });
 }
 
