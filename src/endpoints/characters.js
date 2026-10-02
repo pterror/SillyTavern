@@ -2507,9 +2507,23 @@ async function runSearchWalk(user, { mode, searchTerm, filter, sort, seed, inclu
             start,
             fetchWindow: async (windowOffset, count) => {
                 const params = { ...sqlParams, offset: windowOffset, limit: count, wantRows: false, wantHashes: true, wantTotal: false };
-                const result = includeGroups ? await queryEntities(directories, { ...params, groupsOnly }) : await queryCharacters(directories, params);
-                if (result === null) return null;
-                return (result.hashRows ?? []).map(row => ({ type: row.isGroup ? 'group' : 'character', id: row.id }));
+                if (!includeGroups) {
+                    const result = await queryCharacters(directories, params);
+                    if (result === null) return null;
+                    return (result.hashRows ?? []).map(row => ({ type: row.isGroup ? 'group' : 'character', id: row.id }));
+                }
+                // A sorted page past its own work cap answers what it has with `more`; carry on from its cursor until
+                // the window is full, so a short window still means the end.
+                const window = [];
+                let cursor;
+                for (;;) {
+                    const result = await queryEntities(directories, { ...params, groupsOnly, limit: count - window.length, cursor });
+                    if (result === null) return null;
+                    window.push(...(result.hashRows ?? []).map(row => ({ type: row.isGroup ? 'group' : 'character', id: row.id })));
+                    if (result.more !== true || window.length >= count || typeof result.cursor !== 'string') break;
+                    cursor = result.cursor;
+                }
+                return window;
             },
             check: async batch => {
                 const kept = new Set();
