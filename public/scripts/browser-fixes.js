@@ -1,4 +1,5 @@
 import { getParsedUA, isMobile } from './RossAscends-mods.js';
+import { getFocusedField } from './live-editor/registry.js';
 
 const isFirefox = () => /firefox/i.test(navigator.userAgent);
 
@@ -6,7 +7,7 @@ function sanitizeInlineQuotationOnCopy() {
     // STRG+C, STRG+V on firefox leads to duplicate double quotes when inline quotation elements are copied.
     // To work around this, take the selection and transform <q> to <span> before calling toString().
     document.addEventListener('copy', function (event) {
-        if (document.activeElement instanceof HTMLInputElement || document.activeElement instanceof HTMLTextAreaElement) {
+        if (getFocusedField()) {
             return;
         }
 
@@ -73,8 +74,7 @@ function applyBrowserFixes() {
     if (isMobile()) {
         const fixFunkyPositioning = () => {
             if (isFirefox()) {
-                const active = document.activeElement;
-                if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) {
+                if (getFocusedField()) {
                     // The positioning hack below breaks GBoard candidate replacement
                     // in Firefox Mobile on Android.
                     return;

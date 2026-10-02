@@ -129,6 +129,20 @@ export function mountLiveEditor(textarea, options = {}) {
         return false;
     }]));
 
+    // An editor in the chat (a message being edited) keeps the chat where it was as it grows or shrinks, as the
+    // message edit textarea does: the chat's scroll is read before each change and put back after a height change.
+    let chatScrollBefore = null;
+    const keepChatScroll = [
+        EditorState.transactionExtender.of(() => {
+            chatScrollBefore = textarea.closest('#chat')?.scrollTop ?? null;
+            return null;
+        }),
+        EditorView.updateListener.of((update) => {
+            const chat = update.view.dom.closest('#chat');
+            if (update.heightChanged && chat && chatScrollBefore !== null) chat.scrollTop = chatScrollBefore;
+        }),
+    ];
+
     const sync = EditorView.updateListener.of((update) => {
         if (update.docChanged && !update.transactions.some(tr => tr.annotation(fromTextarea))) {
             textareaValue.set.call(textarea, update.state.doc.toString());
@@ -156,6 +170,7 @@ export function mountLiveEditor(textarea, options = {}) {
                 // First, so listeners on the textarea get every event before the editor's own handlers.
                 Prec.highest(EditorView.domEventHandlers(forwardHandlers)),
                 sync,
+                keepChatScroll,
                 textarea.placeholder ? placeholderExtension(textarea.placeholder) : [],
                 EditorState.readOnly.of(textarea.readOnly),
                 EditorView.editable.of(!textarea.disabled),

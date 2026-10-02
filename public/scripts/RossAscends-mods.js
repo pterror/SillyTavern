@@ -1,5 +1,6 @@
 import { handleFieldEditKey } from './character-field-editor.js';
 import { substituteSafeMacrosAsText } from './safe-macros.js';
+import { getFocusedField } from './live-editor/registry.js';
 import { DOMPurify, Bowser } from '../lib.js';
 
 import {
@@ -1036,15 +1037,11 @@ export function initRossMods() {
 
 
     function isInputElementInFocus() {
-        //return $(document.activeElement).is(":input");
-        var focused = $(':focus');
-        if (focused.is('input') || focused.is('textarea') || focused.prop('contenteditable') == 'true') {
-            if (focused.attr('id') === 'send_textarea') {
-                return false;
-            }
-            return true;
+        const field = getFocusedField();
+        if (field) {
+            return field.id !== 'send_textarea';
         }
-        return false;
+        return $(':focus').prop('contenteditable') == 'true';
     }
 
     function isModifiedKeyboardEvent(event) {
@@ -1075,7 +1072,7 @@ export function initRossMods() {
         }
 
         //Enter to send when send_textarea in focus
-        if (document.activeElement == hotkeyTargets.send_textarea) {
+        if (getFocusedField() == hotkeyTargets.send_textarea) {
             const sendOnEnter = shouldSendOnEnter();
             if (!event.isComposing && !event.shiftKey && !event.ctrlKey && !event.altKey && event.key == 'Enter' && sendOnEnter) {
                 event.preventDefault();
@@ -1083,7 +1080,7 @@ export function initRossMods() {
                 return;
             }
         }
-        if (document.activeElement == hotkeyTargets.dialogue_popup_input && !isMobile()) {
+        if (getFocusedField() == hotkeyTargets.dialogue_popup_input && !isMobile()) {
             if (!event.shiftKey && !event.ctrlKey && event.key == 'Enter') {
                 event.preventDefault();
                 $('#dialogue_popup_ok').trigger('click');
