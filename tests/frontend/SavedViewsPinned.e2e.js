@@ -37,6 +37,11 @@ async function pinnedKeys(page, owner) {
     }, owner);
 }
 
+/** @param {import('@playwright/test').Page} page */
+async function openSearchBar(page) {
+    if (!(await page.locator('#character_search_bar').isVisible())) await page.locator('#rm_button_search').click();
+}
+
 /** @param {import('@playwright/test').Page} page @param {string} avatar */
 const row = (page, avatar) => page.locator(`#rm_print_characters_block .character_select[data-avatar="${avatar}"]`);
 
@@ -49,15 +54,15 @@ test.describe('saved views pin their first page', () => {
         const stamp = Date.now();
         const avatar = await createCharacter(page, `Pinned${stamp}`);
 
-        if (!(await page.locator('#character_search_bar').isVisible())) await page.locator('#rm_button_search').click();
+        await openSearchBar(page);
         await page.locator('#character_search_bar').fill(`Pinned${stamp}`);
         await expect(row(page, avatar)).toBeVisible();
         await page.locator('#character_view_picker').click();
         await page.locator('.view_picker_save input').fill(`Pinned view ${stamp}`);
         await page.locator('.view_picker_save .menu_button').click();
         await expect(page.locator('#character_view_picker .view_picker_name')).toHaveText(`Pinned view ${stamp}`);
+        await expect(page.locator('#character_view_picker')).toHaveAttribute('data-view-id', /.+/);
         const id = await page.locator('#character_view_picker').getAttribute('data-view-id');
-        expect(id).toBeTruthy();
         await expect.poll(() => pinnedKeys(page, `view:${id}`)).toHaveLength(1);
         const [key] = await pinnedKeys(page, `view:${id}`);
         expect(key).toContain(`Pinned${stamp}`);
