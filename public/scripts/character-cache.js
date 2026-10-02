@@ -77,6 +77,11 @@ const LEGACY_REV_KEY = '__rev__';
 const STALE_DIGEST_KEY = '__last_verified_digest__';
 let staleDigestKeyRemoved = false;
 
+/** The user the browser-storage caches are kept for. */
+export function getCacheUserHandle() {
+    return getCurrentUserHandle();
+}
+
 function getCharacterCacheStore() {
     const handle = getCurrentUserHandle();
     let store = storesByHandle.get(handle);

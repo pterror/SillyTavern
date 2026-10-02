@@ -287,6 +287,15 @@ jest.unstable_mockModule('../public/scripts/character-cache.js', () => ({
     saveCachedCharacters: saveCachedCharactersFake,
     getCachedGroupEntriesByIds: getCachedGroupEntriesByIdsFake,
     saveCachedGroups: saveCachedGroupsFake,
+    getCacheUserHandle: () => 'tester',
+}));
+// Nothing kept in browser storage between tests: every query goes to the (fake) server.
+jest.unstable_mockModule('../public/scripts/query-result-cache.js', () => ({
+    setQueryCacheUser: () => {},
+    readQueryCache: async () => null,
+    writeQueryCache: async () => {},
+    pinQueryCache: async () => {},
+    pinnedQueryCacheKeys: async () => [],
 }));
 
 /** @type {typeof import('../public/scripts/character-repository.js').CharacterRepository} */

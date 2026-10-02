@@ -12,7 +12,8 @@ import { unshallowCharacter } from '../script.js';
 import { getRequestHeaders } from './request-headers.js';
 import { charactersStore } from './character-store.js';
 import { isFetchedTagIdsCurrent, tagFetchStamp } from './tag-fetch-stamps.js';
-import { getCachedEntriesByIds, saveCachedCharacters, getCachedGroupEntriesByIds, saveCachedGroups } from './character-cache.js';
+import { getCachedEntriesByIds, saveCachedCharacters, getCachedGroupEntriesByIds, saveCachedGroups, getCacheUserHandle } from './character-cache.js';
+import { readQueryCache, writeQueryCache, setQueryCacheUser } from './query-result-cache.js';
 import { characterDigestFieldsHash, characterDigestSource, normalizeFav, normalizeTagIds, shallowCharacterData } from './hash-utils.js';
 
 /**
@@ -85,6 +86,9 @@ const PAGE_END_CURSOR_LIMIT = 64;
  */
 const queryResponseCache = new Map();
 const QUERY_RESPONSE_CACHE_LIMIT = 100;
+
+/** A hash-mode result's hash rows, kept beside it for the browser-storage cache (query-result-cache.js). */
+const resultHashRows = new WeakMap();
 
 /** Mirrors the server's own page cap (`MAX_QUERY_PAGE_SIZE`): `queryAll()` and `getMany()` chunk their requests at this size. */
 const QUERY_ALL_PAGE_SIZE = 2000;
@@ -626,9 +630,13 @@ export class CharacterRepository {
      * @param {('rows'|'total'|'hidden'|'facets'|'rank')[]} [want] - defaults to `['rows', 'total']`; pass a narrower set
      * (e.g. `['rows']`) to skip paying for a count the caller doesn't need. `'hidden'` adds `hidden`, every entity
      * less the rows on this page.
+     * @param {object} [options]
+     * @param {(result: CharacterQueryResult) => void} [options.onFresh] - with rows wanted and this page kept in
+     *   browser storage from an earlier visit: the kept page is answered at once, the server is asked whether it
+     *   changed, and a changed page is handed to `onFresh`.
      * @returns {Promise<CharacterQueryResult>}
      */
-    async query(filter = {}, sort = undefined, page = 1, pageSize = 100, want = DEFAULT_QUERY_WANT) {
+    async query(filter = {}, sort = undefined, page = 1, pageSize = 100, want = DEFAULT_QUERY_WANT, { onFresh } = {}) {
         // Mirrors the route's own rule: relevance order requires something to rank by, so a blank term
         // cannot ask for a 'search' sort.
         const search = typeof filter.search === 'string' ? filter.search.trim() : '';
@@ -640,13 +648,58 @@ export class CharacterRepository {
         const normalizedSort = sort?.field === 'search' && !search ? undefined : sort;
         const requestShape = { filter: normalizedFilter, sort: normalizedSort, page, pageSize, want };
         const signature = JSON.stringify(requestShape);
-        const cached = queryResponseCache.get(signature);
 
         // Hash mode: when `rows` is wanted, transport row data as {id, hash} plus a few live fields instead of
         // full JSON, resolving each row from the local per-id cache on a hash match and only batch-fetching ids
         // that are missing or changed. A bare `want: ['total']` has nothing to gain from this, so it skips it.
         const useHashMode = want.includes('rows');
         const includeGroups = normalizedFilter.includeGroups === true;
+
+        const cached = queryResponseCache.get(signature);
+        if (useHashMode) setQueryCacheUser(getCacheUserHandle());
+        // Not in this page's memory: the copy kept in browser storage from an earlier visit, if any.
+        const kept = !cached && useHashMode ? await readQueryCache(signature) : null;
+        if (kept && onFresh) {
+            const stale = await this.#resultFromKept(kept, includeGroups);
+            void this.#fetchQuery(requestShape, signature, stale, kept, useHashMode, includeGroups)
+                .then(fresh => {
+                    if (fresh !== stale) onFresh(fresh);
+                })
+                .catch(error => console.warn('[query] revalidating a kept page failed:', error));
+            return stale;
+        }
+        return this.#fetchQuery(requestShape, signature, cached ?? (kept ? { token: kept.token } : undefined), kept, useHashMode, includeGroups);
+    }
+
+    /**
+     * A kept page as a result: its hash rows resolved as a fresh answer's would be.
+     * @param {import('./query-result-cache.js').QueryCacheEntry} kept
+     * @param {boolean} includeGroups
+     * @returns {Promise<CharacterQueryResult>}
+     */
+    async #resultFromKept(kept, includeGroups) {
+        /** @type {CharacterQueryResult} */
+        const result = { seq: kept.seq, token: kept.token, rows: await this.#resolveHashRows(kept.hashRows, includeGroups) };
+        for (const field of /** @type {const} */ (['total', 'hidden', 'searchBackend', 'cursor'])) {
+            if (kept[field] !== undefined) result[field] = kept[field];
+        }
+        resultHashRows.set(result, kept.hashRows);
+        return result;
+    }
+
+    /**
+     * Asks the server for a page, sending `cached`'s token; an unchanged answer returns the cached page (`kept`
+     * resolved, when only browser storage had it).
+     * @param {{filter: object, sort: object|undefined, page: number, pageSize: number, want: string[]}} requestShape
+     * @param {string} signature
+     * @param {CharacterQueryResult | { token: string } | undefined} cached
+     * @param {import('./query-result-cache.js').QueryCacheEntry | null} kept
+     * @param {boolean} useHashMode
+     * @param {boolean} includeGroups
+     * @returns {Promise<CharacterQueryResult>}
+     */
+    async #fetchQuery(requestShape, signature, cached, kept, useHashMode, includeGroups) {
+        const { filter: normalizedFilter, sort: normalizedSort, page, pageSize, want } = requestShape;
 
         const fetchStamp = tagFetchStamp();
         const cursorKey = JSON.stringify({ filter: normalizedFilter, sort: normalizedSort, pageSize, want });
@@ -658,8 +711,13 @@ export class CharacterRepository {
 
         // Server confirmed nothing changed - reuse the cached response rather than the rows/total-less stub.
         if (result?.unchanged === true && cached) {
-            stampRowsTagFetch(cached, fetchStamp);
-            return cached;
+            const answer = 'rows' in cached || !kept ? /** @type {CharacterQueryResult} */ (cached) : await this.#resultFromKept(kept, includeGroups);
+            if (answer !== cached) {
+                if (queryResponseCache.size >= QUERY_RESPONSE_CACHE_LIMIT) queryResponseCache.clear();
+                queryResponseCache.set(signature, answer);
+            }
+            stampRowsTagFetch(answer, fetchStamp);
+            return answer;
         }
 
         // A walked search stopped at its work cap before the page was full: carry on from its cursor, one request at a
@@ -678,6 +736,15 @@ export class CharacterRepository {
         if (result && typeof result.token === 'string' && result.token.length > 0) {
             if (queryResponseCache.size >= QUERY_RESPONSE_CACHE_LIMIT) queryResponseCache.clear();
             queryResponseCache.set(signature, result);
+            const hashRows = resultHashRows.get(result);
+            if (hashRows) {
+                /** @type {import('./query-result-cache.js').QueryCacheEntry} */
+                const entry = { hashRows, token: result.token, seq: result.seq };
+                for (const field of /** @type {const} */ (['total', 'hidden', 'searchBackend', 'cursor'])) {
+                    if (result[field] !== undefined) entry[field] = result[field];
+                }
+                void writeQueryCache(signature, entry);
+            }
         }
 
         stampRowsTagFetch(result, fetchStamp);
@@ -694,6 +761,7 @@ export class CharacterRepository {
      */
     async #fillPage(first, requestShape, useHashMode, includeGroups) {
         const rows = [...(first.rows ?? [])];
+        const hashRows = [...(resultHashRows.get(first) ?? [])];
         let last = first;
         // `hidden` counts every entity less the rows on the page, so it is taken from the first reply and reduced.
         const want = requestShape.want.filter(w => w !== 'hidden');
@@ -701,9 +769,11 @@ export class CharacterRepository {
             const shape = { ...requestShape, want, pageSize: requestShape.pageSize - rows.length, cursor: last.cursor };
             last = useHashMode ? await this.#queryHashMode(shape, undefined, includeGroups) : await postJson('/api/characters/query', shape);
             rows.push(...(last.rows ?? []));
+            hashRows.push(...(resultHashRows.get(last) ?? []));
         }
         /** @type {CharacterQueryResult} */
         const result = { ...first, rows, seq: last.seq, token: last.token };
+        if (useHashMode) resultHashRows.set(result, hashRows);
         delete result.more;
         if (last.total !== undefined) result.total = last.total;
         if (typeof last.cursor === 'string') result.cursor = last.cursor;
@@ -743,6 +813,7 @@ export class CharacterRepository {
         if (decoded.more) result.more = true;
         if (decoded.cursor !== undefined) result.cursor = decoded.cursor;
         result.rows = await this.#resolveHashRows(decoded.hashRows, includeGroups);
+        resultHashRows.set(result, decoded.hashRows);
         return result;
     }
 
