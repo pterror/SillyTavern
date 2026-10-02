@@ -199,7 +199,7 @@ describe('/query want: hidden', () => {
         expect(without.rows).toHaveLength(2);
     }, 30000);
 
-    test('an estimated match total leaves the hidden count exact', async () => {
+    test('a relevance page past its listed rows counts every match and the hidden count stays exact', async () => {
         if ((await searchEngine.resolveSearchEngine()).tier !== 'tantivy') return;
         for (let i = 0; i < 20; i++) {
             await seedCharacter(`v${String(i).padStart(2, '0')}.png`, { name: `Vampire ${i}`, file: true });
@@ -212,13 +212,13 @@ describe('/query want: hidden', () => {
         const deadline = Date.now() + 10000;
         do {
             answer = await queryJson(body);
-            if (typeof answer.total === 'string') break;
+            if (answer.total === 20) break;
             await new Promise(resolve => setTimeout(resolve, 100));
         } while (Date.now() < deadline);
 
-        // A relevance page counts only the matches it ranked (2 + 5 over-fetched).
-        // Twenty-one characters less the two rows on the page; the match estimate plays no part.
-        expect(answer.total).toBe('~7');
+        // The search index counted all twenty matches, so the total is exact even though only 2 + 5 rows were read.
+        // Twenty-one characters less the two rows on the page.
+        expect(answer.total).toBe(20);
         expect(answer.rows).toHaveLength(2);
         expect(answer.hidden).toBe(19);
     }, 30000);
