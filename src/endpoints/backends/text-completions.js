@@ -14,7 +14,7 @@ import {
 } from '../../constants.js';
 import { forwardFetchResponse, trimV1, getConfigValue } from '../../util.js';
 import { setAdditionalHeaders } from '../../additional-headers.js';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { pipeLlamaCppCompactStream, getLlamaCppStreamMeta, createBackpressureWriter, createGenerationRecord, createResumableWriter, detachFromResponse, handleGenerationResume, encodeContent, encodeIndexFrame, encodeReasoningFrame, encodeAssistantNodeIdFrame, encodeProbabilitiesFrame, encodeControlFrame, writeStoredMessagesFrame } from './llamacpp-compact-stream.js';
 import { resolveTextGenBackend, resolveServerUrl } from '../../textgen-backend-resolve.js';
 import { resolveConnectionProfile } from '../../connection-profile-resolve.js';
@@ -35,6 +35,7 @@ import { storeUserMessage, withStoredMessages } from '../../stored-messages.js';
 import { readCardContent } from '../characters.js';
 import { getGroupsByIds } from '../groups.js';
 import { persistAssistantReply, replyTextAsPageShows, unreadableReplyWarning } from '../../assistant-reply-persist.js';
+import { withGenerationStop, generationIdFor, isGenerationStopped, onGenerationStop, onGenerationStopFlush, stoppableController, handleGenerationStop } from '../../generation-stop.js';
 
 export const router = express.Router();
 
@@ -64,13 +65,16 @@ export const router = express.Router();
  * @returns {Promise<any>} Nothing valuable
  */
 async function parseOllamaStream(jsonStream, request, response, persist, itemization, warnings = null) {
+    /** @type {() => void} */
+    let done = () => { };
+    const finished = new Promise(resolve => { done = () => resolve(undefined); });
     try {
         if (!jsonStream.body) {
             throw new Error('No body in the response');
         }
 
         response.setHeader('X-ST-Stream-Format', 'compact-v1');
-        const generationId = randomUUID();
+        const generationId = generationIdFor(response);
         response.setHeader('X-Generation-Id', generationId);
         const generationRecord = createGenerationRecord(generationId);
         const { writer: initialWriter, stopKeepalive } = createResumableWriter(createBackpressureWriter(response), generationRecord);
@@ -96,13 +100,18 @@ async function parseOllamaStream(jsonStream, request, response, persist, itemiza
                         if (persisted) writer.write(encodeAssistantNodeIdFrame(persisted.node_id));
                     })
                     .catch(error => console.error('Failed to persist streamed Ollama assistant reply:', error))
-                    .finally(() => writer.end());
+                    .finally(() => {
+                        writer.end();
+                        done();
+                    });
             } else {
                 writer.end();
+                done();
             }
         };
 
         jsonStream.body.on('data', (data) => {
+            if (isGenerationStopped(response)) return;
             const chunk = data.toString();
             partialData += chunk;
             while (true) {
@@ -132,6 +141,10 @@ async function parseOllamaStream(jsonStream, request, response, persist, itemiza
         jsonStream.body.on('end', () => {
             finishPersist();
         });
+        jsonStream.body.on('error', () => {
+            finishPersist();
+        });
+        await finished;
     } catch (error) {
         console.error('Error forwarding streaming response:', error);
         if (!response.headersSent) {
@@ -194,7 +207,7 @@ export async function forwardAndPersistCompactStream(fetchResponse, response, pe
     response.statusCode = statusCode;
     response.statusMessage = fetchResponse.statusText;
     response.setHeader('X-ST-Stream-Format', 'compact-v1');
-    const generationId = randomUUID();
+    const generationId = generationIdFor(response);
     response.setHeader('X-Generation-Id', generationId);
 
     let sseBuffer = '';
@@ -288,6 +301,7 @@ export async function forwardAndPersistCompactStream(fetchResponse, response, pe
     };
 
     const processLine = (rawLine) => {
+        if (isGenerationStopped(response)) return;
         const trimmed = rawLine.trim();
         if (!trimmed.startsWith('data:')) return;
         const payload = trimmed.slice(5).trim();
@@ -298,6 +312,9 @@ export async function forwardAndPersistCompactStream(fetchResponse, response, pe
             console.warn('Failed to parse streamed SSE event while accumulating text for persistence (compact stream):', error);
         }
     };
+
+    // On a stop, what was held back to coalesce goes out first: the stored reply is what was sent.
+    onGenerationStopFlush(response, flushPendingContent);
 
     await new Promise((resolve) => {
         fetchResponse.body.on('data', (chunk) => {
@@ -671,7 +688,7 @@ export async function buildRawActionTextCompletionRequest(directories, {
     };
 }
 
-router.post('/generate', async function (request, response) {
+router.post('/generate', withGenerationStop(async function (request, response) {
     if (!request.body) return response.sendStatus(400);
 
     // Set only by the raw-action branch below (and only for a type/mode where the reply is actually
@@ -950,6 +967,7 @@ router.post('/generate', async function (request, response) {
                 pendingAssistantPersist = {
                     directories, ownerId, anchorNodeId: replyAnchorNodeId, name2: built.name2,
                     isSwipe, isContinue, anchorContent: built.anchorContent,
+                    generationStop: response.locals.generationStop,
                 };
                 // Same gating as `pendingAssistantPersist` above, not unconditional on `built.itemization`
                 // existing - impersonate/quiet/the continue-text-conflict case must still reach the
@@ -985,7 +1003,10 @@ router.post('/generate', async function (request, response) {
         const apiType = request.body.api_type;
         const baseUrl = request.body.api_server;
 
-        const controller = new AbortController();
+        const controller = stoppableController(response);
+        if (request.body.api_type === TEXTGEN_TYPES.KOBOLDCPP) {
+            onGenerationStop(response, () => abortKoboldCppRequest(request, trimV1(baseUrl)));
+        }
         request.socket.removeAllListeners('close');
         request.socket.on('close', async function () {
             // A raw-action (persisted) generation deliberately keeps running/buffering after the
@@ -1114,7 +1135,7 @@ router.post('/generate', async function (request, response) {
         if (request.body.api_type === TEXTGEN_TYPES.OLLAMA && request.body.stream) {
             const stream = await fetch(url, args);
             storeTokenCountRows();
-            parseOllamaStream(stream, request, response, pendingAssistantPersist, rawActionItemization, warnings);
+            await parseOllamaStream(stream, request, response, pendingAssistantPersist, rawActionItemization, warnings);
         } else if (request.body.stream) {
             const completionsStream = await fetch(url, args);
             storeTokenCountRows();
@@ -1195,13 +1216,13 @@ router.post('/generate', async function (request, response) {
         const status = error?.status ?? error?.code ?? 'UNKNOWN';
         const text = error?.error ?? error?.statusText ?? error?.message ?? 'Unknown error on /generate endpoint';
         let value = { error: true, status: status, response: text };
-        console.error('Endpoint error:', error);
+        if (!isGenerationStopped(response)) console.error('Endpoint error:', error);
 
         return !response.headersSent
             ? response.send(value)
             : response.end();
     }
-});
+}));
 
 /** Final-event metadata (prompt, generation_settings, timings, etc.) for a compact llama.cpp stream, keyed by its `X-Generation-Id`. */
 router.get('/generate/meta/:id', function (request, response) {
@@ -1222,6 +1243,9 @@ router.get('/generate/meta/:id', function (request, response) {
  * doesn't need to know which backend originated a given generation id to resume it.
  */
 router.get('/generate/resume/:id', handleGenerationResume);
+
+/** Stops a generation the server keeps running after a disconnect - see generation-stop.js. */
+router.post('/generate/stop/:id', handleGenerationStop);
 
 const ollama = express.Router();
 

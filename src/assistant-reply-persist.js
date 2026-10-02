@@ -1,4 +1,5 @@
 import { appendMessages, addAlternatives, selectDefaultChild, editMessage } from './message-tree-db.js';
+import { recordGenerationPersisted } from './generation-stop.js';
 
 /**
  * The reply text in a non-streaming answer, read exactly as the page's `extractMessageFromData()`
@@ -87,17 +88,26 @@ export function unreadableReplyWarning(data, key) {
  * @param {boolean} pending.isContinue
  * @param {object|null} pending.anchorContent Required (and used) only when `isContinue` is true -
  *   the anchor's own real, current, full stored content, as loaded from the tree.
+ * @param {import('./generation-stop.js').StopEntry} [pending.generationStop] The request's stop entry; told what the
+ *   reply was stored as, so a stop can answer with it.
  * @param {string} generatedText The full, final generated text (raw, unprocessed backend output -
  *   not run through any client-side cleanup step, matching every other cut-over type's own
  *   already-accepted standard).
- * @returns {Promise<{node_id: string}|null>} The node the reply now lives at (the edited anchor
+ * @returns {Promise<{node_id: string, mes: string}|null>} `mes` is the node's whole stored text. `node_id` is the node the reply now lives at (the edited anchor
  *   for `isContinue`, the new alternative for `isSwipe`, the new child otherwise) - callers use
  *   this to tell the client which node already holds this content, so the client's own legacy
  *   diff-save (`_saveTreeChat()`, public/script.js) can mark it clean instead of re-persisting the
  *   same reply a second time. `null` on a no-op or a failed write - callers must not tell the
  *   client anything was persisted in that case.
  */
-export async function persistAssistantReply({ directories, ownerId, anchorNodeId, name2, isSwipe, isContinue, anchorContent }, generatedText) {
+export async function persistAssistantReply(pending, generatedText) {
+    const persisted = await persistReply(pending, generatedText);
+    recordGenerationPersisted(pending.generationStop, persisted);
+    return persisted;
+}
+
+/** @returns {Promise<{node_id: string, mes: string}|null>} */
+async function persistReply({ directories, ownerId, anchorNodeId, name2, isSwipe, isContinue, anchorContent }, generatedText) {
     if (!generatedText) {
         return null;
     }
@@ -111,12 +121,13 @@ export async function persistAssistantReply({ directories, ownerId, anchorNodeId
         }
 
         const oldText = typeof anchorContent.mes === 'string' ? anchorContent.mes : '';
-        const editResult = await editMessage(directories, ownerId, anchorNodeId, { ...anchorContent, mes: oldText + generatedText });
+        const mes = oldText + generatedText;
+        const editResult = await editMessage(directories, ownerId, anchorNodeId, { ...anchorContent, mes });
         if (!editResult.ok) {
             console.error('Failed to persist continue edit onto the tree:', editResult.reason);
             return null;
         }
-        return { node_id: anchorNodeId };
+        return { node_id: anchorNodeId, mes };
     } else if (isSwipe) {
         const addResult = await addAlternatives(directories, ownerId, anchorNodeId, [replyContent]);
         if (!addResult.ok) {
@@ -128,7 +139,7 @@ export async function persistAssistantReply({ directories, ownerId, anchorNodeId
             if (!selected) {
                 console.error('Failed to select the new swipe alternative as current.');
             }
-            return { node_id: addResult.node_ids[0] };
+            return { node_id: addResult.node_ids[0], mes: generatedText };
         }
         return null;
     } else {
@@ -137,6 +148,6 @@ export async function persistAssistantReply({ directories, ownerId, anchorNodeId
             console.error('Failed to persist assistant reply onto the tree:', appendResult.reason);
             return null;
         }
-        return appendResult.node_ids?.length ? { node_id: appendResult.node_ids[appendResult.node_ids.length - 1] } : null;
+        return appendResult.node_ids?.length ? { node_id: appendResult.node_ids[appendResult.node_ids.length - 1], mes: generatedText } : null;
     }
 }

@@ -1,5 +1,5 @@
 /* eslint-disable dot-notation */
-import { createHmac, randomUUID } from 'node:crypto';
+import { createHmac } from 'node:crypto';
 import process from 'node:process';
 import express from 'express';
 import fetch from 'node-fetch';
@@ -86,6 +86,7 @@ import { getVertexAIAuth, getProjectIdFromServiceAccount } from '../google.js';
 import { getCookieSecret } from '../../users.js';
 import { fetchGoogleModels, GoogleModelsHttpError } from './google-models.js';
 import { encodeContent, encodeIndexFrame, encodeReasoningFrame, encodeAssistantNodeIdFrame, encodeToolCallDeltaFrame, encodeControlFrame, createGenerationRecord, createResumableWriter, detachFromResponse, handleGenerationResume, writeStoredMessagesFrame } from './llamacpp-compact-stream.js';
+import { withGenerationStop, generationIdFor, isGenerationStopped, onGenerationStopFlush, stoppableController, handleGenerationStop } from '../../generation-stop.js';
 
 const API_OPENAI = 'https://api.openai.com/v1';
 const API_CLAUDE = 'https://api.anthropic.com/v1';
@@ -250,7 +251,7 @@ async function sendClaudeRequest(request, response, persist, warnings = null, on
     }
 
     try {
-        const controller = new AbortController();
+        const controller = stoppableController(response);
         request.socket.removeAllListeners('close');
         // A raw-action (persisted) generation deliberately keeps its upstream request running after
         // the client disconnects, instead of aborting it here - same reasoning/precedent as
@@ -720,7 +721,7 @@ async function sendMakerSuiteRequest(request, response, persist, warnings = null
     console.debug(`${apiName} request:`, body);
 
     try {
-        const controller = new AbortController();
+        const controller = stoppableController(response);
         request.socket.removeAllListeners('close');
         request.socket.on('close', function () {
             if (persist) return;
@@ -897,7 +898,7 @@ async function sendAI21Request(request, response, persist, warnings = null, onDi
     }
 
     const bodyParams = {};
-    const controller = new AbortController();
+    const controller = stoppableController(response);
     request.socket.removeAllListeners('close');
     request.socket.on('close', function () {
         if (persist) return;
@@ -1008,7 +1009,7 @@ async function sendMistralAIRequest(request, response, persist, warnings = null,
 
     try {
         const messages = convertMistralMessages(request.body.messages, getPromptNames(request));
-        const controller = new AbortController();
+        const controller = stoppableController(response);
         request.socket.removeAllListeners('close');
         request.socket.on('close', function () {
             if (persist) return;
@@ -1128,7 +1129,7 @@ async function sendMistralAIRequest(request, response, persist, warnings = null,
  */
 async function sendCohereRequest(request, response, persist, warnings = null, onDispatched = null) {
     const apiKey = readSecret(request.user.directories, SECRET_KEYS.COHERE, request.body.secret_id);
-    const controller = new AbortController();
+    const controller = stoppableController(response);
     request.socket.removeAllListeners('close');
     request.socket.on('close', function () {
         if (persist) return;
@@ -1281,7 +1282,7 @@ async function sendDeepSeekRequest(request, response, persist, warnings = null, 
         return response.status(400).send({ error: true });
     }
 
-    const controller = new AbortController();
+    const controller = stoppableController(response);
     request.socket.removeAllListeners('close');
     request.socket.on('close', function () {
         if (persist) return;
@@ -1429,7 +1430,7 @@ async function sendXaiRequest(request, response, persist, warnings = null, onDis
         return response.status(400).send({ error: true });
     }
 
-    const controller = new AbortController();
+    const controller = stoppableController(response);
     request.socket.removeAllListeners('close');
     request.socket.on('close', function () {
         if (persist) return;
@@ -1566,7 +1567,7 @@ async function sendAimlapiRequest(request, response, persist, warnings = null, o
         return response.status(400).send({ error: true });
     }
 
-    const controller = new AbortController();
+    const controller = stoppableController(response);
     request.socket.removeAllListeners('close');
     request.socket.on('close', function () {
         if (persist) return;
@@ -1702,7 +1703,7 @@ async function sendElectronHubRequest(request, response, persist, warnings = nul
         return response.status(400).send({ error: true });
     }
 
-    const controller = new AbortController();
+    const controller = stoppableController(response);
     request.socket.removeAllListeners('close');
     request.socket.on('close', function () {
         if (persist) return;
@@ -1847,7 +1848,7 @@ async function sendChutesRequest(request, response, persist, warnings = null, on
         return response.status(400).send({ error: true });
     }
 
-    const controller = new AbortController();
+    const controller = stoppableController(response);
     request.socket.removeAllListeners('close');
     request.socket.on('close', function () {
         if (persist) return;
@@ -1983,7 +1984,7 @@ async function sendMinimaxRequest(request, response, persist, warnings = null, o
         return response.status(400).send({ error: true });
     }
 
-    const controller = new AbortController();
+    const controller = stoppableController(response);
     request.socket.removeAllListeners('close');
     request.socket.on('close', function () {
         if (persist) return;
@@ -2135,7 +2136,7 @@ async function sendAzureOpenAIRequest(request, response, persist, warnings = nul
         ? OPENAI_FIXED_REASONING_EFFORT[request.body.model] ?? OPENAI_REASONING_EFFORT_MAP[request.body.reasoning_effort] ?? request.body.reasoning_effort
         : undefined;
 
-    const controller = new AbortController();
+    const controller = stoppableController(response);
     request.socket.removeAllListeners('close');
     request.socket.on('close', () => { if (!persist) controller.abort(); });
 
@@ -3120,7 +3121,7 @@ async function forwardAndPersistCompactStream(fetchResponse, response, persist, 
     // encoder functions from llamacpp-compact-stream.js), so there is exactly one wire format and one
     // header value across every raw-action streaming path.
     response.setHeader('X-ST-Stream-Format', 'compact-v1');
-    const generationId = randomUUID();
+    const generationId = generationIdFor(response);
     response.setHeader('X-Generation-Id', generationId);
 
     const generationRecord = createGenerationRecord(generationId);
@@ -3204,6 +3205,8 @@ async function forwardAndPersistCompactStream(fetchResponse, response, persist, 
         writer = detachFromResponse(generationRecord);
     };
     response.socket?.once('close', onSocketClose);
+    // On a stop, what was held back to coalesce goes out first: the stored reply is what was sent.
+    onGenerationStopFlush(response, flushContentBuffer);
 
     await new Promise((resolve) => {
         fetchResponse.body.on('data', (chunk) => {
@@ -3212,6 +3215,7 @@ async function forwardAndPersistCompactStream(fetchResponse, response, persist, 
             while ((idx = sseBuffer.indexOf('\n')) !== -1) {
                 const rawLine = sseBuffer.slice(0, idx);
                 sseBuffer = sseBuffer.slice(idx + 1);
+                if (isGenerationStopped(response)) continue;
 
                 const trimmed = rawLine.trim();
                 if (!trimmed.startsWith('data:')) continue;
@@ -3380,7 +3384,7 @@ async function forwardAndPersistCompactStreamWithServerTools(fetchResponse, resp
     response.statusCode = fetchResponse.status;
     response.statusMessage = fetchResponse.statusText;
     response.setHeader('X-ST-Stream-Format', 'compact-v1');
-    const generationId = randomUUID();
+    const generationId = generationIdFor(response);
     response.setHeader('X-Generation-Id', generationId);
 
     const { writer } = createResumableWriter(createChatCompactStreamWriter(response), createGenerationRecord(generationId));
@@ -3400,6 +3404,7 @@ async function forwardAndPersistCompactStreamWithServerTools(fetchResponse, resp
         while ((idx = buffer.indexOf('\n')) !== -1) {
             const line = buffer.slice(0, idx).trim();
             buffer = buffer.slice(idx + 1);
+            if (isGenerationStopped(response)) continue;
             // Unlike the old SSE-JSON version, there is no "forward the raw line" fallback for a
             // non-`data:` line (an SSE comment, a keep-alive, a blank separator) or a parse failure -
             // the compact protocol has no concept of forwarding opaque upstream bytes, only real
@@ -3447,7 +3452,8 @@ async function forwardAndPersistCompactStreamWithServerTools(fetchResponse, resp
     await ended;
 
     const toolCalls = toolCallsByIndex.filter(Boolean);
-    if (toolCalls.length === 0) {
+    // A stopped round keeps the text sent so far and runs no tools: a tool call cut off mid-stream is incomplete.
+    if (toolCalls.length === 0 || isGenerationStopped(response)) {
         // No tool calls this round - see this function's own doc comment, step 4.
         if (text) {
             const persisted = await persistAssistantReply(persist, text);
@@ -3932,7 +3938,7 @@ async function resolvePendingToolResults(directories, ownerId, nodeId, toolResul
     return { ok: true };
 }
 
-router.post('/generate', async function (request, response) {
+router.post('/generate', withGenerationStop(async function (request, response) {
     // Set only by the raw-action branch below (and only for a type/mode where the reply is actually
     // meant to be persisted - see that branch's own comment for the `is_impersonate`/`type ===
     // 'quiet'` exclusion). Read by BOTH the streaming and non-streaming response points inside the
@@ -4240,6 +4246,7 @@ router.post('/generate', async function (request, response) {
                 pendingAssistantPersist = {
                     directories, ownerId, anchorNodeId: replyAnchorNodeId, name2: built.name2,
                     isSwipe, isContinue, anchorContent: built.anchorContent,
+                    generationStop: response.locals.generationStop,
                 };
                 // Only wired up when this request actually advertised at least one server-native
                 // tool OR at least one client-advertised tool (chunk (c) - see `built.enabledServerTools`/
@@ -4663,7 +4670,7 @@ router.post('/generate', async function (request, response) {
             `${apiUrl}/completions` :
             `${apiUrl}/chat/completions`;
 
-        const controller = new AbortController();
+        const controller = stoppableController(response);
         request.socket.removeAllListeners('close');
         request.socket.on('close', function () {
             if (pendingAssistantPersist) return;
@@ -4876,7 +4883,7 @@ router.post('/generate', async function (request, response) {
             response.end();
         }
     }
-});
+}));
 
 const multimodalModels = express.Router();
 
@@ -5129,6 +5136,8 @@ router.use('/multimodal-models', multimodalModels);
 // See text-completions.js's identical route for the shared implementation/rationale - both routers
 // mount it since a generation id doesn't identify which backend produced it.
 router.get('/generate/resume/:id', handleGenerationResume);
+// See generation-stop.js: an explicit stop aborts what a disconnect deliberately doesn't.
+router.post('/generate/stop/:id', handleGenerationStop);
 
 router.post('/process', async function (request, response) {
     try {

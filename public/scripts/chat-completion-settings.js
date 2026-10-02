@@ -28,6 +28,7 @@ import {
     system_message_types,
 } from '../script.js';
 import { name1 } from './app-selection-state.js';
+import { beginServerGeneration, endServerGeneration } from './generation-stop.js';
 import { getRequestHeaders } from './request-headers.js';
 import { event_types, eventSource } from './events.js';
 import { getGroupNames, selected_group } from './group-chats.js';
@@ -3211,12 +3212,18 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, ra
     await eventSource.emit(event_types.CHAT_COMPLETION_SETTINGS_READY, generate_data);
 
     const generate_url = '/api/backends/chat-completions/generate';
-    const response = await fetch(generate_url, {
-        method: 'POST',
-        body: JSON.stringify(generate_data),
-        headers: getRequestHeaders(),
-        signal: signal,
-    });
+    const generationId = beginServerGeneration('/api/backends/chat-completions', { stream: !!stream });
+    let response;
+    try {
+        response = await fetch(generate_url, {
+            method: 'POST',
+            body: JSON.stringify(generate_data),
+            headers: { ...getRequestHeaders(), 'X-Generation-Id': generationId },
+            signal: signal,
+        });
+    } finally {
+        if (!stream) endServerGeneration(generationId);
+    }
 
     reportStoredHeader(response);
     if (!response.ok) {

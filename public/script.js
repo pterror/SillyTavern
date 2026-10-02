@@ -275,6 +275,7 @@ import { clearItemizedPrompts, deleteItemizedPromptForMessage, deleteItemizedPro
 import { getSystemMessageByType, initSystemMessages, SAFETY_CHAT, sendSystemMessage, system_message_types, system_messages } from './scripts/system-messages.js';
 import { event_types, eventSource } from './scripts/events.js';
 import { token, setToken, getRequestHeaders } from './scripts/request-headers.js';
+import { beginServerGeneration, endServerGeneration } from './scripts/generation-stop.js';
 import { chat, chat_metadata, setChatMetadata } from './scripts/chat-state.js';
 import { active_character, active_group, name1, default_user_name, setActiveCharacter, setActiveGroup, setActiveCharacterAndGroupFromSettings, setName1Raw } from './scripts/app-selection-state.js';
 import { amount_gen, max_context, main_api, setAmountGen, setMaxContext, setMainApi } from './scripts/generation-params.js';
@@ -5353,25 +5354,30 @@ export async function sendGenerationRequest(type, data, options = {}) {
         return await generateHorde(data.prompt, data, abortController.signal, true);
     }
 
-    const response = await fetch(getGenerateUrl(main_api), {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        cache: 'no-cache',
-        body: JSON.stringify(data),
-        signal: abortController.signal,
-    });
+    const generationId = main_api === 'textgenerationwebui' ? beginServerGeneration('/api/backends/text-completions') : null;
+    try {
+        const response = await fetch(getGenerateUrl(main_api), {
+            method: 'POST',
+            headers: { ...getRequestHeaders(), ...(generationId ? { 'X-Generation-Id': generationId } : {}) },
+            cache: 'no-cache',
+            body: JSON.stringify(data),
+            signal: abortController.signal,
+        });
 
-    // An error answer after the server stored the user message names it in this header, whatever its body.
-    reportStoredHeader(response);
-    if (!response.ok) {
-        const error = await response.json();
-        adoptStored(error?.stored);
-        throw error;
+        // An error answer after the server stored the user message names it in this header, whatever its body.
+        reportStoredHeader(response);
+        if (!response.ok) {
+            const error = await response.json();
+            adoptStored(error?.stored);
+            throw error;
+        }
+
+        const answer = await response.json();
+        adoptStored(answer?.stored);
+        return answer;
+    } finally {
+        if (generationId) endServerGeneration(generationId);
     }
-
-    const answer = await response.json();
-    adoptStored(answer?.stored);
-    return answer;
 }
 
 /**

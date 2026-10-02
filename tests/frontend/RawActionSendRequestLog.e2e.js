@@ -459,39 +459,57 @@ test.describe('raw-action send request log', () => {
     }
 
     test('a send clicked after a streamed reply shows the button again, while the previous send is still finishing, goes out', async ({ page }) => {
-        const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
-        const avatar = await createCharacter(page, `RawActionEarlySend-${stamp}`, `Hello from the greeting ${stamp}.`);
-        await openCharacter(page, avatar);
-        await connectLlamaCpp(page, mock.url);
-        // @ts-ignore
-        await page.evaluate(() => { SillyTavern.getContext().textCompletionSettings.streaming = true; });
-        await page.waitForTimeout(SETTLE_MS);
+        // A finished stream has nothing left to wait for once the button shows, so the window comes from a
+        // stopped one: its send finishes only when the server answers the stop, held back here.
+        const slow = await startMockLlamaCpp({ streamDelayMs: 5000 });
+        await page.route('**/generate/stop/**', async (route) => {
+            await new Promise(resolve => setTimeout(resolve, 1500));
+            await route.continue();
+        });
+        try {
+            const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+            const avatar = await createCharacter(page, `RawActionEarlySend-${stamp}`, `Hello from the greeting ${stamp}.`);
+            await openCharacter(page, avatar);
+            await connectLlamaCpp(page, slow.url);
+            // @ts-ignore
+            await page.evaluate(() => { SillyTavern.getContext().textCompletionSettings.streaming = true; });
+            await page.waitForTimeout(SETTLE_MS);
 
-        await page.locator('#send_textarea').fill(`First question ${stamp}?`);
-        const second = `Second question ${stamp}?`;
-        // Clicks Send the moment the button is shown again while the send lock is still held, as a user
-        // clicking right after the reply appears would.
-        const clickedInWindow = await page.evaluate(async (second) => {
-            const { userInputGenerateMutex } = await import('/script.js');
-            document.querySelector('#send_but').click();
-            const deadline = performance.now() + 30000;
-            while (performance.now() < deadline) {
-                const shown = getComputedStyle(document.querySelector('#send_but')).display !== 'none';
-                const replied = document.querySelector('#chat .mes[mesid="2"] .mes_text')?.textContent.includes('Mock reply');
-                if (replied && shown && document.body.dataset.generating === undefined && userInputGenerateMutex.isBusy) {
-                    $('#send_textarea').val(second)[0].dispatchEvent(new Event('input', { bubbles: true }));
-                    document.querySelector('#send_but').click();
-                    return true;
+            await page.locator('#send_textarea').fill(`First question ${stamp}?`);
+            const second = `Second question ${stamp}?`;
+            // Clicks Send the moment the button is shown again while the send lock is still held, as a user
+            // clicking right after the reply appears would.
+            const clickedInWindow = await page.evaluate(async (second) => {
+                const { userInputGenerateMutex } = await import('/script.js');
+                document.querySelector('#send_but').click();
+                let stopClicked = false;
+                const deadline = performance.now() + 30000;
+                while (performance.now() < deadline) {
+                    const shown = getComputedStyle(document.querySelector('#send_but')).display !== 'none';
+                    const streaming = !!document.querySelector('#chat .mes[mesid="2"]') && document.body.dataset.generating === 'true';
+                    if (streaming && !stopClicked) {
+                        stopClicked = true;
+                        await new Promise(resolve => setTimeout(resolve, 300));
+                        document.querySelector('#mes_stop').click();
+                    }
+                    if (stopClicked && shown && document.body.dataset.generating === undefined && userInputGenerateMutex.isBusy) {
+                        $('#send_textarea').val(second)[0].dispatchEvent(new Event('input', { bubbles: true }));
+                        document.querySelector('#send_but').click();
+                        return true;
+                    }
+                    await new Promise(resolve => setTimeout(resolve, 0));
                 }
-                await new Promise(resolve => setTimeout(resolve, 0));
-            }
-            return false;
-        }, second);
-        expect(clickedInWindow).toBe(true);
+                return false;
+            }, second);
+            expect(clickedInWindow).toBe(true);
 
-        await expect(page.locator('#chat .mes[mesid="3"] .mes_text')).toContainText(second, { timeout: 15000 });
-        await expect(page.locator('#chat .mes[mesid="4"] .mes_text')).toContainText('Mock reply', { timeout: 15000 });
-        await expect(page.locator('#send_textarea')).toHaveValue('');
+            await expect(page.locator('#chat .mes[mesid="3"] .mes_text')).toContainText(second, { timeout: 15000 });
+            await expect(page.locator('#chat .mes[mesid="4"] .mes_text')).toContainText('Mock reply', { timeout: 15000 });
+            await expect(page.locator('#send_textarea')).toHaveValue('');
+        } finally {
+            await page.unroute('**/generate/stop/**');
+            await slow.close();
+        }
     });
 
     /**

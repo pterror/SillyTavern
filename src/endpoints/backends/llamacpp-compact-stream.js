@@ -1,10 +1,10 @@
 import { StringDecoder } from 'node:string_decoder';
-import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 
 import { forwardFetchResponse } from '../../util.js';
 import { persistAssistantReply } from '../../assistant-reply-persist.js';
 import { storedMessagesOf } from '../../stored-messages.js';
+import { generationIdFor, isGenerationStopped } from '../../generation-stop.js';
 
 /**
  * Compact wire protocol, originally for the llama.cpp raw-completions streaming path, now also used
@@ -204,7 +204,7 @@ export function encodeEvent(data, lastIndex) {
 }
 
 // Kept reachable via /generate/meta/:id instead of re-sent on every final SSE event.
-const META_KEYS =['prompt', 'generation_settings', 'timings', 'tokens_cached', 'model', 'truncated', 'stopping_word', 'has_new_line'];
+const META_KEYS = ['prompt', 'generation_settings', 'timings', 'tokens_cached', 'model', 'truncated', 'stopping_word', 'has_new_line'];
 const META_CACHE_MAX = 50;
 const META_TTL_MS = 10 * 60 * 1000;
 
@@ -583,7 +583,7 @@ export async function pipeLlamaCppCompactStream(upstreamResponse, response, pers
     }
 
     return new Promise((resolve) => {
-        const id = randomUUID();
+        const id = generationIdFor(response);
         response.setHeader('X-ST-Stream-Format', 'compact-v1');
         response.setHeader('X-Generation-Id', id);
 
@@ -603,22 +603,29 @@ export async function pipeLlamaCppCompactStream(upstreamResponse, response, pers
         let settled = false;
         let accumulatedText = '';
 
+        // The node frame goes last, after the reply is stored, as on every other raw-action stream.
         function finish() {
             if (settled) return;
             settled = true;
-            writer.end();
 
             if (persist && accumulatedText) {
                 persistAssistantReply(persist, accumulatedText)
+                    .then(persisted => {
+                        if (persisted) writer.write(encodeAssistantNodeIdFrame(persisted.node_id));
+                    })
                     .catch(error => console.error('Failed to persist streamed llama.cpp assistant reply:', error))
-                    .finally(() => resolve());
+                    .finally(() => {
+                        writer.end();
+                        resolve();
+                    });
             } else {
+                writer.end();
                 resolve();
             }
         }
 
         function handleEvent(/** @type {any} */ data) {
-            if (!data) return;
+            if (!data || isGenerationStopped(response)) return;
 
             if (persist && typeof data.content === 'string') {
                 accumulatedText += data.content;
@@ -668,7 +675,7 @@ export async function pipeLlamaCppCompactStream(upstreamResponse, response, pers
         });
 
         upstreamResponse.body.on('error', (error) => {
-            console.warn('llama.cpp compact stream upstream error:', error);
+            if (!isGenerationStopped(response)) console.warn('llama.cpp compact stream upstream error:', error);
             finish();
         });
 
