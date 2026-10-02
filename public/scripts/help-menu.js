@@ -5,6 +5,7 @@
  */
 import { openEditorLayer } from './editor-layer.js';
 import { raiseDrawer, updateDrawerStack } from './drawer-stack.js';
+import { renderHotkeys } from './help-hotkeys.js';
 import { findHelpTopic, getHelpTopics, registerHelpTopic } from './help-registry.js';
 import { t } from './i18n.js';
 import { MacroBrowser } from './macros/engine/MacroBrowser.js';
@@ -19,7 +20,7 @@ const BUILT_IN_TOPICS = [
     { id: 'overview', title: () => t`Overview`, aliases: ['help'], order: 10, render: templateTopic('help') },
     { id: 'slash', title: () => t`Slash Commands`, aliases: ['commands', 'slashes', 'slash commands', '1'], order: 20, render: renderSlashCommands },
     { id: 'format', title: () => t`Formatting`, aliases: ['formatting', 'formats', 'chat formatting', '2'], order: 30, render: templateTopic('formatting') },
-    { id: 'hotkeys', title: () => t`Hotkeys`, aliases: ['hotkey', '3'], order: 40, render: templateTopic('hotkeys') },
+    { id: 'hotkeys', title: () => t`Hotkeys`, aliases: ['hotkey', '3'], order: 40, render: (container, query) => { const count = renderHotkeys(container, query); if (query) return count; } },
     { id: 'macros', title: () => t`Macros`, aliases: ['macro', '4'], order: 50, render: renderMacros },
 ];
 for (const topic of BUILT_IN_TOPICS) {

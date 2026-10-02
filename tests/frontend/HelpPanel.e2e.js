@@ -172,3 +172,84 @@ test.describe('Help panel', () => {
         await expect(page.locator('.helpLayer .helpTopic[data-topic="my-extension"] .helpTopicCount')).toHaveText('1');
     });
 });
+
+test.describe('Hotkeys', () => {
+    test.beforeEach(testSetup.awaitST);
+
+    test.beforeEach(async ({ page }) => {
+        await awaitAppReady(page);
+        await page.setViewportSize({ width: 1400, height: 900 });
+    });
+
+    const overlay = page => page.locator('.hotkeyOverlay');
+
+    test('the Hotkeys topic lists every handled hotkey, greying out ones that don\'t work right now', async ({ page }) => {
+        await page.evaluate(() => { window['SillyTavern'].getContext().powerUserSettings.enable_md_hotkeys = false; });
+        await runSlash(page, '/help hotkeys');
+        const content = page.locator('.helpLayer .helpContent');
+        for (const combo of ['Ctrl+Enter', 'Ctrl+Space', 'F9', 'Ctrl+\\', 'Ctrl+F', 'Hold Ctrl']) {
+            await expect(content.locator('kbd', { hasText: combo }).first(), combo).toBeVisible();
+        }
+        await expect(content.locator('.hotkeyItem', { has: page.locator('kbd', { hasText: /^Ctrl\+B$/ }) })).toHaveClass(/hotkeyInactive/);
+        await expect(content.locator('.hotkeyItem', { has: page.locator('kbd', { hasText: /^Ctrl\+Space$/ }) })).not.toHaveClass(/hotkeyInactive/);
+    });
+
+    test('holding Ctrl on its own shows the list without taking focus; letting go hides it', async ({ page }) => {
+        await page.locator('#send_textarea').focus();
+        await page.keyboard.down('Control');
+        await expect(overlay(page)).toBeVisible();
+        await expect(page.locator('#send_textarea')).toBeFocused();
+        await page.keyboard.up('Control');
+        await expect(overlay(page)).toHaveCount(0);
+    });
+
+    test('a shortcut, a click or scrolling while Ctrl is down hides it or keeps it from showing', async ({ page }) => {
+        await page.locator('#send_textarea').focus();
+        // A quick shortcut never shows it.
+        await page.keyboard.down('Control');
+        await page.keyboard.press('a');
+        await page.waitForTimeout(400);
+        await expect(overlay(page)).toHaveCount(0);
+        await page.keyboard.up('Control');
+
+        // A key pressed after it showed hides it.
+        await page.keyboard.down('Control');
+        await expect(overlay(page)).toBeVisible();
+        await page.keyboard.press('a');
+        await expect(overlay(page)).toHaveCount(0);
+        await page.keyboard.up('Control');
+
+        // So do a click and the wheel.
+        await page.keyboard.down('Control');
+        await expect(overlay(page)).toBeVisible();
+        await page.mouse.down();
+        await expect(overlay(page)).toHaveCount(0);
+        await page.mouse.up();
+        await page.keyboard.up('Control');
+
+        await page.keyboard.down('Control');
+        await expect(overlay(page)).toBeVisible();
+        await page.mouse.wheel(0, 50);
+        await expect(overlay(page)).toHaveCount(0);
+        await page.keyboard.up('Control');
+    });
+
+    test('the setting turns it off, and extensions\' hotkeys are listed', async ({ page }) => {
+        await page.evaluate(() => window['SillyTavern'].getContext().registerHotkey({ category: 'My Extension', keys: ['Ctrl+Alt+M'], label: 'Do my thing' }));
+        await page.keyboard.down('Control');
+        await expect(overlay(page)).toContainText('Do my thing');
+        await page.keyboard.up('Control');
+
+        const toggle = page.locator('#hotkey_overlay');
+        await expect(toggle).toBeChecked();
+        await toggle.evaluate(el => { /** @type {HTMLInputElement} */ (el).checked = false; el.dispatchEvent(new Event('input', { bubbles: true })); });
+        try {
+            await page.keyboard.down('Control');
+            await page.waitForTimeout(400);
+            await expect(overlay(page)).toHaveCount(0);
+            await page.keyboard.up('Control');
+        } finally {
+            await toggle.evaluate(el => { /** @type {HTMLInputElement} */ (el).checked = true; el.dispatchEvent(new Event('input', { bubbles: true })); });
+        }
+    });
+});

@@ -77,6 +77,7 @@ import {
     DEFAULT_ROLE as PERSONA_DEFAULT_ROLE,
 } from './personas.js';
 import { DictEntityStore } from './entity-store.js';
+import { initHotkeyOverlay } from './hotkey-overlay.js';
 
 export const toastPositionClasses = [
     'toast-top-left',
@@ -231,6 +232,7 @@ export const power_user = {
     wi_last_editor_book: '',
     enable_auto_select_input: false,
     enable_md_hotkeys: false,
+    hotkey_overlay: true,
     tag_import_setting: tag_import_setting.ASK,
     tag_sort_mode: tag_sort_mode.MANUAL,
     disable_group_trimming: false,
@@ -1968,6 +1970,7 @@ export async function loadPowerUserSettings(settings, data) {
     $('#world_import_dialog').prop('checked', power_user.world_import_dialog);
     $('#enable_auto_select_input').prop('checked', power_user.enable_auto_select_input);
     $('#enable_md_hotkeys').prop('checked', power_user.enable_md_hotkeys);
+    $('#hotkey_overlay').prop('checked', power_user.hotkey_overlay !== false);
     $('#trim_spaces').prop('checked', power_user.trim_spaces);
     $('#continue_on_send').prop('checked', power_user.continue_on_send);
     $('#quick_continue').prop('checked', power_user.quick_continue);
@@ -3655,6 +3658,7 @@ export function markCharacterEditorCountsStale() {
 }
 
 jQuery(() => {
+    initHotkeyOverlay(() => power_user.hotkey_overlay !== false);
     const adjustAutocompleteDebounced = debounce(() => {
         $('.ui-autocomplete-input').each(function () {
             const isOpen = $(this).autocomplete('widget')[0].style.display !== 'none';
@@ -4429,6 +4433,11 @@ jQuery(() => {
         power_user.enable_md_hotkeys = value;
         toggleMDHotkeyIconDisplay();
         saveSettingsDebounced('power_user.enable_md_hotkeys');
+    });
+
+    $('#hotkey_overlay').on('input', function () {
+        power_user.hotkey_overlay = !!$(this).prop('checked');
+        saveSettingsDebounced('power_user.hotkey_overlay');
     });
 
     $('#spoiler_free_mode').on('input', function () {
