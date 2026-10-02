@@ -154,8 +154,9 @@ function usageRowOf(tagId) {
     return withRawDb(db => db.prepare('SELECT count FROM tag_usage WHERE tag_id = ?').get(tagId));
 }
 
-function changeFieldsFor(id) {
-    return withRawDb(db => Array.from(db.prepare('SELECT fields FROM changes WHERE id = ? ORDER BY seq').pluck().iterate(id)));
+/** The fields of the change rows of `id` past `afterSeq`. @param {string} id @param {number} [afterSeq] */
+function changeFieldsFor(id, afterSeq = 0) {
+    return withRawDb(db => Array.from(db.prepare('SELECT fields FROM changes WHERE id = ? AND seq > ? ORDER BY seq').pluck().iterate(id, afterSeq)));
 }
 
 describe('finishDeletedTags', () => {
@@ -188,7 +189,7 @@ describe('finishDeletedTags', () => {
         await assign('g3', 'z');
         expect(await metadataDb.deleteTagDefinition(directories, 'x', 'y')).toMatchObject({ refused: [] });
         expect((await tagCounts(metadataDb, directories, ['x', 'y', 'z'])).approximate).toEqual(['y']);
-        const changesBefore = { c1: changeFieldsFor('c1.png').length, c2: changeFieldsFor('c2.png').length, c3: changeFieldsFor('c3.png').length };
+        const seqBefore = withRawDb(db => db.prepare('SELECT COALESCE(MAX(seq), 0) FROM changes').pluck().get());
 
         const result = await metadataDb.finishDeletedTags(directories);
 
@@ -201,9 +202,9 @@ describe('finishDeletedTags', () => {
         expect(withRawDb(db => [characterCopiesOutOfSync(db), groupCopiesOutOfSync(db), tagUsageMismatches(db)])).toEqual([[], [], []]);
 
         // A character whose tags changed gets one ['tag_ids'] change entry; one whose tags didn't gets none.
-        expect(changeFieldsFor('c1.png').slice(changesBefore.c1)).toEqual([JSON.stringify(['tag_ids'])]);
-        expect(changeFieldsFor('c2.png').slice(changesBefore.c2)).toEqual([JSON.stringify(['tag_ids'])]);
-        expect(changeFieldsFor('c3.png').length).toBe(changesBefore.c3);
+        expect(changeFieldsFor('c1.png', seqBefore)).toEqual([JSON.stringify(['tag_ids'])]);
+        expect(changeFieldsFor('c2.png', seqBefore)).toEqual([JSON.stringify(['tag_ids'])]);
+        expect(changeFieldsFor('c3.png', seqBefore)).toEqual([]);
 
         // Finished: the tags row, X's tag_usage row and the mark are gone, and the flag has cleared.
         expect(tagsRowExists('x')).toBe(false);

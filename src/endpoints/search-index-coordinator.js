@@ -2,7 +2,7 @@ import path from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
 
-import { characterChangeEmitter, getMetaValue } from '../character-metadata-db.js';
+import { CHARACTERS_INDEX_SEQ_META_KEY, characterChangeEmitter, getMetaValue } from '../character-metadata-db.js';
 import { isReadOnlyMode } from '../read-only-mode.js';
 import { color, getConfigFilePath } from '../util.js';
 import { getTantivyModule } from './tantivy-engine.js';
@@ -14,8 +14,9 @@ const TARGETS = /** @type {const} */ (['characters', 'groups']);
 const INDEX_DIR_NAMES = { characters: 'characters-tantivy', groups: 'groups-tantivy' };
 const DISPOSE_TIMEOUT_MS = 10000;
 
-/** The meta keys the characters index persists its cursors under (characters-search-index.js writes them). */
-export const CHARACTERS_INDEX_SEQ_META_KEY = 'tantivy_char_index_seq';
+/** The meta keys the characters index persists its cursors under (characters-search-index.js writes them). The change log
+ * position's key lives with the log, whose trimming holds at it. */
+export { CHARACTERS_INDEX_SEQ_META_KEY };
 export const CHARACTERS_INDEX_TAG_NAME_CHANGE_SEQ_META_KEY = 'tantivy_char_index_tag_name_change_seq';
 export const CHARACTERS_INDEX_RETRY_SEQ_META_KEY = 'tantivy_char_index_retry_seq';
 export const CHARACTERS_INDEX_NAME_ORDER_SEQ_META_KEY = 'tantivy_char_index_name_order_seq';

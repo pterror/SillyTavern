@@ -144,10 +144,11 @@ describe('search-index-worker.js (real worker thread)', () => {
         expect(searchNames(reader, 'Doomed')).toEqual(['Doomed.png']);
 
         const keeper = JSON.parse(await metadataDb.getCharacterCardJson(directories, 'Keeper.png'));
-        // Each write changes the card; one that changed nothing would write nothing and queue nothing.
+        // Each write is to another character: the log keeps one row per character changed, so the backlog is one
+        // row per write.
         for (let i = 0; i < 3000; i++) {
             keeper.data.description = `revision ${i}`;
-            await metadataDb.upsertCharacterFromWrite(directories, 'Keeper.png', JSON.stringify(keeper));
+            await metadataDb.upsertCharacterFromWrite(directories, `Filler${i}.png`, JSON.stringify(keeper));
         }
         await metadataDb.deleteCharacterRow(directories, 'Doomed.png');
         const deleteSeq = await metadataDb.getCurrentSeq(directories);

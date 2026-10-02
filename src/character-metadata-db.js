@@ -73,6 +73,10 @@ characterChangeEmitter.on('change', () => {
 });
 
 /**
+ * Logs a change to `id` at a new seq, keeping at most two rows per id: a whole-record change (a delete, or no field
+ * list) replaces every row of the id; a field-list change replaces only the id's field-list row, its fields the union
+ * of both, and leaves an older whole-record row where it is. A reader behind that whole-record row still reads the
+ * id as whole; a reader past it gets every field changed since.
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  * @param {string} id
  * @param {'upsert'|'delete'} op
@@ -80,9 +84,105 @@ characterChangeEmitter.on('change', () => {
  * @returns {number} The new change row's seq.
  */
 function insertChange(db, id, op, fields) {
-    const { lastInsertRowid } = db.run('INSERT INTO changes (id, op, fields) VALUES (@id, @op, @fields)', { id, op, fields });
+    const newFields = op === 'delete' ? null : parseChangeFields(fields);
+    /** @type {number[]} */
+    const replaced = [];
+    const union = new Set(newFields ?? []);
+    for (const row of /** @type {Iterable<{ seq: number, op: string, fields: string | null }>} */ (db.iterate('SELECT seq, op, fields FROM changes WHERE id = @id', { id }))) {
+        const rowFields = row.op === 'delete' ? null : parseChangeFields(row.fields);
+        if (newFields !== null && rowFields === null) continue;
+        replaced.push(Number(row.seq));
+        for (const field of rowFields ?? []) union.add(field);
+    }
+    for (const seq of replaced) db.run('DELETE FROM changes WHERE seq = @seq', { seq });
+    const stored = newFields === null ? null : JSON.stringify([...union]);
+    const { lastInsertRowid } = db.run('INSERT INTO changes (id, op, fields) VALUES (@id, @op, @fields)', { id, op, fields: stored });
     characterChangeEmitter.emit('change');
+    scheduleChangesTrim(db);
     return Number(lastInsertRowid);
+}
+
+/**
+ * A change row's field names, null for a whole-record row (no list, or one that can't be read).
+ * @param {string | null} fields
+ * @returns {string[] | null}
+ */
+function parseChangeFields(fields) {
+    if (fields === null) return null;
+    try {
+        const parsed = JSON.parse(fields);
+        return Array.isArray(parsed) ? parsed.map(String) : null;
+    } catch {
+        return null;
+    }
+}
+
+/** meta key: the highest seq dropped from the old end of `changes`; a reader behind it gets `truncated`. */
+const CHANGES_FLOOR_KEY = 'changes_floor';
+/** meta key under which the characters search index keeps its position in `changes` (characters-search-index.js). */
+export const CHARACTERS_INDEX_SEQ_META_KEY = 'tantivy_char_index_seq';
+/** Rows of `changes` one trim batch looks at. */
+const CHANGES_TRIM_BATCH_ROWS = 500;
+
+/**
+ * Drops the oldest rows of `changes` when they are mostly gaps (rows replaced by later changes to the same id): the
+ * oldest CHANGES_TRIM_BATCH_ROWS rows past the floor go when their stretch of seqs holds more gaps than rows. Never
+ * past the characters search index's position (a server-side reader that catches up from the log; unknown until it
+ * has one), and never the newest row, whose seq is the log's current seq.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @returns {number} How many rows it dropped.
+ */
+function trimChangesBatchSync(db) {
+    const hold = /** @type {{ value: string } | undefined} */ (db.get('SELECT value FROM meta WHERE key = @key', { key: CHARACTERS_INDEX_SEQ_META_KEY }));
+    if (!hold || !Number.isFinite(Number(hold.value))) return 0;
+    const floorRow = /** @type {{ value: string } | undefined} */ (db.get('SELECT value FROM meta WHERE key = @key', { key: CHANGES_FLOOR_KEY }));
+    const floor = Number(floorRow?.value ?? 0);
+    const maxRow = /** @type {{ seq: number | null }} */ (db.get('SELECT MAX(seq) AS seq FROM changes'));
+    const upto = Math.min(Number(hold.value), Number(maxRow.seq ?? 0) - 1);
+    if (upto <= floor) return 0;
+    const rows = /** @type {{ seq: number }[]} */ (db.readBounded('SELECT seq FROM changes WHERE seq > @floor AND seq <= @upto ORDER BY seq LIMIT @limit',
+        { floor, upto, limit: CHANGES_TRIM_BATCH_ROWS }, CHANGES_TRIM_BATCH_ROWS));
+    if (rows.length === 0) return 0;
+    const last = Number(rows[rows.length - 1].seq);
+    if (last - floor <= 2 * rows.length) return 0;
+    let dropped = 0;
+    db.transaction(() => {
+        dropped = db.run('DELETE FROM changes WHERE seq > @floor AND seq <= @last', { floor, last }).changes;
+        setMetaSync(db, CHANGES_FLOOR_KEY, String(last));
+    });
+    return dropped;
+}
+
+/** @type {WeakSet<object>} Stores whose `changes` trim is scheduled or running. */
+const changesTrimRunning = new WeakSet();
+
+/**
+ * Starts trimming the old end of `changes` (trimChangesBatchSync()) in the background, a batch at a time with a pause
+ * between, once the server listens.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ */
+function scheduleChangesTrim(db) {
+    if (!chatStatsReconcileStarted || isReadOnlyMode() || changesTrimRunning.has(db)) return;
+    changesTrimRunning.add(db);
+    setTimeout(async () => {
+        try {
+            const isOpen = () => [...entries.values()].some(entry => entry.db === db);
+            while (isOpen() && trimChangesBatchSync(db) > 0) await delay(MIGRATION_BATCH_PAUSE_MS);
+        } catch (err) {
+            console.error(color.red('[character-metadata] Could not trim the old end of the change log:'), err);
+        } finally {
+            changesTrimRunning.delete(db);
+        }
+    }, MIGRATION_BATCH_PAUSE_MS);
+}
+
+/**
+ * The highest seq dropped from the old end of `changes`, 0 when none was.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ */
+function readChangesFloorSync(db) {
+    const row = /** @type {{ value: string } | undefined} */ (db.get('SELECT value FROM meta WHERE key = @key', { key: CHANGES_FLOOR_KEY }));
+    return Number(row?.value ?? 0);
 }
 
 /**
@@ -3812,8 +3912,8 @@ export async function getEntityTagChangesSince(directories, { sinceSeq, sinceGro
     const entry = await getEntry(directories);
     if (!entry) return null;
 
-    const bounds = /** @type {{ minSeq: number | null, maxSeq: number | null, minVersion: number | null }} */ (entry.db.get(
-        'SELECT (SELECT MIN(seq) FROM changes) AS minSeq, (SELECT MAX(seq) FROM changes) AS maxSeq, (SELECT MIN(version) FROM group_changes) AS minVersion'));
+    const bounds = /** @type {{ maxSeq: number | null, minVersion: number | null }} */ (entry.db.get(
+        'SELECT (SELECT MAX(seq) FROM changes) AS maxSeq, (SELECT MIN(version) FROM group_changes) AS minVersion'));
     const endSeq = bounds.maxSeq !== null ? Number(bounds.maxSeq) : 0;
     const endGroupsVersion = readGroupsVersionSync(entry.db) ?? 0;
     /** @type {EntityTagChangesPage} */
@@ -3823,7 +3923,7 @@ export async function getEntityTagChangesSince(directories, { sinceSeq, sinceGro
     const seq = /** @type {number} */ (sinceSeq);
     const groupsVersion = /** @type {number} */ (sinceGroupsVersion);
     if (seq > endSeq || groupsVersion > endGroupsVersion) return reset;
-    if (bounds.minSeq !== null && seq < Number(bounds.minSeq) - 1) return reset;
+    if (seq < readChangesFloorSync(entry.db)) return reset;
     if (bounds.minVersion !== null && groupsVersion < Number(bounds.minVersion) - 1) return reset;
 
     /** @type {Set<string>} */
@@ -13657,8 +13757,7 @@ export async function* streamDeletedIdsBetween(directories, afterSeq, uptoSeq) {
 
 /**
  * @returns {Promise<{ seq: number, changes: { id: string, op: 'upsert'|'delete', fields?: string[]|null }[], truncated: boolean, hasMore: boolean } | null>}
- * `truncated: true` means `sinceSeq` predates the oldest change-log row still kept (the log is never pruned
- * today, so this can currently only trigger for a `sinceSeq` from a different store).
+ * `truncated: true` means `sinceSeq` is behind the old end trimChangesBatchSync() dropped: rows it never read are gone.
  * Reads at most `limit` log rows past sinceSeq and collapses only those: `seq` is the last row read (pass it
  * back as sinceSeq for the next page) and `hasMore` says whether rows remain. `limit` is required, so no
  * caller can reach an unbounded read.
@@ -13674,11 +13773,10 @@ export async function getChangesSince(directories, sinceSeq, { limit } = {}) {
     if (!entry) return null;
 
     const numericSince = Number.isFinite(sinceSeq) && sinceSeq >= 0 ? Math.trunc(sinceSeq) : 0;
-    const bounds = (/** @type {{ minSeq: number | null, maxSeq: number | null } | undefined} */ (entry.db.get('SELECT (SELECT MIN(seq) FROM changes) AS minSeq, (SELECT MAX(seq) FROM changes) AS maxSeq')));
-    const minSeq = bounds?.minSeq != null ? Number(bounds.minSeq) : undefined;
+    const bounds = (/** @type {{ maxSeq: number | null } | undefined} */ (entry.db.get('SELECT MAX(seq) AS maxSeq FROM changes')));
     const maxSeq = bounds?.maxSeq != null ? Number(bounds.maxSeq) : 0;
 
-    const truncated = minSeq !== undefined && numericSince < minSeq - 1;
+    const truncated = numericSince < readChangesFloorSync(entry.db);
     if (truncated) {
         return { seq: maxSeq, changes: [], truncated: true, hasMore: false };
     }
