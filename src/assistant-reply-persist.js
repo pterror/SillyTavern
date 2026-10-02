@@ -178,13 +178,29 @@ export function takeReplyNotSaved(pending) {
     return pending?.generationStop?.unsaved?.warning ?? null;
 }
 
+/**
+ * When the reply was generated, as upstream's page stored it on every reply: ISO strings, the request's arrival
+ * and the moment the text was complete. A retry keeps the first attempt's times.
+ * @param {object} pending
+ * @returns {{gen_started?: string, gen_finished: string}}
+ */
+function generationTimes(pending) {
+    pending.genFinished ??= new Date().toISOString();
+    const startedAt = pending.generationStop?.startedAt;
+    return Number.isFinite(startedAt)
+        ? { gen_started: new Date(startedAt).toISOString(), gen_finished: pending.genFinished }
+        : { gen_finished: pending.genFinished };
+}
+
 /** @returns {Promise<{node_id: string, mes: string}|{error: string}|null>} */
-async function persistReply({ directories, ownerId, anchorNodeId, name2, isSwipe, isContinue, anchorContent }, generatedText) {
+async function persistReply(pending, generatedText) {
+    const { directories, ownerId, anchorNodeId, name2, isSwipe, isContinue, anchorContent } = pending;
     if (!generatedText) {
         return null;
     }
 
-    const replyContent = { name: name2, is_user: false, mes: generatedText, extra: {}, send_date: Date.now() };
+    const times = generationTimes(pending);
+    const replyContent = { name: name2, is_user: false, mes: generatedText, extra: {}, send_date: Date.now(), ...times };
 
     if (isContinue) {
         if (!anchorContent) {
@@ -194,7 +210,7 @@ async function persistReply({ directories, ownerId, anchorNodeId, name2, isSwipe
 
         const oldText = typeof anchorContent.mes === 'string' ? anchorContent.mes : '';
         const mes = oldText + generatedText;
-        const editResult = await editMessage(directories, ownerId, anchorNodeId, { ...anchorContent, mes });
+        const editResult = await editMessage(directories, ownerId, anchorNodeId, { ...anchorContent, mes, ...times });
         if (!editResult.ok) {
             console.error('Failed to persist continue edit onto the tree:', editResult.reason);
             return { error: String(editResult.reason ?? 'the continued message could not be written') };
