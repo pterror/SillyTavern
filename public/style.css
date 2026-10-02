@@ -1810,6 +1810,63 @@ textarea.autoSetHeight {
     margin-top: 0.5em;
 }
 
+.hotkeyGroupTitle {
+    font-weight: bold;
+    margin-top: 0.5em;
+}
+
+.hotkeyGroup ul {
+    margin: 0.25em 0;
+}
+
+.hotkeyItem {
+    display: flex;
+    gap: 0.75em;
+    align-items: baseline;
+}
+
+.hotkeyKeys {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25em;
+    flex: 0 0 auto;
+}
+
+.hotkeyInactive {
+    opacity: 0.45;
+}
+
+/* Shown while Ctrl is held on its own. A manual popover, so it sits in the top layer and takes no focus. */
+.hotkeyOverlay {
+    position: fixed;
+    inset: 0;
+    margin: auto;
+    width: min(90vw, 70em);
+    max-height: 85vh;
+    overflow: auto;
+    padding: 10px 20px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 10px;
+    background-color: var(--SmartThemeBlurTintColor);
+    backdrop-filter: blur(calc(var(--SmartThemeBlurStrength)));
+    -webkit-backdrop-filter: blur(calc(var(--SmartThemeBlurStrength)));
+    color: var(--SmartThemeBodyColor);
+    pointer-events: none;
+}
+
+.hotkeyOverlay .hotkeyList {
+    columns: 22em;
+}
+
+.hotkeyOverlay .hotkeyGroup {
+    break-inside: avoid;
+}
+
+.hotkeyOverlayTitle {
+    font-weight: bold;
+    font-size: 1.2em;
+}
+
 @media screen and (max-width: 1000px) {
     .helpMenuButton {
         display: flex;
