@@ -11960,6 +11960,8 @@ export async function swipe(event, direction, { source, repeated, message = chat
     }
 
     const swipeDuration = forceDuration ?? getSwipeDuration(animation_duration);
+    // Set when loadFromSwipeId() moved what follows mesId in `chat` without redrawing it yet.
+    let continuationChanged = false;
 
     //The offscreen messages may be visible if the user resizes the viewport during a swipe.
     const thisMesDivWidth = thisMesDiv.width() + 30;
@@ -12012,6 +12014,7 @@ export async function swipe(event, direction, { source, repeated, message = chat
 
                 //Update the chat.
                 await loadFromSwipeId(mesId, clampedId);
+                continuationChanged = false;
                 await redisplayChat({ startIndex: mesId });
             } else {
                 await Popup.show.confirm(
@@ -12024,6 +12027,9 @@ export async function swipe(event, direction, { source, repeated, message = chat
             }
         }
 
+        // A swipe that ended without animating (e.g. a failed load) still shows what follows the new alternative.
+        await redrawSwipedContinuation();
+
         //Allow for another swipe.
         swipeState = SWIPE_STATE.NONE;
         delete document.body.dataset.swiping;
@@ -12035,7 +12041,7 @@ export async function swipe(event, direction, { source, repeated, message = chat
         if (newSwipeId !== originalSwipeId || source == SWIPE_SOURCE.DELETE || source == SWIPE_SOURCE.BACK) {
             //Update the chat.
             await loadFromSwipeId(mesId, newSwipeId);
-            // loadFromSwipeId() may have just replaced mesId's element via redisplayChat() - reacquire the live one.
+            // Reacquire the live element in case anything replaced it while the load awaited.
             thisMesDiv = chatElement.children('.mes').filter(`[mesid="${mesId}"]`);
             thisMesText = thisMesDiv.find('.mes_block .mes_text');
             //Transition to the new chat.
@@ -12094,14 +12100,31 @@ export async function swipe(event, direction, { source, repeated, message = chat
             return true;
         }
 
-        //Moving to a different alternative means adopting its node and loading what follows it.
-        const switched = await switchToAlternativePath(mesId, newSwipeId);
+        // Moving to a different alternative means adopting its node and loading what follows it. Only the data moves
+        // here; the screen changes in animateSwipe(), between the slide-out and the slide-in.
+        const switched = await switchToAlternativePath(mesId, newSwipeId, { redraw: false });
 
         // Swiping back onto the same slot doesn't change node, so the switch above is a no-op - restore explicitly.
-        if (leavingBlank && !switched) {
-            await _restoreContinuation(mesId);
+        const restored = leavingBlank && !switched
+            ? await _restoreContinuation(mesId, { redraw: false })
+            : false;
+        if (switched || restored) {
+            continuationChanged = true;
         }
         return true;
+    }
+
+    /**
+     * Redraws what follows mesId after loadFromSwipeId() moved it in `chat`. mesId itself is redrawn by addOneMessage().
+     */
+    async function redrawSwipedContinuation() {
+        if (!continuationChanged) return;
+        continuationChanged = false;
+        await redisplayChat({ startIndex: mesId + 1 });
+        if (chat.length === mesId + 1) {
+            chatElement.children('.mes').filter(`[mesid="${mesId}"]`).addClass('last_mes');
+        }
+        updateViewMessageIds();
     }
 
     /**
@@ -12250,6 +12273,7 @@ export async function swipe(event, direction, { source, repeated, message = chat
             // Scrolling here raced with expandNewMessage()'s own scroll pin, causing a visible double-jump; expandNewMessage() is now the single source of truth for scroll position during a swipe.
             //The swipe buttons will be refreshed in endSwipe(), refreshing them now will cause flickering.
             addOneMessage(chat[mesId], { type: 'swipe', forceId: mesId, scroll: false, showSwipes: false });
+            await redrawSwipedContinuation();
 
             if (power_user.message_token_count_enabled) {
                 const tokenCountText = (chat[mesId]?.extra?.reasoning || '') + chat[mesId].mes;
