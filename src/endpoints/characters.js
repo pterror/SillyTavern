@@ -2717,6 +2717,12 @@ async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {})
     // Whether a total computed against a search-narrowed candidate set is exact or approximate
     // (wire convention: a `~` prefix, never a silently-truncated number).
     let approxTotal = false;
+    /**
+     * The total from the rows found among the listed ids, and how many were listed; a search past its id cap
+     * replaces this with the index's count.
+     * @type {(rowsFound: number, listed: number) => { total: number, approx: boolean }}
+     */
+    let totalFromRows = rowsFound => ({ total: rowsFound, approx: false });
 
     // Populated only in the hasSearch+includeGroups branch below, for JS-sorting merged relevance order
     // when sort.field === 'search' (no SQL column exists for text relevance).
@@ -2830,6 +2836,17 @@ async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {})
 
         approxTotal = Number.isFinite(idFetchCap) && (searchResult.total > idFetchCap
             || (includeGroups && groupSearchResult.total > idFetchCap));
+        // The index counts every match with fav, tags and the id lists applied, so past the cap the total is its
+        // count less the listed hits whose row is gone; those mark it approximate, since unlisted hits may be gone
+        // too. The groups index isn't handed filter.ids, so with groups and an id list only the listed rows count.
+        const indexTotal = searchResult.total + (includeGroups ? groupSearchResult.total : 0);
+        const indexCountsEveryMatch = !(includeGroups && explicitIds);
+        totalFromRows = (rowsFound, listed) => {
+            if (!approxTotal) return { total: rowsFound, approx: false };
+            if (!indexCountsEveryMatch) return { total: rowsFound, approx: true };
+            const gone = listed - rowsFound;
+            return { total: indexTotal - gone, approx: gone > 0 };
+        };
 
         if (effectiveIds.length === 0 && effectiveGroupIds.length === 0) {
             const current = includeGroups
@@ -2880,19 +2897,20 @@ async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {})
                 if (wantHashes) hashRows = timePhase('js_sort', () => hashRows.slice().sort((a, b) => combinedScoresById.get(a.id) - combinedScoresById.get(b.id)).slice(offset, offset + pageSize));
             }
 
-            const totalApprox = approxTotal || result.approxTotal;
+            const counted = totalFromRows(result.total, combinedIds.length);
+            const totalApprox = counted.approx || result.approxTotal;
             if (wantHashes) {
                 return queryHashesReply({
                     seq: result.seq,
                     token: tokenFor(result),
-                    total: wantTotal ? result.total : undefined,
+                    total: wantTotal ? counted.total : undefined,
                     approxTotal: totalApprox,
                     hashRows,
                     searchBackend,
                 });
             }
             const payload = { seq: result.seq, token: tokenFor(result) };
-            if (wantTotal) payload.total = totalApprox ? `~${result.total}` : result.total;
+            if (wantTotal) payload.total = totalApprox ? `~${counted.total}` : counted.total;
             if (wantRows) payload.rows = await timePhase('hydrate', () => hydrateEntityRows(user.directories, rows));
             if (searchBackend !== undefined) payload.searchBackend = searchBackend;
             return queryReply(200, payload);
@@ -2941,12 +2959,13 @@ async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {})
     }
 
     // includeGroups is always false here - both includeGroups branches already returned above.
-    const totalApprox = approxTotal || result.approxTotal;
+    const counted = hasSearch ? totalFromRows(result.total, queryParams.ids.length) : { total: result.total, approx: false };
+    const totalApprox = counted.approx || result.approxTotal;
     if (wantHashes) {
         return queryHashesReply({
             seq: result.seq,
             token: tokenFor(result),
-            total: wantTotal ? result.total : undefined,
+            total: wantTotal ? counted.total : undefined,
             approxTotal: totalApprox,
             hashRows: result.hashRows,
             searchBackend,
@@ -2954,7 +2973,7 @@ async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {})
     }
     const payload = { seq: result.seq, token: tokenFor(result) };
     if (wantRows) payload.rows = result.rows;
-    if (wantTotal) payload.total = totalApprox ? `~${result.total}` : result.total;
+    if (wantTotal) payload.total = totalApprox ? `~${counted.total}` : counted.total;
     if (searchBackend !== undefined) payload.searchBackend = searchBackend;
     return queryReply(200, payload);
 }
