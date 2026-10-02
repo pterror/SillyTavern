@@ -7065,3 +7065,40 @@ textarea.live-editor-textarea {
 .char_info_tab_panel.field_edit_attention .field_edit_cancel {
     animation: field_edit_attention 0.8s ease-in-out;
 }
+
+/* The block being edited: syntax shows only on the lines the selection is on. */
+.cm-editor.live-editor .live-line:not(.live-cursor-line) .live-syntax {
+    display: none;
+}
+
+.cm-editor.live-editor .live-syntax {
+    opacity: 0.55;
+}
+
+.cm-editor.live-editor .live-heading {
+    font-weight: bold;
+}
+
+.cm-editor.live-editor .live-heading1 { font-size: 2em; }
+.cm-editor.live-editor .live-heading2 { font-size: 1.5em; }
+.cm-editor.live-editor .live-heading3 { font-size: 1.17em; }
+.cm-editor.live-editor .live-heading5 { font-size: 0.83em; }
+.cm-editor.live-editor .live-heading6 { font-size: 0.67em; }
+
+.cm-editor.live-editor .live-link {
+    text-decoration: underline;
+}
+
+.cm-editor.live-editor .live-html {
+    opacity: 0.7;
+}
+
+/* A block away from the cursor, drawn as chat draws it. */
+.cm-editor.live-editor .live-unit {
+    cursor: text;
+}
+
+.cm-editor.live-editor .live-image img {
+    max-width: 100%;
+    vertical-align: middle;
+}
