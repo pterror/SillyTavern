@@ -991,9 +991,7 @@ export class CharacterRepository {
         /** @type {Array<Character|{type: 'character'|'group', item: Character|object}>} */
         const rows = [];
         let page = 1;
-        // A per-page `sort.field: 'random'` would force SQLite to re-sort the entire filtered table on every
-        // page (RANDHASH isn't an indexed column, so OFFSET can't skip past it) - quadratic in library size.
-        // Dropped here since both current random-sort callers re-sort the result client-side afterward anyway.
+        // Dropped for a random sort: both current random-sort callers re-sort the result client-side afterward.
         const pageSort = sort?.field === 'random' ? undefined : sort;
         for (;;) {
             const result = await this.query(filter, pageSort, page, QUERY_ALL_PAGE_SIZE, ['rows']);

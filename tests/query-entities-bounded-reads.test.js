@@ -4,7 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 
 import * as realSqliteEngine from '../src/endpoints/sqlite-engine.js';
-import { getStringHash, groupDigestFavHash, groupDigestTagIdsHash, groupDigestContentHash } from '../public/scripts/hash-utils.js';
+import { groupDigestFavHash, groupDigestTagIdsHash, groupDigestContentHash } from '../public/scripts/hash-utils.js';
 
 // Wraps whichever engine this install resolves to (native or wasm), recording every call's method and SQL.
 /** @type {{ method: string, sql: string, params: any }[]} */
@@ -105,8 +105,6 @@ function runSql(sql, params = []) {
 /** @param {{ sql: string }} call */
 const oneLine = (call) => call.sql.replace(/\s+/g, ' ').trim();
 
-const PAGE_CHARACTERS_READ = /\bFROM characters WHERE id IN \(SELECT value FROM json_each\(\?\)\)$/;
-const PAGE_GROUPS_READ = /\bFROM groups WHERE id IN \(SELECT value FROM json_each\(\?\)\)$/;
 const GROUP_TAGS_READ = /^SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id$/;
 
 /**
@@ -135,28 +133,31 @@ describe('queryEntities() random page: reads bounded by the page or one group', 
         const rowsResult = await metadataDb.queryEntities(directories, { ...params, wantRows: true, wantHashes: false });
         const rowsCalls = calls.splice(0);
 
-        expect(methodsOf(hashCalls, PAGE_CHARACTERS_READ).map(([method]) => method)).toEqual(['iterate']);
-        expect(methodsOf(hashCalls, PAGE_GROUPS_READ).map(([method]) => method)).toEqual(['iterate']);
+        // Before the random ranks are filled the order runs over rowids: every read takes a bounded id or rowid list and
+        // streams it, nothing reads a whole table.
+        for (const call of [...hashCalls, ...rowsCalls]) {
+            const sql = oneLine(call);
+            if (!/\bFROM (characters|groups)\b/.test(sql) || /COUNT\(\*\)|MAX\(rowid\)/.test(sql)) continue;
+            expect({ sql, method: call.method }).toEqual({ sql, method: 'iterate' });
+            expect(sql).toMatch(/\b(rowid|id) IN \(SELECT value FROM json_each\(\?\)\)|@id/);
+        }
         // g1's row never had digest_tag_ids written, so it falls back too; Alice.png's id isn't a group id, so its
         // fallback reads no tags.
         expect(methodsOf(hashCalls, GROUP_TAGS_READ).sort((a, b) => a[1].id.localeCompare(b[1].id))).toEqual([['iterate', { id: 'g1' }], ['iterate', { id: 'g2' }]]);
-        expect(methodsOf(rowsCalls, PAGE_CHARACTERS_READ).map(([method]) => method)).toEqual(['iterate']);
-        expect(methodsOf(rowsCalls, PAGE_GROUPS_READ).map(([method]) => method)).toEqual(['iterate']);
         expect(methodsOf(rowsCalls, GROUP_TAGS_READ)).toEqual([]);
 
-        // Every id in seed-hash order; the shared id appears once per table, and both slots get the group row.
-        const expectedEntities = [...characterIds, ...groupIds]
-            .map(id => ({ id, h: getStringHash(id, SEED) }))
-            .sort((a, b) => a.h - b.h)
-            .map(({ id }) => ({ type: /** @type {'character'|'group'} */ (groupIds.includes(id) ? 'group' : 'character'), id }));
-        expect(expectedEntities).toHaveLength(7);
-
+        // Each row once, characters and groups typed by their own table (the shared id is one of each), and the same
+        // order on both reads and on a repeat.
+        const order = rowsResult.rows.map(r => `${r.type}:${r.id}`);
+        expect([...order].sort()).toEqual([...characterIds.map(id => `character:${id}`), ...groupIds.map(id => `group:${id}`)].sort());
+        expect(hashResult.hashRows.map(r => `${r.isGroup ? 'group' : 'character'}:${r.id}`)).toEqual(order);
+        const again = await metadataDb.queryEntities(directories, { ...params, wantRows: true, wantHashes: false });
+        expect(again.rows.map(r => `${r.type}:${r.id}`)).toEqual(order);
+        const expectedEntities = rowsResult.rows.map(r => ({ type: r.type, id: r.id }));
         const expectedHashRows = (await metadataDb.getEntityRowsByIds(directories, expectedEntities, { wantRows: false, wantHashes: true })).hashRows;
         const expectedRows = (await metadataDb.getEntityRowsByIds(directories, expectedEntities, { wantRows: true, wantHashes: false })).rows;
         expect(hashResult.hashRows).toEqual(expectedHashRows);
         expect(rowsResult.rows).toEqual(expectedRows);
-        expect(hashResult.hashRows.filter(r => r.id === 'Alice.png').map(r => r.isGroup)).toEqual([true, true]);
-        expect(rowsResult.rows.filter(r => r.id === 'Alice.png').map(r => r.type)).toEqual(['group', 'group']);
 
         // The NULL-digest groups' hashes come from their files and their group_tags rows.
         for (const [id, tagIds] of /** @type {[string, string[]][]} */ ([['g1', []], ['g2', ['t-alpha', 't-zeta']]])) {

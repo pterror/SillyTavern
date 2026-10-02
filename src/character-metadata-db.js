@@ -31,47 +31,6 @@ import { getStringHash, characterDigestFavHash, characterDigestFieldsHash, chara
 
 export const characterChangeEmitter = new EventEmitter();
 
-// Bounds memory growth from seed churn.
-const MAX_RANDOM_CACHE_ENTRIES = 10;
-/**
- * Keyed on both the change log's seq and the groups version (readGroupsVersionSync()), since the ids include every
- * group's.
- * @type {Map<string, { seq: number, groupsVersion: number, sortedIds: string[], db: import('./endpoints/sqlite-engine.js').SqliteEngineHandle }>}
- */
-const randomSortCache = new Map();
-
-/** @type {NodeJS.Timeout | undefined} */
-let randomCacheWarmTimer = undefined;
-
-// Debounced so a batch of rapid changes triggers only one recomputation.
-characterChangeEmitter.on('change', () => {
-    clearTimeout(randomCacheWarmTimer);
-    randomCacheWarmTimer = setTimeout(() => {
-        for (const [key, entry] of randomSortCache) {
-            const seqRow = (/** @type {{ seq: number } | undefined} */ (entry.db.get('SELECT COALESCE(MAX(seq), 0) as seq FROM changes')));
-            const currentSeq = Number(seqRow?.seq ?? 0);
-            const currentGroupsVersion = readGroupsVersionSync(entry.db);
-            if (currentGroupsVersion === null) {
-                // Nothing to key a rebuilt entry on; getRandomSortedEntityIds() never serves one without it.
-                randomSortCache.delete(key);
-                continue;
-            }
-            if (entry.seq !== currentSeq || entry.groupsVersion !== currentGroupsVersion) {
-                const colonIdx = key.lastIndexOf(':');
-                const seed = Number(key.slice(colonIdx + 1));
-                const charIds = (/** @type {{ id: string }[]} */ (entry.db.all('SELECT id FROM characters'))).map(r => r.id);
-                const groupIds = (/** @type {{ id: string }[]} */ (entry.db.all('SELECT id FROM groups'))).map(r => r.id);
-                const allIds = [...charIds, ...groupIds];
-                const hashed = allIds.map(id => ({ id, h: getStringHash(String(id), seed) }));
-                hashed.sort((a, b) => a.h - b.h);
-                entry.sortedIds = hashed.map(r => r.id);
-                entry.seq = currentSeq;
-                entry.groupsVersion = currentGroupsVersion;
-            }
-        }
-    }, 500);
-});
-
 /**
  * Logs a change to `id` at a new seq, keeping at most two rows per id: a whole-record change (a delete, or no field
  * list) replaces every row of the id; a field-list change replaces only the id's field-list row, its fields the union
@@ -1613,20 +1572,10 @@ async function getEntry(directories) {
     db.exec(RANDOM_RANK_TRIGGERS_SQL);
     db.exec(NAME_ORDER_TABLE_SQL);
     db.exec(NAME_ORDER_TRIGGERS_SQL);
-    defineRandHash(db);
     /** @type {MetadataDbEntry} */
     const entry = { db, directories, batch: null, bootstrapPromise: null };
     entries.set(key, entry);
     return entry;
-}
-
-// Registers cyrb53 as a SQL function so random-sort order can be a per-query ORDER BY RANDHASH(id, seed),
-// composing with LIMIT/OFFSET pagination instead of a JS-side sort over every row.
-/**
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- */
-function defineRandHash(db) {
-    db.defineFunction('RANDHASH', (id, seed) => getStringHash(String(id ?? ''), Number(seed ?? 0)));
 }
 
 // Read-only mode (read-only-mode.js): the existing db opens read-only on better-sqlite3, with no mkdir, no
@@ -1641,7 +1590,6 @@ async function openReadOnlyEntry(directories) {
         throw new Error('read-only mode needs better-sqlite3, which is not usable on this install');
     }
     const db = openNativeDatabase(DatabaseCtor, getDbPath(directories), { readonly: true });
-    defineRandHash(db);
     /** @type {MetadataDbEntry} */
     const entry = { db, directories, batch: null, bootstrapPromise: null };
     entries.set(directories.root, entry);
@@ -3272,9 +3220,6 @@ export async function initializeMetadataStores(directoriesList) {
 
 export function disposeMetadataStores() {
     chatStatsReconcileStarted = false;
-    // The random-order cache holds these connections; its warm timer must not run on a closed one.
-    clearTimeout(randomCacheWarmTimer);
-    randomSortCache.clear();
     for (const db of noWaitMetaConnections.values()) {
         try {
             db.close();
@@ -11034,7 +10979,7 @@ export async function seedCardTagsForSingleCharacter(directories, avatar, { only
 }
 
 // Columns queryCharacters() may sort by via a plain `ORDER BY <column>`. Deliberately excludes 'random'
-// (sorts by RANDHASH(id, seed), not a column) and 'search' (relevance order supplied by the caller as idOrder).
+// (randomOrderPage()) and 'search' (relevance order supplied by the caller as idOrder).
 /** @type {Record<string, string>} */
 /**
  * When a tag filter can be read from the tag sort tables: no id list, 'and' mode, at least one included tag and no
@@ -12590,18 +12535,12 @@ export async function queryCharacters(directories, params = {}) {
         }
     } else if (wantRows || wantHashes) {
         const orderParts = [];
-        if (sortField === 'random') {
-            const direction = sortOrder === 'desc' ? 'DESC' : 'ASC';
-            orderParts.push(`RANDHASH(id, ?) ${direction}`);
-        } else {
-            const column = QUERYABLE_SORT_COLUMNS[sortField ?? ''];
-            const direction = sortOrder === 'desc' ? 'DESC' : 'ASC';
-            if (column) {
-                orderParts.push(`${column} ${direction}`);
-                // fav is boolean-valued, so many rows tie on it; name_fold breaks the tie (idx_characters_fav_name_fold).
-                if (sortField === 'fav') {
-                    orderParts.push('name_fold ASC');
-                }
+        const column = QUERYABLE_SORT_COLUMNS[sortField ?? ''];
+        if (column) {
+            orderParts.push(`${column} ${sortOrder === 'desc' ? 'DESC' : 'ASC'}`);
+            // fav is boolean-valued, so many rows tie on it; name_fold breaks the tie (idx_characters_fav_name_fold).
+            if (sortField === 'fav') {
+                orderParts.push('name_fold ASC');
             }
         }
         // Final tie-break by unique id, or ties get inconsistent order across separate paged queries.
@@ -12611,14 +12550,10 @@ export async function queryCharacters(directories, params = {}) {
         const numericOffset = typeof offset === 'number' && Number.isFinite(offset) && offset > 0 ? Math.trunc(offset) : 0;
         const numericLimit = typeof limit === 'number' && Number.isFinite(limit) && limit >= 0 ? Math.trunc(limit) : DEFAULT_QUERY_LIMIT;
 
-        // The RANDHASH(id, ?) placeholder above (when present) is the first `?` after the WHERE clause's own
-        // args, so its bind value goes right after `args` and before the LIMIT/OFFSET pair - SQLite binds `?`
-        // placeholders strictly in the order they appear in the SQL text.
-        const orderArgs = sortField === 'random' ? [Number(seed) || 0] : [];
         const sortColumn = sortField === 'random' ? undefined : QUERYABLE_SORT_COLUMNS[sortField ?? ''];
         /** @type {{ ids: string[], cursor: string | undefined, more: boolean } | null} */
         let walkedPage = null;
-        if (sortField === 'random' && randomRanksReady(entry)) {
+        if (sortField === 'random') {
             const page = randomOrderPage(entry, {
                 kinds: { character: true, group: false }, tags, fav, world, ranges, excludeIds, ids, sortOrder,
                 seed: Number(seed) || 0, offset: numericOffset, limit: numericLimit, cursor: params.cursor, deletions,
@@ -12655,10 +12590,10 @@ export async function queryCharacters(directories, params = {}) {
             return { rows, hashRows, total, approxTotal, seq, ...(cursor !== undefined ? { cursor } : {}), ...(more ? { more: true } : {}) };
         }
         if (wantHashes) {
-            const rawRows = (/** @type {HashSourceRow[]} */ (entry.db.readBounded(`SELECT ${HASH_COLUMNS} FROM ${from} ${where} ${orderBy} LIMIT ? OFFSET ?`, [...args, ...orderArgs, numericLimit, numericOffset], numericLimit)));
+            const rawRows = (/** @type {HashSourceRow[]} */ (entry.db.readBounded(`SELECT ${HASH_COLUMNS} FROM ${from} ${where} ${orderBy} LIMIT ? OFFSET ?`, [...args, numericLimit, numericOffset], numericLimit)));
             hashRows = rawRows.map(toHashRow);
         } else {
-            const rawRows = (/** @type {{ shallow_json: string }[]} */ (entry.db.readBounded(`SELECT shallow_json FROM ${from} ${where} ${orderBy} LIMIT ? OFFSET ?`, [...args, ...orderArgs, numericLimit, numericOffset], numericLimit)));
+            const rawRows = (/** @type {{ shallow_json: string }[]} */ (entry.db.readBounded(`SELECT shallow_json FROM ${from} ${where} ${orderBy} LIMIT ? OFFSET ?`, [...args, numericLimit, numericOffset], numericLimit)));
             rows = rawRows.map(r => parseShallowResolvingTags(r.shallow_json, deletions));
         }
     }
@@ -12739,42 +12674,6 @@ function buildGroupWhereClause({ tags, fav, ranges, excludeIds, ids } = {}, dele
 // queryEntities() (below) is the `filter.includeGroups: true` half of `POST /api/characters/query` - it queries
 // characters and groups as two separate per-table queries with a JS merge-sort (see mergeSortedRows()), not a
 // UNION ALL, so each table keeps its own index-backed ORDER BY.
-
-/**
- * Hash-sorted array of all entity IDs, cached per (handle, seed, seq, groupsVersion). With an unknown groups
- * version (null) it's neither served from nor stored in the cache.
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- * @param {string} handle
- * @param {number} seed
- * @param {number} seq
- * @param {number | null} groupsVersion
- * @returns {string[]}
- */
-function getRandomSortedEntityIds(db, handle, seed, seq, groupsVersion) {
-    const key = `${handle}:${seed}`;
-    const entry = groupsVersion === null ? undefined : randomSortCache.get(key);
-    if (entry && entry.seq === seq && entry.groupsVersion === groupsVersion) {
-        randomSortCache.delete(key);
-        randomSortCache.set(key, entry);
-        return entry.sortedIds;
-    }
-
-    const charIds = (/** @type {{ id: string }[]} */ (db.all('SELECT id FROM characters'))).map(r => r.id);
-    const groupIds = (/** @type {{ id: string }[]} */ (db.all('SELECT id FROM groups'))).map(r => r.id);
-    const allIds = [...charIds, ...groupIds];
-    const hashed = allIds.map(id => ({ id, h: getStringHash(String(id), Number(seed)) }));
-    hashed.sort((a, b) => a.h - b.h);
-    const sortedIds = hashed.map(r => r.id);
-    if (groupsVersion === null) return sortedIds;
-
-    if (randomSortCache.size >= MAX_RANDOM_CACHE_ENTRIES && !randomSortCache.has(key)) {
-        const oldest = randomSortCache.keys().next().value;
-        if (oldest !== undefined) randomSortCache.delete(oldest);
-    }
-
-    randomSortCache.set(key, { seq, groupsVersion, sortedIds, db });
-    return sortedIds;
-}
 
 /** Must match the ORDER BY each side's own SQL query used, so the merge stays a true sorted merge. */
 /**
@@ -13045,8 +12944,6 @@ export async function getEntityRowsByIds(directories, entities, { wantRows = tru
  * @param {number} [params.seed]
  * @param {number} [params.offset]
  * @param {number} [params.limit]
- * @param {string|null} [params.handle] Cache key for getRandomSortedEntityIds()'s per-(handle, seed, seq, groupsVersion) cache.
- * Required when a random-sorted page is read (sortField 'random' with wantRows or wantHashes); throws if missing or ''.
  * @param {boolean} [params.wantRows]
  * @param {boolean} [params.wantTotal]
  * @param {boolean} [params.wantHashes]
@@ -13063,7 +12960,7 @@ export async function queryEntities(directories, params = {}) {
     const {
         tags, fav, world, ranges, excludeIds, ids,
         sortField, sortOrder, seed,
-        offset, limit, handle,
+        offset, limit,
         wantRows = true, wantTotal = true,
         wantHashes = false,
         groupsOnly = false,
@@ -13110,17 +13007,11 @@ export async function queryEntities(directories, params = {}) {
     let moreRows = false;
     if (wantRows || wantHashes) {
         const orderParts = [];
-        if (sortField === 'random') {
-            const direction = sortOrder === 'desc' ? 'DESC' : 'ASC';
-            orderParts.push(`RANDHASH(id, ?) ${direction}`);
-        } else {
-            const column = QUERYABLE_SORT_COLUMNS[sortField ?? ''];
-            const direction = sortOrder === 'desc' ? 'DESC' : 'ASC';
-            if (column) {
-                orderParts.push(`${column} ${direction}`);
-                if (sortField === 'fav') {
-                    orderParts.push('name_fold ASC');
-                }
+        const sortColumnName = QUERYABLE_SORT_COLUMNS[sortField ?? ''];
+        if (sortColumnName) {
+            orderParts.push(`${sortColumnName} ${sortOrder === 'desc' ? 'DESC' : 'ASC'}`);
+            if (sortField === 'fav') {
+                orderParts.push('name_fold ASC');
             }
         }
         orderParts.push('id ASC');
@@ -13128,13 +13019,12 @@ export async function queryEntities(directories, params = {}) {
 
         const numericOffset = typeof offset === 'number' && Number.isFinite(offset) && offset > 0 ? Math.trunc(offset) : 0;
         const numericLimit = typeof limit === 'number' && Number.isFinite(limit) && limit >= 0 ? Math.trunc(limit) : DEFAULT_QUERY_LIMIT;
-        const orderArgs = sortField === 'random' ? [Number(seed) || 0] : [];
 
         // Two separate per-table queries + a JS merge-sort instead of UNION ALL: a UNION ALL prevented SQLite
         // from using either table's index (full scan + temp B-tree sort).
         const fetchLimit = numericOffset + numericLimit;
 
-        if (sortField === 'random' && randomRanksReady(entry)) {
+        if (sortField === 'random') {
             const page = randomOrderPage(entry, {
                 kinds: { character: !groupsOnly, group: true }, tags, fav, world, ranges, excludeIds, ids, sortOrder,
                 seed: Number(seed) || 0, offset: numericOffset, limit: numericLimit, cursor: params.cursor, deletions,
@@ -13150,61 +13040,6 @@ export async function queryEntities(directories, params = {}) {
             }
             nextCursor = page.cursor;
             moreRows = page.more;
-        } else if (sortField === 'random') {
-            if (handle === undefined || handle === null || handle === '') {
-                throw new Error('queryEntities(): a random sort needs params.handle (the random-sort id cache is keyed by it)');
-            }
-            const sortedAllIds = getRandomSortedEntityIds(entry.db, handle, Number(seed) || 0, seq, groupsVersion);
-
-            const hasFilters = groupsOnly || charWhere.from !== 'characters' || charWhere.where !== '' || groupWhere.from !== 'groups' || groupWhere.where !== '';
-            const filterSet = hasFilters ? new Set([
-                ...(groupsOnly ? [] : (/** @type {{ id: string }[]} */ (entry.db.all(`SELECT id FROM ${charWhere.from} ${charWhere.where}`, charWhere.args))).map(r => r.id)),
-                ...(/** @type {{ id: string }[]} */ (entry.db.all(`SELECT id FROM ${groupWhere.from} ${groupWhere.where}`, groupWhere.args))).map(r => r.id),
-            ]) : null;
-
-            const descending = sortOrder === 'desc';
-            const len = sortedAllIds.length;
-            const pageIds = [];
-            let skipped = 0;
-            for (let i = 0; i < len; i++) {
-                const id = sortedAllIds[descending ? len - 1 - i : i];
-                if (filterSet && !filterSet.has(id)) continue;
-                if (skipped < numericOffset) { skipped++; continue; }
-                pageIds.push(id);
-                if (pageIds.length >= numericLimit) break;
-            }
-
-            if (pageIds.length === 0) {
-                rows = wantRows ? [] : undefined;
-                hashRows = wantHashes ? [] : undefined;
-            } else {
-                const pageIdsJson = JSON.stringify(pageIds);
-                /** @type {Map<string, EntityRow>} */
-                const rowById = new Map();
-                for (const r of entry.db.iterate(
-                    `SELECT ${ENTITY_CHARACTER_COLUMNS}
-                    FROM characters WHERE id IN (SELECT value FROM json_each(?))`,
-                    [pageIdsJson],
-                )) {
-                    rowById.set(/** @type {EntityRow} */ (r).id, /** @type {EntityRow} */ (r));
-                }
-                for (const r of entry.db.iterate(
-                    `SELECT ${ENTITY_GROUP_COLUMNS}
-                    FROM groups WHERE id IN (SELECT value FROM json_each(?))`,
-                    [pageIdsJson],
-                )) {
-                    rowById.set(/** @type {EntityRow} */ (r).id, /** @type {EntityRow} */ (r));
-                }
-                const rawRows = pageIds.map(id => rowById.get(id)).filter(r => r !== undefined);
-                if (wantHashes) {
-                    overlayEntityRowsSync(entry.db, rawRows);
-                    hashRows = rawRows.map(toHashRow);
-                    resolveFileFallbackHashes(hashRows);
-                } else {
-                    overlayEntityRowsSync(entry.db, rawRows);
-                    rows = rawRows.map(r => toEntityWireRow(r, deletions));
-                }
-            }
         } else {
             const comparator = makeEntityMergeComparator(sortField, sortOrder, seed);
             const column = QUERYABLE_SORT_COLUMNS[sortField ?? ''];
@@ -13256,7 +13091,7 @@ export async function queryEntities(directories, params = {}) {
                         FROM ${charWhere.from} ${charWhere.where}
                         ${orderBy}
                         LIMIT ?`,
-                        [...charWhere.args, ...orderArgs, fetchLimit],
+                        [...charWhere.args, fetchLimit],
                     );
                 }
                 merged = mergeSortedRows(merged, readStream(
@@ -13264,7 +13099,7 @@ export async function queryEntities(directories, params = {}) {
                     FROM ${groupWhere.from} ${groupWhere.where}
                     ${groupOrderBy}
                     LIMIT ?`,
-                    [...groupWhere.args, ...orderArgs, fetchLimit],
+                    [...groupWhere.args, fetchLimit],
                 ), comparator);
                 rawRows = merged.slice(numericOffset, numericOffset + numericLimit);
             }
@@ -13324,6 +13159,64 @@ function randomEntitiesAtRanks(db, space, ranks) {
 }
 
 /**
+ * A numbering to permute before the random ranks are filled: characters' rowids then groups', as ranks
+ * 0..maxCharacterRowid+maxGroupRowid-1. A deleted row's rowid is a gap the walk steps over like a filtered-out entity,
+ * so the space is never read whole; once the ranks are filled the order switches to them.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {{ character: boolean, group: boolean }} kinds
+ */
+function rowidRandomSpace(db, kinds) {
+    /** @param {string} table */
+    const maxRowid = table => Number(/** @type {{ m: number }} */ (db.get(`SELECT COALESCE(MAX(rowid), 0) AS m FROM ${table}`)).m);
+    const nChar = kinds.character ? maxRowid('characters') : 0;
+    const nGroup = kinds.group ? maxRowid('groups') : 0;
+    return {
+        n: nChar + nGroup,
+        /**
+         * @param {number[]} ranks
+         * @returns {Map<number, { type: 'character' | 'group', id: string }>}
+         */
+        atRanks(ranks) {
+            /** @type {Map<number, { type: 'character' | 'group', id: string }>} */
+            const byRank = new Map();
+            const charRowids = ranks.filter(r => r < nChar).map(r => r + 1);
+            const groupRowids = ranks.filter(r => r >= nChar).map(r => r - nChar + 1);
+            if (charRowids.length > 0) {
+                for (const row of /** @type {Iterable<{ r: number, id: string }>} */ (db.iterate('SELECT rowid AS r, id FROM characters WHERE rowid IN (SELECT value FROM json_each(?))', [JSON.stringify(charRowids)]))) {
+                    byRank.set(Number(row.r) - 1, { type: 'character', id: row.id });
+                }
+            }
+            if (groupRowids.length > 0) {
+                for (const row of /** @type {Iterable<{ r: number, id: string }>} */ (db.iterate('SELECT rowid AS r, id FROM groups WHERE rowid IN (SELECT value FROM json_each(?))', [JSON.stringify(groupRowids)]))) {
+                    byRank.set(Number(row.r) - 1 + nChar, { type: 'group', id: row.id });
+                }
+            }
+            return byRank;
+        },
+        /**
+         * @param {string[]} ids
+         * @returns {{ rank: number, kind: string, entity_id: string }[]}
+         */
+        ranksOf(ids) {
+            const json = JSON.stringify(ids);
+            /** @type {{ rank: number, kind: string, entity_id: string }[]} */
+            const out = [];
+            if (kinds.character) {
+                for (const row of /** @type {Iterable<{ r: number, id: string }>} */ (db.iterate('SELECT rowid AS r, id FROM characters WHERE id IN (SELECT value FROM json_each(?))', [json]))) {
+                    out.push({ rank: Number(row.r) - 1, kind: 'c', entity_id: row.id });
+                }
+            }
+            if (kinds.group) {
+                for (const row of /** @type {Iterable<{ r: number, id: string }>} */ (db.iterate('SELECT rowid AS r, id FROM groups WHERE id IN (SELECT value FROM json_each(?))', [json]))) {
+                    out.push({ rank: Number(row.r) - 1 + nChar, kind: 'g', entity_id: row.id });
+                }
+            }
+            return out;
+        },
+    };
+}
+
+/**
  * The ids among `ids` of one kind that pass a filter's WHERE.
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  * @param {{ from: string, where: string, args: unknown[] }} built
@@ -13371,7 +13264,9 @@ function randomOrderPage(entry, { kinds, tags, fav, world, ranges, excludeIds, i
     const orMode = tags?.mode === 'or';
     const expanded = !!expandTagFilter(tags, deletions);
     const descending = sortOrder === 'desc';
-    const key = String(getStringHash(JSON.stringify({ random: true, seed, tags: tags ?? null, fav: favValue, world: world ?? null, ...(hasRanges(ranges) ? { ranges } : {}), excludeIds: excludeIds ?? null, ids: ids ?? null, kinds, sortOrder: descending })));
+    // Until the ranks are filled, the order runs over the tables' rowids instead (see rowidRandomSpace()).
+    const byRowid = !randomRanksReady(entry);
+    const key = String(getStringHash(JSON.stringify({ random: true, byRowid, seed, tags: tags ?? null, fav: favValue, world: world ?? null, ...(hasRanges(ranges) ? { ranges } : {}), excludeIds: excludeIds ?? null, ids: ids ?? null, kinds, sortOrder: descending })));
     const at = decodeRandomPageCursor(cursor, key);
     const charWhere = buildWhereClause({ tags, fav, world, ranges, excludeIds, ids }, deletions);
     const groupWhere = buildGroupWhereClause({ tags, fav, ranges, excludeIds, ids }, deletions);
@@ -13386,23 +13281,27 @@ function randomOrderPage(entry, { kinds, tags, fav, world, ranges, excludeIds, i
     // otherwise the fav / whole-list space. An id list orders by the same space, so a search's matches listed by id
     // come in the order the walk over that space would give them.
     let space = randomSpaceName('', favValue);
-    if (!orMode && !expanded && include.length > 0) {
+    if (!byRowid && !orMode && !expanded && include.length > 0) {
         const sized = include.map(tagId => ({ space: randomSpaceName(tagId, favValue), n: randomSpaceSize(db, randomSpaceName(tagId, favValue)) }));
         sized.sort((a, b) => a.n - b.n);
         space = sized[0].space;
     }
+    const rowidSpace = byRowid ? rowidRandomSpace(db, kinds) : null;
+    const n = rowidSpace ? rowidSpace.n : randomSpaceSize(db, space);
+    const k = orderKey(seed, rowidSpace ? 'rowid' : space);
+    /** @param {number[]} ranks */
+    const entitiesAtRanks = ranks => rowidSpace ? rowidSpace.atRanks(ranks) : randomEntitiesAtRanks(db, space, ranks);
 
     // An id list: its own ids, each at its position in that space, so the read is bounded by the list.
     if (Array.isArray(ids)) {
-        const n = randomSpaceSize(db, space);
-        const orderKeyOfSpace = orderKey(seed, space);
         /** @type {{ type: 'character' | 'group', id: string, position: number }[]} */
         const placed = [];
-        for (const row of /** @type {Iterable<{ rank: number, kind: string, entity_id: string }>} */ (db.iterate(
+        const ranked = rowidSpace ? rowidSpace.ranksOf(ids) : /** @type {Iterable<{ rank: number, kind: string, entity_id: string }>} */ (db.iterate(
             'SELECT rank, kind, entity_id FROM random_ranks WHERE space = ? AND entity_id IN (SELECT value FROM json_each(?))',
             [space, JSON.stringify(ids)],
-        ))) {
-            const position = unpermute(Number(row.rank), n, orderKeyOfSpace);
+        ));
+        for (const row of ranked) {
+            const position = unpermute(Number(row.rank), n, k);
             placed.push({ type: row.kind === 'g' ? 'group' : 'character', id: row.entity_id, position: descending ? n - 1 - position : position });
         }
         placed.sort((a, b) => a.position - b.position);
@@ -13417,22 +13316,19 @@ function randomOrderPage(entry, { kinds, tags, fav, world, ranges, excludeIds, i
     }
 
     const oneSpace = !orMode && !expanded && exclude.length === 0 && include.length <= 1 && (typeof world !== 'string' || world === '') && !hasRanges(ranges) && !(Array.isArray(excludeIds) && excludeIds.length > 0) && kinds.character && kinds.group;
-    if (oneSpace) {
-        const n = randomSpaceSize(db, space);
-        const k = orderKey(seed, space);
+    // The rowid space has gaps (deleted rows), so it is always walked.
+    if (oneSpace && !rowidSpace) {
         const start = at ? at.position : offset;
         const end = Math.min(n, start + limit);
         /** @type {number[]} */
         const ranks = [];
         for (let j = start; j < end; j++) ranks.push(permute(descending ? n - 1 - j : j, n, k));
-        const byRank = randomEntitiesAtRanks(db, space, ranks);
+        const byRank = entitiesAtRanks(ranks);
         const entities = ranks.map(r => byRank.get(r)).filter(e => e !== undefined);
         return { entities, more: false, cursor: end - start === limit ? encodeRandomPageCursor(key, end, 0) : undefined };
     }
 
     // Walked: the space chosen above drives, and each entity is checked against the whole filter.
-    const n = randomSpaceSize(db, space);
-    const k = orderKey(seed, space);
     let skip = at ? at.skip : offset;
     let j = at ? at.position : 0;
     let examined = 0;
@@ -13443,7 +13339,7 @@ function randomOrderPage(entry, { kinds, tags, fav, world, ranges, excludeIds, i
         /** @type {number[]} */
         const ranks = [];
         for (let q = j; q < windowEnd; q++) ranks.push(permute(descending ? n - 1 - q : q, n, k));
-        const byRank = randomEntitiesAtRanks(db, space, ranks);
+        const byRank = entitiesAtRanks(ranks);
         const candidates = ranks.map(r => byRank.get(r)).filter(e => e !== undefined);
         const kept = passing(candidates);
         // Walk the kept entities in position order, stopping where the page fills, so the cursor lands right after.

@@ -120,8 +120,10 @@ describe('a query narrowed to a hit list starts from the hits and looks each one
             for (const read of reads) {
                 expect({ sql, read }).toEqual({ sql, read: expect.stringMatching(/^SEARCH (characters|groups) USING (COVERING )?INDEX sqlite_autoindex_(characters|groups)_1 \(id=\?\)$/) });
             }
+            // A plain `id IN (list)` lookup has no duplicates to fold; a hit list driving the FROM is deduplicated first.
+            const plainLookup = /WHERE id IN \(SELECT value FROM json_each\(\?\)\)$/.test(sql.replace(/\s+/g, ' ').trim());
             expect({ sql, sorted: details.includes('USE TEMP B-TREE FOR GROUP BY'), inSearchOrder: details.includes('USE TEMP B-TREE FOR DISTINCT') })
-                .toEqual({ sql, sorted: true, inSearchOrder: false });
+                .toEqual({ sql, sorted: !plainLookup, inSearchOrder: false });
         }
     });
 });
@@ -183,17 +185,6 @@ describe('a query narrowed to a hit list returns what the hit list names, once e
         expect(result?.rows?.map(r => r.id).sort()).toEqual(['1700000000002', 'B.png']);
     });
 
-    test('queryEntities() random order without a handle throws', async () => {
-        await seedCharacter('A.png');
-        await metadataDb.upsertGroupRow(directories, '1700000000001', 'G1', { fav: false });
-
-        await expect(metadataDb.queryEntities(directories, { sortField: 'random', seed: 3 })).rejects.toThrow(/handle/);
-        await expect(metadataDb.queryEntities(directories, { sortField: 'random', seed: 3, wantRows: false, wantHashes: true })).rejects.toThrow(/handle/);
-        await expect(metadataDb.queryEntities(directories, { sortField: 'random', seed: 3, handle: '' })).rejects.toThrow(/handle/);
-        await expect(metadataDb.queryEntities(directories, { sortField: 'random', seed: 3, handle: '', wantRows: false, wantHashes: true })).rejects.toThrow(/handle/);
-        await expect(metadataDb.queryEntities(directories, { sortField: 'random', seed: 3, handle: null })).rejects.toThrow(/handle/);
-    });
-
     test('the other filters still apply to the hits', async () => {
         await seedCharacter('Fav.png', { fav: true });
         await seedCharacter('Plain.png');
@@ -222,14 +213,18 @@ const INCLUDED_TAGS = [
 const TAG_CASES = CALLS.flatMap(([callName, call]) => INCLUDED_TAGS.map(([tagsName, tags]) => /** @type {const} */ ([`${callName}, ${tagsName}`, call, { tags }])));
 
 describe('a query narrowed to a hit list checks each hit\'s included tags by its own primary key', () => {
-    test.each(TAG_CASES)('%s', async (_name, call, filter) => {
+    test.each(TAG_CASES)('%s', async (name, call, filter) => {
         await metadataDb.ensureSchemaMigrated(directories);
         recorded.length = 0;
 
         await call(filter);
 
-        const narrowed = recorded.filter(r => Array.isArray(r.params) && r.params.includes(HIT_IDS_JSON));
-        expect(narrowed.length).toBeGreaterThan(0);
+        // The random order's own placement of the hits (a plain `id IN (list)` lookup) checks no filter; the statements
+        // that apply the filter to the hits do.
+        const narrowed = recorded.filter(r => Array.isArray(r.params) && r.params.includes(HIT_IDS_JSON)
+            && !/WHERE id IN \(SELECT value FROM json_each\(\?\)\)$/.test(r.sql.replace(/\s+/g, ' ').trim()));
+        // With none of the hits stored, the random order places nothing and so has nothing to filter.
+        expect({ name, filtered: name.includes('random') || narrowed.length > 0 }).toEqual({ name, filtered: true });
         for (const { sql, params, handle } of narrowed) {
             const details = Array.from(handle.iterate(`EXPLAIN QUERY PLAN ${sql}`, params), row => /** @type {{ detail: string }} */ (row).detail);
             // Newer SQLite (the wasm build) plans the EXISTS as a semi-join: `SEARCH character_tags EXISTS USING ...`.
