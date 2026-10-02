@@ -4,14 +4,19 @@ import crypto from 'node:crypto';
  * A character card stored as its own values instead of one JSON blob (storage redesign, step 5).
  *
  * splitCard() turns a card (the parsed V1/V2/V3 object as the store holds it today) into the rows of the field
- * layout; assembleCard() turns those rows back into the same card. The two are exact inverses for any JSON object:
- * nothing a card carries is dropped, and the assembled card has the same canonical hash as the original (key order
- * may differ; canonicalCardHash() ignores it).
+ * layout; assembleCard() turns those rows back into the same card. The two are exact inverses for any JSON object
+ * except for the favourite flag: nothing else a card carries is dropped, and the assembled card has the same canonical
+ * hash as cardWithStoredFav() of the original (key order may differ; canonicalCardHash() ignores it).
+ *
+ * The favourite flag is one fact whose truth is the `characters.fav` column; a card's `data.extensions.fav` is a
+ * stale copy of it. So only whether the card has that key is stored, and assembly sets it from the column, which the
+ * caller passes as `columns.fav`.
  *
  * Where each value goes:
  * - `columns`: the values the narrow `characters` row holds (`data.name`, `data.creator`, `data.character_version`,
- *   `data.extensions.fav`, `data.extensions.world`, and the top-level `create_date`), each only when it has the type
- *   that column holds (`create_date`: a string or a number); otherwise it goes to `extra` so nothing is coerced.
+ *   `data.extensions.world`, and the top-level `create_date`), each only when it has the type that column holds
+ *   (`create_date`: a string or a number); otherwise it goes to `extra` so nothing is coerced. `fav` is never set by
+ *   splitCard(); assembleCard() reads it.
  * - `fields`: every other string-valued key of `data` (description, personality, scenario, first_mes, mes_example,
  *   creator_notes, system_prompt, post_history_instructions, and any unknown string field).
  * - `greetings`: `data.alternate_greetings` and `data.group_only_greetings`, one row per greeting, in order.
@@ -19,7 +24,7 @@ import crypto from 'node:crypto';
  *   not the user's tag assignments (`character_tags`).
  * - `extensions`: every key of `data.extensions` except fav and world, its value as JSON.
  * - `extra`: everything else, by path: non-string `data` keys (`data:<key>`), top-level keys other than `data`
- *   (`top:<key>`), and a top-level key whose value is exactly the V1 mirror of its `data` counterpart
+ *   (`top:<key>`), the presence of `data.extensions.fav` (`present:fav`), and a top-level key whose value is exactly the V1 mirror of its `data` counterpart
  *   (`mirror:<key>`, value null), so the mirror is one value here and written to both places on assembly.
  */
 
@@ -47,7 +52,7 @@ const GREETING_LISTS = Object.freeze(['alternate_greetings', 'group_only_greetin
  * @property {{ list: string, position: number, text: string }[]} greetings
  * @property {{ position: number, name: string }[]} tags
  * @property {{ key: string, value: string }[]} extensions JSON text per key.
- * @property {{ path: string, value: string | null }[]} extra JSON text per path; null for a mirror marker.
+ * @property {{ path: string, value: string | null }[]} extra JSON text per path; null for a marker.
  */
 
 /**
@@ -106,6 +111,23 @@ export function canonicalCardHash(card) {
 }
 
 /**
+ * The card assembleCard() gives back for `card` once split, when the stored favourite flag is `fav`: its
+ * `data.extensions.fav`, and a top-level `fav` that mirrored it, read `fav`.
+ * @param {unknown} card A parsed card; not modified.
+ * @param {boolean} fav
+ * @returns {unknown}
+ */
+export function cardWithStoredFav(card, fav) {
+    if (!isPlainObject(card) || !isPlainObject(card.data) || !isPlainObject(card.data.extensions) || !Object.hasOwn(card.data.extensions, 'fav')) return card;
+    const mirrored = Object.hasOwn(card, 'fav') && jsonEqual(card.fav, card.data.extensions.fav);
+    return {
+        ...card,
+        ...(mirrored ? { fav } : {}),
+        data: { ...card.data, extensions: { ...card.data.extensions, fav } },
+    };
+}
+
+/**
  * @param {unknown} card A parsed card.
  * @returns {CardParts}
  */
@@ -130,7 +152,7 @@ export function splitCard(card) {
             if (key === 'extensions' && isPlainObject(value)) {
                 parts.extra.push({ path: 'present:extensions', value: null });
                 for (const [extKey, extValue] of Object.entries(value)) {
-                    if (extKey === 'fav' && typeof extValue === 'boolean') parts.columns.fav = extValue;
+                    if (extKey === 'fav') parts.extra.push({ path: 'present:fav', value: null });
                     else if (extKey === 'world' && typeof extValue === 'string') parts.columns.world = extValue;
                     else parts.extensions.push({ key: extKey, value: JSON.stringify(extValue) ?? 'null' });
                 }
@@ -204,7 +226,10 @@ export function assembleCard(parts) {
     if (hasExtensions) {
         /** @type {Record<string, unknown>} */
         const extensions = {};
-        if (columns.fav !== undefined) extensions.fav = columns.fav;
+        if (parts.extra.some(row => row.path === 'present:fav')) {
+            if (typeof columns.fav !== 'boolean') throw new TypeError('assembleCard(): the card has a favourite flag, so columns.fav must be the stored boolean');
+            extensions.fav = columns.fav;
+        }
         if (columns.world !== undefined) extensions.world = columns.world;
         for (const { key, value } of parts.extensions) extensions[key] = JSON.parse(value);
         ensureData().extensions = extensions;

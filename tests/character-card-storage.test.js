@@ -1,15 +1,20 @@
 /* eslint jest/expect-expect: ["warn", { "assertFunctionNames": ["expect", "expectLossless"] }] */
 import { describe, test, expect } from '@jest/globals';
-import { splitCard, assembleCard, canonicalCardHash, canonicalJson } from '../src/character-card-storage.js';
+import { splitCard, assembleCard, canonicalCardHash, canonicalJson, cardWithStoredFav } from '../src/character-card-storage.js';
 
-function roundTrip(card) {
+/** Splits `card` and assembles it back with `fav` as the stored favourite flag. */
+function roundTrip(card, fav = false) {
     const parts = JSON.parse(JSON.stringify(splitCard(card)));
-    return assembleCard(parts);
+    return assembleCard({ ...parts, columns: { ...parts.columns, fav } });
 }
 
 function expectLossless(card) {
-    expect(canonicalCardHash(roundTrip(card))).toBe(canonicalCardHash(card));
+    for (const fav of [false, true]) {
+        expect(canonicalCardHash(roundTrip(card, fav))).toBe(canonicalCardHash(cardWithStoredFav(card, fav)));
+    }
 }
+
+const isPlainObject = (value) => typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const v2Card = {
     name: 'Alice',
@@ -55,7 +60,7 @@ describe('character card storage', () => {
         expect(parts.extra.filter(r => r.path.startsWith('mirror:')).map(r => r.path).sort()).toEqual(
             ['mirror:creatorcomment', 'mirror:description', 'mirror:fav', 'mirror:first_mes', 'mirror:mes_example', 'mirror:name', 'mirror:personality', 'mirror:scenario', 'mirror:tags', 'mirror:talkativeness'].sort());
         expect(parts.fields.find(f => f.field === 'description')?.value).toBe('A traveller.');
-        expect(parts.columns).toEqual({ name: 'Alice', creator: 'bob', character_version: '1.0', fav: false, world: 'Elsewhere', create_date: '2024-1-2 @03h04m05s678ms' });
+        expect(parts.columns).toEqual({ name: 'Alice', creator: 'bob', character_version: '1.0', world: 'Elsewhere', create_date: '2024-1-2 @03h04m05s678ms' });
         expect(parts.tags).toEqual([{ position: 0, name: 'fantasy' }, { position: 1, name: 'tavern' }]);
         expect(parts.extra.some(r => r.path === 'data:tags' || r.path === 'top:create_date')).toBe(false);
         expect(parts.greetings).toEqual([
@@ -90,6 +95,26 @@ describe('character card storage', () => {
         expect(roundTrip({ create_date: null })).toEqual({ create_date: null });
     });
 
+    test('the favourite flag is assembled from the stored one, and only on cards that had it', () => {
+        const stale = roundTrip(v2Card, true);
+        expect(stale.data.extensions.fav).toBe(true);
+        expect(stale.fav).toBe(true);
+        expect(splitCard(v2Card).extensions.some(r => r.key === 'fav')).toBe(false);
+        expect(splitCard(v2Card).extra.some(r => r.path === 'present:fav')).toBe(true);
+
+        const noFav = { data: { extensions: { world: 'w' } } };
+        expect(roundTrip(noFav, true)).toEqual(noFav);
+
+        const oddFav = { data: { extensions: { fav: 'yes' } } };
+        expect(roundTrip(oddFav, true)).toEqual({ data: { extensions: { fav: true } } });
+
+        const driftedTop = { fav: 'x', data: { extensions: { fav: false } } };
+        expect(roundTrip(driftedTop, true)).toEqual({ fav: 'x', data: { extensions: { fav: true } } });
+        expectLossless(driftedTop);
+
+        expect(() => assembleCard(splitCard(v2Card))).toThrow(TypeError);
+    });
+
     test('a V1 key that drifted from data keeps both values', () => {
         const drifted = { ...v2Card, description: 'old text' };
         expectLossless(drifted);
@@ -108,7 +133,7 @@ describe('character card storage', () => {
     });
 
     test('values of an unexpected type are carried, never coerced', () => {
-        expectLossless({ data: { name: 5, creator: null, character_version: ['1'], extensions: { fav: 'yes', world: 3 } } });
+        expectLossless({ data: { name: 5, creator: null, character_version: ['1'], extensions: { world: 3 } } });
         expectLossless({ data: { alternate_greetings: ['a', 2, null] } });
         expectLossless({ data: { group_only_greetings: ['g'] }, spec: 'chara_card_v3', spec_version: '3.0' });
     });
@@ -152,6 +177,7 @@ describe('character card storage', () => {
                 // Make some V1 keys true mirrors.
                 for (const k of ['name', 'description', 'tags']) if (rand() < 0.5 && k in data) card[k] = JSON.parse(JSON.stringify(data[k]));
             }
+            if (isPlainObject(card.data) && isPlainObject(card.data.extensions) && rand() < 0.5) card.data.extensions.fav = rand() < 0.5;
             const before = canonicalJson(card);
             expectLossless(card);
             expect(canonicalJson(card)).toBe(before);
