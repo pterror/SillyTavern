@@ -28,6 +28,8 @@ const CHAT_ID = 'sheld';
 /** Floating lists and the hold-Ctrl hotkey list: above every ordered layer while shown. */
 const LIST_SELECTOR = '.ui-menu, .select2-container--open > .select2-dropdown, .hotkeyOverlay';
 const ORDERED_SELECTOR = `#${CHAT_ID}, ${STACK_DRAWER_SELECTOR}, ${FLOATING_SELECTOR}`;
+/** An edit in progress: a character info field, or a chat message or its reasoning. */
+const EDITING_SELECTOR = '.field_editing, #curEditTextarea, .reasoning_edit_textarea';
 const HOLE_SOURCE = 'drawer-stack';
 /** Past this, the ordered layers are renumbered from 1, keeping the numbers small. */
 const MAX_ORDER = 1000;
@@ -81,14 +83,24 @@ function listLayers() {
     return findLayers().lists;
 }
 
+/** @param {HTMLElement} el @returns {boolean} Whether an edit is in progress in it. */
+function isEditing(el) {
+    return el.querySelector(EDITING_SELECTOR) !== null;
+}
+
+/** @type {WeakSet<HTMLElement>} Layers that held an edit at the last update. */
+const wasEditing = new WeakSet();
+
 /**
- * Bottom-to-top order of two ordered layers: by when brought forward; never brought forward, the chat is lowest;
- * then html order, as painting does.
+ * Bottom-to-top order of two ordered layers: a layer with an edit in progress above every other, so nothing covers
+ * what is being edited (another layer can still open, beside or behind it); then by when brought forward; never
+ * brought forward, the chat is lowest; then html order, as painting does.
  * @param {HTMLElement} a
  * @param {HTMLElement} b
  */
 function compareOrder(a, b) {
-    return drawerOrder(a) - drawerOrder(b)
+    return Number(isEditing(a)) - Number(isEditing(b))
+        || drawerOrder(a) - drawerOrder(b)
         || Number(b.id === CHAT_ID) - Number(a.id === CHAT_ID)
         || (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1);
 }
@@ -220,12 +232,25 @@ function raiseAppearedWindows(ordered) {
 }
 
 /**
+ * A layer whose edit just ended stays where it was, above the layers opened while it was being edited.
+ * @param {HTMLElement[]} ordered
+ */
+function keepEditedLayersInFront(ordered) {
+    for (const el of ordered) {
+        const editing = isEditing(el);
+        if (!editing && wasEditing.has(el)) raiseDrawer(el);
+        if (editing) wasEditing.add(el); else wasEditing.delete(el);
+    }
+}
+
+/**
  * Recomputes every cut from where the layers are now. Synchronous, so code reading a drawer's visibility right after
  * opening, closing or fronting one sees the new state.
  */
 export function updateDrawerStack() {
     const ordered = orderedLayers();
     raiseAppearedWindows(ordered);
+    keepEditedLayersInFront(ordered);
     let changed = false;
     if (!stackOn()) {
         for (const el of [...cut]) changed = clearLayer(el) || changed;

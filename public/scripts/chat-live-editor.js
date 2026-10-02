@@ -5,6 +5,7 @@
 import { showdown } from '../lib.js';
 import { evaluateSafeMacro } from './safe-macros.js';
 import { getFocusedField, loadLiveEditor, mountLiveEditor } from './live-editor/registry.js';
+import { drawerStackChanged } from './drawer-stack.js';
 
 /**
  * @typedef {object} ChatEditorDeps
@@ -81,6 +82,8 @@ export async function mountChatEditor(textarea, target) {
     takeDetachedEditorsAway();
     const holder = { editor: null, ended: false };
     editors.set(textarea, holder);
+    // Nothing may cover the chat while a message is being edited.
+    drawerStackChanged();
     try {
         const editor = await mountLiveEditor(textarea, chatEditorOptions(deps, target));
         if (holder.ended || !textarea.isConnected) {
@@ -107,6 +110,8 @@ export function unmountChatEditor(textarea) {
     holder.ended = true;
     holder.editor?.destroy();
     editors.delete(textarea);
+    // The edit box goes after this; the stack looks again on the next frame.
+    drawerStackChanged();
 }
 
 /** Editors whose text box left the page without its edit closing (e.g. the chat was redrawn) are taken away. */

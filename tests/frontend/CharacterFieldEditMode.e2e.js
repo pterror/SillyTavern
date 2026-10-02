@@ -273,6 +273,16 @@ async function expectToast(page, text) {
 }
 
 /**
+ * The field being edited blocked something: its ✓ ✕ flash, as for a tab click, and no toast says so.
+ * @param {import('@playwright/test').Page} page
+ * @param {ReturnType<typeof fieldLocators>} f
+ */
+async function expectBlockedByFlash(page, f) {
+    await expect(f.panel).toHaveClass(/\bfield_edit_attention\b/);
+    await expect(page.locator('#toast-container .toast-message', { hasText: FIELD_BLOCKED_TOAST })).toHaveCount(0);
+}
+
+/**
  * Pins the character info drawer open, so clicks in the chat leave it open, runs `body`, then unpins it.
  * @param {import('@playwright/test').Page} page
  * @param {() => Promise<void>} body
@@ -531,7 +541,7 @@ test.describe('character field edit mode', () => {
                                 const { selectCharacterByAvatar } = await import('/script.js');
                                 await selectCharacterByAvatar(other);
                             }, other);
-                            await expectToast(page, FIELD_BLOCKED_TOAST);
+                            await expectBlockedByFlash(page, f);
                             await expect(page.locator('#avatar_url_pole')).toHaveValue(avatar);
                             await expectEditMode(page, field);
                             await expect(f.textarea).toHaveValue('in progress');
@@ -555,7 +565,7 @@ test.describe('character field edit mode', () => {
                                 return openGroupById(groupId);
                             }, groupId);
                             expect(opened).toBe(false);
-                            await expectToast(page, FIELD_BLOCKED_TOAST);
+                            await expectBlockedByFlash(page, f);
                             await expect(page.locator('#avatar_url_pole')).toHaveValue(avatar);
                             expect(await page.evaluate(() => {
                                 // @ts-ignore
@@ -583,7 +593,7 @@ test.describe('character field edit mode', () => {
                         if (new URL(request.url()).pathname === '/api/characters/create') creates.push(request.url());
                     });
                     await page.locator('#create_button_label').click();
-                    await expectToast(page, FIELD_BLOCKED_TOAST);
+                    await expectBlockedByFlash(page, f);
                     await expectEditMode(page, field);
                     await expect(f.textarea).toHaveValue('in progress');
                     expect(creates).toEqual([]);
@@ -598,7 +608,7 @@ test.describe('character field edit mode', () => {
                             const f = fieldLocators(page, field.id);
                             await fillField(page, f, 'in progress');
                             await page.locator('#chat .mes[mesid="0"] .mes_edit').click();
-                            await expectToast(page, FIELD_BLOCKED_TOAST);
+                            await expectBlockedByFlash(page, f);
                             await expect(page.locator('#curEditTextarea')).toHaveCount(0);
                             await expectEditMode(page, field);
                             await expect(f.textarea).toHaveValue('in progress');
@@ -615,7 +625,7 @@ test.describe('character field edit mode', () => {
                             await fillField(page, f, 'in progress');
                             // Its button is on the greeting tab, which can't be opened mid-edit; other code can still press it.
                             await page.locator('.open_alternate_greetings').first().evaluate(el => (/** @type {HTMLElement} */ (el)).click());
-                            await expectToast(page, FIELD_BLOCKED_TOAST);
+                            await expectBlockedByFlash(page, f);
                             await expect(page.locator('.popup .alternate_greetings_list')).toHaveCount(0);
                             await expectEditMode(page, field);
                             await expect(f.textarea).toHaveValue('in progress');
@@ -652,7 +662,7 @@ test.describe('character field edit mode', () => {
                         const f = fieldLocators(page, field.id);
                         await fillField(page, f, 'in progress');
                         await page.locator(`#chat .mes[mesid="${mesId}"] .mes_reasoning_edit`).click();
-                        await expectToast(page, FIELD_BLOCKED_TOAST);
+                        await expectBlockedByFlash(page, f);
                         await expect(page.locator('.reasoning_edit_textarea')).toHaveCount(0);
                         await expectEditMode(page, field);
                         await expect(f.textarea).toHaveValue('in progress');
