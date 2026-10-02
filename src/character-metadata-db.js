@@ -182,6 +182,8 @@ export const allowExpensiveDuplicateFallback = !!getConfigValue('performance.all
  * @property {boolean} [randomRanksFilled] Set once fillRandomRanksIfNeeded() has finished, which stays.
  * @property {boolean} [nameOrderFilled] Set once fillNameOrderIfNeeded() has finished, which stays.
  * @property {boolean} [tagQueryColumnsReady] Set once tagQueryColumnsReady() is true, which stays true.
+ * @property {number} [activityQueued] Writes queued into activity_pending since the queue was last written out.
+ * @property {boolean} [activityFoldScheduled] Set while a background write-out of the whole queue is scheduled.
  */
 
 /**
@@ -665,6 +667,20 @@ const SCHEMA_SQL = `
         id   TEXT NOT NULL,
         PRIMARY KEY (kind, id)
     );
+
+    -- Message writes' changes to a row's chat_size and date_last_chat not yet written to the row: one row per
+    -- character or group, merged on every write (size_delta added up, added_at the newest created_at inserted, 0 for
+    -- none). Readers of those two values add it on top of the row; a read sorted or filtered by them first writes it
+    -- into the rows (foldActivitySync()). seq orders queued writes for query tokens (nextActivitySeq()).
+    CREATE TABLE IF NOT EXISTS activity_pending (
+        kind       TEXT NOT NULL CHECK (kind IN ('character', 'group')),
+        id         TEXT NOT NULL,
+        size_delta INTEGER NOT NULL,
+        added_at   INTEGER NOT NULL,
+        seq        INTEGER NOT NULL,
+        PRIMARY KEY (kind, id)
+    ) WITHOUT ROWID;
+    CREATE INDEX IF NOT EXISTS idx_activity_pending_seq ON activity_pending(seq);
 
     -- Characters the search index couldn't re-index, whose previous doc it kept. Retried from next_attempt_at on;
     -- delay_ms is the wait that led there, doubled on each failed attempt. last_error is the last error logged for
@@ -1859,6 +1875,7 @@ function writeRowSync(db, row, tagIds) {
  */
 function deleteRowSync(db, id) {
     let deleted = db.run('DELETE FROM characters WHERE id = @id', { id }).changes;
+    db.run('DELETE FROM activity_pending WHERE kind = \'character\' AND id = @id', { id });
     deleted += db.run('DELETE FROM character_tags WHERE character_id = @id', { id }).changes;
     deleted += db.run('DELETE FROM tag_names_held WHERE character_id = @id', { id }).changes;
     // Cascades: a local_import_mtimes row recorded as duplicate_of this character must not outlive it.
@@ -2107,7 +2124,9 @@ export async function getGroupChatStatsByIds(directories, ids) {
     for (let i = 0; i < ids.length; i += FAV_LOOKUP_BATCH_SIZE) {
         const batch = ids.slice(i, i + FAV_LOOKUP_BATCH_SIZE);
         const placeholders = batch.map(() => '?').join(',');
-        for (const row of /** @type {Generator<{ id: string, chat_size: number, date_last_chat: number }>} */ (entry.db.iterate(`SELECT id, chat_size, date_last_chat FROM groups WHERE id IN (${placeholders})`, batch))) {
+        const rows = Array.from(/** @type {Iterable<{ id: string, chat_size: number, date_last_chat: number }>} */ (entry.db.iterate(`SELECT id, chat_size, date_last_chat FROM groups WHERE id IN (${placeholders})`, batch)));
+        overlayActivitySync(entry.db, 'group', rows);
+        for (const row of rows) {
             result.set(row.id, { chatSize: Number(row.chat_size), dateLastChat: Number(row.date_last_chat) });
         }
     }
@@ -2218,13 +2237,18 @@ export async function getShallowByIds(directories, ids) {
     for (let i = 0; i < ids.length; i += FAV_LOOKUP_BATCH_SIZE) {
         const batch = ids.slice(i, i + FAV_LOOKUP_BATCH_SIZE);
         const placeholders = batch.map(() => '?').join(',');
+        /** @type {{ id: string, chat_size: number, date_last_chat: number, shallow: any }[]} */
+        const parsed = [];
         for (const row of /** @type {Iterable<{ id: string, shallow_json: string }>} */ (entry.db.iterate(`SELECT id, shallow_json FROM characters WHERE id IN (${placeholders})`, batch))) {
             try {
-                result[row.id] = parseShallowResolvingTags(row.shallow_json, deletions);
+                const shallow = parseShallowResolvingTags(row.shallow_json, deletions);
+                parsed.push({ id: row.id, chat_size: Number(shallow?.chat_size ?? 0), date_last_chat: Number(shallow?.date_last_chat ?? 0), shallow });
             } catch {
                 // Skip unparseable rows - same tolerance every other shallow_json consumer has.
             }
         }
+        overlayActivitySync(entry.db, 'character', parsed, r => r.shallow);
+        for (const row of parsed) result[row.id] = row.shallow;
     }
     return result;
 }
@@ -2270,8 +2294,10 @@ export async function getCharacterCardJson(directories, avatar) {
 export async function getCharacterChatStats(directories, avatar) {
     const entry = await getEntry(directories);
     if (!entry) return null;
-    const row = (/** @type {{ chat_size: number, date_last_chat: number } | undefined} */ (entry.db.get('SELECT chat_size, date_last_chat FROM characters WHERE id = @id', { id: avatar })));
-    return row ? { chatSize: row.chat_size, dateLastChat: row.date_last_chat } : null;
+    const row = (/** @type {{ id: string, chat_size: number, date_last_chat: number } | undefined} */ (entry.db.get('SELECT id, chat_size, date_last_chat FROM characters WHERE id = @id', { id: avatar })));
+    if (!row) return null;
+    overlayActivitySync(entry.db, 'character', [row]);
+    return { chatSize: Number(row.chat_size), dateLastChat: Number(row.date_last_chat) };
 }
 
 /**
@@ -2293,9 +2319,9 @@ export async function getCharacterIndexRowsByIds(directories, ids) {
     for (let i = 0; i < ids.length; i += FAV_LOOKUP_BATCH_SIZE) {
         const batch = ids.slice(i, i + FAV_LOOKUP_BATCH_SIZE);
         const placeholders = batch.map(() => '?').join(',');
-        for (const row of /** @type {Generator<CharacterIndexRow>} */ (entry.db.iterate(`SELECT id, name, card_json, chat_size, date_last_chat FROM characters WHERE id IN (${placeholders})`, batch))) {
-            result.set(row.id, row);
-        }
+        const rows = Array.from(/** @type {Iterable<CharacterIndexRow>} */ (entry.db.iterate(`SELECT id, name, card_json, chat_size, date_last_chat FROM characters WHERE id IN (${placeholders})`, batch)));
+        overlayActivitySync(entry.db, 'character', rows);
+        for (const row of rows) result.set(row.id, row);
     }
     return result;
 }
@@ -3208,7 +3234,15 @@ export function disposeMetadataStores() {
 export async function getCharacterMetadataRow(directories, avatar) {
     const entry = await getEntry(directories);
     if (!entry) return undefined;
-    return (/** @type {CharacterRow | undefined} */ (entry.db.get('SELECT * FROM characters WHERE id = @id', { id: avatar })));
+    const row = /** @type {CharacterRow | undefined} */ (entry.db.get('SELECT * FROM characters WHERE id = @id', { id: avatar }));
+    if (row) {
+        const asEntity = { ...row, type: 'character' };
+        overlayEntityRowsSync(entry.db, [asEntity]);
+        row.chat_size = asEntity.chat_size;
+        row.date_last_chat = asEntity.date_last_chat;
+        row.shallow_json = asEntity.shallow_json;
+    }
+    return row;
 }
 
 /**
@@ -4796,23 +4830,238 @@ function sameFileContents(a, b) {
     return a.equals(b);
 }
 
+/** The highest activity_pending seq handed out by this process; see {@link nextActivitySeq}. */
+let lastActivitySeq = 0;
+
 /**
- * An owner's `date_last_chat` after one committed write: its newest message's `created_at`, read after a row delete,
- * otherwise the stored value or the newest inserted `created_at`, whichever is later.
- * @param {number} stored
- * @param {object} change
- * @param {number | null} change.addedCreatedAt
- * @param {(() => number) | null} change.readLastCreatedAt
- * @returns {number}
+ * A seq for a queued activity write, above every one handed out before, in this process and (being at least the
+ * clock) before it. Query tokens carry the queue's highest seq, so the queue's state is part of every token.
  */
-function nextDateLastChat(stored, { addedCreatedAt, readLastCreatedAt }) {
-    if (readLastCreatedAt) return readLastCreatedAt();
-    return addedCreatedAt === null ? stored : Math.max(stored, addedCreatedAt);
+function nextActivitySeq() {
+    lastActivitySeq = Math.max(Date.now(), lastActivitySeq + 1);
+    return lastActivitySeq;
+}
+
+/** @typedef {{ sizeDelta: number, addedAt: number }} PendingActivity */
+
+/**
+ * The queued activity of `ids`, keyed by id; an id with nothing queued is absent.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {'character' | 'group'} kind
+ * @param {string[]} ids
+ * @returns {Map<string, PendingActivity>}
+ */
+function readActivityPendingSync(db, kind, ids) {
+    /** @type {Map<string, PendingActivity>} */
+    const result = new Map();
+    if (ids.length === 0) return result;
+    const any = /** @type {{ x: number } | undefined} */ (db.get('SELECT 1 AS x FROM activity_pending LIMIT 1'));
+    if (!any) return result;
+    for (let i = 0; i < ids.length; i += FAV_LOOKUP_BATCH_SIZE) {
+        const batch = ids.slice(i, i + FAV_LOOKUP_BATCH_SIZE);
+        for (const row of /** @type {Iterable<{ id: string, size_delta: number, added_at: number }>} */ (db.iterate(
+            'SELECT id, size_delta, added_at FROM activity_pending WHERE kind = @kind AND id IN (SELECT value FROM json_each(@ids))',
+            { kind, ids: JSON.stringify(batch) }))) {
+            result.set(String(row.id), { sizeDelta: Number(row.size_delta), addedAt: Number(row.added_at) });
+        }
+    }
+    return result;
 }
 
 /**
- * Applies one committed write's change to a character's chat stats: `chat_size` by the write's size change, and
- * `date_last_chat` to its newest message's `created_at`. Writes nothing when neither changes.
+ * A row's chat stats with its queued activity on top: what the row would hold had every queued write been written.
+ * @param {{ chatSize: number, dateLastChat: number }} stored
+ * @param {PendingActivity | undefined} pending
+ * @returns {{ chatSize: number, dateLastChat: number }}
+ */
+function withPendingActivity(stored, pending) {
+    if (!pending) return stored;
+    return { chatSize: stored.chatSize + pending.sizeDelta, dateLastChat: Math.max(stored.dateLastChat, pending.addedAt) };
+}
+
+/**
+ * Puts each row's queued activity on top of its chat_size and date_last_chat, and its shallow copy's, in place.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {'character' | 'group'} kind
+ * @param {Array<{ id: string, chat_size?: number, date_last_chat?: number }>} rows Rows read from the kind's table.
+ * @param {(row: any) => any} [shallowOf] The parsed shallow copy of a row, when it has one to correct too.
+ */
+function overlayActivitySync(db, kind, rows, shallowOf) {
+    const pending = readActivityPendingSync(db, kind, rows.map(r => String(r.id)));
+    if (pending.size === 0) return;
+    for (const row of rows) {
+        const queued = pending.get(String(row.id));
+        if (!queued) continue;
+        const stats = withPendingActivity({ chatSize: Number(row.chat_size ?? 0), dateLastChat: Number(row.date_last_chat ?? 0) }, queued);
+        if ('chat_size' in row) row.chat_size = stats.chatSize;
+        if ('date_last_chat' in row) row.date_last_chat = stats.dateLastChat;
+        const shallow = shallowOf ? shallowOf(row) : null;
+        if (shallow && typeof shallow === 'object') {
+            shallow.chat_size = stats.chatSize;
+            shallow.date_last_chat = stats.dateLastChat;
+        }
+    }
+}
+
+/**
+ * {@link overlayActivitySync} for parsed character shallow copies, keyed by their `avatar`.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {any[] | undefined} shallowRows
+ */
+function overlayShallowRowsSync(db, shallowRows) {
+    if (!shallowRows || shallowRows.length === 0) return;
+    const wrapped = shallowRows.filter(r => r && typeof r.avatar === 'string')
+        .map(r => ({ id: r.avatar, chat_size: Number(r.chat_size ?? 0), date_last_chat: Number(r.date_last_chat ?? 0), shallow: r }));
+    overlayActivitySync(db, 'character', wrapped, r => r.shallow);
+}
+
+/**
+ * Queued activity on top of queryCharacters()' wire rows (parsed shallow copies) or hash rows, in place.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {any[] | undefined} rows
+ * @param {Array<{ id: string, chat_size: number, date_last_chat: number }> | undefined} hashRows
+ */
+function overlayQueryRowsSync(db, rows, hashRows) {
+    overlayShallowRowsSync(db, rows);
+    if (hashRows && hashRows.length > 0) overlayActivitySync(db, 'character', hashRows);
+}
+
+/**
+ * {@link overlayActivitySync} for raw entity rows (characters and groups mixed, `type` per row), before they are mapped
+ * to wire or hash rows: the columns and, for a character, its stored shallow copy.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {Array<{ id: string, type: string, chat_size?: number, date_last_chat?: number, shallow_json?: string | null }>} rows
+ */
+function overlayEntityRowsSync(db, rows) {
+    for (const kind of /** @type {const} */ (['character', 'group'])) {
+        const ofKind = rows.filter(r => r.type === kind);
+        if (ofKind.length === 0) continue;
+        const pending = readActivityPendingSync(db, kind, ofKind.map(r => String(r.id)));
+        if (pending.size === 0) continue;
+        for (const row of ofKind) {
+            const queued = pending.get(String(row.id));
+            if (!queued) continue;
+            const stats = withPendingActivity({ chatSize: Number(row.chat_size ?? 0), dateLastChat: Number(row.date_last_chat ?? 0) }, queued);
+            row.chat_size = stats.chatSize;
+            row.date_last_chat = stats.dateLastChat;
+            if (typeof row.shallow_json === 'string') {
+                try {
+                    const shallow = JSON.parse(row.shallow_json);
+                    shallow.chat_size = stats.chatSize;
+                    shallow.date_last_chat = stats.dateLastChat;
+                    row.shallow_json = JSON.stringify(shallow);
+                } catch {
+                    // An unreadable copy is left to its reader, which skips it.
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Writes queued activity into its rows (characters' chat stats and shallow copy, groups' chat stats), then drops it.
+ * With `ids`, only those entities' activity; without, every queued row, for a read whose order or filter depends on
+ * the values. Runs synchronously in transactions of at most FOLD_BATCH_ROWS rows.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {{ kind: 'character' | 'group', ids: string[] }} [only]
+ * @returns {number} How many rows' queued activity was written.
+ */
+function foldActivitySync(db, only) {
+    let folded = 0;
+    for (;;) {
+        /** @type {{ kind: 'character' | 'group', id: string, size_delta: number, added_at: number }[]} */
+        const batch = only
+            ? (only.ids.length === 0 ? [] : /** @type {any[]} */ (db.readBounded(
+                'SELECT kind, id, size_delta, added_at FROM activity_pending WHERE kind = @kind AND id IN (SELECT value FROM json_each(@ids)) LIMIT @limit',
+                { kind: only.kind, ids: JSON.stringify(only.ids.slice(0, FOLD_BATCH_ROWS)), limit: FOLD_BATCH_ROWS }, FOLD_BATCH_ROWS)))
+            : /** @type {any[]} */ (db.readBounded('SELECT kind, id, size_delta, added_at FROM activity_pending ORDER BY seq LIMIT @limit', { limit: FOLD_BATCH_ROWS }, FOLD_BATCH_ROWS));
+        if (batch.length === 0) return folded;
+        db.transaction(() => {
+            for (const row of batch) {
+                const pending = { sizeDelta: Number(row.size_delta), addedAt: Number(row.added_at) };
+                if (row.kind === 'character') {
+                    const stored = /** @type {{ chat_size: number, date_last_chat: number } | undefined} */ (db.get(
+                        'SELECT chat_size, date_last_chat FROM characters WHERE id = @id', { id: row.id }));
+                    if (stored) writeCharacterChatStatsSync(db, row.id, withPendingActivity({ chatSize: Number(stored.chat_size), dateLastChat: Number(stored.date_last_chat) }, pending));
+                } else {
+                    const stored = /** @type {{ chat_size: number, date_last_chat: number } | undefined} */ (db.get(
+                        'SELECT chat_size, date_last_chat FROM groups WHERE id = @id', { id: row.id }));
+                    if (stored) writeGroupChatStatsSync(db, row.id, withPendingActivity({ chatSize: Number(stored.chat_size), dateLastChat: Number(stored.date_last_chat) }, pending));
+                }
+                db.run('DELETE FROM activity_pending WHERE kind = @kind AND id = @id', { kind: row.kind, id: row.id });
+            }
+        });
+        folded += batch.length;
+        if (only && only.ids.length <= FOLD_BATCH_ROWS) return folded;
+        if (only) only = { kind: only.kind, ids: only.ids.slice(FOLD_BATCH_ROWS) };
+    }
+}
+
+/** Queued rows written per transaction by {@link foldActivitySync}. */
+const FOLD_BATCH_ROWS = 500;
+
+/** Past this many queued rows, the whole queue is written out in the background ({@link queueActivitySync}). */
+const ACTIVITY_QUEUE_LIMIT = 10000;
+
+/**
+ * Records one committed message write's change to an entity's chat stats. A write that inserted or edited only adds
+ * to the entity's queued activity (no write to its row); a write that deleted a row writes the entity's row now,
+ * queued activity included, since its date_last_chat has to be read back from the tree.
+ * @param {MetadataDbEntry} entry
+ * @param {'character' | 'group'} kind
+ * @param {string} id
+ * @param {{ sizeChange: number, addedCreatedAt: number | null, readLastCreatedAt: (() => number) | null }} change
+ */
+function queueActivitySync(entry, kind, id, { sizeChange, addedCreatedAt, readLastCreatedAt }) {
+    const db = entry.db;
+    const table = kind === 'character' ? 'characters' : 'groups';
+    const stored = /** @type {{ chat_size: number, date_last_chat: number } | undefined} */ (db.get(
+        `SELECT chat_size, date_last_chat FROM ${table} WHERE id = @id`, { id }));
+    if (!stored) {
+        console.warn(color.yellow(`[character-metadata] Chat stats change for ${kind === 'group' ? `group ${id}` : id} (${sizeChange} bytes) not applied: it has no ${kind} row.`));
+        return;
+    }
+    if (readLastCreatedAt) {
+        const pending = readActivityPendingSync(db, kind, [id]).get(id);
+        const chatSize = Number(stored.chat_size) + (pending?.sizeDelta ?? 0) + sizeChange;
+        const dateLastChat = readLastCreatedAt();
+        db.transaction(() => {
+            if (kind === 'character') writeCharacterChatStatsSync(db, id, { chatSize, dateLastChat });
+            else writeGroupChatStatsSync(db, id, { chatSize, dateLastChat });
+            db.run('DELETE FROM activity_pending WHERE kind = @kind AND id = @id', { kind, id });
+        });
+        return;
+    }
+    if (sizeChange === 0) {
+        const pending = readActivityPendingSync(db, kind, [id]).get(id);
+        const dateBefore = Math.max(Number(stored.date_last_chat), pending?.addedAt ?? 0);
+        if (addedCreatedAt === null || addedCreatedAt <= dateBefore) return;
+    }
+    db.run(`INSERT INTO activity_pending (kind, id, size_delta, added_at, seq) VALUES (@kind, @id, @sizeChange, @addedAt, @seq)
+        ON CONFLICT (kind, id) DO UPDATE SET size_delta = size_delta + excluded.size_delta,
+            added_at = MAX(added_at, excluded.added_at), seq = excluded.seq`,
+    { kind, id, sizeChange, addedAt: addedCreatedAt ?? 0, seq: nextActivitySeq() });
+    if (kind === 'group') characterChangeEmitter.emit(GROUP_CHANGES_EVENT);
+    else characterChangeEmitter.emit('change');
+    entry.activityQueued = (entry.activityQueued ?? 0) + 1;
+    if (entry.activityQueued > ACTIVITY_QUEUE_LIMIT && entry.activityFoldScheduled !== true) {
+        entry.activityFoldScheduled = true;
+        setImmediate(() => {
+            entry.activityFoldScheduled = false;
+            entry.activityQueued = 0;
+            try {
+                foldActivitySync(db);
+            } catch (err) {
+                console.error(color.red('[character-metadata] Could not write the queued chat stats:'), err);
+            }
+        });
+    }
+}
+
+/**
+ * Records one committed message write's change to a character's chat stats: `chat_size` by the write's size change,
+ * and `date_last_chat` to its newest message's `created_at`. Queued unless the write deleted a row
+ * ({@link queueActivitySync}).
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} avatar
  * @param {object} change
@@ -4824,34 +5073,13 @@ function nextDateLastChat(stored, { addedCreatedAt, readLastCreatedAt }) {
 export async function applyCharacterChatStats(directories, avatar, { sizeChange, addedCreatedAt, readLastCreatedAt }) {
     const entry = await getEntry(directories);
     if (!entry) return;
-
     flushBufferedRow(entry, avatar);
-    entry.db.transaction(() => {
-        const row = (/** @type {{ chat_size: number, date_last_chat: number, shallow_json: string } | undefined} */ (entry.db.get(
-            'SELECT chat_size, date_last_chat, shallow_json FROM characters WHERE id = @id', { id: avatar })));
-        if (!row) {
-            console.warn(color.yellow(`[character-metadata] Chat stats change for ${avatar} (${sizeChange} bytes) not applied: it has no character row.`));
-            return;
-        }
-        const dateLastChat = nextDateLastChat(Number(row.date_last_chat), { addedCreatedAt, readLastCreatedAt });
-        /** @type {string[]} */
-        const fields = [];
-        if (sizeChange !== 0) fields.push('chat_size');
-        if (dateLastChat !== Number(row.date_last_chat)) fields.push('date_last_chat');
-        if (fields.length === 0) return;
-
-        const chatSize = Number(row.chat_size) + sizeChange;
-        const shallow = JSON.parse(row.shallow_json);
-        shallow.chat_size = chatSize;
-        shallow.date_last_chat = dateLastChat;
-        writeShallowJson(entry.db, avatar, shallow, fields, { chat_size: chatSize, date_last_chat: dateLastChat });
-    });
+    queueActivitySync(entry, 'character', avatar, { sizeChange, addedCreatedAt, readLastCreatedAt });
 }
 
 /**
- * Applies one committed write's change to a group's chat stats, the same way {@link applyCharacterChatStats} does for a
- * character: `chat_size` by the write's size change, and `date_last_chat` to its newest message's `created_at`. A
- * change adds a groups version log row in the same transaction. Writes nothing when neither changes.
+ * Records one committed write's change to a group's chat stats, the same way {@link applyCharacterChatStats} does for
+ * a character. A group's row change adds a groups version log row when it is written.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} groupId
  * @param {object} change
@@ -4863,20 +5091,49 @@ export async function applyCharacterChatStats(directories, avatar, { sizeChange,
 export async function applyGroupChatStats(directories, groupId, { sizeChange, addedCreatedAt, readLastCreatedAt }) {
     const entry = await getEntry(directories);
     if (!entry) return;
+    queueActivitySync(entry, 'group', groupId, { sizeChange, addedCreatedAt, readLastCreatedAt });
+}
 
-    entry.db.transaction(() => {
-        const row = (/** @type {{ chat_size: number, date_last_chat: number } | undefined} */ (entry.db.get(
-            'SELECT chat_size, date_last_chat FROM groups WHERE id = @id', { id: groupId })));
-        if (!row) {
-            console.warn(color.yellow(`[character-metadata] Chat stats change for group ${groupId} (${sizeChange} bytes) not applied: it has no group row.`));
-            return;
-        }
-        const dateLastChat = nextDateLastChat(Number(row.date_last_chat), { addedCreatedAt, readLastCreatedAt });
-        if (sizeChange === 0 && dateLastChat === Number(row.date_last_chat)) return;
+/**
+ * The highest seq in the activity queue, 0 when it's empty: a query token component, read before the rows.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<number | null>} null when the store is unavailable.
+ */
+export async function getActivitySeq(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    const row = /** @type {{ seq: number | null } | undefined} */ (entry.db.get('SELECT MAX(seq) AS seq FROM activity_pending'));
+    return Number(row?.seq ?? 0);
+}
 
-        writeRowIfChanged(entry.db, 'groups', { id: groupId }, { chat_size: Number(row.chat_size) + sizeChange, date_last_chat: dateLastChat });
-        insertGroupChange(entry.db, groupId);
-    });
+/**
+ * Writes every queued chat stats change into its row, for a read sorted or filtered by chat_size or date_last_chat.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<number>} How many rows' queued activity was written.
+ */
+export async function foldAllActivity(directories) {
+    const entry = await getEntry(directories);
+    if (!entry || isReadOnlyMode()) return 0;
+    const folded = foldActivitySync(entry.db);
+    if (folded > 0) entry.activityQueued = 0;
+    return folded;
+}
+
+/** Sort fields and range fields whose values come from message writes and can be queued. */
+const ACTIVITY_FIELDS = new Set(['date_last_chat', 'chat_size']);
+
+/**
+ * Whether a read sorted by `sortField` or filtered by `ranges` depends on queued activity, so the queue is written
+ * into the rows before it.
+ * @param {string | undefined} sortField
+ * @param {unknown} ranges
+ * @returns {boolean}
+ */
+export function readDependsOnActivity(sortField, ranges) {
+    if (sortField !== undefined && ACTIVITY_FIELDS.has(sortField)) return true;
+    if (Array.isArray(ranges)) return ranges.some(r => r && ACTIVITY_FIELDS.has(String(/** @type {any} */ (r).field)));
+    if (ranges && typeof ranges === 'object') return Object.keys(ranges).some(k => ACTIVITY_FIELDS.has(k));
+    return false;
 }
 
 /** @typedef {{ kind: 'character' | 'group', id: string }} QueuedChatStats */
@@ -5209,6 +5466,8 @@ function reconcileQueuedChatStatsSync(db, view, { kind, id }) {
     db.transaction(() => {
         result.changed = kind === 'character' ? writeCharacterChatStatsSync(db, id, stats) : writeGroupChatStatsSync(db, id, stats);
         db.run('DELETE FROM chat_stats_pending WHERE kind = @kind AND id = @id', { kind, id });
+        // Counted from the messages, so it already includes every queued write.
+        db.run('DELETE FROM activity_pending WHERE kind = @kind AND id = @id', { kind, id });
     });
     return result.changed ? 'changed' : 'unchanged';
 }
@@ -5266,6 +5525,7 @@ export async function deleteGroupRow(directories, id, { fileDeleted = false } = 
     if (!entry) return;
     entry.db.transaction(() => {
         const rowDeleted = entry.db.run('DELETE FROM groups WHERE id = @id', { id }).changes > 0;
+        entry.db.run('DELETE FROM activity_pending WHERE kind = \'group\' AND id = @id', { id });
         const tagsDeleted = entry.db.run('DELETE FROM group_tags WHERE group_id = @id', { id }).changes > 0;
         if (rowDeleted || tagsDeleted || fileDeleted) insertGroupChange(entry.db, id, fileDeleted ? sanitize(`${id}.json`) : null);
     });
@@ -12016,6 +12276,7 @@ export async function queryCharacters(directories, params = {}) {
         wantHashes = false,
     } = params;
 
+    if (readDependsOnActivity(sortField, ranges) && !isReadOnlyMode()) foldActivitySync(entry.db);
     const seqRow = (/** @type {{ seq: number } | undefined} */ (entry.db.get('SELECT COALESCE(MAX(seq), 0) as seq FROM changes')));
     const seq = Number(seqRow?.seq ?? 0);
 
@@ -12154,6 +12415,7 @@ export async function queryCharacters(directories, params = {}) {
                 const byId = new Map(Array.from(/** @type {Iterable<{ id: string, shallow_json: string }>} */ (entry.db.iterate('SELECT id, shallow_json FROM characters WHERE id IN (SELECT value FROM json_each(?))', [pageJson]))).map(r => [r.id, r.shallow_json]));
                 rows = pageIds.filter(id => byId.has(id)).map(id => parseShallowResolvingTags(/** @type {string} */ (byId.get(id)), deletions));
             }
+            overlayQueryRowsSync(entry.db, rows, hashRows);
             return { rows, hashRows, total, approxTotal, seq, ...(cursor !== undefined ? { cursor } : {}), ...(more ? { more: true } : {}) };
         }
         if (wantHashes) {
@@ -12165,6 +12427,7 @@ export async function queryCharacters(directories, params = {}) {
         }
     }
 
+    overlayQueryRowsSync(entry.db, rows, hashRows);
     return { rows, hashRows, total, approxTotal, seq };
 }
 
@@ -12521,9 +12784,11 @@ export async function getEntityRowsByIds(directories, entities, { wantRows = tru
     let rows, hashRows;
     if (wantHashes) {
         const { toHashRow, resolveFileFallbackHashes } = makeEntityHashRowMapper(entry, directories, deletions);
+        overlayEntityRowsSync(entry.db, rawRows);
         hashRows = rawRows.map(toHashRow);
         resolveFileFallbackHashes(hashRows);
     } else if (wantRows) {
+        overlayEntityRowsSync(entry.db, rawRows);
         rows = rawRows.map(r => toEntityWireRow(r, deletions));
     }
     return { rows, hashRows, seq, groupsVersion };
@@ -12568,6 +12833,7 @@ export async function queryEntities(directories, params = {}) {
         groupsOnly = false,
     } = params;
 
+    if (readDependsOnActivity(sortField, ranges) && !isReadOnlyMode()) foldActivitySync(entry.db);
     const seqRow = (/** @type {{ seq: number } | undefined} */ (entry.db.get('SELECT COALESCE(MAX(seq), 0) as seq FROM changes')));
     const seq = Number(seqRow?.seq ?? 0);
     const groupsVersion = readGroupsVersionSync(entry.db);
@@ -12639,9 +12905,11 @@ export async function queryEntities(directories, params = {}) {
             });
             const rawRows = readEntityRowsInOrder(entry.db, page.entities);
             if (wantHashes) {
+                overlayEntityRowsSync(entry.db, rawRows);
                 hashRows = rawRows.map(toHashRow);
                 resolveFileFallbackHashes(hashRows);
             } else {
+                overlayEntityRowsSync(entry.db, rawRows);
                 rows = rawRows.map(r => toEntityWireRow(r, deletions));
             }
             nextCursor = page.cursor;
@@ -12693,9 +12961,11 @@ export async function queryEntities(directories, params = {}) {
                 }
                 const rawRows = pageIds.map(id => rowById.get(id)).filter(r => r !== undefined);
                 if (wantHashes) {
+                    overlayEntityRowsSync(entry.db, rawRows);
                     hashRows = rawRows.map(toHashRow);
                     resolveFileFallbackHashes(hashRows);
                 } else {
+                    overlayEntityRowsSync(entry.db, rawRows);
                     rows = rawRows.map(r => toEntityWireRow(r, deletions));
                 }
             }
@@ -12764,9 +13034,11 @@ export async function queryEntities(directories, params = {}) {
             }
 
             if (wantHashes) {
+                overlayEntityRowsSync(entry.db, rawRows);
                 hashRows = rawRows.map(toHashRow);
                 resolveFileFallbackHashes(hashRows);
             } else {
+                overlayEntityRowsSync(entry.db, rawRows);
                 rows = rawRows.map(r => toEntityWireRow(r, deletions));
             }
         }
@@ -13214,13 +13486,16 @@ export async function getCurrentTagNameChangeSeq(directories) {
 export async function* streamCharacterCardJsonBatches(directories) {
     const entry = await getEntry(directories);
     if (!entry) return;
-    yield* /** @type {AsyncGenerator<CharacterIndexRow[], void, undefined>} */ (streamRows(entry.db, {
+    for await (const rows of /** @type {AsyncGenerator<CharacterIndexRow[], void, undefined>} */ (streamRows(entry.db, {
         firstPageSql: 'SELECT id, name, card_json, chat_size, date_last_chat FROM characters ORDER BY id LIMIT @limit',
         firstPageParams: {},
         nextPageSql: 'SELECT id, name, card_json, chat_size, date_last_chat FROM characters WHERE id > @after ORDER BY id LIMIT @limit',
         nextPageParams: {},
         keyColumn: 'id',
-    }));
+    }))) {
+        overlayActivitySync(entry.db, 'character', rows);
+        yield rows;
+    }
 }
 
 /** Ids of the change log's delete rows with afterSeq < seq <= uptoSeq, in seq order, in batches - so the search

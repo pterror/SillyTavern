@@ -37,7 +37,7 @@ import { mergeSortedWindow } from './tantivy-search.js';
 import { searchGroups, searchGroupIds, searchGroupsSorted, getGroupIndexPosition } from './groups-search-index.js';
 import { getGroupsByIds } from './groups.js';
 import { CHARACTER_INDEX_FAILED_EVENT } from './search-index-coordinator.js';
-import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, findCharacterMatches, findGroupMatches, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, toggleCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, getCurrentSeqAndGroupsVersion, seedCardTagsForSingleCharacter, assignEntityTag, unassignEntityTag, streamCharacterIdsMatching, beginBulkSelection, bulkSelectionExists, addToBulkSelection, removeFromBulkSelection, describeBulkSelection, readBulkSelectionPage, streamBulkSelection, mutualTagIdsOfBulkSelection, dropBulkSelection, getCharacterCardJson, getCharacterChatStats, getCharacterIndexRowsByIds, streamCharacterCardJsonBatches, characterRowExists, characterRowOrPendingExistsSync, getEntityRowsByIds, hasClosedFolderTags, copyEntityTags, TAG_MOVE_FAILED_EVENT, TAG_ORDER_SETTLED_EVENT, TAG_CHANGES_EVENT, GROUP_CHANGES_EVENT, QUERY_RANGE_COLUMNS, isQueryRangeField, SAVED_VIEWS_EVENT, getTagChangesSeq } from '../character-metadata-db.js';
+import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, findCharacterMatches, findGroupMatches, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, toggleCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, getCurrentSeqAndGroupsVersion, seedCardTagsForSingleCharacter, assignEntityTag, unassignEntityTag, streamCharacterIdsMatching, beginBulkSelection, bulkSelectionExists, addToBulkSelection, removeFromBulkSelection, describeBulkSelection, readBulkSelectionPage, streamBulkSelection, mutualTagIdsOfBulkSelection, dropBulkSelection, getCharacterCardJson, getCharacterChatStats, getCharacterIndexRowsByIds, streamCharacterCardJsonBatches, characterRowExists, characterRowOrPendingExistsSync, getEntityRowsByIds, hasClosedFolderTags, copyEntityTags, TAG_MOVE_FAILED_EVENT, TAG_ORDER_SETTLED_EVENT, TAG_CHANGES_EVENT, GROUP_CHANGES_EVENT, QUERY_RANGE_COLUMNS, isQueryRangeField, SAVED_VIEWS_EVENT, getTagChangesSeq, getActivitySeq, foldAllActivity, readDependsOnActivity } from '../character-metadata-db.js';
 import { characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash, normalizeFav, SHALLOW_CREATOR_NOTES_HEADER } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
 import { hashGreetingText, opAdd, opAppend, opEdit, opDelete, opMove, opSetDefault, opUnsetDefault, opUnsetDefaultByHash } from '../greeting-ops.js';
@@ -2447,9 +2447,11 @@ function sendHashQueryResponse(response, params) {
  * @param {{ seq: number | null | undefined, groupsVersion?: number | null, search: boolean, includeGroups: boolean, position?: import('./search-index-coordinator.js').SearchIndexPosition | null, groupsPosition?: import('./search-index-coordinator.js').GroupsIndexPosition | null }} components
  * @returns {string | null}
  */
-function queryToken({ seq, groupsVersion, search, includeGroups, position, groupsPosition, tagSeq = null }) {
+function queryToken({ seq, groupsVersion, search, includeGroups, position, groupsPosition, tagSeq = null, activitySeq = null }) {
     if (!Number.isFinite(seq)) return null;
     const components = [seq];
+    // Queued chat stats (message writes not yet written into the rows) change the rows' chat_size and date_last_chat.
+    if (activitySeq !== null) components.push('activity', activitySeq);
     // A "no folder" filter reads tag definitions: a tag turned into a closed folder changes its rows.
     if (tagSeq !== null) components.push('tags', tagSeq);
     if (includeGroups) {
@@ -2543,7 +2545,7 @@ async function searchSortedPage(handle, directories, { searchTerm, sortField, so
  * @param {object} params
  * @returns {Promise<QueryReply>}
  */
-async function runSearchWalk(user, { mode, searchTerm, filter, sort, seed, includeGroups, groupsOnly, tagsLeftToSql, indexComplete = false, offset, pageSize, wantRows, wantTotal, wantHashes, cursor, tagSeq = null }) {
+async function runSearchWalk(user, { mode, searchTerm, filter, sort, seed, includeGroups, groupsOnly, tagsLeftToSql, indexComplete = false, offset, pageSize, wantRows, wantTotal, wantHashes, cursor, tagSeq = null, activitySeq = null }) {
     const { directories } = user;
     const handle = user.profile.handle;
     const unavailable = () => queryReply(503, { error: true, reason: 'metadata-store-unavailable' });
@@ -2688,7 +2690,7 @@ async function runSearchWalk(user, { mode, searchTerm, filter, sort, seed, inclu
         ? await timePhase('page_rows', () => getEntityRowsByIds(directories, entities, { wantRows, wantHashes }))
         : await timePhase('page_rows', () => queryCharacters(directories, { ids: entities.map(entity => entity.id), wantRows, wantHashes, wantTotal: false }));
     if (read === null) return unavailable();
-    const token = queryToken({ seq: read.seq, groupsVersion: read.groupsVersion, search: true, includeGroups, position, groupsPosition, tagSeq });
+    const token = queryToken({ seq: read.seq, groupsVersion: read.groupsVersion, search: true, includeGroups, position, groupsPosition, tagSeq, activitySeq });
 
     if (wantHashes) {
         let hashRows = read.hashRows;
@@ -2826,6 +2828,11 @@ async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {})
         await applyFolderCase(user.directories, filter);
     }
     const tagSeq = folderNone ? await getTagChangesSeq(user.directories) : null;
+    // A read sorted or filtered by chat_size or date_last_chat writes the queued chat stats into the rows first. The
+    // search index sees those writes only once it catches up, so such a search is walked in SQL this time.
+    const activityFolded = readDependsOnActivity(sort.field, filter.ranges) ? await foldAllActivity(user.directories) : 0;
+    // Read before the rows, like the seq: a queued write after it makes the token stale, never the rows.
+    const activitySeq = await getActivitySeq(user.directories);
     const seed = Number(sort.seed);
     if (sort.field === 'random' && !Number.isFinite(seed)) {
         return queryReply(400, { error: true, reason: 'random-seed-required', message: 'sort.field "random" requires a finite sort.seed - design doc §5.3 decision 10, the client mints and persists this (public/scripts/random-sort.js).' });
@@ -2859,7 +2866,7 @@ async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {})
         const current = includeGroups
             ? await getCurrentSeqAndGroupsVersion(user.directories)
             : { seq: await getCurrentSeq(user.directories), groupsVersion: null };
-        const token = queryToken({ seq: current?.seq, groupsVersion: current?.groupsVersion, search: hasSearch, includeGroups, position, groupsPosition, tagSeq });
+        const token = queryToken({ seq: current?.seq, groupsVersion: current?.groupsVersion, search: hasSearch, includeGroups, position, groupsPosition, tagSeq, activitySeq });
         if (token !== null && token === body.ifToken) {
             return queryReply(200, { seq: current.seq, token, unchanged: true });
         }
@@ -2898,7 +2905,7 @@ async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {})
     let searchPosition = null;
     let groupsSearchPosition = null;
     /** @param {{ seq: number, groupsVersion?: number | null }} read The rows' read: its seq and groups version. */
-    const tokenFor = ({ seq, groupsVersion }) => queryToken({ seq, groupsVersion, search: hasSearch, includeGroups, position: searchPosition, groupsPosition: groupsSearchPosition, tagSeq });
+    const tokenFor = ({ seq, groupsVersion }) => queryToken({ seq, groupsVersion, search: hasSearch, includeGroups, position: searchPosition, groupsPosition: groupsSearchPosition, tagSeq, activitySeq });
 
     markSinceStart('prologue');
     if (hasSearch) {
@@ -2907,7 +2914,7 @@ async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {})
         const tagsLeftToSql = await searchTagsLeftToSql(user.directories, filter.tags);
         // The index has no world or range fields: a filter on either is checked in SQL.
         const sqlOnlyFilter = !!filter.world || filter.ranges !== undefined;
-        const indexSorts = sort.field !== undefined && !sqlOnlyFilter && !tagsLeftToSql
+        const indexSorts = sort.field !== undefined && !sqlOnlyFilter && !tagsLeftToSql && activityFolded === 0
             && await indexCanSort(user.directories, await getCharacterIndexPosition(handle, user.directories), sort.field);
         // A match the index can't fully filter (tags left to SQL, or a world, which it has no field for) or can't
         // order (any sort but relevance and its fast fields) is walked and checked under the work cap.
@@ -2930,7 +2937,7 @@ async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {})
             return runSearchWalk(user, {
                 mode: walkMode, searchTerm, filter, sort, seed, includeGroups, groupsOnly, tagsLeftToSql,
                 indexComplete: walkMode === 'rank' && !tagsLeftToSql && !sqlOnlyFilter,
-                offset, pageSize, wantRows, wantTotal, wantHashes, cursor: body.cursor, tagSeq,
+                offset, pageSize, wantRows, wantTotal, wantHashes, cursor: body.cursor, tagSeq, activitySeq,
             });
         }
 
@@ -2983,7 +2990,7 @@ async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {})
             // search): walk it under the work cap like any search the index can't answer whole.
             return runSearchWalk(user, {
                 mode: 'sorted', searchTerm, filter, sort, seed, includeGroups, groupsOnly, tagsLeftToSql: true,
-                offset, pageSize, wantRows, wantTotal, wantHashes, cursor: body.cursor, tagSeq,
+                offset, pageSize, wantRows, wantTotal, wantHashes, cursor: body.cursor, tagSeq, activitySeq,
             });
         }
 

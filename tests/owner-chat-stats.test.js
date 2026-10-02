@@ -146,7 +146,7 @@ describe('messageLineBytes', () => {
 });
 
 describe('a character\'s chat stats follow every write to its messages', () => {
-    test('/save sets chat_size and date_last_chat from the messages, with a change row', async () => {
+    test('/save sets chat_size and date_last_chat from the messages: read at once, written to the row with a change row when the queue is', async () => {
         await seedCharacter('Alice.png');
         let ids;
         const changes = await changesDuring(async () => { ids = await saveAliceChat(); });
@@ -154,7 +154,11 @@ describe('a character\'s chat stats follow every write to its messages', () => {
         expect(ids).toHaveLength(2);
         expect((await stored('Alice.png')).chatSize).toBeGreaterThan(0);
         await expectStoredMatchesMessages();
-        const change = changes.find(c => c.id === 'Alice.png');
+        expect(changes.find(c => c.id === 'Alice.png' && (c.fields ?? []).includes('chat_size'))).toBeUndefined();
+
+        const folded = await changesDuring(() => metadataDb.foldAllActivity(directories));
+        await expectStoredMatchesMessages();
+        const change = folded.find(c => c.id === 'Alice.png');
         expect(change?.fields).toEqual(expect.arrayContaining(['chat_size', 'date_last_chat']));
     });
 
@@ -342,15 +346,9 @@ describe('a group\'s chat stats follow every write to its messages', () => {
         await metadataDb.writeGroupFileAndRow(directories, group, () => fs.writeFileSync(path.join(directories.groups, `${GROUP_ID}.json`), JSON.stringify(group)));
     }
 
+    /** The group's chat stats as readers get them: the row with its queued message writes on top. */
     async function storedGroup() {
-        const { default: Database } = await import('better-sqlite3');
-        const raw = new Database(path.join(directories.root, 'character-metadata.sqlite'), { readonly: true });
-        try {
-            const row = raw.prepare('SELECT chat_size, date_last_chat FROM groups WHERE id = ?').get(GROUP_ID);
-            return { chatSize: row.chat_size, dateLastChat: row.date_last_chat };
-        } finally {
-            raw.close();
-        }
+        return (await metadataDb.getGroupChatStatsByIds(directories, [GROUP_ID])).get(GROUP_ID);
     }
 
     async function expectGroupMatchesMessages() {
@@ -379,44 +377,45 @@ describe('a group\'s chat stats follow every write to its messages', () => {
         return res.body.assigned_node_ids.map(a => a.node_id);
     }
 
-    test('/group/save adds each chat\'s messages to chat_size instead of replacing it with the last chat saved, and bumps the groups version', async () => {
+    test('/group/save adds each chat\'s messages to chat_size instead of replacing it with the last chat saved, and bumps the groups version when written out', async () => {
         await seedGroup();
 
-        const added = await groupRowsDuring(() => saveGroupChat('chat one', ['first chat, a fairly long message', 'another']));
-        expect(added).toBeGreaterThan(0);
+        await saveGroupChat('chat one', ['first chat, a fairly long message', 'another']);
         await saveGroupChat('chat two', ['second']);
 
         const stats = await storedGroup();
         expect(stats.chatSize).toBeGreaterThan(0);
         await expectGroupMatchesMessages();
+        expect(await groupRowsDuring(() => metadataDb.foldAllActivity(directories))).toBe(1);
+        await expectGroupMatchesMessages();
     });
 
-    test('edit, append, graft, alternative, and alternative delete each keep the stats equal to the messages, with a groups version row', async () => {
+    test('edit, append, graft, alternative, and alternative delete each keep the stats equal to the messages, queued (no groups version row) except the delete, which is written at once', async () => {
         await seedGroup();
         const [firstId, replyId] = await saveGroupChat('chat one', ['hello', 'hello there']);
 
         expect(await groupRowsDuring(async () => {
             expect((await postJson('/api/chats/message/edit', { group_id: GROUP_ID, node_id: replyId, content: msg('hello there, a longer reply') })).status).toBe(200);
-        })).toBe(1);
+        })).toBe(0);
         await expectGroupMatchesMessages();
 
         let appended;
         expect(await groupRowsDuring(async () => {
             appended = await postJson('/api/chats/message/append', { group_id: GROUP_ID, after_node_id: replyId, messages: [msg('and?')] });
             expect(appended.status).toBe(200);
-        })).toBe(1);
+        })).toBe(0);
         await expectGroupMatchesMessages();
 
         expect(await groupRowsDuring(async () => {
             expect((await postJson('/api/chats/message/graft', { group_id: GROUP_ID, after_node_id: firstId, before_node_id: replyId, content: msg('spliced in') })).status).toBe(200);
-        })).toBe(1);
+        })).toBe(0);
         await expectGroupMatchesMessages();
 
         let alt;
         expect(await groupRowsDuring(async () => {
             alt = await postJson('/api/chats/message/alternative', { group_id: GROUP_ID, sibling_node_id: appended.body.node_ids[0], content: msg('something else entirely') });
             expect(alt.status).toBe(200);
-        })).toBe(1);
+        })).toBe(0);
         await expectGroupMatchesMessages();
 
         expect(await groupRowsDuring(async () => {
