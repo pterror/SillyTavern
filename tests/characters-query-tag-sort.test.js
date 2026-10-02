@@ -226,6 +226,37 @@ describe('/query included tags read from the tag sort tables', () => {
         }
     });
 
+    test('an excluded tag is checked per row: the right entities, and no list of the tag\'s rows read first', async () => {
+        await seed();
+        await metadataDb.buildEntitySortIndexesIfNeeded(directories);
+        for (const fill of [false, true]) {
+            if (fill) await metadataDb.fillTagSortTablesIfNeeded(directories);
+            for (const tags of [{ exclude: ['T3'] }, { include: ['T1'], exclude: ['T3'] }]) {
+                calls.length = 0;
+                const rows = await listed({ sortField: 'name', sortOrder: 'asc', tags: { mode: 'and', ...tags } });
+                const want = [...CHARACTERS.map(c => ({ ...c, type: 'character' })), ...GROUPS.map(g => ({ ...g, type: 'group' }))]
+                    .filter(e => !e.tags.includes('T3') && (tags.include ?? []).every(t => e.tags.includes(t)))
+                    .map(e => `${e.type}:${e.id}`);
+                expect(new Set(rows)).toEqual(new Set(want));
+                const reads = calls.filter(c => /\bAS k\b/.test(c.sql));
+                expect(reads.length).toBeGreaterThan(0);
+                // Before the fill, an included tag is still read as a list (step 5's fallback); only the exclude is checked then.
+                if (!fill && tags.include) continue;
+                const db = new Database(dbPath(), { readonly: true });
+                try {
+                    for (const read of reads) {
+                        const plan = db.prepare(`EXPLAIN QUERY PLAN ${read.sql}`).all(...read.params).map(r => r.detail).join(' | ');
+                        // A list built from the tag table's rows is the whole-tag read; the json list of excluded ids is fine.
+                        expect({ fill, tags, plan }).toEqual({ fill, tags, plan: expect.not.stringMatching(/LIST SUBQUERY \d+ \| (SEARCH|SCAN) (character_tags|group_tags)/) });
+                        expect(plan).toMatch(/CORRELATED SCALAR SUBQUERY/);
+                    }
+                } finally {
+                    db.close();
+                }
+            }
+        }
+    });
+
     test('the fill resumes after a stop and is idempotent', async () => {
         await seed();
         withDb(db => db.prepare('DELETE FROM character_tag_sort').run());

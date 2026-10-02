@@ -10508,9 +10508,8 @@ function pushExpandedTagClauses(clauses, args, expanded, { tagTable, entityColum
         }
     }
     if (exclude.length > 0) {
-        clauses.push(perRow
-            ? `NOT EXISTS (SELECT 1 FROM ${tagTable} WHERE ${entityColumn} = ${outer}.id AND ${matchesSql}${rowCondition})`
-            : `id NOT IN (SELECT ${entityColumn} FROM ${tagTable} WHERE ${matchesSql}${rowCondition})`);
+        // Per row whether or not the filter has an id list: see buildWhereClause()'s excluded tags.
+        clauses.push(`NOT EXISTS (SELECT 1 FROM ${tagTable} WHERE ${entityColumn} = ${outer}.id AND ${matchesSql}${rowCondition})`);
         args.push(...matchArgs(exclude));
     }
 }
@@ -10575,10 +10574,9 @@ function buildWhereClause({ tags, fav, world, excludeIds, ids } = {}, deletions 
             }
         }
         if (exclude.length > 0) {
-            // With an id list, each hit's own rows are checked by primary key, as for an included tag above.
-            clauses.push(hasIds
-                ? 'NOT EXISTS (SELECT 1 FROM character_tags WHERE character_id = characters.id AND tag_id IN (SELECT value FROM json_each(?)))'
-                : 'id NOT IN (SELECT character_id FROM character_tags WHERE tag_id IN (SELECT value FROM json_each(?)))');
+            // Each row's own tag rows are checked by primary key as the walk reaches it; `id NOT IN (SELECT ...)`
+            // would read every row of the excluded tags first.
+            clauses.push('NOT EXISTS (SELECT 1 FROM character_tags WHERE character_id = characters.id AND tag_id IN (SELECT value FROM json_each(?)))');
             args.push(JSON.stringify(exclude));
         }
     }
@@ -11555,9 +11553,7 @@ function buildGroupWhereClause({ tags, fav, excludeIds, ids } = {}, deletions = 
             }
         }
         if (exclude.length > 0) {
-            clauses.push(hasIds
-                ? `NOT EXISTS (SELECT 1 FROM group_tags WHERE group_id = groups.id AND tag_id IN (SELECT value FROM json_each(?)) AND ${GROUP_TAG_ROW_IS_GROUP_SQL})`
-                : `id NOT IN (SELECT group_id FROM group_tags WHERE tag_id IN (SELECT value FROM json_each(?)) AND ${GROUP_TAG_ROW_IS_GROUP_SQL})`);
+            clauses.push(`NOT EXISTS (SELECT 1 FROM group_tags WHERE group_id = groups.id AND tag_id IN (SELECT value FROM json_each(?)) AND ${GROUP_TAG_ROW_IS_GROUP_SQL})`);
             args.push(JSON.stringify(exclude));
         }
     }
