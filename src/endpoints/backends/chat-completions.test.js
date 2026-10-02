@@ -1577,11 +1577,8 @@ async function run() {
         assert.equal(branchAfter.messages[branchAfter.messages.length - 1].is_user, false);
     }
 
-    // (h) is_continue: true combined with a REAL (non-empty) user_message - see text-completions.test.js's
-    // own identical case for the full rationale (public/script.js's own Generate() does not exempt
-    // 'continue' from its send-textarea-as-user_message condition). The real user message must still be
-    // committed, but the assistant reply must NOT be persisted anywhere (neither spliced onto the
-    // original leaf, nor appended as a plain new child) - `continueUserTextConflict` skips it entirely.
+    // (h) Continue clicked with text left in the box: the text is stored as the user's message, and the
+    // page continues that message (as upstream does), so the reply is stored once, as an edit of it.
     {
         const continueWithUserTextBranch = 'continue-with-user-text-chat';
         await saveChatToTree(directories, ownerId, continueWithUserTextBranch, [
@@ -1596,12 +1593,12 @@ async function run() {
 
         const fakeBackend = await startFakeBackend((_req, res) => {
             res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: ' this should NOT be persisted anywhere.' } }] }));
+            res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: ' And elves too.' } }] }));
         });
         pointBackendAt(fakeBackend.url);
 
         const app = buildTestApp();
-        const { status } = await postGenerate(app, {
+        const { status, data } = await postGenerate(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: originalLeafId,
             type: 'continue', is_continue: true,
             user_message: 'Wait, actually - tell me about dragons instead.',
@@ -1612,13 +1609,14 @@ async function run() {
         assert.equal(status, 200);
 
         const branchAfter = await loadBranch(directories, ownerId, continueWithUserTextBranch);
-        assert.equal(branchAfter.messages.length, messageCountBefore + 1, 'only the user message was added - the generated reply was NOT persisted anywhere in this guarded combination');
+        assert.equal(branchAfter.messages.length, messageCountBefore + 1, 'one message added: the user message, continued in place');
         const newLeaf = branchAfter.messages[branchAfter.messages.length - 1];
-        assert.equal(newLeaf.mes, 'Wait, actually - tell me about dragons instead.');
+        assert.equal(newLeaf.mes, 'Wait, actually - tell me about dragons instead. And elves too.');
         assert.equal(newLeaf.is_user, true);
+        assert.equal(data.assistant_node_id, branchAfter.branch.leaf_id);
 
         const originalNode = (await getAlternatives(directories, originalLeafId)).alternatives.find(a => a.node_id === originalLeafId);
-        assert.equal(originalNode.mes, 'Once upon a time,', 'the original assistant leaf\'s text is byte-for-byte unchanged - continueUserTextConflict correctly skipped persisting the reply');
+        assert.equal(originalNode.mes, 'Once upon a time,', 'the assistant message before it is unchanged');
     }
 
     // (j) GROUP CHAT support (this follow-up task): `character_avatar` (the specific responding member)

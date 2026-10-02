@@ -24,6 +24,8 @@ const STOP_WAIT_MS = 15000;
  * @property {Array<() => void>} flushHooks Run first on a stop, to write out content held back for coalescing.
  * @property {Array<() => void|Promise<void>>} aborts Abort the upstream request.
  * @property {{mes: string, node_id: string}|null} persisted What the reply was stored as, if it was.
+ * @property {{pending: object, text: string, reason: string, warning: object}|null} [unsaved] A reply whose store
+ *   failed, kept so `POST /api/generation/store/:id` can try again.
  * @property {boolean} done
  * @property {number} doneAt
  * @property {Promise<void>} settled Resolves once the route has finished with this generation.
@@ -61,7 +63,7 @@ export function openGenerationStop(request, response) {
     /** @type {StopEntry} */
     const entry = {
         id, owner: request.user?.profile?.handle, stopped: false, flushHooks: [], aborts: [],
-        persisted: null, done: false, doneAt: 0, settled, settle,
+        persisted: null, unsaved: null, done: false, doneAt: 0, settled, settle,
     };
     entries.set(id, entry);
     response.locals.generationStop = entry;
@@ -209,4 +211,15 @@ export async function handleGenerationStop(request, response) {
         return response.status(404).json(result);
     }
     return response.json(result);
+}
+
+/**
+ * A generation's entry, if the given user started it.
+ * @param {string} id
+ * @param {string|undefined} handle
+ * @returns {StopEntry|undefined}
+ */
+export function generationEntryOf(id, handle) {
+    const entry = entries.get(id);
+    return entry && entry.owner === handle ? entry : undefined;
 }

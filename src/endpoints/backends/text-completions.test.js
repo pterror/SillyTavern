@@ -1062,15 +1062,9 @@ async function run() {
         assert.equal(branchAfter.messages[branchAfter.messages.length - 1].is_user, false);
     }
 
-    // (h) is_continue: true combined with a REAL (non-empty) user_message - the genuine, verified edge
-    // case from this session's investigation: public/script.js's own Generate() does NOT exclude
-    // 'continue' from its "read+clear the send textarea as user_message" condition, so leftover
-    // send-box text at the moment Continue is clicked really can reach this route as a real
-    // user_message. The route must still commit that real user message (exactly like any other type
-    // would), but must NOT then edit the ORIGINAL assistant leaf as if it were being continued - that
-    // node is no longer the request's real anchor once a new user node exists ahead of it. Proves the
-    // `continueUserTextConflict` guard: the user message lands as a real new node, but the original
-    // assistant message's own text is completely untouched (no in-place edit was attempted against it).
+    // Continue clicked with text left in the box: the text is stored as the user's message, and the page
+    // continues that message (as upstream does), so the reply is stored once, as an edit of it. The
+    // assistant message before it is untouched.
     {
         const continueWithUserTextBranch = 'continue-with-user-text-chat';
         await saveChatToTree(directories, ownerId, continueWithUserTextBranch, [
@@ -1085,12 +1079,12 @@ async function run() {
 
         const fakeBackend = await startFakeBackend((_req, res) => {
             res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ choices: [{ text: ' this should NOT be spliced onto the old leaf.' }] }));
+            res.end(JSON.stringify({ choices: [{ text: ' And elves too.' }] }));
         });
         pointBackendAt(fakeBackend.url);
 
         const app = buildTestApp();
-        const { status } = await postGenerate(app, {
+        const { status, data: body } = await postGenerate(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: originalLeafId,
             type: 'continue', is_continue: true,
             user_message: 'Wait, actually - tell me about dragons instead.',
@@ -1101,18 +1095,14 @@ async function run() {
         assert.equal(status, 200);
 
         const branchAfter = await loadBranch(directories, ownerId, continueWithUserTextBranch);
-        // A real new user node WAS committed (matching every other type's real-user_message behavior) -
-        // but the assistant reply was NOT spliced onto the original leaf: the count only grew by one
-        // (the user message), not two.
-        assert.equal(branchAfter.messages.length, messageCountBefore + 1, 'only the user message was added - the generated reply was NOT persisted anywhere in this guarded combination');
+        assert.equal(branchAfter.messages.length, messageCountBefore + 1, 'one message added: the user message, continued in place');
         const newLeaf = branchAfter.messages[branchAfter.messages.length - 1];
-        assert.equal(newLeaf.mes, 'Wait, actually - tell me about dragons instead.', 'the real user message was committed, unrelated to the continue edit');
         assert.equal(newLeaf.is_user, true);
+        assert.equal(newLeaf.mes, 'Wait, actually - tell me about dragons instead. And elves too.', 'the reply is stored as the continuation of the user message');
+        assert.equal(body.assistant_node_id, branchAfter.branch.leaf_id, 'the page is told where the reply was stored');
 
-        // The ORIGINAL assistant leaf's own text is completely untouched - the in-place edit was
-        // correctly skipped rather than corrupting it.
         const originalNode = (await getAlternatives(directories, originalLeafId)).alternatives.find(a => a.node_id === originalLeafId);
-        assert.equal(originalNode.mes, 'Once upon a time,', 'the original assistant leaf\'s text is byte-for-byte unchanged - continueUserTextConflict correctly skipped the in-place edit');
+        assert.equal(originalNode.mes, 'Once upon a time,', 'the assistant message before it is unchanged');
     }
 
     // (j) GROUP CHAT support (this session's own task): `character_avatar` (the specific responding

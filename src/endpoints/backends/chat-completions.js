@@ -85,7 +85,7 @@ import {
 import { getVertexAIAuth, getProjectIdFromServiceAccount } from '../google.js';
 import { getCookieSecret } from '../../users.js';
 import { fetchGoogleModels, GoogleModelsHttpError } from './google-models.js';
-import { encodeContent, encodeIndexFrame, encodeReasoningFrame, encodeAssistantNodeIdFrame, encodeToolCallDeltaFrame, encodeControlFrame, createGenerationRecord, createResumableWriter, detachFromResponse, handleGenerationResume, writeStoredMessagesFrame } from './llamacpp-compact-stream.js';
+import { encodeContent, encodeIndexFrame, encodeReasoningFrame, encodeStoredReplyFrame, encodeToolCallDeltaFrame, encodeControlFrame, createGenerationRecord, createResumableWriter, detachFromResponse, handleGenerationResume, writeStoredMessagesFrame } from './llamacpp-compact-stream.js';
 import { withGenerationStop, generationIdFor, isGenerationStopped, onGenerationStopFlush, stoppableController, handleGenerationStop } from '../../generation-stop.js';
 
 const API_OPENAI = 'https://api.openai.com/v1';
@@ -3238,9 +3238,8 @@ async function forwardAndPersistCompactStream(fetchResponse, response, persist, 
 
     if (persist && accumulatedText) {
         const persisted = await persistAssistantReply(persist, accumulatedText);
-        if (persisted) {
-            writer.write(encodeAssistantNodeIdFrame(persisted.node_id));
-        }
+        const frame = encodeStoredReplyFrame(persisted, persist);
+        if (frame) writer.write(frame);
     }
 
     response.socket?.off('close', onSocketClose);
@@ -3457,7 +3456,8 @@ async function forwardAndPersistCompactStreamWithServerTools(fetchResponse, resp
         // No tool calls this round - see this function's own doc comment, step 4.
         if (text) {
             const persisted = await persistAssistantReply(persist, text);
-            if (persisted) writer.write(encodeAssistantNodeIdFrame(persisted.node_id));
+            const frame = encodeStoredReplyFrame(persisted, persist);
+            if (frame) writer.write(frame);
         }
         writer.end();
         return;
@@ -3508,7 +3508,8 @@ async function forwardAndPersistCompactStreamWithServerTools(fetchResponse, resp
     persist.isContinue = false;
     if (finalText) {
         const persisted = await persistAssistantReply(persist, finalText);
-        if (persisted) writer.write(encodeAssistantNodeIdFrame(persisted.node_id));
+        const frame = encodeStoredReplyFrame(persisted, persist);
+        if (frame) writer.write(frame);
     }
     writer.end();
 }
@@ -4203,10 +4204,13 @@ router.post('/generate', withGenerationStop(async function (request, response) {
             // reply should attach after.
             const skipPersistence = isImpersonate || type === 'quiet';
             let replyAnchorNodeId = built.anchorNodeId;
+            const userMessage = typeof userMessageText === 'string'
+                ? { name: built.name1, is_user: true, mes: userMessageText, extra: userMessageExtra, send_date: Date.now() }
+                : null;
             if (!isToolResult && !skipPersistence && typeof userMessageText === 'string' && built.anchorNodeId) {
                 const userNodeId = await storeUserMessage(response, {
                     directories, ownerId, anchorNodeId: built.anchorNodeId, ref: request.body.user_message_ref,
-                    message: { name: built.name1, is_user: true, mes: userMessageText, extra: userMessageExtra, send_date: Date.now() },
+                    message: userMessage,
                 });
                 if (userNodeId) {
                     replyAnchorNodeId = userNodeId;
@@ -4234,18 +4238,15 @@ router.post('/generate', withGenerationStop(async function (request, response) {
             // `isContinue`/`anchorContent` are carried through identically to text-completions.js's own
             // route wiring too - see that file's own comment on these same fields for the full
             // rationale (in-place `editMessage()` persistence for a continue, and why `anchorContent`'s
-            // full object - not just the anchor node id - is needed to build it), INCLUDING the same
-            // `continueUserTextConflict` guard against the real (not hypothetical) "leftover
-            // send-textarea text alongside a continue" edge case - see that file's own comment on this
-            // same computation for the full explanation of why it's needed, and why the fix is to skip
-            // the assistant reply's persistence ENTIRELY for that one combination (not fall back to a
-            // plain appendMessages(), which would misrepresent a continuation fragment as a complete
-            // new reply).
-            const continueUserTextConflict = isContinue && replyAnchorNodeId !== built.anchorNodeId;
-            if (!skipPersistence && !continueUserTextConflict) {
+            // full object - not just the anchor node id - is needed to build it).
+            // A continue sent with text in the box stores that text as the user's message first, and the page then
+            // continues that message, as upstream does: the reply is stored as an edit of it.
+            const continuesUserMessage = isContinue && replyAnchorNodeId !== built.anchorNodeId;
+            if (!skipPersistence) {
                 pendingAssistantPersist = {
                     directories, ownerId, anchorNodeId: replyAnchorNodeId, name2: built.name2,
-                    isSwipe, isContinue, anchorContent: built.anchorContent,
+                    isSwipe, isContinue, anchorContent: continuesUserMessage ? userMessage : built.anchorContent,
+                    warnings,
                     generationStop: response.locals.generationStop,
                 };
                 // Only wired up when this request actually advertised at least one server-native
@@ -4253,9 +4254,7 @@ router.post('/generate', withGenerationStop(async function (request, response) {
                 // `built.enabledClientToolNames`/`buildRawActionChatCompletionRequest()`'s own
                 // `toolsPayload` doc comment) - gated on the exact same conditions as
                 // `pendingAssistantPersist` above, since the tool-call loop only ever runs as a
-                // precursor to persisting a real final reply (never for impersonate/quiet, and never
-                // for the continue/user-text-conflict edge case, which skips assistant persistence
-                // entirely). A pure client-tools-only request (no server tool registered at all) still
+                // precursor to persisting a real final reply (never for impersonate/quiet). A pure client-tools-only request (no server tool registered at all) still
                 // needs this wired up - otherwise a backend response calling one of those client tools
                 // would fall through to the "no pending tool loop" path below and be mishandled as a
                 // plain reply.

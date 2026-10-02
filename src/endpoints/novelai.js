@@ -16,6 +16,7 @@ import { storeUserMessage, withStoredMessages } from '../stored-messages.js';
 import { readCardContent } from './characters.js';
 import { getGroupsByIds } from './groups.js';
 import { persistAssistantReply } from '../assistant-reply-persist.js';
+import { withGenerationStop } from '../generation-stop.js';
 import { forwardAndPersistCompactStream } from './backends/text-completions.js';
 
 const API_NOVELAI = 'https://api.novelai.net';
@@ -306,7 +307,7 @@ export async function buildRawActionNovelRequest(directories, {
     };
 }
 
-router.post('/generate', async function (req, res) {
+router.post('/generate', withGenerationStop(async function (req, res) {
     if (!req.body) return res.sendStatus(400);
 
     // Real raw-action cutover - see buildRawActionNovelRequest() above and
@@ -357,20 +358,26 @@ router.post('/generate', async function (req, res) {
         // tree-shape edge case. Not re-derived here; identical reasoning applies verbatim.
         const skipPersistence = isImpersonate || type === 'quiet';
         let replyAnchorNodeId = built.anchorNodeId;
+        const userMessage = typeof userMessageText === 'string'
+            ? { name: built.name1, is_user: true, mes: userMessageText, extra: userMessageExtra, send_date: Date.now() }
+            : null;
         if (!skipPersistence && typeof userMessageText === 'string' && built.anchorNodeId) {
             const userNodeId = await storeUserMessage(res, {
                 directories, ownerId, anchorNodeId: built.anchorNodeId, ref: req.body.user_message_ref,
-                message: { name: built.name1, is_user: true, mes: userMessageText, extra: userMessageExtra, send_date: Date.now() },
+                message: userMessage,
             });
             if (userNodeId) {
                 replyAnchorNodeId = userNodeId;
             }
         }
-        const continueUserTextConflict = isContinue && replyAnchorNodeId !== built.anchorNodeId;
-        if (!skipPersistence && !continueUserTextConflict) {
+        // A continue sent with text in the box stores that text as the user's message first, and the page then
+        // continues that message, as upstream does: the reply is stored as an edit of it.
+        const continuesUserMessage = isContinue && replyAnchorNodeId !== built.anchorNodeId;
+        if (!skipPersistence) {
             pendingAssistantPersist = {
                 directories, ownerId, anchorNodeId: replyAnchorNodeId, name2: built.name2,
-                isSwipe, isContinue, anchorContent: built.anchorContent,
+                isSwipe, isContinue, anchorContent: continuesUserMessage ? userMessage : built.anchorContent,
+                warnings, generationStop: res.locals.generationStop,
             };
         }
 
@@ -538,7 +545,7 @@ router.post('/generate', async function (req, res) {
     } catch (error) {
         return res.send({ error: true });
     }
-});
+}));
 
 router.post('/generate-image', async (request, response) => {
     if (!request.body) {

@@ -16,6 +16,7 @@ import { storeUserMessage, withStoredMessages } from '../../stored-messages.js';
 import { readCardContent } from '../characters.js';
 import { getGroupsByIds } from '../groups.js';
 import { persistAssistantReply } from '../../assistant-reply-persist.js';
+import { withGenerationStop } from '../../generation-stop.js';
 import { forwardAndPersistCompactStream } from './text-completions.js';
 
 export const router = express.Router();
@@ -170,7 +171,7 @@ export async function buildRawActionKoboldRequest(directories, {
     };
 }
 
-router.post('/generate', async function (request, response_generate) {
+router.post('/generate', withGenerationStop(async function (request, response_generate) {
     if (!request.body) return response_generate.sendStatus(400);
 
     // Real raw-action cutover - "generate for this character/group's chat" - see
@@ -245,24 +246,29 @@ router.post('/generate', async function (request, response_generate) {
         // same resolveTextCompletionGenerationInput()/message-tree-db.js persistence primitives.
         const skipPersistence = isImpersonate || type === 'quiet';
         let replyAnchorNodeId = built.anchorNodeId;
+        const userMessage = typeof userMessageText === 'string'
+            ? { name: built.name1, is_user: true, mes: userMessageText, extra: userMessageExtra, send_date: Date.now() }
+            : null;
         if (!skipPersistence && typeof userMessageText === 'string' && built.anchorNodeId) {
             const userNodeId = await storeUserMessage(response_generate, {
                 directories, ownerId, anchorNodeId: built.anchorNodeId, ref: request.body.user_message_ref,
-                message: { name: built.name1, is_user: true, mes: userMessageText, extra: userMessageExtra, send_date: Date.now() },
+                message: userMessage,
             });
             if (userNodeId) {
                 replyAnchorNodeId = userNodeId;
             }
         }
-        const continueUserTextConflict = isContinue && replyAnchorNodeId !== built.anchorNodeId;
-        if (!skipPersistence && !continueUserTextConflict) {
+        // A continue sent with text in the box stores that text as the user's message first, and the page then
+        // continues that message, as upstream does: the reply is stored as an edit of it.
+        const continuesUserMessage = isContinue && replyAnchorNodeId !== built.anchorNodeId;
+        if (!skipPersistence) {
             pendingAssistantPersist = {
                 directories, ownerId, anchorNodeId: replyAnchorNodeId, name2: built.name2,
-                isSwipe, isContinue, anchorContent: built.anchorContent,
+                isSwipe, isContinue, anchorContent: continuesUserMessage ? userMessage : built.anchorContent,
+                warnings, generationStop: response_generate.locals.generationStop,
             };
             // Same gating as `pendingAssistantPersist` above - see text-completions.js's identical
-            // comment for why impersonate/quiet/the continue-text-conflict case must still reach the
-            // client completely unmodified.
+            // comment for why impersonate/quiet must still reach the client completely unmodified.
             rawActionItemization = built.itemization;
         }
 
@@ -458,7 +464,7 @@ router.post('/generate', async function (request, response_generate) {
 
     console.error('Max retries exceeded. Giving up.');
     return response_generate.send({ error: true });
-});
+}));
 
 router.post('/status', async function (request, response) {
     if (!request.body) return response.sendStatus(400);

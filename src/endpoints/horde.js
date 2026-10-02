@@ -7,9 +7,10 @@ import { buildRawActionKoboldRequest } from './backends/kobold.js';
 import { sanitizeUserMessageExtra } from '../message-tree-db.js';
 import { storeUserMessage } from '../stored-messages.js';
 import { persistAssistantReply } from '../assistant-reply-persist.js';
+import { withGenerationStop } from '../generation-stop.js';
 import {
     createGenerationRecord, createResumableWriter, createBackpressureWriter, detachFromResponse,
-    encodeContent, encodeAssistantNodeIdFrame, encodeControlFrame, handleGenerationResume, KEEPALIVE_INTERVAL_MS, writeStoredMessagesFrame,
+    encodeContent, encodeStoredReplyFrame, encodeControlFrame, handleGenerationResume, KEEPALIVE_INTERVAL_MS, writeStoredMessagesFrame,
 } from './backends/llamacpp-compact-stream.js';
 
 const ANONYMOUS_KEY = '0000000000';
@@ -267,8 +268,7 @@ router.post('/task-status', async (request, response) => {
  * persists the ASSISTANT's reply server-side once the real final text is known, via the returned
  * `rawActionPersist` (`{anchorNodeId, name2, isSwipe, isContinue, anchorContent}`, merged with
  * `directories`/`ownerId` by the caller before being passed to `persistAssistantReply()`) - `null`
- * whenever persistence should be skipped (impersonate/quiet types, or the same
- * `continueUserTextConflict` edge case kobold.js's own raw-action branch already guards against).
+ * whenever persistence should be skipped (impersonate/quiet types).
  *
  * MVP SCOPE BOUNDARY (real, narrow, deliberately deferred - NOT attempted here): live
  * worker-capacity auto-adjustment (public/scripts/horde.js's `adjustHordeGenerationParams()`, itself
@@ -313,18 +313,23 @@ async function buildRawActionHordePayload(request, response) {
     // resolveTextCompletionGenerationInput()/message-tree-db.js persistence primitives.
     const skipPersistence = isImpersonate || type === 'quiet';
     let replyAnchorNodeId = built.anchorNodeId;
+    const userMessage = typeof userMessageText === 'string'
+        ? { name: built.name1, is_user: true, mes: userMessageText, extra: userMessageExtra, send_date: Date.now() }
+        : null;
     if (!skipPersistence && typeof userMessageText === 'string' && built.anchorNodeId) {
         const userNodeId = await storeUserMessage(response, {
             directories, ownerId, anchorNodeId: built.anchorNodeId, ref: request.body.user_message_ref,
-            message: { name: built.name1, is_user: true, mes: userMessageText, extra: userMessageExtra, send_date: Date.now() },
+            message: userMessage,
         });
         if (userNodeId) {
             replyAnchorNodeId = userNodeId;
         }
     }
-    const continueUserTextConflict = isContinue && replyAnchorNodeId !== built.anchorNodeId;
-    const rawActionPersist = (!skipPersistence && !continueUserTextConflict)
-        ? { anchorNodeId: replyAnchorNodeId, name2: built.name2, isSwipe, isContinue, anchorContent: built.anchorContent }
+    // A continue sent with text in the box stores that text as the user's message first, and the page then
+    // continues that message, as upstream does: the reply is stored as an edit of it.
+    const continuesUserMessage = isContinue && replyAnchorNodeId !== built.anchorNodeId;
+    const rawActionPersist = !skipPersistence
+        ? { anchorNodeId: replyAnchorNodeId, name2: built.name2, isSwipe, isContinue, anchorContent: continuesUserMessage ? userMessage : built.anchorContent }
         : null;
 
     // Horde's own real params shape: `prompt` is a SEPARATE top-level field (never inside `params`),
@@ -348,8 +353,7 @@ async function buildRawActionHordePayload(request, response) {
         body: { prompt, params, trusted_workers: !!trustedWorkers, models: Array.isArray(models) ? models : [] },
         rawActionPersist,
         // Same gating as `rawActionPersist` above - see text-completions.js's identical comment for
-        // why impersonate/quiet/the continue-text-conflict case must still reach the client
-        // completely unmodified.
+        // why impersonate/quiet must still reach the client completely unmodified.
         itemization: rawActionPersist ? built.itemization : null,
     };
 }
@@ -485,9 +489,8 @@ async function streamHordeGeneration({ response, jobId, agent, rawActionPersist,
             if (rawActionPersist) {
                 try {
                     const persisted = await persistAssistantReply(rawActionPersist, text);
-                    if (persisted) {
-                        writer.write(encodeAssistantNodeIdFrame(persisted.node_id));
-                    }
+                    const frame = encodeStoredReplyFrame(persisted, rawActionPersist);
+                    if (frame) writer.write(frame);
                 } catch (error) {
                     console.error(`Failed to persist Horde raw-action assistant reply for task ${jobId}:`, error);
                 }
@@ -502,7 +505,7 @@ async function streamHordeGeneration({ response, jobId, agent, rawActionPersist,
 
 router.get('/generate/resume/:id', handleGenerationResume);
 
-router.post('/generate-text', async (request, response) => {
+router.post('/generate-text', withGenerationStop(async (request, response) => {
     // Real raw-action cutover - see buildRawActionHordePayload()'s own doc comment above for the
     // full design. Same trigger condition kobold.js's own raw-action branch uses (owner_id plus
     // character_avatar/group_id) - the existing dispatch code below (the actual POST to Horde's real
@@ -519,7 +522,7 @@ router.post('/generate-text', async (request, response) => {
             const built = await buildRawActionHordePayload(request, response);
             request.body = built.body;
             rawActionPersist = built.rawActionPersist
-                ? { ...built.rawActionPersist, directories: request.user.directories, ownerId }
+                ? { ...built.rawActionPersist, directories: request.user.directories, ownerId, warnings, generationStop: response.locals.generationStop }
                 : null;
             rawActionItemization = built.itemization;
         } catch (error) {
@@ -562,7 +565,7 @@ router.post('/generate-text', async (request, response) => {
     }
 
     return streamHordeGeneration({ response, jobId: submitData.id, agent, rawActionPersist, itemization: rawActionItemization, warnings });
-});
+}));
 
 router.post('/sd-samplers', async (_, response) => {
     try {
