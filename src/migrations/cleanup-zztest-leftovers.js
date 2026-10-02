@@ -55,7 +55,8 @@ export const STRAY_ANCHOR_ID = '0ed9ac5e-4ea1-4e59-8680-c60d03f3c745';
 export const STRAY_CHILD_ID = '690b7bfa-71f6-448e-a6b2-0a53ae4b063b';
 const ANCHOR_CONTENT = '{"__anchor":true}';
 
-export const MARKER_INDEXES = ['idx_characters_fav_desc_name_fold_asc', 'idx_groups_fav_desc_name_fold_asc'];
+/** character-metadata-db.js's UNUSED_INDEXES_DROPPED_FLAG: set by its last schema step. */
+export const MARKER_META_KEY = 'unused_indexes_dropped_v1';
 export const MARKER_MISSING_MESSAGE = 'start the server once, stop it, then rerun';
 
 /**
@@ -196,12 +197,10 @@ function checkMarker(meta) {
     if (!table) return { ok: false, detail: 'character-metadata.sqlite has no characters table' };
     const mtime = meta.get('SELECT name FROM pragma_table_info(\'characters\') WHERE name = \'file_mtime\' LIMIT 1');
     if (mtime) return { ok: false, detail: 'characters still has file_mtime (the newest schema step has not run)' };
-    const found = new Set(meta.rows(
-        'SELECT name FROM sqlite_master WHERE type = \'index\' AND name IN (@a, @b) LIMIT 2',
-        { a: MARKER_INDEXES[0], b: MARKER_INDEXES[1] },
-    ).map(r => r.name));
-    const missing = MARKER_INDEXES.filter(name => !found.has(name));
-    if (missing.length > 0) return { ok: false, detail: `missing index(es) ${missing.join(', ')} (the last schema step has not completed)` };
+    const hasMeta = meta.get('SELECT name FROM sqlite_master WHERE type = \'table\' AND name = \'meta\' LIMIT 1');
+    if (!hasMeta || !meta.get('SELECT 1 FROM meta WHERE key = @key LIMIT 1', { key: MARKER_META_KEY })) {
+        return { ok: false, detail: `meta has no ${MARKER_META_KEY} (the last schema step has not completed)` };
+    }
     return { ok: true, detail: 'schema is current' };
 }
 

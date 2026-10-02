@@ -407,7 +407,7 @@ describe('cleanup-zztest-leftovers', () => {
     });
 
     test.each([
-        ['a missing marker index', db => db.exec('DROP INDEX idx_groups_fav_desc_name_fold_asc'), 'missing index(es) idx_groups_fav_desc_name_fold_asc'],
+        ['a missing schema marker', db => db.exec('DELETE FROM meta WHERE key = \'unused_indexes_dropped_v1\''), 'meta has no unused_indexes_dropped_v1'],
         ['file_mtime still present', db => db.exec('ALTER TABLE characters ADD COLUMN file_mtime INTEGER'), 'characters still has file_mtime'],
     ])('schema not current (%s): real run refused', async (_name, mutate, detail) => {
         const scratch = await makeScratch();

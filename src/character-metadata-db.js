@@ -472,13 +472,6 @@ const SCHEMA_SQL = `
         -- Export paths materialize this column into the PNG chunk so exported files stay self-contained.
         card_json      TEXT NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS idx_characters_name_fold ON characters(name_fold);
-    CREATE INDEX IF NOT EXISTS idx_characters_date_added ON characters(date_added);
-    CREATE INDEX IF NOT EXISTS idx_characters_date_last_chat ON characters(date_last_chat);
-    CREATE INDEX IF NOT EXISTS idx_characters_create_date ON characters(create_date);
-    CREATE INDEX IF NOT EXISTS idx_characters_data_size ON characters(data_size);
-    CREATE INDEX IF NOT EXISTS idx_characters_chat_size ON characters(chat_size);
-    CREATE INDEX IF NOT EXISTS idx_characters_fav_name_fold ON characters(fav, name_fold);
     CREATE INDEX IF NOT EXISTS idx_characters_world ON characters(world);
     -- content_hash: sha256 of the raw uploaded import source bytes. NULL for anything not imported through that
     -- path or predating the column; never backfilled, so NULL/NULL is never treated as a match.
@@ -925,7 +918,6 @@ function migrateCreateDateColumn(db) {
     // create_date_ms exists but create_date doesn't: a previous run was interrupted after DROP, before RENAME.
     if (!createDateColumn && createDateMsColumn) {
         db.exec('ALTER TABLE characters RENAME COLUMN create_date_ms TO create_date');
-        db.exec('CREATE INDEX IF NOT EXISTS idx_characters_create_date ON characters(create_date)');
         return;
     }
 
@@ -982,7 +974,6 @@ function migrateCreateDateColumn(db) {
 
     db.exec('ALTER TABLE characters DROP COLUMN create_date');
     db.exec('ALTER TABLE characters RENAME COLUMN create_date_ms TO create_date');
-    db.exec('CREATE INDEX IF NOT EXISTS idx_characters_create_date ON characters(create_date)');
 }
 
 /**
@@ -1026,11 +1017,6 @@ function migrateGroupsColumns(db, directories) {
     if (!columnNames.has('date_added')) db.exec('ALTER TABLE groups ADD COLUMN date_added INTEGER NOT NULL DEFAULT 0');
     if (!columnNames.has('date_last_chat')) db.exec('ALTER TABLE groups ADD COLUMN date_last_chat INTEGER NOT NULL DEFAULT 0');
     if (!columnNames.has('chat_size')) db.exec('ALTER TABLE groups ADD COLUMN chat_size INTEGER NOT NULL DEFAULT 0');
-    db.exec('CREATE INDEX IF NOT EXISTS idx_groups_name_fold ON groups(name_fold)');
-    db.exec('CREATE INDEX IF NOT EXISTS idx_groups_date_added ON groups(date_added)');
-    db.exec('CREATE INDEX IF NOT EXISTS idx_groups_date_last_chat ON groups(date_last_chat)');
-    db.exec('CREATE INDEX IF NOT EXISTS idx_groups_chat_size ON groups(chat_size)');
-    db.exec('CREATE INDEX IF NOT EXISTS idx_groups_fav_name_fold ON groups(fav, name_fold)');
 
     if (!isPreExistingTable) return;
 
@@ -1336,12 +1322,11 @@ function migrateCardJsonColumn(db, directories) {
     db.exec('CREATE INDEX IF NOT EXISTS idx_characters_avatar_identity_hash ON characters(avatar_identity_hash)');
 }
 
-// idx_characters_fav_name_fold has default ASC on both columns, which SQLite can't use for a DESC/ASC ORDER BY.
+// name_key is tagNameKey() of the row's name. Rows written before this column existed have it NULL until
+// fillTagNameKeysIfNeeded() fills them; its index is built there too, since both take a pass over every tag.
 /**
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  */
-// name_key is tagNameKey() of the row's name. Rows written before this column existed have it NULL until
-// fillTagNameKeysIfNeeded() fills them; its index is built there too, since both take a pass over every tag.
 function migrateTagNameKeyColumn(db) {
     const columns = Array.from(/** @type {Iterable<{ name: string }>} */ (db.iterate('PRAGMA table_info(tags)')));
     if (!columns.some(c => c.name === 'name_key')) {
@@ -1503,9 +1488,25 @@ export function tagDerivedColumns(tag) {
     return { sortOrder, folderType, isFolder: folderType === 'NONE' ? 0 : 1 };
 }
 
-function migrateFavSortIndex(db) {
-    db.exec('CREATE INDEX IF NOT EXISTS idx_characters_fav_desc_name_fold_asc ON characters(fav DESC, name_fold ASC)');
-    db.exec('CREATE INDEX IF NOT EXISTS idx_groups_fav_desc_name_fold_asc ON groups(fav DESC, name_fold ASC)');
+/**
+ * Indexes no query reads any more: every sort, range, name lookup and fav filter reads the (fav, key, tie) sort
+ * indexes (ENTITY_SORT_INDEXES).
+ */
+const UNUSED_INDEXES = [
+    'idx_characters_name_fold', 'idx_characters_date_added', 'idx_characters_date_last_chat', 'idx_characters_create_date',
+    'idx_characters_data_size', 'idx_characters_chat_size', 'idx_characters_fav_name_fold', 'idx_characters_fav_desc_name_fold_asc',
+    'idx_groups_name_fold', 'idx_groups_date_added', 'idx_groups_date_last_chat', 'idx_groups_chat_size', 'idx_groups_fav_name_fold',
+    'idx_groups_fav_desc_name_fold_asc',
+];
+/** meta key: the last schema step (dropUnusedIndexes()) has run. cleanup-zztest-leftovers.js checks for it. */
+export const UNUSED_INDEXES_DROPPED_FLAG = 'unused_indexes_dropped_v1';
+
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ */
+function dropUnusedIndexes(db) {
+    for (const name of UNUSED_INDEXES) db.exec(`DROP INDEX IF EXISTS ${name}`);
+    setMetaSync(db, UNUSED_INDEXES_DROPPED_FLAG, '1');
 }
 
 // Returns null if no SQLite engine is usable on this install - callers must no-op rather than throw. In read-only
@@ -1557,7 +1558,6 @@ async function getEntry(directories) {
     migrateCardJsonColumn(db, directories);
     migrateGroupsColumns(db, directories);
     migrateGroupDigestColumns(db, directories);
-    migrateFavSortIndex(db);
     migrateTagNameKeyColumn(db);
     migrateTagDerivedColumns(db);
     migrateTagReorderPassColumn(db);
@@ -1570,6 +1570,7 @@ async function getEntry(directories) {
     db.exec(RANDOM_RANK_TRIGGERS_SQL);
     db.exec(NAME_ORDER_TABLE_SQL);
     db.exec(NAME_ORDER_TRIGGERS_SQL);
+    dropUnusedIndexes(db);
     /** @type {MetadataDbEntry} */
     const entry = { db, directories, batch: null, bootstrapPromise: null };
     entries.set(key, entry);
@@ -11618,6 +11619,10 @@ function buildWhereClause({ tags, fav, world, ranges, excludeIds, ids } = {}, de
     if (typeof fav === 'boolean') {
         clauses.push('fav = ?');
         args.push(fav ? 1 : 0);
+    } else if (hasRanges(ranges)) {
+        // Both fav values, so a range reads the (fav, key, tie) sort index: without planner statistics SQLite won't
+        // skip past a leading column it has no condition on.
+        clauses.push('fav IN (0, 1)');
     }
     if (typeof world === 'string' && world) {
         clauses.push('world = ?');
@@ -12563,7 +12568,7 @@ export async function queryCharacters(directories, params = {}) {
         const column = QUERYABLE_SORT_COLUMNS[sortField ?? ''];
         if (column) {
             orderParts.push(`${column} ${sortOrder === 'desc' ? 'DESC' : 'ASC'}`);
-            // fav is boolean-valued, so many rows tie on it; name_fold breaks the tie (idx_characters_fav_name_fold).
+            // fav is boolean-valued, so many rows tie on it; name_fold breaks the tie.
             if (sortField === 'fav') {
                 orderParts.push('name_fold ASC');
             }
@@ -12660,6 +12665,10 @@ function buildGroupWhereClause({ tags, fav, ranges, excludeIds, ids } = {}, dele
     if (typeof fav === 'boolean') {
         clauses.push('fav = ?');
         args.push(fav ? 1 : 0);
+    } else if (hasRanges(ranges)) {
+        // Both fav values, so a range reads the (fav, key, tie) sort index: without planner statistics SQLite won't
+        // skip past a leading column it has no condition on.
+        clauses.push('fav IN (0, 1)');
     }
     pushRangeClauses(clauses, args, ranges, 'group');
     const expanded = expandTagFilter(tags, deletions);
@@ -13540,7 +13549,8 @@ export async function findCharacterMatches(directories, { name = null, allowAvat
     let params;
     if (hasName) {
         // name_fold folds a superset of what compareIgnoreCaseAndAccents() does, so every match is among these rows.
-        sql = 'SELECT id, name FROM characters WHERE name_fold = ? ORDER BY id';
+        // Both fav values, so the lookup reads the (fav, name_fold, id) sort index.
+        sql = 'SELECT id, name FROM characters WHERE fav IN (0, 1) AND name_fold = ? ORDER BY id';
         params = [foldName(name)];
     } else if (tagNames) {
         // A row of a marked tag merging into one of the first tags counts as that tag; the marks are matched here.
@@ -13582,7 +13592,7 @@ export async function findGroupMatches(directories, name) {
     const key = tagNameKey(String(name));
     /** @type {string[]} */
     const found = [];
-    for (const row of /** @type {Iterable<{ id: string, name: string }>} */ (entry.db.iterate('SELECT id, name FROM groups WHERE name_fold = ? ORDER BY id', [foldName(name)]))) {
+    for (const row of /** @type {Iterable<{ id: string, name: string }>} */ (entry.db.iterate('SELECT id, name FROM groups WHERE fav IN (0, 1) AND name_fold = ? ORDER BY id', [foldName(name)]))) {
         if (tagNameKey(String(row.name)) === key) found.push(row.id);
         if (found.length >= 2) break;
     }
