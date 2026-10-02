@@ -31,7 +31,7 @@ if (configPath) {
     setConfigFilePath(configPath);
 }
 const { getTantivyModule } = await import('./tantivy-engine.js');
-const { createCharacterIndexMaintainer, formatCatchUpLine } = await import('./characters-search-index.js');
+const { createCharacterIndexMaintainer, formatCatchUpLine, isBatchCatchUp } = await import('./characters-search-index.js');
 const { createGroupIndexMaintainer } = await import('./groups-search-index.js');
 const { disposeMetadataStores } = await import('../character-metadata-db.js');
 
@@ -115,7 +115,7 @@ async function tick() {
             } else if ('swapped' in result) {
                 if (result.swapped) post({ type: 'swapped', target: 'characters', dir: result.swapped, ...charactersPosition() });
             } else if (result.changed) {
-                console.log(formatCatchUpLine(result));
+                if (isBatchCatchUp(result)) console.log(formatCatchUpLine(result));
                 post({ type: 'committed', target: 'characters', changed: true, seq: result.seq, tagNameSeq: result.tagNameSeq, retrySeq: result.retrySeq, deletes: result.deletes, upserts: result.upserts, ms: result.ms });
             }
         } catch (err) {

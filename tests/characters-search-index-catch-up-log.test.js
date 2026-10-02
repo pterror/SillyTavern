@@ -124,6 +124,22 @@ describe('characters-search-index.js: catch-up log line', () => {
             .toContain('seq=10..20 tagseq=5..7 backlog=4 writers=fav:2,tag_ids:1,whole-record:1 tagrenames=2 ');
     });
 
+    test('one card\'s ordinary edit is not a batch; several changes, renames, a backlog, retries, failures or a skipped persist are', () => {
+        const single = {
+            changed: true, deletes: 0, upserts: 1, ms: 5, seq: 11, seqFrom: 10, tagNameSeqFrom: 5, tagNameSeq: 5,
+            retrySeq: 0, retried: 0, failed: 0, backlog: 0, writers: { fav: 1 }, tagRenames: 0, phases: {}, lockWaitMs: 0,
+        };
+        expect(searchIndex.isBatchCatchUp(single)).toBe(false);
+        expect(searchIndex.isBatchCatchUp({ ...single, upserts: 0, deletes: 1 })).toBe(false);
+        expect(searchIndex.isBatchCatchUp({ ...single, upserts: 2 })).toBe(true);
+        expect(searchIndex.isBatchCatchUp({ ...single, deletes: 1 })).toBe(true);
+        expect(searchIndex.isBatchCatchUp({ ...single, tagRenames: 1 })).toBe(true);
+        expect(searchIndex.isBatchCatchUp({ ...single, backlog: 3 })).toBe(true);
+        expect(searchIndex.isBatchCatchUp({ ...single, retried: 1 })).toBe(true);
+        expect(searchIndex.isBatchCatchUp({ ...single, failed: 1 })).toBe(true);
+        expect(searchIndex.isBatchCatchUp({ ...single, persistSkipped: true })).toBe(true);
+    });
+
     test('a tick whose persist was skipped says so right after persist_ms; one that persisted is unchanged', () => {
         const phases = { read: 1, deletes: 2, tags: 3, load: 4, build: 5, add: 6, commit: 7, persist: 8 };
         const base = {
