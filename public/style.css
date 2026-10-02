@@ -7054,3 +7054,14 @@ textarea.live-editor-textarea {
     font-family: inherit;
     line-height: inherit;
 }
+
+/* A tab switch was refused because this field is being edited: its confirm and cancel buttons draw the eye. */
+@keyframes field_edit_attention {
+    0%, 100% { transform: scale(1); filter: none; }
+    30%, 70% { transform: scale(1.35); filter: drop-shadow(0 0 4px var(--SmartThemeQuoteColor)); }
+}
+
+.char_info_tab_panel.field_edit_attention .field_edit_done,
+.char_info_tab_panel.field_edit_attention .field_edit_cancel {
+    animation: field_edit_attention 0.8s ease-in-out;
+}

@@ -598,11 +598,10 @@ test.describe('character field edit mode', () => {
                             await enterEdit(page, field);
                             const f = fieldLocators(page, field.id);
                             await f.textarea.fill('in progress');
-                            await openInfoTab(page, 'greeting');
-                            await page.locator('.open_alternate_greetings').click();
+                            // Its button is on the greeting tab, which can't be opened mid-edit; other code can still press it.
+                            await page.locator('.open_alternate_greetings').first().evaluate(el => (/** @type {HTMLElement} */ (el)).click());
                             await expectToast(page, FIELD_BLOCKED_TOAST);
                             await expect(page.locator('.popup .alternate_greetings_list')).toHaveCount(0);
-                            await openInfoTab(page, field.tab);
                             await expectEditMode(page, field);
                             await expect(f.textarea).toHaveValue('in progress');
                             await f.cancel.click();
@@ -610,22 +609,6 @@ test.describe('character field edit mode', () => {
                     });
                 }
 
-                test('starting to edit another field', async ({ page }) => {
-                    const next = FIELDS[(FIELDS.indexOf(field) + 1) % FIELDS.length];
-                    await withCharacter(page, field, 'original', async () => {
-                        await enterEdit(page, field);
-                        const f = fieldLocators(page, field.id);
-                        await f.textarea.fill('in progress');
-                        await openInfoTab(page, next.tab);
-                        await fieldLocators(page, next.id).pencil.click();
-                        await expectToast(page, FIELD_BLOCKED_TOAST);
-                        await expectPreviewMode(page, next);
-                        await openInfoTab(page, field.tab);
-                        await expectEditMode(page, field);
-                        await expect(f.textarea).toHaveValue('in progress');
-                        await f.cancel.click();
-                    });
-                });
             });
 
             test('starting the field edit is blocked while a chat message is being edited', async ({ page }) => {
@@ -681,18 +664,34 @@ test.describe('character field edit mode', () => {
                 });
             });
 
-            test('switching tabs keeps the edit open', async ({ page }) => {
+            test('another tab can\'t be opened while the field is being edited; its ✓ ✕ flash', async ({ page }) => {
                 const nextTab = TABS[(TABS.indexOf(field.tab) + 1) % TABS.length];
                 await withCharacter(page, field, 'original', async () => {
                     await enterEdit(page, field);
                     const f = fieldLocators(page, field.id);
                     await f.textarea.fill('in progress');
+                    const tabRadio = (/** @type {string} */ tab) => page.locator(`input[name="charInfoTabs_tab"][value="${tab}"]`);
                     await openInfoTab(page, nextTab);
-                    await expect(f.textarea).toBeHidden();
-                    await openInfoTab(page, field.tab);
+                    await expect(f.panel).toHaveClass(/\bfield_edit_attention\b/);
+                    await expect(tabRadio(field.tab)).toBeChecked();
+                    await expect(tabRadio(nextTab)).not.toBeChecked();
                     await expectEditMode(page, field);
+
+                    await tabRadio(field.tab).focus();
+                    await page.keyboard.press('ArrowRight');
+                    await expect(tabRadio(field.tab)).toBeChecked();
+
+                    await page.evaluate((tab) => {
+                        const radio = /** @type {HTMLInputElement} */ (document.querySelector(`#charInfoTabs input[name="charInfoTabs_tab"][value="${tab}"]`));
+                        radio.checked = true;
+                        radio.dispatchEvent(new Event('change', { bubbles: true }));
+                    }, nextTab);
+                    await expect(tabRadio(field.tab)).toBeChecked();
                     await expect(f.textarea).toHaveValue('in progress');
+
                     await f.cancel.click();
+                    await openInfoTab(page, nextTab);
+                    await expect(tabRadio(nextTab)).toBeChecked();
                 });
             });
 

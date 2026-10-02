@@ -481,6 +481,67 @@ function toggleMaximize(button) {
     focusEditing(id);
 }
 
+const TAB_RADIO = 'input[name="charInfoTabs_tab"]';
+const TAB_SWITCH_KEYS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', ' ']);
+
+/** @returns {string | null} The `charInfoTabs_tab` value of the tab holding the field in edit mode. */
+function editingTab() {
+    if (!activeEdit) return null;
+    const panelId = getPanel(activeEdit.id).attr('id') ?? '';
+    return panelId.startsWith('charInfoTab_') ? panelId.slice('charInfoTab_'.length) : null;
+}
+
+/** Draws the eye to the field being edited's ✓ ✕, so it's clear why the tab didn't switch. */
+function flashEditControls() {
+    const panel = getPanel(activeEdit.id);
+    panel.removeClass('field_edit_attention');
+    void panel[0]?.offsetWidth;
+    panel.addClass('field_edit_attention');
+    setTimeout(() => panel.removeClass('field_edit_attention'), 800);
+}
+
+/**
+ * While a field is being edited, the character info tabs don't switch away from it: clicks, keys, and our own code
+ * switching them. The edit has to be confirmed or cancelled first.
+ */
+function initTabSwitchGuard() {
+    const tabs = document.getElementById('charInfoTabs');
+    if (!tabs) return;
+    const blocks = (/** @type {string | null} */ value) => {
+        const current = editingTab();
+        return current !== null && value !== null && value !== current;
+    };
+
+    tabs.addEventListener('click', (event) => {
+        const label = /** @type {Element} */ (event.target).closest?.('#charInfoTabs > .tab-title');
+        const value = label?.querySelector(TAB_RADIO)?.getAttribute('value') ?? null;
+        if (!blocks(value)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        flashEditControls();
+    }, true);
+
+    tabs.addEventListener('keydown', (event) => {
+        if (!(event.target instanceof HTMLInputElement) || !event.target.matches(TAB_RADIO)) return;
+        if (!TAB_SWITCH_KEYS.has(event.key) || editingTab() === null) return;
+        if (event.key === ' ' && !blocks(event.target.value)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        flashEditControls();
+    }, true);
+
+    // Anything else that checks another tab (our own code dispatching `change`) is put back.
+    tabs.addEventListener('change', (event) => {
+        if (!(event.target instanceof HTMLInputElement) || !event.target.matches(TAB_RADIO)) return;
+        const current = editingTab();
+        if (!blocks(event.target.value)) return;
+        event.stopImmediatePropagation();
+        const radio = tabs.querySelector(`${TAB_RADIO}[value="${current}"]`);
+        if (radio instanceof HTMLInputElement) radio.checked = true;
+        flashEditControls();
+    }, true);
+}
+
 /**
  * A field in edit mode takes focus after it moves, at the cursor it had, so typing carries on.
  * @param {string} id
@@ -522,6 +583,7 @@ function isOnLightboxImage(target) {
 /** @param {CharacterFieldEditorDeps} dependencies */
 export function initCharacterFieldEditor(dependencies) {
     deps = dependencies;
+    initTabSwitchGuard();
 
     // Capture phase, so it runs before the document's own Escape handlers (which close drawers and panels); a
     // handled Escape is marked with preventDefault, and those handlers leave it alone.
