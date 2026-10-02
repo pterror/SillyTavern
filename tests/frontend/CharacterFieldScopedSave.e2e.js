@@ -46,6 +46,8 @@ function recordMergeRequests(page) {
 
 /**
  * Creates a character through the Create form and opens it in the editor.
+ * The create form and the editor share the character info drawer, which stays open after Create, so the tag
+ * input is already visible before the editor shows the new character: wait for the editor to hold its avatar.
  * @param {import('@playwright/test').Page} page
  * @param {string} name
  * @returns {Promise<string>} The new character's avatar filename.
@@ -54,10 +56,13 @@ async function createAndOpenCharacter(page, name) {
     await openCharacterManagementDrawer(page);
     await page.locator('#rm_button_create').click();
     await page.locator('#character_name_pole').fill(name);
+    const createResponse = page.waitForResponse(response => response.url().endsWith('/api/characters/create'));
     await page.locator('#create_button_label').click();
+    const avatar = await (await createResponse).text();
     await page.locator('.character_select', { hasText: name }).first().click();
-    await page.locator('#tagInput').waitFor({ state: 'visible', timeout: 10000 });
-    return String(await page.locator('#avatar_url_pole').inputValue());
+    await expect(page.locator('#avatar_url_pole')).toHaveValue(avatar, { timeout: 10000 });
+    await expect(page.locator('#right-nav-panel')).toHaveAttribute('data-menu-type', 'character_edit');
+    return avatar;
 }
 
 /**
