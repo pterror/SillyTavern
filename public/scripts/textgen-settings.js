@@ -11,6 +11,7 @@ import {
 } from '../script.js';
 import { main_api, max_context } from './generation-params.js';
 import { getRequestHeaders } from './request-headers.js';
+import { beginServerGeneration } from './generation-stop.js';
 import { eventSource, event_types } from './events.js';
 import { deriveTemplatesFromChatTemplate } from './chat-templates.js';
 import { t } from './i18n.js';
@@ -1227,6 +1228,7 @@ export async function generateTextGenWithStreaming(generate_data, signal) {
     const response = await fetch('/api/backends/text-completions/generate', {
         headers: {
             ...getRequestHeaders(),
+            'X-Generation-Id': beginServerGeneration('/api/backends/text-completions', { stream: true }),
         },
         body: JSON.stringify(generate_data),
         method: 'POST',

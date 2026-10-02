@@ -14,7 +14,7 @@ import {
     saveReply, sendGenerationRequest, sendMessageAsUser, sendStreamingRequest,
     setCharacterName, setExtensionPrompt, setGenerationProgress, setInContextMessages, setSendButtonState,
     showStopButton, StreamingProcessor, substituteParams, swipe,
-    triggerAutoContinue, unblockGeneration, unshallowCharacter,
+    triggerAutoContinue, unblockGeneration, unshallowCharacter, updateMessageBlock,
 } from '../script.js';
 import { chat, chat_metadata } from './chat-state.js';
 import { amount_gen, main_api, max_context } from './generation-params.js';
@@ -50,6 +50,7 @@ import { getFriendlyTokenizerName, getPromptTokenCountAsync, getTokenCountAsync,
 import { ToolManager } from './tool-calling.js';
 import { showTokenizerWarnings } from './tokenizer-notices.js';
 import { shiftDownByOne, shiftUpByOne, waitUntilCondition } from './utils.js';
+import { stopServerGenerations, takeStreamStopResult } from './generation-stop.js';
 import { getWorldInfoPrompt, wi_anchor_position, world_info_include_names } from './world-info.js';
 
 /** @type {StreamingProcessor|null} */
@@ -120,6 +121,26 @@ function _stampAssistantNodeId(nodeId) {
     }
 }
 
+/**
+ * Puts the stored text of a stopped reply on the last message, if it differs from what is shown.
+ * @param {string|null|undefined} mes
+ */
+function _showStoredReplyText(mes) {
+    if (typeof mes !== 'string') return;
+    const mesId = chat.length - 1;
+    const msg = /** @type {ChatMessage | undefined} */ (chat[mesId]);
+    if (msg == null || msg.is_user === true || msg.mes === mes) return;
+    /** @type {Partial<ChatMessage>} */
+    const updates = { mes };
+    if (Array.isArray(msg.swipes)) {
+        const swipes = [...msg.swipes];
+        swipes[msg.swipe_id ?? 0] = mes;
+        updates.swipes = swipes;
+    }
+    const updated = updateMessage(mesId, updates);
+    if (updated) updateMessageBlock(mesId, updated);
+}
+
 // Overswiping opens an empty slot to type into; nothing exists for it yet, so there is nothing to save, and
 // trying anyway means asking the server to blank the row the message still names, which it refuses.
 /** @param {ChatMessage} message */
@@ -141,8 +162,19 @@ export async function finishStreamedReplyPersistence({ assistantNodeId, itemizat
     if (itemization) {
         applyItemizedPromptBreakdown(chat.length - 1, itemization);
     }
+    const stop = await takeStreamStopResult();
     if (isStoredNodeId(assistantNodeId)) {
         _stampAssistantNodeId(assistantNodeId);
+    } else if (stop !== undefined) {
+        // A stopped reply: the server stored exactly what it streamed up to the stop, which can be a
+        // little more than arrived here, so the message takes the stored text. Nothing to heal: the
+        // server stored it (or stored nothing because nothing was generated).
+        if (stop && isStoredNodeId(stop.node_id)) {
+            _showStoredReplyText(stop.mes);
+            _stampAssistantNodeId(stop.node_id);
+        } else if (!stop || stop.state === 'stopping') {
+            console.warn('[stop] The server did not confirm the stop; the saved reply may differ until the chat is reloaded.', stop);
+        }
     } else {
         // Backend/path didn't send assistant_node_id: not a raw-action stream, the server-side
         // persist failed, or - the common real case - the user stopped the stream before the
@@ -2740,6 +2772,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
  */
 export function stopGeneration() {
     let stopped = false;
+    stopServerGenerations();
     if (streamingProcessor) {
         streamingProcessor.onStopStreaming();
         stopped = true;
