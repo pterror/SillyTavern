@@ -260,7 +260,7 @@ import { initDynamicStyles } from './scripts/dynamic-styles.js';
 import { initInputMarkdown } from './scripts/input-md-formatting.js';
 import { autosizeTextareas, initAutosizeTextareas } from './scripts/autosize-textareas.js';
 import { AbortReason } from './scripts/util/AbortReason.js';
-import { initDrawerStack, isDrawerCovered, frontmostOf, raiseDrawer, updateDrawerStack, bringChatForward } from './scripts/drawer-stack.js';
+import { initDrawerStack, isDrawerCovered, frontmostOf, raiseDrawer, drawerStackChanged, bringChatForward } from './scripts/drawer-stack.js';
 import { initSystemPrompts } from './scripts/sysprompt.js';
 import { registerExtensionSlashCommands as initExtensionSlashCommands } from './scripts/extensions-slashcommands.js';
 import { ToolManager } from './scripts/tool-calling.js';
@@ -8605,7 +8605,7 @@ export function readSavedPanelOpenStates() {
 
 /** After a drawer opens, closes or comes forward: recomputes the stack, records open panels, runs the shown hooks. */
 function onDrawersChanged() {
-    updateDrawerStack();
+    drawerStackChanged();
     if (panelOpenStatesRead) {
         for (const [id, key] of Object.entries(PANEL_OPEN_STATE_KEYS)) {
             accountStorage.setItem(key, String(Boolean(document.getElementById(id)?.classList.contains('openDrawer'))));
@@ -8742,6 +8742,7 @@ export function selectRightMenuWithAnimation(selectedMenuId) {
     const targetPanel = targetMenu?.closest('#right-nav-panel, #char-info-panel');
     if (targetPanel) {
         targetPanel.setAttribute('data-active-menu', normalizedId || '');
+        drawerStackChanged();
     }
     const charInfoMenus = ['rm_ch_create_block', 'rm_group_chats_block'];
     if (charInfoMenus.includes(normalizedId)) {

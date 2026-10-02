@@ -40,6 +40,7 @@ import {
     secret_state,
 } from './secrets.js';
 import { debounce, getStringHash, isValidUrl } from './utils.js';
+import { drawerStackChanged } from './drawer-stack.js';
 import { chat_completion_sources, oai_settings, POLLINATIONS_ENDPOINT } from './chat-completion-settings.js';
 import { getRememberedTokenizerAnswer, getTokenCountsWithTokenizer } from './tokenizers.js';
 import { renderCountBasis } from './tokenizer-notices.js';
@@ -608,6 +609,7 @@ export function dragElement($elmnt) {
         }
 
         const element = /** @type {HTMLElement} */ ($target[0]);
+        drawerStackChanged();
         const style = getComputedStyle(element);
         height = parseInt(style.height);
         width = parseInt(style.width);
@@ -686,6 +688,7 @@ export function dragElement($elmnt) {
         $elmnt.css('margin', 'unset');
         $elmnt.css('height', height);
         $elmnt.css('width', width);
+        drawerStackChanged();
     }
 
     function closeDragElement() {

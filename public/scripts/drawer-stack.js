@@ -10,6 +10,11 @@
  *   draggables on <body> such as zoomed avatars). Clicking, tapping or typing in one brings it forward; a floating
  *   window also comes forward when it appears.
  * - floating lists (autocomplete menus, select2 dropdowns): above every ordered layer while shown.
+ *
+ * The stack is told when something changes (drawerStackChanged, drawerLayersChanged) by the code that opens,
+ * closes, fronts, moves or resizes a layer, and by the dropdown libraries' events. The only things it watches are
+ * each top-bar drawer's own class (an extension may open one without our code) and the children of #movingDivs and
+ * <body> (floating windows coming and going).
  */
 import { setHoles, unionArea } from './util/underlay-clip.js';
 
@@ -22,7 +27,6 @@ const CHAT_ID = 'sheld';
 /** Floating lists: above every ordered layer while shown. */
 const LIST_SELECTOR = '.ui-menu, .select2-container--open > .select2-dropdown';
 const ORDERED_SELECTOR = `#${CHAT_ID}, ${STACK_DRAWER_SELECTOR}, ${FLOATING_SELECTOR}`;
-const LAYER_SELECTOR = `${ORDERED_SELECTOR}, ${LIST_SELECTOR}`;
 const HOLE_SOURCE = 'drawer-stack';
 /** Past this, the ordered layers are renumbered from 1, keeping the numbers small. */
 const MAX_ORDER = 1000;
@@ -321,10 +325,39 @@ function onUserInput(event) {
     if (event instanceof KeyboardEvent && ['Shift', 'Control', 'Alt', 'Meta'].includes(event.key)) return;
     const layer = orderedLayerOf(event.target);
     if (!layer || !isShown(layer)) return;
+    // A layer the stack hasn't found yet (an extension's drawer added after it last looked).
+    if (!orderedLayers().includes(layer)) drawerLayersChanged();
     const shownAbove = orderedLayers().filter(other => other !== layer && isShown(other) && compareOrder(layer, other) < 0);
     if (shownAbove.length === 0) return;
     onFront(layer);
+    drawerStackChanged();
+}
+
+/**
+ * Something changed a layer: recomputes now, then every frame while a layer animates or moves (a drawer sliding
+ * open, a window being dragged), stopping once nothing moves. The places that open, close, front, resize or move a
+ * layer call this; the stack doesn't watch the page for them.
+ */
+export function drawerStackChanged() {
     updateDrawerStack();
+    scheduleUpdate();
+}
+
+/** Layers may have come or gone (a drawer, window or list added or removed): finds them again, then recomputes. */
+export function drawerLayersChanged() {
+    found = null;
+    observeDrawerClasses();
+    drawerStackChanged();
+}
+
+/** Watches each top-bar drawer's own class: the one way an extension's code opens or closes a drawer without ours. */
+let classWatcher = /** @type {MutationObserver | null} */ (null);
+function observeDrawerClasses() {
+    if (!classWatcher) return;
+    classWatcher.disconnect();
+    for (const el of orderedLayers().filter(el => el.matches(STACK_DRAWER_SELECTOR))) {
+        classWatcher.observe(el, { attributes: true, attributeFilter: ['class'] });
+    }
 }
 
 /**
@@ -336,47 +369,18 @@ function onUserInput(event) {
 export function initDrawerStack(visibilityChanged, front) {
     onVisibilityChanged = visibilityChanged;
     onFront = el => (front && el.matches(STACK_DRAWER_SELECTOR) ? front(el) : raiseDrawer(el));
-    const resize = new ResizeObserver(scheduleUpdate);
-    // A layer's own class (open, closed, fullscreen), shown menu and inline style (shown, dragged) decide where it is.
-    const changed = new MutationObserver(scheduleUpdate);
-    // Layers come and go: a drawer an extension adds (or the content it puts in a drawer), a floating window, a list
-    // made or moved under <body>.
-    const holder = document.getElementById('top-settings-holder');
-    /** @type {MutationObserver} */
-    let drawers;
-    const observeLayers = () => {
-        resize.disconnect();
-        changed.disconnect();
-        drawers.disconnect();
-        for (const el of allLayers()) {
-            resize.observe(el);
-            changed.observe(el, { attributes: true, attributeFilter: ['class', 'style', 'data-active-menu'] });
-        }
-        for (const drawer of holder?.children ?? []) drawers.observe(drawer, { childList: true });
-    };
-    const relayer = () => {
-        found = null;
-        observeLayers();
-        scheduleUpdate();
-    };
-    drawers = new MutationObserver(relayer);
-    observeLayers();
-    if (holder) new MutationObserver(relayer).observe(holder, { childList: true });
+    classWatcher = new MutationObserver(drawerStackChanged);
+    observeDrawerClasses();
+    // Floating windows (editor layers, Author's Note, extensions' windows, zoomed avatars) come and go as children of
+    // these two; nothing below them is watched.
     const movingDivs = document.getElementById('movingDivs');
-    if (movingDivs) new MutationObserver(relayer).observe(movingDivs, { childList: true });
-    new MutationObserver(relayer).observe(document.body, { childList: true });
-    // A list opens and closes inside its own container, wherever that is; these events bubble from its input.
-    $(document).on('autocompleteopen autocompleteclose select2:open select2:close', relayer);
-    // Animations of a layer itself start without a resize or a class change (a fade, a transform).
-    const onLayerAnimation = (/** @type {Event} */ event) => {
-        if (event.target instanceof HTMLElement && event.target.matches(LAYER_SELECTOR)) scheduleUpdate();
-    };
-    document.addEventListener('transitionrun', onLayerAnimation, true);
-    document.addEventListener('animationstart', onLayerAnimation, true);
+    if (movingDivs) new MutationObserver(drawerLayersChanged).observe(movingDivs, { childList: true });
+    new MutationObserver(drawerLayersChanged).observe(document.body, { childList: true });
+    // The dropdown libraries say when a list opens or closes.
+    $(document).on('autocompleteopen autocompleteclose select2:open select2:close', drawerLayersChanged);
     document.addEventListener('pointerdown', onUserInput, true);
     document.addEventListener('keydown', onUserInput, true);
-    new MutationObserver(scheduleUpdate).observe(document.body, { attributes: true, attributeFilter: ['class'] });
-    window.addEventListener('resize', scheduleUpdate);
+    window.addEventListener('resize', drawerStackChanged);
     for (const el of /** @type {HTMLElement[]} */ ([...document.querySelectorAll(FLOATING_SELECTOR)])) {
         if (isShown(el)) wasShown.add(el);
     }

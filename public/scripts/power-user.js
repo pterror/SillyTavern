@@ -30,6 +30,7 @@ import { getRequestHeaders } from './request-headers.js';
 import { characters, charactersStore, setCharacterId, setRecentCharacters, getRecentCharacters, holdCharacter } from './character-store.js';
 import { eventSource, event_types } from './events.js';
 import { isMobile, initMovingUI, favsToHotswap, countCharTokensWhenShown, onCharacterEditorMaybeShown, onStackedDrawersChanged } from './RossAscends-mods.js';
+import { drawerStackChanged } from './drawer-stack.js';
 import {
     resetSelectedGroup,
 } from './group-chats.js';
@@ -1152,6 +1153,7 @@ function switchStackedDrawers() {
     $('#stackedDrawers').prop('checked', power_user.stacked_drawers);
     onStackedDrawersChanged();
     refreshTagsDrawerUnderlayClip();
+    drawerStackChanged();
 }
 
 /** Values of power_user.drawer_bar_position. */
@@ -1165,6 +1167,7 @@ function applyDrawerBarPosition() {
     $('body').toggleClass('drawerBarLeft', power_user.drawer_bar_position === 'left');
     $('body').toggleClass('drawerBarRight', power_user.drawer_bar_position === 'right');
     $('#drawer_bar_position').val(power_user.drawer_bar_position);
+    drawerStackChanged();
 }
 
 /** Values of power_user.drawer_bar_position_mobile, the Drawer Bar in the mobile layout. */
@@ -1176,12 +1179,14 @@ function applyDrawerBarMobilePosition() {
     }
     $('body').toggleClass('drawerBarMobileBottom', power_user.drawer_bar_position_mobile === 'bottom');
     $('#drawer_bar_position_mobile').val(power_user.drawer_bar_position_mobile);
+    drawerStackChanged();
 }
 
 function switchForceMobileView() {
     $('body').toggleClass('forceMobileView', power_user.forceMobileView);
     $('#forceMobileView').prop('checked', power_user.forceMobileView);
     onCharacterEditorMaybeShown();
+    drawerStackChanged();
 }
 
 function switchSpoilerMode() {
@@ -1300,7 +1305,7 @@ function applyChatWidth(type) {
         r.style.setProperty('--chatWidthMax', `${power_user.chat_width_max}ch`);
         $('#chat_width_slider').val(power_user.chat_width);
         $('#chat_width_max').val(power_user.chat_width_max);
-        //document.documentElement.style.setProperty('--sheldWidth', power_user.chat_width);
+        drawerStackChanged();
     } else {
         //this is to prevent the slider from updating page in real time
         $('#chat_width_slider').off('mouseup touchend').on('mouseup touchend', async () => {
@@ -1308,6 +1313,7 @@ function applyChatWidth(type) {
             // Otherwise it takes the incorrect slider position with the new value AFTER the resizing.
             await delay(1);
             document.documentElement.style.setProperty('--sheldWidth', getChatWidthValue());
+            drawerStackChanged();
             await delay(1);
         });
     }
