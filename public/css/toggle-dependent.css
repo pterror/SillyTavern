@@ -336,6 +336,11 @@ body.charGalleryView #right-nav-panel.galleryFullscreen[data-active-menu="rm_cha
     height: calc(100dvh - var(--drawerBarTop) - var(--drawerBarBottom));
     max-height: calc(100vh - var(--drawerBarTop) - var(--drawerBarBottom));
     max-height: calc(100dvh - var(--drawerBarTop) - var(--drawerBarBottom));
+
+    /* This rule's height outranks .fillRight.openDrawer's starting style, so the opening slide needs its own. */
+    @starting-style {
+        height: 0;
+    }
 }
 
 /* Hidden in fullscreen gallery view since the tile grid already shows every character with full card art. */
@@ -356,6 +361,10 @@ body.charGalleryView #right-nav-panel.galleryFullscreen[data-active-menu="rm_cha
     height: calc(100dvh - var(--drawerBarTop) - var(--drawerBarBottom));
     max-height: calc(100vh - var(--drawerBarTop) - var(--drawerBarBottom));
     max-height: calc(100dvh - var(--drawerBarTop) - var(--drawerBarBottom));
+
+    @starting-style {
+        height: 0;
+    }
 }
 
 /* Pins the search row to nowrap so a growing search-pill row concedes width, not height, and wastes no
