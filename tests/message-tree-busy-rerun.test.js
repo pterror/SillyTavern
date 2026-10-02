@@ -105,4 +105,68 @@ describe('a tree write rerun after busy starts over from the database, not from 
         expect(stored).toHaveLength(1);
         expect(JSON.parse(stored[0].content).mes).toBe('another hello');
     });
+
+    test('saveChatToTree: each message gets one assigned id, and every id exists', async () => {
+        const directories = makeDirectories();
+        rerunNext = 1;
+        const saved = /** @type {any} */ (await treeDb.saveChatToTree(directories, 'owner-1', 'main', [
+            { chat_metadata: {} },
+            makeMessage('hi', true),
+            makeMessage('hello'),
+        ]));
+
+        expect(saved.assignedNodeIds.map(a => a.index)).toEqual([0, 1]);
+        const ids = saved.assignedNodeIds.map(a => a.node_id);
+        const stored = readRows(directories, 'SELECT id FROM messages WHERE id IN (?, ?)', ids);
+        expect(stored).toHaveLength(2);
+    });
+
+    test('appendMessages: one id per message, and every id exists', async () => {
+        const directories = makeDirectories();
+        const [, replyId] = await seedChat(directories);
+
+        rerunNext = 1;
+        const result = await treeDb.appendMessages(directories, 'owner-1', replyId, [makeMessage('and you?', true), makeMessage('fine')]);
+
+        expect(result.ok).toBe(true);
+        expect(result.node_ids).toHaveLength(2);
+        const stored = readRows(directories, 'SELECT id FROM messages WHERE id IN (?, ?)', result.node_ids);
+        expect(stored).toHaveLength(2);
+    });
+
+    test('editMessages: the applied count and the refusals are counted once', async () => {
+        const directories = makeDirectories();
+        const [, replyId] = await seedChat(directories);
+
+        rerunNext = 1;
+        const result = await treeDb.editMessages(directories, 'owner-1', [
+            { node_id: replyId, content: makeMessage('hello there') },
+            { node_id: 'no-such-node', content: makeMessage('x') },
+        ]);
+
+        expect(result.applied).toBe(1);
+        expect(result.refused.map(r => r.node_id)).toEqual(['no-such-node']);
+    });
+
+    test('addOpeningAlternatives: one id per opening and the added count is counted once', async () => {
+        const directories = makeDirectories();
+
+        rerunNext = 1;
+        const result = await treeDb.addOpeningAlternatives(directories, 'owner-1', [makeMessage('greeting one'), makeMessage('greeting two')]);
+
+        expect(result.added).toBe(2);
+        expect(result.node_ids).toHaveLength(2);
+        const stored = readRows(directories, 'SELECT id FROM messages WHERE id IN (?, ?)', result.node_ids);
+        expect(stored).toHaveLength(2);
+    });
+
+    test('renameCharacterInMessages: the renamed count is counted once', async () => {
+        const directories = makeDirectories();
+        await seedChat(directories);
+
+        rerunNext = 1;
+        const updated = await treeDb.renameCharacterInMessages(directories, 'owner-1', 'Renamed');
+
+        expect(updated).toBe(1);
+    });
 });

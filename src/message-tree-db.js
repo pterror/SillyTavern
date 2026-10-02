@@ -1483,6 +1483,7 @@ export async function saveChatToTree(directories, ownerId, chatName, chatData, i
     entry.db.transaction(() => {
         // Reset here: a transaction that hits busy is rolled back and rerun.
         Object.assign(stats, newWriteStats());
+        assignedNodeIds.length = 0;
         const anchor = ensureAnchorSync(entry.db, ownerId, now, ownerDescriptor);
         const existingNode = getLabeledNodeSync(entry.db, ownerId, chatName);
 
@@ -2015,6 +2016,8 @@ export async function editMessages(directories, ownerId, edits) {
     entry.db.transaction(() => {
         // Reset here: a transaction that hits busy is rolled back and rerun.
         Object.assign(stats, newWriteStats());
+        applied = 0;
+        refused.length = 0;
         for (const edit of list) {
             const nodeId = String(edit.node_id || '');
             if (!nodeId) continue;
@@ -2085,6 +2088,7 @@ export async function appendMessages(directories, ownerId, afterNodeId, contents
     entry.db.transaction(() => {
         // Reset here: a transaction that hits busy is rolled back and rerun.
         Object.assign(stats, newWriteStats());
+        nodeIds.length = 0;
         let cursor = afterNodeId;
         for (const c of contents) {
             const body = sanitizeForStorage(c);
@@ -2728,6 +2732,8 @@ export async function addOpeningAlternatives(directories, ownerId, contents, own
     entry.db.transaction(() => {
         // Reset here: a transaction that hits busy is rolled back and rerun.
         Object.assign(stats, newWriteStats());
+        nodeIds.length = 0;
+        added = 0;
         const now = Date.now();
         const anchor = ensureAnchorSync(entry.db, ownerId, now, owner);
 
@@ -2910,6 +2916,7 @@ export async function renameCharacterInMessages(directories, ownerId, newName) {
         // Reset here: a transaction that hits busy is rolled back and rerun, starting over from the first chunk.
         Object.assign(stats, newWriteStats());
         lastId = '';
+        updated = 0;
         let chunk = firstChunk;
         for (;;) {
             for (const row of chunk) {
@@ -2981,6 +2988,7 @@ export async function renameGroupMemberInMessages(directories, groupOwnerId, old
         // Reset here: a transaction that hits busy is rolled back and rerun, starting over from the first chunk.
         Object.assign(stats, newWriteStats());
         lastId = '';
+        updated = 0;
         let chunk = firstChunk;
         for (;;) {
             for (const row of chunk) {
