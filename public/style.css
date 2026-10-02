@@ -1729,6 +1729,106 @@ textarea.autoSetHeight {
     display: block;
 }
 
+/* The help panel: topic list beside the content on wide screens, behind the menu button on narrow ones. */
+.helpLayer .editorLayerBody {
+    overflow: hidden;
+}
+
+.helpPanel {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.helpHeader {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.helpHeaderTitle {
+    font-weight: bold;
+}
+
+.helpMenuButton {
+    display: none;
+}
+
+.helpMain {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    gap: 10px;
+}
+
+.helpNav {
+    flex: 0 0 13em;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    overflow-y: auto;
+}
+
+.helpTopics {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.helpTopic {
+    display: flex;
+    justify-content: space-between;
+    gap: 5px;
+    padding: 4px 8px;
+    border-radius: 5px;
+    cursor: pointer;
+}
+
+.helpTopic:hover,
+.helpTopic:focus-visible {
+    background-color: var(--white30a);
+}
+
+.helpTopic.active {
+    background-color: var(--SmartThemeQuoteColor);
+    color: var(--SmartThemeBodyColor);
+}
+
+.helpTopicCount {
+    opacity: 0.7;
+}
+
+.helpContent {
+    flex: 1;
+    min-width: 0;
+    overflow-y: auto;
+}
+
+.helpSectionTitle {
+    margin-top: 0.5em;
+}
+
+@media screen and (max-width: 1000px) {
+    .helpMenuButton {
+        display: flex;
+    }
+
+    .helpNav {
+        display: none;
+    }
+
+    .helpPanel.helpNavOpen .helpNav {
+        display: flex;
+        flex: 1;
+    }
+
+    .helpPanel.helpNavOpen .helpContent {
+        display: none;
+    }
+}
+
 .char_info_tab_panel.maximized .field_preview {
     max-height: none;
 }

@@ -1,7 +1,7 @@
 import { SlashCommandParser } from '../SlashCommandParser.js';
 import { SlashCommand } from '../SlashCommand.js';
 import { DOMPurify, Fuse } from '../../../lib.js';
-import { sendSystemMessage, system_message_types } from '../../../script.js';
+import { system_message_types } from '../../../script.js';
 import { chat } from '../../chat-state.js';
 import { t } from '../../i18n.js';
 import { POPUP_RESULT, POPUP_TYPE, Popup, callGenericPopup } from '../../popup.js';
@@ -511,40 +511,15 @@ async function echoCallback(args, value) {
 }
 
 /**
- * @param {any} _ Unused
- * @param {string} type Type of help to display
+ * Opens the help panel at a topic. Takes the same topic names and numbers as upstream's `/help`, plus the names of
+ * registered topics; anything else opens the overview.
+ * @param {unknown} _
+ * @param {string} type
+ * @returns {Promise<string>}
  */
-function helpCommandCallback(_, type) {
-    switch (type?.trim()?.toLowerCase()) {
-        case 'slash':
-        case 'commands':
-        case 'slashes':
-        case 'slash commands':
-        case '1':
-            sendSystemMessage(system_message_types.SLASH_COMMANDS);
-            break;
-        case 'format':
-        case 'formatting':
-        case 'formats':
-        case 'chat formatting':
-        case '2':
-            sendSystemMessage(system_message_types.FORMATTING);
-            break;
-        case 'hotkeys':
-        case 'hotkey':
-        case '3':
-            sendSystemMessage(system_message_types.HOTKEYS);
-            break;
-        case 'macros':
-        case 'macro':
-        case '4':
-            sendSystemMessage(system_message_types.MACROS);
-            break;
-        default:
-            sendSystemMessage(system_message_types.HELP);
-            break;
-    }
-
+async function helpCommandCallback(_, type) {
+    const { openHelp } = await import('../../help-menu.js');
+    openHelp(String(type ?? ''));
     return '';
 }
 

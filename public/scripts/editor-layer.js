@@ -16,19 +16,20 @@
  * @param {HTMLElement} content What the layer shows. It is moved into the layer, not copied.
  * @param {object} options
  * @param {string} options.closeTitle Tooltip of the button that closes it.
+ * @param {string} [options.closeIcon] Font Awesome class of that button.
  * @param {() => boolean} [options.escapeCloses] Whether Escape, pressed inside the layer, closes it now. By default
  * it always does.
  * @param {() => void} [options.onClose] Runs when the layer closes, by its button, Escape or `close()`.
  * @returns {EditorLayer}
  */
-export function openEditorLayer(content, { closeTitle, escapeCloses = () => true, onClose = () => {} }) {
+export function openEditorLayer(content, { closeTitle, closeIcon = 'fa-minimize', escapeCloses = () => true, onClose = () => {} }) {
     const layer = document.createElement('div');
     layer.classList.add('editorLayer');
 
     const bar = document.createElement('div');
     bar.classList.add('editorLayerBar');
     const closeButton = document.createElement('div');
-    closeButton.classList.add('editorLayerClose', 'menu_button', 'fa-solid', 'fa-minimize');
+    closeButton.classList.add('editorLayerClose', 'menu_button', 'fa-solid', closeIcon);
     closeButton.title = closeTitle;
     closeButton.setAttribute('role', 'button');
     closeButton.tabIndex = 0;
