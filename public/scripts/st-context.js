@@ -97,6 +97,7 @@ import { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument } from '
 import { SlashCommandEnumValue } from './slash-commands/SlashCommandEnumValue.js';
 import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
 import { tag_map, tags, tagsStore, importTags, queryTags } from './tags.js';
+import { registerHelpTopic, registerHotkey } from './help-registry.js';
 import { getTextGenServer, textgenerationwebui_settings } from './textgen-settings.js';
 import { tokenizers, getTextTokens, getTokenCount, getTokenCountAsync, getTokenizerModel } from './tokenizers.js';
 import { ToolManager } from './tool-calling.js';
@@ -255,6 +256,8 @@ export function getContext() {
         tagMap: tag_map,
         queryTags,
         getTagById,
+        registerHelpTopic,
+        registerHotkey,
         menuType: menu_type,
         createCharacterData: create_save,
         /** @deprecated Legacy snake-case naming, compatibility with old extensions */

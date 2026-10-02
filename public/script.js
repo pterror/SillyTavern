@@ -13862,6 +13862,9 @@ jQuery(async function () {
             if (is_send_press == false) {
                 await previewFullPrompt();
             }
+        } else if (id === 'option_help') {
+            const { openHelp } = await import('./scripts/help-menu.js');
+            openHelp();
         } else if (id == 'option_delete_mes') {
             setTimeout(() => openMessageDelete(fromSlashCommand, deleteToolCalls), animation_duration);
         } else if (id === 'option_settings') {

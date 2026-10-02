@@ -129,7 +129,8 @@ export class SlashCommandBrowser {
                 window.removeEventListener('keydown', boundHandler);
             }
         });
-        this.mo.observe(document.querySelector('#chat'), { childList: true, subtree: true });
+        // The browser is shown in the chat and in the help panel; watch the whole page so leaving either cleans up.
+        this.mo.observe(document.body, { childList: true, subtree: true });
         const boundHandler = this.handleKeyDown.bind(this);
         window.addEventListener('keydown', boundHandler);
         return this.dom;
