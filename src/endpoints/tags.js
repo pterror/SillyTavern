@@ -314,7 +314,7 @@ const QUERY_REST_COUNT_MAX = 10000;
 
 /**
  * One page of tag definitions:
- * `{ filter: { search, name, contains, ids, used, folders }, sort: { field }, pageSize, cursor, counts, ifHash, restCount }`
+ * `{ filter: { search, name, contains, ids, used, folders, folderType }, sort: { field }, pageSize, cursor, counts, ifHash, restCount }`
  * → `{ rows, cursor, more }`. `search` is a prefix of the name and `contains` text anywhere in it, both ignoring case
  * and accents. With `counts: true` the answer also has `counts: { [id]: n }`, how many characters and groups carry
  * each row's tag, and `approximate`, the ids whose count may be too high while a merge is unfinished.
@@ -364,6 +364,9 @@ router.post('/query', async (request, response) => {
                 return response.status(400).send({ error: true, reason: `invalid-${flag}` });
             }
         }
+        if (filter.folderType !== undefined && filter.folderType !== 'OPEN' && filter.folderType !== 'CLOSED') {
+            return response.status(400).send({ error: true, reason: 'invalid-folder-type', message: 'filter.folderType takes "OPEN" or "CLOSED".' });
+        }
         let ids;
         if (filter.ids !== undefined) {
             if (!Array.isArray(filter.ids) || !filter.ids.every(id => typeof id === 'string')) {
@@ -393,7 +396,8 @@ router.post('/query', async (request, response) => {
             counts: body.counts === true,
             ids,
             used: filter.used === true,
-            folders: filter.folders === true,
+            folders: filter.folders === true || filter.folderType !== undefined,
+            folderType: filter.folderType,
             pageSize,
             after,
         };

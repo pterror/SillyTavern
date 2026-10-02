@@ -10126,6 +10126,7 @@ export function decodeTagQueryCursor(cursor, sort) {
  * @property {string[]} [ids] At most TAG_QUERY_ID_CHUNK distinct ids; the caller enforces it.
  * @property {boolean} [used] Only tags with usage_count > 0.
  * @property {boolean} [folders] Only folder tags (is_folder = 1).
+ * @property {'OPEN'|'CLOSED'} [folderType] Only folder tags of this folder_type; implies `folders`.
  * @property {number} pageSize
  * @property {TagQueryPosition | null} [after] A decoded cursor.
  */
@@ -10217,7 +10218,7 @@ function tagWalkPhases(sort, { used, folders, folderUsageIndex = false }) {
     ];
 }
 
-const TAG_QUERY_ROW_COLUMNS = `rowid AS r, id, data, name_key, sort_order, usage_count, is_folder,
+const TAG_QUERY_ROW_COLUMNS = `rowid AS r, id, data, name_key, sort_order, usage_count, is_folder, folder_type,
     EXISTS (SELECT 1 FROM tag_deletions WHERE tag_id = tags.id) AS marked`;
 // placed: NULL when tag_pending_places has no place for the tag, 0 for a value's place, 1 for a gap's.
 const TAG_QUERY_PLACED_ROW_COLUMNS = `${TAG_QUERY_ROW_COLUMNS},
@@ -10350,6 +10351,7 @@ function tagPlacePosition(db, order, pass, place) {
 function tagRowPassesFilters(row, params, names) {
     return !row.marked && names.matches(row.name_key)
         && (params.folders !== true || row.is_folder === 1)
+        && (params.folderType === undefined || row.folder_type === params.folderType)
         && (params.used !== true || row.usage_count > 0);
 }
 
@@ -10435,6 +10437,7 @@ function* tagRowWalkEvents(entry, params, order, pass, placed, names) {
                     const moved = placed && (pass === null ? row.placed !== null : row.placed === 1);
                     const show = nameMatches && !row.marked && !moved
                         && (phase.coversFolders || !folders || row.is_folder === 1)
+                        && (params.folderType === undefined || row.folder_type === params.folderType)
                         && (phase.coversUsed || !used || row.usage_count > 0);
                     yield { position, row, show };
                     if (!nameMatches && leadsWithName && nameLow !== null && isPastNameRange(row.name_key, names, nameLow)) {
@@ -10597,6 +10600,7 @@ function queryTagsByIds(entry, params, pass) {
         for (const row of /** @type {Generator<TagQueryRow>} */ (entry.db.iterate(sql, slice))) {
             if (row.marked) continue;
             if (params.folders === true && row.is_folder !== 1) continue;
+            if (params.folderType !== undefined && row.folder_type !== params.folderType) continue;
             if (params.used === true && !(row.usage_count > 0)) continue;
             if (!names.matches(row.name_key)) continue;
             const place = placed
@@ -11261,10 +11265,52 @@ export const QUERY_RANGE_COLUMNS = Object.freeze({
     date_last_chat: { character: 'date_last_chat', group: 'date_last_chat' },
     chat_size: { character: 'chat_size', group: 'chat_size' },
     data_size: { character: 'data_size', group: null },
+    closed_folders: { character: closedFolderCountSql('character_tags', 'character_id', 'characters'), group: closedFolderCountSql('group_tags', 'group_id', 'groups') },
 });
 
 /**
- * @typedef {Record<string, { min?: number, max?: number }>} QueryRanges Inclusive bounds per QUERY_RANGE_COLUMNS
+ * How many closed folder tags a row carries, as a correlated subquery on its own tag rows. Tags marked deleted
+ * don't count. A tag's folder_type is read from its data, so it holds before the derived columns are filled.
+ * @param {string} tagTable
+ * @param {string} entityColumn
+ * @param {string} outer The row's table.
+ * @returns {string}
+ */
+function closedFolderCountSql(tagTable, entityColumn, outer) {
+    return `(SELECT COUNT(*) FROM ${tagTable} AS cf JOIN tags AS cft ON cft.id = cf.tag_id WHERE cf.${entityColumn} = ${outer}.id`
+        + ' AND CASE WHEN json_valid(cft.data) THEN json_extract(cft.data, \'$.folder_type\') END = \'CLOSED\''
+        + ' AND cf.tag_id NOT IN (SELECT tag_id FROM tag_deletions))';
+}
+
+/** A `filter.ranges` field bounding how many rows of one tag a row carries: `tag:<id>`, 0 or 1. */
+const QUERY_RANGE_TAG_PREFIX = 'tag:';
+
+/**
+ * Whether `field` is a field `filter.ranges` can bound: a QUERY_RANGE_COLUMNS field or `tag:<id>`.
+ * @param {string} field
+ * @returns {boolean}
+ */
+export function isQueryRangeField(field) {
+    return Object.hasOwn(QUERY_RANGE_COLUMNS, field) || (field.startsWith(QUERY_RANGE_TAG_PREFIX) && field.length > QUERY_RANGE_TAG_PREFIX.length);
+}
+
+/**
+ * The SQL `field` reads for `kind`, with its placeholders' values; null when `kind` has no such value.
+ * @param {string} field
+ * @param {'character' | 'group'} kind
+ * @returns {{ sql: string, args: any[] } | null}
+ */
+function queryRangeColumn(field, kind) {
+    if (field.startsWith(QUERY_RANGE_TAG_PREFIX)) {
+        const [tagTable, entityColumn, outer] = kind === 'character' ? ['character_tags', 'character_id', 'characters'] : ['group_tags', 'group_id', 'groups'];
+        return { sql: `(SELECT COUNT(*) FROM ${tagTable} WHERE ${entityColumn} = ${outer}.id AND tag_id = ?)`, args: [field.slice(QUERY_RANGE_TAG_PREFIX.length)] };
+    }
+    const column = Object.hasOwn(QUERY_RANGE_COLUMNS, field) ? QUERY_RANGE_COLUMNS[field][kind] : null;
+    return column === null ? null : { sql: column, args: [] };
+}
+
+/**
+ * @typedef {Record<string, { min?: number, max?: number }>} QueryRanges Inclusive bounds per isQueryRangeField()
  *   field; a missing end is open.
  */
 
@@ -11287,18 +11333,18 @@ function hasRanges(ranges) {
 function pushRangeClauses(clauses, args, ranges, kind) {
     if (!hasRanges(ranges)) return;
     for (const [field, bound] of Object.entries(ranges)) {
-        const column = Object.hasOwn(QUERY_RANGE_COLUMNS, field) ? QUERY_RANGE_COLUMNS[field][kind] : null;
+        const column = queryRangeColumn(field, kind);
         if (column === null) {
             clauses.push('0');
             continue;
         }
         if (typeof bound.min === 'number') {
-            clauses.push(`${column} >= ?`);
-            args.push(bound.min);
+            clauses.push(`${column.sql} >= ?`);
+            args.push(...column.args, bound.min);
         }
         if (typeof bound.max === 'number') {
-            clauses.push(`${column} <= ?`);
-            args.push(bound.max);
+            clauses.push(`${column.sql} <= ?`);
+            args.push(...column.args, bound.max);
         }
     }
 }
