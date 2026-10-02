@@ -51,8 +51,11 @@ function apply(el) {
         }
         return;
     }
+    // Each hole is reached from the corner and the path goes back to it along the same line, so the links between
+    // holes enclose no area. Going straight from one hole to the next would draw diagonal edges, and evenodd would
+    // cut the triangles between them.
     const cut = disjointRects(rects)
-        .map(r => `${r.left}px ${r.top}px, ${r.right}px ${r.top}px, ${r.right}px ${r.bottom}px, ${r.left}px ${r.bottom}px, ${r.left}px ${r.top}px`)
+        .map(r => `${r.left}px ${r.top}px, ${r.right}px ${r.top}px, ${r.right}px ${r.bottom}px, ${r.left}px ${r.bottom}px, ${r.left}px ${r.top}px, 0 0`)
         .join(', ');
     const clipPath = `polygon(evenodd, 0 0, 100% 0, 100% 100%, 0 100%, 0 0, ${cut})`;
     // Rewriting an unchanged value would still wake observers of the style attribute.
