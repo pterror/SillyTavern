@@ -380,3 +380,29 @@ fn appends_after_close_fail() {
     assert!(matches!(log.append_wait(records(1)), Err(LogError::Closed)));
     fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn iterating_one_file_never_opens_the_next() {
+    let dir = temp_dir("onefile");
+    let recs = records(400);
+    let log = Log::open(&dir, SMALL).unwrap();
+    let positions: Vec<u64> = commit_all(&log, &recs).concat();
+    // As after cleaning removed file 1 before file 0.
+    fs::remove_file(dir.join(file_name(&SMALL, 1))).unwrap();
+    assert!(matches!(
+        log.iterate_sized(0, 10_000),
+        Err(LogError::Gone(1))
+    ));
+    let mut got = Vec::new();
+    let mut from = 0;
+    while split(from).0 == 0 {
+        let (batch, next) = log.iterate_file(from, 7).unwrap();
+        got.extend(batch.into_iter().map(|(p, _, _)| p));
+        from = next;
+    }
+    assert_eq!(from, position(1, 0));
+    let in_file_0: Vec<u64> = positions.into_iter().filter(|p| split(*p).0 == 0).collect();
+    assert_eq!(got, in_file_0);
+    log.close();
+    fs::remove_dir_all(&dir).unwrap();
+}

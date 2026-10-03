@@ -1010,11 +1010,8 @@ impl Inner {
             let mut batch = Vec::new();
             let mut bytes = 0;
             while bytes < self.cfg.relocate_bytes && file_of(next) == file {
-                let (recs, n) = self.log.iterate_sized(next, 256)?;
+                let (recs, n) = self.log.iterate_file(next, 256)?;
                 for (pos, rec, len) in recs {
-                    if file_of(pos) != file {
-                        break;
-                    }
                     bytes += len;
                     batch.push((pos, rec));
                 }
