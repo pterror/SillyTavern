@@ -25,7 +25,6 @@ import { calculateDataSize, toShallow } from '../character-shallow.js';
 import { touchBrowserPresence, PRESENCE_PING_INTERVAL_MS } from '../browser-presence.js';
 import { invalidateThumbnail, getThumbnailVersion } from './thumbnails.js';
 import { importRisuSprites, importChubExpressions, importChubRelatedLorebooks } from './sprites.js';
-import { getChatInfo } from './chats.js';
 import { hasSavedChats, listBranches as listTreeBranches } from '../message-tree-db.js';
 import { ByafParser } from '../byaf.js';
 import { CharXParser, persistCharXAssets } from '../charx.js';
@@ -3531,60 +3530,31 @@ router.post('/chats', validateAvatarUrlMiddleware, async function (request, resp
             return response.send([]);
         }
 
-        // Tree DB path: if the character has saved chats, list branches from the tree DB
-        if (await hasSavedChats(request.user.directories, characterDirectory)) {
-            const branches = await listTreeBranches(request.user.directories, characterDirectory);
-
-            if (request.body.simple) {
-                return response.send(branches.map(b => ({ file_name: b.name + '.jsonl', file_id: b.name })));
-            }
-
-            const chatData = branches.map(b => {
-                const meta = b.metadata ? JSON.parse(b.metadata) : {};
-                return {
-                    node_id: b.id,
-                    file_name: b.name + '.jsonl',
-                    file_size: 0,
-                    chat_items: b.message_count,
-                    mes: b.last_mes || '[No messages]',
-                    // The branch's leaf, not its label's birthday - see branchViewSync().
-                    last_mes: b.last_activity ?? b.created_at,
-                    chat_metadata: request.body.metadata ? meta : undefined,
-                };
-            });
-
-            return response.send(chatData);
-        }
-
-        // JSONL fallback path
-        const chatsDirectory = path.join(request.user.directories.chats, characterDirectory);
-
-        // No chats directory yet is the ordinary state for a freshly created character, not an error.
-        if (!fs.existsSync(chatsDirectory)) {
+        if (!await hasSavedChats(request.user.directories, characterDirectory)) {
             return response.send([]);
         }
 
-        const files = fs.readdirSync(chatsDirectory, { withFileTypes: true });
-        const jsonFiles = files.filter(file => file.isFile() && path.extname(file.name) === '.jsonl').map(file => file.name);
-
-        if (jsonFiles.length === 0) {
-            return response.send([]);
-        }
+        const branches = await listTreeBranches(request.user.directories, characterDirectory);
 
         if (request.body.simple) {
-            return response.send(jsonFiles.map(file => ({ file_name: file, file_id: path.parse(file).name })));
+            return response.send(branches.map(b => ({ file_name: b.name + '.jsonl', file_id: b.name })));
         }
 
-        const jsonFilesPromise = jsonFiles.map((file) => {
-            const withMetadata = !!request.body.metadata;
-            const pathToFile = path.join(request.user.directories.chats, characterDirectory, file);
-            return getChatInfo(pathToFile, {}, withMetadata);
+        const chatData = branches.map(b => {
+            const meta = b.metadata ? JSON.parse(b.metadata) : {};
+            return {
+                node_id: b.id,
+                file_name: b.name + '.jsonl',
+                file_size: 0,
+                chat_items: b.message_count,
+                mes: b.last_mes || '[No messages]',
+                // The branch's leaf, not its label's birthday - see branchViewSync().
+                last_mes: b.last_activity ?? b.created_at,
+                chat_metadata: request.body.metadata ? meta : undefined,
+            };
         });
 
-        const chatData = (await Promise.allSettled(jsonFilesPromise)).filter(x => x.status === 'fulfilled').map(x => x.value);
-        const validFiles = chatData.filter(i => i.file_name);
-
-        return response.send(validFiles);
+        return response.send(chatData);
     } catch (error) {
         console.error(error);
         // Deliberately `{ error: true }`, not `[]` - callers must not treat this as "zero chats".
