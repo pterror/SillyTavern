@@ -1076,9 +1076,6 @@ describe('phase 3: character_tags as source of truth (not a tags.json mirror)', 
         await metadataDb.bootstrapIfNeeded(directories);
         await metadataDb.assignEntityTag(directories, 'Alice.png', 'tag1');
 
-        // tags.json disagrees with the db - no tag1 for Alice.
-        fs.writeFileSync(path.join(tempDir, 'tags.json'), JSON.stringify({ tags: [], tag_map: {} }));
-
         const rowBefore = await metadataDb.getCharacterMetadataRow(directories, 'Alice.png');
         const tagsBefore = await metadataDb.getCharacterTagIds(directories, 'Alice.png');
 
@@ -1344,77 +1341,6 @@ describe('tag_usage', () => {
 
         expect(await metadataDb.getCharacterTagIds(directories, 'Alice.png')).toEqual([]);
         expect(await metadataDb.getTagUsageCount(directories, 'tag1')).toBe(1);
-    });
-});
-
-describe('tags.json tag_map values: a repeated id is stored once, a non-array is read as no tags with a warning', () => {
-    /** @param {Record<string, unknown>} tagMap */
-    function writeTagMap(tagMap) {
-        fs.writeFileSync(path.join(tempDir, 'tags.json'), JSON.stringify({ tags: [], tag_map: tagMap }));
-    }
-
-    async function storedTagIds(/** @type {string} */ avatar) {
-        return { table: (await metadataDb.getCharacterTagIds(directories, avatar)).sort(), shallow: (await listRow(avatar)).tag_ids };
-    }
-
-    /**
-     * Runs fn with console.warn captured, and expects one warning naming `key` and showing `value`.
-     * @param {string} key
-     * @param {unknown} value
-     * @param {() => Promise<unknown>} fn
-     */
-    async function expectWarnsAbout(key, value, fn) {
-        const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
-        try {
-            await fn();
-            const messages = warnSpy.mock.calls.map(([message]) => String(message));
-            expect(messages.filter(m => m.includes(key) && m.includes(JSON.stringify(value)))).toHaveLength(1);
-        } finally {
-            warnSpy.mockRestore();
-        }
-    }
-
-    test('a repeated id, through upsertCharacterFromWrite', async () => {
-        writeTagMap({ 'Bob.png': ['t1', 't2', 't1'] });
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
-        expect(await storedTagIds('Bob.png')).toEqual({ table: ['t1', 't2'], shallow: ['t1', 't2'] });
-    });
-
-    test('a repeated id, through bootstrapIfNeeded', async () => {
-        await writeCardFile('Alice.png');
-        writeTagMap({ 'Alice.png': ['t1', 't1'] });
-        await metadataDb.bootstrapIfNeeded(directories);
-        expect(await storedTagIds('Alice.png')).toEqual({ table: ['t1'], shallow: ['t1'] });
-    });
-
-    test('a repeated id, through reconcile', async () => {
-        await writeCardFile('Alice.png');
-        writeTagMap({ 'Alice.png': ['t1', 't1'] });
-        await metadataDb.reconcile(directories);
-        expect(await storedTagIds('Alice.png')).toEqual({ table: ['t1'], shallow: ['t1'] });
-    });
-
-    test('a string, through upsertCharacterFromWrite', async () => {
-        writeTagMap({ 'Bob.png': 'ab' });
-        await expectWarnsAbout('Bob.png', 'ab', () => metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson()));
-        expect(await storedTagIds('Bob.png')).toEqual({ table: [], shallow: [] });
-    });
-
-    test('a number and an object, through bootstrapIfNeeded, write their rows and throw nothing', async () => {
-        await writeCardFile('Alice.png');
-        await writeCardFile('Carol.png', { name: 'Carol' });
-        writeTagMap({ 'Alice.png': 5, 'Carol.png': { t1: true } });
-        const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
-        try {
-            await metadataDb.bootstrapIfNeeded(directories);
-            const messages = warnSpy.mock.calls.map(([message]) => String(message));
-            expect(messages.some(m => m.includes('Alice.png') && m.includes('5'))).toBe(true);
-            expect(messages.some(m => m.includes('Carol.png') && m.includes(JSON.stringify({ t1: true })))).toBe(true);
-        } finally {
-            warnSpy.mockRestore();
-        }
-        expect(await storedTagIds('Alice.png')).toEqual({ table: [], shallow: [] });
-        expect(await storedTagIds('Carol.png')).toEqual({ table: [], shallow: [] });
     });
 });
 

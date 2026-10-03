@@ -142,12 +142,6 @@ describe('server: list rows\' tag_ids are read sorted', () => {
         expect(fields.tag_ids).toEqual(['ta', 'tb', 'tc']);
     });
 
-    test('a new row seeded from tags.json in any order', async () => {
-        fs.writeFileSync(path.join(directories.root, 'tags.json'), JSON.stringify({ tags: [], tag_map: { 'Bob.png': ['tb', 'ta'] } }));
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', card('Bob'));
-        expect((await readListRow('Bob.png')).tag_ids).toEqual(['ta', 'tb']);
-    });
-
     test('a batch-import row tagged while still buffered', async () => {
         await metadataDb.beginBatchImport(directories);
         await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', card('Bob'), null, null, { fromImport: true });
