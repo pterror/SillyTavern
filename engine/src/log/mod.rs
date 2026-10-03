@@ -833,6 +833,21 @@ impl Log {
     /// their positions and encoded lengths, and the position to continue from. A file that cleaning removed
     /// is `Gone`.
     pub fn iterate_sized(&self, from: u64, limit: usize) -> LogResult<(Vec<Positioned>, u64)> {
+        self.iterate_from(from, limit, false)
+    }
+
+    /// As `iterate_sized`, but only within `from`'s file: at its end, the position returned is the next
+    /// file's start, which isn't opened.
+    pub fn iterate_file(&self, from: u64, limit: usize) -> LogResult<(Vec<Positioned>, u64)> {
+        self.iterate_from(from, limit, true)
+    }
+
+    fn iterate_from(
+        &self,
+        from: u64,
+        limit: usize,
+        one_file: bool,
+    ) -> LogResult<(Vec<Positioned>, u64)> {
         let end = *self.shared.durable.lock().unwrap();
         if from > end.position() {
             return Err(LogError::Position(from, "not durable"));
@@ -873,6 +888,9 @@ impl Log {
             file += 1;
             scan_from = 0;
             next = position(file, 0);
+            if one_file {
+                break;
+            }
         }
         Ok((out, next))
     }
