@@ -30,6 +30,7 @@ const samples = [
     { kind: 'messageAppend', id: 1n, owner: 3n, name: 'Narrator', time: -5, text: '', flags: 0, session: 7n, user: 1n },
     { kind: 'textEdit', entity: 5n, field: 2, offset: 10, removed: 4, text: 'word' },
     { kind: 'textValue', entity: 5n, field: 'my-extension/key', text: 'x'.repeat(40_000) },
+    { kind: 'textValue', entity: 6n, field: 3, text: 'lone \udc00 high \ud800 pair 😀 '.repeat(100) },
 ];
 
 for (const [name, engine] of Object.entries(bindings)) {

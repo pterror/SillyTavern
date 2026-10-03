@@ -128,6 +128,106 @@ fn record_from_js(obj: &Object) -> Result<Record> {
     Record::new(kind, values).map_err(invalid)
 }
 
+/// A JavaScript string from UTF-16 code units, lone surrogates kept.
+pub struct JsText(Vec<u16>);
+
+unsafe fn utf16_string(env: sys::napi_env, units: &[u16]) -> Result<sys::napi_value> {
+    let mut out = std::ptr::null_mut();
+    napi::check_status!(unsafe {
+        sys::napi_create_string_utf16(env, units.as_ptr(), units.len() as isize, &mut out)
+    })?;
+    Ok(out)
+}
+
+/// The lengths of the pieces the text splits into around each lone surrogate, or None if it has none.
+#[cfg(any(target_family = "wasm", test))]
+fn lone_surrogate_pieces(units: &[u16]) -> Option<Vec<usize>> {
+    let mut pieces = Vec::new();
+    let (mut start, mut i, mut lone) = (0, 0, false);
+    while i < units.len() {
+        let u = units[i];
+        let paired = (0xd800..0xdc00).contains(&u)
+            && units
+                .get(i + 1)
+                .is_some_and(|n| (0xdc00..0xe000).contains(n));
+        if paired {
+            i += 2;
+        } else if (0xd800..0xe000).contains(&u) {
+            lone = true;
+            if i > start {
+                pieces.push(i - start);
+            }
+            pieces.push(1);
+            i += 1;
+            start = i;
+        } else {
+            i += 1;
+        }
+    }
+    if i > start {
+        pieces.push(i - start);
+    }
+    lone.then_some(pieces)
+}
+
+impl ToNapiValue for JsText {
+    unsafe fn to_napi_value(env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
+        // emnapi (the wasm build's Node-API) decodes a string of more than 16 code units with
+        // TextDecoder('utf-16le'), which turns a lone surrogate into U+FFFD; one or a few units it copies
+        // exactly. So a text holding lone surrogates is made of pieces, each lone surrogate a piece of its
+        // own, joined by String.prototype.concat.
+        #[cfg(target_family = "wasm")]
+        if let Some(pieces) = lone_surrogate_pieces(&val.0) {
+            unsafe {
+                let mut values = Vec::with_capacity(pieces.len());
+                let mut at = 0;
+                for len in pieces {
+                    values.push(utf16_string(env, &val.0[at..at + len])?);
+                    at += len;
+                }
+                let mut global = std::ptr::null_mut();
+                napi::check_status!(sys::napi_get_global(env, &mut global))?;
+                let mut f = global;
+                for name in [c"String", c"prototype", c"concat"] {
+                    let mut next = std::ptr::null_mut();
+                    napi::check_status!(sys::napi_get_named_property(
+                        env,
+                        f,
+                        name.as_ptr(),
+                        &mut next
+                    ))?;
+                    f = next;
+                }
+                let mut acc = values[0];
+                for args in values[1..].chunks(1024) {
+                    let mut out = std::ptr::null_mut();
+                    napi::check_status!(sys::napi_call_function(
+                        env,
+                        acc,
+                        f,
+                        args.len(),
+                        args.as_ptr(),
+                        &mut out
+                    ))?;
+                    acc = out;
+                }
+                return Ok(acc);
+            }
+        }
+        unsafe { utf16_string(env, &val.0) }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn lone_surrogates_are_pieces_of_their_own() {
+    let t = |s: &[u16]| lone_surrogate_pieces(s);
+    assert_eq!(t(&[0x61, 0x62]), None);
+    assert_eq!(t(&[0xd83d, 0xde00, 0x61]), None);
+    assert_eq!(t(&[0x61, 0xd800, 0x62, 0x63]), Some(vec![1, 1, 2]));
+    assert_eq!(t(&[0xdc00, 0xd83d, 0xde00, 0xd800]), Some(vec![1, 2, 1]));
+}
+
 /// A record and its position, converted to a JavaScript object.
 pub struct RecordAt(u64, Record);
 
@@ -149,9 +249,7 @@ impl ToNapiValue for RecordAt {
                 Value::Field(FieldRef::Code(c)) => obj.set(slot.name, c as f64)?,
                 Value::Field(FieldRef::Key(k)) | Value::Text(k) => obj.set(
                     slot.name,
-                    Utf16String::from(
-                        wtf8_to_utf16(&k).map_err(|e| Error::from_reason(e.to_string()))?,
-                    ),
+                    JsText(wtf8_to_utf16(&k).map_err(|e| Error::from_reason(e.to_string()))?),
                 )?,
                 Value::Bytes(b) => obj.set(slot.name, Buffer::from(b))?,
             }
