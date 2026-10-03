@@ -86,6 +86,8 @@ import { installOwnerChatStatsHook } from './owner-chat-stats.js';
 import { migrateFlatSecrets } from './endpoints/secrets.js';
 import { wasBrowserRecentlyConnected } from './browser-presence.js';
 import { startTokenCountMaintenance } from './token-count-store.js';
+import { ensureEngine, EngineFetchError } from '../engine/fetch.js';
+import { loadEngine, EngineLoadError } from '../engine/load.js';
 
 // Work around a node v20.0.0, v20.1.0, and v20.2.0 bug. The issue was fixed in v20.3.0.
 // https://github.com/nodejs/node/issues/47822#issuecomment-1564708870
@@ -354,6 +356,16 @@ async function preSetupTasks() {
         const now = process.hrtime.bigint();
         console.log(`[boot-timing] ${label}: +${Number(now - __t0) / 1e6}ms total`);
     };
+
+    try {
+        await ensureEngine();
+        loadEngine();
+    } catch (err) {
+        if (!(err instanceof EngineFetchError || err instanceof EngineLoadError)) throw err;
+        console.error(color.red(err.message));
+        process.exit(1);
+    }
+    __mark('loadEngine');
 
     const directories = await getUserDirectoriesList();
     __mark('getUserDirectoriesList');
