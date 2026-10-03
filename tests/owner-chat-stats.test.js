@@ -241,35 +241,7 @@ describe('a character\'s chat stats follow every write to its messages', () => {
     });
 });
 
-describe('fillTreeOwnerKinds', () => {
-    test('records an owner matching exactly one character or group, and warns on the rest', async () => {
-        const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
-        await seedCharacter('Carol.png');
-        await seedCharacter('Dup.png');
-        await metadataDb.upsertGroupRow(directories, 'g1', 'G1', { fav: false, group: { id: 'g1', name: 'G1', members: [], chats: [] } });
-        await metadataDb.upsertGroupRow(directories, 'Dup', 'Dup', { fav: false, group: { id: 'Dup', name: 'Dup', members: [], chats: [] } });
-        for (const ownerId of ['Carol', 'g1', 'Dup', 'Nobody']) {
-            await tree.getOrCreateAnchor(directories, ownerId);
-        }
-
-        await metadataDb.fillTreeOwnerKinds(directories);
-
-        const db = await tree.getDbHandle(directories);
-        expect(Array.from(db.iterate('SELECT owner_id, kind, row_id FROM owners ORDER BY owner_id'))).toEqual([
-            { owner_id: 'Carol', kind: 'character', row_id: 'Carol.png' },
-            { owner_id: 'g1', kind: 'group', row_id: 'g1' },
-        ]);
-        const warned = warn.mock.calls.map(args => String(args[0]));
-        expect(warned.some(line => line.includes('Dup') && line.includes('more than one'))).toBe(true);
-        expect(warned.some(line => line.includes('Nobody') && line.includes('matches no'))).toBe(true);
-
-        // Once known, the owner's writes count.
-        const openings = await tree.addOpeningAlternatives(directories, 'Carol', { name: 'Carol', is_user: false, mes: 'Hi', send_date: 1, extra: {} });
-        expect(openings.added).toBe(1);
-        const expected = await recompute('Carol');
-        expect((await stored('Carol.png')).chatSize).toBe(expected.chatSize);
-    });
-
+describe('character owner ids', () => {
     test('an avatar with .png inside its name maps back to its owner id', () => {
         expect(tree.characterAvatarsForOwnerId('a b')).toEqual(expect.arrayContaining(['a b.png', 'a b', '.pnga b']));
         for (const avatar of tree.characterAvatarsForOwnerId('x.png y')) {

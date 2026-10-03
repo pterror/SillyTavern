@@ -62,8 +62,7 @@ async function seed() {
         // A reply stored without its generation time.
         { name: 'User', is_user: true, mes: 'Same', send_date: T0 + 6000, extra: {} },
         { name: 'Rex', is_user: false, mes: 'Indeed', send_date: T0 + 7000, extra: {} },
-    ]);
-    await treeDb.recordOwnerKinds(directories, [{ ownerId: 'rex', owner: { kind: 'character', rowId: 'rex.png' } }]);
+    ], false, { kind: 'character', rowId: 'rex.png' });
 }
 
 async function run() {

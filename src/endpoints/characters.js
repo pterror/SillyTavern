@@ -27,7 +27,6 @@ import { invalidateThumbnail, getThumbnailVersion } from './thumbnails.js';
 import { importRisuSprites, importChubExpressions, importChubRelatedLorebooks } from './sprites.js';
 import { getChatInfo } from './chats.js';
 import { hasSavedChats, listBranches as listTreeBranches } from '../message-tree-db.js';
-import { migrateOwnerOnTouch } from '../message-tree-migration.js';
 import { ByafParser } from '../byaf.js';
 import { CharXParser, persistCharXAssets } from '../charx.js';
 import cacheBuster from '../middleware/cacheBuster.js';
@@ -3532,12 +3531,7 @@ router.post('/chats', validateAvatarUrlMiddleware, async function (request, resp
             return response.send([]);
         }
 
-        await migrateOwnerOnTouch(request.user.directories, {
-            ownerId: characterDirectory,
-            chatDir: path.join(request.user.directories.chats, characterDirectory),
-        });
-
-        // Tree DB path: if the character is migrated, list branches from the tree DB
+        // Tree DB path: if the character has saved chats, list branches from the tree DB
         if (await hasSavedChats(request.user.directories, characterDirectory)) {
             const branches = await listTreeBranches(request.user.directories, characterDirectory);
 

@@ -1,12 +1,12 @@
 import sanitize from 'sanitize-filename';
 
 /**
- * Per-group async lock. Every writer of a group's JSON file or of its chat files - the group routes, the on-open
- * migration (touchGroupOwner) and the boot group migration pass - runs its read-modify-write under it, so no write
- * can land between another writer's read and write of the same group.
+ * Per-group async lock. Every writer of a group's JSON file or of its chat files - the group routes and
+ * migrateGroupChatsMetadataFormat() - runs its read-modify-write under it, so no write can land between another
+ * writer's read and write of the same group.
  *
  * A group is keyed by its JSON file's name within the user's groups directory: a route names the group by id and
- * writes `sanitize(<id>.json)` (groupLockName()), the migration pass names it by the file it listed. Only groups
+ * writes `sanitize(<id>.json)` (groupLockName()), migrateGroupChatsMetadataFormat() names it by the file it listed. Only groups
  * that are held or waited on have an entry, so memory is bounded by in-flight work, not by the number of groups.
  * Main thread only: it serializes async work within this process, not across worker threads.
  */
