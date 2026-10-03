@@ -301,39 +301,3 @@ describe('group_changes.file_name', () => {
         expect(await addedBy(() => metadataDb.writeGroupFileAndRow(directories, group, () => fs.writeFileSync(groupPath('ab.json'), text)))).toEqual([['a:b', 'ab.json']]);
     });
 });
-
-describe('the file_name migration', () => {
-    test('adds the column to an old group_changes, keeps its rows with NULL, and later writes record their file', async () => {
-        withRawDb(db => {
-            db.exec('CREATE TABLE group_changes (version INTEGER PRIMARY KEY AUTOINCREMENT, group_id TEXT)');
-            db.prepare('INSERT INTO group_changes (group_id) VALUES (\'1001\'), (NULL)').run();
-        });
-
-        await metadataDb.getGroupsVersion(directories);
-
-        const columns = withRawDb(db => Array.from(db.prepare('PRAGMA table_info(group_changes)').iterate(), (/** @type {any} */ c) => c.name));
-        expect(columns).toEqual(['version', 'group_id', 'file_name']);
-        expect(logRows()).toEqual([
-            { version: 1, group_id: '1001', file_name: null },
-            { version: 2, group_id: null, file_name: null },
-        ]);
-
-        await writeThroughStore({ id: '1001', name: 'g', members: [], chats: [] });
-        expect(logRows().slice(2)).toEqual([{ version: 3, group_id: '1001', file_name: '1001.json' }]);
-    });
-
-    test('runs before the groups column migrations, whose rows it can then hold', async () => {
-        writeGroupFileRaw('1001', { name: 'from file' });
-        withRawDb(db => {
-            db.exec('CREATE TABLE group_changes (version INTEGER PRIMARY KEY AUTOINCREMENT, group_id TEXT)');
-            db.exec('CREATE TABLE groups (id TEXT PRIMARY KEY, name TEXT NOT NULL)');
-            db.prepare('INSERT INTO groups (id, name) VALUES (\'1001\', \'old\')').run();
-        });
-
-        await metadataDb.getGroupsVersion(directories);
-
-        // migrateGroupsColumns() and migrateGroupDigestColumns() write rows only, no file.
-        expect(logRows().map(row => [row.group_id, row.file_name])).toEqual([['1001', null], ['1001', null]]);
-        expect(withRawDb(db => db.prepare('SELECT name FROM groups').pluck().get())).toBe('from file');
-    });
-});

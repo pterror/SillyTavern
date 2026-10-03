@@ -213,7 +213,7 @@ function inItemSavepoint(db, fn) {
 
 const BATCH_FLUSH_SIZE = 500;
 
-// Rows per keyset read (WHERE id > ? ORDER BY id LIMIT ?) in the read-then-write migrations and writers.
+// Rows per keyset read (WHERE id > ? ORDER BY id LIMIT ?) in the read-then-write writers.
 const KEYSET_CHUNK = 1000;
 
 // Rows applyOrBuffer() lets accumulate in entry.batch.pending before flushBatch() commits them. Bounds the
@@ -499,10 +499,11 @@ const SCHEMA_SQL = `
         fav            INTEGER NOT NULL DEFAULT 0,
         date_added     INTEGER NOT NULL DEFAULT 0,
         date_last_chat INTEGER NOT NULL DEFAULT 0,
-        chat_size      INTEGER NOT NULL DEFAULT 0
+        chat_size      INTEGER NOT NULL DEFAULT 0,
+        digest_fav     INTEGER,
+        digest_tag_ids INTEGER,
+        digest_content INTEGER
     );
-    -- Indexes for groups are created by migrateGroupsColumns() instead, after it ALTERs a pre-existing
-    -- id/name-only groups table - an unconditional CREATE INDEX here would fail against those missing columns.
 
     CREATE TABLE IF NOT EXISTS group_tags (
         group_id TEXT NOT NULL,
@@ -556,13 +557,20 @@ const SCHEMA_SQL = `
     );
     INSERT OR IGNORE INTO entity_count_fill (kind) VALUES ('character'), ('group');
 
-    -- Tag *definitions* (name/color/folder_type/sort_order/... - everything tags.json's 'tags' array used to
-    -- hold). 'data' is the whole Tag object as JSON, the source of truth. The columns tags are queried by
-    -- (name_key, sort_order, folder_type, is_folder, usage_count) are added by migrateTagNameKeyColumn() and
-    -- migrateTagDerivedColumns(); they are derived from data and tag_usage, and data is never written from them.
+    -- Tag *definitions* (name/color/folder_type/sort_order/...). 'data' is the whole Tag object as JSON, the source
+    -- of truth. The columns tags are queried by are derived from data and tag_usage (TAG_ROW_VALUES_SQL), and data is
+    -- never written from them: name_key is tagNameKey() of the name; sort_order, folder_type, is_folder are
+    -- tagDerivedColumns(); usage_count is the id's tag_usage.count. reorder_pass: the id of the reorder pass
+    -- (tagReorderPassSync()) that last wrote the tag; NULL when none has.
     CREATE TABLE IF NOT EXISTS tags (
-        id   TEXT PRIMARY KEY,
-        data TEXT NOT NULL
+        id           TEXT PRIMARY KEY,
+        data         TEXT NOT NULL,
+        name_key     TEXT,
+        sort_order   REAL,
+        folder_type  TEXT,
+        is_folder    INTEGER,
+        usage_count  INTEGER,
+        reorder_pass INTEGER
     );
 
     -- A tag definition deleted by deleteTagDefinition(), whose tags row and tag rows are still waiting to be removed.
@@ -580,7 +588,15 @@ const SCHEMA_SQL = `
     -- (tag-actions D16, D18, D19, D25.3, D25.9-10, D28). seq is the arrival order, the order they apply in. An entry is either anchored (side and
     -- anchor_id: put tag_id right before/after anchor_id) or a value (value: the raw sort_order as JSON, written into
     -- tag_id's data as is), never both.
-    ${tagPendingMovesTableSql('tag_pending_moves')};
+    CREATE TABLE IF NOT EXISTS tag_pending_moves (
+        seq       INTEGER PRIMARY KEY AUTOINCREMENT,
+        tag_id    TEXT NOT NULL,
+        side      TEXT CHECK (side IN ('before', 'after')),
+        anchor_id TEXT,
+        value     TEXT,
+        CHECK ((side IS NOT NULL AND anchor_id IS NOT NULL AND value IS NULL)
+            OR (side IS NULL AND anchor_id IS NULL AND value IS NOT NULL))
+    );
 
     -- Where each tag a tag_pending_moves entry placed will be once the queue is drained, kept as each entry is queued
     -- (foldTagPendingSync()), so a manual read walks it by index instead of replaying the queue. One row per tag.
@@ -610,6 +626,24 @@ const SCHEMA_SQL = `
     CREATE INDEX IF NOT EXISTS tag_pending_places_frozen_name ON tag_pending_places(vk, vr, g, i) WHERE frozen = 1;
     CREATE INDEX IF NOT EXISTS tag_pending_places_frozen_usage ON tag_pending_places(vc DESC, vk, vr, g, i) WHERE frozen = 1;
     CREATE INDEX IF NOT EXISTS tag_pending_places_vr ON tag_pending_places(vr) WHERE valued = 1 AND frozen = 0;
+    -- tag_pending_places follows the rows it points at whatever writes them: emptied with tag_pending_moves; a
+    -- removed tags row takes its own place with it, and freezes the gaps anchored at it at the place it had; a
+    -- name_key change moves the value places that read it.
+    CREATE TRIGGER IF NOT EXISTS trg_tag_pending_moves_emptied AFTER DELETE ON tag_pending_moves
+        WHEN NOT EXISTS (SELECT 1 FROM tag_pending_moves) BEGIN
+        DELETE FROM tag_pending_places;
+    END;
+    CREATE TRIGGER IF NOT EXISTS trg_tags_pending_places_ad AFTER DELETE ON tags BEGIN
+        DELETE FROM tag_pending_places WHERE tag_id = OLD.id;
+        UPDATE tag_pending_places SET frozen = 1, vk = OLD.name_key, vc = OLD.usage_count, vr = OLD.rowid,
+            vphase = CASE WHEN valued = 1 THEN vphase WHEN OLD.sort_order IS NULL THEN 2 ELSE 1 END,
+            vs = CASE WHEN valued = 1 THEN vs ELSE OLD.sort_order END,
+            valued = 1
+            WHERE anchor_id = OLD.id AND frozen = 0;
+    END;
+    CREATE TRIGGER IF NOT EXISTS trg_tags_pending_places_name_key AFTER UPDATE OF name_key ON tags BEGIN
+        UPDATE tag_pending_places SET vk = NEW.name_key WHERE valued = 1 AND frozen = 0 AND vr = NEW.rowid;
+    END;
 
     -- One row per change to the name a tag's rows read as: a tag *name* edit (saveTagDefinitions() below), or a tag
     -- marked deleted, which then reads as its merge target or as nothing (deleteTagDefinition()). Never per tag
@@ -656,10 +690,14 @@ const SCHEMA_SQL = `
     -- Durable per-file "already processed at this mtime" record, backing DirectoryScanState.lastSeenMtimeMs
     -- (in-memory, bounded, cold on restart) so a restart doesn't force a full read+hash+dedup pass over an
     -- unchanged ~300k-file corpus. getLocalImportMtime() is the fallback lookup when the in-memory cache misses.
+    -- duplicate_of: the character this file was found to duplicate; deleteRowSync() deletes the rows naming a
+    -- deleted character, so a stale skip never outlives the character it depends on.
     CREATE TABLE IF NOT EXISTS local_import_mtimes (
-        source_path TEXT PRIMARY KEY,
-        mtime_ms    INTEGER NOT NULL
+        source_path  TEXT PRIMARY KEY,
+        mtime_ms     INTEGER NOT NULL,
+        duplicate_of TEXT
     );
+    CREATE INDEX IF NOT EXISTS idx_local_import_mtimes_duplicate_of ON local_import_mtimes(duplicate_of);
 
     -- Character and group rows whose chat_size/date_last_chat haven't been counted from their owner's messages
     -- since the row was inserted at 0/0. Added in the same transaction as the insert, removed in the same one as
@@ -731,306 +769,7 @@ function getDbPath(directories) {
     return path.join(directories.root, 'character-metadata.sqlite');
 }
 
-// deleteRowSync() cascades a character deletion into deleting rows that named it as duplicate_of, so a stale
-// skip can never outlive the character it depends on.
-/**
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- */
-function migrateLocalImportMtimesDuplicateOfColumn(db) {
-    const columns = Array.from(/** @type {Iterable<{ name: string, type: string, [key: string]: unknown }>} */ (db.iterate('PRAGMA table_info(local_import_mtimes)')));
-    if (!columns.some(c => c.name === 'duplicate_of')) {
-        db.exec('ALTER TABLE local_import_mtimes ADD COLUMN duplicate_of TEXT');
-    }
-    db.exec('CREATE INDEX IF NOT EXISTS idx_local_import_mtimes_duplicate_of ON local_import_mtimes(duplicate_of)');
-}
-
 export { computeContentIdentityHash };
-
-// Backfills real values into rows from the old id/name-only shape via a plain UPDATE, since
-// bootstrapGroupsIfNeeded()'s upsert path never overwrites an existing date_added.
-/**
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- * @param {import('./users.js').UserDirectoryList} directories
- */
-function migrateGroupsColumns(db, directories) {
-    const columns = Array.from(/** @type {Iterable<{ name: string, type: string, [key: string]: unknown }>} */ (db.iterate('PRAGMA table_info(groups)')));
-    const columnNames = new Set(columns.map(c => c.name));
-    const isPreExistingTable = columnNames.size > 0 && !columnNames.has('date_added');
-
-    if (!columnNames.has('name_fold')) db.exec('ALTER TABLE groups ADD COLUMN name_fold TEXT NOT NULL DEFAULT \'\'');
-    if (!columnNames.has('fav')) db.exec('ALTER TABLE groups ADD COLUMN fav INTEGER NOT NULL DEFAULT 0');
-    if (!columnNames.has('date_added')) db.exec('ALTER TABLE groups ADD COLUMN date_added INTEGER NOT NULL DEFAULT 0');
-    if (!columnNames.has('date_last_chat')) db.exec('ALTER TABLE groups ADD COLUMN date_last_chat INTEGER NOT NULL DEFAULT 0');
-    if (!columnNames.has('chat_size')) db.exec('ALTER TABLE groups ADD COLUMN chat_size INTEGER NOT NULL DEFAULT 0');
-
-    if (!isPreExistingTable) return;
-
-    const readIdChunk = (/** @type {string} */ afterId) => (/** @type {{ id: string }[]} */ (db.readBounded(
-        'SELECT id FROM groups WHERE id > ? ORDER BY id LIMIT ?',
-        [afterId, KEYSET_CHUNK],
-        KEYSET_CHUNK,
-    )));
-
-    const firstChunk = readIdChunk('');
-    if (firstChunk.length === 0) return;
-
-    let lastId = '';
-    db.transaction(() => {
-        // transaction() reruns this callback on busy; a rerun starts over from the first chunk.
-        lastId = '';
-        let chunk = firstChunk;
-        for (;;) {
-            for (const { id } of chunk) {
-                // The chat stats columns were just added at 0/0, whether or not the group's file can be read.
-                queueChatStatsReconcileSync(db, 'group', id);
-                try {
-                    const filePath = path.join(directories.groups, `${id}.json`);
-                    const raw = fs.readFileSync(filePath, 'utf8');
-                    const group = JSON.parse(raw);
-                    const stat = fs.statSync(filePath);
-                    inItemSavepoint(db, () => {
-                        const changed = writeEntityRowSync(db, ENTITY_COUNT_KIND_BY_NAME.group, id, {
-                            name: group.name ?? '',
-                            name_fold: foldName(group.name),
-                            fav: normalizeFav(group.fav) ? 1 : 0,
-                            date_added: Math.round(stat.birthtimeMs),
-                        });
-                        if (changed) insertGroupChange(db, id);
-                    });
-                } catch (err) {
-                    console.error(`[character-metadata] Column-migration backfill failed to process group ${id}, leaving it at its zeroed defaults:`, /** @type {any} */ (err).message);
-                }
-            }
-
-            if (chunk.length < KEYSET_CHUNK) break;
-            lastId = chunk[chunk.length - 1].id;
-            chunk = readIdChunk(lastId);
-            if (chunk.length === 0) break;
-        }
-    });
-}
-
-// Backfills digests immediately - groups are few enough that eager backfill is cheap. Unlike characters, group
-// rows still trust this stored value (see queryEntities()'s toHashRow()): a group's digest source is its own
-// JSON file, not shallow_json, and nothing has found that drift stale.
-/**
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- * @param {import('./users.js').UserDirectoryList} directories
- */
-function migrateGroupDigestColumns(db, directories) {
-    const columns = Array.from(/** @type {Iterable<{ name: string, type: string, [key: string]: unknown }>} */ (db.iterate('PRAGMA table_info(groups)')));
-    const columnNames = new Set(columns.map(c => c.name));
-    const isNewColumn = !columnNames.has('digest_fav');
-    if (!columnNames.has('digest_fav')) db.exec('ALTER TABLE groups ADD COLUMN digest_fav INTEGER');
-    if (!columnNames.has('digest_tag_ids')) db.exec('ALTER TABLE groups ADD COLUMN digest_tag_ids INTEGER');
-    if (!columnNames.has('digest_content')) db.exec('ALTER TABLE groups ADD COLUMN digest_content INTEGER');
-
-    if (!isNewColumn) return;
-
-    const readIdChunk = (/** @type {string} */ afterId) => (/** @type {{ id: string }[]} */ (db.readBounded(
-        'SELECT id FROM groups WHERE id > ? ORDER BY id LIMIT ?',
-        [afterId, KEYSET_CHUNK],
-        KEYSET_CHUNK,
-    )));
-
-    const firstChunk = readIdChunk('');
-    if (firstChunk.length === 0) return;
-
-    let lastId = '';
-    db.transaction(() => {
-        // transaction() reruns this callback on busy; a rerun starts over from the first chunk.
-        lastId = '';
-        let chunk = firstChunk;
-        for (;;) {
-            for (const { id } of chunk) {
-                try {
-                    const filePath = path.join(directories.groups, `${id}.json`);
-                    const raw = fs.readFileSync(filePath, 'utf8');
-                    const group = normalizeGroupRecord(JSON.parse(raw));
-                    const tagIds = tagEntityTypeOf(id) === 'group' ? Array.from(/** @type {Iterable<{ tag_id: string }>} */ (db.iterate('SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id', { id })), r => r.tag_id) : [];
-                    const fingerprintSource = { ...group, tag_ids: tagIds };
-                    inItemSavepoint(db, () => {
-                        const changed = writeRowIfChanged(db, 'groups', { id }, {
-                            digest_fav: groupDigestFavHash(fingerprintSource),
-                            digest_tag_ids: groupDigestTagIdsHash(fingerprintSource),
-                            digest_content: groupDigestContentHash(fingerprintSource),
-                        });
-                        if (changed) insertGroupChange(db, id);
-                    });
-                } catch (err) {
-                    console.error(`[character-metadata] Group digest backfill failed for ${id}, leaving digests NULL (hash-mode falls back to computing live):`, /** @type {any} */ (err).message);
-                }
-            }
-
-            if (chunk.length < KEYSET_CHUNK) break;
-            lastId = chunk[chunk.length - 1].id;
-            chunk = readIdChunk(lastId);
-            if (chunk.length === 0) break;
-        }
-    });
-}
-
-// fields: JSON array of changed field names (e.g. '["fav"]'), or NULL meaning the whole record changed.
-/**
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- */
-function migrateChangesFieldsColumn(db) {
-    const columns = Array.from(/** @type {Iterable<{ name: string, type: string, [key: string]: unknown }>} */ (db.iterate('PRAGMA table_info(changes)')));
-    if (!columns.some(c => c.name === 'fields')) {
-        db.exec('ALTER TABLE changes ADD COLUMN fields TEXT');
-    }
-}
-
-// file_name: see group_changes in SCHEMA_SQL. Rows logged before it existed keep NULL.
-/**
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- */
-function migrateGroupChangesFileNameColumn(db) {
-    const columns = Array.from(/** @type {Iterable<{ name: string, type: string, [key: string]: unknown }>} */ (db.iterate('PRAGMA table_info(group_changes)')));
-    if (!columns.some(c => c.name === 'file_name')) {
-        db.exec('ALTER TABLE group_changes ADD COLUMN file_name TEXT');
-    }
-}
-
-/**
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- */
-function migrateRevToSeqColumns(db) {
-    const changeCols = Array.from(/** @type {Iterable<{ name: string, type: string, [key: string]: unknown }>} */ (db.iterate('PRAGMA table_info(\'changes\')')), c => c.name);
-    if (changeCols.includes('rev') && !changeCols.includes('seq')) {
-        db.exec('ALTER TABLE changes RENAME COLUMN rev TO seq');
-    }
-    db.run('UPDATE meta SET key = \'tags_hash\' WHERE key = \'tags_rev\'');
-    db.run('UPDATE meta SET key = \'tantivy_char_index_seq\' WHERE key = \'tantivy_char_index_rev\'');
-    db.run('UPDATE meta SET key = \'tantivy_char_index_tags_hash\' WHERE key = \'tantivy_char_index_tags_rev\'');
-}
-
-// name_key is tagNameKey() of the row's name.
-/**
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- */
-function migrateTagNameKeyColumn(db) {
-    const columns = Array.from(/** @type {Iterable<{ name: string }>} */ (db.iterate('PRAGMA table_info(tags)')));
-    if (!columns.some(c => c.name === 'name_key')) {
-        db.exec('ALTER TABLE tags ADD COLUMN name_key TEXT');
-    }
-}
-
-// No defaults: every write of a tags row sets them (TAG_ROW_VALUES_SQL).
-const TAG_DERIVED_COLUMNS = [
-    ['sort_order', 'REAL'],
-    ['folder_type', 'TEXT'],
-    ['is_folder', 'INTEGER'],
-    ['usage_count', 'INTEGER'],
-];
-
-/**
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- */
-function migrateTagDerivedColumns(db) {
-    const existing = new Set([...db.iterate('PRAGMA table_info(tags)')].map(c => /** @type {{ name: string }} */ (c).name));
-    for (const [name, type] of TAG_DERIVED_COLUMNS) {
-        if (!existing.has(name)) db.exec(`ALTER TABLE tags ADD COLUMN ${name} ${type}`);
-    }
-}
-
-/** The triggers that kept tag_usage and tags.usage_count before insertTagRowSync() / deleteTagRowSync() did. */
-const OLD_TAG_USAGE_TRIGGER_NAMES = ['trg_character_tags_ai', 'trg_character_tags_ad', 'trg_group_tags_ai', 'trg_group_tags_ad'];
-
-/**
- * The CREATE TABLE of tag_pending_moves (see SCHEMA_SQL), under `name`; a declaration, so SCHEMA_SQL can use it.
- * @param {string} name
- */
-function tagPendingMovesTableSql(name) {
-    return `CREATE TABLE IF NOT EXISTS ${name} (
-        seq       INTEGER PRIMARY KEY AUTOINCREMENT,
-        tag_id    TEXT NOT NULL,
-        side      TEXT CHECK (side IN ('before', 'after')),
-        anchor_id TEXT,
-        value     TEXT,
-        CHECK ((side IS NOT NULL AND anchor_id IS NOT NULL AND value IS NULL)
-            OR (side IS NULL AND anchor_id IS NULL AND value IS NOT NULL))
-    )`;
-}
-
-// tag_pending_places follows the rows it points at whatever writes them: emptied with tag_pending_moves; a removed
-// tags row takes its own place with it, and freezes the gaps anchored at it at the place it had; a name_key change
-// moves the value places that read it. Kept as stored in sqlite_master (no IF NOT EXISTS, no trailing ';'), so
-// replaceTagPendingPlaceTriggers() can tell an old body from this one.
-const TAG_PENDING_PLACE_TRIGGERS = [
-    {
-        name: 'trg_tag_pending_moves_emptied',
-        sql: `CREATE TRIGGER trg_tag_pending_moves_emptied AFTER DELETE ON tag_pending_moves
-    WHEN NOT EXISTS (SELECT 1 FROM tag_pending_moves) BEGIN
-    DELETE FROM tag_pending_places;
-END`,
-    },
-    {
-        name: 'trg_tags_pending_places_ad',
-        sql: `CREATE TRIGGER trg_tags_pending_places_ad AFTER DELETE ON tags BEGIN
-    DELETE FROM tag_pending_places WHERE tag_id = OLD.id;
-    UPDATE tag_pending_places SET frozen = 1, vk = OLD.name_key, vc = OLD.usage_count, vr = OLD.rowid,
-        vphase = CASE WHEN valued = 1 THEN vphase WHEN OLD.sort_order IS NULL THEN 2 ELSE 1 END,
-        vs = CASE WHEN valued = 1 THEN vs ELSE OLD.sort_order END,
-        valued = 1
-        WHERE anchor_id = OLD.id AND frozen = 0;
-END`,
-    },
-    {
-        name: 'trg_tags_pending_places_name_key',
-        sql: `CREATE TRIGGER trg_tags_pending_places_name_key AFTER UPDATE OF name_key ON tags BEGIN
-    UPDATE tag_pending_places SET vk = NEW.name_key WHERE valued = 1 AND frozen = 0 AND vr = NEW.rowid;
-END`,
-    },
-];
-
-/**
- * Creates each TAG_PENDING_PLACE_TRIGGERS trigger that is missing or has another body. Runs after
- * migrateTagPendingMovesValueColumn(), which can drop tag_pending_moves (and its triggers with it).
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- */
-function replaceTagPendingPlaceTriggers(db) {
-    const isCurrent = (/** @type {{ name: string, sql: string }} */ trigger) => {
-        const row = /** @type {{ sql: string } | undefined} */ (db.get('SELECT sql FROM sqlite_master WHERE type = \'trigger\' AND name = @name', { name: trigger.name }));
-        return row?.sql === trigger.sql;
-    };
-    if (TAG_PENDING_PLACE_TRIGGERS.every(isCurrent)) return;
-    db.transaction(() => {
-        for (const trigger of TAG_PENDING_PLACE_TRIGGERS) {
-            if (isCurrent(trigger)) continue;
-            db.exec(`DROP TRIGGER IF EXISTS ${trigger.name}`);
-            db.exec(trigger.sql);
-        }
-    });
-}
-
-/**
- * Rebuilds a tag_pending_moves made with a `sort_order REAL` value column with `value TEXT` in its place, keeping
- * every entry and its seq; a value becomes its JSON. Runs at boot: the table only holds queued moves, so it's small.
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- */
-function migrateTagPendingMovesValueColumn(db) {
-    const columns = new Set([...db.iterate('PRAGMA table_info(tag_pending_moves)')].map(c => /** @type {{ name: string }} */ (c).name));
-    if (!columns.has('sort_order')) return;
-    db.transaction(() => {
-        db.exec('DROP TABLE IF EXISTS tag_pending_moves_new');
-        db.exec(tagPendingMovesTableSql('tag_pending_moves_new'));
-        db.exec(`INSERT INTO tag_pending_moves_new (seq, tag_id, side, anchor_id, value)
-            SELECT seq, tag_id, side, anchor_id, CASE WHEN sort_order IS NULL THEN NULL ELSE json_quote(sort_order) END
-            FROM tag_pending_moves`);
-        db.exec('DROP TABLE tag_pending_moves');
-        db.exec('ALTER TABLE tag_pending_moves_new RENAME TO tag_pending_moves');
-    });
-}
-
-/**
- * reorder_pass: the id of the reorder pass (tagReorderPassSync()) that last wrote the tag; NULL when none has.
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- */
-function migrateTagReorderPassColumn(db) {
-    const existing = new Set([...db.iterate('PRAGMA table_info(tags)')].map(c => /** @type {{ name: string }} */ (c).name));
-    if (!existing.has('reorder_pass')) db.exec('ALTER TABLE tags ADD COLUMN reorder_pass INTEGER');
-}
 
 // Every write of a tags row inserts these columns (`INSERT ... INTO tags ${TAG_ROW_VALUES_SQL}`) with
 // tagRowParams(); usage_count is the id's tag_usage.count, 0 without a tag_usage row.
@@ -1067,30 +806,6 @@ export function tagDerivedColumns(tag) {
     const rawFolder = fields.folder_type;
     const folderType = rawFolder === undefined ? 'NONE' : typeof rawFolder === 'string' ? rawFolder : String(JSON.stringify(rawFolder));
     return { sortOrder, folderType, isFolder: folderType === 'NONE' ? 0 : 1 };
-}
-
-/**
- * Indexes no query reads any more: every sort, range, name lookup and fav filter reads the (fav, key, tie) sort
- * indexes (FIELDS_CHARACTER_INDEXES, GROUP_SORT_INDEXES_SQL), and a descending sort reads its ascending index backwards.
- */
-const UNUSED_INDEXES = [
-    'idx_characters_name_fold', 'idx_characters_date_added', 'idx_characters_date_last_chat', 'idx_characters_create_date',
-    'idx_characters_data_size', 'idx_characters_chat_size', 'idx_characters_fav_name_fold', 'idx_characters_fav_desc_name_fold_asc',
-    'idx_groups_name_fold', 'idx_groups_date_added', 'idx_groups_date_last_chat', 'idx_groups_chat_size', 'idx_groups_fav_name_fold',
-    'idx_groups_fav_desc_name_fold_asc',
-    ...['name_fold', 'date_added', 'date_last_chat', 'create_date', 'data_size', 'chat_size'].flatMap(column => [`idx_characters_sort_fav_${column}_desc`, `idx_character_tag_sort_${column}_desc`]),
-    ...['name_fold', 'date_added', 'date_last_chat', 'chat_size'].flatMap(column => [`idx_groups_sort_fav_${column}_desc`, `idx_group_tag_sort_${column}_desc`]),
-    'idx_name_order_desc', 'idx_name_order_unplaced', 'idx_character_tag_sort_key',
-];
-/** meta key: the last schema step (dropUnusedIndexes()) has run. cleanup-zztest-leftovers.js checks for it. */
-export const UNUSED_INDEXES_DROPPED_FLAG = 'unused_indexes_dropped_v1';
-
-/**
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- */
-function dropUnusedIndexes(db) {
-    for (const name of UNUSED_INDEXES) db.exec(`DROP INDEX IF EXISTS ${name}`);
-    setMetaSync(db, UNUSED_INDEXES_DROPPED_FLAG, '1');
 }
 
 // Returns null if no SQLite engine is usable on this install - callers must no-op rather than throw. In read-only
@@ -1139,19 +854,6 @@ async function getEntry(directories) {
         setMetaSync(db, TAGS_SEED_PENDING_KEY, String(Date.now()));
         setMetaSync(db, CARD_LAYOUT_META_KEY, 'fields');
     }
-    migrateLocalImportMtimesDuplicateOfColumn(db);
-    migrateChangesFieldsColumn(db);
-    // Before any migration below that logs a group change.
-    migrateGroupChangesFileNameColumn(db);
-    migrateRevToSeqColumns(db);
-    migrateGroupsColumns(db, directories);
-    migrateGroupDigestColumns(db, directories);
-    migrateTagNameKeyColumn(db);
-    migrateTagDerivedColumns(db);
-    migrateTagReorderPassColumn(db);
-    migrateTagPendingMovesValueColumn(db);
-    replaceTagPendingPlaceTriggers(db);
-    dropOldCounterTriggers(db);
     db.exec(TAG_INDEXES_SQL);
     db.exec(GROUP_SORT_INDEXES_SQL);
     db.exec(TAG_SORT_TABLES_SQL);
@@ -1160,7 +862,6 @@ async function getEntry(directories) {
     db.exec(RANDOM_RANK_TRIGGERS_SQL);
     db.exec(NAME_ORDER_TABLE_SQL);
     db.exec(NAME_ORDER_TRIGGERS_SQL);
-    dropUnusedIndexes(db);
     /** @type {MetadataDbEntry} */
     const entry = { db, directories, batch: null, bootstrapPromise: null };
     entries.set(key, entry);
@@ -1184,7 +885,7 @@ function assertFieldsLayout(db, directories) {
 }
 
 // Read-only mode (read-only-mode.js): the existing db opens read-only on better-sqlite3, with no mkdir, no
-// SCHEMA_SQL and no migrations, so a write through the store fails in SQLite (SQLITE_READONLY).
+// SCHEMA_SQL, so a write through the store fails in SQLite (SQLITE_READONLY).
 /**
  * @param {import('./users.js').UserDirectoryList} directories
  * @returns {Promise<MetadataDbEntry>}
@@ -1208,8 +909,8 @@ async function openReadOnlyEntry(directories) {
     return entry;
 }
 
-// For one-off tooling that needs the schema/migrations applied (e.g. a pending NOT NULL backfill) without
-// starting the server's own bootstrap background work - getEntry() itself starts neither.
+// Opens the store, creating it with the current schema when it doesn't exist, without starting the server's own
+// bootstrap background work - getEntry() itself starts neither.
 /**
  * @param {import('./users.js').UserDirectoryList} directories
  */
@@ -3799,21 +3500,6 @@ function countTagRowSync(db, kind, entityId, tagId, sign) {
     if (!tagRowCountsFor(kind, entityId) || !entityCountFilledSync(db, kind, entityId)) return;
     const entity = /** @type {{ fav: number } | undefined} */ (db.get(`SELECT fav FROM ${kind.table} WHERE id = @id`, { id: entityId }));
     if (entity) addEntityTagCountSync(db, tagId, kind, entity.fav ? 1 : 0, sign);
-}
-
-/** The triggers that kept entity_counts and entity_tag_counts before the write path did. */
-const OLD_ENTITY_COUNT_TRIGGER_NAMES = ENTITY_COUNT_KINDS.flatMap(({ table, tagTable }) => [
-    `trg_${table}_count_ai`, `trg_${table}_count_ad`, `trg_${table}_count_au_fav`, `trg_${tagTable}_count_ai`, `trg_${tagTable}_count_ad`,
-]);
-
-/**
- * Drops the counter triggers a store from before the write path kept its counters may still have.
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- */
-function dropOldCounterTriggers(db) {
-    const names = [...OLD_ENTITY_COUNT_TRIGGER_NAMES, ...OLD_TAG_USAGE_TRIGGER_NAMES];
-    const present = db.get('SELECT 1 AS ok FROM sqlite_master WHERE type = \'trigger\' AND name IN (SELECT value FROM json_each(@names)) LIMIT 1', { names: JSON.stringify(names) });
-    if (present) db.exec(names.map(name => `DROP TRIGGER IF EXISTS ${name};`).join('\n'));
 }
 
 /**

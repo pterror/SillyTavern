@@ -405,8 +405,8 @@ describe('cleanup-zztest-leftovers', () => {
     });
 
     test.each([
-        ['a missing schema marker', db => db.exec('DELETE FROM meta WHERE key = \'unused_indexes_dropped_v1\''), 'meta has no unused_indexes_dropped_v1'],
-        ['file_mtime still present', db => db.exec('ALTER TABLE characters ADD COLUMN file_mtime INTEGER'), 'characters still has file_mtime'],
+        ['no layout row', db => db.exec('DELETE FROM meta WHERE key = \'card_layout\''), 'not in the fields layout'],
+        ['another layout', db => db.exec('UPDATE meta SET value = \'blob\' WHERE key = \'card_layout\''), 'not in the fields layout'],
     ])('schema not current (%s): real run refused', async (_name, mutate, detail) => {
         const scratch = await makeScratch();
         withDb(path.join(scratch.root, 'character-metadata.sqlite'), mutate);
@@ -416,7 +416,7 @@ describe('cleanup-zztest-leftovers', () => {
 
         expect(out.code).toBe(1);
         expect(out.warns.join('\n')).toContain(detail);
-        expect(out.warns.join('\n')).toContain('start the server once, stop it, then rerun');
+        expect(out.warns.join('\n')).toContain('run src/migrations/convert-character-store-to-fields.js first, then rerun');
         expect(snapshotFiles(scratch.dataRoot)).toEqual(before);
     });
 

@@ -29,7 +29,7 @@ import { groupDigestContentHash, groupDigestFavHash, normalizeFav } from '../../
  *
  * Dry run (read-only opens, writes nothing, may run while the server is running):
  *   node src/migrations/cleanup-zztest-leftovers.js --dry-run [--data-root ./data] [--handle default-user] [--config ./config.yaml]
- * Real run (the server must be stopped, and must have been started once on this data by the current code):
+ * Real run (the server must be stopped, and the character store already converted to the fields layout):
  *   node src/migrations/cleanup-zztest-leftovers.js --apply --server-stopped [--data-root ./data] [--handle default-user] [--config ./config.yaml]
  */
 
@@ -54,9 +54,9 @@ export const STRAY_ANCHOR_ID = '0ed9ac5e-4ea1-4e59-8680-c60d03f3c745';
 export const STRAY_CHILD_ID = '690b7bfa-71f6-448e-a6b2-0a53ae4b063b';
 const ANCHOR_CONTENT = '{"__anchor":true}';
 
-/** character-metadata-db.js's UNUSED_INDEXES_DROPPED_FLAG: set by its last schema step. */
-export const MARKER_META_KEY = 'unused_indexes_dropped_v1';
-export const MARKER_MISSING_MESSAGE = 'start the server once, stop it, then rerun';
+/** The store's layout row (character-card-reader.js CARD_LAYOUT_META_KEY); 'fields' is the only layout the code reads. */
+export const MARKER_META_KEY = 'card_layout';
+export const MARKER_MISSING_MESSAGE = 'run src/migrations/convert-character-store-to-fields.js first, then rerun';
 
 /**
  * @typedef {object} Reader
@@ -194,11 +194,9 @@ function checkMarker(meta) {
     if (!meta) return { ok: false, detail: 'character-metadata.sqlite does not exist' };
     const table = meta.get('SELECT name FROM sqlite_master WHERE type = \'table\' AND name = \'characters\' LIMIT 1');
     if (!table) return { ok: false, detail: 'character-metadata.sqlite has no characters table' };
-    const mtime = meta.get('SELECT name FROM pragma_table_info(\'characters\') WHERE name = \'file_mtime\' LIMIT 1');
-    if (mtime) return { ok: false, detail: 'characters still has file_mtime (the newest schema step has not run)' };
     const hasMeta = meta.get('SELECT name FROM sqlite_master WHERE type = \'table\' AND name = \'meta\' LIMIT 1');
-    if (!hasMeta || !meta.get('SELECT 1 FROM meta WHERE key = @key LIMIT 1', { key: MARKER_META_KEY })) {
-        return { ok: false, detail: `meta has no ${MARKER_META_KEY} (the last schema step has not completed)` };
+    if (!hasMeta || !meta.get('SELECT 1 FROM meta WHERE key = @key AND value = \'fields\' LIMIT 1', { key: MARKER_META_KEY })) {
+        return { ok: false, detail: 'the character store is not in the fields layout' };
     }
     return { ok: true, detail: 'schema is current' };
 }
