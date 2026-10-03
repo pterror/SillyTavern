@@ -245,6 +245,77 @@ fn every_truncation_point_reopens_to_exactly_the_whole_groups() {
 }
 
 #[test]
+fn damage_with_whole_groups_after_it_refuses_to_open_and_changes_nothing() {
+    let dir = temp_dir("damage");
+    let cfg = Config {
+        block_size: 256,
+        file_target: 1 << 20,
+    };
+    let recs = records(60);
+    let log = Log::open(&dir, cfg).unwrap();
+    let mut ends = Vec::new();
+    let mut positions = Vec::new();
+    for chunk in recs.chunks(3) {
+        positions.extend(log.append_wait(chunk.to_vec()).unwrap());
+        ends.push(log.durable_end());
+    }
+    log.close();
+    let name = file_name(&cfg, 0);
+    let original = fs::read(dir.join(&name)).unwrap();
+    let last_group = ends[ends.len() - 2];
+    let copy = temp_dir("damage-copy");
+    let (mut refused, mut opened) = (0, 0);
+    // Every byte before the last group, one at a time.
+    for i in 0..last_group as usize {
+        let mut damaged = original.clone();
+        damaged[i] ^= 0x40;
+        let _ = fs::remove_dir_all(&copy);
+        fs::create_dir_all(&copy).unwrap();
+        fs::write(copy.join(&name), &damaged).unwrap();
+        match Log::open(&copy, cfg) {
+            Err(LogError::Corrupt(c)) => {
+                refused += 1;
+                assert_eq!(
+                    fs::read(copy.join(&name)).unwrap(),
+                    damaged,
+                    "byte {i}: the file was changed"
+                );
+                assert_eq!(fs::read_dir(&copy).unwrap().count(), 1);
+                let group = ends.iter().position(|e| *e > i as u64).unwrap() as u64;
+                assert_eq!(c.groups_before, group, "byte {i}");
+                assert_eq!(
+                    c.damaged_from,
+                    if group == 0 {
+                        0
+                    } else {
+                        ends[group as usize - 1]
+                    }
+                );
+                assert_eq!(c.groups_after, ends.len() as u64 - group - 1, "byte {i}");
+                assert_eq!(c.after_to, *ends.last().unwrap());
+            }
+            Ok(log) => {
+                // A byte in a block's unused tail: no item covers it, and nothing changed.
+                opened += 1;
+                let read = all(&log);
+                assert_eq!(
+                    read.iter().map(|(p, _)| *p).collect::<Vec<_>>(),
+                    positions,
+                    "byte {i}"
+                );
+                assert_eq!(read.into_iter().map(|(_, r)| r).collect::<Vec<_>>(), recs);
+                log.close();
+                assert_eq!(fs::read(copy.join(&name)).unwrap(), damaged);
+            }
+            Err(e) => panic!("byte {i}: {e}"),
+        }
+    }
+    assert!(refused > opened, "{refused} refused, {opened} opened");
+    fs::remove_dir_all(&dir).unwrap();
+    fs::remove_dir_all(&copy).unwrap();
+}
+
+#[test]
 fn a_corrupted_last_group_is_dropped() {
     let dir = temp_dir("corrupt");
     let log = Log::open(&dir, SMALL).unwrap();

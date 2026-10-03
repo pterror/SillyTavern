@@ -21,7 +21,7 @@ use std::thread::JoinHandle;
 
 use format::{
     Ctx, FormatError, PAD, Record, TRAILER, TRAILER_LEN, decode_body, encode, get_uvarint,
-    kind_by_header,
+    kind_by_header, skip_body,
 };
 
 /// Bits of a position holding the offset in its file.
@@ -59,6 +59,8 @@ pub enum LogError {
     TooLarge(u64),
     /// An earlier write or sync failed, so nothing more is appended until the log is reopened.
     Failed,
+    /// Bytes inside the log, not at its end, that hold no whole group.
+    Corrupt(Corruption),
     Closed,
 }
 
@@ -75,6 +77,19 @@ impl std::fmt::Display for LogError {
                 "a commit of {n} bytes is larger than a log file can hold"
             ),
             LogError::Failed => write!(f, "the record log stopped after a failed write; reopen it"),
+            LogError::Corrupt(c) => write!(
+                f,
+                "record log file {} is damaged: bytes {}..{}, after its first {} groups, hold no whole group, \
+                 but {} whole groups follow (bytes {}..{}). Nothing was changed; the log won't open until the \
+                 damage is repaired.",
+                c.file,
+                c.damaged_from,
+                c.damaged_to,
+                c.groups_before,
+                c.groups_after,
+                c.damaged_to,
+                c.after_to
+            ),
             LogError::Closed => write!(f, "the record log is closed"),
         }
     }
@@ -89,6 +104,88 @@ impl From<io::Error> for LogError {
 }
 
 pub type LogResult<T> = Result<T, LogError>;
+
+/// Where a log file is damaged: offsets in the file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Corruption {
+    pub file: String,
+    /// Whole groups before the damage.
+    pub groups_before: u64,
+    pub damaged_from: u64,
+    /// Where the first whole group after the damage starts.
+    pub damaged_to: u64,
+    /// Whole groups from `damaged_to` on, one after another.
+    pub groups_after: u64,
+    /// Where they end.
+    pub after_to: u64,
+}
+
+/// The checksum a group starts from: its position's, so a group's bytes check out only where they were
+/// written (a group that begins with a pad would otherwise also check out from any zero byte in that block).
+fn group_seed(position: u64) -> u32 {
+    crc32c::crc32c(&position.to_le_bytes())
+}
+
+/// The end of a whole group of at least one record starting at `start`, from the bytes `rest` that start at
+/// offset `base`. Only the layout and the checksum are checked: ids and times are differences from earlier
+/// records in the block, which may be in the damage.
+fn whole_group_at(block: u64, file: u64, rest: &[u8], base: u64, start: u64) -> Option<u64> {
+    let end = base + rest.len() as u64;
+    let (mut offset, mut crc, mut records) = (start, group_seed(position(file, start)), 0);
+    while offset < end {
+        let i = (offset - base) as usize;
+        match rest[i] {
+            PAD if offset % block == 0 => return None,
+            PAD => {
+                crc = crc32c::crc32c_append(crc, &[PAD]);
+                offset = block_start(block, offset) + block;
+            }
+            TRAILER => {
+                if offset % block + TRAILER_LEN as u64 > block || records == 0 {
+                    return None;
+                }
+                let stored = rest.get(i + 1..i + TRAILER_LEN)?;
+                return (u32::from_le_bytes(stored.try_into().unwrap()) == crc)
+                    .then_some(offset + TRAILER_LEN as u64);
+            }
+            _ => {
+                let mut at = i;
+                let (kind, bits) = kind_by_header(get_uvarint(rest, &mut at).ok()?)?;
+                skip_body(kind, bits, rest, &mut at).ok()?;
+                let item_end = base + at as u64;
+                if offset % block != 0
+                    && block_start(block, offset) != block_start(block, item_end - 1)
+                {
+                    return None;
+                }
+                crc = crc32c::crc32c_append(crc, &rest[i..at]);
+                records += 1;
+                offset = after(block, offset, item_end);
+            }
+        }
+    }
+    None
+}
+
+/// Whether a whole group starts anywhere in `rest` (the bytes after the last whole group, from offset `base`):
+/// if one does, the bytes before it are damage, not a torn last group.
+fn find_damage(cfg: &Config, file: u64, rest: &[u8], base: u64) -> Option<Corruption> {
+    let end = base + rest.len() as u64;
+    let (start, mut group_end) = (base + 1..end)
+        .find_map(|s| whole_group_at(cfg.block_size, file, rest, base, s).map(|e| (s, e)))?;
+    let mut groups_after = 1;
+    while let Some(e) = whole_group_at(cfg.block_size, file, rest, base, group_end) {
+        (groups_after, group_end) = (groups_after + 1, e);
+    }
+    Some(Corruption {
+        file: String::new(),
+        groups_before: 0,
+        damaged_from: base,
+        damaged_to: start,
+        groups_after,
+        after_to: group_end,
+    })
+}
 
 pub fn position(file: u64, offset: u64) -> u64 {
     (file << FILE_SHIFT) | offset
@@ -214,7 +311,7 @@ impl<'a> Scanner<'a> {
             buf_start: start,
             offset: start,
             ctx: Ctx::default(),
-            crc: 0,
+            crc: group_seed(position(file_index, start)),
         }
     }
 
@@ -295,15 +392,14 @@ impl<'a> Scanner<'a> {
                             FormatError::Invalid("an item crosses a block boundary".into()),
                         ));
                     }
-                    if !matches!(item, Item::Trailer(_)) {
-                        self.crc = crc32c::crc32c_append(self.crc, &self.buf[at0..at]);
-                    } else {
-                        self.crc = 0;
-                    }
                     self.ctx = ctx;
                     self.offset = match item {
                         Item::Pad => block_start(block, start) + block,
                         _ => after(block, start, end),
+                    };
+                    self.crc = match item {
+                        Item::Trailer(_) => group_seed(position(self.file_index, self.offset)),
+                        _ => crc32c::crc32c_append(self.crc, &self.buf[at0..at]),
                     };
                     return Ok(Some((start, item)));
                 }
@@ -405,8 +501,9 @@ fn sync_dir(dir: &Path) -> io::Result<()> {
 
 impl Log {
     /// Opens the log in `dir` (created if missing): finds the last file, reads it to its last group whose
-    /// checksum holds, and cuts off what follows (a group a crash tore before its sync returned, so never
-    /// acknowledged). Reads at most one file.
+    /// checksum holds, and cuts off what follows if that is a group a crash tore before its sync returned
+    /// (never acknowledged). If a whole group follows the damage, it fails with `Corrupt` and changes nothing.
+    /// Later files can't exist: a file is created only after the round before it synced.
     pub fn open(dir: &Path, cfg: Config) -> LogResult<Log> {
         assert!(
             cfg.block_size.is_power_of_two()
@@ -438,14 +535,16 @@ impl Log {
         };
         if let Some(file) = last {
             let path = dir.join(file_name(&cfg, file));
-            let handle = OpenOptions::new().write(true).open(&path)?;
-            let len = handle.metadata()?.len();
-            let reader = LogFile::new(File::open(&path)?);
+            let read_handle = File::open(&path)?;
+            let len = read_handle.metadata()?.len();
+            let reader = LogFile::new(read_handle);
             let mut scanner = Scanner::new(&cfg, file, &reader, 0, len);
+            let mut groups = 0;
             loop {
                 match scanner.next() {
                     Ok(Some((_, Item::Trailer(true)))) => {
-                        (tail.offset, tail.ctx) = (scanner.offset, scanner.ctx)
+                        (tail.offset, tail.ctx) = (scanner.offset, scanner.ctx);
+                        groups += 1;
                     }
                     Ok(Some((_, Item::Trailer(false))))
                     | Ok(None)
@@ -455,6 +554,19 @@ impl Log {
                 }
             }
             if len > tail.offset {
+                // Only the last group can be torn by a crash. If a whole group follows the damage, synced and
+                // acknowledged records would be lost by cutting there: refuse instead, changing nothing.
+                let mut rest = vec![0; (len - tail.offset) as usize];
+                let n = reader.read_at(&mut rest, tail.offset)?;
+                rest.truncate(n);
+                if let Some(corruption) = find_damage(&cfg, file, &rest, tail.offset) {
+                    return Err(LogError::Corrupt(Corruption {
+                        file: file_name(&cfg, file),
+                        groups_before: groups,
+                        ..corruption
+                    }));
+                }
+                let handle = OpenOptions::new().write(true).open(&path)?;
                 handle.set_len(tail.offset)?;
                 handle.sync_data()?;
             }
@@ -735,7 +847,6 @@ impl Layout {
         let mut bytes = [TRAILER; TRAILER_LEN];
         bytes[1..].copy_from_slice(&self.crc.to_le_bytes());
         self.push(at, &bytes);
-        self.crc = 0;
         self.offset = at + TRAILER_LEN as u64;
     }
 }
@@ -779,7 +890,7 @@ fn write_round(
         offset: tail.offset,
         ctx: tail.ctx,
         runs: Vec::new(),
-        crc: 0,
+        crc: group_seed(position(tail.file, tail.offset)),
     };
     // A round ends past `file_target` by at most its last commit, and offsets stay below 2^FILE_SHIFT.
     let max_commit = (1u64 << FILE_SHIFT) - cfg.file_target - cfg.block_size;
