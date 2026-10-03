@@ -88,6 +88,8 @@ pub struct Mem {
     bytes: usize,
     /// The log position its entries cover, once frozen.
     covered: u64,
+    /// Frozen for reaching B, rather than for L or a close.
+    full: bool,
 }
 
 impl Mem {
@@ -225,6 +227,8 @@ pub struct Keyspace {
     counters: Counters,
     hooks: OnceLock<Box<dyn Hooks>>,
     threads: Mutex<Vec<JoinHandle<()>>>,
+    /// Bytes of the last run flushed from a full buffer: the size of tier 0.
+    flush_unit: AtomicU64,
 }
 
 fn sync_dir(dir: &Path) -> io::Result<()> {
@@ -309,6 +313,8 @@ impl Keyspace {
             counters: Counters::default(),
             hooks: OnceLock::new(),
             threads: Mutex::new(Vec::new()),
+            // Until a full buffer has been flushed: entries take about 12 times their run bytes in memory.
+            flush_unit: AtomicU64::new((cfg.buffer_bytes as u64 / 12).max(1)),
         }))
     }
 
@@ -447,7 +453,7 @@ impl Keyspace {
             w.log_bytes += bytes;
             let full = self.version().mems[0].read().unwrap().bytes >= self.cfg.buffer_bytes;
             if full || w.log_bytes >= self.cfg.log_bytes {
-                drop(self.freeze(w, end));
+                drop(self.freeze(w, end, full));
             }
         }
     }
@@ -460,7 +466,7 @@ impl Keyspace {
         let newest = v.mems.get(1).map(|m| m.read().unwrap().covered);
         let covered = newest.unwrap_or_else(|| v.runs.first().map_or(0, |r| r.covered));
         if v.mems[0].read().unwrap().bytes > 0 || end > covered {
-            drop(self.freeze(w, end));
+            drop(self.freeze(w, end, false));
         }
     }
 
@@ -468,13 +474,17 @@ impl Keyspace {
         &'a self,
         mut w: MutexGuard<'a, WriteState>,
         end: u64,
+        full: bool,
     ) -> MutexGuard<'a, WriteState> {
         while self.version().mems.len() > self.cfg.max_frozen {
             w = self.flushed_cv.wait(w).unwrap();
         }
         let mut version = self.version.lock().unwrap();
         let mut mems = version.mems.clone();
-        mems[0].write().unwrap().covered = end;
+        {
+            let mut m = mems[0].write().unwrap();
+            (m.covered, m.full) = (end, full);
+        }
         mems.insert(0, Arc::new(RwLock::new(Mem::default())));
         *version = Arc::new(Version {
             mems,
@@ -587,9 +597,12 @@ impl Keyspace {
         for (ek, ev) in extra {
             w.add(&ek, &ev)?;
         }
-        let covered = m.covered;
+        let (covered, full) = (m.covered, m.full);
         drop(m);
         let bytes = w.finish(covered, seq, seq)?;
+        if full {
+            self.flush_unit.store(bytes, Ordering::Relaxed);
+        }
         let path = self.dir.join(&name);
         fs::rename(&tmp, &path)?;
         sync_dir(&self.dir)?;
@@ -612,18 +625,12 @@ impl Keyspace {
 
     // ---- merges ----
 
-    /// A run's tier: runs within a factor δ of each other in size share one. The unit is the size a flush of
-    /// a full buffer comes out at on disk, or below (entries take several times their encoded size in memory).
+    /// A run's tier: about log_δ of its size in full flushes, rounded to the nearest, so a flush is tier 0, δ
+    /// of them merged tier 1 even when the merge dropped some entries, and so on.
     fn tier(&self, bytes: u64) -> u32 {
-        let unit = (self.cfg.buffer_bytes as u64 / 8).max(1);
-        let delta = self.cfg.fan_in as u64;
-        let mut t = 0;
-        let mut size = unit * delta;
-        while bytes >= size {
-            t += 1;
-            size = size.saturating_mul(delta);
-        }
-        t
+        let unit = self.flush_unit.load(Ordering::Relaxed).max(1) as f64;
+        let t = (bytes.max(1) as f64 / unit).ln() / (self.cfg.fan_in as f64).ln();
+        (t + 0.5).floor().max(0.0) as u32
     }
 
     /// Picks adjacent runs to merge: `fan_in` of one tier, the lowest tier first; or, past a run count no
