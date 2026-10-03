@@ -224,7 +224,7 @@ fn reads(s: &Store, ids: u64, rng: &mut Rng) -> String {
     )
 }
 
-/// Bytes of the live records: every id's current record.
+/// Bytes of the live records: every id's current record, each read back to check it is there.
 fn live_bytes(s: &Store) -> u64 {
     let start = key::of(key::TEST_SET);
     let end = key::prefix_end(&start);
@@ -235,10 +235,13 @@ fn live_bytes(s: &Store) -> u64 {
         let Some((last, _)) = page.last() else { break };
         from = last.clone();
         from.push(0);
-        total += page
-            .iter()
-            .map(|(_, v)| parse_loc(v).unwrap().len)
-            .sum::<u64>();
+        for (k, v) in &page {
+            let l = parse_loc(v).unwrap();
+            if let Err(e) = s.read(l.pos) {
+                panic!("{k:?} points at {}: {e}", l.pos);
+            }
+            total += l.len;
+        }
     }
     total
 }
@@ -268,6 +271,9 @@ fn config() -> StoreConfig {
     }
     if let Some(v) = env("ST_LOG_BLOCK") {
         c.log.block_size = v.parse().unwrap();
+    }
+    if let Some(v) = env("ST_LOG_FILE") {
+        c.log.file_target = v.parse().unwrap();
     }
     c
 }
@@ -358,6 +364,15 @@ fn run(dir: &Path, entries: u64) {
     let started = Instant::now();
     clean_all(&s);
     let live = live_bytes(&s);
+    for st in [key::DEAD, key::CLEAN, key::GONE] {
+        let p = key::of(st);
+        for (k, v) in s.scan(&p, &key::prefix_end(&p), usize::MAX).unwrap() {
+            let f = file_of_key(&k);
+            if !s.log().file_path(f).exists() {
+                panic!("structure {st}: removed file {f} has an entry {v:?}");
+            }
+        }
+    }
     report(
         "cleaned",
         &s,
