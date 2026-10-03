@@ -5,11 +5,11 @@ import os from 'node:os';
 import process from 'node:process';
 import lodash from 'lodash';
 
-import { characterDigestFavHash, characterDigestFieldsHash, characterDigestSource, characterDigestTagIdsHash, normalizeTagIds } from '../public/scripts/hash-utils.js';
+import { characterContentFieldsFingerprint, normalizeFav, normalizeTagIds, shallowCharacterData } from '../public/scripts/hash-utils.js';
 
 // The real delta-sync client (character-list.js getCharacters() -> fetchCharactersDelta() -> character-cache.js)
 // against the real server routes: every character the server writes, fetched whole by delta-sync, must be cached
-// as the list row the server shows for it, compared by their fav/tag_ids/content digests. Only modules that can't load in node are replaced: IndexedDB (localforage) by an
+// as the list row the server shows for it, compared by fav, tag_ids and the content fields. Only modules that can't load in node are replaced: IndexedDB (localforage) by an
 // in-memory store that structured-clones like IndexedDB does, and character-list.js's DOM-bound UI imports.
 
 // writeCharacterData()'s and the JSON importer's DEFAULT_AVATAR_PATH ('./public/img/...') is repo-root-relative.
@@ -156,27 +156,33 @@ const V1_CARD = { name: 'Legacy', description: 'd', creatorcomment: 'legacy note
 const CARDS = [['full', FULL_CARD], ['sparse', SPARSE_CARD], ['bare', BARE_CARD], ['drifted', DRIFT_CARD], ['V1', V1_CARD]];
 
 /**
- * The fav, tag_ids and content digests of a list row or a record hashed as one.
+ * What a list row shows of fav, tag_ids and the content fields, normalized as the page compares them.
  * @param {any} shallow
  */
-function digestsOf(shallow) {
+function listFactsOf(shallow) {
     return {
-        fav: (characterDigestFavHash(shallow) % 4294967296) >>> 0,
-        tagIds: characterDigestTagIdsHash(shallow) >>> 0,
-        content: (characterDigestFieldsHash(shallow) % 4294967296) >>> 0,
+        fav: { fav: normalizeFav(shallow?.fav), extFav: normalizeFav(shallow?.data?.extensions?.fav) },
+        tagIds: normalizeTagIds(shallow?.tag_ids),
+        content: characterContentFieldsFingerprint(shallow),
     };
 }
 
 /**
- * A cached record's digests: its character, with the fields its store split off put back, hashed as the server's list
- * row is hashed under `includeCreatorNotes`.
+ * A cached record's list facts: its character, with the fields its store split off put back, projected as the
+ * server's list row is under `includeCreatorNotes`.
  * @param {any} record
  * @param {boolean} includeCreatorNotes
  */
-function cachedDigests(record, includeCreatorNotes) {
+function cachedListFacts(record, includeCreatorNotes) {
     const character = { ...record.character };
     for (const field of record.dedup ?? []) character[field] = character.data[field];
-    return digestsOf(characterDigestSource({ ...character, tag_ids: normalizeTagIds(character.tag_ids) }, includeCreatorNotes));
+    return listFactsOf({
+        name: character.name,
+        fav: character.fav,
+        tags: character.tags,
+        tag_ids: character.tag_ids,
+        data: shallowCharacterData(character, includeCreatorNotes),
+    });
 }
 
 /**
@@ -302,11 +308,11 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
     }
 
     /**
-     * The digests of each character's list row (getShallowByIds()), hashed as the client hashes its cached records.
+     * The list facts of each character's list row (getShallowByIds()), as the client projects its cached records.
      * @param {number} expectedRows how many character rows the calling test has written
-     * @returns {Promise<Map<string, {fav: number, tagIds: number, content: number}>>}
+     * @returns {Promise<Map<string, ReturnType<typeof listFactsOf>>>}
      */
-    async function serverDigests(expectedRows) {
+    async function serverListFacts(expectedRows) {
         const db = new mode.Database(path.join(directories.root, 'character-metadata.sqlite'), { readonly: true });
         /** @type {string[]} */
         let ids;
@@ -317,7 +323,7 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
         }
         expect(ids.length).toBe(expectedRows);
         const listRows = await mode.metadataDb.getShallowByIds(directories, ids);
-        return new Map(ids.map(id => [id, digestsOf(listRows[id])]));
+        return new Map(ids.map(id => [id, listFactsOf(listRows[id])]));
     }
 
     /** A fresh client's delta-sync from an empty cache, so every character comes back as a whole-record fetch. */
@@ -331,13 +337,13 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
     }
 
     /**
-     * A fresh client's delta-sync next to the server's digests, as { actual, expected } for the test to compare.
+     * A fresh client's delta-sync next to the server's list facts, as { actual, expected } for the test to compare.
      * @param {number} expectedRows how many character rows the calling test has written
      */
     async function cachedAgainstServer(expectedRows) {
         const cached = await deltaSync();
-        const server = await serverDigests(expectedRows);
-        const hashes = [...cached].map(([id, record]) => [id, cachedDigests(record, creatorNotes)]);
+        const server = await serverListFacts(expectedRows);
+        const hashes = [...cached].map(([id, record]) => [id, cachedListFacts(record, creatorNotes)]);
         return {
             actual: {
                 serverHasRows: server.size > 0,

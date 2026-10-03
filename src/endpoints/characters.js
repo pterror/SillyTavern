@@ -204,7 +204,7 @@ export async function readCharacterData(inputFile, inputFormat = 'png', precompu
 }
 
 /**
- * Reads a character already in the library. card_json is the sole data source (the PNG is never read for an
+ * Reads a character already in the library. The card store is the sole data source (the PNG is never read for an
  * already-imported character) - use readCharacterData() directly for arbitrary PNGs not yet in the library.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {string} avatar Avatar filename, e.g. `Alice.png`
@@ -658,7 +658,7 @@ function sendWriteFailure(response, err) {
  * @param  {import('../users.js').UserDirectoryList} directories User directories
  * @param  {object} options Options for the character processing
  * @param  {boolean} options.shallow If true, only return the core character's metadata
- * @param  {string|null} [options.cardJson] The row's card_json when the caller already read it; otherwise it is read here
+ * @param  {string|null} [options.cardJson] The card JSON when the caller already read it; otherwise it is read here
  * @param  {{ chatSize: number, dateLastChat: number }} [options.chatStats] The row's chat_size and date_last_chat when
  *   the caller already read them; otherwise they are read from the row here
  * @return {Promise<object>}     A Promise that resolves when the character processing is done.
@@ -674,7 +674,7 @@ export const processCharacter = async (item, directories, { shallow, cardJson = 
         if (err.code !== 'ENOENT') throw err;
         charStat = fs.statSync(DEFAULT_AVATAR_PATH);
     }
-    // card_json is the only source of card content - the PNG is never read for it.
+    // The card store is the only source of card content - the PNG is never read for it.
     const imgData = cardJson ?? await readCardContent(directories, item);
     if (imgData === undefined) throw new Error('Failed to read character file');
 
@@ -3421,7 +3421,7 @@ router.post('/manifest', function (request, response) {
 /**
  * Other half of the `/manifest` delta-caching flow: fetches full (or shallow) character data for a specific
  * list of avatars, so the client only re-fetches what `/manifest` showed as new or changed. An optional
- * `fields` array switches to a field-filtered mode reading only those fields (plus `avatar`) from `shallow_json`.
+ * `fields` array switches to a field-filtered mode reading only those fields (plus `avatar`) from the list rows.
  * @param  {import("express").Request} request The HTTP request object.
  * @param  {import("express").Response} response The HTTP response object.
  * @return {void}

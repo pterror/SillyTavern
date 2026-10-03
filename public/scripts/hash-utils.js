@@ -196,7 +196,7 @@ export function tagNameKey(name) {
 
 /**
  * The `data` object of a shallow character (the server's toShallow(), src/character-shallow.js): each field
- * falls back to its default only when absent, so a card missing any of them hashes like its shallow_json does.
+ * falls back to its default only when absent.
  * @param {object} character
  * @param {boolean} includeCreatorNotes The server's `performance.shallowCharactersIncludeCreatorNotes`.
  * @returns {object}
@@ -218,71 +218,8 @@ export function shallowCharacterData(character, includeCreatorNotes) {
 }
 
 /**
- * The fields of a whole character record the three character digests read, as the server's shallow_json holds
- * them - hash this, not the record, whenever the record isn't itself a shallow_json projection.
- * @param {object} character
- * @param {boolean} includeCreatorNotes The server's `performance.shallowCharactersIncludeCreatorNotes`.
- * @returns {object}
- */
-export function characterDigestSource(character, includeCreatorNotes) {
-    return {
-        name: character?.name,
-        fav: character?.fav,
-        tags: character?.tags,
-        tag_ids: character?.tag_ids,
-        data: shallowCharacterData(character, includeCreatorNotes),
-    };
-}
-
-/**
- * Picks the subset of a character object that's stable, comparable content between client and server. Excludes
- * `chat`, `chat_size`/`date_last_chat`, and `date_added`/`create_date` - each is recomputed/synthesized from
- * volatile state on one side with no stable equivalent on the other, so including them would make the digest
- * disagree with itself for values that were never actually wrong. Tradeoff: drift specifically in those fields
- * goes undetected, in exchange for zero false positives elsewhere.
- * @param {object} character A `toShallow()`-shaped object, or the full character object
- * @returns {object} The stable subset, ready for `contentHashOf()`
- */
-export function characterDigestFingerprint(character) {
-    return {
-        name: character?.name,
-        fav: normalizeFav(character?.fav),
-        tags: character?.tags,
-        tag_ids: Array.isArray(character?.tag_ids) && character.tag_ids.length > 0 ? [...character.tag_ids].sort() : null,
-        data: {
-            name: character?.data?.name,
-            character_version: character?.data?.character_version,
-            creator: character?.data?.creator,
-            tags: character?.data?.tags,
-            creator_notes: character?.data?.creator_notes,
-            extensions: {
-                fav: normalizeFav(character?.data?.extensions?.fav),
-                world: character?.data?.extensions?.world,
-            },
-        },
-    };
-}
-
-/**
- * The two fields that change independently via `setCharacterFav()` (a DB-only toggle, never touching the PNG) -
- * split out so a fav-only mismatch can be told apart from a content-field mismatch without a second round trip.
- * @param {object} character
- * @returns {object}
- */
-export function characterFavFingerprint(character) {
-    return {
-        fav: normalizeFav(character?.fav),
-        data: {
-            extensions: {
-                fav: normalizeFav(character?.data?.extensions?.fav),
-            },
-        },
-    };
-}
-
-/**
- * Everything `characterDigestFingerprint()` covers except the fav fields - grouped because these all change
- * atomically together when the PNG card is written.
+ * The card's list fields an edit can change, apart from fav: what the edit route's conflict check compares
+ * (`characterDigestFieldsHash()`), alongside `characterCardBodyFingerprint()`.
  * @param {object} character
  * @returns {object}
  */
@@ -301,29 +238,6 @@ export function characterContentFieldsFingerprint(character) {
             },
         },
     };
-}
-
-/**
- * tag_ids change independently via assignEntityTag/unassignEntityTag; sorted here for deterministic hashing
- * regardless of SQL row order.
- * @param {object} character
- * @returns {object}
- */
-export function characterTagIdsFingerprint(character) {
-    const tagIds = character?.tag_ids;
-    return { tag_ids: Array.isArray(tagIds) && tagIds.length > 0 ? [...tagIds].sort() : null };
-}
-
-/**
- * Fixed-shape fast path for `contentHashOf(characterFavFingerprint(character))` - must stay byte-identical to
- * the generic path (verified in tests).
- * @param {object} character
- * @returns {number}
- */
-export function characterDigestFavHash(character) {
-    const fav = normalizeFav(character?.fav);
-    const extFav = normalizeFav(character?.data?.extensions?.fav);
-    return getStringHash(`{"data":{"extensions":{"fav":${extFav}}},"fav":${fav}}`);
 }
 
 /**
@@ -366,22 +280,7 @@ export function characterDigestFieldsHash(character) {
 }
 
 /**
- * Fixed-shape fast path for `contentHashOf(characterTagIdsFingerprint(character)) % 4294967296` (verified in
- * tests), truncated to 32 bits for the per-field digest mechanism.
- * @param {object} character
- * @returns {number} 32-bit unsigned integer
- */
-export function characterDigestTagIdsHash(character) {
-    const tagIds = character?.tag_ids;
-    if (!Array.isArray(tagIds) || tagIds.length === 0) {
-        return getStringHash('{"tag_ids":null}') % 4294967296;
-    }
-    const sorted = [...tagIds].sort();
-    return getStringHash(`{"tag_ids":${JSON.stringify(sorted)}}`) % 4294967296;
-}
-
-/**
- * Group equivalents of the character*Fingerprint() functions above, same three-way fav/tag_ids/content split.
+ * A group's three digests (its `/query` hash-mode cache key): fav, tag_ids and content.
  * `content` is intentionally the whole group object minus `id`/`fav`/`tag_ids` rather than a narrowed field
  * list - unlike characters, a group's `/query` projection already returns the full object, so narrowing here
  * would silently miss changes to fields not explicitly named.

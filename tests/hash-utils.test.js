@@ -1,5 +1,5 @@
 import { describe, test, expect } from '@jest/globals';
-import { getStringHash, bucketOf, emptyDigest, combineDigest, digestsEqual, contentHashOf, characterDigestFingerprint, characterDigestFavHash, characterDigestFieldsHash, characterFavFingerprint, characterContentFieldsFingerprint, canonicalStringify, DEFAULT_DIGEST_BUCKET_COUNT, characterDigestTagIdsHash, characterTagIdsFingerprint } from '../public/scripts/hash-utils.js';
+import { getStringHash, bucketOf, emptyDigest, combineDigest, digestsEqual, contentHashOf, characterDigestFieldsHash, characterContentFieldsFingerprint, canonicalStringify, DEFAULT_DIGEST_BUCKET_COUNT } from '../public/scripts/hash-utils.js';
 
 describe('getStringHash', () => {
     test('is deterministic for the same string and seed', () => {
@@ -94,8 +94,7 @@ describe('combineDigest/digestsEqual - the anti-entropy state-digest primitive s
     });
 });
 
-describe('contentHashOf/characterDigestFingerprint - the content-derived (not stored-counter-derived) hash ' +
-    'input this whole mechanism is built on, see this module\'s own header for why', () => {
+describe('contentHashOf - the content-derived hash', () => {
     test('contentHashOf is deterministic for the same object', () => {
         expect(contentHashOf({ a: 1, b: 'two' })).toBe(contentHashOf({ a: 1, b: 'two' }));
     });
@@ -107,33 +106,9 @@ describe('contentHashOf/characterDigestFingerprint - the content-derived (not st
     test('contentHashOf changes when actual content changes', () => {
         expect(contentHashOf({ a: 1 })).not.toBe(contentHashOf({ a: 2 }));
     });
-
-    test('characterDigestFingerprint drops chat, chat_size, date_last_chat, date_added, and create_date - ' +
-        'fields that are either client-synthesized or server-side live-recomputed from volatile external ' +
-        'state, so including them would make the digest disagree with itself for values that were never ' +
-        'actually wrong (see characterDigestFingerprint()\'s own doc comment)', () => {
-        const base = { name: 'Alice', fav: false, tags: [], data: { name: 'Alice', character_version: '', creator: '', tags: [], creator_notes: '', extensions: { fav: false, world: '' } } };
-        const withVolatileFields = { ...base, chat: 'Alice - just now', chat_size: 42, date_last_chat: 123456, date_added: 1, create_date: '2020-01-01' };
-
-        expect(contentHashOf(characterDigestFingerprint(base))).toBe(contentHashOf(characterDigestFingerprint(withVolatileFields)));
-    });
-
-    test('characterDigestFingerprint keeps name/fav/tags/data - a real change to any of those changes the fingerprint', () => {
-        const base = { name: 'Alice', fav: false, tags: [], data: { name: 'Alice', character_version: '', creator: '', tags: [], creator_notes: '', extensions: { fav: false, world: '' } } };
-        const favToggled = { ...base, fav: true };
-        const renamed = { ...base, name: 'Alicia' };
-
-        expect(contentHashOf(characterDigestFingerprint(base))).not.toBe(contentHashOf(characterDigestFingerprint(favToggled)));
-        expect(contentHashOf(characterDigestFingerprint(base))).not.toBe(contentHashOf(characterDigestFingerprint(renamed)));
-    });
-
-    test('characterDigestFingerprint tolerates a missing data object (never throws)', () => {
-        expect(() => contentHashOf(characterDigestFingerprint({ name: 'Alice' }))).not.toThrow();
-    });
 });
 
-describe('characterDigestFavHash / characterDigestFieldsHash - per-field-group split of the character digest, ' +
-    'see these functions\' own doc comments for why fav is its own stream', () => {
+describe('characterDigestFieldsHash - the edit route\'s conflict hash of the list fields', () => {
     const fixtures = [
         { name: 'Alice', fav: false, tags: ['a', 'b'], data: { name: 'Alice', character_version: '1.0', creator: 'bob', tags: ['a', 'b'], creator_notes: 'hi', extensions: { fav: false, world: 'Wonderland' } } },
         { name: 'Bo\'b "the builder"', fav: true, tags: ['NSFW'], data: { name: 'Bo\'b', character_version: '', creator: '', tags: [], creator_notes: '"quoted"', extensions: { fav: true, world: '' } } },
@@ -144,12 +119,6 @@ describe('characterDigestFavHash / characterDigestFieldsHash - per-field-group s
         { name: 'WithVolatile', fav: false, tags: [], chat: 'just now', chat_size: 1, date_added: 1, create_date: 'x', date_last_chat: 2, data: { name: 'WithVolatile', character_version: '', creator: '', tags: [], creator_notes: '', extensions: { fav: false, world: '' } } },
     ];
 
-    test('fast path matches generic pipeline for favHash', () => {
-        for (const fixture of fixtures) {
-            expect(characterDigestFavHash(fixture)).toBe(contentHashOf(characterFavFingerprint(fixture)));
-        }
-    });
-
     test('fast path matches generic pipeline for fieldsHash', () => {
         for (const fixture of fixtures) {
             expect(characterDigestFieldsHash(fixture)).toBe(contentHashOf(characterContentFieldsFingerprint(fixture)));
@@ -158,76 +127,20 @@ describe('characterDigestFavHash / characterDigestFieldsHash - per-field-group s
 
     test('null/undefined tolerance', () => {
         for (const val of [null, undefined]) {
-            expect(characterDigestFavHash(val)).toBe(contentHashOf(characterFavFingerprint(val)));
             expect(characterDigestFieldsHash(val)).toBe(contentHashOf(characterContentFieldsFingerprint(val)));
         }
     });
 
-    test('fav change only affects favHash, not fieldsHash', () => {
+    test('a fav change leaves fieldsHash alone', () => {
         const base = fixtures[0];
         const favToggled = { ...base, fav: !base.fav, data: { ...base.data, extensions: { ...base.data.extensions, fav: !base.data.extensions.fav } } };
-        expect(characterDigestFavHash(base)).not.toBe(characterDigestFavHash(favToggled));
         expect(characterDigestFieldsHash(base)).toBe(characterDigestFieldsHash(favToggled));
     });
 
-    test('content change only affects fieldsHash, not favHash', () => {
+    test('a content change changes fieldsHash', () => {
         const base = fixtures[0];
         const renamed = { ...base, name: 'Alicia', data: { ...base.data, name: 'Alicia' } };
         expect(characterDigestFieldsHash(base)).not.toBe(characterDigestFieldsHash(renamed));
-        expect(characterDigestFavHash(base)).toBe(characterDigestFavHash(renamed));
-    });
-});
-
-describe('characterDigestTagIdsHash - per-field hash for tag_ids, must match ' +
-    'contentHashOf(characterTagIdsFingerprint(x)) % 4294967296 (32-bit truncation)', () => {
-    const fixtures = [
-        // No tag_ids at all
-        {},
-        // Empty tag_ids
-        { tag_ids: [] },
-        // Single tag
-        { tag_ids: ['abc-123'] },
-        // Multiple tags (should be sorted before hashing for determinism)
-        { tag_ids: ['z-tag', 'a-tag', 'm-tag'] },
-        // Same tags in different order (must produce same hash due to sorting)
-        { tag_ids: ['a-tag', 'm-tag', 'z-tag'] },
-        // With other character fields present (must be ignored)
-        { name: 'Alice', fav: true, tag_ids: ['tag1', 'tag2'], tags: ['card-tag'], data: { name: 'Alice' } },
-        // null/undefined tag_ids
-        { tag_ids: null },
-        { tag_ids: undefined },
-        // Large tag set
-        { tag_ids: Array.from({ length: 50 }, (_, i) => `tag-${String(i).padStart(3, '0')}`) },
-    ];
-
-    test('fast path matches generic pipeline (truncated to 32 bits) for every fixture', () => {
-        for (const fixture of fixtures) {
-            const generic = contentHashOf(characterTagIdsFingerprint(fixture)) % 4294967296;
-            const fast = characterDigestTagIdsHash(fixture);
-            expect(fast).toBe(generic);
-        }
-    });
-
-    test('null/undefined character tolerance', () => {
-        for (const val of [null, undefined]) {
-            expect(characterDigestTagIdsHash(val)).toBe(
-                contentHashOf(characterTagIdsFingerprint(val)) % 4294967296,
-            );
-        }
-    });
-
-    test('different order of same tag_ids produces the same hash (sorting invariant)', () => {
-        const a = { tag_ids: ['z', 'a', 'm'] };
-        const b = { tag_ids: ['a', 'm', 'z'] };
-        expect(characterDigestTagIdsHash(a)).toBe(characterDigestTagIdsHash(b));
-    });
-
-    test('tag_ids change only affects tagIdsHash, not favHash or fieldsHash', () => {
-        const base = { name: 'Alice', fav: false, tag_ids: ['tag1'], tags: ['a'], data: { name: 'Alice', extensions: { fav: false, world: '' } } };
-        const changed = { ...base, tag_ids: ['tag1', 'tag2'] };
-        expect(characterDigestTagIdsHash(base)).not.toBe(characterDigestTagIdsHash(changed));
-        expect(characterDigestFavHash(base)).toBe(characterDigestFavHash(changed));
-        expect(characterDigestFieldsHash(base)).toBe(characterDigestFieldsHash(changed));
     });
 });
 
