@@ -1,4 +1,4 @@
-//! The record log as JavaScript sees it.
+//! A store (record log and derived keyspace) as JavaScript sees it.
 //!
 //! A record is an object `{ kind, ...values }` named by its kind's schema (`log::format::KINDS`). Ids and
 //! positions are BigInts (they pass 2^53); other integers, times (ms) and floats are numbers; a field is a
@@ -19,14 +19,17 @@ use napi_derive::napi;
 use crate::log::format::{
     FieldRef, MAX_SAFE, Record, Slot, Ty, Value, kind_by_name, wtf8_from_utf16, wtf8_to_utf16,
 };
-use crate::log::{Config, Log, LogError};
+use crate::store::{Store as Inner, StoreConfig, StoreError, StoreResult};
 
 fn invalid(msg: String) -> Error {
     Error::new(Status::InvalidArg, msg)
 }
 
-fn log_error(e: LogError) -> Error {
-    Error::from_reason(e.to_string())
+fn store_error(e: StoreError) -> Error {
+    match e {
+        StoreError::Refused(why) => invalid(why),
+        e => Error::from_reason(e.to_string()),
+    }
 }
 
 fn integer(name: &str, v: Unknown) -> Result<u64> {
@@ -113,8 +116,9 @@ fn record_from_js(obj: &Object) -> Result<Record> {
     let kind_name: String = obj
         .get("kind")?
         .ok_or_else(|| invalid("a record needs a kind".into()))?;
-    let kind =
-        kind_by_name(&kind_name).ok_or_else(|| invalid(format!("no record kind {kind_name}")))?;
+    let kind = kind_by_name(&kind_name)
+        .filter(|k| !k.internal)
+        .ok_or_else(|| invalid(format!("no record kind {kind_name}")))?;
     for key in Object::keys(obj)? {
         if key != "kind" && !kind.slots.iter().any(|s| s.name == key) {
             return Err(invalid(format!("{kind_name} has no value {key}")));
@@ -126,6 +130,59 @@ fn record_from_js(obj: &Object) -> Result<Record> {
         .map(|slot| value_from_js(slot, obj.get::<Unknown>(slot.name)?))
         .collect::<Result<Vec<_>>>()?;
     Record::new(kind, values).map_err(invalid)
+}
+
+/// A record and its position, converted to a JavaScript object.
+pub struct RecordAt(u64, Record);
+
+impl ToNapiValue for RecordAt {
+    unsafe fn to_napi_value(raw_env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
+        let env = Env::from_raw(raw_env);
+        let mut obj = Object::new(&env)?;
+        let RecordAt(position, rec) = val;
+        obj.set("kind", rec.kind.name)?;
+        obj.set("position", position)?;
+        for (slot, value) in rec.kind.slots.iter().zip(rec.values) {
+            match value {
+                Value::Absent => {}
+                Value::Bit(b) => obj.set(slot.name, b)?,
+                Value::UInt(n) => obj.set(slot.name, n as f64)?,
+                Value::Int(n) | Value::Time(n) => obj.set(slot.name, n as f64)?,
+                Value::F64(n) => obj.set(slot.name, n)?,
+                Value::Id(n) => obj.set(slot.name, n)?,
+                Value::Field(FieldRef::Code(c)) => obj.set(slot.name, c as f64)?,
+                Value::Field(FieldRef::Key(k)) | Value::Text(k) => {
+                    obj.set(slot.name, text_to_js(k)?)?
+                }
+                Value::Bytes(b) => obj.set(slot.name, Buffer::from(b))?,
+            }
+        }
+        unsafe { Object::to_napi_value(raw_env, obj) }
+    }
+}
+
+pub struct Page(Vec<(u64, Record)>, u64);
+
+impl ToNapiValue for Page {
+    unsafe fn to_napi_value(raw_env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
+        let env = Env::from_raw(raw_env);
+        let mut obj = Object::new(&env)?;
+        obj.set(
+            "records",
+            val.0
+                .into_iter()
+                .map(|(p, r)| RecordAt(p, r))
+                .collect::<Vec<_>>(),
+        )?;
+        obj.set("next", val.1)?;
+        unsafe { Object::to_napi_value(raw_env, obj) }
+    }
+}
+
+fn text_to_js(b: Vec<u8>) -> Result<JsText> {
+    Ok(JsText(
+        wtf8_to_utf16(&b).map_err(|e| Error::from_reason(e.to_string()))?,
+    ))
 }
 
 /// A JavaScript string from UTF-16 code units, lone surrogates kept.
@@ -228,83 +285,89 @@ fn lone_surrogates_are_pieces_of_their_own() {
     assert_eq!(t(&[0xdc00, 0xd83d, 0xde00, 0xd800]), Some(vec![1, 2, 1]));
 }
 
-/// A record and its position, converted to a JavaScript object.
-pub struct RecordAt(u64, Record);
+/// Runs a job on a libuv thread.
+struct RunTask(Option<Box<dyn FnOnce() + Send>>);
 
-impl ToNapiValue for RecordAt {
-    unsafe fn to_napi_value(raw_env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
-        let env = Env::from_raw(raw_env);
-        let mut obj = Object::new(&env)?;
-        let RecordAt(position, rec) = val;
-        obj.set("kind", rec.kind.name)?;
-        obj.set("position", position)?;
-        for (slot, value) in rec.kind.slots.iter().zip(rec.values) {
-            match value {
-                Value::Absent => {}
-                Value::Bit(b) => obj.set(slot.name, b)?,
-                Value::UInt(n) => obj.set(slot.name, n as f64)?,
-                Value::Int(n) | Value::Time(n) => obj.set(slot.name, n as f64)?,
-                Value::F64(n) => obj.set(slot.name, n)?,
-                Value::Id(n) => obj.set(slot.name, n)?,
-                Value::Field(FieldRef::Code(c)) => obj.set(slot.name, c as f64)?,
-                Value::Field(FieldRef::Key(k)) | Value::Text(k) => obj.set(
-                    slot.name,
-                    JsText(wtf8_to_utf16(&k).map_err(|e| Error::from_reason(e.to_string()))?),
-                )?,
-                Value::Bytes(b) => obj.set(slot.name, Buffer::from(b))?,
-            }
+impl Task for RunTask {
+    type Output = ();
+    type JsValue = ();
+
+    fn compute(&mut self) -> Result<()> {
+        if let Some(f) = self.0.take() {
+            f();
         }
-        unsafe { Object::to_napi_value(raw_env, obj) }
+        Ok(())
+    }
+
+    fn resolve(&mut self, _env: Env, _: ()) -> Result<()> {
+        Ok(())
     }
 }
 
-pub struct Page(Vec<(u64, Record)>, u64);
+/// A promise of a read of derived data: run once replay is done, on a libuv thread (or, while replay runs, on
+/// its thread right after it), so no thread waits for replay.
+fn derived<'env, T, F>(env: &'env Env, store: &Arc<Inner>, read: F) -> Result<Object<'env>>
+where
+    T: ToNapiValue + Send + 'static,
+    F: FnOnce(&Inner) -> StoreResult<T> + Send + 'static,
+{
+    let (deferred, promise) = env.create_deferred()?;
+    let s = store.clone();
+    let job: Box<dyn FnOnce() + Send> = Box::new(move || match read(&s) {
+        Ok(v) => deferred.resolve(move |_| Ok(v)),
+        Err(e) => deferred.reject(store_error(e)),
+    });
+    if let Some(job) = store.after_replay(job) {
+        env.spawn(RunTask(Some(job)))?;
+    }
+    Ok(promise)
+}
 
-impl ToNapiValue for Page {
-    unsafe fn to_napi_value(raw_env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
-        let env = Env::from_raw(raw_env);
-        let mut obj = Object::new(&env)?;
-        obj.set(
-            "records",
-            val.0
-                .into_iter()
-                .map(|(p, r)| RecordAt(p, r))
-                .collect::<Vec<_>>(),
-        )?;
-        obj.set("next", val.1)?;
-        unsafe { Object::to_napi_value(raw_env, obj) }
+fn field_arg(v: Unknown) -> Result<FieldRef> {
+    match value_from_js(
+        &Slot {
+            name: "field",
+            ty: Ty::Field,
+            optional: false,
+        },
+        Some(v),
+    )? {
+        Value::Field(f) => Ok(f),
+        _ => unreachable!(),
     }
 }
 
-/// The record log of one store directory.
+/// One store directory: its record log and derived keyspace.
 #[napi]
-pub struct RecordLog {
-    log: Arc<Log>,
+pub struct Store {
+    store: Arc<Inner>,
 }
 
 pub struct OpenTask(PathBuf);
 
 impl Task for OpenTask {
-    type Output = Log;
-    type JsValue = RecordLog;
+    type Output = Inner;
+    type JsValue = Store;
 
-    fn compute(&mut self) -> Result<Log> {
-        Log::open(&self.0, Config::default()).map_err(log_error)
+    fn compute(&mut self) -> Result<Inner> {
+        Inner::open(&self.0, StoreConfig::default()).map_err(store_error)
     }
 
-    fn resolve(&mut self, _env: Env, log: Log) -> Result<RecordLog> {
-        Ok(RecordLog { log: Arc::new(log) })
+    fn resolve(&mut self, _env: Env, store: Inner) -> Result<Store> {
+        Ok(Store {
+            store: Arc::new(store),
+        })
     }
 }
 
-pub struct ReadTask(Arc<Log>, u64);
+pub struct ReadTask(Arc<Inner>, u64);
 
 impl Task for ReadTask {
     type Output = Record;
     type JsValue = RecordAt;
 
     fn compute(&mut self) -> Result<Record> {
-        self.0.read(self.1).map_err(log_error)
+        self.0.read(self.1).map_err(store_error)
     }
 
     fn resolve(&mut self, _env: Env, rec: Record) -> Result<RecordAt> {
@@ -312,18 +375,34 @@ impl Task for ReadTask {
     }
 }
 
-pub struct IterateTask(Arc<Log>, u64, usize);
+pub struct FeedTask(Arc<Inner>, u64, usize);
 
-impl Task for IterateTask {
+impl Task for FeedTask {
     type Output = (Vec<(u64, Record)>, u64);
     type JsValue = Page;
 
     fn compute(&mut self) -> Result<Self::Output> {
-        self.0.iterate(self.1, self.2).map_err(log_error)
+        self.0.feed(self.1, self.2).map_err(store_error)
     }
 
     fn resolve(&mut self, _env: Env, (records, next): Self::Output) -> Result<Page> {
         Ok(Page(records, next))
+    }
+}
+
+pub struct CloseTask(Arc<Inner>);
+
+impl Task for CloseTask {
+    type Output = ();
+    type JsValue = ();
+
+    fn compute(&mut self) -> Result<()> {
+        self.0.close();
+        Ok(())
+    }
+
+    fn resolve(&mut self, _env: Env, _: ()) -> Result<()> {
+        Ok(())
     }
 }
 
@@ -343,11 +422,23 @@ object_type_name!(RecordAt);
 object_type_name!(Page);
 
 #[napi(object)]
-pub struct LogStats {
-    /// Groups written and synced.
-    pub rounds: f64,
-    /// Bytes written: records, pads and trailers.
-    pub bytes: f64,
+pub struct StoreStats {
+    /// Groups written and synced, and their bytes.
+    pub log_rounds: f64,
+    pub log_bytes: f64,
+    pub runs: f64,
+    pub run_bytes: f64,
+    pub flushes: f64,
+    pub merges: f64,
+    /// Bytes of runs written by flushes and by merges.
+    pub flush_bytes: f64,
+    pub merge_bytes: f64,
+    /// Bytes of log replayed at the last open, and in how long.
+    pub replay_bytes: f64,
+    pub replay_ms: f64,
+    pub cleaned_files: f64,
+    pub relocated_bytes: f64,
+    pub removed_bytes: f64,
 }
 
 fn position_arg(p: BigInt) -> Result<u64> {
@@ -360,30 +451,38 @@ fn position_arg(p: BigInt) -> Result<u64> {
 }
 
 #[napi]
-impl RecordLog {
-    /// Opens (creating if missing) the log in `dir`, cutting off a group a crash left torn.
-    #[napi(ts_return_type = "Promise<RecordLog>")]
+impl Store {
+    /// Opens (creating if missing) the store in `dir`. Resolves before the log after the last flush is
+    /// replayed; reads of derived data and commits wait for that.
+    #[napi(ts_return_type = "Promise<Store>")]
     pub fn open(dir: String) -> AsyncTask<OpenTask> {
         AsyncTask::new(OpenTask(PathBuf::from(dir)))
     }
 
-    /// Appends the records as one commit; resolves with their positions once they are durable. Throws for a
-    /// record that doesn't fit its kind.
+    /// Resolves once replay is done; rejects if it failed.
+    #[napi(ts_return_type = "Promise<void>")]
+    pub fn ready<'env>(&self, env: &'env Env) -> Result<Object<'env>> {
+        derived(env, &self.store, |s| s.wait_ready())
+    }
+
+    /// Commits the records together; resolves with their positions once they are durable and their derived
+    /// entries readable. Throws for a record that doesn't fit its kind; rejects, writing nothing, for one that
+    /// can't apply (such as a text edit outside the value).
     #[napi(
         ts_args_type = "records: object[]",
         ts_return_type = "Promise<bigint[]>"
     )]
-    pub fn append<'env>(&self, env: &'env Env, records: Vec<Object>) -> Result<Object<'env>> {
+    pub fn commit<'env>(&self, env: &'env Env, records: Vec<Object>) -> Result<Object<'env>> {
         let records = records
             .iter()
             .map(record_from_js)
             .collect::<Result<Vec<_>>>()?;
         let (deferred, promise) = env.create_deferred()?;
-        self.log.append(
+        self.store.commit(
             records,
             Box::new(move |result| match result {
                 Ok(positions) => deferred.resolve(move |_| Ok(positions)),
-                Err(e) => deferred.reject(log_error(e)),
+                Err(e) => deferred.reject(store_error(e)),
             }),
         );
         Ok(promise)
@@ -393,40 +492,88 @@ impl RecordLog {
     #[napi(ts_return_type = "Promise<object>")]
     pub fn read(&self, position: BigInt) -> Result<AsyncTask<ReadTask>> {
         Ok(AsyncTask::new(ReadTask(
-            self.log.clone(),
+            self.store.clone(),
             position_arg(position)?,
         )))
     }
 
-    /// Up to `limit` durable records from `from` (0n, a record's position, or a `next` from here), and the
-    /// position to continue from.
+    /// The change feed: up to `limit` records committed from `from` (0n or a `next` from here) on, and the
+    /// position to continue from. Rejects for a position whose log file cleaning has removed.
     #[napi(ts_return_type = "Promise<{ records: object[], next: bigint }>")]
-    pub fn iterate(&self, from: BigInt, limit: u32) -> Result<AsyncTask<IterateTask>> {
-        Ok(AsyncTask::new(IterateTask(
-            self.log.clone(),
+    pub fn feed(&self, from: BigInt, limit: u32) -> Result<AsyncTask<FeedTask>> {
+        Ok(AsyncTask::new(FeedTask(
+            self.store.clone(),
             position_arg(from)?,
             limit as usize,
         )))
     }
 
+    /// The entity's fav bit, or null if it has none.
+    #[napi(ts_return_type = "Promise<boolean | null>")]
+    pub fn fav<'env>(&self, env: &'env Env, entity: Unknown) -> Result<Object<'env>> {
+        let e = integer("entity", entity)?;
+        derived(env, &self.store, move |s| s.fav(e))
+    }
+
+    /// A text field's value, or null if it has none.
+    #[napi(
+        ts_args_type = "entity: bigint | number, field: number | string",
+        ts_return_type = "Promise<string | null>"
+    )]
+    pub fn text<'env>(
+        &self,
+        env: &'env Env,
+        entity: Unknown,
+        field: Unknown,
+    ) -> Result<Object<'env>> {
+        let e = integer("entity", entity)?;
+        let f = field_arg(field)?;
+        derived(env, &self.store, move |s| {
+            s.text(e, &f)?
+                .map(|b| text_to_js(b).map_err(|e| StoreError::Entry(e.to_string())))
+                .transpose()
+        })
+    }
+
+    /// The position of the entity's latest record, or null.
+    #[napi(
+        ts_args_type = "entity: bigint | number",
+        ts_return_type = "Promise<bigint | null>"
+    )]
+    pub fn version<'env>(&self, env: &'env Env, entity: Unknown) -> Result<Object<'env>> {
+        let e = integer("entity", entity)?;
+        derived(env, &self.store, move |s| s.version(e))
+    }
+
     /// The position after the last durable record.
     #[napi]
     pub fn durable_end(&self) -> u64 {
-        self.log.durable_end()
+        self.store.durable_end()
     }
 
     #[napi]
-    pub fn stats(&self) -> LogStats {
-        let s = self.log.stats();
-        LogStats {
-            rounds: s.rounds as f64,
-            bytes: s.bytes as f64,
+    pub fn stats(&self) -> StoreStats {
+        let s = self.store.stats();
+        StoreStats {
+            log_rounds: s.log_rounds as f64,
+            log_bytes: s.log_bytes as f64,
+            runs: s.ks.runs as f64,
+            run_bytes: s.ks.run_bytes as f64,
+            flushes: s.ks.flushes as f64,
+            merges: s.ks.merges as f64,
+            flush_bytes: s.ks.flush_bytes as f64,
+            merge_bytes: s.ks.merge_bytes as f64,
+            replay_bytes: s.replay_bytes as f64,
+            replay_ms: s.replay_micros as f64 / 1000.0,
+            cleaned_files: s.cleaned_files as f64,
+            relocated_bytes: s.relocated_bytes as f64,
+            removed_bytes: s.removed_bytes as f64,
         }
     }
 
-    /// Waits for queued commits, then stops the writer; later appends reject.
-    #[napi]
-    pub fn close(&self) {
-        self.log.close();
+    /// Finishes queued commits, flushes, and stops; later commits reject.
+    #[napi(ts_return_type = "Promise<void>")]
+    pub fn close(&self) -> AsyncTask<CloseTask> {
+        AsyncTask::new(CloseTask(self.store.clone()))
     }
 }
