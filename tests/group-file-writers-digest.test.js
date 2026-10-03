@@ -188,29 +188,6 @@ describe('each group file writer updates the row and digests from the file it wr
         expectRowMatchesFile(created.id);
         expect(readRow(created.id).date_added).toBe(dateAdded);
     });
-
-    test('migrateCharacterIds() group member sweep', async () => {
-        const cardParser = await import('../src/character-card-parser.js');
-        const migration = await import('../src/migrations/migrate-character-ids.js');
-        const baseImage = await fs.promises.readFile(path.join(process.cwd(), '..', 'public', 'img', 'ai4.png'));
-        const card = {
-            name: 'Grace', spec: 'chara_card_v2', spec_version: '2.0',
-            data: {
-                name: 'Grace', description: '', personality: '', scenario: '', first_mes: '', mes_example: '',
-                tags: [], creator: '', character_version: '', creator_notes: '', extensions: { world: '' },
-            },
-        };
-        await fs.promises.writeFile(path.join(directories.characters, 'Grace.png'), cardParser.write(baseImage, JSON.stringify(card)));
-        const created = await createGroup({ members: ['Grace.png'], disabled_members: ['Grace.png'] });
-        const dateAdded = readRow(created.id).date_added;
-
-        const result = await migration.migrateCharacterIds(directories, { rebuildSearchIndex: false, log: () => {} });
-        expect(result.migrated).toBe(1);
-
-        expect(readGroupFile(created.id).members).not.toContain('Grace.png');
-        expectRowMatchesFile(created.id);
-        expect(readRow(created.id).date_added).toBe(dateAdded);
-    });
 });
 
 describe('migration writers never create rows or touch a row the file does not back', () => {

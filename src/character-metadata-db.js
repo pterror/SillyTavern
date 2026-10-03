@@ -348,13 +348,6 @@ export const allowExpensiveDuplicateFallback = !!getConfigValue('performance.all
 /** @typedef {{ seq: number, tag_id: string }} TagNameChangeRow */
 
 /**
- * @typedef {object} IdMigrationRow
- * @property {string} old_id
- * @property {string} new_id
- * @property {number} completed 0 or 1
- */
-
-/**
  * @typedef {object} LocalImportSkipRow
  * @property {string} source_path
  * @property {number} mtime_ms
@@ -664,17 +657,6 @@ const SCHEMA_SQL = `
         seq    INTEGER PRIMARY KEY AUTOINCREMENT,
         tag_id TEXT
     );
-
-    -- Bookkeeping for the one-time filename-migration script (name-derived filenames -> minted UUIDv7 ids).
-    -- completed = 0: new_id is minted (a resumed run must reuse it) but the per-character move may not be finished.
-    -- completed = 1 also gates the script's cross-cutting rewrites (groups/world_info/note.chara/active_character).
-    CREATE TABLE IF NOT EXISTS id_migration (
-        old_id    TEXT PRIMARY KEY,
-        new_id    TEXT NOT NULL,
-        completed INTEGER NOT NULL DEFAULT 0
-    );
-    CREATE INDEX IF NOT EXISTS idx_id_migration_new ON id_migration(new_id);
-    CREATE INDEX IF NOT EXISTS idx_id_migration_completed ON id_migration(completed);
 
     -- Durable "this source file will never be importable" record, keyed by full absolute path (multiple
     -- localImport.directories can share a filename). Classifies a non-character file once instead of
@@ -2966,71 +2948,6 @@ export async function getGroupChangesSince(directories, sinceVersion, { limit })
         rows.push({ version: Number(row.version), groupId: row.group_id ?? null, fileName: row.file_name ?? null });
     }
     return { version: rows.length > 0 ? rows[rows.length - 1].version : since, rows, hasMore };
-}
-
-// INSERT OR IGNORE: a resumed migration run reuses the id minted first rather than minting a fresh one.
-/**
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} oldId
- * @param {string} newId
- */
-export async function recordIdMigrationMapping(directories, oldId, newId) {
-    const entry = await getEntry(directories);
-    if (!entry) return;
-    entry.db.run('INSERT OR IGNORE INTO id_migration (old_id, new_id, completed) VALUES (@oldId, @newId, 0)', { oldId, newId });
-}
-
-/**
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} oldId
- * @returns {Promise<string | null>}
- */
-export async function getIdMigrationMapping(directories, oldId) {
-    const entry = await getEntry(directories);
-    if (!entry) return null;
-    const row = (/** @type {{ new_id: string } | undefined} */ (entry.db.get('SELECT new_id FROM id_migration WHERE old_id = @oldId', { oldId })));
-    return row ? String(row.new_id) : null;
-}
-
-/**
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} newId
- * @returns {Promise<boolean>}
- */
-export async function isIdMigrationTargetTaken(directories, newId) {
-    const entry = await getEntry(directories);
-    if (!entry) return false;
-    return !!(/** @type {Record<string, unknown> | undefined} */ (entry.db.get('SELECT 1 FROM id_migration WHERE new_id = @newId', { newId })));
-}
-
-/**
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} oldId
- */
-export async function markIdMigrationComplete(directories, oldId) {
-    const entry = await getEntry(directories);
-    if (!entry) return;
-    writeRowIfChanged(entry.db, 'id_migration', { old_id: oldId }, { completed: 1 });
-}
-
-/**
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<IdMigrationRow[]>}
- */
-export async function getPendingIdMigrations(directories) {
-    const entry = await getEntry(directories);
-    if (!entry) return [];
-    return (/** @type {IdMigrationRow[]} */ (entry.db.all('SELECT old_id, new_id FROM id_migration WHERE completed = 0')));
-}
-
-/**
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<IdMigrationRow[]>}
- */
-export async function getCompletedIdMigrations(directories) {
-    const entry = await getEntry(directories);
-    if (!entry) return [];
-    return (/** @type {IdMigrationRow[]} */ (entry.db.all('SELECT old_id, new_id FROM id_migration WHERE completed = 1')));
 }
 
 // ids can mix character avatars and group ids; each is looked up only in its own type's table (tagEntityTypeOf()).

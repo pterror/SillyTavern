@@ -244,44 +244,11 @@ describe('group column writers store the normalized fav (column + digest_fav) an
         expect(fs.readFileSync(path.join(directories.groups, 'g1.json'), 'utf8')).toBe(before);
     });
 
-    test.each(FAV_CASES)('pre-columns groups table backfill (fav column + digest_fav): %s', async (_label, value, expected) => {
-        const rawDb = new Database(dbPath());
-        rawDb.exec('CREATE TABLE groups (id TEXT PRIMARY KEY, name TEXT NOT NULL);');
-        rawDb.exec('CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT); INSERT INTO meta (key, value) VALUES (\'groups_bootstrap_completed\', \'1\');');
-        rawDb.prepare('INSERT INTO groups (id, name) VALUES (?, ?)').run('g1', 'G');
-        rawDb.close();
-        writeRawGroupFile(withFav({ id: 'g1', name: 'G', members: [], chats: [] }, value));
-
-        await metadataDb.getGroupTagIds(directories, 'g1');
-        expect(columnAndDigest('g1')).toEqual(columnAndDigestFor(expected));
-    });
-
     test.each(FAV_CASES)('migrateGroupChatsMetadataFormat writes the normalized fav: %s', async (_label, value, expected) => {
         writeRawGroupFile(withFav({ id: 'g1', name: 'G', members: [], chats: [], chat_id: 'c1', chat_metadata: {} }, value));
         await groupsModule.migrateGroupChatsMetadataFormat([directories]);
         const group = readGroupJson('g1');
         expect(group.chat_metadata).toBeUndefined();
-        expect(group.fav).toBe(expected);
-    });
-
-    test.each(FAV_CASES)('migrateCharacterIds group sweep writes the normalized fav: %s', async (_label, value, expected) => {
-        const cardParser = await import('../src/character-card-parser.js');
-        const migration = await import('../src/migrations/migrate-character-ids.js');
-        const baseImage = await fs.promises.readFile(path.join(process.cwd(), '..', 'public', 'img', 'ai4.png'));
-        const card = {
-            name: 'Grace', spec: 'chara_card_v2', spec_version: '2.0',
-            data: {
-                name: 'Grace', description: '', personality: '', scenario: '', first_mes: '', mes_example: '',
-                tags: [], creator: '', character_version: '', creator_notes: '', extensions: { world: '' },
-            },
-        };
-        await fs.promises.writeFile(path.join(directories.characters, 'Grace.png'), cardParser.write(baseImage, JSON.stringify(card)));
-        writeRawGroupFile(withFav({ id: 'g1', name: 'G', members: ['Grace.png'], disabled_members: [] }, value));
-
-        const result = await migration.migrateCharacterIds(directories, { rebuildSearchIndex: false, log: () => {} });
-        expect(result.migrated).toBe(1);
-        const group = readGroupJson('g1');
-        expect(group.members).not.toContain('Grace.png');
         expect(group.fav).toBe(expected);
     });
 });
