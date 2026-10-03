@@ -1,5 +1,6 @@
 //! The storage engine (design: `.plans/2026-10-03-storage-from-needs.md`).
 
+pub mod keyspace;
 pub mod log;
 mod log_binding;
 
