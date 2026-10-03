@@ -61,5 +61,6 @@ yarn.lock
 test-results/
 .direnv
 .claude
+.plans
 .mcp.json
 /bin
