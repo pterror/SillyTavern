@@ -7,7 +7,6 @@ import path from 'node:path';
 
 import NodeSqlite3Wasm from 'node-sqlite3-wasm';
 import { isBusyError, openWasmDatabase, streamRows } from '../src/endpoints/sqlite-engine.js';
-import { defineMessageStatsFunctions } from '../src/message-stats.js';
 
 const { Database: WasmDatabase } = NodeSqlite3Wasm;
 
@@ -212,7 +211,6 @@ function snapshotFiles(dir) {
 function withDb(file, fn) {
     const db = new WasmDatabase(file);
     // The message stats triggers fire on message rows written here.
-    defineMessageStatsFunctions({ defineFunction: (name, f) => db.function(name, f, { deterministic: true }) });
     try {
         return fn(db);
     } finally {

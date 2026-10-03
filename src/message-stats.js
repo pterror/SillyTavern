@@ -100,37 +100,6 @@ export function generationMs(content) {
     return started > 0 && finished >= started ? finished - started : null;
 }
 
-/**
- * Registers the SQL functions the stats triggers of a store not yet migrated (migrateMessageStatsSync()) call: a
- * connection that writes message rows of such a store needs them.
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- */
-export function defineMessageStatsFunctions(db) {
-    db.defineFunction('st_kind', content => messageKind(content));
-    db.defineFunction('st_words', content => countWords(parseContent(content)?.mes));
-    db.defineFunction('st_gen_ms', content => generationMs(content));
-    db.defineFunction('st_send_at', content => sendAtOf(content));
-}
-
-/**
- * Opens message-tree.sqlite with a raw better-sqlite3 constructor, with the stats functions already registered. Any
- * code outside message-tree-db.js that opens the tree file goes through this, read-only or not: on a store not yet
- * migrated, a connection without the functions has every message write refused by the old triggers ("no such
- * function: st_kind"). tests/message-tree-openers.test.js fails if a file under src/ opens the tree another way.
- * @param {typeof import('better-sqlite3')} Database
- * @param {string} file
- * @param {import('better-sqlite3').Options} [options]
- * @returns {import('better-sqlite3').Database}
- */
-export function openNativeTreeDatabase(Database, file, options) {
-    const db = new Database(file, options);
-    defineMessageStatsFunctions(/** @type {any} */ ({ defineFunction: (name, fn) => db.function(name, { deterministic: true }, fn) }));
-    return db;
-}
-
-/** Bumped when the table changes; a store on another version is rebuilt and recounted. */
-const MESSAGE_STATS_VERSION = '1';
-const VERSION_KEY = 'message_stats_version';
 const FILL_AFTER_KEY = 'message_stats_fill_after';
 const FILL_DONE_KEY = 'message_stats_filled';
 export const TOTALS_OWNER = '';
@@ -156,32 +125,12 @@ const MESSAGE_STATS_SQL = `
     CREATE INDEX IF NOT EXISTS idx_owner_message_stats_first_user_at ON owner_message_stats(first_user_at);
 `;
 
-/** The triggers that kept the counters before the write path did (countMessageWriteSync()). */
-const DROP_OLD_TRIGGERS_SQL = `
-    DROP TRIGGER IF EXISTS message_stats_insert;
-    DROP TRIGGER IF EXISTS message_stats_delete;
-    DROP TRIGGER IF EXISTS message_stats_content;
-    DROP TRIGGER IF EXISTS message_stats_move;
-`;
-
 /**
- * Creates the stats table. A store on an older version gets it rebuilt and every owner recounted by the fill (a hard
- * cutover: the old counters are dropped).
+ * Creates the stats table.
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  */
-export function migrateMessageStatsSync(db) {
-    const version = /** @type {{ value: string } | undefined} */ (db.get('SELECT value FROM meta WHERE key = @key', { key: VERSION_KEY }));
-    if (db.get('SELECT 1 AS present FROM sqlite_master WHERE type = \'trigger\' AND name LIKE \'message_stats_%\' LIMIT 1')) {
-        db.exec(DROP_OLD_TRIGGERS_SQL);
-    }
-    if (version?.value !== MESSAGE_STATS_VERSION) {
-        db.exec('DROP TABLE IF EXISTS owner_message_stats;');
-        restartMessageStatsFillSync(db);
-    }
+export function createMessageStatsTableSync(db) {
     db.exec(MESSAGE_STATS_SQL);
-    if (version?.value !== MESSAGE_STATS_VERSION) {
-        setTreeMetaSync(db, VERSION_KEY, MESSAGE_STATS_VERSION);
-    }
 }
 
 /**

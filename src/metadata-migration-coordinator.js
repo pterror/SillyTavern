@@ -14,8 +14,6 @@ export const MIGRATION_PASSES = /** @type {const} */ ([
     'finishDeletedTags',
     // tags/reorder also asks for it on its own.
     'runTagReorderPassIfNeeded',
-    // Writes only the message tree.
-    'dropTreeOwnerCreatedAtIndex',
     // Counts each owner's message stats from its rows once; writes only the message tree.
     'fillMessageStatsIfNeeded',
     // Copies tag rows older than the tag sort tables' triggers; until it finishes, /query's tag filters read today's way.
