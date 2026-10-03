@@ -2,7 +2,7 @@ import { describe, test, expect, jest, beforeAll, afterAll, beforeEach, afterEac
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { groupDigestFavHash, characterDigestFavHash } from '../public/scripts/hash-utils.js';
+import { groupDigestFavHash } from '../public/scripts/hash-utils.js';
 
 /** @type {typeof import('../src/character-metadata-db.js')} */
 let metadataDb;
@@ -18,7 +18,6 @@ let baseUrl;
 let directories;
 
 const GROUP_FLAG = 'group_fav_normalized_v1';
-const CHARACTER_FLAG = 'character_fav_normalized_v1';
 
 /**
  * Every call made on the metadata store's db handles (and their read connections) while `recording` is on.
@@ -307,124 +306,6 @@ describe('group fav migration (normalizeGroupFavIfNeeded)', () => {
 
         expectBoundedStreaming(recorded, 'groups', 2);
         const remaining = withRawDb(db => db.prepare('SELECT COUNT(*) AS n FROM groups WHERE fav != 0 OR digest_fav != ?').get(groupDigestFavHash({ fav: false })));
-        expect(remaining.n).toBe(0);
-    }, 60000);
-});
-
-describe('character fav migration (normalizeCharacterFavIfNeeded)', () => {
-    /** @param {boolean} fav */
-    function expectedDigest(fav) {
-        return characterDigestFavHash({ fav, data: { extensions: { fav } } }) % 4294967296;
-    }
-
-    /** @param {string} name */
-    function card(name) {
-        return JSON.stringify({ name, data: { name, tags: [], creator: '', character_version: '', creator_notes: '', extensions: { world: '' } } });
-    }
-
-    // [id, fav column, shallow_json fav fields to plant (MISSING_FIELD = absent), plant a stale digest_fav]
-    const MISSING_FIELD = Symbol('missing');
-    const CHARACTERS = [
-        ['A.png', 1, 'false', MISSING_FIELD, false],
-        ['B.png', 0, 'true', 'yes', false],
-        ['C.png', 1, true, true, true],
-        ['D.png', 0, false, false, false],
-        ['E.png', 1, true, MISSING_FIELD, false],
-    ];
-    const CHANGED = ['A.png', 'B.png', 'E.png'];
-
-    async function seedCharacters() {
-        for (const [id, column] of CHARACTERS) {
-            await metadataDb.upsertCharacterFromWrite(directories, id, card(id));
-            if (column) await metadataDb.setCharacterFav(directories, id, true);
-        }
-        withRawDb(db => {
-            for (const [id, , topFav, extFav, staleDigest] of CHARACTERS) {
-                const shallow = JSON.parse(db.prepare('SELECT shallow_json FROM characters WHERE id = ?').get(id).shallow_json);
-                shallow.fav = topFav;
-                shallow.data = shallow.data ?? {};
-                shallow.data.extensions = shallow.data.extensions ?? {};
-                if (extFav === MISSING_FIELD) delete shallow.data.extensions.fav;
-                else shallow.data.extensions.fav = extFav;
-                db.prepare('UPDATE characters SET shallow_json = ?, digest_fav = ? WHERE id = ?').run(JSON.stringify(shallow), staleDigest ? 12345 : characterDigestFavHash(shallow) % 4294967296, id);
-            }
-        });
-    }
-
-    function readCharacterRows() {
-        const rows = withRawDb(db => [...db.prepare('SELECT id, fav, shallow_json, digest_fav, change_seq, card_json FROM characters LIMIT ?').iterate(CHARACTERS.length + 1)]);
-        expect(rows.length).toBe(CHARACTERS.length);
-        return Object.fromEntries(rows.map(r => [r.id, r]));
-    }
-
-    function maxChangeSeq() {
-        return withRawDb(db => db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM changes').get().seq);
-    }
-
-    /** @param {number} afterSeq @param {number} expectedCount */
-    function changesSince(afterSeq, expectedCount) {
-        const rows = withRawDb(db => [...db.prepare('SELECT seq, id, op, fields FROM changes WHERE seq > ? ORDER BY seq LIMIT ?').iterate(afterSeq, expectedCount + 1)]);
-        expect(rows.length).toBe(expectedCount);
-        return rows;
-    }
-
-    test('re-derives digest_fav and both shallow_json fav fields from the fav column, never touching the column', async () => {
-        await seedCharacters();
-        const before = readCharacterRows();
-
-        await metadataDb.normalizeCharacterFavIfNeeded(directories);
-
-        const after = readCharacterRows();
-        for (const [id, column] of CHARACTERS) {
-            const row = after[id];
-            const shallow = JSON.parse(row.shallow_json);
-            expect([id, row.fav]).toEqual([id, column]);
-            expect([id, shallow.fav, shallow.data.extensions.fav]).toEqual([id, !!column, !!column]);
-            expect([id, row.digest_fav]).toEqual([id, expectedDigest(!!column)]);
-            expect([id, row.card_json]).toEqual([id, before[id].card_json]);
-        }
-    });
-
-    test('adds a ["fav"] change-log entry and bumps change_seq only for rows whose stored value changed', async () => {
-        await seedCharacters();
-        const before = readCharacterRows();
-        const seqBefore = maxChangeSeq();
-
-        await metadataDb.normalizeCharacterFavIfNeeded(directories);
-
-        const after = readCharacterRows();
-        const newChanges = changesSince(seqBefore, CHANGED.length);
-        expect(newChanges.map(c => [c.id, c.op, c.fields]).sort()).toEqual(CHANGED.map(id => [id, 'upsert', JSON.stringify(['fav'])]).sort());
-        const expectedSeqs = Object.fromEntries(CHARACTERS.map(([id]) => [id, CHANGED.includes(id) ? newChanges.find(c => c.id === id)?.seq : before[id].change_seq]));
-        expect(Object.fromEntries(CHARACTERS.map(([id]) => [id, after[id].change_seq]))).toEqual(expectedSeqs);
-    });
-
-    test('runs once: sets its meta flag, and a second call leaves later-drifted rows alone', async () => {
-        await seedCharacters();
-        await metadataDb.normalizeCharacterFavIfNeeded(directories);
-        expect(await metadataDb.getMetaValue(directories, CHARACTER_FLAG)).not.toBeNull();
-
-        withRawDb(db => db.prepare('UPDATE characters SET digest_fav = 12345 WHERE id = ?').run('D.png'));
-        const seqBefore = maxChangeSeq();
-        await metadataDb.normalizeCharacterFavIfNeeded(directories);
-        const after = readCharacterRows();
-        expect(after['D.png'].digest_fav).toBe(12345);
-        changesSince(seqBefore, 0);
-    });
-
-    test('streams the characters table in bounded batches, never an unbounded read', async () => {
-        const count = 1001;
-        await metadataDb.beginBatchImport(directories);
-        for (let i = 0; i < count; i++) {
-            await metadataDb.upsertCharacterFromWrite(directories, `c${String(i).padStart(5, '0')}.png`, card(`c${i}`), null, null, { fromImport: true });
-        }
-        await metadataDb.endBatchImport(directories);
-        withRawDb(db => db.prepare('UPDATE characters SET digest_fav = 12345').run());
-
-        const recorded = await recordCalls(() => metadataDb.normalizeCharacterFavIfNeeded(directories));
-
-        expectBoundedStreaming(recorded, 'characters', 2);
-        const remaining = withRawDb(db => db.prepare('SELECT COUNT(*) AS n FROM characters WHERE digest_fav != ?').get(expectedDigest(false)));
         expect(remaining.n).toBe(0);
     }, 60000);
 });

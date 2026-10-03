@@ -14,7 +14,6 @@ import { charactersStore } from './character-store.js';
 import { isFetchedTagIdsCurrent, tagFetchStamp } from './tag-fetch-stamps.js';
 import { getCachedEntriesByIds, saveCachedCharacters, getCachedGroupEntriesByIds, saveCachedGroups, getCacheUserHandle } from './character-cache.js';
 import { readQueryCache, writeQueryCache, setQueryCacheUser, pinQueryCache } from './query-result-cache.js';
-import { characterDigestFieldsHash, characterDigestSource, normalizeFav, normalizeTagIds, shallowCharacterData } from './hash-utils.js';
 
 /**
  * @typedef {import('../script.js').Character} Character
@@ -283,7 +282,7 @@ const HASH_QUERY_SEARCH_BACKEND_NAMES = { 1: 'tantivy', 2: 'native', 3: 'wasm', 
  * `serializeQueryHashesBinary()` server-side (src/endpoints/characters.js) for the matching encoder and the
  * field-by-field layout spec this just walks with a `DataView`.
  * @param {ArrayBuffer} buffer
- * @returns {{seq: number, token: string|null, total: number|undefined, totalApprox: boolean, hidden: number|undefined, hiddenApprox: boolean, searchBackend: string|undefined, more: boolean, cursor: string|undefined, hashRows: {id:string, isGroup:boolean, favHash:number, tagIdsHash:number, contentHash:number, date_added:number, create_date:number|null, date_last_chat:number, chat_size:number, data_size:number, chat:string|null}[]}}
+ * @returns {{seq: number, token: string|null, total: number|undefined, totalApprox: boolean, hidden: number|undefined, hiddenApprox: boolean, searchBackend: string|undefined, more: boolean, cursor: string|undefined, hashRows: {id:string, isGroup:boolean, version:number|null, favHash:number, tagIdsHash:number, contentHash:number, date_added:number, create_date:number|null, date_last_chat:number, chat_size:number, data_size:number, chat:string|null}[]}}
  */
 function deserializeQueryHashesBinary(buffer) {
     const view = new DataView(buffer);
@@ -310,9 +309,15 @@ function deserializeQueryHashesBinary(buffer) {
         const idLen = view.getUint16(offset, true); offset += 2;
         const id = decoder.decode(new Uint8Array(buffer, offset, idLen)); offset += idLen;
 
-        const favHash = view.getUint32(offset, true); offset += 4;
-        const tagIdsHash = view.getUint32(offset, true); offset += 4;
-        const contentHash = view.getUint32(offset, true); offset += 4;
+        // A character's cache key is its version; a group's, its three digests.
+        let version = null, favHash = 0, tagIdsHash = 0, contentHash = 0;
+        if (isGroup) {
+            favHash = view.getUint32(offset, true); offset += 4;
+            tagIdsHash = view.getUint32(offset, true); offset += 4;
+            contentHash = view.getUint32(offset, true); offset += 4;
+        } else {
+            version = view.getFloat64(offset, true); offset += 8;
+        }
 
         const date_added = view.getFloat64(offset, true); offset += 8;
         const createDateRaw = view.getFloat64(offset, true); offset += 8;
@@ -325,7 +330,7 @@ function deserializeQueryHashesBinary(buffer) {
         offset += chatLen;
 
         hashRows.push({
-            id, isGroup, favHash, tagIdsHash, contentHash,
+            id, isGroup, version, favHash, tagIdsHash, contentHash,
             date_added, create_date: hasCreateDate ? createDateRaw : null, date_last_chat, chat_size, data_size, chat,
         });
     }
@@ -440,31 +445,17 @@ function liveFieldsFromHashRow(hashRow) {
 }
 
 /**
- * A cached character as the row a miss returns for it: the fields `/batch` field-filtered mode returns from
- * shallow_json (HASH_MODE_BATCH_FIELDS), with nothing else from the cached record, so a consumer can't tell a
- * hit from a miss. A whole-record cache entry carries fields shallow_json doesn't (and, with
- * `shallowCharactersIncludeCreatorNotes` off, `data.creator_notes`), which the hashes don't cover.
- *
- * Whether the row's shallow_json holds `data.creator_notes` is read off its content hash: the cached record
- * matches it hashed one way only.
- * @param {object} character The cached record, whose hashes matched `contentHash`.
- * @param {number} contentHash The row's content hash from the server.
- * @returns {object|undefined} `undefined` if the record matches `contentHash` neither way (refetch it).
+ * A cached character as the row a miss returns for it: the fields `/batch` field-filtered mode returns
+ * (HASH_MODE_BATCH_FIELDS), with nothing else from the cached record, so a consumer can't tell a hit from a miss.
+ * @param {Record<string, any>} character The cached record, saved by a hash-mode miss.
+ * @returns {Record<string, any>}
  */
-function projectCachedCharacter(character, contentHash) {
-    const includeCreatorNotes = [false, true].find(include =>
-        characterDigestFieldsHash(characterDigestSource(character, include)) % 4294967296 === contentHash);
-    if (includeCreatorNotes === undefined) return undefined;
-    const data = shallowCharacterData(character, includeCreatorNotes);
-    data.extensions.fav = normalizeFav(data.extensions.fav);
+function projectCachedCharacter(character) {
     /** @type {Record<string, any>} */
     const row = {};
-    // JSON drops undefined values, so a field a miss's shallow_json lacks is absent from its row.
-    if (character.name !== undefined) row.name = character.name;
-    row.fav = normalizeFav(character.fav);
-    if (character.tags !== undefined) row.tags = character.tags;
-    row.tag_ids = normalizeTagIds(character.tag_ids);
-    row.data = data;
+    for (const field of HASH_MODE_BATCH_FIELDS) {
+        if (character[field] !== undefined) row[field] = character[field];
+    }
     return row;
 }
 
@@ -855,9 +846,9 @@ export class CharacterRepository {
     }
 
     /**
-     * Resolves hash-mode's `{id, isGroup, favHash, tagIdsHash, contentHash, ...live fields}` rows into full
-     * objects. A row whose hashes match the local per-id cache is answered from cache with its live fields
-     * overlaid, no refetch; everything else goes through one batched fetch (characters and groups separately,
+     * Resolves hash-mode's `{id, isGroup, version | favHash, tagIdsHash, contentHash, ...live fields}` rows into full
+     * objects. A row whose version (a group's: hashes) matches the local per-id cache is answered from cache with
+     * its live fields overlaid, no refetch; everything else goes through one batched fetch (characters and groups separately,
      * since they're different endpoints/caches) and gets cached for next time.
      * @param {ReturnType<typeof deserializeQueryHashesBinary>['hashRows']} hashRows
      * @param {boolean} includeGroups
@@ -903,10 +894,8 @@ export class CharacterRepository {
 
         for (const hr of hashRows) {
             const entry = cachedEntries.get(hr.id);
-            const hit = entry && entry.hashes.fav === hr.favHash && entry.hashes.tagIds === hr.tagIdsHash && entry.hashes.content === hr.contentHash;
-            const projected = hit ? projectCachedCharacter(entry.character, hr.contentHash) : undefined;
-            if (projected) {
-                result.set(hr.id, { avatar: hr.id, ...projected, ...liveFieldsFromHashRow(hr), shallow: true });
+            if (entry && hr.version !== null && entry.hashes.version === hr.version) {
+                result.set(hr.id, { avatar: hr.id, ...projectCachedCharacter(entry.character), ...liveFieldsFromHashRow(hr), shallow: true });
             } else {
                 staleRows.push(hr);
             }
@@ -915,14 +904,15 @@ export class CharacterRepository {
         if (staleRows.length > 0) {
             const fetched = await fetchBatchFields(staleRows.map(hr => hr.id), HASH_MODE_BATCH_FIELDS);
             const fetchedByAvatar = new Map(fetched.map(c => [c.avatar, c]));
-            /** @type {{avatar: string, character: Character}[]} */
+            /** @type {{avatar: string, character: Character, version: number}[]} */
             const toCache = [];
             for (const hr of staleRows) {
                 const partial = fetchedByAvatar.get(hr.id);
                 if (!partial) continue;
                 const merged = { ...partial, ...liveFieldsFromHashRow(hr), avatar: hr.id, shallow: true };
                 result.set(hr.id, merged);
-                toCache.push({ avatar: hr.id, character: merged });
+                // Fetched after the version was read, so it is at least that version: a later change moves the version on.
+                if (hr.version !== null) toCache.push({ avatar: hr.id, character: merged, version: hr.version });
             }
             if (toCache.length > 0) {
                 await saveCachedCharacters(toCache);

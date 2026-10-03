@@ -121,8 +121,9 @@ describe('processCharacter failures', () => {
 
         const direct = await characters.processCharacter('Alpha.png', directories, { shallow: false });
         const wrapped = await characters.processCharacterOrPlaceholder('Alpha.png', directories, { shallow: false });
-        // `chat` is a fresh timestamped name on every call.
-        expect(wrapped).toEqual({ ...direct, chat: wrapped.chat });
+        // `chat` is a fresh timestamped name on every call. json_data is the same card; its key order may differ
+        // (the first read writes back its drift repair, the second assembles the stored card).
+        expect({ ...wrapped, json_data: JSON.parse(wrapped.json_data) }).toEqual({ ...direct, chat: wrapped.chat, json_data: JSON.parse(direct.json_data) });
         expect(wrapped.name).toBe('Alpha');
     });
 });

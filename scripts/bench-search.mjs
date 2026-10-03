@@ -42,7 +42,7 @@ const CANDIDATES = ['the', 'you', 'and', 'her', 'his', 'she', 'girl', 'woman', '
 const WORDS = ['girl', 'the', 'love', 'dragon', 'vampire', 'detective', 'saxophone', 'quokka', 'dr', 'dark knight'];
 
 const PICK_FIELDS = ['name', 'description', 'first_mes', 'personality', 'scenario', 'tags', 'resolved_tags', 'creator'];
-const BOOT_LOG_MARKER = '[metadata-chain] backfillActiveChatFromCards';
+const BOOT_LOG_MARKER = '[metadata-chain] reconcile';
 
 /** Fresh processes per shape and word. */
 const PROCESSES = 5;
@@ -857,7 +857,7 @@ async function startServer(opts) {
             if (fs.readFileSync(logPath, 'utf8').includes(BOOT_LOG_MARKER)) break;
             await sleep(1000);
         }
-        console.log('server boot chain reached backfillActiveChatFromCards');
+        console.log('server boot chain reached reconcile');
     } catch (err) {
         console.log(`--- last 50 lines of ${logPath} ---\n${tailLog(logPath)}`);
         throw err;

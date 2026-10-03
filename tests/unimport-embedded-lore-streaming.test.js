@@ -133,9 +133,11 @@ describe('unimport-embedded-lore - streamed linked-world reads', () => {
         expect(result).toMatchObject({ safe: 1, migrated: 1, failed: 0, ambiguous: 2, orphanedWorlds: 1 });
 
         // The progress line's one COUNT(*) reads no rows out; every read that returns rows is paged. A write reading back
-        // the one row it is about to write (by primary key) isn't a read of linked Worlds.
+        // the one row it is about to write (by primary key), or a card read assembling a bounded list of cards by primary
+        // key, isn't a read of linked Worlds.
         const onePrimaryKeyRow = c => c.method === 'get' && /\bWHERE id = @id\s*$/.test(c.sql);
-        const worldReads = calls.filter(c => c.method !== 'run' && /^\s*SELECT\b/i.test(c.sql) && /\bworld\b/.test(c.sql) && !/^\s*SELECT COUNT\(\*\)/i.test(c.sql) && !onePrimaryKeyRow(c));
+        const primaryKeyList = c => /\bFROM characters WHERE id IN \(SELECT value FROM json_each\(\?\)\)\s*$/.test(c.sql);
+        const worldReads = calls.filter(c => c.method !== 'run' && /^\s*SELECT\b/i.test(c.sql) && /\bworld\b/.test(c.sql) && !/^\s*SELECT COUNT\(\*\)/i.test(c.sql) && !onePrimaryKeyRow(c) && !primaryKeyList(c));
         expect(worldReads.map(c => c.method)).toEqual(expect.arrayContaining(['iterate', 'get']));
         for (const { method, sql, params, handle } of worldReads) {
             expect(method).not.toBe('all');

@@ -6,9 +6,8 @@ import process from 'node:process';
 import lodash from 'lodash';
 
 // Hash-mode /query (character-repository.js) resolves a row from the client's character cache when the row's
-// hashes match, and fetches it from /batch otherwise. Consumers get the row either way and can't tell which, so
-// a hit must be the same row object a miss is - whether the cached record came from a miss or from delta-sync's
-// whole-record fetch (character-list.js). Real client modules against the real server routes; only what can't
+// version matches, and fetches it from /batch otherwise. Consumers get the row either way and can't tell which, so
+// a hit must be the same row object a miss is. Real client modules against the real server routes; only what can't
 // load in node is replaced: IndexedDB (localforage) by an in-memory store that structured-clones like
 // IndexedDB does, and the DOM-bound modules character-list.js imports.
 
@@ -230,11 +229,6 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
         residentCharacters.length = 0;
     }
 
-    /** @param {string} id */
-    function cachedRecord(id) {
-        return localforageStores.get(`SillyTavern_CharacterCache_${USER_HANDLE}`)?.get(id);
-    }
-
     /**
      * One hash-mode /query for `id` through a freshly imported repository, so its per-request response cache is
      * empty and the row is resolved against the character cache.
@@ -263,14 +257,5 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
         const hitOnMissRecord = await clientResolve('Char.png');
         expect(hitOnMissRecord.batched).toBe(false);
         expect(hitOnMissRecord.row).toStrictEqual(miss.row);
-
-        // Hit on the record delta-sync cached from a whole-record /batch fetch.
-        clearClientCaches();
-        await mode.characterList.getCharacters({ silent: true, silentGroups: true, skipPrint: true });
-        expect(toastrError).not.toHaveBeenCalled();
-        expect(cachedRecord('Char.png')?.character.shallow === true).toBe(lazy);
-        const hitOnSyncRecord = await clientResolve('Char.png');
-        expect(hitOnSyncRecord.batched).toBe(false);
-        expect(hitOnSyncRecord.row).toStrictEqual(miss.row);
     }, 30000);
 });

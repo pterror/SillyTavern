@@ -4,6 +4,18 @@ import path from 'node:path';
 import os from 'node:os';
 
 import * as realSqliteEngine from '../src/endpoints/sqlite-engine.js';
+import { defineCharacterStoreFunctions } from '../src/character-store-schema.js';
+
+/**
+ * Registers on a raw connection to the character store the functions its indexes and triggers call.
+ * @template {import('better-sqlite3').Database} T
+ * @param {T} db
+ * @returns {T}
+ */
+function withStoreFunctions(db) {
+    defineCharacterStoreFunctions({ defineFunction: (name, fn) => db.function(name, { deterministic: true }, fn) });
+    return db;
+}
 
 // Records every statement the store runs, so a test can ask SQLite how it planned the page reads.
 /** @type {{ method: string, sql: string, params: any }[]} */
@@ -71,7 +83,7 @@ const dbPath = () => path.join(directories.root, 'character-metadata.sqlite');
 
 /** @param {string} sql @param {unknown[]} [params] */
 function runSql(sql, params = []) {
-    const db = new Database(dbPath());
+    const db = withStoreFunctions(new Database(dbPath()));
     try {
         return db.prepare(sql).run(...params);
     } finally {
@@ -200,7 +212,7 @@ describe('/query sorted pages: upstream tie order, with and without the sort ind
                 await listed({ sortField, sortOrder });
                 const pageReads = calls.filter(c => /\bORDER BY\b/.test(c.sql) && /\bLIMIT \?/.test(c.sql) && /\bfav = \?/.test(c.sql));
                 expect(pageReads.length).toBe(4);
-                const db = new Database(dbPath(), { readonly: true });
+                const db = withStoreFunctions(new Database(dbPath(), { readonly: true }));
                 try {
                     for (const read of pageReads) {
                         const plan = db.prepare(`EXPLAIN QUERY PLAN ${read.sql}`).all(...read.params).map(r => r.detail).join(' | ');
@@ -245,7 +257,7 @@ describe('/query sorted pages: upstream tie order, with and without the sort ind
                 await metadataDb.queryEntities(directories, { sortField, sortOrder, offset: 3, limit: 3, wantTotal: false, cursor: first.cursor });
                 const reads = calls.filter(c => /\bAS k\b/.test(c.sql));
                 expect(reads.some(c => /> \?|< \?|IS NOT NULL|IS NULL/.test(c.sql))).toBe(true);
-                const db = new Database(dbPath(), { readonly: true });
+                const db = withStoreFunctions(new Database(dbPath(), { readonly: true }));
                 try {
                     for (const read of reads) {
                         const plan = db.prepare(`EXPLAIN QUERY PLAN ${read.sql}`).all(...read.params).map(r => r.detail).join(' | ');
@@ -281,8 +293,9 @@ describe('/query sorted pages: upstream tie order, with and without the sort ind
         expect(result.rows).toHaveLength(2);
         const streamReads = calls.filter(c => /\bAS k\b/.test(c.sql));
         expect(streamReads.length).toBeGreaterThan(0);
-        expect(streamReads.every(c => !/shallow_json/.test(c.sql) && c.method === 'iterate')).toBe(true);
-        const fullReads = calls.filter(c => /shallow_json/.test(c.sql) && /json_each/.test(c.sql));
+        expect(streamReads.every(c => !/\bcard_\w+\b/.test(c.sql) && c.method === 'iterate')).toBe(true);
+        // A list row's card values are read from the card tables, its tag names first.
+        const fullReads = calls.filter(c => /FROM card_tags\b/.test(c.sql) && /json_each/.test(c.sql));
         expect(fullReads.flatMap(c => JSON.parse(c.params[0]))).toHaveLength(2);
         expect(calls.some(c => c.method === 'all')).toBe(false);
     });
@@ -335,7 +348,7 @@ describe('/query with characters only: the same walk, cursor and work cap', () =
                 const reads = calls.filter(c => /\bORDER BY\b/.test(c.sql));
                 expect(reads.length).toBeGreaterThan(0);
                 expect(reads.some(c => /\bgroups\b/.test(c.sql))).toBe(false);
-                const db = new Database(dbPath(), { readonly: true });
+                const db = withStoreFunctions(new Database(dbPath(), { readonly: true }));
                 try {
                     for (const read of reads) {
                         const plan = db.prepare(`EXPLAIN QUERY PLAN ${read.sql}`).all(...read.params).map(r => r.detail).join(' | ');
@@ -377,6 +390,6 @@ describe('/query with characters only: the same walk, cursor and work cap', () =
         const result = await metadataDb.queryCharacters(directories, { sortField: 'date_added', sortOrder: 'desc', offset: 0, limit: 100, wantTotal: false, wantRows: false, wantHashes: true });
         expect(result.hashRows.map(r => r.id)).toEqual(expectedCharacters('date_added', 'desc', undefined));
         expect(result.hashRows[0]).toHaveProperty('chat');
-        expect(result.hashRows[0]).toEqual(expect.objectContaining({ favHash: expect.any(Number), contentHash: expect.any(Number) }));
+        expect(result.hashRows[0]).toEqual(expect.objectContaining({ version: expect.any(Number) }));
     });
 });

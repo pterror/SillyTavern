@@ -194,9 +194,6 @@ export function tagNameKey(name) {
     return name.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 }
 
-/** `/api/characters/batch` response header carrying `shallowCharacterData()`'s `includeCreatorNotes` ('true'/'false'). */
-export const SHALLOW_CREATOR_NOTES_HEADER = 'X-Shallow-Characters-Include-Creator-Notes';
-
 /**
  * The `data` object of a shallow character (the server's toShallow(), src/character-shallow.js): each field
  * falls back to its default only when absent, so a card missing any of them hashes like its shallow_json does.

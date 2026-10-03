@@ -6,6 +6,9 @@ import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
 import Database from 'better-sqlite3';
 
+import { splitCard } from '../src/character-card-storage.js';
+import { defineCharacterStoreFunctions } from '../src/character-store-schema.js';
+
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const ORIGINAL_CWD = process.cwd();
 const HANDLE = 'h';
@@ -340,11 +343,22 @@ describe('search-index-worker.js (real worker thread)', () => {
             metadataDb.characterChangeEmitter.off(coordinatorModule.CHARACTER_INDEX_FAILED_EVENT, onFailed);
         });
 
-        /** Breaks a row's card_json straight in the db, optionally with a change row for it. */
-        function breakCardJson(id, { change }) {
+        /**
+         * Stores a card the index can't process (a V2 card whose `data` is null, named as before) as a row's card
+         * straight in the db, optionally with a change row for it.
+         */
+        function breakCard(id, { change }) {
             const db = new Database(path.join(directories.root, 'character-metadata.sqlite'));
+            defineCharacterStoreFunctions({ defineFunction: (name, fn) => db.function(name, { deterministic: true }, fn) });
             try {
-                db.prepare('UPDATE characters SET card_json = ? WHERE id = ?').run('not json', id);
+                const parts = splitCard({ name: id.replace(/\.png$/, ''), spec: 'chara_card_v2', data: null });
+                const { columns } = parts;
+                for (const table of ['cards', 'card_greetings', 'card_tags', 'card_extensions', 'card_extra']) {
+                    db.prepare(`DELETE FROM ${table} WHERE character_id = ?`).run(id);
+                }
+                db.prepare('UPDATE characters SET name = ?, creator = ?, character_version = ?, world = ?, create_date_raw = ? WHERE id = ?')
+                    .run(columns.name ?? null, columns.creator ?? null, columns.character_version ?? null, columns.world ?? null, columns.create_date ?? null, id);
+                for (const x of parts.extra) db.prepare('INSERT INTO card_extra VALUES (?, ?, ?)').run(id, x.path, x.value);
                 if (change) db.prepare('INSERT INTO changes (id, op, fields) VALUES (?, \'upsert\', NULL)').run(id);
             } finally {
                 db.close();
@@ -358,7 +372,7 @@ describe('search-index-worker.js (real worker thread)', () => {
             const coordinator = makeCoordinator();
             await coordinator.getIndex(HANDLE, directories, 'characters');
 
-            breakCardJson('Broken.png', { change: true });
+            breakCard('Broken.png', { change: true });
             await waitFor(() => failures.length > 0);
             expect(failures).toEqual([{ handle: HANDLE, warning: expect.objectContaining({ id: 'Broken.png', name: 'Broken', retryInMs: 1000, keptEntry: true }) }]);
         }, 30000);
@@ -370,7 +384,7 @@ describe('search-index-worker.js (real worker thread)', () => {
             const coordinator = makeCoordinator();
             await coordinator.getIndex(HANDLE, directories, 'characters');
 
-            breakCardJson('Broken.png', { change: false });
+            breakCard('Broken.png', { change: false });
             await expect(coordinator.rebuild(HANDLE, directories)).resolves.toBe(true);
             await waitFor(() => failures.length > 0);
             expect(failures).toEqual([{ handle: HANDLE, warning: expect.objectContaining({ id: 'Broken.png', name: 'Broken', retryInMs: 1000, keptEntry: true }) }]);

@@ -4,6 +4,18 @@ import path from 'node:path';
 import os from 'node:os';
 
 import * as realSqliteEngine from '../src/endpoints/sqlite-engine.js';
+import { defineCharacterStoreFunctions } from '../src/character-store-schema.js';
+
+/**
+ * Registers on a raw connection to the character store the functions its indexes and triggers call.
+ * @template {import('better-sqlite3').Database} T
+ * @param {T} db
+ * @returns {T}
+ */
+function withStoreFunctions(db) {
+    defineCharacterStoreFunctions({ defineFunction: (name, fn) => db.function(name, { deterministic: true }, fn) });
+    return db;
+}
 
 /** @type {{ method: string, sql: string, params: any }[]} */
 const calls = [];
@@ -71,7 +83,7 @@ const dbPath = () => path.join(directories.root, 'character-metadata.sqlite');
 /** Runs statements on a connection of its own, with the store closed, so the store's triggers are what keep up. */
 function withDb(fn) {
     metadataDb.disposeMetadataStores();
-    const db = new Database(dbPath());
+    const db = withStoreFunctions(new Database(dbPath()));
     try {
         return fn(db);
     } finally {
@@ -212,7 +224,7 @@ describe('/query included tags read from the tag sort tables', () => {
                 await listed({ sortField, sortOrder, tags: { mode: 'and', include: ['T1'] } });
                 const reads = calls.filter(c => /_tag_sort s\b/.test(c.sql));
                 expect(reads.length).toBe(4);
-                const db = new Database(dbPath(), { readonly: true });
+                const db = withStoreFunctions(new Database(dbPath(), { readonly: true }));
                 try {
                     for (const read of reads) {
                         const plan = db.prepare(`EXPLAIN QUERY PLAN ${read.sql}`).all(...read.params).map(r => r.detail).join(' | ');
@@ -243,7 +255,7 @@ describe('/query included tags read from the tag sort tables', () => {
                 expect(reads.some(c => /json_each/.test(c.sql) && /NOT EXISTS/.test(c.sql))).toBe(true);
                 // Before the fill, an included tag is still read as a list (step 5's fallback); only the exclude is checked then.
                 if (!fill && tags.include) continue;
-                const db = new Database(dbPath(), { readonly: true });
+                const db = withStoreFunctions(new Database(dbPath(), { readonly: true }));
                 try {
                     for (const read of reads) {
                         const plan = db.prepare(`EXPLAIN QUERY PLAN ${read.sql}`).all(...read.params).map(r => r.detail).join(' | ');

@@ -78,7 +78,7 @@ import { checkForNewContent } from './endpoints/content-manager.js';
 import { init as settingsInit } from './endpoints/settings.js';
 import { redirectDeprecatedEndpoints, ServerStartup, setupPrivateEndpoints } from './server-startup.js';
 import { diskCache } from './endpoints/characters.js';
-import { initializeMetadataStores, disposeMetadataStores, startChatStatsReconcile } from './character-metadata-db.js';
+import { CharacterStoreLayoutError, initializeMetadataStores, disposeMetadataStores, startChatStatsReconcile } from './character-metadata-db.js';
 import { startMetadataMigrations, disposeMetadataMigrationWorkers } from './metadata-migration-coordinator.js';
 import { startSearchWorkerIfIndexed } from './endpoints/characters-search-index.js';
 import { initializeLocalImportScan, disposeLocalImportScan } from './local-import-scan.js';
@@ -373,7 +373,13 @@ async function preSetupTasks() {
 
     // Only schema creation is awaited; the bootstrap backfill runs in the background so a large
     // library doesn't delay the server from listening.
-    await initializeMetadataStores(directories);
+    try {
+        await initializeMetadataStores(directories);
+    } catch (err) {
+        if (!(err instanceof CharacterStoreLayoutError)) throw err;
+        console.error(color.red(err.message));
+        process.exit(1);
+    }
     __mark('initializeMetadataStores');
 
     // Fire-and-forget, so a user's first search doesn't wait for their search index worker to start.

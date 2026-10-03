@@ -3,6 +3,22 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { storedTagDefinitions, tagCounts } from './tag-store-reads.js';
+import { defineCharacterStoreFunctions } from '../src/character-store-schema.js';
+
+/**
+ * better-sqlite3 with the store's SQL functions registered on every connection, as the store's own connections have
+ * them (character-store-schema.js).
+ * @param {typeof import('better-sqlite3')} Base
+ * @returns {typeof import('better-sqlite3')}
+ */
+function withStoreFunctions(Base) {
+    return /** @type {any} */ (class extends /** @type {any} */ (Base) {
+        constructor(/** @type {any[]} */ ...args) {
+            super(...args);
+            defineCharacterStoreFunctions({ defineFunction: (name, fn) => this.function(name, { deterministic: true }, fn) });
+        }
+    });
+}
 
 /** @type {typeof import('../src/character-metadata-db.js')} */
 let metadataDb;
@@ -107,7 +123,7 @@ async function tagsFor(ids) {
 }
 
 async function withDb(fn) {
-    const Database = (await import('better-sqlite3')).default;
+    const Database = withStoreFunctions((await import('better-sqlite3')).default);
     const db = new Database(path.join(tempDir, 'character-metadata.sqlite'));
     try {
         return fn(db);
@@ -287,47 +303,75 @@ describe('entity tag lists read a marked tag as its merge target', () => {
         expect(await metadataDb.getGroupTagIds(directories, 'g1')).toEqual(['y']);
     });
 
-    test('shallow rows: getShallowByIds, queryCharacters rows, queryEntities rows', async () => {
+    test('list rows carry the ids as stored: getShallowByIds, queryCharacters rows, queryEntities rows', async () => {
         await seedLibrary();
         await deleteTag('x', 'y');
         const shallow = await metadataDb.getShallowByIds(directories, ['c1.png', 'c2.png']);
-        expect(shallow['c1.png'].tag_ids).toEqual(['y']);
-        expect(shallow['c2.png'].tag_ids).toEqual(['y']);
+        expect(shallow['c1.png'].tag_ids).toEqual(['x']);
+        expect(shallow['c2.png'].tag_ids).toEqual(['x', 'y']);
 
         const chars = await metadataDb.queryCharacters(directories, { sortField: 'name', limit: 100 });
-        expect(chars.rows.find(r => r.avatar === 'c1.png').tag_ids).toEqual(['y']);
+        expect(chars.rows.find(r => r.avatar === 'c1.png').tag_ids).toEqual(['x']);
 
         const search = await metadataDb.queryCharacters(directories, { sortField: 'search', idOrder: ['c2.png'], limit: 100 });
-        expect(search.rows[0].tag_ids).toEqual(['y']);
+        expect(search.rows[0].tag_ids).toEqual(['x', 'y']);
 
         const entities = await metadataDb.queryEntities(directories, { sortField: 'name', limit: 100 });
-        expect(entities.rows.find(r => r.id === 'c2.png').item.tag_ids).toEqual(['y']);
+        expect(entities.rows.find(r => r.id === 'c2.png').item.tag_ids).toEqual(['x', 'y']);
 
         const byIds = await metadataDb.getEntityRowsByIds(directories, [{ type: 'character', id: 'c1.png' }]);
-        expect(byIds.rows[0].item.tag_ids).toEqual(['y']);
+        expect(byIds.rows[0].item.tag_ids).toEqual(['x']);
     });
 
-    test('hash rows carry the tag_ids digest of the resolved list', async () => {
+    test('group hash rows carry the tag_ids digest of the resolved list', async () => {
         await seedLibrary();
         await deleteTag('x', 'y');
-        const charHash = hashUtils.characterDigestTagIdsHash({ tag_ids: ['y'] });
         const groupHash = hashUtils.groupDigestTagIdsHash({ tag_ids: ['y'] });
 
-        const chars = await metadataDb.queryCharacters(directories, { sortField: 'name', limit: 100, wantRows: false, wantHashes: true });
-        expect(chars.hashRows.find(r => r.id === 'c1.png').tagIdsHash).toBe(charHash);
-        expect(chars.hashRows.find(r => r.id === 'c2.png').tagIdsHash).toBe(charHash);
-        const search = await metadataDb.queryCharacters(directories, { sortField: 'search', idOrder: ['c1.png'], limit: 100, wantRows: false, wantHashes: true });
-        expect(search.hashRows[0].tagIdsHash).toBe(charHash);
-
         const entities = await metadataDb.queryEntities(directories, { sortField: 'name', limit: 100, wantRows: false, wantHashes: true });
-        expect(entities.hashRows.find(r => r.id === 'c1.png').tagIdsHash).toBe(charHash);
         expect(entities.hashRows.find(r => r.id === 'g1').tagIdsHash).toBe(groupHash);
 
         const random = await metadataDb.queryEntities(directories, { sortField: 'random', seed: 3, handle: 'h', limit: 100, wantRows: false, wantHashes: true });
         expect(random.hashRows.find(r => r.id === 'g1').tagIdsHash).toBe(groupHash);
 
-        const byIds = await metadataDb.getEntityRowsByIds(directories, [{ type: 'character', id: 'c1.png' }, { type: 'group', id: 'g1' }], { wantRows: false, wantHashes: true });
-        expect(byIds.hashRows.map(r => r.tagIdsHash)).toEqual([charHash, groupHash]);
+        const byIds = await metadataDb.getEntityRowsByIds(directories, [{ type: 'group', id: 'g1' }], { wantRows: false, wantHashes: true });
+        expect(byIds.hashRows.map(r => r.tagIdsHash)).toEqual([groupHash]);
+    });
+
+    test('a mark moves no character\'s version, and its rows keep the stored id', async () => {
+        await seedLibrary();
+        const versions = async () => Object.fromEntries(await Promise.all(['c1.png', 'c2.png', 'c3.png'].map(async id => [id, (await metadataDb.getCharacterMetadataRow(directories, id)).version])));
+        const before = await versions();
+        await deleteTag('x', 'y');
+        expect(await versions()).toEqual(before);
+        const chars = await metadataDb.queryCharacters(directories, { sortField: 'name', limit: 100, wantRows: false, wantHashes: true });
+        expect(chars.hashRows.find(r => r.id === 'c1.png').version).toBe(before['c1.png']);
+        expect((await metadataDb.getShallowByIds(directories, ['c1.png']))['c1.png'].tag_ids).toEqual(['x']);
+    });
+
+    test('a tag read answers a merged id with the live tag it reads as, chains followed', async () => {
+        await seedLibrary();
+        await deleteTag('x', 'y');
+        await deleteTag('y', 'z');
+        await deleteTag('d');
+        expect(await metadataDb.getMergedTagTargets(directories, ['x', 'y', 'z', 'd', 'nope'])).toEqual({ x: 'z', y: 'z' });
+        const answer = await (await post('/api/tags/by-ids', { ids: ['x', 'd'] })).json();
+        expect(answer.merged).toEqual({ x: 'z' });
+        expect(answer.gone).toEqual(['d']);
+        // The target's definition comes with it, though it wasn't asked for; nothing nameless is a definition.
+        expect(answer.tags.map(tag => tag.id)).toEqual(['z']);
+        expect(answer.tags.every(tag => typeof tag.name === 'string')).toBe(true);
+    });
+
+    test('finishing the deletion moves the version of each character whose rows it moved', async () => {
+        await seedLibrary();
+        const before = (await metadataDb.getCharacterMetadataRow(directories, 'c1.png')).version;
+        const c4Before = (await metadataDb.getCharacterMetadataRow(directories, 'c4.png')).version;
+        await deleteTag('x', 'y');
+        await metadataDb.finishDeletedTags(directories);
+        expect((await metadataDb.getCharacterMetadataRow(directories, 'c1.png')).version).toBeGreaterThan(before);
+        expect((await metadataDb.getCharacterMetadataRow(directories, 'c4.png')).version).toBe(c4Before);
+        expect((await metadataDb.getShallowByIds(directories, ['c1.png']))['c1.png'].tag_ids).toEqual(['y']);
     });
 });
 

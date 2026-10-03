@@ -21,7 +21,7 @@ import { TavernCardValidator } from '../validator/TavernCardValidator.js';
 import { importFailure, NO_CARD_DATA } from '../character-import-error.js';
 import { parse, write, writeCardToFile, stripCardData, computeAvatarIdentityHashFromImageBuffer, reclaimReflinkPrefix } from '../character-card-parser.js';
 import { getCharaCardV2, convertToV2, readFromV2, charaFormatData, unsetPrivateFields, omitInstallLocalFields, omitFavField, omitChatField, computeContentIdentityHash, V1_V2_FIELD_MAPPINGS } from '../character-card-normalize.js';
-import { calculateDataSize, toShallow, shallowCharactersIncludeCreatorNotes } from '../character-shallow.js';
+import { calculateDataSize, toShallow } from '../character-shallow.js';
 import { touchBrowserPresence, PRESENCE_PING_INTERVAL_MS } from '../browser-presence.js';
 import { invalidateThumbnail, getThumbnailVersion } from './thumbnails.js';
 import { importRisuSprites, importChubExpressions, importChubRelatedLorebooks } from './sprites.js';
@@ -38,7 +38,7 @@ import { searchGroups, searchGroupIds, searchGroupsSorted, getGroupIndexPosition
 import { getGroupsByIds } from './groups.js';
 import { CHARACTER_INDEX_FAILED_EVENT } from './search-index-coordinator.js';
 import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, findCharacterMatches, findGroupMatches, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, toggleCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, getCurrentSeqAndGroupsVersion, seedCardTagsForSingleCharacter, assignEntityTag, unassignEntityTag, streamCharacterIdsMatching, beginBulkSelection, bulkSelectionExists, addToBulkSelection, removeFromBulkSelection, describeBulkSelection, readBulkSelectionPage, streamBulkSelection, mutualTagIdsOfBulkSelection, dropBulkSelection, getCharacterCardJson, getCharacterChatStats, getCharacterIndexRowsByIds, streamCharacterCardJsonBatches, characterRowExists, characterRowOrPendingExistsSync, getEntityRowsByIds, hasClosedFolderTags, copyEntityTags, TAG_MOVE_FAILED_EVENT, TAG_ORDER_SETTLED_EVENT, TAG_CHANGES_EVENT, GROUP_CHANGES_EVENT, QUERY_RANGE_COLUMNS, isQueryRangeField, SAVED_VIEWS_EVENT, getTagChangesSeq, getActivitySeq, foldAllActivity, readDependsOnActivity } from '../character-metadata-db.js';
-import { characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash, normalizeFav, SHALLOW_CREATOR_NOTES_HEADER } from '../../public/scripts/hash-utils.js';
+import { characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash, normalizeFav } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
 import { hashGreetingText, opAdd, opAppend, opEdit, opDelete, opMove, opSetDefault, opUnsetDefault, opUnsetDefaultByHash } from '../greeting-ops.js';
 import { copyCharacterFile } from '../local-import-copy.js';
@@ -2343,8 +2343,9 @@ const HASH_QUERY_SEARCH_BACKEND_CODES = { tantivy: 1, native: 2, wasm: 3, unavai
  * Header (20 bytes): headerFlags(1) [bit0=hasTotal, bit1=totalApprox, bit2=more, bit3=hasCursor] + searchBackendCode(1) + seq(8, float64) +
  * total(8, float64, meaningful only if hasTotal) + rowCount(2, uint16).
  *
- * Per row: flags(1) [bit0=isGroup, bit1=hasCreateDate] + idLen(2) + id(idLen, utf8) + favHash(4) +
- * tagIdsHash(4) + contentHash(4) + date_added(8, float64) + create_date(8, float64, 0 if !hasCreateDate) +
+ * Per row: flags(1) [bit0=isGroup, bit1=hasCreateDate] + idLen(2) + id(idLen, utf8) + the row's cache key: for a
+ * character its version(8, float64), for a group favHash(4) + tagIdsHash(4) + contentHash(4); then
+ * date_added(8, float64) + create_date(8, float64, 0 if !hasCreateDate) +
  * date_last_chat(8, float64) + chat_size(8, float64) + data_size(8, float64) + chatLen(2) +
  * chat(chatLen, utf8, omitted if chatLen is 0).
  *
@@ -2367,7 +2368,7 @@ function serializeQueryHashesBinary({ seq, token, total, approxTotal, hashRows, 
     for (const row of hashRows) {
         const idBytes = Buffer.byteLength(row.id, 'utf8');
         const chatBytes = row.chat ? Buffer.byteLength(row.chat, 'utf8') : 0;
-        totalSize += 1 + 2 + idBytes + 4 + 4 + 4 + 8 + 8 + 8 + 8 + 8 + 2 + chatBytes;
+        totalSize += 1 + 2 + idBytes + (row.isGroup ? 4 + 4 + 4 : 8) + 8 + 8 + 8 + 8 + 8 + 2 + chatBytes;
     }
     totalSize += 2 + tokenBytes; // trailer
     if (hasCursor) totalSize += 2 + cursorBytes;
@@ -2392,9 +2393,13 @@ function serializeQueryHashesBinary({ seq, token, total, approxTotal, hashRows, 
         buf.writeUInt16LE(idBytes, offset); offset += 2;
         buf.write(row.id, offset, idBytes, 'utf8'); offset += idBytes;
 
-        buf.writeUInt32LE(row.favHash >>> 0, offset); offset += 4;
-        buf.writeUInt32LE(row.tagIdsHash >>> 0, offset); offset += 4;
-        buf.writeUInt32LE(row.contentHash >>> 0, offset); offset += 4;
+        if (row.isGroup) {
+            buf.writeUInt32LE(row.favHash >>> 0, offset); offset += 4;
+            buf.writeUInt32LE(row.tagIdsHash >>> 0, offset); offset += 4;
+            buf.writeUInt32LE(row.contentHash >>> 0, offset); offset += 4;
+        } else {
+            buf.writeDoubleLE(row.version, offset); offset += 8;
+        }
 
         buf.writeDoubleLE(row.date_added ?? 0, offset); offset += 8;
         buf.writeDoubleLE(hasCreateDate ? row.create_date : 0, offset); offset += 8;
@@ -3435,11 +3440,8 @@ router.post('/batch', async function (request, response) {
             }
         }
 
-        // A client caching these records hashes them the way shallow_json is hashed, which depends on this setting.
-        response.set(SHALLOW_CREATOR_NOTES_HEADER, String(shallowCharactersIncludeCreatorNotes));
-
-        // Field-filtered mode: shallow_json already carries db-authoritative fav/active_chat/tag_ids, so no
-        // extra stamping step is needed here, unlike the full-record path below.
+        // Field-filtered mode: list rows already carry db-authoritative fav/active_chat/tag_ids, so no extra
+        // stamping step is needed here, unlike the full-record path below.
         if (fields) {
             const shallowById = await getShallowByIds(request.user.directories, avatars);
             const data = avatars

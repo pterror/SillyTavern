@@ -184,7 +184,7 @@ describe('unimport-embedded-lore - skipped cards', () => {
         await indexCharacters();
         const db = new Database(path.join(tempDir, 'character-metadata.sqlite'));
         try {
-            db.prepare('UPDATE characters SET card_json = \'not json\' WHERE id = \'Alice.png\'').run();
+            db.prepare('UPDATE card_extra SET value = \'not json\' WHERE character_id = \'Alice.png\' AND path = \'data:character_book\'').run();
         } finally {
             db.close();
         }
@@ -195,28 +195,18 @@ describe('unimport-embedded-lore - skipped cards', () => {
         expect(notice.skipped.entries).toEqual([{ avatar: 'Alice.png', world: 'Alice\'s Lorebook', reason: 'card-unreadable' }]);
     });
 
-    test('hand-made links, ambiguous cards and cards whose own data does not link the World are not listed', async () => {
-        const book = makeBook();
+    test('hand-made links and ambiguous cards are not listed', async () => {
         writeWorldFile('Hand', { entries: {} });
         await writeCardFile('Hand.png', { data: { extensions: { world: 'Hand' } } });
         const importedBook = makeBook('original content');
         const editedBook = makeBook('this got edited after import');
         writeWorldFile('Carol\'s Lorebook', autoImportedWorldFile(importedBook));
         await writeCardFile('Carol.png', { data: { extensions: { world: 'Carol\'s Lorebook' }, character_book: editedBook } });
-        writeWorldFile('Dora\'s Lorebook', autoImportedWorldFile(book));
-        await writeCardFile('Dora.png');
         await indexCharacters();
-        const db = new Database(path.join(tempDir, 'character-metadata.sqlite'));
-        try {
-            db.prepare('UPDATE characters SET world = ? WHERE id = \'Dora.png\'').run('Dora\'s Lorebook');
-        } finally {
-            db.close();
-        }
 
         const lines = [];
         const boot = await migration.runOnceAtBoot(directories, { log: line => lines.push(line) });
-        expect(boot.result).toMatchObject({ skipped: 0, ambiguous: 1, notLinked: 1 });
-        expect(readReport()).toContainEqual('nothing to do: Dora.png is listed as linking "Dora\'s Lorebook", but its card doesn\'t link it');
+        expect(boot.result).toMatchObject({ skipped: 0, ambiguous: 1, notLinked: 0 });
         expect(readReport()).toContainEqual(expect.stringMatching(/^left alone: Carol\.png links "Carol's Lorebook": /));
         expect(await notices.readNotice(directories, NOTICE_ID)).toBeNull();
     });

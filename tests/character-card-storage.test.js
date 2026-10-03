@@ -60,7 +60,7 @@ describe('character card storage', () => {
         const parts = splitCard(v2Card);
         expect(parts.extra.filter(r => r.path.startsWith('mirror:')).map(r => r.path).sort()).toEqual(
             ['mirror:creatorcomment', 'mirror:description', 'mirror:fav', 'mirror:first_mes', 'mirror:mes_example', 'mirror:name', 'mirror:personality', 'mirror:scenario', 'mirror:tags', 'mirror:talkativeness'].sort());
-        expect(parts.fields.find(f => f.field === 'description')?.value).toBe('A traveller.');
+        expect(parts.card.description).toBe('A traveller.');
         expect(parts.columns).toEqual({ name: 'Alice', creator: 'bob', character_version: '1.0', world: 'Elsewhere', create_date: '2024-1-2 @03h04m05s678ms' });
         expect(parts.tags).toEqual([{ position: 0, name: 'fantasy' }, { position: 1, name: 'tavern' }]);
         expect(parts.extra.some(r => r.path === 'data:tags' || r.path === 'top:create_date')).toBe(false);
@@ -68,6 +68,18 @@ describe('character card storage', () => {
             { list: 'alternate_greetings', position: 0, text: 'Hi there' },
             { list: 'alternate_greetings', position: 1, text: 'Greetings' },
         ]);
+    });
+
+    test('known scalar fields are columns of their type; unknown fields and other types are JSON by path', () => {
+        const card = { spec: 'chara_card_v3', data: { name: 'N', description: 'd', nickname: 'nick', creation_date: 1700000000, modification_date: 'soon', personality: 5, my_field: 'mine', system_prompt: '' } };
+        const parts = splitCard(card);
+        expect(parts.card).toEqual({ description: 'd', nickname: 'nick', creation_date: 1700000000, system_prompt: '' });
+        expect(parts.extra.filter(r => r.path.startsWith('data:'))).toEqual(expect.arrayContaining([
+            { path: 'data:modification_date', value: '"soon"' },
+            { path: 'data:personality', value: '5' },
+            { path: 'data:my_field', value: '"mine"' },
+        ]));
+        expectLossless(card);
     });
 
     test('tag names that are not a non-empty list of strings are not tag rows', () => {

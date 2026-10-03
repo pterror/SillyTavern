@@ -2,6 +2,19 @@ import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach, jes
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { defineCharacterStoreFunctions } from '../src/character-store-schema.js';
+import { splitCard } from '../src/character-card-storage.js';
+
+/**
+ * Registers on a raw connection to the character store the functions its indexes and triggers call.
+ * @template {import('better-sqlite3').Database} T
+ * @param {T} db
+ * @returns {T}
+ */
+function withStoreFunctions(db) {
+    defineCharacterStoreFunctions({ defineFunction: (name, fn) => db.function(name, { deterministic: true }, fn) });
+    return db;
+}
 
 /** @type {import('express').Router} */
 let router;
@@ -720,9 +733,11 @@ function hashResponseToken(buffer) {
     let offset = 1 + 1 + 8 + 8;
     const rowCount = view.getUint16(offset, true); offset += 2;
     for (let i = 0; i < rowCount; i++) {
+        const isGroup = (view.getUint8(offset) & 0b1) !== 0;
         offset += 1;
         offset += 2 + view.getUint16(offset, true);
-        offset += 4 + 4 + 4 + 8 + 8 + 8 + 8 + 8;
+        // A group's three digests, or a character's version.
+        offset += (isGroup ? 4 + 4 + 4 : 8) + 8 + 8 + 8 + 8 + 8;
         offset += 2 + view.getUint16(offset, true);
     }
     const tokenLen = view.getUint16(offset, true); offset += 2;
@@ -800,11 +815,27 @@ describe('POST /api/characters/query - the freshness token (token / ifToken)', (
     test('a retry that re-indexes a card which failed to index is not answered unchanged, though neither the db seq nor the index cursors moved', async () => {
         const Database = (await import('better-sqlite3')).default;
         const dbPath = path.join(directories.root, 'character-metadata.sqlite');
-        /** @param {string} json @param {boolean} change */
-        const setCardJson = (json, change) => {
-            const db = new Database(dbPath);
+        /**
+         * Stores `stored` as Vampire's card straight in the db (its card table rows and its row's card values).
+         * @param {unknown} stored @param {boolean} change
+         */
+        const setCard = (stored, change) => {
+            const db = withStoreFunctions(new Database(dbPath));
             try {
-                db.prepare('UPDATE characters SET card_json = ? WHERE id = ?').run(json, 'Vampire.png');
+                const id = 'Vampire.png';
+                const parts = splitCard(stored);
+                const { columns } = parts;
+                for (const table of ['cards', 'card_greetings', 'card_tags', 'card_extensions', 'card_extra']) {
+                    db.prepare(`DELETE FROM ${table} WHERE character_id = ?`).run(id);
+                }
+                db.prepare('UPDATE characters SET name = ?, creator = ?, character_version = ?, world = ?, create_date_raw = ? WHERE id = ?')
+                    .run(columns.name ?? null, columns.creator ?? null, columns.character_version ?? null, columns.world ?? null, columns.create_date ?? null, id);
+                const cardColumns = Object.keys(parts.card);
+                db.prepare(`INSERT INTO cards (character_id${cardColumns.map(c => `, ${c}`).join('')}) VALUES (?${cardColumns.map(() => ', ?').join('')})`).run(id, ...cardColumns.map(c => parts.card[c]));
+                for (const g of parts.greetings) db.prepare('INSERT INTO card_greetings VALUES (?, ?, ?, ?)').run(id, g.list, g.position, g.text);
+                for (const t of parts.tags) db.prepare('INSERT INTO card_tags VALUES (?, ?, ?)').run(id, t.position, t.name);
+                for (const e of parts.extensions) db.prepare('INSERT INTO card_extensions VALUES (?, ?, ?)').run(id, e.key, e.value);
+                for (const x of parts.extra) db.prepare('INSERT INTO card_extra VALUES (?, ?, ?)').run(id, x.path, x.value);
                 if (change) db.prepare('INSERT INTO changes (id, op, fields) VALUES (?, \'upsert\', NULL)').run('Vampire.png');
             } finally {
                 db.close();
@@ -816,13 +847,14 @@ describe('POST /api/characters/query - the freshness token (token / ifToken)', (
         await seedCharacterWithFile('Vampire.png', { ...card, data: { ...card.data, description: 'fangs' } });
         expect((await settledQuery(fangs)).rows.map(r => r.avatar)).toEqual(['Vampire.png']);
 
-        // The index can't process this, so it keeps the card's old doc and marks it for retry.
-        setCardJson('not json', true);
+        // The index can't process this (a V2 card whose `data` is null), so it keeps the card's old doc and marks it
+        // for retry.
+        setCard({ name: 'Vampire', spec: 'chara_card_v2', data: null }, true);
         const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
         let failed;
         try {
             const marked = () => {
-                const db = new Database(dbPath, { readonly: true });
+                const db = withStoreFunctions(new Database(dbPath, { readonly: true }));
                 try {
                     return db.prepare('SELECT COUNT(*) AS n FROM character_index_retries').get().n > 0;
                 } catch {
@@ -838,7 +870,7 @@ describe('POST /api/characters/query - the freshness token (token / ifToken)', (
             expect(failed.rows.map(r => r.avatar)).toEqual(['Vampire.png']);
 
             // Mended with no change row: only the retry picks it up.
-            setCardJson(JSON.stringify({ ...card, spec: 'chara_card_v2', spec_version: '2.0', data: { ...card.data, description: 'garlic' } }), false);
+            setCard({ ...card, spec: 'chara_card_v2', spec_version: '2.0', data: { ...card.data, description: 'garlic' } }, false);
             let mended;
             const deadline = Date.now() + 10000;
             do {
@@ -946,7 +978,7 @@ describe('POST /api/characters/query - the freshness token (token / ifToken)', (
         expect(typeof before.token).toBe('string');
 
         const Database = (await import('better-sqlite3')).default;
-        const raw = new Database(path.join(directories.root, 'character-metadata.sqlite'));
+        const raw = withStoreFunctions(new Database(path.join(directories.root, 'character-metadata.sqlite')));
         raw.exec('DROP TABLE group_changes');
         raw.close();
 
@@ -1223,7 +1255,7 @@ describe('POST /api/characters/query - filter.search with a fast-field sort (tan
         await metadataDb.deleteGroupRow(directories, 'grp-b');
         metadataDb.disposeMetadataStores();
         const Database = (await import('better-sqlite3')).default;
-        const raw = new Database(path.join(directories.root, 'character-metadata.sqlite'));
+        const raw = withStoreFunctions(new Database(path.join(directories.root, 'character-metadata.sqlite')));
         raw.prepare('DELETE FROM characters WHERE id = ?').run('c.png');
         raw.close();
 
@@ -1253,7 +1285,7 @@ describe('search hits whose row no longer exists (the index can lag a delete)', 
         await prime();
         metadataDb.disposeMetadataStores();
         const Database = (await import('better-sqlite3')).default;
-        const raw = new Database(path.join(directories.root, 'character-metadata.sqlite'));
+        const raw = withStoreFunctions(new Database(path.join(directories.root, 'character-metadata.sqlite')));
         for (const id of deletedIds) {
             raw.prepare('DELETE FROM characters WHERE id = ?').run(id);
         }

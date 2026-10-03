@@ -6,14 +6,12 @@
  * card has none, or has a value of another type, which is in `card_extra`). `create_date` is that date as epoch ms,
  * the sort key. `version` is the seq of the `changes` row that last changed the row: a page caches a list row by
  * (id, version), and a seq is never handed out twice, so a character deleted and made again under the same id never
- * reads as unchanged.
+ * reads as unchanged. `name_fold` is the name sort key: a virtual column, computed from `name` when read, so it is
+ * stored only in its index.
  */
 
 /** The SQL function the name sort folds names with: lower case, compatibility-decomposed, combining marks dropped. */
 export const NAME_FOLD_FUNCTION = 'st_fold';
-
-/** The name sort key, as every statement and index spells it (an expression index is used only by the same text). */
-export const NAME_FOLD_SQL = `${NAME_FOLD_FUNCTION}(name)`;
 
 /**
  * NFKD-normalizes and strips combining marks so "É"/"e" sort and prefix-match the same as "é"/"e".
@@ -40,6 +38,7 @@ export const FIELDS_CHARACTERS_TABLE_SQL = `
     CREATE TABLE IF NOT EXISTS characters (
         id                    TEXT PRIMARY KEY,
         name                  TEXT,
+        name_fold             TEXT GENERATED ALWAYS AS (${NAME_FOLD_FUNCTION}(name)) VIRTUAL,
         fav                   INTEGER NOT NULL,
         date_added            INTEGER NOT NULL,
         create_date           INTEGER,
@@ -60,21 +59,14 @@ export const FIELDS_CHARACTERS_TABLE_SQL = `
     );
 `;
 
-/** The sort keys /query orders characters by, as SQL over the row, each with a `(fav, key, id)` index. */
-export const CHARACTER_SORT_KEYS = Object.freeze([
-    { column: 'name_fold', sql: NAME_FOLD_SQL },
-    { column: 'date_added', sql: 'date_added' },
-    { column: 'date_last_chat', sql: 'date_last_chat' },
-    { column: 'create_date', sql: 'create_date' },
-    { column: 'data_size', sql: 'data_size' },
-    { column: 'chat_size', sql: 'chat_size' },
-]);
+/** The columns /query sorts characters by, each with a `(fav, column, id)` index. */
+export const CHARACTER_SORT_INDEX_COLUMNS = Object.freeze(['name_fold', 'date_added', 'date_last_chat', 'create_date', 'data_size', 'chat_size']);
 
 /** Every index on the fields layout's `characters`: the sort indexes, the world filter and the import dedup lookups. */
 export const FIELDS_CHARACTER_INDEXES = Object.freeze([
-    ...CHARACTER_SORT_KEYS.map(({ column, sql }) => ({
+    ...CHARACTER_SORT_INDEX_COLUMNS.map(column => ({
         name: `idx_characters_sort_fav_${column}_asc`,
-        sql: `CREATE INDEX IF NOT EXISTS idx_characters_sort_fav_${column}_asc ON characters(fav, ${sql} ASC, id ASC)`,
+        sql: `CREATE INDEX IF NOT EXISTS idx_characters_sort_fav_${column}_asc ON characters(fav, ${column} ASC, id ASC)`,
     })),
     { name: 'idx_characters_world', sql: 'CREATE INDEX IF NOT EXISTS idx_characters_world ON characters(world)' },
     { name: 'idx_characters_content_hash', sql: 'CREATE INDEX IF NOT EXISTS idx_characters_content_hash ON characters(content_hash)' },

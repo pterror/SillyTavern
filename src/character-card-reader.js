@@ -1,51 +1,78 @@
-import { assembleCard, cardNameSource } from './character-card-storage.js';
-import { resolveTagIds } from './tag-deletions.js';
+import { CARD_COLUMNS, assembleCard, cardNameSource } from './character-card-storage.js';
 import { normalizeTagIds } from '../public/scripts/hash-utils.js';
 
 /**
- * Reads characters stored as fields (storage redesign, step 5): the card tables below plus the `characters` row,
- * split by character-card-storage.js. character-metadata-db.js reads cards and list rows through this when its store
- * is in that layout.
+ * Reads characters stored as fields: the card tables below plus the `characters` row, split by
+ * character-card-storage.js. character-metadata-db.js reads cards and list rows through this.
  *
  * In that layout the `characters` columns `name`, `creator`, `character_version`, `world` and `create_date_raw` hold
  * the card's own values raw (NULL when the card has none, or has a value of another type, which is in `card_extra`),
  * `fav` the favourite flag, and the rest the row's own values.
  */
 
-/** The card tables. Each row is one value of one character's card; see splitCard() for what goes where. */
+/** The `cards` columns of the known scalar card fields (CARD_COLUMNS), each as the type its values have. */
+const CARD_COLUMN_LIST = Object.keys(CARD_COLUMNS);
+
+/**
+ * The card tables; see splitCard() for what goes where. `cards` is one row per character with a column per known
+ * scalar field (NULL when the card doesn't have it with that type); greetings and the card's tag names are lists, a
+ * row per item; extension data and anything else the card carries are JSON, a row per extension key or path. Plain
+ * rowid tables: a value up to a page long stays on its leaf page.
+ */
 export const CARD_TABLES_SQL = `
-    CREATE TABLE IF NOT EXISTS card_fields (
-        character_id TEXT NOT NULL,
-        field        TEXT NOT NULL,
-        value        TEXT NOT NULL,
-        PRIMARY KEY (character_id, field)
-    ) WITHOUT ROWID;
+    CREATE TABLE IF NOT EXISTS cards (
+        character_id TEXT PRIMARY KEY,
+        ${CARD_COLUMN_LIST.map(column => `${column} ${CARD_COLUMNS[/** @type {keyof typeof CARD_COLUMNS} */ (column)] === 'number' ? 'NUMERIC' : 'TEXT'}`).join(',\n        ')}
+    );
     CREATE TABLE IF NOT EXISTS card_greetings (
         character_id TEXT NOT NULL,
         list         TEXT NOT NULL,
         position     INTEGER NOT NULL,
         text         TEXT NOT NULL,
         PRIMARY KEY (character_id, list, position)
-    ) WITHOUT ROWID;
+    );
     CREATE TABLE IF NOT EXISTS card_tags (
         character_id TEXT NOT NULL,
         position     INTEGER NOT NULL,
         name         TEXT NOT NULL,
         PRIMARY KEY (character_id, position)
-    ) WITHOUT ROWID;
+    );
     CREATE TABLE IF NOT EXISTS card_extensions (
         character_id TEXT NOT NULL,
         key          TEXT NOT NULL,
         value        TEXT NOT NULL,
         PRIMARY KEY (character_id, key)
-    ) WITHOUT ROWID;
+    );
     CREATE TABLE IF NOT EXISTS card_extra (
         character_id TEXT NOT NULL,
         path         TEXT NOT NULL,
         value        TEXT,
         PRIMARY KEY (character_id, path)
-    ) WITHOUT ROWID;
+    );
 `;
+
+/**
+ * Each character's `cards` row as splitCard()'s `card`: only the columns that hold a value.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string[]} ids
+ * @param {string[]} [columns] Which columns to read; all of them by default.
+ * @returns {Map<string, Record<string, string | number>>}
+ */
+export function cardRowsSync(db, ids, columns = CARD_COLUMN_LIST) {
+    /** @type {Map<string, Record<string, string | number>>} */
+    const out = new Map();
+    if (ids.length === 0) return out;
+    for (const row of /** @type {Iterable<Record<string, any>>} */ (db.iterate(
+        `SELECT character_id${columns.map(c => `, ${c}`).join('')} FROM cards WHERE character_id IN (SELECT value FROM json_each(?))`, [JSON.stringify(ids)]))) {
+        /** @type {Record<string, string | number>} */
+        const card = {};
+        for (const column of columns) {
+            if (row[column] !== null && row[column] !== undefined) card[column] = row[column];
+        }
+        out.set(row.character_id, card);
+    }
+    return out;
+}
 
 /** The meta key whose value 'fields' marks a store whose characters are in the fields layout; any other is 'blob'. */
 export const CARD_LAYOUT_META_KEY = 'card_layout';
@@ -115,7 +142,7 @@ export function assembleCardsSync(db, ids) {
     const cards = new Map();
     if (ids.length === 0) return cards;
     const inIds = 'IN (SELECT value FROM json_each(?))';
-    const fields = rowsById(db, `SELECT character_id, field, value FROM card_fields WHERE character_id ${inIds}`, ids);
+    const cardRows = cardRowsSync(db, ids);
     const greetings = rowsById(db, `SELECT character_id, list, position, text FROM card_greetings WHERE character_id ${inIds}`, ids);
     const tags = rowsById(db, `SELECT character_id, position, name FROM card_tags WHERE character_id ${inIds}`, ids);
     const extensions = rowsById(db, `SELECT character_id, key, value FROM card_extensions WHERE character_id ${inIds}`, ids);
@@ -124,7 +151,7 @@ export function assembleCardsSync(db, ids) {
         const id = row.id;
         cards.set(id, assembleCard({
             columns: columnsOfRow(row),
-            fields: fields.get(id) ?? [],
+            card: cardRows.get(id) ?? {},
             greetings: greetings.get(id) ?? [],
             tags: tags.get(id) ?? [],
             extensions: extensions.get(id) ?? [],
@@ -205,20 +232,18 @@ const LIST_EXTRA_PATHS = Object.freeze(['whole', 'top:spec', 'present:data', 'to
     'mirror:name', 'data:tags', 'top:tags', 'mirror:tags', 'top:create_date', 'data:creator', 'data:character_version', 'top:creator',
     'present:extensions', 'data:extensions']);
 const LIST_CREATOR_NOTES_PATHS = Object.freeze(['data:creator_notes', 'top:creatorcomment', 'mirror:creatorcomment']);
-/** The card_fields rows cardListValues() can read: `data` keys it reads that can hold a string. */
-const LIST_FIELDS = Object.freeze(['tags', 'extensions']);
 
 /**
  * List rows from the fields layout, in the blob layout's shallow-copy shape (toShallow() as character-metadata-db.js
- * keeps it): the card values from the columns, the card's tag rows and the few card_fields, card_extensions and
- * card_extra rows they can be in, by primary key; fav, chat, tag ids, dates and sizes from the row and character_tags. Ids without a row are absent.
+ * keeps it): the card values from the columns, the card's tag rows, `cards.creator_notes` when asked for, and the few
+ * card_extensions and card_extra rows they can be in, by primary key; fav, chat, dates and sizes from the row, and the tag ids as character_tags stores them (a tag marked deleted with a
+ * merge target stays as it is: the page reads it as its target through the tag reads). Ids without a row are absent.
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  * @param {string[]} ids A bounded list (one page's).
- * @param {import('./tag-deletions.js').TagDeletions} deletions
  * @param {boolean} includeCreatorNotes `performance.shallowCharactersIncludeCreatorNotes`
  * @returns {Map<string, Record<string, unknown>>}
  */
-export function listRowsFromFieldsSync(db, ids, deletions, includeCreatorNotes) {
+export function listRowsFromFieldsSync(db, ids, includeCreatorNotes) {
     /** @type {Map<string, Record<string, unknown>>} */
     const out = new Map();
     if (ids.length === 0) return out;
@@ -227,8 +252,7 @@ export function listRowsFromFieldsSync(db, ids, deletions, includeCreatorNotes) 
     const tags = rowsById(db, `SELECT character_id, position, name FROM card_tags WHERE character_id ${inIds}`, ids);
     const extra = rowsById(db, `SELECT character_id, path, value FROM card_extra WHERE character_id ${inIds} AND path IN (SELECT value FROM json_each(?))`, ids, [JSON.stringify(paths)]);
     const world = rowsById(db, `SELECT character_id, key, value FROM card_extensions WHERE character_id ${inIds} AND key = 'world'`, ids);
-    const fieldNames = includeCreatorNotes ? [...LIST_FIELDS, 'creator_notes'] : LIST_FIELDS;
-    const fields = rowsById(db, `SELECT character_id, field, value FROM card_fields WHERE character_id ${inIds} AND field IN (SELECT value FROM json_each(?))`, ids, [JSON.stringify(fieldNames)]);
+    const cardRows = includeCreatorNotes ? cardRowsSync(db, ids, ['creator_notes']) : new Map();
     const tagIds = rowsById(db, `SELECT character_id, tag_id FROM character_tags WHERE character_id ${inIds}`, ids);
     for (const row of /** @type {Iterable<any>} */ (db.iterate(
         `SELECT id, name, creator, character_version, world, create_date_raw, fav, date_added, date_last_chat, chat_size, data_size, active_chat, allow_global_styles FROM characters WHERE id ${inIds}`,
@@ -236,7 +260,7 @@ export function listRowsFromFieldsSync(db, ids, deletions, includeCreatorNotes) 
         const id = row.id;
         const card = assembleCard({
             columns: columnsOfRow(row),
-            fields: fields.get(id) ?? [],
+            card: cardRows.get(id) ?? {},
             greetings: [],
             tags: tags.get(id) ?? [],
             extensions: world.get(id) ?? [],
@@ -256,7 +280,7 @@ export function listRowsFromFieldsSync(db, ids, deletions, includeCreatorNotes) 
         shallow.chat_size = row.chat_size;
         shallow.data_size = row.data_size;
         if (values.tags !== undefined) shallow.tags = values.tags;
-        shallow.tag_ids = resolveTagIds(normalizeTagIds((tagIds.get(id) ?? []).map(r => r.tag_id)), deletions);
+        shallow.tag_ids = normalizeTagIds((tagIds.get(id) ?? []).map(r => r.tag_id));
         const { world: worldValue, ...dataValues } = values.data;
         shallow.data = { ...dataValues, extensions: { fav, world: worldValue } };
         if (row.allow_global_styles !== null) shallow.allow_global_styles = !!row.allow_global_styles;

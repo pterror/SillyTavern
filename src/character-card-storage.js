@@ -21,13 +21,14 @@ import crypto from 'node:crypto';
  *   has `spec` and a `data` object with a `name` key, the top-level `name` otherwise. `name:data` or `name:top` in
  *   `extra` says which key it came from, so it goes back there. The other key, when the card has it, is `mirror:name`
  *   when equal and is otherwise stored as itself (`data:name` or `top:name`, a string included).
- * - `fields`: every other string-valued key of `data` (description, personality, scenario, first_mes, mes_example,
- *   creator_notes, system_prompt, post_history_instructions, and any unknown string field).
+ * - `card`: the known V2/V3 scalar fields of `data` (CARD_COLUMNS), each only when it has its column's type; the
+ *   card table holds them as typed columns.
  * - `greetings`: `data.alternate_greetings` and `data.group_only_greetings`, one row per greeting, in order.
  * - `tags`: the card's own tag names (`data.tags`), one row per name, in order. These are the card's embedded names,
  *   not the user's tag assignments (`character_tags`).
  * - `extensions`: every key of `data.extensions` except fav and world, its value as JSON.
- * - `extra`: everything else, by path: non-string `data` keys (`data:<key>`), top-level keys other than `data`
+ * - `extra`: everything else, by path, as JSON: other `data` keys and known ones of another type (`data:<key>`),
+ *   top-level keys other than `data`
  *   (`top:<key>`), the presence of `data.extensions.fav` (`present:fav`), and a top-level key whose value is exactly
  *   the V1 mirror of its `data` counterpart (`mirror:<key>`, value null), so the mirror is one value here and written
  *   to both places on assembly.
@@ -48,12 +49,27 @@ const V1_MIRRORS = Object.freeze({
 });
 
 const COLUMN_KEYS = Object.freeze(['creator', 'character_version']);
+
+/** The known V2/V3 scalar fields of `data` the card table holds as columns, with the type each holds. */
+export const CARD_COLUMNS = Object.freeze({
+    description: 'string',
+    personality: 'string',
+    scenario: 'string',
+    first_mes: 'string',
+    mes_example: 'string',
+    creator_notes: 'string',
+    system_prompt: 'string',
+    post_history_instructions: 'string',
+    nickname: 'string',
+    creation_date: 'number',
+    modification_date: 'number',
+});
 const GREETING_LISTS = Object.freeze(['alternate_greetings', 'group_only_greetings']);
 
 /**
  * @typedef {object} CardParts
  * @property {{ name?: string, creator?: string, character_version?: string, fav?: boolean, world?: string, create_date?: string | number }} columns
- * @property {{ field: string, value: string }[]} fields
+ * @property {Record<string, string | number>} card The CARD_COLUMNS values the card has.
  * @property {{ list: string, position: number, text: string }[]} greetings
  * @property {{ position: number, name: string }[]} tags
  * @property {{ key: string, value: string }[]} extensions JSON text per key.
@@ -149,7 +165,7 @@ export function cardNameSource(card) {
  */
 export function splitCard(card) {
     /** @type {CardParts} */
-    const parts = { columns: {}, fields: [], greetings: [], tags: [], extensions: [], extra: [] };
+    const parts = { columns: {}, card: {}, greetings: [], tags: [], extensions: [], extra: [] };
     if (!isPlainObject(card)) {
         parts.extra.push({ path: 'whole', value: JSON.stringify(card) ?? 'null' });
         return parts;
@@ -197,9 +213,12 @@ export function splitCard(card) {
                 value.forEach((name, position) => parts.tags.push({ position, name }));
                 continue;
             }
-            if (typeof value === 'string') {
-                if (COLUMN_KEYS.includes(key)) parts.columns[/** @type {'creator'|'character_version'} */ (key)] = value;
-                else parts.fields.push({ field: key, value });
+            if (typeof value === 'string' && COLUMN_KEYS.includes(key)) {
+                parts.columns[/** @type {'creator'|'character_version'} */ (key)] = value;
+                continue;
+            }
+            if (Object.hasOwn(CARD_COLUMNS, key) && typeof value === CARD_COLUMNS[/** @type {keyof typeof CARD_COLUMNS} */ (key)]) {
+                parts.card[key] = /** @type {string | number} */ (value);
                 continue;
             }
             parts.extra.push({ path: `data:${key}`, value: JSON.stringify(value) ?? 'null' });
@@ -245,7 +264,7 @@ export function assembleCard(parts) {
         const value = columns[/** @type {'creator'|'character_version'} */ (key)];
         if (value !== undefined) ensureData()[key] = value;
     }
-    for (const { field, value } of parts.fields) ensureData()[field] = value;
+    for (const [field, value] of Object.entries(parts.card)) ensureData()[field] = value;
     for (const list of GREETING_LISTS) {
         const rows = parts.greetings.filter(row => row.list === list).sort((a, b) => a.position - b.position);
         if (rows.length > 0) ensureData()[list] = rows.map(row => row.text);

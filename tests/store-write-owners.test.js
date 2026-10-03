@@ -21,6 +21,9 @@ const TREE_OVERRIDES = {
 /** Writes whatever table its caller names; the call names the table, and that is what's checked (writtenTables()). */
 const ROW_WRITER = 'row-values.js';
 
+/** A one-off format conversion, run with the server stopped: it builds a new store file, which no owner module has open. */
+const FORMAT_CONVERSIONS = new Set(['migrations/convert-character-store-to-fields.js']);
+
 const SQL_KEYWORDS = new Set(['SET', 'OF', 'ON', 'INTO', 'FROM', 'WHERE', 'SELECT', 'VALUES']);
 
 /**
@@ -58,6 +61,7 @@ function writtenTables(source) {
  * @returns {string[]} The writes that aren't the file's to make.
  */
 function strayWrites(file, tables, stores) {
+    if (FORMAT_CONVERSIONS.has(file)) return [];
     if (file === ROW_WRITER) return tables.filter(table => table !== '*').map(table => `${file}: writes ${table}`);
     const owns = (/** @type {string} */ table) =>
         (stores.metadata.has(table) && file === METADATA_OWNER)

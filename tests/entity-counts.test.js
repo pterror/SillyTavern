@@ -2,6 +2,7 @@ import { describe, test, expect, beforeAll, beforeEach, afterEach, jest } from '
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { defineCharacterStoreFunctions } from '../src/character-store-schema.js';
 
 // Each test sets the fill frontier (entity_count_fill) by hand on an empty store, so the counters start exact for the
 // filled range, then checks every counter against a direct COUNT of that range after each write.
@@ -43,6 +44,7 @@ afterEach(() => {
 /** @template T @param {(db: import('better-sqlite3').Database) => T} fn @returns {T} */
 function withRawDb(fn) {
     const db = new Database(path.join(directories.root, 'character-metadata.sqlite'));
+    defineCharacterStoreFunctions({ defineFunction: (name, f) => db.function(name, { deterministic: true }, f) });
     try {
         return fn(db);
     } finally {
@@ -388,31 +390,6 @@ describe('entity counters', () => {
             expect(counterMismatches(db)).toEqual([]);
             expect(Array.from(db.prepare('SELECT kind, fav, count FROM entity_counts').iterate())).toEqual([{ kind: 'character', fav: 1, count: 2 }]);
         });
-    });
-
-    test('the card_json table rebuild keeps the counters, and writes after it are counted', async () => {
-        await openWithFrontier({ character: DONE, group: DONE });
-        await saveTags(['t1']);
-        await seedCharacter('a1.png', true);
-        await assign('a1.png', 't1');
-        metadataDb.disposeMetadataStores();
-        // A store whose card_json is still nullable (a boot that left unresolved rows).
-        withRawDb(db => {
-            const columns = Array.from(db.prepare('PRAGMA table_info(characters)').iterate());
-            db.pragma('legacy_alter_table = ON');
-            db.exec('CREATE TABLE characters_old (' + columns.map(c => `${c.name} ${c.type}${c.name !== 'card_json' && c.notnull ? ' NOT NULL' : ''}${c.pk ? ' PRIMARY KEY' : ''}`).join(', ') + ')');
-            db.exec('INSERT INTO characters_old SELECT * FROM characters');
-            db.exec('DROP TABLE characters');
-            db.exec('ALTER TABLE characters_old RENAME TO characters');
-            expect(db.prepare('SELECT "notnull" FROM pragma_table_info(\'characters\') WHERE name = \'card_json\'').get().notnull).toBe(0);
-        });
-        await metadataDb.ensureSchemaMigrated(directories);
-        withRawDb(db => expect(db.prepare('SELECT "notnull" FROM pragma_table_info(\'characters\') WHERE name = \'card_json\'').get().notnull).toBe(1));
-        await seedCharacter('a2.png');
-        await assign('a2.png', 't1');
-        await metadataDb.deleteCharacterRow(directories, 'a1.png');
-        expectCountersExact();
-        withRawDb(db => expect(db.prepare('SELECT count FROM entity_tag_counts WHERE tag_id = \'t1\' AND kind = \'character\' AND fav = 0').get()?.count).toBe(1));
     });
 
     test('the frontier and counters survive a reopen', async () => {

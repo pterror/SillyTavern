@@ -152,8 +152,8 @@ describe('/api/tags/restore: assignments', () => {
         expect(await restore({ tag_map: { 'Bob.png': ['b'] } })).toEqual(NOTHING_LEFT_OUT);
 
         expect(await tagsFor(['Bob.png'])).toEqual({ 'Bob.png': ['a', 'b'] });
-        const row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
-        expect(JSON.parse(row.shallow_json).tag_ids).toEqual(['a', 'b']);
+        const listRows = /** @type {any} */ (await metadataDb.getShallowByIds(directories, ['Bob.png']));
+        expect(listRows['Bob.png'].tag_ids).toEqual(['a', 'b']);
     });
 
     test('a group keeps the tags it has and gains the backup\'s', async () => {

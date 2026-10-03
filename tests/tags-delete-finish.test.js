@@ -4,6 +4,22 @@ import path from 'node:path';
 import os from 'node:os';
 import { tagCounts } from './tag-store-reads.js';
 import { insertTagRowRaw, rawTagRowInserter } from './util/stored-counters.js';
+import { defineCharacterStoreFunctions } from '../src/character-store-schema.js';
+
+/**
+ * better-sqlite3 with the store's SQL functions registered on every connection, as the store's own connections have
+ * them (character-store-schema.js).
+ * @param {typeof import('better-sqlite3')} Base
+ * @returns {typeof import('better-sqlite3')}
+ */
+function withStoreFunctions(Base) {
+    return /** @type {any} */ (class extends /** @type {any} */ (Base) {
+        constructor(/** @type {any[]} */ ...args) {
+            super(...args);
+            defineCharacterStoreFunctions({ defineFunction: (name, fn) => this.function(name, { deterministic: true }, fn) });
+        }
+    });
+}
 
 /** @type {typeof import('../src/character-metadata-db.js')} */
 let metadataDb;
@@ -51,7 +67,7 @@ beforeAll(async () => {
 
     metadataDb = await import('../src/character-metadata-db.js');
     hashUtils = await import('../public/scripts/hash-utils.js');
-    Database = (await import('better-sqlite3')).default;
+    Database = withStoreFunctions((await import('better-sqlite3')).default);
 });
 
 beforeEach(() => {
@@ -124,11 +140,30 @@ function tagUsageMismatches(db) {
     `).iterate());
 }
 
-/** Characters whose shallow_json.tag_ids differ from their character_tags rows. */
-function characterCopiesOutOfSync(db) {
-    const rows = Array.from(db.prepare('SELECT id, shallow_json FROM characters').iterate());
+/** @type {{ seq: number, tags: Map<string, string> } | null} Each character's tags and the change log's end, before a pass. */
+let tagBaseline = null;
+
+/** @param {import('better-sqlite3').Database} db @returns {Map<string, string>} */
+function characterTagSets(db) {
     const tagsOf = db.prepare('SELECT tag_id FROM character_tags WHERE character_id = ?').pluck();
-    return rows.filter(r => JSON.stringify(JSON.parse(r.shallow_json).tag_ids) !== JSON.stringify(hashUtils.normalizeTagIds(Array.from(tagsOf.iterate(r.id))))).map(r => r.id);
+    return new Map(Array.from(db.prepare('SELECT id FROM characters').pluck().iterate(), id => [id, JSON.stringify(hashUtils.normalizeTagIds(Array.from(tagsOf.iterate(id))))]));
+}
+
+/** Records what characterCopiesOutOfSync() compares with. */
+function recordTagBaseline() {
+    tagBaseline = withRawDb(db => ({ seq: db.prepare('SELECT COALESCE(MAX(seq), 0) FROM changes').pluck().get(), tags: characterTagSets(db) }));
+}
+
+/**
+ * Characters whose tags changed since recordTagBaseline() with no change row since then that lists tag_ids (or the
+ * whole record): a list row a reader caches by version would stay stale.
+ */
+function characterCopiesOutOfSync(db) {
+    if (!tagBaseline) throw new Error('recordTagBaseline() first');
+    const { seq, tags } = tagBaseline;
+    const logged = db.prepare('SELECT 1 FROM changes WHERE id = ? AND seq > ? AND (fields IS NULL OR EXISTS (SELECT 1 FROM json_each(fields) WHERE value = \'tag_ids\'))');
+    const versionMoved = db.prepare('SELECT 1 FROM characters WHERE id = ? AND version > ?');
+    return [...characterTagSets(db)].filter(([id, now]) => now !== tags.get(id) && !(logged.get(id, seq) && versionMoved.get(id, seq))).map(([id]) => id);
 }
 
 /** Groups whose digest_tag_ids differ from their group_tags rows. NULL means not yet backfilled, which is no copy to compare. */
@@ -190,6 +225,7 @@ describe('finishDeletedTags', () => {
         expect(await metadataDb.deleteTagDefinition(directories, 'x', 'y')).toMatchObject({ refused: [] });
         expect((await tagCounts(metadataDb, directories, ['x', 'y', 'z'])).approximate).toEqual(['y']);
         const seqBefore = withRawDb(db => db.prepare('SELECT COALESCE(MAX(seq), 0) FROM changes').pluck().get());
+        recordTagBaseline();
 
         const result = await metadataDb.finishDeletedTags(directories);
 
@@ -225,6 +261,7 @@ describe('finishDeletedTags', () => {
         await assign('c1.png', 'y');
         await assign('g1', 'x');
         expect(await metadataDb.deleteTagDefinition(directories, 'x', null)).toMatchObject({ refused: [] });
+        recordTagBaseline();
 
         await metadataDb.finishDeletedTags(directories);
 
@@ -272,6 +309,7 @@ describe('finishDeletedTags', () => {
         });
         expect(await metadataDb.deleteTagDefinition(directories, 'x', 'y')).toMatchObject({ refused: [] });
         const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+        recordTagBaseline();
 
         await metadataDb.finishDeletedTags(directories);
 
@@ -304,6 +342,7 @@ describe('finishDeletedTags', () => {
             handle.run('UPDATE tag_deletions SET merge_into = \'w\' WHERE merge_into = \'y\'');
             handle.run('INSERT INTO tag_deletions (tag_id, merge_into) VALUES (\'y\', \'w\')');
         };
+        recordTagBaseline();
 
         await metadataDb.finishDeletedTags(directories);
         afterCommit = null;
@@ -329,13 +368,10 @@ async function seedCharacterCopies(count, tagIdsOf) {
             SELECT printf('c%05d.png', n.i), ${columns.map(c => `s.${c}`).join(', ')} FROM n, characters s WHERE s.id = 'seed.png'
         `).run(count);
         const insertTag = rawTagRowInserter(db, 'character_tags');
-        const setTagIds = db.prepare('UPDATE characters SET shallow_json = json_set(shallow_json, \'$.tag_ids\', json(?)), digest_tag_ids = ? WHERE id = ?');
         db.transaction(() => {
             for (let i = 0; i < count; i++) {
                 const id = `c${String(i).padStart(5, '0')}.png`;
-                const tagIds = hashUtils.normalizeTagIds(tagIdsOf(i));
-                for (const tagId of tagIds) insertTag.run(id, tagId);
-                setTagIds.run(JSON.stringify(tagIds), hashUtils.characterDigestTagIdsHash({ tag_ids: tagIds }), id);
+                for (const tagId of hashUtils.normalizeTagIds(tagIdsOf(i))) insertTag.run(id, tagId);
             }
         })();
     });
@@ -369,7 +405,7 @@ describe('finishDeletedTags over many batches', () => {
     const GROUPS = 1500;
     const tagsOf = (/** @type {number} */ i) => (i % 3 === 0 ? ['x', 'y'] : ['x']);
 
-    test('tag_usage and the stored copies are exact at every batch boundary, and .png orphan rows between groups are removed', async () => {
+    test('tag_usage, the logged tag changes and the groups\' stored copies are exact at every batch boundary, and .png orphan rows between groups are removed', async () => {
         await saveTags(['x', 'y']);
         await seedCharacterCopies(CHARACTERS, tagsOf);
         await seedGroupCopies(GROUPS, tagsOf);
@@ -379,6 +415,7 @@ describe('finishDeletedTags over many batches', () => {
         });
         expect(await metadataDb.deleteTagDefinition(directories, 'x', 'y')).toMatchObject({ refused: [] });
         const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+        recordTagBaseline();
 
         /** @type {any[]} */
         const boundaries = [];
@@ -412,6 +449,7 @@ describe('finishDeletedTags over many batches', () => {
         await seedGroupCopies(GROUPS, tagsOf);
         expect(await metadataDb.deleteTagDefinition(directories, 'x', 'y')).toMatchObject({ refused: [] });
 
+        recordTagBaseline();
         transactionCalls = 0;
         crashAtTransaction = 2;
         await expect(metadataDb.finishDeletedTags(directories)).rejects.toThrow('simulated stop');

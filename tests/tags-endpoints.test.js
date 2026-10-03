@@ -184,7 +184,7 @@ describe('POST /api/tags/by-ids', () => {
         metadataDb.disposeMetadataStores();
 
         const body = await (await postJson('/api/tags/by-ids', { ids: ['broken'] })).json();
-        expect(body).toEqual({ tags: [], gone: [] });
+        expect(body).toEqual({ tags: [], gone: [], merged: {} });
     });
 });
 

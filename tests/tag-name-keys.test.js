@@ -2,6 +2,22 @@ import { describe, test, expect, beforeAll, beforeEach, afterEach, jest } from '
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { defineCharacterStoreFunctions } from '../src/character-store-schema.js';
+
+/**
+ * better-sqlite3 with the store's SQL functions registered on every connection, as the store's own connections have
+ * them (character-store-schema.js).
+ * @param {typeof import('better-sqlite3')} Base
+ * @returns {typeof import('better-sqlite3')}
+ */
+function withStoreFunctions(Base) {
+    return /** @type {any} */ (class extends /** @type {any} */ (Base) {
+        constructor(/** @type {any[]} */ ...args) {
+            super(...args);
+            defineCharacterStoreFunctions({ defineFunction: (name, fn) => this.function(name, { deterministic: true }, fn) });
+        }
+    });
+}
 
 /** @type {typeof import('../src/character-metadata-db.js')} */
 let metadataDb;
@@ -18,7 +34,7 @@ beforeAll(async () => {
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
     metadataDb = await import('../src/character-metadata-db.js');
     ({ tagNameKey } = await import('../public/scripts/hash-utils.js'));
-    Database = (await import('better-sqlite3')).default;
+    Database = withStoreFunctions((await import('better-sqlite3')).default);
 });
 
 beforeEach(() => {
@@ -156,18 +172,6 @@ describe('resolving card tag names once name keys are filled', () => {
         expect(tagIds).toEqual(['worker-made']);
         expect(tagDefinitions).toEqual([{ id: 'worker-made', name: 'Beta' }]);
         expect(tagRows().filter(r => r.name_key === 'beta')).toHaveLength(1);
-    });
-
-    test('the worker\'s card tags backfill finds a tag this process created, and creates none again', async () => {
-        await writeCharacter('Alice.png', ['Gamma']);
-        const { tagIds: [gammaId] } = await metadataDb.seedCardTagsForSingleCharacter(directories, 'Alice.png');
-        await writeCharacter('Bob.png', ['GAMMA', 'Fresh']);
-
-        await metadataDb.backfillCardTagsIfNeeded(directories);
-
-        expect(tagRows().filter(r => r.name_key === 'gamma')).toHaveLength(1);
-        expect(assignedTagIds('Bob.png')).toContain(gammaId);
-        expect(tagRows().filter(r => r.name_key === 'fresh')).toHaveLength(1);
     });
 
     test('only-existing mode never creates a tag', async () => {

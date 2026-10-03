@@ -2,6 +2,7 @@ import { describe, test, expect, beforeAll, beforeEach, afterEach, jest } from '
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { defineCharacterStoreFunctions } from '../src/character-store-schema.js';
 import { deleteEntityRaw, deleteTagRowRaw, insertEntityRaw, insertTagRowRaw, setFavRaw } from './util/stored-counters.js';
 
 /** @type {typeof import('../src/character-metadata-db.js')} */
@@ -94,7 +95,11 @@ afterEach(() => {
 /** @type {import('better-sqlite3').Database | null} A second connection standing in for the server's live writes. */
 let liveDb = null;
 function live() {
-    liveDb ??= new Database(path.join(directories.root, 'character-metadata.sqlite'));
+    if (!liveDb) {
+        const db = new Database(path.join(directories.root, 'character-metadata.sqlite'));
+        defineCharacterStoreFunctions({ defineFunction: (name, fn) => db.function(name, { deterministic: true }, fn) });
+        liveDb = db;
+    }
     return liveDb;
 }
 afterEach(() => {
@@ -161,9 +166,8 @@ async function seedLibrary() {
     const db = live();
     db.exec(`
         WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i + 1 < ${CHARACTERS})
-        INSERT INTO characters (id, name, name_fold, fav, date_added, date_last_chat, chat_size, data_size, shallow_json,
-            digest_fav, digest_tag_ids, digest_content, change_seq, card_json)
-        SELECT printf('c%05d.png', i), 'c', 'c', i % 3 = 0, 0, 0, 0, 0, '{}', 0, 0, 0, 0, '{}' FROM n;
+        INSERT INTO characters (id, name, fav, date_added, date_last_chat, chat_size, data_size, version)
+        SELECT printf('c%05d.png', i), 'c', i % 3 = 0, 0, 0, 0, 0, 0 FROM n;
 
         WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i + 1 < ${CHARACTERS})
         INSERT INTO character_tags (character_id, tag_id)
@@ -184,8 +188,7 @@ async function seedLibrary() {
     expect(db.prepare('SELECT COUNT(*) AS n FROM entity_counts').get().n + db.prepare('SELECT COUNT(*) AS n FROM entity_tag_counts').get().n).toBe(0);
 }
 
-const insertCharacterSql = `INSERT INTO characters (id, name, name_fold, fav, date_added, date_last_chat, chat_size, data_size, shallow_json,
-    digest_fav, digest_tag_ids, digest_content, change_seq, card_json) VALUES (?, 'n', 'n', ?, 0, 0, 0, 0, '{}', 0, 0, 0, 0, '{}')`;
+const insertCharacterSql = 'INSERT INTO characters (id, name, fav, date_added, date_last_chat, chat_size, data_size, version) VALUES (?, \'n\', ?, 0, 0, 0, 0, 0)';
 
 let liveWriteRound = 0;
 /**
@@ -334,6 +337,7 @@ describe('fillEntityCountsIfNeeded', () => {
 /** @template T @param {(db: import('better-sqlite3').Database) => T} fn @returns {T} */
 function withRawDb(fn) {
     const db = new Database(path.join(directories.root, 'character-metadata.sqlite'));
+    defineCharacterStoreFunctions({ defineFunction: (name, f) => db.function(name, { deterministic: true }, f) });
     try {
         return fn(db);
     } finally {

@@ -211,7 +211,7 @@ describe('migrateCharacterIds - discovery and idempotency', () => {
         const row = await metadataDb.getCharacterMetadataRow(directories, newAvatar);
         expect(row).toBeDefined();
         expect(row.name).toBe('Pngless');
-        expect(JSON.parse(row.card_json).data.description).toBe('kept');
+        expect(JSON.parse(/** @type {string} */ (await metadataDb.getCharacterCardJson(directories, newAvatar))).data.description).toBe('kept');
         expect(row.avatar_identity_hash).toBe(expectedHash);
 
         expect(fs.existsSync(oldChatsDir)).toBe(false);

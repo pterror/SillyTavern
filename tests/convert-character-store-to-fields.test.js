@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { setConfigFilePath } from '../src/util.js';
 import { getBetterSqlite3 } from '../src/endpoints/native-sqlite.js';
 import { openNativeDatabase } from '../src/endpoints/sqlite-engine.js';
 import { assembleCardsSync, cardLayoutOf } from '../src/character-card-reader.js';
@@ -40,6 +41,7 @@ let Database;
 const dirs = [];
 
 beforeAll(async () => {
+    setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
     Database = await getBetterSqlite3();
     if (!Database) throw new Error('these tests need the native better-sqlite3 binding');
 });
@@ -80,6 +82,7 @@ function blobLibrary({ unreadable = false } = {}) {
     db.prepare('DELETE FROM changes WHERE seq = (SELECT MAX(seq) FROM changes)').run();
     db.prepare('INSERT INTO character_tags VALUES (\'c0.png\', \'t1\'), (\'c1.png\', \'t1\')').run();
     db.prepare('INSERT INTO tags (id, data, name_key) VALUES (\'t1\', \'{"name":"T"}\', \'t\')').run();
+    db.prepare('INSERT INTO tag_log (tag_id) VALUES (\'gone\')').run();
     db.prepare('INSERT INTO random_ranks VALUES (\'a\', 0, \'c\', \'c0.png\'), (\'f0\', 0, \'c\', \'c0.png\'), (\'t\u001ft1\', 0, \'c\', \'c0.png\')').run();
     db.prepare('INSERT INTO character_tag_sort VALUES (\'t1\', \'c0.png\', 0)').run();
     db.prepare('INSERT INTO meta (key, value) VALUES (\'tag_sort_tables_filled\', \'1\'), (\'random_ranks_fill_upto_c\', \'x\'), (\'random_ranks_filled\', \'1\'), (\'name_order_filled\', \'1\'), (\'bootstrap_completed\', \'1\')').run();
@@ -105,6 +108,7 @@ describe('convert-character-store-to-fields', () => {
         expect(fs.existsSync(path.join(dataRoot, 'u', 'character-metadata.pre-fields.sqlite'))).toBe(true);
         expect(fs.existsSync(path.join(dataRoot, 'u', 'character-metadata.next.sqlite'))).toBe(false);
         expect(lines.some(l => l.includes('3 cards, every one checked'))).toBe(true);
+        expect(lines.some(l => l.includes('table tag_log (1 row(s))'))).toBe(true);
 
         const db = openNativeDatabase(Database, live);
         defineCharacterStoreFunctions(db);
@@ -119,16 +123,16 @@ describe('convert-character-store-to-fields', () => {
             // Copied whole, the deleted top row's seq included, so it is never handed out again.
             expect(db.get('SELECT COUNT(*) AS n FROM character_tags')).toEqual({ n: 2 });
             expect(db.get('SELECT seq FROM sqlite_sequence WHERE name = \'changes\'')).toEqual({ seq: 3 });
-            // Derived tables built on need are left out, with their markers and triggers; the rest of meta is kept.
-            expect(db.get('SELECT name FROM sqlite_master WHERE name = \'character_tag_sort\'')).toBeUndefined();
-            expect(db.get('SELECT name FROM sqlite_master WHERE name = \'trg_characters_tagsort_ad\'')).toBeUndefined();
+            // Derived tables built on need are left empty, without their markers; the rest of meta is kept.
+            expect(db.get('SELECT COUNT(*) AS n FROM character_tag_sort')).toEqual({ n: 0 });
             expect(Array.from(db.iterate('SELECT space FROM random_ranks ORDER BY space'), r => r.space)).toEqual(['a', 'f0']);
             expect(Array.from(db.iterate('SELECT key FROM meta ORDER BY key'), r => r.key)).toEqual(['bootstrap_completed', 'card_layout', 'fields_conversion_verified', 'name_order_filled']);
-            // A copied trigger on a copied table still fires.
-            db.run('DELETE FROM tags WHERE id = \'t1\'');
-            expect(db.get('SELECT tag_id FROM tag_log')).toEqual({ tag_id: 't1' });
+            // Tables, indexes and triggers are the current code's, not the old file's.
+            expect(db.get('SELECT name FROM sqlite_master WHERE name = \'trg_tags_log\'')).toBeUndefined();
+            expect(db.get('SELECT name FROM sqlite_master WHERE name = \'tag_log\'')).toBeUndefined();
+            expect(db.get('SELECT name FROM sqlite_master WHERE name = \'trg_characters_tagsort_au\'')).toBeDefined();
             // The name sort reads the fold index.
-            const plan = Array.from(db.iterate('EXPLAIN QUERY PLAN SELECT id FROM characters WHERE fav = 1 ORDER BY st_fold(name), id'), r => r.detail).join(' ');
+            const plan = Array.from(db.iterate('EXPLAIN QUERY PLAN SELECT id FROM characters WHERE fav = 1 ORDER BY name_fold, id'), r => r.detail).join(' ');
             expect(plan).toContain('idx_characters_sort_fav_name_fold_asc');
         } finally {
             db.close();
