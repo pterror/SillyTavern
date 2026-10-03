@@ -15,6 +15,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', 'config.yaml'));
 
 const { resolveTextCompletionGenerationInput } = await import('./text-completion-generation-input.js');
+const { importWorldInfoFromRaw } = await import('./endpoints/worldinfo.js');
 const { writeAllSettings } = await import('./settings-store.js');
 const { saveChatToTree, disposeMessageTreeStores } = await import('./message-tree-db.js');
 const { assembleTextCompletionPrompt } = await import('./text-completion-prompt-orchestrator.js');
@@ -42,7 +43,7 @@ function writeLorebook(name, entries) {
     for (const entry of entries) {
         entriesObj[String(entry.uid)] = entry;
     }
-    fs.writeFileSync(path.join(worldsDir, `${name}.json`), JSON.stringify({ entries: entriesObj }));
+    importWorldInfoFromRaw(directories, name, JSON.stringify({ entries: entriesObj }));
 }
 
 const baseImage = fs.readFileSync(path.join(__dirname, '..', 'public', 'img', 'ai4.png'));

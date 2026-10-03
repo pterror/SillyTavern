@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { resolveWorldInfoCandidates, world_info_insertion_strategy, EMBEDDED_WORLD_NAME } from './candidate-resolution.js';
+import { importWorldInfoFromRaw } from '../endpoints/worldinfo.js';
 
 /** Minimal real on-disk lorebook shape, matching default/content/Eldoria.json's entries format. */
 function makeEntry(uid, order, content = `content-${uid}`) {
@@ -25,7 +26,7 @@ function writeLorebook(dir, name, entries) {
     for (const entry of entries) {
         entriesObj[String(entry.uid)] = entry;
     }
-    fs.writeFileSync(path.join(dir, `${name}.json`), JSON.stringify({ entries: entriesObj }));
+    importWorldInfoFromRaw({ worlds: dir }, name, JSON.stringify({ entries: entriesObj }));
 }
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'wi-candidate-resolution-'));

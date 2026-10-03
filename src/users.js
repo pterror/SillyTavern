@@ -348,6 +348,8 @@ export async function migrateUserData() {
             old: path.join(publicDirectory, 'worlds'),
             new: userDirectories.worlds,
             file: false,
+            // Upstream World Info files come in through the import, which stores them in this server's format.
+            importWorlds: true,
         },
         {
             old: path.join(publicDirectory, 'scripts/extensions/third-party'),
@@ -403,6 +405,24 @@ export async function migrateUserData() {
                 // Copy the file to the new location
                 fs.cpSync(migration.old, migration.new, { force: true });
                 // Move the file to the backup location
+                fs.cpSync(
+                    migration.old,
+                    path.join(backupDirectory, path.basename(migration.old)),
+                    { recursive: true, force: true },
+                );
+                fs.rmSync(migration.old, { recursive: true, force: true });
+            } else if (migration.importWorlds) {
+                const { importWorldInfoFromRaw } = await import('./endpoints/worldinfo.js');
+                fs.mkdirSync(migration.new, { recursive: true });
+                for (const entry of fs.readdirSync(migration.old, { withFileTypes: true })) {
+                    const from = path.join(migration.old, entry.name);
+                    if (entry.isFile() && path.extname(entry.name).toLowerCase() === '.json') {
+                        importWorldInfoFromRaw(userDirectories, entry.name, fs.readFileSync(from, 'utf8'));
+                    } else {
+                        fs.cpSync(from, path.join(migration.new, entry.name), { recursive: true, force: true });
+                    }
+                }
+                // Move the directory to the backup location
                 fs.cpSync(
                     migration.old,
                     path.join(backupDirectory, path.basename(migration.old)),
