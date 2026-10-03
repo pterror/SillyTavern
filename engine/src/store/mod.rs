@@ -820,17 +820,10 @@ impl Inner {
             Ok(positions)
         })();
         match result {
-            Ok(positions) if records.is_empty() => {
-                // Nothing to write: an empty commit, or a relocation whose records were all dead by now.
+            Ok(positions) => {
                 if layout.is_empty() {
                     open.layout = None;
                 }
-                match job {
-                    Job::Commit(_, d) => d(Ok(positions)),
-                    Job::Relocate(_, d) => d(Ok(())),
-                }
-            }
-            Ok(positions) => {
                 for (k, v) in entries {
                     apply(&mut open.entries, k, v);
                 }
@@ -868,11 +861,19 @@ impl Inner {
                 p = self.pipe_cv.wait(p).unwrap();
             }
             let mut group = std::mem::take(&mut p.open);
-            let layout = group.layout.as_mut().unwrap();
+            let dones = std::mem::take(&mut group.dones);
+            // A group of jobs that wrote nothing (an empty commit, a relocation whose records had all died)
+            // still resolves in its turn: after every group before it has published.
+            let Some(layout) = group.layout.as_mut() else {
+                drop(p);
+                for d in dones {
+                    d.succeed();
+                }
+                continue;
+            };
             let end = layout.close();
             p.cursor = end;
             let (file, runs) = (layout.file, std::mem::take(&mut layout.runs));
-            let dones = std::mem::take(&mut group.dones);
             p.syncing = Some(group);
             drop(p);
             // A full open group may now take more.
