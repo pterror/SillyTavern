@@ -2,8 +2,9 @@
 //!
 //! A log is a sequence of items laid out in fixed-size blocks:
 //! - `0x00` pad: the rest of the block is unused; the next item starts at the next block.
-//! - `0x01` trailer: ends a sync group; four bytes of CRC-32C (little-endian) follow, over every item byte
-//!   since the previous trailer (pads included, unused block tails not).
+//! - `0x01` trailer: ends a sync group; four bytes of CRC-32C (little-endian) follow: the CRC of the group's
+//!   start position (8 bytes, little-endian), continued over every item byte since the previous trailer (pads
+//!   included, unused block tails not).
 //! - a record: a header varint (`>= 2`) naming the kind and carrying its bits, then the kind's values in
 //!   schema order, with no per-value type tags.
 //!
@@ -519,6 +520,45 @@ fn get_slice<'a>(buf: &'a [u8], at: &mut usize, len: u64) -> FormatResult<&'a [u
     let s = buf.get(*at..end).ok_or(FormatError::Incomplete)?;
     *at = end;
     Ok(s)
+}
+
+/// Steps over the values of a record at `buf[*at..]` (its header already read) without decoding them: ids
+/// and times are differences from earlier records in the block, so this needs none of them.
+pub fn skip_body(
+    kind: &'static Kind,
+    mut bits: u64,
+    buf: &[u8],
+    at: &mut usize,
+) -> FormatResult<()> {
+    for slot in kind.slots {
+        let set = bits & 1 == 1;
+        if slot.ty == Ty::Bit || slot.optional {
+            bits >>= 1;
+        }
+        if slot.ty == Ty::Bit || (slot.optional && !set) {
+            continue;
+        }
+        match slot.ty {
+            Ty::UInt | Ty::Int | Ty::Id(_) | Ty::Time => {
+                get_uvarint(buf, at)?;
+            }
+            Ty::F64 => {
+                get_slice(buf, at, 8)?;
+            }
+            Ty::Field => {
+                if get_uvarint(buf, at)? == 0 {
+                    let len = get_uvarint(buf, at)?;
+                    get_slice(buf, at, len)?;
+                }
+            }
+            Ty::Text | Ty::Bytes => {
+                let len = get_uvarint(buf, at)?;
+                get_slice(buf, at, len)?;
+            }
+            Ty::Bit => unreachable!(),
+        }
+    }
+    Ok(())
 }
 
 /// Decodes the record at `buf[*at..]`, given its header value (already read), advancing `at` and the

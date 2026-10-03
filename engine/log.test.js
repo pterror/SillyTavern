@@ -119,3 +119,20 @@ for (const [name, engine] of Object.entries(bindings)) {
         log.close();
     });
 }
+
+for (const [name, engine] of Object.entries(bindings)) {
+    test(`${name}: damage with whole groups after it refuses to open and changes nothing`, async () => {
+        const dir = path.join(tmp, `${name}-damaged`);
+        const log = await engine.RecordLog.open(dir);
+        await log.append(samples.slice(0, 3));
+        const [second] = await log.append(samples.slice(3, 5));
+        await log.append(samples.slice(5, 6));
+        log.close();
+        const [file] = fs.readdirSync(dir);
+        const bytes = fs.readFileSync(path.join(dir, file));
+        bytes[Number(second) + 1] ^= 0x40;
+        fs.writeFileSync(path.join(dir, file), bytes);
+        await assert.rejects(engine.RecordLog.open(dir), new RegExp(`${file} is damaged: .* but 1 whole groups follow .*Nothing was changed`));
+        assert.deepEqual(fs.readFileSync(path.join(dir, file)), bytes);
+    });
+}
