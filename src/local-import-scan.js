@@ -18,15 +18,6 @@ import { LocalImportWorkerPool, resolveWorkerPoolSize } from './local-import-wor
 import { importFailure } from './character-import-error.js';
 
 /**
- * Counts a card whose tags wait for the tag upgrade, for the scan pass's finished line.
- * @param {DirectoryScanState} state
- * @param {string[]} heldTagNames
- */
-function countHeldTagNames(state, heldTagNames) {
-    if (heldTagNames.length > 0 && state.scanCounts) state.scanCounts.heldTags++;
-}
-
-/**
  * Imports characters from directories listed under `localImport.directories` in config.yaml. This module never
  * accepts a directory path from a request, so it's never an arbitrary-path-read endpoint.
  *
@@ -86,7 +77,6 @@ export function touchLastSeenMtime(state, filename, mtimeMs) {
  * @property {Map<string, Promise<void>>} [inFlightFiles] Lazily created.
  * @property {ProgressLog | null} [scanProgress] The running scan pass's console output; imports outside a pass (a
  *   watch event's single file) log nothing on success.
- * @property {{ heldTags: number } | null} [scanCounts] The running scan pass's counts for its finished line.
  */
 
 /**
@@ -498,7 +488,7 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
                     state.scanProgress?.add();
                     if (tagImportSetting !== 2) {
                         try {
-                            countHeldTagNames(state, (await seedCardTagsForSingleCharacter(directories, `${pngName}.png`)).heldTagNames);
+                            await seedCardTagsForSingleCharacter(directories, `${pngName}.png`);
                         } catch (err) {
                             console.warn(`[local-import] Failed to seed tags for ${pngName}.png:`, err.message);
                         }
@@ -527,7 +517,7 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
                     }
                     if (tagImportSetting !== 2) {
                         try {
-                            countHeldTagNames(state, (await seedCardTagsForSingleCharacter(directories, `${result.fileName}.png`)).heldTagNames);
+                            await seedCardTagsForSingleCharacter(directories, `${result.fileName}.png`);
                         } catch (err) {
                             console.warn(`[local-import] Failed to seed tags for ${result.fileName}.png:`, err.message);
                         }
@@ -564,7 +554,6 @@ export async function scanDirectory(state, directories) {
 
     await beginBatchImport(directories);
     state.scanProgress = new ProgressLog({ what: `[local-import] importing new cards from ${state.sourceDir}` });
-    state.scanCounts = { heldTags: 0 };
     try {
         await sweepRemovedFiles(state, directories);
 
@@ -603,12 +592,11 @@ export async function scanDirectory(state, directories) {
     } finally {
         await endBatchImport(directories);
         state.hashLocks?.clear();
-        const { scanProgress, scanCounts } = state;
+        const { scanProgress } = state;
         state.scanProgress = null;
-        state.scanCounts = null;
         // One imported card is a single update, which logs nothing.
         if (scanProgress && scanProgress.done > 1) {
-            scanProgress.finish(scanCounts?.heldTags ? `${scanCounts.heldTags} get their tags once the tag upgrade finishes` : '');
+            scanProgress.finish();
         }
     }
 }

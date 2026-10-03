@@ -121,22 +121,23 @@ async function seed() {
     await metadataDb.ensureSchemaMigrated(directories);
     await metadataDb.saveTagDefinitions(directories, NAMES.map((name, n) => (n < 8 ? { id: IDS[n], name, sort_order: (n + 1) * 10 } : { id: IDS[n], name })));
     jest.spyOn(console, 'warn').mockImplementation(() => {});
-    await metadataDb.fillTagNameKeysIfNeeded(directories);
-    await metadataDb.fillTagDerivedColumnsIfNeeded(directories);
-    await metadataDb.migrateTagsJsonIfNeeded(directories);
-    expect(await metadataDb.areTagQueryColumnsReady(directories)).toBe(true);
 }
 
 /**
- * Records a reorder pass, so moves queue and manual reads walk its mode's order.
+ * Records a reorder pass, so moves queue and manual reads walk its mode's order; at its drain, reads take the stored
+ * order with the queue on top, and running the pass only applies the queue.
  * @param {number} id
  * @param {'alphabetical' | 'by_entries'} mode
+ * @param {{ phase: 'drain' } | null} [at]
  */
-function record(id, mode) {
+function record(id, mode, at = null) {
     const upsert = live().prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value');
-    upsert.run('tag_reorder_pass', JSON.stringify({ id, mode, at: null }));
+    upsert.run('tag_reorder_pass', JSON.stringify({ id, mode, at }));
     upsert.run('tag_reorder_pass_last_id', String(id));
 }
+
+/** Records a reorder pass at its drain (record()). */
+const recordDraining = () => record(1, 'alphabetical', { phase: 'drain' });
 
 /**
  * @param {string} a
@@ -288,17 +289,14 @@ async function randomChange(next, values, step) {
 
 describe('tag_pending_places gives the order the queue replay gave', () => {
     describe.each([
-        ['the stored order (sort_order fill unfinished)', null],
+        ['the stored order (a reorder pass at its drain)', null],
         ['an alphabetical reorder pass', 'alphabetical'],
         ['a most-used reorder pass', 'by_entries'],
     ])('%s', (_, mode) => {
         test.each([1, 2, 3, 4, 5, 6])('random moves, values, renames and usage changes, seed %i', async (seedNumber) => {
             await seed();
-            if (mode !== null) {
-                // A pass runs once the sort_order fill has finished.
-                await metadataDb.fillTagSortOrdersIfNeeded(directories);
-                record(1, /** @type {'alphabetical' | 'by_entries'} */ (mode));
-            }
+            if (mode === null) recordDraining();
+            else record(1, /** @type {'alphabetical' | 'by_entries'} */ (mode));
             const pass = mode === null ? null : { mode };
             const next = random(seedNumber * 7919 + (mode?.length ?? 0));
             for (let step = 0; step < 40; step++) {
@@ -311,7 +309,7 @@ describe('tag_pending_places gives the order the queue replay gave', () => {
 
             // While the drain applies the entries one at a time, each read between two of them is the replay of those left.
             let done = false;
-            const drain = (mode === null ? metadataDb.fillTagSortOrdersIfNeeded(directories) : metadataDb.runTagReorderPassIfNeeded(directories)).then(() => { done = true; });
+            const drain = metadataDb.runTagReorderPassIfNeeded(directories).then(() => { done = true; });
             let checked = 0;
             while (!done) {
                 const before = drainState();
@@ -332,6 +330,7 @@ describe('tag_pending_places gives the order the queue replay gave', () => {
 describe('tag_pending_places, when a tag the queue names is deleted', () => {
     test('A after B, C after A, B deleted: A and C stay where B was until the queue drains, then take the order the drain leaves', async () => {
         await seed();
+        recordDraining();
         // a b c d e f g h ordered, k l m n not. A = e, B = b, C = h.
         expect(await metadataDb.moveTagDefinition(directories, 'e', { after: 'b' })).toEqual({ refused: [], written: [], queued: true });
         expect(await metadataDb.moveTagDefinition(directories, 'h', { after: 'e' })).toEqual({ refused: [], written: [], queued: true });
@@ -353,7 +352,7 @@ describe('tag_pending_places, when a tag the queue names is deleted', () => {
         for (const pageSize of [1, 2]) expect(await manualIds(pageSize)).toEqual(whereBWas);
 
         // The drain drops "e after b" (b is gone) and applies "h after e": the jump.
-        await metadataDb.fillTagSortOrdersIfNeeded(directories);
+        await metadataDb.runTagReorderPassIfNeeded(directories);
         expect(live().prepare('SELECT COUNT(*) FROM tag_pending_places').pluck().get()).toBe(0);
         expect(await manualIds(50)).toEqual(['a', 'c', 'd', 'e', 'h', 'f', 'g', 'k', 'l', 'm', 'n']);
     });
@@ -376,6 +375,7 @@ describe('tag_pending_places, when a tag the queue names is deleted', () => {
 describe('tag_pending_places, its upkeep', () => {
     test('entries queued without it (by an older version) are taken in by the next read', async () => {
         await seed();
+        recordDraining();
         const queue = live().prepare('INSERT INTO tag_pending_moves (tag_id, side, anchor_id) VALUES (?, ?, ?)');
         queue.run('k', 'after', 'a');
         queue.run('l', 'after', 'k');
@@ -391,6 +391,7 @@ describe('tag_pending_places, its upkeep', () => {
 
     test('many moves into one spot keep their order: the gap is renumbered once halving runs out', async () => {
         await seed();
+        recordDraining();
         await metadataDb.moveTagDefinition(directories, 'k', { after: 'a' });
         await metadataDb.moveTagDefinition(directories, 'l', { after: 'k' });
         // m and n by turns right before l: each lands between l and the other, halving the room left before l.
@@ -404,6 +405,7 @@ describe('tag_pending_places, its upkeep', () => {
 
     test('a rename moves a value\'s place among the tags without an order', async () => {
         await seed();
+        recordDraining();
         expect((await metadataDb.editTagDefinition(directories, 'a', { sort_order: 'zzz' }))?.refused).toEqual([]);
         await metadataDb.moveTagDefinition(directories, 'b', { after: 'a' });
         const read = async () => {

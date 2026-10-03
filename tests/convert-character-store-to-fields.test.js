@@ -63,7 +63,7 @@ const cards = [
  * A data root with one user whose store is in the blob layout, holding `cards` (the stored fav is the opposite of the
  * first card's own, so the column, not the card, is what the conversion must keep).
  */
-function blobLibrary({ unreadable = false } = {}) {
+function blobLibrary({ unreadable = false, tagMoves = null } = {}) {
     const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'convert-fields-'));
     dirs.push(dataRoot);
     fs.mkdirSync(path.join(dataRoot, 'u'));
@@ -86,8 +86,34 @@ function blobLibrary({ unreadable = false } = {}) {
     db.prepare('INSERT INTO random_ranks VALUES (\'a\', 0, \'c\', \'c0.png\'), (\'f0\', 0, \'c\', \'c0.png\'), (\'t\u001ft1\', 0, \'c\', \'c0.png\')').run();
     db.prepare('INSERT INTO character_tag_sort VALUES (\'t1\', \'c0.png\', 0)').run();
     db.prepare('INSERT INTO meta (key, value) VALUES (\'tag_sort_tables_filled\', \'1\'), (\'random_ranks_fill_upto_c\', \'x\'), (\'random_ranks_filled\', \'1\'), (\'name_order_filled\', \'1\'), (\'bootstrap_completed\', \'1\')').run();
+    if (tagMoves !== null) queueTagMoves(db, tagMoves);
     db.close();
     return dataRoot;
+}
+
+/**
+ * Gives the old file the tags columns moves read and three queued entries: x after a, which applies; y after
+ * 'gone', which is refused; and a sort_order value for a.
+ * @param {any} db
+ * @param {'no pass' | 'pass'} pass 'pass': a reorder pass is recorded, which the entries belong to.
+ */
+function queueTagMoves(db, pass) {
+    db.exec(`
+        ALTER TABLE tags ADD COLUMN sort_order REAL;
+        ALTER TABLE tags ADD COLUMN folder_type TEXT;
+        ALTER TABLE tags ADD COLUMN is_folder INTEGER;
+        ALTER TABLE tags ADD COLUMN usage_count INTEGER;
+        CREATE TABLE tag_pending_moves (seq INTEGER PRIMARY KEY AUTOINCREMENT, tag_id TEXT NOT NULL, side TEXT, anchor_id TEXT, value TEXT);
+    `);
+    const tag = db.prepare('INSERT INTO tags (id, data, name_key, sort_order, folder_type, is_folder, usage_count) VALUES (?, ?, ?, ?, \'NONE\', 0, 0)');
+    for (const [id, order] of [['a', 1], ['b', 2], ['x', 5], ['y', 6]]) tag.run(id, JSON.stringify({ id, name: id.toUpperCase(), sort_order: order }), id, order);
+    const queue = db.prepare('INSERT INTO tag_pending_moves (tag_id, side, anchor_id, value) VALUES (?, ?, ?, ?)');
+    queue.run('x', 'after', 'a', null);
+    queue.run('y', 'after', 'gone', null);
+    queue.run('a', null, null, '0.5');
+    if (pass === 'pass') {
+        db.prepare('INSERT INTO meta (key, value) VALUES (\'tag_reorder_pass\', ?), (\'tag_reorder_pass_last_id\', \'4\')').run(JSON.stringify({ id: 4, mode: 'alphabetical', at: null }));
+    }
 }
 
 const notRunning = async () => ({ running: false, lines: [] });
@@ -139,6 +165,47 @@ describe('convert-character-store-to-fields', () => {
         }
 
         expect((await convert(dataRoot)).lines.at(-1)).toContain('already in the fields layout');
+    });
+
+    test('applies the tag moves queued with no reorder pass, says how many, and warns about each it couldn\'t apply', async () => {
+        const dataRoot = blobLibrary({ tagMoves: 'no pass' });
+        const { code, lines } = await convert(dataRoot);
+        expect(code).toBe(0);
+        expect(lines).toContain('[convert-to-fields] queued tag moves applied: 3.');
+        expect(lines.filter(l => l.includes('WARNING') && l.includes('Couldn\'t move tag'))).toEqual([
+            '[convert-to-fields] WARNING: Couldn\'t move tag "Y" next to "gone": "gone" was deleted.',
+        ]);
+
+        const db = openNativeDatabase(Database, path.join(dataRoot, 'u', 'character-metadata.sqlite'));
+        try {
+            expect(db.get('SELECT COUNT(*) AS n FROM tag_pending_moves')).toEqual({ n: 0 });
+            expect(db.get('SELECT COUNT(*) AS n FROM tag_pending_places')).toEqual({ n: 0 });
+            const order = id => JSON.parse(/** @type {{ data: string }} */ (db.get('SELECT data FROM tags WHERE id = ?', [id])).data).sort_order;
+            expect([order('a'), order('x'), order('b'), order('y')]).toEqual([0.5, 1.5, 2, 6]);
+            expect(db.get('SELECT sort_order FROM tags WHERE id = \'a\'')).toEqual({ sort_order: 0.5 });
+            expect(Array.from(db.iterate('SELECT tag_id FROM tag_changes ORDER BY seq'), r => r.tag_id)).toEqual(['x', 'a']);
+        } finally {
+            db.close();
+        }
+    });
+
+    test('leaves the tag moves queued under a recorded reorder pass to that pass', async () => {
+        const dataRoot = blobLibrary({ tagMoves: 'pass' });
+        const { code, lines } = await convert(dataRoot);
+        expect(code).toBe(0);
+        expect(lines).toContain('[convert-to-fields] queued tag moves applied: 0.');
+        const db = openNativeDatabase(Database, path.join(dataRoot, 'u', 'character-metadata.sqlite'));
+        try {
+            expect(Array.from(db.iterate('SELECT tag_id, side, anchor_id, value FROM tag_pending_moves ORDER BY seq'))).toEqual([
+                { tag_id: 'x', side: 'after', anchor_id: 'a', value: null },
+                { tag_id: 'y', side: 'after', anchor_id: 'gone', value: null },
+                { tag_id: 'a', side: null, anchor_id: null, value: '0.5' },
+            ]);
+            expect(JSON.parse(/** @type {{ value: string }} */ (db.get('SELECT value FROM meta WHERE key = \'tag_reorder_pass\'')).value)).toEqual({ id: 4, mode: 'alphabetical', at: null });
+            expect(db.get('SELECT sort_order FROM tags WHERE id = \'x\'')).toEqual({ sort_order: 5 });
+        } finally {
+            db.close();
+        }
     });
 
     test('a card that can\'t be read stops it, listing the card, and leaves the old file in place', async () => {

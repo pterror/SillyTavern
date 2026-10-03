@@ -979,7 +979,6 @@ async function runConcurrency({ session, dbPath, indexDir, primary, deadline, ru
         const insertUpsert = db.prepare('INSERT INTO changes (id, op, fields) VALUES (?, \'upsert\', NULL)');
         const delChar = db.prepare('DELETE FROM characters WHERE id = ?');
         const delTags = db.prepare('DELETE FROM character_tags WHERE character_id = ?');
-        const delHeld = db.prepare('DELETE FROM tag_names_held WHERE character_id = ?');
         const delImport = db.prepare('DELETE FROM local_import_mtimes WHERE duplicate_of = ?');
         const insertDelete = db.prepare('INSERT INTO changes (id, op, fields) VALUES (?, \'delete\', NULL)');
         db.transaction(() => {
@@ -987,7 +986,6 @@ async function runConcurrency({ session, dbPath, indexDir, primary, deadline, ru
             for (const id of deleteIds) {
                 delChar.run(id);
                 delTags.run(id);
-                delHeld.run(id);
                 delImport.run(id);
                 insertDelete.run(id);
             }

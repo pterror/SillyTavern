@@ -494,7 +494,6 @@ describe('writes that name a marked tag', () => {
     });
 
     test('a card tag named like x resolves to y', async () => {
-        await metadataDb.fillTagNameKeysIfNeeded(directories);
         await saveTags(['x', 'y']);
         await deleteTag('x', 'y');
         await seedCharacter('card.png', ['name-x']);
@@ -505,7 +504,6 @@ describe('writes that name a marked tag', () => {
     });
 
     test('a card tag named like a tag deleted with no target does not resolve to it', async () => {
-        await metadataDb.fillTagNameKeysIfNeeded(directories);
         await saveTags(['d']);
         await deleteTag('d');
         await seedCharacter('card.png', ['name-d']);
@@ -545,7 +543,6 @@ describe('POST /api/tags/create and /api/tags/edit', () => {
     });
 
     test('create answers { result, refused }: empty when created, exists, deleted', async () => {
-        await metadataDb.fillTagDerivedColumnsIfNeeded(directories);
         await saveTags(['m']);
         await deleteTag('m');
         jest.spyOn(console, 'warn').mockImplementation(() => {});

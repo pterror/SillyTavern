@@ -126,22 +126,6 @@ describe('a keyset stream\'s later page seeks on its key instead of re-reading f
         expect(plan).not.toContainEqual(expect.stringMatching(/\bSCAN character_tags\b/));
     }, 60000);
 
-    test('normalizeGroupFavIfNeeded() SEARCHes groups on (id>?)', async () => {
-        for (let i = 0; i < MORE_THAN_ONE_PAGE; i++) {
-            const id = `g${pad(i)}`;
-            const group = { id, name: id, members: [], chats: [], fav: false };
-            fs.writeFileSync(path.join(directories.groups, `${id}.json`), JSON.stringify(group));
-            await metadataDb.upsertGroupRow(directories, id, id, { fav: false, group });
-        }
-        recordedIterates.length = 0;
-
-        await metadataDb.normalizeGroupFavIfNeeded(directories);
-
-        const plan = planOf(recordedLaterPage());
-        expect(plan).toContainEqual(expect.stringMatching(/\bSEARCH groups\b.*\(id>\?\)/));
-        expect(plan).not.toContainEqual(expect.stringMatching(/\bSCAN groups\b/));
-    }, 60000);
-
     test('streamLinkedWorlds() SEARCHes characters on (world>?)', async () => {
         await addCharacters(i => `World${pad(i)}`);
         recordedIterates.length = 0;

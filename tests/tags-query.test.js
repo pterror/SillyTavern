@@ -189,13 +189,6 @@ async function seed(tags) {
     })();
 }
 
-async function makeReady() {
-    await metadataDb.fillTagNameKeysIfNeeded(directories);
-    jest.spyOn(console, 'warn').mockImplementation(() => {});
-    await metadataDb.fillTagDerivedColumnsIfNeeded(directories);
-    expect(await metadataDb.areTagQueryColumnsReady(directories)).toBe(true);
-}
-
 /** @param {string} a @param {string} b */
 const bytes = (a, b) => Buffer.compare(Buffer.from(a, 'utf8'), Buffer.from(b, 'utf8'));
 
@@ -269,7 +262,6 @@ function recordedPlans() {
 describe('POST /api/tags/query', () => {
     test('ifHash: the answer carries its hash, and is only "unchanged" while the page is what the hash was made of', async () => {
         await seed(mixedTags());
-        await makeReady();
         const ask = { sort: { field: 'alphabetical' }, filter: { used: true }, pageSize: 5 };
 
         const plain = await query(ask);
@@ -296,10 +288,9 @@ describe('POST /api/tags/query', () => {
         expect((await query({ ...ask, ifHash: 7 })).status).toBe(400);
     });
 
-    describe.each([['indexed path', true]])('restCount, %s', (_, ready) => {
+    describe('restCount, indexed path', () => {
         test('a full page with more after it answers how many match after it; others answer no rest', async () => {
             await seed(mixedTags());
-            if (ready) await makeReady();
             for (const sort of SORTS) {
                 for (const filter of [{}, { folders: true }, { contains: 'a', folders: true }, { used: true }]) {
                     const want = expected(sort, filter);
@@ -319,11 +310,9 @@ describe('POST /api/tags/query', () => {
         });
     });
 
-    describe.each([['indexed path', true]])('%s', (_, ready) => {
+    describe('indexed path', () => {
         test('every sort and filter pages through exactly the expected order, following cursors', async () => {
             await seed(mixedTags());
-            if (ready) await makeReady();
-            expect(await metadataDb.areTagQueryColumnsReady(directories)).toBe(ready);
             for (const sort of SORTS) {
                 for (const filter of FILTERS) {
                     const want = expected(sort, filter);
@@ -338,7 +327,6 @@ describe('POST /api/tags/query', () => {
             await seed(mixedTags());
             await metadataDb.deleteTagDefinition(directories, 't002', null);
             await metadataDb.deleteTagDefinition(directories, 't014', null);
-            if (ready) await makeReady();
             for (const sort of SORTS) {
                 const got = await queryAll({ sort: { field: sort }, pageSize: 9 });
                 expect(got.ids).not.toContain('t002');
@@ -348,10 +336,9 @@ describe('POST /api/tags/query', () => {
         });
     });
 
-    describe.each([['indexed path', true]])('counts, %s', (_, ready) => {
+    describe('counts, indexed path', () => {
         test('counts are given only when asked, for the rows on the page, from tag_usage', async () => {
             await seed(mixedTags());
-            if (ready) await makeReady();
             const usage = new Map(live().prepare('SELECT tag_id, count FROM tag_usage').all().map(row => [row.tag_id, row.count]));
             for (const sort of SORTS) {
                 const plain = await query({ sort: { field: sort }, pageSize: 7 });
@@ -379,7 +366,6 @@ describe('POST /api/tags/query', () => {
             assign.run('a.png', 'target');
             assign.run('a.png', 'other');
             await metadataDb.deleteTagDefinition(directories, 'source', 'target');
-            if (ready) await makeReady();
 
             const { body } = await query({ sort: { field: 'alphabetical' }, counts: true });
             expect(body.rows.map(t => t.id)).toEqual(['other', 'target']);
@@ -393,7 +379,6 @@ describe('POST /api/tags/query', () => {
             const card = name => JSON.stringify({ name, data: { name, tags: [], extensions: {} } });
             await metadataDb.upsertCharacterFromWrite(directories, 'Stored.png', card('Stored'));
             expect(await metadataDb.assignEntityTag(directories, 'Stored.png', 'both')).toBe('ok');
-            if (ready) await makeReady();
 
             await metadataDb.beginBatchImport(directories);
             await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', card('Bob'), null, null, { fromImport: true });
@@ -418,7 +403,6 @@ describe('POST /api/tags/query', () => {
     test('the sort defaults to manual and the page size to 50, clamped to 500', async () => {
         const tags = Array.from({ length: 620 }, (_, i) => ({ id: `p${String(i).padStart(4, '0')}`, name: `P ${619 - i}`, sort_order: i % 5 === 0 ? undefined : 1000 - i }));
         await seed(tags);
-        await makeReady();
         const first = await query({});
         expect(first.body.rows.map(t => t.id)).toEqual(expected('manual', {}).slice(0, 50));
         expect((await query({ pageSize: 100000 })).body.rows).toHaveLength(500);
@@ -428,7 +412,6 @@ describe('POST /api/tags/query', () => {
 
     test('bad input is a 400', async () => {
         await seed(mixedTags());
-        await makeReady();
         const manualCursor = (await query({ pageSize: 2 })).body.cursor;
         const cases = [
             { sort: { field: 'random' } },
@@ -453,21 +436,8 @@ describe('POST /api/tags/query', () => {
         expect((await query({ filter: { ids: [...ids, ...ids] } })).status).toBe(200);
     });
 
-    test('before the one-time fill, it answers 503 tag-query-not-ready', async () => {
-        await seed(mixedTags());
-        expect(await metadataDb.areTagQueryColumnsReady(directories)).toBe(false);
-        for (const body of [{}, { filter: { ids: ['x0'] } }, { counts: true }, { restCount: true }]) {
-            const response = await query(body);
-            expect({ body, status: response.status, reason: response.body.reason }).toEqual({ body, status: 503, reason: 'tag-query-not-ready' });
-        }
-        await makeReady();
-        expect((await query({})).status).toBe(200);
-    });
-
-
     test('every indexed read goes through its index in order, with no sort step and no scan of the table', async () => {
         await seed(mixedTags());
-        await makeReady();
         recording = true;
         for (const sort of SORTS) {
             for (const filter of FILTERS) {
@@ -494,7 +464,6 @@ describe('POST /api/tags/query', () => {
     test('a page after a cursor reads only its own rows, however deep, in every sort', async () => {
         const tags = Array.from({ length: 3000 }, (_, i) => ({ id: `d${String(i).padStart(4, '0')}`, name: `N ${i % 1500}`, sort_order: i < 2000 ? i % 7 : undefined }));
         await seed(tags);
-        await makeReady();
         for (const sort of SORTS) {
             let cursor = null;
             for (let page = 0; page < 60; page++) {
@@ -521,7 +490,6 @@ describe('POST /api/tags/query', () => {
             const assign = rawTagRowInserter(live(), 'character_tags');
             for (let i = 0; i < 5; i++) assign.run('c.png', `f${i}`);
         })();
-        await makeReady();
 
         const first = await query({ sort: { field: 'alphabetical' }, filter: { folders: true, used: true }, pageSize: 50 });
         expect(first.body).toEqual({ rows: [], cursor: expect.any(String), more: true });

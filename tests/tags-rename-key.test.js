@@ -182,7 +182,6 @@ describe('POST /api/tags/rename-key', () => {
 
     test('a tag deleted with a merge target arrives as that target; one with none does not arrive', async () => {
         jest.spyOn(console, 'warn').mockImplementation(() => {});
-        await metadataDb.fillTagNameKeysIfNeeded(directories);
         for (const id of ['x', 'y', 'd']) {
             expect((await metadataDb.createTagDefinition(directories, { id, name: id })).refused).toEqual([]);
         }

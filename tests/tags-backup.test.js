@@ -114,7 +114,6 @@ async function assign(id, tagIds) {
 
 describe('POST /api/tags/backup', () => {
     test('holds every tag and every character\'s and group\'s tags', async () => {
-        await metadataDb.fillTagNameKeysIfNeeded(directories);
         for (const id of ['a', 'b', 'c']) {
             expect((await metadataDb.createTagDefinition(directories, { id, name: `Tag ${id}` })).refused).toEqual([]);
         }
@@ -133,13 +132,11 @@ describe('POST /api/tags/backup', () => {
     });
 
     test('an entity whose rows span more than one batch is one entry', async () => {
-        await metadataDb.fillTagNameKeysIfNeeded(directories);
         await seedCharacter('Alice.png');
         await seedCharacter('Bob.png');
         const many = Array.from({ length: 1500 }, (_, i) => `t${String(i).padStart(4, '0')}`);
         // One restore for all 1500 rows: assigning them one by one took most of jest's 5 s timeout under load.
         const restored = await metadataDb.restoreTagBackup(directories, { tags: many.map(id => ({ id, name: id })), tagMap: { 'Alice.png': many }, overwrite: false });
-        expect(restored).not.toBe('names-not-ready');
         expect(restored?.undefinedTagIds).toEqual([]);
         await assign('Bob.png', ['t0001']);
 
@@ -152,7 +149,6 @@ describe('POST /api/tags/backup', () => {
 
     test('a tag being deleted is left out, and its assignments read as its merge target', async () => {
         jest.spyOn(console, 'warn').mockImplementation(() => {});
-        await metadataDb.fillTagNameKeysIfNeeded(directories);
         for (const id of ['x', 'y', 'd']) {
             expect((await metadataDb.createTagDefinition(directories, { id, name: id })).refused).toEqual([]);
         }

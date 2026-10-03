@@ -1696,10 +1696,6 @@ async function createTagOnServer(tag, { freeName = false } = {}) {
             cache: 'no-cache',
         });
 
-        if (response.status === 503 && (await response.clone().json().catch(() => null))?.reason === 'tag-names-not-indexed') {
-            toastr.warning(t`Tag names are still being indexed after an update. No tag was created. Try again in a moment.`, t`Creating Tag`);
-            return 'refused';
-        }
         if (!response.ok) {
             throw new Error(`Failed to create tag: ${response.statusText}`);
         }
@@ -1827,10 +1823,6 @@ async function editTagOnServer(id, patch, tag, applyStored) {
 /** At most this many distinct ids per /api/tags/for and /api/tags/by-ids request; more is a 400. */
 const TAG_READ_MAX_IDS = 500;
 
-/** Whether the last /api/tags/query answer was that the server can't page tags yet, after an update. */
-/** @type {'tag-query-not-ready' | null} Why the last tag query was refused as not ready. */
-let tagQueryNotReady = null;
-
 /**
  * One read of /api/tags/query.
  * @param {object} body
@@ -1847,7 +1839,6 @@ async function postTagQuery(body) {
             cache: 'no-cache',
         });
         const reason = response.ok ? null : (await response.clone().json().catch(() => null))?.reason;
-        tagQueryNotReady = response.status === 503 && reason === 'tag-query-not-ready' ? reason : null;
         if (response.status === 400 && reason === 'invalid-cursor') return 'invalid-cursor';
         if (!response.ok) throw new Error(response.statusText);
         const answer = await response.json();
@@ -4685,9 +4676,7 @@ function printBigTagFilterList(type, FILTER_SELECTOR, tagsToDisplay, inactiveTag
         appendTagToList($container, pill, { skipExistsCheck: true });
     } else if (tail === 'failed') {
         /** @type {Tag} */
-        const name = tagQueryNotReady === 'tag-query-not-ready' ? t`Tags are still being indexed after an update. Try again`
-            : t`Tags could not be loaded. Try again`;
-        const pill = { id: `placeholder_${uuidv4()}`, name, color: 'transparent', class: 'placeholder-expander', action: onUsedTagBarRetryClick };
+        const pill = { id: `placeholder_${uuidv4()}`, name: t`Tags could not be loaded. Try again`, color: 'transparent', class: 'placeholder-expander', action: onUsedTagBarRetryClick };
         appendTagToList($container, pill, { skipExistsCheck: true });
     }
     tagFilterRenderCache.set(type, drawn);
@@ -5294,10 +5283,6 @@ async function onTagRestoreFileSelect(e) {
             body: JSON.stringify({ tags: data.tags, tagMap: data.tag_map, overwrite }),
             cache: 'no-cache',
         });
-        if (response.status === 503 && (await response.clone().json().catch(() => null))?.reason === 'tag-names-not-indexed') {
-            toastr.warning('Tag names are still being indexed after an update. Nothing was restored. Try again in a moment.', 'Tag Restore');
-            return;
-        }
         if (!response.ok) {
             throw new Error(`Failed to restore the tag backup: ${response.statusText}`);
         }
@@ -6051,8 +6036,7 @@ function setViewTagStatus(state, kind) {
             status.text(t`Loading tags...`);
             break;
         case 'failed':
-            status.append($('<span></span>').text(tagQueryNotReady === 'tag-query-not-ready' ? t`Tags are still being indexed after an update.`
-                : t`The tags could not be loaded.`), button(t`Try again`, viewTagListRows(state).length ? 'after' : 'reload'));
+            status.append($('<span></span>').text(t`The tags could not be loaded.`), button(t`Try again`, viewTagListRows(state).length ? 'after' : 'reload'));
             break;
         case 'paused':
             status.append($('<span></span>').text(t`No tag found yet among the ones looked at so far.`), button(t`Keep looking`, 'after'));

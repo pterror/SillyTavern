@@ -26,7 +26,9 @@ import { probeConfiguredServer } from './cleanup-zztest-leftovers.js';
  * 3. verifies: every copied table has the rows the old one has, and every card assembles to the canonical hash of
  *    cardWithStoredFav(card_json, fav) with its other row values unchanged. Any difference stops it, lists what
  *    differed, and deletes the new file;
- * 4. swaps the files: the old one becomes `character-metadata.pre-fields.sqlite`, kept for the user to delete once
+ * 4. applies the tag moves queued with no reorder pass recorded (applyPassLessTagMoves()), which the server no
+ *    longer applies, and checks none is left;
+ * 5. swaps the files: the old one becomes `character-metadata.pre-fields.sqlite`, kept for the user to delete once
  *    the server has started cleanly on the new one.
  *
  * The new file is written with the journal off; a run that stops partway leaves a file the next run deletes and
@@ -48,8 +50,9 @@ export const CONVERSION_VERIFIED_META_KEY = 'fields_conversion_verified';
  */
 
 /**
- * @typedef {{ ok: true, cards: number, tables: Record<string, number>, leftOut: string[] }
- *   | { ok: false, reason: string, ids?: string[] }} ConversionResult
+ * @typedef {{ ok: true, cards: number, tables: Record<string, number>, leftOut: string[], tagMovesApplied: number, warnings: string[] }
+ *   | { ok: false, reason: string, ids?: string[] }} ConversionResult tagMovesApplied: queued tag moves applied
+ *   (applyPassLessTagMoves()); warnings: what applying them refused or changed besides the moves.
  */
 
 /**
@@ -329,15 +332,54 @@ export async function buildFieldsStore({
         }
         tables.characters = total;
 
-        next.run('INSERT INTO meta (key, value) VALUES (@key, @value)', { key: CONVERSION_VERIFIED_META_KEY, value: String(Date.now()) });
+        // A refused tag move rolls back to a savepoint, which needs a journal.
         next.exec('PRAGMA journal_mode = WAL');
+        const tagMoves = await applyPassLessTagMoves(next, clock, stopped);
+        if (tagMoves === null) return { ok: false, reason: 'stopped' };
+        if (tagMoves.left > 0) {
+            return { ok: false, reason: `${tagMoves.left} queued tag move(s) were still queued with no reorder pass to apply them after applying the queue.` };
+        }
+
+        next.run('INSERT INTO meta (key, value) VALUES (@key, @value)', { key: CONVERSION_VERIFIED_META_KEY, value: String(Date.now()) });
         keep = true;
-        return { ok: true, cards: total, tables, leftOut };
+        return { ok: true, cards: total, tables, leftOut, tagMovesApplied: tagMoves.applied, warnings: tagMoves.warnings };
     } finally {
         old.close();
         next.close();
         if (!keep) removeDatabaseFiles(nextPath);
     }
+}
+
+/**
+ * Applies the tag_pending_moves entries queued while no reorder pass is recorded, as the server once did at boot:
+ * in arrival order, one entry per transaction, each as applyFirstPendingTagMoveSync() applies it. The server queues
+ * moves only while a pass is recorded, and that pass applies them, so these are applied here. Entries queued under a
+ * recorded pass are left for it.
+ * @param {import('../endpoints/sqlite-engine.js').SqliteEngineHandle} next
+ * @param {ReturnType<typeof batchClock>} clock
+ * @param {() => boolean} stopped
+ * @returns {Promise<{ applied: number, warnings: string[], left: number } | null>} null when stopped. left: entries
+ *   still queued with no pass recorded.
+ */
+async function applyPassLessTagMoves(next, clock, stopped) {
+    const store = await import('../character-metadata-db.js');
+    const result = { applied: 0, warnings: /** @type {string[]} */ ([]), left: 0 };
+    if (store.tagReorderPassSync(next) !== null) return result;
+    for (;;) {
+        if (stopped()) return null;
+        /** @type {import('../character-metadata-db.js').PendingTagMoveOutcome | null} */
+        let outcome = null;
+        next.transaction(() => {
+            outcome = store.applyFirstPendingTagMoveSync(next);
+        });
+        if (outcome === null) break;
+        const { logs, failures } = /** @type {import('../character-metadata-db.js').PendingTagMoveOutcome} */ (outcome);
+        result.applied++;
+        result.warnings.push(...store.tagTailNumberingWarnings(logs), ...failures.map(store.tagMoveFailedText));
+        if (clock.overBudget()) await clock.pause();
+    }
+    result.left = Number(/** @type {{ n: number }} */ (next.get('SELECT COUNT(*) AS n FROM tag_pending_moves')).n);
+    return result;
 }
 
 /**
@@ -665,6 +707,8 @@ export async function runConversion(options) {
     const newBytes = sizeOf(nextPathOf(livePath));
     swapFieldsStoreIn(livePath);
     log(`${LOG_PREFIX} done in ${((Date.now() - started) / 1000).toFixed(1)} s: ${result.cards.toLocaleString('en-US')} cards, every one checked.`);
+    log(`${LOG_PREFIX} queued tag moves applied: ${result.tagMovesApplied}.`);
+    for (const line of result.warnings) warn(`${LOG_PREFIX} WARNING: ${line}`);
     if (result.leftOut.length > 0) warn(`${LOG_PREFIX} WARNING: left out, the current schema has no place for them:\n${result.leftOut.map(line => `  ${line}`).join('\n')}`);
     log(`${LOG_PREFIX} rows copied per table: ${Object.entries(result.tables).map(([name, n]) => `${name} ${n.toLocaleString('en-US')}`).join(', ')}`);
     log(`${LOG_PREFIX} sizes: old ${(oldBytes / 1e6).toFixed(1)} MB, new ${(newBytes / 1e6).toFixed(1)} MB.`);

@@ -64,7 +64,6 @@ beforeEach(async () => {
     for (const dir of [directories.characters, directories.chats, directories.groups, directories.groupChats]) {
         fs.mkdirSync(dir, { recursive: true });
     }
-    await metadataDb.fillTagNameKeysIfNeeded(directories);
     groupChangeEvents = 0;
     metadataDb.characterChangeEmitter.on(metadataDb.GROUP_CHANGES_EVENT, onGroupChange);
 });

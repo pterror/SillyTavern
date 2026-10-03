@@ -105,17 +105,9 @@ function insertTag(id, tagOrData, usage = 0) {
         .run(id, data, name, sortOrder, folderType, isFolder, usage);
 }
 
-/**
- * Opens the store with its tag query columns ready, on an empty table.
- * @param {{ filled?: boolean }} [options] filled: false leaves the sort_order fill unfinished.
- */
-async function openStore({ filled = true } = {}) {
+/** Opens the store, on an empty table. */
+async function openStore() {
     await metadataDb.ensureSchemaMigrated(directories);
-    await metadataDb.fillTagNameKeysIfNeeded(directories);
-    await metadataDb.fillTagDerivedColumnsIfNeeded(directories);
-    await metadataDb.migrateTagsJsonIfNeeded(directories);
-    expect(await metadataDb.areTagQueryColumnsReady(directories)).toBe(true);
-    if (filled) await metadataDb.fillTagSortOrdersIfNeeded(directories);
 }
 
 /** @param {string} key @returns {string | undefined} */
@@ -164,18 +156,6 @@ describe('runTagReorderPassIfNeeded', () => {
         expect(await metadataDb.runTagReorderPassIfNeeded(directories)).toEqual({ batches: 0, rowsChanged: 0 });
         expect(column('a')).toBe(3);
         expect([...live().prepare('SELECT name FROM sqlite_master WHERE name LIKE \'tags_reorder_pass%\'').pluck().iterate()]).toEqual([]);
-    });
-
-    test('waits for the sort_order fill to finish, writing nothing', async () => {
-        await openStore({ filled: false });
-        insertTag('b', { sort_order: 3 });
-        insertTag('a', { sort_order: 4 });
-        queueMove('a', 'before', 'b');
-        record(1, 'alphabetical');
-        expect(await metadataDb.runTagReorderPassIfNeeded(directories)).toEqual({ batches: 0, rowsChanged: 0 });
-        expect([column('a'), column('b'), stamp('a')]).toEqual([4, 3, null]);
-        expect(pass()).toEqual({ id: 1, mode: 'alphabetical', at: null });
-        expect(pendingCount()).toBe(1);
     });
 
     test('alphabetical: numbers every tag 0, 1, 2, ... in (name_key, rowid) order, stamps it, then applies the queue and clears the pass', async () => {
@@ -410,10 +390,9 @@ describe('runTagReorderPassIfNeeded', () => {
         expect(plans.filter(plan => /\bSCAN tags\b(?! USING)/.test(plan) || /TEMP B-TREE/.test(plan))).toEqual([]);
     });
 
-    test('runs after the sort_order fill and before fillEntityCountsIfNeeded', async () => {
+    test('runs before fillEntityCountsIfNeeded', async () => {
         const { MIGRATION_PASSES } = await import('../src/metadata-migration-coordinator.js');
-        const at = MIGRATION_PASSES.indexOf('runTagReorderPassIfNeeded');
-        expect(at).toBeGreaterThan(MIGRATION_PASSES.indexOf('fillTagSortOrdersIfNeeded'));
+        expect(MIGRATION_PASSES).toContain('runTagReorderPassIfNeeded');
         expect(MIGRATION_PASSES[MIGRATION_PASSES.length - 1]).toBe('fillEntityCountsIfNeeded');
     });
 });

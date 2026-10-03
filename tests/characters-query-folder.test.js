@@ -90,8 +90,6 @@ async function seed() {
         }
         for (const tagId of tags) await metadataDb.assignEntityTag(directories, id, tagId);
     }
-    await metadataDb.fillTagNameKeysIfNeeded(directories);
-    await metadataDb.fillTagDerivedColumnsIfNeeded(directories);
 }
 
 /** @param {object} filter @param {object} [sort] */
@@ -120,7 +118,6 @@ describe('/query filter.folder', () => {
 
     test('every sort pages "none" without gaps or repeats', async () => {
         await seed();
-        await metadataDb.buildEntitySortIndexesIfNeeded(directories);
         for (const field of ['name', 'date_added', 'chat_size', 'fav']) {
             for (const order of ['asc', 'desc']) {
                 const seen = [];

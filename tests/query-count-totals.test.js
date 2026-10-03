@@ -651,7 +651,6 @@ describe('/query searches walked under the work cap', () => {
 
     test('a sorted walk whose SQL windows stop at their own work cap still reads every window to the end', async () => {
         await seedWalked();
-        await metadataDb.buildEntitySortIndexesIfNeeded(directories);
         // More marks merging into t1 than the index takes: the tags are left to SQL, so this search is walked.
         const request = { filter: { search: 'zephyr', tags: { include: ['t1'] }, includeGroups: true }, sort: { field: 'date_added', order: 'desc' }, page: 1, pageSize: 20, want: ['rows'] };
         const whole = (await (await postJson(request)).json()).rows.map(row => row.item?.avatar ?? row.item?.id ?? row.avatar);

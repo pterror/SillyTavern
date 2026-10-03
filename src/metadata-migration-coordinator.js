@@ -10,19 +10,9 @@ const DISPOSE_TIMEOUT_MS = 10000;
 
 /** The one-time passes metadata-migration-worker.js runs, in the order they must run. */
 export const MIGRATION_PASSES = /** @type {const} */ ([
-    // First: until it has run, card tag names that only a table lookup could resolve are held, not assigned.
-    'fillTagNameKeysIfNeeded',
-    'fillTagDerivedColumnsIfNeeded',
-    'recoverNumericIdGroupsIfNeeded',
-    'normalizeGroupFavIfNeeded',
-    'migrateTagsJsonIfNeeded',
     'migrateSettingsTagsIfNeeded',
-    'removeOrphanTagRowsIfNeeded',
-    'refreshGroupDigestTagIdsIfNeeded',
     'finishDeletedTags',
-    // After every pass that writes tags rows, migrateTagsJsonIfNeeded's tags without a sort_order included.
-    'fillTagSortOrdersIfNeeded',
-    // After the sort_order fill, which it waits for; tags/reorder also asks for it on its own.
+    // tags/reorder also asks for it on its own.
     'runTagReorderPassIfNeeded',
     // Writes only the message tree.
     'dropTreeOwnerCreatedAtIndex',
@@ -30,8 +20,6 @@ export const MIGRATION_PASSES = /** @type {const} */ ([
     'fillTreeOwnerKinds',
     // Counts each owner's message stats from its rows once; writes only the message tree.
     'fillMessageStatsIfNeeded',
-    // Builds /query's sort indexes; until they exist, /query reads each table in one statement.
-    'buildEntitySortIndexesIfNeeded',
     // Copies tag rows older than the tag sort tables' triggers; until it finishes, /query's tag filters read today's way.
     'fillTagSortTablesIfNeeded',
     // Numbers every entity older than the rank triggers; until it finishes, the random sort reads today's way.
