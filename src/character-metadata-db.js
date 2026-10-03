@@ -27,7 +27,7 @@ import { normalizeGroupRecord, tagEntityTypeOf } from './group-id.js';
 import { expandTagFilter, resolveTagId, resolveTagIds, NO_TAG_DELETIONS } from './tag-deletions.js';
 import { SEARCH_WORK_CAP, SEARCH_WALK_WINDOW } from './endpoints/search-walk.js';
 import { orderKey, permute, unpermute } from './random-order.js';
-import { characterAvatarsForOwnerId, characterOwnerIdOf, dropOwnerCreatedAtIndex, fillMessageStats, openOwnerStatsView } from './message-tree-db.js';
+import { characterAvatarsForOwnerId, characterOwnerIdOf, fillMessageStats, openOwnerStatsView } from './message-tree-db.js';
 // getStringHash must match public/scripts/random-sort.js's compareByRandomSeed() exactly, or server/client random-sort ordering diverges.
 import { getStringHash, groupDigestFavHash, groupDigestTagIdsHash, groupDigestContentHash, normalizeFav, normalizeTagIds, tagNameKey } from '../public/scripts/hash-utils.js';
 
@@ -5836,14 +5836,6 @@ function existingRowIds(db, table, ids) {
         for (const row of /** @type {Iterable<{ id: string }>} */ (rows)) found.push(row.id);
     }
     return found;
-}
-
-/**
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<CharacterPassResult>} `batches` is 1 when the index was dropped.
- */
-export async function dropTreeOwnerCreatedAtIndex(directories) {
-    return { batches: await dropOwnerCreatedAtIndex(directories) ? 1 : 0, rowsChanged: 0 };
 }
 
 /** Owners recounted per message stats fill batch. */

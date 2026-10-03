@@ -11,7 +11,6 @@ import {
     getDbHandle, insertMessageSync, newId, ensureAnchorSync, setDefaultChildSync, alternativesFromMessage, identityHashOf,
     setNodeMetadataSync, labelNodeSync, reparentNodeSync,
 } from '../message-tree-db.js';
-import { openNativeTreeDatabase } from '../message-stats.js';
 import { probeConfiguredServer } from './cleanup-zztest-leftovers.js';
 
 /**
@@ -701,7 +700,7 @@ export async function runRestore(options) {
     /** @type {RestoreResult} */
     let result;
     if (!apply) {
-        const db = openNativeTreeDatabase(Database, treePath, { readonly: true, fileMustExist: true });
+        const db = new Database(treePath, { readonly: true, fileMustExist: true });
         const reader = {
             get: (/** @type {string} */ sql, /** @type {object} */ p) => db.prepare(sql).get(p ?? {}),
             iterate: (/** @type {string} */ sql, /** @type {object} */ p) => db.prepare(sql).iterate(p ?? {}),

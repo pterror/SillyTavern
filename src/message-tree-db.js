@@ -6,8 +6,8 @@ import { color } from './util.js';
 import { getSqliteEngine } from './endpoints/sqlite-engine.js';
 import { writeRowIfChanged } from './row-values.js';
 import {
-    countMessageWriteSync, defineMessageStatsFunctions, deleteMessagesCountedSync, fillMessageStatsBatchSync,
-    messageStatsFilledSync, migrateMessageStatsSync, readMessageStatsSync, restartMessageStatsFillSync,
+    countMessageWriteSync, deleteMessagesCountedSync, fillMessageStatsBatchSync,
+    messageStatsFilledSync, createMessageStatsTableSync, readMessageStatsSync, restartMessageStatsFillSync,
 } from './message-stats.js';
 
 /**
@@ -90,6 +90,7 @@ const SCHEMA_SQL = `
     CREATE INDEX IF NOT EXISTS idx_messages_owner       ON messages(owner_id);
     CREATE INDEX IF NOT EXISTS idx_messages_owner_label ON messages(owner_id, label) WHERE label IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_messages_anchor      ON messages(owner_id) WHERE parent_id IS NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_identity ON messages(identity_hash) WHERE parent_id IS NOT NULL;
 
     CREATE TABLE IF NOT EXISTS meta (
         key   TEXT PRIMARY KEY,
@@ -97,8 +98,8 @@ const SCHEMA_SQL = `
     );
 
     -- What kind of entity owns an owner id's messages, and that entity's row id in the metadata store. Written when
-    -- the owner's anchor is created by a caller that knows the kind, or by the backfill (tree-owner-kinds.js); never
-    -- inferred from the id alone. An owner with no row here is unknown, and its writes change no entity stats.
+    -- the owner's anchor is created by a caller that knows the kind, or by the chat stats reconcile from the rows that
+    -- exist (character-metadata-db.js ownerKindFromRowsSync()); never inferred from the id alone. An owner with no row here is unknown, and its writes change no entity stats.
     CREATE TABLE IF NOT EXISTS owners (
         owner_id TEXT PRIMARY KEY,
         kind     TEXT NOT NULL CHECK (kind IN ('character', 'group')),
@@ -316,18 +317,6 @@ function readOwnerLastCreatedAtSync(db, ownerId) {
     return Number(row?.t ?? 0);
 }
 
-/**
- * Nothing reads `idx_messages_owner_created_at`; it only slows every message write.
- * @param {Directories} directories
- * @returns {Promise<boolean>} Whether this call dropped it.
- */
-export async function dropOwnerCreatedAtIndex(directories) {
-    const entry = await getEntry(directories);
-    if (!entry) return false;
-    if (!entry.db.get('SELECT 1 AS ok FROM sqlite_master WHERE type = \'index\' AND name = \'idx_messages_owner_created_at\'')) return false;
-    entry.db.exec('DROP INDEX IF EXISTS idx_messages_owner_created_at');
-    return true;
-}
 
 /**
  * A synchronous view of one store's owners, for a reconcile that has to read an owner's messages and write the
@@ -475,11 +464,8 @@ async function getEntry(directories) {
         fs.mkdirSync(directories.root, { recursive: true });
     }
     const db = engine.openDatabase(getDbPath(directories));
-    defineMessageStatsFunctions(db);
     db.exec(SCHEMA_SQL);
-    migrateTokenIdsChunks(db);
-    migrateIdentityHashSync(db);
-    migrateMessageStatsSync(db);
+    createMessageStatsTableSync(db);
     const entry = { db };
     entries.set(key, entry);
     return entry;
@@ -541,65 +527,6 @@ export async function listCharacterStatOwners(directories, limit) {
         `SELECT s.owner_id, o.row_id FROM owner_message_stats s JOIN owners o ON o.owner_id = s.owner_id
          WHERE s.owner_id <> '' AND o.kind = 'character' ORDER BY s.owner_id LIMIT @limit`, { limit })),
     row => ({ avatar: row.row_id, ownerId: row.owner_id }));
-}
-
-/**
- * Adds token_ids' chunks column to a store created before it existed. Its rows keep chunks NULL, as rows stored without them.
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- */
-function migrateTokenIdsChunks(db) {
-    const columns = new Set(Array.from(/** @type {Iterable<{ name: string }>} */ (db.iterate('PRAGMA table_info(token_ids)')), c => c.name));
-    if (!columns.has('chunks')) {
-        db.exec('ALTER TABLE token_ids ADD COLUMN chunks TEXT');
-    }
-}
-
-/**
- * Backfills identity_hash and adds its unique index. Kept out of SCHEMA_SQL since the index can't be
- * created before the column exists. If duplicates block the index, the store still opens (unconstrained
- * beats unreadable) and logs how many groups collide.
- */
-/** @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db */
-function migrateIdentityHashSync(db) {
-    const columns = new Set(Array.from(/** @type {Iterable<{ name: string }>} */ (db.iterate('PRAGMA table_info(messages)')), c => c.name));
-    if (!columns.has('identity_hash')) {
-        db.exec('ALTER TABLE messages ADD COLUMN identity_hash TEXT');
-    }
-
-    const readPendingChunk = (/** @type {string} */ afterId) => (/** @type {Pick<MessageRow, 'id' | 'parent_id' | 'content'>[]} */ (db.readBounded(
-        'SELECT id, parent_id, content FROM messages WHERE parent_id IS NOT NULL AND identity_hash IS NULL AND id > ? ORDER BY id LIMIT ?',
-        [afterId, KEYSET_CHUNK],
-        KEYSET_CHUNK,
-    )));
-
-    const firstChunk = readPendingChunk('');
-    let lastId = '';
-    if (firstChunk.length) {
-        db.transaction(() => {
-            // transaction() reruns this callback on busy; a rerun starts over from the first chunk.
-            lastId = '';
-            let chunk = firstChunk;
-            for (;;) {
-                for (const row of chunk) {
-                    // Filtered by `parent_id IS NOT NULL` in the SELECT above.
-                    writeRowIfChanged(db, 'messages', { id: row.id }, { identity_hash: identityHashOf(/** @type {string} */ (row.parent_id), row.content) });
-                }
-
-                if (chunk.length < KEYSET_CHUNK) break;
-                lastId = chunk[chunk.length - 1].id;
-                chunk = readPendingChunk(lastId);
-                if (chunk.length === 0) break;
-            }
-        });
-    }
-
-    try {
-        db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_identity ON messages(identity_hash) WHERE parent_id IS NOT NULL');
-    } catch (error) {
-        const clashing = /** @type {{ c: number } | undefined} */ (db.get(
-            'SELECT COUNT(*) AS c FROM (SELECT identity_hash FROM messages WHERE identity_hash IS NOT NULL AND parent_id IS NOT NULL GROUP BY identity_hash HAVING COUNT(*) > 1)'));
-        console.error(`[message-tree] Identity constraint not applied: ${clashing?.c ?? '?'} groups of rows are duplicates of each other. They must be merged before the database can hold this rule.`, error);
-    }
 }
 
 // ---------------------------------------------------------------------------
