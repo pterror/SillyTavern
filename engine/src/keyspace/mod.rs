@@ -1,6 +1,7 @@
 //! P2, the derived keyspace (design `.plans/2026-10-03-storage-from-needs.md` 4.2–4.4): one shared in-memory
-//! buffer of entries sorted by key, flushed as one immutable run per `buffer_bytes` of entries or `log_bytes` of
-//! log, runs merged in tiers of `fan_in` on the keyspace's own threads, reads merging the buffer and every run.
+//! buffer of entries sorted by key, flushed as one immutable run when the process's stores together buffer B
+//! (`Pool`; the largest buffer goes first) or this keyspace's log has passed `log_bytes` since its last flush;
+//! runs merged in tiers of `fan_in` on the keyspace's own threads; reads merging the buffer and every run.
 //!
 //! Runs live in `<dir>/run-<first flush>-<last flush>.run` (16 hex digits each). A run is written as `.tmp`,
 //! synced, renamed and its directory synced, so a `.run` is always whole. A merge's output holds every flush its
@@ -9,6 +10,7 @@
 
 pub mod block;
 pub mod cache;
+pub mod pool;
 pub mod run;
 pub mod val;
 
@@ -17,11 +19,12 @@ use std::fs;
 use std::io;
 use std::ops::Bound;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, RwLock};
 use std::thread::JoinHandle;
 
 use cache::Cache;
+use pool::Pool;
 use run::{
     Merge, ReadCounts, Run, RunIter, RunWriter, Source, VecSource, parse_run_name, run_name,
 };
@@ -61,15 +64,11 @@ pub type Entries = Vec<(Vec<u8>, Vec<u8>)>;
 
 #[derive(Debug, Clone, Copy)]
 pub struct KsConfig {
-    /// B: the buffer is flushed once its entries take this many bytes of memory.
-    pub buffer_bytes: usize,
     /// L: the buffer is flushed once this many bytes of log have been written since the last flush, so replay
     /// after a crash reads less than this.
     pub log_bytes: u64,
     /// δ: runs of one tier are merged this many at a time.
     pub fan_in: usize,
-    /// C: the block cache's size.
-    pub cache_bytes: usize,
     /// A run block's target size.
     pub block_size: usize,
     pub merge_threads: usize,
@@ -93,7 +92,9 @@ pub struct Mem {
 }
 
 impl Mem {
-    fn insert(&mut self, key: Vec<u8>, val: Val) {
+    /// Returns how many bytes the buffer grew by.
+    fn insert(&mut self, key: Vec<u8>, val: Val) -> i64 {
+        let before = self.bytes;
         match self.map.get_mut(&key) {
             Some(old) => {
                 let older = std::mem::replace(old, Val::Del);
@@ -105,6 +106,7 @@ impl Mem {
                 self.map.insert(key, val);
             }
         }
+        self.bytes as i64 - before as i64
     }
 
     pub fn get(&self, key: &[u8]) -> Option<&Val> {
@@ -199,6 +201,8 @@ struct Counters {
 
 struct WriteState {
     log_bytes: u64,
+    /// The log end the last insert that carried one brought the buffer to.
+    end: u64,
 }
 
 struct Jobs {
@@ -222,7 +226,9 @@ pub struct Keyspace {
     flushed_cv: Condvar,
     jobs: Mutex<Jobs>,
     jobs_cv: Condvar,
-    pub cache: Cache,
+    pool: Arc<Pool>,
+    /// The pool wants this keyspace's buffer frozen; its flush thread does it.
+    freeze_requested: AtomicBool,
     pub counts: ReadCounts,
     counters: Counters,
     hooks: OnceLock<Box<dyn Hooks>>,
@@ -241,7 +247,7 @@ fn sync_dir(dir: &Path) -> io::Result<()> {
 
 impl Keyspace {
     /// Opens the runs in `dir` (created if missing): only each run's footer and top block are read.
-    pub fn open(dir: &Path, cfg: KsConfig) -> KsResult<Arc<Keyspace>> {
+    pub fn open(dir: &Path, cfg: KsConfig, pool: Arc<Pool>) -> KsResult<Arc<Keyspace>> {
         if !dir.exists() {
             fs::create_dir_all(dir)?;
             if let Some(parent) = dir.parent() {
@@ -290,14 +296,16 @@ impl Keyspace {
                 });
             }
         }
-        Ok(Arc::new(Keyspace {
+        let end = runs.first().map_or(0, |r| r.covered);
+        let unit = (pool.buffer_bytes as u64 / 12).max(1);
+        let ks = Arc::new(Keyspace {
             cfg,
             dir: dir.to_path_buf(),
             version: Mutex::new(Arc::new(Version {
                 mems: vec![Arc::new(RwLock::new(Mem::default()))],
                 runs,
             })),
-            write: Mutex::new(WriteState { log_bytes: 0 }),
+            write: Mutex::new(WriteState { log_bytes: 0, end }),
             flushed_cv: Condvar::new(),
             jobs: Mutex::new(Jobs {
                 busy: HashSet::new(),
@@ -308,14 +316,55 @@ impl Keyspace {
                 flush_failures: 0,
             }),
             jobs_cv: Condvar::new(),
-            cache: Cache::new(cfg.cache_bytes),
+            pool: pool.clone(),
+            freeze_requested: AtomicBool::new(false),
             counts: ReadCounts::default(),
             counters: Counters::default(),
             hooks: OnceLock::new(),
             threads: Mutex::new(Vec::new()),
             // Until a full buffer has been flushed: entries take about 12 times their run bytes in memory.
-            flush_unit: AtomicU64::new((cfg.buffer_bytes as u64 / 12).max(1)),
-        }))
+            flush_unit: AtomicU64::new(unit),
+        });
+        pool.register(&ks);
+        Ok(ks)
+    }
+
+    /// Hands a flushed buffer's memory back to the system. glibc keeps freed memory in the arena of the thread
+    /// that allocated it, and each store's buffer is allocated by its own sync thread, so without this every
+    /// store would hold on to its buffer's peak.
+    fn drop_frozen_memory(&self) {
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        {
+            unsafe extern "C" {
+                fn malloc_trim(pad: usize) -> i32;
+            }
+            // SAFETY: malloc_trim takes no pointers and is safe to call from any thread.
+            unsafe {
+                malloc_trim(0);
+            }
+        }
+    }
+
+    pub fn cache(&self) -> &Cache {
+        &self.pool.cache
+    }
+
+    pub fn pool(&self) -> &Pool {
+        &self.pool
+    }
+
+    pub(crate) fn freeze_requested(&self) -> bool {
+        self.freeze_requested.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn active_bytes(&self) -> usize {
+        self.version().mems[0].read().unwrap().bytes
+    }
+
+    pub(crate) fn request_freeze(&self) {
+        self.freeze_requested.store(true, Ordering::Relaxed);
+        drop(self.jobs.lock().unwrap());
+        self.jobs_cv.notify_all();
     }
 
     pub fn config(&self) -> &KsConfig {
@@ -375,7 +424,7 @@ impl Keyspace {
             }
         }
         for r in &v.runs {
-            if let Some(val) = r.get(key, &self.cache, &self.counts)? {
+            if let Some(val) = r.get(key, &self.pool.cache, &self.counts)? {
                 let done = !matches!(val, Val::Add(_));
                 out.push(val);
                 if done {
@@ -406,7 +455,7 @@ impl Keyspace {
                 sources.push(Box::new(RunIter::new(
                     r.clone(),
                     start,
-                    Some(&self.cache),
+                    Some(&self.pool.cache),
                     Some(&self.counts),
                 )?));
             }
@@ -430,9 +479,9 @@ impl Keyspace {
     // ---- writes ----
 
     /// Inserts entries into the buffer. `log` is the log end these entries bring the buffer up to and the
-    /// bytes of log since the previous insert that carried one; when the buffer reaches B or the log L since
-    /// the last flush, the buffer is frozen there and flushed. Waits while `max_frozen` buffers wait for
-    /// their flush.
+    /// bytes of log since the previous insert that carried one; when the log has passed L since the last
+    /// flush, the buffer is frozen there and flushed. Waits while `max_frozen` buffers wait for their flush,
+    /// and while the pool's buffers hold 2B (see `Pool::after_insert`).
     pub fn insert<I: IntoIterator<Item = (Vec<u8>, Val)>>(
         &self,
         entries: I,
@@ -442,20 +491,23 @@ impl Keyspace {
         {
             let v = self.version();
             let mut m = v.mems[0].write().unwrap();
-            let mut n = 0;
+            let (mut n, mut grew) = (0, 0);
             for (k, val) in entries {
-                m.insert(k, val);
+                grew += m.insert(k, val);
                 n += 1;
             }
+            self.pool.add_active(grew);
             self.counters.inserted.fetch_add(n, Ordering::Relaxed);
         }
         if let Some((end, bytes)) = log {
+            w.end = end;
             w.log_bytes += bytes;
-            let full = self.version().mems[0].read().unwrap().bytes >= self.cfg.buffer_bytes;
-            if full || w.log_bytes >= self.cfg.log_bytes {
-                drop(self.freeze(w, end, full));
+            if w.log_bytes >= self.cfg.log_bytes {
+                w = self.freeze(w, end, false);
             }
         }
+        drop(w);
+        self.pool.after_insert();
     }
 
     /// Freezes the buffer as covering the log up to `end`, if it holds anything or `end` is past what the
@@ -484,7 +536,9 @@ impl Keyspace {
         {
             let mut m = mems[0].write().unwrap();
             (m.covered, m.full) = (end, full);
+            self.pool.froze(m.bytes as i64);
         }
+        self.freeze_requested.store(false, Ordering::Relaxed);
         mems.insert(0, Arc::new(RwLock::new(Mem::default())));
         *version = Arc::new(Version {
             mems,
@@ -526,10 +580,30 @@ impl Keyspace {
                     if jobs.stop {
                         return;
                     }
+                    if self.freeze_requested() {
+                        drop(jobs);
+                        let w = self.write.lock().unwrap();
+                        if v.mems[0].read().unwrap().bytes > 0 {
+                            let end = w.end;
+                            drop(self.freeze(w, end, true));
+                        } else {
+                            self.freeze_requested.store(false, Ordering::Relaxed);
+                        }
+                        jobs = self.jobs.lock().unwrap();
+                        continue;
+                    }
                     jobs = self.jobs_cv.wait(jobs).unwrap();
                 }
             };
+            let slot = self.pool.flush_slot();
+            let bytes = mem.read().unwrap().bytes as i64;
             let result = self.flush(&mem);
+            drop(slot);
+            if result.is_ok() {
+                drop(mem);
+                self.drop_frozen_memory();
+                self.pool.released(bytes, 0);
+            }
             self.jobs.lock().unwrap().flushing = false;
             match result {
                 Ok(()) => {
@@ -684,7 +758,9 @@ impl Keyspace {
                     jobs = self.jobs_cv.wait(jobs).unwrap();
                 }
             };
+            let slot = self.pool.merge_slot();
             let result = self.merge(&inputs);
+            drop(slot);
             {
                 let mut jobs = self.jobs.lock().unwrap();
                 for r in &inputs {
@@ -802,7 +878,7 @@ impl Keyspace {
             blocks: self.counts.blocks.load(Ordering::Relaxed),
             file_reads: self.counts.file_reads.load(Ordering::Relaxed),
             buffer_bytes: v.mems.iter().map(|m| m.read().unwrap().bytes as u64).sum(),
-            cache_bytes: self.cache.bytes() as u64,
+            cache_bytes: self.pool.cache.bytes() as u64,
             top_bytes: v.runs.iter().map(|r| r.top_size() as u64).sum(),
         }
     }
@@ -811,6 +887,13 @@ impl Keyspace {
 impl Drop for Keyspace {
     fn drop(&mut self) {
         self.stop();
+        let v = self.version();
+        let bytes: Vec<i64> = v
+            .mems
+            .iter()
+            .map(|m| m.read().unwrap().bytes as i64)
+            .collect();
+        self.pool.released(bytes[1..].iter().sum(), bytes[0]);
     }
 }
 

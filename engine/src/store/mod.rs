@@ -10,6 +10,9 @@
 //!
 //! Layout: the log's files in the store's directory, the runs in `runs/`.
 //!
+//! Memory: every store opened with `Store::open` shares one `Pool`, so the buffers (B) and the block cache (C) are
+//! bounded for the process, not per store; `open_in` takes a pool of its own.
+//!
 //! Opening never reads more than the runs' footers and top blocks and the log after the newest run's covered
 //! position: it probes the log's files upward from that position's file, since cleaning removes only files
 //! below it. The prepare thread then replays the records after that position into the buffer before taking
@@ -33,6 +36,7 @@ use std::thread::JoinHandle;
 use derive::{Loc, Out, Pending, View, apply, deriver};
 use kinds::{file_of, key};
 
+use crate::keyspace::pool::Pool;
 use crate::keyspace::run::Run;
 use crate::keyspace::val::{Val, counter_value, fold};
 use crate::keyspace::{Hooks, Keyspace, KsConfig, KsError, Mem};
@@ -108,10 +112,8 @@ impl Default for StoreConfig {
         StoreConfig {
             log: log::Config::default(),
             ks: KsConfig {
-                buffer_bytes: BUFFER_BYTES,
                 log_bytes: LOG_BYTES,
                 fan_in: FAN_IN,
-                cache_bytes: CACHE_BYTES,
                 block_size: RUN_BLOCK_SIZE,
                 merge_threads: 2,
                 max_frozen: 1,
@@ -123,17 +125,28 @@ impl Default for StoreConfig {
 }
 
 // Provisional, set from measurements at 10^6–10^8 entries: the plan's stage 3 records them and the reasons.
-/// B.
+/// B, shared by every store in the process (`Pool`).
 pub const BUFFER_BYTES: usize = 64 << 20;
 /// L.
 pub const LOG_BYTES: u64 = 64 << 20;
 /// δ.
 pub const FAN_IN: usize = 4;
-/// C.
+/// C, shared by every store in the process.
 pub const CACHE_BYTES: usize = 64 << 20;
 pub const RUN_BLOCK_SIZE: usize = 16 << 10;
 /// u.
 pub const LIVE_FRACTION: f64 = 0.5;
+
+/// Flushes and merges that may run at once across the process.
+pub const FLUSH_SLOTS: usize = 2;
+pub const MERGE_SLOTS: usize = 2;
+
+/// The pool every store opened by `Store::open` shares.
+pub fn global_pool() -> Arc<Pool> {
+    static POOL: std::sync::OnceLock<Arc<Pool>> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| Pool::new(BUFFER_BYTES, CACHE_BYTES, MERGE_SLOTS, FLUSH_SLOTS))
+        .clone()
+}
 
 pub type CommitDone = Box<dyn FnOnce(StoreResult<Vec<u64>>) + Send>;
 type JobDone = Box<dyn FnOnce(StoreResult<()>) + Send>;
@@ -252,7 +265,12 @@ impl Store {
     /// Opens the store in `dir` (created if missing). Returns before replay; reads wait for it, and commits
     /// are taken after it.
     pub fn open(dir: &Path, cfg: StoreConfig) -> StoreResult<Store> {
-        let ks = Keyspace::open(&dir.join("runs"), cfg.ks)?;
+        Store::open_in(dir, cfg, global_pool())
+    }
+
+    /// Opens the store in `dir` sharing `pool`'s buffer budget, block cache and flush and merge slots.
+    pub fn open_in(dir: &Path, cfg: StoreConfig, pool: Arc<Pool>) -> StoreResult<Store> {
+        let ks = Keyspace::open(&dir.join("runs"), cfg.ks, pool)?;
         let covered = ks.covered();
         let start = if ks.has_runs() {
             Start::From(file_of(covered))
@@ -1073,7 +1091,7 @@ impl Hooks for StoreHooks {
             }
             let mut vals = vec![v.clone()];
             for r in older {
-                if let Some(o) = r.get(k, &ks.cache, &ks.counts)? {
+                if let Some(o) = r.get(k, ks.cache(), &ks.counts)? {
                     let done = !matches!(o, Val::Add(_));
                     vals.push(o);
                     if done {
