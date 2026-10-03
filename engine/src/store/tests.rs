@@ -414,3 +414,31 @@ fn a_log_whose_runs_are_missing_after_cleaning_refuses_to_open() {
     );
     fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn a_commit_that_writes_nothing_resolves_after_the_ones_before_it() {
+    let dir = temp_dir("order");
+    let s = Store::open(&dir, SMALL).unwrap();
+    s.wait_ready().unwrap();
+    let order = Arc::new(Mutex::new(Vec::new()));
+    for i in 0..200u64 {
+        let o = order.clone();
+        let recs = if i % 3 == 0 {
+            Vec::new()
+        } else {
+            vec![fav(i, true)]
+        };
+        s.commit(
+            recs,
+            Box::new(move |r| {
+                r.unwrap();
+                o.lock().unwrap().push(i);
+            }),
+        );
+    }
+    s.commit_wait(vec![fav(1000, true)]).unwrap();
+    let order = order.lock().unwrap().clone();
+    assert_eq!(order, (0..200).collect::<Vec<_>>());
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}
