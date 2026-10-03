@@ -15,6 +15,7 @@ import extract from 'png-chunks-extract';
 import { parse as parseCharacterCard, read as readCharacterCardFromBuffer, readCharaChunkPristineFromChunks, computeAvatarIdentityHashFromChunks } from './character-card-parser.js';
 import { getCharaCardV2, computeContentIdentityHash } from './character-card-normalize.js';
 import { calculateDataSize, toShallow } from './character-shallow.js';
+import { CARD_TABLES_SQL, assembleCardsSync, cardLayoutOf, cardNameText, listRowsFromFieldsSync } from './character-card-reader.js';
 import { readTagsData } from './endpoints/tags-data.js';
 import { getSqliteEngine, isBusyError, openNativeDatabase, streamRows } from './endpoints/sqlite-engine.js';
 import { getBetterSqlite3 } from './endpoints/native-sqlite.js';
@@ -241,6 +242,7 @@ export const allowExpensiveDuplicateFallback = !!getConfigValue('performance.all
  * @property {boolean} [randomRanksFilled] Set once fillRandomRanksIfNeeded() has finished, which stays.
  * @property {boolean} [nameOrderFilled] Set once fillNameOrderIfNeeded() has finished, which stays.
  * @property {boolean} [tagQueryColumnsReady] Set once tagQueryColumnsReady() is true, which stays true.
+ * @property {'blob' | 'fields'} cardLayout How the store holds cards (cardLayoutOf()); the card reader below reads by it.
  * @property {number} [activityQueued] Writes queued into activity_pending since the queue was last written out.
  * @property {boolean} [activityFoldScheduled] Set while a background write-out of the whole queue is scheduled.
  */
@@ -1211,6 +1213,18 @@ function migrateCharacterDigestColumns(db) {
     }
 }
 
+// The columns the fields layout keeps the card's raw create_date and character_version in (character-card-reader.js).
+// Added empty: nothing writes them in the blob layout.
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ */
+function migrateCardFieldColumns(db) {
+    const columns = Array.from(/** @type {Iterable<{ name: string }>} */ (db.iterate('PRAGMA table_info(characters)')), c => c.name);
+    // No declared type: the column holds a string or a number as itself.
+    if (!columns.includes('create_date_raw')) db.exec('ALTER TABLE characters ADD COLUMN create_date_raw');
+    if (!columns.includes('character_version')) db.exec('ALTER TABLE characters ADD COLUMN character_version TEXT');
+}
+
 // NULL means "no preference recorded yet"; existing values migrate from client accountStorage on first load.
 /**
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
@@ -1543,7 +1557,13 @@ async function getEntry(directories) {
     }
     const isNewStore = !fs.existsSync(getDbPath(directories));
     const db = engine.openDatabase(getDbPath(directories));
+    // The migrations below are the blob layout's; run over a store in the fields layout they would put card_json back.
+    if (cardLayoutOf(db) === 'fields') {
+        db.close();
+        throw new Error(`The character store at ${getDbPath(directories)} holds cards as fields, which this version can only open read-only.`);
+    }
     db.exec(SCHEMA_SQL);
+    db.exec(CARD_TABLES_SQL);
     if (isNewStore) setMetaSync(db, TAGS_SEED_PENDING_KEY, String(Date.now()));
     migrateContentHashColumn(db);
     migrateContentIdentityColumns(db);
@@ -1559,6 +1579,7 @@ async function getEntry(directories) {
     migrateCharacterDigestColumns(db);
     migrateAllowGlobalStylesColumn(db);
     migrateCardJsonColumn(db, directories);
+    migrateCardFieldColumns(db);
     migrateGroupsColumns(db, directories);
     migrateGroupDigestColumns(db, directories);
     migrateTagNameKeyColumn(db);
@@ -1575,7 +1596,7 @@ async function getEntry(directories) {
     db.exec(NAME_ORDER_TRIGGERS_SQL);
     dropUnusedIndexes(db);
     /** @type {MetadataDbEntry} */
-    const entry = { db, directories, batch: null, bootstrapPromise: null };
+    const entry = { db, directories, batch: null, bootstrapPromise: null, cardLayout: /** @type {'blob'} */ ('blob') };
     entries.set(key, entry);
     return entry;
 }
@@ -1593,7 +1614,7 @@ async function openReadOnlyEntry(directories) {
     }
     const db = openNativeDatabase(DatabaseCtor, getDbPath(directories), { readonly: true });
     /** @type {MetadataDbEntry} */
-    const entry = { db, directories, batch: null, bootstrapPromise: null };
+    const entry = { db, directories, batch: null, bootstrapPromise: null, cardLayout: cardLayoutOf(db) };
     entries.set(directories.root, entry);
     return entry;
 }
@@ -1692,6 +1713,79 @@ function parseShallowResolvingTags(shallowJson, deletions) {
     const shallow = JSON.parse(shallowJson);
     if (Array.isArray(shallow?.tag_ids)) shallow.tag_ids = resolveTagIds(shallow.tag_ids, deletions);
     return shallow;
+}
+
+// The card reader: every read of a card or of a list row goes through these, which read by the store's layout
+// (entry.cardLayout): the stored copies (card_json, shallow_json) in the blob layout, the card tables in the fields
+// layout (character-card-reader.js). A statement feeding them selects listSourceColumn() / cardSourceColumn().
+
+/**
+ * @param {MetadataDbEntry} entry
+ * @returns {string} The select-list item for a list row's stored copy: NULL in the fields layout, which has none.
+ */
+function listSourceColumn(entry) {
+    return entry.cardLayout === 'fields' ? 'NULL AS shallow_json' : 'shallow_json';
+}
+
+/**
+ * @param {MetadataDbEntry} entry
+ * @returns {string} The select-list item for a card's stored copy: NULL in the fields layout, which has none.
+ */
+function cardSourceColumn(entry) {
+    return entry.cardLayout === 'fields' ? 'NULL AS card_json' : 'card_json';
+}
+
+/**
+ * The list rows (toShallow()'s shape, tag ids resolved) of `rows`, in their order.
+ * @param {MetadataDbEntry} entry
+ * @param {Array<{ id: string, shallow_json?: string | null }>} rows Selected with listSourceColumn().
+ * @param {import('./tag-deletions.js').TagDeletions} deletions
+ * @param {{ skipUnreadable?: boolean }} [options] skipUnreadable: a stored copy that doesn't parse gives undefined
+ *   instead of throwing.
+ * @returns {any[]} undefined for a row skipped, or whose character is gone.
+ */
+function readListRowsSync(entry, rows, deletions, { skipUnreadable = false } = {}) {
+    if (entry.cardLayout === 'fields') {
+        const includeCreatorNotes = !!getConfigValue('performance.shallowCharactersIncludeCreatorNotes', false, 'boolean');
+        const byId = listRowsFromFieldsSync(entry.db, rows.map(r => r.id), deletions, includeCreatorNotes);
+        return rows.map(r => byId.get(r.id));
+    }
+    return rows.map(r => {
+        if (!skipUnreadable) return parseShallowResolvingTags(/** @type {string} */ (r.shallow_json), deletions);
+        try {
+            return parseShallowResolvingTags(/** @type {string} */ (r.shallow_json), deletions);
+        } catch {
+            return undefined;
+        }
+    });
+}
+
+/**
+ * Sets each row's `card_json` (and, in the fields layout, `name`, as the blob layout's column holds it).
+ * @param {MetadataDbEntry} entry
+ * @param {Array<{ id: string, name: string, card_json: string | null }>} rows Selected with cardSourceColumn().
+ */
+function fillCardJsonSync(entry, rows) {
+    if (entry.cardLayout !== 'fields' || rows.length === 0) return;
+    const cards = assembleCardsSync(entry.db, rows.map(r => r.id));
+    for (const row of rows) {
+        if (!cards.has(row.id)) continue;
+        const card = cards.get(row.id);
+        row.card_json = JSON.stringify(card);
+        row.name = cardNameText(card);
+    }
+}
+
+/**
+ * @param {MetadataDbEntry} entry
+ * @param {string} id
+ * @returns {string | null} null when the character has no row.
+ */
+function readCardJsonSync(entry, id) {
+    const row = /** @type {{ id: string, name: string, card_json: string | null } | undefined} */ (entry.db.get(`SELECT id, name, ${cardSourceColumn(entry)} FROM characters WHERE id = @id`, { id }));
+    if (!row) return null;
+    fillCardJsonSync(entry, [row]);
+    return row.card_json;
 }
 
 /**
@@ -2258,14 +2352,12 @@ export async function getShallowByIds(directories, ids) {
         const placeholders = batch.map(() => '?').join(',');
         /** @type {{ id: string, chat_size: number, date_last_chat: number, shallow: any }[]} */
         const parsed = [];
-        for (const row of /** @type {Iterable<{ id: string, shallow_json: string }>} */ (entry.db.iterate(`SELECT id, shallow_json FROM characters WHERE id IN (${placeholders})`, batch))) {
-            try {
-                const shallow = parseShallowResolvingTags(row.shallow_json, deletions);
-                parsed.push({ id: row.id, chat_size: Number(shallow?.chat_size ?? 0), date_last_chat: Number(shallow?.date_last_chat ?? 0), shallow });
-            } catch {
-                // Skip unparseable rows - same tolerance every other shallow_json consumer has.
-            }
-        }
+        const rows = Array.from(/** @type {Iterable<{ id: string, shallow_json: string | null }>} */ (entry.db.iterate(`SELECT id, ${listSourceColumn(entry)} FROM characters WHERE id IN (${placeholders})`, batch)));
+        // Unparseable rows are skipped - same tolerance every other shallow_json consumer has.
+        readListRowsSync(entry, rows, deletions, { skipUnreadable: true }).forEach((shallow, i) => {
+            if (shallow === undefined) return;
+            parsed.push({ id: rows[i].id, chat_size: Number(shallow?.chat_size ?? 0), date_last_chat: Number(shallow?.date_last_chat ?? 0), shallow });
+        });
         overlayActivitySync(entry.db, 'character', parsed, r => r.shallow);
         for (const row of parsed) result[row.id] = row.shallow;
     }
@@ -2300,8 +2392,7 @@ export async function getCharacterNamesByIds(directories, ids) {
 export async function getCharacterCardJson(directories, avatar) {
     const entry = await getEntry(directories);
     if (!entry) return null;
-    const row = (/** @type {{ card_json: string | null } | undefined} */ (entry.db.get('SELECT card_json FROM characters WHERE id = @id', { id: avatar })));
-    return row?.card_json ?? null;
+    return readCardJsonSync(entry, avatar);
 }
 
 /**
@@ -2338,7 +2429,8 @@ export async function getCharacterIndexRowsByIds(directories, ids) {
     for (let i = 0; i < ids.length; i += FAV_LOOKUP_BATCH_SIZE) {
         const batch = ids.slice(i, i + FAV_LOOKUP_BATCH_SIZE);
         const placeholders = batch.map(() => '?').join(',');
-        const rows = Array.from(/** @type {Iterable<CharacterIndexRow>} */ (entry.db.iterate(`SELECT id, name, card_json, chat_size, date_last_chat FROM characters WHERE id IN (${placeholders})`, batch)));
+        const rows = Array.from(/** @type {Iterable<CharacterIndexRow>} */ (entry.db.iterate(`SELECT id, name, ${cardSourceColumn(entry)}, chat_size, date_last_chat FROM characters WHERE id IN (${placeholders})`, batch)));
+        fillCardJsonSync(entry, rows);
         overlayActivitySync(entry.db, 'character', rows);
         for (const row of rows) result.set(row.id, row);
     }
@@ -8606,6 +8698,15 @@ function extractCardTags(shallowJson) {
     } catch {
         return [];
     }
+    return cardTagsOfListRow(parsed);
+}
+
+/**
+ * extractCardTags() of a list row already read.
+ * @param {any} parsed
+ * @returns {unknown[]}
+ */
+function cardTagsOfListRow(parsed) {
     if (!parsed || typeof parsed !== 'object') return [];
     if (parsed.data && typeof parsed.data === 'object' && Array.isArray(parsed.data.tags)) {
         return parsed.data.tags;
@@ -10960,10 +11061,17 @@ export async function seedCardTagsForSingleCharacter(directories, avatar, { only
     if (!entry) return none;
 
     const pending = entry.batch?.pending.get(avatar);
-    const shallowJson = pending ? pending.row.shallow_json : (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id: avatar })))?.shallow_json;
-    if (shallowJson === undefined) return none;
+    /** @type {unknown[]} */
+    let cardTags;
+    if (pending) {
+        cardTags = extractCardTags(pending.row.shallow_json);
+    } else {
+        const row = /** @type {{ id: string, shallow_json: string | null } | undefined} */ (entry.db.get(`SELECT id, ${listSourceColumn(entry)} FROM characters WHERE id = @id`, { id: avatar }));
+        if (row === undefined) return none;
+        cardTags = cardTagsOfListRow(readListRowsSync(entry, [row], NO_TAG_DELETIONS, { skipUnreadable: true })[0]);
+    }
 
-    const names = cardTagNames(extractCardTags(shallowJson));
+    const names = cardTagNames(cardTags);
     if (names.length === 0) return none;
 
     /** @type {ResolvedCardTags} */
@@ -11328,18 +11436,19 @@ function decodeSortedPageCursor(cursor, key) {
 
 /**
  * The full rows of a page's entities, in the page's order. An entity whose row is gone is left out.
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {MetadataDbEntry} entry
  * @param {{ type: 'character' | 'group', id: string }[]} entities
  * @returns {EntityRow[]}
  */
-function readEntityRowsInOrder(db, entities) {
+function readEntityRowsInOrder(entry, entities) {
+    const { db } = entry;
     if (entities.length === 0) return [];
     /** @type {Map<string, EntityRow>} */
     const byKey = new Map();
     const characterIds = entities.filter(e => e.type === 'character').map(e => e.id);
     const groupIds = entities.filter(e => e.type === 'group').map(e => e.id);
     if (characterIds.length > 0) {
-        for (const row of db.iterate(`SELECT ${ENTITY_CHARACTER_COLUMNS} FROM characters WHERE id IN (SELECT value FROM json_each(?))`, [JSON.stringify(characterIds)])) {
+        for (const row of db.iterate(`SELECT ${entityCharacterColumns(entry)} FROM characters WHERE id IN (SELECT value FROM json_each(?))`, [JSON.stringify(characterIds)])) {
             byKey.set(`character:${/** @type {EntityRow} */ (row).id}`, /** @type {EntityRow} */ (row));
         }
     }
@@ -11933,6 +12042,8 @@ export async function streamCharactersLinkedToWorld(directories, world) {
     if (!entry) return null;
 
     return (async function* () {
+        // '' is no world: a card without one holds it as '' in the fields layout.
+        if (world === '') return;
         for await (const rows of streamRows(entry.db, {
             firstPageSql: 'SELECT rowid AS rid, id FROM characters WHERE world = @world ORDER BY rowid LIMIT @limit',
             firstPageParams: { world },
@@ -11955,6 +12066,8 @@ export async function isWorldLinkedByAnyCharacter(directories, world) {
     const entry = await getEntry(directories);
     if (!entry) return null;
 
+    // '' is no world: a card without one holds it as '' in the fields layout.
+    if (world === '') return false;
     return !!entry.db.get('SELECT 1 FROM characters WHERE world = @world LIMIT 1', { world });
 }
 
@@ -12553,11 +12666,9 @@ export async function queryCharacters(directories, params = {}) {
                     .filter(id => rowById.has(id))
                     .map(id => toHashRow(/** @type {HashSourceRow} */ (rowById.get(id))));
             } else {
-                const rawRows = Array.from(/** @type {Iterable<{ id: string, shallow_json: string }>} */ (entry.db.iterate(`SELECT id, shallow_json FROM ${from} ${pageWhere}`, pageArgs)));
-                const shallowById = new Map(rawRows.map(r => [r.id, r.shallow_json]));
-                rows = pageIds
-                    .filter(id => shallowById.has(id))
-                    .map(id => parseShallowResolvingTags(/** @type {string} */ (shallowById.get(id)), deletions));
+                const rawRows = Array.from(/** @type {Iterable<{ id: string, shallow_json: string | null }>} */ (entry.db.iterate(`SELECT id, ${listSourceColumn(entry)} FROM ${from} ${pageWhere}`, pageArgs)));
+                const rowById = new Map(rawRows.map(r => [r.id, r]));
+                rows = readListRowsSync(entry, pageIds.filter(id => rowById.has(id)).map(id => /** @type {{ id: string, shallow_json: string | null }} */ (rowById.get(id))), deletions);
             }
         }
     } else if (wantRows || wantHashes) {
@@ -12612,8 +12723,8 @@ export async function queryCharacters(directories, params = {}) {
                 const byId = new Map(Array.from(/** @type {Iterable<HashSourceRow>} */ (entry.db.iterate(`SELECT ${HASH_COLUMNS} FROM characters WHERE id IN (SELECT value FROM json_each(?))`, [pageJson]))).map(r => [r.id, r]));
                 hashRows = pageIds.filter(id => byId.has(id)).map(id => toHashRow(/** @type {HashSourceRow} */ (byId.get(id))));
             } else {
-                const byId = new Map(Array.from(/** @type {Iterable<{ id: string, shallow_json: string }>} */ (entry.db.iterate('SELECT id, shallow_json FROM characters WHERE id IN (SELECT value FROM json_each(?))', [pageJson]))).map(r => [r.id, r.shallow_json]));
-                rows = pageIds.filter(id => byId.has(id)).map(id => parseShallowResolvingTags(/** @type {string} */ (byId.get(id)), deletions));
+                const byId = new Map(Array.from(/** @type {Iterable<{ id: string, shallow_json: string | null }>} */ (entry.db.iterate(`SELECT id, ${listSourceColumn(entry)} FROM characters WHERE id IN (SELECT value FROM json_each(?))`, [pageJson]))).map(r => [r.id, r]));
+                rows = readListRowsSync(entry, pageIds.filter(id => byId.has(id)).map(id => /** @type {{ id: string, shallow_json: string | null }} */ (byId.get(id))), deletions);
             }
             overlayQueryRowsSync(entry.db, rows, hashRows);
             return { rows, hashRows, total, approxTotal, seq, ...(cursor !== undefined ? { cursor } : {}), ...(more ? { more: true } : {}) };
@@ -12622,8 +12733,8 @@ export async function queryCharacters(directories, params = {}) {
             const rawRows = (/** @type {HashSourceRow[]} */ (entry.db.readBounded(`SELECT ${HASH_COLUMNS} FROM ${from} ${where} ${orderBy} LIMIT ? OFFSET ?`, [...args, numericLimit, numericOffset], numericLimit)));
             hashRows = rawRows.map(toHashRow);
         } else {
-            const rawRows = (/** @type {{ shallow_json: string }[]} */ (entry.db.readBounded(`SELECT shallow_json FROM ${from} ${where} ${orderBy} LIMIT ? OFFSET ?`, [...args, numericLimit, numericOffset], numericLimit)));
-            rows = rawRows.map(r => parseShallowResolvingTags(r.shallow_json, deletions));
+            const rawRows = (/** @type {{ id: string, shallow_json: string | null }[]} */ (entry.db.readBounded(`SELECT id, ${listSourceColumn(entry)} FROM ${from} ${where} ${orderBy} LIMIT ? OFFSET ?`, [...args, numericLimit, numericOffset], numericLimit)));
+            rows = readListRowsSync(entry, rawRows, deletions);
         }
     }
 
@@ -12903,22 +13014,40 @@ function makeEntityHashRowMapper(entry, directories, deletions) {
 }
 
 /**
- * @param {EntityRow} r
+ * The `/query` wire rows of entity rows read with entityCharacterColumns(), after overlayEntityRowsSync().
+ * @param {MetadataDbEntry} entry
+ * @param {EntityRow[]} rawRows
  * @param {import('./tag-deletions.js').TagDeletions} deletions
  */
-function toEntityWireRow(r, deletions) {
-    return {
-        type: r.type,
-        id: r.id,
-        fav: !!r.fav,
-        date_added: Number(r.date_added),
-        date_last_chat: Number(r.date_last_chat),
-        chat_size: Number(r.chat_size),
-        item: r.type === 'character' ? parseShallowResolvingTags(/** @type {string} */ (r.shallow_json), deletions) : null,
-    };
+function toEntityWireRows(entry, rawRows, deletions) {
+    const characterRows = rawRows.filter(r => r.type === 'character');
+    const items = new Map(readListRowsSync(entry, characterRows, deletions).map((item, i) => [characterRows[i].id, item]));
+    return rawRows.map(r => {
+        const item = r.type === 'character' ? items.get(r.id) : null;
+        // overlayEntityRowsSync() put the queued activity into the row; in the blob layout also into its stored copy.
+        if (item && entry.cardLayout === 'fields') {
+            item.chat_size = r.chat_size;
+            item.date_last_chat = r.date_last_chat;
+        }
+        return {
+            type: r.type,
+            id: r.id,
+            fav: !!r.fav,
+            date_added: Number(r.date_added),
+            date_last_chat: Number(r.date_last_chat),
+            chat_size: Number(r.chat_size),
+            item,
+        };
+    });
 }
 
-const ENTITY_CHARACTER_COLUMNS = 'id, \'character\' as type, name_fold, fav, date_added, date_last_chat, chat_size, create_date, data_size, shallow_json, digest_fav, digest_tag_ids, digest_content';
+/**
+ * @param {MetadataDbEntry} entry
+ * @returns {string}
+ */
+function entityCharacterColumns(entry) {
+    return `id, 'character' as type, name_fold, fav, date_added, date_last_chat, chat_size, create_date, data_size, ${listSourceColumn(entry)}, digest_fav, digest_tag_ids, digest_content`;
+}
 const ENTITY_GROUP_COLUMNS = 'id, \'group\' as type, name_fold, fav, date_added, date_last_chat, chat_size, date_added as create_date, NULL as data_size, NULL as shallow_json, digest_fav, digest_tag_ids, digest_content';
 
 /**
@@ -12927,7 +13056,7 @@ const ENTITY_GROUP_COLUMNS = 'id, \'group\' as type, name_fold, fav, date_added,
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {{ type: 'character'|'group', id: string }[]} entities
  * @param {{ wantRows?: boolean, wantHashes?: boolean }} [options]
- * @returns {Promise<{ rows: ReturnType<typeof toEntityWireRow>[] | undefined, hashRows: EntityHashRow[] | undefined, seq: number, groupsVersion: number | null } | null>}
+ * @returns {Promise<{ rows: ReturnType<typeof toEntityWireRows> | undefined, hashRows: EntityHashRow[] | undefined, seq: number, groupsVersion: number | null } | null>}
  * `groupsVersion`: readGroupsVersionSync()'s, read with `seq` before the rows.
  */
 export async function getEntityRowsByIds(directories, entities, { wantRows = true, wantHashes = false } = {}) {
@@ -12945,7 +13074,7 @@ export async function getEntityRowsByIds(directories, entities, { wantRows = tru
     /** @type {Map<string, EntityRow>} */
     const groupRows = new Map();
     if (characterIds.length > 0) {
-        for (const r of entry.db.iterate(`SELECT ${ENTITY_CHARACTER_COLUMNS} FROM characters WHERE id IN (SELECT value FROM json_each(?))`, [JSON.stringify(characterIds)])) {
+        for (const r of entry.db.iterate(`SELECT ${entityCharacterColumns(entry)} FROM characters WHERE id IN (SELECT value FROM json_each(?))`, [JSON.stringify(characterIds)])) {
             characterRows.set(/** @type {EntityRow} */ (r).id, /** @type {EntityRow} */ (r));
         }
     }
@@ -12967,7 +13096,7 @@ export async function getEntityRowsByIds(directories, entities, { wantRows = tru
         resolveFileFallbackHashes(hashRows);
     } else if (wantRows) {
         overlayEntityRowsSync(entry.db, rawRows);
-        rows = rawRows.map(r => toEntityWireRow(r, deletions));
+        rows = toEntityWireRows(entry, rawRows, deletions);
     }
     return { rows, hashRows, seq, groupsVersion };
 }
@@ -13074,14 +13203,14 @@ export async function queryEntities(directories, params = {}) {
                 kinds: { character: !groupsOnly, group: true }, tags, fav, world, ranges, excludeIds, ids, sortOrder,
                 seed: Number(seed) || 0, offset: numericOffset, limit: numericLimit, cursor: params.cursor, deletions,
             });
-            const rawRows = readEntityRowsInOrder(entry.db, page.entities);
+            const rawRows = readEntityRowsInOrder(entry, page.entities);
             if (wantHashes) {
                 overlayEntityRowsSync(entry.db, rawRows);
                 hashRows = rawRows.map(toHashRow);
                 resolveFileFallbackHashes(hashRows);
             } else {
                 overlayEntityRowsSync(entry.db, rawRows);
-                rows = rawRows.map(r => toEntityWireRow(r, deletions));
+                rows = toEntityWireRows(entry, rawRows, deletions);
             }
             nextCursor = page.cursor;
             moreRows = page.more;
@@ -13111,7 +13240,7 @@ export async function queryEntities(directories, params = {}) {
                 const skipLeft = Math.max(0, skip - walked.rows.length);
                 nextCursor = moreRows || pageKeys.length === numericLimit ? encodeSortedPageCursor(cursorKey, ends, skipLeft) : undefined;
 
-                rawRows = readEntityRowsInOrder(entry.db, pageKeys);
+                rawRows = readEntityRowsInOrder(entry, pageKeys);
             } else {
                 // Until the sort indexes exist: one statement per table, merged in JS.
                 // create_date: a group's own date_added stands in, projected as create_date, so it interleaves
@@ -13132,7 +13261,7 @@ export async function queryEntities(directories, params = {}) {
                 let merged = [];
                 if (!groupsOnly) {
                     merged = readStream(
-                        `SELECT ${ENTITY_CHARACTER_COLUMNS}
+                        `SELECT ${entityCharacterColumns(entry)}
                         FROM ${charWhere.from} ${charWhere.where}
                         ${orderBy}
                         LIMIT ?`,
@@ -13155,7 +13284,7 @@ export async function queryEntities(directories, params = {}) {
                 resolveFileFallbackHashes(hashRows);
             } else {
                 overlayEntityRowsSync(entry.db, rawRows);
-                rows = rawRows.map(r => toEntityWireRow(r, deletions));
+                rows = toEntityWireRows(entry, rawRows, deletions);
             }
         }
     }
@@ -13665,12 +13794,13 @@ export async function* streamCharacterCardJsonBatches(directories) {
     const entry = await getEntry(directories);
     if (!entry) return;
     for await (const rows of /** @type {AsyncGenerator<CharacterIndexRow[], void, undefined>} */ (streamRows(entry.db, {
-        firstPageSql: 'SELECT id, name, card_json, chat_size, date_last_chat FROM characters ORDER BY id LIMIT @limit',
+        firstPageSql: `SELECT id, name, ${cardSourceColumn(entry)}, chat_size, date_last_chat FROM characters ORDER BY id LIMIT @limit`,
         firstPageParams: {},
-        nextPageSql: 'SELECT id, name, card_json, chat_size, date_last_chat FROM characters WHERE id > @after ORDER BY id LIMIT @limit',
+        nextPageSql: `SELECT id, name, ${cardSourceColumn(entry)}, chat_size, date_last_chat FROM characters WHERE id > @after ORDER BY id LIMIT @limit`,
         nextPageParams: {},
         keyColumn: 'id',
     }))) {
+        fillCardJsonSync(entry, rows);
         overlayActivitySync(entry.db, 'character', rows);
         yield rows;
     }

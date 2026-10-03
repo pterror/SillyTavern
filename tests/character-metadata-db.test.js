@@ -2738,3 +2738,54 @@ describe('streamCharacterCardJsonBatches / streamCharacterIdsForTagIds', () => {
         expect(await collect(metadataDb.streamCharacterIdsForTagIds(directories, []))).toEqual([]);
     });
 });
+
+describe('card tables (storage step 5b)', () => {
+    test('a blob-layout store gets the card tables and columns, empty, and its card reads are unchanged', async () => {
+        const stored = storedCardJson({ name: 'Eve', data: { name: 'Eve', tags: ['x'], creator: 'c', character_version: '2', creator_notes: '', extensions: { world: 'W' } } });
+        await metadataDb.upsertCharacterFromWrite(directories, 'Eve.png', stored);
+        expect(await metadataDb.getCharacterCardJson(directories, 'Eve.png')).toBe(stored);
+
+        const { default: Database } = await import('better-sqlite3');
+        const rawDb = new Database(path.join(tempDir, 'character-metadata.sqlite'), { readonly: true });
+        try {
+            for (const table of ['card_fields', 'card_greetings', 'card_tags', 'card_extensions', 'card_extra']) {
+                expect(rawDb.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()).toEqual({ n: 0 });
+            }
+            expect(rawDb.prepare('SELECT create_date_raw, character_version FROM characters WHERE id = ?').get('Eve.png')).toEqual({ create_date_raw: null, character_version: null });
+        } finally {
+            rawDb.close();
+        }
+    });
+
+    test('a store in the fields layout is not opened for writing, and is left as it was', async () => {
+        const { default: Database } = await import('better-sqlite3');
+        const dbPath = path.join(tempDir, 'character-metadata.sqlite');
+        const rawDb = new Database(dbPath);
+        rawDb.exec('CREATE TABLE characters (id TEXT PRIMARY KEY, name TEXT); CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT); INSERT INTO meta VALUES (\'card_layout\', \'fields\')');
+        rawDb.close();
+
+        await expect(metadataDb.getCharacterCardJson(directories, 'any.png')).rejects.toThrow(/holds cards as fields/);
+
+        const check = new Database(dbPath, { readonly: true });
+        try {
+            expect(check.prepare('PRAGMA table_info(characters)').all().map(c => c.name)).toEqual(['id', 'name']);
+            expect(check.prepare('SELECT name FROM sqlite_master WHERE type = \'table\' ORDER BY name').all().map(r => r.name)).toEqual(['characters', 'meta']);
+        } finally {
+            check.close();
+        }
+    });
+
+    test('a world of \'\' is no world: nothing links it', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'NoWorld.png', storedCardJson({ name: 'NoWorld' }));
+        const { default: Database } = await import('better-sqlite3');
+        const rawDb = new Database(path.join(tempDir, 'character-metadata.sqlite'));
+        // The fields layout stores a card's '' world as itself.
+        rawDb.prepare('UPDATE characters SET world = \'\' WHERE id = ?').run('NoWorld.png');
+        rawDb.close();
+
+        expect(await metadataDb.isWorldLinkedByAnyCharacter(directories, '')).toBe(false);
+        const pages = [];
+        for await (const page of /** @type {AsyncGenerator<string[]>} */ (await metadataDb.streamCharactersLinkedToWorld(directories, ''))) pages.push(page);
+        expect(pages).toEqual([]);
+    });
+});
