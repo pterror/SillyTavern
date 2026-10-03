@@ -7,9 +7,6 @@ export const PUBLIC_DIRECTORIES = {
 
 export const SETTINGS_FILE = 'settings.json';
 
-// Legacy: tags now live in sqlite. Only used to migrate a pre-existing tags.json on bootstrap.
-export const TAGS_FILE = 'tags.json';
-
 /**
  * @type {import('./users.js').UserDirectoryList}
  * @readonly

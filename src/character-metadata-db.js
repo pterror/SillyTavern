@@ -18,7 +18,6 @@ import { calculateDataSize } from './character-shallow.js';
 import { CARD_LAYOUT_META_KEY, CARD_TABLES_SQL, assembleCardsSync, cardLayoutOf, cardListValues, cardNameText, cardRowsSync, listRowsFromFieldsSync } from './character-card-reader.js';
 import { CARD_COLUMNS, splitCard } from './character-card-storage.js';
 import { FIELDS_CHARACTERS_TABLE_SQL, FIELDS_CHARACTER_INDEXES, defineCharacterStoreFunctions, foldName } from './character-store-schema.js';
-import { readTagsData } from './endpoints/tags-data.js';
 import { getSqliteEngine, isBusyError, openNativeDatabase, streamRows } from './endpoints/sqlite-engine.js';
 import { getBetterSqlite3 } from './endpoints/native-sqlite.js';
 import { isReadOnlyMode } from './read-only-mode.js';
@@ -1193,34 +1192,6 @@ function deleteRowSync(db, id) {
     if (deleted > 0) insertChange(db, id, 'delete', null);
 }
 
-// tags.json remains the write source of truth for tag assignment; this reads its mirror.
-/**
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} avatar
- * @returns {string[]}
- */
-function getTagIdsFor(directories, avatar) {
-    const { tag_map } = readTagsData(directories);
-    return tagMapEntryTagIds(tag_map, avatar);
-}
-
-/**
- * The tag ids a tag_map entry holds, each once. A value that isn't an array holds none, as upstream's
- * getTagsList() and tag import read it, and gets a warning naming it.
- * @param {Record<string, unknown>} tagMap
- * @param {string} key
- * @returns {string[]}
- */
-function tagMapEntryTagIds(tagMap, key) {
-    if (!Object.hasOwn(tagMap, key)) return [];
-    const value = tagMap[key];
-    if (!Array.isArray(value)) {
-        warnTagMapEntryNotArray(key, value, 'read as no tags');
-        return [];
-    }
-    return [...new Set(value)];
-}
-
 /**
  * @param {string} key
  * @param {unknown} value
@@ -1261,11 +1232,10 @@ export async function upsertCharacterFromWrite(directories, avatar, cardJson, co
         chat: card.chat,
         fav: card.fav ?? _.get(card, 'data.extensions.fav'),
     };
-    const tagIds = getTagIdsFor(directories, avatar);
     const row = buildRow(avatar, character, { dateAddedCandidate: Date.now(), contentHash, contentIdentityHash, avatarIdentityHash, cardJson });
 
     if (fromImport) {
-        applyOrBuffer(entry, row, tagIds);
+        applyOrBuffer(entry, row, []);
         return;
     }
 
@@ -1274,7 +1244,7 @@ export async function upsertCharacterFromWrite(directories, avatar, cardJson, co
     let flushed;
     entry.db.transaction(() => {
         flushed = writeBufferedRowSync(entry, avatar);
-        writeRowSync(entry.db, row, tagIds);
+        writeRowSync(entry.db, row, []);
     });
     dropFromBuffer(entry, avatar, flushed);
 }
@@ -1833,8 +1803,6 @@ export async function bootstrapIfNeeded(directories) {
 
     const files = (await fsPromises.readdir(directories.characters)).filter(f => f.endsWith('.png'));
 
-    const { tag_map } = readTagsData(directories);
-
     const progress = new ProgressLog({ what: '[character-metadata] reading character cards into the index', total: files.length });
 
     // Chunked with bounded concurrency per chunk to bound peak memory to one chunk's worth of computed rows.
@@ -1854,9 +1822,7 @@ export async function bootstrapIfNeeded(directories) {
                 const avatarIdentityHash = computeAvatarIdentityHashFromChunks(chunks);
                 const contentIdentityHash = fileContentIdentityHash(directories, file, chunks);
                 const character = getCharaCardV2(JSON.parse(imgData), directories, false);
-                const tagIds = tagMapEntryTagIds(tag_map, file);
-                const row = buildRow(file, character, { dateAddedCandidate: Math.round(stat.ctimeMs), contentIdentityHash, importPoisoned: true, avatarIdentityHash, cardJson: imgData });
-                return { row, tagIds };
+                return buildRow(file, character, { dateAddedCandidate: Math.round(stat.ctimeMs), contentIdentityHash, importPoisoned: true, avatarIdentityHash, cardJson: imgData });
             } catch (err) {
                 console.error(`[character-metadata] Bootstrap failed to process ${file}, skipping it this pass (the reconciler will retry it):`, /** @type {any} */ (err).message);
                 return null;
@@ -1866,8 +1832,8 @@ export async function bootstrapIfNeeded(directories) {
         const pending = chunkResults.filter((r) => r !== null);
         if (pending.length > 0) {
             entry.db.transaction(() => {
-                for (const { row, tagIds } of pending) {
-                    writeRowSync(entry.db, row, tagIds);
+                for (const row of pending) {
+                    writeRowSync(entry.db, row, []);
                 }
             });
         }
@@ -1979,18 +1945,16 @@ export async function reconcile(directories) {
                     const avatarIdentityHash = computeAvatarIdentityHashFromChunks(chunks);
                     const contentIdentityHash = fileContentIdentityHash(directories, file, chunks);
                     const character = getCharaCardV2(JSON.parse(imgData), directories, false);
-                    const tagIds = getTagIdsFor(directories, file);
-                    const row = buildRow(file, character, { dateAddedCandidate: Date.now(), contentIdentityHash, importPoisoned: true, avatarIdentityHash, cardJson: imgData });
-                    return { row, tagIds };
+                    return buildRow(file, character, { dateAddedCandidate: Date.now(), contentIdentityHash, importPoisoned: true, avatarIdentityHash, cardJson: imgData });
                 } catch (err) {
                     console.error(`[character-metadata] Reconcile failed to process ${file}, will retry next boot:`, /** @type {any} */ (err).message);
                     return null;
                 }
             });
 
-            for (const result of chunkResults) {
-                if (result) {
-                    applyOrBuffer(entry, result.row, result.tagIds);
+            for (const row of chunkResults) {
+                if (row) {
+                    applyOrBuffer(entry, row, []);
                 }
             }
 
