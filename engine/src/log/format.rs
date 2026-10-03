@@ -193,8 +193,10 @@ pub enum Space {
     Message = 2,
     Position = 3,
     User = 4,
+    /// Positions in the log.
+    Log = 5,
 }
-pub const SPACES: usize = 5;
+pub const SPACES: usize = 6;
 
 /// A value's type in a kind's schema.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -235,6 +237,8 @@ pub struct Kind {
     /// bits. Fixed once written: a different schema is a new kind with new header values.
     pub base: u64,
     pub slots: &'static [Slot],
+    /// Written by the engine itself, never taken from a caller.
+    pub internal: bool,
 }
 
 /// A kind is its header values.
@@ -275,6 +279,7 @@ pub static KINDS: &[Kind] = &[
         name: "fav",
         base: 2,
         slots: &[req("entity", Ty::Id(Space::Entity)), req("fav", Ty::Bit)],
+        internal: false,
     },
     Kind {
         name: "tagAssign",
@@ -284,6 +289,7 @@ pub static KINDS: &[Kind] = &[
             req("tag", Ty::Id(Space::Tag)),
             req("assigned", Ty::Bit),
         ],
+        internal: false,
     },
     Kind {
         name: "pointerMove",
@@ -293,6 +299,7 @@ pub static KINDS: &[Kind] = &[
             req("user", Ty::Id(Space::User)),
             req("target", Ty::Id(Space::Message)),
         ],
+        internal: false,
     },
     Kind {
         name: "forkSelection",
@@ -303,6 +310,7 @@ pub static KINDS: &[Kind] = &[
             req("session", Ty::Id(Space::Position)),
             req("user", Ty::Id(Space::User)),
         ],
+        internal: false,
     },
     Kind {
         name: "messageAppend",
@@ -319,6 +327,7 @@ pub static KINDS: &[Kind] = &[
             req("session", Ty::Id(Space::Position)),
             req("user", Ty::Id(Space::User)),
         ],
+        internal: false,
     },
     Kind {
         name: "textEdit",
@@ -330,6 +339,7 @@ pub static KINDS: &[Kind] = &[
             req("removed", Ty::UInt),
             req("text", Ty::Text),
         ],
+        internal: false,
     },
     Kind {
         name: "textValue",
@@ -339,33 +349,56 @@ pub static KINDS: &[Kind] = &[
             req("field", Ty::Field),
             req("text", Ty::Text),
         ],
+        internal: false,
+    },
+    // The next record is a copy, written by cleaning, of the record at `from`.
+    Kind {
+        name: "moved",
+        base: 18,
+        slots: &[req("from", Ty::Id(Space::Log))],
+        internal: true,
     },
 ];
 
-/// Kinds that exist only in the crate's tests, for the value types `KINDS` doesn't use. Their header values
-/// are far above the real kinds'.
-#[cfg(test)]
-pub static TEST_KINDS: &[Kind] = &[Kind {
-    name: "testAll",
-    base: 1000,
-    slots: &[
-        req("u", Ty::UInt),
-        req("i", Ty::Int),
-        req("f", Ty::F64),
-        opt("t", Ty::Time),
-        req("k", Ty::Field),
-        req("b", Ty::Bytes),
-        req("x", Ty::Bit),
-        opt("o", Ty::Id(Space::Tag)),
-    ],
-}];
+/// Kinds that exist only in the crate's tests and measurements (feature `measure`). Their header values are
+/// far above the real kinds'.
+#[cfg(any(test, feature = "measure"))]
+pub static TEST_KINDS: &[Kind] = &[
+    // The value types `KINDS` doesn't use.
+    Kind {
+        name: "testAll",
+        base: 1000,
+        slots: &[
+            req("u", Ty::UInt),
+            req("i", Ty::Int),
+            req("f", Ty::F64),
+            opt("t", Ty::Time),
+            req("k", Ty::Field),
+            req("b", Ty::Bytes),
+            req("x", Ty::Bit),
+            opt("o", Ty::Id(Space::Tag)),
+        ],
+        internal: false,
+    },
+    // Sets `id`'s value; its deriver keeps the current value, an order by `key` and a count.
+    Kind {
+        name: "testSet",
+        base: 1256,
+        slots: &[
+            req("id", Ty::Id(Space::Entity)),
+            req("key", Ty::UInt),
+            req("value", Ty::Bytes),
+        ],
+        internal: false,
+    },
+];
 
 fn all_kinds() -> impl Iterator<Item = &'static Kind> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "measure"))]
     {
         KINDS.iter().chain(TEST_KINDS.iter())
     }
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "measure")))]
     {
         KINDS.iter()
     }

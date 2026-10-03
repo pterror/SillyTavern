@@ -62,6 +62,8 @@ pub enum LogError {
     /// Bytes inside the log, not at its end, that hold no whole group.
     Corrupt(Corruption),
     Closed,
+    /// A log file that cleaning has removed: nothing points into it any more.
+    Gone(u64),
 }
 
 impl std::fmt::Display for LogError {
@@ -91,6 +93,10 @@ impl std::fmt::Display for LogError {
                 c.after_to
             ),
             LogError::Closed => write!(f, "the record log is closed"),
+            LogError::Gone(file) => write!(
+                f,
+                "record log file {file} has been cleaned away; read from a later position"
+            ),
         }
     }
 }
@@ -297,6 +303,8 @@ struct Scanner<'a> {
     offset: u64,
     ctx: Ctx,
     crc: u32,
+    /// The length of the item `next` returned last.
+    last_len: u64,
 }
 
 impl<'a> Scanner<'a> {
@@ -312,6 +320,7 @@ impl<'a> Scanner<'a> {
             offset: start,
             ctx: Ctx::default(),
             crc: group_seed(position(file_index, start)),
+            last_len: 0,
         }
     }
 
@@ -393,6 +402,7 @@ impl<'a> Scanner<'a> {
                         ));
                     }
                     self.ctx = ctx;
+                    self.last_len = end - start;
                     self.offset = match item {
                         Item::Pad => block_start(block, start) + block,
                         _ => after(block, start, end),
@@ -436,6 +446,9 @@ impl End {
 
 pub type Done = Box<dyn FnOnce(LogResult<Vec<u64>>) + Send>;
 
+/// A record with its position and encoded length.
+pub type Positioned = (u64, Record, u64);
+
 struct Pending {
     records: Vec<Record>,
     done: Done,
@@ -472,16 +485,78 @@ struct Shared {
 #[cfg(not(target_family = "wasm"))]
 const READERS: usize = 4;
 
-/// The writer thread's state.
-struct Tail {
+/// Where the next group goes.
+#[derive(Debug, Clone, Copy)]
+pub struct Cursor {
+    pub file: u64,
+    pub offset: u64,
+    ctx: Ctx,
+}
+
+/// The tail file's write handle, kept by the thread that writes groups: under wasm a file descriptor belongs
+/// to the thread that opened it.
+pub struct TailFile {
     file: u64,
     /// Whether `file` exists on disk.
     exists: bool,
-    /// Opened by the writer thread itself: under wasm a file descriptor belongs to the thread that opened it.
     handle: Option<File>,
-    /// The next item's offset in `file`.
-    offset: u64,
-    ctx: Ctx,
+}
+
+impl TailFile {
+    /// Writes a group's bytes (from `Layout::close`) into `file` and syncs them, creating `file` first if the
+    /// group starts it. Returns the bytes written.
+    pub fn write(&mut self, log: &Log, file: u64, runs: &[(u64, Vec<u8>)]) -> LogResult<u64> {
+        let shared = &log.shared;
+        if self.file != file || !self.exists {
+            let handle = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(shared.dir.join(file_name(&shared.cfg, file)))?;
+            sync_dir(&shared.dir)?;
+            *self = TailFile {
+                file,
+                exists: true,
+                handle: Some(handle),
+            };
+        }
+        if self.handle.is_none() {
+            self.handle = Some(
+                OpenOptions::new()
+                    .write(true)
+                    .open(shared.dir.join(file_name(&shared.cfg, file)))?,
+            );
+        }
+        let handle = self.handle.as_ref().unwrap();
+        let mut bytes = 0;
+        for (at, run) in runs {
+            write_all_at(handle, run, *at)?;
+            bytes += run.len() as u64;
+        }
+        handle.sync_data()?;
+        let mut stats = shared.stats.lock().unwrap();
+        stats.rounds += 1;
+        stats.bytes += bytes;
+        Ok(bytes)
+    }
+}
+
+/// How opening finds the log's last file.
+#[derive(Debug, Clone, Copy)]
+pub enum Start {
+    /// List the directory.
+    List,
+    /// Probe upward from this file: every file from it to the last exists.
+    From(u64),
+}
+
+/// What opening found.
+pub struct Opened {
+    pub log: Log,
+    pub cursor: Cursor,
+    pub tail: TailFile,
+    /// The first file, when the directory was listed.
+    pub first_file: Option<u64>,
 }
 
 pub struct Log {
@@ -500,11 +575,26 @@ fn sync_dir(dir: &Path) -> io::Result<()> {
 }
 
 impl Log {
-    /// Opens the log in `dir` (created if missing): finds the last file, reads it to its last group whose
-    /// checksum holds, and cuts off what follows if that is a group a crash tore before its sync returned
-    /// (never acknowledged). If a whole group follows the damage, it fails with `Corrupt` and changes nothing.
-    /// Later files can't exist: a file is created only after the round before it synced.
+    /// Opens the log in `dir` (created if missing) with its own writer thread for `append`: see `open_parts`.
     pub fn open(dir: &Path, cfg: Config) -> LogResult<Log> {
+        let Opened {
+            log, cursor, tail, ..
+        } = Log::open_parts(dir, cfg, Start::List)?;
+        log.shared.queue.lock().unwrap().closed = false;
+        let writer_shared = log.shared.clone();
+        let writer = std::thread::Builder::new()
+            .name("st-engine-log".into())
+            .spawn(move || writer_loop(&writer_shared, tail, cursor))?;
+        *log.writer.lock().unwrap() = Some(writer);
+        Ok(log)
+    }
+
+    /// Opens the log in `dir` (created if missing) for a caller that writes the groups itself (`append`
+    /// refuses): finds the last file, reads it to its last group whose checksum holds, and cuts off what
+    /// follows if that is a group a crash tore before its sync returned (never acknowledged). If a whole group
+    /// follows the damage, it fails with `Corrupt` and changes nothing. Later files can't exist: a file is
+    /// created only after the round before it synced.
+    pub fn open_parts(dir: &Path, cfg: Config, start: Start) -> LogResult<Opened> {
         assert!(
             cfg.block_size.is_power_of_two()
                 && cfg.block_size >= 64
@@ -516,20 +606,33 @@ impl Log {
                 sync_dir(parent)?;
             }
         }
-        let mut last = None;
-        for entry in fs::read_dir(dir)? {
-            if let Some(file) = entry?
-                .file_name()
-                .to_str()
-                .and_then(|n| parse_file_name(&cfg, n))
-            {
-                last = last.max(Some(file));
+        let (mut first_file, mut last) = (None, None);
+        match start {
+            Start::List => {
+                for entry in fs::read_dir(dir)? {
+                    if let Some(file) = entry?
+                        .file_name()
+                        .to_str()
+                        .and_then(|n| parse_file_name(&cfg, n))
+                    {
+                        last = last.max(Some(file));
+                        first_file = Some(first_file.map_or(file, |f: u64| f.min(file)));
+                    }
+                }
+            }
+            Start::From(mut file) => {
+                while dir.join(file_name(&cfg, file)).exists() {
+                    last = Some(file);
+                    file += 1;
+                }
             }
         }
-        let mut tail = Tail {
-            file: last.unwrap_or(0),
-            exists: last.is_some(),
-            handle: None,
+        let tail_file = last.unwrap_or(match start {
+            Start::List => 0,
+            Start::From(f) => f,
+        });
+        let mut cursor = Cursor {
+            file: tail_file,
             offset: 0,
             ctx: Ctx::default(),
         };
@@ -543,7 +646,7 @@ impl Log {
             loop {
                 match scanner.next() {
                     Ok(Some((_, Item::Trailer(true)))) => {
-                        (tail.offset, tail.ctx) = (scanner.offset, scanner.ctx);
+                        (cursor.offset, cursor.ctx) = (scanner.offset, scanner.ctx);
                         groups += 1;
                     }
                     Ok(Some((_, Item::Trailer(false))))
@@ -553,13 +656,13 @@ impl Log {
                     Err(e) => return Err(e),
                 }
             }
-            if len > tail.offset {
+            if len > cursor.offset {
                 // Only the last group can be torn by a crash. If a whole group follows the damage, synced and
                 // acknowledged records would be lost by cutting there: refuse instead, changing nothing.
-                let mut rest = vec![0; (len - tail.offset) as usize];
-                let n = reader.read_at(&mut rest, tail.offset)?;
+                let mut rest = vec![0; (len - cursor.offset) as usize];
+                let n = reader.read_at(&mut rest, cursor.offset)?;
                 rest.truncate(n);
-                if let Some(corruption) = find_damage(&cfg, file, &rest, tail.offset) {
+                if let Some(corruption) = find_damage(&cfg, file, &rest, cursor.offset) {
                     return Err(LogError::Corrupt(Corruption {
                         file: file_name(&cfg, file),
                         groups_before: groups,
@@ -567,31 +670,43 @@ impl Log {
                     }));
                 }
                 let handle = OpenOptions::new().write(true).open(&path)?;
-                handle.set_len(tail.offset)?;
+                handle.set_len(cursor.offset)?;
                 handle.sync_data()?;
             }
         }
         let shared = Arc::new(Shared {
             cfg,
             dir: dir.to_path_buf(),
-            queue: Mutex::new(Queue::default()),
+            queue: Mutex::new(Queue {
+                pending: VecDeque::new(),
+                closed: true,
+            }),
             wake: Condvar::new(),
             durable: Mutex::new(End {
-                file: tail.file,
-                offset: tail.offset,
+                file: cursor.file,
+                offset: cursor.offset,
             }),
             #[cfg(not(target_family = "wasm"))]
             readers: Mutex::new(VecDeque::new()),
             stats: Mutex::new(Stats::default()),
         });
-        let writer_shared = shared.clone();
-        let writer = std::thread::Builder::new()
-            .name("st-engine-log".into())
-            .spawn(move || writer_loop(&writer_shared, tail))?;
-        Ok(Log {
-            shared,
-            writer: Mutex::new(Some(writer)),
+        Ok(Opened {
+            log: Log {
+                shared,
+                writer: Mutex::new(None),
+            },
+            cursor,
+            tail: TailFile {
+                file: cursor.file,
+                exists: last.is_some(),
+                handle: None,
+            },
+            first_file,
         })
+    }
+
+    pub fn config(&self) -> &Config {
+        &self.shared.cfg
     }
 
     /// Appends `records` as one commit: durable together, in one sync group. `done` runs on the writer thread
@@ -619,13 +734,43 @@ impl Log {
         self.shared.durable.lock().unwrap().position()
     }
 
+    /// Makes the log up to `end` (a group's end, synced) readable.
+    pub fn set_durable(&self, end: Cursor) {
+        *self.shared.durable.lock().unwrap() = End {
+            file: end.file,
+            offset: end.offset,
+        };
+    }
+
     pub fn stats(&self) -> Stats {
         *self.shared.stats.lock().unwrap()
     }
 
+    /// The path of a log file.
+    pub fn file_path(&self, file: u64) -> PathBuf {
+        self.shared.dir.join(file_name(&self.shared.cfg, file))
+    }
+
+    /// Removes a log file nothing will read again.
+    pub fn remove_file(&self, file: u64) -> io::Result<()> {
+        #[cfg(not(target_family = "wasm"))]
+        self.shared
+            .readers
+            .lock()
+            .unwrap()
+            .retain(|(f, _)| *f != file);
+        match fs::remove_file(self.file_path(file)) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        }
+    }
+
     fn open_reader(&self, file: u64) -> LogResult<Arc<LogFile>> {
-        let path = self.shared.dir.join(file_name(&self.shared.cfg, file));
-        Ok(Arc::new(LogFile::new(File::open(path)?)))
+        match File::open(self.file_path(file)) {
+            Ok(f) => Ok(Arc::new(LogFile::new(f))),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Err(LogError::Gone(file)),
+            Err(e) => Err(e.into()),
+        }
     }
 
     #[cfg(target_family = "wasm")]
@@ -649,8 +794,8 @@ impl Log {
         Ok(f)
     }
 
-    /// The record at `pos`, which must be a durable record's start.
-    pub fn read(&self, pos: u64) -> LogResult<Record> {
+    /// The record at `pos`, which must be a durable record's start, and its encoded length.
+    pub fn read_sized(&self, pos: u64) -> LogResult<(Record, u64)> {
         let end = *self.shared.durable.lock().unwrap();
         if pos >= end.position() {
             return Err(LogError::Position(pos, "not durable"));
@@ -671,7 +816,7 @@ impl Log {
         );
         while let Some((at, item)) = scanner.next()? {
             match item {
-                Item::Record(r) if at == offset => return Ok(r),
+                Item::Record(r) if at == offset => return Ok((r, scanner.last_len)),
                 _ if at >= offset => break,
                 _ => {}
             }
@@ -679,9 +824,15 @@ impl Log {
         Err(LogError::Position(pos, "not a record's start"))
     }
 
+    /// The record at `pos`, which must be a durable record's start.
+    pub fn read(&self, pos: u64) -> LogResult<Record> {
+        self.read_sized(pos).map(|(r, _)| r)
+    }
+
     /// Up to `limit` durable records from `from` (0, a record's position, or a `next` returned here), with
-    /// their positions, and the position to continue from.
-    pub fn iterate(&self, from: u64, limit: usize) -> LogResult<(Vec<(u64, Record)>, u64)> {
+    /// their positions and encoded lengths, and the position to continue from. A file that cleaning removed
+    /// is `Gone`.
+    pub fn iterate_sized(&self, from: u64, limit: usize) -> LogResult<(Vec<Positioned>, u64)> {
         let end = *self.shared.durable.lock().unwrap();
         if from > end.position() {
             return Err(LogError::Position(from, "not durable"));
@@ -711,7 +862,7 @@ impl Log {
                     return Err(LogError::Position(next, "not an item boundary"));
                 }
                 if let Item::Record(r) = item {
-                    out.push((at, r));
+                    out.push((at, r, scanner.last_len));
                 }
                 next = position(file, scanner.offset);
             }
@@ -724,6 +875,12 @@ impl Log {
             next = position(file, 0);
         }
         Ok((out, next))
+    }
+
+    /// Up to `limit` durable records from `from`, as `iterate_sized` without the lengths.
+    pub fn iterate(&self, from: u64, limit: usize) -> LogResult<(Vec<(u64, Record)>, u64)> {
+        let (records, next) = self.iterate_sized(from, limit)?;
+        Ok((records.into_iter().map(|(p, r, _)| (p, r)).collect(), next))
     }
 
     /// Lets the writer finish what is queued, then stops it. Later appends fail with `Closed`.
@@ -742,7 +899,11 @@ impl Drop for Log {
     }
 }
 
-fn writer_loop(shared: &Shared, mut tail: Tail) {
+fn writer_loop(shared: &Arc<Shared>, mut tail: TailFile, mut cursor: Cursor) {
+    let log = Log {
+        shared: shared.clone(),
+        writer: Mutex::new(None),
+    };
     let mut failed = false;
     loop {
         let mut batch = {
@@ -762,7 +923,7 @@ fn writer_loop(shared: &Shared, mut tail: Tail) {
             continue;
         }
         let mut done = Vec::new();
-        match write_round(shared, &mut tail, &mut batch, &mut done) {
+        match write_round(&log, &mut tail, &mut cursor, &mut batch, &mut done) {
             Ok(()) => {
                 for (p, result) in done {
                     (p.done)(result);
@@ -788,16 +949,81 @@ fn writer_loop(shared: &Shared, mut tail: Tail) {
     }
 }
 
-/// A round's bytes, laid out from the tail as runs of contiguous bytes.
-struct Layout {
+/// A group's bytes, laid out from a cursor as runs of contiguous bytes.
+pub struct Layout {
     block: u64,
+    pub file: u64,
     offset: u64,
     ctx: Ctx,
-    runs: Vec<(u64, Vec<u8>)>,
+    pub runs: Vec<(u64, Vec<u8>)>,
     crc: u32,
 }
 
+/// A layout's state, to go back to.
+#[derive(Clone, Copy)]
+pub struct Mark {
+    offset: u64,
+    ctx: Ctx,
+    runs: usize,
+    last_run: Option<usize>,
+    crc: u32,
+}
+
+impl Mark {
+    pub fn offset(&self) -> u64 {
+        self.offset
+    }
+}
+
 impl Layout {
+    /// A group starting at `at`, or at the next file's start once `at`'s file has reached its target size.
+    pub fn start(cfg: &Config, at: Cursor) -> Layout {
+        let at = if at.offset >= cfg.file_target {
+            Cursor {
+                file: at.file + 1,
+                offset: 0,
+                ctx: Ctx::default(),
+            }
+        } else {
+            at
+        };
+        Layout {
+            block: cfg.block_size,
+            file: at.file,
+            offset: at.offset,
+            ctx: at.ctx,
+            runs: Vec::new(),
+            crc: group_seed(position(at.file, at.offset)),
+        }
+    }
+
+    /// Bytes laid out in the group's file so far, from its start.
+    pub fn offset(&self) -> u64 {
+        self.offset
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.runs.is_empty()
+    }
+
+    pub fn mark(&self) -> Mark {
+        Mark {
+            offset: self.offset,
+            ctx: self.ctx,
+            runs: self.runs.len(),
+            last_run: self.runs.last().map(|r| r.1.len()),
+            crc: self.crc,
+        }
+    }
+
+    pub fn restore(&mut self, m: Mark) {
+        (self.offset, self.ctx, self.crc) = (m.offset, m.ctx, m.crc);
+        self.runs.truncate(m.runs);
+        if let (Some(len), Some(last)) = (m.last_run, self.runs.last_mut()) {
+            last.1.truncate(len);
+        }
+    }
+
     fn push(&mut self, at: u64, bytes: &[u8]) {
         match self.runs.last_mut() {
             Some((start, run)) if *start + run.len() as u64 == at => run.extend_from_slice(bytes),
@@ -819,7 +1045,8 @@ impl Layout {
         self.offset
     }
 
-    fn record(&mut self, rec: &Record) -> u64 {
+    /// Lays out a record; returns its position and encoded length.
+    pub fn record(&mut self, rec: &Record) -> (u64, u64) {
         let at_block_start = self.offset.is_multiple_of(self.block);
         let mut ctx = if at_block_start {
             Ctx::default()
@@ -839,83 +1066,49 @@ impl Layout {
         self.crc = crc32c::crc32c_append(self.crc, &bytes);
         self.ctx = ctx;
         self.offset = after(self.block, at, at + bytes.len() as u64);
-        at
+        (position(self.file, at), bytes.len() as u64)
     }
 
-    fn trailer(&mut self) {
+    /// Ends the group with its trailer; returns where the next group goes.
+    pub fn close(&mut self) -> Cursor {
         let at = self.make_room(TRAILER_LEN as u64);
         let mut bytes = [TRAILER; TRAILER_LEN];
         bytes[1..].copy_from_slice(&self.crc.to_le_bytes());
         self.push(at, &bytes);
         self.offset = at + TRAILER_LEN as u64;
+        Cursor {
+            file: self.file,
+            offset: self.offset,
+            ctx: self.ctx,
+        }
     }
+}
+
+/// The largest commit a group can take: a group ends past `file_target` by at most its last commit, and
+/// offsets stay below 2^FILE_SHIFT.
+pub fn max_commit(cfg: &Config) -> u64 {
+    (1u64 << FILE_SHIFT) - cfg.file_target - cfg.block_size
 }
 
 /// Writes one group from the front of `batch` and syncs it, moving the commits it took to `done` with their
 /// results. Commits it has no room for stay in `batch`.
 fn write_round(
-    shared: &Shared,
-    tail: &mut Tail,
+    log: &Log,
+    tail: &mut TailFile,
+    cursor: &mut Cursor,
     batch: &mut VecDeque<Pending>,
     done: &mut Vec<(Pending, LogResult<Vec<u64>>)>,
 ) -> LogResult<()> {
-    let cfg = shared.cfg;
-    if tail.exists && tail.offset >= cfg.file_target {
-        *tail = Tail {
-            file: tail.file + 1,
-            exists: false,
-            handle: None,
-            offset: 0,
-            ctx: Ctx::default(),
-        };
-    }
-    if !tail.exists {
-        let handle = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .open(shared.dir.join(file_name(&cfg, tail.file)))?;
-        sync_dir(&shared.dir)?;
-        (tail.exists, tail.handle) = (true, Some(handle));
-    }
-    if tail.handle.is_none() {
-        tail.handle = Some(
-            OpenOptions::new()
-                .write(true)
-                .open(shared.dir.join(file_name(&cfg, tail.file)))?,
-        );
-    }
-    let mut layout = Layout {
-        block: cfg.block_size,
-        offset: tail.offset,
-        ctx: tail.ctx,
-        runs: Vec::new(),
-        crc: group_seed(position(tail.file, tail.offset)),
-    };
-    // A round ends past `file_target` by at most its last commit, and offsets stay below 2^FILE_SHIFT.
-    let max_commit = (1u64 << FILE_SHIFT) - cfg.file_target - cfg.block_size;
+    let cfg = log.shared.cfg;
+    let mut layout = Layout::start(&cfg, *cursor);
     let mut written = 0;
     while layout.offset < cfg.file_target || written == 0 {
         let Some(p) = batch.pop_front() else { break };
-        let before = (
-            layout.offset,
-            layout.ctx,
-            layout.runs.len(),
-            layout.runs.last().map(|r| r.1.len()),
-            layout.crc,
-        );
-        let positions: Vec<u64> = p
-            .records
-            .iter()
-            .map(|r| position(tail.file, layout.record(r)))
-            .collect();
-        let size = layout.offset - before.0;
-        if size > max_commit {
-            (layout.offset, layout.ctx, _, _, layout.crc) = before;
-            layout.runs.truncate(before.2);
-            if let (Some(len), Some(last)) = (before.3, layout.runs.last_mut()) {
-                last.1.truncate(len);
-            }
+        let mark = layout.mark();
+        let positions: Vec<u64> = p.records.iter().map(|r| layout.record(r).0).collect();
+        let size = layout.offset - mark.offset;
+        if size > max_commit(&cfg) {
+            layout.restore(mark);
             done.push((p, Err(LogError::TooLarge(size))));
             continue;
         }
@@ -925,25 +1118,10 @@ fn write_round(
     if written == 0 {
         return Ok(());
     }
-    layout.trailer();
-    let handle = tail.handle.as_ref().unwrap();
-    let mut bytes = 0;
-    for (at, run) in &layout.runs {
-        write_all_at(handle, run, *at)?;
-        bytes += run.len() as u64;
-    }
-    handle.sync_data()?;
-    {
-        let mut stats = shared.stats.lock().unwrap();
-        stats.rounds += 1;
-        stats.bytes += bytes;
-    }
-    tail.offset = layout.offset;
-    tail.ctx = layout.ctx;
-    *shared.durable.lock().unwrap() = End {
-        file: tail.file,
-        offset: tail.offset,
-    };
+    let end = layout.close();
+    tail.write(log, layout.file, &layout.runs)?;
+    *cursor = end;
+    log.set_durable(end);
     Ok(())
 }
 
