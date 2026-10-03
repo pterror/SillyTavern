@@ -69,64 +69,89 @@ function makeEntry(uid, content) {
     return { uid, key: [`key${uid}`], content, comment: '', disable: false };
 }
 
-describe('worldinfo /edit - sidecar write path', () => {
-    test('a fresh save creates a manifest file and one entry file per uid, nothing more', async () => {
+/**
+ * @param {string} name
+ * @returns {object} The book's manifest, as stored.
+ */
+function readManifest(name) {
+    return JSON.parse(fs.readFileSync(path.join(worldsDir, `${name}.json`), 'utf8'));
+}
+
+/**
+ * @param {string} name
+ * @returns {Record<string, string>} Each entry uid's file, as the manifest names it.
+ */
+function entryFiles(name) {
+    return Object.fromEntries(readManifest(name).entries.map(({ uid, file }) => [uid, file]));
+}
+
+/**
+ * @param {string} file
+ * @returns {{ ino: number, mtimeMs: number }}
+ */
+function identity(file) {
+    const { ino, mtimeMs } = fs.statSync(file);
+    return { ino, mtimeMs };
+}
+
+/** Waits long enough that a rewritten file would show a different mtime. */
+function tick() {
+    return new Promise(resolve => setTimeout(resolve, 15));
+}
+
+describe('worldinfo /edit - stored format', () => {
+    test('a fresh save creates a manifest naming one file per entry, and nothing more', async () => {
         const data = { entries: { 0: makeEntry(0, 'Alpha'), 1: makeEntry(1, 'Beta') } };
         const res = await postJson('/api/worldinfo/edit', { name: 'Book', data });
         expect(res.status).toBe(200);
 
-        const manifest = JSON.parse(fs.readFileSync(path.join(worldsDir, 'Book.json'), 'utf8'));
-        expect(manifest.format).toBe('sidecar-v1');
-        expect(manifest.entries.sort()).toEqual(['0', '1']);
-        expect(fs.readdirSync(entriesDirFor('Book')).sort()).toEqual(['0.json', '1.json']);
+        const manifest = readManifest('Book');
+        expect(manifest.format).toBe('sidecar-v2');
+        expect(manifest.entries.map(e => e.uid).sort()).toEqual(['0', '1']);
+        expect(fs.readdirSync(entriesDirFor('Book')).sort()).toEqual(Object.values(entryFiles('Book')).sort());
     });
 
-    test('editing one entry does not rewrite the file of an untouched entry', async () => {
-        const data = { entries: { 0: makeEntry(0, 'Alpha'), 1: makeEntry(1, 'Beta') } };
+    test('editing one entry writes only that entry\'s file; the other keeps its file', async () => {
+        await postJson('/api/worldinfo/edit', { name: 'Book', data: { entries: { 0: makeEntry(0, 'Alpha'), 1: makeEntry(1, 'Beta') } } });
+        const filesBefore = entryFiles('Book');
+        const untouched = identity(path.join(entriesDirFor('Book'), filesBefore['1']));
+        await tick();
+
+        await postJson('/api/worldinfo/edit', { name: 'Book', data: { entries: { 0: makeEntry(0, 'Alpha (edited)'), 1: makeEntry(1, 'Beta') } } });
+
+        const filesAfter = entryFiles('Book');
+        expect(filesAfter['1']).toBe(filesBefore['1']);
+        expect(identity(path.join(entriesDirFor('Book'), filesAfter['1']))).toEqual(untouched);
+        expect(filesAfter['0']).not.toBe(filesBefore['0']);
+        expect(fs.readdirSync(entriesDirFor('Book')).sort()).toEqual(Object.values(filesAfter).sort());
+
+        const res = await postJson('/api/worldinfo/get', { name: 'Book' });
+        expect((await res.json()).entries['0'].content).toBe('Alpha (edited)');
+    });
+
+    test('an edit that changes nothing writes nothing', async () => {
+        const data = { entries: { 0: makeEntry(0, 'Alpha'), 1: makeEntry(1, 'Beta') }, name: 'Book' };
         await postJson('/api/worldinfo/edit', { name: 'Book', data });
+        const manifestPath = path.join(worldsDir, 'Book.json');
+        const snapshot = () => [manifestPath, ...fs.readdirSync(entriesDirFor('Book')).sort().map(f => path.join(entriesDirFor('Book'), f))]
+            .map(file => [file, identity(file)]);
+        const before = snapshot();
+        await tick();
 
-        const untouchedPath = path.join(entriesDirFor('Book'), '1.json');
-        const before = fs.statSync(untouchedPath);
-        await new Promise(resolve => setTimeout(resolve, 15)); // ensure mtime would visibly differ if rewritten
+        const res = await postJson('/api/worldinfo/edit', { name: 'Book', data });
+        expect(res.status).toBe(200);
 
-        const updated = { entries: { 0: makeEntry(0, 'Alpha (edited)'), 1: makeEntry(1, 'Beta') } };
-        await postJson('/api/worldinfo/edit', { name: 'Book', data: updated });
-
-        const after = fs.statSync(untouchedPath);
-        expect(after.mtimeMs).toBe(before.mtimeMs);
-
-        const editedEntry = JSON.parse(fs.readFileSync(path.join(entriesDirFor('Book'), '0.json'), 'utf8'));
-        expect(editedEntry.content).toBe('Alpha (edited)');
+        expect(snapshot()).toEqual(before);
     });
 
-    test('removing an entry deletes only that entry file', async () => {
-        const data = { entries: { 0: makeEntry(0, 'Alpha'), 1: makeEntry(1, 'Beta') } };
-        await postJson('/api/worldinfo/edit', { name: 'Book', data });
+    test('removing an entry deletes only that entry\'s file', async () => {
+        await postJson('/api/worldinfo/edit', { name: 'Book', data: { entries: { 0: makeEntry(0, 'Alpha'), 1: makeEntry(1, 'Beta') } } });
+        const kept = entryFiles('Book')['0'];
 
-        const updated = { entries: { 0: makeEntry(0, 'Alpha') } };
-        await postJson('/api/worldinfo/edit', { name: 'Book', data: updated });
+        await postJson('/api/worldinfo/edit', { name: 'Book', data: { entries: { 0: makeEntry(0, 'Alpha') } } });
 
-        expect(fs.readdirSync(entriesDirFor('Book'))).toEqual(['0.json']);
-        const manifest = JSON.parse(fs.readFileSync(path.join(worldsDir, 'Book.json'), 'utf8'));
-        expect(manifest.entries).toEqual(['0']);
-    });
-
-    test('a pre-existing legacy (pre-migration) file is migrated on its first edit and reads back the same', async () => {
-        const legacy = { entries: { 5: makeEntry(5, 'Legacy content') } };
-        fs.writeFileSync(path.join(worldsDir, 'OldBook.json'), JSON.stringify(legacy));
-
-        const before = await postJson('/api/worldinfo/get', { name: 'OldBook' });
-        expect((await before.json()).entries['5'].content).toBe('Legacy content');
-
-        await postJson('/api/worldinfo/edit', { name: 'OldBook', data: { entries: { 5: makeEntry(5, 'Legacy content'), 6: makeEntry(6, 'New') } } });
-
-        const manifest = JSON.parse(fs.readFileSync(path.join(worldsDir, 'OldBook.json'), 'utf8'));
-        expect(manifest.format).toBe('sidecar-v1');
-
-        const after = await postJson('/api/worldinfo/get', { name: 'OldBook' });
-        const afterData = await after.json();
-        expect(afterData.entries['5'].content).toBe('Legacy content');
-        expect(afterData.entries['6'].content).toBe('New');
+        expect(entryFiles('Book')).toEqual({ 0: kept });
+        expect(fs.readdirSync(entriesDirFor('Book'))).toEqual([kept]);
     });
 
     test('top-level fields other than entries survive a save/read round trip', async () => {
@@ -141,23 +166,42 @@ describe('worldinfo /edit - sidecar write path', () => {
     });
 });
 
-describe('worldinfo /get - reads both formats', () => {
-    test('reads a plain legacy file unchanged', async () => {
-        const legacy = { entries: { 0: makeEntry(0, 'Plain') } };
-        fs.writeFileSync(path.join(worldsDir, 'Plain.json'), JSON.stringify(legacy));
+describe('worldinfo read - only the stored format', () => {
+    test('a file in upstream\'s format (entries inline) is refused, naming the conversion script', () => {
+        fs.writeFileSync(path.join(worldsDir, 'Plain.json'), JSON.stringify({ entries: { 0: makeEntry(0, 'Plain') } }));
 
-        const res = await postJson('/api/worldinfo/get', { name: 'Plain' });
-        expect(await res.json()).toEqual(legacy);
+        expect(() => worldinfo.readWorldInfoFile(directories, 'Plain', false)).toThrow('src/migrations/convert-world-info-to-sidecar.js');
     });
 
-    test('returns the dummy object for a book that does not exist', async () => {
+    test('a file in the earlier sidecar format is refused, naming the conversion script', () => {
+        fs.mkdirSync(entriesDirFor('Older'));
+        fs.writeFileSync(path.join(entriesDirFor('Older'), '0.json'), JSON.stringify(makeEntry(0, 'Older')));
+        fs.writeFileSync(path.join(worldsDir, 'Older.json'), JSON.stringify({ format: 'sidecar-v1', entries: ['0'] }));
+
+        expect(() => worldinfo.readWorldInfoFile(directories, 'Older', false)).toThrow('src/migrations/convert-world-info-to-sidecar.js');
+    });
+
+    test('a file in the entries directory the manifest doesn\'t name is never read, and is gone after the next write', async () => {
+        await postJson('/api/worldinfo/edit', { name: 'Book', data: { entries: { 0: makeEntry(0, 'Alpha') } } });
+        const stray = path.join(entriesDirFor('Book'), '0.0000000000000000.json');
+        fs.writeFileSync(stray, JSON.stringify(makeEntry(0, 'Left by a failed write')));
+
+        const res = await postJson('/api/worldinfo/get', { name: 'Book' });
+        expect(await res.json()).toEqual({ entries: { 0: makeEntry(0, 'Alpha') } });
+
+        await postJson('/api/worldinfo/edit', { name: 'Book', data: { entries: { 0: makeEntry(0, 'Alpha'), 1: makeEntry(1, 'Beta') } } });
+        expect(fs.existsSync(stray)).toBe(false);
+        expect(fs.readdirSync(entriesDirFor('Book')).sort()).toEqual(Object.values(entryFiles('Book')).sort());
+    });
+
+    test('/get returns the dummy object for a book that does not exist', async () => {
         const res = await postJson('/api/worldinfo/get', { name: 'Nope' });
         expect(await res.json()).toEqual({ entries: {} });
     });
 });
 
 describe('worldinfo /delete', () => {
-    test('removes both the manifest and the sidecar entries directory', async () => {
+    test('removes both the manifest and the entries directory', async () => {
         const data = { entries: { 0: makeEntry(0, 'Alpha') } };
         await postJson('/api/worldinfo/edit', { name: 'Book', data });
         expect(fs.existsSync(entriesDirFor('Book'))).toBe(true);
@@ -167,41 +211,30 @@ describe('worldinfo /delete', () => {
         expect(fs.existsSync(path.join(worldsDir, 'Book.json'))).toBe(false);
         expect(fs.existsSync(entriesDirFor('Book'))).toBe(false);
     });
-
-    test('removes a legacy (never-migrated) file with no sidecar directory just fine', async () => {
-        fs.writeFileSync(path.join(worldsDir, 'Legacy.json'), JSON.stringify({ entries: {} }));
-
-        const res = await postJson('/api/worldinfo/delete', { name: 'Legacy' });
-        expect(res.status).toBe(200);
-        expect(fs.existsSync(path.join(worldsDir, 'Legacy.json'))).toBe(false);
-    });
 });
 
 describe('worldinfo /import', () => {
-    test('imports as a plain legacy file, still readable via /get', async () => {
-        const book = { entries: { 0: makeEntry(0, 'Imported content') } };
+    test('stores the book in the stored format, and /get reads back what was imported', async () => {
+        const book = { entries: { 0: makeEntry(0, 'Imported content') }, name: 'Cool Book', extensions: { foo: 'bar' } };
         const res = await postJson('/api/worldinfo/import', { importFilename: 'Cool Book.json', convertedData: JSON.stringify(book) });
         expect(res.status).toBe(200);
         expect(await res.json()).toEqual({ name: 'Cool Book' });
 
-        const raw = JSON.parse(fs.readFileSync(path.join(worldsDir, 'Cool Book.json'), 'utf8'));
-        expect(raw.format).toBeUndefined();
-        expect(raw.entries['0'].content).toBe('Imported content');
+        expect(readManifest('Cool Book').format).toBe('sidecar-v2');
 
         const getRes = await postJson('/api/worldinfo/get', { name: 'Cool Book' });
         expect(await getRes.json()).toEqual(book);
     });
 
-    test('re-importing over a migrated (sidecar-format) book cleans up the old sidecar directory', async () => {
-        await postJson('/api/worldinfo/edit', { name: 'Reimported', data: { entries: { 0: makeEntry(0, 'Old') } } });
-        expect(fs.existsSync(entriesDirFor('Reimported'))).toBe(true);
+    test('re-importing over a stored book leaves no stale entry files', async () => {
+        await postJson('/api/worldinfo/edit', { name: 'Reimported', data: { entries: { 0: makeEntry(0, 'Old'), 1: makeEntry(1, 'Gone') } } });
 
         const book = { entries: { 0: makeEntry(0, 'Fresh import') } };
         await postJson('/api/worldinfo/import', { importFilename: 'Reimported.json', convertedData: JSON.stringify(book) });
 
-        expect(fs.existsSync(entriesDirFor('Reimported'))).toBe(false);
+        expect(fs.readdirSync(entriesDirFor('Reimported'))).toEqual([entryFiles('Reimported')['0']]);
         const getRes = await postJson('/api/worldinfo/get', { name: 'Reimported' });
-        expect((await getRes.json()).entries['0'].content).toBe('Fresh import');
+        expect(await getRes.json()).toEqual(book);
     });
 
     test('rejects a file with no entries list', async () => {
@@ -211,13 +244,13 @@ describe('worldinfo /import', () => {
 });
 
 describe('worldinfo /list', () => {
-    test('lists both legacy and sidecar-format books by name, unaffected by the storage format', async () => {
-        fs.writeFileSync(path.join(worldsDir, 'LegacyOne.json'), JSON.stringify({ entries: {} }));
+    test('lists books by name', async () => {
+        await postJson('/api/worldinfo/import', { importFilename: 'ImportedOne.json', convertedData: JSON.stringify({ entries: {} }) });
         await postJson('/api/worldinfo/edit', { name: 'SidecarOne', data: { entries: { 0: makeEntry(0, 'x') }, name: 'SidecarOne' } });
 
         const res = await postJson('/api/worldinfo/list', {});
         const names = (await res.json()).map(x => x.name).sort();
-        expect(names).toEqual(['LegacyOne', 'SidecarOne']);
+        expect(names).toEqual(['ImportedOne', 'SidecarOne']);
     });
 });
 
@@ -282,7 +315,7 @@ describe('worldinfo /entry/transplant', () => {
         // Read straight off disk (not through another endpoint) to confirm the one call already
         // finished both writes by the time it returned.
         const sourceManifest = JSON.parse(fs.readFileSync(path.join(worldsDir, 'Source.json'), 'utf8'));
-        expect(sourceManifest.entries.sort()).toEqual(['0']);
+        expect(sourceManifest.entries.map(e => e.uid)).toEqual(['0']);
         const targetManifest = JSON.parse(fs.readFileSync(path.join(worldsDir, 'Target.json'), 'utf8'));
         expect(targetManifest.entries.length).toBe(2);
     });
@@ -428,7 +461,7 @@ describe('worldinfo /create', () => {
     test('uniquifies against a book that only exists on disk, not a client-supplied list', async () => {
         // Written straight to disk, bypassing any endpoint - simulates another tab/client having
         // already created this book, which a client-side cache of world_names could miss.
-        fs.writeFileSync(path.join(worldsDir, 'External.json'), JSON.stringify({ entries: {} }));
+        fs.writeFileSync(path.join(worldsDir, 'External.json'), JSON.stringify({ format: 'sidecar-v2', entries: [] }));
 
         const res = await postJson('/api/worldinfo/create', { name: 'External' });
         expect(res.status).toBe(200);
@@ -523,7 +556,7 @@ describe('worldinfo missing-book memory', () => {
         const errors = silenceErrors();
         worldinfo.readWorldInfoFile(directories, 'Ghost Recheck', true);
 
-        fs.writeFileSync(path.join(worldsDir, 'Other.json'), JSON.stringify({ entries: {} }));
+        fs.writeFileSync(path.join(worldsDir, 'Other.json'), JSON.stringify({ format: 'sidecar-v2', entries: [] }));
         const lookups = countLookups('Ghost Recheck');
         worldinfo.readWorldInfoFile(directories, 'Ghost Recheck', true);
 
@@ -567,7 +600,7 @@ describe('worldinfo missing-book memory', () => {
         settleWorldsDir();
         expect(worldinfo.worldInfoFileExists(directories, 'Handmade')).toBe(false);
 
-        fs.writeFileSync(path.join(worldsDir, 'Handmade.json'), JSON.stringify({ entries: {} }));
+        fs.writeFileSync(path.join(worldsDir, 'Handmade.json'), JSON.stringify({ format: 'sidecar-v2', entries: [] }));
 
         expect(worldinfo.worldInfoFileExists(directories, 'Handmade')).toBe(true);
     });
@@ -577,7 +610,7 @@ describe('worldinfo missing-book memory', () => {
         fs.utimesSync(worldsDir, fresh, fresh);
         expect(worldinfo.worldInfoFileExists(directories, 'Same Tick')).toBe(false);
 
-        fs.writeFileSync(path.join(worldsDir, 'Same Tick.json'), JSON.stringify({ entries: {} }));
+        fs.writeFileSync(path.join(worldsDir, 'Same Tick.json'), JSON.stringify({ format: 'sidecar-v2', entries: [] }));
         fs.utimesSync(worldsDir, fresh, fresh);
 
         expect(worldinfo.worldInfoFileExists(directories, 'Same Tick')).toBe(true);
@@ -587,7 +620,7 @@ describe('worldinfo missing-book memory', () => {
         const otherRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'st-worldinfo-test-other-'));
         const other = { worlds: path.join(otherRoot, 'worlds'), root: otherRoot };
         fs.mkdirSync(other.worlds);
-        fs.writeFileSync(path.join(other.worlds, 'Split.json'), JSON.stringify({ entries: {} }));
+        fs.writeFileSync(path.join(other.worlds, 'Split.json'), JSON.stringify({ format: 'sidecar-v2', entries: [] }));
         fs.utimesSync(other.worlds, OLD_MTIME, OLD_MTIME);
         settleWorldsDir();
 

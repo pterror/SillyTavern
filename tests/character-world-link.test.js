@@ -55,9 +55,18 @@ function settleWorldsDir() {
 
 let worldsWritten = 0;
 
-/** Writes a World file by hand and gives the directory an old mtime of its own, so no remembered miss outlives the write. */
+/**
+ * Writes a World file by hand, in the stored format (a manifest naming one file per entry), and gives the directory an
+ * old mtime of its own, so no remembered miss outlives the write.
+ */
 function writeWorld(name, entries) {
-    fs.writeFileSync(path.join(worldsDir, `${name}.json`), JSON.stringify({ entries }));
+    const entriesDir = path.join(worldsDir, `${name}.entries`);
+    fs.mkdirSync(entriesDir);
+    const named = Object.entries(entries).map(([uid, entry]) => {
+        fs.writeFileSync(path.join(entriesDir, `${uid}.json`), JSON.stringify(entry));
+        return { uid, file: `${uid}.json` };
+    });
+    fs.writeFileSync(path.join(worldsDir, `${name}.json`), JSON.stringify({ format: 'sidecar-v2', entries: named }));
     const mtime = new Date(OLD_MTIME.getTime() + (++worldsWritten) * 60_000);
     fs.utimesSync(worldsDir, mtime, mtime);
 }

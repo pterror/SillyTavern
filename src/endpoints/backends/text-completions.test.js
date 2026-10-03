@@ -59,6 +59,7 @@ if (canMockOpenRouter) {
 
 const { router, buildRawActionTextCompletionRequest } = await import('./text-completions.js');
 const { writeAllSettings } = await import('../../settings-store.js');
+const { importWorldInfoFromRaw } = await import('../worldinfo.js');
 const { writeSecret, deleteSecret, SECRET_KEYS } = await import('../secrets.js');
 const { saveChatToTree, loadBranch, appendMessages, editMessage, getAncestorPath, getAlternatives, disposeMessageTreeStores, getMessageTreeDb } = await import('../../message-tree-db.js');
 const { writeBack, tokenKeyHash } = await import('../../token-count-store.js');
@@ -2288,7 +2289,7 @@ async function run() {
                 mes_example: '<START>\n{{user}}: What do you keep?\n{{char}}: The light, always.',
             },
         });
-        fs.writeFileSync(path.join(worldsDir, 'StoreLore.json'), JSON.stringify({
+        importWorldInfoFromRaw(directories, 'StoreLore', JSON.stringify({
             entries: {
                 1: { uid: 1, key: ['lighthouse'], keysecondary: [], comment: '', content: 'The lighthouse stands on a black rock.', constant: false, selective: false, order: 10, position: 0, disable: false },
             },

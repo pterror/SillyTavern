@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -9,8 +10,12 @@ import { tryParse } from '../util.js';
 import { readSettingsAtPaths, writeSettingsKeys } from '../settings-store.js';
 import { resolveCharacterWorldLink } from '../../public/scripts/character-world-link.js';
 
-/** Marks a World Info file as migrated to the sidecar format; absent means entries live inline. */
-const WORLD_INFO_SIDECAR_FORMAT = 'sidecar-v1';
+/**
+ * The stored World Info format: the file is a manifest (every top-level field but `entries`, which lists each entry's
+ * uid and the file in `<name>.entries/` it is stored in). Upstream's format (entries inline) comes in only through
+ * importWorldInfoFromRaw().
+ */
+const WORLD_INFO_SIDECAR_FORMAT = 'sidecar-v2';
 
 function getWorldInfoPaths(directories, worldInfoName) {
     const filename = sanitize(`${worldInfoName}.json`);
@@ -119,19 +124,39 @@ function sanitizeEntryUid(uid) {
     return safe ? safe : null;
 }
 
-/** Reassembles a sidecar manifest plus its per-entry files into the original inline-entries shape. */
+/**
+ * The file an entry is stored in: its uid and the hash of its content, so a changed entry goes to a new file and
+ * the one the manifest names stays as it was until the new manifest lands.
+ * @param {string} safeUid
+ * @param {string} content The entry's stored JSON.
+ */
+function entryFileName(safeUid, content) {
+    return `${safeUid}.${crypto.createHash('sha256').update(content).digest('hex').slice(0, 16)}.json`;
+}
+
+/**
+ * Whether `file` can be an entry file name in the entries directory (no path separators).
+ * @param {unknown} file
+ * @returns {file is string}
+ */
+function isEntryFileName(file) {
+    return typeof file === 'string' && file.endsWith('.json') && sanitize(file) === file;
+}
+
+/** Reassembles a manifest plus the entry files it names into upstream's inline-entries shape. */
 function inflateSidecarWorldInfo(manifest, entriesDir) {
-    const { format, entries: uids, ...rest } = manifest;
+    const rest = _.omit(manifest, ['format', 'entries']);
     const entries = {};
 
-    for (const uid of Array.isArray(uids) ? uids : []) {
-        const safeUid = sanitizeEntryUid(uid);
-        if (!safeUid) {
+    for (const item of manifest.entries) {
+        const uid = item?.uid;
+        const file = item?.file;
+        if (!isEntryFileName(file)) {
+            console.warn(`World info entry ${uid} in ${entriesDir} names no usable file: ${JSON.stringify(file)}`);
             continue;
         }
         try {
-            const entryPath = path.join(entriesDir, `${safeUid}.json`);
-            entries[uid] = JSON.parse(fs.readFileSync(entryPath, 'utf8'));
+            entries[uid] = JSON.parse(fs.readFileSync(path.join(entriesDir, file), 'utf8'));
         } catch (err) {
             console.warn(`World info entry ${uid} could not be read from ${entriesDir}:`, err);
         }
@@ -170,68 +195,64 @@ export function readWorldInfoFile(directories, worldInfoName, allowDummy, { logM
     const worldInfoText = fs.readFileSync(pathToWorldInfo, 'utf8');
     const worldInfo = JSON.parse(worldInfoText);
 
-    if (worldInfo && worldInfo.format === WORLD_INFO_SIDECAR_FORMAT && Array.isArray(worldInfo.entries)) {
-        return inflateSidecarWorldInfo(worldInfo, entriesDir);
+    if (!isSidecarWorldInfo(worldInfo)) {
+        throw new Error(`World info file ${filename} is not in the stored format. Stop the server and run: node src/migrations/convert-world-info-to-sidecar.js --apply --server-stopped`);
     }
-
-    return worldInfo;
+    return inflateSidecarWorldInfo(worldInfo, entriesDir);
 }
 
 /**
- * Writes a World Info file without rewriting entries that haven't changed, migrating it to the sidecar
- * format in the process. One-way: a book never edited here stays legacy until its next edit.
+ * @param {unknown} worldInfo A World Info file, parsed.
+ * @returns {boolean} Whether it is in the stored (sidecar) format.
+ */
+export function isSidecarWorldInfo(worldInfo) {
+    return !!worldInfo && typeof worldInfo === 'object' && /** @type {any} */ (worldInfo).format === WORLD_INFO_SIDECAR_FORMAT
+        && Array.isArray(/** @type {any} */ (worldInfo).entries);
+}
+
+/**
+ * Writes a World Info file in the stored format so that a write that fails partway leaves the book as it was: each
+ * changed entry is written to a new file (entryFileName()), an unchanged one keeps its file, the manifest naming
+ * every entry's file is written last and atomically, and only then are the files it no longer names deleted
+ * (including any a failed write left). Writes nothing when nothing changed.
  */
 function writeWorldInfoFile(directories, worldInfoName, data) {
     const { pathToWorldInfo, entriesDir } = getWorldInfoPaths(directories, worldInfoName);
     const { entries: incomingEntries, ...rest } = data;
     const entries = _.isObjectLike(incomingEntries) ? incomingEntries : {};
-    const incomingUids = Object.keys(entries);
 
     fs.mkdirSync(entriesDir, { recursive: true });
+    const present = new Set(fs.readdirSync(entriesDir));
 
-    const existingUids = fs.readdirSync(entriesDir)
-        .filter(f => f.endsWith('.json'))
-        .map(f => path.parse(f).name);
-    const existingUidSet = new Set(existingUids);
-
-    const keptUids = [];
-
-    for (const uid of incomingUids) {
+    /** @type {{ uid: string, file: string }[]} */
+    const named = [];
+    for (const uid of Object.keys(entries)) {
         const safeUid = sanitizeEntryUid(uid);
         if (!safeUid) {
             console.warn(`Skipping world info entry with unusable uid: ${uid}`);
             continue;
         }
-
-        keptUids.push(uid);
-        const entryPath = path.join(entriesDir, `${safeUid}.json`);
-        const nextEntry = entries[uid];
-
-        let shouldWrite = true;
-        if (existingUidSet.has(safeUid)) {
-            try {
-                const currentEntry = JSON.parse(fs.readFileSync(entryPath, 'utf8'));
-                shouldWrite = !_.isEqual(currentEntry, nextEntry);
-            } catch {
-                shouldWrite = true;
-            }
-        }
-
-        if (shouldWrite) {
-            writeFileAtomicSync(entryPath, JSON.stringify(nextEntry, null, 4));
-        }
+        const content = JSON.stringify(entries[uid], null, 4);
+        const file = entryFileName(safeUid, content);
+        if (!present.has(file)) writeFileAtomicSync(path.join(entriesDir, file), content);
+        named.push({ uid, file });
     }
 
-    // Write the manifest before deleting stale entries, so it never points at an already-deleted file.
-    const manifest = { ...rest, format: WORLD_INFO_SIDECAR_FORMAT, entries: keptUids };
-    writeFileAtomicSync(pathToWorldInfo, JSON.stringify(manifest, null, 4));
-    forgetWorldInfoMiss(pathToWorldInfo);
+    const manifestText = JSON.stringify({ ...rest, format: WORLD_INFO_SIDECAR_FORMAT, entries: named }, null, 4);
+    let currentText = null;
+    try {
+        currentText = fs.readFileSync(pathToWorldInfo, 'utf8');
+    } catch {
+        // No book yet.
+    }
+    if (currentText !== manifestText) {
+        writeFileAtomicSync(pathToWorldInfo, manifestText);
+        forgetWorldInfoMiss(pathToWorldInfo);
+    }
 
-    const keptSafeUids = new Set(keptUids.map(sanitizeEntryUid));
-    for (const safeUid of existingUids) {
-        if (!keptSafeUids.has(safeUid)) {
-            fs.unlinkSync(path.join(entriesDir, `${safeUid}.json`));
-        }
+    const kept = new Set(named.map(item => item.file));
+    for (const file of present) {
+        if (!kept.has(file)) fs.rmSync(path.join(entriesDir, file), { recursive: true, force: true });
     }
 }
 
@@ -401,20 +422,7 @@ export function importWorldInfoFromRaw(directories, desiredName, fileContents) {
         throw new Error('World file must have a name');
     }
 
-    writeFileAtomicSync(pathToNewFile, fileContents);
-    forgetWorldInfoMiss(pathToNewFile);
-
-    // Legacy format written directly, so clear any orphaned sidecar directory from a prior migration. Only once the
-    // new file is in place: if the write fails, a sidecar-format book it would have replaced keeps its entries. A
-    // directory left behind can't be read as entries, since the legacy file has no sidecar format marker.
-    const { entriesDir } = getWorldInfoPaths(directories, worldName);
-    try {
-        if (fs.existsSync(entriesDir)) {
-            fs.rmSync(entriesDir, { recursive: true, force: true });
-        }
-    } catch (err) {
-        console.warn(`Could not remove the old sidecar directory ${entriesDir} of the imported World Info ${worldName}:`, err);
-    }
+    writeWorldInfoFile(directories, worldName, worldContent);
     return worldName;
 }
 
