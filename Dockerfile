@@ -21,6 +21,11 @@ RUN \
   echo "*** Install npm packages ***" && \
   npm ci --no-audit --no-fund --loglevel=error --no-progress --omit=dev --ignore-scripts && npm cache clean --force
 
+# The engine build for this source, so the container never fetches it at start
+RUN \
+  echo "*** Fetch the engine ***" && \
+  node engine/fetch.js
+
 # Create config directory and link config.yaml. Added hardcoded dirs(constants.js?)
 # that must be present for Non-Root Mode and volumeless docker runs.
 RUN \
