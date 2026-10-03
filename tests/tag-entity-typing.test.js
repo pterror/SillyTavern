@@ -2,6 +2,22 @@ import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } fr
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { defineCharacterStoreFunctions } from '../src/character-store-schema.js';
+
+/**
+ * better-sqlite3 with the store's SQL functions registered on every connection, as the store's own connections have
+ * them (character-store-schema.js).
+ * @param {typeof import('better-sqlite3')} Base
+ * @returns {typeof import('better-sqlite3')}
+ */
+function withStoreFunctions(Base) {
+    return /** @type {any} */ (class extends /** @type {any} */ (Base) {
+        constructor(/** @type {any[]} */ ...args) {
+            super(...args);
+            defineCharacterStoreFunctions({ defineFunction: (name, fn) => this.function(name, { deterministic: true }, fn) });
+        }
+    });
+}
 
 // A tag assignment's entity type follows from its id: ending in `.png` is a character, anything else a group.
 // A group row whose id ends in `.png` can only be legacy data; its group_tags rows are never read as a group's.
@@ -25,7 +41,7 @@ beforeAll(async () => {
 
     metadataDb = await import('../src/character-metadata-db.js');
     searchCoordinator = await import('../src/endpoints/search-index-coordinator.js');
-    Database = (await import('better-sqlite3')).default;
+    Database = withStoreFunctions((await import('better-sqlite3')).default);
     const { router: tagsRouter } = await import('../src/endpoints/tags.js');
     const { router: groupsRouter } = await import('../src/endpoints/groups.js');
 

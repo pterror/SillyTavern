@@ -15,6 +15,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 
 import { openNativeDatabase } from '../src/endpoints/sqlite-engine.js';
+import { defineCharacterStoreFunctions } from '../src/character-store-schema.js';
 
 // better-sqlite3's own default; the engine's longer default is sized for the server's bulk write passes.
 const BUSY_TIMEOUT_MS = 5000;
@@ -68,7 +69,9 @@ function tryOpen(dbPath, label) {
         return null;
     }
     try {
-        return openNativeDatabase(Database, dbPath, { readonly: true, busyTimeoutMs: BUSY_TIMEOUT_MS });
+        const db = openNativeDatabase(Database, dbPath, { readonly: true, busyTimeoutMs: BUSY_TIMEOUT_MS });
+        defineCharacterStoreFunctions(db);
+        return db;
     } catch (error) {
         console.warn(`warning: couldn't open ${label} (${dbPath}): ${error.message} - skipping its section(s)`);
         return null;

@@ -3,6 +3,18 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { recountStoredCounters } from './util/stored-counters.js';
+import { defineCharacterStoreFunctions } from '../src/character-store-schema.js';
+
+/**
+ * Registers on a raw connection to the character store the functions its indexes and triggers call.
+ * @template {import('better-sqlite3').Database} T
+ * @param {T} db
+ * @returns {T}
+ */
+function withStoreFunctions(db) {
+    defineCharacterStoreFunctions({ defineFunction: (name, fn) => db.function(name, { deterministic: true }, fn) });
+    return db;
+}
 
 // POST /api/characters/query's total read from the stored counters (entity_counts / entity_tag_counts) once their
 // fill is done, for the shapes they answer: no filter, fav alone, one included tag, one excluded tag (each ± fav).
@@ -106,7 +118,7 @@ afterEach(async () => {
 
 /** @template T @param {(db: import('better-sqlite3').Database) => T} fn @returns {T} */
 function withRawDb(fn) {
-    const db = new Database(path.join(directories.root, 'character-metadata.sqlite'));
+    const db = withStoreFunctions(new Database(path.join(directories.root, 'character-metadata.sqlite')));
     try {
         return fn(db);
     } finally {
@@ -457,13 +469,20 @@ const SEQ_CTE = 'WITH RECURSIVE seq(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM 
 
 /**
  * Copies `template`'s row of `table` n times through a raw connection, with the given column expressions over the
- * row number i. The counter triggers count the copies, since the fill is done by then.
+ * row number i. The counter triggers count the copies, since the fill is done by then. A character's card table rows
+ * are copied with it, under its new id (overrides.id).
  * @param {import('better-sqlite3').Database} db
  */
 function copyRows(db, table, template, n, overrides) {
     const columns = Array.from(db.prepare(`PRAGMA table_info(${table})`).iterate(), c => c.name);
     const values = columns.map(c => overrides[c] ?? `t.${c}`);
     db.prepare(`${SEQ_CTE} INSERT INTO ${table} (${columns.join(', ')}) SELECT ${values.join(', ')} FROM seq, ${table} t WHERE t.id = @template`).run({ n, template });
+    if (table !== 'characters') return;
+    for (const cardTable of ['cards', 'card_greetings', 'card_tags', 'card_extensions', 'card_extra']) {
+        const cardColumns = Array.from(db.prepare(`PRAGMA table_info(${cardTable})`).iterate(), c => c.name).filter(c => c !== 'character_id');
+        db.prepare(`${SEQ_CTE} INSERT INTO ${cardTable} (character_id, ${cardColumns.join(', ')}) SELECT ${overrides.id}, ${cardColumns.map(c => `t.${c}`).join(', ')} FROM seq, ${cardTable} t WHERE t.character_id = @template`)
+            .run({ n, template });
+    }
 }
 
 /**
@@ -479,7 +498,7 @@ async function seedBigStore() {
     withRawDb(db => {
         db.transaction(() => {
             copyRows(db, 'characters', 'tmpl.png', BIG_CHARACTERS, {
-                id: 'printf(\'c%06d.png\', i)', name_fold: 'printf(\'c%06d\', i)',
+                id: 'printf(\'c%06d.png\', i)', name: 'printf(\'c%06d\', i)',
                 fav: `${bucketSql(15485863)} < 15`, world: `CASE WHEN ${bucketSql(179424673)} < 30 THEN 'lore' ELSE '' END`,
             });
             copyRows(db, 'groups', 'gtmpl', BIG_GROUPS, {
@@ -672,8 +691,9 @@ describe('/query searches walked under the work cap', () => {
         let offset = 1 + 1 + 8 + 8;
         const rowCount = view.getUint16(offset, true); offset += 2;
         expect(rowCount).toBe(1);
+        // A character row: its version where a group row has its three digests.
         offset += 1;
-        const idLen = view.getUint16(offset, true); offset += 2 + idLen + 4 + 4 + 4 + 8 * 5;
+        const idLen = view.getUint16(offset, true); offset += 2 + idLen + 8 + 8 * 5;
         const chatLen = view.getUint16(offset, true); offset += 2 + chatLen;
         const tokenLen = view.getUint16(offset, true); offset += 2 + tokenLen;
         const cursorLen = view.getUint16(offset, true); offset += 2;

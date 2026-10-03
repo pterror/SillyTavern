@@ -12,10 +12,12 @@ import { color, delay, generateTimestamp, getConfigValue, mapWithConcurrency, pa
 import { ProgressLog } from './progress-log.js';
 import { changedValues, writeRowIfChanged } from './row-values.js';
 import extract from 'png-chunks-extract';
-import { parse as parseCharacterCard, read as readCharacterCardFromBuffer, readCharaChunkPristineFromChunks, computeAvatarIdentityHashFromChunks } from './character-card-parser.js';
+import { read as readCharacterCardFromBuffer, readCharaChunkPristineFromChunks, computeAvatarIdentityHashFromChunks } from './character-card-parser.js';
 import { getCharaCardV2, computeContentIdentityHash } from './character-card-normalize.js';
-import { calculateDataSize, toShallow } from './character-shallow.js';
-import { CARD_TABLES_SQL, assembleCardsSync, cardLayoutOf, cardNameText, listRowsFromFieldsSync } from './character-card-reader.js';
+import { calculateDataSize } from './character-shallow.js';
+import { CARD_LAYOUT_META_KEY, CARD_TABLES_SQL, assembleCardsSync, cardLayoutOf, cardListValues, cardNameText, cardRowsSync, listRowsFromFieldsSync } from './character-card-reader.js';
+import { CARD_COLUMNS, splitCard } from './character-card-storage.js';
+import { FIELDS_CHARACTERS_TABLE_SQL, FIELDS_CHARACTER_INDEXES, CHARACTER_SORT_INDEX_COLUMNS, defineCharacterStoreFunctions, foldName } from './character-store-schema.js';
 import { readTagsData } from './endpoints/tags-data.js';
 import { getSqliteEngine, isBusyError, openNativeDatabase, streamRows } from './endpoints/sqlite-engine.js';
 import { getBetterSqlite3 } from './endpoints/native-sqlite.js';
@@ -28,7 +30,7 @@ import { SEARCH_WORK_CAP, SEARCH_WALK_WINDOW } from './endpoints/search-walk.js'
 import { orderKey, permute, unpermute } from './random-order.js';
 import { characterAvatarsForOwnerId, characterOwnerIdOf, dropOwnerCreatedAtIndex, fillMessageStats, listOwnersWithoutKind, openOwnerStatsView, recordOwnerKinds } from './message-tree-db.js';
 // getStringHash must match public/scripts/random-sort.js's compareByRandomSeed() exactly, or server/client random-sort ordering diverges.
-import { getStringHash, characterDigestFavHash, characterDigestFieldsHash, characterDigestTagIdsHash, groupDigestFavHash, groupDigestTagIdsHash, groupDigestContentHash, normalizeFav, normalizeTagIds, tagNameKey } from '../public/scripts/hash-utils.js';
+import { getStringHash, groupDigestFavHash, groupDigestTagIdsHash, groupDigestContentHash, normalizeFav, normalizeTagIds, tagNameKey } from '../public/scripts/hash-utils.js';
 
 export const characterChangeEmitter = new EventEmitter();
 
@@ -242,7 +244,6 @@ export const allowExpensiveDuplicateFallback = !!getConfigValue('performance.all
  * @property {boolean} [randomRanksFilled] Set once fillRandomRanksIfNeeded() has finished, which stays.
  * @property {boolean} [nameOrderFilled] Set once fillNameOrderIfNeeded() has finished, which stays.
  * @property {boolean} [tagQueryColumnsReady] Set once tagQueryColumnsReady() is true, which stays true.
- * @property {'blob' | 'fields'} cardLayout How the store holds cards (cardLayoutOf()); the card reader below reads by it.
  * @property {number} [activityQueued] Writes queued into activity_pending since the queue was last written out.
  * @property {boolean} [activityFoldScheduled] Set while a background write-out of the whole queue is scheduled.
  */
@@ -261,39 +262,50 @@ export const allowExpensiveDuplicateFallback = !!getConfigValue('performance.all
  */
 
 /**
- * @typedef {object} CharacterRow Full `characters` table row shape (see SCHEMA_SQL above).
+ * @typedef {object} CharacterRow Full `characters` table row shape (character-store-schema.js).
  * @property {string} id
- * @property {string} name
+ * @property {string | null} name The card's name, when it is a string.
  * @property {string} name_fold
  * @property {number} fav 0 or 1
- * @property {number} date_added Epoch ms. Write-once: every upsert's ON CONFLICT omits it from the SET list.
+ * @property {number} date_added Epoch ms. Write-once: only renameCharacterRow() and setCharacterDateAdded() change it.
  * @property {number | null} create_date Epoch ms, parsed via parseCreateDateToEpochMs().
+ * @property {string | number | null} create_date_raw The card's own create_date, when a string or a number.
  * @property {number} date_last_chat Epoch ms
  * @property {number} chat_size
  * @property {number} data_size
  * @property {string | null} world
  * @property {string | null} creator
- * @property {string | null} version
- * @property {string | null} creator_notes
- * @property {string} shallow_json JSON-serialized shallow character object (character-shallow.js's toShallow()).
- * @property {number} digest_fav Per-field digest of shallow_json's fav fields - see writeShallowJson().
- * @property {number} digest_tag_ids Per-field digest of shallow_json's tag_ids - see writeShallowJson().
- * @property {number} digest_content Per-field digest of shallow_json's content fields - see writeShallowJson().
- * @property {number} change_seq
+ * @property {string | null} character_version
  * @property {NodeId} active_chat
- * @property {number} active_chat_checked 0 = not examined, 1 = resolved one way or the other. Never regresses 1->0.
- * @property {string | null} card_json Full Spec-V2 card JSON when it overrides the PNG chunk; null otherwise.
+ * @property {number | null} allow_global_styles 0, 1, or null ("no preference recorded yet").
+ * @property {number} version The seq of the change that last changed the row.
  * @property {string | null} content_hash sha256 of the raw uploaded import source bytes.
  * @property {string | null} content_identity_hash Fingerprint of semantic content with install-local fields stripped.
  * @property {string | null} avatar_identity_hash sha256 over the PNG's raw IDAT payload bytes.
  * @property {number} import_poisoned 0 or 1 - whether this row may carry old-import-path artifacts.
- * @property {number | null} allow_global_styles 0, 1, or null ("no preference recorded yet").
  */
 
 /**
- * @typedef {Omit<CharacterRow, 'change_seq' | 'allow_global_styles'>} CharacterUpsertRow buildRow()'s output -
- * every UPSERT_SQL-bound column except `change_seq` (assigned by insertChange() at write time, not by buildRow())
- * and `allow_global_styles` (not part of UPSERT_SQL at all - owned solely by setCharacterAllowGlobalStyles()).
+ * @typedef {object} CharacterUpsertRow buildRow()'s output: a card written as a character, split into its row's
+ * values and its card table rows (`parts`), with what the batch-import buffer's readers need of it.
+ * @property {string} id
+ * @property {import('./character-card-storage.js').CardParts} parts
+ * @property {string | null} name
+ * @property {string | null} creator
+ * @property {string | null} character_version
+ * @property {string | null} world
+ * @property {string | number | null} create_date_raw
+ * @property {number} fav
+ * @property {number} date_added
+ * @property {number | null} create_date
+ * @property {number} data_size
+ * @property {string | null} content_hash
+ * @property {string | null} content_identity_hash
+ * @property {string | null} avatar_identity_hash
+ * @property {number} import_poisoned
+ * @property {NodeId} active_chat
+ * @property {string} nameText The name the app shows (cardNameText()).
+ * @property {unknown[]} cardTags The card's own tag names, as its list row shows them.
  */
 
 /**
@@ -383,10 +395,7 @@ export const allowExpensiveDuplicateFallback = !!getConfigValue('performance.all
  */
 
 /**
- * @typedef {object} HashSourceRow Columns selected via HASH_COLUMNS - the fields queryCharacters()'s toHashRow()
- * reads. digest_fav/digest_tag_ids/digest_content are plain column reads, not recomputed here - writeShallowJson()
- * is the only place a character row's shallow_json and its digests can be written, always together, so a stored
- * value here can never be stale relative to shallow_json.
+ * @typedef {object} HashSourceRow Columns selected via HASH_COLUMNS - the fields queryCharacters()'s toHashRow() reads.
  * @property {string} id
  * @property {NodeId} active_chat
  * @property {number} date_added
@@ -394,9 +403,7 @@ export const allowExpensiveDuplicateFallback = !!getConfigValue('performance.all
  * @property {number} date_last_chat
  * @property {number} chat_size
  * @property {number} data_size
- * @property {number} digest_fav
- * @property {number} digest_tag_ids
- * @property {number} digest_content
+ * @property {number} version
  */
 
 /**
@@ -411,15 +418,17 @@ export const allowExpensiveDuplicateFallback = !!getConfigValue('performance.all
  * @property {number} chat_size
  * @property {number | null} create_date `date_added` on the group side (groups have no separate card create_date).
  * @property {number | null} data_size `null` for a group row (no equivalent).
- * @property {string | null} shallow_json `null` for a group row.
- * @property {number | null} [digest_fav] Character rows: always present. Group rows: null means "not yet backfilled".
- * @property {number | null} [digest_tag_ids] Character rows: always present. Group rows: null means "not yet backfilled".
- * @property {number | null} [digest_content] Character rows: always present. Group rows: null means "not yet backfilled".
+ * @property {NodeId} active_chat `null` for a group row.
+ * @property {number | null} version A character row's; `null` for a group row.
+ * @property {number | null} [digest_fav] Group rows; null means "not yet backfilled". `null` for a character row.
+ * @property {number | null} [digest_tag_ids] Group rows; null means "not yet backfilled". `null` for a character row.
+ * @property {number | null} [digest_content] Group rows; null means "not yet backfilled". `null` for a character row.
  */
 
 /**
- * @typedef {object} EntityHashRow queryEntities()'s toHashRow() output. A NULL-digest group row's
- * favHash/tagIdsHash/contentHash start as placeholder zeros, corrected in place by resolveFileFallbackHashes().
+ * @typedef {object} EntityHashRow queryEntities()'s toHashRow() output. A character row carries its `version`; a group
+ * row its three digests, where a NULL-digest group row's favHash/tagIdsHash/contentHash start as placeholder zeros,
+ * corrected in place by resolveFileFallbackHashes().
  * @property {string} id
  * @property {boolean} isGroup
  * @property {NodeId} chat
@@ -428,9 +437,10 @@ export const allowExpensiveDuplicateFallback = !!getConfigValue('performance.all
  * @property {number} date_last_chat
  * @property {number} chat_size
  * @property {number} data_size
- * @property {number} favHash
- * @property {number} tagIdsHash
- * @property {number} contentHash
+ * @property {number | null} version A character row's version; null for a group row.
+ * @property {number} favHash 0 for a character row.
+ * @property {number} tagIdsHash 0 for a character row.
+ * @property {number} contentHash 0 for a character row.
  */
 
 /** @type {Map<string, MetadataDbEntry>} Keyed by directories.root. */
@@ -439,42 +449,8 @@ const entries = new Map();
 let warnedNoEngine = false;
 
 const SCHEMA_SQL = `
-    CREATE TABLE IF NOT EXISTS characters (
-        id             TEXT PRIMARY KEY,
-        name           TEXT NOT NULL,
-        name_fold      TEXT NOT NULL,
-        fav            INTEGER NOT NULL,
-        date_added     INTEGER NOT NULL,
-        -- Epoch ms, parsed via parseCreateDateToEpochMs(); NULL if the card's create_date is missing/unparseable.
-        -- Must stay INTEGER (not TEXT) or a mixed-type UNION ORDER BY with groups.date_added misorders rows.
-        create_date    INTEGER,
-        date_last_chat INTEGER NOT NULL,
-        chat_size      INTEGER NOT NULL,
-        data_size      INTEGER NOT NULL,
-        world          TEXT,
-        creator        TEXT,
-        version        TEXT,
-        creator_notes  TEXT,
-        shallow_json   TEXT NOT NULL,
-        -- Per-field digests of shallow_json, read directly by queryCharacters()'s/queryEntities()'s hash mode -
-        -- never recomputed there. writeShallowJson() is the only place shallow_json is written outside buildRow()/
-        -- writeRowSync()'s own row-construction, and it always writes these three columns in the same statement,
-        -- so they cannot drift out of step with shallow_json the way they once did (see migrateCharacterDigestColumns()).
-        digest_fav     INTEGER NOT NULL,
-        digest_tag_ids INTEGER NOT NULL,
-        digest_content INTEGER NOT NULL,
-        change_seq     INTEGER NOT NULL,
-        -- NULL is ambiguous: "confirmed no chat" vs "not examined yet" look identical, which would make a
-        -- resumability query re-read every no-chat card off disk on every boot. active_chat_checked disambiguates.
-        active_chat    TEXT,
-        -- 0 = not examined, 1 = resolved one way or the other (real chat name or confirmed none). Never regresses 1->0.
-        active_chat_checked INTEGER NOT NULL DEFAULT 0,
-        -- Full Spec-V2 card JSON - the single source of truth for character data. The PNG is never read as a
-        -- data source for an already-imported character; readCardContent() (characters.js) is the read seam.
-        -- Export paths materialize this column into the PNG chunk so exported files stay self-contained.
-        card_json      TEXT NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_characters_world ON characters(world);
+    ${FIELDS_CHARACTERS_TABLE_SQL}
+    ${FIELDS_CHARACTER_INDEXES.filter(index => !index.name.startsWith('idx_characters_sort_')).map(index => `${index.sql};`).join('\n    ')}
     -- content_hash: sha256 of the raw uploaded import source bytes. NULL for anything not imported through that
     -- path or predating the column; never backfilled, so NULL/NULL is never treated as a match.
     --
@@ -482,12 +458,9 @@ const SCHEMA_SQL = `
     -- (stripInstallLocalFields()), recomputed on every successful write, so two independently-imported copies of
     -- the same card can be recognized as the same character. Only valid if the file went through the current
     -- minimal-mutation write path; import_poisoned=1 flags rows where it might not have (old, more-mutating
-    -- import logic). Every pre-existing row starts poisoned; only upsertCharacterFromWrite() clears it, since
-    -- only an actual write through the current path proves the file is current.
-    --
-    -- backfillContentIdentityHashes() populates content_identity_hash a third way, from the PNG's pristine
-    -- 'chara' chunk, but deliberately does NOT clear import_poisoned - the flag also means "file may carry other
-    -- old-write-path artifacts" (forced ccv3 upgrade, old avatar re-encode), which stays true regardless.
+    -- import logic). Only upsertCharacterFromWrite() clears it, since only an actual write through the current
+    -- path proves the file is current. The flag also means "file may carry other old-write-path artifacts"
+    -- (forced ccv3 upgrade, old avatar re-encode).
     --
     -- avatar_identity_hash: computeAvatarIdentityHashFromChunks() - sha256 over raw IDAT payload bytes, not a
     -- decoded-pixel hash. Independent from content_identity_hash (same text, different portrait can share one but
@@ -776,216 +749,12 @@ const SCHEMA_SQL = `
     CREATE INDEX IF NOT EXISTS idx_saved_views_position ON saved_views(position, id);
 `;
 
-const UPSERT_SQL = `
-    INSERT INTO characters (
-        id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size,
-        world, creator, version, creator_notes, shallow_json, digest_fav, digest_tag_ids, digest_content,
-        content_hash, content_identity_hash, avatar_identity_hash, import_poisoned, active_chat, active_chat_checked,
-        change_seq, card_json
-    ) VALUES (
-        @id, @name, @name_fold, @fav, @date_added, @create_date, @date_last_chat, @chat_size, @data_size,
-        @world, @creator, @version, @creator_notes, @shallow_json, @digest_fav, @digest_tag_ids, @digest_content,
-        @content_hash, @content_identity_hash, @avatar_identity_hash, @import_poisoned, @active_chat, @active_chat_checked,
-        @changeSeq, @card_json
-    )
-    ON CONFLICT(id) DO UPDATE SET
-        name = excluded.name,
-        name_fold = excluded.name_fold,
-        fav = excluded.fav,
-        create_date = excluded.create_date,
-        -- date_last_chat and chat_size absent deliberately: owned by applyCharacterChatStats(), which follows every
-        -- write to the character's messages. This function's callers get theirs from the chats directory, which no
-        -- longer changes once messages live in the tree, so including them would reset the row to stale values.
-        data_size = excluded.data_size,
-        world = excluded.world,
-        creator = excluded.creator,
-        version = excluded.version,
-        creator_notes = excluded.creator_notes,
-        shallow_json = excluded.shallow_json,
-        digest_fav = excluded.digest_fav,
-        digest_tag_ids = excluded.digest_tag_ids,
-        digest_content = excluded.digest_content,
-        -- COALESCE: most writers pass no content hash (undefined), and a plain overwrite would clobber an
-        -- import-time hash to NULL on the next unrelated edit. Only a fresh hash (re-import, same id) overwrites.
-        content_hash = COALESCE(excluded.content_hash, characters.content_hash),
-        content_identity_hash = COALESCE(excluded.content_identity_hash, characters.content_identity_hash),
-        avatar_identity_hash = COALESCE(excluded.avatar_identity_hash, characters.avatar_identity_hash),
-        -- import_poisoned is NOT NULL so there's no NULL "no signal" value: a genuine write (0) always clears
-        -- poison; reconcile/bootstrap bind 1 as their no-signal value and leave the existing state alone.
-        import_poisoned = CASE WHEN excluded.import_poisoned = 0 THEN 0 ELSE characters.import_poisoned END,
-        -- Plain overwrite: writeRowSync() already pre-resolves the correct value before this SQL runs.
-        active_chat = excluded.active_chat,
-        -- Never regresses 1 -> 0.
-        active_chat_checked = CASE WHEN excluded.active_chat_checked = 1 THEN 1 ELSE characters.active_chat_checked END,
-        -- Plain overwrite, not COALESCE: NULL here is a real signal ("file now current, stop preferring the
-        -- parked copy"), not an absence of one - a COALESCE would keep serving stale edits after an avatar
-        -- replace with no way to ever clear them.
-        card_json = excluded.card_json,
-        change_seq = excluded.change_seq
-    -- date_added intentionally absent: write-once, see this module's header.
-`;
-
-// NFKD-normalizes and strips combining marks so "É"/"e" sort/prefix-match the same as "é"/"e".
-/**
- * @param {unknown} name
- * @returns {string}
- */
-function foldName(name) {
-    return String(name ?? '')
-        .toLowerCase()
-        .normalize('NFKD')
-        .replace(/[\u0300-\u036f]/g, '');
-}
-
 /**
  * @param {import('./users.js').UserDirectoryList} directories
  * @returns {string}
  */
 function getDbPath(directories) {
     return path.join(directories.root, 'character-metadata.sqlite');
-}
-
-// SQLite has no ALTER TABLE ADD COLUMN IF NOT EXISTS, so this checks PRAGMA table_info and runs the ALTER once.
-// Never backfills existing rows' hashes - they stay NULL.
-/**
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- */
-function migrateContentHashColumn(db) {
-    const columns = Array.from(/** @type {Iterable<{ name: string, type: string, [key: string]: unknown }>} */ (db.iterate('PRAGMA table_info(characters)')));
-    const hasColumn = columns.some(c => c.name === 'content_hash');
-    if (!hasColumn) {
-        db.exec('ALTER TABLE characters ADD COLUMN content_hash TEXT');
-    }
-    db.exec('CREATE INDEX IF NOT EXISTS idx_characters_content_hash ON characters(content_hash)');
-}
-
-// import_poisoned defaults to 1: rows that predate this column came from the old, more-mutating import logic.
-/**
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- */
-function migrateContentIdentityColumns(db) {
-    const columns = Array.from(/** @type {Iterable<{ name: string, type: string, [key: string]: unknown }>} */ (db.iterate('PRAGMA table_info(characters)')));
-    if (!columns.some(c => c.name === 'content_identity_hash')) {
-        db.exec('ALTER TABLE characters ADD COLUMN content_identity_hash TEXT');
-    }
-    if (!columns.some(c => c.name === 'import_poisoned')) {
-        db.exec('ALTER TABLE characters ADD COLUMN import_poisoned INTEGER NOT NULL DEFAULT 1');
-    }
-    db.exec('CREATE INDEX IF NOT EXISTS idx_characters_content_identity_hash ON characters(content_identity_hash)');
-    db.exec('DROP INDEX IF EXISTS idx_characters_import_poisoned');
-}
-
-/**
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- */
-function migrateAvatarIdentityColumn(db) {
-    const columns = Array.from(/** @type {Iterable<{ name: string, type: string, [key: string]: unknown }>} */ (db.iterate('PRAGMA table_info(characters)')));
-    if (!columns.some(c => c.name === 'avatar_identity_hash')) {
-        db.exec('ALTER TABLE characters ADD COLUMN avatar_identity_hash TEXT');
-    }
-    db.exec('CREATE INDEX IF NOT EXISTS idx_characters_avatar_identity_hash ON characters(avatar_identity_hash)');
-}
-
-// A pre-existing active_chat column means those rows were already resolved in prior boots, so active_chat_checked
-// is retroactively set to 1 for them instead of DEFAULT 0, which would force a full corpus re-read.
-/**
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- */
-function migrateActiveChatColumn(db) {
-    const columns = Array.from(/** @type {Iterable<{ name: string, type: string, [key: string]: unknown }>} */ (db.iterate('PRAGMA table_info(characters)')));
-    const hadActiveChatAlready = columns.some(c => c.name === 'active_chat');
-    if (!hadActiveChatAlready) {
-        db.exec('ALTER TABLE characters ADD COLUMN active_chat TEXT');
-    }
-    if (!columns.some(c => c.name === 'active_chat_checked')) {
-        db.exec('ALTER TABLE characters ADD COLUMN active_chat_checked INTEGER NOT NULL DEFAULT 0');
-        if (hadActiveChatAlready) {
-            db.exec('UPDATE characters SET active_chat_checked = 1');
-        }
-    }
-    db.exec('DROP INDEX IF EXISTS idx_characters_active_chat_checked');
-}
-
-// Converts create_date from TEXT to INTEGER epoch ms. SQLite has no ALTER COLUMN, so: add a new INTEGER column,
-// backfill it in JS (parseCreateDateToEpochMs handles the "ST humanized" formats SQL alone can't), then DROP the
-// old column and RENAME the new one into place. Unparseable values become NULL and are logged.
-/**
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- */
-function migrateCreateDateColumn(db) {
-    const columns = Array.from(/** @type {Iterable<{ name: string, type: string, [key: string]: unknown }>} */ (db.iterate('PRAGMA table_info(characters)')));
-    const createDateColumn = columns.find(c => c.name === 'create_date');
-    const createDateMsColumn = columns.find(c => c.name === 'create_date_ms');
-
-    // create_date_ms exists but create_date doesn't: a previous run was interrupted after DROP, before RENAME.
-    if (!createDateColumn && createDateMsColumn) {
-        db.exec('ALTER TABLE characters RENAME COLUMN create_date_ms TO create_date');
-        return;
-    }
-
-    if (!createDateColumn || createDateColumn.type === 'INTEGER') return;
-
-    // If create_date_ms already exists (interrupted run), skip ADD + backfill and go straight to DROP + RENAME.
-    if (!createDateMsColumn) {
-        // SQLite refuses to DROP COLUMN while an index still references it.
-        db.exec('DROP INDEX IF EXISTS idx_characters_create_date');
-        db.exec('ALTER TABLE characters ADD COLUMN create_date_ms INTEGER');
-
-        /** @type {{ id: string, value: number | null }[]} */
-        const unparseable = [];
-        let lastId = '';
-        let rowsRead = 0;
-        db.transaction(() => {
-            // transaction() reruns this callback on busy; a rerun starts over from the first row.
-            lastId = '';
-            rowsRead = 0;
-            for (;;) {
-                const chunk = (/** @type {{ id: string, create_date: number | null }[]} */ (db.readBounded(
-                    'SELECT id, create_date FROM characters WHERE create_date IS NOT NULL AND id > ? ORDER BY id LIMIT ?',
-                    [lastId, KEYSET_CHUNK],
-                    KEYSET_CHUNK,
-                )));
-                if (chunk.length === 0) break;
-                rowsRead += chunk.length;
-
-                for (const row of chunk) {
-                    const ms = parseCreateDateToEpochMs(row.create_date);
-                    if (ms === null) {
-                        unparseable.push({ id: row.id, value: row.create_date });
-                        continue;
-                    }
-                    writeRowIfChanged(db, 'characters', { id: row.id }, { create_date_ms: ms });
-                }
-
-                lastId = chunk[chunk.length - 1].id;
-                if (chunk.length < KEYSET_CHUNK) break;
-            }
-        });
-
-        if (unparseable.length > 0) {
-            console.error(color.yellow(
-                `[character-metadata] create_date migration: ${unparseable.length} of ${rowsRead} row(s) had a ` +
-                'create_date value that could not be parsed as a date (neither ISO 8601 nor the ST "humanized" ' +
-                'format) and were set to NULL instead. Affected rows: ' +
-                JSON.stringify(unparseable),
-            ));
-        }
-    } else {
-        db.exec('DROP INDEX IF EXISTS idx_characters_create_date');
-    }
-
-    db.exec('ALTER TABLE characters DROP COLUMN create_date');
-    db.exec('ALTER TABLE characters RENAME COLUMN create_date_ms TO create_date');
-}
-
-/**
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- */
-function migrateDropFileMtimeColumn(db) {
-    const columns = Array.from(/** @type {Iterable<{ name: string, type: string, [key: string]: unknown }>} */ (db.iterate('PRAGMA table_info(characters)')));
-    if (columns.some(c => c.name === 'file_mtime')) {
-        db.exec('ALTER TABLE characters DROP COLUMN file_mtime');
-    }
 }
 
 // deleteRowSync() cascades a character deletion into deleting rows that named it as duplicate_of, so a stale
@@ -1153,10 +922,6 @@ function migrateGroupChangesFileNameColumn(db) {
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  */
 function migrateRevToSeqColumns(db) {
-    const charCols = Array.from(/** @type {Iterable<{ name: string, type: string, [key: string]: unknown }>} */ (db.iterate('PRAGMA table_info(\'characters\')')), c => c.name);
-    if (charCols.includes('rev') && !charCols.includes('change_seq')) {
-        db.exec('ALTER TABLE characters RENAME COLUMN rev TO change_seq');
-    }
     const changeCols = Array.from(/** @type {Iterable<{ name: string, type: string, [key: string]: unknown }>} */ (db.iterate('PRAGMA table_info(\'changes\')')), c => c.name);
     if (changeCols.includes('rev') && !changeCols.includes('seq')) {
         db.exec('ALTER TABLE changes RENAME COLUMN rev TO seq');
@@ -1164,176 +929,6 @@ function migrateRevToSeqColumns(db) {
     db.run('UPDATE meta SET key = \'tags_hash\' WHERE key = \'tags_rev\'');
     db.run('UPDATE meta SET key = \'tantivy_char_index_seq\' WHERE key = \'tantivy_char_index_rev\'');
     db.run('UPDATE meta SET key = \'tantivy_char_index_tags_hash\' WHERE key = \'tantivy_char_index_tags_rev\'');
-}
-
-// digest_fav/digest_tag_ids/digest_content used to drift from shallow_json because several call sites wrote
-// shallow_json without also updating them (a prior fix dropped the columns entirely rather than closing those
-// call sites). writeShallowJson() is now the only place shallow_json is written outside buildRow()/writeRowSync()'s
-// own row construction, and it always writes all three digest columns in the same statement - so an install that
-// still has these columns from before is fine as-is, and an install missing them gets a one-time eager backfill
-// (same shape as migrateGroupDigestColumns()) rather than the old lazy-NULL-until-next-write behavior, since
-// nothing here should ever read a NULL digest again.
-/**
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- */
-function migrateCharacterDigestColumns(db) {
-    const columns = Array.from(/** @type {Iterable<{ name: string, type: string, [key: string]: unknown }>} */ (db.iterate('PRAGMA table_info(characters)')));
-    const columnNames = new Set(columns.map(c => c.name));
-    const isNewColumn = !columnNames.has('digest_fav');
-    if (!columnNames.has('digest_fav')) db.exec('ALTER TABLE characters ADD COLUMN digest_fav INTEGER NOT NULL DEFAULT 0');
-    if (!columnNames.has('digest_tag_ids')) db.exec('ALTER TABLE characters ADD COLUMN digest_tag_ids INTEGER NOT NULL DEFAULT 0');
-    if (!columnNames.has('digest_content')) db.exec('ALTER TABLE characters ADD COLUMN digest_content INTEGER NOT NULL DEFAULT 0');
-
-    if (!isNewColumn) return;
-
-    const BACKFILL_CHUNK = 1000;
-    let lastId = '';
-    for (;;) {
-        const chunk = (/** @type {{ id: string, shallow_json: string }[]} */ (db.readBounded(
-            'SELECT id, shallow_json FROM characters WHERE id > ? ORDER BY id LIMIT ?',
-            [lastId, BACKFILL_CHUNK],
-            BACKFILL_CHUNK,
-        )));
-        if (chunk.length === 0) break;
-
-        db.transaction(() => {
-            for (const row of chunk) {
-                try {
-                    const shallow = JSON.parse(row.shallow_json);
-                    const { digest_fav, digest_tag_ids, digest_content } = digestColumnsForShallow(shallow);
-                    writeRowIfChanged(db, 'characters', { id: row.id }, { digest_fav, digest_tag_ids, digest_content });
-                } catch (err) {
-                    console.error(`[character-metadata] Character digest backfill failed for ${row.id}, leaving it at its zeroed defaults:`, /** @type {any} */ (err).message);
-                }
-            }
-        });
-
-        lastId = chunk[chunk.length - 1].id;
-        if (chunk.length < BACKFILL_CHUNK) break;
-    }
-}
-
-// The columns the fields layout keeps the card's raw create_date and character_version in (character-card-reader.js).
-// Added empty: nothing writes them in the blob layout.
-/**
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- */
-function migrateCardFieldColumns(db) {
-    const columns = Array.from(/** @type {Iterable<{ name: string }>} */ (db.iterate('PRAGMA table_info(characters)')), c => c.name);
-    // No declared type: the column holds a string or a number as itself.
-    if (!columns.includes('create_date_raw')) db.exec('ALTER TABLE characters ADD COLUMN create_date_raw');
-    if (!columns.includes('character_version')) db.exec('ALTER TABLE characters ADD COLUMN character_version TEXT');
-}
-
-// NULL means "no preference recorded yet"; existing values migrate from client accountStorage on first load.
-/**
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- */
-function migrateAllowGlobalStylesColumn(db) {
-    const columns = Array.from(/** @type {Iterable<{ name: string, type: string, [key: string]: unknown }>} */ (db.iterate('PRAGMA table_info(characters)')));
-    if (!columns.some(c => c.name === 'allow_global_styles')) {
-        db.exec('ALTER TABLE characters ADD COLUMN allow_global_styles INTEGER');
-    }
-}
-
-// card_json is the single source of truth for character data (never the PNG, post-import) - see SCHEMA_SQL's
-// column comment. A pre-existing row from before this column existed has no other source for it than its PNG,
-// so this is the one place the app still reads a PNG's embedded chunk for an already-imported character - a
-// one-time transition, not a runtime fallback. SQLite has no ALTER COLUMN, so making the column NOT NULL
-// (once every row has a value) means rebuilding the table: create the replacement with the same columns,
-// copy the data across, drop the old table, rename the new one into place.
-/**
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- * @param {import('./users.js').UserDirectoryList} directories
- */
-function migrateCardJsonColumn(db, directories) {
-    let columns = Array.from(/** @type {Iterable<{ name: string, type: string, notnull: number, [key: string]: unknown }>} */ (db.iterate('PRAGMA table_info(characters)')));
-    if (!columns.some(c => c.name === 'card_json')) {
-        db.exec('ALTER TABLE characters ADD COLUMN card_json TEXT');
-        columns = Array.from(/** @type {Iterable<{ name: string, type: string, notnull: number, [key: string]: unknown }>} */ (db.iterate('PRAGMA table_info(characters)')));
-    }
-
-    const cardJsonColumn = columns.find(c => c.name === 'card_json');
-    if (cardJsonColumn !== undefined && cardJsonColumn.notnull === 1) return; // already migrated
-
-    const readIdChunk = (/** @type {string} */ afterId) => (/** @type {{ id: string }[]} */ (db.readBounded(
-        'SELECT id FROM characters WHERE card_json IS NULL AND id > ? ORDER BY id LIMIT ?',
-        [afterId, KEYSET_CHUNK],
-        KEYSET_CHUNK,
-    )));
-
-    const firstChunk = readIdChunk('');
-    if (firstChunk.length > 0) {
-        let backfilled = 0;
-        /** @type {string[]} */
-        const unresolved = [];
-        let lastId = '';
-        let rowsRead = 0;
-        db.transaction(() => {
-            // transaction() reruns this callback on busy; a rerun starts over from the first chunk.
-            lastId = '';
-            rowsRead = 0;
-            let chunk = firstChunk;
-            for (;;) {
-                rowsRead += chunk.length;
-                for (const row of chunk) {
-                    let cardJson;
-                    try {
-                        cardJson = readCharacterCardFromBuffer(fs.readFileSync(path.join(directories.characters, row.id)));
-                    } catch {
-                        cardJson = undefined;
-                    }
-                    if (cardJson === undefined) {
-                        unresolved.push(row.id);
-                        continue;
-                    }
-                    writeRowIfChanged(db, 'characters', { id: row.id }, { card_json: cardJson });
-                    backfilled++;
-                }
-
-                if (chunk.length < KEYSET_CHUNK) break;
-                lastId = chunk[chunk.length - 1].id;
-                chunk = readIdChunk(lastId);
-                if (chunk.length === 0) break;
-            }
-        });
-        console.log(color.cyan(`[character-metadata] card_json migration: backfilled ${backfilled}/${rowsRead} pre-existing row(s) from their PNG.`));
-        if (unresolved.length > 0) {
-            console.error(color.red(
-                `[character-metadata] card_json migration: ${unresolved.length} row(s) have no readable PNG and no other ` +
-                `character-data source, so card_json can't be backfilled for them: ${unresolved.slice(0, 20).join(', ')}` +
-                `${unresolved.length > 20 ? ', ...' : ''}. Leaving the column nullable until these rows are resolved ` +
-                '(fix or remove them, then restart) - NOT NULL cannot be added while any row would violate it.',
-            ));
-            return;
-        }
-    }
-
-    // A trigger that names `characters` makes the RENAME below fail while the table is gone. The rows are copied
-    // unchanged, so the counters and the tag sort rows stay right; getEntry() creates the triggers again after this.
-    dropOldCounterTriggers(db);
-    db.exec(DROP_TAG_SORT_TRIGGERS_SQL);
-    db.exec(DROP_RANDOM_RANK_TRIGGERS_SQL);
-    db.exec(DROP_NAME_ORDER_TRIGGERS_SQL);
-    db.exec('CREATE TABLE characters_new (' + columns.map(c => {
-        let def = `${/** @type {string} */ (c.name)} ${/** @type {string} */ (c.type)}`;
-        if (c.name === 'card_json' || c.notnull) def += ' NOT NULL';
-        if (c.dflt_value !== null && c.dflt_value !== undefined) def += ` DEFAULT ${c.dflt_value}`;
-        if (c.pk) def += ' PRIMARY KEY';
-        return def;
-    }).join(', ') + ')');
-    const columnList = columns.map(c => c.name).join(', ');
-    db.exec(`INSERT INTO characters_new (${columnList}) SELECT ${columnList} FROM characters`);
-    db.exec('DROP TABLE characters');
-    db.exec('ALTER TABLE characters_new RENAME TO characters');
-
-    // Every index on `characters` created above this point in getEntry()'s migration chain was dropped along
-    // with the table just now (SQLite drops a table's indexes with it) and needs recreating - anything created
-    // further down getEntry()'s chain (migrateGroupsColumns() onward) still runs after this function returns.
-    db.exec(SCHEMA_SQL);
-    db.exec('CREATE INDEX IF NOT EXISTS idx_characters_content_hash ON characters(content_hash)');
-    db.exec('CREATE INDEX IF NOT EXISTS idx_characters_content_identity_hash ON characters(content_identity_hash)');
-    db.exec('CREATE INDEX IF NOT EXISTS idx_characters_avatar_identity_hash ON characters(avatar_identity_hash)');
 }
 
 // name_key is tagNameKey() of the row's name. Rows written before this column existed have it NULL until
@@ -1557,29 +1152,26 @@ async function getEntry(directories) {
     }
     const isNewStore = !fs.existsSync(getDbPath(directories));
     const db = engine.openDatabase(getDbPath(directories));
-    // The migrations below are the blob layout's; run over a store in the fields layout they would put card_json back.
-    if (cardLayoutOf(db) === 'fields') {
-        db.close();
-        throw new Error(`The character store at ${getDbPath(directories)} holds cards as fields, which this version can only open read-only.`);
+    defineCharacterStoreFunctions(db);
+    if (!isNewStore) {
+        try {
+            assertFieldsLayout(db, directories);
+        } catch (err) {
+            db.close();
+            throw err;
+        }
     }
     db.exec(SCHEMA_SQL);
     db.exec(CARD_TABLES_SQL);
-    if (isNewStore) setMetaSync(db, TAGS_SEED_PENDING_KEY, String(Date.now()));
-    migrateContentHashColumn(db);
-    migrateContentIdentityColumns(db);
-    migrateAvatarIdentityColumn(db);
-    migrateActiveChatColumn(db);
-    migrateCreateDateColumn(db);
-    migrateDropFileMtimeColumn(db);
+    if (isNewStore) {
+        setMetaSync(db, TAGS_SEED_PENDING_KEY, String(Date.now()));
+        setMetaSync(db, CARD_LAYOUT_META_KEY, 'fields');
+    }
     migrateLocalImportMtimesDuplicateOfColumn(db);
     migrateChangesFieldsColumn(db);
     // Before any migration below that logs a group change.
     migrateGroupChangesFileNameColumn(db);
     migrateRevToSeqColumns(db);
-    migrateCharacterDigestColumns(db);
-    migrateAllowGlobalStylesColumn(db);
-    migrateCardJsonColumn(db, directories);
-    migrateCardFieldColumns(db);
     migrateGroupsColumns(db, directories);
     migrateGroupDigestColumns(db, directories);
     migrateTagNameKeyColumn(db);
@@ -1596,9 +1188,25 @@ async function getEntry(directories) {
     db.exec(NAME_ORDER_TRIGGERS_SQL);
     dropUnusedIndexes(db);
     /** @type {MetadataDbEntry} */
-    const entry = { db, directories, batch: null, bootstrapPromise: null, cardLayout: /** @type {'blob'} */ ('blob') };
+    const entry = { db, directories, batch: null, bootstrapPromise: null };
     entries.set(key, entry);
     return entry;
+}
+
+/** Thrown when a store is in a layout this version doesn't read. */
+export class CharacterStoreLayoutError extends Error {}
+
+/**
+ * Throws CharacterStoreLayoutError, saying how to convert it, for a store whose characters are in the old blob
+ * layout (a `characters` table with no fields-layout meta row).
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {import('./users.js').UserDirectoryList} directories
+ */
+function assertFieldsLayout(db, directories) {
+    if (!db.get('SELECT 1 FROM sqlite_master WHERE type = \'table\' AND name = \'characters\'')) return;
+    if (cardLayoutOf(db) === 'fields') return;
+    const handle = path.basename(directories.root);
+    throw new CharacterStoreLayoutError(`${getDbPath(directories)} is in the old character layout. Stop the server and run: node src/migrations/convert-character-store-to-fields.js --server-stopped --handle ${handle}`);
 }
 
 // Read-only mode (read-only-mode.js): the existing db opens read-only on better-sqlite3, with no mkdir, no
@@ -1613,8 +1221,15 @@ async function openReadOnlyEntry(directories) {
         throw new Error('read-only mode needs better-sqlite3, which is not usable on this install');
     }
     const db = openNativeDatabase(DatabaseCtor, getDbPath(directories), { readonly: true });
+    defineCharacterStoreFunctions(db);
+    try {
+        assertFieldsLayout(db, directories);
+    } catch (err) {
+        db.close();
+        throw err;
+    }
     /** @type {MetadataDbEntry} */
-    const entry = { db, directories, batch: null, bootstrapPromise: null, cardLayout: cardLayoutOf(db) };
+    const entry = { db, directories, batch: null, bootstrapPromise: null };
     entries.set(directories.root, entry);
     return entry;
 }
@@ -1641,132 +1256,59 @@ export function characterRowOrPendingExistsSync(directories, avatar) {
     return Boolean(entry.db.get('SELECT 1 FROM characters WHERE id = @id', { id: avatar }));
 }
 
-// The only place a shallow object's digest_fav/digest_tag_ids/digest_content are computed - buildRow(),
-// writeRowSync(), patchPendingRowTagIds(), and writeShallowJson() below all call this rather than hashing
-// shallow's fields themselves, so there is exactly one computation to keep in sync with hash-utils.js.
 /**
- * @param {object} shallow
- * @returns {{ digest_fav: number, digest_tag_ids: number, digest_content: number }}
- */
-function digestColumnsForShallow(shallow) {
-    return {
-        digest_fav: characterDigestFavHash(shallow) % 4294967296,
-        digest_tag_ids: characterDigestTagIdsHash(shallow),
-        digest_content: characterDigestFieldsHash(shallow) % 4294967296,
-    };
-}
-
-// The sole writer of an existing character row's shallow_json column (buildRow()'s initial INSERT and
-// writeRowSync()'s pre-UPSERT row mutation are the only other places shallow_json is set, since those build a
-// whole new row rather than UPDATE one - both call digestColumnsForShallow() directly for the same reason).
-// Every UPDATE that touches shallow_json goes through this function, which always recomputes and writes
-// digest_fav/digest_tag_ids/digest_content in the same statement: shallow_json cannot be written here without
-// its digests, so they cannot drift out of step the way they previously did. It also writes the row's change
-// entry, so a fav fix made here is listed in it.
-/**
+ * Writes the given columns of a character's row where they differ from what is stored, logging one change with
+ * `fields` and moving the row's version to it. Writes nothing when nothing differs.
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  * @param {string} id
- * @param {object} shallow
- * @param {string[]} fields The change entry's field list; 'fav' is appended when the fav fix below changed shallow.
- * @param {Record<string, unknown>} [extraColumns] Other columns to SET in the same statement (e.g. fav,
- * active_chat) so a caller's other column writes stay atomic with the shallow_json write.
+ * @param {Record<string, unknown>} values
+ * @param {string[]} fields The change entry's field list.
+ * @returns {boolean} Whether it wrote.
  */
-function writeShallowJson(db, id, shallow, fields, extraColumns = {}) {
-    // Absent means never filled (backfillTagIdsInShallowJson() finds such rows by the missing key), so it is filled
-    // from character_tags rather than stored as [].
-    shallow.tag_ids = normalizeTagIds(Array.isArray(shallow.tag_ids) ? shallow.tag_ids : readCharacterTagIds(db, id));
-    // shallow_json read back from a row normalizeCharacterFavIfNeeded() hasn't reached yet may disagree with the fav
-    // column, which is authoritative. A fav in extraColumns is what this statement writes to that column.
-    const favColumn = 'fav' in extraColumns
-        ? extraColumns.fav
-        : (/** @type {{ fav: number } | undefined} */ (db.get('SELECT fav FROM characters WHERE id = @id', { id })))?.fav;
-    const changeFields = [...fields];
-    if (favColumn !== undefined) {
-        const fav = !!favColumn;
-        const s = /** @type {{ fav?: unknown, data?: { extensions?: { fav?: unknown } } }} */ (shallow);
-        if (s.fav !== fav || s.data?.extensions?.fav !== fav) {
-            setShallowFav(s, fav);
-            if (!changeFields.includes('fav')) changeFields.push('fav');
-        }
-    }
-    // Everything that can throw is computed before the first write, so a row is written in full or not at all.
-    const shallowJson = JSON.stringify(shallow);
-    const digests = digestColumnsForShallow(shallow);
-    const compared = { shallow_json: shallowJson, ...digests, ...extraColumns };
-    const stored = /** @type {Record<string, any> | undefined} */ (db.get(
-        `SELECT ${Object.keys(compared).join(', ')} FROM characters WHERE id = @id`, { id }));
-    if (!stored) return;
-    // Only the columns that changed are written; when none did, nothing is.
-    const changed = changedValues(stored, compared);
-    if (Object.keys(changed).length === 0) return;
-    const changeSeq = insertChange(db, id, 'upsert', JSON.stringify(changeFields));
-    writeEntityRowSync(db, ENTITY_COUNT_KIND_BY_NAME.character, id, { ...changed, change_seq: Number(changeSeq) }, stored);
+function writeCharacterColumnsSync(db, id, values, fields) {
+    const stored = /** @type {Record<string, any> | undefined} */ (db.get(`SELECT ${Object.keys(values).join(', ')} FROM characters WHERE id = @id`, { id }));
+    if (!stored) return false;
+    const changed = changedValues(stored, values);
+    if (Object.keys(changed).length === 0) return false;
+    const seq = insertChange(db, id, 'upsert', JSON.stringify(fields));
+    writeEntityRowSync(db, ENTITY_COUNT_KIND_BY_NAME.character, id, { ...changed, version: seq }, stored);
+    return true;
 }
 
 /**
- * A stored shallow_json as readers get it: tag_ids resolved through tag_deletions.
- * @param {string} shallowJson
- * @param {import('./tag-deletions.js').TagDeletions} deletions
- * @returns {any}
+ * Logs that a character's tag rows changed, which changes its list row's tag_ids, and moves its version. Called by
+ * a writer of character_tags once its rows changed, in the same transaction.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} id
  */
-function parseShallowResolvingTags(shallowJson, deletions) {
-    const shallow = JSON.parse(shallowJson);
-    if (Array.isArray(shallow?.tag_ids)) shallow.tag_ids = resolveTagIds(shallow.tag_ids, deletions);
-    return shallow;
+function logCharacterTagIdsChangedSync(db, id) {
+    if (!db.get('SELECT 1 FROM characters WHERE id = @id', { id })) return;
+    const seq = insertChange(db, id, 'upsert', JSON.stringify(['tag_ids']));
+    db.run('UPDATE characters SET version = @seq WHERE id = @id', { id, seq });
 }
 
-// The card reader: every read of a card or of a list row goes through these, which read by the store's layout
-// (entry.cardLayout): the stored copies (card_json, shallow_json) in the blob layout, the card tables in the fields
-// layout (character-card-reader.js). A statement feeding them selects listSourceColumn() / cardSourceColumn().
+// The card reader: every read of a card or of a list row goes through these, which assemble them from the card
+// tables (character-card-reader.js).
 
 /**
+ * The list rows (toShallow()'s shape, tag ids as stored) of `rows`, in their order.
  * @param {MetadataDbEntry} entry
- * @returns {string} The select-list item for a list row's stored copy: NULL in the fields layout, which has none.
+ * @param {Array<{ id: string }>} rows
+ * @returns {any[]} undefined for a row whose character is gone.
  */
-function listSourceColumn(entry) {
-    return entry.cardLayout === 'fields' ? 'NULL AS shallow_json' : 'shallow_json';
+function readListRowsSync(entry, rows) {
+    const includeCreatorNotes = !!getConfigValue('performance.shallowCharactersIncludeCreatorNotes', false, 'boolean');
+    const byId = listRowsFromFieldsSync(entry.db, rows.map(r => r.id), includeCreatorNotes);
+    return rows.map(r => byId.get(r.id));
 }
 
 /**
+ * Sets each row's `card_json` to its assembled card and `name` to the name the app shows (cardNameText()).
  * @param {MetadataDbEntry} entry
- * @returns {string} The select-list item for a card's stored copy: NULL in the fields layout, which has none.
- */
-function cardSourceColumn(entry) {
-    return entry.cardLayout === 'fields' ? 'NULL AS card_json' : 'card_json';
-}
-
-/**
- * The list rows (toShallow()'s shape, tag ids resolved) of `rows`, in their order.
- * @param {MetadataDbEntry} entry
- * @param {Array<{ id: string, shallow_json?: string | null }>} rows Selected with listSourceColumn().
- * @param {import('./tag-deletions.js').TagDeletions} deletions
- * @param {{ skipUnreadable?: boolean }} [options] skipUnreadable: a stored copy that doesn't parse gives undefined
- *   instead of throwing.
- * @returns {any[]} undefined for a row skipped, or whose character is gone.
- */
-function readListRowsSync(entry, rows, deletions, { skipUnreadable = false } = {}) {
-    if (entry.cardLayout === 'fields') {
-        const includeCreatorNotes = !!getConfigValue('performance.shallowCharactersIncludeCreatorNotes', false, 'boolean');
-        const byId = listRowsFromFieldsSync(entry.db, rows.map(r => r.id), deletions, includeCreatorNotes);
-        return rows.map(r => byId.get(r.id));
-    }
-    return rows.map(r => {
-        if (!skipUnreadable) return parseShallowResolvingTags(/** @type {string} */ (r.shallow_json), deletions);
-        try {
-            return parseShallowResolvingTags(/** @type {string} */ (r.shallow_json), deletions);
-        } catch {
-            return undefined;
-        }
-    });
-}
-
-/**
- * Sets each row's `card_json` (and, in the fields layout, `name`, as the blob layout's column holds it).
- * @param {MetadataDbEntry} entry
- * @param {Array<{ id: string, name: string, card_json: string | null }>} rows Selected with cardSourceColumn().
+ * @param {Array<{ id: string, name?: string | null, card_json?: string }>} rows
  */
 function fillCardJsonSync(entry, rows) {
-    if (entry.cardLayout !== 'fields' || rows.length === 0) return;
+    if (rows.length === 0) return;
     const cards = assembleCardsSync(entry.db, rows.map(r => r.id));
     for (const row of rows) {
         if (!cards.has(row.id)) continue;
@@ -1782,25 +1324,10 @@ function fillCardJsonSync(entry, rows) {
  * @returns {string | null} null when the character has no row.
  */
 function readCardJsonSync(entry, id) {
-    const row = /** @type {{ id: string, name: string, card_json: string | null } | undefined} */ (entry.db.get(`SELECT id, name, ${cardSourceColumn(entry)} FROM characters WHERE id = @id`, { id }));
-    if (!row) return null;
-    fillCardJsonSync(entry, [row]);
-    return row.card_json;
-}
-
-/**
- * The tag_ids digest of a character row as readers get it: the stored digest_tag_ids, unless a marked tag is in
- * shallow_json.tag_ids, which is then hashed resolved (the digest parseShallowResolvingTags()' row hashes to).
- * @param {number} storedDigest
- * @param {string | null | undefined} shallowJson Needed only when `deletions` isn't empty.
- * @param {import('./tag-deletions.js').TagDeletions} deletions
- * @returns {number}
- */
-function characterTagIdsDigestForReader(storedDigest, shallowJson, deletions) {
-    if (!deletions.any || typeof shallowJson !== 'string') return storedDigest >>> 0;
-    const tagIds = JSON.parse(shallowJson)?.tag_ids;
-    const resolved = resolveTagIds(tagIds, deletions);
-    return resolved === tagIds ? storedDigest >>> 0 : characterDigestTagIdsHash({ tag_ids: resolved }) >>> 0;
+    /** @type {{ id: string, card_json?: string }[]} */
+    const rows = [{ id }];
+    fillCardJsonSync(entry, rows);
+    return rows[0].card_json ?? null;
 }
 
 /**
@@ -1812,22 +1339,87 @@ function readCharacterTagIds(db, id) {
     return Array.from(db.iterate('SELECT tag_id FROM character_tags WHERE character_id = @id', { id }), row => /** @type {{ tag_id: string }} */ (row).tag_id);
 }
 
-// shallow_json's two fav fields both mirror the db-authoritative fav column.
 /**
- * @param {{ fav?: unknown, data?: { extensions?: { fav?: unknown } } }} shallow Mutated in place.
- * @param {boolean} fav
+ * The card's list and JSON tables, with the key and value columns of each, and where splitCard() puts their rows.
+ * @type {{ table: string, key: string[], value: string, rowsOf: (parts: import('./character-card-storage.js').CardParts) => Record<string, any>[] }[]}
  */
-function setShallowFav(shallow, fav) {
-    shallow.fav = fav;
-    shallow.data = shallow.data ?? {};
-    shallow.data.extensions = shallow.data.extensions ?? {};
-    shallow.data.extensions.fav = fav;
+const CARD_PART_TABLES = [
+    { table: 'card_greetings', key: ['list', 'position'], value: 'text', rowsOf: parts => parts.greetings },
+    { table: 'card_tags', key: ['position'], value: 'name', rowsOf: parts => parts.tags },
+    { table: 'card_extensions', key: ['key'], value: 'value', rowsOf: parts => parts.extensions },
+    { table: 'card_extra', key: ['path'], value: 'value', rowsOf: parts => parts.extra },
+];
+
+const CARD_COLUMN_NAMES = Object.keys(CARD_COLUMNS);
+const UPSERT_CARD_ROW_SQL = `INSERT INTO cards (character_id, ${CARD_COLUMN_NAMES.join(', ')}) VALUES (@character_id, ${CARD_COLUMN_NAMES.map(c => `@${c}`).join(', ')})
+    ON CONFLICT (character_id) DO UPDATE SET ${CARD_COLUMN_NAMES.map(c => `${c} = excluded.${c}`).join(', ')}`;
+
+/**
+ * Makes a character's card table rows `parts`' rows, writing only the rows that differ: its `cards` row only when a
+ * column changed, a list or JSON row only when its value did, and a row `parts` no longer has is deleted. The one
+ * writer of the card tables.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} id
+ * @param {import('./character-card-storage.js').CardParts} parts
+ * @returns {boolean} Whether it wrote.
+ */
+function writeCardPartsSync(db, id, parts) {
+    let changed = false;
+    const storedCard = cardRowsSync(db, [id]).get(id);
+    if (!storedCard || CARD_COLUMN_NAMES.some(c => (storedCard[c] ?? null) !== (parts.card[c] ?? null))) {
+        /** @type {Record<string, unknown>} */
+        const values = { character_id: id };
+        for (const column of CARD_COLUMN_NAMES) values[column] = parts.card[column] ?? null;
+        db.run(UPSERT_CARD_ROW_SQL, values);
+        changed = true;
+    }
+    for (const { table, key, value, rowsOf } of CARD_PART_TABLES) {
+        const columns = [...key, value];
+        /** @type {Map<string, any>} */
+        const stored = new Map();
+        for (const row of /** @type {Iterable<Record<string, any>>} */ (db.iterate(`SELECT ${columns.join(', ')} FROM ${table} WHERE character_id = @id`, { id }))) {
+            stored.set(JSON.stringify(key.map(k => row[k])), row[value]);
+        }
+        for (const row of rowsOf(parts)) {
+            const rowKey = JSON.stringify(key.map(k => row[k]));
+            const had = stored.has(rowKey);
+            const storedValue = stored.get(rowKey);
+            stored.delete(rowKey);
+            if (had && storedValue === row[value]) continue;
+            db.run(`INSERT INTO ${table} (character_id, ${columns.join(', ')}) VALUES (?, ${columns.map(() => '?').join(', ')})
+                ON CONFLICT (character_id, ${key.join(', ')}) DO UPDATE SET ${value} = excluded.${value}`, [id, ...columns.map(c => row[c])]);
+            changed = true;
+        }
+        for (const rowKey of stored.keys()) {
+            const keyValues = JSON.parse(rowKey);
+            db.run(`DELETE FROM ${table} WHERE character_id = ? AND ${key.map(k => `${k} = ?`).join(' AND ')}`, [id, ...keyValues]);
+            changed = true;
+        }
+    }
+    return changed;
+}
+
+/**
+ * A card's tag names as its list row shows them (`data.tags`, or the top-level `tags`), for resolving to tag ids.
+ * @param {any} listValues cardListValues()' result, or a list row.
+ * @returns {unknown[]}
+ */
+function cardTagsOfListRow(listValues) {
+    if (!listValues || typeof listValues !== 'object') return [];
+    if (listValues.data && typeof listValues.data === 'object' && Array.isArray(listValues.data.tags)) {
+        return listValues.data.tags;
+    }
+    if (Array.isArray(listValues.tags)) {
+        return listValues.tags;
+    }
+    return [];
 }
 
 // dateAddedCandidate is only used on a genuine insert.
 /**
  * @param {string} id
- * @param {HoistedCharacterCard} character
+ * @param {HoistedCharacterCard} character The card as getCharaCardV2() reads it, with `chat` and `fav` as the card
+ *   holds them.
  * @param {object} params
  * @param {number} params.dateAddedCandidate
  * @param {string | null} [params.contentHash]
@@ -1835,82 +1427,50 @@ function setShallowFav(shallow, fav) {
  * @param {boolean} [params.importPoisoned] Whether the file may carry old-write-path artifacts (see SCHEMA_SQL): true
  * for a row read from a file the current write path didn't write.
  * @param {string | null} [params.avatarIdentityHash]
- * @param {string[]} [params.tagIds]
- * @param {string} params.cardJson
+ * @param {string} params.cardJson The card as stored.
  * @returns {CharacterUpsertRow}
  */
-function buildRow(id, character, { dateAddedCandidate, contentHash, contentIdentityHash, importPoisoned = contentIdentityHash == null, avatarIdentityHash, tagIds = [], cardJson }) {
-    if (typeof cardJson !== 'string') throw new TypeError(`buildRow(${id}): cardJson is required (card_json is NOT NULL) - got ${typeof cardJson}`);
-    const includeCreatorNotes = !!getConfigValue('performance.shallowCharactersIncludeCreatorNotes', false, 'boolean');
-    const dataSize = calculateDataSize(character.data ?? {});
-    const shallowSource = {
-        ...character,
-        avatar: id,
-        date_added: dateAddedCandidate,
-        date_last_chat: 0,
-        chat_size: 0,
-        data_size: dataSize,
-        tag_ids: normalizeTagIds(tagIds),
-    };
-    const shallow = toShallow(shallowSource);
+function buildRow(id, character, { dateAddedCandidate, contentHash, contentIdentityHash, importPoisoned = contentIdentityHash == null, avatarIdentityHash, cardJson }) {
+    if (typeof cardJson !== 'string') throw new TypeError(`buildRow(${id}): cardJson is required - got ${typeof cardJson}`);
+    const card = JSON.parse(cardJson);
+    const parts = splitCard(card);
+    const { columns } = parts;
     // Falls back to the V2 mirror when the V1 top-level field is absent, same drift the other
     // V1_V2_FIELD_MAPPINGS fields get repaired for at read-time (character-card-normalize.js).
     const fav = normalizeFav(character.fav ?? _.get(/** @type {any} */ (character), 'data.extensions.fav'));
-    setShallowFav(shallow, fav);
     return {
         id,
-        name: character.name ?? '',
-        name_fold: foldName(character.name),
+        parts,
+        name: columns.name ?? null,
+        creator: columns.creator ?? null,
+        character_version: columns.character_version ?? null,
+        world: columns.world ?? null,
+        create_date_raw: columns.create_date ?? null,
         fav: fav ? 1 : 0,
         date_added: dateAddedCandidate,
         create_date: parseCreateDateToEpochMs(character.create_date),
-        // A new row starts at 0/0 and is queued for reconcileQueuedChatStatsSync(); an existing row keeps its own.
-        date_last_chat: 0,
-        chat_size: 0,
-        data_size: dataSize,
-        // Card `data.*` extension fields are genuinely caller-arbitrary (Spec-V2), hence the `any` cast here.
-        world: _.get(/** @type {any} */ (character), 'data.extensions.world', '') || null,
-        creator: _.get(/** @type {any} */ (character), 'data.creator', '') || null,
-        version: _.get(/** @type {any} */ (character), 'data.character_version', '') || null,
-        creator_notes: includeCreatorNotes ? (_.get(/** @type {any} */ (character), 'data.creator_notes', '') || null) : null,
-        shallow_json: JSON.stringify(shallow),
-        ...digestColumnsForShallow(shallow),
+        data_size: calculateDataSize(character.data ?? {}),
         content_hash: contentHash ?? null,
         content_identity_hash: contentIdentityHash ?? null,
         avatar_identity_hash: avatarIdentityHash ?? null,
         import_poisoned: importPoisoned ? 1 : 0,
         active_chat: character.chat ?? null,
-        active_chat_checked: 1,
-        card_json: cardJson,
+        nameText: cardNameText(card),
+        cardTags: cardTagsOfListRow(cardListValues(card, false)),
     };
 }
 
-/** The columns UPSERT_SQL sets on an existing row, other than change_seq. */
-const UPSERT_UPDATED_COLUMNS = ['name', 'name_fold', 'fav', 'create_date', 'data_size', 'world', 'creator', 'version',
-    'creator_notes', 'shallow_json', 'digest_fav', 'digest_tag_ids', 'digest_content', 'content_hash', 'content_identity_hash',
-    'avatar_identity_hash', 'import_poisoned', 'active_chat', 'active_chat_checked', 'card_json'];
+/** The columns a card write sets on an existing row. */
+const CARD_WRITE_COLUMNS = ['name', 'creator', 'character_version', 'world', 'create_date_raw', 'create_date', 'data_size',
+    'content_hash', 'content_identity_hash', 'avatar_identity_hash', 'import_poisoned', 'active_chat'];
 
-/**
- * The columns of the stored row `row` changes, by the rules UPSERT_SQL sets them on an existing row: the hash columns
- * and the two flags keep the stored value unless the row brings a new one.
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- * @param {Record<string, any>} row
- * @returns {{ stored: Record<string, any>, changed: Record<string, any> }} `changed` is empty when the write would
- *   change nothing.
- */
-function rowWriteChangesSync(db, row) {
-    const stored = /** @type {Record<string, any>} */ (db.get(`SELECT ${UPSERT_UPDATED_COLUMNS.join(', ')}, change_seq FROM characters WHERE id = @id`, { id: row.id }));
-    /** @type {Record<string, any>} */
-    const next = {};
-    for (const column of UPSERT_UPDATED_COLUMNS) next[column] = row[column];
-    for (const column of ['content_hash', 'content_identity_hash', 'avatar_identity_hash']) next[column] = row[column] ?? stored[column];
-    next.import_poisoned = row.import_poisoned === 0 ? 0 : stored.import_poisoned;
-    next.active_chat_checked = row.active_chat_checked === 1 ? 1 : stored.active_chat_checked;
-    return { stored, changed: changedValues(stored, next) };
-}
+const INSERT_CHARACTER_SQL = `INSERT INTO characters (id, name, creator, character_version, world, create_date_raw, fav, date_added, create_date,
+        date_last_chat, chat_size, data_size, active_chat, version, content_hash, content_identity_hash, avatar_identity_hash, import_poisoned)
+    VALUES (@id, @name, @creator, @character_version, @world, @create_date_raw, @fav, @date_added, @create_date,
+        0, 0, @data_size, @active_chat, @version, @content_hash, @content_identity_hash, @avatar_identity_hash, @import_poisoned)`;
 
 // Meant to run inside db.transaction(...). tagIds only seeds a genuinely new row's tags on first INSERT -
-// character_tags is the source of truth thereafter, so an UPDATE never touches it. fav and active_chat get the
+// character_tags is the source of truth thereafter, so an update never touches it. fav and active_chat get the
 // same one-time-seed treatment: once a row exists, a stale/foreign value from the card can't override them.
 /**
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
@@ -1918,52 +1478,34 @@ function rowWriteChangesSync(db, row) {
  * @param {string[]} tagIds
  */
 function writeRowSync(db, row, tagIds) {
-    const existingRow = (/** @type {{ fav: number, active_chat: NodeId, shallow_json: string, chat_size: number, date_last_chat: number, date_added: number } | undefined} */ (db.get('SELECT fav, active_chat, shallow_json, chat_size, date_last_chat, date_added FROM characters WHERE id = @id', { id: row.id })));
-    const existed = !!existingRow;
+    const stored = /** @type {Record<string, any> | undefined} */ (db.get(`SELECT ${CARD_WRITE_COLUMNS.join(', ')} FROM characters WHERE id = @id`, { id: row.id }));
 
-    if (existed) {
-        const currentFav = existingRow.fav ? 1 : 0;
-        const favChanged = row.fav !== currentFav;
-        // Only a non-NULL existing active_chat gets forced back; NULL means not-yet-examined or confirmed-no-chat,
-        // so this write's freshly-resolved candidate is allowed to seed it.
-        const forceActiveChat = existingRow.active_chat !== null && row.active_chat !== existingRow.active_chat;
-        const currentTagIds = Array.from(/** @type {Iterable<{ tag_id: string }>} */ (db.iterate('SELECT tag_id FROM character_tags WHERE character_id = @id', { id: row.id })), r => r.tag_id);
-
-        const shallow = JSON.parse(row.shallow_json);
-        shallow.tag_ids = normalizeTagIds(currentTagIds);
-        // The UPSERT keeps the row's chat stats and its write-once date_added, so the saved copy shows those too.
-        shallow.chat_size = existingRow.chat_size;
-        shallow.date_last_chat = existingRow.date_last_chat;
-        shallow.date_added = existingRow.date_added;
-        if (favChanged) {
-            setShallowFav(shallow, !!currentFav);
-        }
-        if (forceActiveChat) {
-            shallow.chat = existingRow.active_chat;
-        }
-        // card_json deliberately skips the fav/active_chat forcing shallow_json just got: it's the exported
-        // card's own bytes, and fav/chat are stripped from cards on write (characters.js's omitFavField()/
-        // omitChatField()) since both are db-authoritative and must not round-trip into exports.
-        row = {
-            ...row,
-            fav: favChanged ? currentFav : row.fav,
-            active_chat: forceActiveChat ? existingRow.active_chat : row.active_chat,
-            shallow_json: JSON.stringify(shallow),
-            ...digestColumnsForShallow(shallow),
-        };
-    }
-
-    if (existed) {
-        // Only the columns this write changes are written; a write that changes none writes nothing.
-        const { stored, changed } = rowWriteChangesSync(db, row);
-        if (Object.keys(changed).length === 0) return;
-        const changeSeq = Number(insertChange(db, row.id, 'upsert', null));
-        writeEntityRowSync(db, ENTITY_COUNT_KIND_BY_NAME.character, row.id, { ...changed, change_seq: changeSeq }, stored);
+    if (stored) {
+        /** @type {Record<string, unknown>} */
+        const next = {};
+        for (const column of CARD_WRITE_COLUMNS) next[column] = /** @type {any} */ (row)[column];
+        // A hash is replaced only by a new one: most writers have none, and an import-time hash must outlive them.
+        for (const column of ['content_hash', 'content_identity_hash', 'avatar_identity_hash']) next[column] = /** @type {any} */ (row)[column] ?? stored[column];
+        // 0 is a write through the current path, which clears it; 1 is no signal.
+        next.import_poisoned = row.import_poisoned === 0 ? 0 : stored.import_poisoned;
+        // A stored chat stays; NULL (no chat recorded) lets the card's seed it.
+        next.active_chat = stored.active_chat !== null ? stored.active_chat : row.active_chat;
+        const cardChanged = writeCardPartsSync(db, row.id, row.parts);
+        const changed = changedValues(stored, next);
+        if (!cardChanged && Object.keys(changed).length === 0) return;
+        const seq = insertChange(db, row.id, 'upsert', null);
+        writeEntityRowSync(db, ENTITY_COUNT_KIND_BY_NAME.character, row.id, { ...changed, version: seq }, stored);
         return;
     }
 
-    const lastInsertRowid = insertChange(db, row.id, 'upsert', null);
-    db.run(UPSERT_SQL, { ...row, changeSeq: Number(lastInsertRowid) });
+    const seq = insertChange(db, row.id, 'upsert', null);
+    db.run(INSERT_CHARACTER_SQL, {
+        id: row.id, name: row.name, creator: row.creator, character_version: row.character_version, world: row.world,
+        create_date_raw: row.create_date_raw, fav: row.fav, date_added: row.date_added, create_date: row.create_date,
+        data_size: row.data_size, active_chat: row.active_chat, version: seq, content_hash: row.content_hash,
+        content_identity_hash: row.content_identity_hash, avatar_identity_hash: row.avatar_identity_hash, import_poisoned: row.import_poisoned,
+    });
+    writeCardPartsSync(db, row.id, row.parts);
     countEntityRowSync(db, ENTITY_COUNT_KIND_BY_NAME.character, row.id, row.fav, 1);
 
     queueChatStatsReconcileSync(db, 'character', row.id);
@@ -1975,8 +1517,6 @@ function writeRowSync(db, row, tagIds) {
             insertTagRowSync(db, 'character_tags', row.id, tagId);
         }
         warnDeletedTagsNotAssigned(row.id, dropped);
-        // row.shallow_json was built from the unresolved ids.
-        if (tagIds.some(tagId => deletions.has(tagId))) syncShallowTagIdsFromTable(db, row.id);
     }
 }
 
@@ -1988,6 +1528,7 @@ function deleteRowSync(db, id) {
     const stored = /** @type {{ fav: number } | undefined} */ (db.get('SELECT fav FROM characters WHERE id = @id', { id }));
     let deleted = db.run('DELETE FROM characters WHERE id = @id', { id }).changes;
     if (stored && deleted > 0) countEntityRowSync(db, ENTITY_COUNT_KIND_BY_NAME.character, id, stored.fav, -1);
+    for (const table of ['cards', ...CARD_PART_TABLES.map(t => t.table)]) db.run(`DELETE FROM ${table} WHERE character_id = @id`, { id });
     db.run('DELETE FROM activity_pending WHERE kind = \'character\' AND id = @id', { id });
     deleted += deleteEntityTagRowsSync(db, 'character_tags', id);
     deleted += db.run('DELETE FROM tag_names_held WHERE character_id = @id', { id }).changes;
@@ -2056,7 +1597,7 @@ export async function upsertCharacterFromWrite(directories, avatar, cardJson, co
     }
 
     const contentIdentityHash = computeContentIdentityHash(card);
-    // The row describes the card as every reader of card_json sees it (/batch, bootstrap, reconcile all read it
+    // The row describes the card as every reader of it sees it (/batch, bootstrap, reconcile all read it
     // through getCharaCardV2()), except chat and fav: getCharaCardV2() invents a chat for a card without one and
     // drops a V2 card's top-level fav, and both only seed the row's db-authoritative columns.
     const character = {
@@ -2065,7 +1606,7 @@ export async function upsertCharacterFromWrite(directories, avatar, cardJson, co
         fav: card.fav ?? _.get(card, 'data.extensions.fav'),
     };
     const tagIds = getTagIdsFor(directories, avatar);
-    const row = buildRow(avatar, character, { dateAddedCandidate: Date.now(), contentHash, contentIdentityHash, avatarIdentityHash, tagIds, cardJson });
+    const row = buildRow(avatar, character, { dateAddedCandidate: Date.now(), contentHash, contentIdentityHash, avatarIdentityHash, cardJson });
 
     if (fromImport) {
         applyOrBuffer(entry, row, tagIds);
@@ -2082,8 +1623,7 @@ export async function upsertCharacterFromWrite(directories, avatar, cardJson, co
     dropFromBuffer(entry, avatar, flushed);
 }
 
-// The one writer (besides a row's first INSERT) allowed to change fav. Pure metadata-store mutation - no PNG
-// touch. Patches shallow_json's embedded fav too, so /query stays consistent with the column.
+// The one writer (besides a row's first INSERT) allowed to change fav. Pure metadata-store mutation - no PNG touch.
 /**
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} avatar
@@ -2095,14 +1635,8 @@ export async function setCharacterFav(directories, avatar, fav) {
     if (!entry) return false;
 
     flushBufferedRow(entry, avatar);
-    const existing = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id: avatar })));
-    if (!existing) return false;
-
-    const normalized = normalizeFav(fav);
-    const shallow = JSON.parse(existing.shallow_json);
-    setShallowFav(shallow, normalized);
-
-    writeShallowJson(entry.db, avatar, shallow, ['fav'], { fav: normalized ? 1 : 0 });
+    if (!entry.db.get('SELECT 1 FROM characters WHERE id = @id', { id: avatar })) return false;
+    entry.db.transaction(() => writeCharacterColumnsSync(entry.db, avatar, { fav: normalizeFav(fav) ? 1 : 0 }, ['fav']));
     return true;
 }
 
@@ -2117,18 +1651,15 @@ export async function toggleCharacterFav(directories, avatar) {
     if (!entry) return null;
 
     flushBufferedRow(entry, avatar);
-    const existing = (/** @type {{ shallow_json: string, fav: number } | undefined} */ (entry.db.get('SELECT shallow_json, fav FROM characters WHERE id = @id', { id: avatar })));
+    const existing = (/** @type {{ fav: number } | undefined} */ (entry.db.get('SELECT fav FROM characters WHERE id = @id', { id: avatar })));
     if (!existing) return null;
 
     const next = !existing.fav;
-    const shallow = JSON.parse(existing.shallow_json);
-    setShallowFav(shallow, next);
-
-    writeShallowJson(entry.db, avatar, shallow, ['fav'], { fav: next ? 1 : 0 });
+    entry.db.transaction(() => writeCharacterColumnsSync(entry.db, avatar, { fav: next ? 1 : 0 }, ['fav']));
     return next;
 }
 
-// Mirrors setCharacterFav(): DB column + shallow_json mirror, no card file write.
+// Mirrors setCharacterFav(): a DB column, no card file write.
 /**
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} avatar
@@ -2140,19 +1671,14 @@ export async function setCharacterAllowGlobalStyles(directories, avatar, allowed
     if (!entry) return false;
 
     flushBufferedRow(entry, avatar);
-    const existing = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id: avatar })));
-    if (!existing) return false;
-
-    const shallow = JSON.parse(existing.shallow_json);
-    shallow.allow_global_styles = !!allowed;
-
-    writeShallowJson(entry.db, avatar, shallow, ['allow_global_styles'], { allow_global_styles: allowed ? 1 : 0 });
+    if (!entry.db.get('SELECT 1 FROM characters WHERE id = @id', { id: avatar })) return false;
+    entry.db.transaction(() => writeCharacterColumnsSync(entry.db, avatar, { allow_global_styles: allowed ? 1 : 0 }, ['allow_global_styles']));
     return true;
 }
 
 // The one writer, other than a row's first INSERT, allowed to change active_chat. Mirrors setCharacterFav():
-// never touches the PNG card file, pure metadata-store mutation. Patches shallow_json's embedded chat to match.
-// No-op if this avatar isn't tracked yet - a row must exist for active_chat to mean anything.
+// never touches the PNG card file, pure metadata-store mutation. No-op if this avatar isn't tracked yet - a row
+// must exist for active_chat to mean anything.
 /**
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} avatar
@@ -2164,14 +1690,8 @@ export async function setCharacterActiveChat(directories, avatar, chat) {
     if (!entry) return false;
 
     flushBufferedRow(entry, avatar);
-    const existing = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id: avatar })));
-    if (!existing) return false;
-
-    const shallow = JSON.parse(existing.shallow_json);
-    shallow.chat = chat;
-
-    // active_chat_checked = 1: this write is as authoritative a resolution as backfillActiveChatFromCards().
-    writeShallowJson(entry.db, avatar, shallow, ['active_chat'], { active_chat: chat, active_chat_checked: 1 });
+    if (!entry.db.get('SELECT 1 FROM characters WHERE id = @id', { id: avatar })) return false;
+    entry.db.transaction(() => writeCharacterColumnsSync(entry.db, avatar, { active_chat: chat }, ['active_chat']));
     return true;
 }
 
@@ -2344,7 +1864,6 @@ export async function getShallowByIds(directories, ids) {
     const entry = await getEntry(directories);
     if (!entry || !Array.isArray(ids) || ids.length === 0) return {};
 
-    const deletions = readTagDeletionsSync(entry.db);
     /** @type {{[id: string]: object}} */
     const result = {};
     for (let i = 0; i < ids.length; i += FAV_LOOKUP_BATCH_SIZE) {
@@ -2352,9 +1871,8 @@ export async function getShallowByIds(directories, ids) {
         const placeholders = batch.map(() => '?').join(',');
         /** @type {{ id: string, chat_size: number, date_last_chat: number, shallow: any }[]} */
         const parsed = [];
-        const rows = Array.from(/** @type {Iterable<{ id: string, shallow_json: string | null }>} */ (entry.db.iterate(`SELECT id, ${listSourceColumn(entry)} FROM characters WHERE id IN (${placeholders})`, batch)));
-        // Unparseable rows are skipped - same tolerance every other shallow_json consumer has.
-        readListRowsSync(entry, rows, deletions, { skipUnreadable: true }).forEach((shallow, i) => {
+        const rows = Array.from(/** @type {Iterable<{ id: string }>} */ (entry.db.iterate(`SELECT id FROM characters WHERE id IN (${placeholders})`, batch)));
+        readListRowsSync(entry, rows).forEach((shallow, i) => {
             if (shallow === undefined) return;
             parsed.push({ id: rows[i].id, chat_size: Number(shallow?.chat_size ?? 0), date_last_chat: Number(shallow?.date_last_chat ?? 0), shallow });
         });
@@ -2365,8 +1883,8 @@ export async function getShallowByIds(directories, ids) {
 }
 
 /**
- * Each given id's `name` column, for ids that have a row. Callers pass a bounded list; ids without a row are absent
- * from the map.
+ * Each given id's name as the app shows it (cardNameText()), for ids that have a row. Callers pass a bounded list;
+ * ids without a row are absent from the map.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string[]} ids
  * @returns {Promise<Map<string, string>>}
@@ -2376,14 +1894,20 @@ export async function getCharacterNamesByIds(directories, ids) {
     const map = new Map();
     const entry = await getEntry(directories);
     if (!entry || ids.length === 0) return map;
-    for (const row of /** @type {Generator<{ id: string, name: string }>} */ (entry.db.iterate('SELECT id, name FROM characters WHERE id IN (SELECT value FROM json_each(?))', [JSON.stringify(ids)]))) {
-        map.set(String(row.id), String(row.name));
+    /** @type {string[]} */
+    const notText = [];
+    for (const row of /** @type {Generator<{ id: string, name: string | null }>} */ (entry.db.iterate('SELECT id, name FROM characters WHERE id IN (SELECT value FROM json_each(?))', [JSON.stringify(ids)]))) {
+        if (row.name === null) notText.push(String(row.id));
+        else map.set(String(row.id), row.name);
+    }
+    // A name that isn't a string is in the card tables; the card says what it shows as.
+    if (notText.length > 0) {
+        for (const [id, card] of assembleCardsSync(entry.db, notText)) map.set(id, cardNameText(card));
     }
     return map;
 }
 
-// null means no row exists for this avatar yet (not yet reconciled, or never existed) - once a row exists,
-// card_json is NOT NULL.
+// null means no row exists for this avatar yet (not yet reconciled, or never existed).
 /**
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} avatar
@@ -2414,8 +1938,8 @@ export async function getCharacterChatStats(directories, avatar) {
  * @typedef {{ id: string, name: string, card_json: string, chat_size: number, date_last_chat: number }} CharacterIndexRow
  */
 
-/** The rows of `ids` via WHERE id IN (...), never scanning every row. The caller keeps `ids` bounded (one request's
- * ids, one batch of a stream), so only those rows' card_json is ever in memory.
+/** The rows of `ids` via WHERE id IN (...), never scanning every row, each with its assembled card. The caller keeps
+ * `ids` bounded (one request's ids, one batch of a stream), so only those cards are ever in memory.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string[]} ids
  * @returns {Promise<Map<string, CharacterIndexRow>>}
@@ -2429,7 +1953,7 @@ export async function getCharacterIndexRowsByIds(directories, ids) {
     for (let i = 0; i < ids.length; i += FAV_LOOKUP_BATCH_SIZE) {
         const batch = ids.slice(i, i + FAV_LOOKUP_BATCH_SIZE);
         const placeholders = batch.map(() => '?').join(',');
-        const rows = Array.from(/** @type {Iterable<CharacterIndexRow>} */ (entry.db.iterate(`SELECT id, name, ${cardSourceColumn(entry)}, chat_size, date_last_chat FROM characters WHERE id IN (${placeholders})`, batch)));
+        const rows = Array.from(/** @type {Iterable<CharacterIndexRow>} */ (entry.db.iterate(`SELECT id, chat_size, date_last_chat FROM characters WHERE id IN (${placeholders})`, batch)));
         fillCardJsonSync(entry, rows);
         overlayActivitySync(entry.db, 'character', rows);
         for (const row of rows) result.set(row.id, row);
@@ -2475,21 +1999,19 @@ export async function renameCharacterRow(directories, oldAvatar, newAvatar) {
 
     const oldRow = (/** @type {{ date_added: number } | undefined} */ (entry.db.get('SELECT date_added FROM characters WHERE id = @id', { id: oldAvatar })));
     if (oldRow) {
-        const dateAdded = Number(oldRow.date_added);
-        // Checked to exist at the top and flushed into the table if it was buffered, with no await in between.
-        const newRow = (/** @type {{ shallow_json: string }} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id: newAvatar })));
-        const shallow = JSON.parse(withPatchedDateAdded(newRow.shallow_json, dateAdded));
-        writeShallowJson(entry.db, newAvatar, shallow, ['date_added'], { date_added: dateAdded });
+        // newAvatar was checked to exist at the top and flushed into the table if it was buffered, with no await in between.
+        entry.db.transaction(() => writeCharacterColumnsSync(entry.db, newAvatar, { date_added: Number(oldRow.date_added) }, ['date_added']));
     }
 
     // Must read before the transaction below deletes oldAvatar's rows.
     const oldTagIds = Array.from(/** @type {Iterable<{ tag_id: string }>} */ (entry.db.iterate('SELECT tag_id FROM character_tags WHERE character_id = @id', { id: oldAvatar })), r => r.tag_id);
     if (oldTagIds.length > 0) {
         entry.db.transaction(() => {
+            let inserted = false;
             for (const tagId of oldTagIds) {
-                insertTagRowSync(entry.db, 'character_tags', newAvatar, tagId);
+                if (insertTagRowSync(entry.db, 'character_tags', newAvatar, tagId)) inserted = true;
             }
-            syncShallowTagIdsFromTable(entry.db, newAvatar);
+            if (inserted) logCharacterTagIdsChangedSync(entry.db, newAvatar);
         });
     }
 
@@ -2555,22 +2077,6 @@ function dropFromBuffer(entry, avatar, written) {
     }
 }
 
-/** Returns `shallowJson` with its `date_added` field overwritten; unmodified if it doesn't parse. */
-/**
- * @param {string} shallowJson
- * @param {number} dateAdded
- * @returns {string}
- */
-function withPatchedDateAdded(shallowJson, dateAdded) {
-    try {
-        const parsed = JSON.parse(shallowJson);
-        parsed.date_added = dateAdded;
-        return JSON.stringify(parsed);
-    } catch {
-        return shallowJson;
-    }
-}
-
 /** Overwrites date_added unconditionally - one of the two exceptions to it being write-once in this module; the
  * other is renameCharacterRow(), which carries oldAvatar's date_added over to newAvatar. */
 /**
@@ -2585,14 +2091,10 @@ export async function setCharacterDateAdded(directories, id, dateAddedMs) {
     const pending = entry.batch?.pending.get(id);
     if (pending) {
         pending.row.date_added = dateAddedMs;
-        pending.row.shallow_json = withPatchedDateAdded(pending.row.shallow_json, dateAddedMs);
         return;
     }
 
-    const row = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id })));
-    if (!row) return;
-    const shallow = JSON.parse(withPatchedDateAdded(row.shallow_json, dateAddedMs));
-    writeShallowJson(entry.db, id, shallow, ['date_added'], { date_added: dateAddedMs });
+    entry.db.transaction(() => writeCharacterColumnsSync(entry.db, id, { date_added: dateAddedMs }, ['date_added']));
 }
 
 /**
@@ -2712,7 +2214,7 @@ export async function bootstrapIfNeeded(directories) {
                 const contentIdentityHash = fileContentIdentityHash(directories, file, chunks);
                 const character = getCharaCardV2(JSON.parse(imgData), directories, false);
                 const tagIds = tagMapEntryTagIds(tag_map, file);
-                const row = buildRow(file, character, { dateAddedCandidate: Math.round(stat.ctimeMs), contentIdentityHash, importPoisoned: true, avatarIdentityHash, tagIds, cardJson: imgData });
+                const row = buildRow(file, character, { dateAddedCandidate: Math.round(stat.ctimeMs), contentIdentityHash, importPoisoned: true, avatarIdentityHash, cardJson: imgData });
                 return { row, tagIds };
             } catch (err) {
                 console.error(`[character-metadata] Bootstrap failed to process ${file}, skipping it this pass (the reconciler will retry it):`, /** @type {any} */ (err).message);
@@ -2756,126 +2258,6 @@ function fileContentIdentityHash(directories, id, chunks) {
         console.error(`[character-metadata] Couldn't work out the content fingerprint of ${id}; duplicate checks on import won't match it:`, /** @type {any} */ (err).message);
         return null;
     }
-}
-
-const CONTENT_IDENTITY_BACKFILLED_FLAG = 'content_identity_backfilled_v1';
-
-// Backfills content_identity_hash for rows from before bootstrap and reconcile computed it, without clearing
-// import_poisoned (see SCHEMA_SQL). Runs once: every row inserted since gets its hash when it's inserted.
-/**
- * @param {import('./users.js').UserDirectoryList} directories
- */
-export async function backfillContentIdentityHashes(directories) {
-    const entry = await getEntry(directories);
-    if (!entry) return;
-    if (entry.db.get('SELECT 1 FROM meta WHERE key = @key', { key: CONTENT_IDENTITY_BACKFILLED_FLAG })) return;
-
-    if (!getConfigValue('performance.allowExpensiveDuplicateFallback', true, 'boolean')) return;
-
-    if (!fs.existsSync(directories.characters)) return;
-
-    const progress = new ProgressLog({ what: '[character-metadata] working out content fingerprints for cards imported with damaged data' });
-
-    for await (const rows of streamRows(entry.db, {
-        firstPageSql: 'SELECT rowid AS rid, id FROM characters WHERE import_poisoned = 1 AND content_identity_hash IS NULL ORDER BY rowid LIMIT @limit',
-        firstPageParams: {},
-        nextPageSql: 'SELECT rowid AS rid, id FROM characters WHERE import_poisoned = 1 AND content_identity_hash IS NULL AND rowid > @after ORDER BY rowid LIMIT @limit',
-        nextPageParams: {},
-        keyColumn: 'rid',
-    })) {
-        const poisonedIds = (/** @type {{ rid: number, id: string }[]} */ (rows)).map(r => r.id);
-        for (let i = 0; i < poisonedIds.length; i += BATCH_FLUSH_SIZE) {
-            const chunkIds = poisonedIds.slice(i, i + BATCH_FLUSH_SIZE);
-            const chunkResults = await mapWithConcurrency(chunkIds, BOOTSTRAP_READ_CONCURRENCY, async (id) => {
-                let chunks;
-                try {
-                    chunks = extract(new Uint8Array(await fs.promises.readFile(path.join(directories.characters, id))));
-                } catch (err) {
-                    console.error(`[character-metadata] Couldn't read ${id} to work out its content fingerprint; duplicate checks on import won't match it:`, /** @type {any} */ (err).message);
-                    return null;
-                }
-                const hash = fileContentIdentityHash(directories, id, chunks);
-                return hash === null ? null : { id, hash, avatarHash: computeAvatarIdentityHashFromChunks(chunks) };
-            });
-
-            const updates = chunkResults.filter((r) => r !== null);
-            if (updates.length > 0) {
-                entry.db.transaction(() => {
-                    for (const { id, hash, avatarHash } of updates) {
-                        const stored = /** @type {{ avatar_identity_hash: string | null } | undefined} */ (entry.db.get('SELECT avatar_identity_hash FROM characters WHERE id = @id', { id }));
-                        writeRowIfChanged(entry.db, 'characters', { id }, { content_identity_hash: hash, avatar_identity_hash: stored?.avatar_identity_hash ?? avatarHash });
-                    }
-                });
-            }
-
-            progress.add(chunkIds.length);
-
-            await new Promise(resolve => setImmediate(resolve));
-        }
-    }
-
-    if (progress.done > 0) progress.finish();
-    setMetaSync(entry.db, CONTENT_IDENTITY_BACKFILLED_FLAG, String(Date.now()));
-}
-
-const ACTIVE_CHAT_BACKFILLED_FLAG = 'active_chat_backfilled_v1';
-
-// Reads the last opened chat off the card for rows from before active_chat_checked existed. Keyed on
-// active_chat_checked, not active_chat IS NULL, since the latter can't distinguish "confirmed no chat" from "not
-// examined". Runs once: every row written since is inserted with active_chat_checked = 1.
-/**
- * @param {import('./users.js').UserDirectoryList} directories
- */
-export async function backfillActiveChatFromCards(directories) {
-    const entry = await getEntry(directories);
-    if (!entry) return;
-    if (entry.db.get('SELECT 1 FROM meta WHERE key = @key', { key: ACTIVE_CHAT_BACKFILLED_FLAG })) return;
-
-    if (!fs.existsSync(directories.characters)) return;
-
-    const progress = new ProgressLog({ what: '[character-metadata] reading each card\'s last opened chat' });
-
-    for await (const rows of streamRows(entry.db, {
-        firstPageSql: 'SELECT rowid AS rid, id FROM characters WHERE active_chat_checked = 0 ORDER BY rowid LIMIT @limit',
-        firstPageParams: {},
-        nextPageSql: 'SELECT rowid AS rid, id FROM characters WHERE active_chat_checked = 0 AND rowid > @after ORDER BY rowid LIMIT @limit',
-        nextPageParams: {},
-        keyColumn: 'rid',
-    })) {
-        const uncheckedIds = (/** @type {{ rid: number, id: string }[]} */ (rows)).map(r => r.id);
-        for (let i = 0; i < uncheckedIds.length; i += BATCH_FLUSH_SIZE) {
-            const chunkIds = uncheckedIds.slice(i, i + BATCH_FLUSH_SIZE);
-            const chunkResults = await mapWithConcurrency(chunkIds, BOOTSTRAP_READ_CONCURRENCY, async (id) => {
-                try {
-                    const filePath = path.join(directories.characters, id);
-                    const imgData = await parseCharacterCard(filePath, 'png');
-                    const character = JSON.parse(imgData);
-                    const chat = character.chat ?? null;
-                    return { id, chat, resolved: true };
-                } catch (err) {
-                    console.error(`[character-metadata] Active-chat backfill failed to process ${id}, so its last opened chat stays unknown:`, /** @type {any} */ (err).message);
-                    return { id, resolved: false };
-                }
-            });
-
-            const resolved = chunkResults.filter(r => r.resolved);
-            if (resolved.length > 0) {
-                entry.db.transaction(() => {
-                    for (const { id, chat } of resolved) {
-                        const stored = /** @type {{ active_chat_checked: number } | undefined} */ (entry.db.get('SELECT active_chat_checked FROM characters WHERE id = @id', { id }));
-                        if (stored && stored.active_chat_checked === 0) writeRowIfChanged(entry.db, 'characters', { id }, { active_chat: chat ?? null, active_chat_checked: 1 });
-                    }
-                });
-            }
-
-            progress.add(chunkIds.length);
-
-            await new Promise(resolve => setImmediate(resolve));
-        }
-    }
-
-    if (progress.done > 0) progress.finish();
-    setMetaSync(entry.db, ACTIVE_CHAT_BACKFILLED_FLAG, String(Date.now()));
 }
 
 const MIGRATION_BATCH_PAUSE_MS = 10;
@@ -2987,104 +2369,6 @@ async function runResumableCharacterPass(db, { table = 'characters', doneKey, do
     return { batches, rowsChanged };
 }
 
-// The NOT LIKE test can't use an index, so it is applied per row within each bounded batch rather than as a
-// discovery query over the whole table.
-/**
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<CharacterPassResult | undefined>}
- */
-export async function backfillTagIdsInShallowJson(directories) {
-    const entry = await getEntry(directories);
-    if (!entry) return;
-
-    const already = (/** @type {{ value: string } | undefined} */ (entry.db.get('SELECT value FROM meta WHERE key = \'tag_ids_shallow_json_backfill_completed\'')));
-    if (already) return { batches: 0, rowsChanged: 0 };
-
-    return runResumableCharacterPass(entry.db, {
-        doneKey: 'tag_ids_shallow_json_backfill_completed',
-        doneValue: '1',
-        progressKey: 'tag_ids_shallow_json_backfill_progress',
-        label: 'tag_ids shallow_json backfill',
-        logProgress: true,
-        prepareRow: (id) => {
-            const row = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id AND shallow_json NOT LIKE \'%"tag_ids":%\'', { id })));
-            if (!row) return null;
-            if (row.shallow_json.includes('"tag_ids":')) return null;
-            const shallow = JSON.parse(row.shallow_json);
-            shallow.tag_ids = readCharacterTagIds(entry.db, id);
-            return () => writeShallowJson(entry.db, id, shallow, ['tag_ids']);
-        },
-    });
-}
-
-const CHARACTER_FAV_NORMALIZED_FLAG = 'character_fav_normalized_v1';
-
-// One-time pass re-deriving shallow_json's two fav fields (and so digest_fav) from the fav column, which it never
-// writes. A row whose shallow_json changes gets a ['fav'] change-log entry and change_seq bump, so clients learn
-// of it through the feed; a row whose fields already match only has a stale digest_fav corrected, with no entry.
-// Each row is re-read inside its batch's transaction, so a concurrent fav write can't be overwritten with a
-// stale value.
-/**
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<CharacterPassResult | undefined>}
- */
-export async function normalizeCharacterFavIfNeeded(directories) {
-    const entry = await getEntry(directories);
-    if (!entry) return;
-    if (entry.db.get('SELECT 1 FROM meta WHERE key = @key', { key: CHARACTER_FAV_NORMALIZED_FLAG })) return { batches: 0, rowsChanged: 0 };
-
-    return runResumableCharacterPass(entry.db, {
-        doneKey: CHARACTER_FAV_NORMALIZED_FLAG,
-        doneValue: String(Date.now()),
-        progressKey: `${CHARACTER_FAV_NORMALIZED_FLAG}_progress`,
-        label: 'Character fav normalization',
-        prepareRow: (id) => {
-            const row = (/** @type {{ fav: number, shallow_json: string, digest_fav: number } | undefined} */ (entry.db.get('SELECT fav, shallow_json, digest_fav FROM characters WHERE id = @id', { id })));
-            if (!row) return null;
-            const fav = !!row.fav;
-            const shallow = JSON.parse(row.shallow_json);
-            if (shallow.fav !== fav || shallow.data?.extensions?.fav !== fav) {
-                setShallowFav(shallow, fav);
-                return () => writeShallowJson(entry.db, id, shallow, ['fav']);
-            }
-            const { digest_fav } = digestColumnsForShallow(shallow);
-            if (Number(row.digest_fav) === digest_fav) return null;
-            return () => writeRowIfChanged(entry.db, 'characters', { id }, { digest_fav });
-        },
-    });
-}
-
-const CHARACTER_TAG_IDS_NORMALIZED_FLAG = 'character_tag_ids_normalized_v1';
-
-// One-time pass sorting shallow_json.tag_ids written before writes sorted it. A reordered row gets a ['tag_ids']
-// change-log entry and change_seq bump; digest_tag_ids already sorts, so it doesn't change. A row with no tag_ids
-// is left to backfillTagIdsInShallowJson(). Each row is re-read inside its batch's transaction, so a concurrent
-// tag write can't be overwritten with a stale value.
-/**
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<CharacterPassResult | undefined>}
- */
-export async function normalizeCharacterTagIdsIfNeeded(directories) {
-    const entry = await getEntry(directories);
-    if (!entry) return;
-    if (entry.db.get('SELECT 1 FROM meta WHERE key = @key', { key: CHARACTER_TAG_IDS_NORMALIZED_FLAG })) return { batches: 0, rowsChanged: 0 };
-
-    return runResumableCharacterPass(entry.db, {
-        doneKey: CHARACTER_TAG_IDS_NORMALIZED_FLAG,
-        doneValue: String(Date.now()),
-        progressKey: `${CHARACTER_TAG_IDS_NORMALIZED_FLAG}_progress`,
-        label: 'Character tag_ids normalization',
-        prepareRow: (id) => {
-            const row = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id })));
-            if (!row) return null;
-            const shallow = JSON.parse(row.shallow_json);
-            if (!Array.isArray(shallow.tag_ids)) return null;
-            if (JSON.stringify(shallow.tag_ids) === JSON.stringify(normalizeTagIds(shallow.tag_ids))) return null;
-            return () => writeShallowJson(entry.db, id, shallow, ['tag_ids']);
-        },
-    });
-}
-
 /**
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  * @param {'characters' | 'groups'} table
@@ -3102,7 +2386,7 @@ function knownEntityIdsOf(db, table, ids) {
     return known;
 }
 
-// Existing files are never re-read: card_json is authoritative, so only files with no row are parsed.
+// Existing files are never re-read: the stored card is authoritative, so only files with no row are parsed.
 /**
  * @param {import('./users.js').UserDirectoryList} directories
  */
@@ -3150,7 +2434,7 @@ export async function reconcile(directories) {
                     const contentIdentityHash = fileContentIdentityHash(directories, file, chunks);
                     const character = getCharaCardV2(JSON.parse(imgData), directories, false);
                     const tagIds = getTagIdsFor(directories, file);
-                    const row = buildRow(file, character, { dateAddedCandidate: Date.now(), contentIdentityHash, importPoisoned: true, avatarIdentityHash, tagIds, cardJson: imgData });
+                    const row = buildRow(file, character, { dateAddedCandidate: Date.now(), contentIdentityHash, importPoisoned: true, avatarIdentityHash, cardJson: imgData });
                     return { row, tagIds };
                 } catch (err) {
                     console.error(`[character-metadata] Reconcile failed to process ${file}, will retry next boot:`, /** @type {any} */ (err).message);
@@ -3329,10 +2613,7 @@ export async function initializeMetadataStores(directoriesList) {
         // (metadata-migration-coordinator.js, started once the server listens).
         entry.bootstrapPromise = __stage('bootstrapIfNeeded', () => bootstrapIfNeeded(directories))
             .then(() => __stage('bootstrapGroupsIfNeeded', () => bootstrapGroupsIfNeeded(directories)))
-            .then(() => __stage('reconcile', () => reconcile(directories)))
-            // After reconcile() so this pass sees any rows reconcile() itself just inserted.
-            .then(() => __stage('backfillContentIdentityHashes', () => backfillContentIdentityHashes(directories)))
-            .then(() => __stage('backfillActiveChatFromCards', () => backfillActiveChatFromCards(directories)));
+            .then(() => __stage('reconcile', () => reconcile(directories)));
         entry.bootstrapPromise.catch(err => console.error(`[character-metadata] Bootstrap failed for ${directories.root}:`, err));
         chains.push(entry.bootstrapPromise);
     }
@@ -3373,7 +2654,6 @@ export async function getCharacterMetadataRow(directories, avatar) {
         overlayEntityRowsSync(entry.db, [asEntity]);
         row.chat_size = asEntity.chat_size;
         row.date_last_chat = asEntity.date_last_chat;
-        row.shallow_json = asEntity.shallow_json;
     }
     return row;
 }
@@ -4237,18 +3517,6 @@ export async function getEntityTagIdsForMany(directories, ids, { type: onlyType 
     return result;
 }
 
-// Patches a still-buffered batch-import row's tag ids so a read landing before flush still sees the assignment.
-
-/**
- * @param {PendingRow} pending
- */
-function patchPendingRowTagIds(pending) {
-    const shallow = JSON.parse(pending.row.shallow_json);
-    shallow.tag_ids = normalizeTagIds(pending.tagIds);
-    pending.row.shallow_json = JSON.stringify(shallow);
-    Object.assign(pending.row, digestColumnsForShallow(shallow));
-}
-
 // Requires the entity to exist in its own type's table (tagEntityTypeOf()) since neither tag table has an FK to
 // enforce it. A character still in the batch-import buffer counts as existing, and is written to the table before
 // the tag, so the assignment lands right away.
@@ -4300,14 +3568,7 @@ export async function assignEntityTagReporting(directories, id, tagId) {
     entry.db.transaction(() => {
         result.found = false;
         if (type === 'character' && (/** @type {Record<string, unknown> | undefined} */ (entry.db.get('SELECT 1 FROM characters WHERE id = @id', { id })))) {
-            insertTagRowSync(entry.db, 'character_tags', id, tagId);
-            const charRow = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id })));
-            if (charRow) {
-                const currentTagIds = Array.from(/** @type {Iterable<{ tag_id: string }>} */ (entry.db.iterate('SELECT tag_id FROM character_tags WHERE character_id = @id', { id })), r => r.tag_id);
-                const shallow = JSON.parse(charRow.shallow_json);
-                shallow.tag_ids = currentTagIds;
-                writeShallowJson(entry.db, id, shallow, ['tag_ids']);
-            }
+            if (insertTagRowSync(entry.db, 'character_tags', id, tagId)) logCharacterTagIdsChangedSync(entry.db, id);
             result.found = true;
         } else if (type === 'group' && (/** @type {Record<string, unknown> | undefined} */ (entry.db.get('SELECT 1 FROM groups WHERE id = @id', { id })))) {
             const inserted = insertTagRowSync(entry.db, 'group_tags', id, tagId);
@@ -4382,14 +3643,7 @@ export async function unassignEntityTag(directories, id, tagId) {
             return;
         }
 
-        deleteTagRowSync(entry.db, 'character_tags', id, tagId);
-        const charRow = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id })));
-        if (charRow) {
-            const currentTagIds = Array.from(/** @type {Iterable<{ tag_id: string }>} */ (entry.db.iterate('SELECT tag_id FROM character_tags WHERE character_id = @id', { id })), r => r.tag_id);
-            const shallow = JSON.parse(charRow.shallow_json);
-            shallow.tag_ids = currentTagIds;
-            writeShallowJson(entry.db, id, shallow, ['tag_ids']);
-        }
+        if (deleteTagRowSync(entry.db, 'character_tags', id, tagId)) logCharacterTagIdsChangedSync(entry.db, id);
     });
     return 'ok';
 }
@@ -4750,13 +4004,15 @@ function tagSortSchema({ table, tagTable, entityColumn, sortTable, columns, tieK
         ${indexes.join('\n        ')}`;
     const fromEntity = (/** @type {string} */ ref) => columns.map(c => `${ref}.${c.source}`).join(', ');
     const changed = columns.map(c => `OLD.${c.source} IS NOT NEW.${c.source}`).join(' OR ');
+    // A character's name_fold is computed from its name, so an update names `name`.
+    const updatedColumns = columns.map(c => (table === 'characters' && c.source === 'name_fold' ? 'name' : c.source));
     const triggers = [
         [`trg_${table}_tagsort_ai`, `AFTER INSERT ON ${table}`, `
             INSERT OR REPLACE INTO ${sortTable} (tag_id, entity_id, ${keyColumns})
                 SELECT tag_id, NEW.id, ${fromEntity('NEW')} FROM ${tagTable} WHERE ${entityColumn} = NEW.id AND ${tagRowCounts(entityColumn)};`],
         [`trg_${table}_tagsort_ad`, `AFTER DELETE ON ${table}`, `
             DELETE FROM ${sortTable} WHERE entity_id = OLD.id;`],
-        [`trg_${table}_tagsort_au`, `AFTER UPDATE OF ${columns.map(c => c.source).join(', ')} ON ${table} WHEN ${changed}`, `
+        [`trg_${table}_tagsort_au`, `AFTER UPDATE OF ${updatedColumns.join(', ')} ON ${table} WHEN ${changed}`, `
             UPDATE ${sortTable} SET ${columns.map(c => `${c.key} = NEW.${c.source}`).join(', ')} WHERE entity_id = NEW.id;`],
         [`trg_${tagTable}_tagsort_ai`, `AFTER INSERT ON ${tagTable} WHEN ${tagRowCounts(`NEW.${entityColumn}`)}`, `
             INSERT OR REPLACE INTO ${sortTable} (tag_id, entity_id, ${keyColumns})
@@ -4777,7 +4033,6 @@ function tagSortSchema({ table, tagTable, entityColumn, sortTable, columns, tieK
 const TAG_SORT_SCHEMAS = TAG_SORT_KINDS.map(tagSortSchema);
 const TAG_SORT_TABLES_SQL = TAG_SORT_SCHEMAS.map(schema => schema.tableSql).join('\n');
 const TAG_SORT_TRIGGERS_SQL = TAG_SORT_SCHEMAS.flatMap(schema => schema.triggers).map(trigger => trigger.sql).join('\n');
-const DROP_TAG_SORT_TRIGGERS_SQL = TAG_SORT_SCHEMAS.flatMap(schema => schema.triggers).map(trigger => `DROP TRIGGER IF EXISTS ${trigger.name};`).join('\n');
 /** meta key: every tag sort table holds a row for every tag row that existed before its triggers. */
 const TAG_SORT_FILLED_FLAG = 'tag_sort_tables_filled';
 /** meta key prefix: the last entity id, per kind, whose tag rows the fill has copied. */
@@ -4898,7 +4153,6 @@ function randomRankTriggers({ code, table, tagTable, entityColumn, tagRowCounts 
 
 const RANDOM_RANK_TRIGGERS = RANDOM_RANK_KINDS.flatMap(randomRankTriggers);
 const RANDOM_RANK_TRIGGERS_SQL = RANDOM_RANK_TRIGGERS.map(trigger => trigger.sql).join('\n');
-const DROP_RANDOM_RANK_TRIGGERS_SQL = RANDOM_RANK_TRIGGERS.map(trigger => `DROP TRIGGER IF EXISTS ${trigger.name};`).join('\n');
 /** meta key: every entity that existed before the rank triggers holds its ranks. */
 const RANDOM_RANKS_FILLED_FLAG = 'random_ranks_filled';
 /** meta key prefix: the last entity id, per kind, the rank fill has numbered. */
@@ -4944,7 +4198,7 @@ const NAME_ORDER_TRIGGERS = [['c', 'characters'], ['g', 'groups']].flatMap(([cod
     },
     {
         name: `trg_${table}_name_order_au`,
-        sql: `CREATE TRIGGER IF NOT EXISTS trg_${table}_name_order_au AFTER UPDATE OF name_fold ON ${table} WHEN OLD.name_fold IS NOT NEW.name_fold BEGIN
+        sql: `CREATE TRIGGER IF NOT EXISTS trg_${table}_name_order_au AFTER UPDATE OF ${table === 'characters' ? 'name' : 'name_fold'} ON ${table} WHEN OLD.name_fold IS NOT NEW.name_fold BEGIN
             UPDATE name_order SET name_fold = NEW.name_fold, pos_asc = NULL, pos_desc = NULL WHERE kind = '${code}' AND entity_id = NEW.id;
         END;`,
     },
@@ -4956,7 +4210,6 @@ const NAME_ORDER_TRIGGERS = [['c', 'characters'], ['g', 'groups']].flatMap(([cod
     },
 ]);
 const NAME_ORDER_TRIGGERS_SQL = NAME_ORDER_TRIGGERS.map(trigger => trigger.sql).join('\n');
-const DROP_NAME_ORDER_TRIGGERS_SQL = NAME_ORDER_TRIGGERS.map(trigger => `DROP TRIGGER IF EXISTS ${trigger.name};`).join('\n');
 /** meta key: every entity has a name_order row and both orders were numbered once. */
 const NAME_ORDER_FILLED_FLAG = 'name_order_filled';
 /** meta key prefix: how far the name order fill has got, per phase. */
@@ -5240,9 +4493,9 @@ function overlayQueryRowsSync(db, rows, hashRows) {
 
 /**
  * {@link overlayActivitySync} for raw entity rows (characters and groups mixed, `type` per row), before they are mapped
- * to wire or hash rows: the columns and, for a character, its stored shallow copy.
+ * to wire or hash rows.
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- * @param {Array<{ id: string, type: string, chat_size?: number, date_last_chat?: number, shallow_json?: string | null }>} rows
+ * @param {Array<{ id: string, type: string, chat_size?: number, date_last_chat?: number }>} rows
  */
 function overlayEntityRowsSync(db, rows) {
     for (const kind of /** @type {const} */ (['character', 'group'])) {
@@ -5256,22 +4509,12 @@ function overlayEntityRowsSync(db, rows) {
             const stats = withPendingActivity({ chatSize: Number(row.chat_size ?? 0), dateLastChat: Number(row.date_last_chat ?? 0) }, queued);
             row.chat_size = stats.chatSize;
             row.date_last_chat = stats.dateLastChat;
-            if (typeof row.shallow_json === 'string') {
-                try {
-                    const shallow = JSON.parse(row.shallow_json);
-                    shallow.chat_size = stats.chatSize;
-                    shallow.date_last_chat = stats.dateLastChat;
-                    row.shallow_json = JSON.stringify(shallow);
-                } catch {
-                    // An unreadable copy is left to its reader, which skips it.
-                }
-            }
         }
     }
 }
 
 /**
- * Writes queued activity into its rows (characters' chat stats and shallow copy, groups' chat stats), then drops it.
+ * Writes queued activity into its rows (characters' and groups' chat stats), then drops it.
  * With `ids`, only those entities' activity; without, every queued row, for a read whose order or filter depends on
  * the values. Runs synchronously in transactions of at most FOLD_BATCH_ROWS rows.
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
@@ -5791,20 +5034,15 @@ function reconcileQueuedChatStatsSync(db, view, { kind, id }) {
  * @returns {boolean} whether the row changed.
  */
 function writeCharacterChatStatsSync(db, avatar, stats) {
-    const row = (/** @type {{ chat_size: number, date_last_chat: number, shallow_json: string } | undefined} */ (db.get(
-        'SELECT chat_size, date_last_chat, shallow_json FROM characters WHERE id = @id', { id: avatar })));
+    const row = (/** @type {{ chat_size: number, date_last_chat: number } | undefined} */ (db.get(
+        'SELECT chat_size, date_last_chat FROM characters WHERE id = @id', { id: avatar })));
     if (!row) return false;
     /** @type {string[]} */
     const fields = [];
     if (Number(row.chat_size) !== stats.chatSize) fields.push('chat_size');
     if (Number(row.date_last_chat) !== stats.dateLastChat) fields.push('date_last_chat');
     if (fields.length === 0) return false;
-
-    const shallow = JSON.parse(row.shallow_json);
-    shallow.chat_size = stats.chatSize;
-    shallow.date_last_chat = stats.dateLastChat;
-    writeShallowJson(db, avatar, shallow, fields, { chat_size: stats.chatSize, date_last_chat: stats.dateLastChat });
-    return true;
+    return writeCharacterColumnsSync(db, avatar, { chat_size: stats.chatSize, date_last_chat: stats.dateLastChat }, fields);
 }
 
 /**
@@ -6180,6 +5418,35 @@ export async function getGoneTagIds(directories, ids) {
         }
     }
     return wanted.filter(id => !present.has(id));
+}
+
+/**
+ * The ids among `ids` marked deleted with a merge target, each with the live tag it now reads as: the merge target,
+ * followed while that is itself marked with one. An id whose chain ends at a tag deleted with no merge target, or at
+ * no tag, isn't listed (it is gone).
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {unknown[]} ids A bounded list.
+ * @returns {Promise<Record<string, string> | null>} null when the store is unavailable.
+ */
+export async function getMergedTagTargets(directories, ids) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    const deletions = readTagDeletionsSync(entry.db);
+    /** @type {Record<string, string>} */
+    const merged = {};
+    if (!deletions.any) return merged;
+    for (const id of new Set((Array.isArray(ids) ? ids : []).map(String))) {
+        let target = deletions.get(id);
+        /** @type {Set<string>} */
+        const seen = new Set([id]);
+        while (typeof target === 'string' && deletions.has(target) && !seen.has(target)) {
+            seen.add(target);
+            target = deletions.get(target);
+        }
+        if (typeof target !== 'string' || deletions.has(target)) continue;
+        if (entry.db.get(`SELECT 1 FROM tags WHERE id = @target AND ${NOT_MARKED_DELETED_SQL}`, { target })) merged[id] = target;
+    }
+    return merged;
 }
 
 /**
@@ -6674,7 +5941,7 @@ const DELETED_TAG_BATCH_SIZE = 1000;
 
 /** @type {TagRowSide[]} */
 const TAG_ROW_SIDES = [
-    { tagTable: 'character_tags', entityColumn: 'character_id', entityTable: 'characters', syncStoredCopy: syncShallowTagIdsFromTable, logTagRowsChanged: () => {} },
+    { tagTable: 'character_tags', entityColumn: 'character_id', entityTable: 'characters', syncStoredCopy: () => {}, logTagRowsChanged: logCharacterTagIdsChangedSync },
     { tagTable: 'group_tags', entityColumn: 'group_id', entityTable: 'groups', syncStoredCopy: syncGroupDigestTagIdsFromTable, logTagRowsChanged: insertGroupChange },
 ];
 
@@ -8082,7 +7349,7 @@ const TAG_MAP_IMPORT_BATCH_PAUSE_MS = 10;
  * @param {boolean} [options.writeBuffered] Counts a character still in the batch-import buffer as known, writing its
  *   row to the table first, as assignEntityTag() does.
  * @returns {Promise<{ droppedKeys: string[], undefinedTagIds: { key: string, tagIds: string[] }[], notAssigned: { key: string, tagIds: string[] }[], failed: { key: string, message: string }[], failedKeys: number, batches: number, rowsChanged: number }>}
- *   rowsChanged counts the keys whose assignments or shallow_json changed. notAssigned lists, per known key, the tag
+ *   rowsChanged counts the keys whose assignments changed. notAssigned lists, per known key, the tag
  *   ids deleted with no merge target.
  */
 async function importTagMap(entry, tagMap, { label = 'tags.json migration', requireDefinitions = false, writeBuffered = false } = {}) {
@@ -8104,21 +7371,13 @@ async function importTagMap(entry, tagMap, { label = 'tags.json migration', requ
      * @param {unknown[]} tagIds
      * @returns {() => boolean} The key's writes; true if they changed anything.
      */
-    const prepareCharacterKey = (key, tagIds) => {
-        const row = /** @type {{ shallow_json: string }} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id: key }));
-        const shallow = JSON.parse(row.shallow_json);
-        return () => {
-            let changed = false;
-            for (const tagId of tagIds) {
-                if (insertTagRowSync(entry.db, 'character_tags', key, tagId)) changed = true;
-            }
-            const currentTagIds = readCharacterTagIds(entry.db, key);
-            // writeShallowJson() stores tag_ids normalized.
-            if (Array.isArray(shallow.tag_ids) && JSON.stringify(shallow.tag_ids) === JSON.stringify(normalizeTagIds(currentTagIds))) return changed;
-            shallow.tag_ids = currentTagIds;
-            writeShallowJson(entry.db, key, shallow, ['tag_ids']);
-            return true;
-        };
+    const prepareCharacterKey = (key, tagIds) => () => {
+        let changed = false;
+        for (const tagId of tagIds) {
+            if (insertTagRowSync(entry.db, 'character_tags', key, tagId)) changed = true;
+        }
+        if (changed) logCharacterTagIdsChangedSync(entry.db, key);
+        return changed;
     };
 
     /**
@@ -8598,7 +7857,6 @@ function holdCardTagNamesSync(db, avatar, names, onlyExisting) {
 
 /**
  * Creates resolved's new tags, assigns every resolved tag to a characters row and holds its unresolved names.
- * Leaves shallow_json.tag_ids to the caller (syncShallowTagIdsFromTable()).
  * @param {MetadataDbEntry} entry
  * @param {string} avatar
  * @param {ResolvedCardTags} resolved
@@ -8608,37 +7866,16 @@ function holdCardTagNamesSync(db, avatar, names, onlyExisting) {
 function writeResolvedCardTagsSync(entry, avatar, resolved, onlyExisting) {
     const { db } = entry;
     const created = createCardTagsSync(entry, resolved).length;
+    let assigned = false;
     for (const tagId of resolved.tagIds) {
-        insertTagRowSync(db, 'character_tags', avatar, tagId);
+        if (insertTagRowSync(db, 'character_tags', avatar, tagId)) assigned = true;
     }
+    if (assigned) logCharacterTagIdsChangedSync(db, avatar);
     holdCardTagNamesSync(db, avatar, resolved.held, onlyExisting);
     return created;
 }
 
-// Patches one character row's shallow_json.tag_ids to match character_tags. Re-reads
-// character_tags rather than trusting a caller's resolved list, so other pre-existing assignments survive.
-/**
- * @returns {boolean} Whether the row was found.
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- * @param {string} avatar
- */
-function syncShallowTagIdsFromTable(db, avatar) {
-    const row = (/** @type {{ shallow_json: string } | undefined} */ (db.get('SELECT shallow_json FROM characters WHERE id = @id', { id: avatar })));
-    if (!row) return false;
-    /** @type {string[]} */
-    const currentTagIds = [];
-    for (const r of /** @type {Generator<{ tag_id: string }>} */ (db.iterate('SELECT tag_id FROM character_tags WHERE character_id = @id', { id: avatar }))) {
-        currentTagIds.push(r.tag_id);
-    }
-    const shallow = JSON.parse(row.shallow_json);
-    // writeShallowJson() stores tag_ids normalized.
-    if (Array.isArray(shallow.tag_ids) && JSON.stringify(shallow.tag_ids) === JSON.stringify(normalizeTagIds(currentTagIds))) return true;
-    shallow.tag_ids = currentTagIds;
-    writeShallowJson(db, avatar, shallow, ['tag_ids']);
-    return true;
-}
-
-// Group counterpart to syncShallowTagIdsFromTable(): a group's stored copy of its tags is digest_tag_ids.
+// A group's stored copy of its tags is digest_tag_ids.
 /**
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  * @param {string} groupId
@@ -8683,111 +7920,6 @@ function groupDigestTagIdsFromTable(db, groupId) {
  */
 function groupDigestTagIdsMatch(stored, digestTagIds) {
     return stored !== null && Number(stored) === digestTagIds;
-}
-
-// Accepts either shape a card may carry tags in: { data: { tags: [...] } } or a bare { tags: [...] }.
-// Returns [] (never null/undefined) so callers can iterate unconditionally.
-/**
- * @param {string} shallowJson
- * @returns {unknown[]}
- */
-function extractCardTags(shallowJson) {
-    let parsed;
-    try {
-        parsed = JSON.parse(shallowJson);
-    } catch {
-        return [];
-    }
-    return cardTagsOfListRow(parsed);
-}
-
-/**
- * extractCardTags() of a list row already read.
- * @param {any} parsed
- * @returns {unknown[]}
- */
-function cardTagsOfListRow(parsed) {
-    if (!parsed || typeof parsed !== 'object') return [];
-    if (parsed.data && typeof parsed.data === 'object' && Array.isArray(parsed.data.tags)) {
-        return parsed.data.tags;
-    }
-    if (Array.isArray(parsed.tags)) {
-        return parsed.tags;
-    }
-    return [];
-}
-
-// One-time backfill of character_tags from each card's already-parsed shallow_json.data.tags (no disk read
-// needed). Gated by its own meta flag; resumes after the last batch it committed.
-/**
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<CharacterPassResult | undefined>}
- */
-export async function backfillCardTagsIfNeeded(directories) {
-    const entry = await getEntry(directories);
-    if (!entry) return;
-
-    const already = (/** @type {{ value: string } | undefined} */ (entry.db.get('SELECT value FROM meta WHERE key = \'card_tags_backfill_completed\'')));
-    if (already) return { batches: 0, rowsChanged: 0 };
-
-    console.log(color.cyan('[character-metadata] Backfilling tag assignments from card-embedded tags...'));
-
-    let ready = false;
-    let batchNewDefinitions = 0;
-    let batchNewAssignments = 0;
-    let newDefinitions = 0;
-    let newAssignments = 0;
-
-    const result = await runResumableCharacterPass(entry.db, {
-        doneKey: 'card_tags_backfill_completed',
-        doneValue: '1',
-        progressKey: 'card_tags_backfill_progress',
-        label: 'Card-tags backfill',
-        logProgress: true,
-        onBatchStart: () => {
-            ready = tagNameKeysReady(entry);
-            batchNewDefinitions = 0;
-            batchNewAssignments = 0;
-        },
-        onBatchCommitted: () => {
-            newDefinitions += batchNewDefinitions;
-            newAssignments += batchNewAssignments;
-        },
-        prepareRow: (id) => {
-            const row = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id })));
-            if (!row) return null;
-            const names = cardTagNames(extractCardTags(row.shallow_json));
-            if (names.length === 0) return null;
-
-            const resolved = resolveCardTagNamesSync(entry.db, names, { ready });
-            const shallow = JSON.parse(row.shallow_json);
-            const currentTagIds = readCharacterTagIds(entry.db, id);
-            const current = new Set(currentTagIds);
-            const missing = resolved.tagIds.filter(tagId => !current.has(tagId));
-            // writeShallowJson() stores tag_ids normalized.
-            const inSync = (/** @type {string[]} */ tagIds) => Array.isArray(shallow.tag_ids) && JSON.stringify(shallow.tag_ids) === JSON.stringify(normalizeTagIds(tagIds));
-            if (missing.length === 0 && resolved.toCreate.length === 0 && resolved.held.length === 0 && inSync(currentTagIds)) return null;
-
-            return () => {
-                const created = createCardTagsSync(entry, resolved);
-                batchNewDefinitions += created.length;
-                for (const tagId of [...missing, ...created]) {
-                    if (insertTagRowSync(entry.db, 'character_tags', id, tagId)) batchNewAssignments++;
-                }
-                holdCardTagNamesSync(entry.db, id, resolved.held, false);
-                // Synced here rather than left to backfillTagIdsInShallowJson(), which only targets rows missing a
-                // tag_ids key and would skip a row that already had one.
-                const finalTagIds = [...currentTagIds, ...missing, ...created];
-                if (!inSync(finalTagIds)) {
-                    shallow.tag_ids = finalTagIds;
-                    writeShallowJson(entry.db, id, shallow, ['tag_ids']);
-                }
-            };
-        },
-    });
-
-    console.log(color.cyan(`[character-metadata] Card-tags backfill: ${newDefinitions} new tag definitions, ${newAssignments} new assignments.`));
-    return result;
 }
 
 const TAG_NAME_KEY_FILL_BATCH_SIZE = 1000;
@@ -8838,8 +7970,6 @@ export async function fillTagNameKeysIfNeeded(directories) {
             dropped = [];
             drained = 0;
             const held = /** @type {{ character_id: string, name: string, only_existing: number }[]} */ ([...entry.db.iterate('SELECT character_id, name, only_existing FROM tag_names_held ORDER BY character_id, name LIMIT @limit', { limit: HELD_TAG_NAMES_BATCH_SIZE })]);
-            /** @type {Set<string>} */
-            const assignedTo = new Set();
             for (const { character_id: characterId, name, only_existing: onlyExisting } of held) {
                 entry.db.run('DELETE FROM tag_names_held WHERE character_id = @characterId AND name = @name', { characterId, name });
                 drained++;
@@ -8849,10 +7979,6 @@ export async function fillTagNameKeysIfNeeded(directories) {
                 }
                 const resolved = resolveCardTagNamesSync(entry.db, [name], { ready: true, onlyExisting: !!onlyExisting });
                 writeResolvedCardTagsSync(entry, characterId, resolved, !!onlyExisting);
-                if (resolved.tagIds.length > 0) assignedTo.add(characterId);
-            }
-            for (const characterId of assignedTo) {
-                syncShallowTagIdsFromTable(entry.db, characterId);
             }
         });
         if (dropped.length > 0) {
@@ -11064,11 +10190,11 @@ export async function seedCardTagsForSingleCharacter(directories, avatar, { only
     /** @type {unknown[]} */
     let cardTags;
     if (pending) {
-        cardTags = extractCardTags(pending.row.shallow_json);
+        cardTags = pending.row.cardTags;
     } else {
-        const row = /** @type {{ id: string, shallow_json: string | null } | undefined} */ (entry.db.get(`SELECT id, ${listSourceColumn(entry)} FROM characters WHERE id = @id`, { id: avatar }));
-        if (row === undefined) return none;
-        cardTags = cardTagsOfListRow(readListRowsSync(entry, [row], NO_TAG_DELETIONS, { skipUnreadable: true })[0]);
+        const listRow = readListRowsSync(entry, [{ id: avatar }])[0];
+        if (listRow === undefined) return none;
+        cardTags = cardTagsOfListRow(listRow);
     }
 
     const names = cardTagNames(cardTags);
@@ -11090,7 +10216,6 @@ export async function seedCardTagsForSingleCharacter(directories, avatar, { only
         // Held names are resolved against the characters table, so the row can't stay in the buffer.
         if (pending && !flushed) flushed = writeBufferedRowSync(entry, avatar);
         writeResolvedCardTagsSync(entry, avatar, resolved, onlyExisting);
-        if (resolved.tagIds.length > 0) syncShallowTagIdsFromTable(entry.db, avatar);
     });
     dropFromBuffer(entry, avatar, flushed);
 
@@ -11099,7 +10224,6 @@ export async function seedCardTagsForSingleCharacter(directories, avatar, { only
         for (const tagId of resolved.tagIds) {
             if (!pending.tagIds.includes(tagId)) pending.tagIds.push(tagId);
         }
-        patchPendingRowTagIds(pending);
     }
 
     const definitionsById = new Map(resolved.learned.map(({ id, data }) => [id, JSON.parse(data)]));
@@ -11448,7 +10572,7 @@ function readEntityRowsInOrder(entry, entities) {
     const characterIds = entities.filter(e => e.type === 'character').map(e => e.id);
     const groupIds = entities.filter(e => e.type === 'group').map(e => e.id);
     if (characterIds.length > 0) {
-        for (const row of db.iterate(`SELECT ${entityCharacterColumns(entry)} FROM characters WHERE id IN (SELECT value FROM json_each(?))`, [JSON.stringify(characterIds)])) {
+        for (const row of db.iterate(`SELECT ${ENTITY_CHARACTER_COLUMNS} FROM characters WHERE id IN (SELECT value FROM json_each(?))`, [JSON.stringify(characterIds)])) {
             byKey.set(`character:${/** @type {EntityRow} */ (row).id}`, /** @type {EntityRow} */ (row));
         }
     }
@@ -11460,8 +10584,6 @@ function readEntityRowsInOrder(entry, entities) {
     return entities.map(e => byKey.get(`${e.type}:${e.id}`)).filter(row => row !== undefined);
 }
 
-/** The sort columns /query orders characters by, each with an index that starts with fav. */
-const CHARACTER_SORT_INDEX_COLUMNS = ['name_fold', 'date_added', 'date_last_chat', 'create_date', 'data_size', 'chat_size'];
 /** The same for groups. create_date sorts groups by date_added; data_size has no group column, so ties decide. */
 const GROUP_SORT_INDEX_COLUMNS = ['name_fold', 'date_added', 'date_last_chat', 'chat_size'];
 
@@ -12579,8 +11701,7 @@ function readCountSample(db, kind, tagId, merged, size, share, random, ids) {
  * @param {number} [params.limit]
  * @param {boolean} [params.wantRows]
  * @param {boolean} [params.wantTotal]
- * @param {boolean} [params.wantHashes] Returns `hashRows` (per-row content hashes) instead of `rows`, computed
- * live from shallow_json rather than the stored digest_* columns, which can drift from a fresh recompute.
+ * @param {boolean} [params.wantHashes] Returns `hashRows` (each row's version and live fields) instead of `rows`.
  * @returns {Promise<{ rows: object[] | undefined, hashRows: object[] | undefined, total: number | undefined, approxTotal: boolean, seq: number } | null>}
  * `null` means the metadata store is unavailable - callers must not fall back to a live filesystem scan.
  * `approxTotal` marks `total` as an estimate (totalWithoutCount()).
@@ -12620,12 +11741,8 @@ export async function queryCharacters(directories, params = {}) {
         }
     }
 
-    // digest_fav/digest_tag_ids/digest_content are plain column reads - writeShallowJson() is the only place
-    // shallow_json is written outside buildRow()/writeRowSync()'s own row construction, and it always writes
-    // these three columns in the same statement, so a stored value here can never be stale relative to shallow_json.
-    // shallow_json only for characterTagIdsDigestForReader(), and only while some tag is marked deleted.
-    const HASH_COLUMNS = `id, active_chat, date_added, create_date, date_last_chat, chat_size, data_size, digest_fav, digest_tag_ids, digest_content${deletions.any ? ', shallow_json' : ''}`;
-    /** @param {HashSourceRow & { shallow_json?: string }} r */
+    const HASH_COLUMNS = 'id, active_chat, date_added, create_date, date_last_chat, chat_size, data_size, version';
+    /** @param {HashSourceRow} r */
     const toHashRow = (r) => ({
         id: r.id,
         chat: r.active_chat,
@@ -12634,9 +11751,7 @@ export async function queryCharacters(directories, params = {}) {
         date_last_chat: r.date_last_chat,
         chat_size: r.chat_size,
         data_size: r.data_size,
-        favHash: r.digest_fav >>> 0,
-        tagIdsHash: characterTagIdsDigestForReader(r.digest_tag_ids, r.shallow_json, deletions),
-        contentHash: r.digest_content >>> 0,
+        version: Number(r.version),
     });
 
     let rows, hashRows;
@@ -12666,9 +11781,9 @@ export async function queryCharacters(directories, params = {}) {
                     .filter(id => rowById.has(id))
                     .map(id => toHashRow(/** @type {HashSourceRow} */ (rowById.get(id))));
             } else {
-                const rawRows = Array.from(/** @type {Iterable<{ id: string, shallow_json: string | null }>} */ (entry.db.iterate(`SELECT id, ${listSourceColumn(entry)} FROM ${from} ${pageWhere}`, pageArgs)));
-                const rowById = new Map(rawRows.map(r => [r.id, r]));
-                rows = readListRowsSync(entry, pageIds.filter(id => rowById.has(id)).map(id => /** @type {{ id: string, shallow_json: string | null }} */ (rowById.get(id))), deletions);
+                const rawRows = Array.from(/** @type {Iterable<{ id: string }>} */ (entry.db.iterate(`SELECT id FROM ${from} ${pageWhere}`, pageArgs)));
+                const found = new Set(rawRows.map(r => r.id));
+                rows = readListRowsSync(entry, pageIds.filter(id => found.has(id)).map(id => ({ id })));
             }
         }
     } else if (wantRows || wantHashes) {
@@ -12723,8 +11838,7 @@ export async function queryCharacters(directories, params = {}) {
                 const byId = new Map(Array.from(/** @type {Iterable<HashSourceRow>} */ (entry.db.iterate(`SELECT ${HASH_COLUMNS} FROM characters WHERE id IN (SELECT value FROM json_each(?))`, [pageJson]))).map(r => [r.id, r]));
                 hashRows = pageIds.filter(id => byId.has(id)).map(id => toHashRow(/** @type {HashSourceRow} */ (byId.get(id))));
             } else {
-                const byId = new Map(Array.from(/** @type {Iterable<{ id: string, shallow_json: string | null }>} */ (entry.db.iterate(`SELECT id, ${listSourceColumn(entry)} FROM characters WHERE id IN (SELECT value FROM json_each(?))`, [pageJson]))).map(r => [r.id, r]));
-                rows = readListRowsSync(entry, pageIds.filter(id => byId.has(id)).map(id => /** @type {{ id: string, shallow_json: string | null }} */ (byId.get(id))), deletions);
+                rows = readListRowsSync(entry, pageIds.map(id => ({ id }))).filter(row => row !== undefined);
             }
             overlayQueryRowsSync(entry.db, rows, hashRows);
             return { rows, hashRows, total, approxTotal, seq, ...(cursor !== undefined ? { cursor } : {}), ...(more ? { more: true } : {}) };
@@ -12733,8 +11847,8 @@ export async function queryCharacters(directories, params = {}) {
             const rawRows = (/** @type {HashSourceRow[]} */ (entry.db.readBounded(`SELECT ${HASH_COLUMNS} FROM ${from} ${where} ${orderBy} LIMIT ? OFFSET ?`, [...args, numericLimit, numericOffset], numericLimit)));
             hashRows = rawRows.map(toHashRow);
         } else {
-            const rawRows = (/** @type {{ id: string, shallow_json: string | null }[]} */ (entry.db.readBounded(`SELECT id, ${listSourceColumn(entry)} FROM ${from} ${where} ${orderBy} LIMIT ? OFFSET ?`, [...args, numericLimit, numericOffset], numericLimit)));
-            rows = readListRowsSync(entry, rawRows, deletions);
+            const rawRows = (/** @type {{ id: string }[]} */ (entry.db.readBounded(`SELECT id FROM ${from} ${where} ${orderBy} LIMIT ? OFFSET ?`, [...args, numericLimit, numericOffset], numericLimit)));
+            rows = readListRowsSync(entry, rawRows);
         }
     }
 
@@ -12947,11 +12061,8 @@ function makeEntityHashRowMapper(entry, directories, deletions) {
         const resolved = resolveTagIds(tagIds, deletions);
         return resolved === tagIds ? storedDigest : groupDigestTagIdsHash({ tag_ids: resolved });
     };
-    // Character rows' digest_fav/digest_tag_ids/digest_content are plain column reads - writeShallowJson() is the
-    // sole writer of shallow_json outside buildRow()/writeRowSync()'s own row construction, and always writes
-    // these three columns in the same statement, so they can't be stale relative to shallow_json (see that
-    // table's schema comment). Group rows trust their stored digest_* columns when non-NULL; a NULL digest falls
-    // back to a live recompute.
+    // A character row carries its version. Group rows trust their stored digest_* columns when non-NULL; a NULL
+    // digest falls back to a live recompute.
     /** @type {Set<string>} */
     const groupIdsNeedingFileFallback = new Set();
     /**
@@ -12959,12 +12070,10 @@ function makeEntityHashRowMapper(entry, directories, deletions) {
      * @returns {EntityHashRow}
      */
     const toHashRow = (r) => {
-        let favHash, tagIdsHash, contentHash, chat = null;
+        let favHash = 0, tagIdsHash = 0, contentHash = 0, chat = null, version = null;
         if (r.type === 'character') {
-            favHash = r.digest_fav;
-            tagIdsHash = characterTagIdsDigestForReader(r.digest_tag_ids, r.shallow_json, deletions);
-            contentHash = r.digest_content;
-            chat = JSON.parse(/** @type {string} */ (r.shallow_json)).chat ?? null;
+            version = Number(r.version);
+            chat = r.active_chat ?? null;
         } else if (r.digest_fav != null && r.digest_tag_ids != null && r.digest_content != null) {
             favHash = r.digest_fav;
             // A .png group row's tags are never read as a group's (tagEntityTypeOf()), so it's served with none.
@@ -12980,7 +12089,7 @@ function makeEntityHashRowMapper(entry, directories, deletions) {
             date_added: Number(r.date_added), create_date: r.create_date === null ? null : Number(r.create_date),
             date_last_chat: Number(r.date_last_chat), chat_size: Number(r.chat_size),
             data_size: r.data_size === null ? 0 : Number(r.data_size),
-            favHash: favHash >>> 0, tagIdsHash: tagIdsHash >>> 0, contentHash: contentHash >>> 0,
+            version, favHash: favHash >>> 0, tagIdsHash: tagIdsHash >>> 0, contentHash: contentHash >>> 0,
         };
     };
     /**
@@ -13014,18 +12123,17 @@ function makeEntityHashRowMapper(entry, directories, deletions) {
 }
 
 /**
- * The `/query` wire rows of entity rows read with entityCharacterColumns(), after overlayEntityRowsSync().
+ * The `/query` wire rows of entity rows read with ENTITY_CHARACTER_COLUMNS, after overlayEntityRowsSync().
  * @param {MetadataDbEntry} entry
  * @param {EntityRow[]} rawRows
- * @param {import('./tag-deletions.js').TagDeletions} deletions
  */
-function toEntityWireRows(entry, rawRows, deletions) {
+function toEntityWireRows(entry, rawRows) {
     const characterRows = rawRows.filter(r => r.type === 'character');
-    const items = new Map(readListRowsSync(entry, characterRows, deletions).map((item, i) => [characterRows[i].id, item]));
+    const items = new Map(readListRowsSync(entry, characterRows).map((item, i) => [characterRows[i].id, item]));
     return rawRows.map(r => {
         const item = r.type === 'character' ? items.get(r.id) : null;
-        // overlayEntityRowsSync() put the queued activity into the row; in the blob layout also into its stored copy.
-        if (item && entry.cardLayout === 'fields') {
+        // overlayEntityRowsSync() put the queued activity into the row.
+        if (item) {
             item.chat_size = r.chat_size;
             item.date_last_chat = r.date_last_chat;
         }
@@ -13041,14 +12149,8 @@ function toEntityWireRows(entry, rawRows, deletions) {
     });
 }
 
-/**
- * @param {MetadataDbEntry} entry
- * @returns {string}
- */
-function entityCharacterColumns(entry) {
-    return `id, 'character' as type, name_fold, fav, date_added, date_last_chat, chat_size, create_date, data_size, ${listSourceColumn(entry)}, digest_fav, digest_tag_ids, digest_content`;
-}
-const ENTITY_GROUP_COLUMNS = 'id, \'group\' as type, name_fold, fav, date_added, date_last_chat, chat_size, date_added as create_date, NULL as data_size, NULL as shallow_json, digest_fav, digest_tag_ids, digest_content';
+const ENTITY_CHARACTER_COLUMNS = 'id, \'character\' as type, name_fold, fav, date_added, date_last_chat, chat_size, create_date, data_size, active_chat, version, NULL as digest_fav, NULL as digest_tag_ids, NULL as digest_content';
+const ENTITY_GROUP_COLUMNS = 'id, \'group\' as type, name_fold, fav, date_added, date_last_chat, chat_size, date_added as create_date, NULL as data_size, NULL as active_chat, NULL as version, digest_fav, digest_tag_ids, digest_content';
 
 /**
  * queryEntities()'s row shapes for an already-ordered page of entities, in that order. An entity whose row no
@@ -13074,7 +12176,7 @@ export async function getEntityRowsByIds(directories, entities, { wantRows = tru
     /** @type {Map<string, EntityRow>} */
     const groupRows = new Map();
     if (characterIds.length > 0) {
-        for (const r of entry.db.iterate(`SELECT ${entityCharacterColumns(entry)} FROM characters WHERE id IN (SELECT value FROM json_each(?))`, [JSON.stringify(characterIds)])) {
+        for (const r of entry.db.iterate(`SELECT ${ENTITY_CHARACTER_COLUMNS} FROM characters WHERE id IN (SELECT value FROM json_each(?))`, [JSON.stringify(characterIds)])) {
             characterRows.set(/** @type {EntityRow} */ (r).id, /** @type {EntityRow} */ (r));
         }
     }
@@ -13096,7 +12198,7 @@ export async function getEntityRowsByIds(directories, entities, { wantRows = tru
         resolveFileFallbackHashes(hashRows);
     } else if (wantRows) {
         overlayEntityRowsSync(entry.db, rawRows);
-        rows = toEntityWireRows(entry, rawRows, deletions);
+        rows = toEntityWireRows(entry, rawRows);
     }
     return { rows, hashRows, seq, groupsVersion };
 }
@@ -13210,7 +12312,7 @@ export async function queryEntities(directories, params = {}) {
                 resolveFileFallbackHashes(hashRows);
             } else {
                 overlayEntityRowsSync(entry.db, rawRows);
-                rows = toEntityWireRows(entry, rawRows, deletions);
+                rows = toEntityWireRows(entry, rawRows);
             }
             nextCursor = page.cursor;
             moreRows = page.more;
@@ -13261,7 +12363,7 @@ export async function queryEntities(directories, params = {}) {
                 let merged = [];
                 if (!groupsOnly) {
                     merged = readStream(
-                        `SELECT ${entityCharacterColumns(entry)}
+                        `SELECT ${ENTITY_CHARACTER_COLUMNS}
                         FROM ${charWhere.from} ${charWhere.where}
                         ${orderBy}
                         LIMIT ?`,
@@ -13284,7 +12386,7 @@ export async function queryEntities(directories, params = {}) {
                 resolveFileFallbackHashes(hashRows);
             } else {
                 overlayEntityRowsSync(entry.db, rawRows);
-                rows = toEntityWireRows(entry, rawRows, deletions);
+                rows = toEntityWireRows(entry, rawRows);
             }
         }
     }
@@ -13785,7 +12887,7 @@ export async function getCurrentTagNameChangeSeq(directories) {
     return Number(row?.seq ?? 0);
 }
 
-/** Every character's id, card_json and chat stats, in id order, in batches - for a caller that must visit the whole
+/** Every character's id, assembled card and chat stats, in id order, in batches - for a caller that must visit the whole
  * library without holding it.
  * @param {import('./users.js').UserDirectoryList} directories
  * @returns {AsyncGenerator<CharacterIndexRow[], void, undefined>}
@@ -13794,9 +12896,9 @@ export async function* streamCharacterCardJsonBatches(directories) {
     const entry = await getEntry(directories);
     if (!entry) return;
     for await (const rows of /** @type {AsyncGenerator<CharacterIndexRow[], void, undefined>} */ (streamRows(entry.db, {
-        firstPageSql: `SELECT id, name, ${cardSourceColumn(entry)}, chat_size, date_last_chat FROM characters ORDER BY id LIMIT @limit`,
+        firstPageSql: 'SELECT id, chat_size, date_last_chat FROM characters ORDER BY id LIMIT @limit',
         firstPageParams: {},
-        nextPageSql: `SELECT id, name, ${cardSourceColumn(entry)}, chat_size, date_last_chat FROM characters WHERE id > @after ORDER BY id LIMIT @limit`,
+        nextPageSql: 'SELECT id, chat_size, date_last_chat FROM characters WHERE id > @after ORDER BY id LIMIT @limit',
         nextPageParams: {},
         keyColumn: 'id',
     }))) {

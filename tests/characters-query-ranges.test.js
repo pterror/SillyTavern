@@ -2,6 +2,18 @@ import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } fr
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { defineCharacterStoreFunctions } from '../src/character-store-schema.js';
+
+/**
+ * Registers on a raw connection to the character store the functions its indexes and triggers call.
+ * @template {import('better-sqlite3').Database} T
+ * @param {T} db
+ * @returns {T}
+ */
+function withStoreFunctions(db) {
+    defineCharacterStoreFunctions({ defineFunction: (name, fn) => db.function(name, { deterministic: true }, fn) });
+    return db;
+}
 
 /** @type {typeof import('../src/character-metadata-db.js')} */
 let metadataDb;
@@ -57,7 +69,7 @@ afterEach(() => {
 
 /** @param {string} sql @param {unknown[]} [params] */
 function runSql(sql, params = []) {
-    const db = new Database(path.join(directories.root, 'character-metadata.sqlite'));
+    const db = withStoreFunctions(new Database(path.join(directories.root, 'character-metadata.sqlite')));
     try {
         return db.prepare(sql).run(...params);
     } finally {

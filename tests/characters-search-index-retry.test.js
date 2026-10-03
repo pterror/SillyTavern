@@ -4,6 +4,9 @@ import path from 'node:path';
 import os from 'node:os';
 import Database from 'better-sqlite3';
 
+import { splitCard } from '../src/character-card-storage.js';
+import { defineCharacterStoreFunctions } from '../src/character-store-schema.js';
+
 /** @type {typeof import('../src/endpoints/characters-search-index.js')} */
 let searchIndex;
 /** @type {typeof import('../src/character-metadata-db.js')} */
@@ -16,6 +19,10 @@ let tantivyEngine;
 let tantivySearch;
 /** @type {typeof import('../src/endpoints/search-index-coordinator.js')} */
 let searchCoordinator;
+/** @type {typeof import('../src/character-card-normalize.js')} */
+let cardNormalize;
+/** @type {typeof import('../src/character-shallow.js')} */
+let characterShallow;
 
 let tempDir;
 let charactersDir;
@@ -65,16 +72,44 @@ async function writeCard(name, description) {
     await fs.promises.writeFile(path.join(charactersDir, `${name}.png`), cardParser.write(baseImage, cardJson(name, description)));
 }
 
+/** A card the index can't process: a V2 card whose `data` is null. */
+const BROKEN = { name: 'Flaky', spec: 'chara_card_v2', data: null };
+/** A card the index can't process with another error: a `data` value that has no string form. */
+const BROKEN_OTHER = { name: 'Flaky', spec: 'chara_card_v2', data: { name: 'Flaky', odd: { toString: 1 } } };
+
 /**
- * Sets a row's card_json straight in the db, as another connection would, optionally with a change row for it.
+ * A raw connection to the store, with the functions its indexes and triggers call.
+ * @param {import('better-sqlite3').Options} [options]
+ */
+function openDb(options) {
+    const db = new Database(dbPath(), options);
+    defineCharacterStoreFunctions({ defineFunction: (name, fn) => db.function(name, { deterministic: true }, fn) });
+    return db;
+}
+
+/**
+ * Stores `card` as a row's card straight in the db (its card table rows and its row's card values), as another
+ * connection would, optionally with a change row for it.
  * @param {string} id
- * @param {string} json
+ * @param {unknown} card
  * @param {{ change: boolean }} options
  */
-function setCardJson(id, json, { change }) {
-    const db = new Database(dbPath());
+function setCard(id, card, { change }) {
+    const db = openDb();
     try {
-        db.prepare('UPDATE characters SET card_json = ? WHERE id = ?').run(json, id);
+        const parts = splitCard(card);
+        const { columns } = parts;
+        for (const table of ['cards', 'card_greetings', 'card_tags', 'card_extensions', 'card_extra']) {
+            db.prepare(`DELETE FROM ${table} WHERE character_id = ?`).run(id);
+        }
+        db.prepare('UPDATE characters SET name = ?, creator = ?, character_version = ?, world = ?, create_date_raw = ? WHERE id = ?')
+            .run(columns.name ?? null, columns.creator ?? null, columns.character_version ?? null, columns.world ?? null, columns.create_date ?? null, id);
+        const cardColumns = Object.keys(parts.card);
+        db.prepare(`INSERT INTO cards (character_id${cardColumns.map(c => `, ${c}`).join('')}) VALUES (?${cardColumns.map(() => ', ?').join('')})`).run(id, ...cardColumns.map(c => parts.card[c]));
+        for (const g of parts.greetings) db.prepare('INSERT INTO card_greetings VALUES (?, ?, ?, ?)').run(id, g.list, g.position, g.text);
+        for (const t of parts.tags) db.prepare('INSERT INTO card_tags VALUES (?, ?, ?)').run(id, t.position, t.name);
+        for (const e of parts.extensions) db.prepare('INSERT INTO card_extensions VALUES (?, ?, ?)').run(id, e.key, e.value);
+        for (const x of parts.extra) db.prepare('INSERT INTO card_extra VALUES (?, ?, ?)').run(id, x.path, x.value);
         if (change) {
             db.prepare('INSERT INTO changes (id, op, fields) VALUES (?, \'upsert\', NULL)').run(id);
         }
@@ -85,7 +120,7 @@ function setCardJson(id, json, { change }) {
 
 /** @returns {{ id: string, next_attempt_at: number, delay_ms: number, last_error: string }[]} */
 function retryMarks() {
-    const db = new Database(dbPath(), { readonly: true });
+    const db = openDb({ readonly: true });
     try {
         return Array.from(db.prepare('SELECT id, next_attempt_at, delay_ms, last_error FROM character_index_retries ORDER BY id').iterate());
     } finally {
@@ -93,14 +128,14 @@ function retryMarks() {
     }
 }
 
-/** What processCharacter() throws for card_json `json`, as the retry mark records it. */
-function parseError(json) {
+/** What processCharacter() throws for `card`, as the retry mark records it. */
+function processingError(card) {
     try {
-        JSON.parse(json);
+        characterShallow.calculateDataSize(cardNormalize.getCharaCardV2(structuredClone(card), directories, false).data);
     } catch (err) {
         return String(err);
     }
-    throw new Error(`${json} parses`);
+    throw new Error(`${JSON.stringify(card)} is processed`);
 }
 
 /**
@@ -144,6 +179,8 @@ beforeAll(async () => {
     tantivyEngine = await import('../src/endpoints/tantivy-engine.js');
     tantivySearch = await import('../src/endpoints/tantivy-search.js');
     searchCoordinator = await import('../src/endpoints/search-index-coordinator.js');
+    cardNormalize = await import('../src/character-card-normalize.js');
+    characterShallow = await import('../src/character-shallow.js');
 });
 
 beforeEach(() => {
@@ -198,21 +235,21 @@ describe('characters-search-index.js: a card that fails to re-index keeps its do
         if (!await setUp()) return;
         const seqBefore = maintainer.seq();
 
-        setCardJson(FLAKY, 'not json', { change: true });
+        setCard(FLAKY, BROKEN, { change: true });
         const r = await tick();
 
         expect(docCount(FLAKY)).toBe(1);
         expect(docCount(FLAKY, 'flakyword')).toBe(1);
-        expect(retryMarks()).toEqual([{ id: FLAKY, next_attempt_at: now + 1000, delay_ms: 1000, last_error: parseError('not json') }]);
+        expect(retryMarks()).toEqual([{ id: FLAKY, next_attempt_at: now + 1000, delay_ms: 1000, last_error: processingError(BROKEN) }]);
         expect(r.seq).toBeGreaterThan(seqBefore);
         expect(Number(await metadataDb.getMetaValue(directories, SEQ_META_KEY))).toBe(r.seq);
         expect(logsAbout(FLAKY)).toHaveLength(1);
-        expect(logsAbout(FLAKY)[0]).toContain(parseError('not json'));
+        expect(logsAbout(FLAKY)[0]).toContain(processingError(BROKEN));
     }, 20000);
 
     test('a changed id with no row is still deleted, and clears its mark', async () => {
         if (!await setUp()) return;
-        setCardJson(FLAKY, 'not json', { change: true });
+        setCard(FLAKY, BROKEN, { change: true });
         await tick();
         expect(retryMarks()).toHaveLength(1);
 
@@ -225,10 +262,10 @@ describe('characters-search-index.js: a card that fails to re-index keeps its do
 
     test('a card indexed through a change clears its mark', async () => {
         if (!await setUp()) return;
-        setCardJson(FLAKY, 'not json', { change: true });
+        setCard(FLAKY, BROKEN, { change: true });
         await tick();
 
-        setCardJson(FLAKY, cardJson('Flaky', 'mendedword'), { change: true });
+        setCard(FLAKY, JSON.parse(cardJson('Flaky', 'mendedword')), { change: true });
         await tick();
 
         expect(retryMarks()).toEqual([]);
@@ -238,14 +275,14 @@ describe('characters-search-index.js: a card that fails to re-index keeps its do
 
     test('a due retry re-indexes the card without moving either cursor, and saves a bumped retry counter', async () => {
         if (!await setUp()) return;
-        setCardJson(FLAKY, 'not json', { change: true });
+        setCard(FLAKY, BROKEN, { change: true });
         const failed = await tick();
         const retrySeqBefore = maintainer.retrySeq();
         expect(Number(await metadataDb.getMetaValue(directories, RETRY_SEQ_META_KEY))).toBe(retrySeqBefore);
         const failedAt = now;
 
         // Mended without a change row, so only the retry picks it up.
-        setCardJson(FLAKY, cardJson('Flaky', 'mendedword'), { change: false });
+        setCard(FLAKY, JSON.parse(cardJson('Flaky', 'mendedword')), { change: false });
 
         now = failedAt + 999;
         const early = await tick();
@@ -271,9 +308,9 @@ describe('characters-search-index.js: a card that fails to re-index keeps its do
 
     test('the saved retry counter is read back when the persisted index is reopened', async () => {
         if (!await setUp()) return;
-        setCardJson(FLAKY, 'not json', { change: true });
+        setCard(FLAKY, BROKEN, { change: true });
         await tick();
-        setCardJson(FLAKY, cardJson('Flaky', 'mendedword'), { change: false });
+        setCard(FLAKY, JSON.parse(cardJson('Flaky', 'mendedword')), { change: false });
         now += 1000;
         await tick();
         const retrySeq = maintainer.retrySeq();
@@ -287,7 +324,7 @@ describe('characters-search-index.js: a card that fails to re-index keeps its do
 
     test('every failed attempt doubles the delay, capped at 5 minutes', async () => {
         if (!await setUp()) return;
-        setCardJson(FLAKY, 'not json', { change: true });
+        setCard(FLAKY, BROKEN, { change: true });
         await tick();
         expect(retryMarks()[0].delay_ms).toBe(1000);
 
@@ -306,18 +343,18 @@ describe('characters-search-index.js: a card that fails to re-index keeps its do
 
     test('a failing change to a marked card doubles its delay too', async () => {
         if (!await setUp()) return;
-        setCardJson(FLAKY, 'not json', { change: true });
+        setCard(FLAKY, BROKEN, { change: true });
         await tick();
 
         now += 10;
-        setCardJson(FLAKY, 'still not json', { change: true });
+        setCard(FLAKY, BROKEN_OTHER, { change: true });
         await tick();
-        expect(retryMarks()).toEqual([{ id: FLAKY, next_attempt_at: now + 2000, delay_ms: 2000, last_error: parseError('still not json') }]);
+        expect(retryMarks()).toEqual([{ id: FLAKY, next_attempt_at: now + 2000, delay_ms: 2000, last_error: processingError(BROKEN_OTHER) }]);
     }, 20000);
 
     test('a failed retry that changes nothing in the index keeps the retry counter', async () => {
         if (!await setUp()) return;
-        setCardJson(FLAKY, 'not json', { change: true });
+        setCard(FLAKY, BROKEN, { change: true });
         await tick();
         const retrySeqBefore = maintainer.retrySeq();
         now = retryMarks()[0].next_attempt_at;
@@ -328,7 +365,7 @@ describe('characters-search-index.js: a card that fails to re-index keeps its do
 
     test('a failure is logged only when its error differs from the last one logged for that card', async () => {
         if (!await setUp()) return;
-        setCardJson(FLAKY, 'not json', { change: true });
+        setCard(FLAKY, BROKEN, { change: true });
         await tick();
         expect(logsAbout(FLAKY)).toHaveLength(1);
 
@@ -338,12 +375,12 @@ describe('characters-search-index.js: a card that fails to re-index keeps its do
         await tick();
         expect(logsAbout(FLAKY)).toHaveLength(1);
 
-        setCardJson(FLAKY, '{', { change: false });
+        setCard(FLAKY, BROKEN_OTHER, { change: false });
         now = retryMarks()[0].next_attempt_at;
         await tick();
         expect(logsAbout(FLAKY)).toHaveLength(2);
-        expect(logsAbout(FLAKY)[1]).toContain(parseError('{'));
-        expect(retryMarks()[0].last_error).toBe(parseError('{'));
+        expect(logsAbout(FLAKY)[1]).toContain(processingError(BROKEN_OTHER));
+        expect(retryMarks()[0].last_error).toBe(processingError(BROKEN_OTHER));
 
         now = retryMarks()[0].next_attempt_at;
         await tick();
@@ -352,12 +389,12 @@ describe('characters-search-index.js: a card that fails to re-index keeps its do
 
     test('a retry of a card whose row is gone deletes its doc and clears the mark', async () => {
         if (!await setUp()) return;
-        setCardJson(FLAKY, 'not json', { change: true });
+        setCard(FLAKY, BROKEN, { change: true });
         await tick();
         const retrySeqBefore = maintainer.retrySeq();
 
         // Deleted without a change row, so only the retry sees it.
-        const db = new Database(dbPath());
+        const db = openDb();
         try {
             db.prepare('DELETE FROM characters WHERE id = ?').run(FLAKY);
         } finally {
@@ -375,7 +412,7 @@ describe('characters-search-index.js: a card that fails to re-index keeps its do
         const batch = searchIndex.CHARACTER_INDEX_RETRY_BATCH_SIZE;
         expect(Number.isInteger(batch) && batch > 0).toBe(true);
         const extra = 5;
-        const db = new Database(dbPath());
+        const db = openDb();
         try {
             const insert = db.prepare('INSERT INTO character_index_retries (id, next_attempt_at, delay_ms, last_error) VALUES (?, ?, 1000, \'x\')');
             for (let i = 0; i < batch + extra; i++) insert.run(`Ghost${String(i).padStart(5, '0')}.png`, now);
@@ -391,9 +428,9 @@ describe('characters-search-index.js: a card that fails to re-index keeps its do
     test('under a lock neither the mark nor the cursors land and nothing is logged; the next tick writes and logs both', async () => {
         if (!await setUp()) return;
         const persistedBefore = await metadataDb.getMetaValue(directories, SEQ_META_KEY);
-        setCardJson(FLAKY, 'not json', { change: true });
+        setCard(FLAKY, BROKEN, { change: true });
 
-        const blocker = new Database(dbPath());
+        const blocker = openDb();
         let skipped;
         try {
             blocker.exec('BEGIN IMMEDIATE');
@@ -419,15 +456,15 @@ describe('characters-search-index.js: a card that fails to re-index keeps its do
 describe('characters-search-index.js: a card that fails to re-index is warned about', () => {
     test('a failure hands one warning naming the card to onIndexFailure', async () => {
         if (!await setUp()) return;
-        setCardJson(FLAKY, 'not json', { change: true });
+        setCard(FLAKY, BROKEN, { change: true });
         await tick();
 
-        expect(warnings).toEqual([{ id: FLAKY, name: 'Flaky', error: parseError('not json'), retryInMs: 1000, keptEntry: true }]);
+        expect(warnings).toEqual([{ id: FLAKY, name: 'Flaky', error: processingError(BROKEN), retryInMs: 1000, keptEntry: true }]);
     }, 20000);
 
     test('a failure is warned about only when its error differs from the last one for that card', async () => {
         if (!await setUp()) return;
-        setCardJson(FLAKY, 'not json', { change: true });
+        setCard(FLAKY, BROKEN, { change: true });
         await tick();
         now = retryMarks()[0].next_attempt_at;
         await tick();
@@ -435,11 +472,11 @@ describe('characters-search-index.js: a card that fails to re-index is warned ab
         await tick();
         expect(warnings).toHaveLength(1);
 
-        setCardJson(FLAKY, '{', { change: false });
+        setCard(FLAKY, BROKEN_OTHER, { change: false });
         now = retryMarks()[0].next_attempt_at;
         await tick();
         expect(warnings).toHaveLength(2);
-        expect(warnings[1]).toEqual({ id: FLAKY, name: 'Flaky', error: parseError('{'), retryInMs: 8000, keptEntry: true });
+        expect(warnings[1]).toEqual({ id: FLAKY, name: 'Flaky', error: processingError(BROKEN_OTHER), retryInMs: 8000, keptEntry: true });
 
         now = retryMarks()[0].next_attempt_at;
         await tick();
@@ -448,9 +485,9 @@ describe('characters-search-index.js: a card that fails to re-index is warned ab
 
     test('under a lock nothing is warned about; the tick that lands the mark warns', async () => {
         if (!await setUp()) return;
-        setCardJson(FLAKY, 'not json', { change: true });
+        setCard(FLAKY, BROKEN, { change: true });
 
-        const blocker = new Database(dbPath());
+        const blocker = openDb();
         try {
             blocker.exec('BEGIN IMMEDIATE');
             expect((await tick()).persistSkipped).toBe(true);

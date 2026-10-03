@@ -1,6 +1,5 @@
 import { describe, test, expect, jest, beforeEach } from '@jest/globals';
 import {
-    characterDigestFavHash, characterDigestFieldsHash, characterDigestTagIdsHash,
     groupDigestFavHash, groupDigestTagIdsHash, groupDigestContentHash, shallowCharacterData,
 } from '../public/scripts/hash-utils.js';
 
@@ -8,17 +7,8 @@ const getRequestHeadersMock = jest.fn(() => ({ 'Content-Type': 'application/json
 const unshallowCharacterMock = jest.fn();
 
 // HASH_VERSION / GROUP_HASH_VERSION in character-cache.js (not exported).
-const CHARACTER_HASH_VERSION = 2;
+const CHARACTER_HASH_VERSION = 5;
 const GROUP_HASH_VERSION = 1;
-
-/** Same hashes saveCachedCharacters() stores, and the server ships as a character row's favHash/tagIdsHash/contentHash. */
-function characterHashes(character) {
-    return {
-        fav: characterDigestFavHash(character) % 4294967296,
-        tagIds: characterDigestTagIdsHash(character),
-        content: characterDigestFieldsHash(character) % 4294967296,
-    };
-}
 
 /** Same hashes saveCachedGroups() stores, and the server ships as a group row's hashes. */
 function groupHashes(group) {
@@ -32,7 +22,7 @@ function groupHashes(group) {
 /**
  * In-memory stand-in for both character-cache.js IndexedDB stores. Records are structured-cloned in and out,
  * as IndexedDB does.
- * @type {Map<string, {character?: object, group?: object, hashes: {fav: number, tagIds: number, content: number, v: number}}>}
+ * @type {Map<string, {character?: object, group?: object, hashes: {version?: number | null, fav?: number, tagIds?: number, content?: number, v: number}}>}
  */
 let cacheRecords = new Map();
 
@@ -46,8 +36,8 @@ async function getCachedEntriesByIdsFake(ids) {
 }
 
 async function saveCachedCharactersFake(entries) {
-    for (const { avatar, character } of entries) {
-        cacheRecords.set(avatar, structuredClone({ character, hashes: { ...characterHashes(character), v: CHARACTER_HASH_VERSION } }));
+    for (const { avatar, character, version } of entries) {
+        cacheRecords.set(avatar, structuredClone({ character, hashes: { version: typeof version === 'number' ? version : null, v: CHARACTER_HASH_VERSION } }));
     }
     return [];
 }
@@ -85,7 +75,7 @@ function encodeQueryHashes({ seq, token, total, approxTotal, hashRows, searchBac
     for (const row of hashRows) {
         const idBytes = Buffer.byteLength(row.id, 'utf8');
         const chatBytes = row.chat ? Buffer.byteLength(row.chat, 'utf8') : 0;
-        totalSize += 1 + 2 + idBytes + 4 + 4 + 4 + 8 + 8 + 8 + 8 + 8 + 2 + chatBytes;
+        totalSize += 1 + 2 + idBytes + (row.isGroup ? 4 + 4 + 4 : 8) + 8 + 8 + 8 + 8 + 8 + 2 + chatBytes;
     }
     const tokenBytes = token ? Buffer.byteLength(token, 'utf8') : 0;
     totalSize += 2 + tokenBytes;
@@ -110,9 +100,13 @@ function encodeQueryHashes({ seq, token, total, approxTotal, hashRows, searchBac
         buf.writeUInt16LE(idBytes, offset); offset += 2;
         buf.write(row.id, offset, idBytes, 'utf8'); offset += idBytes;
 
-        buf.writeUInt32LE(row.favHash >>> 0, offset); offset += 4;
-        buf.writeUInt32LE(row.tagIdsHash >>> 0, offset); offset += 4;
-        buf.writeUInt32LE(row.contentHash >>> 0, offset); offset += 4;
+        if (row.isGroup) {
+            buf.writeUInt32LE(row.favHash >>> 0, offset); offset += 4;
+            buf.writeUInt32LE(row.tagIdsHash >>> 0, offset); offset += 4;
+            buf.writeUInt32LE(row.contentHash >>> 0, offset); offset += 4;
+        } else {
+            buf.writeDoubleLE(row.version, offset); offset += 8;
+        }
 
         buf.writeDoubleLE(row.date_added ?? 0, offset); offset += 8;
         buf.writeDoubleLE(hasCreateDate ? row.create_date : 0, offset); offset += 8;
@@ -140,18 +134,20 @@ function encodeQueryHashes({ seq, token, total, approxTotal, hashRows, searchBac
 }
 
 /**
- * Per-test fake server: character fixtures are their shallow records, group fixtures their stamped group
- * objects, `live` the per-id fields a hash row carries outside its hashes, and `queryResponses` the /query
- * answers in call order.
+ * Per-test fake server: character fixtures are their shallow records, each with its `versions` entry, group fixtures
+ * their stamped group objects, `live` the per-id fields a hash row carries outside its cache key, and
+ * `queryResponses` the /query answers in call order.
  */
 let server;
 let liveCounter;
+let versionCounter;
 
 /** @param {object} fields Stored as the shallow record shallow_json holds for a card with these fields. */
 function addCharacter(fields) {
     const character = { fav: false, tag_ids: [], ...fields, data: shallowCharacterData(fields, false) };
     liveCounter++;
     server.characters.set(character.avatar, character);
+    server.versions.set(character.avatar, ++versionCounter);
     server.live.set(character.avatar, {
         chat: `${character.avatar} chat ${liveCounter}`,
         date_added: 1000 + liveCounter,
@@ -196,8 +192,7 @@ function jsonResponse(data) {
 
 function hashRowFor(id) {
     if (server.characters.has(id)) {
-        const hashes = characterHashes(server.characters.get(id));
-        return { id, isGroup: false, favHash: hashes.fav, tagIdsHash: hashes.tagIds, contentHash: hashes.content, ...server.live.get(id) };
+        return { id, isGroup: false, version: server.versions.get(id), ...server.live.get(id) };
     }
     const hashes = groupHashes(server.groups.get(id));
     return { id, isGroup: true, favHash: hashes.fav, tagIdsHash: hashes.tagIds, contentHash: hashes.content, ...server.live.get(id) };
@@ -263,7 +258,7 @@ function hashModeGroup(group) {
 }
 
 async function cacheCharacters(...characters) {
-    await saveCachedCharactersFake(characters.map(character => ({ avatar: character.avatar, character })));
+    await saveCachedCharactersFake(characters.map(character => ({ avatar: character.avatar, character, version: server.versions.get(character.avatar) })));
 }
 
 function fetchedUrls() {
@@ -335,8 +330,9 @@ beforeEach(() => {
     getRequestHeadersMock.mockClear();
     unshallowCharacterMock.mockReset();
     cacheRecords = new Map();
-    server = { characters: new Map(), groups: new Map(), live: new Map(), queryResponses: [] };
+    server = { characters: new Map(), versions: new Map(), groups: new Map(), live: new Map(), queryResponses: [] };
     liveCounter = 0;
+    versionCounter = 0;
     global.fetch = jest.fn(fakeFetch);
 });
 

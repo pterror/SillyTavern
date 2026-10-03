@@ -8,7 +8,6 @@ import { CARD_LAYOUT_META_KEY, CARD_TABLES_SQL, assembleCardsSync, cardLayoutOf,
 import { splitCard, canonicalCardHash, cardWithStoredFav } from '../src/character-card-storage.js';
 import { getCharaCardV2 } from '../src/character-card-normalize.js';
 import { shallowCharacterData, normalizeTagIds } from '../public/scripts/hash-utils.js';
-import { NO_TAG_DELETIONS, tagDeletionsFromMap } from '../src/tag-deletions.js';
 
 const FIELDS_CHARACTERS_SQL = `
     CREATE TABLE characters (
@@ -55,7 +54,8 @@ function store(card, { fav = false, activeChat = null, allowGlobalStyles = null,
         id, name: columns.name ?? null, creator: columns.creator ?? null, character_version: columns.character_version ?? null,
         world: columns.world ?? null, create_date_raw: columns.create_date ?? null, fav: fav ? 1 : 0, active_chat: activeChat, allow_global_styles: allowGlobalStyles,
     });
-    for (const f of parts.fields) db.run('INSERT INTO card_fields VALUES (?, ?, ?)', [id, f.field, f.value]);
+    const cardColumns = Object.keys(parts.card);
+    db.run(`INSERT INTO cards (character_id${cardColumns.map(c => `, ${c}`).join('')}) VALUES (?${cardColumns.map(() => ', ?').join('')})`, [id, ...cardColumns.map(c => parts.card[c])]);
     for (const g of parts.greetings) db.run('INSERT INTO card_greetings VALUES (?, ?, ?, ?)', [id, g.list, g.position, g.text]);
     for (const t of parts.tags) db.run('INSERT INTO card_tags VALUES (?, ?, ?)', [id, t.position, t.name]);
     for (const e of parts.extensions) db.run('INSERT INTO card_extensions VALUES (?, ?, ?)', [id, e.key, e.value]);
@@ -166,7 +166,7 @@ describe('character card reader (fields layout)', () => {
                 card, fav: i % 3 === 0, activeChat: i % 2 === 0 ? `chat-${i}` : null, allowGlobalStyles: [null, 0, 1][i % 3], tagIds: i % 2 ? ['t2', 't1'] : [], includeCreatorNotes,
             }));
             const ids = rows.map(r => store(r.card, r));
-            const got = listRowsFromFieldsSync(db, ids, NO_TAG_DELETIONS, includeCreatorNotes);
+            const got = listRowsFromFieldsSync(db, ids, includeCreatorNotes);
             ids.forEach((id, i) => {
                 expect(JSON.parse(JSON.stringify(got.get(id)))).toEqual(expectedListRow(/** @type {object} */ (rows[i].card), id, rows[i]));
             });
@@ -174,10 +174,9 @@ describe('character card reader (fields layout)', () => {
         });
     }
 
-    test('list rows resolve tag ids through tag deletions', () => {
-        const id = store({ name: 'n' }, { tagIds: ['gone', 'kept'] });
-        const deletions = tagDeletionsFromMap(new Map([['gone', 'merged']]));
-        expect(listRowsFromFieldsSync(db, [id], deletions, false).get(id)?.tag_ids).toEqual(['kept', 'merged']);
+    test('list rows carry tag ids as character_tags stores them', () => {
+        const id = store({ name: 'n' }, { tagIds: ['kept', 'merged-away'] });
+        expect(listRowsFromFieldsSync(db, [id], false).get(id)?.tag_ids).toEqual(['kept', 'merged-away']);
     });
 
     test('cardListValues matches getCharaCardV2() and toShallow() on random cards', () => {
@@ -204,7 +203,7 @@ describe('character card reader (fields layout)', () => {
                 const row = { fav: i % 2 === 0, activeChat: null, allowGlobalStyles: null, tagIds: [], includeCreatorNotes };
                 stored.push({ id: store(card, row), card, row });
             }
-            const got = listRowsFromFieldsSync(db, stored.map(s => s.id), NO_TAG_DELETIONS, includeCreatorNotes);
+            const got = listRowsFromFieldsSync(db, stored.map(s => s.id), includeCreatorNotes);
             for (const { id, card, row } of stored) {
                 expect(JSON.parse(JSON.stringify(got.get(id)))).toEqual(expectedListRow(card, id, row));
             }

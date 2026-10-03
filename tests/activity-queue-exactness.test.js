@@ -112,10 +112,8 @@ async function expectReadsExact() {
     for (const avatar of avatars) {
         expect([avatar, await metadataDb.getCharacterChatStats(directories, avatar)]).toEqual([avatar, expected.get(avatar)]);
         const row = await metadataDb.getCharacterMetadataRow(directories, avatar);
-        const shallow = JSON.parse(row.shallow_json);
         const want = expected.get(avatar);
-        expect([avatar, row.chat_size, row.date_last_chat, shallow.chat_size, shallow.date_last_chat])
-            .toEqual([avatar, want?.chatSize, want?.dateLastChat, want?.chatSize, want?.dateLastChat]);
+        expect([avatar, row.chat_size, row.date_last_chat]).toEqual([avatar, want?.chatSize, want?.dateLastChat]);
     }
     const shallowById = await metadataDb.getShallowByIds(directories, avatars);
     for (const avatar of avatars) {

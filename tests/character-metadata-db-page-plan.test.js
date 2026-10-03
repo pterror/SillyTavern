@@ -112,28 +112,6 @@ function planOf({ sql, params, handle }) {
 }
 
 describe('a keyset stream\'s later page seeks on its key instead of re-reading from the start', () => {
-    test('normalizeCharacterFavIfNeeded() SEARCHes characters on (id>?)', async () => {
-        await addCharacters(() => '');
-        recordedIterates.length = 0;
-
-        await metadataDb.normalizeCharacterFavIfNeeded(directories);
-
-        const plan = planOf(recordedLaterPage());
-        expect(plan).toContainEqual(expect.stringMatching(/\bSEARCH characters\b.*\(id>\?\)/));
-        expect(plan).not.toContainEqual(expect.stringMatching(/\bSCAN characters\b/));
-    }, 60000);
-
-    test('normalizeCharacterTagIdsIfNeeded() SEARCHes characters on (id>?)', async () => {
-        await addCharacters(() => '');
-        recordedIterates.length = 0;
-
-        await metadataDb.normalizeCharacterTagIdsIfNeeded(directories);
-
-        const plan = planOf(recordedLaterPage());
-        expect(plan).toContainEqual(expect.stringMatching(/\bSEARCH characters\b.*\(id>\?\)/));
-        expect(plan).not.toContainEqual(expect.stringMatching(/\bSCAN characters\b/));
-    }, 60000);
-
     test('streamCharacterIdsForTagIds() SEARCHes character_tags on character_id>?', async () => {
         const avatars = await addCharacters(() => '');
         for (const avatar of avatars) {
@@ -183,50 +161,6 @@ describe('a keyset stream\'s later page seeks on its key instead of re-reading f
 
         const plan = planOf(recordedLaterPage());
         expect(plan).toContainEqual(expect.stringMatching(/\bSEARCH characters\b.*\(world=\? AND rowid>\?\)/));
-        expect(plan).not.toContainEqual(expect.stringMatching(/\bSCAN characters\b/));
-    }, 60000);
-
-    test('backfillContentIdentityHashes() SEARCHes characters by rowid, past the last page', async () => {
-        await addCharacters(() => '');
-        metadataDb.disposeMetadataStores();
-        const { default: Database } = await import('better-sqlite3');
-        const rawDb = new Database(path.join(directories.root, 'character-metadata.sqlite'));
-        rawDb.prepare('UPDATE characters SET import_poisoned = 1, content_identity_hash = NULL').run();
-        rawDb.close();
-        recordedIterates.length = 0;
-
-        // No PNG is on disk, so every row's read fails and logs.
-        const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
-        try {
-            await metadataDb.backfillContentIdentityHashes(directories);
-        } finally {
-            errorSpy.mockRestore();
-        }
-
-        const plan = planOf(recordedLaterPage());
-        expect(plan).toContainEqual(expect.stringMatching(/\bSEARCH characters\b.*\browid>\?\)/));
-        expect(plan).not.toContainEqual(expect.stringMatching(/\bSCAN characters\b/));
-    }, 60000);
-
-    test('backfillActiveChatFromCards() SEARCHes characters on (rowid>?)', async () => {
-        await addCharacters(() => '');
-        metadataDb.disposeMetadataStores();
-        const { default: Database } = await import('better-sqlite3');
-        const rawDb = new Database(path.join(directories.root, 'character-metadata.sqlite'));
-        rawDb.prepare('UPDATE characters SET active_chat_checked = 0').run();
-        rawDb.close();
-        recordedIterates.length = 0;
-
-        // No PNG is on disk, so every row's read fails and logs.
-        const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
-        try {
-            await metadataDb.backfillActiveChatFromCards(directories);
-        } finally {
-            errorSpy.mockRestore();
-        }
-
-        const plan = planOf(recordedLaterPage());
-        expect(plan).toContainEqual(expect.stringMatching(/\bSEARCH characters\b.*\(rowid>\?\)/));
         expect(plan).not.toContainEqual(expect.stringMatching(/\bSCAN characters\b/));
     }, 60000);
 

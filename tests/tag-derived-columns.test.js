@@ -2,6 +2,22 @@ import { describe, test, expect, beforeAll, beforeEach, afterEach, jest } from '
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { defineCharacterStoreFunctions } from '../src/character-store-schema.js';
+
+/**
+ * better-sqlite3 with the store's SQL functions registered on every connection, as the store's own connections have
+ * them (character-store-schema.js).
+ * @param {typeof import('better-sqlite3')} Base
+ * @returns {typeof import('better-sqlite3')}
+ */
+function withStoreFunctions(Base) {
+    return /** @type {any} */ (class extends /** @type {any} */ (Base) {
+        constructor(/** @type {any[]} */ ...args) {
+            super(...args);
+            defineCharacterStoreFunctions({ defineFunction: (name, fn) => this.function(name, { deterministic: true }, fn) });
+        }
+    });
+}
 
 /** @type {typeof import('../src/character-metadata-db.js')} */
 let metadataDb;
@@ -38,7 +54,7 @@ beforeAll(async () => {
     const openDatabase = engine.openDatabase;
     engine.openDatabase = (dbPath, options) => instrumentedHandle(openDatabase(dbPath, options));
     metadataDb = await import('../src/character-metadata-db.js');
-    Database = (await import('better-sqlite3')).default;
+    Database = withStoreFunctions((await import('better-sqlite3')).default);
 });
 
 beforeEach(() => {
@@ -507,14 +523,6 @@ describe('tags minted from card tags get max+1, one after another, after the fil
         expect(await metadataDb.areTagQueryColumnsReady(directories)).toBe(ready);
         await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardWithTags('Bob', ['Second', 'Old', 'First']));
         await metadataDb.seedCardTagsForSingleCharacter(directories, 'Bob.png');
-        expect([mintedOrder('Second'), mintedOrder('First')]).toEqual([5.5, 6.5]);
-    });
-
-    test('backfillCardTagsIfNeeded', async () => {
-        await metadataDb.fillTagNameKeysIfNeeded(directories);
-        if (ready) await metadataDb.fillTagDerivedColumnsIfNeeded(directories);
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardWithTags('Bob', ['Second', 'First']));
-        await metadataDb.backfillCardTagsIfNeeded(directories);
         expect([mintedOrder('Second'), mintedOrder('First')]).toEqual([5.5, 6.5]);
     });
 

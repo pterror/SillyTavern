@@ -2,6 +2,22 @@ import { describe, test, expect, beforeAll, beforeEach, afterEach } from '@jest/
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { defineCharacterStoreFunctions } from '../src/character-store-schema.js';
+
+/**
+ * better-sqlite3 with the store's SQL functions registered on every connection, as the store's own connections have
+ * them (character-store-schema.js).
+ * @param {typeof import('better-sqlite3')} Base
+ * @returns {typeof import('better-sqlite3')}
+ */
+function withStoreFunctions(Base) {
+    return /** @type {any} */ (class extends /** @type {any} */ (Base) {
+        constructor(/** @type {any[]} */ ...args) {
+            super(...args);
+            defineCharacterStoreFunctions({ defineFunction: (name, fn) => this.function(name, { deterministic: true }, fn) });
+        }
+    });
+}
 
 /** @type {typeof import('../src/character-metadata-db.js')} */
 let metadataDb;
@@ -14,7 +30,7 @@ beforeAll(async () => {
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
     metadataDb = await import('../src/character-metadata-db.js');
-    Database = (await import('better-sqlite3')).default;
+    Database = withStoreFunctions((await import('better-sqlite3')).default);
 });
 
 beforeEach(() => {
@@ -122,7 +138,7 @@ describe('character-metadata-db.js: the full name order (search plan step 7f)', 
 
         await addCharacter('new.png', 'Name 2b');
         await addGroup('g9', 'Name 0');
-        withDb(db => db.prepare('UPDATE characters SET name_fold = ? WHERE id = ?').run('aaa', 'c4.png'));
+        withDb(db => db.prepare('UPDATE characters SET name = ? WHERE id = ?').run('aaa', 'c4.png'));
         withDb(db => db.prepare('DELETE FROM characters WHERE id = ?').run('c1.png'));
         expect((await metadataDb.getNameOrderState(directories)).usable).toBe(false);
 
@@ -153,7 +169,7 @@ describe('character-metadata-db.js: the full name order (search plan step 7f)', 
     test('a page of the fill that saw a row renamed behind it leaves that row for placement', async () => {
         for (let i = 0; i < 3; i++) await addCharacter(`c${i}.png`, `Name ${i}`);
         await metadataDb.fillNameOrderIfNeeded(directories);
-        withDb(db => db.prepare('UPDATE characters SET name_fold = ? WHERE id = ?').run('zzz', 'c0.png'));
+        withDb(db => db.prepare('UPDATE characters SET name = ? WHERE id = ?').run('zzz', 'c0.png'));
         const db = new Database(dbPath(), { readonly: true });
         try {
             expect(db.prepare('SELECT pos_asc FROM name_order WHERE entity_id = ?').get('c0.png').pos_asc).toBeNull();

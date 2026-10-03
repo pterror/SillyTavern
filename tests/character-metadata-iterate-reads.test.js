@@ -134,11 +134,9 @@ function schemaColumns() {
 
 describe('the schema migrations read PRAGMA table_info through iterate()', () => {
     const PRAGMA_READS = [
-        'PRAGMA table_info(characters)',
         'PRAGMA table_info(local_import_mtimes)',
         'PRAGMA table_info(groups)',
         'PRAGMA table_info(changes)',
-        'PRAGMA table_info(\'characters\')',
         'PRAGMA table_info(\'changes\')',
         'PRAGMA table_info(tags)',
     ];
@@ -156,7 +154,7 @@ describe('the schema migrations read PRAGMA table_info through iterate()', () =>
         expect(schemaColumns()).toEqual(before);
     });
 
-    test('an older store missing the migrated columns, with rev in place of seq, gets the current columns back', async () => {
+    test('an older store missing the migrated columns, with rev in place of the change log\'s seq, gets the current columns back', async () => {
         await metadataDb.ensureSchemaMigrated(directories);
         metadataDb.disposeMetadataStores();
         const current = schemaColumns();
@@ -166,16 +164,6 @@ describe('the schema migrations read PRAGMA table_info through iterate()', () =>
             for (const { type, name } of Array.from(db.prepare('SELECT type, name FROM sqlite_master WHERE type IN (\'index\', \'trigger\') AND sql IS NOT NULL').iterate())) {
                 db.exec(`DROP ${type.toUpperCase()} "${name}"`);
             }
-            // Rebuilt rather than ALTERed: SQLite can't reparse the characters table's commented definition after a DROP COLUMN.
-            const dropped = new Set(['content_hash', 'content_identity_hash', 'import_poisoned', 'avatar_identity_hash', 'active_chat_checked',
-                'digest_fav', 'digest_tag_ids', 'digest_content', 'allow_global_styles', 'card_json']);
-            const kept = Array.from(db.prepare('SELECT name, type, "notnull", dflt_value, pk FROM pragma_table_info(\'characters\')').iterate()).filter(c => !dropped.has(c.name));
-            db.exec('CREATE TABLE characters_old (' + kept.map(c => [c.name, c.type, c.notnull ? 'NOT NULL' : '', c.dflt_value !== null ? `DEFAULT ${c.dflt_value}` : '', c.pk ? 'PRIMARY KEY' : ''].filter(Boolean).join(' ')).join(', ') + ')');
-            db.exec(`INSERT INTO characters_old SELECT ${kept.map(c => c.name).join(', ')} FROM characters`);
-            db.exec('DROP TABLE characters');
-            db.exec('ALTER TABLE characters_old RENAME TO characters');
-            db.exec('ALTER TABLE characters ADD COLUMN file_mtime INTEGER');
-            db.exec('ALTER TABLE characters RENAME COLUMN change_seq TO rev');
             db.exec('ALTER TABLE changes DROP COLUMN fields');
             db.exec('ALTER TABLE changes RENAME COLUMN seq TO rev');
             db.exec('ALTER TABLE local_import_mtimes DROP COLUMN duplicate_of');
@@ -227,8 +215,8 @@ describe('one entity\'s tags are read through iterate()', () => {
     const CHARACTER_TAGS = 'SELECT tag_id FROM character_tags WHERE character_id = @id';
     const GROUP_TAGS = 'SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id';
 
-    /** @param {string} id */
-    const storedTagIds = (id) => withRawDb(db => JSON.parse(db.prepare('SELECT shallow_json FROM characters WHERE id = ?').pluck().get(id)).tag_ids);
+    /** The tag ids the character's list row shows. @param {string} id */
+    const storedTagIds = async (id) => /** @type {any} */ ((await metadataDb.getShallowByIds(directories, [id]))[id]).tag_ids;
 
     test('rewriting an existing character keeps its tags from character_tags', async () => {
         await saveTags(['x', 'y']);
@@ -236,11 +224,9 @@ describe('one entity\'s tags are read through iterate()', () => {
         await assign('Ann.png', 'y');
         await assign('Ann.png', 'x');
 
-        calls.length = 0;
         await seedCharacter('Ann.png', true);
 
-        expectReadThroughIterate(CHARACTER_TAGS);
-        expect(storedTagIds('Ann.png')).toEqual(['x', 'y']);
+        expect(await storedTagIds('Ann.png')).toEqual(['x', 'y']);
     });
 
     test('renaming a character carries its tags to the new avatar', async () => {
@@ -255,7 +241,7 @@ describe('one entity\'s tags are read through iterate()', () => {
 
         expectReadThroughIterate(CHARACTER_TAGS);
         expect(await metadataDb.getCharacterTagIds(directories, 'New.png')).toEqual(['x', 'y']);
-        expect(storedTagIds('New.png')).toEqual(['x', 'y']);
+        expect(await storedTagIds('New.png')).toEqual(['x', 'y']);
     });
 
     test('getCharacterTagIds() and getGroupTagIds() return the entity\'s tags', async () => {
@@ -287,18 +273,16 @@ describe('one entity\'s tags are read through iterate()', () => {
         await assign('Ann.png', 'x');
         await assign('Ann.png', 'y');
         await assign('g1', 'x');
-        expectReadThroughIterate(CHARACTER_TAGS);
         expectReadThroughIterate(GROUP_TAGS);
-        expect(storedTagIds('Ann.png').slice().sort()).toEqual(['x', 'y']);
+        expect((await storedTagIds('Ann.png')).slice().sort()).toEqual(['x', 'y']);
         expect(digestOf('g1')).toBe(g2DigestWithX);
 
         await assign('g1', 'y');
         calls.length = 0;
         expect(await metadataDb.unassignEntityTag(directories, 'Ann.png', 'x')).toBe('ok');
         expect(await metadataDb.unassignEntityTag(directories, 'g1', 'y')).toBe('ok');
-        expectReadThroughIterate(CHARACTER_TAGS);
         expectReadThroughIterate(GROUP_TAGS);
-        expect(storedTagIds('Ann.png')).toEqual(['y']);
+        expect(await storedTagIds('Ann.png')).toEqual(['y']);
         expect(digestOf('g1')).toBe(g2DigestWithX);
     });
 });
@@ -334,7 +318,7 @@ describe('lookups over a caller\'s id batch read through iterate()', () => {
         expectReadThroughIterate('SELECT id FROM characters WHERE id IN (?,?,?,?)');
         expectReadThroughIterate('SELECT character_id, tag_id FROM character_tags WHERE character_id IN (?,?,?,?)');
         expectReadThroughIterate('SELECT id, active_chat FROM characters WHERE id IN (?,?,?,?) AND active_chat IS NOT NULL');
-        expectReadThroughIterate('SELECT id, shallow_json FROM characters WHERE id IN (?,?,?,?)');
+        expectReadThroughIterate(/^SELECT id, name, creator, character_version, world, create_date_raw, fav, date_added, .* FROM characters WHERE id IN \(SELECT value FROM json_each\(\?\)\)$/);
     });
 
     test('getLocalImportMtimesForPaths() returns the recorded mtime of each known path', async () => {
@@ -358,9 +342,13 @@ describe('lookups over a caller\'s id batch read through iterate()', () => {
 
         expect(rowsResult?.rows?.map(r => r.avatar)).toEqual(['Dan.png', 'Ann.png', 'Cal.png']);
         expect(hashResult?.hashRows?.map(r => r.id)).toEqual(['Dan.png', 'Ann.png', 'Cal.png']);
-        const pageReads = calls.filter(c => /\bid IN \(SELECT value FROM json_each\(\?\)\)$/.test(oneLine(c)));
-        expect(pageReads.map(c => c.method)).toEqual(['iterate', 'iterate']);
-        expect(oneLine(pageReads[0])).toMatch(/^SELECT id, shallow_json FROM /);
-        expect(oneLine(pageReads[1])).not.toMatch(/^SELECT id, shallow_json FROM /);
+        const pageReads = calls.filter(c => /\bFROM characters WHERE id IN \(SELECT value FROM json_each\(\?\)\)$/.test(oneLine(c)));
+        expect([...new Set(pageReads.map(c => c.method))]).toEqual(['iterate']);
+        // The rows' page read, their list rows' read and the hash rows' read, each by the page's ids.
+        expect(pageReads.map(c => oneLine(c))).toEqual([
+            expect.stringMatching(/^SELECT id FROM characters WHERE /),
+            expect.stringMatching(/^SELECT id, name, creator, /),
+            expect.stringMatching(/^SELECT id, active_chat, .*\bversion FROM characters WHERE /),
+        ]);
     });
 });

@@ -37,8 +37,6 @@ jest.unstable_mockModule('../src/endpoints/sqlite-engine.js', () => ({
 
 /** @type {typeof import('../src/character-metadata-db.js')} */
 let metadataDb;
-/** @type {typeof import('better-sqlite3')} */
-let Database;
 
 /** @type {import('../src/users.js').UserDirectoryList} */
 let directories;
@@ -48,7 +46,6 @@ beforeAll(async () => {
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
 
     metadataDb = await import('../src/character-metadata-db.js');
-    Database = (await import('better-sqlite3')).default;
 });
 
 beforeEach(() => {
@@ -79,16 +76,6 @@ async function seedCharacter(avatar, fav = false) {
         data: { name, tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav, world: '' } },
     });
     await metadataDb.upsertCharacterFromWrite(directories, avatar, cardJson);
-}
-
-/** @param {(db: import('better-sqlite3').Database) => any} fn */
-function withRawDb(fn) {
-    const db = new Database(path.join(directories.root, 'character-metadata.sqlite'));
-    try {
-        return fn(db);
-    } finally {
-        db.close();
-    }
 }
 
 /** @param {{ sql: string }} call */
@@ -172,32 +159,3 @@ describe('queryCharacters() reads a non-search page with readBounded(), bounded 
     });
 });
 
-describe('the character digest backfill reads each keyset chunk with readBounded(), bounded by the chunk size', () => {
-    const CHUNK_READ = /^SELECT id, shallow_json FROM characters WHERE id > \? ORDER BY id LIMIT \?$/;
-
-    test('an install missing the digest columns gets them backfilled to the values a write produces', async () => {
-        const ids = ['Ann.png', 'Bea.png', 'Cal.png'];
-        for (const id of ids) await seedCharacter(id, id === 'Bea.png');
-        metadataDb.disposeMetadataStores();
-
-        const readDigests = () => withRawDb(db => Array.from(db.prepare('SELECT id, digest_fav, digest_tag_ids, digest_content FROM characters ORDER BY id').iterate()));
-        const written = readDigests();
-        expect(written.map(r => r.id)).toEqual(ids);
-        withRawDb(db => {
-            db.exec('ALTER TABLE characters DROP COLUMN digest_fav');
-            db.exec('ALTER TABLE characters DROP COLUMN digest_tag_ids');
-            db.exec('ALTER TABLE characters DROP COLUMN digest_content');
-        });
-
-        calls.length = 0;
-        await metadataDb.ensureSchemaMigrated(directories);
-        metadataDb.disposeMetadataStores();
-
-        expect(readDigests()).toEqual(written);
-        const reads = callsMatching(CHUNK_READ);
-        expect(reads.map(c => c.method)).toEqual(['readBounded']);
-        const [params, max] = reads[0].args;
-        expect(params).toEqual(['', max]);
-        expect(max).toBe(1000);
-    });
-});

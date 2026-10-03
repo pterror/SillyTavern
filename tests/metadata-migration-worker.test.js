@@ -4,7 +4,6 @@ import { Worker } from 'node:worker_threads';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { storedTagDefinitions } from './tag-store-reads.js';
 
 /** @type {typeof import('../src/character-metadata-db.js')} */
 let metadataDb;
@@ -359,26 +358,17 @@ describe('metadata-migration-worker.js', () => {
 
         expect(passesRan()).toEqual([...coordinatorModule.MIGRATION_PASSES]);
         expect(output()).not.toMatch(/: start$|\d+ms|batch\(es\)/m);
-        expect(await metadataDb.getMetaValue(directories, 'character_tag_ids_normalized_v1')).not.toBeNull();
-    });
-
-    test('a tag the worker creates is reused, not created again, by a later write in this process', async () => {
-        await writeCardFile('Alice.png', ['Beta']);
-        await writeCardFile('Carol.png', ['Beta']);
-        await Promise.all(await metadataDb.initializeMetadataStores([directories]));
-        expect((await metadataDb.seedCardTagsForSingleCharacter(directories, 'Carol.png', { onlyExisting: true })).tagIds).toEqual([]);
-
-        await coordinatorModule.createMetadataMigrationCoordinator().start(directories);
-        const { tagIds } = await metadataDb.seedCardTagsForSingleCharacter(directories, 'Carol.png');
-
-        const betas = (await storedTagDefinitions(metadataDb, directories)).filter(tag => /** @type {any} */ (tag).name === 'Beta');
-        expect(betas).toHaveLength(1);
-        expect(tagIds).toEqual([/** @type {any} */ (betas[0]).id]);
+        expect(await metadataDb.getMetaValue(directories, metadataDb.ORPHAN_TAG_ROWS_REMOVED_FLAG)).not.toBeNull();
     });
 
     test('this process emits \'change\' when the worker wrote change rows, and not when it wrote none', async () => {
         await writeCardFile('Alice.png', ['Beta']);
         await Promise.all(await metadataDb.initializeMetadataStores([directories]));
+        // A deleted tag the worker's finishDeletedTags() moves off Alice onto its merge target: a change row for her.
+        expect((await metadataDb.createTagDefinition(directories, { id: 'gone', name: 'gone' })).refused).toEqual([]);
+        expect((await metadataDb.createTagDefinition(directories, { id: 'kept', name: 'kept' })).refused).toEqual([]);
+        expect(await metadataDb.assignEntityTag(directories, 'Alice.png', 'gone')).toBe('ok');
+        await metadataDb.deleteTagDefinition(directories, 'gone', 'kept');
         const onChange = jest.fn();
         metadataDb.characterChangeEmitter.on('change', onChange);
         try {

@@ -2,7 +2,6 @@ import { describe, test, expect, jest, beforeAll, beforeEach, afterEach } from '
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { Buffer } from 'node:buffer';
 
 import * as realSqliteEngine from '../src/endpoints/sqlite-engine.js';
 import { groupDigestTagIdsHash } from '../public/scripts/hash-utils.js';
@@ -39,8 +38,6 @@ jest.unstable_mockModule('../src/endpoints/sqlite-engine.js', () => ({
 
 /** @type {typeof import('../src/character-metadata-db.js')} */
 let metadataDb;
-/** @type {typeof import('../src/util.js').parseCreateDateToEpochMs} */
-let parseCreateDateToEpochMs;
 /** @type {typeof import('better-sqlite3')} */
 let Database;
 /** @type {import('../src/users.js').UserDirectoryList} */
@@ -49,7 +46,6 @@ let directories;
 beforeAll(async () => {
     const util = await import('../src/util.js');
     util.setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
-    parseCreateDateToEpochMs = util.parseCreateDateToEpochMs;
 
     metadataDb = await import('../src/character-metadata-db.js');
     Database = (await import('better-sqlite3')).default;
@@ -88,85 +84,6 @@ function withRawDb(fn) {
 
 /** @param {{ sql: string }} call */
 const oneLine = (call) => call.sql.replace(/\s+/g, ' ').trim();
-
-describe('migrateCreateDateColumn reads the rows to convert in keyset chunks', () => {
-    test('2001 parseable, one unparseable and one NULL create_date: three bounded chunk reads, every row converted', async () => {
-        /** @type {Map<string, string | null>} */
-        const seeded = new Map();
-        for (let i = 0; i < 2001; i++) {
-            const id = `char-${String(i).padStart(5, '0')}.png`;
-            // Every other row uses the ST "humanized" format, the rest ISO 8601.
-            seeded.set(id, i % 2 === 0
-                ? new Date(Date.UTC(2024, 0, 1) + i * 1000).toISOString()
-                : `2024-6-5 @14h ${Math.floor(i / 60) % 60}m ${i % 60}s 682ms`);
-        }
-        seeded.set('char-01000-garbage.png', 'not a date at all');
-        seeded.set('char-01500-missing.png', null);
-
-        // The table as it was before create_date became INTEGER.
-        withRawDb(db => {
-            db.exec(`
-                CREATE TABLE characters (
-                    id             TEXT PRIMARY KEY,
-                    name           TEXT NOT NULL,
-                    name_fold      TEXT NOT NULL,
-                    fav            INTEGER NOT NULL,
-                    date_added     INTEGER NOT NULL,
-                    create_date    TEXT,
-                    date_last_chat INTEGER NOT NULL,
-                    chat_size      INTEGER NOT NULL,
-                    data_size      INTEGER NOT NULL,
-                    file_mtime     INTEGER NOT NULL,
-                    world          TEXT,
-                    creator        TEXT,
-                    version        TEXT,
-                    creator_notes  TEXT,
-                    shallow_json   TEXT NOT NULL,
-                    change_seq     INTEGER NOT NULL
-                );
-                CREATE INDEX idx_characters_create_date ON characters(create_date);
-            `);
-            const insert = db.prepare(`
-                INSERT INTO characters (id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size, file_mtime, world, creator, version, creator_notes, shallow_json, change_seq)
-                VALUES (@id, @id, @id, 0, 500, @createDate, 0, 0, 0, 500, NULL, NULL, NULL, NULL, '{}', 1)
-            `);
-            db.transaction(() => {
-                for (const [id, createDate] of seeded) insert.run({ id, createDate });
-            })();
-        });
-
-        const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
-
-        // Any exported call opens the store, which runs migrateCreateDateColumn().
-        await metadataDb.getCharacterMetadataRow(directories, 'char-00000.png');
-
-        const chunkSql = 'SELECT id, create_date FROM characters WHERE create_date IS NOT NULL AND id > ? ORDER BY id LIMIT ?';
-        const chunkReads = calls.filter(c => oneLine(c) === chunkSql);
-        expect(chunkReads.map(c => c.method)).toEqual(['readBounded', 'readBounded', 'readBounded']);
-        for (const read of chunkReads) {
-            expect(read.args[1]).toBe(1000);
-            expect(read.args[0][1]).toBe(1000);
-        }
-        expect(calls.filter(c => c.method === 'all' && /\bcreate_date\b/.test(c.sql))).toEqual([]);
-
-        expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('1 of 2002 row(s)'));
-        expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('not a date at all'));
-
-        withRawDb(db => {
-            const column = Array.from(db.prepare('PRAGMA table_info(characters)').iterate()).find(c => c.name === 'create_date');
-            expect(column.type).toBe('INTEGER');
-
-            const migrated = new Map(Array.from(db.prepare('SELECT id, create_date FROM characters').iterate(), r => [r.id, r.create_date]));
-            expect(migrated.size).toBe(seeded.size);
-            const expected = new Map(Array.from(seeded, ([id, createDate]) => [id, createDate === null ? null : parseCreateDateToEpochMs(createDate)]));
-            expect(Array.from(expected.values()).filter(v => v !== null)).toHaveLength(2001);
-            expect(migrated).toEqual(expected);
-            expect(migrated.get('char-01000-garbage.png')).toBeNull();
-            expect(migrated.get('char-01500-missing.png')).toBeNull();
-            expect(migrated.get('char-00000.png')).toBe(Date.UTC(2024, 0, 1));
-        });
-    });
-});
 
 describe('migrateGroupsColumns reads the group ids to backfill in keyset chunks', () => {
     test('2001 groups in a pre-columns table: three bounded chunk reads, every row backfilled from its file and queued', async () => {
@@ -315,70 +232,3 @@ describe('saveTagDefinitions looks up old names only for the ids it saves, in bo
     });
 });
 
-describe('migrateCardJsonColumn reads the ids to backfill in keyset chunks', () => {
-    // A minimal valid 1x1 transparent PNG, so character-card-parser.js's write() can attach a `chara` chunk to it.
-    const BLANK_PNG = Buffer.from(
-        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
-        'base64',
-    );
-
-    /** @param {string} name */
-    const card = (name) => JSON.stringify({ name, spec: 'chara_card_v2', spec_version: '2.0', data: { name, tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
-
-    test('2001 NULL rows with a readable PNG and one without: three bounded chunk reads, the 2001 backfilled from their PNG, the column left nullable', async () => {
-        const { write: writeCard, read: readCard } = await import('../src/character-card-parser.js');
-
-        /** @type {string[]} */
-        const ids = [];
-        for (let i = 0; i < 2002; i++) {
-            const id = `char-${String(i).padStart(5, '0')}.png`;
-            ids.push(id);
-            await metadataDb.upsertCharacterFromWrite(directories, id, card(id.replace(/\.png$/, '')), null, null, {});
-        }
-        const unresolvedId = ids[2001];
-        /** @type {Map<string, string>} */
-        const expected = new Map();
-        for (const id of ids.slice(0, 2001)) {
-            const filePath = path.join(directories.characters, id);
-            fs.writeFileSync(filePath, writeCard(BLANK_PNG, card(`png ${id}`)));
-            expected.set(id, readCard(fs.readFileSync(filePath)));
-        }
-        metadataDb.disposeMetadataStores();
-
-        // A store whose card_json is still nullable, with every row's card_json NULL.
-        withRawDb(db => {
-            const columns = Array.from(db.prepare('PRAGMA table_info(characters)').iterate());
-            db.pragma('legacy_alter_table = ON');
-            db.exec('CREATE TABLE characters_old (' + columns.map(c => `${c.name} ${c.type}${c.name !== 'card_json' && c.notnull ? ' NOT NULL' : ''}${c.pk ? ' PRIMARY KEY' : ''}`).join(', ') + ')');
-            db.exec('INSERT INTO characters_old SELECT * FROM characters');
-            db.exec('DROP TABLE characters');
-            db.exec('ALTER TABLE characters_old RENAME TO characters');
-            expect(db.prepare('UPDATE characters SET card_json = NULL').run().changes).toBe(2002);
-        });
-
-        const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
-        const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
-
-        calls.length = 0;
-        await metadataDb.ensureSchemaMigrated(directories);
-        metadataDb.disposeMetadataStores();
-
-        const chunkSql = 'SELECT id FROM characters WHERE card_json IS NULL AND id > ? ORDER BY id LIMIT ?';
-        const chunkReads = calls.filter(c => oneLine(c) === chunkSql);
-        expect(chunkReads.map(c => c.method)).toEqual(['readBounded', 'readBounded', 'readBounded']);
-        for (const read of chunkReads) {
-            expect(read.args[1]).toBe(1000);
-            expect(read.args[0][1]).toBe(1000);
-        }
-        expect(calls.filter(c => c.method === 'all' && /card_json IS NULL/.test(oneLine(c)))).toEqual([]);
-
-        expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('backfilled 2001/2002'));
-        expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining(unresolvedId));
-
-        withRawDb(db => {
-            const rows = new Map(Array.from(db.prepare('SELECT id, card_json FROM characters').iterate(), r => [r.id, r.card_json]));
-            expect(rows).toEqual(new Map([...expected, [unresolvedId, null]]));
-            expect(db.prepare('SELECT "notnull" FROM pragma_table_info(\'characters\') WHERE name = \'card_json\'').get().notnull).toBe(0);
-        });
-    });
-});

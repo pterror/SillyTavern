@@ -3337,11 +3337,20 @@ function fillCharacterAndTagOptionsHelper({ characterFilter, entry }) {
     }
     if (tagOptions.size === 0) return;
     readTagsForIds(selectedTagIds).then((read) => {
+        /** @type {Set<string>} */
+        const shown = new Set();
         for (const [id, option] of tagOptions) {
             const tag = read?.tags.get(id);
+            // A tag merged into another is that tag, shown once.
+            const shownId = tag ? String(tag.id) : id;
+            if (shown.has(shownId)) {
+                option.remove();
+                continue;
+            }
+            shown.add(shownId);
             // A new element: select2 keeps what it drew an option as on the option itself.
             const named = document.createElement('option');
-            named.value = id;
+            named.value = shownId;
             named.selected = option.selected;
             if (tag) named.innerText = `[Tag] ${tag.name}`;
             else if (read?.gone.has(id)) named.innerText = `[Tag] ${t`(deleted tag)`}`;

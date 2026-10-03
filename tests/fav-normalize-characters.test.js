@@ -3,7 +3,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import process from 'node:process';
-import { characterDigestFavHash } from '../public/scripts/hash-utils.js';
 
 // writeCharacterData()'s and the JSON importer's DEFAULT_AVATAR_PATH ('./public/img/...') is repo-root-relative.
 const originalCwd = process.cwd();
@@ -40,11 +39,6 @@ const PRESENT_FAV_CASES = FAV_CASES.filter(([, value]) => value !== MISSING);
 function withFav(target, value) {
     if (value !== MISSING) target.fav = value;
     return target;
-}
-
-/** @param {boolean} fav */
-function expectedDigest(fav) {
-    return characterDigestFavHash({ fav, data: { extensions: { fav } } }) % 4294967296;
 }
 
 beforeAll(async () => {
@@ -109,31 +103,34 @@ async function postJson(urlPath, body) {
     });
 }
 
-/** @param {string} id @returns {{ fav: number, shallow: any, digest_fav: number, card: any }} */
-function readCharacterRow(id) {
+/** @param {string} id @returns {Promise<{ fav: number, shallow: any, card: any }>} The fav column, the list row and the card. */
+async function readCharacterRow(id) {
     const db = new Database(path.join(directories.root, 'character-metadata.sqlite'), { readonly: true });
+    let fav;
     try {
-        const row = db.prepare('SELECT fav, shallow_json, digest_fav, card_json FROM characters WHERE id = ?').get(id);
-        return { fav: row.fav, shallow: JSON.parse(row.shallow_json), digest_fav: row.digest_fav, card: JSON.parse(row.card_json) };
+        fav = db.prepare('SELECT fav FROM characters WHERE id = ?').get(id).fav;
     } finally {
         db.close();
     }
+    const shallow = /** @type {any} */ ((await metadataDb.getShallowByIds(directories, [id]))[id]);
+    const card = JSON.parse(/** @type {string} */ (await metadataDb.getCharacterCardJson(directories, id)));
+    return { fav, shallow, card };
 }
 
 /** @param {string} id */
-function storedFav(id) {
-    const row = readCharacterRow(id);
-    return { fav: row.fav, shallowFav: row.shallow.fav, shallowExtensionsFav: row.shallow.data.extensions.fav, digestFav: row.digest_fav };
+async function storedFav(id) {
+    const row = await readCharacterRow(id);
+    return { fav: row.fav, shallowFav: row.shallow.fav, shallowExtensionsFav: row.shallow.data.extensions.fav };
 }
 
-/** @param {boolean} expected @returns {ReturnType<typeof storedFav>} */
+/** @param {boolean} expected @returns {Awaited<ReturnType<typeof storedFav>>} */
 function storedFavFor(expected) {
-    return { fav: expected ? 1 : 0, shallowFav: expected, shallowExtensionsFav: expected, digestFav: expectedDigest(expected) };
+    return { fav: expected ? 1 : 0, shallowFav: expected, shallowExtensionsFav: expected };
 }
 
 /** @param {string} id */
-function cardJsonFavKeys(id) {
-    const { card } = readCharacterRow(id);
+async function cardJsonFavKeys(id) {
+    const { card } = await readCharacterRow(id);
     return {
         topLevel: Object.prototype.hasOwnProperty.call(card, 'fav'),
         extensions: Object.prototype.hasOwnProperty.call(card.data?.extensions ?? {}, 'fav'),
@@ -167,52 +164,29 @@ async function createCharacter(value) {
     return 'Zorkmid.png';
 }
 
-/**
- * Decodes `/query`'s binary hash-mode body (layout: serializeQueryHashesBinary() in src/endpoints/characters.js).
- * @param {ArrayBuffer} buffer
- * @returns {{ id: string, isGroup: boolean, favHash: number }[]}
- */
-function decodeHashRows(buffer) {
-    const view = new DataView(buffer);
-    const decoder = new TextDecoder();
-    let offset = 1 + 1 + 8 + 8;
-    const rowCount = view.getUint16(offset, true); offset += 2;
-    const rows = [];
-    for (let i = 0; i < rowCount; i++) {
-        const flags = view.getUint8(offset); offset += 1;
-        const idLen = view.getUint16(offset, true); offset += 2;
-        const id = decoder.decode(new Uint8Array(buffer, offset, idLen)); offset += idLen;
-        const favHash = view.getUint32(offset, true); offset += 4;
-        offset += 4 + 4 + 8 * 5;
-        const chatLen = view.getUint16(offset, true); offset += 2 + chatLen;
-        rows.push({ id, isGroup: (flags & 0b1) !== 0, favHash });
-    }
-    return rows;
-}
-
-describe('character column writers store the normalized fav in the column, both shallow_json fav fields and digest_fav', () => {
+describe('character column writers store the normalized fav in the column, and the list row shows it in both fav fields', () => {
     test.each(FAV_CASES)('upsertCharacterFromWrite, new row: %s', async (_label, value, expected) => {
         await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardWithFav(value));
-        expect(storedFav('Bob.png')).toEqual(storedFavFor(expected));
+        expect(await storedFav('Bob.png')).toEqual(storedFavFor(expected));
     });
 
     test.each([[true, 'false'], [false, 'true']])('upsertCharacterFromWrite, existing row keeps its column (%p) over the card (%p), in both shallow fields', async (existing, cardValue) => {
         await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardWithFav(existing));
         await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardWithFav(cardValue));
-        expect(storedFav('Bob.png')).toEqual(storedFavFor(existing));
+        expect(await storedFav('Bob.png')).toEqual(storedFavFor(existing));
     });
 
     test.each(FAV_CASES)('setCharacterFav: %s', async (_label, value, expected) => {
         await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardWithFav(!expected));
         expect(await metadataDb.setCharacterFav(directories, 'Bob.png', value === MISSING ? undefined : value)).toBe(true);
-        expect(storedFav('Bob.png')).toEqual(storedFavFor(expected));
+        expect(await storedFav('Bob.png')).toEqual(storedFavFor(expected));
     });
 
     test.each(FAV_CASES)('POST /fav: %s', async (_label, value, expected) => {
         await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardWithFav(!expected));
         const response = await postJson('/api/characters/fav', withFav({ avatar: 'Bob.png' }, value));
         expect(response.status).toBe(204);
-        expect(storedFav('Bob.png')).toEqual(storedFavFor(expected));
+        expect(await storedFav('Bob.png')).toEqual(storedFavFor(expected));
     });
 
     test.each(FAV_CASES)('POST /fav bulk: %s', async (_label, value, expected) => {
@@ -220,66 +194,66 @@ describe('character column writers store the normalized fav in the column, both 
         const response = await postJson('/api/characters/fav', { bulk: [withFav({ avatar: 'Bob.png' }, value)] });
         expect(response.status).toBe(200);
         expect((await response.json()).results).toEqual([{ avatar: 'Bob.png', ok: true }]);
-        expect(storedFav('Bob.png')).toEqual(storedFavFor(expected));
+        expect(await storedFav('Bob.png')).toEqual(storedFavFor(expected));
     });
 
     test.each(FAV_CASES)('POST /create: %s', async (_label, value, expected) => {
         const avatar = await createCharacter(value);
-        expect(storedFav(avatar)).toEqual(storedFavFor(expected));
+        expect(await storedFav(avatar)).toEqual(storedFavFor(expected));
     });
 
     test.each(PRESENT_FAV_CASES)('POST /merge-attributes: %s', async (_label, value, expected) => {
         const avatar = await createCharacter(!expected);
         const response = await postJson('/api/characters/merge-attributes', { avatar, fav: value });
         expect(response.status).toBe(200);
-        expect(storedFav(avatar)).toEqual(storedFavFor(expected));
+        expect(await storedFav(avatar)).toEqual(storedFavFor(expected));
     });
 
     test('POST /create with a batch import open: the row and its fav are in the table before the import ends', async () => {
         expect((await postJson('/api/characters/metadata/batch-import/begin', {})).status).toBe(204);
         try {
             const avatar = await createCharacter(true);
-            expect(storedFav(avatar)).toEqual(storedFavFor(true));
+            expect(await storedFav(avatar)).toEqual(storedFavFor(true));
         } finally {
             await postJson('/api/characters/metadata/batch-import/end', {});
         }
-        expect(storedFav('Zorkmid.png')).toEqual(storedFavFor(true));
+        expect(await storedFav('Zorkmid.png')).toEqual(storedFavFor(true));
     });
 });
 
-describe('card_json never gains fav', () => {
+describe('the stored card never gains fav', () => {
     test.each(FAV_CASES)('POST /create: %s', async (_label, value) => {
         const avatar = await createCharacter(value);
-        expect(cardJsonFavKeys(avatar)).toEqual({ topLevel: false, extensions: false });
+        expect(await cardJsonFavKeys(avatar)).toEqual({ topLevel: false, extensions: false });
     });
 
     test.each(FAV_CASES)('POST /edit: %s', async (_label, value) => {
         const avatar = await createCharacter(true);
         const response = await postJson('/api/characters/edit', withFav({ avatar_url: avatar, ch_name: 'Zorkmid', description: 'edited' }, value));
         expect(response.status).toBe(200);
-        expect(readCharacterRow(avatar).card.description ?? readCharacterRow(avatar).card.data.description).toBe('edited');
-        expect(cardJsonFavKeys(avatar)).toEqual({ topLevel: false, extensions: false });
+        const { card } = await readCharacterRow(avatar);
+        expect(card.description ?? card.data.description).toBe('edited');
+        expect(await cardJsonFavKeys(avatar)).toEqual({ topLevel: false, extensions: false });
     });
 
     test.each(PRESENT_FAV_CASES)('POST /merge-attributes: %s', async (_label, value) => {
         const avatar = await createCharacter(false);
         const response = await postJson('/api/characters/merge-attributes', { avatar, fav: value, data: { extensions: { fav: value } } });
         expect(response.status).toBe(200);
-        expect(cardJsonFavKeys(avatar)).toEqual({ topLevel: false, extensions: false });
+        expect(await cardJsonFavKeys(avatar)).toEqual({ topLevel: false, extensions: false });
     });
 
     test.each(FAV_CASES)('POST /fav: %s', async (_label, value) => {
         const avatar = await createCharacter(false);
         const response = await postJson('/api/characters/fav', withFav({ avatar }, value));
         expect(response.status).toBe(204);
-        expect(cardJsonFavKeys(avatar)).toEqual({ topLevel: false, extensions: false });
+        expect(await cardJsonFavKeys(avatar)).toEqual({ topLevel: false, extensions: false });
     });
 });
 
-describe('every card-sending route sends both fav fields as the column boolean, and the client hash of each record equals digest_fav', () => {
+describe('every card-sending route sends both fav fields as the column boolean', () => {
     test.each(FAV_CASES)('created with fav %s', async (_label, value, expected) => {
         const avatar = await createCharacter(value);
-        const { digest_fav: digestFav } = readCharacterRow(avatar);
 
         /** @type {[string, any][]} */
         const sent = [];
@@ -314,69 +288,7 @@ describe('every card-sending route sends both fav fields as the column boolean, 
         const imported = await (await fetch(`${baseUrl}/api/characters/import`, { method: 'POST', body: formData })).json();
         sent.push(['/import', imported.character]);
 
-        const hashResponse = await postJson('/api/characters/query', { page: 1, pageSize: 10, want: ['hashes', 'total'] });
-        const hashRow = decodeHashRows(await hashResponse.arrayBuffer()).find(r => r.id === avatar);
-
-        expect(sent.map(([route, record]) => [route, characterDigestFavHash(record) % 4294967296]))
-            .toEqual(sent.map(([route]) => [route, digestFav]));
-        expect(hashRow.favHash).toBe(digestFav);
         expect(sent.map(([route, record]) => [route, record?.fav, record?.data?.extensions?.fav]))
             .toEqual(sent.map(([route]) => [route, expected, expected]));
-        expect(digestFav).toBe(expectedDigest(expected));
     }, 30000);
-});
-
-describe('a write that stores shallow_json read back re-derives its fav fields from the column when they disagree', () => {
-    /** @param {string} id @param {boolean} shallowFav */
-    function setShallowFavFields(id, shallowFav) {
-        const db = new Database(path.join(directories.root, 'character-metadata.sqlite'));
-        try {
-            const { shallow_json } = db.prepare('SELECT shallow_json FROM characters WHERE id = ?').get(id);
-            const shallow = JSON.parse(shallow_json);
-            shallow.fav = shallowFav;
-            shallow.data.extensions.fav = shallowFav;
-            db.prepare('UPDATE characters SET shallow_json = ? WHERE id = ?').run(JSON.stringify(shallow), id);
-        } finally {
-            db.close();
-        }
-    }
-
-    /** @param {string} id @returns {string[] | null} */
-    function lastChangeFields(id) {
-        const db = new Database(path.join(directories.root, 'character-metadata.sqlite'), { readonly: true });
-        try {
-            return JSON.parse(db.prepare('SELECT fields FROM changes WHERE id = ? ORDER BY seq DESC LIMIT 1').get(id).fields);
-        } finally {
-            db.close();
-        }
-    }
-
-    const WRITERS = [
-        ['setCharacterAllowGlobalStyles', ['allow_global_styles'], () => metadataDb.setCharacterAllowGlobalStyles(directories, 'Bob.png', true)],
-        ['setCharacterDateAdded', ['date_added'], () => metadataDb.setCharacterDateAdded(directories, 'Bob.png', 1700000000000)],
-        ['setCharacterActiveChat', ['active_chat'], () => metadataDb.setCharacterActiveChat(directories, 'Bob.png', 'chat-1')],
-    ];
-
-    test.each(WRITERS.flatMap(([name, fields, write]) => [true, false].map(column => [name, column, fields, write])))('%s, column %p: shallow fav fields and digest_fav match the column, and the change entry lists fav', async (_name, column, fields, write) => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardWithFav(column));
-        setShallowFavFields('Bob.png', !column);
-        await write();
-        expect(storedFav('Bob.png')).toEqual(storedFavFor(column));
-        expect(lastChangeFields('Bob.png')).toEqual([...fields, 'fav']);
-    });
-
-    test.each(WRITERS)('%s: shallow fav fields that already match leave fav out of the change entry', async (_name, fields, write) => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardWithFav(true));
-        await write();
-        expect(storedFav('Bob.png')).toEqual(storedFavFor(true));
-        expect(lastChangeFields('Bob.png')).toEqual(fields);
-    });
-
-    test.each([true, false])('setCharacterFav(%p) on a row whose shallow fav fields disagree with the column stores the new value', async (value) => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardWithFav(!value));
-        setShallowFavFields('Bob.png', value);
-        expect(await metadataDb.setCharacterFav(directories, 'Bob.png', value)).toBe(true);
-        expect(storedFav('Bob.png')).toEqual(storedFavFor(value));
-        expect(lastChangeFields('Bob.png')).toEqual(['fav']);
-    });
 });

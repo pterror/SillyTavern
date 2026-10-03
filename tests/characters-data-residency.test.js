@@ -3,7 +3,7 @@
  *
  * The property under test: a metadata-only edit - description, greetings, a rename, anything that is not
  * image pixels - must NOT rewrite the character's PNG. The new content is parked in the metadata db's
- * `card_json` column and becomes authoritative; the file keeps its old bytes AND its old mtime.
+ * card tables and becomes authoritative; the file keeps its old bytes AND its old mtime.
  *
  * The hard requirement it must not break: an export still carries a CURRENT embedded chunk, because that is all
  * other tools can read. A duplicate is a library entry like any other - image-only, its content in its db row.
@@ -113,8 +113,8 @@ describe('metadata-only edits do not touch the PNG', () => {
         const got = await (await post('get', { avatar_url: 'Alice.png' })).json();
         expect(got.data.description).toBe('EDITED');
 
-        const row = await metadataDb.getCharacterMetadataRow(directories, 'Alice.png');
-        expect(JSON.parse(row.shallow_json).name).toBe('Alice');
+        const listRow = (await metadataDb.getShallowByIds(directories, ['Alice.png']))['Alice.png'];
+        expect(listRow.name).toBe('Alice');
     });
 
     test('/batch resolves parked content for multiple characters in one request', async () => {
@@ -211,8 +211,8 @@ describe('duplicate copies the current content', () => {
     });
 });
 
-describe('an image write keeps card_json set', () => {
-    test('card_json equals the content upsertCharacterFromWrite() was given', async () => {
+describe('an image write keeps the stored card set', () => {
+    test('the stored card is the content upsertCharacterFromWrite() was given', async () => {
         await post('create', { ch_name: 'Alice', description: 'original', file_name: 'Alice' });
         await post('edit', { avatar_url: 'Alice.png', ch_name: 'Alice', description: 'EDITED' });
 
@@ -334,7 +334,7 @@ describe('add and unset-default are conflict-checked too', () => {
 
 describe('/greetings/move places next to a hash-checked target', () => {
     const storedCard = async () => JSON.parse(await metadataDb.getCharacterCardJson(directories, 'Alice.png'));
-    const changeSeq = async () => (await metadataDb.getCharacterMetadataRow(directories, 'Alice.png')).change_seq;
+    const changeSeq = async () => (await metadataDb.getCharacterMetadataRow(directories, 'Alice.png')).version;
 
     /** Alice with greetings ['hello', 'second', 'third'], 'hello' the default. Resolves to their hashes. */
     async function aliceWithThreeGreetings() {
@@ -544,7 +544,7 @@ describe('/greetings/default/unset with expected_default_hash checks the default
 });
 
 describe('an op whose outcome is already in place answers 200 and writes nothing', () => {
-    const changeSeq = async () => (await metadataDb.getCharacterMetadataRow(directories, 'Alice.png')).change_seq;
+    const changeSeq = async () => (await metadataDb.getCharacterMetadataRow(directories, 'Alice.png')).version;
 
     test('unset when there is no default, by position or by hash', async () => {
         await post('create', { ch_name: 'Alice', description: 'd', first_mes: 'hello', file_name: 'Alice' });
@@ -650,7 +650,7 @@ describe('/edit\'s content-hash conflict check survives the residency split', ()
 });
 
 describe('a character whose PNG is missing', () => {
-    test('/batch still returns it from card_json, never reading the PNG', async () => {
+    test('/batch still returns it from the stored card, never reading the PNG', async () => {
         await post('create', { ch_name: 'Alice', description: 'from-db', file_name: 'Alice' });
         fs.rmSync(path.join(directories.characters, 'Alice.png'));
 

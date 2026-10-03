@@ -5,10 +5,11 @@ import os from 'node:os';
 import process from 'node:process';
 import lodash from 'lodash';
 
+import { characterDigestFavHash, characterDigestFieldsHash, characterDigestSource, characterDigestTagIdsHash, normalizeTagIds } from '../public/scripts/hash-utils.js';
+
 // The real delta-sync client (character-list.js getCharacters() -> fetchCharactersDelta() -> character-cache.js)
 // against the real server routes: after POST /fav, delta-sync merges only the changed field into the cached
-// record, which must then carry the same fav/tag_ids/content hashes the server stores as its digest columns - the
-// values hash-mode /query compares the cache against. Only modules that can't load in node are replaced: IndexedDB
+// record, which must then be the list row the server shows for it, compared by their fav/tag_ids/content digests. Only modules that can't load in node are replaced: IndexedDB
 // (localforage) by an in-memory store that structured-clones like IndexedDB does, and character-list.js's DOM-bound
 // UI imports.
 
@@ -156,6 +157,30 @@ const V1_CARD = { name: 'Legacy', description: 'd', creatorcomment: 'legacy note
 const CARDS = [['full', FULL_CARD], ['sparse', SPARSE_CARD], ['bare', BARE_CARD], ['drifted', DRIFT_CARD], ['V1', V1_CARD]];
 
 /**
+ * The fav, tag_ids and content digests of a list row or a record hashed as one.
+ * @param {any} shallow
+ */
+function digestsOf(shallow) {
+    return {
+        fav: (characterDigestFavHash(shallow) % 4294967296) >>> 0,
+        tagIds: characterDigestTagIdsHash(shallow) >>> 0,
+        content: (characterDigestFieldsHash(shallow) % 4294967296) >>> 0,
+    };
+}
+
+/**
+ * A cached record's digests: its character, with the fields its store split off put back, hashed as the server's list
+ * row is hashed under `includeCreatorNotes`.
+ * @param {any} record
+ * @param {boolean} includeCreatorNotes
+ */
+function cachedDigests(record, includeCreatorNotes) {
+    const character = { ...record.character };
+    for (const field of record.dedup ?? []) character[field] = character.data[field];
+    return digestsOf(characterDigestSource({ ...character, tag_ids: normalizeTagIds(character.tag_ids) }, includeCreatorNotes));
+}
+
+/**
  * @typedef {object} Mode
  * @property {typeof import('../src/character-metadata-db.js')} metadataDb
  * @property {typeof import('../src/endpoints/search-index-coordinator.js')} searchCoordinator
@@ -262,16 +287,23 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
         return `${name}.png`;
     }
 
-    /** @returns {Map<string, {fav: number, tagIds: number, content: number}>} every character row's digest columns (every test here holds exactly one) */
-    function serverDigests() {
+    /**
+     * The digests of each character's list row (getShallowByIds()), hashed as the client hashes its cached records.
+     * @param {number} expectedRows how many character rows the calling test has written
+     * @returns {Promise<Map<string, {fav: number, tagIds: number, content: number}>>}
+     */
+    async function serverDigests(expectedRows) {
         const db = new mode.Database(path.join(directories.root, 'character-metadata.sqlite'), { readonly: true });
+        /** @type {string[]} */
+        let ids;
         try {
-            const rows = [...db.prepare('SELECT id, digest_fav, digest_tag_ids, digest_content FROM characters ORDER BY id LIMIT 2').iterate()];
-            expect(rows.length).toBe(1);
-            return new Map(rows.map(r => [r.id, { fav: r.digest_fav >>> 0, tagIds: r.digest_tag_ids >>> 0, content: r.digest_content >>> 0 }]));
+            ids = [...db.prepare('SELECT id FROM characters ORDER BY id LIMIT ?').iterate(expectedRows + 1)].map(r => r.id);
         } finally {
             db.close();
         }
+        expect(ids.length).toBe(expectedRows);
+        const listRows = await mode.metadataDb.getShallowByIds(directories, ids);
+        return new Map(ids.map(id => [id, digestsOf(listRows[id])]));
     }
 
     /**
@@ -313,20 +345,20 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
     async function favMergeAgainstServer(avatar, favSequence) {
         const actual = [];
         const expected = [];
-        const recordStep = (step, { cached, fieldRequests }, expectedFieldRequests) => {
-            const server = serverDigests();
-            const hashes = [...cached].map(([id, record]) => [id, { fav: record.hashes.fav >>> 0, tagIds: record.hashes.tagIds >>> 0, content: record.hashes.content >>> 0 }]);
+        const recordStep = async (step, { cached, fieldRequests }, expectedFieldRequests) => {
+            const server = await serverDigests(1);
+            const hashes = [...cached].map(([id, record]) => [id, cachedDigests(record, creatorNotes)]);
             actual.push({ step, fieldRequests, serverHasRows: server.size > 0, hashes: Object.fromEntries(hashes) });
             expected.push({ step, fieldRequests: expectedFieldRequests, serverHasRows: true, hashes: Object.fromEntries(server) });
         };
 
-        recordStep('warm', await incrementalSync(), []);
+        await recordStep('warm', await incrementalSync(), []);
         for (const [index, fav] of favSequence.entries()) {
             const before = storedFav(avatar);
             await postJson('/api/characters/fav', { avatar, fav });
             // The /fav change arrives as a field-level change, so this exercises the merge, not a whole-record fetch.
             // Setting the fav already stored changes nothing, so there is nothing to sync.
-            recordStep(`fav #${index} ${fav}`, await incrementalSync(), before === fav ? [] : [['fav']]);
+            await recordStep(`fav #${index} ${fav}`, await incrementalSync(), before === fav ? [] : [['fav']]);
         }
         return { actual, expected };
     }

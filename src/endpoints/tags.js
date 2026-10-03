@@ -24,6 +24,7 @@ import {
     getEntityTagChangesEnd,
     getTagDefinitionsByIds,
     getGoneTagIds,
+    getMergedTagTargets,
     findTagsByNames,
     queryTags,
     decodeTagQueryCursor,
@@ -433,8 +434,9 @@ router.post('/query', async (request, response) => {
 const BY_IDS_MAX_IDS = 500;
 
 /**
- * `{ ids, known }` → `{ tags, gone, unchanged }`: the definitions for a named set of ids, and the ids among them no
- * tag has (never stored, deleted, or marked deleted). `known` (optional) maps an id to contentHashOf() of the copy
+ * `{ ids, known }` → `{ tags, gone, merged, unchanged }`: the definitions for a named set of ids; the ids among them
+ * no tag has (never stored, deleted, or marked deleted with no merge target); and `merged`, each id marked deleted with
+ * a merge target mapped to the live tag it now reads as (merge chains followed), whose definition is in `tags` too. `known` (optional) maps an id to contentHashOf() of the copy
  * the caller holds: a definition with that hash is left out of `tags` and listed in `unchanged`. An id in none of
  * the three is a tag whose stored definition can't be read. More than BY_IDS_MAX_IDS distinct ids is a 400 rather
  * than a truncated answer, which would read as those tags not existing.
@@ -449,13 +451,17 @@ router.post('/by-ids', async (request, response) => {
         if (known !== undefined && (known === null || typeof known !== 'object' || Array.isArray(known))) {
             return response.status(400).send({ error: 'known must be an object of id to hash' });
         }
-        const tags = await getTagDefinitionsByIds(request.user.directories, ids);
-        const gone = tags === null ? null : await getGoneTagIds(request.user.directories, ids);
-        if (tags === null || gone === null) {
+        const merged = await getMergedTagTargets(request.user.directories, ids);
+        const asked = new Set(ids.map(String));
+        const targets = merged === null ? [] : [...new Set(Object.values(merged))].filter(id => !asked.has(id));
+        const tags = merged === null ? null : await getTagDefinitionsByIds(request.user.directories, [...ids, ...targets]);
+        const goneOrMerged = tags === null ? null : await getGoneTagIds(request.user.directories, ids);
+        if (tags === null || goneOrMerged === null || merged === null) {
             return response.send({ tags: null });
         }
+        const gone = goneOrMerged.filter(id => !Object.hasOwn(merged, id));
         if (!known) {
-            return response.send({ tags, gone });
+            return response.send({ tags, gone, merged });
         }
         /** @type {string[]} */
         const unchanged = [];
@@ -464,7 +470,7 @@ router.post('/by-ids', async (request, response) => {
             unchanged.push(tag.id);
             return false;
         });
-        response.send({ tags: changed, gone, unchanged });
+        response.send({ tags: changed, gone, merged, unchanged });
     } catch (err) {
         console.error('Could not read tag definitions by id', err);
         response.sendStatus(500);

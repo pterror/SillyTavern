@@ -78,6 +78,14 @@ function cardJson(overrides = {}) {
 }
 
 /**
+ * The list row the store serves for `id` (what /query sends).
+ * @param {string} id
+ */
+async function listRow(id) {
+    return /** @type {any} */ ((await metadataDb.getShallowByIds(directories, [id]))[id]);
+}
+
+/**
  * cardJson() in the shape the app stores in card_json (see /create): a spec'd V2 card whose top-level fields
  * mirror `data.*`, with no fav.
  * @param {object} overrides As for cardJson()
@@ -146,7 +154,7 @@ describe('upsertCharacterFromWrite', () => {
         expect(row.name_fold).toBe('bob');
         expect(row.creator).toBe('tester');
         expect(row.date_added).toBeGreaterThanOrEqual(before);
-        expect(JSON.parse(row.shallow_json).name).toBe('Bob');
+        expect((await listRow('Bob.png')).name).toBe('Bob');
     });
 
     test('never recomputes date_added on a later write to the same avatar', async () => {
@@ -158,7 +166,7 @@ describe('upsertCharacterFromWrite', () => {
         const secondRow = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
 
         expect(secondRow.date_added).toBe(firstRow.date_added);
-        expect(JSON.parse(secondRow.shallow_json).data.tags).toEqual(['x']);
+        expect((await listRow('Bob.png')).data.tags).toEqual(['x']);
     });
 });
 
@@ -192,11 +200,7 @@ describe('renameCharacterRow', () => {
         expect(newRow.date_added).toBe(oldRow.date_added);
     });
 
-    test('also carries date_added into shallow_json\'s own embedded copy, not just the column', async () => {
-        // Regression test: shallow_json is a point-in-time JSON snapshot taken at upsert (buildRow()) - a caller
-        // reading date_added through the shallow projection (as /query does - see characters.js) rather than the
-        // raw column would otherwise see the wrong value after a rename, even though the column itself was
-        // correctly patched.
+    test('also carries date_added into the list row /query serves, not just the column', async () => {
         await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
         const oldRow = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
 
@@ -204,20 +208,19 @@ describe('renameCharacterRow', () => {
         await metadataDb.upsertCharacterFromWrite(directories, 'Robert.png', cardJson({ name: 'Robert', data: { name: 'Robert', tags: [], creator: 'tester', character_version: '1.0', creator_notes: '', extensions: { fav: false, world: '' } } }));
         await metadataDb.renameCharacterRow(directories, 'Bob.png', 'Robert.png');
 
-        const newRow = await metadataDb.getCharacterMetadataRow(directories, 'Robert.png');
-        expect(JSON.parse(newRow.shallow_json).date_added).toBe(oldRow.date_added);
+        expect((await listRow('Robert.png')).date_added).toBe(oldRow.date_added);
     });
 });
 
 describe('setCharacterDateAdded', () => {
-    test('overwrites date_added on an existing row, both the column and shallow_json\'s embedded copy', async () => {
+    test('overwrites date_added on an existing row, in the column and the list row', async () => {
         await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
 
         await metadataDb.setCharacterDateAdded(directories, 'Bob.png', 5000);
 
         const row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
         expect(row.date_added).toBe(5000);
-        expect(JSON.parse(row.shallow_json).date_added).toBe(5000);
+        expect((await listRow('Bob.png')).date_added).toBe(5000);
     });
 
     test('is a no-op for an id with no row', async () => {
@@ -234,7 +237,7 @@ describe('setCharacterDateAdded', () => {
 
         const row = await metadataDb.getCharacterMetadataRow(directories, 'Carol.png');
         expect(row.date_added).toBe(7000);
-        expect(JSON.parse(row.shallow_json).date_added).toBe(7000);
+        expect((await listRow('Carol.png')).date_added).toBe(7000);
     });
 });
 
@@ -476,9 +479,9 @@ describe('batch import mode', () => {
         const row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
         expect(row).toBeDefined();
         expect(await metadataDb.getCharacterTagIds(directories, 'Bob.png')).toEqual(['tag1']);
-        // The row's own shallow_json (what /query actually serves) has to carry it too, not just the
-        // character_tags table - that's the field the client's getTagsList()/entityTagIds fallback reads.
-        expect(JSON.parse(row.shallow_json).tag_ids).toEqual(['tag1']);
+        // The list row (what /query actually serves) has to carry it too, not just the character_tags table -
+        // that's the field the client's getTagsList()/entityTagIds fallback reads.
+        expect((await listRow('Bob.png')).tag_ids).toEqual(['tag1']);
     });
 
     // Regression: a re-import of a character that already has a row is buffered too, and at flush writeRowSync() keeps
@@ -498,7 +501,7 @@ describe('batch import mode', () => {
                 const row = await metadataDb.getCharacterMetadataRow(directories, avatar);
                 expect(row.name).toBe(name);
                 expect((await metadataDb.getCharacterTagIds(directories, avatar)).sort()).toEqual(tagIds);
-                expect(JSON.parse(row.shallow_json).tag_ids).toEqual(tagIds);
+                expect((await listRow(avatar)).tag_ids).toEqual(tagIds);
             }
         }
 
@@ -608,7 +611,7 @@ describe('a user write during an open batch import lands in the table right away
             const row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
             expect(row.name).toBe('Bobby');
             expect(await metadataDb.getCharacterTagIds(directories, 'Bob.png')).toEqual(['tag1']);
-            expect(JSON.parse(row.shallow_json).tag_ids).toEqual(['tag1']);
+            expect((await listRow('Bob.png')).tag_ids).toEqual(['tag1']);
         });
     });
 
@@ -683,7 +686,7 @@ describe('a user write during an open batch import lands in the table right away
             const row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
             expect(row.date_added).toBe(7000);
             expect((await metadataDb.getCharacterTagIds(directories, 'Bob.png')).sort()).toEqual(expected);
-            expect([...JSON.parse(row.shallow_json).tag_ids].sort()).toEqual(expected);
+            expect([...(await listRow('Bob.png')).tag_ids].sort()).toEqual(expected);
         });
     });
 
@@ -700,7 +703,7 @@ describe('a user write during an open batch import lands in the table right away
             const row = await metadataDb.getCharacterMetadataRow(directories, 'Robert.png');
             expect(row.name).toBe('Robert');
             expect(row.date_added).toBe(5000);
-            expect(JSON.parse(row.shallow_json).date_added).toBe(5000);
+            expect((await listRow('Robert.png')).date_added).toBe(5000);
             expect(await metadataDb.getCharacterTagIds(directories, 'Robert.png')).toEqual(['tag1']);
             expect(await metadataDb.getCharacterMetadataRow(directories, 'Bob.png')).toBeUndefined();
         });
@@ -786,198 +789,6 @@ describe('content_hash / findCharacterIdByContentHash (bulk-import exact-duplica
         expect(await metadataDb.findCharacterIdByContentHash(directories, '')).toBeNull();
     });
 
-    test('migrates an existing (pre-content_hash) database in place without losing rows', async () => {
-        // Simulates an install that already has a character-metadata.sqlite from before this column existed:
-        // build the old-shaped table directly (no content_hash) and seed one row, bypassing this module
-        // entirely, then let a normal call (which always goes through getEntry() -> migrateContentHashColumn())
-        // pick it up.
-        const { default: Database } = await import('better-sqlite3');
-        const dbPath = path.join(tempDir, 'character-metadata.sqlite');
-        const rawDb = new Database(dbPath);
-        rawDb.exec(`
-            CREATE TABLE characters (
-                id             TEXT PRIMARY KEY,
-                name           TEXT NOT NULL,
-                name_fold      TEXT NOT NULL,
-                fav            INTEGER NOT NULL,
-                date_added     INTEGER NOT NULL,
-                create_date    TEXT,
-                date_last_chat INTEGER NOT NULL,
-                chat_size      INTEGER NOT NULL,
-                data_size      INTEGER NOT NULL,
-                file_mtime     INTEGER NOT NULL,
-                world          TEXT,
-                creator        TEXT,
-                version        TEXT,
-                creator_notes  TEXT,
-                shallow_json   TEXT NOT NULL,
-                change_seq            INTEGER NOT NULL
-            );
-        `);
-        rawDb.prepare(`
-            INSERT INTO characters (id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size, file_mtime, world, creator, version, creator_notes, shallow_json, change_seq)
-            VALUES ('Preexisting.png', 'Preexisting', 'preexisting', 0, 500, NULL, 0, 0, 0, 500, NULL, NULL, NULL, NULL, '{}', 1)
-        `).run();
-        rawDb.close();
-
-        // Any exported call routes through getEntry(), which runs the migration before returning.
-        const preexisting = await metadataDb.getCharacterMetadataRow(directories, 'Preexisting.png');
-        expect(preexisting).toBeDefined();
-        expect(preexisting.name).toBe('Preexisting');
-        expect(preexisting.content_hash).toBeNull();
-
-        // And the column is now usable for a subsequent write.
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 'deadbeef');
-        expect(await metadataDb.findCharacterIdByContentHash(directories, 'deadbeef')).toBe('Bob.png');
-    });
-});
-
-describe('migrateCreateDateColumn (2026-08: create_date TEXT -> INTEGER epoch ms, matching every other timestamp column)', () => {
-    test('migrates an existing (pre-INTEGER create_date) database in place: ISO strings, the ST "humanized" legacy format, and a genuinely unparseable value', async () => {
-        // Simulates an install whose character-metadata.sqlite predates this migration - build the old (TEXT
-        // create_date) table directly, seed rows covering every shape found in this fork's real ~327k-row
-        // production database (2026-08 investigation): a plain ISO 8601 string (the overwhelming majority), the
-        // "ST humanized" format humanizedDateTime() produced before ISO became the default (~6% of that corpus),
-        // NULL (a genuinely-missing create_date), and one deliberately-garbage value to exercise the "genuinely
-        // unparseable" path this fork's own corpus never actually hit.
-        const { default: Database } = await import('better-sqlite3');
-        const dbPath = path.join(tempDir, 'character-metadata.sqlite');
-        const rawDb = new Database(dbPath);
-        rawDb.exec(`
-            CREATE TABLE characters (
-                id             TEXT PRIMARY KEY,
-                name           TEXT NOT NULL,
-                name_fold      TEXT NOT NULL,
-                fav            INTEGER NOT NULL,
-                date_added     INTEGER NOT NULL,
-                create_date    TEXT,
-                date_last_chat INTEGER NOT NULL,
-                chat_size      INTEGER NOT NULL,
-                data_size      INTEGER NOT NULL,
-                file_mtime     INTEGER NOT NULL,
-                world          TEXT,
-                creator        TEXT,
-                version        TEXT,
-                creator_notes  TEXT,
-                shallow_json   TEXT NOT NULL,
-                change_seq            INTEGER NOT NULL
-            );
-            CREATE INDEX idx_characters_create_date ON characters(create_date);
-        `);
-        const insert = rawDb.prepare(`
-            INSERT INTO characters (id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size, file_mtime, world, creator, version, creator_notes, shallow_json, change_seq)
-            VALUES (@id, @name, @nameFold, 0, 500, @createDate, 0, 0, 0, 500, NULL, NULL, NULL, NULL, '{}', 1)
-        `);
-        insert.run({ id: 'Iso.png', name: 'Iso', nameFold: 'iso', createDate: '2024-07-12T01:31:37.123Z' });
-        insert.run({ id: 'Humanized.png', name: 'Humanized', nameFold: 'humanized', createDate: '2024-6-5 @14h 56m 50s 682ms' });
-        insert.run({ id: 'Missing.png', name: 'Missing', nameFold: 'missing', createDate: null });
-        insert.run({ id: 'Garbage.png', name: 'Garbage', nameFold: 'garbage', createDate: 'not a date at all' });
-        rawDb.close();
-
-        const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
-
-        // Any exported call routes through getEntry(), which runs migrateCreateDateColumn() before returning.
-        const isoRow = await metadataDb.getCharacterMetadataRow(directories, 'Iso.png');
-        const humanizedRow = await metadataDb.getCharacterMetadataRow(directories, 'Humanized.png');
-        const missingRow = await metadataDb.getCharacterMetadataRow(directories, 'Missing.png');
-        const garbageRow = await metadataDb.getCharacterMetadataRow(directories, 'Garbage.png');
-
-        expect(isoRow.create_date).toBe(Date.parse('2024-07-12T01:31:37.123Z'));
-        expect(humanizedRow.create_date).toBe(Date.parse('2024-06-05T14:56:50.682Z'));
-        expect(missingRow.create_date).toBeNull();
-        // A genuinely unparseable value is NULLed, same as a missing one - not silently special-cased, and
-        // loudly flagged rather than swallowed (the "flag anything that can't be migrated cleanly" instruction).
-        expect(garbageRow.create_date).toBeNull();
-        expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('not a date at all'));
-
-        errorSpy.mockRestore();
-
-        // The column itself is genuinely INTEGER now, not just holding numbers under a TEXT affinity (which
-        // would silently reintroduce the original TEXT-collation sort bug - see this column's own SCHEMA_SQL
-        // comment) - and a fresh write through the ordinary path still works against the migrated table.
-        const { default: Database2 } = await import('better-sqlite3');
-        const checkDb = new Database2(dbPath, { readonly: true });
-        const col = Array.from(checkDb.prepare('PRAGMA table_info(characters)').iterate()).find(c => c.name === 'create_date');
-        expect(col.type).toBe('INTEGER');
-        checkDb.close();
-
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
-        const bobRow = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
-        expect(bobRow.create_date).toBe(Date.parse('2024-01-01T00:00:00.000Z'));
-    });
-
-    test('a second migration pass on an already-migrated table is a no-op (idempotent)', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
-        const before = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
-
-        // Forces a fresh getEntry() call (and therefore a fresh migrateCreateDateColumn() run) against the same
-        // on-disk file, the same way a server restart would - not just a second call reusing the cached handle.
-        metadataDb.disposeMetadataStores();
-        const after = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
-
-        expect(after.create_date).toBe(before.create_date);
-    });
-});
-
-describe('migrateDropFileMtimeColumn', () => {
-    test('migrates an existing (pre-drop) database in place: file_mtime is gone and rows are kept', async () => {
-        const { default: Database } = await import('better-sqlite3');
-        const dbPath = path.join(tempDir, 'character-metadata.sqlite');
-        const rawDb = new Database(dbPath);
-        rawDb.exec(`
-            CREATE TABLE characters (
-                id             TEXT PRIMARY KEY,
-                name           TEXT NOT NULL,
-                name_fold      TEXT NOT NULL,
-                fav            INTEGER NOT NULL,
-                date_added     INTEGER NOT NULL,
-                create_date    TEXT,
-                date_last_chat INTEGER NOT NULL,
-                chat_size      INTEGER NOT NULL,
-                data_size      INTEGER NOT NULL,
-                file_mtime     INTEGER NOT NULL,
-                world          TEXT,
-                creator        TEXT,
-                version        TEXT,
-                creator_notes  TEXT,
-                shallow_json   TEXT NOT NULL,
-                change_seq            INTEGER NOT NULL
-            );
-            CREATE INDEX idx_characters_create_date ON characters(create_date);
-        `);
-        rawDb.prepare(`
-            INSERT INTO characters (id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size, file_mtime, world, creator, version, creator_notes, shallow_json, change_seq)
-            VALUES ('Old.png', 'Old', 'old', 0, 500, '2024-07-12T01:31:37.123Z', 0, 0, 0, 500, NULL, NULL, NULL, NULL, '{}', 1)
-        `).run();
-        rawDb.close();
-
-        // Any exported call routes through getEntry(), which runs migrateDropFileMtimeColumn() before returning.
-        const oldRow = await metadataDb.getCharacterMetadataRow(directories, 'Old.png');
-        expect(oldRow.name).toBe('Old');
-        expect(oldRow.date_added).toBe(500);
-        expect(oldRow).not.toHaveProperty('file_mtime');
-
-        const { default: Database2 } = await import('better-sqlite3');
-        const checkDb = new Database2(dbPath, { readonly: true });
-        const columnNames = Array.from(checkDb.prepare('PRAGMA table_info(characters)').iterate(), c => c.name);
-        expect(columnNames).not.toContain('file_mtime');
-        checkDb.close();
-
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
-        expect(await metadataDb.getCharacterMetadataRow(directories, 'Bob.png')).toBeDefined();
-    });
-
-    test('a second migration pass on an already-migrated table is a no-op (idempotent)', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
-        const before = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
-
-        // Forces a fresh getEntry() (and so a fresh migrateDropFileMtimeColumn() run) against the same on-disk
-        // file, rather than reusing the cached handle.
-        metadataDb.disposeMetadataStores();
-        const after = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
-
-        expect(after).toEqual(before);
-    });
 });
 
 describe('avatar_identity_hash / findCharacterIdByIdentityHashes (avatar-aware identity dedup)', () => {
@@ -1059,46 +870,6 @@ describe('avatar_identity_hash / findCharacterIdByIdentityHashes (avatar-aware i
         expect(rowAfter.avatar_identity_hash).not.toBe('a-genuinely-different-avatar-hash');
     });
 
-    test('migrates an existing (pre-avatar_identity_hash) database in place without losing rows', async () => {
-        const { default: Database } = await import('better-sqlite3');
-        const dbPath = path.join(tempDir, 'character-metadata.sqlite');
-        const rawDb = new Database(dbPath);
-        rawDb.exec(`
-            CREATE TABLE characters (
-                id                     TEXT PRIMARY KEY,
-                name                   TEXT NOT NULL,
-                name_fold              TEXT NOT NULL,
-                fav                    INTEGER NOT NULL,
-                date_added             INTEGER NOT NULL,
-                create_date            TEXT,
-                date_last_chat         INTEGER NOT NULL,
-                chat_size              INTEGER NOT NULL,
-                data_size              INTEGER NOT NULL,
-                file_mtime             INTEGER NOT NULL,
-                world                  TEXT,
-                creator                TEXT,
-                version                TEXT,
-                creator_notes          TEXT,
-                shallow_json           TEXT NOT NULL,
-                content_hash           TEXT,
-                content_identity_hash  TEXT,
-                import_poisoned        INTEGER NOT NULL DEFAULT 1,
-                change_seq                    INTEGER NOT NULL
-            );
-        `);
-        rawDb.prepare(`
-            INSERT INTO characters (id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size, file_mtime, world, creator, version, creator_notes, shallow_json, change_seq)
-            VALUES ('Preexisting.png', 'Preexisting', 'preexisting', 0, 500, NULL, 0, 0, 0, 500, NULL, NULL, NULL, NULL, '{}', 1)
-        `).run();
-        rawDb.close();
-
-        const preexisting = await metadataDb.getCharacterMetadataRow(directories, 'Preexisting.png');
-        expect(preexisting).toBeDefined();
-        expect(preexisting.avatar_identity_hash).toBeNull();
-
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), null, 'avatarhash1');
-        expect(await metadataDb.getCharacterMetadataRow(directories, 'Bob.png')).toEqual(expect.objectContaining({ avatar_identity_hash: 'avatarhash1' }));
-    });
 });
 
 describe('content_identity_hash / import_poisoned (unfuck-the-import: cheap dedup groundwork)', () => {
@@ -1162,45 +933,9 @@ describe('content_identity_hash / import_poisoned (unfuck-the-import: cheap dedu
         expect(row.content_identity_hash).toEqual(expect.any(String));
     });
 
-    test('migrates an existing (pre-content_identity_hash) database in place, defaulting preexisting rows to poisoned', async () => {
-        const { default: Database } = await import('better-sqlite3');
-        const dbPath = path.join(tempDir, 'character-metadata.sqlite');
-        const rawDb = new Database(dbPath);
-        rawDb.exec(`
-            CREATE TABLE characters (
-                id             TEXT PRIMARY KEY,
-                name           TEXT NOT NULL,
-                name_fold      TEXT NOT NULL,
-                fav            INTEGER NOT NULL,
-                date_added     INTEGER NOT NULL,
-                create_date    TEXT,
-                date_last_chat INTEGER NOT NULL,
-                chat_size      INTEGER NOT NULL,
-                data_size      INTEGER NOT NULL,
-                file_mtime     INTEGER NOT NULL,
-                world          TEXT,
-                creator        TEXT,
-                version        TEXT,
-                creator_notes  TEXT,
-                shallow_json   TEXT NOT NULL,
-                content_hash   TEXT,
-                change_seq            INTEGER NOT NULL
-            );
-        `);
-        rawDb.prepare(`
-            INSERT INTO characters (id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size, file_mtime, world, creator, version, creator_notes, shallow_json, content_hash, change_seq)
-            VALUES ('Preexisting.png', 'Preexisting', 'preexisting', 0, 500, NULL, 0, 0, 0, 500, NULL, NULL, NULL, NULL, '{}', NULL, 1)
-        `).run();
-        rawDb.close();
-
-        const preexisting = await metadataDb.getCharacterMetadataRow(directories, 'Preexisting.png');
-        expect(preexisting).toBeDefined();
-        expect(preexisting.import_poisoned).toBe(1);
-        expect(preexisting.content_identity_hash).toBeNull();
-    });
 });
 
-describe('backfillContentIdentityHashes / findCharacterIdByContentIdentityHash (poisoned-row expensive fallback)', () => {
+describe('content_identity_hash of a poisoned row', () => {
     /** @type {typeof import('png-chunks-extract').default} */
     let extract;
     /** @type {typeof import('png-chunk-text')} */
@@ -1264,158 +999,15 @@ describe('backfillContentIdentityHashes / findCharacterIdByContentIdentityHash (
         };
     }
 
-    /** Clears every row's content_identity_hash, as rows inserted before reconcile() hashed them have it. */
-    async function forgetContentIdentityHashes() {
-        metadataDb.disposeMetadataStores();
-        const { default: Database } = await import('better-sqlite3');
-        const rawDb = new Database(path.join(tempDir, 'character-metadata.sqlite'));
-        rawDb.prepare('UPDATE characters SET content_identity_hash = NULL').run();
-        rawDb.close();
-    }
-
-    test('reconcile hashes a poisoned row from the pristine chara chunk, the hash the backfill gives it', async () => {
-        await writeOldStylePoisonedCard('Poisoned.png', pristineCard());
+    test('reconcile hashes a poisoned row from the pristine chara chunk', async () => {
+        const pristine = pristineCard();
+        await writeOldStylePoisonedCard('Poisoned.png', pristine);
         await metadataDb.reconcile(directories);
         const atInsert = (await metadataDb.getCharacterMetadataRow(directories, 'Poisoned.png')).content_identity_hash;
-        await forgetContentIdentityHashes();
-        await metadataDb.backfillContentIdentityHashes(directories);
 
         expect(atInsert).toMatch(/^[0-9a-f]{64}$/);
-        expect((await metadataDb.getCharacterMetadataRow(directories, 'Poisoned.png')).content_identity_hash).toBe(atInsert);
+        expect(atInsert).toBe(metadataDb.computeContentIdentityHash(cardNormalize.getCharaCardV2(JSON.parse(JSON.stringify(pristine)), directories, false)));
     });
-
-    test('backfill computes a content_identity_hash for a poisoned row, from the pristine chara chunk, leaving import_poisoned set', async () => {
-        await writeOldStylePoisonedCard('Poisoned.png', pristineCard());
-        await metadataDb.reconcile(directories);
-        await forgetContentIdentityHashes();
-
-        const before = await metadataDb.getCharacterMetadataRow(directories, 'Poisoned.png');
-        expect(before.import_poisoned).toBe(1);
-        expect(before.content_identity_hash).toBeNull();
-
-        await metadataDb.backfillContentIdentityHashes(directories);
-
-        const after = await metadataDb.getCharacterMetadataRow(directories, 'Poisoned.png');
-        expect(after.content_identity_hash).toEqual(expect.any(String));
-        expect(after.content_identity_hash.length).toBe(64);
-        // Still poisoned - backfilling the hash does not mean the file itself is free of other old-write-path
-        // artifacts (see SCHEMA_SQL's own comment on the distinction).
-        expect(after.import_poisoned).toBe(1);
-    });
-
-    test('the backfilled hash matches what a fresh write of the same (stripped) content would produce', async () => {
-        const data = pristineCard();
-        await writeOldStylePoisonedCard('Poisoned.png', data);
-        await metadataDb.reconcile(directories);
-        await forgetContentIdentityHashes();
-        await metadataDb.backfillContentIdentityHashes(directories);
-        const poisoned = await metadataDb.getCharacterMetadataRow(directories, 'Poisoned.png');
-
-        // A brand-new, never-poisoned write of the exact same ORIGINAL card - normalized through getCharaCardV2()
-        // first, exactly the way characters.js's importFromPng()/importFromJson() always normalize a card before
-        // ever calling writeCharacterData() (upsertCharacterFromWrite() itself does no normalization - it hashes
-        // whatever JSON it's handed as-is, on the assumption that JSON already went through that normalization,
-        // which is what makes cardJson()'s own bare fixture unsuitable for this particular comparison: it skips
-        // that step deliberately, for tests that don't need it). fav/create_date deliberately differ from the
-        // poisoned copy - both get stripped before hashing, so they must not affect the result either way.
-        const normalized = cardNormalize.getCharaCardV2(JSON.parse(JSON.stringify(data)), directories, false);
-        normalized.fav = true;
-        normalized.create_date = '2020-01-01T00:00:00.000Z';
-        await metadataDb.upsertCharacterFromWrite(directories, 'Fresh.png', JSON.stringify(normalized));
-        const fresh = await metadataDb.getCharacterMetadataRow(directories, 'Fresh.png');
-
-        expect(poisoned.content_identity_hash).toBe(fresh.content_identity_hash);
-    });
-
-    test('findCharacterIdByContentIdentityHash finds a backfilled poisoned row by its recovered hash', async () => {
-        await writeOldStylePoisonedCard('Poisoned.png', pristineCard());
-        await metadataDb.reconcile(directories);
-        await forgetContentIdentityHashes();
-        await metadataDb.backfillContentIdentityHashes(directories);
-        const row = await metadataDb.getCharacterMetadataRow(directories, 'Poisoned.png');
-
-        expect(await metadataDb.findCharacterIdByContentIdentityHash(directories, row.content_identity_hash)).toBe('Poisoned.png');
-        expect(await metadataDb.findCharacterIdByContentIdentityHash(directories, 'not-a-real-hash')).toBeNull();
-        expect(await metadataDb.findCharacterIdByContentIdentityHash(directories, '')).toBeNull();
-    });
-
-    test('the backfill runs once: a later call reads nothing, even for a row left without a hash', async () => {
-        await writeOldStylePoisonedCard('Poisoned.png', pristineCard());
-        await metadataDb.reconcile(directories);
-        await metadataDb.backfillContentIdentityHashes(directories);
-        await forgetContentIdentityHashes();
-
-        await metadataDb.backfillContentIdentityHashes(directories);
-
-        expect((await metadataDb.getCharacterMetadataRow(directories, 'Poisoned.png')).content_identity_hash).toBeNull();
-    });
-
-    test('a row whose file fails to parse is left poisoned/hashless and named in the log, without throwing', async () => {
-        const filePath = await writeOldStylePoisonedCard('Poisoned.png', pristineCard());
-        await metadataDb.reconcile(directories);
-        await forgetContentIdentityHashes();
-        await fs.promises.writeFile(filePath, 'not a valid png at all');
-
-        const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
-        try {
-            await expect(metadataDb.backfillContentIdentityHashes(directories)).resolves.toBeUndefined();
-            expect(errorSpy.mock.calls.some(([message]) => String(message).includes('Poisoned.png'))).toBe(true);
-        } finally {
-            errorSpy.mockRestore();
-        }
-
-        const row = await metadataDb.getCharacterMetadataRow(directories, 'Poisoned.png');
-        expect(row.import_poisoned).toBe(1);
-        expect(row.content_identity_hash).toBeNull();
-    });
-
-    test('gated off (allowExpensiveDuplicateFallback=false): backfill does nothing', async () => {
-        process.env.SILLYTAVERN_PERFORMANCE_ALLOWEXPENSIVEDUPLICATEFALLBACK = 'false';
-
-        await writeOldStylePoisonedCard('Poisoned.png', pristineCard());
-        await metadataDb.reconcile(directories);
-        await metadataDb.backfillContentIdentityHashes(directories);
-
-        const row = await metadataDb.getCharacterMetadataRow(directories, 'Poisoned.png');
-        expect(row.content_identity_hash).toBeNull();
-        expect(row.import_poisoned).toBe(1);
-    });
-
-    test('a row that is not poisoned (already has a trustworthy hash) is left untouched by backfill', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
-        const before = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
-
-        await metadataDb.backfillContentIdentityHashes(directories);
-
-        const after = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
-        expect(after.content_identity_hash).toBe(before.content_identity_hash);
-        expect(after.import_poisoned).toBe(0);
-    });
-
-    test('backfillContentIdentityHashes() over more than one 1000-row page processes every matching row exactly once', async () => {
-        const avatars = [];
-        for (let i = 0; i < 1001; i++) {
-            avatars.push(`Poisoned${String(i).padStart(4, '0')}.png`);
-            await metadataDb.upsertCharacterFromWrite(directories, avatars[i], cardJson());
-        }
-        metadataDb.disposeMetadataStores();
-        const { default: Database } = await import('better-sqlite3');
-        const rawDb = new Database(path.join(tempDir, 'character-metadata.sqlite'));
-        rawDb.prepare('UPDATE characters SET import_poisoned = 1, content_identity_hash = NULL').run();
-        rawDb.close();
-
-        // No PNG is on disk, so each row processed logs one failure naming it.
-        const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
-        try {
-            await metadataDb.backfillContentIdentityHashes(directories);
-            const processed = errorSpy.mock.calls
-                .map(([message]) => String(message).match(/Couldn't read (\S+) to work out its content fingerprint/)?.[1])
-                .filter(id => id !== undefined);
-            expect(processed.sort()).toEqual(avatars);
-        } finally {
-            errorSpy.mockRestore();
-        }
-    }, 60000);
 });
 
 describe('phase 3: character_tags as source of truth (not a tags.json mirror)', () => {
@@ -1563,11 +1155,11 @@ describe('assignEntityTag/unassignEntityTag commit the tag row and its write-bac
         rawDb.close();
     }
 
-    test('a character\'s tag row rolls back when its shallow_json write fails', async () => {
+    test('a character\'s tag row rolls back when its version write fails', async () => {
         await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
         await metadataDb.assignEntityTag(directories, 'Bob.png', 'keep');
         const before = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
-        await failWritesTo('characters', 'shallow_json');
+        await failWritesTo('characters', 'version');
 
         await expect(metadataDb.assignEntityTag(directories, 'Bob.png', 'tag1')).rejects.toThrow('write-back failed');
         await expect(metadataDb.unassignEntityTag(directories, 'Bob.png', 'keep')).rejects.toThrow('write-back failed');
@@ -1721,40 +1313,29 @@ describe('phase 3 extension: tag definitions (owner decision - tags.json removal
         expect(second.tagIds).toEqual([mintedId]);
     });
 
-    test('seedCardTagsForSingleCharacter writes shallow_json and a change entry only when tag_ids change', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
+    test('seedCardTagsForSingleCharacter writes a change entry and moves the version only when tag_ids change', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ tags: ['Shared'] }));
         await metadataDb.fillTagNameKeysIfNeeded(directories);
         const { default: Database } = await import('better-sqlite3');
         const rawDb = new Database(path.join(directories.root, 'character-metadata.sqlite'));
         try {
-            const shallow = JSON.parse(rawDb.prepare('SELECT shallow_json FROM characters WHERE id = ?').get('Bob.png').shallow_json);
-            shallow.data.tags = ['Shared'];
-            shallow.tag_ids = [];
-            rawDb.prepare('UPDATE characters SET shallow_json = ? WHERE id = ?').run(JSON.stringify(shallow), 'Bob.png');
             rawDb.prepare('DELETE FROM character_tags WHERE character_id = ?').run('Bob.png');
-            rawDb.exec(`
-                CREATE TABLE shallow_json_writes (id TEXT NOT NULL);
-                CREATE TRIGGER count_shallow_json_writes AFTER UPDATE OF shallow_json ON characters
-                BEGIN INSERT INTO shallow_json_writes (id) VALUES (NEW.id); END;
-            `);
-            const snapshot = () => ({
+            const snapshot = async () => ({
                 changes: rawDb.prepare('SELECT COUNT(*) AS n FROM changes WHERE id = ?').get('Bob.png').n,
-                changeSeq: rawDb.prepare('SELECT change_seq FROM characters WHERE id = ?').get('Bob.png').change_seq,
-                shallowWrites: rawDb.prepare('SELECT COUNT(*) AS n FROM shallow_json_writes WHERE id = ?').get('Bob.png').n,
-                tagIds: JSON.parse(rawDb.prepare('SELECT shallow_json FROM characters WHERE id = ?').get('Bob.png').shallow_json).tag_ids,
+                version: rawDb.prepare('SELECT version FROM characters WHERE id = ?').get('Bob.png').version,
+                tagIds: (await listRow('Bob.png')).tag_ids,
             });
 
-            const before = snapshot();
+            const before = await snapshot();
             const first = await metadataDb.seedCardTagsForSingleCharacter(directories, 'Bob.png');
-            const afterChange = snapshot();
+            const afterChange = await snapshot();
             expect(first.tagIds).toHaveLength(1);
             expect(afterChange.tagIds).toEqual(first.tagIds);
             expect(afterChange.changes).toBe(before.changes + 1);
-            expect(afterChange.changeSeq).toBeGreaterThan(before.changeSeq);
-            expect(afterChange.shallowWrites).toBe(before.shallowWrites + 1);
+            expect(afterChange.version).toBeGreaterThan(before.version);
 
             await metadataDb.seedCardTagsForSingleCharacter(directories, 'Bob.png');
-            expect(snapshot()).toEqual(afterChange);
+            expect(await snapshot()).toEqual(afterChange);
         } finally {
             rawDb.close();
         }
@@ -1888,8 +1469,7 @@ describe('tags.json tag_map values: a repeated id is stored once, a non-array is
     }
 
     async function storedTagIds(/** @type {string} */ avatar) {
-        const row = await metadataDb.getCharacterMetadataRow(directories, avatar);
-        return { table: (await metadataDb.getCharacterTagIds(directories, avatar)).sort(), shallow: JSON.parse(row.shallow_json).tag_ids };
+        return { table: (await metadataDb.getCharacterTagIds(directories, avatar)).sort(), shallow: (await listRow(avatar)).tag_ids };
     }
 
     /**
@@ -2122,7 +1702,7 @@ describe('fav is db-authoritative once a character row exists (owner decision - 
         expect(row.fav).toBe(1);
     });
 
-    test('setCharacterFav() is the only thing that can change fav after a row exists, and it patches shallow_json to match', async () => {
+    test('setCharacterFav() is the only thing that can change fav after a row exists, and the list row shows it', async () => {
         await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ fav: false }));
 
         const updated = await metadataDb.setCharacterFav(directories, 'Bob.png', true);
@@ -2131,9 +1711,7 @@ describe('fav is db-authoritative once a character row exists (owner decision - 
         const row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
         expect(row.fav).toBe(1);
 
-        // queryCharacters() returns JSON.parse(shallow_json) verbatim (character-metadata-db.js) - a caller
-        // reading through that path must see the same fav the row itself reports, not whatever buildRow()
-        // embedded at insert time.
+        // A caller reading through queryCharacters() must see the same fav the row itself reports, not the card's.
         const queried = await metadataDb.queryCharacters(directories, { ids: ['Bob.png'] });
         expect(queried.rows[0].fav).toBe(true);
 
@@ -2199,7 +1777,7 @@ describe('active_chat is db-authoritative once a character row exists (2026-08 c
         expect(row).toBeUndefined();
     });
 
-    test('setCharacterActiveChat() updates active_chat, patches shallow_json.chat, and bumps change_seq for a tracked row', async () => {
+    test('setCharacterActiveChat() updates active_chat, shows it as the list row\'s chat, and moves the version for a tracked row', async () => {
         await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
         const before = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
 
@@ -2208,13 +1786,12 @@ describe('active_chat is db-authoritative once a character row exists (2026-08 c
 
         const after = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
         expect(after.active_chat).toBe('Bob - New Chat');
-        expect(after.change_seq).toBeGreaterThan(before.change_seq);
+        expect(after.version).toBeGreaterThan(before.version);
 
-        const shallow = JSON.parse(after.shallow_json);
+        const shallow = await listRow('Bob.png');
         expect(shallow.chat).toBe('Bob - New Chat');
 
-        // queryCharacters() returns JSON.parse(shallow_json) verbatim - a caller reading through that path must
-        // see the same chat pointer the row itself reports.
+        // A caller reading through queryCharacters() must see the same chat pointer the row itself reports.
         const queried = await metadataDb.queryCharacters(directories, { ids: ['Bob.png'] });
         expect(queried.rows[0].chat).toBe('Bob - New Chat');
     });
@@ -2233,7 +1810,7 @@ describe('active_chat is db-authoritative once a character row exists (2026-08 c
         await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ chat: 'Bob - First Real Chat' }));
         const seeded = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
         expect(seeded.active_chat).toBe('Bob - First Real Chat');
-        expect(JSON.parse(seeded.shallow_json).chat).toBe('Bob - First Real Chat');
+        expect((await listRow('Bob.png')).chat).toBe('Bob - First Real Chat');
     });
 
     test('writeRowSync(): a NON-NULL existing active_chat is preserved even when a later write\'s card carries a different value (db wins, matching fav exactly)', async () => {
@@ -2244,7 +1821,7 @@ describe('active_chat is db-authoritative once a character row exists (2026-08 c
         await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ chat: 'Some Stale Value' }));
         const after = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
         expect(after.active_chat).toBe('Bob - Original Chat');
-        expect(JSON.parse(after.shallow_json).chat).toBe('Bob - Original Chat');
+        expect((await listRow('Bob.png')).chat).toBe('Bob - Original Chat');
     });
 
     test('getCharacterActiveChatsByIds() bulk-reads active_chat for a known set of ids, omitting both untracked ids and tracked-but-NULL ids', async () => {
@@ -2256,396 +1833,6 @@ describe('active_chat is db-authoritative once a character row exists (2026-08 c
         expect(chats).toEqual({ 'Alice.png': 'Alice - Chat' });
     });
 
-    test('backfillActiveChatFromCards() populates active_chat from on-disk cards for pre-existing NULL rows, without clobbering a concurrently-set non-null value', async () => {
-        await writeCardFile('Alice.png', { name: 'Alice', chat: 'Alice - From Disk', data: { name: 'Alice', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
-        await writeCardFile('Bob.png', { name: 'Bob', chat: 'Bob - From Disk', data: { name: 'Bob', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
-        // A card with no chat field at all - getCharaCardV2()'s own placeholder-synthesis fallback
-        // (convertToV2()/readFromV2(): `char.chat ?? \`${name} - ${date}\``) means this only stays chat-less at
-        // the RAW card level, not after normalization - which is exactly why this test seeds rows directly
-        // (below) rather than through reconcile()/bootstrapIfNeeded(): those both call getCharaCardV2() on the
-        // parsed card before ever reaching buildRow(), so a real "no chat at all" row can only be produced this
-        // way, matching the genuine "row predates the active_chat column" case the backfill targets - a row
-        // inserted before the column existed has active_chat NULL regardless of what buildRow()/getCharaCardV2()
-        // would compute for its card today.
-        await writeCardFile('Carol.png', { name: 'Carol', data: { name: 'Carol', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
-
-        const { default: Database } = await import('better-sqlite3');
-        const dbPath = path.join(tempDir, 'character-metadata.sqlite');
-        const rawDb = new Database(dbPath);
-        rawDb.exec(`
-            CREATE TABLE characters (
-                id             TEXT PRIMARY KEY,
-                name           TEXT NOT NULL,
-                name_fold      TEXT NOT NULL,
-                fav            INTEGER NOT NULL,
-                date_added     INTEGER NOT NULL,
-                create_date    TEXT,
-                date_last_chat INTEGER NOT NULL,
-                chat_size      INTEGER NOT NULL,
-                data_size      INTEGER NOT NULL,
-                file_mtime     INTEGER NOT NULL,
-                world          TEXT,
-                creator        TEXT,
-                version        TEXT,
-                creator_notes  TEXT,
-                shallow_json   TEXT NOT NULL,
-                change_seq            INTEGER NOT NULL
-            );
-        `);
-        const insert = rawDb.prepare(`
-            INSERT INTO characters (id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size, file_mtime, world, creator, version, creator_notes, shallow_json, change_seq)
-            VALUES (@id, @name, @nameFold, 0, 1000, NULL, 0, 0, 0, 1000, NULL, NULL, NULL, NULL, '{}', 1)
-        `);
-        insert.run({ id: 'Alice.png', name: 'Alice', nameFold: 'alice' });
-        insert.run({ id: 'Bob.png', name: 'Bob', nameFold: 'bob' });
-        insert.run({ id: 'Carol.png', name: 'Carol', nameFold: 'carol' });
-        rawDb.close();
-
-        const beforeAlice = await metadataDb.getCharacterMetadataRow(directories, 'Alice.png');
-        const beforeBob = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
-        const beforeCarol = await metadataDb.getCharacterMetadataRow(directories, 'Carol.png');
-        expect(beforeAlice.active_chat).toBeNull();
-        expect(beforeBob.active_chat).toBeNull();
-        expect(beforeCarol.active_chat).toBeNull();
-
-        // Simulate a live write racing the backfill for Bob's row: it already sets a real, more-current value
-        // BEFORE the backfill runs - the backfill's own (necessarily older) view of Bob's card must not clobber
-        // it, per the `AND active_chat IS NULL` guard on its UPDATE.
-        await metadataDb.setCharacterActiveChat(directories, 'Bob.png', 'Bob - Concurrently Set');
-
-        await metadataDb.backfillActiveChatFromCards(directories);
-
-        const afterAlice = await metadataDb.getCharacterMetadataRow(directories, 'Alice.png');
-        const afterBob = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
-        const afterCarol = await metadataDb.getCharacterMetadataRow(directories, 'Carol.png');
-        expect(afterAlice.active_chat).toBe('Alice - From Disk');
-        expect(afterBob.active_chat).toBe('Bob - Concurrently Set');
-        expect(afterCarol.active_chat).toBeNull();
-    });
-
-    test('backfillActiveChatFromCards() is idempotent (a second call is a no-op for already-backfilled rows)', async () => {
-        await writeCardFile('Alice.png', { name: 'Alice', chat: 'Alice - From Disk', data: { name: 'Alice', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
-        await metadataDb.reconcile(directories);
-        await metadataDb.backfillActiveChatFromCards(directories);
-        const first = await metadataDb.getCharacterMetadataRow(directories, 'Alice.png');
-
-        // Corrupt the file so a re-read would fail loudly if the backfill mistakenly tried it again.
-        await fs.promises.writeFile(path.join(charactersDir, 'Alice.png'), 'not a png');
-        await expect(metadataDb.backfillActiveChatFromCards(directories)).resolves.toBeUndefined();
-
-        const second = await metadataDb.getCharacterMetadataRow(directories, 'Alice.png');
-        expect(second.active_chat).toBe(first.active_chat);
-    });
-
-    test('backfillActiveChatFromCards() runs once: a later call reads nothing, even for a row left unchecked', async () => {
-        await writeCardFile('Alice.png', { name: 'Alice', chat: 'Alice - From Disk', data: { name: 'Alice', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
-        await metadataDb.reconcile(directories);
-        await metadataDb.backfillActiveChatFromCards(directories);
-        metadataDb.disposeMetadataStores();
-        const { default: Database } = await import('better-sqlite3');
-        const rawDb = new Database(path.join(tempDir, 'character-metadata.sqlite'));
-        rawDb.prepare('UPDATE characters SET active_chat = NULL, active_chat_checked = 0').run();
-        rawDb.close();
-
-        await metadataDb.backfillActiveChatFromCards(directories);
-
-        const row = await metadataDb.getCharacterMetadataRow(directories, 'Alice.png');
-        expect(row.active_chat_checked).toBe(0);
-        expect(row.active_chat).toBeNull();
-    });
-});
-
-describe('active_chat_checked (regression: a genuinely chatless card must converge, not get re-read off disk on every boot forever)', () => {
-    test('backfillActiveChatFromCards() marks a genuinely chatless card checked=1 (not just NULL), so a second pass does not touch it', async () => {
-        // "predates active_chat" shape, same raw-insert trick backfillActiveChatFromCards()'s other tests use -
-        // a row whose card genuinely has no chat at all.
-        await writeCardFile('Carol.png', { name: 'Carol', data: { name: 'Carol', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
-
-        const { default: Database } = await import('better-sqlite3');
-        const dbPath = path.join(tempDir, 'character-metadata.sqlite');
-        const rawDb = new Database(dbPath);
-        rawDb.exec(`
-            CREATE TABLE characters (
-                id             TEXT PRIMARY KEY,
-                name           TEXT NOT NULL,
-                name_fold      TEXT NOT NULL,
-                fav            INTEGER NOT NULL,
-                date_added     INTEGER NOT NULL,
-                create_date    TEXT,
-                date_last_chat INTEGER NOT NULL,
-                chat_size      INTEGER NOT NULL,
-                data_size      INTEGER NOT NULL,
-                file_mtime     INTEGER NOT NULL,
-                world          TEXT,
-                creator        TEXT,
-                version        TEXT,
-                creator_notes  TEXT,
-                shallow_json   TEXT NOT NULL,
-                change_seq            INTEGER NOT NULL
-            );
-        `);
-        rawDb.prepare(`
-            INSERT INTO characters (id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size, file_mtime, world, creator, version, creator_notes, shallow_json, change_seq)
-            VALUES ('Carol.png', 'Carol', 'carol', 0, 1000, NULL, 0, 0, 0, 1000, NULL, NULL, NULL, NULL, '{}', 1)
-        `).run();
-        rawDb.close();
-
-        // First pass: genuinely reads Carol's card off disk, finds no chat, and must record that as a real,
-        // final answer - not "still unknown".
-        await metadataDb.backfillActiveChatFromCards(directories);
-        const afterFirstPass = await metadataDb.getCharacterMetadataRow(directories, 'Carol.png');
-        expect(afterFirstPass.active_chat).toBeNull();
-        expect(afterFirstPass.active_chat_checked).toBe(1);
-
-        // Corrupt the file so a re-read would fail loudly (same trick the existing idempotence test uses) - if
-        // the old `WHERE active_chat IS NULL` resumability query were still in play, this row would match it
-        // forever (active_chat stays NULL, it's genuinely chatless) and this second pass would try to re-parse
-        // the now-corrupt file.
-        await fs.promises.writeFile(path.join(charactersDir, 'Carol.png'), 'not a png');
-        const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
-        await metadataDb.backfillActiveChatFromCards(directories);
-        expect(errorSpy).not.toHaveBeenCalled();
-        errorSpy.mockRestore();
-
-        const afterSecondPass = await metadataDb.getCharacterMetadataRow(directories, 'Carol.png');
-        expect(afterSecondPass.active_chat).toBeNull();
-        expect(afterSecondPass.active_chat_checked).toBe(1);
-    });
-
-    test('a full backfill pass over a mixed corpus (some cards with a chat, some genuinely without) converges: a second pass touches none of them', async () => {
-        await writeCardFile('Alice.png', { name: 'Alice', chat: 'Alice - Chat', data: { name: 'Alice', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
-        await writeCardFile('Bob.png', { name: 'Bob', data: { name: 'Bob', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
-        await writeCardFile('Carol.png', { name: 'Carol', data: { name: 'Carol', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
-
-        const { default: Database } = await import('better-sqlite3');
-        const dbPath = path.join(tempDir, 'character-metadata.sqlite');
-        const rawDb = new Database(dbPath);
-        rawDb.exec(`
-            CREATE TABLE characters (
-                id             TEXT PRIMARY KEY,
-                name           TEXT NOT NULL,
-                name_fold      TEXT NOT NULL,
-                fav            INTEGER NOT NULL,
-                date_added     INTEGER NOT NULL,
-                create_date    TEXT,
-                date_last_chat INTEGER NOT NULL,
-                chat_size      INTEGER NOT NULL,
-                data_size      INTEGER NOT NULL,
-                file_mtime     INTEGER NOT NULL,
-                world          TEXT,
-                creator        TEXT,
-                version        TEXT,
-                creator_notes  TEXT,
-                shallow_json   TEXT NOT NULL,
-                change_seq            INTEGER NOT NULL
-            );
-        `);
-        const insert = rawDb.prepare(`
-            INSERT INTO characters (id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size, file_mtime, world, creator, version, creator_notes, shallow_json, change_seq)
-            VALUES (@id, @name, @nameFold, 0, 1000, NULL, 0, 0, 0, 1000, NULL, NULL, NULL, NULL, '{}', 1)
-        `);
-        insert.run({ id: 'Alice.png', name: 'Alice', nameFold: 'alice' });
-        insert.run({ id: 'Bob.png', name: 'Bob', nameFold: 'bob' });
-        insert.run({ id: 'Carol.png', name: 'Carol', nameFold: 'carol' });
-        rawDb.close();
-
-        await metadataDb.backfillActiveChatFromCards(directories);
-
-        const rowsAfterFirstPass = await Promise.all(['Alice.png', 'Bob.png', 'Carol.png'].map(id => metadataDb.getCharacterMetadataRow(directories, id)));
-        expect(rowsAfterFirstPass.every(r => r.active_chat_checked === 1)).toBe(true);
-        expect(rowsAfterFirstPass.find(r => r.id === 'Alice.png').active_chat).toBe('Alice - Chat');
-        expect(rowsAfterFirstPass.find(r => r.id === 'Bob.png').active_chat).toBeNull();
-        expect(rowsAfterFirstPass.find(r => r.id === 'Carol.png').active_chat).toBeNull();
-
-        // Corrupt every file - a second, converged pass must not touch (read) any of them, including the
-        // genuinely-chatless ones (the exact class of row that used to re-match the resumability query forever).
-        for (const id of ['Alice.png', 'Bob.png', 'Carol.png']) {
-            await fs.promises.writeFile(path.join(charactersDir, id), 'not a png');
-        }
-        const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
-        await metadataDb.backfillActiveChatFromCards(directories);
-        expect(errorSpy).not.toHaveBeenCalled();
-        errorSpy.mockRestore();
-    });
-
-    test('migrateActiveChatColumn(): an install that already had active_chat (added before active_chat_checked existed) gets its preexisting rows retroactively marked checked=1, without re-sweeping them', async () => {
-        // Simulates the real-world upgrade shape this fix targets: a table that already went through however
-        // many boots of the OLD (buggy) backfillActiveChatFromCards() - active_chat already populated correctly
-        // for rows that have one, already NULL (correctly, if unrecorded) for rows that don't - but predates
-        // active_chat_checked itself.
-        const { default: Database } = await import('better-sqlite3');
-        const dbPath = path.join(tempDir, 'character-metadata.sqlite');
-        const rawDb = new Database(dbPath);
-        rawDb.exec(`
-            CREATE TABLE characters (
-                id             TEXT PRIMARY KEY,
-                name           TEXT NOT NULL,
-                name_fold      TEXT NOT NULL,
-                fav            INTEGER NOT NULL,
-                date_added     INTEGER NOT NULL,
-                create_date    TEXT,
-                date_last_chat INTEGER NOT NULL,
-                chat_size      INTEGER NOT NULL,
-                data_size      INTEGER NOT NULL,
-                file_mtime     INTEGER NOT NULL,
-                world          TEXT,
-                creator        TEXT,
-                version        TEXT,
-                creator_notes  TEXT,
-                shallow_json   TEXT NOT NULL,
-                change_seq            INTEGER NOT NULL,
-                active_chat    TEXT
-            );
-        `);
-        const insert = rawDb.prepare(`
-            INSERT INTO characters (id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size, file_mtime, world, creator, version, creator_notes, shallow_json, change_seq, active_chat)
-            VALUES (@id, @name, @nameFold, 0, 1000, NULL, 0, 0, 0, 1000, NULL, NULL, NULL, NULL, '{}', 1, @activeChat)
-        `);
-        insert.run({ id: 'HasChat.png', name: 'HasChat', nameFold: 'haschat', activeChat: 'Some Real Chat' });
-        insert.run({ id: 'ConfirmedNoChat.png', name: 'ConfirmedNoChat', nameFold: 'confirmednochat', activeChat: null });
-        rawDb.close();
-        // Neither avatar has a real card file on disk - if the migration mistakenly left ConfirmedNoChat.png
-        // unchecked (rather than retroactively marking it), the subsequent backfill pass below would try to
-        // read a nonexistent file and log an error.
-
-        // Opening the db (any metadataDb call routes through getEntry()) runs migrateActiveChatColumn().
-        const hasChatRow = await metadataDb.getCharacterMetadataRow(directories, 'HasChat.png');
-        const confirmedNoChatRow = await metadataDb.getCharacterMetadataRow(directories, 'ConfirmedNoChat.png');
-        expect(hasChatRow.active_chat_checked).toBe(1);
-        expect(hasChatRow.active_chat).toBe('Some Real Chat');
-        expect(confirmedNoChatRow.active_chat_checked).toBe(1);
-        expect(confirmedNoChatRow.active_chat).toBeNull();
-
-        const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
-        await metadataDb.backfillActiveChatFromCards(directories);
-        expect(errorSpy).not.toHaveBeenCalled();
-        errorSpy.mockRestore();
-    });
-
-    test('migrateActiveChatColumn(): a table where active_chat is ALSO being added for the first time does NOT retroactively mark its rows checked (genuinely never examined, must still be swept)', async () => {
-        await writeCardFile('Dave.png', { name: 'Dave', chat: 'Dave - Real Chat On Disk', data: { name: 'Dave', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
-
-        const { default: Database } = await import('better-sqlite3');
-        const dbPath = path.join(tempDir, 'character-metadata.sqlite');
-        const rawDb = new Database(dbPath);
-        rawDb.exec(`
-            CREATE TABLE characters (
-                id             TEXT PRIMARY KEY,
-                name           TEXT NOT NULL,
-                name_fold      TEXT NOT NULL,
-                fav            INTEGER NOT NULL,
-                date_added     INTEGER NOT NULL,
-                create_date    TEXT,
-                date_last_chat INTEGER NOT NULL,
-                chat_size      INTEGER NOT NULL,
-                data_size      INTEGER NOT NULL,
-                file_mtime     INTEGER NOT NULL,
-                world          TEXT,
-                creator        TEXT,
-                version        TEXT,
-                creator_notes  TEXT,
-                shallow_json   TEXT NOT NULL,
-                change_seq            INTEGER NOT NULL
-            );
-        `);
-        rawDb.prepare(`
-            INSERT INTO characters (id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size, file_mtime, world, creator, version, creator_notes, shallow_json, change_seq)
-            VALUES ('Dave.png', 'Dave', 'dave', 0, 1000, NULL, 0, 0, 0, 1000, NULL, NULL, NULL, NULL, '{}', 1)
-        `).run();
-        rawDb.close();
-
-        // Opening the db adds BOTH active_chat and active_chat_checked in this same call - Dave's row must NOT
-        // be retroactively marked checked (it genuinely predates the whole chat-pointer migration, not just
-        // this one column), so the backfill below must still pick it up and recover its real chat from disk.
-        const beforeBackfill = await metadataDb.getCharacterMetadataRow(directories, 'Dave.png');
-        expect(beforeBackfill.active_chat_checked).toBe(0);
-
-        await metadataDb.backfillActiveChatFromCards(directories);
-        const afterBackfill = await metadataDb.getCharacterMetadataRow(directories, 'Dave.png');
-        expect(afterBackfill.active_chat).toBe('Dave - Real Chat On Disk');
-        expect(afterBackfill.active_chat_checked).toBe(1);
-    });
-
-    test('buildRow()/writeRowSync(): an ordinary write always leaves the row checked=1 (real writes always resolve active_chat one way or the other)', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
-        const noChatRow = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
-        expect(noChatRow.active_chat).toBeNull();
-        expect(noChatRow.active_chat_checked).toBe(1);
-
-        await metadataDb.upsertCharacterFromWrite(directories, 'Alice.png', cardJson({ name: 'Alice', chat: 'Alice - Chat', data: { name: 'Alice', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } }));
-        const hasChatRow = await metadataDb.getCharacterMetadataRow(directories, 'Alice.png');
-        expect(hasChatRow.active_chat).toBe('Alice - Chat');
-        expect(hasChatRow.active_chat_checked).toBe(1);
-    });
-
-    test('setCharacterActiveChat() also marks the row checked=1 (a live chat-switch write is just as authoritative a resolution as a backfill pass)', async () => {
-        // Seed a row that's tracked but not yet checked (predates active_chat entirely), the same raw-insert
-        // shape the migration tests above use, to exercise the case where a live write races ahead of the
-        // backfill for this exact row.
-        const { default: Database } = await import('better-sqlite3');
-        const dbPath = path.join(tempDir, 'character-metadata.sqlite');
-        const rawDb = new Database(dbPath);
-        rawDb.exec(`
-            CREATE TABLE characters (
-                id             TEXT PRIMARY KEY,
-                name           TEXT NOT NULL,
-                name_fold      TEXT NOT NULL,
-                fav            INTEGER NOT NULL,
-                date_added     INTEGER NOT NULL,
-                create_date    TEXT,
-                date_last_chat INTEGER NOT NULL,
-                chat_size      INTEGER NOT NULL,
-                data_size      INTEGER NOT NULL,
-                file_mtime     INTEGER NOT NULL,
-                world          TEXT,
-                creator        TEXT,
-                version        TEXT,
-                creator_notes  TEXT,
-                shallow_json   TEXT NOT NULL,
-                change_seq            INTEGER NOT NULL
-            );
-        `);
-        rawDb.prepare(`
-            INSERT INTO characters (id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size, file_mtime, world, creator, version, creator_notes, shallow_json, change_seq)
-            VALUES ('Eve.png', 'Eve', 'eve', 0, 1000, NULL, 0, 0, 0, 1000, NULL, NULL, NULL, NULL, '{"chat":null}', 1)
-        `).run();
-        rawDb.close();
-
-        const before = await metadataDb.getCharacterMetadataRow(directories, 'Eve.png');
-        expect(before.active_chat_checked).toBe(0);
-
-        const updated = await metadataDb.setCharacterActiveChat(directories, 'Eve.png', 'Eve - Switched Chat');
-        expect(updated).toBe(true);
-
-        const after = await metadataDb.getCharacterMetadataRow(directories, 'Eve.png');
-        expect(after.active_chat).toBe('Eve - Switched Chat');
-        expect(after.active_chat_checked).toBe(1);
-    });
-
-    test('backfillActiveChatFromCards() over more than one 1000-row page processes every matching row exactly once', async () => {
-        const avatars = [];
-        for (let i = 0; i < 1001; i++) {
-            avatars.push(`Unchecked${String(i).padStart(4, '0')}.png`);
-            await metadataDb.upsertCharacterFromWrite(directories, avatars[i], cardJson());
-        }
-        metadataDb.disposeMetadataStores();
-        const { default: Database } = await import('better-sqlite3');
-        const rawDb = new Database(path.join(tempDir, 'character-metadata.sqlite'));
-        rawDb.prepare('UPDATE characters SET active_chat_checked = 0').run();
-        rawDb.close();
-
-        // No PNG is on disk, so each row processed logs one failure naming it.
-        const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
-        try {
-            await metadataDb.backfillActiveChatFromCards(directories);
-            const processed = errorSpy.mock.calls
-                .map(([message]) => String(message).match(/Active-chat backfill failed to process (\S+),/)?.[1])
-                .filter(id => id !== undefined);
-            expect(processed.sort()).toEqual(avatars);
-        } finally {
-            errorSpy.mockRestore();
-        }
-    }, 60000);
 });
 
 describe('getChangesSince / getTagNameChangesSince with { limit }', () => {
@@ -2739,49 +1926,11 @@ describe('streamCharacterCardJsonBatches / streamCharacterIdsForTagIds', () => {
     });
 });
 
-describe('card tables (storage step 5b)', () => {
-    test('a blob-layout store gets the card tables and columns, empty, and its card reads are unchanged', async () => {
-        const stored = storedCardJson({ name: 'Eve', data: { name: 'Eve', tags: ['x'], creator: 'c', character_version: '2', creator_notes: '', extensions: { world: 'W' } } });
-        await metadataDb.upsertCharacterFromWrite(directories, 'Eve.png', stored);
-        expect(await metadataDb.getCharacterCardJson(directories, 'Eve.png')).toBe(stored);
-
-        const { default: Database } = await import('better-sqlite3');
-        const rawDb = new Database(path.join(tempDir, 'character-metadata.sqlite'), { readonly: true });
-        try {
-            for (const table of ['card_fields', 'card_greetings', 'card_tags', 'card_extensions', 'card_extra']) {
-                expect(rawDb.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()).toEqual({ n: 0 });
-            }
-            expect(rawDb.prepare('SELECT create_date_raw, character_version FROM characters WHERE id = ?').get('Eve.png')).toEqual({ create_date_raw: null, character_version: null });
-        } finally {
-            rawDb.close();
-        }
-    });
-
-    test('a store in the fields layout is not opened for writing, and is left as it was', async () => {
-        const { default: Database } = await import('better-sqlite3');
-        const dbPath = path.join(tempDir, 'character-metadata.sqlite');
-        const rawDb = new Database(dbPath);
-        rawDb.exec('CREATE TABLE characters (id TEXT PRIMARY KEY, name TEXT); CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT); INSERT INTO meta VALUES (\'card_layout\', \'fields\')');
-        rawDb.close();
-
-        await expect(metadataDb.getCharacterCardJson(directories, 'any.png')).rejects.toThrow(/holds cards as fields/);
-
-        const check = new Database(dbPath, { readonly: true });
-        try {
-            expect(check.prepare('PRAGMA table_info(characters)').all().map(c => c.name)).toEqual(['id', 'name']);
-            expect(check.prepare('SELECT name FROM sqlite_master WHERE type = \'table\' ORDER BY name').all().map(r => r.name)).toEqual(['characters', 'meta']);
-        } finally {
-            check.close();
-        }
-    });
-
+describe('card tables', () => {
     test('a world of \'\' is no world: nothing links it', async () => {
         await metadataDb.upsertCharacterFromWrite(directories, 'NoWorld.png', storedCardJson({ name: 'NoWorld' }));
-        const { default: Database } = await import('better-sqlite3');
-        const rawDb = new Database(path.join(tempDir, 'character-metadata.sqlite'));
         // The fields layout stores a card's '' world as itself.
-        rawDb.prepare('UPDATE characters SET world = \'\' WHERE id = ?').run('NoWorld.png');
-        rawDb.close();
+        expect((await metadataDb.getCharacterMetadataRow(directories, 'NoWorld.png')).world).toBe('');
 
         expect(await metadataDb.isWorldLinkedByAnyCharacter(directories, '')).toBe(false);
         const pages = [];

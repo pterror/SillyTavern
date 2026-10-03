@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import Database from 'better-sqlite3';
+import { defineCharacterStoreFunctions } from '../src/character-store-schema.js';
 
 /** @type {typeof import('../src/character-metadata-db.js')} */
 let metadataDb;
@@ -59,13 +60,20 @@ async function writeCardFile(avatar, description) {
 }
 
 function rawDb() {
-    return new Database(path.join(tempDir, 'character-metadata.sqlite'));
+    const db = new Database(path.join(tempDir, 'character-metadata.sqlite'));
+    defineCharacterStoreFunctions({ defineFunction: (name, fn) => db.function(name, { deterministic: true }, fn) });
+    return db;
 }
 
 /** @param {Database.Database} db */
 function snapshot(db) {
     return {
         characters: db.prepare('SELECT * FROM characters ORDER BY id').all(),
+        cards: db.prepare('SELECT * FROM cards ORDER BY character_id').all(),
+        cardGreetings: db.prepare('SELECT * FROM card_greetings ORDER BY character_id, list, position').all(),
+        cardTags: db.prepare('SELECT * FROM card_tags ORDER BY character_id, position').all(),
+        cardExtensions: db.prepare('SELECT * FROM card_extensions ORDER BY character_id, key').all(),
+        cardExtra: db.prepare('SELECT * FROM card_extra ORDER BY character_id, path').all(),
         characterTags: db.prepare('SELECT character_id, tag_id FROM character_tags ORDER BY character_id, tag_id').all(),
         groups: db.prepare('SELECT * FROM groups ORDER BY id').all(),
         groupTags: db.prepare('SELECT group_id, tag_id FROM group_tags ORDER BY group_id, tag_id').all(),
@@ -112,7 +120,7 @@ describe('bootstrap rerun on an existing library', () => {
 
             const after = snapshot(db);
             expect(after).toEqual(before);
-            expect(JSON.parse(after.characters.find(r => r.id === 'Alice.png').card_json).data.description).toBe('edited after import');
+            expect(JSON.parse(/** @type {string} */ (await metadataDb.getCharacterCardJson(directories, 'Alice.png'))).data.description).toBe('edited after import');
             expect(db.prepare('SELECT COUNT(*) AS n FROM changes').get()).toEqual(changesBefore);
             // Only the two done markers are written.
             expect(walFrames(db) - walBefore).toBeLessThan(4 * 4096 * 4);

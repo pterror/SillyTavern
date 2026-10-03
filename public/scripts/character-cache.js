@@ -1,13 +1,13 @@
 import { localforage } from '../lib.js';
 import { getCurrentUserHandle } from './user.js';
-import { characterDigestFavHash, characterDigestFieldsHash, characterDigestTagIdsHash, characterDigestSource, groupDigestFavHash, groupDigestTagIdsHash, groupDigestContentHash, normalizeTagIds } from './hash-utils.js';
+import { groupDigestFavHash, groupDigestTagIdsHash, groupDigestContentHash, normalizeTagIds } from './hash-utils.js';
 
 // Client-side residency cache for character data, keyed off the server's per-item change feed
 // (`getChangesSince()`) rather than a per-character mtime. One IndexedDB database per user handle.
 
-// Bumped when the hash function's output or the form records are stored in changes (GROUP_HASH_VERSION likewise);
-// records with a different/missing version read as cache misses.
-const HASH_VERSION = 4;
+// Bumped when the form records are stored in changes (GROUP_HASH_VERSION likewise); records with a different/missing
+// version read as cache misses.
+const HASH_VERSION = 5;
 
 // Top-level fields Spec V2 cards mirror under `data.*` for V1 back-compat; saveCachedCharacters()
 // strips a byte-identical top-level copy and records it in `dedup`, restored by readers on the way out.
@@ -196,7 +196,7 @@ export async function readCachedCharactersByIds(ids) {
     return result;
 }
 
-// A hash match means the cached `character` can be used as-is with zero refetch.
+// A record whose `hashes.version` is the server's version for the character can be used as-is with zero refetch.
 export async function getCachedEntriesByIds(ids) {
     const store = getCharacterCacheStore();
     const result = new Map();
@@ -216,31 +216,21 @@ export async function getCachedEntriesByIds(ids) {
 
 /**
  * Callers must pass already fully processed character objects - reads return cache hits as-is, unprocessed.
- * @param {{avatar: string, character: object}[]} entries
- * @param {object} [options]
- * @param {boolean} [options.includeCreatorNotes] Required for any record that is not a shallow_json projection
- * (a whole /batch record): the server's `performance.shallowCharactersIncludeCreatorNotes`, so the record is
- * hashed as its shallow_json is. Omitted, each record is hashed as it is.
+ * @param {{avatar: string, character: object, version?: number}[]} entries `version`: the server's version of the
+ *   character the record was read at, when the caller knows it; a record without one never counts as current.
  * @returns {Promise<string[]>} avatars whose write failed
  */
-export async function saveCachedCharacters(entries, { includeCreatorNotes } = {}) {
+export async function saveCachedCharacters(entries) {
     const store = getCharacterCacheStore();
     const failed = [];
     // Batched so a large backfill doesn't fire hundreds of thousands of concurrent setItem calls.
     const SAVE_BATCH = 500;
     for (let i = 0; i < entries.length; i += SAVE_BATCH) {
         const batch = entries.slice(i, i + SAVE_BATCH);
-        await Promise.all(batch.map(({ avatar, character: given }) => {
+        await Promise.all(batch.map(({ avatar, character: given, version }) => {
             const character = { ...given, tag_ids: normalizeTagIds(given.tag_ids) };
-            const hashed = includeCreatorNotes === undefined ? character : characterDigestSource(character, includeCreatorNotes);
-            const hashes = {
-                fav: characterDigestFavHash(hashed) % 4294967296,
-                tagIds: characterDigestTagIdsHash(hashed),
-                content: characterDigestFieldsHash(hashed) % 4294967296,
-                v: HASH_VERSION,
-            };
-            // Hashed from the original `character` before stripping, so hashes reflect full content
-            // regardless of what's stored; never mutates the caller's (possibly still-live) object.
+            const hashes = { version: typeof version === 'number' ? version : null, v: HASH_VERSION };
+            // Never mutates the caller's (possibly still-live) object.
             const { toStore, dedup } = computeDedupSplit(character);
             return store.setItem(avatar, { character: toStore, hashes, dedup, dedupV: DEDUP_VERSION }).catch(error => {
                 console.error(`Failed to cache character data for ${avatar}:`, error);

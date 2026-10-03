@@ -32,6 +32,7 @@ import { enumTypes, SlashCommandEnumValue } from './slash-commands/SlashCommandE
 import { contentHashOf } from './hash-utils.js';
 import { refreshUnderlayClips, registerUnderlayClip, scrollContainerOf, underlayClip } from './util/underlay-clip.js';
 import { dropOldTagsCache } from './tags-cache.js';
+import { mergedTagTarget, shownTagIds, tagReadDrops, takeInMergedTags } from './tag-merges.js';
 import { beginLocalTagChange, isFetchedTagIdsCurrent, tagFetchStamp } from './tag-fetch-stamps.js';
 import { characterRepository, parseQueryTotal } from './character-repository.js';
 
@@ -1889,7 +1890,9 @@ async function postTagsRead(path, body) {
         console.error(`${path} failed: ${response.statusText}`);
         return null;
     }
-    return response.json();
+    const answer = await response.json();
+    takeInMergedTags(answer?.merged);
+    return answer;
 }
 
 /** Tag fields whose value is drawn on screen, each with what redraws it. */
@@ -1949,7 +1952,8 @@ async function resyncRefusedTag(id) {
     if (serverTag) {
         await replaceTagFromServer(id, serverTag);
     } else {
-        await dropTagLocally(id);
+        const target = answer.merged?.[id];
+        await dropTagLocally(id, typeof target === 'string' ? { replaceWithId: target } : {});
     }
 }
 
@@ -3574,7 +3578,7 @@ export async function readTagsForIds(ids) {
     const gone = new Set();
     const missing = [];
     for (const id of new Set(ids)) {
-        const held = tagsStore.get(id);
+        const held = tagsStore.get(mergedTagTarget(id));
         if (held) found.set(id, held);
         else missing.push(id);
     }
@@ -3588,7 +3592,7 @@ export async function readTagsForIds(ids) {
         for (const id of answer.gone) gone.add(String(id));
     }
     for (const id of missing) {
-        const tag = tagsStore.get(id);
+        const tag = tagsStore.get(mergedTagTarget(id));
         if (tag) found.set(id, tag);
     }
     return { tags: found, gone };
@@ -3620,8 +3624,8 @@ let missingTagReads = Promise.resolve();
 export function heldTagsForIds(tagIds) {
     /** @type {Tag[]} */
     const found = [];
-    for (const id of tagIds) {
-        const tag = tagsStore.get(id);
+    for (const { id, shownId } of shownTagIds(tagIds)) {
+        const tag = tagsStore.get(shownId);
         if (tag) found.push(tag);
         else noteMissingTagDefinition(id);
     }
@@ -3653,7 +3657,7 @@ async function readMissingTagDefinitions() {
         if (!answer || !Array.isArray(answer.tags)) break;
         const answered = new Set(answer.tags.filter(isTagObject).map(tag => tag.id));
         for (const id of chunk) {
-            if (!answered.has(id)) tagIdsWithoutDefinition.add(id);
+            if (!answered.has(mergedTagTarget(id))) tagIdsWithoutDefinition.add(id);
         }
         if (answered.size) {
             mergeServerTagDefinitions(answer.tags);
@@ -4457,10 +4461,16 @@ async function readSavedFilterTags(ids) {
             break;
         }
         mergeServerTagDefinitions(answer.tags);
-        const goneHere = new Set(answer.gone.map(String));
+        const drops = new Map(tagReadDrops(answer).map(drop => [drop.id, drop.replaceWithId]));
         for (const id of slice) {
-            if (goneHere.has(id)) gone.push(id);
-            else if (!tagsStore.has(id)) reads.unreadable.add(id);
+            if (!drops.has(id)) {
+                if (!tagsStore.has(id)) reads.unreadable.add(id);
+            } else if (drops.get(id) === undefined) {
+                gone.push(id);
+            } else {
+                // A filter on a merged tag becomes a filter on its target, as the tag change feed moves it.
+                moveTagFilters(id, /** @type {string} */ (drops.get(id)));
+            }
         }
     }
     reads.failedAt = failed ? Date.now() : 0;
@@ -5049,7 +5059,7 @@ function takeInServerTagDefinitions(serverTags) {
 async function rereadTagDefinitions() {
     const ids = tags.filter(tag => isTagObject(tag) && storedTagFields.has(tag.id)).map(tag => tag.id);
     let sortOrderChanged = false;
-    /** @type {{ id: string }[]} */
+    /** @type {{ id: string, replaceWithId?: string }[]} */
     const gone = [];
     let readAll = true;
     for (let i = 0; i < ids.length; i += TAG_READ_MAX_IDS) {
@@ -5063,7 +5073,7 @@ async function rereadTagDefinitions() {
             break;
         }
         if (takeInServerTagDefinitions(answer.tags).sortOrderChanged) sortOrderChanged = true;
-        for (const id of answer.gone) gone.push({ id: String(id) });
+        gone.push(...tagReadDrops(answer));
     }
     await dropTagsLocally(gone);
     if (sortOrderChanged) redrawAfterTagSortOrderChange();

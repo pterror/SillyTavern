@@ -95,8 +95,8 @@ async function recompute(ownerId) {
 /** @param {string} avatar */
 async function storedCharacter(avatar) {
     const row = await metadataDb.getCharacterMetadataRow(directories, avatar);
-    const shallow = JSON.parse(row.shallow_json);
-    expect({ chatSize: shallow.chat_size, dateLastChat: shallow.date_last_chat }).toEqual({ chatSize: row.chat_size, dateLastChat: row.date_last_chat });
+    const listRow = /** @type {any} */ ((await metadataDb.getShallowByIds(directories, [avatar]))[avatar]);
+    expect({ chatSize: listRow.chat_size, dateLastChat: listRow.date_last_chat }).toEqual({ chatSize: row.chat_size, dateLastChat: row.date_last_chat });
     return { chatSize: row.chat_size, dateLastChat: row.date_last_chat };
 }
 
@@ -264,6 +264,8 @@ describe('a one-time pass counts every row\'s chat stats', () => {
     async function writeMetadata(sql, ...params) {
         const { default: Database } = await import('better-sqlite3');
         const raw = new Database(path.join(directories.root, 'character-metadata.sqlite'));
+        const { defineCharacterStoreFunctions } = await import('../src/character-store-schema.js');
+        defineCharacterStoreFunctions({ defineFunction: (name, fn) => raw.function(name, { deterministic: true }, fn) });
         try {
             raw.prepare(sql).run(...params);
         } finally {

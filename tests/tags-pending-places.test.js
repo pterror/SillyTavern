@@ -3,6 +3,22 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { deleteTagRowRaw, insertTagRowRaw } from './util/stored-counters.js';
+import { defineCharacterStoreFunctions } from '../src/character-store-schema.js';
+
+/**
+ * better-sqlite3 with the store's SQL functions registered on every connection, as the store's own connections have
+ * them (character-store-schema.js).
+ * @param {typeof import('better-sqlite3')} Base
+ * @returns {typeof import('better-sqlite3')}
+ */
+function withStoreFunctions(Base) {
+    return /** @type {any} */ (class extends /** @type {any} */ (Base) {
+        constructor(/** @type {any[]} */ ...args) {
+            super(...args);
+            defineCharacterStoreFunctions({ defineFunction: (name, fn) => this.function(name, { deterministic: true }, fn) });
+        }
+    });
+}
 
 /** @type {typeof import('../src/character-metadata-db.js')} */
 let metadataDb;
@@ -18,7 +34,7 @@ beforeAll(async () => {
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
     metadataDb = await import('../src/character-metadata-db.js');
-    Database = (await import('better-sqlite3')).default;
+    Database = withStoreFunctions((await import('better-sqlite3')).default);
 
     const { router } = await import('../src/endpoints/tags.js');
     const express = (await import('express')).default;

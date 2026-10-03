@@ -317,8 +317,9 @@ function openTagPicker(anchor, searchTags, onPick) {
  * @param {typeof t} options.translate i18n's `t`.
  * @param {(term: string) => Promise<{ id: string, name: string }[] | null>} options.searchTags Tags whose names hold
  *   `term`, from the server; null if the read failed.
- * @param {(ids: string[]) => Promise<{ names: Map<string, string>, gone: Set<string> } | null>} options.tagNames The
- *   names of `ids`; `gone` holds ids no tag has. null if the read failed.
+ * @param {(ids: string[]) => Promise<{ names: Map<string, string>, gone: Set<string>, shownAs: Map<string, string> } | null>} options.tagNames
+ *   The names of `ids`; `gone` holds ids no tag has; `shownAs` maps an id merged into another tag to that tag's id.
+ *   null if the read failed.
  * @returns {() => void} Redraws the pills and the box from the current view.
  */
 export function initViewPills({ container, input, getView, setView, translate, searchTags, tagNames }) {
@@ -338,6 +339,8 @@ export function initViewPills({ container, input, getView, setView, translate, s
     let editing = -1;
     /** Tag names already read, by id; null for a tag that no longer exists. @type {Map<string, string|null>} */
     const names = new Map();
+    /** A merged tag's id, to the tag it shows as. @type {Map<string, string>} */
+    const shownAs = new Map();
     /** Ids being read. @type {Set<string>} */
     const reading = new Set();
 
@@ -360,6 +363,8 @@ export function initViewPills({ container, input, getView, setView, translate, s
             for (const id of missing) {
                 if (answer.names.has(id)) names.set(id, answer.names.get(id));
                 else if (answer.gone.has(id)) names.set(id, null);
+                const target = answer.shownAs.get(id);
+                if (target !== undefined && target !== id) shownAs.set(id, target);
             }
             render();
         });
@@ -465,11 +470,20 @@ export function initViewPills({ container, input, getView, setView, translate, s
 
     function render() {
         container.empty();
-        tags.include.forEach((id, index) => {
+        // A merged tag shows as its target, once: a second id showing as the same tag gets no pill of its own.
+        /** @type {Set<string>} */
+        const shown = new Set();
+        const firstShowing = (/** @type {string} */ id) => {
+            const as = shownAs.get(id) ?? id;
+            if (shown.has(as)) return false;
+            shown.add(as);
+            return true;
+        };
+        tags.include.filter(firstShowing).forEach((id, index) => {
             if (index > 0) container.append(renderJoiner());
             container.append(renderTagPill(id, true));
         });
-        tags.exclude.forEach(id => container.append(renderTagPill(id, false)));
+        tags.exclude.filter(firstShowing).forEach(id => container.append(renderTagPill(id, false)));
         if (typeof fav === 'boolean') container.append(renderFavPill());
         Object.keys(ranges).forEach(field => container.append(renderRangePill(field)));
         readMissingNames();

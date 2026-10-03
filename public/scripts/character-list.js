@@ -3,7 +3,7 @@ import { favsToHotswap } from './RossAscends-mods.js';
 import { characters, charactersStore, this_avatar, resolveCharacterRef } from './character-store.js';
 import { getGroups, getGroupBlock } from './group-chats.js';
 import { power_user, sortEntitiesList } from './power-user.js';
-import { normalizeFav, SHALLOW_CREATOR_NOTES_HEADER } from './hash-utils.js';
+import { normalizeFav } from './hash-utils.js';
 import { debounce, delay, PAGINATION_TEMPLATE, localizePagination, renderPaginationDropdown, paginationDropdownChangeHandler } from './utils.js';
 import { debounce_timeout } from './constants.js';
 import { filterByTagState, printTagFilters, printTagList, tag_filter_type, compareTagsForSort, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, heldTagsForIds, searchTagsByName, readTagsForIds, registerFolderCaseHandlers } from './tags.js';
@@ -1232,8 +1232,6 @@ async function fetchCharactersDelta(progress) {
 
         /** @type {Map<string, object>} fresh/updated records to save back to the cache */
         const fresh = new Map();
-        // From each /batch response; the saves below hash these records the way the server hashes shallow_json.
-        let includeCreatorNotes = false;
 
         for (let i = 0; i < wholeRecordIds.length; i += CHARACTER_BATCH_CHUNK_SIZE) {
             const chunk = wholeRecordIds.slice(i, i + CHARACTER_BATCH_CHUNK_SIZE);
@@ -1246,8 +1244,6 @@ async function fetchCharactersDelta(progress) {
             if (!batchResponse.ok) {
                 throw new Error(`Failed to fetch character batch: ${batchResponse.statusText}`);
             }
-            includeCreatorNotes = batchResponse.headers.get(SHALLOW_CREATOR_NOTES_HEADER) === 'true';
-
             const batchData = await batchResponse.json();
             for (const character of batchData) {
                 finalizeFetchedCharacter(character);
@@ -1272,8 +1268,6 @@ async function fetchCharactersDelta(progress) {
                     if (!batchResponse.ok) {
                         throw new Error(`Failed to fetch character batch (fields): ${batchResponse.statusText}`);
                     }
-                    includeCreatorNotes = batchResponse.headers.get(SHALLOW_CREATOR_NOTES_HEADER) === 'true';
-
                     const batchData = await batchResponse.json();
                     const batchMerged = [];
                     for (const partial of batchData) {
@@ -1299,7 +1293,7 @@ async function fetchCharactersDelta(progress) {
                     }
                     // Saved incrementally per batch to avoid one huge IndexedDB write at the end.
                     if (batchMerged.length > 0) {
-                        await saveCachedCharacters(batchMerged, { includeCreatorNotes });
+                        await saveCachedCharacters(batchMerged);
                     }
                 }
             }
@@ -1307,7 +1301,7 @@ async function fetchCharactersDelta(progress) {
 
         let writeFailures = [];
         if (fresh.size > 0) {
-            writeFailures = await saveCachedCharacters(Array.from(fresh, ([avatar, character]) => ({ avatar, character })), { includeCreatorNotes });
+            writeFailures = await saveCachedCharacters(Array.from(fresh, ([avatar, character]) => ({ avatar, character })));
         }
         // Failures before the cursor: if interrupted between the two writes, the page replays and refetches them,
         // instead of the cursor moving past ids whose write failed.
@@ -1636,7 +1630,11 @@ export function initCharacterSearch() {
         tagNames: async (ids) => {
             const answer = await readTagsForIds(ids);
             if (!answer) return null;
-            return { names: new Map([...answer.tags].map(([id, tag]) => [id, String(tag.name)])), gone: answer.gone };
+            return {
+                names: new Map([...answer.tags].map(([id, tag]) => [id, String(tag.name)])),
+                gone: answer.gone,
+                shownAs: new Map([...answer.tags].map(([id, tag]) => [id, String(tag.id)])),
+            };
         },
     });
     showViewInSearchBox();
