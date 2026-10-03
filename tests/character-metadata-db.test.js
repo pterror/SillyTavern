@@ -1804,14 +1804,8 @@ describe('streamCharacterCardJsonBatches / streamCharacterIdsForTagIds', () => {
 });
 
 describe('card tables', () => {
-    test('a world of \'\' is no world: nothing links it', async () => {
+    test('a card\'s \'\' world is stored as itself', async () => {
         await metadataDb.upsertCharacterFromWrite(directories, 'NoWorld.png', storedCardJson({ name: 'NoWorld' }));
-        // The fields layout stores a card's '' world as itself.
         expect((await metadataDb.getCharacterMetadataRow(directories, 'NoWorld.png')).world).toBe('');
-
-        expect(await metadataDb.isWorldLinkedByAnyCharacter(directories, '')).toBe(false);
-        const pages = [];
-        for await (const page of /** @type {AsyncGenerator<string[]>} */ (await metadataDb.streamCharactersLinkedToWorld(directories, ''))) pages.push(page);
-        expect(pages).toEqual([]);
     });
 });

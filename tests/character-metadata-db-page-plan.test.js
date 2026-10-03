@@ -126,28 +126,6 @@ describe('a keyset stream\'s later page seeks on its key instead of re-reading f
         expect(plan).not.toContainEqual(expect.stringMatching(/\bSCAN character_tags\b/));
     }, 60000);
 
-    test('streamLinkedWorlds() SEARCHes characters on (world>?)', async () => {
-        await addCharacters(i => `World${pad(i)}`);
-        recordedIterates.length = 0;
-
-        await collect(await metadataDb.streamLinkedWorlds(directories));
-
-        const plan = planOf(recordedLaterPage());
-        expect(plan).toContainEqual(expect.stringMatching(/\bSEARCH characters\b.*\(world>\?\)/));
-        expect(plan).not.toContainEqual(expect.stringMatching(/\bSCAN characters\b/));
-    }, 60000);
-
-    test('streamCharactersLinkedToWorld() SEARCHes characters on (world=? AND rowid>?)', async () => {
-        await addCharacters(() => 'Crowd');
-        recordedIterates.length = 0;
-
-        await collect(await metadataDb.streamCharactersLinkedToWorld(directories, 'Crowd'));
-
-        const plan = planOf(recordedLaterPage());
-        expect(plan).toContainEqual(expect.stringMatching(/\bSEARCH characters\b.*\(world=\? AND rowid>\?\)/));
-        expect(plan).not.toContainEqual(expect.stringMatching(/\bSCAN characters\b/));
-    }, 60000);
-
     test('streamCharacterCardJsonBatches() SEARCHes characters on (id>?)', async () => {
         await addCharacters(() => '');
         recordedIterates.length = 0;

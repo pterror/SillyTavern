@@ -85,7 +85,6 @@ import { initializeLocalImportScan, disposeLocalImportScan } from './local-impor
 import { disposeMessageTreeStores } from './message-tree-db.js';
 import { installOwnerChatStatsHook } from './owner-chat-stats.js';
 import { migrateFlatSecrets } from './endpoints/secrets.js';
-import { runOnceAtBoot as runUnimportEmbeddedLoreAtBoot } from './migrations/unimport-embedded-lore.js';
 import { maybeStartGroupChatRestore } from './migrations/restore-group-chat-migration-losses.js';
 import { wasBrowserRecentlyConnected } from './browser-presence.js';
 import { startTokenCountMaintenance } from './token-count-store.js';
@@ -386,13 +385,6 @@ async function preSetupTasks() {
     for (const handle of await getAllUserHandles()) {
         startSearchWorkerIfIndexed(handle, getUserDirectories(handle))
             .catch(err => console.error(color.red(`[search] Starting the search index worker for ${handle} failed:`), err));
-    }
-
-    // Fire-and-forget: waits internally for that user's bootstrap backfill, so it can block for a
-    // while on a large library. Marks itself complete per-user, so later boots are a no-op lookup.
-    for (const userDirectories of directories) {
-        runUnimportEmbeddedLoreAtBoot(userDirectories)
-            .catch(err => console.error(color.red(`[unimport-embedded-lore] Boot run failed for ${userDirectories.root}:`), err));
     }
 
     // Inert unless localImport.directories is configured.
