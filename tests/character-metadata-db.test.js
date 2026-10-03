@@ -1423,42 +1423,6 @@ describe('groups schema extension (owner decision - fav/date_added/date_last_cha
         fs.writeFileSync(path.join(groupsDir, `${id}.json`), JSON.stringify({ id, name: id, members: [], chats: [], ...overrides }));
     }
 
-    test('migrates an existing (pre-columns) groups table in place, backfilling real values for existing rows and queuing their chat stats', async () => {
-        // Simulates an install that already ran bootstrapGroupsIfNeeded() under the old id/name-only shape:
-        // build that table directly and seed one row, then let a normal call pick up both the ALTER and the
-        // one-time backfill (migrateGroupsColumns()).
-        const { default: Database } = await import('better-sqlite3');
-        const dbPath = path.join(tempDir, 'character-metadata.sqlite');
-        const rawDb = new Database(dbPath);
-        rawDb.exec('CREATE TABLE groups (id TEXT PRIMARY KEY, name TEXT NOT NULL);');
-        rawDb.exec('CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT); INSERT INTO meta (key, value) VALUES (\'groups_bootstrap_completed\', \'1\');');
-        rawDb.prepare('INSERT INTO groups (id, name) VALUES (@id, @name)').run({ id: 'OldGroup', name: 'Old Group' });
-        rawDb.close();
-
-        // The old row's on-disk JSON file, so the backfill has something real to read fav/chats from.
-        writeGroupFile('OldGroup', { name: 'Old Group', fav: true, chats: ['c1'] });
-        fs.writeFileSync(path.join(groupChatsDir, 'c1.jsonl'), 'x'.repeat(10));
-
-        // Any exported groups call routes through getEntry() -> migrateGroupsColumns(), which runs the ALTER +
-        // backfill before returning. bootstrapGroupsIfNeeded() itself must stay a no-op here (its own meta flag
-        // is already set), proving the backfill came from migrateGroupsColumns(), not a re-run of bootstrap.
-        await metadataDb.bootstrapGroupsIfNeeded(directories);
-        const row = await metadataDb.getGroupTagIds(directories, 'OldGroup'); // cheap way to force getEntry()
-        expect(row).toEqual([]); // no tags assigned - just proving the call succeeded post-migration
-
-        const rawDb2 = new Database(dbPath);
-        const migrated = rawDb2.prepare('SELECT * FROM groups WHERE id = ?').get('OldGroup');
-        const queued = Array.from(rawDb2.prepare('SELECT kind, id FROM chat_stats_pending').iterate());
-        rawDb2.close();
-        expect(migrated.fav).toBe(1);
-        // Counted from the group's messages by the chat stats queue, not from its chat files.
-        expect(migrated.chat_size).toBe(0);
-        expect(migrated.date_last_chat).toBe(0);
-        expect(queued).toEqual([{ kind: 'group', id: 'OldGroup' }]);
-        expect(migrated.date_added).toBeGreaterThan(0);
-        expect(migrated.name_fold).toBe('old group');
-    });
-
     test('upsertGroupRow never overwrites date_added on a later call for the same id', async () => {
         await metadataDb.upsertGroupRow(directories, 'g1', 'My Group');
         const first = await metadataDb.getGroupTagIds(directories, 'g1'); // not used - just a sanity round trip

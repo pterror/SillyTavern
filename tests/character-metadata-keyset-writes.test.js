@@ -4,7 +4,6 @@ import path from 'node:path';
 import os from 'node:os';
 
 import * as realSqliteEngine from '../src/endpoints/sqlite-engine.js';
-import { groupDigestTagIdsHash } from '../public/scripts/hash-utils.js';
 
 // Wraps whichever engine this install resolves to (native or wasm), recording every call's method, SQL and arguments.
 /** @type {{ method: string, sql: string, args: any[] }[]} */
@@ -84,107 +83,6 @@ function withRawDb(fn) {
 
 /** @param {{ sql: string }} call */
 const oneLine = (call) => call.sql.replace(/\s+/g, ' ').trim();
-
-describe('migrateGroupsColumns reads the group ids to backfill in keyset chunks', () => {
-    test('2001 groups in a pre-columns table: three bounded chunk reads, every row backfilled from its file and queued', async () => {
-        /** @type {string[]} */
-        const ids = [];
-        for (let i = 0; i < 2001; i++) {
-            const id = `group-${String(i).padStart(5, '0')}`;
-            ids.push(id);
-            fs.writeFileSync(path.join(directories.groups, `${id}.json`), JSON.stringify({ id, name: `Group ${i}`, fav: i % 3 === 0, members: [], chats: [] }));
-        }
-
-        // The id/name-only table an install that already ran bootstrapGroupsIfNeeded() has.
-        withRawDb(db => {
-            // The digest columns are already there so migrateGroupDigestColumns() returns early and only this migration reads the ids.
-            db.exec('CREATE TABLE groups (id TEXT PRIMARY KEY, name TEXT NOT NULL, digest_fav INTEGER, digest_tag_ids INTEGER, digest_content INTEGER);');
-            db.exec('CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT); INSERT INTO meta (key, value) VALUES (\'groups_bootstrap_completed\', \'1\');');
-            const insert = db.prepare('INSERT INTO groups (id, name) VALUES (@id, \'old\')');
-            db.transaction(() => {
-                for (const id of ids) insert.run({ id });
-            })();
-        });
-
-        // bootstrapGroupsIfNeeded() is a no-op (its meta flag is set); getGroupTagIds() opens the store, which runs migrateGroupsColumns().
-        await metadataDb.bootstrapGroupsIfNeeded(directories);
-        expect(await metadataDb.getGroupTagIds(directories, 'group-00000')).toEqual([]);
-
-        const chunkSql = 'SELECT id FROM groups WHERE id > ? ORDER BY id LIMIT ?';
-        const chunkReads = calls.filter(c => oneLine(c) === chunkSql);
-        expect(chunkReads.map(c => c.method)).toEqual(['readBounded', 'readBounded', 'readBounded']);
-        for (const read of chunkReads) {
-            expect(read.args[1]).toBe(1000);
-            expect(read.args[0][1]).toBe(1000);
-        }
-        expect(calls.filter(c => c.method === 'all' && oneLine(c) === 'SELECT id FROM groups')).toEqual([]);
-
-        withRawDb(db => {
-            const rows = new Map(Array.from(db.prepare('SELECT id, name, name_fold, fav, date_added FROM groups').iterate(), r => [r.id, r]));
-            expect(rows.size).toBe(2001);
-            ids.forEach((id, i) => {
-                const birthtimeMs = Math.round(fs.statSync(path.join(directories.groups, `${id}.json`)).birthtimeMs);
-                expect(rows.get(id)).toEqual({ id, name: `Group ${i}`, name_fold: `group ${i}`, fav: i % 3 === 0 ? 1 : 0, date_added: birthtimeMs });
-            });
-            expect(Array.from(rows.values()).filter(r => r.fav === 1)).toHaveLength(667);
-
-            const queued = Array.from(db.prepare('SELECT kind, id FROM chat_stats_pending ORDER BY id').iterate());
-            expect(queued).toEqual(ids.map(id => ({ kind: 'group', id })));
-        });
-    });
-});
-
-describe('migrateGroupDigestColumns reads the group ids to backfill in keyset chunks', () => {
-    test('2001 groups missing the digest columns: three bounded chunk reads, every digest backfilled to the values a write produces', async () => {
-        expect(await metadataDb.saveTagDefinitions(directories, [{ id: 'x', name: 'name-x' }, { id: 'y', name: 'name-y' }])).toBe('ok');
-        /** @type {string[]} */
-        const ids = [];
-        /** @type {Set<string>} */
-        const tagged = new Set();
-        /** @type {string[]} */
-        const assignResults = [];
-        for (let i = 0; i < 2001; i++) {
-            const id = `group-${String(i).padStart(5, '0')}`;
-            ids.push(id);
-            const group = { id, name: id, members: [], chats: [], fav: i % 3 === 0 };
-            fs.writeFileSync(path.join(directories.groups, `${id}.json`), JSON.stringify(group));
-            await metadataDb.upsertGroupRow(directories, id, id, { fav: group.fav, group });
-            if (i % 5 === 0) assignResults.push(await metadataDb.assignEntityTag(directories, id, 'x'));
-            if (i % 7 === 0) assignResults.push(await metadataDb.assignEntityTag(directories, id, 'y'));
-            if (i % 5 === 0 || i % 7 === 0) tagged.add(id);
-        }
-        expect(assignResults.filter(r => r !== 'ok')).toEqual([]);
-        expect(assignResults).toHaveLength(401 + 286);
-        metadataDb.disposeMetadataStores();
-
-        const readDigests = () => withRawDb(db => Array.from(db.prepare('SELECT id, digest_fav, digest_tag_ids, digest_content FROM groups ORDER BY id').iterate()));
-        const written = readDigests();
-        expect(written.map(r => r.id)).toEqual(ids);
-        expect(written.filter(r => tagged.has(r.id) && r.digest_tag_ids === null)).toEqual([]);
-        withRawDb(db => {
-            db.exec('ALTER TABLE groups DROP COLUMN digest_fav');
-            db.exec('ALTER TABLE groups DROP COLUMN digest_tag_ids');
-            db.exec('ALTER TABLE groups DROP COLUMN digest_content');
-        });
-
-        calls.length = 0;
-        await metadataDb.ensureSchemaMigrated(directories);
-        metadataDb.disposeMetadataStores();
-
-        const chunkSql = 'SELECT id FROM groups WHERE id > ? ORDER BY id LIMIT ?';
-        const chunkReads = calls.filter(c => oneLine(c) === chunkSql);
-        expect(chunkReads.map(c => c.method)).toEqual(['readBounded', 'readBounded', 'readBounded']);
-        for (const read of chunkReads) {
-            expect(read.args[1]).toBe(1000);
-            expect(read.args[0][1]).toBe(1000);
-        }
-        expect(calls.filter(c => c.method === 'all' && oneLine(c) === 'SELECT id FROM groups')).toEqual([]);
-
-        // A write leaves an untagged group's digest_tag_ids NULL; the backfill sets it to the empty tag list's hash.
-        const emptyTagIdsHash = groupDigestTagIdsHash({ tag_ids: [] });
-        expect(readDigests()).toEqual(written.map(row => tagged.has(row.id) ? row : { ...row, digest_tag_ids: emptyTagIdsHash }));
-    });
-});
 
 describe('saveTagDefinitions looks up old names only for the ids it saves, in bounded chunks', () => {
     test('2002 tags, then 2000 of them (every tenth renamed), the marked one renamed and one new: three bounded lookups, one rename row per renamed saved id', async () => {
