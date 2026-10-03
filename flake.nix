@@ -1,8 +1,12 @@
 {
   inputs = {
     nixpkgs.url = github:nixos/nixpkgs/nixpkgs-unstable;
+    rust-overlay = {
+      url = github:oxalica/rust-overlay;
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
-  outputs = { self, nixpkgs }:
+  outputs = { self, nixpkgs, rust-overlay }:
     let
       forAllSystems = with nixpkgs.lib; f: foldAttrs mergeAttrs { }
         (map (s: { ${s} = f s; }) systems.flakeExposed);
@@ -10,7 +14,11 @@
     {
       devShell = forAllSystems
         (system:
-          let pkgs = nixpkgs.legacyPackages.${system}; in
+          let
+            pkgs = import nixpkgs { inherit system; overlays = [ rust-overlay.overlays.default ]; };
+            # The engine crate's toolchain, from the same pin CI builds the releases with.
+            rust = pkgs.rust-bin.fromRustupToolchainFile ./engine/rust-toolchain.toml;
+          in
           pkgs.mkShell rec {
             packages = with pkgs; [
 	      nodejs_22
@@ -19,6 +27,8 @@
 	      # watcher-overflow handling) - this project's other native deps (better-sqlite3, @reflink/reflink)
 	      # ship prebuilt binaries and never needed this, `inotify` has none and requires a from-source build.
 	      python3
+	      # engine/ (st-engine): development builds only; installs fetch the prebuilt file.
+	      rust
             ];
             # Playwright's downloaded browsers can't run on NixOS. tests/package.json pins @playwright/test
             # to this nixpkgs' playwright-driver version so the browser revisions match.

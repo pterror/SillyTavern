@@ -60,3 +60,6 @@ replit.nix
 # -- Logs & Temp ---
 *.log
 **/tmp
+/engine/dist
+/engine/target
+/engine/node_modules

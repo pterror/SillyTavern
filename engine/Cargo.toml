@@ -1,0 +1,21 @@
+[package]
+name = "st-engine"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "AGPL-3.0"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+napi = { version = "3.14.0", default-features = false, features = ["napi4"] }
+napi-derive = "3.6.10"
+
+[build-dependencies]
+napi-build = "2.6.0"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = "symbols"

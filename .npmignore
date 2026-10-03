@@ -14,3 +14,6 @@ access.log
 /public/scripts/extensions/third-party
 /colab
 .gemini
+/engine/dist
+/engine/target
+/engine/node_modules
