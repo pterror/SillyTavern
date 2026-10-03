@@ -37,8 +37,20 @@ function writeDist(distDir, name, data) {
 }
 
 /**
+ * Removes the files in the dist directory built for any source hash other than `key`.
+ * @param {string} distDir
+ * @param {string} key Release key (16 hex) to keep
+ */
+function removeOtherHashes(distDir, key) {
+    for (const name of fs.readdirSync(distDir)) {
+        const match = /^st-engine-([0-9a-f]{16})-/.exec(name);
+        if (match && match[1] !== key) fs.rmSync(path.join(distDir, name));
+    }
+}
+
+/**
  * Leaves engine/dist/ with a file for this checkout's source hash: the platform's native build if the release has
- * one, else the wasm build. Never a file of another hash.
+ * one, else the wasm build. Never a file of another hash; once this hash's file is there, other hashes' files are removed.
  * @param {object} [options]
  * @param {string|null} [options.platform] targets.json native platform, or null to take the wasm
  * @param {string} [options.releaseBase] URL the `engine-<key>/<file>` paths are under
@@ -50,7 +62,10 @@ export async function ensureEngine({ platform = currentPlatform(), releaseBase =
     const names = [...(platform ? [nativeFileName(key, platform)] : []), wasmFileName(key)];
     for (const name of names) {
         const file = path.join(distDir, name);
-        if (fs.existsSync(file)) return file;
+        if (fs.existsSync(file)) {
+            removeOtherHashes(distDir, key);
+            return file;
+        }
     }
     for (const name of names) {
         const url = `${releaseBase}/engine-${key}/${name}`;
@@ -63,6 +78,7 @@ export async function ensureEngine({ platform = currentPlatform(), releaseBase =
         if (!data) continue;
         writeDist(distDir, name, data);
         console.log(`Downloaded the engine for source hash ${key}: ${name}`);
+        removeOtherHashes(distDir, key);
         return path.join(distDir, name);
     }
     throw new EngineFetchError(`The engine for source hash ${key} has no release yet (engine-${key}). Retry once CI has finished building it.`);

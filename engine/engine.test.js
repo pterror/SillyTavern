@@ -101,3 +101,19 @@ test('another hash\'s file is never used', async () => {
     await assert.rejects(ensureEngine({ releaseBase, distDir }), EngineFetchError);
     assert.throws(() => loadEngine({ distDir }), EngineLoadError);
 });
+
+test('once this hash\'s file is there, other hashes\' files are removed', async () => {
+    publish();
+    const old = '0000000000000000';
+    for (const [fetchPlatform, keptName] of [[platform, nativeName], [null, wasmName]]) {
+        for (const present of [true, false]) {
+            const distDir = freshDist();
+            fs.writeFileSync(path.join(distDir, nativeFileName(old, platform)), '');
+            fs.writeFileSync(path.join(distDir, wasmFileName(old)), '');
+            fs.writeFileSync(path.join(distDir, 'unrelated.txt'), '');
+            if (present) fs.copyFileSync(path.join(DIST_DIR, keptName), path.join(distDir, keptName));
+            assert.equal(await ensureEngine({ platform: fetchPlatform, releaseBase, distDir }), path.join(distDir, keptName));
+            assert.deepEqual(fs.readdirSync(distDir).sort(), [keptName, 'unrelated.txt'].sort());
+        }
+    }
+});
