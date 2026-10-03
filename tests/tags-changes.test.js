@@ -53,10 +53,6 @@ beforeEach(async () => {
     }
     // The store with its tag query columns ready and its sort_order fill finished, so moves apply at once.
     await metadataDb.ensureSchemaMigrated(directories);
-    await metadataDb.fillTagNameKeysIfNeeded(directories);
-    await metadataDb.fillTagDerivedColumnsIfNeeded(directories);
-    await metadataDb.migrateTagsJsonIfNeeded(directories);
-    await metadataDb.fillTagSortOrdersIfNeeded(directories);
     reported = [];
     metadataDb.characterChangeEmitter.on(metadataDb.TAG_CHANGES_EVENT, onReported);
 });

@@ -73,7 +73,6 @@ async function seed() {
         fs.writeFileSync(path.join(directories.groups, `g${i}.json`), JSON.stringify(group));
         await metadataDb.upsertGroupRow(directories, `g${i}`, group.name, { fav: group.fav, group });
     }
-    await metadataDb.buildEntitySortIndexesIfNeeded(directories);
 }
 
 /** @param {{ sql: string, params: any, handle: any }} call */

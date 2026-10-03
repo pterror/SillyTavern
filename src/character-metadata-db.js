@@ -17,12 +17,11 @@ import { getCharaCardV2, computeContentIdentityHash } from './character-card-nor
 import { calculateDataSize } from './character-shallow.js';
 import { CARD_LAYOUT_META_KEY, CARD_TABLES_SQL, assembleCardsSync, cardLayoutOf, cardListValues, cardNameText, cardRowsSync, listRowsFromFieldsSync } from './character-card-reader.js';
 import { CARD_COLUMNS, splitCard } from './character-card-storage.js';
-import { FIELDS_CHARACTERS_TABLE_SQL, FIELDS_CHARACTER_INDEXES, CHARACTER_SORT_INDEX_COLUMNS, defineCharacterStoreFunctions, foldName } from './character-store-schema.js';
+import { FIELDS_CHARACTERS_TABLE_SQL, FIELDS_CHARACTER_INDEXES, defineCharacterStoreFunctions, foldName } from './character-store-schema.js';
 import { readTagsData } from './endpoints/tags-data.js';
 import { getSqliteEngine, isBusyError, openNativeDatabase, streamRows } from './endpoints/sqlite-engine.js';
 import { getBetterSqlite3 } from './endpoints/native-sqlite.js';
 import { isReadOnlyMode } from './read-only-mode.js';
-import { TAGS_FILE } from './constants.js';
 import { legacySettingsPath, settingsDirPath } from './settings-store.js';
 import { normalizeGroupRecord, tagEntityTypeOf } from './group-id.js';
 import { expandTagFilter, resolveTagId, resolveTagIds, NO_TAG_DELETIONS } from './tag-deletions.js';
@@ -237,13 +236,9 @@ export const allowExpensiveDuplicateFallback = !!getConfigValue('performance.all
  * @property {import('./users.js').UserDirectoryList} directories
  * @property {{ pending: Map<string, PendingRow> } | null} batch Non-null while batch-import mode is active
  * @property {Promise<void> | null} bootstrapPromise
- * @property {boolean} [tagNameKeysReady] Set once tagNameKeysReady() is true, which stays true.
- * @property {boolean} [tagFolderUsageIndex] Set once the tags_folder_usage_count index is found, which stays.
- * @property {boolean} [entitySortIndexes] Set once every ENTITY_SORT_INDEXES index is found, which stays.
  * @property {boolean} [tagSortFilled] Set once fillTagSortTablesIfNeeded() has finished, which stays.
  * @property {boolean} [randomRanksFilled] Set once fillRandomRanksIfNeeded() has finished, which stays.
  * @property {boolean} [nameOrderFilled] Set once fillNameOrderIfNeeded() has finished, which stays.
- * @property {boolean} [tagQueryColumnsReady] Set once tagQueryColumnsReady() is true, which stays true.
  * @property {number} [activityQueued] Writes queued into activity_pending since the queue was last written out.
  * @property {boolean} [activityFoldScheduled] Set while a background write-out of the whole queue is scheduled.
  */
@@ -450,7 +445,7 @@ let warnedNoEngine = false;
 
 const SCHEMA_SQL = `
     ${FIELDS_CHARACTERS_TABLE_SQL}
-    ${FIELDS_CHARACTER_INDEXES.filter(index => !index.name.startsWith('idx_characters_sort_')).map(index => `${index.sql};`).join('\n    ')}
+    ${FIELDS_CHARACTER_INDEXES.map(index => `${index.sql};`).join('\n    ')}
     -- content_hash: sha256 of the raw uploaded import source bytes. NULL for anything not imported through that
     -- path or predating the column; never backfilled, so NULL/NULL is never treated as a match.
     --
@@ -591,9 +586,8 @@ const SCHEMA_SQL = `
     CREATE INDEX IF NOT EXISTS idx_tag_deletions_merge_into ON tag_deletions(merge_into);
 
     -- A tag move (moveTagDefinition(), reorderTagDefinitions()) or sort_order value (createTagDefinition(),
-    -- editTagDefinition()) that arrived before fillTagSortOrdersIfNeeded() finished, while a reorder pass is
-    -- recorded, or while anything was still queued, waiting to be applied (tag-actions D16, D18, D19, D25.3,
-    -- D25.9-10, D28). seq is the arrival order, the order they apply in. An entry is either anchored (side and
+    -- editTagDefinition()) that arrived while a reorder pass is recorded, waiting for the pass to apply it
+    -- (tag-actions D16, D18, D19, D25.3, D25.9-10, D28). seq is the arrival order, the order they apply in. An entry is either anchored (side and
     -- anchor_id: put tag_id right before/after anchor_id) or a value (value: the raw sort_order as JSON, written into
     -- tag_id's data as is), never both.
     ${tagPendingMovesTableSql('tag_pending_moves')};
@@ -645,16 +639,6 @@ const SCHEMA_SQL = `
     CREATE TABLE IF NOT EXISTS tag_changes (
         seq    INTEGER PRIMARY KEY AUTOINCREMENT,
         tag_id TEXT
-    );
-
-    -- A card tag name that couldn't be resolved yet because some tags rows have no name_key (see
-    -- tagNameKeysReady()). fillTagNameKeysIfNeeded() resolves and assigns each one once they all do.
-    -- only_existing = 1: assigned only if a tag with that name exists, never created.
-    CREATE TABLE IF NOT EXISTS tag_names_held (
-        character_id  TEXT NOT NULL,
-        name          TEXT NOT NULL,
-        only_existing INTEGER NOT NULL,
-        PRIMARY KEY (character_id, name)
     );
 
     -- Bookkeeping for the one-time filename-migration script (name-derived filenames -> minted UUIDv7 ids).
@@ -931,8 +915,7 @@ function migrateRevToSeqColumns(db) {
     db.run('UPDATE meta SET key = \'tantivy_char_index_tags_hash\' WHERE key = \'tantivy_char_index_tags_rev\'');
 }
 
-// name_key is tagNameKey() of the row's name. Rows written before this column existed have it NULL until
-// fillTagNameKeysIfNeeded() fills them; its index is built there too, since both take a pass over every tag.
+// name_key is tagNameKey() of the row's name.
 /**
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  */
@@ -943,8 +926,7 @@ function migrateTagNameKeyColumn(db) {
     }
 }
 
-// No defaults: a row written before these columns existed reads NULL until it is filled, so it can never pass for
-// a derived value.
+// No defaults: every write of a tags row sets them (TAG_ROW_VALUES_SQL).
 const TAG_DERIVED_COLUMNS = [
     ['sort_order', 'REAL'],
     ['folder_type', 'TEXT'],
@@ -1099,7 +1081,7 @@ export function tagDerivedColumns(tag) {
 
 /**
  * Indexes no query reads any more: every sort, range, name lookup and fav filter reads the (fav, key, tie) sort
- * indexes (ENTITY_SORT_INDEXES), and a descending sort reads its ascending index backwards.
+ * indexes (FIELDS_CHARACTER_INDEXES, GROUP_SORT_INDEXES_SQL), and a descending sort reads its ascending index backwards.
  */
 const UNUSED_INDEXES = [
     'idx_characters_name_fold', 'idx_characters_date_added', 'idx_characters_date_last_chat', 'idx_characters_create_date',
@@ -1180,6 +1162,8 @@ async function getEntry(directories) {
     migrateTagPendingMovesValueColumn(db);
     replaceTagPendingPlaceTriggers(db);
     dropOldCounterTriggers(db);
+    db.exec(TAG_INDEXES_SQL);
+    db.exec(GROUP_SORT_INDEXES_SQL);
     db.exec(TAG_SORT_TABLES_SQL);
     db.exec(TAG_SORT_TRIGGERS_SQL);
     db.exec(RANDOM_RANKS_TABLE_SQL);
@@ -1531,7 +1515,6 @@ function deleteRowSync(db, id) {
     for (const table of ['cards', ...CARD_PART_TABLES.map(t => t.table)]) db.run(`DELETE FROM ${table} WHERE character_id = @id`, { id });
     db.run('DELETE FROM activity_pending WHERE kind = \'character\' AND id = @id', { id });
     deleted += deleteEntityTagRowsSync(db, 'character_tags', id);
-    deleted += db.run('DELETE FROM tag_names_held WHERE character_id = @id', { id }).changes;
     // Cascades: a local_import_mtimes row recorded as duplicate_of this character must not outlive it.
     deleted += db.run('DELETE FROM local_import_mtimes WHERE duplicate_of = @id', { id }).changes;
     if (deleted > 0) insertChange(db, id, 'delete', null);
@@ -2015,10 +1998,7 @@ export async function renameCharacterRow(directories, oldAvatar, newAvatar) {
         });
     }
 
-    entry.db.transaction(() => {
-        entry.db.run('UPDATE OR IGNORE tag_names_held SET character_id = @newAvatar WHERE character_id = @oldAvatar', { newAvatar, oldAvatar });
-        deleteRowSync(entry.db, oldAvatar);
-    });
+    entry.db.transaction(() => deleteRowSync(entry.db, oldAvatar));
     return { copiedOrphanTagIds: oldRow ? [] : oldTagIds };
 }
 
@@ -2275,101 +2255,6 @@ function setMetaSync(db, key, value) {
 /** @typedef {{ batches: number, rowsChanged: number }} CharacterPassResult */
 
 /**
- * A one-time pass over every row of a table that resumes after the last batch it committed. The batch's rows are
- * re-read by prepareRow inside the batch's own transaction, so no other connection's write lands between read and
- * write. The pause between batches lets other writers take the lock. A row whose prepareRow throws is left as it is
- * and keeps doneKey unset; progressKey is still cleared at the end, so the next run retries from the first row
- * rather than past it. A write that throws rolls back its whole batch and fails the pass, leaving progressKey at the
- * last committed batch.
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- * @param {object} options
- * @param {'characters' | 'groups'} [options.table] The table whose rows (by id) the pass walks.
- * @param {string} options.doneKey
- * @param {string} options.doneValue
- * @param {string} options.progressKey
- * @param {string} options.label
- * @param {boolean} [options.logProgress]
- * @param {(id: string) => (null | (() => void))} options.prepareRow Does every read, parse and computation for the
- *   row and returns its writes, or null if it needs none. Neither may change anything outside the database, since a
- *   transaction that hits busy is rolled back and rerun.
- * @param {() => void} [options.onBatchStart] Runs first inside each batch's transaction, including a rerun after
- *   busy, so batch-local state the rows build up can be reset there.
- * @param {() => void} [options.onBatchCommitted] Runs once each batch has committed.
- * @param {() => void} [options.finish] Runs inside the final transaction, before doneKey is written.
- * @returns {Promise<CharacterPassResult>}
- */
-async function runResumableCharacterPass(db, { table = 'characters', doneKey, doneValue, progressKey, label, logProgress = false, prepareRow, onBatchStart, onBatchCommitted, finish }) {
-    const saved = /** @type {{ value: string } | undefined} */ (db.get('SELECT value FROM meta WHERE key = @key', { key: progressKey }));
-    const nextPageSql = `SELECT id FROM ${table} WHERE id > @after ORDER BY id LIMIT @limit`;
-    const pages = saved
-        ? streamRows(db, { firstPageSql: nextPageSql, firstPageParams: { after: saved.value }, nextPageSql, nextPageParams: {}, keyColumn: 'id' })
-        : streamRows(db, { firstPageSql: `SELECT id FROM ${table} ORDER BY id LIMIT @limit`, firstPageParams: {}, nextPageSql, nextPageParams: {}, keyColumn: 'id' });
-    let batches = 0;
-    let rowsChanged = 0;
-    let rowsFailed = 0;
-    const progress = logProgress
-        ? new ProgressLog({
-            what: `[character-metadata] ${label}`,
-            total: Number(/** @type {{ n: number }} */ (saved
-                ? db.get(`SELECT COUNT(*) AS n FROM ${table} WHERE id > @after`, { after: saved.value })
-                : db.get(`SELECT COUNT(*) AS n FROM ${table}`, {})).n),
-        })
-        : null;
-    for await (const rows of pages) {
-        const ids = /** @type {{ id: string }[]} */ (rows).map(r => r.id);
-        let batchChanged = 0;
-        /** @type {{ id: string, message: string }[]} */
-        let batchFailed = [];
-        db.transaction(() => {
-            // Reset here: a transaction that hits busy is rolled back and rerun.
-            batchChanged = 0;
-            batchFailed = [];
-            onBatchStart?.();
-            for (const id of ids) {
-                let write;
-                try {
-                    write = prepareRow(id);
-                } catch (err) {
-                    batchFailed.push({ id, message: String(/** @type {any} */ (err)?.message ?? err) });
-                    continue;
-                }
-                if (write) {
-                    write();
-                    batchChanged++;
-                }
-            }
-            setMetaSync(db, progressKey, ids[ids.length - 1]);
-        });
-        onBatchCommitted?.();
-        batches++;
-        rowsChanged += batchChanged;
-        rowsFailed += batchFailed.length;
-        if (batchFailed.length > 0) {
-            console.warn(color.yellow(`[character-metadata] ${label}: ${batchFailed.length} row(s) failed and were left as they are:\n${batchFailed.map(f => `  ${f.id}: ${f.message}`).join('\n')}`));
-        }
-        if (batches % MIGRATION_PASSIVE_CHECKPOINT_EVERY_BATCHES === 0) {
-            if (!isReadOnlyMode()) db.get('PRAGMA wal_checkpoint(PASSIVE)');
-        }
-        progress?.add(ids.length);
-        await delay(MIGRATION_BATCH_PAUSE_MS);
-    }
-
-    db.transaction(() => {
-        finish?.();
-        if (rowsFailed === 0) {
-            setMetaSync(db, doneKey, doneValue);
-        }
-        db.run('DELETE FROM meta WHERE key = @key', { key: progressKey });
-    });
-    if (!isReadOnlyMode()) db.checkpoint();
-    if (rowsFailed > 0) {
-        console.warn(color.yellow(`[character-metadata] ${label}: ${rowsFailed} row(s) failed (listed above); not marked done, so it runs again from the first row next boot.`));
-    }
-    progress?.finish(`${rowsChanged.toLocaleString('en-US')} changed`);
-    return { batches, rowsChanged };
-}
-
-/**
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  * @param {'characters' | 'groups'} table
  * @param {string[]} ids at most FAV_LOOKUP_BATCH_SIZE
@@ -2494,19 +2379,28 @@ export function reportTagChanges(root) {
 }
 
 /**
- * Adds tag_changes rows (see SCHEMA_SQL) in the caller's transaction and tells this process's listeners. A
- * transaction that is rolled back takes the rows with it; the listeners then find nothing new.
- * @param {MetadataDbEntry} entry
+ * Adds tag_changes rows (see SCHEMA_SQL) in the caller's transaction.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  * @param {string[] | null} tagIds The tags whose definition changed, or null for one batch row.
+ * @returns {boolean} Whether it added any.
+ */
+function insertTagChangesSync(db, tagIds) {
+    if (tagIds === null) {
+        db.run('INSERT INTO tag_changes (tag_id) VALUES (NULL)');
+        return true;
+    }
+    for (const tagId of new Set(tagIds)) db.run('INSERT INTO tag_changes (tag_id) VALUES (@tagId)', { tagId });
+    return tagIds.length > 0;
+}
+
+/**
+ * insertTagChangesSync(), then tells this process's listeners. A transaction that is rolled back takes the rows with
+ * it; the listeners then find nothing new.
+ * @param {MetadataDbEntry} entry
+ * @param {string[] | null} tagIds
  */
 function logTagChangesSync(entry, tagIds) {
-    if (tagIds === null) {
-        entry.db.run('INSERT INTO tag_changes (tag_id) VALUES (NULL)');
-    } else {
-        if (tagIds.length === 0) return;
-        for (const tagId of new Set(tagIds)) entry.db.run('INSERT INTO tag_changes (tag_id) VALUES (@tagId)', { tagId });
-    }
-    reportTagChanges(entry.directories.root);
+    if (insertTagChangesSync(entry.db, tagIds)) reportTagChanges(entry.directories.root);
 }
 
 /**
@@ -2525,7 +2419,7 @@ export const TAG_MOVE_FAILED_EVENT = 'tag-move-failed';
  * the same.
  * @param {TagMoveFailedPayload} payload
  */
-function tagMoveFailedText({ tagId, tagName, anchorId, anchorName, refusedId, reason }) {
+export function tagMoveFailedText({ tagId, tagName, anchorId, anchorName, refusedId, reason }) {
     const tag = tagName ?? tagId;
     if (anchorId === null) return `Couldn't set the order of tag "${tag}": its stored data couldn't be read.`;
     const anchor = anchorName ?? anchorId;
@@ -5148,144 +5042,6 @@ export async function groupRowExists(directories, id) {
     return !!entry.db.get('SELECT 1 FROM groups WHERE id = @id', { id });
 }
 
-export const GROUP_NUMERIC_ID_RECOVERY_FLAG = 'group_numeric_id_recovery_v1';
-
-// One-time pass for stores whose groups bootstrap skipped every group file holding its id as a number (the legacy
-// format): inserts a row for each such group that has none. Existing rows are never touched. Groups are few and the
-// pass is idempotent, so it saves no position: it reruns from the first file until its flag is set, which happens
-// only once no file failed.
-/**
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<CharacterPassResult | undefined>}
- */
-export async function recoverNumericIdGroupsIfNeeded(directories) {
-    const entry = await getEntry(directories);
-    if (!entry) return;
-    if (entry.db.get('SELECT 1 FROM meta WHERE key = @key', { key: GROUP_NUMERIC_ID_RECOVERY_FLAG })) return { batches: 0, rowsChanged: 0 };
-
-    const label = 'Numeric-id group recovery';
-    let batches = 0;
-    let rowsChanged = 0;
-    let filesFailed = 0;
-
-    /** @param {string} file */
-    const prepareFile = (file) => {
-        const filePath = path.join(directories.groups, file);
-        const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-        if (typeof raw?.id !== 'number') return null;
-        const group = normalizeGroupRecord(raw);
-        if (!hasGroupIdForRow(group)) return null;
-        if (entry.db.get('SELECT 1 FROM groups WHERE id = @id', { id: group.id })) return null;
-        const stat = fs.statSync(filePath);
-        return () => {
-            const inserted = upsertGroupRowSync(entry.db, {
-                id: group.id,
-                name: group.name,
-                fav: normalizeFav(group.fav),
-                group,
-                dateAdded: Math.round(stat.birthtimeMs),
-                insertOnly: true,
-            });
-            if (inserted) insertGroupChange(entry.db, group.id);
-        };
-    };
-
-    /** @param {string[]} files */
-    const runBatch = async (files) => {
-        let batchChanged = 0;
-        /** @type {{ file: string, message: string }[]} */
-        let batchFailed = [];
-        entry.db.transaction(() => {
-            // Reset here: a transaction that hits busy is rolled back and rerun.
-            batchChanged = 0;
-            batchFailed = [];
-            for (const file of files) {
-                let write;
-                try {
-                    write = prepareFile(file);
-                } catch (err) {
-                    batchFailed.push({ file, message: String(/** @type {any} */ (err)?.message ?? err) });
-                    continue;
-                }
-                if (write) {
-                    write();
-                    batchChanged++;
-                }
-            }
-        });
-        batches++;
-        rowsChanged += batchChanged;
-        filesFailed += batchFailed.length;
-        if (batchFailed.length > 0) {
-            console.warn(color.yellow(`[character-metadata] ${label}: ${batchFailed.length} group file(s) failed and were skipped:\n${batchFailed.map(f => `  ${f.file}: ${f.message}`).join('\n')}`));
-        }
-        if (batches % MIGRATION_PASSIVE_CHECKPOINT_EVERY_BATCHES === 0) {
-            if (!isReadOnlyMode()) entry.db.get('PRAGMA wal_checkpoint(PASSIVE)');
-        }
-        await delay(MIGRATION_BATCH_PAUSE_MS);
-    };
-
-    if (fs.existsSync(directories.groups)) {
-        const BATCH_SIZE = 500;
-        const dir = await fsPromises.opendir(directories.groups);
-        /** @type {string[]} */
-        let batch = [];
-        for await (const dirent of dir) {
-            if (!dirent.isFile() || !dirent.name.endsWith('.json')) continue;
-            batch.push(dirent.name);
-            if (batch.length >= BATCH_SIZE) {
-                await runBatch(batch);
-                batch = [];
-            }
-        }
-        if (batch.length > 0) await runBatch(batch);
-    }
-
-    if (filesFailed === 0) {
-        setMetaSync(entry.db, GROUP_NUMERIC_ID_RECOVERY_FLAG, String(Date.now()));
-    }
-    if (!isReadOnlyMode()) entry.db.checkpoint();
-    if (filesFailed > 0) {
-        console.warn(color.yellow(`[character-metadata] ${label}: ${filesFailed} group file(s) failed (listed above); not marked done, so it runs again next boot.`));
-    }
-    return { batches, rowsChanged };
-}
-
-export const GROUP_FAV_NORMALIZED_FLAG = 'group_fav_normalized_v1';
-
-// One-time pass re-deriving each group's fav column and digest_fav from its normalized JSON file (the source of
-// truth), since older writers stored the raw file value by truthiness (a file holding "false" read as a favourite).
-// A group's file is read inside its batch's transaction, so a group write in this process can't land between the
-// read and the row write. A group whose file can't be read is left as it is and keeps the pass from being marked done.
-/**
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<CharacterPassResult | undefined>}
- */
-export async function normalizeGroupFavIfNeeded(directories) {
-    const entry = await getEntry(directories);
-    if (!entry) return;
-    if (entry.db.get('SELECT 1 FROM meta WHERE key = @key', { key: GROUP_FAV_NORMALIZED_FLAG })) return { batches: 0, rowsChanged: 0 };
-
-    return runResumableCharacterPass(entry.db, {
-        table: 'groups',
-        doneKey: GROUP_FAV_NORMALIZED_FLAG,
-        doneValue: String(Date.now()),
-        progressKey: `${GROUP_FAV_NORMALIZED_FLAG}_progress`,
-        label: 'Group fav normalization',
-        prepareRow: (id) => {
-            if (!entry.db.get('SELECT 1 FROM groups WHERE id = @id', { id })) return null;
-            const group = JSON.parse(fs.readFileSync(path.join(directories.groups, sanitize(`${id}.json`)), 'utf8'));
-            const fav = normalizeFav(group?.fav);
-            const values = { fav: fav ? 1 : 0, digest_fav: groupDigestFavHash({ fav }) };
-            if (!entry.db.get('SELECT 1 FROM groups WHERE id = @id AND (fav IS NOT @fav OR digest_fav IS NOT @digestFav)', { id, fav: values.fav, digestFav: values.digest_fav })) return null;
-            return () => {
-                writeEntityRowSync(entry.db, ENTITY_COUNT_KIND_BY_NAME.group, id, values);
-                insertGroupChange(entry.db, id);
-            };
-        },
-    });
-}
-
 /**
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  * @returns {import('./tag-deletions.js').TagDeletions}
@@ -5339,10 +5095,7 @@ const NOT_MARKED_DELETED_SQL = 'id NOT IN (SELECT tag_id FROM tag_deletions)';
 export async function hasClosedFolderTags(directories) {
     const entry = await getEntry(directories);
     if (!entry) return null;
-    const closedWhere = tagQueryColumnsReady(entry)
-        ? 'is_folder = 1 AND folder_type = \'CLOSED\''
-        : 'CASE WHEN json_valid(data) THEN json_extract(data, \'$.folder_type\') END = \'CLOSED\'';
-    return !!entry.db.get(`SELECT 1 FROM tags WHERE ${closedWhere} AND ${NOT_MARKED_DELETED_SQL} LIMIT 1`);
+    return !!entry.db.get(`SELECT 1 FROM tags WHERE is_folder = 1 AND folder_type = 'CLOSED' AND ${NOT_MARKED_DELETED_SQL} LIMIT 1`);
 }
 
 /**
@@ -5455,21 +5208,20 @@ export async function getMergedTagTargets(directories, ids) {
  * standing for that target.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string[]} names
- * @returns {Promise<{ name: string, tag: object | null }[] | 'names-not-ready' | null>} one entry per distinct name
- *   given, in the order given; `tag` null when no tag has the name or its stored definition can't be parsed.
- *   'names-not-ready': names can't be looked up yet. null when the store is unavailable.
+ * @returns {Promise<{ name: string, tag: object | null }[] | null>} one entry per distinct name given, in the order
+ *   given; `tag` null when no tag has the name or its stored definition can't be parsed. null when the store is
+ *   unavailable.
  */
 export async function findTagsByNames(directories, names) {
     const entry = await getEntry(directories);
     if (!entry) return null;
-    if (!tagNameKeysReady(entry)) return 'names-not-ready';
 
     const out = [];
     const seen = new Set();
     for (const name of names) {
         if (seen.has(name)) continue;
         seen.add(name);
-        const resolved = resolveCardTagNamesSync(entry.db, [name], { ready: true, onlyExisting: true });
+        const resolved = resolveCardTagNamesSync(entry.db, [name], { onlyExisting: true });
         let tag = null;
         if (resolved.learned.length > 0) {
             const learned = resolved.learned[0];
@@ -5631,16 +5383,11 @@ const NEXT_TAG_SORT_ORDER_SQL = 'SELECT MAX(0, COALESCE(MAX(sort_order), 0)) + 1
 /**
  * The sort_order upstream's newTag() gives a new tag: `Math.max(0, ...orders) + 1` over the tags that have one.
  * Marked tags count too, which still puts it after every live tag.
- *
- * null until fillTagDerivedColumnsIfNeeded() has finished: before that the sort_order column isn't filled, and the
- * max could only be found by reading every tag. A tag created then gets no sort_order of its own, and
- * fillTagSortOrdersIfNeeded(), which only starts once the column is filled, numbers it after every ordered tag.
- * @param {MetadataDbEntry} entry
- * @returns {number | null}
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @returns {number}
  */
-function nextTagSortOrderSync(entry) {
-    if (!entry.db.get('SELECT 1 FROM meta WHERE key = @key', { key: TAG_DERIVED_COLUMNS_FILLED_FLAG })) return null;
-    const row = /** @type {{ next: number }} */ (entry.db.get(NEXT_TAG_SORT_ORDER_SQL));
+function nextTagSortOrderSync(db) {
+    const row = /** @type {{ next: number }} */ (db.get(NEXT_TAG_SORT_ORDER_SQL));
     return Number(row.next);
 }
 
@@ -5654,10 +5401,8 @@ function nextTagSortOrderSync(entry) {
  *   match {@link TagDefinitionInput}'s shape, so it's validated below before use.
  * @param {object} [options]
  * @param {boolean} [options.freeName] The given name is only a base: the tag gets freeTagNameSync()'s name for it.
- *   Needs tagNameKeysReady().
- * @returns {Promise<(TagWriteResult & { tag?: TagDefinitionInput }) | 'names-not-ready' | null>} tag: the definition
- *   as stored, when it was. 'names-not-ready': a free name was asked for before names can be looked up; nothing is
- *   written.
+ * @returns {Promise<(TagWriteResult & { tag?: TagDefinitionInput }) | null>} tag: the definition as stored, when it
+ *   was.
  */
 export async function createTagDefinition(directories, rawTag, { freeName = false } = {}) {
     const entry = await getEntry(directories);
@@ -5670,11 +5415,9 @@ export async function createTagDefinition(directories, rawTag, { freeName = fals
 
     /** @type {TagWriteResult} */
     const result = { refused: [] };
-    const names = { ready: true };
     entry.db.transaction(() => {
         // Reset here: a transaction that hits busy is rolled back and rerun.
         result.refused = [];
-        names.ready = true;
         if (entry.db.get('SELECT 1 FROM tag_deletions WHERE tag_id = @id', { id })) {
             result.refused.push({ id, reason: 'deleted' });
             return;
@@ -5683,22 +5426,12 @@ export async function createTagDefinition(directories, rawTag, { freeName = fals
             result.refused.push({ id, reason: 'exists' });
             return;
         }
-        if (freeName) {
-            if (!tagNameKeysReady(entry)) {
-                names.ready = false;
-                return;
-            }
-            tag.name = freeTagNameSync(entry.db, baseName);
-        }
-        if (assignOrder) {
-            const next = nextTagSortOrderSync(entry);
-            if (next !== null) tag.sort_order = next;
-        }
+        if (freeName) tag.name = freeTagNameSync(entry.db, baseName);
+        if (assignOrder) tag.sort_order = nextTagSortOrderSync(entry.db);
         entry.db.run(`INSERT INTO tags ${TAG_ROW_VALUES_SQL}`, tagRowParams(tag));
         if (!assignOrder && !tagSortOrdersSettledSync(entry.db)) queueTagSortOrderValueSync(entry.db, id, tag.sort_order);
         logTagChangesSync(entry, [id]);
     });
-    if (!names.ready) return 'names-not-ready';
     if (result.refused.length > 0) {
         if (result.refused[0].reason === 'deleted') warnStaleDeletedTagSave([id]);
         return result;
@@ -6106,175 +5839,6 @@ async function moveDeletedTagRows(db, tagId, tagName, side, totals) {
         await delay(MIGRATION_BATCH_PAUSE_MS);
         if (page.length < DELETED_TAG_BATCH_SIZE) return 'walked';
     }
-}
-
-export const ORPHAN_TAG_ROWS_REMOVED_FLAG = 'orphan_tag_rows_removed_v1';
-const ORPHAN_TAG_ROWS_PROGRESS_KEY = `${ORPHAN_TAG_ROWS_REMOVED_FLAG}_progress`;
-
-/**
- * One-time pass removing every character_tags row with no characters row and every group_tags row with no groups
- * row, whatever its id looks like, and listing each in a warning (entity id: tag name). tag_usage follows through
- * its triggers.
- *
- * Walks each tag table by its primary key, a bounded page at a time, closing each page's read before writing. A
- * page's orphans are re-checked and removed in one transaction that also saves the position, so a page with none
- * writes nothing, and a restart re-reads from the last page that removed rows.
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<CharacterPassResult | undefined>} `batches` and `rowsChanged` count the pages that removed rows
- *   and the rows removed.
- */
-export async function removeOrphanTagRowsIfNeeded(directories) {
-    const entry = await getEntry(directories);
-    if (!entry) return;
-    const { db } = entry;
-    if (db.get('SELECT 1 FROM meta WHERE key = @key', { key: ORPHAN_TAG_ROWS_REMOVED_FLAG })) return { batches: 0, rowsChanged: 0 };
-
-    const label = 'Orphan tag row removal';
-    const saved = /** @type {{ value: string } | undefined} */ (db.get('SELECT value FROM meta WHERE key = @key', { key: ORPHAN_TAG_ROWS_PROGRESS_KEY }));
-    let progressSaved = !!saved;
-    /** @type {{ table: string, id: string, tagId: string } | null} */
-    const resumeAt = saved ? JSON.parse(saved.value) : null;
-
-    let batches = 0;
-    let rowsChanged = 0;
-    const sides = resumeAt ? TAG_ROW_SIDES.slice(TAG_ROW_SIDES.findIndex(side => side.tagTable === resumeAt.table)) : TAG_ROW_SIDES;
-    for (const { tagTable, entityColumn, entityTable, logTagRowsChanged } of sides) {
-        /** @type {{ id: string, tagId: string } | null} */
-        let after = resumeAt?.table === tagTable ? { id: resumeAt.id, tagId: resumeAt.tagId } : null;
-        for (;;) {
-            /** @type {{ id: string, tagId: string }[]} */
-            const page = [];
-            const rows = after === null
-                ? db.iterate(`SELECT ${entityColumn} AS id, tag_id FROM ${tagTable} ORDER BY ${entityColumn}, tag_id LIMIT @limit`, { limit: DELETED_TAG_BATCH_SIZE })
-                : db.iterate(`SELECT ${entityColumn} AS id, tag_id FROM ${tagTable} WHERE (${entityColumn}, tag_id) > (@id, @tagId) ORDER BY ${entityColumn}, tag_id LIMIT @limit`, { ...after, limit: DELETED_TAG_BATCH_SIZE });
-            for (const row of /** @type {Iterable<{ id: string, tag_id: string }>} */ (rows)) page.push({ id: row.id, tagId: row.tag_id });
-            if (page.length === 0) break;
-            const last = page[page.length - 1];
-            after = { id: last.id, tagId: last.tagId };
-
-            const pageIds = [...new Set(page.map(row => row.id))];
-            /** @type {Set<string>} */
-            const known = new Set();
-            for (let i = 0; i < pageIds.length; i += FAV_LOOKUP_BATCH_SIZE) {
-                for (const id of knownEntityIdsOf(db, entityTable, pageIds.slice(i, i + FAV_LOOKUP_BATCH_SIZE))) known.add(id);
-            }
-            const candidates = page.filter(row => !known.has(row.id));
-
-            if (candidates.length > 0) {
-                /** @type {{ removed: string[] }} */
-                const state = { removed: [] };
-                db.transaction(() => {
-                    // Reset here: a transaction that hits busy is rolled back and rerun.
-                    state.removed = [];
-                    /** @type {Map<string, string>} */
-                    const names = new Map();
-                    /** @type {Set<string>} */
-                    const changedIds = new Set();
-                    for (const row of candidates) {
-                        if (db.get(`SELECT 1 FROM ${entityTable} WHERE id = @id`, { id: row.id })) continue;
-                        if (!deleteTagRowSync(db, tagTable, row.id, row.tagId)) continue;
-                        if (!names.has(row.tagId)) names.set(row.tagId, tagNameForWarning(db, row.tagId));
-                        state.removed.push(`  ${row.id}: ${names.get(row.tagId)}`);
-                        changedIds.add(row.id);
-                    }
-                    for (const id of changedIds) logTagRowsChanged(db, id);
-                    if (state.removed.length === 0) return;
-                    setMetaSync(db, ORPHAN_TAG_ROWS_PROGRESS_KEY, JSON.stringify({ table: tagTable, id: last.id, tagId: last.tagId }));
-                });
-                if (state.removed.length > 0) {
-                    progressSaved = true;
-                    batches++;
-                    rowsChanged += state.removed.length;
-                    if (batches % MIGRATION_PASSIVE_CHECKPOINT_EVERY_BATCHES === 0 && !isReadOnlyMode()) db.get('PRAGMA wal_checkpoint(PASSIVE)');
-                    console.warn(color.yellow(`[character-metadata] ${label}: removed ${state.removed.length} ${tagTable} row(s) whose ${entityTable} row doesn't exist:\n${state.removed.join('\n')}`));
-                }
-            }
-            await delay(MIGRATION_BATCH_PAUSE_MS);
-            if (page.length < DELETED_TAG_BATCH_SIZE) break;
-        }
-    }
-
-    db.transaction(() => {
-        setMetaSync(db, ORPHAN_TAG_ROWS_REMOVED_FLAG, String(Date.now()));
-        if (progressSaved) db.run('DELETE FROM meta WHERE key = @key', { key: ORPHAN_TAG_ROWS_PROGRESS_KEY });
-    });
-    if (!isReadOnlyMode()) db.checkpoint();
-    return { batches, rowsChanged };
-}
-
-export const GROUP_DIGEST_TAG_IDS_REFRESHED_FLAG = 'group_digest_tag_ids_refreshed_v1';
-const GROUP_DIGEST_TAG_IDS_PROGRESS_KEY = `${GROUP_DIGEST_TAG_IDS_REFRESHED_FLAG}_progress`;
-
-/**
- * One-time pass setting every group's digest_tag_ids to what its group_tags rows give, where it is NULL or
- * differs, and listing each group it set in a warning.
- *
- * Walks groups by id, a bounded page at a time, closing each page's read before writing. A page's groups are
- * re-checked and set in one transaction that also saves the position, so a page with nothing to set writes
- * nothing, and a restart re-reads from the last page that set a digest.
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<CharacterPassResult | undefined>} `batches` and `rowsChanged` count the pages that set digests
- *   and the groups set.
- */
-export async function refreshGroupDigestTagIdsIfNeeded(directories) {
-    const entry = await getEntry(directories);
-    if (!entry) return;
-    const { db } = entry;
-    if (db.get('SELECT 1 FROM meta WHERE key = @key', { key: GROUP_DIGEST_TAG_IDS_REFRESHED_FLAG })) return { batches: 0, rowsChanged: 0 };
-
-    const label = 'Group digest_tag_ids refresh';
-    const saved = /** @type {{ value: string } | undefined} */ (db.get('SELECT value FROM meta WHERE key = @key', { key: GROUP_DIGEST_TAG_IDS_PROGRESS_KEY }));
-    let progressSaved = !!saved;
-    /** @type {string | null} */
-    let after = saved ? JSON.parse(saved.value).id : null;
-
-    let batches = 0;
-    let rowsChanged = 0;
-    for (;;) {
-        /** @type {{ id: string, digest_tag_ids: number | null }[]} */
-        const page = [];
-        const rows = after === null
-            ? db.iterate('SELECT id, digest_tag_ids FROM groups ORDER BY id LIMIT @limit', { limit: DELETED_TAG_BATCH_SIZE })
-            : db.iterate('SELECT id, digest_tag_ids FROM groups WHERE id > @after ORDER BY id LIMIT @limit', { after, limit: DELETED_TAG_BATCH_SIZE });
-        for (const row of /** @type {Iterable<{ id: string, digest_tag_ids: number | null }>} */ (rows)) page.push(row);
-        if (page.length === 0) break;
-        const last = page[page.length - 1].id;
-        after = last;
-
-        const candidates = page.filter(row => !groupDigestTagIdsMatch(row.digest_tag_ids, groupDigestTagIdsFromTable(db, row.id))).map(row => row.id);
-
-        if (candidates.length > 0) {
-            /** @type {{ set: string[] }} */
-            const state = { set: [] };
-            db.transaction(() => {
-                // Reset here: a transaction that hits busy is rolled back and rerun.
-                state.set = [];
-                for (const id of candidates) {
-                    if (!syncGroupDigestTagIdsFromTable(db, id)) continue;
-                    state.set.push(id);
-                    insertGroupChange(db, id);
-                }
-                if (state.set.length === 0) return;
-                setMetaSync(db, GROUP_DIGEST_TAG_IDS_PROGRESS_KEY, JSON.stringify({ id: last }));
-            });
-            if (state.set.length > 0) {
-                progressSaved = true;
-                batches++;
-                rowsChanged += state.set.length;
-                if (batches % MIGRATION_PASSIVE_CHECKPOINT_EVERY_BATCHES === 0 && !isReadOnlyMode()) db.get('PRAGMA wal_checkpoint(PASSIVE)');
-                console.warn(color.yellow(`[character-metadata] ${label}: set digest_tag_ids from group_tags on ${state.set.length} group(s) whose stored one was NULL or stale:\n${state.set.map(id => `  ${id}`).join('\n')}`));
-            }
-        }
-        await delay(MIGRATION_BATCH_PAUSE_MS);
-        if (page.length < DELETED_TAG_BATCH_SIZE) break;
-    }
-
-    db.transaction(() => {
-        setMetaSync(db, GROUP_DIGEST_TAG_IDS_REFRESHED_FLAG, String(Date.now()));
-        if (progressSaved) db.run('DELETE FROM meta WHERE key = @key', { key: GROUP_DIGEST_TAG_IDS_PROGRESS_KEY });
-    });
-    if (!isReadOnlyMode()) db.checkpoint();
-    return { batches, rowsChanged };
 }
 
 const ENTITY_COUNT_FILL_BATCH_SIZE = 1000;
@@ -6935,83 +6499,6 @@ export async function fillEntityCountsIfNeeded(directories) {
     return { batches, rowsChanged };
 }
 
-// One-time migration off tags.json (removed entirely, not just drained). Must run after bootstrapIfNeeded()
-// AND bootstrapGroupsIfNeeded() since it classifies tag_map keys against those tables; an unmatched key is
-// dropped with a warning. On success tags.json is renamed to `tags.json.migrated`, not deleted. Gated by a meta
-// flag, set only if nothing failed; otherwise tags.json stays in place and the whole migration, which is
-// idempotent, reruns from the start next boot.
-/**
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<CharacterPassResult | undefined>}
- */
-export async function migrateTagsJsonIfNeeded(directories) {
-    const entry = await getEntry(directories);
-    if (!entry) return;
-
-    const already = (/** @type {{ value: string } | undefined} */ (entry.db.get('SELECT value FROM meta WHERE key = \'tags_json_migrated\'')));
-    if (already) return { batches: 0, rowsChanged: 0 };
-
-    const tagsJsonPath = path.join(directories.root, TAGS_FILE);
-    if (!fs.existsSync(tagsJsonPath)) {
-        setMetaSync(entry.db, 'tags_json_migrated', String(Date.now()));
-        return { batches: 0, rowsChanged: 0 };
-    }
-    // An install that had a tags.json, readable or not, isn't fresh, so it never gets the default tags.
-    entry.db.run('DELETE FROM meta WHERE key = @key', { key: TAGS_SEED_PENDING_KEY });
-
-    /** @type {{ tags?: TagDefinitionInput[], tag_map?: Record<string, string[]> }} */
-    let parsed;
-    try {
-        parsed = JSON.parse(fs.readFileSync(tagsJsonPath, 'utf8'));
-    } catch (err) {
-        console.error('[character-metadata] Failed to parse tags.json during migration - leaving it in place and retrying next boot:', /** @type {any} */ (err).message);
-        return { batches: 0, rowsChanged: 0 };
-    }
-
-    const tagsArray = Array.isArray(parsed.tags) ? parsed.tags : [];
-    const tagMap = parsed.tag_map && typeof parsed.tag_map === 'object' ? parsed.tag_map : {};
-
-    // Only ids not already in `tags`: a definition saved after the server started listening is newer than
-    // tags.json's and wins. Nothing is deleted, so a rerun from the start is safe.
-    let insertedDefinitions = 0;
-    entry.db.transaction(() => {
-        // Reset here: a transaction that hits busy is rolled back and rerun.
-        insertedDefinitions = 0;
-        for (const raw of tagsArray) {
-            const tag = /** @type {TagDefinitionInput | null | undefined} */ (raw);
-            if (!tag || typeof tag.id !== 'string' || !tag.id) continue;
-            insertedDefinitions += entry.db.run(`INSERT OR IGNORE INTO tags ${TAG_ROW_VALUES_SQL}`, tagRowParams(tag)).changes;
-        }
-        if (insertedDefinitions > 0) {
-            logTagChangesSync(entry, null);
-        }
-    });
-    const imported = await importTagMap(entry, tagMap);
-    const { droppedKeys } = imported;
-    const batches = 1 + imported.batches;
-    const rowsChanged = insertedDefinitions + imported.rowsChanged;
-    if (imported.failedKeys === 0) {
-        setMetaSync(entry.db, 'tags_json_migrated', String(Date.now()));
-    }
-    if (!isReadOnlyMode()) entry.db.checkpoint();
-
-    if (droppedKeys.length > 0) {
-        console.warn(`[character-metadata] tags.json migration: ${droppedKeys.length} tag_map key(s) matched neither a known character nor a known group, dropped: ${droppedKeys.slice(0, 20).join(', ')}${droppedKeys.length > 20 ? ', ...' : ''}`);
-    }
-
-    if (imported.failedKeys > 0) {
-        console.warn(color.yellow(`[character-metadata] tags.json migration: ${imported.failedKeys} tag_map key(s) failed (listed above); not marked done and tags.json left in place, so it runs again from the start next boot.`));
-        return { batches, rowsChanged };
-    }
-
-    try {
-        fs.renameSync(tagsJsonPath, `${tagsJsonPath}.migrated`);
-    } catch (err) {
-        console.error('[character-metadata] Migrated tags.json successfully but could not rename it out of the way (safe to ignore - it is never read again):', /** @type {any} */ (err).message);
-    }
-    return { batches, rowsChanged };
-}
-
 const SETTINGS_TAGS_MIGRATED_FLAG = 'settings_tags_migrated';
 const SETTINGS_TAGS_IMPORT_BATCH_SIZE = 500;
 
@@ -7040,9 +6527,9 @@ function seedDefaultTagsIfPendingSync(entry, settings) {
         const tags = DEFAULT_TAG_NAMES
             .map(name => ({ id: crypto.randomUUID(), name, create_date: Date.now() }))
             .sort((a, b) => compareNameKeys(tagDefinitionNameKey(a), tagDefinitionNameKey(b)));
-        let next = nextTagSortOrderSync(entry);
+        let next = nextTagSortOrderSync(entry.db);
         for (const tag of tags) {
-            entry.db.run(`INSERT INTO tags ${TAG_ROW_VALUES_SQL}`, tagRowParams(next === null ? tag : { ...tag, sort_order: next++ }));
+            entry.db.run(`INSERT INTO tags ${TAG_ROW_VALUES_SQL}`, tagRowParams({ ...tag, sort_order: next++ }));
         }
         logTagChangesSync(entry, null);
         outcome.seeded = true;
@@ -7095,7 +6582,7 @@ async function importSettingsTagDefinitions(entry, label, tags) {
         }
         (Object.hasOwn(tag, 'sort_order') ? ordered : orderless).push(tag);
     }
-    // Stable, so tags with the same name key keep the list's order, as rowid does in fillTagSortOrdersIfNeeded().
+    // Stable, so tags with the same name key keep the list's order.
     orderless.sort((a, b) => compareNameKeys(tagDefinitionNameKey(a), tagDefinitionNameKey(b)));
     const sequence = [...ordered, ...orderless];
 
@@ -7121,7 +6608,7 @@ async function importSettingsTagDefinitions(entry, label, tags) {
             const marked = new Set();
             for (const row of /** @type {Generator<{ tag_id: string }>} */ (entry.db.iterate(`SELECT tag_id FROM tag_deletions WHERE tag_id IN (${placeholders})`, ids))) marked.add(row.tag_id);
             const settled = tagSortOrdersSettledSync(entry.db);
-            let next = nextTagSortOrderSync(entry);
+            let next = nextTagSortOrderSync(entry.db);
 
             for (const source of batch) {
                 const id = source.id;
@@ -7135,10 +6622,10 @@ async function importSettingsTagDefinitions(entry, label, tags) {
                 }
                 const tag = { ...source };
                 const assignOrder = !Object.hasOwn(tag, 'sort_order');
-                if (assignOrder && next !== null) tag.sort_order = next;
+                if (assignOrder) tag.sort_order = next;
                 const params = tagRowParams(tag);
                 entry.db.run(`INSERT INTO tags ${TAG_ROW_VALUES_SQL}`, params);
-                if (next !== null && params.sortOrder !== null && params.sortOrder >= next) next = params.sortOrder + 1;
+                if (params.sortOrder !== null && params.sortOrder >= next) next = params.sortOrder + 1;
                 if (!assignOrder && !settled) queueTagSortOrderValueSync(entry.db, id, tag.sort_order);
                 batchInserted.push(id);
             }
@@ -7552,7 +7039,7 @@ function liveTagIdByNameKeySync(db, nameKey, exceptId) {
  * first live one with its name, and is created when there is neither. An id under a deletion mark can't be reused,
  * so its tag is created under a new id: what a restore gives must not depend on how far finishDeletedTags() has got.
  * `overwrite` writes the backup's fields onto the stored tag as editTagDefinition() does, leaving out a name another
- * live tag has. A created tag gets its order as in importSettingsTagDefinitions(). Needs tagNameKeysReady().
+ * live tag has. A created tag gets its order as in importSettingsTagDefinitions().
  * @param {MetadataDbEntry} entry
  * @param {unknown[]} tags
  * @param {boolean} overwrite
@@ -7596,7 +7083,7 @@ async function restoreTagDefinitions(entry, tags, overwrite) {
             const done = emptyBatch();
             state.done = done;
             const settled = tagSortOrdersSettledSync(entry.db);
-            let next = nextTagSortOrderSync(entry);
+            let next = nextTagSortOrderSync(entry.db);
 
             for (const source of batch) {
                 const { id, name } = source;
@@ -7627,7 +7114,7 @@ async function restoreTagDefinitions(entry, tags, overwrite) {
                     if (outcome.refused === 'unreadable') done.unreadable.push({ id: existingId, name });
                     else if (outcome.written) done.updated.push(existingId);
                     const patchedOrder = Object.hasOwn(patch, 'sort_order') ? tagDerivedColumns(patch).sortOrder : null;
-                    if (next !== null && patchedOrder !== null && patchedOrder >= next) next = patchedOrder + 1;
+                    if (patchedOrder !== null && patchedOrder >= next) next = patchedOrder + 1;
                     continue;
                 }
 
@@ -7635,10 +7122,10 @@ async function restoreTagDefinitions(entry, tags, overwrite) {
                 if (newId !== id) done.actualIds.push([id, newId]);
                 const tag = { ...source, id: newId };
                 const assignOrder = !Object.hasOwn(tag, 'sort_order');
-                if (assignOrder && next !== null) tag.sort_order = next;
+                if (assignOrder) tag.sort_order = next;
                 const params = tagRowParams(tag);
                 entry.db.run(`INSERT INTO tags ${TAG_ROW_VALUES_SQL}`, params);
-                if (next !== null && params.sortOrder !== null && params.sortOrder >= next) next = params.sortOrder + 1;
+                if (params.sortOrder !== null && params.sortOrder >= next) next = params.sortOrder + 1;
                 if (!assignOrder && !settled) queueTagSortOrderValueSync(entry.db, newId, tag.sort_order);
                 done.created.push(newId);
             }
@@ -7673,13 +7160,11 @@ async function restoreTagDefinitions(entry, tags, overwrite) {
  * and a key that already has every tag listed for it isn't written. Everything not restored is in the result.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {{ tags: unknown[], tagMap: Record<string, unknown>, overwrite: boolean }} backup
- * @returns {Promise<(TagRestoreDefinitions & TagRestoreAssignments) | 'names-not-ready' | null>} 'names-not-ready',
- *   with nothing written, until fillTagNameKeysIfNeeded() has run: a backup tag can't be matched by name before.
+ * @returns {Promise<(TagRestoreDefinitions & TagRestoreAssignments) | null>}
  */
 export async function restoreTagBackup(directories, { tags, tagMap, overwrite }) {
     const entry = await getEntry(directories);
     if (!entry) return null;
-    if (!tagNameKeysReady(entry)) return 'names-not-ready';
 
     const { definitions, actualIds } = await restoreTagDefinitions(entry, tags, overwrite);
 
@@ -7739,20 +7224,6 @@ function tagDefinitionNameKey(tag) {
 }
 
 /**
- * Whether every tags row has its name_key and its index exists, so a name_key lookup finds every tag that has the
- * name. Once true it stays true: every write to tags sets name_key.
- * @param {MetadataDbEntry} entry
- * @returns {boolean}
- */
-function tagNameKeysReady(entry) {
-    if (entry.tagNameKeysReady === true) return true;
-    if (!entry.db.get('SELECT 1 FROM sqlite_master WHERE type = \'index\' AND name = \'tags_name_key\'')) return false;
-    if (entry.db.get('SELECT 1 FROM tags WHERE name_key IS NULL LIMIT 1')) return false;
-    entry.tagNameKeysReady = true;
-    return true;
-}
-
-/**
  * @param {unknown[]} cardTags
  * @returns {string[]}
  */
@@ -7768,35 +7239,28 @@ function cardTagNames(cardTags) {
  * @typedef {object} ResolvedCardTags
  * @property {string[]} tagIds
  * @property {string[]} toCreate Names no tag matches, for createCardTagsSync().
- * @property {string[]} held Names that can't be resolved while name keys are unfilled.
  * @property {{ key: string, id: string, data: string }[]} learned The definition of each tag read or created.
  */
 
 /**
  * Resolves card tag names to tag ids inside the caller's write transaction, writing nothing. A name matches a tag
  * whose name_key is its tagNameKey(), the first by rowid when several do (upstream's getTag() takes the first in
- * its tags array, which is creation order). While name keys are unfilled every name is held; after, a name no tag
- * matches is to be created.
+ * its tags array, which is creation order). A name no tag matches is to be created.
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  * @param {string[]} names From cardTagNames().
- * @param {object} options
- * @param {boolean} options.ready tagNameKeysReady(), read inside the same transaction.
+ * @param {object} [options]
  * @param {boolean} [options.onlyExisting] Never marks a name to be created.
  * @returns {ResolvedCardTags}
  */
-function resolveCardTagNamesSync(db, names, { ready, onlyExisting = false }) {
+function resolveCardTagNamesSync(db, names, { onlyExisting = false } = {}) {
     /** @type {ResolvedCardTags} */
-    const resolved = { tagIds: [], toCreate: [], held: [], learned: [] };
+    const resolved = { tagIds: [], toCreate: [], learned: [] };
     /** @type {Set<string>} */
     const seen = new Set();
     for (const name of names) {
         const key = tagNameKey(name);
         if (seen.has(key)) continue;
         seen.add(key);
-        if (!ready) {
-            resolved.held.push(name);
-            continue;
-        }
         // A marked tag with a merge target stands for that target; one with none matches nothing.
         const row = /** @type {{ id: string, data: string, merge_into: string | null } | undefined} */ (db.get(
             `SELECT t.id, t.data, d.merge_into FROM tags t LEFT JOIN tag_deletions d ON d.tag_id = t.id
@@ -7818,8 +7282,7 @@ function resolveCardTagNamesSync(db, names, { ready, onlyExisting = false }) {
 
 /**
  * Creates a tag for each of resolved.toCreate, adding it to resolved.tagIds and resolved.learned. Each gets the
- * sort_order upstream's importTags() -> createNewTag() gives it, one after another: max+1 (nextTagSortOrderSync()), or
- * none while that has no answer.
+ * sort_order upstream's importTags() -> createNewTag() gives it, one after another: max+1 (nextTagSortOrderSync()).
  * @param {MetadataDbEntry} entry
  * @param {ResolvedCardTags} resolved
  * @returns {string[]} The new tags' ids.
@@ -7827,10 +7290,10 @@ function resolveCardTagNamesSync(db, names, { ready, onlyExisting = false }) {
 function createCardTagsSync(entry, resolved) {
     const { db } = entry;
     // Each tag inserted is the new max, so the next one's max+1 is one more.
-    let sortOrder = resolved.toCreate.length > 0 ? nextTagSortOrderSync(entry) : null;
+    let sortOrder = resolved.toCreate.length > 0 ? nextTagSortOrderSync(db) : 0;
     const created = resolved.toCreate.map((name) => {
         const id = crypto.randomUUID();
-        const params = tagRowParams(sortOrder === null ? { id, name, create_date: Date.now() } : { id, name, create_date: Date.now(), sort_order: sortOrder++ });
+        const params = tagRowParams({ id, name, create_date: Date.now(), sort_order: sortOrder++ });
         db.run(`INSERT INTO tags ${TAG_ROW_VALUES_SQL}`, params);
         resolved.learned.push({ key: params.nameKey, id, data: params.data });
         return id;
@@ -7844,26 +7307,13 @@ function createCardTagsSync(entry, resolved) {
 }
 
 /**
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- * @param {string} avatar
- * @param {string[]} names
- * @param {boolean} onlyExisting
- */
-function holdCardTagNamesSync(db, avatar, names, onlyExisting) {
-    for (const name of names) {
-        db.run('INSERT OR IGNORE INTO tag_names_held (character_id, name, only_existing) VALUES (@characterId, @name, @onlyExisting)', { characterId: avatar, name, onlyExisting: onlyExisting ? 1 : 0 });
-    }
-}
-
-/**
- * Creates resolved's new tags, assigns every resolved tag to a characters row and holds its unresolved names.
+ * Creates resolved's new tags and assigns every resolved tag to a characters row.
  * @param {MetadataDbEntry} entry
  * @param {string} avatar
  * @param {ResolvedCardTags} resolved
- * @param {boolean} onlyExisting
  * @returns {number} How many tags it created.
  */
-function writeResolvedCardTagsSync(entry, avatar, resolved, onlyExisting) {
+function writeResolvedCardTagsSync(entry, avatar, resolved) {
     const { db } = entry;
     const created = createCardTagsSync(entry, resolved).length;
     let assigned = false;
@@ -7871,7 +7321,6 @@ function writeResolvedCardTagsSync(entry, avatar, resolved, onlyExisting) {
         if (insertTagRowSync(db, 'character_tags', avatar, tagId)) assigned = true;
     }
     if (assigned) logCharacterTagIdsChangedSync(db, avatar);
-    holdCardTagNamesSync(db, avatar, resolved.held, onlyExisting);
     return created;
 }
 
@@ -7922,86 +7371,10 @@ function groupDigestTagIdsMatch(stored, digestTagIds) {
     return stored !== null && Number(stored) === digestTagIds;
 }
 
-const TAG_NAME_KEY_FILL_BATCH_SIZE = 1000;
-const HELD_TAG_NAMES_BATCH_SIZE = 500;
-
-/**
- * One-time pass: builds name_key's index, fills name_key on every tags row that lacks it, then resolves and assigns
- * every held card tag name (tag_names_held). A name is held only while some row lacks its key, and the fill's last
- * batch commits before the first held name is read here, so no name is held after this pass has drained them.
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<CharacterPassResult | undefined>}
- */
-export async function fillTagNameKeysIfNeeded(directories) {
-    const entry = await getEntry(directories);
-    if (!entry) return;
-
-    entry.db.run('CREATE INDEX IF NOT EXISTS tags_name_key ON tags(name_key)');
-
-    let batches = 0;
-    let rowsChanged = 0;
-    for (;;) {
-        let filled = 0;
-        entry.db.transaction(() => {
-            filled = 0;
-            const rows = /** @type {{ id: string, data: string }[]} */ ([...entry.db.iterate('SELECT id, data FROM tags WHERE name_key IS NULL LIMIT @limit', { limit: TAG_NAME_KEY_FILL_BATCH_SIZE })]);
-            for (const { id, data } of rows) {
-                let tag = null;
-                try {
-                    tag = JSON.parse(data);
-                } catch {
-                    // Unparseable: it has no name to match, so it gets the key no card tag name has.
-                }
-                writeRowIfChanged(entry.db, 'tags', { id }, { name_key: tagDefinitionNameKey(tag) });
-                filled++;
-            }
-        });
-        if (filled === 0) break;
-        batches++;
-        rowsChanged += filled;
-        await delay(MIGRATION_BATCH_PAUSE_MS);
-    }
-
-    for (;;) {
-        /** @type {{ character_id: string, name: string }[]} */
-        let dropped = [];
-        let drained = 0;
-        entry.db.transaction(() => {
-            dropped = [];
-            drained = 0;
-            const held = /** @type {{ character_id: string, name: string, only_existing: number }[]} */ ([...entry.db.iterate('SELECT character_id, name, only_existing FROM tag_names_held ORDER BY character_id, name LIMIT @limit', { limit: HELD_TAG_NAMES_BATCH_SIZE })]);
-            for (const { character_id: characterId, name, only_existing: onlyExisting } of held) {
-                entry.db.run('DELETE FROM tag_names_held WHERE character_id = @characterId AND name = @name', { characterId, name });
-                drained++;
-                if (!entry.db.get('SELECT 1 FROM characters WHERE id = @id', { id: characterId })) {
-                    dropped.push({ character_id: characterId, name });
-                    continue;
-                }
-                const resolved = resolveCardTagNamesSync(entry.db, [name], { ready: true, onlyExisting: !!onlyExisting });
-                writeResolvedCardTagsSync(entry, characterId, resolved, !!onlyExisting);
-            }
-        });
-        if (dropped.length > 0) {
-            console.warn(color.yellow(`[character-metadata] Held card tag names whose character no longer exists, not assigned:\n${dropped.map(d => `  ${d.character_id}: ${d.name}`).join('\n')}`));
-        }
-        if (drained === 0) break;
-        batches++;
-        rowsChanged += drained;
-        await delay(MIGRATION_BATCH_PAUSE_MS);
-    }
-
-    return { batches, rowsChanged };
-}
-
-export const TAG_DERIVED_COLUMNS_FILLED_FLAG = 'tag_derived_columns_filled_v1';
-// The rowid of the last tags row the fill has passed. Every row with rowid <= it has its derived columns: a row
-// keeps its rowid, and every tags write sets the columns (TAG_ROW_VALUES_SQL), whatever rowid it lands on.
-const TAG_DERIVED_COLUMNS_FILL_UPTO_KEY = `${TAG_DERIVED_COLUMNS_FILLED_FLAG}_upto`;
-const TAG_DERIVED_COLUMNS_FILL_BATCH_SIZE = 1000;
-
-// The indexes tag pages are read through by keyset, besides tags_name_key. tags is a rowid table, so each one ends
-// in rowid without naming it (SQLite rejects naming it): ON tags(sort_order) is (sort_order, rowid).
-const TAG_QUERY_INDEXES_SQL = `
+// The indexes tags are looked up by name and read in pages through, by keyset. tags is a rowid table, so each one
+// ends in rowid without naming it (SQLite rejects naming it): ON tags(sort_order) is (sort_order, rowid).
+const TAG_INDEXES_SQL = `
+    CREATE INDEX IF NOT EXISTS tags_name_key ON tags(name_key);
     CREATE INDEX IF NOT EXISTS tags_sort_order ON tags(sort_order);
     CREATE INDEX IF NOT EXISTS tags_unordered_name_key ON tags(name_key) WHERE sort_order IS NULL;
     CREATE INDEX IF NOT EXISTS tags_usage_count ON tags(usage_count DESC, name_key);
@@ -8013,131 +7386,6 @@ const TAG_QUERY_INDEXES_SQL = `
     CREATE INDEX IF NOT EXISTS tags_used_unordered_name_key ON tags(name_key) WHERE sort_order IS NULL AND usage_count > 0;
     CREATE INDEX IF NOT EXISTS tags_used_name_key ON tags(name_key) WHERE usage_count > 0;
 `;
-
-/**
- * One-time pass: builds TAG_QUERY_INDEXES_SQL, then sets sort_order, folder_type and is_folder (tagDerivedColumns()
- * of data) and usage_count (the id's tag_usage.count, 0 without a row) on every tags row past the frontier, and
- * marks the fill done once no row is left past it.
- *
- * Each page is read to the end and written in one transaction, so a live write to a row can't be overwritten with
- * columns derived from its old data. A restart resumes from the frontier. Each tag whose sort_order is present but
- * has no order (a non-numeric string, NaN or an object) is logged once, with its raw value.
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<CharacterPassResult | undefined>} `batches` counts the transactions that moved the frontier or
- *   marked the fill done; `rowsChanged` the rows whose columns were written.
- */
-export async function fillTagDerivedColumnsIfNeeded(directories) {
-    const entry = await getEntry(directories);
-    if (!entry) return;
-    const { db } = entry;
-    // Every run, so a store filled before an index was added gets it here, in the worker.
-    db.exec(TAG_QUERY_INDEXES_SQL);
-    if (db.get('SELECT 1 FROM meta WHERE key = @key', { key: TAG_DERIVED_COLUMNS_FILLED_FLAG })) return { batches: 0, rowsChanged: 0 };
-
-    const saved = /** @type {{ value: string } | undefined} */ (db.get('SELECT value FROM meta WHERE key = @key', { key: TAG_DERIVED_COLUMNS_FILL_UPTO_KEY }));
-    /** @type {number | null} */
-    let after = saved ? Number(saved.value) : null;
-
-    let batches = 0;
-    let rowsChanged = 0;
-    for (;;) {
-        /** @type {{ changed: number, unordered: string[], last: number | null, done: boolean }} */
-        const state = { changed: 0, unordered: [], last: after, done: false };
-        db.transaction(() => {
-            // Reset here: a transaction that hits busy is rolled back and rerun.
-            state.changed = 0;
-            state.unordered = [];
-            state.last = after;
-            state.done = false;
-            const page = /** @type {{ rowid: number, id: string, data: string }[]} */ ([...(after === null
-                ? db.iterate('SELECT rowid, id, data FROM tags ORDER BY rowid LIMIT @limit', { limit: TAG_DERIVED_COLUMNS_FILL_BATCH_SIZE })
-                : db.iterate('SELECT rowid, id, data FROM tags WHERE rowid > @after ORDER BY rowid LIMIT @limit', { after, limit: TAG_DERIVED_COLUMNS_FILL_BATCH_SIZE }))]);
-            for (const { rowid, id, data } of page) {
-                /** @type {unknown} */
-                let tag = null;
-                try {
-                    tag = JSON.parse(data);
-                } catch {
-                    // Unparseable: derived as data with no fields, as name_key's fill does.
-                }
-                const { sortOrder, folderType, isFolder } = tagDerivedColumns(tag);
-                const rawOrder = tag !== null && typeof tag === 'object' ? /** @type {Record<string, unknown>} */ (tag).sort_order : undefined;
-                if (rawOrder !== undefined && sortOrder === null) {
-                    const name = /** @type {Record<string, unknown>} */ (tag).name;
-                    state.unordered.push(`  ${id} (${typeof name === 'string' ? name : JSON.stringify(name)}): ${JSON.stringify(rawOrder)}`);
-                }
-                const usage = /** @type {{ count: number } | undefined} */ (db.get('SELECT count FROM tag_usage WHERE tag_id = @id', { id }));
-                if (writeRowIfChanged(db, 'tags', { rowid }, {
-                    sort_order: sortOrder, folder_type: folderType, is_folder: isFolder, usage_count: usage?.count ?? 0,
-                })) state.changed++;
-            }
-            if (page.length > 0) {
-                state.last = page[page.length - 1].rowid;
-                setMetaSync(db, TAG_DERIVED_COLUMNS_FILL_UPTO_KEY, String(state.last));
-            }
-            if (page.length < TAG_DERIVED_COLUMNS_FILL_BATCH_SIZE) {
-                setMetaSync(db, TAG_DERIVED_COLUMNS_FILLED_FLAG, String(Date.now()));
-                db.run('DELETE FROM meta WHERE key = @key', { key: TAG_DERIVED_COLUMNS_FILL_UPTO_KEY });
-                state.done = true;
-            }
-        });
-        batches++;
-        rowsChanged += state.changed;
-        if (state.unordered.length > 0) {
-            console.warn(color.yellow(`[character-metadata] Tag derived columns fill: ${state.unordered.length} tag(s) whose sort_order is non-numeric, NaN or an object, so it has no sort_order and sorts alphabetically with the tags that have none:\n${state.unordered.join('\n')}`));
-        }
-        if (batches % MIGRATION_PASSIVE_CHECKPOINT_EVERY_BATCHES === 0 && !isReadOnlyMode()) db.get('PRAGMA wal_checkpoint(PASSIVE)');
-        if (state.done) break;
-        after = state.last;
-        await delay(MIGRATION_BATCH_PAUSE_MS);
-    }
-
-    if (!isReadOnlyMode()) db.checkpoint();
-    return { batches, rowsChanged };
-}
-
-/**
- * Whether every tags row has name_key and the derived columns, and their indexes exist, so tags can be paged
- * through them. Once true it stays true: every tags write sets all of those columns.
- * @param {MetadataDbEntry} entry
- * @returns {boolean}
- */
-function tagQueryColumnsReady(entry) {
-    if (entry.tagQueryColumnsReady === true) return true;
-    if (!entry.db.get('SELECT 1 FROM meta WHERE key = @key', { key: TAG_DERIVED_COLUMNS_FILLED_FLAG })) return false;
-    if (!tagNameKeysReady(entry)) return false;
-    entry.tagQueryColumnsReady = true;
-    return true;
-}
-
-/**
- * Whether the tags_folder_usage_count index exists. A store filled before it was added gets it from the next
- * fillTagDerivedColumnsIfNeeded() run; until then a most-used walk of folders checks is_folder per row.
- * @param {MetadataDbEntry} entry
- * @returns {boolean}
- */
-function tagFolderUsageIndexReady(entry) {
-    if (entry.tagFolderUsageIndex === true) return true;
-    if (!entry.db.get('SELECT 1 FROM sqlite_master WHERE type = \'index\' AND name = \'tags_folder_usage_count\'')) return false;
-    entry.tagFolderUsageIndex = true;
-    return true;
-}
-
-/**
- * tagQueryColumnsReady() for the store.
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<boolean>}
- */
-export async function areTagQueryColumnsReady(directories) {
-    const entry = await getEntry(directories);
-    return !!entry && tagQueryColumnsReady(entry);
-}
-
-export const TAG_SORT_ORDERS_FILLED_FLAG = 'tag_sort_orders_filled_v1';
-// JSON of the pass's place: { phase: 'unordered', k, r }, the (name_key, rowid) of the last tag without a
-// sort_order it passed, or { phase: 'ties', s }, the sort_order up to which (s included) it has spread every tie.
-const TAG_SORT_ORDERS_FILL_AT_KEY = `${TAG_SORT_ORDERS_FILLED_FLAG}_at`;
-const TAG_SORT_ORDERS_FILL_BATCH_SIZE = 1000;
 
 /**
  * @param {string} data A tags row's data.
@@ -8209,307 +7457,12 @@ function valuesBefore(base, count) {
 }
 
 /**
- * Values for ranks 1..count-1 of `count` tags tied at `value`, spread evenly up to `next` (the next sort_order
- * above them; null when none is), rank 0 keeping `value`.
- * @param {number} value
- * @param {number | null} next
- * @param {number} count
- * @returns {number[] | null} null when there's no room for distinct values.
- */
-function spreadTiedValues(value, next, count) {
-    /** @type {number[]} */
-    let values;
-    if (next === null) {
-        values = valuesAfter(value, count - 1);
-        if (values.length < count - 1) return null;
-    } else {
-        values = [];
-        for (let i = 1; i < count; i++) values.push(value + (next - value) * (i / count));
-    }
-    let previous = value;
-    for (const v of values) {
-        if (!Number.isFinite(v) || v <= previous) return null;
-        previous = v;
-    }
-    return next !== null && previous >= next ? null : values;
-}
-
-/**
  * @param {string} id
  * @param {Record<string, unknown> | null} tag
  */
 function tagWarningLabel(id, tag) {
     const name = tag?.name;
     return `${id} (${typeof name === 'string' ? name : JSON.stringify(name)})`;
-}
-
-/**
- * Logs every tag tied at `value`, which the pass leaves tied.
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- * @param {number} value
- */
-async function warnTagsLeftTied(db, value) {
-    /** @type {number | null} */
-    let after = null;
-    for (;;) {
-        const page = /** @type {{ rowid: number, id: string, data: string }[]} */ ([...(after === null
-            ? db.iterate('SELECT rowid, id, data FROM tags WHERE sort_order = @value ORDER BY rowid LIMIT @limit', { value, limit: TAG_SORT_ORDERS_FILL_BATCH_SIZE })
-            : db.iterate('SELECT rowid, id, data FROM tags WHERE sort_order = @value AND rowid > @after ORDER BY rowid LIMIT @limit', { value, after, limit: TAG_SORT_ORDERS_FILL_BATCH_SIZE }))]);
-        if (page.length === 0) return;
-        console.warn(color.yellow(`[character-metadata] Tag sort_order fill: ${page.length} tag(s) left tied at sort_order ${value}: there is no room for distinct values between it and the next one. They keep their order (insertion order):\n${page.map(row => `  ${tagWarningLabel(row.id, parseTagObject(row.data))}`).join('\n')}`));
-        after = page[page.length - 1].rowid;
-        if (page.length < TAG_SORT_ORDERS_FILL_BATCH_SIZE) return;
-        await delay(MIGRATION_BATCH_PAUSE_MS);
-    }
-}
-
-/**
- * Spreads the tags tied at `value` when there are more than a batch of them: counts them in bounded reads, then
- * writes them from the highest rowid down, so at every commit the tags still tied sit below the ones already
- * spread, in the same order. Each batch reads the next value above `value` live and spreads the rest below it,
- * so a tag written there meanwhile keeps its place. Tags a stale count leaves tied are found again by the walk.
- * @param {MetadataDbEntry} entry
- * @param {number} value
- * @param {{ batches: number, rowsChanged: number }} totals Added to.
- * @returns {Promise<'spread' | 'no-room'>}
- */
-async function spreadLargeTie(entry, value, totals) {
-    const { db } = entry;
-    let remaining = 0;
-    /** @type {number | null} */
-    let after = null;
-    for (;;) {
-        const page = /** @type {number[]} */ ([...(after === null
-            ? db.iterate('SELECT rowid FROM tags WHERE sort_order = @value ORDER BY rowid LIMIT @limit', { value, limit: TAG_SORT_ORDERS_FILL_BATCH_SIZE })
-            : db.iterate('SELECT rowid FROM tags WHERE sort_order = @value AND rowid > @after ORDER BY rowid LIMIT @limit', { value, after, limit: TAG_SORT_ORDERS_FILL_BATCH_SIZE }))]
-            .map(row => /** @type {{ rowid: number }} */ (row).rowid));
-        remaining += page.length;
-        if (page.length < TAG_SORT_ORDERS_FILL_BATCH_SIZE) break;
-        after = page[page.length - 1];
-        await delay(MIGRATION_BATCH_PAUSE_MS);
-    }
-
-    /** @type {number | null} */
-    let below = null;
-    for (;;) {
-        /** @type {{ written: number, last: number | null, finished: boolean, noRoom: boolean }} */
-        const state = { written: 0, last: below, finished: false, noRoom: false };
-        db.transaction(() => {
-            // Reset here: a transaction that hits busy is rolled back and rerun.
-            state.written = 0;
-            state.last = below;
-            state.finished = false;
-            state.noRoom = false;
-            const nextRow = /** @type {{ next: number | null }} */ (db.get('SELECT MIN(sort_order) AS next FROM tags WHERE sort_order > @value', { value }));
-            const page = /** @type {{ rowid: number, id: string, data: string }[]} */ ([...(below === null
-                ? db.iterate('SELECT rowid, id, data FROM tags WHERE sort_order = @value ORDER BY rowid DESC LIMIT @limit', { value, limit: TAG_SORT_ORDERS_FILL_BATCH_SIZE })
-                : db.iterate('SELECT rowid, id, data FROM tags WHERE sort_order = @value AND rowid < @below ORDER BY rowid DESC LIMIT @limit', { value, below, limit: TAG_SORT_ORDERS_FILL_BATCH_SIZE }))]);
-            const values = spreadTiedValues(value, nextRow.next, remaining);
-            if (!values) {
-                state.noRoom = true;
-                return;
-            }
-            for (const row of page) {
-                const rank = remaining - 1 - state.written;
-                if (rank < 1) break;
-                // Stored data under a sort_order is always an object: tagDerivedColumns() gives any other NULL.
-                writeTagSortOrderSync(db, row.rowid, /** @type {Record<string, unknown>} */ (parseTagObject(row.data)), values[rank - 1]);
-                state.written++;
-                state.last = row.rowid;
-            }
-            if (state.written > 0) {
-                logTagChangesSync(entry, null);
-            }
-            state.finished = page.length < TAG_SORT_ORDERS_FILL_BATCH_SIZE || state.written < page.length;
-        });
-        if (state.noRoom) {
-            await warnTagsLeftTied(db, value);
-            return 'no-room';
-        }
-        totals.batches++;
-        totals.rowsChanged += state.written;
-        remaining -= state.written;
-        below = state.last;
-        if (state.finished) return 'spread';
-        await delay(MIGRATION_BATCH_PAUSE_MS);
-    }
-}
-
-/**
- * One-time pass giving every tag a sort_order of its own, so a move can place a tag between two neighbours. Waits
- * until the derived columns are filled and tags.json is migrated: before that, sort_order's column isn't complete
- * and tags.json may still bring tags without one.
- *
- * 1. Tags without a sort_order get one, continuing after the current max in the order they display: by
- *    (name_key, rowid) after every ordered tag. A tag whose sort_order is present but has no order loses that raw
- *    value, which is logged; one whose data isn't a JSON object is left without one and logged.
- * 2. Tags sharing a sort_order are spread into distinct values in rowid order (upstream's insertion order), up to
- *    the next value above them, the first keeping its value. A tie with no room between it and the next value is
- *    left tied and logged.
- *
- * Every write changes a row's order value without changing the order, so each commit shows the order the user
- * sees. Each page is read to the end and written in one transaction. A restart resumes from the place kept in meta.
- *
- * 3. Once the flag is set, the moves queued in tag_pending_moves while the pass ran (moveTagDefinition()) are applied
- *    in arrival order (drainTagPendingMoves()). A run that finds the flag already set applies what is left of them.
- *    While a reorder pass is recorded, neither applies anything: that pass applies them when it ends.
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<CharacterPassResult | undefined>} `batches` counts the transactions that wrote or moved the
- *   place; `rowsChanged` the tags written.
- */
-export async function fillTagSortOrdersIfNeeded(directories) {
-    const entry = await getEntry(directories);
-    if (!entry) return;
-    const { db } = entry;
-    if (db.get('SELECT 1 FROM meta WHERE key = @key', { key: TAG_SORT_ORDERS_FILLED_FLAG })) {
-        const totals = { batches: 0, rowsChanged: 0 };
-        await drainTagPendingMoves(entry, directories, totals);
-        return totals;
-    }
-    if (!tagQueryColumnsReady(entry) || !db.get('SELECT 1 FROM meta WHERE key = \'tags_json_migrated\'')) {
-        console.log(color.cyan('[character-metadata] Tag sort_order fill: waiting for the tag query columns fill and the tags.json migration to finish.'));
-        return { batches: 0, rowsChanged: 0 };
-    }
-
-    const saved = /** @type {{ value: string } | undefined} */ (db.get('SELECT value FROM meta WHERE key = @key', { key: TAG_SORT_ORDERS_FILL_AT_KEY }));
-    /** @type {{ phase: 'unordered', k: string, r: number } | { phase: 'unordered' } | { phase: 'ties', s: number | null }} */
-    let at = saved ? JSON.parse(saved.value) : { phase: 'unordered' };
-
-    const totals = { batches: 0, rowsChanged: 0 };
-    const pause = async () => {
-        if (totals.batches % MIGRATION_PASSIVE_CHECKPOINT_EVERY_BATCHES === 0 && !isReadOnlyMode()) db.get('PRAGMA wal_checkpoint(PASSIVE)');
-        await delay(MIGRATION_BATCH_PAUSE_MS);
-    };
-    /** @param {typeof at} next */
-    const saveAt = next => setMetaSync(db, TAG_SORT_ORDERS_FILL_AT_KEY, JSON.stringify(next));
-
-    while (at.phase === 'unordered') {
-        const from = at;
-        /** @type {{ written: number, next: typeof at, replaced: string[], unwritable: string[], unplaced: string[] }} */
-        const state = { written: 0, next: from, replaced: [], unwritable: [], unplaced: [] };
-        db.transaction(() => {
-            // Reset here: a transaction that hits busy is rolled back and rerun.
-            Object.assign(state, { written: 0, next: from, replaced: [], unwritable: [], unplaced: [] });
-            /** @type {{ rowid: number, id: string, data: string, name_key: string }[]} */
-            const page = [];
-            const read = (/** @type {string} */ where, /** @type {Record<string, unknown>} */ params) => {
-                const limit = TAG_SORT_ORDERS_FILL_BATCH_SIZE - page.length;
-                if (limit > 0) page.push(...db.iterate(`SELECT rowid, id, data, name_key FROM tags INDEXED BY tags_unordered_name_key
-                    WHERE sort_order IS NULL${where} ORDER BY name_key, rowid LIMIT @limit`, { ...params, limit }));
-            };
-            if ('k' in from) {
-                read(' AND name_key = @k AND rowid > @r', { k: from.k, r: from.r });
-                read(' AND name_key > @k', { k: from.k });
-            } else {
-                read('', {});
-            }
-            const max = /** @type {{ max: number | null }} */ (db.get('SELECT MAX(sort_order) AS max FROM tags')).max;
-            // Upstream newTag()'s Math.max(0, ...orders) + 1.
-            const values = valuesAfter(Math.max(0, max ?? 0), page.length);
-            for (const row of page) {
-                const tag = parseTagObject(row.data);
-                if (!tag) {
-                    state.unwritable.push(`  ${row.id}`);
-                    continue;
-                }
-                if (state.written >= values.length) {
-                    state.unplaced.push(`  ${tagWarningLabel(row.id, tag)}`);
-                    continue;
-                }
-                if (tag.sort_order !== undefined) state.replaced.push(`  ${tagWarningLabel(row.id, tag)}: ${JSON.stringify(tag.sort_order)}`);
-                writeTagSortOrderSync(db, row.rowid, tag, values[state.written]);
-                state.written++;
-            }
-            if (state.written > 0) {
-                logTagChangesSync(entry, null);
-            }
-            const last = page[page.length - 1];
-            state.next = page.length < TAG_SORT_ORDERS_FILL_BATCH_SIZE ? { phase: 'ties', s: null } : { phase: 'unordered', k: last.name_key, r: last.rowid };
-            saveAt(state.next);
-        });
-        totals.batches++;
-        totals.rowsChanged += state.written;
-        if (state.replaced.length > 0) {
-            console.warn(color.yellow(`[character-metadata] Tag sort_order fill: ${state.replaced.length} tag(s) whose sort_order had no order (non-numeric, NaN or an object) were given one; their old values:\n${state.replaced.join('\n')}`));
-        }
-        if (state.unwritable.length > 0) {
-            console.warn(color.yellow(`[character-metadata] Tag sort_order fill: ${state.unwritable.length} tag(s) whose stored data isn't a JSON object were left without a sort_order:\n${state.unwritable.join('\n')}`));
-        }
-        if (state.unplaced.length > 0) {
-            console.warn(color.yellow(`[character-metadata] Tag sort_order fill: ${state.unplaced.length} tag(s) were left without a sort_order: no finite value is left after the current max:\n${state.unplaced.join('\n')}`));
-        }
-        at = state.next;
-        await pause();
-    }
-
-    for (;;) {
-        const { s } = /** @type {{ phase: 'ties', s: number | null }} */ (at);
-        /** @type {{ written: number, s: number | null, large: number | null, noRoom: number[], done: boolean }} */
-        const state = { written: 0, s, large: null, noRoom: [], done: false };
-        db.transaction(() => {
-            // Reset here: a transaction that hits busy is rolled back and rerun.
-            Object.assign(state, { written: 0, s, large: null, noRoom: [], done: false });
-            // One row past the batch shows whether the page's last run goes on.
-            const page = /** @type {{ rowid: number, data: string, sort_order: number }[]} */ ([...(s === null
-                ? db.iterate('SELECT rowid, data, sort_order FROM tags INDEXED BY tags_sort_order WHERE sort_order IS NOT NULL ORDER BY sort_order, rowid LIMIT @limit', { limit: TAG_SORT_ORDERS_FILL_BATCH_SIZE + 1 })
-                : db.iterate('SELECT rowid, data, sort_order FROM tags INDEXED BY tags_sort_order WHERE sort_order > @s ORDER BY sort_order, rowid LIMIT @limit', { s, limit: TAG_SORT_ORDERS_FILL_BATCH_SIZE + 1 }))]);
-            const atEnd = page.length <= TAG_SORT_ORDERS_FILL_BATCH_SIZE;
-            /** @type {{ value: number, rows: typeof page }[]} */
-            const runs = [];
-            for (const row of page) {
-                if (runs.length > 0 && runs[runs.length - 1].value === row.sort_order) runs[runs.length - 1].rows.push(row);
-                else runs.push({ value: row.sort_order, rows: [row] });
-            }
-            const complete = atEnd ? runs.length : runs.length - 1;
-            if (!atEnd && complete === 0) {
-                state.large = runs[0].value;
-                return;
-            }
-            for (let i = 0; i < complete; i++) {
-                const { value, rows } = runs[i];
-                const values = rows.length > 1 ? spreadTiedValues(value, i + 1 < runs.length ? runs[i + 1].value : null, rows.length) : [];
-                if (!values) {
-                    state.noRoom.push(value);
-                    state.s = value;
-                    continue;
-                }
-                for (let rank = 1; rank < rows.length; rank++) {
-                    writeTagSortOrderSync(db, rows[rank].rowid, /** @type {Record<string, unknown>} */ (parseTagObject(rows[rank].data)), values[rank - 1]);
-                    state.written++;
-                }
-                state.s = rows.length > 1 ? values[values.length - 1] : value;
-            }
-            if (state.written > 0) {
-                logTagChangesSync(entry, null);
-            }
-            state.done = atEnd;
-            if (state.done) {
-                setMetaSync(db, TAG_SORT_ORDERS_FILLED_FLAG, String(Date.now()));
-                db.run('DELETE FROM meta WHERE key = @key', { key: TAG_SORT_ORDERS_FILL_AT_KEY });
-            } else {
-                saveAt({ phase: 'ties', s: state.s });
-            }
-        });
-        if (state.done) await drainTagPendingMoves(entry, directories, totals);
-        for (const value of state.noRoom) await warnTagsLeftTied(db, value);
-        if (state.large !== null) {
-            const outcome = await spreadLargeTie(entry, state.large, totals);
-            if (outcome === 'no-room') {
-                db.transaction(() => saveAt({ phase: 'ties', s: state.large }));
-                at = { phase: 'ties', s: state.large };
-            }
-            await pause();
-            continue;
-        }
-        totals.batches++;
-        totals.rowsChanged += state.written;
-        if (state.done) break;
-        at = { phase: 'ties', s: state.s };
-        await pause();
-    }
-
-    if (!isReadOnlyMode()) db.checkpoint();
-    return totals;
 }
 
 /** The rows a move's first renumbering window covers (tag-actions D11); it doubles while there's no room. */
@@ -8614,7 +7567,7 @@ function placeTagNextToSync(db, moved, tag, anchor, side, written) {
 
 /**
  * Numbers the tail (tags without a sort_order, by (name_key, rowid)) from its start through the anchor, after the
- * current max as fillTagSortOrdersIfNeeded() does, reading at most TAG_QUERY_WORK_CAP rows. The moved tag and rows
+ * current max, reading at most TAG_QUERY_WORK_CAP rows. The moved tag and rows
  * whose data isn't a JSON object stay in the tail.
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  * @param {TagMoveRow} anchor
@@ -8700,20 +7653,17 @@ const TAG_REORDER_PASS_LAST_ID_KEY = 'tag_reorder_pass_last_id';
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  * @returns {TagReorderPass | null}
  */
-function tagReorderPassSync(db) {
+export function tagReorderPassSync(db) {
     const row = /** @type {{ value: string } | undefined} */ (db.get('SELECT value FROM meta WHERE key = @key', { key: TAG_REORDER_PASS_KEY }));
     return row ? JSON.parse(row.value) : null;
 }
 
 /**
- * Whether a move can be applied now: fillTagSortOrdersIfNeeded() has finished (its flag is set), no reorder pass is
- * recorded, and no move is left queued.
+ * Whether a move can be applied now: no reorder pass is recorded and no move is left queued.
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  */
 function tagSortOrdersSettledSync(db) {
-    return !!db.get('SELECT 1 FROM meta WHERE key = @key', { key: TAG_SORT_ORDERS_FILLED_FLAG })
-        && tagReorderPassSync(db) === null
-        && !db.get('SELECT 1 FROM tag_pending_moves LIMIT 1');
+    return tagReorderPassSync(db) === null && !db.get('SELECT 1 FROM tag_pending_moves LIMIT 1');
 }
 
 /**
@@ -8990,17 +7940,29 @@ function moveTagSync(db, id, anchorId, side) {
 }
 
 /**
- * Logs what numbering the tail changed or skipped.
+ * The warnings for what numbering the tail changed or skipped.
+ * @param {TagTailLogs | null} logs
+ * @returns {string[]}
+ */
+export function tagTailNumberingWarnings(logs) {
+    const { replaced = [], unwritable = [] } = logs ?? {};
+    /** @type {string[]} */
+    const lines = [];
+    if (replaced.length > 0) {
+        lines.push(`[character-metadata] Tag move: ${replaced.length} tag(s) whose sort_order had no order (non-numeric, NaN or an object) were given one; their old values:\n${replaced.join('\n')}`);
+    }
+    if (unwritable.length > 0) {
+        lines.push(`[character-metadata] Tag move: ${unwritable.length} tag(s) whose stored data isn't a JSON object were left without a sort_order:\n${unwritable.join('\n')}`);
+    }
+    return lines;
+}
+
+/**
+ * Logs tagTailNumberingWarnings().
  * @param {TagTailLogs | null} logs
  */
 function warnTagTailNumbering(logs) {
-    const { replaced = [], unwritable = [] } = logs ?? {};
-    if (replaced.length > 0) {
-        console.warn(color.yellow(`[character-metadata] Tag move: ${replaced.length} tag(s) whose sort_order had no order (non-numeric, NaN or an object) were given one; their old values:\n${replaced.join('\n')}`));
-    }
-    if (unwritable.length > 0) {
-        console.warn(color.yellow(`[character-metadata] Tag move: ${unwritable.length} tag(s) whose stored data isn't a JSON object were left without a sort_order:\n${unwritable.join('\n')}`));
-    }
+    for (const line of tagTailNumberingWarnings(logs)) console.warn(color.yellow(line));
 }
 
 /**
@@ -9008,10 +7970,9 @@ function warnTagTailNumbering(logs) {
  * Only the moved tag's sort_order changes, unless there's no room next to the anchor: then a window of rows around
  * it is spread too. An anchor without a sort_order first gets one, along with the tail before it.
  *
- * Until fillTagSortOrdersIfNeeded() has finished, while a reorder pass is recorded, or while anything is queued
- * (tagSortOrdersSettledSync()), the move is only checked for what the order can't change ('same', a deleted or
- * missing id, an unreadable moved tag) and queued in tag_pending_moves, writing nothing else; the pass that ends
- * applies it.
+ * While a reorder pass is recorded, or while anything is queued (tagSortOrdersSettledSync()), the move is only
+ * checked for what the order can't change ('same', a deleted or missing id, an unreadable moved tag) and queued in
+ * tag_pending_moves, writing nothing else; the reorder pass applies it when it ends.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {unknown} id
  * @param {unknown} placement `{ before: anchorId }` or `{ after: anchorId }`.
@@ -9126,113 +8087,120 @@ function tagNameSync(db, id) {
 }
 
 /**
- * Applies tag_pending_moves in arrival order, one entry per transaction, deleting each (tag-actions D16, D18, D19).
- * An anchored entry is moved as moveTagDefinition() moves; a value entry's raw value is written as the tag's
- * sort_order in data, and coerced in the column.
- * An entry whose tag was deleted or is gone is dropped, and one whose tag is its own anchor does nothing, both
- * without a warning. After each entry, tag_pending_places is folded again from the entries left (refoldTagPendingSync()). Any other refusal leaves the tags as they are and is reported by reportTagMoveFailed(), once
- * per refusal.
- *
- * With no `passId`, it stops while a reorder pass is recorded. With one, it applies them for that pass
- * (runTagReorderPassIfNeeded()): it stops once another pass (or none) is recorded, and the transaction that finds the
- * table empty clears the pass record, so no entry is left queued with no pass to apply it (tag-actions D25.7).
- * @param {MetadataDbEntry} entry
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {{ batches: number, rowsChanged: number }} totals Gets a batch per entry and the rows it wrote.
- * @param {number | null} [passId]
- * @returns {Promise<'done' | 'held'>} done: the table was found empty (and, with `passId`, the pass cleared), and
- *   reportTagOrderSettled() was called if this call applied an entry or ran for a pass; held: stopped by the pass
- *   record.
+ * @typedef {object} PendingTagMoveOutcome
+ * @property {number} rows The tags rows written.
+ * @property {TagTailLogs | null} logs Set when the move numbered the tail.
+ * @property {TagMoveFailedPayload[]} failures One per refusal that wasn't a drop.
  */
-async function drainTagPendingMoves(entry, directories, totals, passId = null) {
-    const { db } = entry;
-    // So a store with nothing queued runs no transaction; each transaction below still reads its own entry.
-    if (passId === null && !db.get('SELECT 1 FROM tag_pending_moves LIMIT 1')) return 'done';
-    let entries = 0;
-    for (;;) {
-        /** @type {'done' | 'held'} */
-        let stop = 'done';
-        /** @type {{ seq: number, tag_id: string, side: 'before' | 'after' | null, anchor_id: string | null, value: string | null } | undefined} */
-        let pending;
-        /** @type {TagMoveOutcome | null} */
-        let moved = null;
-        let rows = 0;
-        /** @type {TagMoveFailedPayload[]} */
-        let failures = [];
+
+/**
+ * Applies the first tag_pending_moves entry inside the caller's transaction and deletes it (tag-actions D16, D18,
+ * D19), logging a tag_changes row per definition it changed. An anchored entry is moved as moveTagDefinition()
+ * moves; a value entry's raw value is written as the tag's sort_order in data, and coerced in the column. An entry
+ * whose tag was deleted or is gone is dropped, and one whose tag is its own anchor does nothing, both without a
+ * failure. Any other refusal leaves the tags as they are and comes back in `failures`. After the entry,
+ * tag_pending_places is folded again from the entries left (refoldTagPendingSync()).
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @returns {PendingTagMoveOutcome | null} null when the table is empty.
+ */
+export function applyFirstPendingTagMoveSync(db) {
+    const pending = /** @type {{ seq: number, tag_id: string, side: 'before' | 'after' | null, anchor_id: string | null, value: string | null } | undefined} */ (
+        db.get('SELECT seq, tag_id, side, anchor_id, value FROM tag_pending_moves ORDER BY seq LIMIT 1'));
+    if (!pending) return null;
+    /** @type {PendingTagMoveOutcome} */
+    const outcome = { rows: 0, logs: null, failures: [] };
+    /** @type {string[]} */
+    let changed = [];
+    const { tag_id: tagId, side, anchor_id: anchorId } = pending;
+    if (side !== null && anchorId !== null) {
         try {
-            db.transaction(() => {
-                // Reset here: a transaction that hits busy is rolled back and rerun.
-                moved = null;
-                rows = 0;
-                failures = [];
-                const pass = tagReorderPassSync(db);
-                if (passId === null ? pass !== null : pass?.id !== passId) {
-                    pending = undefined;
-                    stop = 'held';
-                    return;
-                }
-                pending = /** @type {typeof pending} */ (db.get('SELECT seq, tag_id, side, anchor_id, value FROM tag_pending_moves ORDER BY seq LIMIT 1'));
-                if (!pending) {
-                    stop = 'done';
-                    if (passId !== null) db.run('DELETE FROM meta WHERE key = @key', { key: TAG_REORDER_PASS_KEY });
-                    // One batch row for the whole pass: its batches log none of their own.
-                    if (passId !== null) logTagChangesSync(entry, null);
-                    return;
-                }
-                const { tag_id: tagId, side, anchor_id: anchorId } = pending;
-                if (side !== null && anchorId !== null) {
-                    moved = moveTagSync(db, tagId, anchorId, side);
-                    const { refused } = moved;
-                    if (refused.length > 0) {
-                        const dropped = refused.some(r => r.id === tagId && (r.reason === 'deleted' || r.reason === 'missing'))
-                            || refused.some(r => r.reason === 'same');
-                        if (!dropped) {
-                            const tagName = tagNameSync(db, tagId);
-                            const anchorName = tagNameSync(db, anchorId);
-                            failures = refused.map(r => ({
-                                tagId, tagName, anchorId, anchorName, refusedId: r.id,
-                                reason: /** @type {TagMoveFailedReason} */ (r.reason === 'missing' ? 'deleted' : r.reason),
-                            }));
-                        }
-                        // Rolls back what the move wrote; the entry is deleted in a transaction of its own below.
-                        throw new TagMoveRollback();
+            inItemSavepoint(db, () => {
+                const moved = moveTagSync(db, tagId, anchorId, side);
+                const { refused } = moved;
+                if (refused.length > 0) {
+                    const dropped = refused.some(r => r.id === tagId && (r.reason === 'deleted' || r.reason === 'missing'))
+                        || refused.some(r => r.reason === 'same');
+                    if (!dropped) {
+                        const tagName = tagNameSync(db, tagId);
+                        const anchorName = tagNameSync(db, anchorId);
+                        outcome.failures = refused.map(r => ({
+                            tagId, tagName, anchorId, anchorName, refusedId: r.id,
+                            reason: /** @type {TagMoveFailedReason} */ (r.reason === 'missing' ? 'deleted' : r.reason),
+                        }));
                     }
-                    rows = moved.rows;
-                } else {
-                    const value = JSON.parse(/** @type {string} */ (pending.value));
-                    const marked = !!db.get('SELECT 1 FROM tag_deletions WHERE tag_id = @id', { id: tagId });
-                    const row = /** @type {{ rowid: number, data: string } | undefined} */ (marked ? undefined
-                        : db.get('SELECT rowid, data FROM tags WHERE id = @id', { id: tagId }));
-                    const tag = row ? parseTagObject(row.data) : null;
-                    if (row && !tag) {
-                        failures = [{ tagId, tagName: null, anchorId: null, anchorName: null, refusedId: tagId, reason: 'unreadable' }];
-                    } else if (row && tag && !(Object.hasOwn(tag, 'sort_order') && JSON.stringify(tag.sort_order) === JSON.stringify(value))) {
-                        writeTagSortOrderSync(db, row.rowid, tag, value);
-                        rows = 1;
-                    }
+                    // Rolls back what the move wrote.
+                    throw new TagMoveRollback();
                 }
-                db.run('DELETE FROM tag_pending_moves WHERE seq = @seq', { seq: pending.seq });
-                refoldTagPendingSync(db);
-                if (rows > 0) {
-                    logTagChangesSync(entry, moved ? /** @type {TagMoveOutcome} */ (moved).written.map(w => w.id) : [tagId]);
-                }
+                outcome.rows = moved.rows;
+                outcome.logs = moved.logs;
+                changed = moved.written.map(w => w.id);
             });
         } catch (err) {
             if (!(err instanceof TagMoveRollback)) throw err;
-            const { seq } = /** @type {NonNullable<typeof pending>} */ (pending);
-            db.transaction(() => {
-                db.run('DELETE FROM tag_pending_moves WHERE seq = @seq', { seq });
-                refoldTagPendingSync(db);
-            });
         }
-        if (!pending) {
+    } else {
+        const value = JSON.parse(/** @type {string} */ (pending.value));
+        const marked = !!db.get('SELECT 1 FROM tag_deletions WHERE tag_id = @id', { id: tagId });
+        const row = /** @type {{ rowid: number, data: string } | undefined} */ (marked ? undefined
+            : db.get('SELECT rowid, data FROM tags WHERE id = @id', { id: tagId }));
+        const tag = row ? parseTagObject(row.data) : null;
+        if (row && !tag) {
+            outcome.failures = [{ tagId, tagName: null, anchorId: null, anchorName: null, refusedId: tagId, reason: 'unreadable' }];
+        } else if (row && tag && !(Object.hasOwn(tag, 'sort_order') && JSON.stringify(tag.sort_order) === JSON.stringify(value))) {
+            writeTagSortOrderSync(db, row.rowid, tag, value);
+            outcome.rows = 1;
+            changed = [tagId];
+        }
+    }
+    db.run('DELETE FROM tag_pending_moves WHERE seq = @seq', { seq: pending.seq });
+    refoldTagPendingSync(db);
+    if (outcome.rows > 0) insertTagChangesSync(db, changed);
+    return outcome;
+}
+
+/**
+ * Applies a reorder pass's tag_pending_moves (runTagReorderPassIfNeeded()) in arrival order, one entry per
+ * transaction (applyFirstPendingTagMoveSync()), reporting each failure by reportTagMoveFailed(). It stops once
+ * another pass (or none) is recorded, and the transaction that finds the table empty clears the pass record, so no
+ * entry is left queued with no pass to apply it (tag-actions D25.7).
+ * @param {MetadataDbEntry} entry
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {{ batches: number, rowsChanged: number }} totals Gets a batch per entry and the rows it wrote.
+ * @param {number} passId
+ * @returns {Promise<'done' | 'held'>} done: the table was found empty, the pass cleared and reportTagOrderSettled()
+ *   called; held: stopped by the pass record.
+ */
+async function drainTagPendingMoves(entry, directories, totals, passId) {
+    const { db } = entry;
+    for (;;) {
+        /** @type {{ stop: 'done' | 'held' | null, applied: PendingTagMoveOutcome | null }} */
+        const state = { stop: null, applied: null };
+        db.transaction(() => {
+            // Reset here: a transaction that hits busy is rolled back and rerun.
+            state.stop = null;
+            state.applied = null;
+            if (tagReorderPassSync(db)?.id !== passId) {
+                state.stop = 'held';
+                return;
+            }
+            state.applied = applyFirstPendingTagMoveSync(db);
+            if (state.applied) return;
+            state.stop = 'done';
+            db.run('DELETE FROM meta WHERE key = @key', { key: TAG_REORDER_PASS_KEY });
+            // One batch row for the whole pass: its batches log none of their own.
+            insertTagChangesSync(db, null);
+        });
+        if (state.stop === 'done') {
+            reportTagChanges(directories.root);
             // A pass rewrote every tag's sort_order even when its entries were all dropped.
-            const outcome = /** @type {'done' | 'held'} */ (stop);
-            if (outcome === 'done' && (passId !== null || entries > 0)) reportTagOrderSettled(directories.root);
-            return outcome;
+            reportTagOrderSettled(directories.root);
         }
-        entries++;
-        if (rows > 0) warnTagTailNumbering(/** @type {TagMoveOutcome | null} */ (moved)?.logs ?? null);
+        if (!state.applied) return state.stop ?? 'held';
+        const { rows, logs, failures } = state.applied;
+        if (rows > 0) {
+            reportTagChanges(directories.root);
+            warnTagTailNumbering(logs);
+        }
         for (const payload of failures) reportTagMoveFailed(directories.root, payload);
         totals.batches++;
         totals.rowsChanged += rows;
@@ -9300,8 +8268,7 @@ function warnTagReorderBatch(passId, { replaced, unwritable, unplaced }) {
 
 /**
  * The recorded reorder pass (tag-actions step 6, D3, D15, D16, D18, D19, D25), run in the migration worker after
- * reorderTagDefinitions() records it, and resumed from its place on a restart. Waits for fillTagSortOrdersIfNeeded()
- * to finish. Each batch re-reads the record, so a pass recorded meanwhile restarts the walk under its id, whatever
+ * reorderTagDefinitions() records it, and resumed from its place on a restart. Each batch re-reads the record, so a pass recorded meanwhile restarts the walk under its id, whatever
  * phase this one was in. Each batch reads its rows to the end, then writes them and the pass's place in one
  * transaction.
  *
@@ -9329,9 +8296,6 @@ export async function runTagReorderPassIfNeeded(directories) {
     const totals = { batches: 0, rowsChanged: 0 };
     const recorded = tagReorderPassSync(db);
     if (recorded === null) return totals;
-    if (!db.get('SELECT 1 FROM meta WHERE key = @key', { key: TAG_SORT_ORDERS_FILLED_FLAG })) {
-        return totals;
-    }
     db.exec(TAG_REORDER_PASS_INDEXES_SQL);
 
     const pause = async () => {
@@ -9638,20 +8602,18 @@ function tagNameMatchers(params) {
  * The phases a sort walks for a filter set, each through the index tags-paging D11 lists for it. A filter the
  * index doesn't fix is checked per row.
  * @param {TagQuerySort} sort
- * @param {{ used: boolean, folders: boolean, folderUsageIndex?: boolean }} filter folderUsageIndex: the
- *   tags_folder_usage_count index exists, so a most-used walk of folders reads only folder tags.
+ * @param {{ used: boolean, folders: boolean }} filter
  * @returns {TagWalkPhase[]}
  */
-function tagWalkPhases(sort, { used, folders, folderUsageIndex = false }) {
+function tagWalkPhases(sort, { used, folders }) {
     const folderWhere = folders ? ['is_folder = 1'] : [];
     if (sort === 'by_entries') {
-        const byFolder = folders && folderUsageIndex;
         return [{
             phase: 1,
-            index: byFolder ? 'tags_folder_usage_count' : 'tags_usage_count',
-            where: [...(byFolder ? folderWhere : []), ...(used ? ['usage_count > 0'] : [])],
+            index: folders ? 'tags_folder_usage_count' : 'tags_usage_count',
+            where: [...folderWhere, ...(used ? ['usage_count > 0'] : [])],
             keys: [{ column: 'usage_count', desc: true }, { column: 'name_key' }],
-            coversFolders: byFolder,
+            coversFolders: folders,
             coversUsed: used,
         }];
     }
@@ -9881,7 +8843,7 @@ function* tagRowWalkEvents(entry, params, order, pass, placed, names) {
     const walkAfter = after !== null && (placed || after.g === -1) ? { ...after, r: after.r - 1, g: /** @type {0} */ (0), i: 0 } : after;
     const isPastAfter = (/** @type {TagQueryPosition} */ position) => after === null || compareTagPositions(order, position, after) > 0;
     const shows = (/** @type {TagQueryRow} */ row) => tagRowPassesFilters(row, params, names);
-    const phases = tagWalkPhases(order, placed ? { used: false, folders: false } : { used, folders, folderUsageIndex: folders && tagFolderUsageIndexReady(entry) });
+    const phases = tagWalkPhases(order, placed ? { used: false, folders: false } : { used, folders });
     for (const phase of phases) {
         if (walkAfter !== null && walkAfter.phase > phase.phase) continue;
         const leadsWithName = phase.keys[0].column === 'name_key';
@@ -10093,14 +9055,12 @@ function queryTagsByIds(entry, params, pass) {
  * good only for the order it was made in (D25.8).
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {TagQueryParams} params
- * @returns {Promise<TagQueryResult | 'invalid-cursor' | 'not-ready' | null>} null when no SQLite
- *   engine is usable; 'invalid-cursor' for a manual cursor made in another order than the one read now; 'not-ready'
- *   until the derived columns are filled (tagQueryColumnsReady()), the one-time pass after an update.
+ * @returns {Promise<TagQueryResult | 'invalid-cursor' | null>} null when no SQLite engine is usable;
+ *   'invalid-cursor' for a manual cursor made in another order than the one read now.
  */
 export async function queryTags(directories, params) {
     const entry = await getEntry(directories);
     if (!entry) return null;
-    if (!tagQueryColumnsReady(entry)) return 'not-ready';
     const pass = params.sort === 'manual' ? tagQueryPassSync(entry.db) : null;
     if (params.sort === 'manual' && params.after) {
         const made = params.after.pass ?? null;
@@ -10177,12 +9137,11 @@ function tagCountsForIdsSync(entry, ids) {
  * @param {string} avatar
  * @param {object} [options]
  * @param {boolean} [options.onlyExisting] Resolves only tags matching an existing definition, never minting a new one.
- * @returns {Promise<{ tagIds: string[], tagDefinitions: object[], heldTagNames: string[] }>} tagDefinitions is
- * returned alongside tagIds because the client can't resolve an id to a tag it has never seen a definition for.
- * heldTagNames are names that can't be resolved until fillTagNameKeysIfNeeded() has run; it assigns them then.
+ * @returns {Promise<{ tagIds: string[], tagDefinitions: object[] }>} tagDefinitions is returned alongside tagIds
+ * because the client can't resolve an id to a tag it has never seen a definition for.
  */
 export async function seedCardTagsForSingleCharacter(directories, avatar, { onlyExisting = false } = {}) {
-    const none = { tagIds: [], tagDefinitions: [], heldTagNames: [] };
+    const none = { tagIds: [], tagDefinitions: [] };
     const entry = await getEntry(directories);
     if (!entry) return none;
 
@@ -10201,21 +9160,19 @@ export async function seedCardTagsForSingleCharacter(directories, avatar, { only
     if (names.length === 0) return none;
 
     /** @type {ResolvedCardTags} */
-    let resolved = { tagIds: [], toCreate: [], held: [], learned: [] };
+    let resolved = { tagIds: [], toCreate: [], learned: [] };
     /** @type {PendingRow | undefined} */
     let flushed;
     entry.db.transaction(() => {
         flushed = undefined;
-        resolved = resolveCardTagNamesSync(entry.db, names, { ready: tagNameKeysReady(entry), onlyExisting });
+        resolved = resolveCardTagNamesSync(entry.db, names, { onlyExisting });
         flushed = writeBufferedRowOverExistingSync(entry, avatar);
-        if (pending && !flushed && resolved.held.length === 0) {
+        if (pending && !flushed) {
             // Tag definitions go straight to the tags table; the row's assignments wait in the buffer (below).
             createCardTagsSync(entry, resolved);
             return;
         }
-        // Held names are resolved against the characters table, so the row can't stay in the buffer.
-        if (pending && !flushed) flushed = writeBufferedRowSync(entry, avatar);
-        writeResolvedCardTagsSync(entry, avatar, resolved, onlyExisting);
+        writeResolvedCardTagsSync(entry, avatar, resolved);
     });
     dropFromBuffer(entry, avatar, flushed);
 
@@ -10228,7 +9185,7 @@ export async function seedCardTagsForSingleCharacter(directories, avatar, { only
 
     const definitionsById = new Map(resolved.learned.map(({ id, data }) => [id, JSON.parse(data)]));
     const tagDefinitions = resolved.tagIds.map(id => definitionsById.get(id)).filter((t) => t !== undefined);
-    return { tagIds: resolved.tagIds, tagDefinitions, heldTagNames: resolved.held };
+    return { tagIds: resolved.tagIds, tagDefinitions };
 }
 
 // Columns queryCharacters() may sort by via a plain `ORDER BY <column>`. Deliberately excludes 'random'
@@ -10584,66 +9541,17 @@ function readEntityRowsInOrder(entry, entities) {
     return entities.map(e => byKey.get(`${e.type}:${e.id}`)).filter(row => row !== undefined);
 }
 
-/** The same for groups. create_date sorts groups by date_added; data_size has no group column, so ties decide. */
-const GROUP_SORT_INDEX_COLUMNS = ['name_fold', 'date_added', 'date_last_chat', 'chat_size'];
-
 /**
- * The indexes that hand out one fav value's rows in a sort's order, ties included, so a page stops after the page
- * (search plan step 4). One per column, read forwards for an ascending sort and backwards for a descending one, so a
- * descending sort is the ascending one reversed, ties included. A group's tie key is `id || '.json'`, its file name,
- * as upstream reads groups.
- * @type {{ name: string, sql: string }[]}
+ * The groups' sort indexes, as FIELDS_CHARACTER_INDEXES has the characters': each hands out one fav value's rows in a
+ * sort's order, ties included, so a page stops after the page (search plan step 4), read forwards for an ascending
+ * sort and backwards for a descending one. A group's tie key is `id || '.json'`, its file name, as upstream reads
+ * groups. create_date sorts groups by date_added; data_size has no group column, so ties decide.
  */
-const ENTITY_SORT_INDEXES = [
-    ...CHARACTER_SORT_INDEX_COLUMNS.map(column => ({
-        name: `idx_characters_sort_fav_${column}_asc`,
-        sql: `CREATE INDEX IF NOT EXISTS idx_characters_sort_fav_${column}_asc ON characters(fav, ${column} ASC, id ASC)`,
-    })),
-    ...GROUP_SORT_INDEX_COLUMNS.map(column => ({
-        name: `idx_groups_sort_fav_${column}_asc`,
-        sql: `CREATE INDEX IF NOT EXISTS idx_groups_sort_fav_${column}_asc ON groups(fav, ${column} ASC, (id || '.json') ASC)`,
-    })),
-    {
-        name: 'idx_groups_sort_fav_key',
-        sql: 'CREATE INDEX IF NOT EXISTS idx_groups_sort_fav_key ON groups(fav, (id || \'.json\') ASC)',
-    },
-];
-
-/**
- * Builds the sort indexes a store doesn't have yet, one statement at a time, in the migration worker after the
- * server is listening. Until every one exists, /query keeps its one-statement-per-table page read.
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<{ batches: number, rowsChanged: number } | undefined>}
- */
-export async function buildEntitySortIndexesIfNeeded(directories) {
-    const entry = await getEntry(directories);
-    if (!entry) return;
-    let built = 0;
-    for (const index of ENTITY_SORT_INDEXES) {
-        if (entry.db.get('SELECT 1 FROM sqlite_master WHERE type = \'index\' AND name = ?', [index.name])) continue;
-        entry.db.exec(index.sql);
-        built++;
-        await new Promise(resolve => setImmediate(resolve));
-    }
-    return { batches: built, rowsChanged: 0 };
-}
-
-/**
- * Whether every sort index exists. Stays true once it is.
- * @param {MetadataDbEntry} entry
- * @returns {boolean}
- */
-function entitySortIndexesReady(entry) {
-    if (entry.entitySortIndexes === true) return true;
-    const placeholders = ENTITY_SORT_INDEXES.map(() => '?').join(', ');
-    const found = /** @type {{ n: number } | undefined} */ (entry.db.get(
-        `SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'index' AND name IN (${placeholders})`,
-        ENTITY_SORT_INDEXES.map(index => index.name),
-    ));
-    if (Number(found?.n ?? 0) !== ENTITY_SORT_INDEXES.length) return false;
-    entry.entitySortIndexes = true;
-    return true;
-}
+const GROUP_SORT_INDEXES_SQL = [
+    ...['name_fold', 'date_added', 'date_last_chat', 'chat_size'].map(column =>
+        `CREATE INDEX IF NOT EXISTS idx_groups_sort_fav_${column}_asc ON groups(fav, ${column} ASC, (id || '.json') ASC);`),
+    'CREATE INDEX IF NOT EXISTS idx_groups_sort_fav_key ON groups(fav, (id || \'.json\') ASC);',
+].join('\n');
 
 const QUERYABLE_SORT_COLUMNS = {
     name: 'name_fold',
@@ -11814,7 +10722,7 @@ export async function queryCharacters(directories, params = {}) {
                 seed: Number(seed) || 0, offset: numericOffset, limit: numericLimit, cursor: params.cursor, deletions,
             });
             walkedPage = { ids: page.entities.map(e => e.id), cursor: page.cursor, more: page.more };
-        } else if (sortColumn && entitySortIndexesReady(entry)) {
+        } else if (sortColumn) {
             // The same walk as queryEntities()'s sorted page, with characters only: keys through the fav-first sort
             // indexes or the tag sort tables, under the work cap, a cursor to seek from, full rows for the page alone.
             const charWhere = { from, where, args };
@@ -12322,7 +11230,7 @@ export async function queryEntities(directories, params = {}) {
             /** @type {EntityRow[]} */
             let rawRows;
 
-            if (column && entitySortIndexesReady(entry)) {
+            if (column) {
                 const streams = sortedPageStreams(entry, {
                     column, sortOrder, fav, world, ranges, excludeIds, ids, tags, groupsOnly, charWhere, groupWhere, deletions,
                 });
@@ -12344,7 +11252,7 @@ export async function queryEntities(directories, params = {}) {
 
                 rawRows = readEntityRowsInOrder(entry, pageKeys);
             } else {
-                // Until the sort indexes exist: one statement per table, merged in JS.
+                // No sort column: one statement per table, merged in JS.
                 // create_date: a group's own date_added stands in, projected as create_date, so it interleaves
                 // correctly with characters instead of parking every group at one end of the sort (NULL would).
                 // data_size: no equivalent for groups, stays NULL on the group side - every group sorts equal on
@@ -12702,7 +11610,7 @@ export const FIND_CHARACTER_WORK_CAP = 20000;
  * matches every character. Upstream returns the first match in its array, which is in avatar order; so is this.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {{ name?: string | null, allowAvatar?: boolean, insensitive?: boolean, tags?: string[] | null }} query
- * @returns {Promise<{ ids: string[], capped: boolean } | 'names-not-ready' | null>} at most two ids, the first being
+ * @returns {Promise<{ ids: string[], capped: boolean } | null>} at most two ids, the first being
  *   findChar()'s answer and a second meaning "more than one matched". `capped` when the work cap stopped the search
  *   before it could rule out a match. null when the store is unavailable.
  */
@@ -12716,7 +11624,6 @@ export async function findCharacterMatches(directories, { name = null, allowAvat
     /** @type {Set<string>[]} for each wanted tag name, the ids of the live tags with exactly that name */
     let wantedTagIds = [];
     if (tagNames) {
-        if (!tagNameKeysReady(entry)) return 'names-not-ready';
         wantedTagIds = tagNames.map(tagName => {
             const ids = new Set();
             for (const row of /** @type {Iterable<{ id: string, data: string }>} */ (db.iterate(`SELECT id, data FROM tags WHERE name_key = ? AND ${NOT_MARKED_DELETED_SQL}`, [tagNameKey(tagName)]))) {

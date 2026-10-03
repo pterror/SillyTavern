@@ -41,7 +41,7 @@ export const router = express.Router();
  * `{ tag, freeName }` → `{ result, refused: [{ id, reason: 'deleted' | 'exists' }], tag }`. `tag` is the definition
  * as stored, when it was; a tag sent with no `sort_order` gets the next place in the manual order. With
  * `freeName: true`, `tag.name` is only a base and the server picks a name no other tag has (`name`, else `name #1`,
- * `name #2`, ...); 503 with reason 'tag-names-not-indexed', and nothing written, until tag names can be looked up.
+ * `name #2`, ...).
  */
 router.post('/create', async (request, response) => {
     try {
@@ -60,9 +60,6 @@ router.post('/create', async (request, response) => {
         const result = await createTagDefinition(request.user.directories, tag, { freeName: freeName === true });
         if (result === null) {
             return response.status(503).send({ error: 'Character metadata store is unavailable' });
-        }
-        if (result === 'names-not-ready') {
-            return response.status(503).send({ error: 'Tag names are still being indexed', reason: 'tag-names-not-indexed' });
         }
 
         response.send({ result: 'ok', refused: result.refused, tag: result.tag });
@@ -330,9 +327,6 @@ const QUERY_REST_COUNT_MAX = 10000;
  * With `restCount: true`, a full page that has a next page also answers `rest: { count, more }`: how many tags
  * match after it, counted up to QUERY_REST_COUNT_MAX under the same work cap. `more` means there may be more than
  * `count`. A page cut short by the work cap (`more`) or with no next page has no `rest`.
- *
- * 503 with reason 'tag-query-not-ready' until the one-time pass after an update has filled the tag columns the
- * query reads.
  */
 router.post('/query', async (request, response) => {
     try {
@@ -406,9 +400,6 @@ router.post('/query', async (request, response) => {
         if (result === null) {
             return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
         }
-        if (result === 'not-ready') {
-            return response.status(503).send({ error: true, reason: 'tag-query-not-ready' });
-        }
         if (result === 'invalid-cursor') {
             return response.status(400).send({ error: true, reason: 'invalid-cursor' });
         }
@@ -416,7 +407,7 @@ router.post('/query', async (request, response) => {
             const restAfter = decodeTagQueryCursor(result.cursor, sortField);
             const rest = restAfter === null ? null : await queryTags(request.user.directories,
                 { ...params, counts: false, pageSize: QUERY_REST_COUNT_MAX, after: restAfter });
-            if (rest && rest !== 'invalid-cursor' && rest !== 'not-ready') {
+            if (rest && rest !== 'invalid-cursor') {
                 result = { ...result, rest: { count: rest.rows.length, more: rest.cursor !== null } };
             }
         }
@@ -481,7 +472,7 @@ const BY_NAMES_MAX_NAMES = 100;
 
 /**
  * `{ names }` → `{ tags: [{ name, tag }] }`, one entry per distinct name in the order given: the tag each name stands
- * for (findTagsByNames()), or null. 503 with reason 'tag-names-not-indexed' until tag names can be looked up.
+ * for (findTagsByNames()), or null.
  */
 router.post('/by-names', async (request, response) => {
     try {
@@ -495,9 +486,6 @@ router.post('/by-names', async (request, response) => {
         const found = await findTagsByNames(request.user.directories, names);
         if (found === null) {
             return response.status(503).send({ error: 'Character metadata store is unavailable' });
-        }
-        if (found === 'names-not-ready') {
-            return response.status(503).send({ error: 'Tag names are still being indexed', reason: 'tag-names-not-indexed' });
         }
         response.send({ tags: found });
     } catch (err) {
@@ -695,7 +683,7 @@ router.post('/rename-key', async (request, response) => {
 /**
  * `{ tags, tagMap, overwrite }` (a tag backup's `tags` and `tag_map`, and whether the backup's settings replace
  * those of tags that already exist) → everything restoreTagBackup() did not restore, plus `createdTagIds` and
- * `updatedTagIds`. 503 with reason 'tag-names-not-indexed', and nothing written, until tag names can be looked up.
+ * `updatedTagIds`.
  */
 router.post('/restore', async (request, response) => {
     try {
@@ -713,9 +701,6 @@ router.post('/restore', async (request, response) => {
         const result = await restoreTagBackup(request.user.directories, { tags, tagMap, overwrite });
         if (result === null) {
             return response.status(503).send({ error: 'Character metadata store is unavailable' });
-        }
-        if (result === 'names-not-ready') {
-            return response.status(503).send({ error: 'Tag names are still being indexed', reason: 'tag-names-not-indexed' });
         }
 
         response.send(result);

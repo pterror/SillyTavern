@@ -170,7 +170,6 @@ describe('POST /api/tags/copy', () => {
 
     test('a tag deleted with a merge target is copied as that target; one with none is not copied', async () => {
         jest.spyOn(console, 'warn').mockImplementation(() => {});
-        await metadataDb.fillTagNameKeysIfNeeded(directories);
         for (const id of ['x', 'y', 'd']) {
             expect((await metadataDb.createTagDefinition(directories, { id, name: id })).refused).toEqual([]);
         }

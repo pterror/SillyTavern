@@ -163,7 +163,6 @@ async function everyList() {
 describe('/query included tags read from the tag sort tables', () => {
     test('once filled, every sort, direction, fav filter and tag filter lists exactly as the plain query does', async () => {
         await seed();
-        await metadataDb.buildEntitySortIndexesIfNeeded(directories);
         const before = await everyList();
         expect(before.some(l => l.rows.length > 0)).toBe(true);
         // The triggers already wrote these rows; the fill finds nothing missing and marks the tables ready.
@@ -177,7 +176,6 @@ describe('/query included tags read from the tag sort tables', () => {
 
     test('pages join up to the whole list', async () => {
         await seed();
-        await metadataDb.buildEntitySortIndexesIfNeeded(directories);
         await metadataDb.fillTagSortTablesIfNeeded(directories);
         for (const sortField of ['name', 'date_added', 'fav']) {
             for (const sortOrder of ['asc', 'desc']) {
@@ -192,7 +190,6 @@ describe('/query included tags read from the tag sort tables', () => {
 
     test('the triggers keep the tables right through tag, sort key, fav, insert and delete writes', async () => {
         await seed();
-        await metadataDb.buildEntitySortIndexesIfNeeded(directories);
         await metadataDb.fillTagSortTablesIfNeeded(directories);
         withDb(db => {
             db.prepare('UPDATE characters SET date_added = 1, fav = 1 WHERE id = ?').run('m.png');
@@ -216,7 +213,6 @@ describe('/query included tags read from the tag sort tables', () => {
 
     test('a one-tag page walks the tag sort index in order: no temp b-tree sort', async () => {
         await seed();
-        await metadataDb.buildEntitySortIndexesIfNeeded(directories);
         await metadataDb.fillTagSortTablesIfNeeded(directories);
         for (const sortField of SORTS) {
             for (const sortOrder of ['asc', 'desc']) {
@@ -240,7 +236,6 @@ describe('/query included tags read from the tag sort tables', () => {
 
     test('an excluded tag is checked per row: the right entities, and no list of the tag\'s rows read first', async () => {
         await seed();
-        await metadataDb.buildEntitySortIndexesIfNeeded(directories);
         for (const fill of [false, true]) {
             if (fill) await metadataDb.fillTagSortTablesIfNeeded(directories);
             for (const tags of [{ exclude: ['T3'] }, { include: ['T1'], exclude: ['T3'] }]) {
@@ -272,7 +267,6 @@ describe('/query included tags read from the tag sort tables', () => {
 
     test('under the work cap, a page that needs more reading comes back with more and a cursor, and following it lists everything once', async () => {
         await seed();
-        await metadataDb.buildEntitySortIndexesIfNeeded(directories);
         await metadataDb.fillTagSortTablesIfNeeded(directories);
         metadataDb._setSortedPageWalkForTests({ cap: 1, window: 1 });
         try {
@@ -306,7 +300,6 @@ describe('/query included tags read from the tag sort tables', () => {
 
     test('a jump past the cap with no cursor answers an empty page with more, and following it reaches the asked page', async () => {
         await seed();
-        await metadataDb.buildEntitySortIndexesIfNeeded(directories);
         metadataDb._setSortedPageWalkForTests(null);
         const whole = await listed({ sortField: 'date_added', sortOrder: 'desc' });
         metadataDb._setSortedPageWalkForTests({ cap: 1, window: 1 });

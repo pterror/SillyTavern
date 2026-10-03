@@ -141,15 +141,6 @@ async function seed() {
     for (const id of USED) assign.run('c.png', id);
 }
 
-/** Fills the tag query columns, leaving the sort_order fill unfinished so moves are queued. */
-async function makeReady() {
-    await metadataDb.fillTagNameKeysIfNeeded(directories);
-    jest.spyOn(console, 'warn').mockImplementation(() => {});
-    await metadataDb.fillTagDerivedColumnsIfNeeded(directories);
-    await metadataDb.migrateTagsJsonIfNeeded(directories);
-    expect(await metadataDb.areTagQueryColumnsReady(directories)).toBe(true);
-}
-
 /**
  * Pending entries, inserted as moveTagDefinition() queues them: [id, side, anchorId] or [id, value].
  * @param {([string, 'before' | 'after', string] | [string, unknown])[]} entries
@@ -222,14 +213,12 @@ function record(id, mode, at = null) {
 const clearRecord = () => live().prepare('DELETE FROM meta WHERE key = ?').run('tag_reorder_pass');
 
 describe('POST /api/tags/query manual, during a reorder pass', () => {
-    describe.each([['indexed path', true]])('%s', (_, ready) => {
+    describe('indexed path', () => {
         beforeEach(async () => {
             await seed();
-            if (ready) await makeReady();
         });
 
         test.each(['alphabetical', 'by_entries'])('%s: the mode\'s order with the pending moves on top, cursors made in the pass\'s order', async (mode) => {
-            expect(await metadataDb.areTagQueryColumnsReady(directories)).toBe(ready);
             record(3, mode);
             expect(await pagedIds()).toEqual(everyPageSize(MODE_ORDERS[mode]));
             const entries = /** @type {[string, 'before' | 'after', string][]} */ ([
@@ -329,8 +318,6 @@ describe('POST /api/tags/query manual, during a reorder pass', () => {
 
     test.each(['alphabetical', 'by_entries'])('%s: once the pass has run, the order is the one shown while it was recorded', async (mode) => {
         await seed();
-        await makeReady();
-        await metadataDb.fillTagSortOrdersIfNeeded(directories);
         const moves = /** @type {[string, 'before' | 'after', string][]} */ ([
             ['h', 'after', 'a'], ['c', 'before', 'b'], ['a', 'after', 'i'], ['e', 'before', 'h'],
         ]);

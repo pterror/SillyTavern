@@ -205,17 +205,6 @@ const WRITERS = [
         rows: ['1001'],
     },
     {
-        name: 'migrateTagsJsonIfNeeded',
-        setup: async () => {
-            await saveTags(['x']);
-            await seedGroup('1001');
-            fs.writeFileSync(path.join(directories.root, 'tags.json'), JSON.stringify({ tags: [{ id: 'x', name: 'name-x' }], tag_map: { 1001: ['x'] } }));
-        },
-        act: () => metadataDb.migrateTagsJsonIfNeeded(directories),
-        again: async () => withRawDb(db => { db.prepare('DELETE FROM meta WHERE key = \'tags_json_migrated\'').run(); }),
-        rows: ['1001'],
-    },
-    {
         name: 'bootstrapGroupsIfNeeded',
         setup: async () => {
             await openStore();
@@ -225,27 +214,6 @@ const WRITERS = [
         act: () => metadataDb.bootstrapGroupsIfNeeded(directories),
         again: async () => withRawDb(db => { db.prepare('DELETE FROM meta WHERE key = \'groups_bootstrap_completed\'').run(); }),
         rows: ['1001', '1002'],
-    },
-    {
-        name: 'recoverNumericIdGroupsIfNeeded',
-        setup: async () => {
-            await openStore();
-            fs.writeFileSync(groupFile('1001'), JSON.stringify({ id: 1001, name: 'numeric', members: [], chats: [] }));
-        },
-        act: () => metadataDb.recoverNumericIdGroupsIfNeeded(directories),
-        again: async () => withRawDb(db => { db.prepare('DELETE FROM meta WHERE key = ?').run(metadataDb.GROUP_NUMERIC_ID_RECOVERY_FLAG); }),
-        rows: ['1001'],
-    },
-    {
-        name: 'normalizeGroupFavIfNeeded',
-        setup: async () => {
-            await seedGroup('1001');
-            await seedGroup('1002');
-            withRawDb(db => { db.prepare('UPDATE groups SET fav = 1 WHERE id = \'1001\'').run(); });
-        },
-        act: () => metadataDb.normalizeGroupFavIfNeeded(directories),
-        again: async () => withRawDb(db => { db.prepare('DELETE FROM meta WHERE key = ?').run(metadataDb.GROUP_FAV_NORMALIZED_FLAG); }),
-        rows: ['1001'],
     },
     {
         name: 'finishDeletedTags',
@@ -258,32 +226,6 @@ const WRITERS = [
             await metadataDb.deleteTagDefinition(directories, 'x', 'y');
         },
         act: () => metadataDb.finishDeletedTags(directories),
-        rows: ['1001'],
-    },
-    {
-        name: 'removeOrphanTagRowsIfNeeded',
-        setup: async () => {
-            await saveTags(['x']);
-            await seedGroup('1001');
-            await metadataDb.assignEntityTag(directories, '1001', 'x');
-            withRawDb(db => { db.prepare('INSERT INTO group_tags (group_id, tag_id) VALUES (\'9999\', \'x\')').run(); });
-        },
-        act: () => metadataDb.removeOrphanTagRowsIfNeeded(directories),
-        again: async () => withRawDb(db => { db.prepare('DELETE FROM meta WHERE key = ?').run(metadataDb.ORPHAN_TAG_ROWS_REMOVED_FLAG); }),
-        rows: ['9999'],
-    },
-    {
-        name: 'refreshGroupDigestTagIdsIfNeeded',
-        setup: async () => {
-            await saveTags(['x']);
-            await seedGroup('1001');
-            await seedGroup('1002');
-            await metadataDb.assignEntityTag(directories, '1001', 'x');
-            await metadataDb.assignEntityTag(directories, '1002', 'x');
-            withRawDb(db => { db.prepare('UPDATE groups SET digest_tag_ids = 12345 WHERE id = \'1001\'').run(); });
-        },
-        act: () => metadataDb.refreshGroupDigestTagIdsIfNeeded(directories),
-        again: async () => withRawDb(db => { db.prepare('DELETE FROM meta WHERE key = ?').run(metadataDb.GROUP_DIGEST_TAG_IDS_REFRESHED_FLAG); }),
         rows: ['1001'],
     },
 ];

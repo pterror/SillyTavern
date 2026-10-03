@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { applyQueuedTagMoves } from './tag-store-reads.js';
+
 /** @type {typeof import('../src/character-metadata-db.js')} */
 let metadataDb;
 /** @type {typeof import('better-sqlite3')} */
@@ -87,17 +89,9 @@ function insertTag(id, tagOrData) {
         .run(id, data, name, sortOrder, folderType, isFolder);
 }
 
-/**
- * Opens the store with its tag query columns ready and the sort_order fill finished, on an empty table.
- * @param {{ filled?: boolean }} [options] filled: false leaves the sort_order fill unfinished.
- */
-async function openStore({ filled = true } = {}) {
+/** Opens the store, on an empty table. */
+async function openStore() {
     await metadataDb.ensureSchemaMigrated(directories);
-    await metadataDb.fillTagNameKeysIfNeeded(directories);
-    await metadataDb.fillTagDerivedColumnsIfNeeded(directories);
-    await metadataDb.migrateTagsJsonIfNeeded(directories);
-    expect(await metadataDb.areTagQueryColumnsReady(directories)).toBe(true);
-    if (filled) await metadataDb.fillTagSortOrdersIfNeeded(directories);
 }
 
 /** @returns {Map<string, { data: string, sort_order: number | null }>} */
@@ -219,19 +213,6 @@ describe('POST /api/tags/reorder', () => {
         expect(requestPass.mock.calls).toEqual([[directories, 'runTagReorderPassIfNeeded']]);
     });
 
-    test('is recorded before the sort_order fill has finished too, after the moves already queued', async () => {
-        await openStore({ filled: false });
-        insertTag('a', { sort_order: 1 });
-        insertTag('x', { sort_order: 5 });
-        expect(await metadataDb.moveTagDefinition(directories, 'a', { after: 'x' })).toEqual({ refused: [], written: [], queued: true });
-        expect(await post('reorder', { id: 'x', before: 'a', mode: 'alphabetical' })).toEqual({ status: 200, body: { result: 'ok', refused: [], queued: true } });
-        expect(pass()).toEqual({ id: 1, mode: 'alphabetical', at: null });
-        expect(pending()).toEqual([
-            { tag_id: 'a', side: 'after', anchor_id: 'x', value: null },
-            { tag_id: 'x', side: 'before', anchor_id: 'a', value: null },
-        ]);
-    });
-
     test('a second reorder replaces the pass: a greater id, its mode, its place reset; the queue carries over, its move last', async () => {
         await openStore();
         await recordPass();
@@ -287,7 +268,7 @@ describe('POST /api/tags/reorder', () => {
 });
 
 describe('while a reorder pass is recorded', () => {
-    test('a move is queued even with the fill finished and nothing else queued', async () => {
+    test('a move is queued even with nothing else queued', async () => {
         await openStore();
         await recordPass();
         live().prepare('DELETE FROM tag_pending_moves').run();
@@ -295,22 +276,6 @@ describe('while a reorder pass is recorded', () => {
         expect(await post('move', { id: 'a', after: 'x' })).toEqual({ status: 200, body: { result: 'ok', refused: [], written: [], queued: true } });
         expect(pending()).toEqual([{ tag_id: 'a', side: 'after', anchor_id: 'x', value: null }]);
         expect(rows()).toEqual(before);
-    });
-
-    test('the sort_order fill applies nothing queued, finished or finishing', async () => {
-        await openStore({ filled: false });
-        insertTag('a', { sort_order: 1 });
-        insertTag('x', { sort_order: 5 });
-        insertTag('n', { name: 'N' });
-        expect(await metadataDb.moveTagDefinition(directories, 'x', { before: 'a' })).toEqual({ refused: [], written: [], queued: true });
-        expect((await post('reorder', { id: 'a', before: 'x', mode: 'alphabetical' })).body.queued).toBe(true);
-        await metadataDb.fillTagSortOrdersIfNeeded(directories);
-        expect(column('n')).toBe(6);
-        expect([column('a'), column('x')]).toEqual([1, 5]);
-        expect(pending()).toHaveLength(2);
-        expect(await metadataDb.fillTagSortOrdersIfNeeded(directories)).toEqual({ batches: 0, rowsChanged: 0 });
-        expect(pending()).toHaveLength(2);
-        expect(pass()).toEqual({ id: 1, mode: 'alphabetical', at: null });
     });
 
     test('an edit writes its other fields at once and queues its sort_order as given', async () => {
@@ -364,41 +329,8 @@ describe('while a reorder pass is recorded', () => {
     });
 });
 
-describe('with no reorder pass recorded, while moves queue', () => {
-    test('before the sort_order fill has finished, an edit queues its sort_order after a queued move, and the edit wins', async () => {
-        await openStore({ filled: false });
-        insertTag('a', { sort_order: 1 });
-        insertTag('b', { sort_order: 3 });
-        insertTag('x', { sort_order: 5 });
-        expect(await post('move', { id: 'x', after: 'a' })).toEqual({ status: 200, body: { result: 'ok', refused: [], written: [], queued: true } });
-        expect(await post('edit', { id: 'x', patch: { name: 'X', sort_order: 10 } })).toEqual({ status: 200, body: { result: 'ok', refused: [] } });
-        expect(data('x')).toEqual({ id: 'x', name: 'X', sort_order: 5 });
-        expect(column('x')).toBe(5);
-        expect(pending()).toEqual([
-            { tag_id: 'x', side: 'after', anchor_id: 'a', value: null },
-            { tag_id: 'x', side: null, anchor_id: null, value: '10' },
-        ]);
-
-        await metadataDb.fillTagSortOrdersIfNeeded(directories);
-        expect(pending()).toEqual([]);
-        expect([data('x').sort_order, column('x')]).toEqual([10, 10]);
-    });
-
-    test('before the sort_order fill has finished, a create with its own sort_order writes it and queues it; the fill keeps it', async () => {
-        await openStore({ filled: false });
-        insertTag('a', { sort_order: 3 });
-        expect(await post('create', { tag: { id: 'n', name: 'N', sort_order: 3 } })).toEqual({ status: 200, body: { result: 'ok', refused: [], tag: data('n') } });
-        expect(await post('create', { tag: { id: 'o', name: 'O' } })).toEqual({ status: 200, body: { result: 'ok', refused: [], tag: data('o') } });
-        expect([data('n').sort_order, column('n')]).toEqual([3, 3]);
-        expect(data('o').sort_order).toBe(4);
-        expect(pending()).toEqual([{ tag_id: 'n', side: null, anchor_id: null, value: '3' }]);
-
-        await metadataDb.fillTagSortOrdersIfNeeded(directories);
-        expect(pending()).toEqual([]);
-        expect([data('n').sort_order, column('n')]).toEqual([3, 3]);
-    });
-
-    test('with the fill finished but an entry still queued, an edit and a create queue their sort_order after it', async () => {
+describe('with no reorder pass recorded, while an entry is queued', () => {
+    test('an edit and a create queue their sort_order after it', async () => {
         await openStore();
         insertTag('a', { sort_order: 1 });
         insertTag('x', { sort_order: 5 });
@@ -424,7 +356,7 @@ describe('with no reorder pass recorded', () => {
         expect(pending()).toEqual([]);
     });
 
-    test('the drain writes a value entry\'s raw value into data and its coerced value into the column', async () => {
+    test('applying a value entry writes its raw value into data and its coerced value into the column', async () => {
         await openStore();
         insertTag('s', { sort_order: 1 });
         insertTag('t', { sort_order: 5 });
@@ -435,8 +367,7 @@ describe('with no reorder pass recorded', () => {
         insert.run('t', '"5"');
         insert.run('u', 'null');
         insert.run('v', '{"x":1}');
-        const totals = await metadataDb.fillTagSortOrdersIfNeeded(directories);
-        expect(totals).toEqual({ batches: 4, rowsChanged: 4 });
+        expect((await applyQueuedTagMoves(metadataDb, directories)).map(o => o.rows)).toEqual([1, 1, 1, 1]);
         expect(pending()).toEqual([]);
         expect([data('s').sort_order, column('s')]).toEqual(['abc', null]);
         expect([data('t').sort_order, column('t')]).toEqual(['5', 5]);
@@ -449,7 +380,7 @@ describe('with no reorder pass recorded', () => {
         insertTag('s', { sort_order: 'abc' });
         live().prepare('INSERT INTO tag_pending_moves (tag_id, value) VALUES (?, ?)').run('s', '"abc"');
         const before = rows();
-        expect(await metadataDb.fillTagSortOrdersIfNeeded(directories)).toEqual({ batches: 1, rowsChanged: 0 });
+        expect((await applyQueuedTagMoves(metadataDb, directories)).map(o => o.rows)).toEqual([0]);
         expect(rows()).toEqual(before);
     });
 });

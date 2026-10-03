@@ -74,17 +74,9 @@ async function create(id, name) {
 }
 
 describe('POST /api/tags/by-names', () => {
-    test('503 tag-names-not-indexed until names can be looked up', async () => {
-        await create('a', 'Funny');
-        const { status, body } = await post('/api/tags/by-names', { names: ['Funny'] });
-        expect(status).toBe(503);
-        expect(body.reason).toBe('tag-names-not-indexed');
-    });
-
     test('finds a tag ignoring case and accents, null for a name no tag has, one entry per distinct name in order', async () => {
         await create('a', 'Café');
         await create('b', 'Serious');
-        await metadataDb.fillTagNameKeysIfNeeded(directories);
 
         const { status, body } = await post('/api/tags/by-names', { names: ['serious', 'CAFE', 'Nope', 'serious'] });
         expect(status).toBe(200);
@@ -95,7 +87,6 @@ describe('POST /api/tags/by-names', () => {
     test('of several tags with the name, the first created', async () => {
         await create('first', 'Same');
         await create('second', 'same');
-        await metadataDb.fillTagNameKeysIfNeeded(directories);
 
         const { body } = await post('/api/tags/by-names', { names: ['SAME'] });
         expect(body.tags[0].tag.id).toBe('first');
@@ -105,7 +96,6 @@ describe('POST /api/tags/by-names', () => {
         await create('old', 'Old');
         await create('new', 'New');
         await create('gone', 'Gone');
-        await metadataDb.fillTagNameKeysIfNeeded(directories);
         expect((await post('/api/tags/delete', { id: 'old', mergeInto: 'new' })).status).toBe(200);
         expect((await post('/api/tags/delete', { id: 'gone', mergeInto: null })).status).toBe(200);
 
@@ -126,7 +116,6 @@ describe('POST /api/tags/by-names', () => {
 
 describe('POST /api/tags/create', () => {
     test('answers the stored definition, with the place in the manual order the server gave it', async () => {
-        await metadataDb.fillTagDerivedColumnsIfNeeded(directories);
         await create('a', 'A');
         const { body } = await post('/api/tags/create', { tag: { id: 'b', name: 'B' } });
         expect(body).toEqual({ result: 'ok', refused: [], tag: { id: 'b', name: 'B', sort_order: 2 } });

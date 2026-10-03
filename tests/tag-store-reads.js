@@ -19,18 +19,13 @@ export async function storedTagDefinitions(metadataDb, directories) {
 
 /**
  * How many characters and groups carry each of `ids`, as /api/tags/query's `counts: true` answers it. Only ids with a
- * stored, unmarked definition are counted. Runs the one-time column fills first if the store hasn't had them, since
- * the query answers nothing until then.
+ * stored, unmarked definition are counted.
  * @param {typeof import('../src/character-metadata-db.js')} metadataDb
  * @param {import('../src/users.js').UserDirectoryList} directories
  * @param {string[]} ids
  * @returns {Promise<{ counts: Record<string, number>, approximate: string[] }>}
  */
 export async function tagCounts(metadataDb, directories, ids) {
-    if (!await metadataDb.areTagQueryColumnsReady(directories)) {
-        await metadataDb.fillTagNameKeysIfNeeded(directories);
-        await metadataDb.fillTagDerivedColumnsIfNeeded(directories);
-    }
     const result = await metadataDb.queryTags(directories, { sort: 'manual', ids, counts: true, pageSize: Math.max(ids.length, 1), after: null });
     if (result === null || typeof result === 'string') throw new Error(`the tag query answered ${result}`);
     return { counts: result.counts ?? {}, approximate: result.approximate ?? [] };
@@ -49,5 +44,31 @@ export async function storedTagUsageRows(directories) {
         return Object.fromEntries(rows.map(row => [row.tag_id, Number(row.count)]));
     } finally {
         db.close();
+    }
+}
+
+/**
+ * Applies every queued tag move, one per transaction, as the character store conversion applies those queued with no
+ * reorder pass (applyFirstPendingTagMoveSync()), on a connection of its own through the store's engine.
+ * @param {typeof import('../src/character-metadata-db.js')} metadataDb
+ * @param {import('../src/users.js').UserDirectoryList} directories
+ * @returns {Promise<import('../src/character-metadata-db.js').PendingTagMoveOutcome[]>} One per entry, in order.
+ */
+export async function applyQueuedTagMoves(metadataDb, directories) {
+    const engine = await (await import('../src/endpoints/sqlite-engine.js')).getSqliteEngine();
+    const handle = engine.openDatabase(path.join(directories.root, 'character-metadata.sqlite'));
+    try {
+        const outcomes = [];
+        for (;;) {
+            /** @type {import('../src/character-metadata-db.js').PendingTagMoveOutcome | null} */
+            let outcome = null;
+            handle.transaction(() => {
+                outcome = metadataDb.applyFirstPendingTagMoveSync(handle);
+            });
+            if (outcome === null) return outcomes;
+            outcomes.push(outcome);
+        }
+    } finally {
+        handle.close();
     }
 }

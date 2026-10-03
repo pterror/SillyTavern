@@ -134,22 +134,19 @@ async function listedSet(params) {
 }
 
 describe('/query filter.ranges', () => {
-    for (const indexes of [false, true]) {
-        test(`every sort and direction lists exactly the entities inside the ranges, paged${indexes ? ', with the sort indexes' : ''}`, async () => {
-            await seed();
-            if (indexes) await metadataDb.buildEntitySortIndexesIfNeeded(directories);
-            for (const ranges of RANGES) {
-                const want = ALL.filter(e => inRanges(e, ranges)).map(e => `${e.type}:${e.id}`).sort();
-                for (const sortField of ['name', 'create_date', 'date_last_chat', 'chat_size', 'data_size', 'fav']) {
-                    for (const sortOrder of ['asc', 'desc']) {
-                        const rows = await listedSet({ ranges, sortField, sortOrder });
-                        expect({ ranges, sortField, sortOrder, rows: [...rows].sort() }).toEqual({ ranges, sortField, sortOrder, rows: want });
-                        expect(new Set(rows).size).toBe(rows.length);
-                    }
+    test('every sort and direction lists exactly the entities inside the ranges, paged', async () => {
+        await seed();
+        for (const ranges of RANGES) {
+            const want = ALL.filter(e => inRanges(e, ranges)).map(e => `${e.type}:${e.id}`).sort();
+            for (const sortField of ['name', 'create_date', 'date_last_chat', 'chat_size', 'data_size', 'fav']) {
+                for (const sortOrder of ['asc', 'desc']) {
+                    const rows = await listedSet({ ranges, sortField, sortOrder });
+                    expect({ ranges, sortField, sortOrder, rows: [...rows].sort() }).toEqual({ ranges, sortField, sortOrder, rows: want });
+                    expect(new Set(rows).size).toBe(rows.length);
                 }
             }
-        });
-    }
+        }
+    });
 
     test('random order with ranges lists each entity inside them once', async () => {
         await seed();

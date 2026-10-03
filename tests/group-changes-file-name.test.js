@@ -251,31 +251,9 @@ const WRITERS = [
         rows: [['1001', null]],
     },
     {
-        name: 'migrateTagsJsonIfNeeded',
-        setup: async () => {
-            await saveTags(['x']);
-            await seedGroup('1001');
-            fs.writeFileSync(path.join(directories.root, 'tags.json'), JSON.stringify({ tags: [{ id: 'x', name: 'name-x' }], tag_map: { 1001: ['x'] } }));
-        },
-        act: () => metadataDb.migrateTagsJsonIfNeeded(directories),
-        rows: [['1001', null]],
-    },
-    {
         name: 'bootstrapGroupsIfNeeded',
         setup: async () => { await openStore(); writeGroupFileRaw('1001'); },
         act: () => metadataDb.bootstrapGroupsIfNeeded(directories),
-        rows: [['1001', null]],
-    },
-    {
-        name: 'recoverNumericIdGroupsIfNeeded',
-        setup: async () => { await openStore(); writeRawFile('1001.json', { id: 1001, name: 'numeric', members: [], chats: [] }); },
-        act: () => metadataDb.recoverNumericIdGroupsIfNeeded(directories),
-        rows: [['1001', null]],
-    },
-    {
-        name: 'normalizeGroupFavIfNeeded',
-        setup: async () => { await seedGroup('1001'); withRawDb(db => { db.prepare('UPDATE groups SET fav = 1 WHERE id = \'1001\'').run(); }); },
-        act: () => metadataDb.normalizeGroupFavIfNeeded(directories),
         rows: [['1001', null]],
     },
     {
@@ -287,27 +265,6 @@ const WRITERS = [
             await metadataDb.deleteTagDefinition(directories, 'x', 'y');
         },
         act: () => metadataDb.finishDeletedTags(directories),
-        rows: [['1001', null]],
-    },
-    {
-        name: 'removeOrphanTagRowsIfNeeded',
-        setup: async () => {
-            await saveTags(['x']);
-            await openStore();
-            withRawDb(db => { db.prepare('INSERT INTO group_tags (group_id, tag_id) VALUES (\'9999\', \'x\')').run(); });
-        },
-        act: () => metadataDb.removeOrphanTagRowsIfNeeded(directories),
-        rows: [['9999', null]],
-    },
-    {
-        name: 'refreshGroupDigestTagIdsIfNeeded',
-        setup: async () => {
-            await saveTags(['x']);
-            await seedGroup('1001');
-            await metadataDb.assignEntityTag(directories, '1001', 'x');
-            withRawDb(db => { db.prepare('UPDATE groups SET digest_tag_ids = 12345 WHERE id = \'1001\'').run(); });
-        },
-        act: () => metadataDb.refreshGroupDigestTagIdsIfNeeded(directories),
         rows: [['1001', null]],
     },
     {

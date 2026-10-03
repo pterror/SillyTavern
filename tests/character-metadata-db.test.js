@@ -529,16 +529,14 @@ describe('batch import mode', () => {
         });
 
         test('seedCardTagsForSingleCharacter', async () => {
-            await metadataDb.fillTagNameKeysIfNeeded(directories);
             await metadataDb.saveTagDefinitions(directories, [{ id: 'elan', name: 'Élan' }]);
             await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
             await metadataDb.assignEntityTag(directories, 'Bob.png', 'keep');
             await metadataDb.beginBatchImport(directories);
             await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', editedCardJson('Bobby', ['elan']), null, null, { fromImport: true });
 
-            const { tagIds, heldTagNames } = await metadataDb.seedCardTagsForSingleCharacter(directories, 'Bob.png');
+            const { tagIds } = await metadataDb.seedCardTagsForSingleCharacter(directories, 'Bob.png');
             expect(tagIds).toEqual(['elan']);
-            expect(heldTagNames).toEqual([]);
 
             await expectLanded('Bob.png', 'Bobby', ['elan', 'keep']);
         });
@@ -571,7 +569,6 @@ describe('a user write during an open batch import lands in the table right away
      * @param {string[]} [tags] Tag ids, each defined with its id as its name.
      */
     async function bufferImport(avatar, name, tags = []) {
-        await metadataDb.fillTagNameKeysIfNeeded(directories);
         if (tags.length > 0) await metadataDb.saveTagDefinitions(directories, tags.map(id => ({ id, name: id })));
         await metadataDb.beginBatchImport(directories);
         await metadataDb.upsertCharacterFromWrite(directories, avatar, named(name, tags), null, null, { fromImport: true });
@@ -1201,35 +1198,6 @@ describe('phase 3 extension: groups (owner decision - tags.json removal includes
         expect(await metadataDb.assignEntityTag(directories, 'group1', 'tag1')).toBe('not_found');
     });
 
-    describe('a tag_map import keeps a group\'s digest_tag_ids equal to its group_tags', () => {
-        async function storedDigestTagIds(/** @type {string} */ id) {
-            metadataDb.disposeMetadataStores();
-            const { default: Database } = await import('better-sqlite3');
-            const rawDb = new Database(path.join(tempDir, 'character-metadata.sqlite'));
-            try {
-                return rawDb.prepare('SELECT digest_tag_ids FROM groups WHERE id = ?').get(id).digest_tag_ids;
-            } finally {
-                rawDb.close();
-            }
-        }
-
-        async function expectedDigestTagIds(/** @type {string[]} */ tagIds) {
-            const { groupDigestTagIdsHash } = await import('../public/scripts/hash-utils.js');
-            return groupDigestTagIdsHash({ tag_ids: tagIds });
-        }
-
-        test('migrateTagsJsonIfNeeded', async () => {
-            await metadataDb.upsertGroupRow(directories, 'group1', 'My Group');
-            await metadataDb.assignEntityTag(directories, 'group1', 'a');
-            fs.writeFileSync(path.join(tempDir, 'tags.json'), JSON.stringify({ tags: [], tag_map: { group1: ['b'] } }));
-
-            await metadataDb.migrateTagsJsonIfNeeded(directories);
-
-            expect(await metadataDb.getGroupTagIds(directories, 'group1')).toEqual(['a', 'b']);
-            expect(await storedDigestTagIds('group1')).toBe(await expectedDigestTagIds(['a', 'b']));
-        });
-    });
-
     test('deleteGroupRow cascades to group_tags and tag_usage', async () => {
         await metadataDb.upsertGroupRow(directories, 'group1', 'My Group');
         await metadataDb.assignEntityTag(directories, 'group1', 'tag1');
@@ -1301,7 +1269,6 @@ describe('phase 3 extension: tag definitions (owner decision - tags.json removal
 
     test('a seed after a rename finds the tag by its new name', async () => {
         await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ data: { name: 'Bob', tags: ['Shared'], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } }));
-        await metadataDb.fillTagNameKeysIfNeeded(directories);
         const first = await metadataDb.seedCardTagsForSingleCharacter(directories, 'Bob.png');
         const mintedId = first.tagIds[0];
 
@@ -1315,7 +1282,6 @@ describe('phase 3 extension: tag definitions (owner decision - tags.json removal
 
     test('seedCardTagsForSingleCharacter writes a change entry and moves the version only when tag_ids change', async () => {
         await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ tags: ['Shared'] }));
-        await metadataDb.fillTagNameKeysIfNeeded(directories);
         const { default: Database } = await import('better-sqlite3');
         const rawDb = new Database(path.join(directories.root, 'character-metadata.sqlite'));
         try {
@@ -1356,87 +1322,6 @@ describe('phase 3 extension: tag definitions (owner decision - tags.json removal
             expect(warnSpy).toHaveBeenCalledTimes(1);
             expect(warnSpy.mock.calls[0][0]).toContain('[character-metadata]');
             expect(warnSpy.mock.calls[0][0]).toContain('tag2');
-        } finally {
-            warnSpy.mockRestore();
-        }
-    });
-});
-
-describe('phase 3 extension: tags.json removal (migration + settings-snapshot round trip)', () => {
-    test('migrateTagsJsonIfNeeded seeds definitions + character_tags + group_tags, then renames tags.json out of the way', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
-        fs.writeFileSync(path.join(groupsDir, 'group1.json'), JSON.stringify({ id: 'group1', name: 'G', members: [] }));
-        await metadataDb.bootstrapGroupsIfNeeded(directories);
-
-        const tagsJsonPath = path.join(tempDir, 'tags.json');
-        fs.writeFileSync(tagsJsonPath, JSON.stringify({
-            tags: [{ id: 'tag1', name: 'Funny' }],
-            tag_map: { 'Bob.png': ['tag1'], group1: ['tag1'], 'GhostCharacter.png': ['tag1'] },
-        }));
-
-        await metadataDb.migrateTagsJsonIfNeeded(directories);
-
-        expect(await storedTagDefinitions(metadataDb, directories)).toEqual([{ id: 'tag1', name: 'Funny' }]);
-        expect(await metadataDb.getCharacterTagIds(directories, 'Bob.png')).toEqual(['tag1']);
-        expect(await metadataDb.getGroupTagIds(directories, 'group1')).toEqual(['tag1']);
-        // The unresolvable key is dropped, not guessed at - see this function's own doc comment.
-        expect(await metadataDb.getEntityTagIdsForMany(directories, ['GhostCharacter.png'])).toEqual({ 'GhostCharacter.png': [] });
-
-        expect(fs.existsSync(tagsJsonPath)).toBe(false);
-        expect(fs.existsSync(`${tagsJsonPath}.migrated`)).toBe(true);
-    });
-
-    test('migrateTagsJsonIfNeeded only runs once - a second call does not reprocess a re-created tags.json', async () => {
-        await metadataDb.migrateTagsJsonIfNeeded(directories); // no tags.json yet - marks migrated with nothing to do
-
-        fs.writeFileSync(path.join(tempDir, 'tags.json'), JSON.stringify({ tags: [{ id: 'tag1', name: 'Funny' }], tag_map: {} }));
-        await metadataDb.migrateTagsJsonIfNeeded(directories);
-
-        expect(await storedTagDefinitions(metadataDb, directories)).toEqual([]);
-        // The re-created tags.json is untouched since migration was already marked complete.
-        expect(fs.existsSync(path.join(tempDir, 'tags.json'))).toBe(true);
-    });
-
-    test('migrateTagsJsonIfNeeded keeps a definition already in tags with the same id and inserts tags.json\'s others', async () => {
-        await metadataDb.saveTagDefinitions(directories, [{ id: 'tag1', name: 'Saved Later' }, { id: 'tag9', name: 'Only In Db' }]);
-        fs.writeFileSync(path.join(tempDir, 'tags.json'), JSON.stringify({
-            tags: [{ id: 'tag1', name: 'Funny' }, { id: 'tag2', name: 'Serious' }],
-            tag_map: {},
-        }));
-
-        await metadataDb.migrateTagsJsonIfNeeded(directories);
-
-        const defs = await storedTagDefinitions(metadataDb, directories);
-        expect(defs).toHaveLength(3);
-        expect(defs).toEqual(expect.arrayContaining([
-            { id: 'tag1', name: 'Saved Later' },
-            { id: 'tag9', name: 'Only In Db' },
-            { id: 'tag2', name: 'Serious' },
-        ]));
-        expect(fs.existsSync(path.join(tempDir, 'tags.json.migrated'))).toBe(true);
-    });
-
-    test('migrateTagsJsonIfNeeded imports every tag_map key across more than one batch and drops unknown keys with a warning', async () => {
-        const avatars = Array.from({ length: 1201 }, (_, i) => `Char${i}.png`);
-        for (const avatar of avatars) {
-            await metadataDb.upsertCharacterFromWrite(directories, avatar, cardJson());
-        }
-        /** @type {Record<string, string[]>} */
-        const tagMap = {};
-        for (const avatar of avatars) tagMap[avatar] = ['tag1'];
-        tagMap['GhostCharacter.png'] = ['tag1'];
-        fs.writeFileSync(path.join(tempDir, 'tags.json'), JSON.stringify({ tags: [{ id: 'tag1', name: 'Funny' }], tag_map: tagMap }));
-
-        const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
-        try {
-            await metadataDb.migrateTagsJsonIfNeeded(directories);
-            const result = await metadataDb.getEntityTagIdsForMany(directories, [...avatars, 'GhostCharacter.png']);
-            for (const avatar of avatars) expect(result[avatar]).toEqual(['tag1']);
-            expect(result['GhostCharacter.png']).toEqual([]);
-            const dropWarnings = warnSpy.mock.calls.filter(c => String(c[0]).includes('tags.json migration'));
-            expect(dropWarnings).toHaveLength(1);
-            expect(dropWarnings[0][0]).toContain('1 tag_map key(s)');
-            expect(dropWarnings[0][0]).toContain('GhostCharacter.png');
         } finally {
             warnSpy.mockRestore();
         }
@@ -1530,14 +1415,6 @@ describe('tags.json tag_map values: a repeated id is stored once, a non-array is
         }
         expect(await storedTagIds('Alice.png')).toEqual({ table: [], shallow: [] });
         expect(await storedTagIds('Carol.png')).toEqual({ table: [], shallow: [] });
-    });
-
-    test('migrateTagsJsonIfNeeded', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
-        await metadataDb.assignEntityTag(directories, 'Bob.png', 't1');
-        writeTagMap({ 'Bob.png': { t2: true } });
-        await expectWarnsAbout('Bob.png', { t2: true }, () => metadataDb.migrateTagsJsonIfNeeded(directories));
-        expect(await storedTagIds('Bob.png')).toEqual({ table: ['t1'], shallow: ['t1'] });
     });
 });
 

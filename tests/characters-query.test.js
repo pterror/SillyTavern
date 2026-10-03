@@ -1554,7 +1554,6 @@ describe('POST /api/characters/changes', () => {
 describe('/query sorted pages past the work cap', () => {
     test('the reply has the rows read so far, more and a cursor; following the cursor gives the whole page', async () => {
         for (const name of ['delta', 'alpha', 'echo', 'charlie', 'bravo', 'foxtrot']) await seedCharacter(`${name}.png`);
-        await metadataDb.buildEntitySortIndexesIfNeeded(directories);
         const body = { filter: { includeGroups: true }, sort: { field: 'name', order: 'asc' }, page: 1, pageSize: 4, want: ['rows'] };
         const whole = await (await postJson('/api/characters/query', body)).json();
         expect(whole.more).toBeUndefined();

@@ -296,28 +296,4 @@ describe('read-only mode: POST /api/characters/query against an existing library
         const reader = await searchCoordinator.getSearchIndex('read-only-test-user', directories, 'groups');
         expect(reader.position).toEqual({ version: Number(version), tagNameSeq: Number(tagNameSeq) });
     });
-
-    // A group file that fails to parse leaves the pass's done flag unwritten, so the pass writes nothing and
-    // reaches its closing checkpoint. Another connection's write sits in the -wal, which a read-only connection
-    // can't checkpoint (SQLITE_IOERR_WRITE). Last in this block: that write changes the db.
-    test('a migration pass that writes nothing skips its checkpoint', async () => {
-        const { getBetterSqlite3 } = await import('../src/endpoints/native-sqlite.js');
-        const DatabaseCtor = await getBetterSqlite3();
-        const writer = new DatabaseCtor(path.join(directories.root, DB_FILE));
-        const brokenGroupFile = path.join(directories.groups, 'broken.json');
-        try {
-            writer.prepare('INSERT INTO meta (key, value) VALUES (\'read-only-mode-test\', \'x\')').run();
-            const dbWritten = snapshotFile(path.join(directories.root, DB_FILE));
-            const walWritten = snapshotFile(path.join(directories.root, `${DB_FILE}-wal`));
-            expect(walWritten.size).toBeGreaterThan(0);
-            fs.writeFileSync(brokenGroupFile, '{');
-
-            await expect(metadataDb.recoverNumericIdGroupsIfNeeded(directories)).resolves.toEqual({ batches: 1, rowsChanged: 0 });
-            expect(snapshotFile(path.join(directories.root, DB_FILE))).toEqual(dbWritten);
-            expect(snapshotFile(path.join(directories.root, `${DB_FILE}-wal`))).toEqual(walWritten);
-        } finally {
-            fs.rmSync(brokenGroupFile, { force: true });
-            writer.close();
-        }
-    });
 });

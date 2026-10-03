@@ -102,7 +102,6 @@ describe('migrateSettingsTagsIfNeeded', () => {
         const tagMapText = writeKeyFile('tag_map', tagMap);
 
         // As in MIGRATION_PASSES: until the column fill has run, a new tag gets no sort_order of its own.
-        await metadataDb.fillTagDerivedColumnsIfNeeded(directories);
         await metadataDb.migrateSettingsTagsIfNeeded(directories);
 
         const defs = await definitionsById();
@@ -205,9 +204,9 @@ describe('migrateSettingsTagsIfNeeded', () => {
         expect(fs.existsSync(keyFilePath('tags.json'))).toBe(false);
     });
 
-    test('runs right after migrateTagsJsonIfNeeded in MIGRATION_PASSES', async () => {
+    test('runs in MIGRATION_PASSES', async () => {
         const { MIGRATION_PASSES } = await import('../src/metadata-migration-coordinator.js');
-        expect(MIGRATION_PASSES[MIGRATION_PASSES.indexOf(/** @type {any} */ ('migrateSettingsTagsIfNeeded')) - 1]).toBe('migrateTagsJsonIfNeeded');
+        expect(MIGRATION_PASSES).toContain('migrateSettingsTagsIfNeeded');
     });
 
     test('with no source it marks the pass done, and a done pass reads nothing', async () => {

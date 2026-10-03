@@ -107,16 +107,6 @@ function readRow(id) {
     }
 }
 
-/** @param {string} key */
-function readMeta(key) {
-    const db = new Database(path.join(directories.root, 'character-metadata.sqlite'), { readonly: true });
-    try {
-        return db.prepare('SELECT value FROM meta WHERE key = ?').get(key);
-    } finally {
-        db.close();
-    }
-}
-
 /** A legacy group file: id, chat_id and chats stored as numbers. */
 function writeLegacyGroup(id = 777, extra = {}) {
     const group = { id, name: `Legacy ${id}`, members: [], disabled_members: [], chat_id: 5, chats: [5, 'Named chat'], fav: false, ...extra };
@@ -290,74 +280,6 @@ describe('the groups bootstrap scan', () => {
 
         expect(readRow('g1')).toMatchObject({ name: 'Non-digit id' });
         expect(readRow('888')).toMatchObject({ name: 'Stray' });
-    });
-});
-
-describe('the numeric-id group recovery pass', () => {
-    /** A store whose bootstrap already ran and skipped legacy numeric-id groups. */
-    async function bootstrappedStore() {
-        await metadataDb.bootstrapGroupsIfNeeded(directories);
-        expect(readMeta('groups_bootstrap_completed')).toBeDefined();
-    }
-
-    test('inserts a missing row for a legacy numeric-id group, without rewriting its file', async () => {
-        await bootstrappedStore();
-        const legacy = writeLegacyGroup(777);
-
-        await metadataDb.recoverNumericIdGroupsIfNeeded(directories);
-
-        expect(readRow('777')).toMatchObject({ id: '777', name: 'Legacy 777' });
-        expect(readRow('777').digest_content >>> 0).toBe(groupDigestContentHash({ ...legacy, id: '777', chat_id: '5', chats: ['5', 'Named chat'] }) >>> 0);
-        expect(readRawFile('777.json')).toEqual(legacy);
-    });
-
-    test('never touches an existing row', async () => {
-        await bootstrappedStore();
-        writeLegacyGroup(777);
-        await metadataDb.upsertGroupRow(directories, '777', 'Row name', { fav: true, group: { name: 'Row name' } });
-        const before = readRow('777');
-
-        await metadataDb.recoverNumericIdGroupsIfNeeded(directories);
-
-        expect(readRow('777')).toEqual(before);
-    });
-
-    test('inserts only what the bootstrap skipped: a numeric id, in whichever file holds it', async () => {
-        await bootstrappedStore();
-        writeRawFile('999.json', { id: '999', name: 'String id', members: [], chats: [] });
-        writeRawFile('stray.json', { id: 888, name: 'Stray', members: [], chats: [] });
-
-        await metadataDb.recoverNumericIdGroupsIfNeeded(directories);
-
-        expect(readRow('999')).toBeUndefined();
-        expect(readRow('888')).toMatchObject({ name: 'Stray' });
-    });
-
-    test('runs once, under its own flag', async () => {
-        await bootstrappedStore();
-        writeLegacyGroup(777);
-        await metadataDb.recoverNumericIdGroupsIfNeeded(directories);
-        expect(readMeta(metadataDb.GROUP_NUMERIC_ID_RECOVERY_FLAG)).toBeDefined();
-
-        writeLegacyGroup(778);
-        await metadataDb.recoverNumericIdGroupsIfNeeded(directories);
-
-        expect(readRow('777')).toBeDefined();
-        expect(readRow('778')).toBeUndefined();
-    });
-
-    test('runs in the store\'s migration worker, after its boot chain', async () => {
-        await bootstrappedStore();
-        writeLegacyGroup(777);
-        metadataDb.disposeMetadataStores();
-
-        await Promise.all(await metadataDb.initializeMetadataStores([directories]));
-        expect(readRow('777')).toBeUndefined();
-
-        const { createMetadataMigrationCoordinator } = await import('../src/metadata-migration-coordinator.js');
-        await createMetadataMigrationCoordinator().start(directories);
-
-        expect(readRow('777')).toMatchObject({ id: '777' });
     });
 });
 

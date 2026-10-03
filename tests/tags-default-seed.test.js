@@ -76,8 +76,6 @@ function writeKeyFile(key, value) {
  * there: until that fill has run, a new tag gets no sort_order of its own.
  */
 async function runImportPasses() {
-    await metadataDb.fillTagDerivedColumnsIfNeeded(directories);
-    await metadataDb.migrateTagsJsonIfNeeded(directories);
     await metadataDb.migrateSettingsTagsIfNeeded(directories);
 }
 
@@ -136,17 +134,6 @@ describe('the six default tags', () => {
 
         expect(tagRows()).toEqual([]);
         expect(metaValue('tags_seed_pending')).toBeUndefined();
-    });
-
-    test('a new store with a tags.json gets none of the six', async () => {
-        fs.writeFileSync(path.join(directories.root, 'tags.json'), JSON.stringify({ tags: [{ id: 'old', name: 'Old' }], tag_map: {} }));
-
-        await metadataDb.ensureSchemaMigrated(directories);
-        await metadataDb.migrateTagsJsonIfNeeded(directories);
-        expect(metaValue('tags_seed_pending')).toBeUndefined();
-        await metadataDb.migrateSettingsTagsIfNeeded(directories);
-
-        expect(tagRows().map(row => row.id)).toEqual(['old']);
     });
 
     test('a new store with an unreadable settings file gets none of the six, names the file, and never seeds later', async () => {

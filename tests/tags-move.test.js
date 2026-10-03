@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { applyQueuedTagMoves } from './tag-store-reads.js';
+
 /** @type {typeof import('../src/character-metadata-db.js')} */
 let metadataDb;
 /** @type {typeof import('better-sqlite3')} */
@@ -121,17 +123,9 @@ function markDeleted(id) {
     live().prepare('INSERT INTO tag_deletions (tag_id, merge_into) VALUES (?, NULL)').run(id);
 }
 
-/**
- * Opens the store with its tag query columns ready, on an empty table.
- * @param {{ filled?: boolean }} [options] filled: false leaves the sort_order fill unfinished, so moves are queued.
- */
-async function openStore({ filled = true } = {}) {
+/** Opens the store, on an empty table. */
+async function openStore() {
     await metadataDb.ensureSchemaMigrated(directories);
-    await metadataDb.fillTagNameKeysIfNeeded(directories);
-    await metadataDb.fillTagDerivedColumnsIfNeeded(directories);
-    await metadataDb.migrateTagsJsonIfNeeded(directories);
-    expect(await metadataDb.areTagQueryColumnsReady(directories)).toBe(true);
-    if (filled) await metadataDb.fillTagSortOrdersIfNeeded(directories);
 }
 
 /** Tag ids in the order Manual shows them: by (sort_order, rowid), then those without one by (name_key, rowid). */
@@ -530,37 +524,14 @@ async function queue(id, placement) {
     expect(await metadataDb.moveTagDefinition(directories, id, placement)).toEqual({ refused: [], written: [], queued: true });
 }
 
-/**
- * Collects TAG_MOVE_FAILED_EVENT emissions.
- * @param {boolean} deliver Whether the listener acks them.
- */
-function listenForMoveFailures(deliver) {
-    /** @type {{ root: string, payload: any }[]} */
-    const reports = [];
-    metadataDb.characterChangeEmitter.on(metadataDb.TAG_MOVE_FAILED_EVENT, (root, payload, ack) => {
-        reports.push({ root, payload });
-        if (deliver) ack.delivered = true;
-    });
-    return reports;
-}
+/** Applies every queued entry (applyQueuedTagMoves()). */
+const applyQueued = () => applyQueuedTagMoves(metadataDb, directories);
 
-describe('moveTagDefinition before the sort_order fill has finished: queued', () => {
-    test('while the fill\'s flag is missing, the move is queued with the place it will leave, and no tag is written', async () => {
-        await openStore({ filled: false });
-        insertTag('a', { sort_order: 1 });
-        insertTag('x', { sort_order: 5 });
-        const before = rows();
-        const changesSeq = await metadataDb.getTagChangesSeq(directories);
-        runSql = [];
-        await queue('x', { before: 'a' });
-        expect(runSql[0]).toMatch(/^INSERT INTO tag_pending_moves\b/);
-        for (const sql of runSql.slice(1)) expect(sql).toMatch(/^(DELETE FROM|INSERT INTO) tag_pending_places\b|^INSERT INTO meta\b/);
-        expect(pending()).toEqual([{ tag_id: 'x', side: 'before', anchor_id: 'a', value: null }]);
-        expect(rows()).toEqual(before);
-        expect(await metadataDb.getTagChangesSeq(directories)).toBe(changesSeq);
-    });
+/** @param {import('../src/character-metadata-db.js').PendingTagMoveOutcome[]} outcomes */
+const failuresOf = outcomes => outcomes.flatMap(o => o.failures);
 
-    test('while the flag is set but a queued move is left, the move is queued after it', async () => {
+describe('moveTagDefinition while a move is queued: queued', () => {
+    test('the move is queued after the one left, and no tag is written', async () => {
         await openStore();
         insertTag('a', { sort_order: 1 });
         insertTag('b', { sort_order: 2 });
@@ -576,12 +547,15 @@ describe('moveTagDefinition before the sort_order fill has finished: queued', ()
     });
 
     test('same, deleted, missing and an unreadable tag are still refused, queueing nothing; the anchor\'s order isn\'t checked', async () => {
-        await openStore({ filled: false });
+        await openStore();
         insertTag('a', { sort_order: 1 });
         insertTag('d', { sort_order: 2 });
         insertTag('bad', '{not json');
         insertTag('arr', '[1]');
+        insertTag('y', { sort_order: 9 });
         markDeleted('d');
+        insertPending('y', 'after', 'a');
+        const left = { tag_id: 'y', side: 'after', anchor_id: 'a', value: null };
         jest.spyOn(console, 'warn').mockImplementation(() => {});
         expect(await moveWritingNothing('a', { before: 'a' })).toEqual({ refused: [{ id: 'a', reason: 'same' }], written: [] });
         expect(await moveWritingNothing('d', { before: 'a' })).toEqual({ refused: [{ id: 'd', reason: 'deleted' }], written: [] });
@@ -589,16 +563,17 @@ describe('moveTagDefinition before the sort_order fill has finished: queued', ()
         expect(await moveWritingNothing('nope', { after: 'a' })).toEqual({ refused: [{ id: 'nope', reason: 'missing' }], written: [] });
         expect(await moveWritingNothing('a', { after: 'nope' })).toEqual({ refused: [{ id: 'nope', reason: 'missing' }], written: [] });
         expect(await moveWritingNothing('bad', { after: 'a' })).toEqual({ refused: [{ id: 'bad', reason: 'unreadable' }], written: [] });
-        expect(pending()).toEqual([]);
+        expect(pending()).toEqual([left]);
         await queue('a', { after: 'arr' });
-        expect(pending()).toEqual([{ tag_id: 'a', side: 'after', anchor_id: 'arr', value: null }]);
+        expect(pending()).toEqual([left, { tag_id: 'a', side: 'after', anchor_id: 'arr', value: null }]);
     });
 
-    test('POST /api/tags/move answers queued true until the fill ends, then applies the move and answers queued false', async () => {
-        await openStore({ filled: false });
+    test('POST /api/tags/move answers queued true and writes nothing', async () => {
+        await openStore();
         insertTag('a', { sort_order: 1 });
         insertTag('b', { sort_order: 2 });
         insertTag('x', { sort_order: 5 });
+        insertPending('b', 'before', 'a');
         const post = async body => (await fetch(`${baseUrl}/api/tags/move`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -606,38 +581,27 @@ describe('moveTagDefinition before the sort_order fill has finished: queued', ()
         })).json();
         expect(await post({ id: 'x', before: 'a' })).toEqual({ result: 'ok', refused: [], written: [], queued: true });
         expect(dataOrder('x')).toBe(5);
-        await metadataDb.fillTagSortOrdersIfNeeded(directories);
-        expect(pending()).toEqual([]);
-        expect(dataOrder('x')).toBe(0);
-        expect(await post({ id: 'x', after: 'a' })).toEqual({ result: 'ok', refused: [], written: [{ id: 'x', sort_order: dataOrder('x') }], queued: false });
-        expect(dataOrder('x')).toBe(1.5);
+        expect(pending()).toHaveLength(2);
     });
 });
 
-describe('the sort_order fill applies the queued moves when it ends', () => {
+describe('applyFirstPendingTagMoveSync: a queued entry, applied', () => {
     test('in arrival order: a chain lands in order and a later entry for the same tag wins', async () => {
-        await openStore({ filled: false });
+        await openStore();
         insertTag('a', { sort_order: 1 });
         insertTag('b', { sort_order: 2 });
         insertTag('c', { sort_order: 3 });
         insertTag('x', { sort_order: 10 });
         insertTag('y', { sort_order: 20 });
         insertTag('z', { sort_order: 30 });
-        await queue('x', { after: 'b' });
-        await queue('z', { after: 'x' });
-        await queue('y', { before: 'a' });
-        await queue('y', { after: 'c' });
+        insertPending('x', 'after', 'b');
+        insertPending('z', 'after', 'x');
+        insertPending('y', 'before', 'a');
+        insertPending('y', 'after', 'c');
         const changesSeq = await metadataDb.getTagChangesSeq(directories);
-        let changedEvents = 0;
-        const onChanged = () => changedEvents++;
-        metadataDb.characterChangeEmitter.on(metadataDb.TAG_CHANGES_EVENT, onChanged);
-        try {
-            const totals = await metadataDb.fillTagSortOrdersIfNeeded(directories);
-            expect(totals.rowsChanged).toBe(4);
-        } finally {
-            metadataDb.characterChangeEmitter.off(metadataDb.TAG_CHANGES_EVENT, onChanged);
-        }
-        expect(changedEvents).toBe(4);
+        const outcomes = await applyQueued();
+        expect(outcomes.reduce((n, o) => n + o.rows, 0)).toBe(4);
+        expect(failuresOf(outcomes)).toEqual([]);
         expect(pending()).toEqual([]);
         expect(displayOrder()).toEqual(['a', 'b', 'x', 'z', 'c', 'y']);
         expect([dataOrder('x'), dataOrder('z'), dataOrder('y')]).toEqual([2.5, 2.75, 4]);
@@ -645,99 +609,58 @@ describe('the sort_order fill applies the queued moves when it ends', () => {
         expect(await metadataDb.getTagChangesSeq(directories)).not.toBe(changesSeq);
     });
 
-    test('says the order is settled once, after the last queued move is applied', async () => {
-        await openStore({ filled: false });
-        insertTag('a', { sort_order: 1 });
-        insertTag('b', { sort_order: 2 });
-        insertTag('x', { sort_order: 10 });
-        await queue('x', { after: 'a' });
-        await queue('b', { before: 'a' });
-        /** @type {{ root: string, pending: number }[]} */
-        const settled = [];
-        metadataDb.characterChangeEmitter.on(metadataDb.TAG_ORDER_SETTLED_EVENT, root => settled.push({ root, pending: pending().length }));
-        await metadataDb.fillTagSortOrdersIfNeeded(directories);
-        expect(settled).toEqual([{ root: directories.root, pending: 0 }]);
-        expect(displayOrder()).toEqual(['b', 'a', 'x']);
-    });
-
-    test('doesn\'t say the order is settled when nothing was queued', async () => {
-        await openStore({ filled: false });
-        insertTag('a', { sort_order: 1 });
-        insertTag('x', {});
-        const settled = jest.fn();
-        metadataDb.characterChangeEmitter.on(metadataDb.TAG_ORDER_SETTLED_EVENT, settled);
-        await metadataDb.fillTagSortOrdersIfNeeded(directories);
-        expect(dataOrder('x')).toBe(2);
-        expect(settled).not.toHaveBeenCalled();
-    });
-
-    test('a move whose tag was deleted or is gone is dropped with no warning', async () => {
-        await openStore({ filled: false });
+    test('a move whose tag was deleted or is gone is dropped with no failure', async () => {
+        await openStore();
         insertTag('a', { sort_order: 1 });
         insertTag('x', { sort_order: 5 });
         insertTag('y', { sort_order: 6 });
-        await queue('x', { before: 'a' });
-        await queue('y', { before: 'a' });
+        insertPending('x', 'before', 'a');
+        insertPending('y', 'before', 'a');
         markDeleted('x');
         live().prepare('DELETE FROM tags WHERE id = ?').run('y');
         const before = rows();
-        const reports = listenForMoveFailures(false);
-        const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
-        await metadataDb.fillTagSortOrdersIfNeeded(directories);
+        const outcomes = await applyQueued();
+        expect(outcomes).toHaveLength(2);
         expect(pending()).toEqual([]);
         expect(rows()).toEqual(before);
-        expect(reports).toEqual([]);
-        expect(warnings(warn)).not.toMatch(/Couldn't move/);
+        expect(failuresOf(outcomes)).toEqual([]);
     });
 
-    test('a deleted anchor leaves the tag where it is and reports it; logged when nothing takes the report', async () => {
-        await openStore({ filled: false });
+    test('a deleted anchor leaves the tag where it is and comes back as a failure', async () => {
+        await openStore();
         insertTag('a', { name: 'Alpha', sort_order: 1 });
         insertTag('b', { sort_order: 2 });
         insertTag('x', { name: 'Ex', sort_order: 5 });
-        await queue('x', { before: 'a' });
-        await queue('x', { after: 'b' });
+        insertPending('x', 'before', 'a');
+        insertPending('x', 'after', 'b');
         markDeleted('a');
         live().prepare('DELETE FROM tags WHERE id = ?').run('b');
-        const reports = listenForMoveFailures(false);
-        const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
-        await metadataDb.fillTagSortOrdersIfNeeded(directories);
+        const failures = failuresOf(await applyQueued());
         expect(pending()).toEqual([]);
         expect(dataOrder('x')).toBe(5);
-        expect(reports).toEqual([
-            { root: directories.root, payload: { tagId: 'x', tagName: 'Ex', anchorId: 'a', anchorName: 'Alpha', refusedId: 'a', reason: 'deleted' } },
-            { root: directories.root, payload: { tagId: 'x', tagName: 'Ex', anchorId: 'b', anchorName: null, refusedId: 'b', reason: 'deleted' } },
+        expect(failures).toEqual([
+            { tagId: 'x', tagName: 'Ex', anchorId: 'a', anchorName: 'Alpha', refusedId: 'a', reason: 'deleted' },
+            { tagId: 'x', tagName: 'Ex', anchorId: 'b', anchorName: null, refusedId: 'b', reason: 'deleted' },
         ]);
-        expect(warnings(warn)).toContain('[character-metadata] Couldn\'t move tag "Ex" next to "Alpha": "Alpha" was deleted.');
-        expect(warnings(warn)).toContain('[character-metadata] Couldn\'t move tag "Ex" next to "b": "b" was deleted.');
+        expect(failures.map(metadataDb.tagMoveFailedText)).toEqual([
+            'Couldn\'t move tag "Ex" next to "Alpha": "Alpha" was deleted.',
+            'Couldn\'t move tag "Ex" next to "b": "b" was deleted.',
+        ]);
     });
 
-    test('a report a listener takes isn\'t logged', async () => {
-        await openStore({ filled: false });
-        insertTag('a', { sort_order: 1 });
-        insertTag('x', { sort_order: 5 });
-        await queue('x', { before: 'a' });
-        markDeleted('a');
-        const reports = listenForMoveFailures(true);
-        const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
-        await metadataDb.fillTagSortOrdersIfNeeded(directories);
-        expect(reports).toHaveLength(1);
-        expect(warnings(warn)).not.toMatch(/Couldn't move/);
-    });
-
-    test('a run that finds the fill finished applies what is left, and a restart finds nothing more', async () => {
+    test('applies what is queued, and a second run finds nothing', async () => {
         await openStore();
         insertTag('a', { sort_order: 1 });
         insertTag('b', { sort_order: 2 });
         insertTag('x', { sort_order: 5 });
         insertPending('x', 'after', 'a');
-        expect(await metadataDb.fillTagSortOrdersIfNeeded(directories)).toEqual({ batches: 1, rowsChanged: 1 });
+        expect((await applyQueued()).map(o => o.rows)).toEqual([1]);
         expect(pending()).toEqual([]);
         expect(dataOrder('x')).toBe(1.5);
-        expect(await metadataDb.fillTagSortOrdersIfNeeded(directories)).toEqual({ batches: 0, rowsChanged: 0 });
+        expect(await applyQueued()).toEqual([]);
     });
 
-    test('an anchor in the tail past the work cap and an unreadable anchor are reported', async () => {
+    test('an anchor in the tail past the work cap and an unreadable anchor are failures', async () => {
         await openStore();
         const cap = metadataDb.TAG_QUERY_WORK_CAP;
         live().transaction(() => {
@@ -749,29 +672,28 @@ describe('the sort_order fill applies the queued moves when it ends', () => {
         insertPending('x', 'before', 'last');
         insertPending('x', 'after', 'arr');
         const before = rows();
-        const reports = listenForMoveFailures(false);
-        const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
-        await metadataDb.fillTagSortOrdersIfNeeded(directories);
+        const failures = failuresOf(await applyQueued());
         expect(pending()).toEqual([]);
         expect(rows()).toEqual(before);
-        expect(reports.map(r => r.payload)).toEqual([
+        expect(failures).toEqual([
             { tagId: 'x', tagName: 'Ex', anchorId: 'last', anchorName: 'Zzz', refusedId: 'last', reason: 'unordered' },
             { tagId: 'x', tagName: 'Ex', anchorId: 'arr', anchorName: null, refusedId: 'arr', reason: 'unreadable' },
         ]);
-        expect(warnings(warn)).toContain('Couldn\'t move tag "Ex" next to "Zzz": "Zzz" is too far into the tags with no order.');
-        expect(warnings(warn)).toContain('Couldn\'t move tag "Ex" next to "arr": the stored data of "arr" couldn\'t be read.');
+        expect(failures.map(metadataDb.tagMoveFailedText)).toEqual([
+            'Couldn\'t move tag "Ex" next to "Zzz": "Zzz" is too far into the tags with no order.',
+            'Couldn\'t move tag "Ex" next to "arr": the stored data of "arr" couldn\'t be read.',
+        ]);
     });
 
-    test('a move refused for two reasons reports each, in order', async () => {
+    test('a move refused for two reasons comes back with each, in order', async () => {
         await openStore();
         insertTag('bad', '{not json');
         insertTag('a', { name: 'Alpha', sort_order: 1 });
         markDeleted('a');
         insertPending('bad', 'before', 'a');
-        const reports = listenForMoveFailures(true);
-        await metadataDb.fillTagSortOrdersIfNeeded(directories);
+        const failures = failuresOf(await applyQueued());
         expect(pending()).toEqual([]);
-        expect(reports.map(r => r.payload)).toEqual([
+        expect(failures).toEqual([
             { tagId: 'bad', tagName: null, anchorId: 'a', anchorName: 'Alpha', refusedId: 'bad', reason: 'unreadable' },
             { tagId: 'bad', tagName: null, anchorId: 'a', anchorName: 'Alpha', refusedId: 'a', reason: 'deleted' },
         ]);
@@ -784,16 +706,16 @@ describe('the sort_order fill applies the queued moves when it ends', () => {
         insertTag('b', { name: 'B' });
         insertPending('x', 'before', 'b');
         const before = rows();
-        const reports = listenForMoveFailures(true);
-        await metadataDb.fillTagSortOrdersIfNeeded(directories);
+        const outcomes = await applyQueued();
         expect(pending()).toEqual([]);
         expect(rows()).toEqual(before);
-        expect(reports.map(r => r.payload)).toEqual([
+        expect(outcomes.map(o => o.rows)).toEqual([0]);
+        expect(failuresOf(outcomes)).toEqual([
             { tagId: 'x', tagName: 'x', anchorId: 'b', anchorName: 'B', refusedId: 'x', reason: 'no-room' },
         ]);
     });
 
-    test('a sort_order entry is written, one for a gone tag is dropped, and one for unreadable data is reported', async () => {
+    test('a sort_order entry is written, one for a gone tag is dropped, and one for unreadable data is a failure', async () => {
         await openStore();
         insertTag('a', { sort_order: 1 });
         insertTag('x', { sort_order: 5 });
@@ -801,18 +723,16 @@ describe('the sort_order fill applies the queued moves when it ends', () => {
         insertPendingValue('x', 7.5);
         insertPendingValue('gone', 3);
         insertPendingValue('bad', 2);
-        const reports = listenForMoveFailures(false);
-        const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
         const changesSeq = await metadataDb.getTagChangesSeq(directories);
-        await metadataDb.fillTagSortOrdersIfNeeded(directories);
+        const failures = failuresOf(await applyQueued());
         expect(pending()).toEqual([]);
         expect(dataOrder('x')).toBe(7.5);
         expect(columnMismatches()).toEqual([]);
         expect(rows().get('bad')).toEqual({ data: '{not json', sort_order: null });
-        expect(reports.map(r => r.payload)).toEqual([
+        expect(failures).toEqual([
             { tagId: 'bad', tagName: null, anchorId: null, anchorName: null, refusedId: 'bad', reason: 'unreadable' },
         ]);
-        expect(warnings(warn)).toContain('[character-metadata] Couldn\'t set the order of tag "bad": its stored data couldn\'t be read.');
+        expect(failures.map(metadataDb.tagMoveFailedText)).toEqual(['Couldn\'t set the order of tag "bad": its stored data couldn\'t be read.']);
         expect(await metadataDb.getTagChangesSeq(directories)).not.toBe(changesSeq);
     });
 
@@ -823,7 +743,7 @@ describe('the sort_order fill applies the queued moves when it ends', () => {
         const before = rows();
         const changesSeq = await metadataDb.getTagChangesSeq(directories);
         runSql = [];
-        await metadataDb.fillTagSortOrdersIfNeeded(directories);
+        expect((await applyQueued()).map(o => o.rows)).toEqual([0]);
         expect(runSql).toEqual([expect.stringMatching(/^DELETE FROM tag_pending_moves\b/)]);
         expect(rows()).toEqual(before);
         expect(await metadataDb.getTagChangesSeq(directories)).toBe(changesSeq);

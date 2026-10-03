@@ -152,7 +152,7 @@ describe('the metadata migration passes run after the server listens', () => {
         await Promise.all(await metadataDb.initializeMetadataStores([directories]));
 
         expect(await metadataDb.characterRowExists(directories, 'Alice.png')).toBe(true);
-        for (const key of [metadataDb.GROUP_NUMERIC_ID_RECOVERY_FLAG, metadataDb.GROUP_FAV_NORMALIZED_FLAG, 'tags_json_migrated', 'card_tags_backfill_completed', 'tag_ids_shallow_json_backfill_completed', 'character_fav_normalized_v1', 'character_tag_ids_normalized_v1', 'orphan_tag_rows_removed_v1', 'group_digest_tag_ids_refreshed_v1']) {
+        for (const key of ['settings_tags_migrated', 'tag_sort_tables_filled', 'random_ranks_filled', 'name_order_filled']) {
             expect(await metadataDb.getMetaValue(directories, key)).toBeNull();
         }
     });
@@ -358,7 +358,7 @@ describe('metadata-migration-worker.js', () => {
 
         expect(passesRan()).toEqual([...coordinatorModule.MIGRATION_PASSES]);
         expect(output()).not.toMatch(/: start$|\d+ms|batch\(es\)/m);
-        expect(await metadataDb.getMetaValue(directories, metadataDb.ORPHAN_TAG_ROWS_REMOVED_FLAG)).not.toBeNull();
+        expect(await metadataDb.getMetaValue(directories, 'tag_sort_tables_filled')).not.toBeNull();
     });
 
     test('this process emits \'change\' when the worker wrote change rows, and not when it wrote none', async () => {

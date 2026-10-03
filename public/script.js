@@ -12546,9 +12546,6 @@ export async function processDroppedFiles(files, data = new Map(), { sourceUrls 
                 ? (tagsAdded ? t`Replaced character '${charName}' (tags imported)` : t`Replaced character '${charName}'`)
                 : (tagsAdded ? t`Imported character '${charName}' (tags imported)` : t`Imported character '${charName}'`);
             toastr.success(toastMessage);
-            if (result.pendingTags?.length > 0) {
-                toastr.warning(t`Tags ${result.pendingTags.join(', ')} will be added to '${charName}' once the tag upgrade finishes.`, t`Tags not added yet`);
-            }
         }
     } finally {
         // Always ends batch mode, even on a mid-loop throw - an un-ended batch leaves writes silently buffered well past this request.
@@ -12713,7 +12710,6 @@ async function importCharacter(file, { preserveFileName = '', sourceUrl = '' } =
                 avatarFileName, replaced: exists, character: data.character,
                 serverHandledTags: effectiveTagSetting === tag_import_setting.ALL || effectiveTagSetting === tag_import_setting.ONLY_EXISTING,
                 tagDefinitions: Array.isArray(data.tagDefinitions) ? data.tagDefinitions : [],
-                pendingTags: Array.isArray(data.pendingTags) ? data.pendingTags : [],
             };
         }
     } catch (error) {

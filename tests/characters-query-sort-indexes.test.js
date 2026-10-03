@@ -171,22 +171,9 @@ async function listed(params) {
 const SORTS = ['name', 'fav', 'date_added', 'date_last_chat', 'chat_size', 'create_date', 'data_size'];
 const FAVS = [undefined, true, false];
 
-describe('/query sorted pages: upstream tie order, with and without the sort indexes', () => {
-    test('before the sort indexes exist, every sort, direction and fav filter lists in upstream tie order', async () => {
+describe('/query sorted pages: upstream tie order through the sort indexes', () => {
+    test('every sort, direction and fav filter lists the same, and pages join up', async () => {
         await seed();
-        for (const sortField of SORTS) {
-            for (const sortOrder of ['asc', 'desc']) {
-                for (const fav of FAVS) {
-                    expect({ sortField, sortOrder, fav, rows: await listed({ sortField, sortOrder, fav }) })
-                        .toEqual({ sortField, sortOrder, fav, rows: expected(sortField, sortOrder, fav) });
-                }
-            }
-        }
-    });
-
-    test('with the sort indexes, every sort, direction and fav filter lists the same, and pages join up', async () => {
-        await seed();
-        await metadataDb.buildEntitySortIndexesIfNeeded(directories);
         for (const sortField of SORTS) {
             for (const sortOrder of ['asc', 'desc']) {
                 for (const fav of FAVS) {
@@ -203,9 +190,8 @@ describe('/query sorted pages: upstream tie order, with and without the sort ind
         }
     });
 
-    test('with the sort indexes, each page read walks an index in order: no temp b-tree sort', async () => {
+    test('each page read walks an index in order: no temp b-tree sort', async () => {
         await seed();
-        await metadataDb.buildEntitySortIndexesIfNeeded(directories);
         for (const sortField of SORTS) {
             for (const sortOrder of ['asc', 'desc']) {
                 calls.length = 0;
@@ -226,9 +212,8 @@ describe('/query sorted pages: upstream tie order, with and without the sort ind
         }
     });
 
-    test('with the sort indexes, following each page\'s cursor lists the same as paging by offset', async () => {
+    test('following each page\'s cursor lists the same as paging by offset', async () => {
         await seed();
-        await metadataDb.buildEntitySortIndexesIfNeeded(directories);
         for (const sortField of SORTS) {
             for (const sortOrder of ['asc', 'desc']) {
                 for (const fav of FAVS) {
@@ -249,7 +234,6 @@ describe('/query sorted pages: upstream tie order, with and without the sort ind
 
     test('a page read from a cursor seeks the indexes: no temp b-tree sort', async () => {
         await seed();
-        await metadataDb.buildEntitySortIndexesIfNeeded(directories);
         for (const sortField of SORTS) {
             for (const sortOrder of ['asc', 'desc']) {
                 const first = await metadataDb.queryEntities(directories, { sortField, sortOrder, offset: 0, limit: 3, wantTotal: false });
@@ -272,7 +256,6 @@ describe('/query sorted pages: upstream tie order, with and without the sort ind
 
     test('a cursor carries on after its last row when rows are added before it, and one for another sort is ignored', async () => {
         await seed();
-        await metadataDb.buildEntitySortIndexesIfNeeded(directories);
         const first = await metadataDb.queryEntities(directories, { sortField: 'name', sortOrder: 'asc', offset: 0, limit: 3, wantTotal: false });
         const seen = first.rows.map(r => `${r.type}:${r.id}`);
         // A new entity that sorts before the cursor would shift an offset page; the cursor isn't moved by it.
@@ -287,7 +270,6 @@ describe('/query sorted pages: upstream tie order, with and without the sort ind
 
     test('a deep page reads keys only through the indexes, and full rows for the page alone', async () => {
         await seed();
-        await metadataDb.buildEntitySortIndexesIfNeeded(directories);
         calls.length = 0;
         const result = await metadataDb.queryEntities(directories, { sortField: 'date_added', sortOrder: 'desc', offset: 5, limit: 2, wantTotal: false });
         expect(result.rows).toHaveLength(2);
@@ -300,13 +282,6 @@ describe('/query sorted pages: upstream tie order, with and without the sort ind
         expect(calls.some(c => c.method === 'all')).toBe(false);
     });
 
-    test('the build pass is idempotent and the indexes survive reopening', async () => {
-        await seed();
-        const first = await metadataDb.buildEntitySortIndexesIfNeeded(directories);
-        expect(first.batches).toBeGreaterThan(0);
-        const second = await metadataDb.buildEntitySortIndexesIfNeeded(directories);
-        expect(second.batches).toBe(0);
-    });
 });
 
 describe('/query with characters only: the same walk, cursor and work cap', () => {
@@ -315,7 +290,6 @@ describe('/query with characters only: the same walk, cursor and work cap', () =
 
     test('every sort, direction and fav filter lists in order, and following each page\'s cursor joins up', async () => {
         await seed();
-        await metadataDb.buildEntitySortIndexesIfNeeded(directories);
         for (const sortField of SORTS) {
             for (const sortOrder of ['asc', 'desc']) {
                 for (const fav of FAVS) {
@@ -340,7 +314,6 @@ describe('/query with characters only: the same walk, cursor and work cap', () =
 
     test('a page walks the sort indexes: no temp b-tree sort, and no group stream', async () => {
         await seed();
-        await metadataDb.buildEntitySortIndexesIfNeeded(directories);
         for (const sortField of SORTS) {
             for (const sortOrder of ['asc', 'desc']) {
                 calls.length = 0;
@@ -363,7 +336,6 @@ describe('/query with characters only: the same walk, cursor and work cap', () =
 
     test('past the work cap, a page answers `more` and a cursor, and following them lists everything once', async () => {
         await seed();
-        await metadataDb.buildEntitySortIndexesIfNeeded(directories);
         metadataDb._setSortedPageWalkForTests({ cap: 1, window: 1 });
         try {
             const want = expectedCharacters('name', 'asc', undefined);
@@ -386,7 +358,6 @@ describe('/query with characters only: the same walk, cursor and work cap', () =
 
     test('hash rows come in the same order as rows', async () => {
         await seed();
-        await metadataDb.buildEntitySortIndexesIfNeeded(directories);
         const result = await metadataDb.queryCharacters(directories, { sortField: 'date_added', sortOrder: 'desc', offset: 0, limit: 100, wantTotal: false, wantRows: false, wantHashes: true });
         expect(result.hashRows.map(r => r.id)).toEqual(expectedCharacters('date_added', 'desc', undefined));
         expect(result.hashRows[0]).toHaveProperty('chat');

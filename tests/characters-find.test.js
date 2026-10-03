@@ -109,7 +109,6 @@ describe('POST /api/characters/find', () => {
         await seedTag('t1', 'Hero');
         await seedTag('t2', 'Tall');
         await seedTag('t3', 'hero');
-        await metadataDb.fillTagNameKeysIfNeeded(directories);
         await metadataDb.assignEntityTag(directories, 'a.png', 't3');
         await metadataDb.assignEntityTag(directories, 'b.png', 't1');
         await metadataDb.assignEntityTag(directories, 'b.png', 't2');
@@ -125,7 +124,6 @@ describe('POST /api/characters/find', () => {
         await seedCharacter('a.png', 'Sam');
         await seedTag('old', 'Old');
         await seedTag('new', 'New');
-        await metadataDb.fillTagNameKeysIfNeeded(directories);
         await metadataDb.assignEntityTag(directories, 'a.png', 'old');
         await metadataDb.deleteTagDefinition(directories, 'old', 'new');
 
@@ -186,7 +184,6 @@ describe('a tag with more deleted tags merging into it than a read takes', () =>
         await seedCharacter('b.png', 'Ben');
         await seedCharacter('c.png', 'Cal');
         await seedTag('t1', 'Hero');
-        await metadataDb.fillTagNameKeysIfNeeded(directories);
         await metadataDb.assignEntityTag(directories, 'a.png', 't1');
         // b carries one of the marked tags; its row still counts as Hero until the marks finish.
         await metadataDb.assignEntityTag(directories, 'b.png', 'gone-01234');

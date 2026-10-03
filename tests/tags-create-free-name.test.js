@@ -68,11 +68,6 @@ async function post(urlPath, body) {
     return { status: response.status, body: parsed };
 }
 
-/** Runs the boot pass that makes tag names look-up-able, as a started server has. */
-async function indexTagNames() {
-    await metadataDb.fillTagNameKeysIfNeeded(directories);
-}
-
 /** @param {string} id @returns {Promise<string>} the name the server stores for the tag */
 async function storedName(id) {
     const { body } = await post('/api/tags/by-ids', { ids: [id] });
@@ -81,7 +76,6 @@ async function storedName(id) {
 
 describe('POST /api/tags/create with freeName', () => {
     test('keeps the base name while no tag has it, then numbers it as getFreeName() does', async () => {
-        await indexTagNames();
         const names = [];
         for (const id of ['a', 'b', 'c']) {
             const { status, body } = await post('/api/tags/create', { tag: { id, name: 'New Tag' }, freeName: true });
@@ -97,7 +91,6 @@ describe('POST /api/tags/create with freeName', () => {
     test('takes the first free number, and a name differing only in case or accents counts as taken', async () => {
         expect((await post('/api/tags/create', { tag: { id: 'x', name: 'néw TAG' } })).status).toBe(200);
         expect((await post('/api/tags/create', { tag: { id: 'y', name: 'New Tag #2' } })).status).toBe(200);
-        await indexTagNames();
 
         expect((await post('/api/tags/create', { tag: { id: 'a', name: 'New Tag' }, freeName: true })).body.tag.name).toBe('New Tag #1');
         expect((await post('/api/tags/create', { tag: { id: 'b', name: 'New Tag' }, freeName: true })).body.tag.name).toBe('New Tag #3');
@@ -106,36 +99,22 @@ describe('POST /api/tags/create with freeName', () => {
     test('a deleted tag\'s name is free again', async () => {
         expect((await post('/api/tags/create', { tag: { id: 'x', name: 'New Tag' } })).status).toBe(200);
         expect((await post('/api/tags/delete', { id: 'x', mergeInto: null })).status).toBe(200);
-        await indexTagNames();
 
         expect((await post('/api/tags/create', { tag: { id: 'a', name: 'New Tag' }, freeName: true })).body.tag.name).toBe('New Tag');
     });
 
     test('the answer carries the place in the manual order the server gave the tag', async () => {
-        await metadataDb.fillTagDerivedColumnsIfNeeded(directories);
         expect((await post('/api/tags/create', { tag: { id: 'x', name: 'X', sort_order: 41 } })).status).toBe(200);
-        await indexTagNames();
 
         const { body } = await post('/api/tags/create', { tag: { id: 'a', name: 'New Tag', color: '#112233' }, freeName: true });
         expect(body.tag).toEqual({ id: 'a', name: 'New Tag', color: '#112233', sort_order: 42 });
     });
 
     test('without freeName the name is stored as given, taken or not', async () => {
-        await metadataDb.fillTagDerivedColumnsIfNeeded(directories);
         expect((await post('/api/tags/create', { tag: { id: 'x', name: 'New Tag' } })).body).toEqual({ result: 'ok', refused: [], tag: { id: 'x', name: 'New Tag', sort_order: 1 } });
         expect((await post('/api/tags/create', { tag: { id: 'y', name: 'New Tag' } })).body).toEqual({ result: 'ok', refused: [], tag: { id: 'y', name: 'New Tag', sort_order: 2 } });
         expect((await post('/api/tags/create', { tag: { id: 'z', name: 'New Tag' }, freeName: false })).body).toEqual({ result: 'ok', refused: [], tag: { id: 'z', name: 'New Tag', sort_order: 3 } });
         expect(await storedName('z')).toBe('New Tag');
-    });
-
-    test('until tag names can be looked up, a freeName create is a 503 and nothing is created', async () => {
-        const { status, body } = await post('/api/tags/create', { tag: { id: 'a', name: 'New Tag' }, freeName: true });
-        expect(status).toBe(503);
-        expect(body.reason).toBe('tag-names-not-indexed');
-        expect((await post('/api/tags/by-ids', { ids: ['a'] })).body.tags).toEqual([]);
-
-        await indexTagNames();
-        expect((await post('/api/tags/create', { tag: { id: 'a', name: 'New Tag' }, freeName: true })).body.tag.name).toBe('New Tag');
     });
 
     test('a refused create names nothing and carries no tag', async () => {

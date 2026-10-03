@@ -141,13 +141,14 @@ async function seed() {
     for (const id of USED) assign.run('c.png', id);
 }
 
-/** Fills the tag query columns, leaving the sort_order fill unfinished so moves are queued. */
-async function makeReady() {
-    await metadataDb.fillTagNameKeysIfNeeded(directories);
-    jest.spyOn(console, 'warn').mockImplementation(() => {});
-    await metadataDb.fillTagDerivedColumnsIfNeeded(directories);
-    await metadataDb.migrateTagsJsonIfNeeded(directories);
-    expect(await metadataDb.areTagQueryColumnsReady(directories)).toBe(true);
+/**
+ * Records a reorder pass at its drain, the state queued entries are read in: manual reads take the stored order with
+ * the queue on top, moves are queued, and running the pass only applies the queue.
+ */
+function recordDrainingPass() {
+    const upsert = live().prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value');
+    upsert.run('tag_reorder_pass', JSON.stringify({ id: 1, mode: 'alphabetical', at: { phase: 'drain' } }));
+    upsert.run('tag_reorder_pass_last_id', '1');
 }
 
 /**
@@ -204,7 +205,7 @@ const everyPageSize = ids => Object.fromEntries(PAGE_SIZES.map(pageSize => [page
 describe('POST /api/tags/query manual, with many moves queued', () => {
     test('the manual order still answers, with the last move in place', async () => {
         await seed();
-        await makeReady();
+        recordDrainingPass();
         /** @type {[string, 'before' | 'after', string][]} */
         const entries = Array.from({ length: 5000 }, (_, i) => /** @type {[string, 'before' | 'after', string]} */ ([i % 2 ? 'a' : 'b', 'after', i % 2 ? 'b' : 'a']));
         entries.push(['a', 'after', 'f']);
@@ -217,14 +218,13 @@ describe('POST /api/tags/query manual, with many moves queued', () => {
 });
 
 describe('POST /api/tags/query manual, with moves pending', () => {
-    describe.each([['indexed path', true]])('%s', (_, ready) => {
+    describe('indexed path', () => {
         beforeEach(async () => {
             await seed();
-            if (ready) await makeReady();
+            recordDrainingPass();
         });
 
         test('with nothing pending the order is the stored one', async () => {
-            expect(await metadataDb.areTagQueryColumnsReady(directories)).toBe(ready);
             expect(await pagedIds()).toEqual(everyPageSize(NATURAL));
             for (const pageSize of [1, 2]) {
                 const { cursors } = await queryAll({ pageSize });
@@ -350,9 +350,9 @@ describe('POST /api/tags/query manual, with moves pending', () => {
         });
     });
 
-    test('once the sort_order fill applies the queued moves, the order is the one the pending moves showed', async () => {
+    test('once the reorder pass\'s drain applies the queued moves, the order is the one the pending moves showed', async () => {
         await seed();
-        await makeReady();
+        recordDrainingPass();
         const moves = /** @type {[string, 'before' | 'after', string][]} */ ([
             ['a', 'after', 'g'],
             ['h', 'before', 'c'],
@@ -371,21 +371,22 @@ describe('POST /api/tags/query manual, with moves pending', () => {
         const shown = (await queryAll({ pageSize: 2 })).ids;
         expect(shown).toEqual(applied(NATURAL, moves));
         const shownFolders = (await queryAll({ pageSize: 1, filter: { folders: true } })).ids;
+        await metadataDb.runTagReorderPassIfNeeded(directories);
 
-        await metadataDb.fillTagSortOrdersIfNeeded(directories);
         expect(live().prepare('SELECT COUNT(*) FROM tag_pending_moves').pluck().get()).toBe(0);
         expect((await queryAll({ pageSize: 2 })).ids).toEqual(shown);
         expect((await queryAll({ pageSize: 1, filter: { folders: true } })).ids).toEqual(shownFolders);
     });
 
-    test('once the finished sort_order fill applies queued values, the order is the one they showed', async () => {
+    test('once the reorder pass\'s drain applies queued values, the order is the one they showed', async () => {
         await seed();
-        await makeReady();
-        await metadataDb.fillTagSortOrdersIfNeeded(directories);
+        // Every tag ordered: g and h after the rest.
+        for (const [id, sortOrder] of [['g', 71], ['h', 72]]) expect((await metadataDb.editTagDefinition(directories, id, { sort_order: sortOrder }))?.refused).toEqual([]);
+        recordDrainingPass();
         pend([['b', '15'], ['a', 'zzz'], ['f', 'before', 'a'], ['c', { x: 1 }], ['d', null], ['h', 'after', 'd']]);
         const shown = (await queryAll({ pageSize: 2 })).ids;
         expect(shown).toEqual(['d', 'h', 'b', 'e', 'i', 'g', 'f', 'a', 'c']);
-        await metadataDb.fillTagSortOrdersIfNeeded(directories);
+        await metadataDb.runTagReorderPassIfNeeded(directories);
         expect(live().prepare('SELECT COUNT(*) FROM tag_pending_moves').pluck().get()).toBe(0);
         expect((await queryAll({ pageSize: 2 })).ids).toEqual(shown);
     });

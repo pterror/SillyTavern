@@ -94,14 +94,8 @@ async function seedGroup(id) {
     await metadataDb.upsertGroupRow(directories, id, group.name, { fav: false, group });
 }
 
-/** Lets tag names be looked up, as the boot chain does. */
-async function indexTagNames() {
-    await metadataDb.fillTagNameKeysIfNeeded(directories);
-}
-
 /** @param {object[]} tags Stored as they are. */
 async function seedTags(tags) {
-    await indexTagNames();
     for (const tag of tags) {
         expect((await metadataDb.createTagDefinition(directories, { ...tag })).refused).toEqual([]);
     }
@@ -236,7 +230,6 @@ describe('/api/tags/restore: assignments', () => {
 
 describe('/api/tags/restore: definitions', () => {
     test('a tag the server does not have is created, and its assignments are stored', async () => {
-        await indexTagNames();
         await seedCharacter('Bob.png');
         const tag = { id: 'new', name: 'New', color: '#123456', folder_type: 'OPEN', sort_order: 5 };
 
@@ -248,7 +241,6 @@ describe('/api/tags/restore: definitions', () => {
     });
 
     test('a created tag with no order of its own is placed after every tag that has one', async () => {
-        await metadataDb.fillTagDerivedColumnsIfNeeded(directories);
         await seedTags([{ id: 'a', name: 'Alpha', sort_order: 40 }]);
 
         await restore({ tags: [{ id: 'z', name: 'Zed' }, { id: 'm', name: 'Mid' }, { id: 'o', name: 'Ordered', sort_order: 50 }] });
@@ -346,7 +338,6 @@ describe('/api/tags/restore: definitions', () => {
     });
 
     test('entries that are not a tag with an id and a name are listed, and the rest is restored', async () => {
-        await indexTagNames();
 
         const result = await restore({ tags: [null, 'x', { id: 'no-name' }, { name: 'No id' }, { id: 'ok', name: 'Ok', sort_order: 1 }] });
 
@@ -355,17 +346,6 @@ describe('/api/tags/restore: definitions', () => {
             createdTagIds: ['ok'],
             invalidTags: ['null', '"x"', '{"id":"no-name"}', '{"name":"No id"}'],
         });
-    });
-
-    test('503 with nothing written while tag names can\'t be looked up yet', async () => {
-        await seedCharacter('Bob.png');
-
-        const { status, body } = await post('/api/tags/restore', { tags: [{ id: 'new', name: 'New' }], tagMap: { 'Bob.png': ['new'] }, overwrite: false });
-
-        expect(status).toBe(503);
-        expect(body.reason).toBe('tag-names-not-indexed');
-        expect(await storedTag('new')).toBeUndefined();
-        expect(await tagsFor(['Bob.png'])).toEqual({ 'Bob.png': [] });
     });
 
     test.each([

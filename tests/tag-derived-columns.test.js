@@ -197,6 +197,8 @@ describe('columns at open', () => {
         withRawDb(db => {
             // A store from before the columns has none of the triggers that read them either.
             for (const name of ['trg_tags_pending_places_ad', 'trg_tags_pending_places_name_key']) db.exec(`DROP TRIGGER ${name}`);
+            // Nor any index on them.
+            for (const name of [...db.prepare('SELECT name FROM sqlite_master WHERE type = \'index\' AND tbl_name = \'tags\' AND sql IS NOT NULL').pluck().iterate()]) db.exec(`DROP INDEX ${name}`);
             for (const name of ['sort_order', 'folder_type', 'is_folder', 'usage_count']) db.exec(`ALTER TABLE tags DROP COLUMN ${name}`);
             db.exec(`
                 CREATE TRIGGER IF NOT EXISTS trg_character_tags_ai AFTER INSERT ON character_tags BEGIN
@@ -250,10 +252,6 @@ describe('every tags write sets the derived columns with data', () => {
 
     test('createTagDefinition, and editTagDefinition on update', async () => {
         await openStore();
-        // Until the sort_order fill has finished, a given sort_order is queued rather than written.
-        await makeReady();
-        await metadataDb.migrateTagsJsonIfNeeded(directories);
-        await metadataDb.fillTagSortOrdersIfNeeded(directories);
         await metadataDb.createTagDefinition(directories, { id: 'a', name: 'A', sort_order: null, folder_type: null });
         expect(derived('a')).toEqual({ sort_order: 0, folder_type: 'null', is_folder: 1, usage_count: 0 });
         await metadataDb.editTagDefinition(directories, 'a', { sort_order: 2.5, folder_type: 'NONE' });
@@ -262,20 +260,8 @@ describe('every tags write sets the derived columns with data', () => {
         expect(derived('a')).toEqual({ sort_order: null, folder_type: 'OPEN', is_folder: 1, usage_count: 0 });
     });
 
-    test('migrateTagsJsonIfNeeded', async () => {
-        await openStore();
-        fs.writeFileSync(path.join(directories.root, 'tags.json'), JSON.stringify({
-            tags: [{ id: 'j', name: 'J', sort_order: true, folder_type: 'CLOSED' }],
-            tag_map: {},
-        }));
-        await metadataDb.migrateTagsJsonIfNeeded(directories);
-        expect(derived('j')).toEqual({ sort_order: 1, folder_type: 'CLOSED', is_folder: 1, usage_count: 0 });
-    });
-
     test('card tag creation', async () => {
         await openStore();
-        await metadataDb.fillTagNameKeysIfNeeded(directories);
-        await metadataDb.fillTagDerivedColumnsIfNeeded(directories);
         const name = 'Brand New';
         const json = JSON.stringify({ name: 'Bob', spec: 'chara_card_v2', spec_version: '2.0', data: { name: 'Bob', tags: [name], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
         await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', json);
@@ -349,12 +335,6 @@ function watchWrites() {
     return { changed: () => version() !== before, close: () => db.close() };
 }
 
-async function makeReady() {
-    await metadataDb.fillTagNameKeysIfNeeded(directories);
-    await metadataDb.fillTagDerivedColumnsIfNeeded(directories);
-    expect(await metadataDb.areTagQueryColumnsReady(directories)).toBe(true);
-}
-
 /** @param {string} sql */
 const readsTags = sql => /\bFROM tags\b/.test(sql);
 
@@ -369,7 +349,6 @@ function planOf({ sql, params }) {
 describe('createTagDefinition', () => {
     test('an id that already has a row is refused as exists, and nothing is written', async () => {
         await openStore();
-        await metadataDb.fillTagDerivedColumnsIfNeeded(directories);
         expect(await metadataDb.createTagDefinition(directories, { id: 'a', name: 'A' })).toEqual({ refused: [], tag: { id: 'a', name: 'A', sort_order: 1 } });
         const watcher = watchWrites();
         try {
@@ -383,7 +362,6 @@ describe('createTagDefinition', () => {
 
     test('a marked id is refused as deleted, before exists, with a warning naming it, and nothing is written', async () => {
         await openStore();
-        await metadataDb.fillTagDerivedColumnsIfNeeded(directories);
         await metadataDb.createTagDefinition(directories, { id: 'a', name: 'A' });
         await metadataDb.createTagDefinition(directories, { id: 'b', name: 'B' });
         await metadataDb.deleteTagDefinition(directories, 'a', null);
@@ -418,18 +396,15 @@ describe('createTagDefinition', () => {
         expect(derived('c')?.sort_order).toBe(-3);
     });
 
-    describe('with no sort_order, max+1, after the fill', () => {
-        const ready = true;
+    describe('with no sort_order, max+1', () => {
         beforeEach(async () => {
             await openStore();
-            await makeReady();
         });
 
         /** @param {string} id @returns {unknown} */
         const orderOf = id => /** @type {any} */ (storedData(id)).sort_order;
 
         test('an empty table gives 1, in data and in the column', async () => {
-            expect(await metadataDb.areTagQueryColumnsReady(directories)).toBe(ready);
             await metadataDb.createTagDefinition(directories, { id: 'a', name: 'A' });
             expect(orderOf('a')).toBe(1);
             expect(derived('a')?.sort_order).toBe(1);
@@ -453,50 +428,20 @@ describe('createTagDefinition', () => {
             expect(orderOf('c')).toBe(1);
         });
 
-        if (ready) {
-            test('is read through tags_sort_order as a covering-index search, never a scan of tags', async () => {
-                await metadataDb.createTagDefinition(directories, { id: 'a', name: 'A', sort_order: 3 });
-                recording = true;
-                await metadataDb.createTagDefinition(directories, { id: 'b', name: 'B' });
-                recording = false;
-                expect(orderOf('b')).toBe(4);
-                const plans = recorded.filter(s => readsTags(s.sql)).map(planOf);
-                expect(plans.some(plan => plan.includes('COVERING INDEX tags_sort_order'))).toBe(true);
-                expect(plans.filter(plan => /\bSCAN tags\b/.test(plan))).toEqual([]);
-            });
-        }
-    });
-
-    describe('with no sort_order, before the fill', () => {
-        beforeEach(async () => {
-            await openStore();
-            await metadataDb.fillTagNameKeysIfNeeded(directories);
-        });
-
-        test('the tag gets no order of its own, and no tags row is read to find one', async () => {
+        test('is read through tags_sort_order as a covering-index search, never a scan of tags', async () => {
             await metadataDb.createTagDefinition(directories, { id: 'a', name: 'A', sort_order: 3 });
-            recorded = [];
             recording = true;
-            expect(await metadataDb.createTagDefinition(directories, { id: 'b', name: 'B' })).toEqual({ refused: [], tag: { id: 'b', name: 'B' } });
-            recording = false;
-            expect(storedData('b')).toEqual({ id: 'b', name: 'B' });
-            expect(derived('b')?.sort_order).toBe(null);
-            expect(recorded.filter(s => /\bSELECT\b[\s\S]*\bFROM tags\b/.test(s.sql) && !/\bWHERE\b/.test(s.sql))).toEqual([]);
-        });
-
-        test('once the columns are filled, the sort-order fill numbers it after every ordered tag', async () => {
-            await metadataDb.createTagDefinition(directories, { id: 'a', name: 'A', sort_order: 3 });
             await metadataDb.createTagDefinition(directories, { id: 'b', name: 'B' });
-            await metadataDb.fillTagDerivedColumnsIfNeeded(directories);
-            await metadataDb.migrateTagsJsonIfNeeded(directories);
-            await metadataDb.fillTagSortOrdersIfNeeded(directories);
-            expect(/** @type {any} */ (storedData('b')).sort_order).toBeGreaterThan(3);
+            recording = false;
+            expect(orderOf('b')).toBe(4);
+            const plans = recorded.filter(s => readsTags(s.sql)).map(planOf);
+            expect(plans.some(plan => plan.includes('COVERING INDEX tags_sort_order'))).toBe(true);
+            expect(plans.filter(plan => /\bSCAN tags\b/.test(plan))).toEqual([]);
         });
     });
 });
 
-describe('tags minted from card tags get max+1, one after another, after the fill', () => {
-    const ready = true;
+describe('tags minted from card tags get max+1, one after another', () => {
     /** @param {string[]} tags */
     const cardWithTags = (name, tags) => JSON.stringify({ name, spec: 'chara_card_v2', spec_version: '2.0', data: { name, tags, creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
 
@@ -518,42 +463,15 @@ describe('tags minted from card tags get max+1, one after another, after the fil
     });
 
     test('seedCardTagsForSingleCharacter', async () => {
-        await metadataDb.fillTagNameKeysIfNeeded(directories);
-        if (ready) await metadataDb.fillTagDerivedColumnsIfNeeded(directories);
-        expect(await metadataDb.areTagQueryColumnsReady(directories)).toBe(ready);
         await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardWithTags('Bob', ['Second', 'Old', 'First']));
         await metadataDb.seedCardTagsForSingleCharacter(directories, 'Bob.png');
         expect([mintedOrder('Second'), mintedOrder('First')]).toEqual([5.5, 6.5]);
     });
-
-    test('a held name, once fillTagNameKeysIfNeeded resolves it', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardWithTags('Bob', ['Held']));
-        expect((await metadataDb.seedCardTagsForSingleCharacter(directories, 'Bob.png')).heldTagNames).toEqual(['Held']);
-        if (ready) {
-            // The derived columns fill needs no name keys; the held name waits for them.
-            await metadataDb.fillTagDerivedColumnsIfNeeded(directories);
-        }
-        await metadataDb.fillTagNameKeysIfNeeded(directories);
-        expect(await metadataDb.areTagQueryColumnsReady(directories)).toBe(ready);
-        expect(mintedOrder('Held')).toBe(5.5);
-    });
-});
-
-test('tags minted from card tags before the fill get no order of their own', async () => {
-    await openStore();
-    await metadataDb.createTagDefinition(directories, { id: 'old', name: 'Old', sort_order: 4.5 });
-    await metadataDb.fillTagNameKeysIfNeeded(directories);
-    await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', JSON.stringify({ name: 'Bob', spec: 'chara_card_v2', spec_version: '2.0', data: { name: 'Bob', tags: ['New'], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } }));
-    await metadataDb.seedCardTagsForSingleCharacter(directories, 'Bob.png');
-    const minted = withRawDb(db => [...db.prepare('SELECT data FROM tags').pluck().iterate()].map(d => JSON.parse(d)).filter(t => t.name === 'New'));
-    expect(minted).toHaveLength(1);
-    expect(Object.hasOwn(minted[0], 'sort_order')).toBe(false);
 });
 
 describe('editTagDefinition', () => {
     test('merges only the patch\'s fields, so a field another tab changed stays as stored', async () => {
         await openStore();
-        await metadataDb.fillTagDerivedColumnsIfNeeded(directories);
         await metadataDb.createTagDefinition(directories, { id: 'a', name: 'A', color: 'red', color2: 'black' });
         // Another tab recolours.
         expect(await metadataDb.editTagDefinition(directories, 'a', { color: 'blue' })).toEqual({ refused: [] });
@@ -576,7 +494,6 @@ describe('editTagDefinition', () => {
 
     test('a marked id is refused as deleted with a warning, whether or not its row is still there, and no row is created', async () => {
         await openStore();
-        await metadataDb.fillTagDerivedColumnsIfNeeded(directories);
         await metadataDb.createTagDefinition(directories, { id: 'a', name: 'A' });
         await metadataDb.deleteTagDefinition(directories, 'a', null);
         withRawDb(db => db.prepare('INSERT INTO tag_deletions (tag_id, merge_into) VALUES (?, NULL)').run('gone'));
@@ -631,7 +548,6 @@ describe('editTagDefinition', () => {
 
     test('a name change updates name_key and is logged in tag_changes and tag_name_changes; other fields aren\'t logged in tag_name_changes', async () => {
         await openStore();
-        await metadataDb.fillTagDerivedColumnsIfNeeded(directories);
         await metadataDb.createTagDefinition(directories, { id: 'a', name: 'A' });
         const changesSeq = await metadataDb.getTagChangesSeq(directories);
         const before = await metadataDb.getCurrentTagNameChangeSeq(directories);
