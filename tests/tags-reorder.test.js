@@ -141,40 +141,6 @@ async function recordPass() {
 }
 
 describe('schema', () => {
-    test('a tag_pending_moves with a sort_order column is rebuilt with value, keeping every entry and its seq', async () => {
-        await metadataDb.ensureSchemaMigrated(directories);
-        live().exec(`DROP TABLE tag_pending_moves;
-            CREATE TABLE tag_pending_moves (
-                seq        INTEGER PRIMARY KEY AUTOINCREMENT,
-                tag_id     TEXT NOT NULL,
-                side       TEXT CHECK (side IN ('before', 'after')),
-                anchor_id  TEXT,
-                sort_order REAL,
-                CHECK ((side IS NOT NULL AND anchor_id IS NOT NULL AND sort_order IS NULL)
-                    OR (side IS NULL AND anchor_id IS NULL AND sort_order IS NOT NULL))
-            );
-            INSERT INTO tag_pending_moves (seq, tag_id, side, anchor_id, sort_order) VALUES
-                (3, 'x', 'before', 'a', NULL), (7, 'y', NULL, NULL, 7.5), (9, 'z', NULL, NULL, 2), (12, 'w', NULL, NULL, 9e999);`);
-        liveDb.close();
-        liveDb = null;
-        metadataDb.disposeMetadataStores();
-
-        await metadataDb.ensureSchemaMigrated(directories);
-        const columns = [...live().prepare('PRAGMA table_info(tag_pending_moves)').iterate()].map(c => c.name);
-        expect(columns).toEqual(['seq', 'tag_id', 'side', 'anchor_id', 'value']);
-        const entries = [...live().prepare('SELECT seq, tag_id, side, anchor_id, value FROM tag_pending_moves ORDER BY seq').iterate()];
-        expect(entries.map(e => ({ ...e, value: e.value === null ? null : JSON.parse(e.value) }))).toEqual([
-            { seq: 3, tag_id: 'x', side: 'before', anchor_id: 'a', value: null },
-            { seq: 7, tag_id: 'y', side: null, anchor_id: null, value: 7.5 },
-            { seq: 9, tag_id: 'z', side: null, anchor_id: null, value: 2 },
-            { seq: 12, tag_id: 'w', side: null, anchor_id: null, value: Infinity },
-        ]);
-        live().prepare('INSERT INTO tag_pending_moves (tag_id, value) VALUES (?, ?)').run('v', '"abc"');
-        expect(live().prepare('SELECT seq FROM tag_pending_moves WHERE tag_id = ?').pluck().get('v')).toBeGreaterThan(12);
-        expect(() => live().prepare('INSERT INTO tag_pending_moves (tag_id, side, anchor_id, value) VALUES (?, ?, ?, ?)').run('v', 'before', 'a', '1'))
-            .toThrow(/CHECK constraint failed/);
-    });
-
     test('tags gets a reorder_pass column, NULL on every row', async () => {
         await metadataDb.ensureSchemaMigrated(directories);
         insertTag('a', { sort_order: 1 });

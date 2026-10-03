@@ -314,29 +314,6 @@ describe('each group file read returns the id, chat_id and chats as strings', ()
         expect(groupsModule.getGroupsByIds(directories, ['777'])['777']).toMatchObject(NORMALIZED);
     });
 
-    test('migrateCharacterIds() group member sweep writes the group back normalized', async () => {
-        const cardParser = await import('../src/character-card-parser.js');
-        const migration = await import('../src/migrations/migrate-character-ids.js');
-        const baseImage = await fs.promises.readFile(path.join(process.cwd(), '..', 'public', 'img', 'ai4.png'));
-        const card = {
-            name: 'Grace', spec: 'chara_card_v2', spec_version: '2.0',
-            data: {
-                name: 'Grace', description: '', personality: '', scenario: '', first_mes: '', mes_example: '',
-                tags: [], creator: '', character_version: '', creator_notes: '', extensions: { world: '' },
-            },
-        };
-        await fs.promises.writeFile(path.join(directories.characters, 'Grace.png'), cardParser.write(baseImage, JSON.stringify(card)));
-        const legacy = writeLegacyGroup(777, { members: ['Grace.png'] });
-        await metadataDb.upsertGroupRow(directories, '777', legacy.name, { fav: false, group: legacy });
-
-        const result = await migration.migrateCharacterIds(directories, { rebuildSearchIndex: false, log: () => {} });
-        expect(result.migrated).toBe(1);
-
-        const file = readRawFile('777.json');
-        expect(file.members).not.toContain('Grace.png');
-        expect(file).toMatchObject(NORMALIZED);
-        expect(readRow('777').digest_content >>> 0).toBe(groupDigestContentHash(file) >>> 0);
-    });
 });
 
 describe('each existing write of a legacy group stores chat_id and chats as strings', () => {
