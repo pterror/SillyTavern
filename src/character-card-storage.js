@@ -13,10 +13,14 @@ import crypto from 'node:crypto';
  * caller passes as `columns.fav`.
  *
  * Where each value goes:
- * - `columns`: the values the narrow `characters` row holds (`data.name`, `data.creator`, `data.character_version`,
- *   `data.extensions.world`, and the top-level `create_date`), each only when it has the type that column holds
- *   (`create_date`: a string or a number); otherwise it goes to `extra` so nothing is coerced. `fav` is never set by
- *   splitCard(); assembleCard() reads it.
+ * - `columns`: the values the narrow `characters` row holds (the character's name, `data.creator`,
+ *   `data.character_version`, `data.extensions.world`, and the top-level `create_date`), each only when it has the
+ *   type that column holds (`create_date`: a string or a number); otherwise it goes to `extra` so nothing is coerced.
+ *   `fav` is never set by splitCard(); assembleCard() reads it.
+ * - The character's name is the one the app shows and sorts by, getCharaCardV2(card).name: `data.name` when the card
+ *   has `spec` and a `data` object with a `name` key, the top-level `name` otherwise. `name:data` or `name:top` in
+ *   `extra` says which key it came from, so it goes back there. The other key, when the card has it, is `mirror:name`
+ *   when equal and is otherwise stored as itself (`data:name` or `top:name`, a string included).
  * - `fields`: every other string-valued key of `data` (description, personality, scenario, first_mes, mes_example,
  *   creator_notes, system_prompt, post_history_instructions, and any unknown string field).
  * - `greetings`: `data.alternate_greetings` and `data.group_only_greetings`, one row per greeting, in order.
@@ -24,8 +28,9 @@ import crypto from 'node:crypto';
  *   not the user's tag assignments (`character_tags`).
  * - `extensions`: every key of `data.extensions` except fav and world, its value as JSON.
  * - `extra`: everything else, by path: non-string `data` keys (`data:<key>`), top-level keys other than `data`
- *   (`top:<key>`), the presence of `data.extensions.fav` (`present:fav`), and a top-level key whose value is exactly the V1 mirror of its `data` counterpart
- *   (`mirror:<key>`, value null), so the mirror is one value here and written to both places on assembly.
+ *   (`top:<key>`), the presence of `data.extensions.fav` (`present:fav`), and a top-level key whose value is exactly
+ *   the V1 mirror of its `data` counterpart (`mirror:<key>`, value null), so the mirror is one value here and written
+ *   to both places on assembly.
  */
 
 /** Top-level V1 keys that mirror a value under `data`, by path. */
@@ -42,7 +47,7 @@ const V1_MIRRORS = Object.freeze({
     talkativeness: ['extensions', 'talkativeness'],
 });
 
-const COLUMN_KEYS = Object.freeze(['name', 'creator', 'character_version']);
+const COLUMN_KEYS = Object.freeze(['creator', 'character_version']);
 const GREETING_LISTS = Object.freeze(['alternate_greetings', 'group_only_greetings']);
 
 /**
@@ -128,6 +133,17 @@ export function cardWithStoredFav(card, fav) {
 }
 
 /**
+ * Which key of `card` holds the name getCharaCardV2() gives it: `data.name` for a card with `spec` and a `data` object
+ * with a `name` key (readFromV2() hoists it), the top-level `name` otherwise (readFromV2() leaves it when `data` has
+ * none; convertToV2() takes it for a card without `spec`).
+ * @param {Record<string, unknown>} card
+ * @returns {'data' | 'top'}
+ */
+export function cardNameSource(card) {
+    return Object.hasOwn(card, 'spec') && isPlainObject(card.data) && Object.hasOwn(card.data, 'name') ? 'data' : 'top';
+}
+
+/**
  * @param {unknown} card A parsed card.
  * @returns {CardParts}
  */
@@ -145,10 +161,25 @@ export function splitCard(card) {
         parts.extra.push({ path: 'top:data', value: JSON.stringify(data) ?? 'null' });
     }
 
+    const nameFrom = cardNameSource(card);
+    const nameAt = { data: isPlainObject(data) ? readPath(data, ['name']) : { found: false }, top: readPath(card, ['name']) };
+    const name = nameAt[nameFrom];
+    const otherName = nameAt[nameFrom === 'data' ? 'top' : 'data'];
+    if (name.found) {
+        parts.extra.push({ path: `name:${nameFrom}`, value: null });
+        if (typeof name.value === 'string') parts.columns.name = name.value;
+        else parts.extra.push({ path: `${nameFrom}:name`, value: JSON.stringify(name.value) ?? 'null' });
+    }
+    if (otherName.found) {
+        if (name.found && jsonEqual(name.value, otherName.value)) parts.extra.push({ path: 'mirror:name', value: null });
+        else parts.extra.push({ path: `${nameFrom === 'data' ? 'top' : 'data'}:name`, value: JSON.stringify(otherName.value) ?? 'null' });
+    }
+
     if (isPlainObject(data)) {
         // An empty `data` or `data.extensions` splits to no rows, so their presence is a marker of its own.
         parts.extra.push({ path: 'present:data', value: null });
         for (const [key, value] of Object.entries(data)) {
+            if (key === 'name') continue;
             if (key === 'extensions' && isPlainObject(value)) {
                 parts.extra.push({ path: 'present:extensions', value: null });
                 for (const [extKey, extValue] of Object.entries(value)) {
@@ -167,7 +198,7 @@ export function splitCard(card) {
                 continue;
             }
             if (typeof value === 'string') {
-                if (COLUMN_KEYS.includes(key)) parts.columns[/** @type {'name'|'creator'|'character_version'} */ (key)] = value;
+                if (COLUMN_KEYS.includes(key)) parts.columns[/** @type {'creator'|'character_version'} */ (key)] = value;
                 else parts.fields.push({ field: key, value });
                 continue;
             }
@@ -176,7 +207,7 @@ export function splitCard(card) {
     }
 
     for (const [key, value] of Object.entries(card)) {
-        if (key === 'data') continue;
+        if (key === 'data' || key === 'name') continue;
         if (key === 'create_date' && (typeof value === 'string' || typeof value === 'number')) {
             parts.columns.create_date = value;
             continue;
@@ -211,7 +242,7 @@ export function assembleCard(parts) {
 
     const { columns } = parts;
     for (const key of COLUMN_KEYS) {
-        const value = columns[/** @type {'name'|'creator'|'character_version'} */ (key)];
+        const value = columns[/** @type {'creator'|'character_version'} */ (key)];
         if (value !== undefined) ensureData()[key] = value;
     }
     for (const { field, value } of parts.fields) ensureData()[field] = value;
@@ -244,10 +275,20 @@ export function assembleCard(parts) {
         else if (path.startsWith('top:')) card[path.slice(4)] = JSON.parse(/** @type {string} */ (value));
     }
     if (columns.create_date !== undefined) card.create_date = columns.create_date;
+    const nameFrom = parts.extra.some(row => row.path === 'name:data') ? 'data' : parts.extra.some(row => row.path === 'name:top') ? 'top' : null;
+    if (columns.name !== undefined) {
+        if (nameFrom === null) throw new TypeError('assembleCard(): columns.name is set but no name:data or name:top says which key it belongs to');
+        if (nameFrom === 'data') ensureData().name = columns.name;
+        else card.name = columns.name;
+    }
     if (data !== undefined) card.data = data;
     for (const { path } of parts.extra) {
         if (!path.startsWith('mirror:')) continue;
         const key = path.slice(7);
+        if (key === 'name' && nameFrom === 'top') {
+            ensureData().name = card.name;
+            continue;
+        }
         const counterpart = readPath(/** @type {Record<string, unknown>} */ (data ?? {}), V1_MIRRORS[/** @type {keyof typeof V1_MIRRORS} */ (key)]);
         card[key] = counterpart.value;
     }

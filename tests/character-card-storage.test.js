@@ -1,5 +1,6 @@
 /* eslint jest/expect-expect: ["warn", { "assertFunctionNames": ["expect", "expectLossless"] }] */
-import { describe, test, expect } from '@jest/globals';
+import { describe, test, expect, jest } from '@jest/globals';
+import { getCharaCardV2 } from '../src/character-card-normalize.js';
 import { splitCard, assembleCard, canonicalCardHash, canonicalJson, cardWithStoredFav } from '../src/character-card-storage.js';
 
 /** Splits `card` and assembles it back with `fav` as the stored favourite flag. */
@@ -115,6 +116,38 @@ describe('character card storage', () => {
         expect(() => assembleCard(splitCard(v2Card))).toThrow(TypeError);
     });
 
+    test('the name is stored from the key getCharaCardV2() reads it from, and goes back there', () => {
+        // spec and data.name: data.name is the name; an equal top-level name is a mirror, a different one itself.
+        const fromData = { spec: 'chara_card_v2', name: 'Old', data: { name: 'New' } };
+        expect(splitCard(fromData).columns.name).toBe('New');
+        expect(splitCard(fromData).extra.map(r => r.path)).toEqual(expect.arrayContaining(['name:data', 'top:name']));
+        expect(roundTrip(fromData)).toEqual(fromData);
+        expect(splitCard(v2Card).extra.map(r => r.path)).toEqual(expect.arrayContaining(['name:data', 'mirror:name']));
+
+        // spec without data.name: the top-level name.
+        const noDataName = { spec: 'chara_card_v2', name: 'Top', data: { description: 'd' } };
+        expect(splitCard(noDataName).columns.name).toBe('Top');
+        expect(splitCard(noDataName).extra.some(r => r.path === 'name:top')).toBe(true);
+        expect(roundTrip(noDataName)).toEqual(noDataName);
+
+        // no spec: the top-level name, whatever data.name is.
+        const v1Drifted = { name: 'V1', data: { name: 'V2' } };
+        expect(splitCard(v1Drifted).columns.name).toBe('V1');
+        expect(splitCard(v1Drifted).extra).toEqual(expect.arrayContaining([{ path: 'name:top', value: null }, { path: 'data:name', value: '"V2"' }]));
+        expect(roundTrip(v1Drifted)).toEqual(v1Drifted);
+        const v1Mirrored = { name: 'Same', data: { name: 'Same' } };
+        expect(splitCard(v1Mirrored).extra.some(r => r.path === 'mirror:name')).toBe(true);
+        expect(roundTrip(v1Mirrored)).toEqual(v1Mirrored);
+
+        // A non-string name stays where it is, as itself; no name at all stores nothing.
+        const oddName = { spec: 'chara_card_v2', data: { name: 5 } };
+        expect(splitCard(oddName).columns.name).toBeUndefined();
+        expect(roundTrip(oddName)).toEqual(oddName);
+        expect(splitCard({ data: {} }).extra.some(r => r.path.startsWith('name:'))).toBe(false);
+        expectLossless({ spec: 'x', name: 'n' });
+        expectLossless({ spec: 'x', data: 'not an object', name: 'n' });
+    });
+
     test('a V1 key that drifted from data keeps both values', () => {
         const drifted = { ...v2Card, description: 'old text' };
         expectLossless(drifted);
@@ -144,7 +177,9 @@ describe('character card storage', () => {
         expectLossless(null);
     });
 
-    test('random cards round-trip exactly', () => {
+    test('random cards round-trip exactly, the name column holding getCharaCardV2()\'s name', () => {
+        // getCharaCardV2() warns about every card missing V2 fields.
+        const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
         let seed = 12345;
         const rand = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
         const pick = (list) => list[Math.floor(rand() * list.length)];
@@ -180,7 +215,11 @@ describe('character card storage', () => {
             if (isPlainObject(card.data) && isPlainObject(card.data.extensions) && rand() < 0.5) card.data.extensions.fav = rand() < 0.5;
             const before = canonicalJson(card);
             expectLossless(card);
+            const parts = splitCard(card);
+            const normalizedName = getCharaCardV2(structuredClone(card), {}, false).name;
+            expect(parts.columns.name).toBe(typeof normalizedName === 'string' ? normalizedName : undefined);
             expect(canonicalJson(card)).toBe(before);
         }
+        warn.mockRestore();
     });
 });
