@@ -2,12 +2,12 @@
 /* eslint-env node */
 /**
  * Made-up character library for the search bench's concurrency run: `cardCount` characters shaped like the live
- * library, with the bench's words mixed in at their live share per indexed field, every boot flag and one-time
- * pass marker set as done (as live has them), and the character index built and caught up.
+ * library, with the bench's words mixed in at their live share per indexed field, every boot flag set as done (as
+ * live has them), and the character index built and caught up.
  *
- * Live is only ever read, through raw read-only handles, at run time: better-sqlite3 `{ readonly: true,
- * fileMustExist: true }` on `<live user dir>/character-metadata.sqlite` (every statement a point lookup or with a
- * LIMIT) and tantivy `Index.open()` on `<live user dir>/search-index/characters-tantivy` (searched, never written).
+ * Live is only ever read, through read-only handles, at run time: better-sqlite3 `{ readonly: true,
+ * fileMustExist: true }` on `<live user dir>/character-metadata.sqlite`, which must be in the fields layout (every
+ * statement a point lookup or with a LIMIT; cards assembled from the card tables by primary key) and tantivy `Index.open()` on `<live user dir>/search-index/characters-tantivy` (searched, never written).
  * Nothing from live is written anywhere except as sizes, flags, counts and dates in the made-up library. Server
  * functions only ever get the scratch directories.
  *
@@ -161,23 +161,29 @@ export async function generateSynthLibrary(liveUserDir, scratchRoot, words, card
 // ---------------------------------------------------------------- child: live reads
 
 /**
- * Bounded read-only sample of the live metadata db: per-card sizes, flags, counts and dates, tag name lengths,
- * the tag count, and the groups' fav flags and tag counts.
+ * Bounded read-only sample of the live metadata db (fields layout): per-card sizes, flags, counts and dates, tag
+ * name lengths, the tag count, and the groups' fav flags and tag counts.
+ * @param {(file: string, options: object) => any} openDatabase sqlite-engine.js's openNativeDatabase over better-sqlite3.
+ * @param {typeof import('../src/character-card-reader.js').assembleCardsSync} assembleCardsSync
+ * @param {typeof import('../src/character-store-schema.js').defineCharacterStoreFunctions} defineCharacterStoreFunctions
+ * @param {string} liveUserDir
  */
-function sampleLive(Database, liveUserDir) {
-    const db = new Database(path.join(liveUserDir, 'character-metadata.sqlite'), { readonly: true, fileMustExist: true });
+function sampleLive(openDatabase, assembleCardsSync, defineCharacterStoreFunctions, liveUserDir) {
+    const db = openDatabase(path.join(liveUserDir, 'character-metadata.sqlite'), { readonly: true });
+    defineCharacterStoreFunctions(db);
     try {
-        const maxRowid = db.prepare('SELECT MAX(rowid) AS m FROM characters').get().m;
+        const maxRowid = db.get('SELECT MAX(rowid) AS m FROM characters').m;
         if (!maxRowid) throw new Error('the live characters table is empty');
-        const pick = db.prepare('SELECT rowid AS rid, * FROM characters WHERE rowid >= ? ORDER BY rowid LIMIT 1');
-        const tagCountOf = db.prepare(`SELECT COUNT(*) AS n FROM (SELECT 1 FROM character_tags WHERE character_id = ? LIMIT ${LIVE_TAGS_PER_ENTITY_LIMIT})`);
+        const pickSql = 'SELECT rowid AS rid, id, fav, date_added, create_date, world, character_version, active_chat, content_hash FROM characters WHERE rowid >= ? ORDER BY rowid LIMIT 1';
+        const tagCountSql = `SELECT COUNT(*) AS n FROM (SELECT 1 FROM character_tags WHERE character_id = ? LIMIT ${LIVE_TAGS_PER_ENTITY_LIMIT})`;
         const samples = [];
         let replacedSpecs = 0;
         let replacedExtKeys = 0;
         for (let k = 0; k < LIVE_CHARACTER_SAMPLES; k++) {
-            const r = pick.get(Math.floor(1 + (maxRowid - 1) * k / LIVE_CHARACTER_SAMPLES));
+            const r = db.get(pickSql, [Math.floor(1 + (maxRowid - 1) * k / LIVE_CHARACTER_SAMPLES)]);
             if (!r) continue;
-            const card = JSON.parse(r.card_json);
+            const card = assembleCardsSync(db, [r.id]).get(r.id);
+            if (!card) continue;
             const d = card.data ?? {};
             const dataLens = {};
             for (const [key, v] of Object.entries(d)) dataLens[key] = typeof v === 'string' ? v.length : JSON.stringify(v ?? null).length;
@@ -199,7 +205,7 @@ function sampleLive(Database, liveUserDir) {
                 date_added: r.date_added,
                 create_date: r.create_date,
                 worldSet: r.world !== null,
-                versionLen: typeof r.version === 'string' ? r.version.length : null,
+                versionLen: typeof r.character_version === 'string' ? r.character_version.length : null,
                 activeChatSet: r.active_chat !== null,
                 contentHashSet: r.content_hash !== null,
                 cardTop,
@@ -210,15 +216,14 @@ function sampleLive(Database, liveUserDir) {
                 altGreetings: Array.isArray(d.alternate_greetings) ? d.alternate_greetings.length : null,
                 bookEntries: d.character_book?.entries?.length ?? null,
                 cardFav,
-                tagCount: tagCountOf.get(r.id).n,
+                tagCount: db.get(tagCountSql, [r.id]).n,
             });
         }
 
-        const tagMax = db.prepare('SELECT MAX(rowid) AS m FROM tags').get().m ?? 0;
-        const tagPick = db.prepare('SELECT data FROM tags WHERE rowid >= ? ORDER BY rowid LIMIT 1');
+        const tagMax = db.get('SELECT MAX(rowid) AS m FROM tags').m ?? 0;
         const tagNameLens = [];
         for (let k = 0; k < LIVE_TAG_NAME_SAMPLES && tagMax > 0; k++) {
-            const t = tagPick.get(Math.floor(1 + (tagMax - 1) * k / LIVE_TAG_NAME_SAMPLES));
+            const t = db.get('SELECT data FROM tags WHERE rowid >= ? ORDER BY rowid LIMIT 1', [Math.floor(1 + (tagMax - 1) * k / LIVE_TAG_NAME_SAMPLES)]);
             if (!t) continue;
             try {
                 tagNameLens.push(String(JSON.parse(t.data).name ?? '').length);
@@ -226,9 +231,9 @@ function sampleLive(Database, liveUserDir) {
         }
         if (tagNameLens.length === 0) tagNameLens.push(8);
 
-        const tagCount = db.prepare(`SELECT COUNT(*) AS n FROM (SELECT 1 FROM tags LIMIT ${LIVE_TAG_COUNT_LIMIT})`).get().n;
+        const tagCount = db.get(`SELECT COUNT(*) AS n FROM (SELECT 1 FROM tags LIMIT ${LIVE_TAG_COUNT_LIMIT})`).n;
         const groups = [];
-        for (const g of db.prepare(`SELECT g.fav AS fav, (SELECT COUNT(*) FROM (SELECT 1 FROM group_tags gt WHERE gt.group_id = g.id LIMIT ${LIVE_TAGS_PER_ENTITY_LIMIT})) AS ntags FROM groups g ORDER BY g.rowid LIMIT ${LIVE_GROUP_LIMIT}`).iterate()) {
+        for (const g of db.iterate(`SELECT g.fav AS fav, (SELECT COUNT(*) FROM (SELECT 1 FROM group_tags gt WHERE gt.group_id = g.id LIMIT ${LIVE_TAGS_PER_ENTITY_LIMIT})) AS ntags FROM groups g ORDER BY g.rowid LIMIT ${LIVE_GROUP_LIMIT}`)) {
             groups.push({ fav: !!g.fav, ntags: g.ntags });
         }
         return {
@@ -268,7 +273,10 @@ async function runChild(args) {
     const tantivy = tantivyImport.default ?? tantivyImport;
 
     // ---- live, read only ----
-    const live = sampleLive(Database, liveUserDir);
+    const { openNativeDatabase } = await import('../src/endpoints/sqlite-engine.js');
+    const { assembleCardsSync } = await import('../src/character-card-reader.js');
+    const { defineCharacterStoreFunctions } = await import('../src/character-store-schema.js');
+    const live = sampleLive((file, options) => openNativeDatabase(Database, file, options), assembleCardsSync, defineCharacterStoreFunctions, liveUserDir);
     const liveIndex = termCounter(tantivy, path.join(liveUserDir, 'search-index', 'characters-tantivy'));
     const liveNumDocs = liveIndex.numDocs;
     if (!(liveNumDocs > 0)) throw new Error(`live index numDocs = ${liveNumDocs}`);
@@ -588,8 +596,10 @@ async function runChild(args) {
             clock = plan.dateAdded;
             await db.upsertCharacterFromWrite(directories, plan.id, cardJson, plan.contentHash, plan.avatarIdentityHash);
         }
-        await db.setEntityTagIdsMany(directories, Object.fromEntries(chunk.map(plan => [plan.id, plan.tagIds])));
         await db.endBatchImport(directories);
+        for (const plan of chunk) {
+            for (const tagId of plan.tagIds) await db.assignEntityTag(directories, plan.id, tagId);
+        }
     }
     clock = NOW_BASE;
     mark('importedMs');
@@ -619,17 +629,13 @@ async function runChild(args) {
         await writeGroupFile(directories, group);
         groupPlans.push({ id, tagIds: drawTags(live.groups[g].ntags).map(t => t.id) });
     }
-    if (groupPlans.length > 0) await db.setEntityTagIdsMany(directories, Object.fromEntries(groupPlans.map(g => [g.id, g.tagIds])));
+    for (const group of groupPlans) {
+        for (const tagId of group.tagIds) await db.assignEntityTag(directories, group.id, tagId);
+    }
     log(`${groupPlans.length} groups`);
 
-    // ---- meta: every boot flag and one-time pass marker done, as on live ----
-    const migrationKeys = [
-        'bootstrap_completed', 'groups_bootstrap_completed', 'group_numeric_id_recovery_v1', 'group_fav_normalized_v1',
-        'tags_json_migrated', 'character_fav_normalized_v1', 'character_tag_ids_normalized_v1', 'unimport_embedded_lore_completed',
-    ];
-    for (const key of migrationKeys) await db.markMigrationComplete(directories, key);
-    await db.setMetaValue(directories, 'card_tags_backfill_completed', '1');
-    await db.setMetaValue(directories, 'tag_ids_shallow_json_backfill_completed', '1');
+    // ---- meta: every boot flag done, as on live ----
+    for (const key of ['bootstrap_completed', 'groups_bootstrap_completed']) await db.setMetaValue(directories, key, '1');
     // Unused leftover key live still carries.
     await db.setMetaValue(directories, 'tantivy_char_index_tags_hash', crypto.createHash('sha256').update(String(seed)).digest('hex'));
     fs.mkdirSync(directories.characters, { recursive: true });
