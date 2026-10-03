@@ -122,7 +122,8 @@ impl Default for StoreConfig {
     }
 }
 
-/// B. Provisional; the plan's stage 3 records how each constant was measured.
+// Provisional, set from measurements at 10^6–10^8 entries: the plan's stage 3 records them and the reasons.
+/// B.
 pub const BUFFER_BYTES: usize = 64 << 20;
 /// L.
 pub const LOG_BYTES: u64 = 64 << 20;
@@ -130,7 +131,7 @@ pub const LOG_BYTES: u64 = 64 << 20;
 pub const FAN_IN: usize = 4;
 /// C.
 pub const CACHE_BYTES: usize = 64 << 20;
-pub const RUN_BLOCK_SIZE: usize = 4 << 10;
+pub const RUN_BLOCK_SIZE: usize = 16 << 10;
 /// u.
 pub const LIVE_FRACTION: f64 = 0.5;
 

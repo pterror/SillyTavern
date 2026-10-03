@@ -28,7 +28,8 @@ use format::{
 pub const FILE_SHIFT: u32 = 36;
 /// A file takes no new round once it reaches this size; it bounds what opening the log reads.
 pub const FILE_TARGET: u64 = 16 << 20;
-/// Provisional; the plan's stage 2 records how it was measured, and stage 3 retunes it with cleaning.
+/// Provisional; the plan's stages 2 and 3 record how it was measured (cleaning works per file, so it doesn't
+/// depend on this).
 pub const BLOCK_SIZE: u64 = 4 << 10;
 
 #[derive(Debug, Clone, Copy)]
