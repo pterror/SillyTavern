@@ -27,7 +27,7 @@ import { normalizeGroupRecord, tagEntityTypeOf } from './group-id.js';
 import { expandTagFilter, resolveTagId, resolveTagIds, NO_TAG_DELETIONS } from './tag-deletions.js';
 import { SEARCH_WORK_CAP, SEARCH_WALK_WINDOW } from './endpoints/search-walk.js';
 import { orderKey, permute, unpermute } from './random-order.js';
-import { characterAvatarsForOwnerId, characterOwnerIdOf, dropOwnerCreatedAtIndex, fillMessageStats, listOwnersWithoutKind, openOwnerStatsView, recordOwnerKinds } from './message-tree-db.js';
+import { characterAvatarsForOwnerId, characterOwnerIdOf, dropOwnerCreatedAtIndex, fillMessageStats, openOwnerStatsView } from './message-tree-db.js';
 // getStringHash must match public/scripts/random-sort.js's compareByRandomSeed() exactly, or server/client random-sort ordering diverges.
 import { getStringHash, groupDigestFavHash, groupDigestTagIdsHash, groupDigestContentHash, normalizeFav, normalizeTagIds, tagNameKey } from '../public/scripts/hash-utils.js';
 
@@ -5821,8 +5821,6 @@ async function moveDeletedTagRows(db, tagId, tagName, side, totals) {
 
 const ENTITY_COUNT_FILL_BATCH_SIZE = 1000;
 
-const TREE_OWNER_KIND_BATCH_SIZE = 100;
-
 /**
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  * @param {'characters' | 'groups'} table
@@ -5846,40 +5844,6 @@ function existingRowIds(db, table, ids) {
  */
 export async function dropTreeOwnerCreatedAtIndex(directories) {
     return { batches: await dropOwnerCreatedAtIndex(directories) ? 1 : 0, rowsChanged: 0 };
-}
-
-/**
- * Records the kind of every message tree owner that has none yet: `character` when exactly one characters row's
- * chats live under the owner id, `group` when the groups row with that id is the only match. An owner with no match,
- * or more than one, stays unknown and is logged. Runs every boot, since owners the boot chat migration creates have
- * no kind until this pass.
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<CharacterPassResult | undefined>} `batches` counts the pages of owners examined, `rowsChanged`
- *   the kinds recorded.
- */
-export async function fillTreeOwnerKinds(directories) {
-    const entry = await getEntry(directories);
-    if (!entry) return;
-
-    let batches = 0;
-    let rowsChanged = 0;
-    /** @type {string | null} */
-    let after = null;
-    for (;;) {
-        const ownerIds = await listOwnersWithoutKind(directories, after, TREE_OWNER_KIND_BATCH_SIZE);
-        if (ownerIds.length === 0) break;
-        after = ownerIds[ownerIds.length - 1];
-
-        /** @type {{ ownerId: string, owner: import('./message-tree-db.js').OwnerDescriptor }[]} */
-        const found = [];
-        for (const ownerId of ownerIds) {
-            const owner = ownerKindFromRowsSync(entry.db, ownerId);
-            if (owner) found.push({ ownerId, owner });
-        }
-        rowsChanged += await recordOwnerKinds(directories, found);
-        batches++;
-    }
-    return { batches, rowsChanged };
 }
 
 /** Owners recounted per message stats fill batch. */
@@ -5934,6 +5898,7 @@ function ownerKindFromRowsSync(db, ownerId) {
     }
     return undefined;
 }
+
 
 /**
  * Copies into the tag sort tables the tag rows that existed before their triggers did, a batch of entities at a

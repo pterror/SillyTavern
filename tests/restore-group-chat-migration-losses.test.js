@@ -22,8 +22,48 @@ jest.unstable_mockModule('../src/endpoints/sqlite-engine.js', () => ({
 
 const queueChatStats = jest.fn();
 const openOwnerChatStatsQueue = jest.fn(async () => queueChatStats);
-const kickChatStatsReconcile = jest.fn();
-jest.unstable_mockModule('../src/character-metadata-db.js', () => ({ openOwnerChatStatsQueue, kickChatStatsReconcile }));
+const disposeMetadataStores = jest.fn();
+jest.unstable_mockModule('../src/character-metadata-db.js', () => ({ openOwnerChatStatsQueue, disposeMetadataStores }));
+
+/** @param {object | undefined} params */
+const prefixParams = params => (params ? Object.fromEntries(Object.entries(params).map(([k, v]) => [`@${k}`, v])) : {});
+
+/** The part of better-sqlite3's API the dry run uses, over wasm. */
+class WasmBetterSqlite3 {
+    constructor(file, options = {}) {
+        this.db = new WasmDatabase(file, { readOnly: !!options.readonly, fileMustExist: !!options.fileMustExist });
+    }
+
+    function(name, options, fn) {
+        this.db.function(name, fn, options);
+    }
+
+    prepare(sql) {
+        const db = this.db;
+        return {
+            get: params => {
+                const stmt = db.prepare(sql);
+                try {
+                    return stmt.get(prefixParams(params)) ?? undefined;
+                } finally {
+                    stmt.finalize();
+                }
+            },
+            iterate: function* (params) {
+                const stmt = db.prepare(sql);
+                try {
+                    yield* stmt.iterate(prefixParams(params));
+                } finally {
+                    stmt.finalize();
+                }
+            },
+        };
+    }
+
+    close() {
+        this.db.close();
+    }
+}
 
 /** @type {typeof import('../src/migrations/restore-group-chat-migration-losses.js')} */
 let restore;
@@ -49,7 +89,7 @@ beforeEach(() => {
     warns = [];
     queueChatStats.mockClear();
     openOwnerChatStatsQueue.mockClear();
-    kickChatStatsReconcile.mockClear();
+    disposeMetadataStores.mockClear();
 });
 
 afterEach(() => {
@@ -60,8 +100,9 @@ afterEach(() => {
 });
 
 function makeDirectories() {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'restore-group-chat-losses-test-'));
-    tmpDirs.push(root);
+    const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'restore-group-chat-losses-test-'));
+    tmpDirs.push(dataRoot);
+    const root = path.join(dataRoot, 'default-user');
     const directories = {
         root,
         groups: path.join(root, 'groups'),
@@ -128,8 +169,18 @@ function snapshot(db, ownerId) {
     return Array.from(db.iterate('SELECT id, parent_id, content, label, default_child_id, metadata, identity_hash FROM messages WHERE owner_id = @o ORDER BY id LIMIT 1000', { o: ownerId }));
 }
 
-function run(dirs) {
-    return restore.runOnceAtBoot(dirs, { pauseMs: 0, log: (l) => logs.push(l), warn: (l) => warns.push(l) });
+const APPLY = ['--apply', '--server-stopped'];
+const notRunning = async () => ({ running: false, lines: ['port probe: free'] });
+
+/**
+ * Runs the script's CLI on `dirs`, a real run unless `args` says otherwise. The script closes the stores it opened,
+ * so a test reads the tree again afterwards through a fresh treeDb.getDbHandle().
+ * @returns {Promise<number>} The exit code.
+ */
+function run(dirs, args = APPLY, { Database = WasmBetterSqlite3, probeServer = notRunning } = {}) {
+    return restore.main([...args, '--data-root', path.dirname(dirs.root), '--handle', path.basename(dirs.root)], {
+        Database, probeServer, pauseMs: 0, log: (l) => logs.push(l), warn: (l) => warns.push(l),
+    });
 }
 
 const test1Messages = () => [
@@ -148,13 +199,13 @@ async function test1Setup() {
     return { dirs, db, ...seeded };
 }
 
-describe('restoreGroupChatMigrationLosses', () => {
+describe('restoring a group chat', () => {
     test('bad-path multi-message chat gets its first message back', async () => {
-        const { dirs, db, anchorId } = await test1Setup();
+        const { dirs, anchorId } = await test1Setup();
 
-        const out = await run(dirs);
+        expect(await run(dirs)).toBe(0);
 
-        expect(out.status).toBe('ran');
+        const db = await treeDb.getDbHandle(dirs);
         const loaded = await treeDb.loadBranch(dirs, 'g1', 'c1');
         expect(loaded?.messages.map(m => m.mes)).toEqual(['m1b', 'm2a', 'm3']);
         expect(loaded?.messages[0].swipes).toHaveLength(3);
@@ -176,7 +227,7 @@ describe('restoreGroupChatMigrationLosses', () => {
         writeOriginal(dirs, 'c2', messages);
         writeBackup(dirs, 'g2', { id: 'g2', chat_id: 'c2', chats: ['c2'], chat_metadata: { note_prompt: 'np', main_chat: 'x' } });
 
-        await run(dirs);
+        expect(await run(dirs)).toBe(0);
 
         const loaded = await treeDb.loadBranch(dirs, 'g2', 'c2');
         expect(loaded?.messages.map(m => m.mes)).toEqual(['only']);
@@ -189,7 +240,7 @@ describe('restoreGroupChatMigrationLosses', () => {
         const dirs = makeDirectories();
         const messages = [makeMessage('a'), makeMessage('b')];
         writeGroup(dirs, { groupId: 'g3', chats: ['c3'] });
-        const db = await treeDb.getDbHandle(dirs);
+        let db = await treeDb.getDbHandle(dirs);
         let labelId = '';
         db.transaction(() => {
             const anchor = treeDb.ensureAnchorSync(db, 'g3', 1000);
@@ -212,8 +263,9 @@ describe('restoreGroupChatMigrationLosses', () => {
         writeBackup(dirs, 'g3', { id: 'g3', chat_id: 'other', chats: ['c3'], past_metadata: { c3: { integrity: 'old', note_prompt: 'p' } } });
         const before = snapshot(db, 'g3');
 
-        await run(dirs);
+        expect(await run(dirs)).toBe(0);
 
+        db = await treeDb.getDbHandle(dirs);
         const row = db.get('SELECT metadata FROM messages WHERE id = @id', { id: labelId });
         expect(JSON.parse(row.metadata)).toEqual({ integrity: 'new', __is_group: true, note_prompt: 'p' });
         expect(warns.some(l => l.includes('NOTE group g3 chat "c3"') && l.includes('integrity'))).toBe(true);
@@ -222,8 +274,9 @@ describe('restoreGroupChatMigrationLosses', () => {
     });
 
     test('idempotent', async () => {
-        const { dirs, db } = await test1Setup();
-        await run(dirs);
+        const { dirs } = await test1Setup();
+        expect(await run(dirs)).toBe(0);
+        const db = await treeDb.getDbHandle(dirs);
         const before = snapshot(db, 'g1');
 
         const result = await restore.restoreGroupChatLosses(dirs, { reader: db, apply: true, pauseMs: 0 });
@@ -232,9 +285,10 @@ describe('restoreGroupChatMigrationLosses', () => {
         expect(result.intact.map(i => i.chatId)).toContain('c1');
         expect(snapshot(db, 'g1')).toEqual(before);
 
-        const again = await run(dirs);
-        expect(again.status).toBe('already-complete');
-        expect(snapshot(db, 'g1')).toEqual(before);
+        logs.length = 0;
+        expect(await run(dirs)).toBe(0);
+        expect(logs.some(l => l.includes('0 restored, 1 already intact'))).toBe(true);
+        expect(snapshot(await treeDb.getDbHandle(dirs), 'g1')).toEqual(before);
     });
 
     describe('unrestorable cases are warned and untouched', () => {
@@ -245,10 +299,10 @@ describe('restoreGroupChatMigrationLosses', () => {
             db.run('UPDATE messages SET label = @l WHERE id = @id', { l: 'bm', id: forkId });
             const before = snapshot(db, 'g1');
 
-            await run(dirs);
+            expect(await run(dirs)).toBe(1);
 
             expect(warns.some(l => l.includes('CANNOT RESTORE group g1 chat "c1"') && l.includes('"bm"') && l.includes('left untouched'))).toBe(true);
-            expect(snapshot(db, 'g1')).toEqual(before);
+            expect(snapshot(await treeDb.getDbHandle(dirs), 'g1')).toEqual(before);
         });
 
         test('a message edited in place', async () => {
@@ -258,10 +312,10 @@ describe('restoreGroupChatMigrationLosses', () => {
             db.run('UPDATE messages SET content = @c, identity_hash = @h WHERE id = @id', { c, h: treeDb.identityHashOf(parentId, c), id: ids[1] });
             const before = snapshot(db, 'g1');
 
-            await run(dirs);
+            expect(await run(dirs)).toBe(1);
 
             expect(warns.some(l => l.includes('CANNOT RESTORE') && l.includes('no longer match the original from message 3 on'))).toBe(true);
-            expect(snapshot(db, 'g1')).toEqual(before);
+            expect(snapshot(await treeDb.getDbHandle(dirs), 'g1')).toEqual(before);
         });
     });
 
@@ -270,54 +324,67 @@ describe('restoreGroupChatMigrationLosses', () => {
         writeGroup(dirs, { groupId: 'g6', chats: ['c6'] });
         writeOriginal(dirs, 'c6', [{ chat_metadata: {}, user_name: 'unused', character_name: 'unused' }, makeMessage('m')]);
 
-        const out = await run(dirs);
+        await treeDb.getDbHandle(dirs);
 
-        expect(out.result.intact).toHaveLength(0);
-        expect(out.result.restored).toHaveLength(0);
-        expect(out.result.unrestorable).toHaveLength(0);
-        expect(out.result.notices).toHaveLength(0);
+        expect(await run(dirs)).toBe(0);
+
         expect(logs.some(l => l.includes('0 headerless original(s) found'))).toBe(true);
+        expect(warns).toEqual([]);
     });
 
-    test('dry run writes nothing', async () => {
+    test('dry run writes nothing, lists what would change, and opens the tree read-only', async () => {
+        const { dirs, db } = await test1Setup();
+        const before = snapshot(db, 'g1');
+        treeDb.disposeMessageTreeStores();
+        const treeBytes = fs.readFileSync(path.join(dirs.root, 'message-tree.sqlite'));
+
+        expect(await run(dirs, ['--dry-run'], { probeServer: async () => { throw new Error('a dry run does not probe'); } })).toBe(0);
+
+        expect(logs.some(l => l.includes('WOULD RESTORE group g1 chat "c1"') && l.includes('in front of its 2 message(s)'))).toBe(true);
+        expect(logs.at(-1)).toContain('dry run: nothing was written.');
+        expect(fs.readFileSync(path.join(dirs.root, 'message-tree.sqlite'))).toEqual(treeBytes);
+        expect(snapshot(await treeDb.getDbHandle(dirs), 'g1')).toEqual(before);
+        expect(openOwnerChatStatsQueue).not.toHaveBeenCalled();
+    });
+});
+
+describe('the command line', () => {
+    test('neither or both of --dry-run and --apply, or an unknown argument, is a usage error', async () => {
+        const dirs = makeDirectories();
+        expect(await run(dirs, [])).toBe(2);
+        expect(await run(dirs, ['--dry-run', '--apply', '--server-stopped'])).toBe(2);
+        expect(await run(dirs, ['--dry-run', '--bogus'])).toBe(2);
+        expect(warns.some(l => l.includes('usage: --dry-run | --apply --server-stopped'))).toBe(true);
+        expect(warns.some(l => l.includes('unknown argument(s): --bogus'))).toBe(true);
+    });
+
+    test('a real run without --server-stopped is refused and writes nothing', async () => {
         const { dirs, db } = await test1Setup();
         const before = snapshot(db, 'g1');
 
-        const result = await restore.restoreGroupChatLosses(dirs, { reader: db, apply: false, pauseMs: 0 });
+        expect(await run(dirs, ['--apply'])).toBe(1);
 
-        expect(result.restored.map(i => i.chatId)).toContain('c1');
+        expect(warns.some(l => l.includes('REFUSED: the real run needs --server-stopped'))).toBe(true);
         expect(snapshot(db, 'g1')).toEqual(before);
-        expect(db.get('SELECT value FROM meta WHERE key = @key', { key: 'group_chat_migration_losses_restored' })).toBeUndefined();
     });
 
-    test('flag off is a no-op', () => {
-        const dirs = makeDirectories();
-        let spawnWorker = jest.fn();
+    test('a real run is refused when the server appears to be running', async () => {
+        const { dirs, db } = await test1Setup();
+        const before = snapshot(db, 'g1');
 
-        expect(restore.maybeStartGroupChatRestore([dirs], { enabled: false, spawnWorker })).toBe(false);
-        expect(spawnWorker).not.toHaveBeenCalled();
-        expect(fs.existsSync(path.join(dirs.root, 'message-tree.sqlite'))).toBe(false);
+        expect(await run(dirs, APPLY, { probeServer: async () => ({ running: true, lines: ['port probe: in-use'] }) })).toBe(1);
 
-        spawnWorker = jest.fn(() => ({ on: jest.fn(), unref: jest.fn() }));
-        expect(restore.maybeStartGroupChatRestore([dirs], { enabled: true, spawnWorker })).toBe(true);
-        expect(spawnWorker).toHaveBeenCalledTimes(1);
-        expect(spawnWorker.mock.calls[0][0].directoriesList).toEqual([dirs]);
+        expect(logs.some(l => l.includes('port probe: in-use'))).toBe(true);
+        expect(warns.some(l => l.includes('REFUSED: the server appears to be running'))).toBe(true);
+        expect(snapshot(db, 'g1')).toEqual(before);
     });
 
-    test('held users are reported and not restored; with no one else, no worker starts', () => {
+    test('no usable better-sqlite3, or no message tree, is refused', async () => {
         const dirs = makeDirectories();
-        const spawnWorker = jest.fn(() => ({ on: jest.fn(), unref: jest.fn() }));
-        const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
-        try {
-            expect(restore.maybeStartGroupChatRestore([], { enabled: true, held: [dirs], spawnWorker })).toBe(false);
-            expect(warn.mock.calls.some(call => String(call[0]).includes(dirs.root))).toBe(true);
-            warn.mockClear();
-            expect(restore.maybeStartGroupChatRestore([], { enabled: false, held: [dirs], spawnWorker })).toBe(false);
-            expect(warn).not.toHaveBeenCalled();
-        } finally {
-            warn.mockRestore();
-        }
-        expect(spawnWorker).not.toHaveBeenCalled();
+        expect(await run(dirs, ['--dry-run'], { Database: null })).toBe(1);
+        expect(warns.some(l => l.includes('REFUSED: native better-sqlite3 is not available'))).toBe(true);
+        expect(await run(dirs, ['--dry-run'])).toBe(1);
+        expect(warns.some(l => l.includes('message-tree.sqlite does not exist'))).toBe(true);
     });
 });
 
@@ -326,32 +393,20 @@ describe('a restore queues the groups whose messages it changed', () => {
         const { dirs, db } = await test1Setup();
         /** @type {number[]} */
         const rowsWhenQueued = [];
+        // The script opens the tree through the store, which hands it this same open connection until it closes it.
         queueChatStats.mockImplementation(() => {
             rowsWhenQueued.push(db.get('SELECT COUNT(*) AS n FROM messages WHERE owner_id = @o', { o: 'g1' }).n);
         });
         const rowsBefore = db.get('SELECT COUNT(*) AS n FROM messages WHERE owner_id = @o', { o: 'g1' }).n;
 
-        expect((await run(dirs)).status).toBe('ran');
+        expect(await run(dirs)).toBe(0);
 
-        expect(openOwnerChatStatsQueue).toHaveBeenCalledWith(dirs, { existingOnly: true });
+        expect(openOwnerChatStatsQueue).toHaveBeenCalledWith(expect.objectContaining({ root: dirs.root }), { existingOnly: true });
         expect(queueChatStats.mock.calls.every(([ownerId, owner]) => ownerId === 'g1' && owner.kind === 'group' && owner.rowId === 'g1')).toBe(true);
-        const rowsAfter = db.get('SELECT COUNT(*) AS n FROM messages WHERE owner_id = @o', { o: 'g1' }).n;
+        expect(queueChatStats).toHaveBeenCalledTimes(2);
+        const rowsAfter = (await treeDb.getDbHandle(dirs)).get('SELECT COUNT(*) AS n FROM messages WHERE owner_id = @o', { o: 'g1' }).n;
         expect(rowsAfter).toBeGreaterThan(rowsBefore);
         expect(rowsWhenQueued.at(-1)).toBe(rowsAfter);
-    });
-
-    test('the worker exiting starts counting what it queued, for each of its users', () => {
-        const dirs = makeDirectories();
-        /** @type {Record<string, () => void>} */
-        const handlers = {};
-        const spawnWorker = jest.fn(() => ({ on: jest.fn((event, fn) => { handlers[event] = fn; }), unref: jest.fn() }));
-
-        restore.maybeStartGroupChatRestore([dirs], { enabled: true, spawnWorker });
-        expect(kickChatStatsReconcile).not.toHaveBeenCalled();
-        handlers.exit();
-
-        return new Promise(resolve => setImmediate(resolve)).then(() => {
-            expect(kickChatStatsReconcile).toHaveBeenCalledWith(dirs);
-        });
+        expect(disposeMetadataStores).toHaveBeenCalled();
     });
 });

@@ -43,7 +43,6 @@ import {
     migratePublicOverrides,
 } from './users.js';
 
-import { startGroupChatMigrations, migrateAllCharacterChats } from './message-tree-migration.js';
 import { getSqliteEngine } from './endpoints/sqlite-engine.js';
 import getWebpackServeMiddleware from './middleware/webpack-serve.js';
 import basicAuthMiddleware from './middleware/basicAuth.js';
@@ -85,7 +84,6 @@ import { initializeLocalImportScan, disposeLocalImportScan } from './local-impor
 import { disposeMessageTreeStores } from './message-tree-db.js';
 import { installOwnerChatStatsHook } from './owner-chat-stats.js';
 import { migrateFlatSecrets } from './endpoints/secrets.js';
-import { maybeStartGroupChatRestore } from './migrations/restore-group-chat-migration-losses.js';
 import { wasBrowserRecentlyConnected } from './browser-presence.js';
 import { startTokenCountMaintenance } from './token-count-store.js';
 
@@ -558,18 +556,6 @@ async function postSetupTasks(result) {
     // Not awaited. Sets each store's token table row counts and prunes a table over its cap, in small batches on this thread.
     startTokenCountMaintenance(await getUserDirectoriesList())
         .catch(err => console.error(color.red('[token-count-store] Counting and pruning the token tables failed:'), err));
-
-    // Not awaited. The restore reads what the group migration left, so it starts only once that has finished, and only
-    // for users it left no chat file un-migrated for. Off unless config.yaml sets restoreGroupChatMigrationLosses: true.
-    // Runs in a worker.
-    startGroupChatMigrations({
-        afterMigration: ({ migrated, unmigrated }) => {
-            maybeStartGroupChatRestore(migrated, {
-                enabled: getConfigValue('restoreGroupChatMigrationLosses', false, 'boolean'),
-                held: unmigrated,
-            });
-        },
-    });
 }
 
 /**
@@ -623,7 +609,6 @@ initUserStorage(globalThis.DATA_ROOT)
     .then(migrateUserData)
     .then(migrateSystemPrompts)
     .then(migratePublicOverrides)
-    .then(migrateAllCharacterChats)
     .then(verifySqliteBackend)
     .then(verifySecuritySettings)
     .then(preSetupTasks)

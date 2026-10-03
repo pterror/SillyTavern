@@ -16,12 +16,11 @@ import {
     isPathUnderParent,
 } from '../util.js';
 import { getCharacterActiveChatsByIds, setCharacterActiveChat } from '../character-metadata-db.js';
-import { resolveGroupOwnerFile } from '../character-shallow.js';
+import { resolveGroupOwner } from '../character-shallow.js';
 import { readGroupFile, writeGroupFile } from './groups.js';
 import { withGroupLock } from '../group-lock.js';
 import { readCardContent } from './characters.js';
 import { cardToGreetingsModel } from '../greeting-list.js';
-import { migrateGroupFile, migrateOwnerOnTouch } from '../message-tree-migration.js';
 import {
     isAvailable as isTreeAvailable, hasSavedChats,
     saveChatToTree, loadBranch, forkBranch, labelNode,
@@ -497,11 +496,6 @@ router.post('/save', validateAvatarUrlMiddleware, async function (request, respo
         // Whole-array save: our own frontend uses this on the normal path too (a fresh chat's first
         // save, and tree-chat snapshots), alongside the named per-row operations for everything else.
         const owner = ownerDescriptorOf({ avatar: request.body.avatar_url });
-        await migrateOwnerOnTouch(request.user.directories, {
-            ownerId: cardName,
-            chatDir: path.join(request.user.directories.chats, cardName),
-            owner,
-        });
 
         // A fresh branch/bookmark save asks for a name minted here (like /chats/label's unique:true)
         // instead of asserting a name the client uniquified against its own fetched chat list.
@@ -538,12 +532,6 @@ router.post('/get', validateAvatarUrlMiddleware, async function (request, respon
         const chatName = String(request.body.file_name || '');
 
         if (chatName) {
-            // Opening a chat is a touch too, or a never-migrated character renders blank on first read.
-            await migrateOwnerOnTouch(request.user.directories, {
-                ownerId: dirName,
-                chatDir: path.join(request.user.directories.chats, dirName),
-                owner: ownerDescriptorOf({ avatar: request.body.avatar_url }),
-            });
             // The pointer may be a node id (exact) or a legacy chat name (looked up, not unique per owner);
             // both are accepted so an existing pointer keeps working while the client moves over.
             const result = await loadAtNode(request.user.directories, dirName, chatName)
@@ -590,14 +578,9 @@ router.post('/rename', validateAvatarUrlMiddleware, async function (request, res
         /** @type {string|null} */
         let ownerId = null;
         if (request.body.is_group) {
-            ownerId = (await touchGroupOwner(request.user.directories, { chatId: oldName, groupId: request.body.group_id }))?.id ?? null;
+            ownerId = resolveGroupOwner(request.user.directories.groups, { chatId: oldName, groupId: request.body.group_id })?.id ?? null;
         } else {
             ownerId = String(request.body.avatar_url).replace('.png', '');
-            await migrateOwnerOnTouch(request.user.directories, {
-                ownerId,
-                chatDir: path.join(request.user.directories.chats, ownerId),
-                owner: ownerDescriptorOf({ avatar: request.body.avatar_url }),
-            });
         }
 
         if (ownerId == null || ownerId === '' || !await hasSavedChats(request.user.directories, ownerId)) {
@@ -1217,7 +1200,7 @@ router.post('/export', validateAvatarUrlMiddleware, async function (request, res
     // the owning group the same way /rename and /group/get do closes that gap instead of carrying it
     // forward as a silent regression once the fallback goes away.
     const ownerId = request.body.is_group
-        ? (await touchGroupOwner(request.user.directories, { chatId: chatName, groupId: request.body.group_id }))?.id ?? null
+        ? resolveGroupOwner(request.user.directories.groups, { chatId: chatName, groupId: request.body.group_id })?.id ?? null
         : String(request.body.avatar_url).replace('.png', '');
 
     if (ownerId == null || ownerId === '' || !await hasSavedChats(request.user.directories, ownerId)) {
@@ -1281,11 +1264,8 @@ router.post('/group/import', async function (request, response) {
         const chatname = humanizedDateTime();
         const pathToUpload = path.join(filedata.destination, filedata.filename);
 
-        // Once a group is in the tree, an import must go through the store too, or the file it drops is
-        // never read again. touchGroupOwner() must run before the import to migrate any file-backed
-        // history first - migrating after would strand it behind the import's own label.
         const useTree = await isTreeAvailable(request.user.directories);
-        const group = useTree ? await touchGroupOwner(request.user.directories, { groupId: request.body?.group_id }) : null;
+        const group = useTree ? resolveGroupOwner(request.user.directories.groups, { groupId: request.body?.group_id }) : null;
 
         if (group) {
             const raw = fs.readFileSync(pathToUpload, 'utf8');
@@ -1339,17 +1319,7 @@ router.post('/import', validateAvatarUrlMiddleware, async function (request, res
         const pathToUpload = path.join(request.file.destination, request.file.filename);
         const data = fs.readFileSync(pathToUpload, 'utf8');
 
-        // Once a character is in the tree, an import must go through the store too, or the file it
-        // drops is never read again (see touchGroupOwner() below). Migrate any file-backed history
-        // first - migrating after would strand it behind the import's own label.
         const useTree = await isTreeAvailable(request.user.directories);
-        if (useTree) {
-            await migrateOwnerOnTouch(request.user.directories, {
-                ownerId: avatarUrl,
-                chatDir: directoryPath,
-                owner: ownerDescriptorOf({ avatar: request.body.avatar_url }),
-            });
-        }
 
         /**
          * @param {string} chatText jsonl-formatted chat text (header line + one message per line)
@@ -1449,22 +1419,6 @@ router.post('/import', validateAvatarUrlMiddleware, async function (request, res
     }
 });
 
-/**
- * Resolves which group owns a chat/group id and migrates the group before the caller touches its chats: the same
- * per-group step as the boot pass (migrateGroupFile(): metadata format, then tree, under the group's lock, on the
- * group's chat list as read inside it), except that a group already in the tree is not retried here.
- * @param {import('../users.js').UserDirectoryList} directories
- * @param {{ chatId?: string, groupId?: string }} params
- * @returns {Promise<{ id: string, chats: string[] } | null>} `null` when no group claims this chat.
- */
-async function touchGroupOwner(directories, { chatId, groupId }) {
-    const resolved = resolveGroupOwnerFile(directories.groups, { chatId, groupId });
-    if (!resolved) return null;
-
-    const { group } = await migrateGroupFile(directories, resolved.fileName, { retryUnmigrated: false });
-    return group;
-}
-
 router.post('/group/get', async (request, response) => {
     try {
         if (!request.body || !request.body.id) {
@@ -1472,7 +1426,7 @@ router.post('/group/get', async (request, response) => {
         }
 
         const id = String(request.body.id);
-        const group = await touchGroupOwner(request.user.directories, { chatId: id, groupId: request.body.group_id });
+        const group = resolveGroupOwner(request.user.directories.groups, { chatId: id, groupId: request.body.group_id });
 
         if (group) {
             const result = await loadAtNode(request.user.directories, group.id, id)
@@ -1505,7 +1459,7 @@ router.post('/group/branches', async (request, response) => {
         }
 
         const groupId = String(request.body.group_id);
-        const group = await touchGroupOwner(request.user.directories, { groupId });
+        const group = resolveGroupOwner(request.user.directories.groups, { groupId });
         if (!group) {
             return response.send([]);
         }
@@ -1535,7 +1489,7 @@ router.post('/group/info', async (request, response) => {
         }
 
         const id = String(request.body.id);
-        const group = await touchGroupOwner(request.user.directories, { chatId: id, groupId: request.body.group_id });
+        const group = resolveGroupOwner(request.user.directories.groups, { chatId: id, groupId: request.body.group_id });
 
         if (group) {
             const branch = (await listBranches(request.user.directories, group.id)).find(b => b.name === id);
@@ -1568,7 +1522,7 @@ router.post('/group/delete', async (request, response) => {
         const id = String(request.body.id);
         // The client drops this chat from its in-memory copy of the group's `chats` before asking, and may
         // never save that list, so the id can still be in the group file - group_id names the owner either way.
-        const group = await touchGroupOwner(request.user.directories, { chatId: id, groupId: request.body.group_id });
+        const group = resolveGroupOwner(request.user.directories.groups, { chatId: id, groupId: request.body.group_id });
         if (!group) {
             console.error('The group chat was not deleted.');
             return response.sendStatus(400);
@@ -1609,7 +1563,7 @@ router.post('/group/delete', async (request, response) => {
 
 /**
  * Same idea as pickUniqueChatFileName(), but for group chats: uniqueness is checked against the group's
- * own `chats` id list (already loaded via touchGroupOwner()) instead of a directory listing, since a
+ * own `chats` id list (already loaded via resolveGroupOwner()) instead of a directory listing, since a
  * group chat id doubles as its display name in this legacy save path.
  * @param {string[]} existingIds Group's current `chats` array.
  * @param {string} baseId Desired chat id, e.g. the main chat's display name.
@@ -1632,7 +1586,7 @@ function pickUniqueGroupChatId(existingIds, baseId) {
  * heard of; without this, the caller previously had to follow up with a whole separate
  * /api/groups/save-partial request just to append one string to `chats` - two requests to persist what
  * is, from the user's perspective, one action (create a branch/bookmark). `group` here is the shallow
- * `{id, chats}` view from `resolveGroupOwner()`/`touchGroupOwner()`, so the full descriptor is re-read
+ * `{id, chats}` view from `resolveGroupOwner()`, so the full descriptor is re-read
  * before writing back - writing the shallow view would silently drop every other group field.
  * Ordinary chat saves (the hot path - every message of an ongoing group chat) hit the early return: the
  * id was already registered when the group/chat was created, so no extra read or write happens.
@@ -1698,7 +1652,7 @@ router.post('/group/save', async function (request, response) {
 
         assignMissingGenIds(chatData);
 
-        const group = await touchGroupOwner(request.user.directories, { chatId: id, groupId: request.body.group_id });
+        const group = resolveGroupOwner(request.user.directories.groups, { chatId: id, groupId: request.body.group_id });
         if (!group) {
             // Refused rather than silently written to a file nothing reads once the group is tree-backed.
             console.error(`Refusing to save group chat "${id}": no group claims it.`);
@@ -1763,7 +1717,7 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
         }
 
         const ownerId = group_id
-            ? (await touchGroupOwner(request.user.directories, { groupId: String(group_id) }))?.id ?? null
+            ? resolveGroupOwner(request.user.directories.groups, { groupId: String(group_id) })?.id ?? null
             : String(avatar_url).replace('.png', '');
 
         if (ownerId == null || ownerId === '') {

@@ -409,10 +409,6 @@ enableDownloadableTokenizers: true
 # Memory for loaded tokenizers, counted as the size of their files on disk. Past this, the least recently used are unloaded; a single tokenizer bigger than this still loads.
 # The bundled web tokenizers (Claude, Llama 3 legacy routes, Command-R/A, Qwen2, Nemo, DeepSeek) stay loaded and don't count.
 tokenizerMemoryCacheCapacity: '256mb'
-# One-time repair of group chats whose first message or chat metadata an older chat migration lost.
-# Restores them from "<chat>.jsonl.pre-migration" files and backups/_group_metadata_update, in the background
-# after startup, once per user; anything it cannot restore exactly is left untouched and listed in the log.
-restoreGroupChatMigrationLosses: false
 # -- OPENAI CONFIGURATION --
 # A placeholder message to use in strict prompt post-processing mode when the prompt doesn't start with a user message
 promptPlaceholder: "[Start a new chat]"

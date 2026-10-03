@@ -330,25 +330,6 @@ export async function dropOwnerCreatedAtIndex(directories) {
 }
 
 /**
- * One page of owner ids with no recorded kind, in id order, after `after` (from the start when null).
- * @param {Directories} directories
- * @param {string | null} after
- * @param {number} limit
- * @returns {Promise<string[]>}
- */
-export async function listOwnersWithoutKind(directories, after, limit) {
-    const entry = await getEntry(directories);
-    if (!entry) return [];
-    const rows = entry.db.iterate(
-        `SELECT DISTINCT m.owner_id AS owner_id FROM messages m
-         WHERE m.parent_id IS NULL ${after === null ? '' : 'AND m.owner_id > @after'}
-           AND NOT EXISTS (SELECT 1 FROM owners o WHERE o.owner_id = m.owner_id)
-         ORDER BY m.owner_id LIMIT @limit`,
-        after === null ? { limit } : { after, limit });
-    return Array.from(rows, row => /** @type {{ owner_id: string }} */ (row).owner_id);
-}
-
-/**
  * A synchronous view of one store's owners, for a reconcile that has to read an owner's messages and write the
  * owner's entity row in one step, with no write's stats change landing in between.
  * @typedef {object} OwnerStatsView
@@ -391,26 +372,6 @@ export async function openOwnerStatsView(directories) {
             return { chatSize, dateLastChat };
         },
     };
-}
-
-/**
- * Records owners' kinds, leaving any already recorded as they are.
- * @param {Directories} directories
- * @param {{ ownerId: string, owner: OwnerDescriptor }[]} owners
- * @returns {Promise<number>} How many were recorded.
- */
-export async function recordOwnerKinds(directories, owners) {
-    const entry = await getEntry(directories);
-    if (!entry || owners.length === 0) return 0;
-    let recorded = 0;
-    entry.db.transaction(() => {
-        // Reset here: a transaction that hits busy is rolled back and rerun.
-        recorded = 0;
-        for (const { ownerId, owner } of owners) {
-            if (recordOwnerSync(entry.db, ownerId, owner)) recorded++;
-        }
-    });
-    return recorded;
 }
 
 /**

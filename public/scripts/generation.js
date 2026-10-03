@@ -1040,7 +1040,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         const characterAvatar = getCurrentCharacter()?.avatar;
         const groupId = selected_group != null ? selected_group : undefined;
         // For a group turn, owner_id addresses the GROUP's own chat/branch storage (matching
-        // src/endpoints/chats.js's own `ownerId = group_id ? touchGroupOwner(...).id : avatar...`
+        // src/endpoints/chats.js's own `ownerId = group_id ? resolveGroupOwner(...).id : avatar...`
         // pattern) - a character avatar would be the WRONG owner here, even though characterAvatar
         // itself is still resolved and sent (as `character_avatar`) for the responding member's own
         // card/prompt resolution. Falls back to the plain per-character ownerId when not in a group,
@@ -1377,7 +1377,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         const characterAvatar = getCurrentCharacter()?.avatar;
         const groupId = selected_group != null ? selected_group : undefined;
         // For a group turn, owner_id addresses the GROUP's own chat/branch storage (matching
-        // src/endpoints/chats.js's own `ownerId = group_id ? touchGroupOwner(...).id : avatar...`
+        // src/endpoints/chats.js's own `ownerId = group_id ? resolveGroupOwner(...).id : avatar...`
         // pattern) - a character avatar would be the WRONG owner here, even though characterAvatar
         // itself is still resolved and sent (as `character_avatar`) for the responding member's own
         // card/prompt resolution. Falls back to the plain per-character ownerId when not in a group,

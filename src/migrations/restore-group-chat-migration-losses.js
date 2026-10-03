@@ -1,19 +1,18 @@
 import fs from 'node:fs';
 import { promises as fsPromises } from 'node:fs';
 import path from 'node:path';
+import process from 'node:process';
 import readline from 'node:readline';
-import { Worker } from 'node:worker_threads';
-import { fileURLToPath } from 'node:url';
 
-import { color, getConfigFilePath } from '../util.js';
+import { setConfigFilePath } from '../util.js';
 import { isChatHeaderEntry, parseChatFile } from '../chat-header.js';
 import { USER_DIRECTORY_TEMPLATE } from '../constants.js';
 import {
     getDbHandle, insertMessageSync, newId, ensureAnchorSync, setDefaultChildSync, alternativesFromMessage, identityHashOf,
     setNodeMetadataSync, labelNodeSync, reparentNodeSync,
 } from '../message-tree-db.js';
-import { setTreeMetaSync } from '../message-tree-meta.js';
 import { openNativeTreeDatabase } from '../message-stats.js';
+import { probeConfiguredServer } from './cleanup-zztest-leftovers.js';
 
 /**
  * Repairs group chats damaged by an older tree migration, which took a headerless chat file's first line
@@ -30,17 +29,19 @@ import { openNativeTreeDatabase } from '../message-stats.js';
  * Message 2's other alternatives are copied under the restored message rather than moved, since they may be
  * openings other chats start from.
  *
- * Dry run for one user, writing nothing:
- *   node src/migrations/restore-group-chat-migration-losses.js [--data-root ./data] [--handle default-user]
+ * A one-off: run once on the existing data, then deleted.
+ *
+ * Dry run (read-only open, writes nothing; lists which chats change and how many messages):
+ *   node src/migrations/restore-group-chat-migration-losses.js --dry-run [--data-root ./data] [--handle default-user] [--config ./config.yaml]
+ * Real run (the server must be stopped; its character store must already be in the fields layout, since a restored
+ * group is queued there to have its chat stats counted again when the server next starts):
+ *   node src/migrations/restore-group-chat-migration-losses.js --apply --server-stopped [--data-root ./data] [--handle default-user] [--config ./config.yaml]
  */
 
-const MARKER_KEY = 'group_chat_migration_losses_restored';
 const DEFAULT_PAUSE_MS = 20;
 const MAX_PATH_DEPTH = 1000000;
 const MAX_LISTED_LABELS = 20;
 const LOG_PREFIX = '[restore-group-chats]';
-
-const WORKER_PATH = fileURLToPath(new URL('./restore-group-chat-migration-losses-worker.js', import.meta.url));
 
 /**
  * @typedef {object} RestoreDirectories
@@ -647,86 +648,25 @@ export function formatReport(root, result, apply) {
     return lines;
 }
 
+
 /**
- * @param {RestoreDirectories} directories
- * @param {object} [options]
+ * @param {object} options
+ * @param {string} options.dataRoot
+ * @param {string} options.handle
+ * @param {boolean} options.apply
+ * @param {boolean} options.serverStopped
+ * @param {any} options.Database better-sqlite3 constructor, or null when the native binding isn't usable.
+ * @param {() => Promise<{ running: boolean, lines: string[] }>} [options.probeServer]
  * @param {(line: string) => void} [options.log]
  * @param {(line: string) => void} [options.warn]
  * @param {number} [options.pauseMs]
- * @returns {Promise<{ status: 'unavailable' | 'already-complete' | 'error' } | { status: 'ran', result: RestoreResult }>}
+ * @returns {Promise<number>} Process exit code: 0 done, 1 refused, failed, or a chat could not be restored.
  */
-export async function runOnceAtBoot(directories, options = {}) {
+export async function runRestore(options) {
+    const { dataRoot, handle, apply, serverStopped, Database } = options;
     const log = options.log ?? console.log;
     const warn = options.warn ?? console.warn;
-    const root = directories.root;
-
-    const db = await getDbHandle(directories);
-    if (!db) return { status: 'unavailable' };
-    if (db.get('SELECT value FROM meta WHERE key = @key', { key: MARKER_KEY })) {
-        return { status: 'already-complete' };
-    }
-
-    let result;
-    try {
-        const { openOwnerChatStatsQueue } = await import('../character-metadata-db.js');
-        const queueChatStats = await openOwnerChatStatsQueue(/** @type {import('../users.js').UserDirectoryList} */ (directories), { existingOnly: true });
-        result = await restoreGroupChatLosses(directories, { reader: db, apply: true, pauseMs: options.pauseMs, queueChatStats });
-    } catch (err) {
-        warn(color.red(`${LOG_PREFIX} ${root}: run failed, will retry next boot: ${err?.message ?? String(err)}`));
-        return { status: 'error' };
-    }
-
-    const lines = formatReport(root, result, true);
-    const logged = 1 + result.restored.length + result.intact.length;
-    lines.slice(0, logged).forEach(line => log(line));
-    lines.slice(logged).forEach(line => warn(color.yellow(line)));
-
-    setTreeMetaSync(db, MARKER_KEY, String(Date.now()));
-    return { status: 'ran', result };
-}
-
-/** @param {object} workerData */
-const defaultSpawn = workerData => new Worker(WORKER_PATH, { workerData });
-
-/**
- * @param {RestoreDirectories[]} directoriesList Users to restore
- * @param {object} options
- * @param {boolean} options.enabled
- * @param {RestoreDirectories[]} [options.held] Users not restored this boot because the group chat migration left
- * some of their chat files un-migrated; the restore reads what that migration landed, so it waits until it has all
- * @param {(workerData: { directoriesList: RestoreDirectories[], configPath: string | null }) => import('node:worker_threads').Worker} [options.spawnWorker]
- * @returns {boolean} Whether a worker was started
- */
-export function maybeStartGroupChatRestore(directoriesList, { enabled, held = [], spawnWorker = defaultSpawn }) {
-    if (!enabled) return false;
-    for (const directories of held) {
-        console.warn(color.yellow(`${LOG_PREFIX} ${directories.root}: not run this boot; it waits until every group chat file the migration left in place (listed above) has migrated`));
-    }
-    if (directoriesList.length === 0) return false;
-    const worker = spawnWorker({ directoriesList, configPath: getConfigFilePath() });
-    worker.on('error', err => console.error(color.red(`${LOG_PREFIX} worker failed:`), err));
-    // What the worker queued is counted only on this thread (character-metadata-db.js kickChatStatsReconcile()).
-    worker.on('exit', () => {
-        import('../character-metadata-db.js')
-            .then(({ kickChatStatsReconcile }) => { for (const directories of directoriesList) kickChatStatsReconcile(/** @type {import('../users.js').UserDirectoryList} */ (directories)); })
-            .catch(err => console.error(color.red(`${LOG_PREFIX} counting the restored groups' chat stats failed to start:`), err));
-    });
-    worker.unref?.();
-    return true;
-}
-
-const isMain = process.argv[1] && import.meta.url === `file://${process.argv[1]}`;
-if (isMain) {
-    const { default: Database } = await import('better-sqlite3');
-
-    const args = process.argv.slice(2);
-    const getArg = (name, fallback) => {
-        const index = args.indexOf(`--${name}`);
-        return index !== -1 && args[index + 1] !== undefined ? args[index + 1] : fallback;
-    };
-
-    const dataRoot = getArg('data-root', './data');
-    const handle = getArg('handle', 'default-user');
+    const probeServer = options.probeServer ?? probeConfiguredServer;
     const root = path.join(dataRoot, handle);
     const dirs = {
         root,
@@ -734,20 +674,115 @@ if (isMain) {
         groupChats: path.join(root, USER_DIRECTORY_TEMPLATE.groupChats),
         backups: path.join(root, USER_DIRECTORY_TEMPLATE.backups),
     };
+    const treePath = path.join(root, 'message-tree.sqlite');
 
-    const db = openNativeTreeDatabase(Database, path.join(root, 'message-tree.sqlite'), { readonly: true, fileMustExist: true });
-    const reader = {
-        get: (sql, p) => db.prepare(sql).get(p ?? {}),
-        iterate: (sql, p) => db.prepare(sql).iterate(p ?? {}),
-    };
+    log(`${LOG_PREFIX} ${apply ? 'real run' : 'dry run'} for ${root}`);
+    if (!Database) {
+        warn(`${LOG_PREFIX} REFUSED: native better-sqlite3 is not available; this script never opens these databases with the wasm engine`);
+        return 1;
+    }
+    if (apply) {
+        if (!serverStopped) {
+            warn(`${LOG_PREFIX} REFUSED: the real run needs --server-stopped (stop the server first; a --port override is not visible to the port probe)`);
+            return 1;
+        }
+        const probe = await probeServer();
+        probe.lines.forEach(line => log(`${LOG_PREFIX} ${line}`));
+        if (probe.running) {
+            warn(`${LOG_PREFIX} REFUSED: the server appears to be running (or the port could not be checked); stop it and rerun`);
+            return 1;
+        }
+    }
+    if (!fs.existsSync(treePath)) {
+        warn(`${LOG_PREFIX} REFUSED: ${treePath} does not exist`);
+        return 1;
+    }
+
+    /** @type {RestoreResult} */
     let result;
-    try {
-        result = await restoreGroupChatLosses(dirs, { reader, apply: false, pauseMs: 0 });
-    } finally {
-        db.close();
+    if (!apply) {
+        const db = openNativeTreeDatabase(Database, treePath, { readonly: true, fileMustExist: true });
+        const reader = {
+            get: (/** @type {string} */ sql, /** @type {object} */ p) => db.prepare(sql).get(p ?? {}),
+            iterate: (/** @type {string} */ sql, /** @type {object} */ p) => db.prepare(sql).iterate(p ?? {}),
+        };
+        try {
+            result = await restoreGroupChatLosses(dirs, { reader, apply: false, pauseMs: options.pauseMs ?? 0 });
+        } finally {
+            db.close();
+        }
+    } else {
+        const { openOwnerChatStatsQueue, disposeMetadataStores } = await import('../character-metadata-db.js');
+        const { disposeMessageTreeStores } = await import('../message-tree-db.js');
+        try {
+            const db = await getDbHandle(dirs);
+            if (!db) {
+                warn(`${LOG_PREFIX} REFUSED: no usable SQLite backend for ${treePath}`);
+                return 1;
+            }
+            const queueChatStats = await openOwnerChatStatsQueue(/** @type {import('../users.js').UserDirectoryList} */ (/** @type {unknown} */ (dirs)), { existingOnly: true });
+            result = await restoreGroupChatLosses(dirs, { reader: db, apply: true, pauseMs: options.pauseMs ?? 0, queueChatStats });
+        } catch (err) {
+            warn(`${LOG_PREFIX} FAILED: ${err?.message ?? String(err)}`);
+            return 1;
+        } finally {
+            disposeMetadataStores();
+            disposeMessageTreeStores();
+        }
     }
-    for (const line of formatReport(root, result, false)) {
-        console.log(line);
+
+    const lines = formatReport(root, result, apply);
+    const logged = 1 + result.restored.length + result.intact.length;
+    lines.slice(0, logged).forEach(line => log(line));
+    lines.slice(logged).forEach(line => warn(line));
+    if (!apply) log(`${LOG_PREFIX} dry run: nothing was written.`);
+    return result.unrestorable.length > 0 ? 1 : 0;
+}
+
+/**
+ * @param {string[]} argv
+ * @returns {{ dataRoot: string, handle: string, config: string, dryRun: boolean, apply: boolean, serverStopped: boolean, unknown: string[] }}
+ */
+export function parseArgs(argv) {
+    const out = { dataRoot: './data', handle: 'default-user', config: './config.yaml', dryRun: false, apply: false, serverStopped: false, unknown: /** @type {string[]} */ ([]) };
+    for (let i = 0; i < argv.length; i++) {
+        const arg = argv[i];
+        if (arg === '--dry-run') out.dryRun = true;
+        else if (arg === '--apply') out.apply = true;
+        else if (arg === '--server-stopped') out.serverStopped = true;
+        else if ((arg === '--data-root' || arg === '--handle' || arg === '--config') && argv[i + 1] !== undefined) {
+            out[{ '--data-root': 'dataRoot', '--handle': 'handle', '--config': 'config' }[arg]] = argv[++i];
+        } else out.unknown.push(arg);
     }
-    console.log(`${LOG_PREFIX} dry run: nothing was written.`);
+    return out;
+}
+
+/**
+ * @param {string[]} argv
+ * @param {object} deps
+ * @param {any} deps.Database
+ * @param {() => Promise<{ running: boolean, lines: string[] }>} [deps.probeServer]
+ * @param {(line: string) => void} [deps.log]
+ * @param {(line: string) => void} [deps.warn]
+ * @param {number} [deps.pauseMs]
+ * @returns {Promise<number>}
+ */
+export async function main(argv, deps) {
+    const args = parseArgs(argv);
+    const warn = deps.warn ?? console.warn;
+    if (args.unknown.length > 0 || args.dryRun === args.apply) {
+        warn(`${LOG_PREFIX} usage: --dry-run | --apply --server-stopped  [--data-root ./data] [--handle default-user] [--config ./config.yaml]`);
+        if (args.unknown.length > 0) warn(`${LOG_PREFIX} unknown argument(s): ${args.unknown.join(' ')}`);
+        return 2;
+    }
+    return runRestore({ ...deps, dataRoot: args.dataRoot, handle: args.handle, apply: args.apply, serverStopped: args.serverStopped });
+}
+
+const isMain = process.argv[1] && import.meta.url === `file://${process.argv[1]}`;
+if (isMain) {
+    const args = parseArgs(process.argv.slice(2));
+    setConfigFilePath(args.config);
+    const { getBetterSqlite3 } = await import('../endpoints/native-sqlite.js');
+    const Database = await getBetterSqlite3();
+    process.exitCode = await main(process.argv.slice(2), { Database });
 }

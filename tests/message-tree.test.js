@@ -29,8 +29,6 @@ jest.unstable_mockModule('../src/endpoints/sqlite-engine.js', () => ({
 
 /** @type {typeof import('../src/message-tree-db.js')} */
 let treeDb;
-/** @type {typeof import('../src/message-tree-migration.js')} */
-let migration;
 
 beforeAll(async () => {
     // message-tree-db.js transitively imports src/endpoints/secrets.js, which reads a config value at
@@ -41,7 +39,6 @@ beforeAll(async () => {
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
 
     treeDb = await import('../src/message-tree-db.js');
-    migration = await import('../src/message-tree-migration.js');
 });
 
 const tmpDirs = [];
@@ -155,138 +152,12 @@ describe('forking', () => {
     });
 });
 
-describe('message deduplication during migration', () => {
-    test('migrateCharacterChats() stores a shared prefix between two JSONL files exactly once', async () => {
+describe('message deduplication', () => {
+    test('ingesting a new chat under a group leaves its existing branches intact', async () => {
+        // An import ingests under the group's owner id exactly like a save does, and must not disturb what is
+        // already there.
         const directories = makeDirectories();
-        const chatDir = path.join(directories.root, 'chats', 'migrate-char');
-        fs.mkdirSync(chatDir, { recursive: true });
-
-        const rootHeader = { chat_metadata: {} };
-        const rootMessages = [
-            makeMessage({ mes: 'm0', sendDate: 'd0' }),
-            makeMessage({ mes: 'm1', sendDate: 'd1' }),
-            makeMessage({ mes: 'm2-root', sendDate: 'd2-root' }),
-        ];
-        const rootLines = [rootHeader, ...rootMessages].map(l => JSON.stringify(l)).join('\n') + '\n';
-        fs.writeFileSync(path.join(chatDir, 'root.jsonl'), rootLines);
-
-        // Shares m0/m1 (identical send_date) with root, then diverges at index 2.
-        const branchHeader = { chat_metadata: { main_chat: 'root' } };
-        const branchMessages = [
-            makeMessage({ mes: 'm0', sendDate: 'd0' }),
-            makeMessage({ mes: 'm1', sendDate: 'd1' }),
-            makeMessage({ mes: 'm2-branch', sendDate: 'd2-branch' }),
-        ];
-        const branchLines = [branchHeader, ...branchMessages].map(l => JSON.stringify(l)).join('\n') + '\n';
-        fs.writeFileSync(path.join(chatDir, 'branch.jsonl'), branchLines);
-
-        const result = await migration.migrateCharacterChats(directories, 'migrate-char', chatDir, false);
-        expect(result.errors).toEqual([]);
-        expect(result.migrated).toBe(2);
-
-        // 4 unique messages total: m0, m1 shared once each, plus m2-root and m2-branch's divergent tails.
-        // (parent_id IS NOT NULL excludes the per-owner anchor row every owner has - see ensureAnchorSync().)
-        const db = await treeDb.getDbHandle(directories);
-        const { count } = db.get('SELECT COUNT(*) as count FROM messages WHERE parent_id IS NOT NULL');
-        expect(count).toBe(4);
-
-        const rootLoaded = await treeDb.loadBranch(directories, 'migrate-char', 'root');
-        expect(rootLoaded.messages.map(m => m.mes)).toEqual(['m0', 'm1', 'm2-root']);
-
-        const branchLoaded = await treeDb.loadBranch(directories, 'migrate-char', 'branch');
-        expect(branchLoaded.messages.map(m => m.mes)).toEqual(['m0', 'm1', 'm2-branch']);
-
-        // The shared m0/m1 nodes are literally the same rows across both branches' paths.
-        expect(branchLoaded.messages[0].node_id).toBe(rootLoaded.messages[0].node_id);
-        expect(branchLoaded.messages[1].node_id).toBe(rootLoaded.messages[1].node_id);
-
-        // Migrated files get renamed out of the way so a re-run skips them (hasBranchesSync() gate).
-        expect(fs.existsSync(path.join(chatDir, 'root.jsonl.pre-migration'))).toBe(true);
-        expect(fs.existsSync(path.join(chatDir, 'branch.jsonl.pre-migration'))).toBe(true);
-        expect(fs.existsSync(path.join(chatDir, 'root.jsonl'))).toBe(false);
-
-        // Re-running migration on an already-migrated owner is a no-op (idempotent per this module's header).
-        const rerun = await migration.migrateCharacterChats(directories, 'migrate-char', chatDir, false);
-        expect(rerun).toEqual({ migrated: 0, skipped: 0, errors: [] });
-    });
-
-    test('an explicit file list migrates only that owner\'s files out of a shared directory', async () => {
-        // Groups don't get a directory per owner the way characters do - every group chat of every
-        // group lives flat in one shared folder, and only the group's own descriptor says which chat
-        // ids are its. This is the case the scan cannot express: point it at the shared folder and
-        // both groups' histories land under whichever owner ran first.
-        const directories = makeDirectories();
-        const sharedDir = path.join(directories.root, 'group chats');
-        fs.mkdirSync(sharedDir, { recursive: true });
-
-        const writeChat = (name, texts, metadata = {}) => {
-            const lines = [{ chat_metadata: metadata }, ...texts.map((t, i) => makeMessage({ mes: t, sendDate: `d${i}` }))];
-            fs.writeFileSync(path.join(sharedDir, `${name}.jsonl`), lines.map(l => JSON.stringify(l)).join('\n') + '\n');
-        };
-
-        writeChat('chat-alpha-1', ['a0', 'a1']);
-        writeChat('chat-alpha-2', ['a0', 'a2']);
-        writeChat('chat-beta-1', ['b0']);
-
-        const alpha = await migration.migrateCharacterChats(
-            directories, 'group-alpha', sharedDir, true,
-            // A stale entry (no such file) and a traversal attempt are both dropped without failing
-            // the run - the descriptor this list comes from is user-editable and outlives its files.
-            ['chat-alpha-1.jsonl', 'chat-alpha-2.jsonl', 'chat-deleted-long-ago.jsonl', '../escape.jsonl'],
-        );
-        expect(alpha.errors).toEqual([]);
-        expect(alpha.migrated).toBe(2);
-
-        // Beta's file was never touched by alpha's run - still sitting there unmigrated.
-        expect(fs.existsSync(path.join(sharedDir, 'chat-beta-1.jsonl'))).toBe(true);
-        expect(fs.existsSync(path.join(sharedDir, 'chat-alpha-1.jsonl.pre-migration'))).toBe(true);
-
-        const beta = await migration.migrateCharacterChats(
-            directories, 'group-beta', sharedDir, true, ['chat-beta-1.jsonl'],
-        );
-        expect(beta.migrated).toBe(1);
-        expect(fs.existsSync(path.join(sharedDir, 'chat-beta-1.jsonl.pre-migration'))).toBe(true);
-
-        // Each group owns exactly its own chats, and alpha's shared 'a0' prefix still dedups to one row.
-        const alphaBranches = await treeDb.listBranches(directories, 'group-alpha');
-        expect(alphaBranches.map(b => b.name).sort()).toEqual(['chat-alpha-1', 'chat-alpha-2']);
-        expect(alphaBranches.every(b => b.is_group === 1)).toBe(true);
-
-        const betaBranches = await treeDb.listBranches(directories, 'group-beta');
-        expect(betaBranches.map(b => b.name)).toEqual(['chat-beta-1']);
-
-        const alpha1 = await treeDb.loadBranch(directories, 'group-alpha', 'chat-alpha-1');
-        const alpha2 = await treeDb.loadBranch(directories, 'group-alpha', 'chat-alpha-2');
-        expect(alpha1.messages.map(m => m.mes)).toEqual(['a0', 'a1']);
-        expect(alpha2.messages.map(m => m.mes)).toEqual(['a0', 'a2']);
-        expect(alpha1.messages[0].node_id).toBe(alpha2.messages[0].node_id);
-        // The is-a-group marker is storage bookkeeping, not chat metadata the client should see.
-        expect(alpha1.metadata.__is_group).toBeUndefined();
-
-        // Beta's 'b0' is a different owner's row even though nothing about the text differs.
-        const beta1 = await treeDb.loadBranch(directories, 'group-beta', 'chat-beta-1');
-        expect(beta1.messages.map(m => m.mes)).toEqual(['b0']);
-
-        // Same idempotency gate as the scan path: a second touch of an already-migrated owner is a no-op.
-        const rerun = await migration.migrateCharacterChats(
-            directories, 'group-alpha', sharedDir, true, ['chat-alpha-1.jsonl', 'chat-alpha-2.jsonl'],
-        );
-        expect(rerun).toEqual({ migrated: 0, skipped: 0, errors: [] });
-    });
-
-    test('ingesting a new chat under a migrated group leaves its existing branches intact', async () => {
-        // The /group/import ordering hazard, from the store's side: an import ingests under the group's
-        // owner id exactly like a save does, and once it labels a node the migration gate is satisfied
-        // forever. So the group's own files have to already be in by then - and the ingest itself must not
-        // disturb what migration put there.
-        const directories = makeDirectories();
-        const sharedDir = path.join(directories.root, 'group chats');
-        fs.mkdirSync(sharedDir, { recursive: true });
-
-        const lines = [{ chat_metadata: {} }, makeMessage({ mes: 'existing', sendDate: 'd0' })];
-        fs.writeFileSync(path.join(sharedDir, 'old-chat.jsonl'), lines.map(l => JSON.stringify(l)).join('\n') + '\n');
-
-        await migration.migrateCharacterChats(directories, 'grp', sharedDir, true, ['old-chat.jsonl']);
+        await treeDb.saveChatToTree(directories, 'grp', 'old-chat', [{ chat_metadata: {} }, makeMessage({ mes: 'existing', sendDate: 'd0' })], true);
 
         const imported = [{ chat_metadata: {} }, makeMessage({ mes: 'existing', sendDate: 'd0' }), makeMessage({ mes: 'imported tail', sendDate: 'd1' })];
         await treeDb.saveChatToTree(directories, 'grp', 'imported-chat', imported, true);
@@ -298,7 +169,7 @@ describe('message deduplication during migration', () => {
         const old = await treeDb.loadBranch(directories, 'grp', 'old-chat');
         const fresh = await treeDb.loadBranch(directories, 'grp', 'imported-chat');
         expect(fresh.messages.map(m => m.mes)).toEqual(['existing', 'imported tail']);
-        // The shared opening is one row, not a second copy - the import converged onto migrated history
+        // The shared opening is one row, not a second copy - the import converged onto the existing history
         // rather than duplicating it.
         expect(fresh.messages[0].node_id).toBe(old.messages[0].node_id);
         // What old-chat loads as is the strict-prefix question the test below leaves open on purpose.
@@ -331,26 +202,6 @@ describe('message deduplication during migration', () => {
         // it here. That is a pre-existing property of the model, not of groups, but groups reach it far more
         // often than characters do, because two chats in one group start from the same greetings verbatim.
         // Left open on purpose rather than papered over - see docs/design/group-chat-tree-migration.md.
-    });
-
-    test('an owner with no surviving files is left untouched, not marked migrated', async () => {
-        // The state a brand-new group is in: a descriptor with chat ids whose files don't exist yet.
-        // Nothing to migrate must stay "nothing has happened here", so the first real save still
-        // creates the owner's rows normally rather than finding a half-built owner.
-        const directories = makeDirectories();
-        const sharedDir = path.join(directories.root, 'group chats');
-        fs.mkdirSync(sharedDir, { recursive: true });
-
-        const result = await migration.migrateCharacterChats(
-            directories, 'group-empty', sharedDir, true, ['never-written.jsonl'],
-        );
-        expect(result).toEqual({ migrated: 0, skipped: 0, errors: [] });
-        expect(await treeDb.hasSavedChats(directories, 'group-empty')).toBe(false);
-
-        const header = { chat_metadata: {} };
-        await treeDb.saveChatToTree(directories, 'group-empty', 'first-chat', [header, makeMessage({ mes: 'hello', sendDate: 'd0' })], true);
-        const loaded = await treeDb.loadBranch(directories, 'group-empty', 'first-chat');
-        expect(loaded.messages.map(m => m.mes)).toEqual(['hello']);
     });
 });
 
