@@ -393,7 +393,7 @@ async function postHashQuery(body) {
 // Mirrors script.js's own CHARACTER_BATCH_CHUNK_SIZE, not /query's (larger) MAX_QUERY_PAGE_SIZE.
 const BATCH_FIELDS_CHUNK_SIZE = 500;
 
-// characterDigestFingerprint()'s own field list (hash-utils.js) minus `avatar`, which /batch always includes.
+// The list-row fields a hash-mode miss fetches through /batch's field-filtered mode, less `avatar`, which /batch always includes.
 const HASH_MODE_BATCH_FIELDS = /** @type {const} */ (['name', 'fav', 'tags', 'tag_ids', 'data']);
 
 /**

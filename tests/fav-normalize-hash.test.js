@@ -18,16 +18,6 @@ const FAV_CASES = [
 ];
 
 /** @param {unknown} value @returns {object} */
-function characterWith(value) {
-    const character = { name: 'A', data: { name: 'A', extensions: { world: '' } } };
-    if (value !== MISSING) {
-        character.fav = value;
-        character.data.extensions.fav = value;
-    }
-    return character;
-}
-
-/** @param {unknown} value @returns {object} */
 function groupWith(value) {
     const group = { id: 'g1', name: 'G', members: [] };
     if (value !== MISSING) group.fav = value;
@@ -42,37 +32,6 @@ describe('normalizeFav', () => {
 
     test('called with no argument (missing) -> false', () => {
         expect(hashUtils.normalizeFav()).toBe(false);
-    });
-});
-
-describe('client character fav fingerprint/hash normalize inside the functions', () => {
-    test.each(FAV_CASES)('characterFavFingerprint: %s', (_label, value, expected) => {
-        expect(hashUtils.characterFavFingerprint(characterWith(value))).toEqual({
-            fav: expected,
-            data: { extensions: { fav: expected } },
-        });
-    });
-
-    test.each(FAV_CASES)('characterDigestFingerprint fav fields: %s', (_label, value, expected) => {
-        const fingerprint = hashUtils.characterDigestFingerprint(characterWith(value));
-        expect(fingerprint.fav).toBe(expected);
-        expect(fingerprint.data.extensions.fav).toBe(expected);
-    });
-
-    test.each(FAV_CASES)('characterDigestFavHash equals the hash of the normalized boolean: %s', (_label, value, expected) => {
-        expect(hashUtils.characterDigestFavHash(characterWith(value)))
-            .toBe(hashUtils.characterDigestFavHash({ fav: expected, data: { extensions: { fav: expected } } }));
-    });
-
-    test.each(FAV_CASES)('characterDigestFavHash fast path matches contentHashOf(characterFavFingerprint): %s', (_label, value) => {
-        const character = characterWith(value);
-        expect(hashUtils.characterDigestFavHash(character) % 4294967296)
-            .toBe(hashUtils.contentHashOf(hashUtils.characterFavFingerprint(character)) % 4294967296);
-    });
-
-    test('the two fav fields are normalized independently', () => {
-        expect(hashUtils.characterFavFingerprint({ fav: 'true', data: { extensions: { fav: 'false' } } }))
-            .toEqual({ fav: true, data: { extensions: { fav: false } } });
     });
 });
 

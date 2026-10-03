@@ -177,7 +177,7 @@ describe('/api/tags/restore: assignments', () => {
         expect(await restore({ tag_map: { 'Bob.png': ['a'] } })).toEqual(NOTHING_LEFT_OUT);
 
         const after = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
-        expect(after.change_seq).toBe(before.change_seq);
+        expect(after.version).toBe(before.version);
     });
 
     test('keys that are neither a character nor a group are listed, and the rest is written', async () => {
