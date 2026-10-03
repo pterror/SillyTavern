@@ -1,0 +1,124 @@
+# Builds st-engine (engine/) for every target in engine/targets.json plus the wasm build, and publishes them as the
+# release engine-<first 16 hex of the source hash> (engine/source-hash.js), which the server downloads from
+# (engine/fetch.js). A source hash that already has a release is not rebuilt.
+
+name: Engine release
+
+on:
+  push:
+    paths:
+      - 'engine/**'
+      - '.github/workflows/engine.yml'
+  workflow_dispatch:
+
+# One run at a time, so a second run for the same hash sees the first one's release.
+concurrency:
+  group: engine-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      key: ${{ steps.plan.outputs.key }}
+      build: ${{ steps.plan.outputs.build }}
+      native: ${{ steps.plan.outputs.native }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          key=$(node --input-type=module -e "import { sourceKey } from './engine/source-hash.js'; console.log(sourceKey())")
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+          # A draft is a run that failed before publishing; it is rebuilt.
+          if [ "$(gh release view "engine-$key" --json isDraft --jq .isDraft 2>/dev/null)" = "false" ]; then
+            echo "engine-$key is already released"
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "native=$(node --input-type=module -e "import { TARGETS } from './engine/platform.js'; console.log(JSON.stringify(TARGETS.native))")" >> "$GITHUB_OUTPUT"
+
+  native:
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.native) }}
+    name: native (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    # targets.json marks the targets that ship only where they build (armv7); the others gate the release.
+    continue-on-error: ${{ matrix.optional == true }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      # rustup reads engine/rust-toolchain.toml from engine/, so this installs the pinned toolchain too.
+      - working-directory: engine
+        run: rustup target add ${{ matrix.rust }}
+      - if: matrix.build == 'zigbuild'
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+      - if: matrix.build == 'zigbuild'
+        run: pip install cargo-zigbuild==0.23.4 ziglang==0.16.0
+      - run: node engine/build.js --platform ${{ matrix.platform }}
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: engine-${{ matrix.platform }}
+          path: engine/dist/*
+          if-no-files-found: error
+
+  wasm:
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      - working-directory: engine
+        run: |
+          rustup target add wasm32-wasip1-threads
+          npm ci --ignore-scripts --no-audit --no-fund
+      - run: node engine/build.js --wasm
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: engine-wasm
+          path: engine/dist/*
+          if-no-files-found: error
+
+  release:
+    needs: [plan, native, wasm]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: engine-*
+          path: dist
+          merge-multiple: true
+      # Published only once every file is attached: the server takes a release's files as complete.
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          KEY: ${{ needs.plan.outputs.key }}
+        run: |
+          ls -l dist
+          if gh release view "engine-$KEY" >/dev/null 2>&1; then
+            gh release delete "engine-$KEY" --yes --cleanup-tag
+          fi
+          gh release create "engine-$KEY" dist/* --draft --latest=false --target "$GITHUB_SHA" \
+            --title "engine $KEY" --notes "st-engine built from $GITHUB_SHA."
+          gh release edit "engine-$KEY" --draft=false --latest=false
