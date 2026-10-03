@@ -489,16 +489,6 @@ const SCHEMA_SQL = `
         value TEXT
     );
 
-    -- Cards a one-time migration still has to write, per migration: a later boot retries only these. settled = 1 marks
-    -- a row the running retry pass is done with; commitMigrationSettled() deletes those rows in the same transaction that
-    -- stores the pass's notice, so after a crash before it every row is looked at again.
-    CREATE TABLE IF NOT EXISTS migration_pending (
-        migration TEXT NOT NULL,
-        id        TEXT NOT NULL,
-        settled   INTEGER NOT NULL DEFAULT 0,
-        PRIMARY KEY (migration, id)
-    );
-
     -- Mirrors characters' fav/date_added/date_last_chat/chat_size/name_fold so queryEntities() can UNION ALL
     -- both tables under one ORDER BY. No 'world' column (groups have no lorebook binding). Group ids are stable
     -- for their whole lifetime, so date_added needs no rename-time carry-forward like characters get.
@@ -2140,18 +2130,6 @@ export async function endBatchImport(directories) {
 
     flushBatch(entry);
     entry.batch = null;
-}
-
-// Commits whatever an open batch import has buffered so far and leaves batch mode on - for a caller about to record
-// that its own writes are done, which must not outlive a crash that loses the buffer. No-op outside batch mode.
-/**
- * @param {import('./users.js').UserDirectoryList} directories
- */
-export async function flushBatchImport(directories) {
-    const entry = await getEntry(directories);
-    if (!entry) return;
-
-    flushBatch(entry);
 }
 
 // One-time backfill for a library predating this metadata store. Seeds date_added from ctimeMs, recorded in meta so it runs once.
@@ -9802,28 +9780,6 @@ function buildWhereClause({ tags, fav, world, ranges, excludeIds, ids } = {}, de
 }
 
 /**
- * Every world some character links as its primary world, with how many characters link it, in world order, in
- * batches. Reads idx_characters_world only; each batch's read is finished before it is yielded, so the caller may
- * write between batches.
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<AsyncGenerator<{ world: string, linkers: number }[], void, undefined> | null>} `null` if the
- * metadata store is unavailable.
- */
-export async function streamLinkedWorlds(directories) {
-    const entry = await getEntry(directories);
-    if (!entry) return null;
-
-    // world has TEXT affinity, so `> ''` keeps exactly the rows that are neither NULL nor ''; a later page's `> @after` implies it.
-    return /** @type {AsyncGenerator<{ world: string, linkers: number }[], void, undefined>} */ (streamRows(entry.db, {
-        firstPageSql: 'SELECT world, COUNT(*) AS linkers FROM characters WHERE world > \'\' GROUP BY world ORDER BY world LIMIT @limit',
-        firstPageParams: {},
-        nextPageSql: 'SELECT world, COUNT(*) AS linkers FROM characters WHERE world > @after GROUP BY world ORDER BY world LIMIT @limit',
-        nextPageParams: {},
-        keyColumn: 'world',
-    }));
-}
-
-/**
  * How many character rows there are, for a background pass's progress over them.
  * @param {import('./users.js').UserDirectoryList} directories
  * @returns {Promise<number | null>} `null` if the metadata store is unavailable.
@@ -9832,18 +9788,6 @@ export async function countCharacterRows(directories) {
     const entry = await getEntry(directories);
     if (!entry) return null;
     const row = /** @type {{ n: number } | undefined} */ (entry.db.get('SELECT COUNT(*) AS n FROM characters', {}));
-    return Number(row?.n ?? 0);
-}
-
-/**
- * How many characters link a World, for a background pass's progress over them.
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<number | null>} `null` if the metadata store is unavailable.
- */
-export async function countCharactersLinkedToAWorld(directories) {
-    const entry = await getEntry(directories);
-    if (!entry) return null;
-    const row = /** @type {{ n: number } | undefined} */ (entry.db.get('SELECT COUNT(*) AS n FROM characters WHERE world > \'\'', {}));
     return Number(row?.n ?? 0);
 }
 
@@ -10057,176 +10001,6 @@ export async function dropBulkSelection(directories, job) {
         await new Promise(resolve => setImmediate(resolve));
     }
     entry.db.run('DELETE FROM bulk_jobs WHERE job = @job', { job });
-}
-
-/**
- * Ids of the characters that link `world` as their primary world, in batches. Pages by rowid, the order
- * idx_characters_world keeps within one world, so a page seeks instead of sorting every linker; each batch's read is
- * finished before it is yielded.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} world
- * @returns {Promise<AsyncGenerator<string[], void, undefined> | null>} `null` if the metadata store is unavailable.
- */
-export async function streamCharactersLinkedToWorld(directories, world) {
-    const entry = await getEntry(directories);
-    if (!entry) return null;
-
-    return (async function* () {
-        // '' is no world: a card without one holds it as '' in the fields layout.
-        if (world === '') return;
-        for await (const rows of streamRows(entry.db, {
-            firstPageSql: 'SELECT rowid AS rid, id FROM characters WHERE world = @world ORDER BY rowid LIMIT @limit',
-            firstPageParams: { world },
-            nextPageSql: 'SELECT rowid AS rid, id FROM characters WHERE world = @world AND rowid > @after ORDER BY rowid LIMIT @limit',
-            nextPageParams: { world },
-            keyColumn: 'rid',
-        })) {
-            yield (/** @type {{ rid: number, id: string }[]} */ (rows)).map(row => row.id);
-        }
-    })();
-}
-
-/**
- * Whether any character links `world` as its primary world - one indexed lookup.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} world
- * @returns {Promise<boolean | null>} `null` if the metadata store is unavailable.
- */
-export async function isWorldLinkedByAnyCharacter(directories, world) {
-    const entry = await getEntry(directories);
-    if (!entry) return null;
-
-    // '' is no world: a card without one holds it as '' in the fields layout.
-    if (world === '') return false;
-    return !!entry.db.get('SELECT 1 FROM characters WHERE world = @world LIMIT 1', { world });
-}
-
-// A boot-time migration reading this store must check this first - bootstrapIfNeeded() runs in the
-// background and isn't awaited, so an early query could see a partially-backfilled table.
-/**
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<boolean>}
- */
-export async function isBootstrapComplete(directories) {
-    const entry = await getEntry(directories);
-    if (!entry) return false;
-    return !!(/** @type {Record<string, unknown> | undefined} */ (entry.db.get('SELECT value FROM meta WHERE key = @key', { key: 'bootstrap_completed' })));
-}
-
-/** Generic one-time-per-user completion marker, keyed by the caller's own namespaced `key`. */
-/**
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} key
- * @returns {Promise<boolean>}
- */
-export async function isMigrationMarkedComplete(directories, key) {
-    const entry = await getEntry(directories);
-    if (!entry) return false;
-    return !!(/** @type {Record<string, unknown> | undefined} */ (entry.db.get('SELECT value FROM meta WHERE key = @key', { key })));
-}
-
-/**
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} key
- */
-export async function markMigrationComplete(directories, key) {
-    const entry = await getEntry(directories);
-    if (!entry) return;
-    setMetaSync(entry.db, key, String(Date.now()));
-}
-
-/**
- * Records that `migration` still has to write `id`, unsettled (a row already there is reset to unsettled).
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} migration
- * @param {string} id
- */
-export async function addMigrationPending(directories, migration, id) {
-    const entry = await getEntry(directories);
-    if (!entry) return;
-    writeRowIfChanged(entry.db, 'migration_pending', { migration, id }, { settled: 0 }, { insert: true });
-}
-
-/**
- * Marks one pending row settled (the running retry pass is done with it) or unsettled.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} migration
- * @param {string} id
- * @param {boolean} settled
- */
-export async function setMigrationPendingSettled(directories, migration, id, settled) {
-    const entry = await getEntry(directories);
-    if (!entry) return;
-    writeRowIfChanged(entry.db, 'migration_pending', { migration, id }, { settled: settled ? 1 : 0 });
-}
-
-/**
- * Deletes every pending row of `migration`.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} migration
- */
-export async function clearMigrationPending(directories, migration) {
-    const entry = await getEntry(directories);
-    if (!entry) return;
-    entry.db.run('DELETE FROM migration_pending WHERE migration = @migration', { migration });
-}
-
-/**
- * Whether `migration` has any pending row, settled or not - one indexed lookup.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} migration
- * @returns {Promise<boolean>} false when the metadata store is unavailable.
- */
-export async function hasMigrationPending(directories, migration) {
-    const entry = await getEntry(directories);
-    if (!entry) return false;
-    return !!entry.db.get('SELECT 1 FROM migration_pending WHERE migration = @migration LIMIT 1', { migration });
-}
-
-/**
- * The pending rows of `migration`, in id order, in batches; each batch's read is finished before it is yielded, so the
- * caller may write between batches.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} migration
- * @returns {Promise<AsyncGenerator<{ id: string, settled: number }[], void, undefined> | null>} `null` if the metadata
- * store is unavailable.
- */
-export async function streamMigrationPending(directories, migration) {
-    const entry = await getEntry(directories);
-    if (!entry) return null;
-
-    return (async function* () {
-        for await (const rows of streamRows(entry.db, {
-            firstPageSql: 'SELECT id, settled FROM migration_pending WHERE migration = @migration ORDER BY id LIMIT @limit',
-            firstPageParams: { migration },
-            nextPageSql: 'SELECT id, settled FROM migration_pending WHERE migration = @migration AND id > @after ORDER BY id LIMIT @limit',
-            nextPageParams: { migration },
-            keyColumn: 'id',
-        })) {
-            yield (/** @type {{ id: string, settled: number }[]} */ (rows)).map(row => ({ id: String(row.id), settled: Number(row.settled) }));
-        }
-    })();
-}
-
-/**
- * In one transaction: deletes the settled pending rows of `migration`, and stores `metaValue` under `metaKey` (`null`
- * deletes the key, `undefined` leaves it as it is).
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} migration
- * @param {string} metaKey
- * @param {unknown} metaValue
- */
-export async function commitMigrationSettled(directories, migration, metaKey, metaValue) {
-    const entry = await getEntry(directories);
-    if (!entry) return;
-    entry.db.transaction(() => {
-        entry.db.run('DELETE FROM migration_pending WHERE migration = @migration AND settled = 1', { migration });
-        if (metaValue === null) {
-            entry.db.run('DELETE FROM meta WHERE key = @key', { key: metaKey });
-        } else if (metaValue !== undefined) {
-            setMetaSync(entry.db, metaKey, String(metaValue));
-        }
-    });
 }
 
 const COUNT_SAMPLE_RUNS = 20;
