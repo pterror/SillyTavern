@@ -23,7 +23,7 @@ module.exports = {
     overrides: [
         {
             // Server-side files, Node CLI scripts (plus this configuration file)
-            files: ['src/**/*.js', './*.js', 'plugins/**/*.js', 'scripts/**/*.js'],
+            files: ['src/**/*.js', './*.js', 'plugins/**/*.js', 'scripts/**/*.js', 'engine/**/*.js'],
             env: {
                 node: true,
                 es2024: true,
@@ -222,6 +222,7 @@ module.exports = {
         'cache/**',
         'src/tokenizers/**',
         'docker/**',
+        'engine/target/**',
         'plugins/**',
         '**/*.min.js',
         'public/scripts/extensions/quick-reply/lib/**',
