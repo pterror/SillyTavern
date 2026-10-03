@@ -23,10 +23,8 @@ const SMALL: StoreConfig = StoreConfig {
         file_target: 4096,
     },
     ks: KsConfig {
-        buffer_bytes: 16 << 10,
         log_bytes: 8 << 10,
         fan_in: 3,
-        cache_bytes: 64 << 10,
         block_size: 256,
         merge_threads: 2,
         max_frozen: 1,
@@ -34,6 +32,10 @@ const SMALL: StoreConfig = StoreConfig {
     live_fraction: 0.5,
     relocate_bytes: 1024,
 };
+
+fn small_pool() -> Arc<Pool> {
+    Pool::new(16 << 10, 64 << 10, 2, 2)
+}
 
 fn text(s: &str) -> Vec<u8> {
     wtf8_from_utf16(&s.encode_utf16().collect::<Vec<_>>())
@@ -170,14 +172,14 @@ fn workload(s: &Store, model: &mut Model, from: u64, n: u64) {
 fn derived_values_follow_commits_through_flushes_merges_and_reopens() {
     let dir = temp_dir("follow");
     let mut model = Model::default();
-    let s = Store::open(&dir, SMALL).unwrap();
+    let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
     workload(&s, &mut model, 0, 3000);
     model.check(&s);
     let st = s.stats();
     assert!(st.ks.flushes > 5 && st.ks.merges > 0, "{st:?}");
     s.close();
     drop(s);
-    let s = Store::open(&dir, SMALL).unwrap();
+    let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
     s.wait_ready().unwrap();
     assert_eq!(
         s.stats().replay_records,
@@ -192,7 +194,7 @@ fn derived_values_follow_commits_through_flushes_merges_and_reopens() {
 #[test]
 fn a_text_value_is_written_whole_once_its_edits_reach_its_size() {
     let dir = temp_dir("text");
-    let s = Store::open(&dir, SMALL).unwrap();
+    let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
     let base = "0123456789".repeat(10);
     s.commit_wait(vec![set_text(1, 1, &base)]).unwrap();
     let mut value = base.clone();
@@ -218,7 +220,7 @@ fn a_text_value_is_written_whole_once_its_edits_reach_its_size() {
 #[test]
 fn a_commit_that_cant_apply_writes_nothing() {
     let dir = temp_dir("refuse");
-    let s = Store::open(&dir, SMALL).unwrap();
+    let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
     s.commit_wait(vec![set_text(1, 1, "héllo")]).unwrap();
     let end = s.durable_end();
     for bad in [
@@ -241,7 +243,7 @@ fn after_a_crash_replay_restores_every_acknowledged_commit() {
     let mut model = Model::default();
     let mut from = 0;
     for round in 0..6 {
-        let s = Store::open(&dir, SMALL).unwrap();
+        let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
         s.wait_ready().unwrap();
         model.check(&s);
         if round > 0 {
@@ -258,7 +260,7 @@ fn after_a_crash_replay_restores_every_acknowledged_commit() {
         s.abandon();
         std::mem::forget(s);
     }
-    let s = Store::open(&dir, SMALL).unwrap();
+    let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
     model.check(&s);
     drop(s);
     fs::remove_dir_all(&dir).unwrap();
@@ -267,11 +269,11 @@ fn after_a_crash_replay_restores_every_acknowledged_commit() {
 #[test]
 fn reads_before_replay_ends_wait_for_it() {
     let dir = temp_dir("wait");
-    let s = Store::open(&dir, SMALL).unwrap();
+    let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
     s.commit_wait(vec![fav(5, true)]).unwrap();
     s.abandon();
     std::mem::forget(s);
-    let s = Store::open(&dir, SMALL).unwrap();
+    let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     let s = Arc::new(s);
     let s2 = s.clone();
@@ -303,7 +305,7 @@ fn log_files(dir: &Path) -> Vec<u64> {
 fn cleaning_drops_replaced_records_and_keeps_every_live_one() {
     let dir = temp_dir("clean");
     let mut model = Model::default();
-    let s = Store::open(&dir, SMALL).unwrap();
+    let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
     let first_feed = s.feed(0, 10).unwrap();
     assert!(first_feed.0.is_empty());
     // A text that is never replaced stays live in the first file throughout.
@@ -352,7 +354,7 @@ fn cleaning_drops_replaced_records_and_keeps_every_live_one() {
     s.close();
     drop(s);
     // Reopened by probing from the newest run's file: the removed files are never looked for.
-    let s = Store::open(&dir, SMALL).unwrap();
+    let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
     model.check(&s);
     drop(s);
     fs::remove_dir_all(&dir).unwrap();
@@ -361,7 +363,7 @@ fn cleaning_drops_replaced_records_and_keeps_every_live_one() {
 #[test]
 fn concurrent_commits_share_syncs_and_each_sees_the_ones_before() {
     let dir = temp_dir("concurrent");
-    let s = Arc::new(Store::open(&dir, SMALL).unwrap());
+    let s = Arc::new(Store::open_in(&dir, SMALL, small_pool()).unwrap());
     let threads: Vec<_> = (0..8)
         .map(|t| {
             let s = s.clone();
@@ -394,7 +396,7 @@ fn concurrent_commits_share_syncs_and_each_sees_the_ones_before() {
 fn a_log_whose_runs_are_missing_after_cleaning_refuses_to_open() {
     let dir = temp_dir("noruns");
     let mut model = Model::default();
-    let s = Store::open(&dir, SMALL).unwrap();
+    let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
     workload(&s, &mut model, 0, 6000);
     for _ in 0..20 {
         s.inner.ks.freeze_at(s.durable_end());
@@ -406,7 +408,7 @@ fn a_log_whose_runs_are_missing_after_cleaning_refuses_to_open() {
     drop(s);
     assert!(log_files(&dir)[0] > 0);
     fs::remove_dir_all(dir.join("runs")).unwrap();
-    let err = Store::open(&dir, SMALL).err().unwrap();
+    let err = Store::open_in(&dir, SMALL, small_pool()).err().unwrap();
     assert!(
         err.to_string()
             .contains("runs that covered its cleaned files are missing"),
@@ -418,7 +420,7 @@ fn a_log_whose_runs_are_missing_after_cleaning_refuses_to_open() {
 #[test]
 fn a_commit_that_writes_nothing_resolves_after_the_ones_before_it() {
     let dir = temp_dir("order");
-    let s = Store::open(&dir, SMALL).unwrap();
+    let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
     s.wait_ready().unwrap();
     let order = Arc::new(Mutex::new(Vec::new()));
     for i in 0..200u64 {

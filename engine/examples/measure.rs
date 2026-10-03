@@ -10,6 +10,9 @@
 //!     moment; the store is reopened and every commit the child saw acknowledged is checked to be readable.
 //!   cargo run --release --features measure --example measure -- calibrate <dir>
 //!     the memory a buffer of `testSet`'s entries takes, against the bytes it counts toward B.
+//!   cargo run --release --features measure --example measure -- multi <dir> <stores> <entries>
+//!     that many stores on one pool, loaded and updated at once (store i with entries/(i % 4 + 1)): peak memory
+//!     and each store's reads and writes.
 //! Linux only (`/proc/self/status`). The constants can be overridden from the environment (`config`).
 
 use std::io::{BufRead, BufReader, Write};
@@ -19,6 +22,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use st_engine::keyspace::pool::Pool;
 use st_engine::keyspace::val::get_u64;
 use st_engine::log::format::{Record, Value, kind_by_name};
 use st_engine::store::kinds::{key, parse_loc};
@@ -107,9 +111,14 @@ fn file_of_key(k: &[u8]) -> u64 {
     get_u64(k, &mut at).unwrap()
 }
 
+/// Commits in flight at once per store: ST_INFLIGHT, else 8.
+fn inflight_limit() -> u32 {
+    std::env::var("ST_INFLIGHT").map_or(8, |v| v.parse().unwrap())
+}
+
 fn commit_all(s: &Store, mut recs: impl Iterator<Item = Record>) -> Duration {
     let started = Instant::now();
-    // Up to 8 commits in flight, as concurrent actions would be.
+    // Several commits in flight, as concurrent actions would be.
     let inflight = Arc::new((std::sync::Mutex::new(0u32), std::sync::Condvar::new()));
     loop {
         let chunk: Vec<Record> = recs.by_ref().take(BATCH as usize).collect();
@@ -118,7 +127,7 @@ fn commit_all(s: &Store, mut recs: impl Iterator<Item = Record>) -> Duration {
         }
         let (m, cv) = &*inflight;
         let mut n = m.lock().unwrap();
-        while *n >= 8 {
+        while *n >= inflight_limit() {
             n = cv.wait(n).unwrap();
         }
         *n += 1;
@@ -246,14 +255,11 @@ fn live_bytes(s: &Store) -> u64 {
     total
 }
 
-/// The default config, with any constant overridden by an environment variable (ST_B, ST_L, ST_DELTA, ST_U,
-/// ST_C, ST_BLOCK, ST_LOG_BLOCK; sizes in bytes).
+/// The default config, with any constant overridden by an environment variable (ST_L, ST_DELTA, ST_U, ST_BLOCK,
+/// ST_LOG_BLOCK, ST_LOG_FILE; sizes in bytes). B and C are the pool's (`pool`).
 fn config() -> StoreConfig {
     let mut c = StoreConfig::default();
     let env = |k: &str| std::env::var(k).ok();
-    if let Some(v) = env("ST_B") {
-        c.ks.buffer_bytes = v.parse().unwrap();
-    }
     if let Some(v) = env("ST_L") {
         c.ks.log_bytes = v.parse().unwrap();
     }
@@ -262,9 +268,6 @@ fn config() -> StoreConfig {
     }
     if let Some(v) = env("ST_U") {
         c.live_fraction = v.parse().unwrap();
-    }
-    if let Some(v) = env("ST_C") {
-        c.ks.cache_bytes = v.parse().unwrap();
     }
     if let Some(v) = env("ST_BLOCK") {
         c.ks.block_size = v.parse().unwrap();
@@ -279,6 +282,21 @@ fn config() -> StoreConfig {
 }
 
 /// Memory a buffer of entries shaped like `testSet`'s takes, against what it counts.
+/// The pool every store of a run shares: B and C from ST_B and ST_C, else the defaults.
+fn pool() -> Arc<Pool> {
+    static POOL: std::sync::OnceLock<Arc<Pool>> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| {
+        let env = |k: &str, d: usize| std::env::var(k).map_or(d, |v| v.parse().unwrap());
+        Pool::new(
+            env("ST_B", st_engine::store::BUFFER_BYTES),
+            env("ST_C", st_engine::store::CACHE_BYTES),
+            st_engine::store::MERGE_SLOTS,
+            st_engine::store::FLUSH_SLOTS,
+        )
+    })
+    .clone()
+}
+
 fn calibrate(dir: &Path) {
     use st_engine::keyspace::val::Val;
     use st_engine::keyspace::{Hooks, Keyspace, Mem};
@@ -294,9 +312,8 @@ fn calibrate(dir: &Path) {
         }
         fn flushed(&self, _: &Keyspace) {}
     }
-    let mut cfg = StoreConfig::default().ks;
-    cfg.buffer_bytes = usize::MAX;
-    let ks = Keyspace::open(dir, cfg).unwrap();
+    let cfg = StoreConfig::default().ks;
+    let ks = Keyspace::open(dir, cfg, Pool::new(usize::MAX / 4, 0, 1, 1)).unwrap();
     ks.start(Box::new(NoHooks)).unwrap();
     let before = proc_kb("VmRSS:");
     let mut rng = Rng(7);
@@ -327,7 +344,7 @@ fn calibrate(dir: &Path) {
 fn run(dir: &Path, entries: u64) {
     let ids = entries / 2;
     let cfg = config();
-    let s = Store::open(dir, cfg).unwrap();
+    let s = Store::open_in(dir, cfg, pool()).unwrap();
     s.wait_ready().unwrap();
     let mut rng = Rng(1);
     let t = commit_all(&s, (0..ids).map(|id| set(id, Rng(id).next() % (1 << 32))));
@@ -389,7 +406,7 @@ fn run(dir: &Path, entries: u64) {
     drop(s);
     let closed = started.elapsed();
     let started = Instant::now();
-    let s = Store::open(dir, cfg).unwrap();
+    let s = Store::open_in(dir, cfg, pool()).unwrap();
     let opened = started.elapsed();
     s.wait_ready().unwrap();
     report(
@@ -411,7 +428,7 @@ fn run(dir: &Path, entries: u64) {
 /// The crash child: commits rounds of updates, keeping up to 32 commits in flight, and prints each commit's
 /// number once it is acknowledged. Commit `i` sets `BATCH` ids to the key `base + i`.
 fn child(dir: &Path, ids: u64, base: u64) {
-    let s = Arc::new(Store::open(dir, config()).unwrap());
+    let s = Arc::new(Store::open_in(dir, config(), pool()).unwrap());
     s.wait_ready().unwrap();
     let inflight = Arc::new((std::sync::Mutex::new(0u32), std::sync::Condvar::new()));
     // Until killed.
@@ -444,7 +461,7 @@ fn child(dir: &Path, ids: u64, base: u64) {
 
 fn crash(dir: &Path, rounds: u64) {
     let ids = {
-        let s = Store::open(dir, StoreConfig::default()).unwrap();
+        let s = Store::open_in(dir, config(), pool()).unwrap();
         let c = s.get(&key::of(key::TEST_COUNT)).unwrap().unwrap();
         s.close();
         st_engine::keyspace::val::counter_value(&c).unwrap() as u64
@@ -479,7 +496,7 @@ fn crash(dir: &Path, rounds: u64) {
         reader.join().unwrap();
         let last = acked.load(Ordering::SeqCst);
         let started = Instant::now();
-        let s = Store::open(dir, config()).unwrap();
+        let s = Store::open_in(dir, config(), pool()).unwrap();
         let opened = started.elapsed();
         s.wait_ready().unwrap();
         let ready = started.elapsed();
@@ -522,6 +539,79 @@ fn crash(dir: &Path, rounds: u64) {
     }
 }
 
+/// `k` stores in `dir`/0.. on one pool, each loaded with `entries` and then updated, all at once from a thread
+/// per store: the pool's peak memory, and each store's reads and writes.
+fn multi(dir: &Path, k: usize, entries: u64) {
+    let ids = entries / 2;
+    let stores: Vec<Arc<Store>> = (0..k)
+        .map(|i| Arc::new(Store::open_in(&dir.join(i.to_string()), config(), pool()).unwrap()))
+        .collect();
+    let peak = Arc::new(AtomicU64::new(0));
+    let sampling = Arc::new(AtomicU64::new(1));
+    let sampler = {
+        let (peak, sampling) = (peak.clone(), sampling.clone());
+        std::thread::spawn(move || {
+            while sampling.load(Ordering::Relaxed) == 1 {
+                let (a, f) = pool().buffered();
+                peak.fetch_max(a + f, Ordering::Relaxed);
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        })
+    };
+    let started = Instant::now();
+    let threads: Vec<_> = stores
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let s = s.clone();
+            std::thread::spawn(move || {
+                s.wait_ready().unwrap();
+                // Uneven: store i loads ids/(i % 4 + 1).
+                let n = ids / (i as u64 % 4 + 1);
+                commit_all(&s, (0..n).map(|id| set(id, Rng(id).next() % (1 << 32))));
+                commit_all(
+                    &s,
+                    (0..n).map(|j| {
+                        let mut r = Rng(j ^ 0x5555);
+                        set(r.next() % n, r.next() % (1 << 32))
+                    }),
+                );
+                n
+            })
+        })
+        .collect();
+    let ns: Vec<u64> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+    let secs = started.elapsed().as_secs_f64();
+    let mut rng = Rng(3);
+    let mut per = Vec::new();
+    for (s, n) in stores.iter().zip(&ns) {
+        settle(s);
+        let r = reads(s, *n, &mut rng);
+        let st = s.stats();
+        per.push(format!(
+            "{{\"ids\":{n},\"writes_per_entry\":{:.1},\"runs\":{}{r}}}",
+            (st.ks.flush_bytes + st.ks.merge_bytes) as f64 / st.ks.inserted as f64,
+            st.ks.runs
+        ));
+    }
+    sampling.store(0, Ordering::Relaxed);
+    sampler.join().unwrap();
+    let (active, frozen) = pool().buffered();
+    let cache = stores[0].keyspace().cache().bytes();
+    for s in &stores {
+        s.close();
+    }
+    let rss_open = proc_kb("VmRSS:");
+    drop(stores);
+    println!(
+        "{{\"phase\":\"multi\",\"stores\":{k},\"secs\":{secs:.1},{},\"rss_closed_kb\":{},\"rss_before_close_kb\":{rss_open},\"pool_peak\":{},\"pool_active\":{active},\"pool_frozen\":{frozen},\"cache\":{cache},\"per_store\":[{}]}}",
+        mem_json(),
+        proc_kb("VmRSS:"),
+        peak.load(Ordering::Relaxed),
+        per.join(",")
+    );
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let dir = PathBuf::from(&args[2]);
@@ -529,6 +619,7 @@ fn main() {
         "run" => run(&dir, args[3].parse().unwrap()),
         "crash" => crash(&dir, args[3].parse().unwrap()),
         "calibrate" => calibrate(&dir),
+        "multi" => multi(&dir, args[3].parse().unwrap(), args[4].parse().unwrap()),
         "child" => child(&dir, args[3].parse().unwrap(), args[4].parse().unwrap()),
         a => panic!("unknown command {a}"),
     }

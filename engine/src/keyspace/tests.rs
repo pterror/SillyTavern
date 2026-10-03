@@ -16,14 +16,16 @@ pub fn temp_dir(name: &str) -> PathBuf {
 }
 
 const SMALL: KsConfig = KsConfig {
-    buffer_bytes: 16 << 10,
     log_bytes: u64::MAX,
     fan_in: 3,
-    cache_bytes: 64 << 10,
     block_size: 256,
     merge_threads: 2,
     max_frozen: 2,
 };
+
+fn small_pool() -> Arc<Pool> {
+    Pool::new(16 << 10, 64 << 10, 2, 2)
+}
 
 struct NoHooks;
 
@@ -35,7 +37,7 @@ impl Hooks for NoHooks {
 }
 
 fn open_with(dir: &Path, cfg: KsConfig) -> Arc<Keyspace> {
-    let ks = Keyspace::open(dir, cfg).unwrap();
+    let ks = Keyspace::open(dir, cfg, small_pool()).unwrap();
     ks.start(Box::new(NoHooks)).unwrap();
     ks
 }
@@ -198,20 +200,67 @@ fn a_missing_or_damaged_run_refuses_to_open() {
         d[i] ^= 1;
         fs::write(&names[0], &d).unwrap();
         assert!(
-            matches!(Keyspace::open(&dir, SMALL), Err(KsError::Corrupt { .. })),
+            matches!(
+                Keyspace::open(&dir, SMALL, small_pool()),
+                Err(KsError::Corrupt { .. })
+            ),
             "byte {i}"
         );
     }
     let mut d = original.clone();
     d[3] ^= 1;
     fs::write(&names[0], &d).unwrap();
-    let ks = Keyspace::open(&dir, SMALL).unwrap();
+    let ks = Keyspace::open(&dir, SMALL, small_pool()).unwrap();
     let r = (0..2000).try_for_each(|i| ks.get(&key(i)).map(drop));
     assert!(matches!(r, Err(KsError::Corrupt { .. })));
     drop(ks);
     fs::write(&names[0], &original).unwrap();
     fs::remove_file(&names[1]).unwrap();
-    let err = Keyspace::open(&dir, SMALL).err().unwrap();
+    let err = Keyspace::open(&dir, SMALL, small_pool()).err().unwrap();
     assert!(err.to_string().contains("are in no run"), "{err}");
     fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn keyspaces_sharing_a_pool_stay_within_its_budget_together() {
+    let pool = Pool::new(16 << 10, 64 << 10, 2, 2);
+    let dirs: Vec<PathBuf> = (0..8).map(|i| temp_dir(&format!("pool{i}"))).collect();
+    let all: Vec<Arc<Keyspace>> = dirs
+        .iter()
+        .map(|d| {
+            let ks = Keyspace::open(d, SMALL, pool.clone()).unwrap();
+            ks.start(Box::new(NoHooks)).unwrap();
+            ks
+        })
+        .collect();
+    let mut models = vec![BTreeMap::new(); all.len()];
+    let mut ends = vec![0; all.len()];
+    let mut peak = 0;
+    for round in 0..40 {
+        for (i, ks) in all.iter().enumerate() {
+            // Uneven load: some keyspaces take far more than others.
+            load(
+                ks,
+                20 + (i as u64 * 37 + round) % 200,
+                &mut models[i],
+                &mut ends[i],
+            );
+            let (active, frozen) = pool.buffered();
+            peak = peak.max(active + frozen);
+        }
+    }
+    // An insert may pass 2B by its own entries before it waits.
+    assert!(peak <= 2 * (16 << 10) + 8 * 1024, "peak {peak}");
+    for (ks, model) in all.iter().zip(&models) {
+        check(ks, model);
+        assert!(ks.stats().flushes > 0);
+    }
+    for ks in &all {
+        ks.stop();
+    }
+    drop(all);
+    assert_eq!(pool.buffered(), (0, 0));
+    for d in dirs {
+        fs::remove_dir_all(d).unwrap();
+    }
 }
