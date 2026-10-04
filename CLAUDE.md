@@ -10,7 +10,7 @@ No `.all()` on database statements. Stream rows with `.iterate()`; anything that
 
 ## Storage
 
-Every piece of data is stored once, as its own value: a known field is its own value, a real list is its own items. Nothing the app reads into, filters, sorts or changes on its own sits inside a larger blob (like a whole card's JSON). Data the app only stores and hands back unopened (an extension's data, a field it doesn't know) is kept as it came, e.g. JSON. Anything derived from it is computed when read, unless that can't meet the scale rule; then it is stored narrow and kept up to date from each change as it is committed, at a cost bounded by that change, never by rescanning and never by a backlog a later read must work through. A write costs what actually changed. Reads, writes and disk space are kept at their lowest asymptotic cost together; none is bought with an unbounded amount of another.
+Every piece of data is stored once, as its own value: a known field is its own value, a real list is its own items. Nothing the app reads into, filters, sorts or changes on its own sits inside a larger blob (like a whole card's JSON). Data the app only stores and hands back unopened (an extension's data, a field it doesn't know) is kept as it came, e.g. JSON. Anything derived from it is computed when read, unless that can't meet the scale rule; then it is stored narrow and kept up to date in whatever way is fastest. A write costs what actually changed. Reads, writes and disk space are kept at their lowest asymptotic cost together; none is bought with an unbounded amount of another.
 
 ## Tests
 
