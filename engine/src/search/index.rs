@@ -5,9 +5,11 @@ use std::collections::HashMap;
 
 use super::text::{grams, tokens};
 use super::{
-    BLOCK_BITS, LENGTH_MAX, Scope, TermKind, bound, doc_count, doc_freq, doc_lengths, field_tokens,
-    length, max_doc, posting, shortest, varint,
+    BLOCK_BITS, FIELD_BITS, LENGTH_BITS, LENGTH_MAX, Scope, TermKind, doc_count, doc_freq,
+    field_length_block, field_tokens, in_block, length_block, max_doc, posting_block, shortest,
+    slot, slot_in,
 };
+use crate::keyspace::val::map_pairs;
 use crate::store::StoreError;
 use crate::store::derive::{Out, View};
 
@@ -64,19 +66,16 @@ pub fn update(
         )
         .filter(|(_, o, n)| o != n)
         .collect();
+    let sl = slot(doc, field);
     for ((kind, term), o, n) in changed {
-        let k = posting(scope, *kind, term, doc, field);
-        if n == 0 {
-            out.del(k);
-            out.add(doc_freq(scope, *kind, term, field), -1);
-            continue;
-        }
-        out.put(k, varint(n));
+        out.map(
+            posting_block(scope, *kind, term, block),
+            vec![(sl, n as u32)],
+        );
         if o == 0 {
             out.add(doc_freq(scope, *kind, term, field), 1);
-        }
-        if n > o {
-            out.max(bound(scope, *kind, term, field, block), n);
+        } else if n == 0 {
+            out.add(doc_freq(scope, *kind, term, field), -1);
         }
     }
     let (o, n) = (before.len, after.len);
@@ -84,10 +83,14 @@ pub fn update(
         return Ok(());
     }
     out.add(field_tokens(scope, field), n as i64 - o as i64);
-    if n == 0 {
-        out.del(length(scope, doc, field));
-    } else {
-        out.put(length(scope, doc, field), varint(n));
+    let lblock = doc >> LENGTH_BITS;
+    let lslot = slot_in(LENGTH_BITS, doc, field);
+    out.map(length_block(scope, lblock), vec![(lslot, n as u32)]);
+    out.map(
+        field_length_block(scope, field, block),
+        vec![(in_block(doc), n as u32)],
+    );
+    if n > 0 {
         if o == 0 {
             out.max(max_doc(scope), doc);
         }
@@ -100,11 +103,14 @@ pub fn update(
     }
     if o == 0 || n == 0 {
         // The document counts once whatever number of its fields have text.
-        let start = doc_lengths(scope, doc);
-        let others = view
-            .scan(&start, &crate::store::kinds::key::prefix_end(&start), 2)?
-            .into_iter()
-            .any(|(k, _)| k != length(scope, doc, field));
+        let first = slot_in(LENGTH_BITS, doc, 0);
+        let others = match view.get(&length_block(scope, lblock))? {
+            Some(b) => map_pairs(&b)
+                .ok_or_else(|| StoreError::Entry("a search length block doesn't decode".into()))?
+                .into_iter()
+                .any(|(s, len)| s >> FIELD_BITS == first >> FIELD_BITS && s != lslot && len > 0),
+            None => false,
+        };
         if !others {
             out.add(doc_count(scope), if n == 0 { -1 } else { 1 });
         }

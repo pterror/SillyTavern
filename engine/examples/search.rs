@@ -856,7 +856,7 @@ fn main() {
             .map_or("null".into(), |(_, t)| t.to_string());
         println!(
             "{{\"phase\":\"query\",\"q\":{:?},\"words\":{words},\"median_ms\":{:.3},\"total\":{},\"total_exact\":{},\
-             \"page_exact\":{},\"work\":{},\"scans\":{},\"entries\":{},\"gets\":{},\"texts\":{},\"blocks\":{blocks},\"file_reads\":{file_reads},\
+             \"page_exact\":{},\"work\":{},\"scans\":{},\"entries\":{},\"pairs\":{},\"gets\":{},\"texts\":{},\"blocks\":{blocks},\"file_reads\":{file_reads},\
              \"brute_total\":{brute_total},\"page_equal\":{same_page},\"total_equal\":{same_total}}}",
             label,
             median.as_secs_f64() * 1000.0,
@@ -866,6 +866,7 @@ fn main() {
             f.work,
             f.scans,
             f.entries,
+            f.pairs,
             f.gets,
             f.texts,
         );
@@ -930,7 +931,6 @@ fn load_and_space(
     for structure in [
         key::SEARCH_POSTING,
         key::SEARCH_DOC_FREQ,
-        key::SEARCH_BOUND,
         key::SEARCH_LENGTH,
         key::SEARCH_SHORTEST,
         key::SEARCH_FIELD_TOKENS,
