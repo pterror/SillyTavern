@@ -27,6 +27,10 @@ mimalloc = { version = "0.1", default-features = false }
 name = "measure"
 required-features = ["measure"]
 
+[[example]]
+name = "search"
+required-features = ["measure"]
+
 [build-dependencies]
 napi-build = "2.6.0"
 

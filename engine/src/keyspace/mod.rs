@@ -731,6 +731,11 @@ impl Keyspace {
         self.merge_act.wait_idle();
     }
 
+    /// Entries inserted so far: changes whenever the derived data may have.
+    pub fn inserted(&self) -> u64 {
+        self.counters.inserted.load(Ordering::Acquire)
+    }
+
     pub fn stats(&self) -> KsStats {
         let v = self.version();
         let c = &self.counters;

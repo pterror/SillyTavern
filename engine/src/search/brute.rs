@@ -95,6 +95,11 @@ fn occurs(toks: &[String], phrase: &[String], prefix: bool) -> bool {
         })
 }
 
+/// A field length as scoring takes it: its length code's length.
+fn quantized(len: usize) -> f64 {
+    super::code_length(super::length_code(len as u64))
+}
+
 /// A statistics key: (field, term, whether a prefix term).
 type Key = (usize, String, bool);
 
@@ -227,7 +232,7 @@ impl Stats {
     fn score(&self, scope: Scope, parts: &Parts, doc: &Doc) -> f64 {
         let mut s = 0.0;
         for (f, ps) in parts {
-            let len = doc.fields[*f].iter().map(Vec::len).sum::<usize>() as f64;
+            let len = quantized(doc.fields[*f].iter().map(Vec::len).sum::<usize>());
             for (k, tf) in ps {
                 s += scope.fields()[*f].weight
                     * idf(self.df[k] as f64, self.n)
@@ -314,7 +319,7 @@ impl Checker {
         }
         let tag_lens = tag_docs
             .iter()
-            .map(|(&t, d)| (t, d[0].iter().map(Vec::len).sum::<usize>() as f64))
+            .map(|(&t, d)| (t, quantized(d[0].iter().map(Vec::len).sum::<usize>())))
             .collect();
         Checker {
             q: q.clone(),
