@@ -1,12 +1,12 @@
 //! P3, search (design `.plans/2026-10-03-storage-from-needs.md` 7). Every entry is in the derived keyspace,
 //! written at commit from a field's text before and after a change (`index`), read by `query`.
 //!
-//! A term's postings are one per (term, document), holding every field's frequency and quantized length, filed
-//! best first: by score class (a weighted BM25 of the posting at reference field lengths), then by block of ids.
-//! A string is one term both as a whole token and as a prefix term (a token's first 2–20 characters in the prefix
-//! fields): a posting's prefix-field slots hold both counts, so the query's last word reads the same list.
-//! So a word's best documents are its first entries. A directory per term (id order: document → class) finds a
-//! document's posting and serves intersections. No positions: a phrase is checked on the candidates' text.
+//! A term's postings are in id order, compressed per block of ids: each document's fields with the term's count
+//! there. A string is one term both as a whole token and as a prefix term (a token's first 2–20 characters in the
+//! prefix fields): a prefix field's slot holds both counts, so the query's last word reads the same list. Per
+//! block and field the term's highest count, and per block and field the shortest length, bound a block's scores
+//! (block-max WAND). A term with more documents than a page or two also keeps its best documents (`top`), so a
+//! word's first page reads those. No positions: a phrase is checked on the candidates' text.
 //!
 //! A scope is one searchable set of documents: the library (documents are entities), the tag names (documents
 //! are tags), one owner's chat messages (documents are messages).
@@ -18,6 +18,7 @@ pub mod query;
 #[cfg(test)]
 mod tests;
 pub mod text;
+pub mod top;
 
 use crate::keyspace::val::{put_bytes, put_u64};
 use crate::log::format::{get_uvarint, put_uvarint};
@@ -27,14 +28,13 @@ use crate::store::kinds::key;
 pub const K1: f64 = 1.2;
 pub const B: f64 = 0.75;
 
-/// A term's directory is one entry (a compressed `Val::Map`) per block of `1 << BLOCK_BITS` consecutive ids.
+/// A term's postings are one entry (a compressed `Val::Map`) per block of `1 << BLOCK_BITS` consecutive ids;
+/// score bounds are per block too.
 pub const BLOCK_BITS: u32 = 10;
-/// A term's postings of one class are one entry per block of `1 << IMPACT_BITS` ids: wider, since a class holds
-/// a fraction of the term's documents.
-pub const IMPACT_BITS: u32 = 14;
-/// A document's lengths in every field (what says whether it has any text) are kept per block of
-/// `1 << LENGTH_BITS` ids.
-pub const LENGTH_BITS: u32 = 6;
+/// A document's lengths in every field are kept per block of `1 << LENGTH_BITS` ids.
+pub const LENGTH_BITS: u32 = 4;
+/// Per-block bounds of a term (or a field's lengths) are one entry per `1 << CHUNK_BITS` blocks.
+pub const CHUNK_BITS: u32 = 16;
 
 pub const LIBRARY: u64 = 1;
 pub const TAGS: u64 = 2;
@@ -77,53 +77,43 @@ pub struct FieldDef {
     pub prefix: bool,
     /// Not indexed in this scope: the names of the document's tags, read through tag membership.
     pub joined: bool,
-    /// The length (in tokens) score classes take as the field's average; the query scales its bounds by how far
-    /// the real average is above it.
-    pub avg: f64,
-    /// The idf score classes take for the field; the query scales its bounds by the highest ratio of a field's
-    /// real idf to it. Words are rarer in short fields, so their idf runs higher there.
-    pub idf: f64,
 }
 
-const fn field(name: &'static str, weight: f64, prefix: bool, avg: f64, idf: f64) -> FieldDef {
+const fn field(name: &'static str, weight: f64, prefix: bool) -> FieldDef {
     FieldDef {
         name,
         weight,
         prefix,
         joined: false,
-        avg,
-        idf,
     }
 }
 
 /// Weights: upstream's Fuse keys for `fuzzySearchCharacters` (name 20, tags 10, description and example 3,
 /// scenario, personality, first message and notes 2, creator, card tags and alternate greetings 1), which the old
 /// index used as BM25 field boosts too; with them a match in the name outranks body matches. Prefix on name,
-/// creator and tags (design 7.1, Q-F1). Reference averages and idfs: the synthetic library's, roughly.
+/// creator and tags (design 7.1, Q-F1).
 pub static LIBRARY_FIELDS: &[FieldDef] = &[
-    field("name", 20.0, true, 3.0, 6.0),
+    field("name", 20.0, true),
     FieldDef {
         name: "resolved_tags",
         weight: 10.0,
         prefix: true,
         joined: true,
-        avg: 0.0,
-        idf: 0.0,
     },
-    field("description", 3.0, false, 450.0, 2.0),
-    field("mes_example", 3.0, false, 220.0, 2.0),
-    field("scenario", 2.0, false, 85.0, 2.0),
-    field("personality", 2.0, false, 60.0, 2.0),
-    field("first_mes", 2.0, false, 240.0, 2.0),
-    field("creator_notes", 2.0, false, 120.0, 2.0),
-    field("creator", 1.0, true, 2.0, 5.0),
-    field("tags", 1.0, true, 15.0, 4.0),
-    field("alternate_greetings", 1.0, false, 380.0, 2.0),
+    field("description", 3.0, false),
+    field("mes_example", 3.0, false),
+    field("scenario", 2.0, false),
+    field("personality", 2.0, false),
+    field("first_mes", 2.0, false),
+    field("creator_notes", 2.0, false),
+    field("creator", 1.0, true),
+    field("tags", 1.0, true),
+    field("alternate_greetings", 1.0, false),
 ];
 
-pub static TAG_FIELDS: &[FieldDef] = &[field("name", 1.0, true, 2.0, 4.0)];
+pub static TAG_FIELDS: &[FieldDef] = &[field("name", 1.0, true)];
 
-pub static CHAT_FIELDS: &[FieldDef] = &[field("text", 1.0, false, 40.0, 3.0)];
+pub static CHAT_FIELDS: &[FieldDef] = &[field("text", 1.0, false)];
 
 /// Which document frequency a term's count is: of the term as a whole token, or as a prefix term (a token's
 /// first 2–20 characters) in a prefix field.
@@ -142,48 +132,63 @@ fn scoped(structure: u64, s: Scope) -> Vec<u8> {
     k
 }
 
-/// A term's postings, best first within each group: then the group, the score class (descending, as
-/// `CLASSES - 1 - class`) and a block of `1 << IMPACT_BITS` ids → a map (`Val::Map`) of
-/// `slot_in(IMPACT_BITS, doc, field)` → `pack(tf, length code)`. A posting's rank is `group * CLASSES + class`.
+fn termed(structure: u64, s: Scope, term: &str) -> Vec<u8> {
+    let mut k = scoped(structure, s);
+    put_bytes(&mut k, term.as_bytes());
+    k
+}
+
+/// A term's postings: then a block → a map (`Val::Map`) of `slot(doc, field)` → `pack`ed counts.
 pub fn postings(s: Scope, term: &str) -> Vec<u8> {
-    let mut k = scoped(key::SEARCH_POSTING, s);
-    put_bytes(&mut k, term.as_bytes());
-    k
+    termed(key::SEARCH_POSTING, s, term)
 }
 
-/// A term's postings of one group.
-pub fn postings_group(s: Scope, term: &str, group: u32) -> Vec<u8> {
+pub fn posting_block(s: Scope, term: &str, block: u64) -> Vec<u8> {
     let mut k = postings(s, term);
-    put_u64(&mut k, u64::from(group));
-    k
-}
-
-/// The entry holding `doc`'s posting of `rank`.
-pub fn posting_block(s: Scope, term: &str, rank: u32, doc: u64) -> Vec<u8> {
-    let mut k = postings_group(s, term, rank / CLASSES);
-    put_u64(&mut k, u64::from(CLASSES - 1 - rank % CLASSES));
-    put_u64(&mut k, doc >> IMPACT_BITS);
-    k
-}
-
-/// A term's documents in id order: then a block → a map of `in_block(doc)` → its posting's rank + 1.
-pub fn directory(s: Scope, term: &str) -> Vec<u8> {
-    let mut k = scoped(key::SEARCH_DIRECTORY, s);
-    put_bytes(&mut k, term.as_bytes());
-    k
-}
-
-pub fn directory_block(s: Scope, term: &str, block: u64) -> Vec<u8> {
-    let mut k = directory(s, term);
     put_u64(&mut k, block);
     k
 }
 
+/// A term's highest count per block and field: then a chunk of blocks → a maxima map (`Val::MaxMap`) of
+/// `bound_slot(block, field)` → the count (as a prefix term in a prefix field).
+pub fn block_maxima(s: Scope, term: &str, chunk: u64) -> Vec<u8> {
+    let mut k = termed(key::SEARCH_BLOCK_MAX, s, term);
+    put_u64(&mut k, chunk);
+    k
+}
+
+/// A field's shortest length per block: then a chunk of blocks → a maxima map of `bound_slot(block, 0)` →
+/// `SHORTEST_BASE - length` (only ever raised: a block's lengths may since have grown).
+pub fn shortest(s: Scope, field: u32, chunk: u64) -> Vec<u8> {
+    let mut k = scoped(key::SEARCH_SHORTEST, s);
+    put_u64(&mut k, u64::from(field));
+    put_u64(&mut k, chunk);
+    k
+}
+
+pub const SHORTEST_BASE: u64 = u32::MAX as u64;
+
+/// A block's chunk and its slot in the chunk's map, for field `field`.
+pub fn bound_slot(block: u64, field: u32) -> (u64, u32) {
+    (
+        block >> CHUNK_BITS,
+        ((block & ((1 << CHUNK_BITS) - 1)) as u32) << FIELD_BITS | field,
+    )
+}
+
 /// Documents holding the term in any field, as a whole token or a prefix term (a counter).
 pub fn term_docs(s: Scope, term: &str) -> Vec<u8> {
-    let mut k = scoped(key::SEARCH_TERM_DOCS, s);
-    put_bytes(&mut k, term.as_bytes());
-    k
+    termed(key::SEARCH_TERM_DOCS, s, term)
+}
+
+/// A term's best documents (`top::List`), for a term with more documents than the list holds.
+pub fn top(s: Scope, term: &str) -> Vec<u8> {
+    termed(key::SEARCH_TOP, s, term)
+}
+
+/// Changes that no top list followed (a bulk load's): a list built before the last one is stale (a counter).
+pub fn top_generation(s: Scope) -> Vec<u8> {
+    scoped(key::SEARCH_TOP_GENERATION, s)
 }
 
 /// Documents whose field holds the term: then the field (a counter each).
@@ -228,19 +233,14 @@ pub fn unslot_in(bits: u32, block: u64, slot: u32) -> (u64, u32) {
     )
 }
 
-/// `slot_in` for postings entries.
+/// `slot_in` for postings blocks.
 pub fn slot(doc: u64, field: u32) -> u32 {
-    slot_in(IMPACT_BITS, doc, field)
+    slot_in(BLOCK_BITS, doc, field)
 }
 
-/// `unslot_in` for postings entries.
+/// `unslot_in` for postings blocks.
 pub fn unslot(block: u64, slot: u32) -> (u64, u32) {
-    unslot_in(IMPACT_BITS, block, slot)
-}
-
-/// A document's place in its directory block.
-pub fn in_block(doc: u64) -> u32 {
-    (doc & ((1 << BLOCK_BITS) - 1)) as u32
+    unslot_in(BLOCK_BITS, block, slot)
 }
 
 /// A field's tokens over every document (a counter).
@@ -272,20 +272,14 @@ pub fn parse_varint(b: &[u8]) -> Option<u64> {
     (at == b.len()).then_some(v)
 }
 
-// ---- scoring ----
+// ---- values ----
 
-/// Score classes per term, a factor `CLASS_STEP` apart from `CLASS_FLOOR` up (class 0 holds everything below).
-pub const CLASSES: u32 = 64;
-const CLASS_STEP: f64 = 1.12;
-const CLASS_FLOOR: f64 = 0.25;
-
-/// What a posting holds for one field: the term's count as a whole token, its count as a prefix term (the
-/// same outside the prefix fields, where the query's last word matches whole tokens), and the field's length code.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A term's counts in one field of a document: as a whole token, and as a prefix term (the same outside the
+/// prefix fields, where the query's last word matches whole tokens).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct FieldHit {
     pub exact: u64,
     pub gram: u64,
-    pub code: u8,
 }
 
 impl FieldHit {
@@ -293,36 +287,35 @@ impl FieldHit {
     pub fn tf(&self, as_prefix: bool) -> u64 {
         if as_prefix { self.gram } else { self.exact }
     }
+
+    /// The higher count: what bounds hold.
+    pub fn most(&self) -> u64 {
+        self.exact.max(self.gram)
+    }
 }
 
-/// Counts in a prefix field's slot are kept to 12 bits each; elsewhere to 24.
-const PREFIX_TF_MAX: u64 = (1 << 12) - 1;
-const TF_MAX: u64 = (1 << 24) - 1;
+/// Counts in a prefix field's slot are kept to 16 bits each; elsewhere to 32.
+const PREFIX_TF_MAX: u64 = (1 << 16) - 1;
 
 /// A posting slot's value (never 0: a slot holds a field the term is in).
 pub fn pack(prefix_field: bool, h: FieldHit) -> u32 {
-    let code = u32::from(h.code);
     if prefix_field {
-        (h.exact.min(PREFIX_TF_MAX) as u32) << 8 | (h.gram.min(PREFIX_TF_MAX) as u32) << 20 | code
+        (h.exact.min(PREFIX_TF_MAX) as u32) | (h.gram.min(PREFIX_TF_MAX) as u32) << 16
     } else {
-        (h.exact.min(TF_MAX) as u32) << 8 | code
+        h.exact.min(u64::from(u32::MAX)) as u32
     }
 }
 
 pub fn unpack(prefix_field: bool, v: u32) -> FieldHit {
-    let code = v as u8;
     if prefix_field {
         FieldHit {
-            exact: u64::from(v >> 8 & 0xfff),
-            gram: u64::from(v >> 20),
-            code,
+            exact: u64::from(v & 0xffff),
+            gram: u64::from(v >> 16),
         }
     } else {
-        let tf = u64::from(v >> 8);
         FieldHit {
-            exact: tf,
-            gram: tf,
-            code,
+            exact: u64::from(v),
+            gram: u64::from(v),
         }
     }
 }
@@ -356,42 +349,7 @@ pub fn code_length(code: u8) -> f64 {
     f64::from(length_edges()[code as usize])
 }
 
-/// Groups of postings: those with a term in a prefix field (the short fields, where its idf runs highest), and
-/// the rest. Each group's bounds scale by its own fields' idfs.
-pub const GROUPS: u32 = 2;
-
-/// A posting's rank: its group, and its class: its BM25 with each field at its weight, reference idf and
-/// reference average length, the higher of its counts as whole tokens and as prefix terms, so the class bounds the
-/// term both as a word and as the query's last word.
-pub fn rank_of(s: Scope, fields: &[(u32, FieldHit)]) -> u32 {
-    let defs = s.fields();
-    let group = u32::from(!fields.iter().any(|f| defs[f.0 as usize].prefix));
-    let score = |as_prefix: bool| -> f64 {
-        fields
-            .iter()
-            .map(|&(f, h)| {
-                let d = &defs[f as usize];
-                d.weight * d.idf * tf_norm(h.tf(as_prefix) as f64, code_length(h.code), d.avg)
-            })
-            .sum()
-    };
-    group * CLASSES + class_of(score(false).max(score(true)))
-}
-
-fn class_of(c: f64) -> u32 {
-    if c <= CLASS_FLOOR {
-        return 0;
-    }
-    (((c / CLASS_FLOOR).ln() / CLASS_STEP.ln()) as u32).min(CLASSES - 1)
-}
-
-/// The most a posting of `class` scores, at the reference idfs and lengths (the top class unbounded).
-pub fn class_bound(class: u32) -> f64 {
-    if class == CLASSES - 1 {
-        return f64::INFINITY;
-    }
-    CLASS_FLOOR * CLASS_STEP.powi(class as i32 + 1)
-}
+// ---- scoring ----
 
 pub fn idf(df: f64, n: f64) -> f64 {
     (1.0 + (n - df + 0.5) / (df + 0.5)).ln()

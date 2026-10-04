@@ -16,6 +16,9 @@ pub enum Val {
     /// Sets slots of the key's map (a `Put` of `map_bytes`, or an empty map if it has none) without reading it:
     /// (slot, value) pairs sorted by slot, value 0 removing the slot.
     Map(Vec<(u32, u32)>),
+    /// Raises slots of the key's map (as `Map`'s) to at least these values without reading it: pairs sorted by
+    /// slot.
+    MaxMap(Vec<(u32, u32)>),
 }
 
 /// A map's pairs (sorted by slot, values not 0) as `Put` bytes, the same encoding as a `Map` value's payload: a
@@ -212,6 +215,42 @@ pub fn map_over(newer: &[(u32, u32)], mut older: Vec<(u32, u32)>) -> Vec<(u32, u
     out
 }
 
+/// Two maps' pairs, each slot at the higher value, sorted by slot.
+pub fn map_max(a: &[(u32, u32)], mut b: Vec<(u32, u32)>) -> Vec<(u32, u32)> {
+    if a.is_empty() {
+        return b;
+    }
+    if b.last().is_none_or(|&(s, _)| s < a[0].0) {
+        b.extend_from_slice(a);
+        return b;
+    }
+    let mut out = Vec::with_capacity(a.len() + b.len());
+    let (mut i, mut j) = (0, 0);
+    while i < a.len() || j < b.len() {
+        match (a.get(i), b.get(j)) {
+            (Some(x), Some(y)) if x.0 == y.0 => {
+                out.push((x.0, x.1.max(y.1)));
+                i += 1;
+                j += 1;
+            }
+            (Some(x), Some(y)) if x.0 < y.0 => {
+                out.push(*x);
+                i += 1;
+            }
+            (Some(x), None) => {
+                out.push(*x);
+                i += 1;
+            }
+            (_, Some(y)) => {
+                out.push(*y);
+                j += 1;
+            }
+            (None, None) => unreachable!(),
+        }
+    }
+    out
+}
+
 /// A map's pairs as stored: removals dropped; nothing when empty.
 fn map_stored(mut pairs: Vec<(u32, u32)>) -> Val {
     pairs.retain(|&(_, v)| v != 0);
@@ -283,6 +322,13 @@ impl Val {
                 map_stored(map_over(&n, base.unwrap_or_default()))
             }
             (Val::Map(n), Val::Del) => map_stored(n),
+            (Val::MaxMap(n), Val::MaxMap(o)) => Val::MaxMap(map_max(&n, o.clone())),
+            (Val::MaxMap(n), Val::Put(b)) => {
+                let base = map_pairs(b);
+                debug_assert!(base.is_some(), "a MaxMap over a value that isn't a map");
+                map_stored(map_max(&n, base.unwrap_or_default()))
+            }
+            (Val::MaxMap(n), Val::Del) => map_stored(n),
             (v, _) => v,
         }
     }
@@ -291,13 +337,18 @@ impl Val {
     pub fn over_owned(self, older: Val) -> Val {
         match (self, older) {
             (Val::Map(n), Val::Map(o)) => Val::Map(map_over(&n, o)),
+            (Val::MaxMap(n), Val::MaxMap(o)) => Val::MaxMap(map_max(&n, o)),
             (v, o) => v.over(&o),
         }
     }
 
-    /// Whether the value builds on older ones (an `Add`, a `Max` or a `Map`), so a read goes on to them.
+    /// Whether the value builds on older ones (an `Add`, a `Max`, a `Map` or a `MaxMap`), so a read goes on to
+    /// them.
     pub fn is_partial(&self) -> bool {
-        matches!(self, Val::Add(_) | Val::Max(_) | Val::Map(_))
+        matches!(
+            self,
+            Val::Add(_) | Val::Max(_) | Val::Map(_) | Val::MaxMap(_)
+        )
     }
 
     /// The value as the oldest one of its key: a `Del` is nothing, an `Add` a counter from 0, a `Max` itself, a
@@ -307,7 +358,7 @@ impl Val {
             Val::Del => None,
             Val::Add(d) => Some(Val::Put(counter_bytes(d))),
             Val::Max(m) => Some(Val::Put(max_bytes(m))),
-            Val::Map(pairs) => match map_stored(pairs) {
+            Val::Map(pairs) | Val::MaxMap(pairs) => match map_stored(pairs) {
                 Val::Del => None,
                 v => Some(v),
             },
@@ -330,7 +381,7 @@ impl Val {
             Val::Del => 0,
             Val::Add(d) => crate::log::format::uvarint_len(zigzag(*d)),
             Val::Max(m) => crate::log::format::uvarint_len(*m),
-            Val::Map(pairs) => map_len(pairs),
+            Val::Map(pairs) | Val::MaxMap(pairs) => map_len(pairs),
         }
     }
 
@@ -356,6 +407,10 @@ impl Val {
                 put_uvarint(out, ((map_len(pairs) as u64) << 3) | 4);
                 put_map(out, pairs);
             }
+            Val::MaxMap(pairs) => {
+                put_uvarint(out, ((map_len(pairs) as u64) << 3) | 5);
+                put_map(out, pairs);
+            }
         }
     }
 
@@ -376,6 +431,7 @@ impl Val {
             }
             3 => max_value(payload).map(Val::Max),
             4 => map_pairs(payload).map(Val::Map),
+            5 => map_pairs(payload).map(Val::MaxMap),
             _ => None,
         }
     }
@@ -526,6 +582,15 @@ mod tests {
             Some(Val::Del)
         );
         assert_eq!(Val::Map(vec![(3, 0)]).bottom(), None);
+        // Maxima per slot.
+        assert_eq!(
+            fold([
+                Val::MaxMap(vec![(1, 3), (4, 1)]),
+                Val::MaxMap(vec![(1, 5), (2, 2)]),
+                Val::Put(map_bytes(&[(2, 7), (9, 1)]))
+            ]),
+            Some(Val::Put(map_bytes(&[(1, 5), (2, 7), (4, 1), (9, 1)])))
+        );
         assert_eq!(
             Val::Map(vec![(2, 1), (300, 9)]).over_owned(Val::Map(vec![(1, 5), (2, 4)])),
             Val::Map(vec![(1, 5), (2, 1), (300, 9)])
@@ -541,6 +606,7 @@ mod tests {
             Val::Map(Vec::new()),
             Val::Map((0..300).map(|i| (i * 16 + 3, i % 5 + 1)).collect()),
             Val::Map((0..300).map(|i| (i * i, (i * 7) % 3)).collect()),
+            Val::MaxMap(vec![(0, 2), (9, 70000)]),
         ] {
             let mut b = Vec::new();
             v.encode(&mut b);

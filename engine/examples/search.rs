@@ -857,7 +857,7 @@ fn main() {
         println!(
             "{{\"phase\":\"query\",\"q\":{:?},\"words\":{words},\"median_ms\":{:.3},\"total\":{},\"total_exact\":{},\
              \"page_exact\":{},\"work\":{},\"scans\":{},\"entries\":{},\"pairs\":{},\"gets\":{},\"texts\":{},\"plan_us\":{},\"blocks\":{blocks},\"file_reads\":{file_reads},\
-             \"brute_total\":{brute_total},\"page_equal\":{same_page},\"total_equal\":{same_total}}}",
+             \"brute_total\":{brute_total},\"page_equal\":{same_page},\"total_equal\":{same_total},\"listed\":{}}}",
             label,
             median.as_secs_f64() * 1000.0,
             f.total,
@@ -870,6 +870,7 @@ fn main() {
             f.gets,
             f.texts,
             f.plan_micros,
+            f.listed,
         );
     }
 
@@ -942,7 +943,9 @@ fn load_and_space(
         key::SEARCH_POSTING,
         key::SEARCH_DOC_FREQ,
         key::SEARCH_LENGTH,
-        key::SEARCH_DIRECTORY,
+        key::SEARCH_BLOCK_MAX,
+        key::SEARCH_SHORTEST,
+        key::SEARCH_TOP,
         key::SEARCH_TERM_DOCS,
         key::SEARCH_FIELD_TOKENS,
         key::SEARCH_DOCS,
@@ -976,7 +979,7 @@ fn load_and_space(
         .collect();
     let search_bytes: u64 = by
         .iter()
-        .filter(|(k, _)| **k < key::MEMBER)
+        .filter(|(k, _)| **k < key::MEMBER || **k == key::SEARCH_SHORTEST || **k == key::SEARCH_TOP)
         .map(|(_, (_, b))| b)
         .sum();
     println!(
@@ -991,7 +994,9 @@ fn space_detail(s: &Store) {
     let mut by: BTreeMap<(u64, u8), [u64; 4]> = BTreeMap::new();
     for structure in [
         key::SEARCH_POSTING,
-        key::SEARCH_DIRECTORY,
+        key::SEARCH_BLOCK_MAX,
+        key::SEARCH_SHORTEST,
+        key::SEARCH_TOP,
         key::SEARCH_DOC_FREQ,
         key::SEARCH_TERM_DOCS,
         key::MEMBER_BLOCK,

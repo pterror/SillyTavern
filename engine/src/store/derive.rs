@@ -75,6 +75,8 @@ pub struct View<'a> {
     pub(super) layers: Vec<Layer<'a>>,
     pub(super) pending: Vec<&'a Pending>,
     pub(super) staged: Option<&'a Staged>,
+    /// A bulk load's: entries shared across partitions that a write would read and rewrite are left alone.
+    pub(super) bulk: bool,
     pub(super) ks: &'a Keyspace,
     pub(super) log: &'a Log,
 }
@@ -181,6 +183,11 @@ impl View<'_> {
         }
         acc.retain(|x| x.1 != 0);
         Ok(acc)
+    }
+
+    /// Whether a bulk load derives through this view (see `bulk`).
+    pub fn is_bulk(&self) -> bool {
+        self.bulk
     }
 
     /// A number that changes whenever the published entries may have.
@@ -290,6 +297,11 @@ impl Out {
 
     pub fn max(&mut self, key: Vec<u8>, n: u64) {
         self.entries.push((key, Val::Max(n)));
+    }
+
+    /// Raises slots of the key's map (`Val::MaxMap`).
+    pub fn max_map(&mut self, key: Vec<u8>, pairs: Vec<(u32, u32)>) {
+        self.entries.push((key, Val::MaxMap(pairs)));
     }
 
     /// Sets slots of the key's map (`Val::Map`).

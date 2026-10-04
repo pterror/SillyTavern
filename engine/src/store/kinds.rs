@@ -38,7 +38,10 @@ pub mod key {
     pub const SEARCH_FIELD_TOKENS: u64 = 37;
     pub const SEARCH_DOCS: u64 = 38;
     pub const SEARCH_MAX_DOC: u64 = 39;
-    pub const SEARCH_DIRECTORY: u64 = 34;
+    pub const SEARCH_BLOCK_MAX: u64 = 34;
+    pub const SEARCH_SHORTEST: u64 = 44;
+    pub const SEARCH_TOP: u64 = 46;
+    pub const SEARCH_TOP_GENERATION: u64 = 47;
     /// Per (tag, entity): the `tagAssign` record assigning it.
     pub const MEMBER: u64 = 40;
     /// Per (entity, tag): assigned.

@@ -61,6 +61,7 @@ enum Stored {
     Add(i64),
     Max(u64),
     Map(Vec<(u32, u32)>),
+    MaxMap(Vec<(u32, u32)>),
 }
 
 impl Stored {
@@ -71,6 +72,7 @@ impl Stored {
             Stored::Add(n) => Val::Add(*n),
             Stored::Max(n) => Val::Max(*n),
             Stored::Map(p) => Val::Map(p.clone()),
+            Stored::MaxMap(p) => Val::MaxMap(p.clone()),
         }
     }
 }
@@ -139,6 +141,10 @@ impl Mem {
                 self.bytes += p.capacity() * 8;
                 Stored::Map(p)
             }
+            Val::MaxMap(p) => {
+                self.bytes += p.capacity() * 8;
+                Stored::MaxMap(p)
+            }
         }
     }
 
@@ -166,8 +172,19 @@ impl Mem {
                 *old = merged;
                 return self.bytes as i64 - before as i64;
             }
+            Some(Stored::MaxMap(_)) if matches!(val, Val::MaxMap(_)) => {
+                let Val::MaxMap(n) = val else { unreachable!() };
+                let Some(Stored::MaxMap(old)) = self.map.get_mut(key) else {
+                    unreachable!()
+                };
+                let cap = old.capacity();
+                let merged = super::val::map_max(&n, std::mem::take(old));
+                self.bytes = self.bytes + merged.capacity() * 8 - cap * 8;
+                *old = merged;
+                return self.bytes as i64 - before as i64;
+            }
             Some(old) => {
-                if let Stored::Map(p) = old {
+                if let Stored::Map(p) | Stored::MaxMap(p) = old {
                     self.bytes -= p.capacity() * 8;
                 }
                 let v = val.over(&old.val());

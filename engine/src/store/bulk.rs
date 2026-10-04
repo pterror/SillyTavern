@@ -530,6 +530,7 @@ fn work(
                 layers: vec![Layer::Hashed(&cur)],
                 pending: Vec::new(),
                 staged: Some(if cur_again { &staged } else { &records_only }),
+                bulk: true,
                 ks: &inner.ks,
                 log: &inner.log,
             };
@@ -633,7 +634,7 @@ fn merge_runs(
 }
 
 /// Adds a finished partition's value to the sink; returns the memory it took. A map's slots are appended and
-/// sorted when spilled.
+/// sorted when spilled (a maxima map's then kept once each, at the highest).
 fn sink_add(sink: &mut HashMap<Vec<u8>, Val>, k: Vec<u8>, v: Val) -> usize {
     use std::collections::hash_map::Entry;
     match sink.entry(k) {
@@ -645,7 +646,7 @@ fn sink_add(sink: &mut HashMap<Vec<u8>, Val>, k: Vec<u8>, v: Val) -> usize {
         Entry::Occupied(mut e) => {
             let old = e.get_mut();
             match (old, v) {
-                (Val::Map(a), Val::Map(b)) => {
+                (Val::Map(a), Val::Map(b)) | (Val::MaxMap(a), Val::MaxMap(b)) => {
                     let n = b.len() * 8;
                     a.extend(b);
                     n
@@ -685,8 +686,20 @@ fn spill(
     let mut entries: Vec<(Vec<u8>, Val)> = sink.drain().collect();
     entries.sort_unstable_by(|a, b| a.0.cmp(&b.0));
     for (k, mut v) in entries {
-        if let Val::Map(p) = &mut v {
-            p.sort_unstable_by_key(|x| x.0);
+        match &mut v {
+            Val::Map(p) => p.sort_unstable_by_key(|x| x.0),
+            Val::MaxMap(p) => {
+                p.sort_unstable();
+                // Each slot once, at its highest.
+                p.dedup_by(|later, earlier| {
+                    let same = later.0 == earlier.0;
+                    if same {
+                        earlier.1 = earlier.1.max(later.1);
+                    }
+                    same
+                });
+            }
+            _ => {}
         }
         w.add(&k, &v)?;
     }
