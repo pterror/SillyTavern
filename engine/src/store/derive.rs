@@ -125,6 +125,11 @@ impl Out {
         self.entries.push((key, Val::Max(n)));
     }
 
+    /// Sets slots of the key's map (`Val::Map`).
+    pub fn map(&mut self, key: Vec<u8>, pairs: Vec<(u32, u32)>) {
+        self.entries.push((key, Val::Map(pairs)));
+    }
+
     /// Applies the entries over `layer`.
     pub fn apply(self, layer: &mut BTreeMap<Vec<u8>, Val>) {
         for (k, v) in self.entries {
@@ -137,7 +142,7 @@ pub fn apply(layer: &mut BTreeMap<Vec<u8>, Val>, k: Vec<u8>, v: Val) {
     match layer.get_mut(&k) {
         Some(old) => {
             let older = std::mem::replace(old, Val::Del);
-            *old = v.over(&older);
+            *old = v.over_owned(older);
         }
         None => {
             layer.insert(k, v);
