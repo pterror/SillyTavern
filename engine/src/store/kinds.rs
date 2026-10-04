@@ -46,6 +46,18 @@ pub mod key {
     pub const MEMBER_OF: u64 = 41;
     /// Per tag: its entities (a counter).
     pub const MEMBER_COUNT: u64 = 42;
+    /// Per (tag, block of `1 << MEMBER_BITS` entity ids): a map of the entity's place → 1 for each carrier.
+    pub const MEMBER_BLOCK: u64 = 45;
+    pub const MEMBER_BITS: u32 = 14;
+
+    pub fn member_block(tag: u64, entity: u64) -> Vec<u8> {
+        ids(MEMBER_BLOCK, tag, entity >> MEMBER_BITS)
+    }
+
+    /// An entity's place in its member block.
+    pub fn member_slot(entity: u64) -> u32 {
+        (entity & ((1 << MEMBER_BITS) - 1)) as u32
+    }
     /// Per message: its `messageAppend` record.
     pub const MESSAGE: u64 = 43;
     #[cfg(any(test, feature = "measure"))]
@@ -650,6 +662,10 @@ impl Deriver for TagAssign {
             if old.is_none() {
                 out.put(key::ids(key::MEMBER_OF, entity, tag), Vec::new());
                 out.add(key::id(key::MEMBER_COUNT, tag), 1);
+                out.map(
+                    key::member_block(tag, entity),
+                    vec![(key::member_slot(entity), 1)],
+                );
             }
             out.put(k, loc_bytes(at));
         } else {
@@ -657,6 +673,10 @@ impl Deriver for TagAssign {
             if old.is_some() {
                 out.del(key::ids(key::MEMBER_OF, entity, tag));
                 out.add(key::id(key::MEMBER_COUNT, tag), -1);
+                out.map(
+                    key::member_block(tag, entity),
+                    vec![(key::member_slot(entity), 0)],
+                );
                 out.del(k);
             }
         }
