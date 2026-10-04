@@ -1,5 +1,7 @@
-//! The derivers stage 3 has: current values for `fav`, `textValue` and `textEdit` (with the entity's version),
-//! the cleaner's `moved` marker, and the test kind `testSet`. Each store stage adds its kinds' derivers here.
+//! The derivers: current values for `fav`, `textValue` and `textEdit` (with the entity's version), search
+//! entries for the text fields that are searched, tag membership for `tagAssign`, a message's record and its
+//! chat search entries for `messageAppend`, the cleaner's `moved` marker, and the test kind `testSet`. Each
+//! store stage adds its kinds' derivers here.
 
 use super::StoreError;
 use super::derive::{Deriver, Loc, Out, View};
@@ -7,6 +9,7 @@ use crate::log::FILE_SHIFT;
 use crate::log::format::{
     Ctx, FieldRef, Record, Value, encode, get_uvarint, kind_by_name, put_uvarint, wtf8_to_utf16,
 };
+use crate::search::{self, Scope};
 
 /// Entry keys: a structure's id, then its key's components (`keyspace::val::put_u64` / `put_bytes`).
 pub mod key {
@@ -27,6 +30,23 @@ pub mod key {
     pub const TEXT: u64 = 18;
     /// Per (entity, field, n): the n-th edit since the last full value.
     pub const TEXT_EDIT: u64 = 19;
+    /// Search (`crate::search`).
+    pub const SEARCH_POSTING: u64 = 32;
+    pub const SEARCH_DOC_FREQ: u64 = 33;
+    pub const SEARCH_BOUND: u64 = 34;
+    pub const SEARCH_LENGTH: u64 = 35;
+    pub const SEARCH_SHORTEST: u64 = 36;
+    pub const SEARCH_FIELD_TOKENS: u64 = 37;
+    pub const SEARCH_DOCS: u64 = 38;
+    pub const SEARCH_MAX_DOC: u64 = 39;
+    /// Per (tag, entity): the `tagAssign` record assigning it.
+    pub const MEMBER: u64 = 40;
+    /// Per (entity, tag): assigned.
+    pub const MEMBER_OF: u64 = 41;
+    /// Per tag: its entities (a counter).
+    pub const MEMBER_COUNT: u64 = 42;
+    /// Per message: its `messageAppend` record.
+    pub const MESSAGE: u64 = 43;
     #[cfg(any(test, feature = "measure"))]
     pub const TEST_SET: u64 = 4096;
     #[cfg(any(test, feature = "measure"))]
@@ -360,6 +380,10 @@ struct TextValue;
 impl Deriver for TextValue {
     fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
         let (entity, f) = (id(rec, 0), field(rec, 1));
+        if let Some(sf) = search_field(f) {
+            let old = text_value(view, entity, f)?.unwrap_or_default();
+            index_text(view, out, sf, entity, &old, bytes(rec, 2))?;
+        }
         if let Some(old) = Head::get(view, entity, f)? {
             dead(out, old.full);
             for (k, l) in edits(view, entity, f, &old)? {
@@ -436,6 +460,13 @@ impl Deriver for TextEdit {
         let mut head = Head::get(view, entity, f)?.ok_or_else(|| {
             StoreError::Entry(format!("a textEdit of entity {entity} with no value"))
         })?;
+        if let Some(sf) = search_field(f) {
+            let old = materialize(view, entity, f, &head)?;
+            let new = apply_edit(&old, id(rec, 2), id(rec, 3), bytes(rec, 4)).ok_or_else(|| {
+                StoreError::Entry(format!("an edit of entity {entity}'s text is out of range"))
+            })?;
+            index_text(view, out, sf, entity, &old, &new)?;
+        }
         head.size = head.size.checked_sub(id(rec, 3)).ok_or_else(|| {
             StoreError::Entry(format!(
                 "a textEdit of entity {entity} removes more than it has"
@@ -462,6 +493,250 @@ impl Deriver for TextEdit {
         out: &mut Out,
     ) -> Result<(), StoreError> {
         repoint_text(rec, from, Some(to), view, out).map(drop)
+    }
+}
+
+// ---- search ----
+
+/// A text field that is searched: where, and whether its value is a list of items.
+#[derive(Debug, Clone, Copy)]
+pub struct SearchField {
+    pub scope: Scope,
+    pub field: u32,
+    pub list: bool,
+}
+
+/// Separates a list field's items in its text value (test and measurement builds; the library stage defines
+/// how card fields are stored).
+pub const ITEM_SEPARATOR: u8 = 0x1e;
+
+/// The searched field a record field is. Card and tag fields get their codes with the library's records; until
+/// then only test and measurement builds have any.
+pub fn search_field(f: &FieldRef) -> Option<SearchField> {
+    #[cfg(any(test, feature = "measure"))]
+    if let FieldRef::Code(c) = f {
+        return test_codes::field(*c);
+    }
+    let _ = f;
+    None
+}
+
+/// The record field a searched field is stored in, the inverse of `search_field`.
+pub fn search_code(scope: Scope, field: u32) -> Option<(FieldRef, bool)> {
+    #[cfg(any(test, feature = "measure"))]
+    return test_codes::code(scope, field);
+    #[cfg(not(any(test, feature = "measure")))]
+    {
+        let _ = (scope, field);
+        None
+    }
+}
+
+#[cfg(any(test, feature = "measure"))]
+pub mod test_codes {
+    use super::SearchField;
+    use crate::log::format::FieldRef;
+    use crate::search::Scope;
+
+    /// Library field i is code `LIBRARY + i`; a tag's name is `TAG_NAME`.
+    pub const LIBRARY: u64 = 1000;
+    pub const TAG_NAME: u64 = 1100;
+    pub const ALTERNATE_GREETINGS: u32 = 10;
+
+    pub fn field(c: u64) -> Option<SearchField> {
+        if c == TAG_NAME {
+            return Some(SearchField {
+                scope: Scope::TAGS,
+                field: 0,
+                list: false,
+            });
+        }
+        let i = u32::try_from(c.checked_sub(LIBRARY)?).ok()?;
+        let def = Scope::LIBRARY.fields().get(i as usize)?;
+        (!def.joined).then_some(SearchField {
+            scope: Scope::LIBRARY,
+            field: i,
+            list: i == ALTERNATE_GREETINGS,
+        })
+    }
+
+    pub fn code(scope: Scope, field: u32) -> Option<(FieldRef, bool)> {
+        let c = match scope.kind {
+            crate::search::TAGS => TAG_NAME,
+            crate::search::LIBRARY => LIBRARY + u64::from(field),
+            _ => return None,
+        };
+        let sf = self::field(c)?;
+        (sf.scope == scope && sf.field == field).then_some((FieldRef::Code(c), sf.list))
+    }
+}
+
+fn items(text: &[u8], list: bool) -> Vec<&[u8]> {
+    if text.is_empty() {
+        Vec::new()
+    } else if list {
+        text.split(|b| *b == ITEM_SEPARATOR).collect()
+    } else {
+        vec![text]
+    }
+}
+
+fn index_text(
+    view: &View,
+    out: &mut Out,
+    sf: SearchField,
+    doc: u64,
+    old: &[u8],
+    new: &[u8],
+) -> Result<(), StoreError> {
+    search::index::update(
+        view,
+        out,
+        sf.scope,
+        doc,
+        sf.field,
+        &items(old, sf.list),
+        &items(new, sf.list),
+    )
+}
+
+/// A searched field's values, for checking a phrase on them.
+pub fn search_texts(
+    view: &View,
+    scope: Scope,
+    doc: u64,
+    field: u32,
+) -> Result<Vec<Vec<u8>>, StoreError> {
+    if scope.kind == search::CHAT {
+        let Some(b) = view.get(&key::id(key::MESSAGE, doc))? else {
+            return Ok(Vec::new());
+        };
+        let (rec, _) = view.record(parse_loc(&b)?.pos)?;
+        return Ok(if id(&rec, 2) == scope.owner {
+            vec![bytes(&rec, 6).to_vec()]
+        } else {
+            Vec::new()
+        });
+    }
+    let Some((f, list)) = search_code(scope, field) else {
+        return Ok(Vec::new());
+    };
+    let text = text_value(view, doc, &f)?.unwrap_or_default();
+    Ok(items(&text, list).into_iter().map(<[u8]>::to_vec).collect())
+}
+
+// ---- tag membership ----
+
+/// `tagAssign`: the record assigning a tag to an entity is the (tag, entity) membership entry's value; an
+/// unassignment removes the entry and points at nothing.
+struct TagAssign;
+
+fn member_key(rec: &Record) -> Vec<u8> {
+    key::ids(key::MEMBER, id(rec, 1), id(rec, 0))
+}
+
+impl Deriver for TagAssign {
+    fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
+        let (entity, tag) = (id(rec, 0), id(rec, 1));
+        let k = member_key(rec);
+        let old = view.get(&k)?.map(|b| parse_loc(&b)).transpose()?;
+        if let Some(old) = old {
+            dead(out, old);
+        }
+        if rec.values[2] == Value::Bit(true) {
+            if old.is_none() {
+                out.put(key::ids(key::MEMBER_OF, entity, tag), Vec::new());
+                out.add(key::id(key::MEMBER_COUNT, tag), 1);
+            }
+            out.put(k, loc_bytes(at));
+        } else {
+            dead(out, at);
+            if old.is_some() {
+                out.del(key::ids(key::MEMBER_OF, entity, tag));
+                out.add(key::id(key::MEMBER_COUNT, tag), -1);
+                out.del(k);
+            }
+        }
+        Ok(())
+    }
+
+    fn is_live(&self, rec: &Record, pos: u64, view: &View) -> Result<bool, StoreError> {
+        Ok(view
+            .get(&member_key(rec))?
+            .map(|b| parse_loc(&b))
+            .transpose()?
+            .is_some_and(|l| l.pos == pos))
+    }
+
+    fn repoint(
+        &self,
+        rec: &Record,
+        from: u64,
+        to: Loc,
+        view: &View,
+        out: &mut Out,
+    ) -> Result<(), StoreError> {
+        if self.is_live(rec, from, view)? {
+            out.put(member_key(rec), loc_bytes(to));
+        }
+        Ok(())
+    }
+}
+
+// ---- messages ----
+
+/// `messageAppend`: the message's record, and its text in its owner's chat search.
+struct MessageAppend;
+
+impl Pointer for MessageAppend {
+    fn key(&self, rec: &Record) -> Vec<u8> {
+        key::id(key::MESSAGE, id(rec, 0))
+    }
+
+    fn others(
+        &self,
+        rec: &Record,
+        _: Loc,
+        old: Option<Loc>,
+        view: &View,
+        out: &mut Out,
+    ) -> Result<(), StoreError> {
+        let doc = id(rec, 0);
+        let (owner, text) = (id(rec, 2), bytes(rec, 6));
+        if let Some(old) = old {
+            let (prev, _) = view.record(old.pos)?;
+            let prev_owner = id(&prev, 2);
+            if prev_owner != owner {
+                search::index::update(
+                    view,
+                    out,
+                    Scope::chat(prev_owner),
+                    doc,
+                    0,
+                    &items(bytes(&prev, 6), false),
+                    &[],
+                )?;
+            } else {
+                return search::index::update(
+                    view,
+                    out,
+                    Scope::chat(owner),
+                    doc,
+                    0,
+                    &items(bytes(&prev, 6), false),
+                    &items(text, false),
+                );
+            }
+        }
+        search::index::update(
+            view,
+            out,
+            Scope::chat(owner),
+            doc,
+            0,
+            &[],
+            &items(text, false),
+        )
     }
 }
 
@@ -517,6 +792,8 @@ pub fn deriver(kind: &str) -> Option<&'static dyn Deriver> {
         "fav" => &Fav,
         "textValue" => &TextValue,
         "textEdit" => &TextEdit,
+        "tagAssign" => &TagAssign,
+        "messageAppend" => &MessageAppend,
         "moved" => &Moved,
         #[cfg(any(test, feature = "measure"))]
         "testSet" => &TestSet,

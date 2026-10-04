@@ -16,6 +16,7 @@ measure = []
 napi = { version = "3.14.0", default-features = false, features = ["napi6"] }
 crc32c = "0.6.8"
 napi-derive = "3.6.10"
+unicode-normalization = "0.1.25"
 
 # The crate's own allocator on native builds (wasm keeps its default): it returns freed memory to the system
 # instead of holding each engine thread's peak, as glibc's per-thread arenas do. Node's own memory isn't affected.

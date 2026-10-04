@@ -457,6 +457,14 @@ impl Store {
         })
     }
 
+    /// A page of search results (`crate::search::query`).
+    pub fn search(
+        &self,
+        q: &crate::search::query::Query,
+    ) -> StoreResult<crate::search::query::Found> {
+        self.derived(|v| crate::search::query::run(v, q))
+    }
+
     /// A derived entry's value.
     pub fn get(&self, key: &[u8]) -> StoreResult<Option<Vec<u8>>> {
         self.derived(|v| v.get(key))
