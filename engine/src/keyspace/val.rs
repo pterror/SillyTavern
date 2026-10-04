@@ -10,6 +10,23 @@ pub enum Val {
     Del,
     /// Adds to the key's counter (a `Put` of `counter_bytes`, or 0 if it has none) without reading it.
     Add(i64),
+    /// Raises the key's maximum (a `Put` of `max_bytes`, or nothing if it has none) to at least this, without
+    /// reading it.
+    Max(u64),
+}
+
+/// A maximum's value as `Put` bytes.
+pub fn max_bytes(n: u64) -> Vec<u8> {
+    let mut out = Vec::new();
+    put_uvarint(&mut out, n);
+    out
+}
+
+/// A maximum's value from `Put` bytes.
+pub fn max_value(b: &[u8]) -> Option<u64> {
+    let mut at = 0;
+    let v = get_uvarint(b, &mut at).ok()?;
+    (at == b.len()).then_some(v)
 }
 
 fn zigzag(v: i64) -> u64 {
@@ -45,15 +62,28 @@ impl Val {
                 Val::Put(counter_bytes(base.unwrap_or(0).wrapping_add(d)))
             }
             (Val::Add(d), Val::Del) => Val::Put(counter_bytes(d)),
+            (Val::Max(m), Val::Max(o)) => Val::Max(m.max(*o)),
+            (Val::Max(m), Val::Put(b)) => {
+                let base = max_value(b);
+                debug_assert!(base.is_some(), "a Max over a value that isn't a maximum");
+                Val::Put(max_bytes(base.unwrap_or(0).max(m)))
+            }
+            (Val::Max(m), Val::Del) => Val::Put(max_bytes(m)),
             (v, _) => v,
         }
     }
 
-    /// The value as the oldest one of its key: a `Del` is nothing, an `Add` a counter from 0.
+    /// Whether the value builds on older ones (an `Add` or a `Max`), so a read goes on to them.
+    pub fn is_partial(&self) -> bool {
+        matches!(self, Val::Add(_) | Val::Max(_))
+    }
+
+    /// The value as the oldest one of its key: a `Del` is nothing, an `Add` a counter from 0, a `Max` itself.
     pub fn bottom(self) -> Option<Val> {
         match self {
             Val::Del => None,
             Val::Add(d) => Some(Val::Put(counter_bytes(d))),
+            Val::Max(m) => Some(Val::Put(max_bytes(m))),
             v => Some(v),
         }
     }
@@ -72,6 +102,7 @@ impl Val {
             Val::Put(b) => b.len(),
             Val::Del => 0,
             Val::Add(d) => crate::log::format::uvarint_len(zigzag(*d)),
+            Val::Max(m) => crate::log::format::uvarint_len(*m),
         }
     }
 
@@ -88,6 +119,10 @@ impl Val {
                 put_uvarint(&mut p, zigzag(*d));
                 put_uvarint(out, ((p.len() as u64) << 2) | 2);
                 out.extend_from_slice(&p);
+            }
+            Val::Max(m) => {
+                put_uvarint(out, ((crate::log::format::uvarint_len(*m) as u64) << 2) | 3);
+                put_uvarint(out, *m);
             }
         }
     }
@@ -107,6 +142,7 @@ impl Val {
                 let v = get_uvarint(payload, &mut p).ok()?;
                 (p == payload.len()).then_some(Val::Add(unzigzag(v)))
             }
+            3 => max_value(payload).map(Val::Max),
             _ => None,
         }
     }
@@ -120,7 +156,7 @@ pub fn fold<I: IntoIterator<Item = Val>>(vals: I) -> Option<Val> {
             None => v,
             Some(newer) => newer.over(&v),
         };
-        if !matches!(next, Val::Add(_)) {
+        if !next.is_partial() {
             return Some(next);
         }
         acc = Some(next);
@@ -236,11 +272,19 @@ mod tests {
             Some(Val::Put(counter_bytes(2)))
         );
         assert_eq!(fold([Val::Del, Val::Put(vec![1])]), Some(Val::Del));
+        assert_eq!(fold([Val::Max(2), Val::Max(7)]), Some(Val::Max(7)));
+        assert_eq!(
+            fold([Val::Max(9), Val::Put(max_bytes(4)), Val::Max(100)]),
+            Some(Val::Put(max_bytes(9)))
+        );
+        assert_eq!(fold([Val::Max(3), Val::Del]), Some(Val::Put(max_bytes(3))));
         for v in [
             Val::Put(vec![1, 2]),
             Val::Del,
             Val::Add(-7),
             Val::Add(i64::MIN),
+            Val::Max(0),
+            Val::Max(u64::MAX),
         ] {
             let mut b = Vec::new();
             v.encode(&mut b);

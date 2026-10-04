@@ -59,6 +59,7 @@ enum Stored {
     Put(Bytes),
     Del,
     Add(i64),
+    Max(u64),
 }
 
 impl Stored {
@@ -67,6 +68,7 @@ impl Stored {
             Stored::Put(b) => Val::Put(b.get().to_vec()),
             Stored::Del => Val::Del,
             Stored::Add(n) => Val::Add(*n),
+            Stored::Max(n) => Val::Max(*n),
         }
     }
 }
@@ -130,6 +132,7 @@ impl Mem {
             Val::Put(b) => Stored::Put(self.alloc(&b)),
             Val::Del => Stored::Del,
             Val::Add(n) => Stored::Add(n),
+            Val::Max(n) => Stored::Max(n),
         }
     }
 
@@ -137,10 +140,14 @@ impl Mem {
     pub(super) fn insert(&mut self, key: &[u8], val: Val) -> i64 {
         let before = self.bytes;
         let stored = match self.map.get(key) {
-            // A counter's sum over a counter is kept in place: no new bytes for each add.
+            // A counter's sum over a counter, or a maximum over a maximum, is kept in place: no new bytes for each.
             Some(Stored::Add(old)) if matches!(val, Val::Add(_)) => {
                 let Val::Add(n) = val else { unreachable!() };
                 Stored::Add(old.wrapping_add(n))
+            }
+            Some(Stored::Max(old)) if matches!(val, Val::Max(_)) => {
+                let Val::Max(n) = val else { unreachable!() };
+                Stored::Max(n.max(*old))
             }
             Some(old) => {
                 let v = val.over(&old.val());
