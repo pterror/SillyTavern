@@ -1,25 +1,26 @@
 //! A store: the record log (P1) and the derived keyspace (P2) kept in step (design
 //! `.plans/2026-10-03-storage-from-needs.md` 3, 4.1–4.4).
 //!
-//! Commits go through two threads. The prepare thread takes commits in arrival order and, for each, runs its
-//! records' derivers against everything before it (published entries, plus the entries of groups not yet
-//! synced), lays the records out in the open group and keeps their entries with it. The sync thread takes the
-//! open group whenever no sync is running, writes and syncs it, then publishes its entries to the keyspace's
-//! buffer and resolves its commits. So derivation of one group overlaps the sync of the one before, and nothing
-//! reads an entry whose record isn't durable.
+//! A store owns no threads: its work runs as activities on the process's engine threads (`keyspace::exec`), one
+//! bounded step per task, so stores take turns. Commits go through two activities. The prepare activity takes
+//! commits in arrival order and, for each, runs its records' derivers against everything before it (published
+//! entries, plus the entries of groups not yet synced), lays the records out in the open group and keeps their
+//! entries with it. The sync activity takes the open group whenever no sync is running, writes and syncs it,
+//! then publishes its entries to the keyspace's buffer and resolves its commits. So derivation of one group
+//! overlaps the sync of the one before, and nothing reads an entry whose record isn't durable.
 //!
 //! Layout: the log's files in the store's directory, the runs in `runs/`.
 //!
-//! Memory: every store opened with `Store::open` shares one `Pool`, so the buffers (B) and the block cache (C) are
-//! bounded for the process, not per store; `open_in` takes a pool of its own.
+//! Memory: every store opened with `Store::open` shares one `Pool`, so the threads, the buffers (B) and the block
+//! cache (C) are bounded for the process, not per store; `open_in` takes a pool of its own.
 //!
 //! Opening never reads more than the runs' footers and top blocks and the log after the newest run's covered
 //! position: it probes the log's files upward from that position's file, since cleaning removes only files
-//! below it. The prepare thread then replays the records after that position into the buffer before taking
+//! below it. The prepare activity's first step replays the records after that position into the buffer before taking
 //! any commit; reads of derived data wait for it.
 //!
 //! Cleaning: a log file whose records' dead bytes pass `1 - u` of its size is queued when a flush finds it
-//! there. The cleaner copies its live records (each after a `moved` marker naming where it was) to the log's
+//! there. The clean activity copies its live records (each after a `moved` marker naming where it was) to the log's
 //! end through the commit path, so the copies' entries are repointed in log order like any commit, then
 //! removes the file once the runs cover the log past the copies, so replay never meets a record pointing into
 //! it.
@@ -29,13 +30,13 @@ pub mod kinds;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, RwLock, Weak};
-use std::thread::JoinHandle;
 
 use derive::{Loc, Out, Pending, View, apply, deriver};
 use kinds::{file_of, key};
 
+use crate::keyspace::exec::Activity;
 use crate::keyspace::pool::Pool;
 use crate::keyspace::run::Run;
 use crate::keyspace::val::{Val, counter_value, fold};
@@ -115,7 +116,6 @@ impl Default for StoreConfig {
                 log_bytes: LOG_BYTES,
                 fan_in: FAN_IN,
                 block_size: RUN_BLOCK_SIZE,
-                merge_threads: 2,
                 max_frozen: 1,
             },
             live_fraction: LIVE_FRACTION,
@@ -137,15 +137,27 @@ pub const RUN_BLOCK_SIZE: usize = 16 << 10;
 /// u.
 pub const LIVE_FRACTION: f64 = 0.5;
 
-/// Flushes and merges that may run at once across the process.
+/// The engine's threads for the whole process; how many take only short steps (a lone commit is never stuck behind
+/// busy stores); and how many flushes and merges may hold at once: the rest are always free for commits.
+pub const THREADS: usize = 10;
+pub const FRONT_THREADS: usize = 2;
 pub const FLUSH_SLOTS: usize = 2;
 pub const MERGE_SLOTS: usize = 2;
 
 /// The pool every store opened by `Store::open` shares.
 pub fn global_pool() -> Arc<Pool> {
     static POOL: std::sync::OnceLock<Arc<Pool>> = std::sync::OnceLock::new();
-    POOL.get_or_init(|| Pool::new(BUFFER_BYTES, CACHE_BYTES, MERGE_SLOTS, FLUSH_SLOTS))
-        .clone()
+    POOL.get_or_init(|| {
+        Pool::new(
+            BUFFER_BYTES,
+            CACHE_BYTES,
+            THREADS,
+            FRONT_THREADS,
+            MERGE_SLOTS,
+            FLUSH_SLOTS,
+        )
+    })
+    .clone()
 }
 
 pub type CommitDone = Box<dyn FnOnce(StoreResult<Vec<u64>>) + Send>;
@@ -192,10 +204,9 @@ struct Pipe {
     /// Where the next group starts.
     cursor: Cursor,
     open: Group,
-    /// The group being synced: its entries and records are seen by the prepare thread until published.
+    /// The group being synced: its entries and records are seen by the prepare activity until published.
     syncing: Option<Group>,
     closed: bool,
-    prepare_done: bool,
     failed: Option<String>,
 }
 
@@ -233,32 +244,43 @@ pub struct StoreStats {
 }
 
 struct Inner {
+    me: Weak<Inner>,
     cfg: StoreConfig,
     log: Log,
     ks: Arc<Keyspace>,
     pipe: Mutex<Pipe>,
-    /// The prepare thread waits on it for jobs and room; the sync thread for a group.
-    pipe_cv: Condvar,
+    /// The tail file's write handle, used by the sync activity only.
+    tail: Mutex<TailFile>,
+    /// Replays first, then lays out one job per step.
+    prepare_act: Arc<Activity>,
+    /// Writes, syncs and publishes one group per step.
+    sync_act: Arc<Activity>,
+    clean_act: Arc<Activity>,
+    /// Where replay starts; `replayed` once it has run.
+    replay_from: u64,
+    replayed: AtomicBool,
     ready: Mutex<Replay>,
     ready_cv: Condvar,
     /// Held for reading across an entry lookup and the log read it leads to; for writing to remove a file.
     gate: RwLock<()>,
     clean: Mutex<CleanState>,
+    /// Signalled when cleaning's state changes (for `Store::clean`).
     clean_cv: Condvar,
-    /// Held by whoever is cleaning.
-    cleaning: Mutex<()>,
     counters: Counters,
 }
 
 #[derive(Default)]
 struct CleanState {
-    wake: bool,
     stop: bool,
+    /// The file being cleaned and where its next unread record is.
+    file: Option<(u64, u64)>,
+    /// A batch of its records is in the commit path.
+    relocating: bool,
 }
 
 pub struct Store {
     inner: Arc<Inner>,
-    threads: Mutex<Vec<JoinHandle<()>>>,
+    closed: AtomicBool,
 }
 
 impl Store {
@@ -302,48 +324,46 @@ impl Store {
                 ),
             }));
         }
-        let inner = Arc::new(Inner {
-            cfg,
-            log,
-            ks: ks.clone(),
-            pipe: Mutex::new(Pipe {
-                queue: VecDeque::new(),
-                cursor,
-                open: Group::default(),
-                syncing: None,
-                closed: false,
-                prepare_done: false,
-                failed: None,
-            }),
-            pipe_cv: Condvar::new(),
-            ready: Mutex::new(Replay::Running(Vec::new())),
-            ready_cv: Condvar::new(),
-            gate: RwLock::new(()),
-            clean: Mutex::new(CleanState::default()),
-            clean_cv: Condvar::new(),
-            cleaning: Mutex::new(()),
-            counters: Counters::default(),
+        let exec = &ks.pool().exec;
+        let inner = Arc::new_cyclic(|me: &Weak<Inner>| {
+            let activity = |step: fn(&Inner) -> bool| {
+                let a = Activity::new(exec);
+                let me = me.clone();
+                a.set_step(Box::new(move || me.upgrade().is_some_and(|i| step(&i))));
+                a
+            };
+            Inner {
+                me: me.clone(),
+                cfg,
+                log,
+                ks: ks.clone(),
+                pipe: Mutex::new(Pipe {
+                    queue: VecDeque::new(),
+                    cursor,
+                    open: Group::default(),
+                    syncing: None,
+                    closed: false,
+                    failed: None,
+                }),
+                tail: Mutex::new(tail),
+                prepare_act: activity(Inner::prepare_step),
+                sync_act: activity(Inner::sync_step),
+                clean_act: activity(Inner::clean_step),
+                replay_from: covered,
+                replayed: AtomicBool::new(false),
+                ready: Mutex::new(Replay::Running(Vec::new())),
+                ready_cv: Condvar::new(),
+                gate: RwLock::new(()),
+                clean: Mutex::new(CleanState::default()),
+                clean_cv: Condvar::new(),
+                counters: Counters::default(),
+            }
         });
         ks.start(Box::new(StoreHooks(Arc::downgrade(&inner))))?;
-        let mut threads = Vec::new();
-        let spawn = |name: &str, f: Box<dyn FnOnce() + Send>| {
-            std::thread::Builder::new().name(name.into()).spawn(f)
-        };
-        let i = inner.clone();
-        threads.push(spawn(
-            "st-engine-prepare",
-            Box::new(move || i.prepare_loop(covered)),
-        )?);
-        let i = inner.clone();
-        threads.push(spawn(
-            "st-engine-sync",
-            Box::new(move || i.sync_loop(tail)),
-        )?);
-        let i = inner.clone();
-        threads.push(spawn("st-engine-clean", Box::new(move || i.clean_loop()))?);
+        inner.prepare_act.kick();
         Ok(Store {
             inner,
-            threads: Mutex::new(threads),
+            closed: AtomicBool::new(false),
         })
     }
 
@@ -365,8 +385,8 @@ impl Store {
         rx.recv().unwrap_or(Err(StoreError::Closed))
     }
 
-    /// While replay runs, keeps `f` to run on the replaying thread once it ends (however it ends) and returns
-    /// None; after, hands `f` back. `f` runs before that thread takes any commit, so it must not wait on one.
+    /// While replay runs, keeps `f` to run on the replaying engine thread once it ends (however it ends) and
+    /// returns None; after, hands `f` back. `f` must not wait for the engine (a commit, a flush).
     pub fn after_replay(&self, f: Box<dyn FnOnce() + Send>) -> Option<Box<dyn FnOnce() + Send>> {
         match &mut *self.inner.ready.lock().unwrap() {
             Replay::Running(waiting) => {
@@ -509,55 +529,67 @@ impl Store {
 
     /// Runs the cleaner now, without waiting for a flush to wake it.
     pub fn wake_cleaner(&self) {
-        self.inner.wake_cleaner();
+        self.inner.clean_act.kick();
     }
 
-    /// Cleans on this thread: removes cleaned files the runs now cover past, then cleans every file queued.
+    /// Cleans until nothing queued is left to clean: removes cleaned files the runs now cover past, and cleans
+    /// every file queued that they cover. Not from an engine thread.
     pub fn clean(&self) -> StoreResult<()> {
         self.inner.wait_ready()?;
-        self.inner.clean_once()
+        self.inner.clean_act.kick();
+        let mut c = self.inner.clean.lock().unwrap();
+        loop {
+            drop(c);
+            self.inner.clean_act.wait_idle();
+            c = self.inner.clean.lock().unwrap();
+            if !c.relocating {
+                return Ok(());
+            }
+            c = self.inner.clean_cv.wait(c).unwrap();
+        }
     }
 
-    /// Finishes queued commits, flushes the buffer so the next open replays nothing, and stops every thread.
-    /// Later commits fail with `Closed`.
-    pub fn close(&self) {
-        {
-            let mut c = self.inner.clean.lock().unwrap();
-            c.stop = true;
-        }
-        self.inner.clean_cv.notify_all();
-        let mut threads = self.threads.lock().unwrap();
-        if threads.is_empty() {
+    /// Finishes queued commits and stops: later commits fail with `Closed`. With `flush`, the buffer is flushed
+    /// so the next open replays nothing. Not from an engine thread.
+    fn shut(&self, flush: bool) {
+        if self.closed.swap(true, Ordering::AcqRel) {
             return;
         }
-        // The cleaner first: it may be waiting on a relocation the pipe still has to finish.
-        threads.pop().unwrap().join().ok();
-        self.inner.pipe.lock().unwrap().closed = true;
-        self.inner.pipe_cv.notify_all();
-        for t in threads.drain(..) {
-            t.join().ok();
+        let i = &self.inner;
+        i.clean.lock().unwrap().stop = true;
+        i.pipe.lock().unwrap().closed = true;
+        loop {
+            i.prepare_act.kick();
+            i.sync_act.kick();
+            i.prepare_act.wait_idle();
+            i.sync_act.wait_idle();
+            let p = i.pipe.lock().unwrap();
+            if p.queue.is_empty() && p.open.dones.is_empty() && p.syncing.is_none() {
+                break;
+            }
+            drop(p);
+            // The sync step may be waiting for room that another store's flush frees.
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        if self.inner.is_ready() {
-            self.inner.ks.freeze_at(self.inner.log.durable_end());
+        i.clean_act.wait_idle();
+        if flush && i.is_ready() {
+            i.ks.freeze_at(i.log.durable_end());
             // If the flush fails, the next open replays what it held.
-            let _ = self.inner.ks.wait_flushed();
+            let _ = i.ks.wait_flushed();
         }
-        self.inner.ks.stop();
+        i.ks.stop();
     }
 
-    /// Ends every thread as a crash would, with nothing flushed (for tests of replay).
+    /// Finishes queued commits, flushes the buffer so the next open replays nothing, and stops. Later commits
+    /// fail with `Closed`.
+    pub fn close(&self) {
+        self.shut(true);
+    }
+
+    /// Stops as a crash would, with nothing flushed (for tests of replay).
     #[cfg(test)]
     fn abandon(&self) {
-        self.inner.clean.lock().unwrap().stop = true;
-        self.inner.clean_cv.notify_all();
-        let mut threads = self.threads.lock().unwrap();
-        threads.pop().unwrap().join().ok();
-        self.inner.pipe.lock().unwrap().closed = true;
-        self.inner.pipe_cv.notify_all();
-        for t in threads.drain(..) {
-            t.join().ok();
-        }
-        self.inner.ks.stop();
+        self.shut(false);
     }
 }
 
@@ -576,7 +608,7 @@ impl Inner {
         }
         p.queue.push_back(job);
         drop(p);
-        self.pipe_cv.notify_all();
+        self.prepare_act.kick();
     }
 
     fn is_ready(&self) -> bool {
@@ -691,41 +723,45 @@ impl Inner {
         Ok(bytes)
     }
 
-    // ---- the prepare thread ----
+    // ---- the prepare activity ----
 
-    fn prepare_loop(&self, covered: u64) {
-        let replayed = self.replay(covered).map_err(|e| e.to_string());
-        let failed = replayed.clone().err();
-        self.set_ready(replayed);
+    /// Replays (first step only), then lays out the next queued job.
+    fn prepare_step(&self) -> bool {
+        if !self.replayed.load(Ordering::Acquire) {
+            let replayed = self.replay(self.replay_from).map_err(|e| e.to_string());
+            if let Err(why) = &replayed {
+                self.pipe.lock().unwrap().failed = Some(why.clone());
+            }
+            self.replayed.store(true, Ordering::Release);
+            self.set_ready(replayed);
+            self.clean_act.kick();
+            return true;
+        }
         let mut p = self.pipe.lock().unwrap();
-        if let Some(why) = failed {
-            p.failed = Some(why);
+        // A full open group waits for the sync step to take it; with no room in the pool, nothing more is
+        // prepared either, so entries waiting to be published stay within what the pool's flushes can free.
+        let full = p
+            .open
+            .layout
+            .as_ref()
+            .is_some_and(|l| l.offset() >= self.cfg.log.file_target);
+        if full || p.queue.is_empty() || !self.ks.pool().room_or_wait(&self.prepare_act) {
+            return false;
         }
-        loop {
-            let full = p
-                .open
-                .layout
-                .as_ref()
-                .is_some_and(|l| l.offset() >= self.cfg.log.file_target);
-            if p.queue.is_empty() || full {
-                if p.closed && p.queue.is_empty() {
-                    break;
-                }
-                p = self.pipe_cv.wait(p).unwrap();
-                continue;
-            }
-            let job = p.queue.pop_front().unwrap();
-            if let Some(why) = &p.failed {
-                let e = StoreError::Failed(why.clone());
-                fail_job(job, e);
-                continue;
-            }
-            self.prepare(&mut p, job);
-            self.pipe_cv.notify_all();
+        let Some(job) = p.queue.pop_front() else {
+            return false;
+        };
+        if let Some(why) = &p.failed {
+            let e = StoreError::Failed(why.clone());
+            drop(p);
+            fail_job(job, e);
+            return true;
         }
-        p.prepare_done = true;
+        self.prepare(&mut p, job);
+        let more = !p.queue.is_empty();
         drop(p);
-        self.pipe_cv.notify_all();
+        self.sync_act.kick();
+        more
     }
 
     /// Lays out one job in the open group with its entries, or fails it, writing nothing of it.
@@ -868,102 +904,154 @@ impl Inner {
         }
     }
 
-    // ---- the sync thread ----
+    // ---- the sync activity ----
 
-    fn sync_loop(&self, mut tail: TailFile) {
-        loop {
-            let mut p = self.pipe.lock().unwrap();
-            while p.open.dones.is_empty() {
-                if p.prepare_done {
-                    return;
-                }
-                p = self.pipe_cv.wait(p).unwrap();
+    /// Writes, syncs and publishes the open group, once the pool has room for its entries.
+    fn sync_step(&self) -> bool {
+        let mut p = self.pipe.lock().unwrap();
+        if p.open.dones.is_empty() || !self.ks.pool().room_or_wait(&self.sync_act) {
+            return false;
+        }
+        let mut group = std::mem::take(&mut p.open);
+        let dones = std::mem::take(&mut group.dones);
+        // A group of jobs that wrote nothing (an empty commit, a relocation whose records had all died) still
+        // resolves in its turn: after every group before it has published.
+        let Some(layout) = group.layout.as_mut() else {
+            drop(p);
+            for d in dones {
+                d.succeed();
             }
-            let mut group = std::mem::take(&mut p.open);
-            let dones = std::mem::take(&mut group.dones);
-            // A group of jobs that wrote nothing (an empty commit, a relocation whose records had all died)
-            // still resolves in its turn: after every group before it has published.
-            let Some(layout) = group.layout.as_mut() else {
+            return true;
+        };
+        let end = layout.close();
+        p.cursor = end;
+        let (file, runs) = (layout.file, std::mem::take(&mut layout.runs));
+        p.syncing = Some(group);
+        drop(p);
+        // A full open group may now take more.
+        self.prepare_act.kick();
+        let written = self.tail.lock().unwrap().write(&self.log, file, &runs);
+        let mut p = self.pipe.lock().unwrap();
+        let group = p.syncing.take().unwrap();
+        match written {
+            Ok(bytes) => {
+                self.log.set_durable(end);
+                self.ks
+                    .insert(group.entries, Some((position_of(end), bytes)));
                 drop(p);
                 for d in dones {
                     d.succeed();
                 }
-                continue;
-            };
-            let end = layout.close();
-            p.cursor = end;
-            let (file, runs) = (layout.file, std::mem::take(&mut layout.runs));
-            p.syncing = Some(group);
-            drop(p);
-            // A full open group may now take more.
-            self.pipe_cv.notify_all();
-            let written = tail.write(&self.log, file, &runs);
-            let mut p = self.pipe.lock().unwrap();
-            let group = p.syncing.take().unwrap();
-            match written {
-                Ok(bytes) => {
-                    self.log.set_durable(end);
-                    self.ks
-                        .insert(group.entries, Some((position_of(end), bytes)));
-                    drop(p);
-                    for d in dones {
-                        d.succeed();
-                    }
+            }
+            Err(e) => {
+                // What reached the file is unknown, so nothing more is appended; reopening recovers to the
+                // last group whose checksum holds. Groups prepared on top of this one fail with it.
+                let why = e.to_string();
+                p.failed = Some(why.clone());
+                let open = std::mem::take(&mut p.open);
+                let queued: Vec<Job> = p.queue.drain(..).collect();
+                drop(p);
+                for d in dones.into_iter().chain(open.dones) {
+                    d.fail(&why);
                 }
-                Err(e) => {
-                    // What reached the file is unknown, so nothing more is appended; reopening recovers to the
-                    // last group whose checksum holds. Groups prepared on top of this one fail with it.
-                    let why = e.to_string();
-                    p.failed = Some(why.clone());
-                    let open = std::mem::take(&mut p.open);
-                    let queued: Vec<Job> = p.queue.drain(..).collect();
-                    drop(p);
-                    for d in dones.into_iter().chain(open.dones) {
-                        d.fail(&why);
-                    }
-                    for j in queued {
-                        fail_job(j, StoreError::Failed(why.clone()));
-                    }
+                for j in queued {
+                    fail_job(j, StoreError::Failed(why.clone()));
                 }
             }
         }
+        true
     }
 
     // ---- cleaning ----
 
-    fn wake_cleaner(&self) {
-        self.clean.lock().unwrap().wake = true;
-        self.clean_cv.notify_all();
-    }
-
-    fn clean_loop(&self) {
-        if self.wait_ready().is_err() {
-            return;
+    /// One step of cleaning: hands the next batch of the file being cleaned to the commit path (and waits, by
+    /// returning, for it to come back), finishes the file, or picks the next one.
+    fn clean_step(&self) -> bool {
+        if !self.is_ready() {
+            return false;
         }
-        loop {
-            {
-                let mut c = self.clean.lock().unwrap();
-                while !c.wake && !c.stop {
-                    c = self.clean_cv.wait(c).unwrap();
-                }
-                if c.stop {
-                    return;
-                }
-                c.wake = false;
-            }
-            if let Err(e) = self.clean_once() {
+        match self.clean_next() {
+            Ok(more) => more,
+            Err(e) => {
                 eprintln!("st-engine: cleaning the log failed: {e}");
+                let mut c = self.clean.lock().unwrap();
+                c.file = None;
+                self.clean_cv.notify_all();
+                false
             }
         }
     }
 
-    fn stopping(&self) -> bool {
-        self.clean.lock().unwrap().stop
+    fn clean_next(&self) -> StoreResult<bool> {
+        let mut c = self.clean.lock().unwrap();
+        if c.stop || c.relocating {
+            return Ok(false);
+        }
+        let Some((file, next)) = c.file else {
+            drop(c);
+            self.remove_cleaned()?;
+            let Some(file) = self.next_to_clean()? else {
+                return Ok(false);
+            };
+            self.clean.lock().unwrap().file = Some((file, log::position(file, 0)));
+            return Ok(true);
+        };
+        let mut batch = Vec::new();
+        let (mut at, mut bytes) = (next, 0);
+        while bytes < self.cfg.relocate_bytes && file_of(at) == file {
+            let (recs, n) = self.log.iterate_file(at, 256)?;
+            for (pos, rec, len) in recs {
+                bytes += len;
+                batch.push((pos, rec));
+            }
+            at = n;
+        }
+        if batch.is_empty() {
+            c.file = None;
+            drop(c);
+            self.ks.insert(
+                [
+                    (key::id(key::DEAD, file), Val::Del),
+                    (key::id(key::CLEAN, file), Val::Del),
+                    (
+                        key::id(key::GONE, file),
+                        Val::Put(kinds::pos_bytes(self.log.durable_end())),
+                    ),
+                ],
+                None,
+            );
+            self.counters.cleaned_files.fetch_add(1, Ordering::Relaxed);
+            self.clean_cv.notify_all();
+            return Ok(true);
+        }
+        c.file = Some((file, at));
+        c.relocating = true;
+        drop(c);
+        self.submit(Job::Relocate(batch, self.relocated()));
+        Ok(false)
     }
 
-    /// Removes cleaned files the runs now cover past, then cleans every file queued.
-    fn clean_once(&self) -> StoreResult<()> {
-        let _one = self.cleaning.lock().unwrap();
+    /// What a relocation batch does when it comes back: lets cleaning go on (from the file's start again, if
+    /// the batch failed).
+    fn relocated(&self) -> JobDone {
+        let me = self.me.clone();
+        Box::new(move |r| {
+            let Some(i) = me.upgrade() else { return };
+            {
+                let mut c = i.clean.lock().unwrap();
+                c.relocating = false;
+                if let Err(e) = r {
+                    eprintln!("st-engine: cleaning the log failed: {e}");
+                    c.file = None;
+                }
+            }
+            i.clean_cv.notify_all();
+            i.clean_act.kick();
+        })
+    }
+
+    /// Removes cleaned files the runs now cover past.
+    fn remove_cleaned(&self) -> StoreResult<()> {
         let covered = self.ks.covered();
         let gone = key::of(key::GONE);
         for (k, v) in self.ks.scan(&gone, &key::prefix_end(&gone), usize::MAX)? {
@@ -980,16 +1068,19 @@ impl Inner {
                 self.ks.insert([(k, Val::Del)], None);
             }
         }
+        Ok(())
+    }
+
+    /// The next queued file to clean: one the runs cover entirely (opening finds the log's files from the
+    /// newest run's file up) and still under u live. Queued files back above u are dequeued.
+    fn next_to_clean(&self) -> StoreResult<Option<u64>> {
+        let covered = self.ks.covered();
         let queued = key::of(key::CLEAN);
         for (k, _) in self
             .ks
             .scan(&queued, &key::prefix_end(&queued), usize::MAX)?
         {
-            if self.stopping() {
-                return Ok(());
-            }
             let file = file_from_key(&k)?;
-            // Only files the runs cover entirely: opening finds the log's files from the newest run's file up.
             if file >= file_of(covered) {
                 continue;
             }
@@ -1003,52 +1094,9 @@ impl Inner {
                 self.ks.insert([(k, Val::Del)], None);
                 continue;
             }
-            if !self.clean_file(file)? {
-                return Ok(());
-            }
-            self.ks.insert(
-                [
-                    (key::id(key::DEAD, file), Val::Del),
-                    (k, Val::Del),
-                    (
-                        key::id(key::GONE, file),
-                        Val::Put(kinds::pos_bytes(self.log.durable_end())),
-                    ),
-                ],
-                None,
-            );
-            self.counters.cleaned_files.fetch_add(1, Ordering::Relaxed);
+            return Ok(Some(file));
         }
-        Ok(())
-    }
-
-    /// Copies a file's live records to the log's end. Returns false if stopped first.
-    fn clean_file(&self, file: u64) -> StoreResult<bool> {
-        let mut next = log::position(file, 0);
-        loop {
-            let mut batch = Vec::new();
-            let mut bytes = 0;
-            while bytes < self.cfg.relocate_bytes && file_of(next) == file {
-                let (recs, n) = self.log.iterate_file(next, 256)?;
-                for (pos, rec, len) in recs {
-                    bytes += len;
-                    batch.push((pos, rec));
-                }
-                next = n;
-            }
-            if batch.is_empty() {
-                return Ok(true);
-            }
-            if self.stopping() {
-                return Ok(false);
-            }
-            let (tx, rx) = std::sync::mpsc::channel();
-            self.submit(Job::Relocate(batch, Box::new(move |r| drop(tx.send(r)))));
-            rx.recv().unwrap_or(Err(StoreError::Closed))?;
-            if file_of(next) != file {
-                return Ok(true);
-            }
-        }
+        Ok(None)
     }
 }
 
@@ -1117,7 +1165,7 @@ impl Hooks for StoreHooks {
 
     fn flushed(&self, _: &Keyspace) {
         if let Some(inner) = self.0.upgrade() {
-            inner.wake_cleaner();
+            inner.clean_act.kick();
         }
     }
 }

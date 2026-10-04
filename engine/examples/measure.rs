@@ -116,6 +116,11 @@ fn inflight_limit() -> u32 {
     std::env::var("ST_INFLIGHT").map_or(8, |v| v.parse().unwrap())
 }
 
+/// Commits in flight at once across all stores of `multi`: ST_TOTAL_INFLIGHT, else unbounded.
+fn total_inflight_limit() -> u64 {
+    std::env::var("ST_TOTAL_INFLIGHT").map_or(u64::MAX, |v| v.parse().unwrap())
+}
+
 fn commit_all(s: &Store, mut recs: impl Iterator<Item = Record>) -> Duration {
     let started = Instant::now();
     // Several commits in flight, as concurrent actions would be.
@@ -282,7 +287,8 @@ fn config() -> StoreConfig {
 }
 
 /// Memory a buffer of entries shaped like `testSet`'s takes, against what it counts.
-/// The pool every store of a run shares: B and C from ST_B and ST_C, else the defaults.
+/// The pool every store of a run shares: B, C and the engine's threads from ST_B, ST_C and ST_THREADS, else the
+/// defaults.
 fn pool() -> Arc<Pool> {
     static POOL: std::sync::OnceLock<Arc<Pool>> = std::sync::OnceLock::new();
     POOL.get_or_init(|| {
@@ -290,6 +296,8 @@ fn pool() -> Arc<Pool> {
         Pool::new(
             env("ST_B", st_engine::store::BUFFER_BYTES),
             env("ST_C", st_engine::store::CACHE_BYTES),
+            env("ST_THREADS", st_engine::store::THREADS),
+            st_engine::store::FRONT_THREADS,
             st_engine::store::MERGE_SLOTS,
             st_engine::store::FLUSH_SLOTS,
         )
@@ -313,7 +321,7 @@ fn calibrate(dir: &Path) {
         fn flushed(&self, _: &Keyspace) {}
     }
     let cfg = StoreConfig::default().ks;
-    let ks = Keyspace::open(dir, cfg, Pool::new(usize::MAX / 4, 0, 1, 1)).unwrap();
+    let ks = Keyspace::open(dir, cfg, Pool::new(usize::MAX / 4, 0, 1, 0, 1, 1)).unwrap();
     ks.start(Box::new(NoHooks)).unwrap();
     let before = proc_kb("VmRSS:");
     let mut rng = Rng(7);
@@ -558,30 +566,101 @@ fn multi(dir: &Path, k: usize, entries: u64) {
             }
         })
     };
-    let started = Instant::now();
-    let threads: Vec<_> = stores
-        .iter()
-        .enumerate()
-        .map(|(i, s)| {
-            let s = s.clone();
-            std::thread::spawn(move || {
-                s.wait_ready().unwrap();
-                // Uneven: store i loads ids/(i % 4 + 1).
-                let n = ids / (i as u64 % 4 + 1);
-                commit_all(&s, (0..n).map(|id| set(id, Rng(id).next() % (1 << 32))));
-                commit_all(
-                    &s,
-                    (0..n).map(|j| {
-                        let mut r = Rng(j ^ 0x5555);
-                        set(r.next() % n, r.next() % (1 << 32))
-                    }),
-                );
-                n
-            })
+    // A store beside them committing one record every 5 ms: its commit latency shows whether the busy stores
+    // starve it.
+    let probe = Arc::new(Store::open_in(&dir.join("probe"), config(), pool()).unwrap());
+    probe.wait_ready().unwrap();
+    let probing = Arc::new(AtomicU64::new(1));
+    let prober = {
+        let (probe, probing) = (probe.clone(), probing.clone());
+        std::thread::spawn(move || {
+            let mut lat = Vec::new();
+            let mut i = 0;
+            while probing.load(Ordering::Relaxed) == 1 {
+                let t = Instant::now();
+                probe.commit_wait(vec![set(i % 1000, i)]).unwrap();
+                lat.push(t.elapsed().as_secs_f64() * 1e3);
+                i += 1;
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            lat
         })
-        .collect();
-    let ns: Vec<u64> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+    };
+    let started = Instant::now();
+    // One thread submits for every store, as the server's single JavaScript thread does: store i loads
+    // ids/(i % 4 + 1), then updates as many, keeping up to `inflight_limit()` commits in flight per store.
+    let ns: Vec<u64> = (0..k as u64).map(|i| ids / (i % 4 + 1)).collect();
+    let inflight: Vec<Arc<AtomicU64>> = (0..k).map(|_| Arc::new(AtomicU64::new(0))).collect();
+    let progress = Arc::new((std::sync::Mutex::new(()), std::sync::Condvar::new()));
+    let mut next = vec![0u64; k];
+    loop {
+        let mut submitted = false;
+        let mut finished = true;
+        for (i, s) in stores.iter().enumerate() {
+            let n = ns[i];
+            if next[i] >= 2 * n {
+                continue;
+            }
+            finished = false;
+            let total: u64 = inflight.iter().map(|f| f.load(Ordering::Acquire)).sum();
+            if inflight[i].load(Ordering::Acquire) >= u64::from(inflight_limit())
+                || total >= total_inflight_limit()
+            {
+                continue;
+            }
+            let from = next[i];
+            let to = (from + BATCH).min(if from < n { n } else { 2 * n });
+            let recs: Vec<Record> = (from..to)
+                .map(|j| {
+                    if j < n {
+                        set(j, Rng(j).next() % (1 << 32))
+                    } else {
+                        let mut r = Rng((j - n) ^ 0x5555);
+                        set(r.next() % n, r.next() % (1 << 32))
+                    }
+                })
+                .collect();
+            next[i] = to;
+            inflight[i].fetch_add(1, Ordering::AcqRel);
+            let (f, p) = (inflight[i].clone(), progress.clone());
+            s.commit(
+                recs,
+                Box::new(move |r| {
+                    r.unwrap();
+                    f.fetch_sub(1, Ordering::AcqRel);
+                    let _g = p.0.lock().unwrap();
+                    p.1.notify_all();
+                }),
+            );
+            submitted = true;
+        }
+        let all_idle = inflight.iter().all(|f| f.load(Ordering::Acquire) == 0);
+        if finished && all_idle {
+            break;
+        }
+        if !submitted {
+            let g = progress.0.lock().unwrap();
+            drop(
+                progress
+                    .1
+                    .wait_timeout(g, Duration::from_millis(5))
+                    .unwrap(),
+            );
+        }
+    }
     let secs = started.elapsed().as_secs_f64();
+    probing.store(0, Ordering::Relaxed);
+    let mut lat = prober.join().unwrap();
+    lat.sort_by(f64::total_cmp);
+    let pct = |p: f64| lat[((lat.len() - 1) as f64 * p) as usize];
+    let latency = format!(
+        "\"probe_commits\":{},\"probe_p50_ms\":{:.2},\"probe_p99_ms\":{:.2},\"probe_max_ms\":{:.2}",
+        lat.len(),
+        pct(0.5),
+        pct(0.99),
+        lat[lat.len() - 1]
+    );
+    probe.close();
     let mut rng = Rng(3);
     let mut per = Vec::new();
     for (s, n) in stores.iter().zip(&ns) {
@@ -604,7 +683,7 @@ fn multi(dir: &Path, k: usize, entries: u64) {
     let rss_open = proc_kb("VmRSS:");
     drop(stores);
     println!(
-        "{{\"phase\":\"multi\",\"stores\":{k},\"secs\":{secs:.1},{},\"rss_closed_kb\":{},\"rss_before_close_kb\":{rss_open},\"pool_peak\":{},\"pool_active\":{active},\"pool_frozen\":{frozen},\"cache\":{cache},\"per_store\":[{}]}}",
+        "{{\"phase\":\"multi\",\"stores\":{k},\"secs\":{secs:.1},{latency},{},\"rss_closed_kb\":{},\"rss_before_close_kb\":{rss_open},\"pool_peak\":{},\"pool_active\":{active},\"pool_frozen\":{frozen},\"cache\":{cache},\"per_store\":[{}]}}",
         mem_json(),
         proc_kb("VmRSS:"),
         peak.load(Ordering::Relaxed),
