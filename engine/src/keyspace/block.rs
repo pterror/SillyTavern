@@ -119,9 +119,9 @@ impl Block {
         u32::from_le_bytes(self.bytes[at..at + 4].try_into().unwrap()) as usize
     }
 
-    /// Decodes the entry at `at`, whose key shares a prefix with `key` (the entry before it), into `key`.
-    /// Returns the value and where the next entry starts.
-    fn decode(&self, at: usize, key: &mut Vec<u8>) -> Result<(Val, usize), String> {
+    /// Decodes the key of the entry at `at`, whose key shares a prefix with `key` (the entry before it), into
+    /// `key`. Returns where its value starts (decoded only when asked for) and where the next entry starts.
+    fn decode(&self, at: usize, key: &mut Vec<u8>) -> Result<(usize, usize), String> {
         let buf = &self.bytes[..self.entries_end];
         let mut p = at;
         let bad = || "entry doesn't decode".to_string();
@@ -136,8 +136,21 @@ impl Block {
         key.truncate(shared);
         key.extend_from_slice(suffix);
         p += unshared;
-        let val = Val::decode(buf, &mut p).ok_or_else(bad)?;
-        Ok((val, p))
+        let val_at = p;
+        let tag = get_uvarint(buf, &mut p).map_err(|_| bad())?;
+        let len = usize::try_from(tag >> 3).map_err(|_| bad())?;
+        p = p
+            .checked_add(len)
+            .filter(|&e| e <= buf.len())
+            .ok_or_else(bad)?;
+        Ok((val_at, p))
+    }
+
+    /// The value starting at `at`.
+    fn value(&self, at: usize) -> Result<Val, String> {
+        let mut p = at;
+        Val::decode(&self.bytes[..self.entries_end], &mut p)
+            .ok_or_else(|| "a value doesn't decode".to_string())
     }
 
     fn restart_key(&self, i: usize) -> Result<Vec<u8>, String> {
@@ -152,7 +165,7 @@ pub struct Cursor {
     block: Arc<Block>,
     next: usize,
     pub key: Vec<u8>,
-    pub val: Val,
+    val_at: usize,
     pub valid: bool,
 }
 
@@ -162,11 +175,16 @@ impl Cursor {
             block,
             next: 0,
             key: Vec::new(),
-            val: Val::Del,
+            val_at: 0,
             valid: false,
         };
         c.advance()?;
         Ok(c)
+    }
+
+    /// The current entry's value.
+    pub fn val(&self) -> Result<Val, String> {
+        self.block.value(self.val_at)
     }
 
     /// At the first entry whose key is at least `target`.
@@ -190,7 +208,7 @@ impl Cursor {
             block,
             next: start,
             key: Vec::new(),
-            val: Val::Del,
+            val_at: 0,
             valid: false,
         };
         c.advance()?;
@@ -205,8 +223,8 @@ impl Cursor {
             self.valid = false;
             return Ok(());
         }
-        let (val, next) = self.block.decode(self.next, &mut self.key)?;
-        (self.val, self.next, self.valid) = (val, next, true);
+        let (val_at, next) = self.block.decode(self.next, &mut self.key)?;
+        (self.val_at, self.next, self.valid) = (val_at, next, true);
         Ok(())
     }
 }
@@ -230,7 +248,7 @@ mod tests {
         for i in 0..100 {
             let c = Cursor::seek(block.clone(), &key(i)).unwrap();
             assert!(c.valid && c.key == key(i));
-            assert_eq!(c.val, Val::Put(i.to_le_bytes().to_vec()));
+            assert_eq!(c.val().unwrap(), Val::Put(i.to_le_bytes().to_vec()));
             // Between key(i - 1) and key(i).
             let mut gap = key(i);
             *gap.last_mut().unwrap() -= 1;

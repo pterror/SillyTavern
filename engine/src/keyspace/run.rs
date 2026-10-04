@@ -285,7 +285,8 @@ impl Run {
     }
 
     fn child(&self, c: &Cursor) -> KsResult<Handle> {
-        Handle::from_val(&c.val).ok_or_else(|| self.corrupt("index entry isn't a handle".into()))
+        Handle::from_val(&c.val().map_err(|e| self.corrupt(e))?)
+            .ok_or_else(|| self.corrupt("index entry isn't a handle".into()))
     }
 
     /// The run's value for `key`.
@@ -303,7 +304,10 @@ impl Run {
             block = self.read_block(self.child(&c)?, kind, Some(cache), Some(counts))?;
         }
         let c = Cursor::seek(block, key).map_err(|e| self.corrupt(e))?;
-        Ok((c.valid && c.key == key).then_some(c.val))
+        if c.valid && c.key == key {
+            return Ok(Some(c.val().map_err(|e| self.corrupt(e))?));
+        }
+        Ok(None)
     }
 }
 
@@ -312,7 +316,7 @@ impl Run {
 /// A sorted stream of entries, the current one at `key()`.
 pub trait Source {
     fn key(&self) -> Option<&[u8]>;
-    fn val(&self) -> &Val;
+    fn val(&self) -> KsResult<Val>;
     fn advance(&mut self) -> KsResult<()>;
 }
 
@@ -387,8 +391,12 @@ impl Source for RunIter<'_> {
             .map(|c| c.key.as_slice())
     }
 
-    fn val(&self) -> &Val {
-        &self.path.last().unwrap().val
+    fn val(&self) -> KsResult<Val> {
+        self.path
+            .last()
+            .unwrap()
+            .val()
+            .map_err(|e| self.run.corrupt(e))
     }
 
     fn advance(&mut self) -> KsResult<()> {
@@ -417,8 +425,8 @@ impl Source for VecSource {
         self.entries.get(self.at).map(|(k, _)| k.as_slice())
     }
 
-    fn val(&self) -> &Val {
-        &self.entries[self.at].1
+    fn val(&self) -> KsResult<Val> {
+        Ok(self.entries[self.at].1.clone())
     }
 
     fn advance(&mut self) -> KsResult<()> {
@@ -451,7 +459,7 @@ impl<'a> Merge<'a> {
         let mut vals = Vec::new();
         for s in &mut self.sources {
             if s.key() == Some(key.as_slice()) {
-                vals.push(s.val().clone());
+                vals.push(s.val()?);
                 s.advance()?;
             }
         }
