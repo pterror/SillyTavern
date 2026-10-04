@@ -8,6 +8,7 @@ static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 pub mod keyspace;
 pub mod log;
+pub mod search;
 pub mod store;
 // Measurement builds are programs of their own, without node to provide Node-API.
 #[cfg(not(feature = "measure"))]
