@@ -542,6 +542,8 @@ pub mod test_codes {
     /// Library field i is code `LIBRARY + i`; a tag's name is `TAG_NAME`.
     pub const LIBRARY: u64 = 1000;
     pub const TAG_NAME: u64 = 1100;
+    /// The list fields: card tags and alternate greetings.
+    pub const CARD_TAGS: u32 = 9;
     pub const ALTERNATE_GREETINGS: u32 = 10;
 
     pub fn field(c: u64) -> Option<SearchField> {
@@ -557,7 +559,7 @@ pub mod test_codes {
         (!def.joined).then_some(SearchField {
             scope: Scope::LIBRARY,
             field: i,
-            list: i == ALTERNATE_GREETINGS,
+            list: i == CARD_TAGS || i == ALTERNATE_GREETINGS,
         })
     }
 
