@@ -14,6 +14,12 @@ use crate::store::derive::View;
 use crate::store::kinds::{ITEM_SEPARATOR, key, parse_loc, test_codes};
 use crate::store::{Store, StoreConfig, StoreResult};
 
+/// The phrase structures are a process-wide switch: tests here take turns.
+fn turn() -> std::sync::MutexGuard<'static, ()> {
+    static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    TURN.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn temp_dir(name: &str) -> PathBuf {
     static N: AtomicU64 = AtomicU64::new(0);
     let dir = std::env::temp_dir().join(format!(
@@ -312,6 +318,7 @@ impl std::fmt::Debug for Query {
 
 #[test]
 fn results_equal_a_scan_of_every_document() {
+    let _turn = turn();
     let dir = temp_dir("scan");
     let lib = build(&dir, 1, 160);
     for clauses in queries() {
@@ -321,6 +328,7 @@ fn results_equal_a_scan_of_every_document() {
 
 #[test]
 fn filters_and_negations_restrict_matches() {
+    let _turn = turn();
     let dir = temp_dir("filters");
     let lib = build(&dir, 2, 120);
     let c = |t: &str| clause(t, None, false, false);
@@ -349,6 +357,7 @@ fn filters_and_negations_restrict_matches() {
 
 #[test]
 fn edits_flushes_merges_and_reopening_keep_results_equal() {
+    let _turn = turn();
     let dir = temp_dir("edits");
     let mut lib = build(&dir, 3, 100);
     let mut r = Rng(33);
@@ -430,6 +439,7 @@ fn edits_flushes_merges_and_reopening_keep_results_equal() {
 
 #[test]
 fn one_word_reads_its_best_postings_first_and_other_queries_mark_what_the_limit_cut() {
+    let _turn = turn();
     let dir = temp_dir("limit");
     let lib = build(&dir, 4, 200);
     let c = |t: &str| clause(t, None, false, false);
@@ -466,6 +476,7 @@ fn one_word_reads_its_best_postings_first_and_other_queries_mark_what_the_limit_
 
 #[test]
 fn a_words_total_is_its_counter_when_nothing_restricts_it() {
+    let _turn = turn();
     let dir = temp_dir("counter");
     let lib = build(&dir, 6, 150);
     let c = |t: &str| clause(t, None, false, false);
@@ -544,6 +555,7 @@ impl SortKey for TestOrder {
 
 #[test]
 fn a_sort_key_orders_matches_by_sorting_or_by_walking() {
+    let _turn = turn();
     let dir = temp_dir("sort");
     let lib = build(&dir, 5, 150);
     let mut r = Rng(55);
@@ -585,6 +597,7 @@ fn a_sort_key_orders_matches_by_sorting_or_by_walking() {
 
 #[test]
 fn a_field_edit_writes_only_its_changed_terms_and_other_kinds_write_no_postings() {
+    let _turn = turn();
     let dir = temp_dir("writes");
     let s = open(&dir);
     let code = test_codes::LIBRARY + 2;
@@ -626,4 +639,30 @@ fn a_field_edit_writes_only_its_changed_terms_and_other_kinds_write_no_postings(
     // terms "re", "red" go, "blue", "bl", "blu", "blue" come (posting, directory, document counter and
     // frequency each); plus the text's head, version, and the old value's dead bytes.
     assert_eq!(inserted(&s) - before, 3 * 4 + 4 * 4 + 3);
+}
+
+#[test]
+fn phrases_through_pairs_and_pair_filters_equal_a_scan() {
+    let _turn = turn();
+    use super::phrase_mode;
+    phrase_mode::set_write(phrase_mode::PAIRS | phrase_mode::FINGERPRINTS);
+    let dir = temp_dir("pairs");
+    let lib = build(&dir, 7, 160);
+    let c = |t: &str| clause(t, None, false, false);
+    let phrases = [
+        vec![clause("dark knight", None, false, true), c("the")],
+        vec![clause("dark knight", None, false, true)],
+        vec![clause("the dark knight", None, false, true), c("love")],
+        vec![c("foo-bar"), c("x9")],
+        vec![c("o'neil"), c("the")],
+        vec![clause("knight the", None, false, true), c("dragon")],
+    ];
+    for mode in [0, phrase_mode::PAIRS, phrase_mode::FINGERPRINTS] {
+        phrase_mode::set_read(mode);
+        for clauses in &phrases {
+            check(&lib, &query(clauses.clone(), 6));
+        }
+    }
+    phrase_mode::set_read(0);
+    phrase_mode::set_write(0);
 }

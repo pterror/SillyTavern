@@ -128,6 +128,89 @@ pub static CHAT_FIELDS: &[FieldDef] = &[field("text", 1.0, false, 40.0, 3.0)];
 pub enum TermKind {
     Exact = 0,
     Gram = 1,
+    /// Two adjacent tokens, joined by `PAIR_SEPARATOR` (measurement builds' phrase evaluation).
+    Pair = 2,
+}
+
+pub const PAIR_SEPARATOR: char = '\u{1}';
+
+/// Phrase structures written and read, for comparing them (measurement builds only; set before opening a
+/// store and kept for its life): `PAIRS` writes and reads pair postings, `FINGERPRINTS` per-field pair filters.
+#[cfg(any(test, feature = "measure"))]
+pub mod phrase_mode {
+    use std::sync::atomic::{AtomicU8, Ordering};
+
+    pub const PAIRS: u8 = 1;
+    pub const FINGERPRINTS: u8 = 2;
+    static WRITE: AtomicU8 = AtomicU8::new(0);
+    static READ: AtomicU8 = AtomicU8::new(0);
+
+    pub fn set_write(m: u8) {
+        WRITE.store(m, Ordering::Relaxed);
+    }
+    pub fn set_read(m: u8) {
+        READ.store(m, Ordering::Relaxed);
+    }
+    pub fn write() -> u8 {
+        WRITE.load(Ordering::Relaxed)
+    }
+    pub fn read() -> u8 {
+        READ.load(Ordering::Relaxed)
+    }
+}
+
+#[cfg(not(any(test, feature = "measure")))]
+pub mod phrase_mode {
+    pub const PAIRS: u8 = 1;
+    pub const FINGERPRINTS: u8 = 2;
+    pub fn write() -> u8 {
+        0
+    }
+    pub fn read() -> u8 {
+        0
+    }
+}
+
+/// A field's adjacent-pair filter: then document, field → bloom bytes.
+pub fn fingerprint(s: Scope, doc: u64, field: u32) -> Vec<u8> {
+    let mut k = scoped(key::SEARCH_FINGERPRINT, s);
+    put_u64(&mut k, doc);
+    put_u64(&mut k, u64::from(field));
+    k
+}
+
+fn pair_hashes(a: &str, b: &str) -> [u64; 3] {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in a.bytes().chain([1u8]).chain(b.bytes()) {
+        h ^= u64::from(byte);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    let h2 = h.rotate_left(31).wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+    [h, h.wrapping_add(h2), h.wrapping_add(h2.wrapping_mul(2))]
+}
+
+/// A bloom filter of adjacent token pairs: 8 bits per pair, 3 probes (about 3% false positives).
+pub fn pair_filter(pairs: &[(String, String)]) -> Vec<u8> {
+    let bits = (pairs.len() * 8).next_power_of_two().max(8);
+    let mut f = vec![0u8; bits / 8];
+    for (a, b) in pairs {
+        for h in pair_hashes(a, b) {
+            let i = (h % bits as u64) as usize;
+            f[i / 8] |= 1 << (i % 8);
+        }
+    }
+    f
+}
+
+pub fn pair_maybe_in(filter: &[u8], a: &str, b: &str) -> bool {
+    let bits = filter.len() * 8;
+    if bits == 0 {
+        return false;
+    }
+    pair_hashes(a, b).iter().all(|h| {
+        let i = (h % bits as u64) as usize;
+        filter[i / 8] >> (i % 8) & 1 == 1
+    })
 }
 
 // ---- keys ----

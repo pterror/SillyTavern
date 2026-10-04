@@ -35,6 +35,10 @@ trait Generator {
     /// Every tag: id, name.
     fn tags(&self) -> &[(u64, String)];
     fn card(&mut self) -> Card;
+    /// Words of the text by rank of frequency (synth only).
+    fn vocab(&self) -> &[String] {
+        &[]
+    }
 }
 
 const NAME: usize = 0;
@@ -526,6 +530,10 @@ impl Generator for Synth {
         &self.tags
     }
 
+    fn vocab(&self) -> &[String] {
+        &self.vocab
+    }
+
     fn card(&mut self) -> Card {
         let i = self.i;
         self.i += 1;
@@ -757,6 +765,10 @@ fn main() {
             total += c.fields.iter().flatten().map(String::len).sum::<usize>();
         }
         println!("{total}");
+        return;
+    }
+    if args[1] == "phrases" {
+        phrases(&args[2..]);
         return;
     }
     let dir = PathBuf::from(&args[1]);
@@ -1134,4 +1146,221 @@ fn probe(s: &Store) {
         "{{\"phase\":\"probe\",\"get_us\":{get_us:.1},\"scan1_us\":{scan_us:.1},\"runs\":{}}}",
         st.runs
     );
+}
+
+/// The phrase evaluation: `phrases <dir> <cards> [--reuse]` on the synth library, with pair postings and pair
+/// filters both written; each phrase query read the three ways (text checks, pairs, filters before text), each
+/// as the query's end (its last word a prefix) and inside it (before a negated word that matches nothing).
+/// `phrases writes <dir>` measures the entries one-word edits write with each structure on 2000 cards.
+fn phrases(args: &[String]) {
+    use st_engine::search::phrase_mode;
+    if args[0] == "writes" {
+        for (label, mode) in [
+            ("none", 0),
+            ("pairs", phrase_mode::PAIRS),
+            ("filters", phrase_mode::FINGERPRINTS),
+        ] {
+            phrase_mode::set_write(mode);
+            let dir = PathBuf::from(&args[1]).join(label);
+            let _ = std::fs::remove_dir_all(&dir);
+            let s = Store::open(&dir, StoreConfig::default()).unwrap();
+            s.wait_ready().unwrap();
+            let mut g = generator("synth", 2000);
+            let tags = g.tags().to_vec();
+            commit_all(
+                &s,
+                tags.iter()
+                    .map(|(id, n)| text_value(*id, test_codes::TAG_NAME, n)),
+                1000,
+            );
+            commit_all(
+                &s,
+                (0..2000).flat_map(|i| card_records(i as u64 + 1, &g.card())),
+                200,
+            );
+            println!("{{\"phase\":\"phrase-writes\",\"structures\":\"{label}\"}}");
+            writes(&s, 2000);
+            s.close();
+            drop(s);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        return;
+    }
+    phrase_mode::set_write(phrase_mode::PAIRS | phrase_mode::FINGERPRINTS);
+    let dir = PathBuf::from(&args[0]);
+    let cards: usize = args[1].parse().unwrap();
+    let reuse = args.iter().any(|a| a == "--reuse") && dir.exists();
+    if !reuse {
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    let s = Store::open(&dir, StoreConfig::default()).unwrap();
+    s.wait_ready().unwrap();
+    let mut g = generator("synth", cards);
+    let tags = g.tags().to_vec();
+    let vocab: Vec<String> = g.vocab().iter().map(|w| w.to_lowercase()).collect();
+    if !reuse {
+        load_and_space(&s, &dir, "synth", cards, g.as_mut(), &tags);
+        // Space of the pair postings (term kind 2) and the pair filters, by structure.
+        let mut pair_bytes: BTreeMap<u64, u64> = BTreeMap::new();
+        for structure in [
+            key::SEARCH_POSTING,
+            key::SEARCH_DIRECTORY,
+            key::SEARCH_DOC_FREQ,
+            key::SEARCH_TERM_DOCS,
+            key::SEARCH_FINGERPRINT,
+        ] {
+            let start = key::of(structure);
+            let end = key::prefix_end(&start);
+            let mut from = start.clone();
+            loop {
+                let page = s.scan(&from, &end, 65536).unwrap();
+                for (k, v) in &page {
+                    let pair = structure == key::SEARCH_FINGERPRINT || k.get(5) == Some(&2);
+                    if pair {
+                        *pair_bytes.entry(structure).or_default() += (k.len() + v.len()) as u64;
+                    }
+                }
+                match page.last() {
+                    Some((k, _)) if page.len() == 65536 => {
+                        from = k.clone();
+                        from.push(0);
+                    }
+                    _ => break,
+                }
+            }
+        }
+        let parts: Vec<String> = pair_bytes
+            .iter()
+            .map(|(k, b)| format!("\"{k}\":{b}"))
+            .collect();
+        println!("{{\"phase\":\"phrase-space\",{}}}", parts.join(","));
+    }
+    // (a) a common phrase, (b) common words in a rare phrase, (c) a rare phrase.
+    let cases = [
+        ("common", format!("{} {}", vocab[0], vocab[1])),
+        ("rare-of-common", "dark knight".to_string()),
+        ("rare-of-common", "the dragon".to_string()),
+        ("rare", format!("{} {}", vocab[1500], vocab[0])),
+    ];
+    let mut qs: Vec<(String, Query)> = Vec::new();
+    for (case, text) in &cases {
+        for inner in [false, true] {
+            let mut cl = c(text);
+            cl.quoted = true;
+            let mut clauses = vec![cl];
+            if inner {
+                let mut none = c("zzqqxnothing");
+                none.negate = true;
+                clauses.push(none);
+            }
+            let label = format!(
+                "{case} {:?}{}",
+                text,
+                if inner { " (inside)" } else { " (end)" }
+            );
+            qs.push((
+                label,
+                Query {
+                    scope: Scope::LIBRARY,
+                    clauses,
+                    filters: Vec::new(),
+                    order: Order::Relevance,
+                    limit: 50,
+                    after: None,
+                    limits: Limits::default(),
+                },
+            ));
+        }
+    }
+    // The scan's answers.
+    let tag_names: BTreeMap<u64, Vec<u8>> = tags
+        .iter()
+        .map(|(id, n)| (*id, n.as_bytes().to_vec()))
+        .collect();
+    let mut checkers: Vec<Checker> = qs
+        .iter()
+        .map(|(_, q)| Checker::new(q, &tag_names, 50))
+        .collect();
+    for pass in 0..2 {
+        let mut g = generator("synth", cards);
+        for i in 0..cards {
+            let card = g.card();
+            let f = fields_of(&card);
+            let d = Doc::new(&f, Scope::LIBRARY);
+            let t: BTreeSet<u64> = card.tags.iter().copied().collect();
+            for ch in &mut checkers {
+                if pass == 0 {
+                    ch.stats(&d, &t);
+                } else {
+                    ch.matches(i as u64 + 1, &d, &t);
+                }
+            }
+        }
+    }
+    let answers: Vec<(Vec<(u64, f64)>, u64)> = checkers.into_iter().map(Checker::result).collect();
+    for (mode_label, mode) in [
+        ("text", 0),
+        ("pairs", phrase_mode::PAIRS),
+        ("filters", phrase_mode::FINGERPRINTS),
+    ] {
+        phrase_mode::set_read(mode);
+        for ((label, q), (want, total)) in qs.iter().zip(&answers) {
+            let f = s.search(q).unwrap();
+            let mut times = Vec::new();
+            for _ in 0..31 {
+                let t = Instant::now();
+                s.search(q).unwrap();
+                times.push(t.elapsed());
+            }
+            times.sort();
+            let got: Vec<(u64, f64)> = f.hits.iter().map(|h| (h.doc, h.score)).collect();
+            println!(
+                "{{\"phase\":\"phrase\",\"read\":\"{mode_label}\",\"q\":{label:?},\"median_us\":{:.0},\"p99_us\":{:.0},\
+                 \"total\":{},\"total_exact\":{},\"brute_total\":{total},\"page_exact\":{},\"page_equal\":{},\
+                 \"texts\":{},\"gets\":{},\"work\":{}}}",
+                times[15].as_secs_f64() * 1e6,
+                times[30].as_secs_f64() * 1e6,
+                f.total,
+                f.total_exact,
+                f.page_exact,
+                got == want[..want.len().min(50)],
+                f.texts,
+                f.gets,
+                f.work
+            );
+        }
+    }
+    phrase_mode::set_read(0);
+    // The text check itself: reading a field's value, and finding a phrase in it.
+    let code = test_codes::LIBRARY + DESCRIPTION as u64;
+    let phrase: Vec<String> = vec!["dark".into(), "knight".into()];
+    let (mut read, mut check, mut old_check, mut n) = (0.0, 0.0, 0.0, 0);
+    for i in 0..2000u64 {
+        let doc = 1 + (i * 7919) % cards as u64;
+        let t = Instant::now();
+        let Some(text) = s.text(doc, &FieldRef::Code(code)).unwrap() else {
+            continue;
+        };
+        read += t.elapsed().as_secs_f64();
+        let t = Instant::now();
+        std::hint::black_box(st_engine::search::text::phrase_in(
+            &text, &phrase, true, false,
+        ));
+        check += t.elapsed().as_secs_f64();
+        let t = Instant::now();
+        let toks = tokens(&text);
+        std::hint::black_box(
+            toks.windows(2)
+                .any(|w| w[0] == phrase[0] && w[1].starts_with(phrase[1].as_str())),
+        );
+        old_check += t.elapsed().as_secs_f64();
+        n += 1;
+    }
+    println!(
+        "{{\"phase\":\"text-check\",\"read_us\":{:.1},\"check_us\":{:.1},\"collecting_check_us\":{:.1}}}",
+        read * 1e6 / f64::from(n),
+        check * 1e6 / f64::from(n),
+        old_check * 1e6 / f64::from(n)
+    );
+    s.close();
 }
