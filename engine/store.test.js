@@ -128,6 +128,36 @@ for (const [name, engine] of Object.entries(bindings)) {
         await assert.rejects(log.read(log.durableEnd()), /not durable/);
         await log.close();
     });
+
+    test(`${name}: an owner's messages are searched by word and phrase, folded, and survive a reopen`, async () => {
+        const dir = path.join(tmp, `${name}-search`);
+        let store = await engine.Store.open(dir);
+        const say = (id, owner, text) => ({ kind: 'messageAppend', id, owner, time: 1, text, flags: 0, session: 1n, user: 1n });
+        await store.commit([
+            say(1n, 5n, 'The Dragon sleeps.'),
+            say(2n, 5n, 'a dragon? No, a drake'),
+            say(3n, 5n, 'Café au lait \ud800 dragon dragon'),
+            say(4n, 6n, 'dragon of another owner'),
+        ]);
+        const search = (clauses, extra = {}) => store.search({ scope: { chat: 5n }, clauses, limit: 10, ...extra });
+        let found = await search([{ text: 'dragon' }]);
+        assert.deepEqual(found.hits.map(h => h.doc), [3n, 1n, 2n]);
+        assert.equal(found.total, 3);
+        assert.ok(found.totalExact && found.pageExact && !found.more);
+        assert.deepEqual((await search([{ text: 'cafe' }, { text: 'dragon' }])).hits.map(h => h.doc), [3n]);
+        assert.deepEqual((await search([{ text: 'the dragon', quoted: true }])).hits.map(h => h.doc), [1n]);
+        assert.deepEqual((await search([{ text: 'dragon' }, { text: 'drake', negate: true }])).hits.map(h => h.doc), [3n, 1n]);
+        const page = await search([{ text: 'dragon' }], { limit: 1 });
+        assert.ok(page.more);
+        const next = await search([{ text: 'dragon' }], { limit: 1, after: page.hits[0] });
+        assert.deepEqual(next.hits.map(h => h.doc), [1n]);
+        await assert.rejects(async () => store.search({ scope: 'nope', clauses: [], limit: 1 }), /no search scope/);
+        await store.close();
+        store = await engine.Store.open(dir);
+        found = await search([{ text: 'DRAGON' }]);
+        assert.deepEqual(found.hits.map(h => h.doc), [3n, 1n, 2n]);
+        await store.close();
+    });
 }
 
 test('native and wasm write the same bytes', async () => {

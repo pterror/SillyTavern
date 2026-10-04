@@ -19,6 +19,8 @@ use napi_derive::napi;
 use crate::log::format::{
     FieldRef, MAX_SAFE, Record, Slot, Ty, Value, kind_by_name, wtf8_from_utf16, wtf8_to_utf16,
 };
+use crate::search::Scope;
+use crate::search::query::{After, Clause, Filter, Found, Limits, Order, Query};
 use crate::store::{Store as Inner, StoreConfig, StoreError, StoreResult};
 
 fn invalid(msg: String) -> Error {
@@ -420,6 +422,128 @@ macro_rules! object_type_name {
 }
 object_type_name!(RecordAt);
 object_type_name!(Page);
+object_type_name!(SearchPage);
+
+/// A page of search results as JavaScript sees it.
+pub struct SearchPage(Found);
+
+impl ToNapiValue for SearchPage {
+    unsafe fn to_napi_value(raw_env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
+        let env = Env::from_raw(raw_env);
+        let f = val.0;
+        let mut hits = Vec::with_capacity(f.hits.len());
+        for h in f.hits {
+            let mut o = Object::new(&env)?;
+            o.set("doc", h.doc)?;
+            o.set("score", h.score)?;
+            hits.push(o);
+        }
+        let mut obj = Object::new(&env)?;
+        obj.set("hits", hits)?;
+        obj.set("total", f.total as f64)?;
+        obj.set("totalExact", f.total_exact)?;
+        obj.set("pageExact", f.page_exact)?;
+        obj.set("more", f.more)?;
+        unsafe { Object::to_napi_value(raw_env, obj) }
+    }
+}
+
+fn ids_arg(name: &str, v: Option<Vec<Unknown>>) -> Result<Option<Vec<u64>>> {
+    v.map(|xs| xs.into_iter().map(|x| integer(name, x)).collect())
+        .transpose()
+}
+
+fn query_from_js(q: &Object) -> Result<Query> {
+    let scope = match q.get::<Unknown>("scope")? {
+        None => return Err(invalid("a search needs a scope".into())),
+        Some(v) if v.get_type()? == ValueType::String => match String::from_unknown(v)?.as_str() {
+            "library" => Scope::LIBRARY,
+            "tags" => Scope::TAGS,
+            other => return Err(invalid(format!("no search scope {other}"))),
+        },
+        Some(v) => {
+            let o = Object::from_unknown(v)?;
+            let owner = o.get::<Unknown>("chat")?.ok_or_else(|| {
+                invalid("a search scope is 'library', 'tags' or { chat: owner }".into())
+            })?;
+            Scope::chat(integer("chat", owner)?)
+        }
+    };
+    let nfields = scope.fields().len() as u64;
+    let mut clauses = Vec::new();
+    for c in q.get::<Vec<Object>>("clauses")?.unwrap_or_default() {
+        let text = string(
+            "text",
+            c.get::<Unknown>("text")?
+                .ok_or_else(|| invalid("a clause needs text".into()))?,
+        )?;
+        let fields = match c.get::<Vec<Unknown>>("fields")? {
+            None => None,
+            Some(fs) => Some(
+                fs.into_iter()
+                    .map(|f| {
+                        let f = integer("field", f)?;
+                        if f >= nfields {
+                            return Err(invalid(format!("the scope has no field {f}")));
+                        }
+                        Ok(f as u32)
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+            ),
+        };
+        clauses.push(Clause {
+            text,
+            fields,
+            negate: c.get::<bool>("negate")?.unwrap_or(false),
+            quoted: c.get::<bool>("quoted")?.unwrap_or(false),
+        });
+    }
+    let mut filters = Vec::new();
+    if let Some(f) = q.get::<Object>("filters")? {
+        if let Some(t) = ids_arg("allTags", f.get("allTags")?)? {
+            filters.push(Filter::AllTags(t));
+        }
+        if let Some(t) = ids_arg("anyTag", f.get("anyTag")?)? {
+            filters.push(Filter::AnyTag(t));
+        }
+        if let Some(t) = ids_arg("noTag", f.get("noTag")?)? {
+            filters.push(Filter::NoTag(t));
+        }
+        if let Some(t) = ids_arg("ids", f.get("ids")?)? {
+            filters.push(Filter::Ids(t));
+        }
+        if let Some(t) = ids_arg("notIds", f.get("notIds")?)? {
+            filters.push(Filter::NotIds(t));
+        }
+    }
+    let limit = match q.get::<Unknown>("limit")? {
+        Some(v) => integer("limit", v)? as usize,
+        None => return Err(invalid("a search needs a limit".into())),
+    };
+    let after = match q.get::<Object>("after")? {
+        None => None,
+        Some(a) => {
+            let score: f64 = a
+                .get("score")?
+                .ok_or_else(|| invalid("after needs a score".into()))?;
+            let doc = integer(
+                "doc",
+                a.get::<Unknown>("doc")?
+                    .ok_or_else(|| invalid("after needs a doc".into()))?,
+            )?;
+            Some(After::Score(score, doc))
+        }
+    };
+    Ok(Query {
+        scope,
+        clauses,
+        filters,
+        order: Order::Relevance,
+        limit,
+        after,
+        limits: Limits::default(),
+    })
+}
 
 #[napi(object)]
 pub struct StoreStats {
@@ -543,6 +667,19 @@ impl Store {
     pub fn version<'env>(&self, env: &'env Env, entity: Unknown) -> Result<Object<'env>> {
         let e = integer("entity", entity)?;
         derived(env, &self.store, move |s| s.version(e))
+    }
+
+    /// A page of search results in relevance order: `{ scope: 'library' | 'tags' | { chat: owner }, clauses:
+    /// [{ text, fields?, negate?, quoted? }], filters?: { allTags?, anyTag?, noTag?, ids?, notIds? }, limit,
+    /// after? }` (`after` the last hit of the page before). Resolves with `{ hits: [{ doc, score }], total,
+    /// totalExact, pageExact, more }`.
+    #[napi(
+        ts_args_type = "query: object",
+        ts_return_type = "Promise<{ hits: { doc: bigint, score: number }[], total: number, totalExact: boolean, pageExact: boolean, more: boolean }>"
+    )]
+    pub fn search<'env>(&self, env: &'env Env, query: Object) -> Result<Object<'env>> {
+        let q = query_from_js(&query)?;
+        derived(env, &self.store, move |s| s.search(&q).map(SearchPage))
     }
 
     /// The position after the last durable record.
