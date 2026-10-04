@@ -625,8 +625,8 @@ fn a_field_edit_writes_only_its_changed_terms_and_other_kinds_write_no_postings(
     s.commit_wait(vec![assign(7, 1, true)]).unwrap();
     s.commit_wait(vec![rec("fav", vec![Value::Id(7), Value::Bit(true)])])
         .unwrap();
-    // Membership both ways and a count; the fav and the version.
-    assert_eq!(inserted(&s) - before, 3 + 2);
+    // Membership both ways, its block map and a count; the fav and the version.
+    assert_eq!(inserted(&s) - before, 4 + 2);
     for e in 100..150 {
         s.commit_wait(vec![assign(e, 1, true)]).unwrap();
     }

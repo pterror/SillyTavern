@@ -19,7 +19,7 @@
 //! inexact; totals are exact where the counts give them or the walk finished, estimates otherwise.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use super::text::{GRAM_MAX, GRAM_MIN, char_len, first_chars, phrase_in, tokens};
@@ -34,7 +34,7 @@ use crate::store::kinds::{key, search_texts};
 use crate::store::{StoreError, StoreResult};
 
 /// Carriers of the matching tags up to which a word's query lists them all.
-const MEMBERS_LISTED: u64 = 8192;
+const MEMBERS_LISTED: u64 = 65536;
 
 /// Work a scan's start costs, in entries.
 pub const SEEK: u64 = 96;
@@ -571,7 +571,10 @@ fn members(tag: u64) -> Ids {
 
 /// Whether `doc` carries `tag`.
 fn carries(ctx: &mut Ctx, doc: u64, tag: u64) -> StoreResult<bool> {
-    Ok(ctx.get(&key::ids(key::MEMBER, tag, doc))?.is_some())
+    // The member block is read once per query for every candidate in its range.
+    let m = ctx.map(key::member_block(tag, doc))?;
+    Ok(m.binary_search_by_key(&key::member_slot(doc), |p| p.0)
+        .is_ok())
 }
 
 /// A document's posting for a term: (field, tf, length code) by field.
@@ -715,20 +718,34 @@ impl Joined {
         if self.listed.is_some() {
             return Ok(self.complete);
         }
-        let mut by_doc: BTreeMap<u64, f64> = BTreeMap::new();
+        // Each tag's carriers from its member blocks, in id order; summed across tags.
+        let mut items: Vec<(u64, f64)> = Vec::new();
         for &(tag, j) in &self.tags {
-            let mut ids = members(tag);
-            ids.seek(ctx, 0)?;
-            while let Some(e) = ids.doc() {
+            let prefix = key::id(key::MEMBER_BLOCK, tag);
+            let mut cur = Cursor::new(&prefix);
+            cur.seek(ctx, &prefix)?;
+            while let Some((k, v)) = cur.get() {
                 if ctx.work > until {
                     self.complete = false;
                     break;
                 }
-                *by_doc.entry(e).or_default() += j;
-                ids.seek(ctx, e + 1)?;
+                let mut at = prefix.len();
+                let block = u64_at(k, &mut at)?;
+                for (slot, _) in ctx.pairs(v)? {
+                    items.push((block << key::MEMBER_BITS | u64::from(slot), j));
+                }
+                cur.advance(ctx)?;
             }
         }
-        self.listed = Some(Listed::new(by_doc.into_iter().collect()));
+        items.sort_unstable_by_key(|x| x.0);
+        let mut merged: Vec<(u64, f64)> = Vec::with_capacity(items.len());
+        for (d, j) in items {
+            match merged.last_mut() {
+                Some(last) if last.0 == d => last.1 += j,
+                _ => merged.push((d, j)),
+            }
+        }
+        self.listed = Some(Listed::new(merged));
         Ok(self.complete)
     }
 }
@@ -1680,7 +1697,13 @@ impl Plan {
             .and_then(|j| j.listed.as_ref())
             .map(|l| l.items.iter().map(|&(d, s)| (s, d)).collect())
             .unwrap_or_default();
-        by_join.sort_by(|a, b| b.0.total_cmp(&a.0));
+        if self.pos[0]
+            .joined
+            .as_ref()
+            .is_some_and(|j| j.tags.len() > 1)
+        {
+            by_join.sort_by(|a, b| b.0.total_cmp(&a.0));
+        }
         let listed = self.pos[0]
             .joined
             .as_ref()
