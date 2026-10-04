@@ -494,8 +494,7 @@ pub struct Cursor {
     ctx: Ctx,
 }
 
-/// The tail file's write handle, kept by the thread that writes groups: under wasm a file descriptor belongs
-/// to the thread that opened it.
+/// The tail file's write handle.
 pub struct TailFile {
     file: u64,
     /// Whether `file` exists on disk.
@@ -535,6 +534,12 @@ impl TailFile {
             bytes += run.len() as u64;
         }
         handle.sync_data()?;
+        // Under wasm a file descriptor belongs to the thread that opened it, and groups are written from any of
+        // the engine's threads: open the file per group there.
+        #[cfg(target_family = "wasm")]
+        {
+            self.handle = None;
+        }
         let mut stats = shared.stats.lock().unwrap();
         stats.rounds += 1;
         stats.bytes += bytes;

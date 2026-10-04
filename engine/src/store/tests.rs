@@ -26,7 +26,6 @@ const SMALL: StoreConfig = StoreConfig {
         log_bytes: 8 << 10,
         fan_in: 3,
         block_size: 256,
-        merge_threads: 2,
         max_frozen: 1,
     },
     live_fraction: 0.5,
@@ -34,7 +33,7 @@ const SMALL: StoreConfig = StoreConfig {
 };
 
 fn small_pool() -> Arc<Pool> {
-    Pool::new(16 << 10, 64 << 10, 2, 2)
+    Pool::new(16 << 10, 64 << 10, 4, 1, 2, 2)
 }
 
 fn text(s: &str) -> Vec<u8> {
@@ -243,7 +242,8 @@ fn after_a_crash_replay_restores_every_acknowledged_commit() {
     let mut model = Model::default();
     let mut from = 0;
     for round in 0..6 {
-        let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
+        // A budget the workload never fills: flushes come from L, so the buffer holds what replay must redo.
+        let s = Store::open_in(&dir, SMALL, Pool::new(16 << 20, 64 << 10, 4, 1, 2, 2)).unwrap();
         s.wait_ready().unwrap();
         model.check(&s);
         if round > 0 {

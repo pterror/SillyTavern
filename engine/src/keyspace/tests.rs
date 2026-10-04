@@ -19,12 +19,11 @@ const SMALL: KsConfig = KsConfig {
     log_bytes: u64::MAX,
     fan_in: 3,
     block_size: 256,
-    merge_threads: 2,
     max_frozen: 2,
 };
 
 fn small_pool() -> Arc<Pool> {
-    Pool::new(16 << 10, 64 << 10, 2, 2)
+    Pool::new(16 << 10, 64 << 10, 4, 1, 2, 2)
 }
 
 struct NoHooks;
@@ -50,6 +49,18 @@ fn key(i: u64) -> Vec<u8> {
     let mut k = vec![7];
     put_u64(&mut k, i);
     k
+}
+
+/// As a store's sync step does: publish only once the pool has room.
+fn wait_for_room(pool: &Pool) {
+    loop {
+        let (active, frozen) = pool.buffered();
+        if active + frozen < 2 * pool.buffer_bytes as u64 {
+            return;
+        }
+        pool.request_room();
+        std::thread::sleep(std::time::Duration::from_micros(100));
+    }
 }
 
 /// A deterministic stream of puts, deletes and counter adds over 2000 keys; returns the model of what every
@@ -80,6 +91,7 @@ fn load(ks: &Keyspace, n: u64, model: &mut BTreeMap<Vec<u8>, Vec<u8>>, end: &mut
             None => model.remove(&k),
         };
         *end += 1;
+        wait_for_room(ks.pool());
         ks.insert([(k, v)], Some((*end, 1)));
     }
 }
@@ -158,7 +170,14 @@ fn runs_left_over_from_a_merge_and_unfinished_runs_are_removed_on_open() {
         b"half",
     )
     .unwrap();
-    let ks = open(&dir);
+    // Merges off: tiers are reckoned again after a reopen, so a merge could otherwise follow.
+    let ks = open_with(
+        &dir,
+        KsConfig {
+            fan_in: 1000,
+            ..SMALL
+        },
+    );
     check(&ks, &model);
     let mut names: Vec<String> = fs::read_dir(&dir)
         .unwrap()
@@ -175,8 +194,9 @@ fn runs_left_over_from_a_merge_and_unfinished_runs_are_removed_on_open() {
 #[test]
 fn a_missing_or_damaged_run_refuses_to_open() {
     let dir = temp_dir("damaged");
+    // Nothing merges: the runs stay one per flush.
     let unmerged = KsConfig {
-        merge_threads: 0,
+        fan_in: 1000,
         ..SMALL
     };
     let ks = open_with(&dir, unmerged);
@@ -223,7 +243,7 @@ fn a_missing_or_damaged_run_refuses_to_open() {
 
 #[test]
 fn keyspaces_sharing_a_pool_stay_within_its_budget_together() {
-    let pool = Pool::new(16 << 10, 64 << 10, 2, 2);
+    let pool = Pool::new(16 << 10, 64 << 10, 4, 1, 2, 2);
     let dirs: Vec<PathBuf> = (0..8).map(|i| temp_dir(&format!("pool{i}"))).collect();
     let all: Vec<Arc<Keyspace>> = dirs
         .iter()
@@ -249,8 +269,8 @@ fn keyspaces_sharing_a_pool_stay_within_its_budget_together() {
             peak = peak.max(active + frozen);
         }
     }
-    // An insert may pass 2B by its own entries before it waits.
-    assert!(peak <= 2 * (16 << 10) + 8 * 1024, "peak {peak}");
+    // A batch of inserts may pass 2B by its own entries (in a new chunk) before the next waits.
+    assert!(peak <= 2 * (16 << 10) + 64 * 1024, "peak {peak}");
     for (ks, model) in all.iter().zip(&models) {
         check(ks, model);
         assert!(ks.stats().flushes > 0);

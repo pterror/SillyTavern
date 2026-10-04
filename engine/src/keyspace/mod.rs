@@ -1,7 +1,7 @@
 //! P2, the derived keyspace (design `.plans/2026-10-03-storage-from-needs.md` 4.2–4.4): one shared in-memory
 //! buffer of entries sorted by key, flushed as one immutable run when the process's stores together buffer B
 //! (`Pool`; the largest buffer goes first) or this keyspace's log has passed `log_bytes` since its last flush;
-//! runs merged in tiers of `fan_in` on the keyspace's own threads; reads merging the buffer and every run.
+//! runs merged in tiers of `fan_in` on the process's engine threads (`exec`); reads merging the buffer and every run.
 //!
 //! Runs live in `<dir>/run-<first flush>-<last flush>.run` (16 hex digits each). A run is written as `.tmp`,
 //! synced, renamed and its directory synced, so a `.run` is always whole. A merge's output holds every flush its
@@ -10,20 +10,21 @@
 
 pub mod block;
 pub mod cache;
+pub mod exec;
+pub mod mem;
 pub mod pool;
 pub mod run;
 pub mod val;
 
-use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io;
-use std::ops::Bound;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, RwLock};
-use std::thread::JoinHandle;
+use std::sync::{Arc, Condvar, Mutex, OnceLock, RwLock};
 
 use cache::Cache;
+use exec::Activity;
+pub use mem::Mem;
 use pool::Pool;
 use run::{
     Merge, ReadCounts, Run, RunIter, RunWriter, Source, VecSource, parse_run_name, run_name,
@@ -71,81 +72,8 @@ pub struct KsConfig {
     pub fan_in: usize,
     /// A run block's target size.
     pub block_size: usize,
-    pub merge_threads: usize,
     /// Buffers waiting for their flush; commits wait while this many are.
     pub max_frozen: usize,
-}
-
-/// Memory per buffered entry besides its key and value: the map's node share and the allocations' headers.
-/// Measured: 136 bytes per entry of 12 bytes of key and value (`examples/measure.rs calibrate`).
-const ENTRY_OVERHEAD: usize = 128;
-
-/// The shared in-memory buffer.
-#[derive(Default)]
-pub struct Mem {
-    map: BTreeMap<Vec<u8>, Val>,
-    bytes: usize,
-    /// The log position its entries cover, once frozen.
-    covered: u64,
-    /// Frozen for reaching B, rather than for L or a close.
-    full: bool,
-}
-
-impl Mem {
-    /// Returns how many bytes the buffer grew by.
-    fn insert(&mut self, key: Vec<u8>, val: Val) -> i64 {
-        let before = self.bytes;
-        match self.map.get_mut(&key) {
-            Some(old) => {
-                let older = std::mem::replace(old, Val::Del);
-                *old = val.over(&older);
-                self.bytes = self.bytes - older.payload_len() + old.payload_len();
-            }
-            None => {
-                self.bytes += key.len() + val.payload_len() + ENTRY_OVERHEAD;
-                self.map.insert(key, val);
-            }
-        }
-        self.bytes as i64 - before as i64
-    }
-
-    pub fn get(&self, key: &[u8]) -> Option<&Val> {
-        self.map.get(key)
-    }
-
-    pub fn bytes(&self) -> usize {
-        self.bytes
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = (&Vec<u8>, &Val)> {
-        self.map.iter()
-    }
-
-    /// Entries in `[start, end)`, in order.
-    pub fn range<'a>(
-        &'a self,
-        start: &[u8],
-        end: &[u8],
-    ) -> impl Iterator<Item = (&'a Vec<u8>, &'a Val)> {
-        self.map
-            .range::<[u8], _>((Bound::Included(start), Bound::Excluded(end)))
-    }
-
-    /// Entries in `[start, end)` in order, until `live` of them aren't deletions.
-    fn page(&self, start: &[u8], end: &[u8], live: usize) -> Vec<(Vec<u8>, Val)> {
-        let mut out = Vec::new();
-        let mut n = 0;
-        for (k, v) in self.range(start, end) {
-            if n == live {
-                break;
-            }
-            if *v != Val::Del {
-                n += 1;
-            }
-            out.push((k.clone(), v.clone()));
-        }
-        out
-    }
 }
 
 /// What a read sees: buffers and runs, newest first. `mems[0]` is the buffer taking inserts.
@@ -206,13 +134,8 @@ struct WriteState {
 }
 
 struct Jobs {
-    busy: HashSet<u64>,
     next_flush: u64,
     stop: bool,
-    /// A flushed run is being written.
-    flushing: bool,
-    /// Merges being written.
-    merging: usize,
     /// Flushes that failed (each is retried).
     flush_failures: u64,
 }
@@ -222,17 +145,17 @@ pub struct Keyspace {
     dir: PathBuf,
     version: Mutex<Arc<Version>>,
     write: Mutex<WriteState>,
-    /// Signalled when a frozen buffer has been flushed.
+    /// Signalled, under `write`, when a frozen buffer has been flushed or a flush failed.
     flushed_cv: Condvar,
     jobs: Mutex<Jobs>,
-    jobs_cv: Condvar,
     pool: Arc<Pool>,
-    /// The pool wants this keyspace's buffer frozen; its flush thread does it.
+    flush_act: Arc<Activity>,
+    merge_act: Arc<Activity>,
+    /// The pool wants this keyspace's buffer frozen; its flush activity does it.
     freeze_requested: AtomicBool,
     pub counts: ReadCounts,
     counters: Counters,
     hooks: OnceLock<Box<dyn Hooks>>,
-    threads: Mutex<Vec<JoinHandle<()>>>,
     /// Bytes of the last run flushed from a full buffer: the size of tier 0.
     flush_unit: AtomicU64,
 }
@@ -297,59 +220,48 @@ impl Keyspace {
             }
         }
         let end = runs.first().map_or(0, |r| r.covered);
-        let unit = (pool.buffer_bytes as u64 / 12).max(1);
-        let ks = Arc::new(Keyspace {
-            cfg,
-            dir: dir.to_path_buf(),
-            version: Mutex::new(Arc::new(Version {
-                mems: vec![Arc::new(RwLock::new(Mem::default()))],
-                runs,
-            })),
-            write: Mutex::new(WriteState { log_bytes: 0, end }),
-            flushed_cv: Condvar::new(),
-            jobs: Mutex::new(Jobs {
-                busy: HashSet::new(),
-                next_flush: next,
-                stop: false,
-                flushing: false,
-                merging: 0,
-                flush_failures: 0,
-            }),
-            jobs_cv: Condvar::new(),
-            pool: pool.clone(),
-            freeze_requested: AtomicBool::new(false),
-            counts: ReadCounts::default(),
-            counters: Counters::default(),
-            hooks: OnceLock::new(),
-            threads: Mutex::new(Vec::new()),
-            // Until a full buffer has been flushed: entries take about 12 times their run bytes in memory.
-            flush_unit: AtomicU64::new(unit),
+        let unit = (pool.buffer_bytes as u64 / 6).max(1);
+        let ks = Arc::new_cyclic(|me: &std::sync::Weak<Keyspace>| {
+            let activity = |step: fn(&Keyspace) -> bool| {
+                let a = Activity::new(&pool.exec);
+                let me = me.clone();
+                a.set_step(Box::new(move || me.upgrade().is_some_and(|ks| step(&ks))));
+                a
+            };
+            Keyspace {
+                cfg,
+                dir: dir.to_path_buf(),
+                version: Mutex::new(Arc::new(Version {
+                    mems: vec![Arc::new(RwLock::new(Mem::default()))],
+                    runs,
+                })),
+                write: Mutex::new(WriteState { log_bytes: 0, end }),
+                flushed_cv: Condvar::new(),
+                jobs: Mutex::new(Jobs {
+                    next_flush: next,
+                    stop: false,
+                    flush_failures: 0,
+                }),
+                pool: pool.clone(),
+                flush_act: activity(Keyspace::flush_step),
+                merge_act: activity(Keyspace::merge_step),
+                freeze_requested: AtomicBool::new(false),
+                counts: ReadCounts::default(),
+                counters: Counters::default(),
+                hooks: OnceLock::new(),
+                // Until a full buffer has been flushed: entries take about 6 times their run bytes in memory.
+                flush_unit: AtomicU64::new(unit),
+            }
         });
         pool.register(&ks);
         Ok(ks)
-    }
-
-    /// Hands a flushed buffer's memory back to the system. glibc keeps freed memory in the arena of the thread
-    /// that allocated it, and each store's buffer is allocated by its own sync thread, so without this every
-    /// store would hold on to its buffer's peak.
-    fn drop_frozen_memory(&self) {
-        #[cfg(all(target_os = "linux", target_env = "gnu"))]
-        {
-            unsafe extern "C" {
-                fn malloc_trim(pad: usize) -> i32;
-            }
-            // SAFETY: malloc_trim takes no pointers and is safe to call from any thread.
-            unsafe {
-                malloc_trim(0);
-            }
-        }
     }
 
     pub fn cache(&self) -> &Cache {
         &self.pool.cache
     }
 
-    pub fn pool(&self) -> &Pool {
+    pub fn pool(&self) -> &Arc<Pool> {
         &self.pool
     }
 
@@ -358,39 +270,23 @@ impl Keyspace {
     }
 
     pub(crate) fn active_bytes(&self) -> usize {
-        self.version().mems[0].read().unwrap().bytes
+        self.version().mems[0].read().unwrap().bytes()
     }
 
     pub(crate) fn request_freeze(&self) {
         self.freeze_requested.store(true, Ordering::Relaxed);
-        drop(self.jobs.lock().unwrap());
-        self.jobs_cv.notify_all();
+        self.flush_act.kick();
     }
 
     pub fn config(&self) -> &KsConfig {
         &self.cfg
     }
 
-    /// Starts the flush and merge threads.
+    /// Starts flushing and merging (runs an earlier close left unmerged are merged now).
     pub fn start(self: &Arc<Self>, hooks: Box<dyn Hooks>) -> io::Result<()> {
         let _ = self.hooks.set(hooks);
-        let mut threads = self.threads.lock().unwrap();
-        let ks = self.clone();
-        threads.push(
-            std::thread::Builder::new()
-                .name("st-engine-flush".into())
-                .spawn(move || ks.flush_loop())?,
-        );
-        for i in 0..self.cfg.merge_threads {
-            let ks = self.clone();
-            threads.push(
-                std::thread::Builder::new()
-                    .name(format!("st-engine-merge-{i}"))
-                    .spawn(move || ks.merge_loop())?,
-            );
-        }
-        // Runs left unmerged by an earlier close.
-        self.jobs_cv.notify_all();
+        self.merge_act.kick();
+        self.flush_act.kick();
         Ok(())
     }
 
@@ -417,7 +313,7 @@ impl Keyspace {
         for m in &v.mems {
             if let Some(val) = m.read().unwrap().get(key) {
                 let done = !matches!(val, Val::Add(_));
-                out.push(val.clone());
+                out.push(val);
                 if done {
                     return Ok(out);
                 }
@@ -493,7 +389,7 @@ impl Keyspace {
             let mut m = v.mems[0].write().unwrap();
             let (mut n, mut grew) = (0, 0);
             for (k, val) in entries {
-                grew += m.insert(k, val);
+                grew += m.insert(&k, val);
                 n += 1;
             }
             self.pool.add_active(grew);
@@ -502,8 +398,10 @@ impl Keyspace {
         if let Some((end, bytes)) = log {
             w.end = end;
             w.log_bytes += bytes;
-            if w.log_bytes >= self.cfg.log_bytes {
-                w = self.freeze(w, end, false);
+            // With a buffer still waiting for its flush, this one is frozen at a later insert.
+            if w.log_bytes >= self.cfg.log_bytes && self.version().mems.len() <= self.cfg.max_frozen
+            {
+                self.freeze(&mut w, end, false);
             }
         }
         drop(w);
@@ -511,32 +409,30 @@ impl Keyspace {
     }
 
     /// Freezes the buffer as covering the log up to `end`, if it holds anything or `end` is past what the
-    /// runs cover. Returns once it is queued for its flush.
+    /// runs cover. Waits for room among the frozen buffers first (not from an engine thread).
     pub fn freeze_at(&self, end: u64) {
-        let w = self.write.lock().unwrap();
+        let mut w = self.write.lock().unwrap();
+        while self.version().mems.len() > self.cfg.max_frozen {
+            self.flush_act.kick();
+            w = self.flushed_cv.wait(w).unwrap();
+        }
         let v = self.version();
         let newest = v.mems.get(1).map(|m| m.read().unwrap().covered);
         let covered = newest.unwrap_or_else(|| v.runs.first().map_or(0, |r| r.covered));
-        if v.mems[0].read().unwrap().bytes > 0 || end > covered {
-            drop(self.freeze(w, end, false));
+        if v.mems[0].read().unwrap().bytes() > 0 || end > covered {
+            self.freeze(&mut w, end, false);
         }
     }
 
-    fn freeze<'a>(
-        &'a self,
-        mut w: MutexGuard<'a, WriteState>,
-        end: u64,
-        full: bool,
-    ) -> MutexGuard<'a, WriteState> {
-        while self.version().mems.len() > self.cfg.max_frozen {
-            w = self.flushed_cv.wait(w).unwrap();
-        }
+    /// Freezes the buffer taking inserts and queues its flush. The caller holds `write` and has checked there is
+    /// room among the frozen buffers.
+    fn freeze(&self, w: &mut WriteState, end: u64, full: bool) {
         let mut version = self.version.lock().unwrap();
         let mut mems = version.mems.clone();
         {
             let mut m = mems[0].write().unwrap();
             (m.covered, m.full) = (end, full);
-            self.pool.froze(m.bytes as i64);
+            self.pool.froze(m.bytes() as i64);
         }
         self.freeze_requested.store(false, Ordering::Relaxed);
         mems.insert(0, Arc::new(RwLock::new(Mem::default())));
@@ -546,10 +442,7 @@ impl Keyspace {
         });
         drop(version);
         w.log_bytes = 0;
-        // Taken so the flusher can't miss the wakeup between checking for work and waiting.
-        drop(self.jobs.lock().unwrap());
-        self.jobs_cv.notify_all();
-        w
+        self.flush_act.kick();
     }
 
     /// Waits until every frozen buffer has been flushed, or a flush fails.
@@ -560,6 +453,7 @@ impl Keyspace {
             if self.jobs.lock().unwrap().flush_failures > failures {
                 return Err(KsError::Io(io::Error::other("a flush failed")));
             }
+            self.flush_act.kick();
             w = self.flushed_cv.wait(w).unwrap();
         }
         Ok(())
@@ -567,81 +461,61 @@ impl Keyspace {
 
     // ---- flushes ----
 
-    fn flush_loop(&self) {
-        loop {
-            let mem = {
-                let mut jobs = self.jobs.lock().unwrap();
-                loop {
-                    let v = self.version();
-                    if v.mems.len() > 1 {
-                        jobs.flushing = true;
-                        break v.mems.last().unwrap().clone();
-                    }
-                    if jobs.stop {
-                        return;
-                    }
-                    if self.freeze_requested() {
-                        drop(jobs);
-                        let w = self.write.lock().unwrap();
-                        if v.mems[0].read().unwrap().bytes > 0 {
-                            let end = w.end;
-                            drop(self.freeze(w, end, true));
-                        } else {
-                            self.freeze_requested.store(false, Ordering::Relaxed);
-                        }
-                        jobs = self.jobs.lock().unwrap();
-                        continue;
-                    }
-                    jobs = self.jobs_cv.wait(jobs).unwrap();
-                }
-            };
-            let slot = self.pool.flush_slot();
-            let bytes = mem.read().unwrap().bytes as i64;
-            let result = self.flush(&mem);
-            drop(slot);
-            if result.is_ok() {
-                drop(mem);
-                self.drop_frozen_memory();
-                self.pool.released(bytes, 0);
+    /// One step of the flush activity: flushes the oldest frozen buffer, or freezes the buffer taking inserts
+    /// when the pool asked.
+    fn flush_step(&self) -> bool {
+        if self.jobs.lock().unwrap().stop {
+            return false;
+        }
+        let v = self.version();
+        if v.mems.len() == 1 {
+            if !self.freeze_requested() {
+                return false;
             }
-            self.jobs.lock().unwrap().flushing = false;
-            match result {
-                Ok(()) => {
-                    {
-                        let _w = self.write.lock().unwrap();
-                        self.flushed_cv.notify_all();
-                    }
-                    self.jobs_cv.notify_all();
-                    if let Some(h) = self.hooks.get() {
-                        h.flushed(self);
-                    }
+            let mut w = self.write.lock().unwrap();
+            if self.version().mems.len() == 1 && v.mems[0].read().unwrap().bytes() > 0 {
+                let end = w.end;
+                self.freeze(&mut w, end, true);
+            } else {
+                self.freeze_requested.store(false, Ordering::Relaxed);
+            }
+            return true;
+        }
+        let Some(slot) = self.pool.flush_slot(&self.flush_act) else {
+            return false;
+        };
+        let mem = v.mems.last().unwrap().clone();
+        drop(v);
+        let bytes = mem.read().unwrap().bytes() as i64;
+        let result = self.flush(&mem);
+        drop(slot);
+        match result {
+            Ok(()) => {
+                // The buffer's chunks are freed whole once readers holding an older version let go of it.
+                drop(mem);
+                self.pool.released(bytes, 0);
+                {
+                    let _w = self.write.lock().unwrap();
+                    self.flushed_cv.notify_all();
                 }
-                Err(e) => {
-                    // The buffer stays frozen, so nothing is lost: its entries are still read from memory, and
-                    // after a restart replay derives them again. Commits wait once `max_frozen` pile up.
-                    eprintln!("st-engine: flushing the derived keyspace failed: {e}");
-                    let stop = {
-                        let mut jobs = self.jobs.lock().unwrap();
-                        jobs.flush_failures += 1;
-                        jobs.stop
-                    };
-                    // `write` is never taken while holding `jobs`.
-                    {
-                        let _w = self.write.lock().unwrap();
-                        self.flushed_cv.notify_all();
-                    }
-                    if stop {
-                        return;
-                    }
-                    let jobs = self.jobs.lock().unwrap();
-                    if !jobs.stop {
-                        drop(
-                            self.jobs_cv
-                                .wait_timeout(jobs, std::time::Duration::from_secs(1))
-                                .unwrap(),
-                        );
-                    }
+                if let Some(h) = self.hooks.get() {
+                    h.flushed(self);
                 }
+                self.merge_act.kick();
+                true
+            }
+            Err(e) => {
+                // The buffer stays frozen, so nothing is lost: its entries are still read from memory, and after a
+                // restart replay derives them again. Inserts wait for room meanwhile.
+                eprintln!("st-engine: flushing the derived keyspace failed: {e}");
+                self.jobs.lock().unwrap().flush_failures += 1;
+                {
+                    let _w = self.write.lock().unwrap();
+                    self.flushed_cv.notify_all();
+                }
+                // Retried after a pause; a failing disk holds one engine thread for it.
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                true
             }
         }
     }
@@ -662,11 +536,11 @@ impl Keyspace {
         // The buffer's own entries win over the extra ones for the same key.
         let mut extra = extra.into_iter().peekable();
         for (k, v) in m.iter() {
-            while let Some((ek, ev)) = extra.next_if(|(ek, _)| ek < k) {
+            while let Some((ek, ev)) = extra.next_if(|(ek, _)| ek.as_slice() < k) {
                 w.add(&ek, &ev)?;
             }
-            extra.next_if(|(ek, _)| ek == k);
-            w.add(k, v)?;
+            extra.next_if(|(ek, _)| ek.as_slice() == k);
+            w.add(k, &v)?;
         }
         for (ek, ev) in extra {
             w.add(&ek, &ev)?;
@@ -709,17 +583,16 @@ impl Keyspace {
 
     /// Picks adjacent runs to merge: `fan_in` of one tier, the lowest tier first; or, past a run count no
     /// tiering leaves, the adjacent `fan_in` with the fewest bytes. Returns them oldest first.
-    fn pick(&self, jobs: &Jobs) -> Option<Vec<Arc<Run>>> {
+    fn pick(&self) -> Option<Vec<Arc<Run>>> {
         let delta = self.cfg.fan_in;
         let v = self.version();
         let runs: Vec<&Arc<Run>> = v.runs.iter().rev().collect();
-        let free = |r: &&Arc<Run>| !jobs.busy.contains(&r.uid);
         let mut best: Option<(u32, usize)> = None;
         let mut i = 0;
         while i < runs.len() {
             let t = self.tier(runs[i].bytes);
             let mut j = i;
-            while j < runs.len() && free(&runs[j]) && self.tier(runs[j].bytes) == t {
+            while j < runs.len() && self.tier(runs[j].bytes) == t {
                 j += 1;
             }
             if j - i >= delta && best.is_none_or(|(bt, _)| t < bt) {
@@ -733,48 +606,31 @@ impl Keyspace {
         if runs.len() > delta * 16 {
             return runs
                 .windows(delta)
-                .filter(|w| w.iter().all(free))
                 .min_by_key(|w| w.iter().map(|r| r.bytes).sum::<u64>())
                 .map(|w| w.iter().map(|r| (*r).clone()).collect());
         }
         None
     }
 
-    fn merge_loop(&self) {
-        loop {
-            let inputs = {
-                let mut jobs = self.jobs.lock().unwrap();
-                loop {
-                    if jobs.stop {
-                        return;
-                    }
-                    if let Some(inputs) = self.pick(&jobs) {
-                        for r in &inputs {
-                            jobs.busy.insert(r.uid);
-                        }
-                        jobs.merging += 1;
-                        break inputs;
-                    }
-                    jobs = self.jobs_cv.wait(jobs).unwrap();
-                }
-            };
-            let slot = self.pool.merge_slot();
-            let result = self.merge(&inputs);
-            drop(slot);
-            {
-                let mut jobs = self.jobs.lock().unwrap();
-                for r in &inputs {
-                    jobs.busy.remove(&r.uid);
-                }
-                jobs.merging -= 1;
-            }
-            self.jobs_cv.notify_all();
-            match result {
-                Ok(_) => {}
-                Err(e) => {
-                    eprintln!("st-engine: merging runs failed: {e}");
-                    std::thread::sleep(std::time::Duration::from_secs(1));
-                }
+    /// One step of the merge activity: one merge, if one is due and a slot is free.
+    fn merge_step(&self) -> bool {
+        if self.jobs.lock().unwrap().stop || self.pick().is_none() {
+            return false;
+        }
+        let Some(slot) = self.pool.merge_slot(&self.merge_act) else {
+            return false;
+        };
+        let Some(inputs) = self.pick() else {
+            return false;
+        };
+        let result = self.merge(&inputs);
+        drop(slot);
+        match result {
+            Ok(done) => done,
+            Err(e) => {
+                // Retried at the next flush.
+                eprintln!("st-engine: merging runs failed: {e}");
+                false
             }
         }
     }
@@ -845,22 +701,28 @@ impl Keyspace {
         Ok(true)
     }
 
-    /// Waits until no merge is due or running.
+    /// Waits until no flush or merge is due or running (not from an engine thread).
     pub fn wait_merged(&self) {
-        let mut jobs = self.jobs.lock().unwrap();
-        while jobs.merging > 0 || jobs.flushing || self.pick(&jobs).is_some() {
-            jobs = self.jobs_cv.wait(jobs).unwrap();
+        loop {
+            self.flush_act.wait_idle();
+            self.merge_act.wait_idle();
+            if self.version().mems.len() == 1 && self.pick().is_none() {
+                return;
+            }
+            self.flush_act.kick();
+            self.merge_act.kick();
+            // A step waiting for a slot isn't running: look again shortly.
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
     }
 
-    /// Stops the flush and merge threads; a merge in progress is abandoned. Frozen buffers not yet flushed
-    /// are not written (their records are replayed on the next open).
+    /// Stops flushing and merging; a merge in progress is abandoned. Frozen buffers not yet flushed are not
+    /// written (their records are replayed on the next open). Waits for a running step (not from an engine
+    /// thread).
     pub fn stop(&self) {
         self.jobs.lock().unwrap().stop = true;
-        self.jobs_cv.notify_all();
-        for t in self.threads.lock().unwrap().drain(..) {
-            let _ = t.join();
-        }
+        self.flush_act.wait_idle();
+        self.merge_act.wait_idle();
     }
 
     pub fn stats(&self) -> KsStats {
@@ -877,7 +739,11 @@ impl Keyspace {
             lookups: c.lookups.load(Ordering::Relaxed),
             blocks: self.counts.blocks.load(Ordering::Relaxed),
             file_reads: self.counts.file_reads.load(Ordering::Relaxed),
-            buffer_bytes: v.mems.iter().map(|m| m.read().unwrap().bytes as u64).sum(),
+            buffer_bytes: v
+                .mems
+                .iter()
+                .map(|m| m.read().unwrap().bytes() as u64)
+                .sum(),
             cache_bytes: self.pool.cache.bytes() as u64,
             top_bytes: v.runs.iter().map(|r| r.top_size() as u64).sum(),
         }
@@ -886,12 +752,13 @@ impl Keyspace {
 
 impl Drop for Keyspace {
     fn drop(&mut self) {
-        self.stop();
+        // No waiting: the last reference may be dropped by the keyspace's own step.
+        self.jobs.lock().unwrap().stop = true;
         let v = self.version();
         let bytes: Vec<i64> = v
             .mems
             .iter()
-            .map(|m| m.read().unwrap().bytes as i64)
+            .map(|m| m.read().unwrap().bytes() as i64)
             .collect();
         self.pool.released(bytes[1..].iter().sum(), bytes[0]);
     }
