@@ -1,20 +1,21 @@
 //! Reading the index: a query is clauses (words or phrases, each over some fields, maybe negated) and filters,
 //! answered as a page in relevance (BM25) or sort-key order, with the total.
 //!
-//! Matching: every positive clause and filter must match, no negated one. A clause of one token is a word; a
-//! quoted clause, or one whose text splits into several tokens, is a phrase: its tokens adjacent and in order
-//! within one value of one field. The query's last token is a prefix (from 2 characters) in the prefix fields,
-//! an exact token elsewhere. A phrase is found through its exact tokens' postings, then checked on the
-//! candidates' text. The joined field (the library's tag names) matches through the tags whose names match.
+//! Matching: every positive clause and filter must match, no negated one. A clause of one token is a word; one
+//! of several tokens (quoted, or split by the tokenizer, as `foo-bar`) is a phrase: its tokens adjacent and in
+//! order within one value of one field. The query's last token is a prefix (from 2 characters): for a word in
+//! the prefix fields only, an exact token elsewhere; for a phrase in every field. A phrase is found through its
+//! exact tokens' postings, then checked on the candidates' text. The joined field (the library's tag names)
+//! matches through the tags whose names match.
 //!
 //! Work is counted in entries read (a scan's start counts `SEEK` entries, a text read `TEXT` plus its bytes /
-//! 64). Matches are enumerated in document order up to `Limits::enumerate`: finishing under it, the total and
-//! the page are exact. Past it the total is an estimate; in relevance order the page is then completed from
-//! the per-block score bounds (blocks in order of their bound until no block can beat the page), exact if that
-//! finishes within `Limits::ranked`. A clause's tags (through the joined field) are read up to `Limits::joined`;
-//! past it nothing is exact. In sort-key order, the matches are sorted by their keys when there are at
-//! most about √(page · documents) of them, else the order is walked checking each document, up to
-//! `Limits::walked`.
+//! 16), each about 60 nanoseconds. Matches are enumerated in document order up to `Limits::enumerate`:
+//! finishing under it, the total and the page are exact. Past it the total is an estimate; in relevance order
+//! the page is then completed from the per-block score bounds (blocks in order of their bound until no block
+//! can beat the page), exact if that finishes within `Limits::ranked`. The clauses' tags (through the joined
+//! field) and their members are read up to `Limits::joined`; past it nothing is exact. In sort-key order, the
+//! matches are sorted by their keys when there are at most about √(page · documents) of them, else the order is
+//! walked checking each document, up to `Limits::walked`.
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
@@ -31,26 +32,26 @@ use crate::store::kinds::{key, search_texts};
 use crate::store::{StoreError, StoreResult};
 
 /// Work a scan's start costs, in entries.
-pub const SEEK: u64 = 16;
-/// Work a text read costs besides its bytes / 64.
-pub const TEXT: u64 = 64;
+pub const SEEK: u64 = 256;
+/// Work a text read costs besides its bytes / 16.
+pub const TEXT: u64 = 256;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Limits {
     pub enumerate: u64,
     pub ranked: u64,
     pub walked: u64,
-    /// For reading the tags a clause matches through the joined field, and their members.
+    /// For reading the tags the clauses match through the joined field, and their members, all together.
     pub joined: u64,
 }
 
 impl Default for Limits {
     fn default() -> Self {
         Limits {
-            enumerate: 100_000,
-            ranked: 100_000,
-            walked: 100_000,
-            joined: 100_000,
+            enumerate: 300_000,
+            ranked: 300_000,
+            walked: 300_000,
+            joined: 200_000,
         }
     }
 }
@@ -136,6 +137,10 @@ pub struct Found {
     /// Matches follow the page (or may, when the page isn't exact).
     pub more: bool,
     pub work: u64,
+    /// Scans started, entries they read, point reads and texts read.
+    pub scans: u64,
+    pub entries: u64,
+    pub gets: u64,
     pub texts: u64,
 }
 
@@ -143,6 +148,9 @@ pub fn run(view: &View, q: &Query) -> StoreResult<Found> {
     let mut ctx = Ctx {
         view,
         work: 0,
+        scans: 0,
+        entries: 0,
+        gets: 0,
         texts: 0,
         stats: HashMap::new(),
     };
@@ -152,6 +160,9 @@ pub fn run(view: &View, q: &Query) -> StoreResult<Found> {
         Order::Key(k) => plan.by_key(&mut ctx, q, k.as_ref())?,
     };
     found.work = ctx.work;
+    found.scans = ctx.scans;
+    found.entries = ctx.entries;
+    found.gets = ctx.gets;
     found.texts = ctx.texts;
     Ok(found)
 }
@@ -161,6 +172,9 @@ pub fn run(view: &View, q: &Query) -> StoreResult<Found> {
 pub(crate) struct Ctx<'a> {
     view: &'a View<'a>,
     work: u64,
+    scans: u64,
+    entries: u64,
+    gets: u64,
     texts: u64,
     stats: HashMap<Vec<u8>, u64>,
 }
@@ -174,6 +188,8 @@ impl Ctx<'_> {
     ) -> StoreResult<Vec<(Vec<u8>, Vec<u8>)>> {
         let page = self.view.scan(start, end, limit)?;
         self.work += SEEK + page.len() as u64;
+        self.scans += 1;
+        self.entries += page.len() as u64;
         Ok(page)
     }
 
@@ -183,6 +199,7 @@ impl Ctx<'_> {
             return Ok(*v);
         }
         self.work += SEEK;
+        self.gets += 1;
         let v = match self.view.get(&k)? {
             Some(b) if counter => counter_value(&b).unwrap_or(0).max(0) as u64,
             Some(b) => parse_varint(&b).unwrap_or(0),
@@ -195,7 +212,7 @@ impl Ctx<'_> {
     fn texts(&mut self, scope: Scope, doc: u64, field: u32) -> StoreResult<Vec<Vec<u8>>> {
         let t = search_texts(self.view, scope, doc, field)?;
         self.texts += 1;
-        self.work += TEXT + t.iter().map(|x| x.len() as u64).sum::<u64>() / 64;
+        self.work += TEXT + t.iter().map(|x| x.len() as u64).sum::<u64>() / 16;
         Ok(t)
     }
 }
@@ -251,7 +268,17 @@ impl Cursor {
             self.pos = self.page.partition_point(|(e, _)| e.as_slice() < k);
             return Ok(());
         }
-        self.fill(ctx, k, PAGE_MIN)
+        // Onward from a page read mostly through, as a merge in id order goes: read more at a time; onward past
+        // most of it, as sparse lookups go: less.
+        let onward = self.page.last().is_some_and(|(l, _)| l.as_slice() < k);
+        let size = if !onward {
+            PAGE_MIN
+        } else if self.pos * 2 >= self.page.len() {
+            (self.size * 2).min(PAGE_MAX)
+        } else {
+            (self.size / 2).max(PAGE_MIN)
+        };
+        self.fill(ctx, k, size)
     }
 
     fn get(&self) -> Option<&(Vec<u8>, Vec<u8>)> {
@@ -560,7 +587,7 @@ impl Matcher {
         toks: Vec<String>,
         fields: Option<&[u32]>,
         last: bool,
-        limits: &Limits,
+        join_until: u64,
     ) -> StoreResult<Option<Matcher>> {
         if toks.is_empty() {
             return Ok(None);
@@ -633,7 +660,7 @@ impl Matcher {
             }
         }
         if let Some(jf) = joined_field {
-            m.joined = Some(join(ctx, stats, &toks, last, jf, limits)?);
+            m.joined = Some(join(ctx, stats, &toks, last, jf, join_until)?);
         }
         Ok(Some(m))
     }
@@ -847,14 +874,14 @@ fn join(
     toks: &[String],
     last: bool,
     field: u32,
-    limits: &Limits,
+    until: u64,
 ) -> StoreResult<Joined> {
     let scope = Scope::TAGS;
     let stats = scope_stats(ctx, scope)?;
     let mut tags = Vec::new();
     let mut complete = true;
-    let budget = ctx.work.saturating_add(limits.joined);
-    if let Some(mut m) = Matcher::new(ctx, scope, &stats, toks.to_vec(), None, last, limits)? {
+    let budget = until;
+    if let Some(mut m) = Matcher::new(ctx, scope, &stats, toks.to_vec(), None, last, until)? {
         let mut d = 0;
         loop {
             if ctx.work > budget {
@@ -988,6 +1015,7 @@ impl Plan {
         let last = q.clauses.iter().rposition(|c| !tokens(&c.text).is_empty());
         let (mut pos, mut neg) = (Vec::new(), Vec::new());
         let mut complete_joins = true;
+        let join_until = ctx.work.saturating_add(q.limits.joined);
         for (i, c) in q.clauses.iter().enumerate() {
             let toks = tokens(&c.text);
             if let Some(m) = Matcher::new(
@@ -997,7 +1025,7 @@ impl Plan {
                 toks,
                 c.fields.as_deref(),
                 Some(i) == last,
-                &q.limits,
+                join_until,
             )? {
                 complete_joins &= m.joined.as_ref().is_none_or(|j| j.complete);
                 if c.negate {
