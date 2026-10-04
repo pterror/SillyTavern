@@ -711,6 +711,7 @@ impl Keyspace {
     /// run, as the next flush covering the log up to `covered`. The buffer must be empty and nothing being
     /// inserted (a bulk load's install, with commits held).
     pub fn install_run(&self, path: &Path, covered: u64) -> KsResult<()> {
+        let mut w = self.write.lock().unwrap();
         let mut jobs = self.jobs.lock().unwrap();
         let seq = jobs.next_flush;
         run::restamp(path, covered, seq, seq)?;
@@ -730,6 +731,9 @@ impl Keyspace {
         }
         jobs.next_flush = seq + 1;
         drop(jobs);
+        // A later flush covers at least what this run does.
+        w.end = w.end.max(covered);
+        drop(w);
         // Readers keyed by `inserted` see that the derived data changed.
         self.counters
             .inserted

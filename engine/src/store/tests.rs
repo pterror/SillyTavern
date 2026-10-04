@@ -572,6 +572,13 @@ fn a_bulk_load_derives_what_commits_derive() {
     assert_eq!(st.records, recs.len() as u64);
     assert!(!b.join(bulk::LOAD_DIR).exists());
     assert_eq!(derived(&sa, 0..320), derived(&sb, 0..320));
+    // A flush the pool asks for, of entries that no record brought (as cleaning's), covers the log past the
+    // load.
+    sb.inner
+        .ks
+        .insert([(key::id(key::GONE, u64::MAX), Val::Del)], None);
+    sb.inner.ks.request_freeze();
+    sb.inner.ks.wait_flushed().unwrap();
     // Commits go on after it, and everything holds across reopening.
     for s in [&sa, &sb] {
         s.commit_wait(library(5, 3)).unwrap();
@@ -648,6 +655,7 @@ fn an_abandoned_or_refused_bulk_load_leaves_the_store_as_it_was() {
     let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
     assert_eq!(s.fav(25).unwrap(), Some(true));
     s.commit_wait(library(10, 40)).unwrap();
+    drop(s);
     let _ = fs::remove_dir_all(&dir);
 }
 
