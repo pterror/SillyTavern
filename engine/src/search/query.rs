@@ -791,6 +791,21 @@ impl Joined {
         Ok(s)
     }
 
+    /// The most a document in `[lo, hi)` gets from the tags.
+    fn most_in(&self, lo: u64, hi: u64) -> f64 {
+        match &self.listed {
+            Some(l) => {
+                let from = l.items.partition_point(|x| x.0 < lo);
+                l.items[from..]
+                    .iter()
+                    .take_while(|x| x.0 < hi)
+                    .map(|x| x.1)
+                    .fold(0.0, f64::max)
+            }
+            None => self.most,
+        }
+    }
+
     /// Lists every member (within the budget); returns whether that finished.
     fn list(&mut self, ctx: &mut Ctx, until: u64) -> StoreResult<bool> {
         if self.listed.is_some() {
@@ -1040,7 +1055,7 @@ impl Matcher {
     }
 
     /// The most any document in the current blocks of the lists can score (with the joined tags).
-    fn block_ceiling(&self, ctx: &mut Ctx) -> StoreResult<f64> {
+    fn block_ceiling(&self, ctx: &mut Ctx, d: u64) -> StoreResult<f64> {
         let mut s = 0.0;
         for li in 0..self.lists.len() {
             if let Some(b) = self.lists[li].dir.block {
@@ -1050,7 +1065,10 @@ impl Matcher {
         if self.phrase && self.prefix {
             s += self.part.iter().map(|p| p.weight_idf).fold(0.0, f64::max) * (super::K1 + 1.0);
         }
-        Ok(s + self.joined.as_ref().map_or(0.0, |j| j.most))
+        Ok(s + self
+            .joined
+            .as_ref()
+            .map_or(0.0, |j| j.most_in(d, self.block_end())))
     }
 
     /// The most document `d` can score, from the counts of the lists standing at it, at their blocks' shortest
@@ -1085,7 +1103,12 @@ impl Matcher {
         if self.phrase && self.prefix {
             s += self.part.iter().map(|p| p.weight_idf).fold(0.0, f64::max) * (super::K1 + 1.0);
         }
-        Ok(s + self.joined.as_ref().map_or(0.0, |j| j.most))
+        let joined = match &mut self.joined {
+            Some(j) if j.listed.is_some() => j.score(ctx, d)?,
+            Some(j) => j.most,
+            None => 0.0,
+        };
+        Ok(s + joined)
     }
 
     /// The first id past the current blocks of the lists.
@@ -1546,7 +1569,7 @@ impl Plan {
             {
                 let mut blocks = 0.0;
                 for m in &self.pos {
-                    blocks += m.block_ceiling(ctx)?;
+                    blocks += m.block_ceiling(ctx, d)?;
                 }
                 if Ranked(blocks, 0) > *f {
                     walk.skipped = true;
