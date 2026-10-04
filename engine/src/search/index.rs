@@ -11,6 +11,7 @@ use super::{
     doc_freq, field_tokens, in_block, length_block, length_code, max_doc, pack, posting_block,
     rank_of, slot, slot_in, term_docs, unpack, unslot,
 };
+use super::{PAIR_SEPARATOR, phrase_mode};
 use crate::keyspace::val::map_pairs;
 use crate::store::StoreError;
 use crate::store::derive::{Out, View};
@@ -29,7 +30,14 @@ impl Terms {
     fn of(items: &[&[u8]], prefix: bool) -> Terms {
         let mut t = Terms::default();
         for item in items {
-            for tok in tokens(item) {
+            let toks = tokens(item);
+            if phrase_mode::write() & phrase_mode::PAIRS != 0 {
+                for w in toks.windows(2) {
+                    let pair = format!("{}{PAIR_SEPARATOR}{}", w[0], w[1]);
+                    *t.tf.entry((TermKind::Pair, pair)).or_default() += 1;
+                }
+            }
+            for tok in toks {
                 t.len += 1;
                 if prefix {
                     for g in grams(&tok) {
@@ -92,7 +100,7 @@ pub fn update(
     for ((kind, term), o, n) in rewrite {
         let kind = *kind;
         // A prefix term in a field other than a prefix field mirrors the whole token's frequency there.
-        if (kind == TermKind::Exact || prefix) && (o == 0) != (n == 0) {
+        if (kind != TermKind::Gram || prefix) && (o == 0) != (n == 0) {
             out.add(
                 doc_freq(scope, kind, term, field),
                 if n == 0 { -1 } else { 1 },
@@ -158,6 +166,23 @@ pub fn update(
             (None, Some(_)) => out.add(term_docs(scope, kind, term), 1),
             (Some(_), None) => out.add(term_docs(scope, kind, term), -1),
             _ => {}
+        }
+    }
+    if phrase_mode::write() & phrase_mode::FINGERPRINTS != 0 && old != new {
+        let pairs: Vec<(String, String)> = new
+            .iter()
+            .flat_map(|v| {
+                let t = tokens(v);
+                t.windows(2)
+                    .map(|w| (w[0].clone(), w[1].clone()))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let k = super::fingerprint(scope, doc, field);
+        if pairs.is_empty() {
+            out.del(k);
+        } else {
+            out.put(k, super::pair_filter(&pairs));
         }
     }
     if lo == ln {

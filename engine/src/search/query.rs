@@ -22,7 +22,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
-use super::text::{GRAM_MAX, GRAM_MIN, char_len, first_chars, tokens};
+use super::text::{GRAM_MAX, GRAM_MIN, char_len, first_chars, phrase_in, tokens};
 use super::{
     BLOCK_BITS, CLASSES, GROUPS, LENGTH_BITS, Scope, TermKind, class_bound, code_length, directory,
     directory_block, doc_count, doc_freqs, field_tokens, idf, in_block, lengths, max_doc,
@@ -733,23 +733,6 @@ impl Joined {
     }
 }
 
-/// Whether `phrase` occurs in a value's tokens: adjacent and in order, the last a prefix if `prefix`.
-fn occurs(toks: &[String], phrase: &[String], prefix: bool) -> bool {
-    if phrase.is_empty() || toks.len() < phrase.len() {
-        return false;
-    }
-    let last = phrase.len() - 1;
-    toks.windows(phrase.len()).any(|w| {
-        w.iter().zip(phrase).enumerate().all(|(i, (t, p))| {
-            if i == last && prefix {
-                t.starts_with(p.as_str())
-            } else {
-                t == p
-            }
-        })
-    })
-}
-
 fn fields_of(scope: Scope, m: u64) -> impl Iterator<Item = u32> {
     (0..scope.fields().len() as u32).filter(move |f| m >> f & 1 == 1)
 }
@@ -774,6 +757,8 @@ struct Matcher {
     factors: [f64; GROUPS as usize],
     joined: Option<Joined>,
     doc: Option<u64>,
+    /// A phrase found through its adjacent pairs' postings (measurement builds' phrase evaluation).
+    pairs: bool,
 }
 
 impl Matcher {
@@ -826,6 +811,7 @@ impl Matcher {
             factors: [0.0; GROUPS as usize],
             joined: None,
             doc: None,
+            pairs: false,
         };
         // Per field, the highest ratio of a token's idf there to the field's reference idf.
         let mut ratio = vec![0.0f64; defs.len()];
@@ -879,6 +865,25 @@ impl Matcher {
                     m.lists
                         .push(list(TermKind::Exact, tok, mask & !prefix_mask));
                 }
+            }
+        }
+        if phrase && super::phrase_mode::read() & super::phrase_mode::PAIRS != 0 {
+            let exact_until = if prefix { last_i } else { last_i + 1 };
+            let pairs: Vec<List> = (0..exact_until.saturating_sub(1))
+                .map(|i| {
+                    let term = format!("{}{}{}", toks[i], super::PAIR_SEPARATOR, toks[i + 1]);
+                    List {
+                        kind: TermKind::Pair,
+                        dir: BlockDocs::directory(scope, TermKind::Pair, &term),
+                        term,
+                        mask,
+                        token: usize::MAX,
+                    }
+                })
+                .collect();
+            if !pairs.is_empty() {
+                m.lists = pairs;
+                m.pairs = true;
             }
         }
         // A group's bounds scale by the most any of its fields' idf and average length exceed the references:
@@ -966,6 +971,10 @@ impl Matcher {
     /// The most the current document can score, from its directory classes and the joined tags.
     fn ceiling(&self) -> f64 {
         let Some(doc) = self.doc else { return 0.0 };
+        if self.pairs {
+            // A pair's class says nothing of the tokens' scores.
+            return f64::INFINITY;
+        }
         let mut s: f64 = self
             .lists
             .iter()
@@ -980,6 +989,9 @@ impl Matcher {
 
     /// The most any document in the current blocks of the lists can score (with the joined tags).
     fn block_ceiling(&self) -> f64 {
+        if self.pairs {
+            return f64::INFINITY;
+        }
         let mut s: f64 = self
             .lists
             .iter()
@@ -1047,16 +1059,10 @@ impl Matcher {
                     let mut tf = tf;
                     if is_gram_long {
                         // The prefix terms hold its first characters: count the whole prefix on the text.
-                        let pre = &self.tokens[0];
                         tf = ctx
                             .texts(scope, doc, f)?
                             .iter()
-                            .map(|t| {
-                                tokens(t)
-                                    .iter()
-                                    .filter(|x| x.starts_with(pre.as_str()))
-                                    .count() as u64
-                            })
+                            .map(|t| phrase_in(t, &self.tokens, true, true).1)
                             .sum();
                         if tf == 0 {
                             continue;
@@ -1068,40 +1074,53 @@ impl Matcher {
             }
             out.parts.sort_unstable_by_key(|x| (x.0, x.1));
         } else if !data.is_empty() {
-            // Fields holding every exact token.
+            // Fields holding every list's term (exact tokens, or adjacent pairs).
             let common = data
                 .iter()
                 .map(|(_, _, p)| p.iter().fold(0u64, |m, x| m | 1 << x.0))
                 .fold(u64::MAX, |a, b| a & b);
+            // Each exact token's posting.
+            let mut tok: HashMap<usize, Posting> = HashMap::new();
+            if self.pairs {
+                let exact_until = if self.prefix { last } else { last + 1 };
+                for i in 0..exact_until {
+                    let t = self.tokens[i].clone();
+                    let p = match class_in(ctx, scope, TermKind::Exact, &t, doc)? {
+                        Some(r) => posting(ctx, scope, TermKind::Exact, &t, r, doc)?,
+                        None => Vec::new(),
+                    };
+                    tok.insert(i, p);
+                }
+            } else {
+                for (t, _, p) in &data {
+                    tok.insert(*t, p.clone());
+                }
+            }
+            // Two whole tokens: their pair's posting is the phrase.
+            let pair_is_phrase = self.pairs && !self.prefix && self.tokens.len() == 2;
+            let filters = super::phrase_mode::read() & super::phrase_mode::FINGERPRINTS != 0;
             for f in fields_of(scope, common & self.mask) {
                 let prefix_field = scope.fields()[f as usize].prefix;
                 let mut last_tf = 0;
-                let mut found = false;
-                for t in ctx.texts(scope, doc, f)? {
-                    let toks = tokens(&t);
-                    found |= occurs(&toks, &self.tokens, self.prefix);
-                    if self.prefix {
+                let mut found = pair_is_phrase;
+                if !found && filters && !self.pair_filter_passes(ctx, doc, f)? {
+                    continue;
+                }
+                if !found {
+                    for t in ctx.texts(scope, doc, f)? {
                         // The prefix token scores as a prefix term in a prefix field, as a whole token elsewhere.
-                        let p = self.tokens[last].as_str();
-                        last_tf += toks
-                            .iter()
-                            .filter(|x| {
-                                if prefix_field {
-                                    x.starts_with(p)
-                                } else {
-                                    x.as_str() == p
-                                }
-                            })
-                            .count() as u64;
+                        let (here, n) = phrase_in(&t, &self.tokens, self.prefix, prefix_field);
+                        found |= here;
+                        last_tf += n;
                     }
                 }
                 if !found {
                     continue;
                 }
                 hit = true;
-                let code = data
-                    .iter()
-                    .flat_map(|(_, _, p)| p.iter())
+                let code = tok
+                    .values()
+                    .flat_map(|p| p.iter())
                     .find(|x| x.0 == f)
                     .map_or(0, |x| x.2);
                 for i in 0..=last {
@@ -1111,9 +1130,8 @@ impl Matcher {
                     let tf = if i == last && self.prefix {
                         last_tf
                     } else {
-                        data.iter()
-                            .find(|(t, _, _)| *t == i)
-                            .and_then(|(_, _, p)| p.iter().find(|x| x.0 == f))
+                        tok.get(&i)
+                            .and_then(|p| p.iter().find(|x| x.0 == f))
                             .map_or(0, |x| x.1)
                     };
                     if tf > 0 {
@@ -1134,6 +1152,20 @@ impl Matcher {
             }
         }
         Ok(hit.then_some(out))
+    }
+
+    /// Whether field `f`'s pair filter holds every adjacent pair of the phrase's whole tokens.
+    fn pair_filter_passes(&self, ctx: &mut Ctx, doc: u64, f: u32) -> StoreResult<bool> {
+        let n = self.tokens.len();
+        let exact_until = if self.prefix { n - 1 } else { n };
+        if exact_until < 2 {
+            return Ok(true);
+        }
+        let Some(filter) = ctx.get(&super::fingerprint(self.scope, doc, f))? else {
+            return Ok(false);
+        };
+        Ok((0..exact_until - 1)
+            .all(|i| super::pair_maybe_in(&filter, &self.tokens[i], &self.tokens[i + 1])))
     }
 
     fn score(&self, m: &Matched, stats: &Stats) -> f64 {
