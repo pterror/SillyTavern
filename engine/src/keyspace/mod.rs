@@ -707,6 +707,42 @@ impl Keyspace {
         Ok(true)
     }
 
+    /// Puts the run file at `path` (written with `RunWriter`, on the same file system) in place as the newest
+    /// run, as the next flush covering the log up to `covered`. The buffer must be empty and nothing being
+    /// inserted (a bulk load's install, with commits held).
+    pub fn install_run(&self, path: &Path, covered: u64) -> KsResult<()> {
+        let mut jobs = self.jobs.lock().unwrap();
+        let seq = jobs.next_flush;
+        run::restamp(path, covered, seq, seq)?;
+        let dest = self.dir.join(run_name(seq, seq));
+        fs::rename(path, &dest)?;
+        sync_dir(&self.dir)?;
+        let run = Arc::new(Run::open(&dest, seq, seq)?);
+        let entries = run.entries;
+        {
+            let mut version = self.version.lock().unwrap();
+            let mut runs = version.runs.clone();
+            runs.insert(0, run);
+            *version = Arc::new(Version {
+                mems: version.mems.clone(),
+                runs,
+            });
+        }
+        jobs.next_flush = seq + 1;
+        drop(jobs);
+        // Readers keyed by `inserted` see that the derived data changed.
+        self.counters
+            .inserted
+            .fetch_add(entries.max(1), Ordering::Release);
+        self.merge_act.kick();
+        Ok(())
+    }
+
+    /// The directory holding the runs.
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
     /// Waits until no flush or merge is due or running (not from an engine thread).
     pub fn wait_merged(&self) {
         loop {

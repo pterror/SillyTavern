@@ -202,7 +202,7 @@ fn split(pos: u64) -> (u64, u64) {
     (pos >> FILE_SHIFT, pos & ((1 << FILE_SHIFT) - 1))
 }
 
-fn file_name(cfg: &Config, file: u64) -> String {
+pub fn file_name(cfg: &Config, file: u64) -> String {
     format!("log-{:016x}.blk", position(file, 0) / cfg.block_size)
 }
 
@@ -494,6 +494,17 @@ pub struct Cursor {
     ctx: Ctx,
 }
 
+impl Cursor {
+    /// A file's start.
+    pub fn file_start(file: u64) -> Cursor {
+        Cursor {
+            file,
+            offset: 0,
+            ctx: Ctx::default(),
+        }
+    }
+}
+
 /// The tail file's write handle.
 pub struct TailFile {
     file: u64,
@@ -503,6 +514,15 @@ pub struct TailFile {
 }
 
 impl TailFile {
+    /// The tail file `file`, which exists.
+    pub fn existing(file: u64) -> TailFile {
+        TailFile {
+            file,
+            exists: true,
+            handle: None,
+        }
+    }
+
     /// Writes a group's bytes (from `Layout::close`) into `file` and syncs them, creating `file` first if the
     /// group starts it. Returns the bytes written.
     pub fn write(&mut self, log: &Log, file: u64, runs: &[(u64, Vec<u8>)]) -> LogResult<u64> {
@@ -830,6 +850,55 @@ impl Log {
         Err(LogError::Position(pos, "not a record's start"))
     }
 
+    /// The record at `pos` in a file staged in `dir` (a bulk load's, not yet in the log).
+    pub fn read_staged(&self, dir: &Path, pos: u64) -> LogResult<(Record, u64)> {
+        let (file, offset) = split(pos);
+        let reader = match File::open(dir.join(file_name(&self.shared.cfg, file))) {
+            Ok(f) => LogFile::new(f),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Err(LogError::Gone(file)),
+            Err(e) => return Err(e.into()),
+        };
+        let mut scanner = Scanner::new(
+            &self.shared.cfg,
+            file,
+            &reader,
+            block_start(self.shared.cfg.block_size, offset),
+            u64::MAX,
+        );
+        while let Some((at, item)) = scanner.next()? {
+            match item {
+                Item::Record(r) if at == offset => return Ok((r, scanner.last_len)),
+                _ if at >= offset => break,
+                _ => {}
+            }
+        }
+        Err(LogError::Position(pos, "not a record's start"))
+    }
+
+    /// Writes a group laid out from a file's start (`Layout::close` done) as file `file` in `dir`, synced: a bulk
+    /// load's staging. Returns the bytes written.
+    pub fn write_staged(&self, dir: &Path, file: u64, runs: &[(u64, Vec<u8>)]) -> LogResult<u64> {
+        let path = dir.join(file_name(&self.shared.cfg, file));
+        let handle = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(path)?;
+        let mut bytes = 0;
+        for (at, run) in runs {
+            write_all_at(&handle, run, *at)?;
+            bytes += run.len() as u64;
+        }
+        handle.sync_data()?;
+        Ok(bytes)
+    }
+
+    /// The name of log file `file`.
+    pub fn file_name(&self, file: u64) -> String {
+        file_name(&self.shared.cfg, file)
+    }
+
     /// The record at `pos`, which must be a durable record's start.
     pub fn read(&self, pos: u64) -> LogResult<Record> {
         self.read_sized(pos).map(|(r, _)| r)
@@ -1000,9 +1069,10 @@ impl Mark {
 }
 
 impl Layout {
-    /// A group starting at `at`, or at the next file's start once `at`'s file has reached its target size.
-    pub fn start(cfg: &Config, at: Cursor) -> Layout {
-        let at = if at.offset >= cfg.file_target {
+    /// A group starting at `at`, or at the next file's start once `at`'s file has reached its target size
+    /// (unless `stay`: while a bulk load holds the files after it).
+    pub fn start(cfg: &Config, at: Cursor, stay: bool) -> Layout {
+        let at = if at.offset >= cfg.file_target && !stay {
             Cursor {
                 file: at.file + 1,
                 offset: 0,
@@ -1124,7 +1194,7 @@ fn write_round(
     done: &mut Vec<(Pending, LogResult<Vec<u64>>)>,
 ) -> LogResult<()> {
     let cfg = log.shared.cfg;
-    let mut layout = Layout::start(&cfg, *cursor);
+    let mut layout = Layout::start(&cfg, *cursor, false);
     let mut written = 0;
     while layout.offset < cfg.file_target || written == 0 {
         let Some(p) = batch.pop_front() else { break };

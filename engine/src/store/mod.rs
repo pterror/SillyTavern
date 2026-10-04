@@ -25,15 +25,16 @@
 //! removes the file once the runs cover the log past the copies, so replay never meets a record pointing into
 //! it.
 
+pub mod bulk;
 pub mod derive;
 pub mod kinds;
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, RwLock, Weak};
 
-use derive::{Loc, Out, Pending, View, apply, deriver};
+use derive::{Layer, Loc, Out, Pending, View, apply, deriver};
 use kinds::{file_of, key};
 
 use crate::keyspace::exec::Activity;
@@ -208,6 +209,17 @@ struct Pipe {
     syncing: Option<Group>,
     closed: bool,
     failed: Option<String>,
+    /// A bulk load holds the log files after the cursor's: groups stay in the cursor's file.
+    loading: Option<Loading>,
+}
+
+/// What the commit path keeps while a bulk load runs.
+#[derive(Default)]
+struct Loading {
+    /// Partitions of the records committed meanwhile, checked against the load's when it is installed.
+    touched: HashSet<u64>,
+    /// No job is taken while the load is installed.
+    installing: bool,
 }
 
 enum Replay {
@@ -245,6 +257,8 @@ pub struct StoreStats {
 
 struct Inner {
     me: Weak<Inner>,
+    /// The store's directory.
+    dir: std::path::PathBuf,
     cfg: StoreConfig,
     log: Log,
     ks: Arc<Keyspace>,
@@ -294,6 +308,7 @@ impl Store {
 
     /// Opens the store in `dir` sharing `pool`'s buffer budget, block cache and flush and merge slots.
     pub fn open_in(dir: &Path, cfg: StoreConfig, pool: Arc<Pool>) -> StoreResult<Store> {
+        bulk::recover(dir, &cfg.log)?;
         let ks = Keyspace::open(&dir.join("runs"), cfg.ks, pool)?;
         let covered = ks.covered();
         let start = if ks.has_runs() {
@@ -336,6 +351,7 @@ impl Store {
             };
             Inner {
                 me: me.clone(),
+                dir: dir.to_path_buf(),
                 cfg,
                 log,
                 ks: ks.clone(),
@@ -346,6 +362,7 @@ impl Store {
                     syncing: None,
                     closed: false,
                     failed: None,
+                    loading: None,
                 }),
                 tail: Mutex::new(tail),
                 prepare_act: activity(Inner::prepare_step),
@@ -430,6 +447,7 @@ impl Store {
         let view = View {
             layers: Vec::new(),
             pending: Vec::new(),
+            staged: None,
             ks: &self.inner.ks,
             log: &self.inner.log,
         };
@@ -661,8 +679,9 @@ impl Inner {
         pending: Vec<&'a Pending>,
     ) -> View<'a> {
         View {
-            layers,
+            layers: layers.into_iter().map(Layer::Sorted).collect(),
             pending,
+            staged: None,
             ks: &self.ks,
             log: &self.log,
         }
@@ -751,12 +770,17 @@ impl Inner {
         let mut p = self.pipe.lock().unwrap();
         // A full open group waits for the sync step to take it; with no room in the pool, nothing more is
         // prepared either, so entries waiting to be published stay within what the pool's flushes can free.
-        let full = p
-            .open
-            .layout
-            .as_ref()
-            .is_some_and(|l| l.offset() >= self.cfg.log.file_target);
-        if full || p.queue.is_empty() || !self.ks.pool().room_or_wait(&self.prepare_act) {
+        let full = p.loading.is_none()
+            && p.open
+                .layout
+                .as_ref()
+                .is_some_and(|l| l.offset() >= self.cfg.log.file_target);
+        let installing = p.loading.as_ref().is_some_and(|l| l.installing);
+        if full
+            || installing
+            || p.queue.is_empty()
+            || !self.ks.pool().room_or_wait(&self.prepare_act)
+        {
             return false;
         }
         let Some(job) = p.queue.pop_front() else {
@@ -781,11 +805,22 @@ impl Inner {
             cursor,
             open,
             syncing,
+            loading,
             ..
         } = p;
+        if let Some(l) = loading {
+            let recs: Vec<&Record> = match &job {
+                Job::Commit(recs, _) => recs.iter().collect(),
+                Job::Relocate(recs, _) => recs.iter().map(|(_, r)| r).collect(),
+            };
+            for r in recs {
+                l.touched.insert(deriver(r.kind).partition(r));
+            }
+        }
+        let stay = loading.is_some();
         let layout = open
             .layout
-            .get_or_insert_with(|| Layout::start(&self.cfg.log, *cursor));
+            .get_or_insert_with(|| Layout::start(&self.cfg.log, *cursor, stay));
         let mark = layout.mark();
         let mut entries = BTreeMap::new();
         let mut records = Pending::new();
@@ -978,7 +1013,8 @@ impl Inner {
     /// One step of cleaning: hands the next batch of the file being cleaned to the commit path (and waits, by
     /// returning, for it to come back), finishes the file, or picks the next one.
     fn clean_step(&self) -> bool {
-        if !self.is_ready() {
+        // A bulk load reads the log as it stands: nothing is moved meanwhile.
+        if !self.is_ready() || self.pipe.lock().unwrap().loading.is_some() {
             return false;
         }
         match self.clean_next() {

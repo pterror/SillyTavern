@@ -433,6 +433,10 @@ impl Deriver for TextValue {
 struct TextEdit;
 
 impl Deriver for TextEdit {
+    fn prepares(&self) -> bool {
+        true
+    }
+
     /// Applies the edit to the current value to check it; writes the new full value instead once the edits
     /// since the last one would reach the value's size (design 4.1), so a read stays within about twice it.
     fn prepare(&self, rec: Record, view: &View) -> Result<Record, StoreError> {

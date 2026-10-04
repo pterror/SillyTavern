@@ -444,3 +444,248 @@ fn a_commit_that_writes_nothing_resolves_after_the_ones_before_it() {
     drop(s);
     fs::remove_dir_all(&dir).unwrap();
 }
+
+// ---- bulk loads ----
+
+/// A library of `n` entities: searched text fields from a small vocabulary (so terms repeat across fields and
+/// entities), tags, favs and test sets; an entity's records together.
+fn library(from: u64, n: u64) -> Vec<Record> {
+    use kinds::test_codes::{CARD_TAGS, LIBRARY};
+    let words = [
+        "dark",
+        "knight",
+        "dragon",
+        "vampire",
+        "love",
+        "the",
+        "girl",
+        "quokka",
+        "saxophone",
+        "drab",
+        "élan",
+        "東京",
+        "o'neil",
+        "foo-bar",
+    ];
+    let mut out = Vec::new();
+    for e in from..from + n {
+        let word = |i: u64| words[((e * 31 + i * 17) % words.len() as u64) as usize];
+        for f in [0u64, 2, 4, 8, u64::from(CARD_TAGS)] {
+            let len = (e + f) % 9 + 1;
+            let t: Vec<&str> = (0..len).map(|i| word(i + f)).collect();
+            let sep = if f == u64::from(CARD_TAGS) {
+                "\u{1e}"
+            } else {
+                " "
+            };
+            out.push(set_text(e, LIBRARY + f, &t.join(sep)));
+        }
+        if e % 3 == 0 {
+            out.push(fav(e, e % 2 == 0));
+        }
+        out.push(rec(
+            "tagAssign",
+            vec![Value::Id(e), Value::Id(e % 5 + 1), Value::Bit(true)],
+        ));
+        out.push(test_set(e, e % 13, b"x"));
+    }
+    out
+}
+
+/// The search structures' entries, their maps without removed slots, and each entity's texts and fav.
+fn derived(s: &Store, entities: std::ops::Range<u64>) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let mut out = Vec::new();
+    for st in [
+        key::SEARCH_POSTING,
+        key::SEARCH_DOC_FREQ,
+        key::SEARCH_DIRECTORY,
+        key::SEARCH_LENGTH,
+        key::SEARCH_TERM_DOCS,
+        key::SEARCH_FIELD_TOKENS,
+        key::SEARCH_DOCS,
+        key::SEARCH_MAX_DOC,
+        key::MEMBER_OF,
+        key::MEMBER_COUNT,
+        key::MEMBER_BLOCK,
+        key::TEST_ORDER,
+        key::TEST_COUNT,
+    ] {
+        let p = key::of(st);
+        for (k, v) in s.scan(&p, &key::prefix_end(&p), usize::MAX).unwrap() {
+            let v = match crate::keyspace::val::map_pairs(&v) {
+                Some(pairs) if st != key::TEST_COUNT && st != key::SEARCH_DOCS => {
+                    let pairs: Vec<_> = pairs.into_iter().filter(|p| p.1 != 0).collect();
+                    if pairs.is_empty() {
+                        continue;
+                    }
+                    format!("{pairs:?}").into_bytes()
+                }
+                _ => v,
+            };
+            out.push((k, v));
+        }
+    }
+    for e in entities {
+        for f in 0..12 {
+            let t = s
+                .text(e, &FieldRef::Code(kinds::test_codes::LIBRARY + f))
+                .unwrap();
+            out.push((format!("text {e} {f}").into_bytes(), t.unwrap_or_default()));
+        }
+        out.push((
+            format!("fav {e}").into_bytes(),
+            format!("{:?}", s.fav(e).unwrap()).into_bytes(),
+        ));
+    }
+    out
+}
+
+fn bulk_dirs(name: &str) -> (PathBuf, PathBuf) {
+    (
+        temp_dir(&format!("{name}-commits")),
+        temp_dir(&format!("{name}-bulk")),
+    )
+}
+
+#[test]
+fn a_bulk_load_derives_what_commits_derive() {
+    let (a, b) = bulk_dirs("bulk");
+    let (sa, sb) = (
+        Store::open_in(&a, SMALL, small_pool()).unwrap(),
+        Store::open_in(&b, SMALL, small_pool()).unwrap(),
+    );
+    // Some state first, which the load reads and replaces in part.
+    for s in [&sa, &sb] {
+        for c in library(1, 20).chunks(7) {
+            s.commit_wait(c.to_vec()).unwrap();
+        }
+    }
+    let recs = library(10, 300);
+    for c in recs.chunks(9) {
+        sa.commit_wait(c.to_vec()).unwrap();
+    }
+    let mut l = sb.loader().unwrap();
+    for c in recs.chunks(100) {
+        l.add(c.to_vec()).unwrap();
+    }
+    let st = l.finish().unwrap();
+    assert_eq!(st.records, recs.len() as u64);
+    assert!(!b.join(bulk::LOAD_DIR).exists());
+    assert_eq!(derived(&sa, 0..320), derived(&sb, 0..320));
+    // Commits go on after it, and everything holds across reopening.
+    for s in [&sa, &sb] {
+        s.commit_wait(library(5, 3)).unwrap();
+        s.commit_wait(vec![fav(400, true)]).unwrap();
+    }
+    assert_eq!(derived(&sa, 0..401), derived(&sb, 0..401));
+    drop(sb);
+    let sb = Store::open_in(&b, SMALL, small_pool()).unwrap();
+    assert_eq!(derived(&sa, 0..401), derived(&sb, 0..401));
+    let _ = (fs::remove_dir_all(&a), fs::remove_dir_all(&b));
+}
+
+#[test]
+fn a_bulk_load_out_of_partition_order_derives_what_commits_derive() {
+    let (a, b) = bulk_dirs("bulk-order");
+    let (sa, sb) = (
+        Store::open_in(&a, SMALL, small_pool()).unwrap(),
+        Store::open_in(&b, SMALL, small_pool()).unwrap(),
+    );
+    // Each entity's records split, and the second halves in reverse entity order.
+    let recs = library(1, 120);
+    let (first, second): (Vec<_>, Vec<_>) = recs
+        .iter()
+        .cloned()
+        .enumerate()
+        .partition(|(i, _)| i % 2 == 0);
+    let mut order: Vec<Record> = first.into_iter().map(|(_, r)| r).collect();
+    order.extend(second.into_iter().rev().map(|(_, r)| r));
+    for r in &order {
+        sa.commit_wait(vec![r.clone()]).unwrap();
+    }
+    let mut l = sb.loader().unwrap();
+    l.add(order).unwrap();
+    l.finish().unwrap();
+    assert_eq!(derived(&sa, 0..130), derived(&sb, 0..130));
+    let _ = (fs::remove_dir_all(&a), fs::remove_dir_all(&b));
+}
+
+#[test]
+fn an_abandoned_or_refused_bulk_load_leaves_the_store_as_it_was() {
+    let dir = temp_dir("bulk-abandon");
+    let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
+    s.commit_wait(library(1, 5)).unwrap();
+    let before = derived(&s, 0..60);
+    {
+        let mut l = s.loader().unwrap();
+        l.add(library(10, 40)).unwrap();
+        // Another load can't start meanwhile; commits go on.
+        assert!(matches!(s.loader(), Err(StoreError::Refused(_))));
+        s.commit_wait(vec![fav(3, true)]).unwrap();
+        s.commit_wait(vec![fav(3, false)]).unwrap();
+    }
+    assert!(!dir.join(bulk::LOAD_DIR).exists());
+    assert_eq!(derived(&s, 0..60), before);
+    // A kind whose commit may change the record isn't loaded.
+    let mut l = s.loader().unwrap();
+    assert!(matches!(
+        l.add(vec![edit(1, 2, 0, 0, "x")]),
+        Err(StoreError::Refused(_))
+    ));
+    assert!(l.finish().is_err());
+    // A record committed meanwhile in a partition the load holds refuses the load.
+    let mut l = s.loader().unwrap();
+    l.add(library(10, 40)).unwrap();
+    s.commit_wait(vec![fav(25, true)]).unwrap();
+    assert!(matches!(l.finish(), Err(StoreError::Refused(_))));
+    assert_eq!(s.fav(25).unwrap(), Some(true));
+    assert_eq!(
+        s.text(30, &FieldRef::Code(kinds::test_codes::LIBRARY))
+            .unwrap(),
+        None
+    );
+    drop(s);
+    let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
+    assert_eq!(s.fav(25).unwrap(), Some(true));
+    s.commit_wait(library(10, 40)).unwrap();
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_bulk_load_stopped_while_installing_is_whole_or_absent_after_reopening() {
+    for (point, visible) in [(1u8, false), (2, true)] {
+        let dir = temp_dir("bulk-crash");
+        let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
+        s.commit_wait(library(1, 3)).unwrap();
+        let mut l = s.loader().unwrap();
+        l.add(library(10, 50)).unwrap();
+        bulk::FAIL_AT.store(point, Ordering::Relaxed);
+        assert!(l.finish().is_err());
+        bulk::FAIL_AT.store(0, Ordering::Relaxed);
+        // Nothing more is written until reopening.
+        assert!(s.commit_wait(vec![fav(1, true)]).is_err());
+        drop(s);
+        let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
+        assert!(!dir.join(bulk::LOAD_DIR).exists());
+        let t = s
+            .text(30, &FieldRef::Code(kinds::test_codes::LIBRARY))
+            .unwrap();
+        assert_eq!(t.is_some(), visible, "failpoint {point}");
+        assert!(
+            s.text(2, &FieldRef::Code(kinds::test_codes::LIBRARY))
+                .unwrap()
+                .is_some()
+        );
+        // The log goes on from wherever it ends.
+        s.commit_wait(library(100, 5)).unwrap();
+        drop(s);
+        let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
+        assert!(
+            s.text(100, &FieldRef::Code(kinds::test_codes::LIBRARY))
+                .unwrap()
+                .is_some()
+        );
+        drop(s);
+        let _ = fs::remove_dir_all(&dir);
+    }
+}

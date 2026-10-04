@@ -908,7 +908,14 @@ fn load_and_space(
             .sum::<u64>();
         card_records(i as u64 + 1, &card)
     });
-    commit_all(s, recs, 200);
+    if std::env::args().any(|a| a == "--bulk") {
+        let mut l = s.loader().unwrap();
+        l.add(recs).unwrap();
+        let st = l.finish().unwrap();
+        println!("{{\"phase\":\"bulk\",\"stats\":\"{st:?}\"}}");
+    } else {
+        commit_all(s, recs, 200);
+    }
     let load = started.elapsed();
     settle(s);
     let st = s.stats();
