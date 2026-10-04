@@ -13,6 +13,213 @@ pub enum Val {
     /// Raises the key's maximum (a `Put` of `max_bytes`, or nothing if it has none) to at least this, without
     /// reading it.
     Max(u64),
+    /// Sets slots of the key's map (a `Put` of `map_bytes`, or an empty map if it has none) without reading it:
+    /// (slot, value) pairs sorted by slot, value 0 removing the slot.
+    Map(Vec<(u32, u32)>),
+}
+
+/// A map's pairs (sorted by slot, values not 0) as `Put` bytes, the same encoding as a `Map` value's payload: a
+/// varint of the count shifted left, its low bit the form, whichever is smaller. Packed (0): per chunk of `CHUNK`
+/// pairs the bit widths of its slot differences and of its values (a byte each), then those bit-packed, least
+/// significant first, difference then value per pair. Varints (1): per pair a varint of the slot difference
+/// shifted left with the low bit set when the value is 1, any other value following as a varint. A slot's
+/// difference is from the slot before (from 0 for the first).
+pub fn map_bytes(pairs: &[(u32, u32)]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(map_len(pairs));
+    put_map(&mut out, pairs);
+    out
+}
+
+const CHUNK: usize = 128;
+
+fn bits(v: u32) -> u32 {
+    32 - v.leading_zeros()
+}
+
+/// Each chunk's widths.
+fn chunks(pairs: &[(u32, u32)]) -> impl Iterator<Item = (&[(u32, u32)], u32, u32, u32)> {
+    let mut prev = 0u32;
+    pairs.chunks(CHUNK).map(move |c| {
+        let base = prev;
+        let (mut bd, mut bv, mut p) = (0, 0, base);
+        for &(slot, v) in c {
+            bd = bd.max(bits(slot - p));
+            bv = bv.max(bits(v));
+            p = slot;
+        }
+        prev = p;
+        (c, base, bd, bv)
+    })
+}
+
+fn varints_len(pairs: &[(u32, u32)]) -> usize {
+    let mut prev = 0u32;
+    let mut n = 0;
+    for &(slot, v) in pairs {
+        n += crate::log::format::uvarint_len(u64::from(slot - prev) << 1);
+        prev = slot;
+        if v != 1 {
+            n += crate::log::format::uvarint_len(u64::from(v));
+        }
+    }
+    n
+}
+
+fn packed_len(pairs: &[(u32, u32)]) -> usize {
+    chunks(pairs)
+        .map(|(c, _, bd, bv)| 2 + ((bd + bv) as usize * c.len()).div_ceil(8))
+        .sum()
+}
+
+fn put_map(out: &mut Vec<u8>, pairs: &[(u32, u32)]) {
+    let varints = varints_len(pairs) < packed_len(pairs);
+    put_uvarint(out, (pairs.len() as u64) << 1 | u64::from(varints));
+    if varints {
+        let mut prev = 0u32;
+        for &(slot, v) in pairs {
+            let d = u64::from(slot - prev);
+            prev = slot;
+            if v == 1 {
+                put_uvarint(out, d << 1 | 1);
+            } else {
+                put_uvarint(out, d << 1);
+                put_uvarint(out, u64::from(v));
+            }
+        }
+        return;
+    }
+    for (c, base, bd, bv) in chunks(pairs) {
+        out.push(bd as u8);
+        out.push(bv as u8);
+        let (mut acc, mut n, mut p) = (0u64, 0u32, base);
+        let mut push = |x: u32, w: u32, acc: &mut u64, n: &mut u32| {
+            *acc |= u64::from(x) << *n;
+            *n += w;
+            while *n >= 8 {
+                out.push(*acc as u8);
+                *acc >>= 8;
+                *n -= 8;
+            }
+        };
+        for &(slot, v) in c {
+            push(slot - p, bd, &mut acc, &mut n);
+            push(v, bv, &mut acc, &mut n);
+            p = slot;
+        }
+        if n > 0 {
+            out.push(acc as u8);
+        }
+    }
+}
+
+fn map_len(pairs: &[(u32, u32)]) -> usize {
+    crate::log::format::uvarint_len((pairs.len() as u64) << 1)
+        + varints_len(pairs).min(packed_len(pairs))
+}
+
+/// A map's pairs from `map_bytes` (or a `Map` payload).
+pub fn map_pairs(b: &[u8]) -> Option<Vec<(u32, u32)>> {
+    let mut at = 0;
+    let head = get_uvarint(b, &mut at).ok()?;
+    let count = usize::try_from(head >> 1).ok()?;
+    let mut out = Vec::with_capacity(count.min(b.len() * 8));
+    let mut slot = 0u32;
+    if head & 1 == 1 {
+        for _ in 0..count {
+            let d = get_uvarint(b, &mut at).ok()?;
+            if d >> 1 == 0 && !out.is_empty() {
+                return None;
+            }
+            slot = slot.checked_add(u32::try_from(d >> 1).ok()?)?;
+            let v = if d & 1 == 1 {
+                1
+            } else {
+                u32::try_from(get_uvarint(b, &mut at).ok()?).ok()?
+            };
+            out.push((slot, v));
+        }
+        return (at == b.len()).then_some(out);
+    }
+    while out.len() < count {
+        let (bd, bv) = (u32::from(*b.get(at)?), u32::from(*b.get(at + 1)?));
+        if bd > 32 || bv > 32 {
+            return None;
+        }
+        at += 2;
+        let n = (count - out.len()).min(CHUNK);
+        let bytes = ((bd + bv) as usize * n).div_ceil(8);
+        let data = b.get(at..at + bytes)?;
+        at += bytes;
+        let (mut acc, mut have, mut i) = (0u64, 0u32, 0usize);
+        let mut take = |w: u32| -> u32 {
+            while have < w {
+                acc |= u64::from(data[i]) << have;
+                i += 1;
+                have += 8;
+            }
+            let x = (acc & ((1u64 << w) - 1)) as u32;
+            acc >>= w;
+            have -= w;
+            x
+        };
+        for _ in 0..n {
+            let d = take(bd);
+            let v = take(bv);
+            if d == 0 && !out.is_empty() {
+                return None;
+            }
+            slot = slot.checked_add(d)?;
+            out.push((slot, v));
+        }
+    }
+    (at == b.len()).then_some(out)
+}
+
+/// `newer`'s pairs over `older`'s, sorted by slot.
+pub fn map_over(newer: &[(u32, u32)], mut older: Vec<(u32, u32)>) -> Vec<(u32, u32)> {
+    if newer.is_empty() {
+        return older;
+    }
+    // Pairs past every older slot, as ids growing in order bring them: appended.
+    if older.last().is_none_or(|&(s, _)| s < newer[0].0) {
+        older.extend_from_slice(newer);
+        return older;
+    }
+    let mut out = Vec::with_capacity(older.len() + newer.len());
+    let (mut i, mut j) = (0, 0);
+    while i < newer.len() || j < older.len() {
+        match (newer.get(i), older.get(j)) {
+            (Some(n), Some(o)) if n.0 == o.0 => {
+                out.push(*n);
+                i += 1;
+                j += 1;
+            }
+            (Some(n), Some(o)) if n.0 < o.0 => {
+                out.push(*n);
+                i += 1;
+            }
+            (Some(n), None) => {
+                out.push(*n);
+                i += 1;
+            }
+            (_, Some(o)) => {
+                out.push(*o);
+                j += 1;
+            }
+            (None, None) => unreachable!(),
+        }
+    }
+    out
+}
+
+/// A map's pairs as stored: removals dropped; nothing when empty.
+fn map_stored(mut pairs: Vec<(u32, u32)>) -> Val {
+    pairs.retain(|&(_, v)| v != 0);
+    if pairs.is_empty() {
+        Val::Del
+    } else {
+        Val::Put(map_bytes(&pairs))
+    }
 }
 
 /// A maximum's value as `Put` bytes.
@@ -69,21 +276,41 @@ impl Val {
                 Val::Put(max_bytes(base.unwrap_or(0).max(m)))
             }
             (Val::Max(m), Val::Del) => Val::Put(max_bytes(m)),
+            (Val::Map(n), Val::Map(o)) => Val::Map(map_over(&n, o.clone())),
+            (Val::Map(n), Val::Put(b)) => {
+                let base = map_pairs(b);
+                debug_assert!(base.is_some(), "a Map over a value that isn't a map");
+                map_stored(map_over(&n, base.unwrap_or_default()))
+            }
+            (Val::Map(n), Val::Del) => map_stored(n),
             (v, _) => v,
         }
     }
 
-    /// Whether the value builds on older ones (an `Add` or a `Max`), so a read goes on to them.
-    pub fn is_partial(&self) -> bool {
-        matches!(self, Val::Add(_) | Val::Max(_))
+    /// `over`, taking the older value: a map over a map is merged in place.
+    pub fn over_owned(self, older: Val) -> Val {
+        match (self, older) {
+            (Val::Map(n), Val::Map(o)) => Val::Map(map_over(&n, o)),
+            (v, o) => v.over(&o),
+        }
     }
 
-    /// The value as the oldest one of its key: a `Del` is nothing, an `Add` a counter from 0, a `Max` itself.
+    /// Whether the value builds on older ones (an `Add`, a `Max` or a `Map`), so a read goes on to them.
+    pub fn is_partial(&self) -> bool {
+        matches!(self, Val::Add(_) | Val::Max(_) | Val::Map(_))
+    }
+
+    /// The value as the oldest one of its key: a `Del` is nothing, an `Add` a counter from 0, a `Max` itself, a
+    /// `Map` its pairs (nothing when none is left).
     pub fn bottom(self) -> Option<Val> {
         match self {
             Val::Del => None,
             Val::Add(d) => Some(Val::Put(counter_bytes(d))),
             Val::Max(m) => Some(Val::Put(max_bytes(m))),
+            Val::Map(pairs) => match map_stored(pairs) {
+                Val::Del => None,
+                v => Some(v),
+            },
             v => Some(v),
         }
     }
@@ -103,26 +330,31 @@ impl Val {
             Val::Del => 0,
             Val::Add(d) => crate::log::format::uvarint_len(zigzag(*d)),
             Val::Max(m) => crate::log::format::uvarint_len(*m),
+            Val::Map(pairs) => map_len(pairs),
         }
     }
 
-    /// Appends the tag varint `(payload length << 2) | kind`, then the payload.
+    /// Appends the tag varint `(payload length << 3) | kind`, then the payload.
     pub fn encode(&self, out: &mut Vec<u8>) {
         match self {
             Val::Put(b) => {
-                put_uvarint(out, (b.len() as u64) << 2);
+                put_uvarint(out, (b.len() as u64) << 3);
                 out.extend_from_slice(b);
             }
             Val::Del => put_uvarint(out, 1),
             Val::Add(d) => {
                 let mut p = Vec::new();
                 put_uvarint(&mut p, zigzag(*d));
-                put_uvarint(out, ((p.len() as u64) << 2) | 2);
+                put_uvarint(out, ((p.len() as u64) << 3) | 2);
                 out.extend_from_slice(&p);
             }
             Val::Max(m) => {
-                put_uvarint(out, ((crate::log::format::uvarint_len(*m) as u64) << 2) | 3);
+                put_uvarint(out, ((crate::log::format::uvarint_len(*m) as u64) << 3) | 3);
                 put_uvarint(out, *m);
+            }
+            Val::Map(pairs) => {
+                put_uvarint(out, ((map_len(pairs) as u64) << 3) | 4);
+                put_map(out, pairs);
             }
         }
     }
@@ -130,11 +362,11 @@ impl Val {
     /// Decodes a value written by `encode`.
     pub fn decode(buf: &[u8], at: &mut usize) -> Option<Val> {
         let tag = get_uvarint(buf, at).ok()?;
-        let len = usize::try_from(tag >> 2).ok()?;
+        let len = usize::try_from(tag >> 3).ok()?;
         let end = at.checked_add(len)?;
         let payload = buf.get(*at..end)?;
         *at = end;
-        match tag & 3 {
+        match tag & 7 {
             0 => Some(Val::Put(payload.to_vec())),
             1 if len == 0 => Some(Val::Del),
             2 => {
@@ -143,6 +375,7 @@ impl Val {
                 (p == payload.len()).then_some(Val::Add(unzigzag(v)))
             }
             3 => max_value(payload).map(Val::Max),
+            4 => map_pairs(payload).map(Val::Map),
             _ => None,
         }
     }
@@ -278,6 +511,25 @@ mod tests {
             Some(Val::Put(max_bytes(9)))
         );
         assert_eq!(fold([Val::Max(3), Val::Del]), Some(Val::Put(max_bytes(3))));
+        // Maps: newer slots win, 0 removes, an empty map is no value.
+        let older = Val::Put(map_bytes(&[(1, 1), (5, 7), (9, 2)]));
+        assert_eq!(
+            fold([
+                Val::Map(vec![(5, 0), (6, 3)]),
+                Val::Map(vec![(1, 4)]),
+                older.clone()
+            ]),
+            Some(Val::Put(map_bytes(&[(1, 4), (6, 3), (9, 2)])))
+        );
+        assert_eq!(
+            fold([Val::Map(vec![(1, 0), (5, 0), (9, 0)]), older]),
+            Some(Val::Del)
+        );
+        assert_eq!(Val::Map(vec![(3, 0)]).bottom(), None);
+        assert_eq!(
+            Val::Map(vec![(2, 1), (300, 9)]).over_owned(Val::Map(vec![(1, 5), (2, 4)])),
+            Val::Map(vec![(1, 5), (2, 1), (300, 9)])
+        );
         for v in [
             Val::Put(vec![1, 2]),
             Val::Del,
@@ -285,6 +537,10 @@ mod tests {
             Val::Add(i64::MIN),
             Val::Max(0),
             Val::Max(u64::MAX),
+            Val::Map(vec![(0, 1), (7, 0), (1 << 20, u32::MAX)]),
+            Val::Map(Vec::new()),
+            Val::Map((0..300).map(|i| (i * 16 + 3, i % 5 + 1)).collect()),
+            Val::Map((0..300).map(|i| (i * i, (i * 7) % 3)).collect()),
         ] {
             let mut b = Vec::new();
             v.encode(&mut b);
