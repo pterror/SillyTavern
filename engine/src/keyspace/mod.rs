@@ -103,8 +103,9 @@ pub struct KsStats {
     pub flush_bytes: u64,
     pub merges: u64,
     pub merge_bytes: u64,
-    /// Entries inserted into the buffer.
+    /// Entries inserted into the buffer, and their keys' and values' bytes (each value with a tag byte).
     pub inserted: u64,
+    pub inserted_bytes: u64,
     pub runs: u64,
     pub run_bytes: u64,
     pub lookups: u64,
@@ -124,6 +125,7 @@ struct Counters {
     merges: AtomicU64,
     merge_bytes: AtomicU64,
     inserted: AtomicU64,
+    inserted_bytes: AtomicU64,
     lookups: AtomicU64,
 }
 
@@ -312,7 +314,7 @@ impl Keyspace {
         let mut out = Vec::new();
         for m in &v.mems {
             if let Some(val) = m.read().unwrap().get(key) {
-                let done = !matches!(val, Val::Add(_));
+                let done = !val.is_partial();
                 out.push(val);
                 if done {
                     return Ok(out);
@@ -321,7 +323,7 @@ impl Keyspace {
         }
         for r in &v.runs {
             if let Some(val) = r.get(key, &self.pool.cache, &self.counts)? {
-                let done = !matches!(val, Val::Add(_));
+                let done = !val.is_partial();
                 out.push(val);
                 if done {
                     return Ok(out);
@@ -387,13 +389,17 @@ impl Keyspace {
         {
             let v = self.version();
             let mut m = v.mems[0].write().unwrap();
-            let (mut n, mut grew) = (0, 0);
+            let (mut n, mut bytes, mut grew) = (0, 0, 0);
             for (k, val) in entries {
+                bytes += (k.len() + val.payload_len() + 1) as u64;
                 grew += m.insert(&k, val);
                 n += 1;
             }
             self.pool.add_active(grew);
             self.counters.inserted.fetch_add(n, Ordering::Relaxed);
+            self.counters
+                .inserted_bytes
+                .fetch_add(bytes, Ordering::Relaxed);
         }
         if let Some((end, bytes)) = log {
             w.end = end;
@@ -734,6 +740,7 @@ impl Keyspace {
             merges: c.merges.load(Ordering::Relaxed),
             merge_bytes: c.merge_bytes.load(Ordering::Relaxed),
             inserted: c.inserted.load(Ordering::Relaxed),
+            inserted_bytes: c.inserted_bytes.load(Ordering::Relaxed),
             runs: v.runs.len() as u64,
             run_bytes: v.runs.iter().map(|r| r.bytes).sum(),
             lookups: c.lookups.load(Ordering::Relaxed),

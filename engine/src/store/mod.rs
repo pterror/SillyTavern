@@ -1140,7 +1140,7 @@ impl Hooks for StoreHooks {
             let mut vals = vec![v.clone()];
             for r in older {
                 if let Some(o) = r.get(k, ks.cache(), &ks.counts)? {
-                    let done = !matches!(o, Val::Add(_));
+                    let done = !o.is_partial();
                     vals.push(o);
                     if done {
                         break;

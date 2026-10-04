@@ -35,7 +35,7 @@ impl View<'_> {
             .iter()
             .filter_map(|l| l.get(key).cloned())
             .collect();
-        if vals.iter().all(|v| matches!(v, Val::Add(_))) {
+        if vals.iter().all(Val::is_partial) {
             match self.ks.get(key)? {
                 Some(b) => vals.push(Val::Put(b)),
                 None if vals.is_empty() => return Ok(None),
@@ -119,6 +119,10 @@ impl Out {
 
     pub fn add(&mut self, key: Vec<u8>, n: i64) {
         self.entries.push((key, Val::Add(n)));
+    }
+
+    pub fn max(&mut self, key: Vec<u8>, n: u64) {
+        self.entries.push((key, Val::Max(n)));
     }
 
     /// Applies the entries over `layer`.
