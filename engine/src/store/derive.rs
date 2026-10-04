@@ -45,6 +45,62 @@ impl View<'_> {
         Ok(fold(vals).and_then(Val::resolved))
     }
 
+    /// The pairs of the map at `key` whose slots are in `[lo, hi)`, removals dropped; with `published` false,
+    /// as if nothing were published. Reads only those slots of maps still being built.
+    pub fn map_range(
+        &self,
+        key: &[u8],
+        lo: u32,
+        hi: u32,
+        published: bool,
+    ) -> Result<Vec<(u32, u32)>, StoreError> {
+        let mut acc: Vec<(u32, u32)> = Vec::new();
+        let mut base: Option<Option<Vec<u8>>> = None;
+        for l in &self.layers {
+            match l.get(key) {
+                None => continue,
+                Some(Val::Map(p)) => {
+                    let from = p.partition_point(|x| x.0 < lo);
+                    let to = p.partition_point(|x| x.0 < hi);
+                    acc = crate::keyspace::val::map_over(&acc, p[from..to].to_vec());
+                }
+                Some(Val::Put(b)) => {
+                    base = Some(Some(b.clone()));
+                    break;
+                }
+                Some(_) => {
+                    base = Some(None);
+                    break;
+                }
+            }
+        }
+        let base = match base {
+            Some(b) => b,
+            None if published => self.ks.get(key)?,
+            None => None,
+        };
+        if let Some(b) = base {
+            let older: Vec<(u32, u32)> = crate::keyspace::val::map_pairs(&b)
+                .ok_or_else(|| StoreError::Entry("a map doesn't decode".into()))?
+                .into_iter()
+                .filter(|x| x.0 >= lo && x.0 < hi)
+                .collect();
+            acc = crate::keyspace::val::map_over(&acc, older);
+        }
+        acc.retain(|x| x.1 != 0);
+        Ok(acc)
+    }
+
+    /// A number that changes whenever the published entries may have.
+    pub fn published_version(&self) -> u64 {
+        self.ks.inserted()
+    }
+
+    /// The published value only.
+    pub fn get_published(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
+        Ok(self.ks.get(key)?)
+    }
+
     /// Up to `limit` keys in `[start, end)` that have values, in order.
     pub fn scan(&self, start: &[u8], end: &[u8], limit: usize) -> Result<Entries, StoreError> {
         let mut unpublished: BTreeMap<Vec<u8>, Val> = BTreeMap::new();

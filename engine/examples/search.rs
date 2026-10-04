@@ -856,7 +856,7 @@ fn main() {
             .map_or("null".into(), |(_, t)| t.to_string());
         println!(
             "{{\"phase\":\"query\",\"q\":{:?},\"words\":{words},\"median_ms\":{:.3},\"total\":{},\"total_exact\":{},\
-             \"page_exact\":{},\"work\":{},\"scans\":{},\"entries\":{},\"pairs\":{},\"gets\":{},\"texts\":{},\"blocks\":{blocks},\"file_reads\":{file_reads},\
+             \"page_exact\":{},\"work\":{},\"scans\":{},\"entries\":{},\"pairs\":{},\"gets\":{},\"texts\":{},\"plan_us\":{},\"blocks\":{blocks},\"file_reads\":{file_reads},\
              \"brute_total\":{brute_total},\"page_equal\":{same_page},\"total_equal\":{same_total}}}",
             label,
             median.as_secs_f64() * 1000.0,
@@ -869,11 +869,14 @@ fn main() {
             f.pairs,
             f.gets,
             f.texts,
+            f.plan_micros,
         );
     }
 
     if !reuse {
         writes(&s, cards);
+    } else {
+        probe(&s);
     }
     s.close();
 }
@@ -932,7 +935,8 @@ fn load_and_space(
         key::SEARCH_POSTING,
         key::SEARCH_DOC_FREQ,
         key::SEARCH_LENGTH,
-        key::SEARCH_SHORTEST,
+        key::SEARCH_DIRECTORY,
+        key::SEARCH_TERM_DOCS,
         key::SEARCH_FIELD_TOKENS,
         key::SEARCH_DOCS,
         key::SEARCH_MAX_DOC,
@@ -1105,5 +1109,29 @@ fn writes(s: &Store, cards: usize) {
         message,
         rename,
         (st.ks.flush_bytes + st.ks.merge_bytes) as f64 / st.ks.inserted_bytes as f64,
+    );
+}
+
+/// Times single reads of the store's derived entries: a point read of a counter, and a scan of a term's postings.
+fn probe(s: &Store) {
+    use st_engine::search::{TermKind, doc_freq, postings};
+    let words = ["dragon", "quokka", "saxophone", "girl", "the", "vampire"];
+    let n = 2000;
+    let t = Instant::now();
+    for i in 0..n {
+        s.get(&doc_freq(Scope::LIBRARY, TermKind::Exact, words[i % 6], 2))
+            .unwrap();
+    }
+    let get_us = t.elapsed().as_secs_f64() * 1e6 / n as f64;
+    let t = Instant::now();
+    for i in 0..n {
+        let p = postings(Scope::LIBRARY, TermKind::Exact, words[i % 6]);
+        s.scan(&p, &key::prefix_end(&p), 1).unwrap();
+    }
+    let scan_us = t.elapsed().as_secs_f64() * 1e6 / n as f64;
+    let st = s.stats().ks;
+    println!(
+        "{{\"phase\":\"probe\",\"get_us\":{get_us:.1},\"scan1_us\":{scan_us:.1},\"runs\":{}}}",
+        st.runs
     );
 }

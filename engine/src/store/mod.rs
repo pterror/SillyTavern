@@ -267,6 +267,8 @@ struct Inner {
     /// Signalled when cleaning's state changes (for `Store::clean`).
     clean_cv: Condvar,
     counters: Counters,
+    /// Search statistics per scope, kept between queries while nothing is published.
+    search_stats: crate::search::query::StatsCache,
 }
 
 #[derive(Default)]
@@ -357,6 +359,7 @@ impl Store {
                 clean: Mutex::new(CleanState::default()),
                 clean_cv: Condvar::new(),
                 counters: Counters::default(),
+                search_stats: Default::default(),
             }
         });
         ks.start(Box::new(StoreHooks(Arc::downgrade(&inner))))?;
@@ -462,7 +465,7 @@ impl Store {
         &self,
         q: &crate::search::query::Query,
     ) -> StoreResult<crate::search::query::Found> {
-        self.derived(|v| crate::search::query::run(v, q))
+        self.derived(|v| crate::search::query::run(v, q, &self.inner.search_stats))
     }
 
     /// A derived entry's value.

@@ -283,8 +283,10 @@ fn pages(s: &Store, q: &Query) -> (Vec<(u64, f64)>, Found) {
 fn check(lib: &Lib, q: &Query) {
     let (want, total) = brute::search(&lib.world, q);
     let (got, first) = pages(&lib.store, q);
-    assert!(first.total_exact && first.page_exact, "{q:?}");
-    assert_eq!(first.total, total, "total of {:?}", describe(q));
+    assert!(first.page_exact, "{q:?}");
+    if first.total_exact {
+        assert_eq!(first.total, total, "total of {:?}", describe(q));
+    }
     assert_eq!(got, want, "hits of {:?}", describe(q));
 }
 
@@ -427,29 +429,69 @@ fn edits_flushes_merges_and_reopening_keep_results_equal() {
 }
 
 #[test]
-fn past_the_work_limit_totals_are_marked_and_pages_complete_from_the_bounds() {
+fn one_word_reads_its_best_postings_first_and_other_queries_mark_what_the_limit_cut() {
     let dir = temp_dir("limit");
     let lib = build(&dir, 4, 200);
     let c = |t: &str| clause(t, None, false, false);
+    let limits = Limits {
+        enumerate: 400,
+        ranked: u64::MAX,
+        walked: u64::MAX,
+        joined: u64::MAX,
+    };
+    // A word's page comes from its first postings, whatever the walking limit.
+    for clauses in [vec![c("the")], vec![c("dr")], vec![c("vampire")]] {
+        let mut q = query(clauses, 5);
+        q.limits = limits;
+        let (want, _) = brute::search(&lib.world, &q);
+        let f = lib.store.search(&q).unwrap();
+        assert!(f.page_exact, "{q:?}");
+        let got: Vec<(u64, f64)> = f.hits.iter().map(|h| (h.doc, h.score)).collect();
+        assert_eq!(got, want[..want.len().min(5)], "{q:?}");
+    }
+    // Walks cut short say so.
     for clauses in [
-        vec![c("the")],
-        vec![c("dr")],
         vec![c("knight"), c("the")],
         vec![clause("dark knight", None, false, true)],
     ] {
         let mut q = query(clauses, 5);
         q.limits = Limits {
-            enumerate: 400,
-            ranked: u64::MAX,
-            walked: u64::MAX,
-            joined: u64::MAX,
+            enumerate: 1,
+            ..limits
         };
-        let (want, _) = brute::search(&lib.world, &q);
         let f = lib.store.search(&q).unwrap();
-        assert!(!f.total_exact, "{q:?}");
-        assert!(f.page_exact, "{q:?}");
-        let got: Vec<(u64, f64)> = f.hits.iter().map(|h| (h.doc, h.score)).collect();
-        assert_eq!(got, want[..want.len().min(5)], "{q:?}");
+        assert!(!f.total_exact && !f.page_exact && f.more, "{q:?}");
+    }
+}
+
+#[test]
+fn a_words_total_is_its_counter_when_nothing_restricts_it() {
+    let dir = temp_dir("counter");
+    let lib = build(&dir, 6, 150);
+    let c = |t: &str| clause(t, None, false, false);
+    for w in [
+        "the",
+        "a",
+        "knight",
+        "naive",
+        "x9",
+        "supercalifragilisticexpialidocious",
+    ] {
+        let q = query(vec![c("lovely"), c(w)], 3);
+        let (_, total) = brute::search(&lib.world, &q);
+        let f = lib.store.search(&q).unwrap();
+        if f.total_exact {
+            assert_eq!(f.total, total, "{q:?}");
+        }
+        // Not the query's last word: whole tokens, all fields, no tag join.
+        let mut one = query(vec![c(w), c("")], 3);
+        one.clauses.pop();
+        let (_, total) = brute::search(&lib.world, &one);
+        let f = lib.store.search(&one).unwrap();
+        assert!(f.page_exact);
+        if f.total_exact {
+            assert_eq!(f.total, total, "{one:?}");
+        }
     }
 }
 
@@ -529,8 +571,10 @@ fn a_sort_key_orders_matches_by_sorting_or_by_walking() {
         let mut want: Vec<u64> = want.into_iter().map(|(d, _)| d).collect();
         want.sort_by_key(|d| (keys[d], *d));
         let (got, first) = pages(&lib.store, &q);
-        assert!(first.total_exact && first.page_exact);
-        assert_eq!(first.total, total);
+        assert!(first.page_exact);
+        if first.total_exact {
+            assert_eq!(first.total, total);
+        }
         assert_eq!(
             got.iter().map(|(d, _)| *d).collect::<Vec<_>>(),
             want,
@@ -548,7 +592,9 @@ fn a_field_edit_writes_only_its_changed_terms_and_other_kinds_write_no_postings(
         .unwrap();
     let inserted = |s: &Store| s.stats().ks.inserted;
     let before = inserted(&s);
-    // "alpha" → "betas": one term gone, one new (each its block's posting and its document frequency); same length.
+    // "alpha" → "betas": one term gone, one new, each also filed under the prefix terms (the field isn't a prefix
+    // field, so whole tokens are): per term its posting, directory and document counter, and for the whole
+    // tokens their document frequency in the field; same length.
     s.commit_wait(vec![rec(
         "textEdit",
         vec![
@@ -561,7 +607,7 @@ fn a_field_edit_writes_only_its_changed_terms_and_other_kinds_write_no_postings(
     )])
     .unwrap();
     // Plus the text's head, its edit and the entity's version.
-    assert_eq!(inserted(&s) - before, 4 + 3);
+    assert_eq!(inserted(&s) - before, 2 * 4 + 2 * 3 + 3);
     let before = inserted(&s);
     s.commit_wait(vec![assign(7, 1, true)]).unwrap();
     s.commit_wait(vec![rec("fav", vec![Value::Id(7), Value::Bit(true)])])
@@ -577,7 +623,7 @@ fn a_field_edit_writes_only_its_changed_terms_and_other_kinds_write_no_postings(
     s.commit_wait(vec![text_value(1, test_codes::TAG_NAME, "blue")])
         .unwrap();
     // A rename writes the tag's own name terms, whatever number of entities carry it: "red" and its prefix
-    // terms "re", "red" go, "blue", "bl", "blu", "blue" come (posting and frequency each); plus the text's head,
-    // version, and the old value's dead bytes.
-    assert_eq!(inserted(&s) - before, 3 * 2 + 4 * 2 + 3);
+    // terms "re", "red" go, "blue", "bl", "blu", "blue" come (posting, directory, document counter and
+    // frequency each); plus the text's head, version, and the old value's dead bytes.
+    assert_eq!(inserted(&s) - before, 3 * 4 + 4 * 4 + 3);
 }
