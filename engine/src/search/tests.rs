@@ -548,7 +548,7 @@ fn a_field_edit_writes_only_its_changed_terms_and_other_kinds_write_no_postings(
         .unwrap();
     let inserted = |s: &Store| s.stats().ks.inserted;
     let before = inserted(&s);
-    // "alpha" → "betas": one term gone (posting, frequency), one new (posting, frequency, bound); same length.
+    // "alpha" → "betas": one term gone, one new (each its block's posting and its document frequency); same length.
     s.commit_wait(vec![rec(
         "textEdit",
         vec![
@@ -561,7 +561,7 @@ fn a_field_edit_writes_only_its_changed_terms_and_other_kinds_write_no_postings(
     )])
     .unwrap();
     // Plus the text's head, its edit and the entity's version.
-    assert_eq!(inserted(&s) - before, 5 + 3);
+    assert_eq!(inserted(&s) - before, 4 + 3);
     let before = inserted(&s);
     s.commit_wait(vec![assign(7, 1, true)]).unwrap();
     s.commit_wait(vec![rec("fav", vec![Value::Id(7), Value::Bit(true)])])
@@ -577,7 +577,7 @@ fn a_field_edit_writes_only_its_changed_terms_and_other_kinds_write_no_postings(
     s.commit_wait(vec![text_value(1, test_codes::TAG_NAME, "blue")])
         .unwrap();
     // A rename writes the tag's own name terms, whatever number of entities carry it: "red" and its prefix
-    // terms "re", "red" go (posting, frequency each), "blue", "bl", "blu", "blue" come (posting, frequency,
-    // bound each); plus the text's head, version, and the old value's dead bytes.
-    assert_eq!(inserted(&s) - before, 3 * 2 + 4 * 3 + 3);
+    // terms "re", "red" go, "blue", "bl", "blu", "blue" come (posting and frequency each); plus the text's head,
+    // version, and the old value's dead bytes.
+    assert_eq!(inserted(&s) - before, 3 * 2 + 4 * 2 + 3);
 }

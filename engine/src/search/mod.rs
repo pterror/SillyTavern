@@ -22,8 +22,12 @@ use crate::store::kinds::key;
 pub const K1: f64 = 1.2;
 pub const B: f64 = 0.75;
 
-/// Documents share a score bound per block of `1 << BLOCK_BITS` consecutive ids.
+/// A term's postings are kept per block of `1 << BLOCK_BITS` consecutive ids, one entry each, compressed
+/// (`Val::Map`); score bounds are per block too.
 pub const BLOCK_BITS: u32 = 10;
+/// A document's lengths in every field (what says whether it has any text) are kept per block of
+/// `1 << LENGTH_BITS` ids.
+pub const LENGTH_BITS: u32 = 6;
 
 pub const LIBRARY: u64 = 1;
 pub const TAGS: u64 = 2;
@@ -117,7 +121,7 @@ fn scoped(structure: u64, s: Scope) -> Vec<u8> {
     k
 }
 
-/// The postings of a term: then (document, field) → term frequency.
+/// The postings of a term: then a block → a map (`Val::Map`) of `slot(doc, field)` → term frequency.
 pub fn postings(s: Scope, kind: TermKind, term: &str) -> Vec<u8> {
     let mut k = scoped(key::SEARCH_POSTING, s);
     k.push(kind as u8);
@@ -125,10 +129,9 @@ pub fn postings(s: Scope, kind: TermKind, term: &str) -> Vec<u8> {
     k
 }
 
-pub fn posting(s: Scope, kind: TermKind, term: &str, doc: u64, field: u32) -> Vec<u8> {
+pub fn posting_block(s: Scope, kind: TermKind, term: &str, block: u64) -> Vec<u8> {
     let mut k = postings(s, kind, term);
-    put_u64(&mut k, doc);
-    put_u64(&mut k, u64::from(field));
+    put_u64(&mut k, block);
     k
 }
 
@@ -141,36 +144,61 @@ pub fn doc_freq(s: Scope, kind: TermKind, term: &str, field: u32) -> Vec<u8> {
     k
 }
 
-/// A term's per-block maxima of term frequency in one field: then block → max.
-pub fn bounds(s: Scope, kind: TermKind, term: &str, field: u32) -> Vec<u8> {
-    let mut k = scoped(key::SEARCH_BOUND, s);
-    k.push(kind as u8);
-    put_bytes(&mut k, term.as_bytes());
-    put_u64(&mut k, u64::from(field));
-    k
-}
-
-pub fn bound(s: Scope, kind: TermKind, term: &str, field: u32, block: u64) -> Vec<u8> {
-    let mut k = bounds(s, kind, term, field);
-    put_u64(&mut k, block);
-    k
-}
-
-/// Every document's field lengths: then document, field → tokens.
+/// Every document's field lengths: then a length block → a map of `slot_in(LENGTH_BITS, doc, field)` → tokens.
 pub fn lengths(s: Scope) -> Vec<u8> {
     scoped(key::SEARCH_LENGTH, s)
 }
 
-pub fn doc_lengths(s: Scope, doc: u64) -> Vec<u8> {
+pub fn length_block(s: Scope, block: u64) -> Vec<u8> {
     let mut k = lengths(s);
-    put_u64(&mut k, doc);
+    put_u64(&mut k, block);
     k
 }
 
-pub fn length(s: Scope, doc: u64, field: u32) -> Vec<u8> {
-    let mut k = doc_lengths(s, doc);
+/// One field's lengths: then a postings block → a map of the document's place in the block → tokens. What
+/// scoring reads: only the fields a match is in.
+pub fn field_lengths(s: Scope, field: u32) -> Vec<u8> {
+    let mut k = scoped(key::SEARCH_FIELD_LENGTH, s);
     put_u64(&mut k, u64::from(field));
     k
+}
+
+pub fn field_length_block(s: Scope, field: u32, block: u64) -> Vec<u8> {
+    let mut k = field_lengths(s, field);
+    put_u64(&mut k, block);
+    k
+}
+
+/// A document's place in its postings block.
+pub fn in_block(doc: u64) -> u32 {
+    (doc & ((1 << BLOCK_BITS) - 1)) as u32
+}
+
+/// Fields per scope are at most `1 << FIELD_BITS`.
+pub const FIELD_BITS: u32 = 4;
+
+/// A document's field within its block's map, for blocks of `1 << bits` ids.
+pub fn slot_in(bits: u32, doc: u64, field: u32) -> u32 {
+    debug_assert!(field < 1 << FIELD_BITS);
+    ((doc & ((1 << bits) - 1)) as u32) << FIELD_BITS | field
+}
+
+/// The document and field of a slot in block `block` of `1 << bits` ids.
+pub fn unslot_in(bits: u32, block: u64, slot: u32) -> (u64, u32) {
+    (
+        block << bits | u64::from(slot >> FIELD_BITS),
+        slot & ((1 << FIELD_BITS) - 1),
+    )
+}
+
+/// `slot_in` for postings blocks.
+pub fn slot(doc: u64, field: u32) -> u32 {
+    slot_in(BLOCK_BITS, doc, field)
+}
+
+/// `unslot_in` for postings blocks.
+pub fn unslot(block: u64, slot: u32) -> (u64, u32) {
+    unslot_in(BLOCK_BITS, block, slot)
 }
 
 /// A field's per-block shortest length, as a maximum of `LENGTH_MAX - length`: then block → that.

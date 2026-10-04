@@ -23,16 +23,19 @@ use std::sync::Arc;
 
 use super::text::{GRAM_MAX, GRAM_MIN, char_len, first_chars, tokens};
 use super::{
-    BLOCK_BITS, LENGTH_MAX, Scope, TermKind, bounds, doc_count, doc_freq, doc_lengths,
-    field_tokens, idf, lengths, max_doc, parse_varint, postings, shortest, shortest_all, tf_norm,
+    BLOCK_BITS, LENGTH_BITS, LENGTH_MAX, Scope, TermKind, doc_count, doc_freq, field_length_block,
+    field_lengths, field_tokens, idf, in_block, lengths, max_doc, parse_varint, postings, shortest,
+    shortest_all, slot_in, tf_norm, unslot, unslot_in,
 };
-use crate::keyspace::val::{counter_value, get_u64, put_u64};
+use crate::keyspace::val::{counter_value, get_u64, map_pairs, put_u64};
 use crate::store::derive::View;
 use crate::store::kinds::{key, search_texts};
 use crate::store::{StoreError, StoreResult};
 
 /// Work a scan's start costs, in entries.
 pub const SEEK: u64 = 96;
+/// Postings or lengths decoded per entry of work.
+pub const PAIRS: u64 = 8;
 /// Work a text read costs besides its bytes / 32.
 pub const TEXT: u64 = 128;
 
@@ -48,10 +51,10 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Limits {
-            enumerate: 120_000,
-            ranked: 120_000,
-            walked: 120_000,
-            joined: 80_000,
+            enumerate: 250_000,
+            ranked: 100_000,
+            walked: 100_000,
+            joined: 60_000,
         }
     }
 }
@@ -137,9 +140,10 @@ pub struct Found {
     /// Matches follow the page (or may, when the page isn't exact).
     pub more: bool,
     pub work: u64,
-    /// Scans started, entries they read, point reads and texts read.
+    /// Scans started, entries they read, postings or lengths decoded from them, point reads and texts read.
     pub scans: u64,
     pub entries: u64,
+    pub pairs: u64,
     pub gets: u64,
     pub texts: u64,
 }
@@ -150,6 +154,7 @@ pub fn run(view: &View, q: &Query) -> StoreResult<Found> {
         work: 0,
         scans: 0,
         entries: 0,
+        pairs: 0,
         gets: 0,
         texts: 0,
         stats: HashMap::new(),
@@ -162,6 +167,7 @@ pub fn run(view: &View, q: &Query) -> StoreResult<Found> {
     found.work = ctx.work;
     found.scans = ctx.scans;
     found.entries = ctx.entries;
+    found.pairs = ctx.pairs;
     found.gets = ctx.gets;
     found.texts = ctx.texts;
     Ok(found)
@@ -174,6 +180,7 @@ pub(crate) struct Ctx<'a> {
     work: u64,
     scans: u64,
     entries: u64,
+    pairs: u64,
     gets: u64,
     texts: u64,
     stats: HashMap<Vec<u8>, u64>,
@@ -207,6 +214,25 @@ impl Ctx<'_> {
         };
         self.stats.insert(k, v);
         Ok(v)
+    }
+
+    /// A block map's pairs.
+    fn pairs(&mut self, b: &[u8]) -> StoreResult<Vec<(u32, u32)>> {
+        let p = map_pairs(b)
+            .ok_or_else(|| StoreError::Entry("a search block doesn't decode".into()))?;
+        self.pairs += p.len() as u64;
+        self.work += p.len() as u64 / PAIRS;
+        Ok(p)
+    }
+
+    /// The block map at `k` (empty when it has none).
+    fn map(&mut self, k: &[u8]) -> StoreResult<Vec<(u32, u32)>> {
+        self.work += SEEK;
+        self.gets += 1;
+        match self.view.get(k)? {
+            Some(b) => self.pairs(&b),
+            None => Ok(Vec::new()),
+        }
     }
 
     fn texts(&mut self, scope: Scope, doc: u64, field: u32) -> StoreResult<Vec<Vec<u8>>> {
@@ -281,6 +307,13 @@ impl Cursor {
         self.fill(ctx, k, size)
     }
 
+    /// Whether the page read last holds `k`'s place.
+    fn covers(&self, k: &[u8]) -> bool {
+        self.from.as_slice() <= k
+            && !self.page.is_empty()
+            && (self.last || self.page.last().is_some_and(|(l, _)| k <= l.as_slice()))
+    }
+
     fn get(&self) -> Option<&(Vec<u8>, Vec<u8>)> {
         self.page.get(self.pos)
     }
@@ -307,50 +340,79 @@ trait Docs {
     fn seek(&mut self, ctx: &mut Ctx, d: u64) -> StoreResult<()>;
 }
 
-/// The (document, field) → term frequency entries under a prefix, a document at a time, keeping the allowed fields.
+/// Block maps under a prefix (each entry block → `slot` → value), read a document at a time, keeping the
+/// allowed fields: a term's postings, or the field lengths (every document with text).
 struct Postings {
     prefix: Vec<u8>,
+    /// Ids per block: `1 << bits`.
+    bits: u32,
     cur: Cursor,
     mask: u64,
+    /// The block read, its pairs, and the next pair.
+    block: Option<u64>,
+    pairs: Vec<(u32, u32)>,
+    at: usize,
     doc: Option<u64>,
     hits: Vec<(u32, u64)>,
 }
 
 impl Postings {
-    fn new(prefix: Vec<u8>, mask: u64) -> Postings {
+    fn new(prefix: Vec<u8>, bits: u32, mask: u64) -> Postings {
         Postings {
             cur: Cursor::new(&prefix),
             prefix,
+            bits,
             mask,
+            block: None,
+            pairs: Vec::new(),
+            at: 0,
             doc: None,
             hits: Vec::new(),
         }
     }
 
+    /// Reads the entry the cursor is at, if any.
+    fn read_block(&mut self, ctx: &mut Ctx) -> StoreResult<bool> {
+        let Some((k, v)) = self.cur.get() else {
+            self.block = None;
+            self.pairs.clear();
+            self.doc = None;
+            return Ok(false);
+        };
+        let mut at = self.prefix.len();
+        self.block = Some(u64_at(k, &mut at)?);
+        self.pairs = ctx.pairs(v)?;
+        self.at = 0;
+        Ok(true)
+    }
+
+    /// From pair `at` on: the first document with an allowed field.
     fn load(&mut self, ctx: &mut Ctx) -> StoreResult<()> {
         self.hits.clear();
         loop {
-            let Some((k, _)) = self.cur.get() else {
+            let Some(block) = self.block else {
                 self.doc = None;
                 return Ok(());
             };
-            let mut at = self.prefix.len();
-            let doc = u64_at(k, &mut at)?;
-            while let Some((k, v)) = self.cur.get() {
-                let mut at = self.prefix.len();
-                if u64_at(k, &mut at)? != doc {
-                    break;
+            while self.at < self.pairs.len() {
+                let (doc, _) = unslot_in(self.bits, block, self.pairs[self.at].0);
+                while let Some(&(s, v)) = self.pairs.get(self.at) {
+                    let (d, f) = unslot_in(self.bits, block, s);
+                    if d != doc {
+                        break;
+                    }
+                    if self.mask >> f & 1 == 1 && v > 0 {
+                        self.hits.push((f, u64::from(v)));
+                    }
+                    self.at += 1;
                 }
-                let f = u64_at(k, &mut at)? as u32;
-                if self.mask >> f & 1 == 1 {
-                    self.hits.push((f, parse_varint(v).unwrap_or(0)));
+                if !self.hits.is_empty() {
+                    self.doc = Some(doc);
+                    return Ok(());
                 }
-                self.cur.advance(ctx)?;
             }
-            if !self.hits.is_empty() {
-                self.doc = Some(doc);
-                return Ok(());
-            }
+            self.cur.advance(ctx)?;
+            self.read_block(ctx)?;
         }
     }
 }
@@ -364,9 +426,19 @@ impl Docs for Postings {
         if self.doc == Some(d) {
             return Ok(());
         }
-        let mut k = self.prefix.clone();
-        put_u64(&mut k, d);
-        self.cur.seek(ctx, &k)?;
+        let block = d >> self.bits;
+        if self.block != Some(block) {
+            let mut k = self.prefix.clone();
+            put_u64(&mut k, block);
+            self.cur.seek(ctx, &k)?;
+            if !self.read_block(ctx)? {
+                return Ok(());
+            }
+        }
+        if self.block == Some(block) {
+            let first = slot_in(self.bits, d, 0);
+            self.at = self.pairs.partition_point(|&(s, _)| s < first);
+        }
         self.load(ctx)
     }
 }
@@ -386,16 +458,6 @@ impl Ids {
             doc: None,
         }
     }
-
-    fn load(&mut self) -> StoreResult<()> {
-        let Some((k, _)) = self.cur.get() else {
-            self.doc = None;
-            return Ok(());
-        };
-        let mut at = self.prefix.len();
-        self.doc = Some(u64_at(k, &mut at)?);
-        Ok(())
-    }
 }
 
 impl Docs for Ids {
@@ -410,7 +472,14 @@ impl Docs for Ids {
         let mut k = self.prefix.clone();
         put_u64(&mut k, d);
         self.cur.seek(ctx, &k)?;
-        self.load()
+        self.doc = match self.cur.get() {
+            Some((k, _)) => {
+                let mut at = self.prefix.len();
+                Some(u64_at(k, &mut at)?)
+            }
+            None => None,
+        };
+        Ok(())
     }
 }
 
@@ -655,8 +724,10 @@ impl Matcher {
                     .copied()
                     .filter(|&p| m.parts[p].kind == kind)
                     .collect();
-                m.lists
-                    .push((Postings::new(postings(scope, kind, &term), fm), ids));
+                m.lists.push((
+                    Postings::new(postings(scope, kind, &term), BLOCK_BITS, fm),
+                    ids,
+                ));
             }
         }
         if let Some(jf) = joined_field {
@@ -746,26 +817,26 @@ impl Matcher {
             let last = self.tokens.len() - 1;
             let long_prefix =
                 !self.phrase && self.prefix && char_len(&self.tokens[last]) > GRAM_MAX;
-            // tf per (field, part) from the postings.
-            let mut tfs: BTreeMap<(u32, usize), u64> = BTreeMap::new();
+            // tf per (field, part) from the postings, in field then part order.
+            let mut tfs: Vec<(u32, usize, u64)> = Vec::new();
             for (l, ids) in &self.lists {
                 if l.doc() != Some(doc) {
                     continue;
                 }
                 for &(f, tf) in &l.hits {
                     if let Some(&p) = ids.iter().find(|&&p| self.parts[p].field == f) {
-                        tfs.insert((f, p), tf);
+                        tfs.push((f, p, tf));
                     }
                 }
             }
+            tfs.sort_unstable();
+            let tf_of =
+                |f: u32, p: usize| tfs.iter().find(|x| x.0 == f && x.1 == p).map_or(0, |x| x.2);
             for f in fields_of(self.scope, self.candidates) {
                 let prefix_field = self.scope.fields()[f as usize].prefix;
                 if !self.phrase && !(long_prefix && prefix_field) {
                     hit = true;
-                    out.parts.extend(
-                        tfs.range((f, 0)..(f + 1, 0))
-                            .map(|(&(f, p), &tf)| (f, p, tf)),
-                    );
+                    out.parts.extend(tfs.iter().filter(|x| x.0 == f));
                     continue;
                 }
                 let mut last_tf = 0;
@@ -799,7 +870,7 @@ impl Matcher {
                     let tf = if i == last && self.prefix {
                         last_tf
                     } else {
-                        tfs.get(&(f, p)).copied().unwrap_or(0)
+                        tf_of(f, p)
                     };
                     if tf > 0 {
                         out.parts.push((f, p, tf));
@@ -916,7 +987,11 @@ fn join(
         let idf_j = idf((df as f64).min(lib.n), lib.n);
         let mut by_doc: BTreeMap<u64, f64> = BTreeMap::new();
         for (tag, hit, list) in members_of {
-            let len = ctx.number(super::length(scope, tag, 0), false)? as f64;
+            let len = ctx
+                .map(&field_length_block(scope, 0, tag >> BLOCK_BITS))?
+                .into_iter()
+                .find(|&(s, _)| s == in_block(tag))
+                .map_or(0.0, |(_, v)| f64::from(v));
             let mut s = 0.0;
             for &(_, _, tf) in &hit.parts {
                 s += weight * idf_j * tf_norm(tf as f64, len, stats.fields[0].avg_len);
@@ -954,6 +1029,9 @@ impl Filtered {
     }
 }
 
+/// A block's number and its map's pairs.
+type Block = (u64, Vec<(u32, u32)>);
+
 struct Plan {
     scope: Scope,
     stats: Stats,
@@ -962,9 +1040,10 @@ struct Plan {
     include: Vec<Filtered>,
     exclude: Vec<Filtered>,
     /// Every document with text, when nothing else leads.
-    all: Option<Ids>,
+    all: Option<Postings>,
     complete_joins: bool,
-    lens: Cursor,
+    /// Per field: its lengths blocks, read in order as matches come in id order, and the one read last.
+    lens: Vec<(Cursor, Option<Block>)>,
 }
 
 #[derive(PartialEq)]
@@ -1055,7 +1134,8 @@ impl Plan {
                 ))),
             }
         }
-        let all = (pos.is_empty() && include.is_empty()).then(|| Ids::new(lengths(q.scope)));
+        let all = (pos.is_empty() && include.is_empty())
+            .then(|| Postings::new(lengths(q.scope), LENGTH_BITS, u64::MAX));
         Ok(Plan {
             scope: q.scope,
             stats,
@@ -1065,7 +1145,9 @@ impl Plan {
             exclude,
             all,
             complete_joins,
-            lens: Cursor::new(&lengths(q.scope)),
+            lens: (0..q.scope.fields().len() as u32)
+                .map(|f| (Cursor::new(&field_lengths(q.scope, f)), None))
+                .collect(),
         })
     }
 
@@ -1175,23 +1257,31 @@ impl Plan {
         ))
     }
 
-    fn lengths_of(&mut self, ctx: &mut Ctx, doc: u64) -> StoreResult<Vec<f64>> {
-        let n = self.scope.fields().len();
-        let mut out = vec![0.0; n];
-        let start = doc_lengths(self.scope, doc);
-        self.lens.seek(ctx, &start)?;
-        while let Some((k, v)) = self.lens.get() {
-            if !k.starts_with(&start) {
-                break;
-            }
-            let mut at = start.len();
-            let f = u64_at(k, &mut at)? as usize;
-            if f < n {
-                out[f] = parse_varint(v).unwrap_or(0) as f64;
-            }
-            self.lens.advance(ctx)?;
+    /// The document's length in `field`, from that field's lengths block.
+    fn length_of(&mut self, ctx: &mut Ctx, doc: u64, field: u32) -> StoreResult<f64> {
+        let block = doc >> BLOCK_BITS;
+        let scope = self.scope;
+        let (cur, read) = &mut self.lens[field as usize];
+        if read.as_ref().is_none_or(|(b, _)| *b != block) {
+            let k = field_length_block(scope, field, block);
+            // The next block on, as dense matches go: read on in the scan; a block further off: a point read.
+            let next = read.as_ref().is_some_and(|(b, _)| *b + 1 == block);
+            let pairs = if next || cur.covers(&k) {
+                cur.seek(ctx, &k)?;
+                match cur.get() {
+                    Some((key, v)) if *key == k => ctx.pairs(v)?,
+                    _ => Vec::new(),
+                }
+            } else {
+                ctx.map(&k)?
+            };
+            *read = Some((block, pairs));
         }
-        Ok(out)
+        let pairs = &read.as_ref().unwrap().1;
+        let at = in_block(doc);
+        Ok(pairs
+            .binary_search_by_key(&at, |&(s, _)| s)
+            .map_or(0.0, |i| f64::from(pairs[i].1)))
     }
 
     fn ceiling(&self, matched: &[Matched]) -> f64 {
@@ -1206,7 +1296,16 @@ impl Plan {
         if self.pos.is_empty() {
             return Ok(0.0);
         }
-        let lens = self.lengths_of(ctx, doc)?;
+        let mut lens = vec![0.0; self.scope.fields().len()];
+        let mut fields: Vec<u32> = matched
+            .iter()
+            .flat_map(|m| m.parts.iter().map(|p| p.0))
+            .collect();
+        fields.sort_unstable();
+        fields.dedup();
+        for f in fields {
+            lens[f as usize] = self.length_of(ctx, doc, f)?;
+        }
         let f = |field: u32| lens[field as usize];
         Ok(self
             .pos
@@ -1359,9 +1458,18 @@ impl Plan {
         let ntok = m.tokens.len();
         let mut by_tok: Vec<BTreeMap<u64, f64>> = vec![BTreeMap::new(); ntok];
         let mut shortest_cache = Shortest::default();
+        // A term's blocks give each field's highest frequency there; with the field's shortest length in the
+        // block, the most any document there can score.
+        let mut terms: BTreeMap<(TermKind, String), Vec<usize>> = BTreeMap::new();
+        for (p, part) in m.parts.iter().enumerate() {
+            terms
+                .entry((part.kind, part.term.clone()))
+                .or_default()
+                .push(p);
+        }
         let parts = m.parts.clone();
-        for (p, part) in parts.iter().enumerate() {
-            let start = bounds(scope, part.kind, &part.term, part.field);
+        for ((kind, term), ps) in terms {
+            let start = postings(scope, kind, &term);
             let mut from = start.clone();
             put_u64(&mut from, first);
             let mut cur = Cursor::new(&start);
@@ -1372,15 +1480,26 @@ impl Plan {
                 }
                 let mut at = start.len();
                 let blk = u64_at(k, &mut at)?;
-                let max_tf = parse_varint(v).unwrap_or(0) as f64;
-                let short = shortest_len(ctx, scope, part.field, blk, &mut shortest_cache)?;
-                let x = part.weight_idf
-                    * tf_norm(
-                        max_tf,
-                        short,
-                        self.stats.fields[part.field as usize].avg_len,
-                    );
-                *by_tok[tok_of_part[p]].entry(blk).or_default() += x;
+                let mut most = [0u32; 1 << super::FIELD_BITS];
+                for (sl, tf) in ctx.pairs(v)? {
+                    let f = unslot(blk, sl).1 as usize;
+                    most[f] = most[f].max(tf);
+                }
+                for &p in &ps {
+                    let part = &parts[p];
+                    let max_tf = most[part.field as usize];
+                    if max_tf == 0 {
+                        continue;
+                    }
+                    let short = shortest_len(ctx, scope, part.field, blk, &mut shortest_cache)?;
+                    let x = part.weight_idf
+                        * tf_norm(
+                            f64::from(max_tf),
+                            short,
+                            self.stats.fields[part.field as usize].avg_len,
+                        );
+                    *by_tok[tok_of_part[p]].entry(blk).or_default() += x;
+                }
                 cur.advance(ctx)?;
             }
         }
