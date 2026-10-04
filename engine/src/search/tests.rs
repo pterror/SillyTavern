@@ -355,6 +355,68 @@ fn filters_and_negations_restrict_matches() {
     }
 }
 
+/// One random edit: a text edit, a name, a tag assignment, a tag rename or a list field.
+fn random_edit(lib: &mut Lib, r: &mut Rng, docs: &[u64], i: u64) {
+    let doc = docs[r.below(docs.len() as u64) as usize];
+    match i % 5 {
+        0 => {
+            // A text edit: replace a span at character boundaries.
+            let old = String::from_utf8(
+                lib.world.library.docs[&doc][2]
+                    .first()
+                    .cloned()
+                    .unwrap_or_default(),
+            )
+            .unwrap();
+            let bounds: Vec<usize> = old
+                .char_indices()
+                .map(|(i, _)| i)
+                .chain([old.len()])
+                .collect();
+            let a = bounds[r.below(bounds.len() as u64) as usize];
+            let b = bounds[r.below(bounds.len() as u64) as usize].max(a);
+            let ins = format!(" {} ", r.pick(WORDS));
+            if old.is_empty() {
+                lib.set(doc, 2, &[ins]);
+                return;
+            }
+            lib.store
+                .commit_wait(vec![rec(
+                    "textEdit",
+                    vec![
+                        Value::Id(doc),
+                        Value::Field(FieldRef::Code(test_codes::LIBRARY + 2)),
+                        Value::UInt(a as u64),
+                        Value::UInt((b - a) as u64),
+                        Value::Text(wtf8(&ins)),
+                    ],
+                )])
+                .unwrap();
+            let new = format!("{}{}{}", &old[..a], ins, &old[b..]);
+            lib.world.library.docs.get_mut(&doc).unwrap()[2] = vec![new.into_bytes()];
+        }
+        1 => {
+            let n = r.below(4);
+            lib.set(doc, 0, &[sentence(r, n)]);
+        }
+        2 => {
+            let tag = 1 + r.below(12);
+            let on = r.below(2) == 0;
+            lib.assign(doc, tag, on);
+        }
+        3 => {
+            let tag = 1 + r.below(12);
+            let n = 1 + r.below(2);
+            let name = sentence(r, n);
+            lib.tag(tag, &name);
+        }
+        _ => {
+            let items: Vec<String> = (0..r.below(3)).map(|_| sentence(r, 2)).collect();
+            lib.set(doc, 10, &items);
+        }
+    }
+}
+
 #[test]
 fn edits_flushes_merges_and_reopening_keep_results_equal() {
     let _turn = turn();
@@ -363,64 +425,7 @@ fn edits_flushes_merges_and_reopening_keep_results_equal() {
     let mut r = Rng(33);
     let docs: Vec<u64> = lib.world.library.docs.keys().copied().collect();
     for i in 0..300 {
-        let doc = docs[r.below(docs.len() as u64) as usize];
-        match i % 5 {
-            0 => {
-                // A text edit: replace a span at character boundaries.
-                let old = String::from_utf8(
-                    lib.world.library.docs[&doc][2]
-                        .first()
-                        .cloned()
-                        .unwrap_or_default(),
-                )
-                .unwrap();
-                let bounds: Vec<usize> = old
-                    .char_indices()
-                    .map(|(i, _)| i)
-                    .chain([old.len()])
-                    .collect();
-                let a = bounds[r.below(bounds.len() as u64) as usize];
-                let b = bounds[r.below(bounds.len() as u64) as usize].max(a);
-                let ins = format!(" {} ", r.pick(WORDS));
-                if old.is_empty() {
-                    lib.set(doc, 2, &[ins]);
-                    continue;
-                }
-                lib.store
-                    .commit_wait(vec![rec(
-                        "textEdit",
-                        vec![
-                            Value::Id(doc),
-                            Value::Field(FieldRef::Code(test_codes::LIBRARY + 2)),
-                            Value::UInt(a as u64),
-                            Value::UInt((b - a) as u64),
-                            Value::Text(wtf8(&ins)),
-                        ],
-                    )])
-                    .unwrap();
-                let new = format!("{}{}{}", &old[..a], ins, &old[b..]);
-                lib.world.library.docs.get_mut(&doc).unwrap()[2] = vec![new.into_bytes()];
-            }
-            1 => {
-                let n = r.below(4);
-                lib.set(doc, 0, &[sentence(&mut r, n)]);
-            }
-            2 => {
-                let tag = 1 + r.below(12);
-                let on = r.below(2) == 0;
-                lib.assign(doc, tag, on);
-            }
-            3 => {
-                let tag = 1 + r.below(12);
-                let n = 1 + r.below(2);
-                let name = sentence(&mut r, n);
-                lib.tag(tag, &name);
-            }
-            _ => {
-                let items: Vec<String> = (0..r.below(3)).map(|_| sentence(&mut r, 2)).collect();
-                lib.set(doc, 10, &items);
-            }
-        }
+        random_edit(&mut lib, &mut r, &docs, i);
     }
     for clauses in queries() {
         check(&lib, &query(clauses, 6));
@@ -605,8 +610,8 @@ fn a_field_edit_writes_only_its_changed_terms_and_other_kinds_write_no_postings(
         .unwrap();
     let inserted = |s: &Store| s.stats().ks.inserted;
     let before = inserted(&s);
-    // "alpha" → "betas": one term gone, one new: per term its posting, directory, document counter and
-    // document frequency in the field; same length.
+    // "alpha" → "betas": one term gone, one new: per term its posting slot, document counter and document
+    // frequency in the field, and the new one's block maximum; same length.
     s.commit_wait(vec![rec(
         "textEdit",
         vec![
@@ -619,7 +624,7 @@ fn a_field_edit_writes_only_its_changed_terms_and_other_kinds_write_no_postings(
     )])
     .unwrap();
     // Plus the text's head, its edit and the entity's version.
-    assert_eq!(inserted(&s) - before, 2 * 4 + 3);
+    assert_eq!(inserted(&s) - before, 2 * 3 + 1 + 3);
     let before = inserted(&s);
     s.commit_wait(vec![assign(7, 1, true)]).unwrap();
     s.commit_wait(vec![rec("fav", vec![Value::Id(7), Value::Bit(true)])])
@@ -635,10 +640,10 @@ fn a_field_edit_writes_only_its_changed_terms_and_other_kinds_write_no_postings(
     s.commit_wait(vec![text_value(1, test_codes::TAG_NAME, "blue")])
         .unwrap();
     // A rename writes the tag's own name terms, whatever number of entities carry it: "re" and "red" go,
-    // "bl", "blu" and "blue" come (posting, directory, document counter and prefix frequency each, and a
-    // whole-token frequency for "red" and "blue"); plus the text's head, version, and the old value's dead
-    // bytes.
-    assert_eq!(inserted(&s) - before, 5 * 4 + 2 + 3);
+    // "bl", "blu" and "blue" come (posting slot, document counter and prefix frequency each, a block maximum
+    // for the new ones, and a whole-token frequency for "red" and "blue"); plus the text's head, version, and
+    // the old value's dead bytes.
+    assert_eq!(inserted(&s) - before, 5 * 3 + 3 + 2 + 3);
 }
 
 #[test]
@@ -658,4 +663,55 @@ fn phrases_equal_a_scan() {
     for clauses in &phrases {
         check(&lib, &query(clauses.clone(), 6));
     }
+}
+
+#[test]
+fn top_lists_follow_edits_and_bulk_loads() {
+    let _turn = turn();
+    let dir = temp_dir("top");
+    let mut lib = build(&dir, 5, 500);
+    let c = |t: &str| clause(t, None, false, false);
+    let words = [
+        "the", "dr", "dark", "love", "vampire", "knight", "cafe", "elodie",
+    ];
+    let mut listed = 0;
+    let mut check_words = |lib: &Lib| {
+        for w in words {
+            let q = query(vec![c(w)], 6);
+            check(lib, &q);
+            listed += usize::from(lib.store.search(&q).unwrap().listed);
+        }
+    };
+    check_words(&lib);
+    let mut r = Rng(77);
+    let docs: Vec<u64> = lib.world.library.docs.keys().copied().collect();
+    for i in 0..400 {
+        random_edit(&mut lib, &mut r, &docs, i);
+        if i % 50 == 49 {
+            check_words(&lib);
+        }
+    }
+    // A bulk load leaves the lists stale: they are built again.
+    let mut l = lib.store.loader().unwrap();
+    let mut recs = Vec::new();
+    for doc in 2000..2200u64 {
+        let text = format!("the dark knight {} love", "the ".repeat((doc % 7) as usize));
+        recs.push(text_value(doc, test_codes::LIBRARY, &text));
+        lib.world
+            .library
+            .docs
+            .entry(doc)
+            .or_insert_with(|| vec![Vec::new(); 11])[0] = vec![text.into_bytes()];
+    }
+    l.add(recs).unwrap();
+    l.finish().unwrap();
+    check_words(&lib);
+    lib.store.close();
+    drop(lib.store);
+    let lib = Lib {
+        store: open(&dir),
+        world: lib.world,
+    };
+    check_words(&lib);
+    assert!(listed > 0);
 }

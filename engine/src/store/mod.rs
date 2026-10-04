@@ -448,6 +448,7 @@ impl Store {
             layers: Vec::new(),
             pending: Vec::new(),
             staged: None,
+            bulk: false,
             ks: &self.inner.ks,
             log: &self.inner.log,
         };
@@ -483,7 +484,12 @@ impl Store {
         &self,
         q: &crate::search::query::Query,
     ) -> StoreResult<crate::search::query::Found> {
-        self.derived(|v| crate::search::query::run(v, q, &self.inner.search_stats))
+        let mut found =
+            self.derived(|v| crate::search::query::run(v, q, &self.inner.search_stats))?;
+        if let Some((k, v, version)) = found.keep.take() {
+            self.inner.keep_derived(k, v, version);
+        }
+        Ok(found)
     }
 
     /// A derived entry's value.
@@ -682,8 +688,25 @@ impl Inner {
             layers: layers.into_iter().map(Layer::Sorted).collect(),
             pending,
             staged: None,
+            bulk: false,
             ks: &self.ks,
             log: &self.log,
+        }
+    }
+
+    /// Keeps a derived entry a read built (a top list) from the published entries at `version`, if they are
+    /// still at it and no commit is being prepared or synced: every commit after it then sees it. Lost in a crash
+    /// (it is no record's), it is built again.
+    fn keep_derived(&self, key: Vec<u8>, value: Vec<u8>, version: u64) {
+        let p = self.pipe.lock().unwrap();
+        if p.open.dones.is_empty()
+            && p.open.entries.is_empty()
+            && p.syncing.is_none()
+            && p.loading.is_none()
+            && !p.closed
+            && self.ks.inserted() == version
+        {
+            self.ks.insert([(key, Val::Put(value))], None);
         }
     }
 

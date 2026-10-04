@@ -498,7 +498,8 @@ fn derived(s: &Store, entities: std::ops::Range<u64>) -> Vec<(Vec<u8>, Vec<u8>)>
     for st in [
         key::SEARCH_POSTING,
         key::SEARCH_DOC_FREQ,
-        key::SEARCH_DIRECTORY,
+        key::SEARCH_BLOCK_MAX,
+        key::SEARCH_SHORTEST,
         key::SEARCH_LENGTH,
         key::SEARCH_TERM_DOCS,
         key::SEARCH_FIELD_TOKENS,
