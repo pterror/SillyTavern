@@ -9,7 +9,7 @@
 //! matches through the tags whose names match.
 //!
 //! Work is counted in entries read (a scan's start counts `SEEK` entries, a text read `TEXT` plus its bytes /
-//! 16), each about 60 nanoseconds. Matches are enumerated in document order up to `Limits::enumerate`:
+//! 32), each about 0.16 µs at 10^6 documents. Matches are enumerated in document order up to `Limits::enumerate`:
 //! finishing under it, the total and the page are exact. Past it the total is an estimate; in relevance order
 //! the page is then completed from the per-block score bounds (blocks in order of their bound until no block
 //! can beat the page), exact if that finishes within `Limits::ranked`. The clauses' tags (through the joined
@@ -32,9 +32,9 @@ use crate::store::kinds::{key, search_texts};
 use crate::store::{StoreError, StoreResult};
 
 /// Work a scan's start costs, in entries.
-pub const SEEK: u64 = 256;
-/// Work a text read costs besides its bytes / 16.
-pub const TEXT: u64 = 256;
+pub const SEEK: u64 = 96;
+/// Work a text read costs besides its bytes / 32.
+pub const TEXT: u64 = 128;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Limits {
@@ -48,10 +48,10 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Limits {
-            enumerate: 300_000,
-            ranked: 300_000,
-            walked: 300_000,
-            joined: 200_000,
+            enumerate: 120_000,
+            ranked: 120_000,
+            walked: 120_000,
+            joined: 80_000,
         }
     }
 }
@@ -212,7 +212,7 @@ impl Ctx<'_> {
     fn texts(&mut self, scope: Scope, doc: u64, field: u32) -> StoreResult<Vec<Vec<u8>>> {
         let t = search_texts(self.view, scope, doc, field)?;
         self.texts += 1;
-        self.work += TEXT + t.iter().map(|x| x.len() as u64).sum::<u64>() / 16;
+        self.work += TEXT + t.iter().map(|x| x.len() as u64).sum::<u64>() / 32;
         Ok(t)
     }
 }
