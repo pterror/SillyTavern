@@ -605,9 +605,8 @@ fn a_field_edit_writes_only_its_changed_terms_and_other_kinds_write_no_postings(
         .unwrap();
     let inserted = |s: &Store| s.stats().ks.inserted;
     let before = inserted(&s);
-    // "alpha" → "betas": one term gone, one new, each also filed under the prefix terms (the field isn't a prefix
-    // field, so whole tokens are): per term its posting, directory and document counter, and for the whole
-    // tokens their document frequency in the field; same length.
+    // "alpha" → "betas": one term gone, one new: per term its posting, directory, document counter and
+    // document frequency in the field; same length.
     s.commit_wait(vec![rec(
         "textEdit",
         vec![
@@ -620,7 +619,7 @@ fn a_field_edit_writes_only_its_changed_terms_and_other_kinds_write_no_postings(
     )])
     .unwrap();
     // Plus the text's head, its edit and the entity's version.
-    assert_eq!(inserted(&s) - before, 2 * 4 + 2 * 3 + 3);
+    assert_eq!(inserted(&s) - before, 2 * 4 + 3);
     let before = inserted(&s);
     s.commit_wait(vec![assign(7, 1, true)]).unwrap();
     s.commit_wait(vec![rec("fav", vec![Value::Id(7), Value::Bit(true)])])
@@ -635,18 +634,17 @@ fn a_field_edit_writes_only_its_changed_terms_and_other_kinds_write_no_postings(
     let before = inserted(&s);
     s.commit_wait(vec![text_value(1, test_codes::TAG_NAME, "blue")])
         .unwrap();
-    // A rename writes the tag's own name terms, whatever number of entities carry it: "red" and its prefix
-    // terms "re", "red" go, "blue", "bl", "blu", "blue" come (posting, directory, document counter and
-    // frequency each); plus the text's head, version, and the old value's dead bytes.
-    assert_eq!(inserted(&s) - before, 3 * 4 + 4 * 4 + 3);
+    // A rename writes the tag's own name terms, whatever number of entities carry it: "re" and "red" go,
+    // "bl", "blu" and "blue" come (posting, directory, document counter and prefix frequency each, and a
+    // whole-token frequency for "red" and "blue"); plus the text's head, version, and the old value's dead
+    // bytes.
+    assert_eq!(inserted(&s) - before, 5 * 4 + 2 + 3);
 }
 
 #[test]
-fn phrases_through_pairs_and_pair_filters_equal_a_scan() {
+fn phrases_equal_a_scan() {
     let _turn = turn();
-    use super::phrase_mode;
-    phrase_mode::set_write(phrase_mode::PAIRS | phrase_mode::FINGERPRINTS);
-    let dir = temp_dir("pairs");
+    let dir = temp_dir("phrases");
     let lib = build(&dir, 7, 160);
     let c = |t: &str| clause(t, None, false, false);
     let phrases = [
@@ -657,12 +655,7 @@ fn phrases_through_pairs_and_pair_filters_equal_a_scan() {
         vec![c("o'neil"), c("the")],
         vec![clause("knight the", None, false, true), c("dragon")],
     ];
-    for mode in [0, phrase_mode::PAIRS, phrase_mode::FINGERPRINTS] {
-        phrase_mode::set_read(mode);
-        for clauses in &phrases {
-            check(&lib, &query(clauses.clone(), 6));
-        }
+    for clauses in &phrases {
+        check(&lib, &query(clauses.clone(), 6));
     }
-    phrase_mode::set_read(0);
-    phrase_mode::set_write(0);
 }

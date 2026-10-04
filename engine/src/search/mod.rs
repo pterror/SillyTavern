@@ -3,6 +3,8 @@
 //!
 //! A term's postings are one per (term, document), holding every field's frequency and quantized length, filed
 //! best first: by score class (a weighted BM25 of the posting at reference field lengths), then by block of ids.
+//! A string is one term both as a whole token and as a prefix term (a token's first 2–20 characters in the prefix
+//! fields): a posting's prefix-field slots hold both counts, so the query's last word reads the same list.
 //! So a word's best documents are its first entries. A directory per term (id order: document → class) finds a
 //! document's posting and serves intersections. No positions: a phrase is checked on the candidates' text.
 //!
@@ -123,94 +125,12 @@ pub static TAG_FIELDS: &[FieldDef] = &[field("name", 1.0, true, 2.0, 4.0)];
 
 pub static CHAT_FIELDS: &[FieldDef] = &[field("text", 1.0, false, 40.0, 3.0)];
 
-/// Whether a term is a whole token or a token's prefix term.
+/// Which document frequency a term's count is: of the term as a whole token, or as a prefix term (a token's
+/// first 2–20 characters) in a prefix field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum TermKind {
     Exact = 0,
     Gram = 1,
-    /// Two adjacent tokens, joined by `PAIR_SEPARATOR` (measurement builds' phrase evaluation).
-    Pair = 2,
-}
-
-pub const PAIR_SEPARATOR: char = '\u{1}';
-
-/// Phrase structures written and read, for comparing them (measurement builds only; set before opening a
-/// store and kept for its life): `PAIRS` writes and reads pair postings, `FINGERPRINTS` per-field pair filters.
-#[cfg(any(test, feature = "measure"))]
-pub mod phrase_mode {
-    use std::sync::atomic::{AtomicU8, Ordering};
-
-    pub const PAIRS: u8 = 1;
-    pub const FINGERPRINTS: u8 = 2;
-    static WRITE: AtomicU8 = AtomicU8::new(0);
-    static READ: AtomicU8 = AtomicU8::new(0);
-
-    pub fn set_write(m: u8) {
-        WRITE.store(m, Ordering::Relaxed);
-    }
-    pub fn set_read(m: u8) {
-        READ.store(m, Ordering::Relaxed);
-    }
-    pub fn write() -> u8 {
-        WRITE.load(Ordering::Relaxed)
-    }
-    pub fn read() -> u8 {
-        READ.load(Ordering::Relaxed)
-    }
-}
-
-#[cfg(not(any(test, feature = "measure")))]
-pub mod phrase_mode {
-    pub const PAIRS: u8 = 1;
-    pub const FINGERPRINTS: u8 = 2;
-    pub fn write() -> u8 {
-        0
-    }
-    pub fn read() -> u8 {
-        0
-    }
-}
-
-/// A field's adjacent-pair filter: then document, field → bloom bytes.
-pub fn fingerprint(s: Scope, doc: u64, field: u32) -> Vec<u8> {
-    let mut k = scoped(key::SEARCH_FINGERPRINT, s);
-    put_u64(&mut k, doc);
-    put_u64(&mut k, u64::from(field));
-    k
-}
-
-fn pair_hashes(a: &str, b: &str) -> [u64; 3] {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in a.bytes().chain([1u8]).chain(b.bytes()) {
-        h ^= u64::from(byte);
-        h = h.wrapping_mul(0x0100_0000_01b3);
-    }
-    let h2 = h.rotate_left(31).wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
-    [h, h.wrapping_add(h2), h.wrapping_add(h2.wrapping_mul(2))]
-}
-
-/// A bloom filter of adjacent token pairs: 8 bits per pair, 3 probes (about 3% false positives).
-pub fn pair_filter(pairs: &[(String, String)]) -> Vec<u8> {
-    let bits = (pairs.len() * 8).next_power_of_two().max(8);
-    let mut f = vec![0u8; bits / 8];
-    for (a, b) in pairs {
-        for h in pair_hashes(a, b) {
-            let i = (h % bits as u64) as usize;
-            f[i / 8] |= 1 << (i % 8);
-        }
-    }
-    f
-}
-
-pub fn pair_maybe_in(filter: &[u8], a: &str, b: &str) -> bool {
-    let bits = filter.len() * 8;
-    if bits == 0 {
-        return false;
-    }
-    pair_hashes(a, b).iter().all(|h| {
-        let i = (h % bits as u64) as usize;
-        filter[i / 8] >> (i % 8) & 1 == 1
-    })
 }
 
 // ---- keys ----
@@ -225,46 +145,43 @@ fn scoped(structure: u64, s: Scope) -> Vec<u8> {
 /// A term's postings, best first within each group: then the group, the score class (descending, as
 /// `CLASSES - 1 - class`) and a block of `1 << IMPACT_BITS` ids → a map (`Val::Map`) of
 /// `slot_in(IMPACT_BITS, doc, field)` → `pack(tf, length code)`. A posting's rank is `group * CLASSES + class`.
-pub fn postings(s: Scope, kind: TermKind, term: &str) -> Vec<u8> {
+pub fn postings(s: Scope, term: &str) -> Vec<u8> {
     let mut k = scoped(key::SEARCH_POSTING, s);
-    k.push(kind as u8);
     put_bytes(&mut k, term.as_bytes());
     k
 }
 
 /// A term's postings of one group.
-pub fn postings_group(s: Scope, kind: TermKind, term: &str, group: u32) -> Vec<u8> {
-    let mut k = postings(s, kind, term);
+pub fn postings_group(s: Scope, term: &str, group: u32) -> Vec<u8> {
+    let mut k = postings(s, term);
     put_u64(&mut k, u64::from(group));
     k
 }
 
 /// The entry holding `doc`'s posting of `rank`.
-pub fn posting_block(s: Scope, kind: TermKind, term: &str, rank: u32, doc: u64) -> Vec<u8> {
-    let mut k = postings_group(s, kind, term, rank / CLASSES);
+pub fn posting_block(s: Scope, term: &str, rank: u32, doc: u64) -> Vec<u8> {
+    let mut k = postings_group(s, term, rank / CLASSES);
     put_u64(&mut k, u64::from(CLASSES - 1 - rank % CLASSES));
     put_u64(&mut k, doc >> IMPACT_BITS);
     k
 }
 
 /// A term's documents in id order: then a block → a map of `in_block(doc)` → its posting's rank + 1.
-pub fn directory(s: Scope, kind: TermKind, term: &str) -> Vec<u8> {
+pub fn directory(s: Scope, term: &str) -> Vec<u8> {
     let mut k = scoped(key::SEARCH_DIRECTORY, s);
-    k.push(kind as u8);
     put_bytes(&mut k, term.as_bytes());
     k
 }
 
-pub fn directory_block(s: Scope, kind: TermKind, term: &str, block: u64) -> Vec<u8> {
-    let mut k = directory(s, kind, term);
+pub fn directory_block(s: Scope, term: &str, block: u64) -> Vec<u8> {
+    let mut k = directory(s, term);
     put_u64(&mut k, block);
     k
 }
 
-/// Documents holding the term in any field (a counter).
-pub fn term_docs(s: Scope, kind: TermKind, term: &str) -> Vec<u8> {
+/// Documents holding the term in any field, as a whole token or a prefix term (a counter).
+pub fn term_docs(s: Scope, term: &str) -> Vec<u8> {
     let mut k = scoped(key::SEARCH_TERM_DOCS, s);
-    k.push(kind as u8);
     put_bytes(&mut k, term.as_bytes());
     k
 }
@@ -362,13 +279,52 @@ pub const CLASSES: u32 = 64;
 const CLASS_STEP: f64 = 1.12;
 const CLASS_FLOOR: f64 = 0.25;
 
-/// A posting's value: its term frequency and its field's length code.
-pub fn pack(tf: u64, code: u8) -> u32 {
-    (tf.min((1 << 24) - 1) as u32) << 8 | u32::from(code)
+/// What a posting holds for one field: the term's count as a whole token, its count as a prefix term (the
+/// same outside the prefix fields, where the query's last word matches whole tokens), and the field's length code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FieldHit {
+    pub exact: u64,
+    pub gram: u64,
+    pub code: u8,
 }
 
-pub fn unpack(v: u32) -> (u64, u8) {
-    (u64::from(v >> 8), v as u8)
+impl FieldHit {
+    /// The count a word matches by: as a prefix or whole.
+    pub fn tf(&self, as_prefix: bool) -> u64 {
+        if as_prefix { self.gram } else { self.exact }
+    }
+}
+
+/// Counts in a prefix field's slot are kept to 12 bits each; elsewhere to 24.
+const PREFIX_TF_MAX: u64 = (1 << 12) - 1;
+const TF_MAX: u64 = (1 << 24) - 1;
+
+/// A posting slot's value (never 0: a slot holds a field the term is in).
+pub fn pack(prefix_field: bool, h: FieldHit) -> u32 {
+    let code = u32::from(h.code);
+    if prefix_field {
+        (h.exact.min(PREFIX_TF_MAX) as u32) << 8 | (h.gram.min(PREFIX_TF_MAX) as u32) << 20 | code
+    } else {
+        (h.exact.min(TF_MAX) as u32) << 8 | code
+    }
+}
+
+pub fn unpack(prefix_field: bool, v: u32) -> FieldHit {
+    let code = v as u8;
+    if prefix_field {
+        FieldHit {
+            exact: u64::from(v >> 8 & 0xfff),
+            gram: u64::from(v >> 20),
+            code,
+        }
+    } else {
+        let tf = u64::from(v >> 8);
+        FieldHit {
+            exact: tf,
+            gram: tf,
+            code,
+        }
+    }
 }
 
 /// Field lengths quantized to a byte, as tantivy's field norms: exact below 32, then steps of about 10% (each
@@ -405,22 +361,24 @@ pub fn code_length(code: u8) -> f64 {
 pub const GROUPS: u32 = 2;
 
 /// A posting's rank: its group, and its class: its BM25 with each field at its weight, reference idf and
-/// reference average length.
-pub fn rank_of(s: Scope, fields: &[(u32, u64, u8)]) -> u32 {
+/// reference average length, the higher of its counts as whole tokens and as prefix terms, so the class bounds the
+/// term both as a word and as the query's last word.
+pub fn rank_of(s: Scope, fields: &[(u32, FieldHit)]) -> u32 {
     let defs = s.fields();
     let group = u32::from(!fields.iter().any(|f| defs[f.0 as usize].prefix));
-    group * CLASSES + class_of(s, fields)
+    let score = |as_prefix: bool| -> f64 {
+        fields
+            .iter()
+            .map(|&(f, h)| {
+                let d = &defs[f as usize];
+                d.weight * d.idf * tf_norm(h.tf(as_prefix) as f64, code_length(h.code), d.avg)
+            })
+            .sum()
+    };
+    group * CLASSES + class_of(score(false).max(score(true)))
 }
 
-fn class_of(s: Scope, fields: &[(u32, u64, u8)]) -> u32 {
-    let defs = s.fields();
-    let c: f64 = fields
-        .iter()
-        .map(|&(f, tf, code)| {
-            let d = &defs[f as usize];
-            d.weight * d.idf * tf_norm(tf as f64, code_length(code), d.avg)
-        })
-        .sum();
+fn class_of(c: f64) -> u32 {
     if c <= CLASS_FLOOR {
         return 0;
     }

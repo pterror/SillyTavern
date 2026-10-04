@@ -24,9 +24,10 @@ use std::sync::Arc;
 
 use super::text::{GRAM_MAX, GRAM_MIN, char_len, first_chars, phrase_in, tokens};
 use super::{
-    BLOCK_BITS, CLASSES, GROUPS, LENGTH_BITS, Scope, TermKind, class_bound, code_length, directory,
-    directory_block, doc_count, doc_freqs, field_tokens, idf, in_block, lengths, max_doc,
-    parse_varint, posting_block, postings, postings_group, term_docs, tf_norm, unpack, unslot,
+    BLOCK_BITS, CLASSES, FieldHit, GROUPS, LENGTH_BITS, Scope, TermKind, class_bound, code_length,
+    directory, directory_block, doc_count, doc_freqs, field_tokens, idf, in_block, lengths,
+    max_doc, parse_varint, posting_block, postings, postings_group, term_docs, tf_norm, unpack,
+    unslot,
 };
 use crate::keyspace::val::{counter_value, get_u64, map_pairs, put_u64};
 use crate::store::derive::View;
@@ -410,8 +411,8 @@ impl BlockDocs {
         }
     }
 
-    fn directory(scope: Scope, kind: TermKind, term: &str) -> BlockDocs {
-        BlockDocs::new(directory(scope, kind, term), BLOCK_BITS, 0)
+    fn directory(scope: Scope, term: &str) -> BlockDocs {
+        BlockDocs::new(directory(scope, term), BLOCK_BITS, 0)
     }
 
     fn doc_of(&self, block: u64, slot: u32) -> u64 {
@@ -577,42 +578,52 @@ fn carries(ctx: &mut Ctx, doc: u64, tag: u64) -> StoreResult<bool> {
         .is_ok())
 }
 
-/// A document's posting for a term: (field, tf, length code) by field.
-type Posting = Vec<(u32, u64, u8)>;
+/// A document's posting for a term, by field.
+type Posting = Vec<(u32, FieldHit)>;
 
 /// A document's posting for a term, in the class its directory gives.
-fn posting(
-    ctx: &mut Ctx,
-    scope: Scope,
-    kind: TermKind,
-    term: &str,
-    class: u32,
-    doc: u64,
-) -> StoreResult<Posting> {
+fn posting(ctx: &mut Ctx, scope: Scope, term: &str, class: u32, doc: u64) -> StoreResult<Posting> {
     let block = doc >> super::IMPACT_BITS;
-    let m = ctx.map(posting_block(scope, kind, term, class, doc))?;
+    let m = ctx.map(posting_block(scope, term, class, doc))?;
     let first = super::slot(doc, 0);
+    let defs = scope.fields();
     let mut out = Vec::new();
     for &(s, v) in &m[m.partition_point(|p| p.0 < first)..] {
         let (d, f) = unslot(block, s);
         if d != doc {
             break;
         }
-        let (tf, code) = unpack(v);
-        out.push((f, tf, code));
+        out.push((f, unpack(defs[f as usize].prefix, v)));
     }
     Ok(out)
 }
 
-/// A document's class in a term's directory, if it has the term.
-fn class_in(
+/// (field, tf, length code) by field.
+type Tfs = Vec<(u32, u64, u8)>;
+
+/// A document's posting for a term (looked up through the term's directory), as (field, tf) in the fields of
+/// `mask`, counting the term as a prefix when `as_prefix`.
+fn tfs_of(
     ctx: &mut Ctx,
     scope: Scope,
-    kind: TermKind,
     term: &str,
     doc: u64,
-) -> StoreResult<Option<u32>> {
-    let m = ctx.map(directory_block(scope, kind, term, doc >> BLOCK_BITS))?;
+    mask: u64,
+    as_prefix: bool,
+) -> StoreResult<Tfs> {
+    Ok(match class_in(ctx, scope, term, doc)? {
+        Some(rank) => posting(ctx, scope, term, rank, doc)?
+            .into_iter()
+            .filter(|(f, h)| mask >> f & 1 == 1 && h.tf(as_prefix) > 0)
+            .map(|(f, h)| (f, h.tf(as_prefix), h.code))
+            .collect(),
+        None => Vec::new(),
+    })
+}
+
+/// A document's class in a term's directory, if it has the term.
+fn class_in(ctx: &mut Ctx, scope: Scope, term: &str, doc: u64) -> StoreResult<Option<u32>> {
+    let m = ctx.map(directory_block(scope, term, doc >> BLOCK_BITS))?;
     let at = in_block(doc);
     Ok(m.binary_search_by_key(&at, |p| p.0)
         .ok()
@@ -672,12 +683,13 @@ struct Part {
     weight_idf: f64,
 }
 
-/// A list a clause reads: a term's postings, in the fields `mask`, standing for token `token`.
+/// A list a clause reads: a term's postings, in the fields `mask`, standing for token `token`; counted as a
+/// prefix term in the prefix fields when `as_prefix`.
 struct List {
-    kind: TermKind,
     term: String,
     mask: u64,
     token: usize,
+    as_prefix: bool,
     dir: BlockDocs,
 }
 
@@ -774,8 +786,6 @@ struct Matcher {
     factors: [f64; GROUPS as usize],
     joined: Option<Joined>,
     doc: Option<u64>,
-    /// A phrase found through its adjacent pairs' postings (measurement builds' phrase evaluation).
-    pairs: bool,
 }
 
 impl Matcher {
@@ -828,7 +838,6 @@ impl Matcher {
             factors: [0.0; GROUPS as usize],
             joined: None,
             doc: None,
-            pairs: false,
         };
         // Per field, the highest ratio of a token's idf there to the field's reference idf.
         let mut ratio = vec![0.0f64; defs.len()];
@@ -861,46 +870,25 @@ impl Matcher {
                 // Checked on the text.
                 continue;
             }
-            let list = |kind, term: &str, mask| List {
-                kind,
+            let list = |term: &str, mask, as_prefix| List {
                 term: term.to_string(),
                 mask,
                 token: i,
-                dir: BlockDocs::directory(scope, kind, term),
+                as_prefix,
+                dir: BlockDocs::directory(scope, term),
             };
             if !is_prefix {
-                m.lists.push(list(TermKind::Exact, tok, mask));
+                m.lists.push(list(tok, mask, false));
             } else if !long {
                 // Prefix terms in the prefix fields, whole tokens elsewhere: one list.
-                m.lists.push(list(TermKind::Gram, tok, mask));
+                m.lists.push(list(tok, mask, true));
             } else {
                 if mask & prefix_mask != 0 {
-                    m.lists
-                        .push(list(TermKind::Gram, &gram_term, mask & prefix_mask));
+                    m.lists.push(list(&gram_term, mask & prefix_mask, true));
                 }
                 if mask & !prefix_mask != 0 {
-                    m.lists
-                        .push(list(TermKind::Exact, tok, mask & !prefix_mask));
+                    m.lists.push(list(tok, mask & !prefix_mask, false));
                 }
-            }
-        }
-        if phrase && super::phrase_mode::read() & super::phrase_mode::PAIRS != 0 {
-            let exact_until = if prefix { last_i } else { last_i + 1 };
-            let pairs: Vec<List> = (0..exact_until.saturating_sub(1))
-                .map(|i| {
-                    let term = format!("{}{}{}", toks[i], super::PAIR_SEPARATOR, toks[i + 1]);
-                    List {
-                        kind: TermKind::Pair,
-                        dir: BlockDocs::directory(scope, TermKind::Pair, &term),
-                        term,
-                        mask,
-                        token: usize::MAX,
-                    }
-                })
-                .collect();
-            if !pairs.is_empty() {
-                m.lists = pairs;
-                m.pairs = true;
             }
         }
         // A group's bounds scale by the most any of its fields' idf and average length exceed the references:
@@ -988,10 +976,6 @@ impl Matcher {
     /// The most the current document can score, from its directory classes and the joined tags.
     fn ceiling(&self) -> f64 {
         let Some(doc) = self.doc else { return 0.0 };
-        if self.pairs {
-            // A pair's class says nothing of the tokens' scores.
-            return f64::INFINITY;
-        }
         let mut s: f64 = self
             .lists
             .iter()
@@ -1006,9 +990,6 @@ impl Matcher {
 
     /// The most any document in the current blocks of the lists can score (with the joined tags).
     fn block_ceiling(&self) -> f64 {
-        if self.pairs {
-            return f64::INFINITY;
-        }
         let mut s: f64 = self
             .lists
             .iter()
@@ -1042,13 +1023,13 @@ impl Matcher {
         let mut out = Matched::default();
         let mut hit = false;
         // Each list's posting for the document, from its directory class (looked up when not at it).
-        let mut data: Vec<(usize, usize, Posting)> = Vec::new();
+        let mut data: Vec<(usize, usize, Tfs)> = Vec::new();
         for li in 0..self.lists.len() {
             let class = if self.lists[li].dir.doc() == Some(doc) {
                 Some(self.lists[li].dir.value - 1)
             } else {
                 let l = &self.lists[li];
-                class_in(ctx, scope, l.kind, &l.term.clone(), doc)?
+                class_in(ctx, scope, &l.term.clone(), doc)?
             };
             let Some(class) = class else {
                 if self.phrase {
@@ -1058,10 +1039,11 @@ impl Matcher {
                 continue;
             };
             let l = &self.lists[li];
-            let (kind, term, mask, token) = (l.kind, l.term.clone(), l.mask, l.token);
-            let p: Vec<(u32, u64, u8)> = posting(ctx, scope, kind, &term, class, doc)?
+            let (term, mask, token, as_prefix) = (l.term.clone(), l.mask, l.token, l.as_prefix);
+            let p: Tfs = posting(ctx, scope, &term, class, doc)?
                 .into_iter()
-                .filter(|x| mask >> x.0 & 1 == 1)
+                .filter(|(f, h)| mask >> f & 1 == 1 && h.tf(as_prefix) > 0)
+                .map(|(f, h)| (f, h.tf(as_prefix), h.code))
                 .collect();
             if !p.is_empty() {
                 data.push((token, li, p));
@@ -1071,7 +1053,7 @@ impl Matcher {
         let long = !self.phrase && self.prefix && char_len(&self.tokens[last]) > GRAM_MAX;
         if !self.phrase {
             for (_, li, p) in &data {
-                let is_gram_long = long && self.lists[*li].kind == TermKind::Gram;
+                let is_gram_long = long && self.lists[*li].as_prefix;
                 for &(f, tf, code) in p.iter() {
                     let mut tf = tf;
                     if is_gram_long {
@@ -1091,45 +1073,25 @@ impl Matcher {
             }
             out.parts.sort_unstable_by_key(|x| (x.0, x.1));
         } else if !data.is_empty() {
-            // Fields holding every list's term (exact tokens, or adjacent pairs).
+            // Fields holding every exact token.
             let common = data
                 .iter()
                 .map(|(_, _, p)| p.iter().fold(0u64, |m, x| m | 1 << x.0))
                 .fold(u64::MAX, |a, b| a & b);
-            // Each exact token's posting.
-            let mut tok: HashMap<usize, Posting> = HashMap::new();
-            if self.pairs {
-                let exact_until = if self.prefix { last } else { last + 1 };
-                for i in 0..exact_until {
-                    let t = self.tokens[i].clone();
-                    let p = match class_in(ctx, scope, TermKind::Exact, &t, doc)? {
-                        Some(r) => posting(ctx, scope, TermKind::Exact, &t, r, doc)?,
-                        None => Vec::new(),
-                    };
-                    tok.insert(i, p);
-                }
-            } else {
-                for (t, _, p) in &data {
-                    tok.insert(*t, p.clone());
-                }
+            // Each exact token's (field, tf, length code).
+            let mut tok: HashMap<usize, Tfs> = HashMap::new();
+            for (t, _, p) in &data {
+                tok.insert(*t, p.clone());
             }
-            // Two whole tokens: their pair's posting is the phrase.
-            let pair_is_phrase = self.pairs && !self.prefix && self.tokens.len() == 2;
-            let filters = super::phrase_mode::read() & super::phrase_mode::FINGERPRINTS != 0;
             for f in fields_of(scope, common & self.mask) {
                 let prefix_field = scope.fields()[f as usize].prefix;
                 let mut last_tf = 0;
-                let mut found = pair_is_phrase;
-                if !found && filters && !self.pair_filter_passes(ctx, doc, f)? {
-                    continue;
-                }
-                if !found {
-                    for t in ctx.texts(scope, doc, f)? {
-                        // The prefix token scores as a prefix term in a prefix field, as a whole token elsewhere.
-                        let (here, n) = phrase_in(&t, &self.tokens, self.prefix, prefix_field);
-                        found |= here;
-                        last_tf += n;
-                    }
+                let mut found = false;
+                for t in ctx.texts(scope, doc, f)? {
+                    // The prefix token scores as a prefix term in a prefix field, as a whole token elsewhere.
+                    let (here, n) = phrase_in(&t, &self.tokens, self.prefix, prefix_field);
+                    found |= here;
+                    last_tf += n;
                 }
                 if !found {
                     continue;
@@ -1171,20 +1133,6 @@ impl Matcher {
         Ok(hit.then_some(out))
     }
 
-    /// Whether field `f`'s pair filter holds every adjacent pair of the phrase's whole tokens.
-    fn pair_filter_passes(&self, ctx: &mut Ctx, doc: u64, f: u32) -> StoreResult<bool> {
-        let n = self.tokens.len();
-        let exact_until = if self.prefix { n - 1 } else { n };
-        if exact_until < 2 {
-            return Ok(true);
-        }
-        let Some(filter) = ctx.get(&super::fingerprint(self.scope, doc, f))? else {
-            return Ok(false);
-        };
-        Ok((0..exact_until - 1)
-            .all(|i| super::pair_maybe_in(&filter, &self.tokens[i], &self.tokens[i + 1])))
-    }
-
     fn score(&self, m: &Matched, stats: &Stats) -> f64 {
         let mut s = 0.0;
         for &(f, p, tf, code) in &m.parts {
@@ -1213,12 +1161,8 @@ fn join(
     let word = toks.len() == 1 && !(last && char_len(&toks[0]) > GRAM_MAX);
     if word {
         // A word: every posting of its term in the tag names.
-        let kind = if last && char_len(&toks[0]) >= GRAM_MIN {
-            TermKind::Gram
-        } else {
-            TermKind::Exact
-        };
-        let prefix = postings(scope, kind, &toks[0]);
+        let as_prefix = last && char_len(&toks[0]) >= GRAM_MIN;
+        let prefix = postings(scope, &toks[0]);
         let mut cur = Cursor::new(&prefix);
         cur.seek(ctx, &prefix)?;
         while let Some((k, v)) = cur.get() {
@@ -1232,8 +1176,10 @@ fn join(
             let block = u64_at(k, &mut at)?;
             for (sl, v) in ctx.pairs(v)? {
                 let (tag, _) = unslot(block, sl);
-                let (tf, code) = unpack(v);
-                hits.push((tag, vec![(tf, code)]));
+                let h = unpack(true, v);
+                if h.tf(as_prefix) > 0 {
+                    hits.push((tag, vec![(h.tf(as_prefix), h.code)]));
+                }
             }
             cur.advance(ctx)?;
         }
@@ -1577,9 +1523,8 @@ impl Plan {
         let mut lead: Option<u64> = None;
         for i in 0..self.pos.len() {
             if self.pos[i].single().is_some() {
-                let l = &self.pos[i].lists[0];
-                let (kind, term) = (l.kind, l.term.clone());
-                let n = ctx.counter(&term_docs(self.scope, kind, &term))?;
+                let term = self.pos[i].lists[0].term.clone();
+                let n = ctx.counter(&term_docs(self.scope, &term))?;
                 lead = Some(lead.map_or(n, |m: u64| m.min(n)));
             }
         }
@@ -1664,15 +1609,16 @@ impl Plan {
             set: BTreeSet::new(),
         };
         let scope = self.scope;
-        let (kind, term, mask) = {
+        let (term, mask, as_prefix) = {
             let l = &self.pos[0].lists[0];
-            (l.kind, l.term.clone(), l.mask)
+            (l.term.clone(), l.mask, l.as_prefix)
         };
+        let defs = scope.fields();
         // One stream per group that can hold the clause's fields, read in the order of their heads' bounds.
         let mut streams: Vec<(u32, Vec<u8>, Cursor)> = Vec::new();
         for g in 0..GROUPS {
             if self.pos[0].factors[g as usize] > 0.0 {
-                let prefix = postings_group(scope, kind, &term, g);
+                let prefix = postings_group(scope, &term, g);
                 let mut cur = Cursor::new(&prefix);
                 cur.seek(ctx, &prefix)?;
                 streams.push((g, prefix, cur));
@@ -1755,21 +1701,17 @@ impl Plan {
                     .map(|m| m.1)
                     .collect();
                 if term_count.is_none() {
-                    term_count = Some(ctx.counter(&term_docs(scope, kind, &term))?);
+                    term_count = Some(ctx.counter(&term_docs(scope, &term))?);
                 }
                 let left = term_count.unwrap_or(0).saturating_sub(seen.len() as u64);
                 if (need.len() as u64) * 32 < left {
                     for doc in need {
                         seen.insert(doc);
                         let parts: Vec<(u32, usize, u64, u8)> =
-                            match class_in(ctx, scope, kind, &term, doc)? {
-                                Some(rank) => posting(ctx, scope, kind, &term, rank, doc)?
-                                    .into_iter()
-                                    .filter(|x| mask >> x.0 & 1 == 1)
-                                    .map(|(f, tf, code)| (f, self.pos[0].parts[&(0, f)], tf, code))
-                                    .collect(),
-                                None => Vec::new(),
-                            };
+                            tfs_of(ctx, scope, &term, doc, mask, as_prefix)?
+                                .into_iter()
+                                .map(|(f, tf, code)| (f, self.pos[0].parts[&(0, f)], tf, code))
+                                .collect();
                         if !self.passes(ctx, doc)? {
                             continue;
                         }
@@ -1805,9 +1747,9 @@ impl Plan {
                     if d != doc {
                         break;
                     }
-                    if mask >> f & 1 == 1 {
-                        let (tf, code) = unpack(v);
-                        parts.push((f, self.pos[0].parts[&(0, f)], tf, code));
+                    let h = unpack(defs[f as usize].prefix, v);
+                    if mask >> f & 1 == 1 && h.tf(as_prefix) > 0 {
+                        parts.push((f, self.pos[0].parts[&(0, f)], h.tf(as_prefix), h.code));
                     }
                     i += 1;
                 }
@@ -1862,9 +1804,11 @@ impl Plan {
                 }
             }
         } else {
-            // The word's documents, from its counter; restricted fields, filters and tags make it an estimate.
-            total = ctx.counter(&term_docs(scope, kind, &term))?;
-            let all_fields = mask == self.pos[0].mask_all();
+            // The word's documents, from its counter; restricted fields, filters and tags make it an estimate, and
+            // so does a whole word that is also a prefix of tokens in the prefix fields (counted with them).
+            total = ctx.counter(&term_docs(scope, &term))?;
+            let all_fields =
+                mask == self.pos[0].mask_all() && (as_prefix || !gram_shared(scope, &term));
             let filtered =
                 !self.include.is_empty() || !self.exclude.is_empty() || !self.neg.is_empty();
             if filtered && !seen.is_empty() {
@@ -1896,8 +1840,7 @@ impl Plan {
         let page = q.limit.max(1) as f64;
         let estimate = match self.pos.as_slice() {
             [m] if m.single().is_some() => {
-                let l = &m.lists[0];
-                Some(ctx.counter(&term_docs(self.scope, l.kind, &l.term))? as f64)
+                Some(ctx.counter(&term_docs(self.scope, &m.lists[0].term))? as f64)
             }
             _ => None,
         };
@@ -1936,7 +1879,9 @@ impl Plan {
             let filtered =
                 !self.include.is_empty() || !self.exclude.is_empty() || !self.neg.is_empty();
             let m = &self.pos[0];
-            let all_fields = m.lists[0].mask == m.mask_all();
+            let l = &m.lists[0];
+            let all_fields =
+                l.mask == m.mask_all() && (l.as_prefix || !gram_shared(self.scope, &l.term));
             let has_join = m.joined.as_ref().is_some_and(|j| !j.tags.is_empty());
             total_exact = !filtered && all_fields && !has_join && self.complete_joins;
             if has_join {
@@ -2007,6 +1952,11 @@ impl Matcher {
             .filter(|&i| !defs[i].joined)
             .fold(0, |m, i| m | 1 << i)
     }
+}
+
+/// Whether a term's list can hold documents that have it only as a prefix term (in a prefix field).
+fn gram_shared(scope: Scope, term: &str) -> bool {
+    char_len(term) >= GRAM_MIN && scope.fields().iter().any(|d| d.prefix)
 }
 
 fn page_of(best: Best, limit: usize, total: u64, total_exact: bool, page_exact: bool) -> Found {
