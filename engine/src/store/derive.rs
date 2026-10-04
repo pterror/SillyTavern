@@ -2,12 +2,16 @@
 //! both produce the same entries.
 
 use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
+use std::sync::Arc;
 
 use super::StoreError;
+use crate::keyspace::cache::Cache;
+use crate::keyspace::run::{ReadCounts, Run, RunIter, Source};
 use crate::keyspace::val::{Val, fold};
 use crate::keyspace::{Entries, Keyspace};
 use crate::log::Log;
-use crate::log::format::{Kind, Record};
+use crate::log::format::{Kind, Record, Value};
 
 /// Where a record is in the log, and its encoded length.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,22 +23,91 @@ pub struct Loc {
 /// Records not yet durable, by position, with their lengths.
 pub type Pending = HashMap<u64, (Record, u64)>;
 
-/// What a deriver sees: entries not yet published (newest first) over the keyspace, and records not yet durable
-/// over the log.
+/// A bulk load's unpublished state below a worker's buffer: the runs it spilled (newest first), and the log
+/// files it laid out from `staged_from` on, kept in `staged_dir` until the load is installed.
+pub struct Staged {
+    pub runs: Vec<Arc<Run>>,
+    pub cache: Cache,
+    pub counts: ReadCounts,
+    pub staged_dir: PathBuf,
+    pub staged_from: u64,
+}
+
+/// Unpublished entries, sorted or not.
+#[derive(Clone, Copy)]
+pub enum Layer<'a> {
+    Sorted(&'a BTreeMap<Vec<u8>, Val>),
+    Hashed(&'a HashMap<Vec<u8>, Val>),
+}
+
+impl<'a> Layer<'a> {
+    fn get(&self, key: &[u8]) -> Option<&'a Val> {
+        match self {
+            Layer::Sorted(m) => m.get(key),
+            Layer::Hashed(m) => m.get(key),
+        }
+    }
+
+    /// The entries in `[start, end)`, in order.
+    fn range(&self, start: &[u8], end: &[u8]) -> Vec<(&'a Vec<u8>, &'a Val)> {
+        match self {
+            Layer::Sorted(m) => m
+                .range::<[u8], _>((
+                    std::ops::Bound::Included(start),
+                    std::ops::Bound::Excluded(end),
+                ))
+                .collect(),
+            Layer::Hashed(m) => {
+                let mut v: Vec<_> = m
+                    .iter()
+                    .filter(|(k, _)| k.as_slice() >= start && k.as_slice() < end)
+                    .collect();
+                v.sort_unstable_by(|a, b| a.0.cmp(b.0));
+                v
+            }
+        }
+    }
+}
+
+/// What a deriver sees: entries not yet published (newest first: the layers, then a bulk load's spilled runs)
+/// over the keyspace, and records not yet durable over the log.
 pub struct View<'a> {
-    pub(super) layers: Vec<&'a BTreeMap<Vec<u8>, Val>>,
+    pub(super) layers: Vec<Layer<'a>>,
     pub(super) pending: Vec<&'a Pending>,
+    pub(super) staged: Option<&'a Staged>,
     pub(super) ks: &'a Keyspace,
     pub(super) log: &'a Log,
 }
 
 impl View<'_> {
+    /// The unpublished values of `key`, newest first, down to the first that hides the older ones.
+    fn unpublished(&self, key: &[u8]) -> Result<Vec<Val>, StoreError> {
+        let mut vals = Vec::new();
+        for l in &self.layers {
+            if let Some(v) = l.get(key) {
+                let done = !v.is_partial();
+                vals.push(v.clone());
+                if done {
+                    return Ok(vals);
+                }
+            }
+        }
+        if let Some(st) = self.staged {
+            for r in &st.runs {
+                if let Some(v) = r.get(key, &st.cache, &st.counts)? {
+                    let done = !v.is_partial();
+                    vals.push(v);
+                    if done {
+                        return Ok(vals);
+                    }
+                }
+            }
+        }
+        Ok(vals)
+    }
+
     pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
-        let mut vals: Vec<Val> = self
-            .layers
-            .iter()
-            .filter_map(|l| l.get(key).cloned())
-            .collect();
+        let mut vals = self.unpublished(key)?;
         if vals.iter().all(Val::is_partial) {
             match self.ks.get(key)? {
                 Some(b) => vals.push(Val::Put(b)),
@@ -56,20 +129,39 @@ impl View<'_> {
     ) -> Result<Vec<(u32, u32)>, StoreError> {
         let mut acc: Vec<(u32, u32)> = Vec::new();
         let mut base: Option<Option<Vec<u8>>> = None;
-        for l in &self.layers {
-            match l.get(key) {
-                None => continue,
-                Some(Val::Map(p)) => {
+        // Folds one value (newest first) into `acc`; true once it hides everything older.
+        let mut take = |v: &Val, acc: &mut Vec<(u32, u32)>| -> bool {
+            match v {
+                Val::Map(p) => {
                     let from = p.partition_point(|x| x.0 < lo);
                     let to = p.partition_point(|x| x.0 < hi);
-                    acc = crate::keyspace::val::map_over(&acc, p[from..to].to_vec());
+                    *acc = crate::keyspace::val::map_over(acc, p[from..to].to_vec());
+                    false
                 }
-                Some(Val::Put(b)) => {
+                Val::Put(b) => {
                     base = Some(Some(b.clone()));
-                    break;
+                    true
                 }
-                Some(_) => {
+                _ => {
                     base = Some(None);
+                    true
+                }
+            }
+        };
+        let mut done = false;
+        for l in &self.layers {
+            if let Some(v) = l.get(key)
+                && take(v, &mut acc)
+            {
+                done = true;
+                break;
+            }
+        }
+        if !done && let Some(st) = self.staged {
+            for r in &st.runs {
+                if let Some(v) = r.get(key, &st.cache, &st.counts)?
+                    && take(&v, &mut acc)
+                {
                     break;
                 }
             }
@@ -104,16 +196,30 @@ impl View<'_> {
     /// Up to `limit` keys in `[start, end)` that have values, in order.
     pub fn scan(&self, start: &[u8], end: &[u8], limit: usize) -> Result<Entries, StoreError> {
         let mut unpublished: BTreeMap<Vec<u8>, Val> = BTreeMap::new();
+        let mut over = |k: &Vec<u8>, v: Val| {
+            let v = match unpublished.remove(k) {
+                Some(older) => v.over(&older),
+                None => v,
+            };
+            unpublished.insert(k.clone(), v);
+        };
+        // Oldest first.
+        if let Some(st) = self.staged {
+            for r in st.runs.iter().rev() {
+                let mut it = RunIter::new(r.clone(), start, Some(&st.cache), Some(&st.counts))?;
+                while let Some(k) = it.key() {
+                    if k >= end {
+                        break;
+                    }
+                    let k = k.to_vec();
+                    over(&k, it.val()?);
+                    it.advance()?;
+                }
+            }
+        }
         for layer in self.layers.iter().rev() {
-            for (k, v) in layer.range::<[u8], _>((
-                std::ops::Bound::Included(start),
-                std::ops::Bound::Excluded(end),
-            )) {
-                let v = match unpublished.remove(k) {
-                    Some(older) => v.clone().over(&older),
-                    None => v.clone(),
-                };
-                unpublished.insert(k.clone(), v);
+            for (k, v) in layer.range(start, end) {
+                over(k, v.clone());
             }
         }
         // Each unpublished entry can hide at most one published one.
@@ -154,6 +260,11 @@ impl View<'_> {
                 return Ok((r.clone(), *len));
             }
         }
+        if let Some(st) = self.staged
+            && pos >= st.staged_from
+        {
+            return Ok(self.log.read_staged(&st.staged_dir, pos)?);
+        }
         Ok(self.log.read_sized(pos)?)
     }
 }
@@ -192,6 +303,21 @@ impl Out {
             apply(layer, k, v);
         }
     }
+
+    /// Applies the entries over `layer`.
+    pub fn apply_hashed(self, layer: &mut HashMap<Vec<u8>, Val>) {
+        for (k, v) in self.entries {
+            match layer.get_mut(&k) {
+                Some(old) => {
+                    let older = std::mem::replace(old, Val::Del);
+                    *old = v.over_owned(older);
+                }
+                None => {
+                    layer.insert(k, v);
+                }
+            }
+        }
+    }
 }
 
 pub fn apply(layer: &mut BTreeMap<Vec<u8>, Val>, k: Vec<u8>, v: Val) {
@@ -212,6 +338,22 @@ pub trait Deriver: Sync {
     /// At commit only, before the record is logged: the record to log for it, or a refusal.
     fn prepare(&self, rec: Record, _view: &View) -> Result<Record, StoreError> {
         Ok(rec)
+    }
+
+    /// Whether `prepare` may change the record. A bulk load lays its records out before deriving any, so it
+    /// takes only kinds that it can't.
+    fn prepares(&self) -> bool {
+        false
+    }
+
+    /// The record's partition: every entry `derive` reads, and every entry it writes that isn't a counter, a
+    /// maximum or a map slot of its own partition's, belongs to records of the same partition. So a bulk load
+    /// derives each partition's records in order on one thread, and partitions in parallel.
+    fn partition(&self, rec: &Record) -> u64 {
+        match rec.values.first() {
+            Some(Value::Id(v) | Value::UInt(v)) => *v,
+            _ => 0,
+        }
     }
 
     /// The entries for the record at `at`.

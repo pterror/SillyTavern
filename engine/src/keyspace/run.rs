@@ -9,6 +9,8 @@
 //! the run covers (u64), the first and last flush it holds (u64 each), CRC-32C of the bytes before it (u32),
 //! zero padding; all little-endian.
 
+use std::cmp::Reverse;
+use std::collections::BinaryHeap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -289,6 +291,29 @@ impl Run {
             .ok_or_else(|| self.corrupt("index entry isn't a handle".into()))
     }
 
+    /// Every data block's last key and place, in order.
+    pub fn data_blocks(&self) -> KsResult<Vec<(Vec<u8>, Handle)>> {
+        let mut level: Vec<(Vec<u8>, Handle)> = Vec::new();
+        let mut c = Cursor::first(self.top.clone()).map_err(|e| self.corrupt(e))?;
+        while c.valid {
+            level.push((c.key.clone(), self.child(&c)?));
+            c.advance().map_err(|e| self.corrupt(e))?;
+        }
+        for _ in 1..self.levels {
+            let mut below = Vec::new();
+            for (_, h) in &level {
+                let b = self.read_block(*h, KIND_INDEX, None, None)?;
+                let mut c = Cursor::first(b).map_err(|e| self.corrupt(e))?;
+                while c.valid {
+                    below.push((c.key.clone(), self.child(&c)?));
+                    c.advance().map_err(|e| self.corrupt(e))?;
+                }
+            }
+            level = below;
+        }
+        Ok(level)
+    }
+
     /// The run's value for `key`.
     pub fn get(&self, key: &[u8], cache: &Cache, counts: &ReadCounts) -> KsResult<Option<Val>> {
         if key > self.max_key.as_slice() {
@@ -438,29 +463,48 @@ impl Source for VecSource {
 /// Merges sources, the first the newest: yields each key once, with its values folded newest first.
 pub struct Merge<'a> {
     sources: Vec<Box<dyn Source + 'a>>,
+    /// Each source's current key with its index, least first.
+    heap: BinaryHeap<Reverse<(Vec<u8>, usize)>>,
+    started: bool,
 }
 
 impl<'a> Merge<'a> {
     pub fn new(sources: Vec<Box<dyn Source + 'a>>) -> Merge<'a> {
-        Merge { sources }
+        Merge {
+            sources,
+            heap: BinaryHeap::new(),
+            started: false,
+        }
     }
 
     /// The next key and its values' fold.
     pub fn next_entry(&mut self) -> KsResult<Option<(Vec<u8>, Val)>> {
-        let Some(key) = self
-            .sources
-            .iter()
-            .filter_map(|s| s.key())
-            .min()
-            .map(<[u8]>::to_vec)
-        else {
+        if !self.started {
+            self.started = true;
+            for (i, s) in self.sources.iter().enumerate() {
+                if let Some(k) = s.key() {
+                    self.heap.push(Reverse((k.to_vec(), i)));
+                }
+            }
+        }
+        let Some(Reverse((key, first))) = self.heap.pop() else {
             return Ok(None);
         };
-        let mut vals = Vec::new();
-        for s in &mut self.sources {
-            if s.key() == Some(key.as_slice()) {
-                vals.push(s.val()?);
-                s.advance()?;
+        // Sources holding the key, newest (lowest index) first.
+        let mut at = vec![first];
+        while let Some(Reverse((k, _))) = self.heap.peek()
+            && *k == key
+        {
+            let Reverse((_, i)) = self.heap.pop().unwrap();
+            at.push(i);
+        }
+        let mut vals = Vec::with_capacity(at.len());
+        for i in at {
+            let s = &mut self.sources[i];
+            vals.push(s.val()?);
+            s.advance()?;
+            if let Some(k) = s.key() {
+                self.heap.push(Reverse((k.to_vec(), i)));
             }
         }
         Ok(Some((key, super::val::fold(vals).unwrap())))
@@ -468,6 +512,33 @@ impl<'a> Merge<'a> {
 }
 
 // ---- writing ----
+
+/// Rewrites a run file's footer to hold other flushes and another covered position (a bulk load's run, named
+/// once it is installed), and syncs it.
+pub fn restamp(path: &Path, covered: u64, lo: u64, hi: u64) -> io::Result<()> {
+    let file = OpenOptions::new().read(true).write(true).open(path)?;
+    let bytes = file.metadata()?.len();
+    let mut f = [0u8; FOOTER];
+    read_exact_at(&file, &mut f, bytes - FOOTER as u64)?;
+    if &f[..8] != MAGIC {
+        return Err(io::Error::other("not a run file"));
+    }
+    f[32..40].copy_from_slice(&covered.to_le_bytes());
+    f[40..48].copy_from_slice(&lo.to_le_bytes());
+    f[48..56].copy_from_slice(&hi.to_le_bytes());
+    let crc = crc32c::crc32c(&f[..56]);
+    f[56..60].copy_from_slice(&crc.to_le_bytes());
+    #[cfg(unix)]
+    std::os::unix::fs::FileExt::write_all_at(&file, &f, bytes - FOOTER as u64)?;
+    #[cfg(not(unix))]
+    {
+        use std::io::{Seek, SeekFrom};
+        let mut w = &file;
+        w.seek(SeekFrom::Start(bytes - FOOTER as u64))?;
+        w.write_all(&f)?;
+    }
+    file.sync_data()
+}
 
 pub struct RunWriter {
     out: BufWriter<File>,
@@ -539,6 +610,23 @@ impl RunWriter {
         let bytes = self.data.finish(KIND_DATA);
         let h = self.write_block(&bytes)?;
         self.push_index(0, &last, h)
+    }
+
+    /// Appends every data block of `run` as it is (its keys all after this writer's), as a merge's outputs over
+    /// disjoint key ranges are joined into one run.
+    pub fn append_run(&mut self, run: &Run) -> KsResult<()> {
+        if !self.data.is_empty() {
+            self.flush_data()?;
+        }
+        let mut buf = Vec::new();
+        for (last, h) in run.data_blocks()? {
+            buf.resize(h.len as usize, 0);
+            run.file.read_exact_at(&mut buf, h.offset)?;
+            let at = self.write_block(&buf)?;
+            self.push_index(0, &last, at)?;
+        }
+        self.entries += run.entries;
+        Ok(())
     }
 
     /// Adds an entry; keys must come in increasing order.
