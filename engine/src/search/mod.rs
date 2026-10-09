@@ -75,8 +75,6 @@ pub struct FieldDef {
     pub weight: f64,
     /// The query's last word matches as a prefix here.
     pub prefix: bool,
-    /// Not indexed in this scope: the names of the document's tags, read through tag membership.
-    pub joined: bool,
 }
 
 const fn field(name: &'static str, weight: f64, prefix: bool) -> FieldDef {
@@ -84,22 +82,16 @@ const fn field(name: &'static str, weight: f64, prefix: bool) -> FieldDef {
         name,
         weight,
         prefix,
-        joined: false,
     }
 }
 
-/// Weights: upstream's Fuse keys for `fuzzySearchCharacters` (name 20, tags 10, description and example 3,
-/// scenario, personality, first message and notes 2, creator, card tags and alternate greetings 1), which the old
-/// index used as BM25 field boosts too; with them a match in the name outranks body matches. Prefix on name,
-/// creator and tags (design 7.1, Q-F1).
+/// Weights: upstream's Fuse keys for `fuzzySearchCharacters` (name 20, description and example 3, scenario,
+/// personality, first message and notes 2, creator, card tags and alternate greetings 1), which the old index used
+/// as BM25 field boosts too; with them a match in the name outranks body matches. Prefix on name, creator and
+/// tags (design 7.1, Q-F1). The names of the tags an entity carries are not a field: a query's matching tags are
+/// answered beside its page (`query::Found::tags`).
 pub static LIBRARY_FIELDS: &[FieldDef] = &[
     field("name", 20.0, true),
-    FieldDef {
-        name: "resolved_tags",
-        weight: 10.0,
-        prefix: true,
-        joined: true,
-    },
     field("description", 3.0, false),
     field("mes_example", 3.0, false),
     field("scenario", 2.0, false),
@@ -181,14 +173,32 @@ pub fn term_docs(s: Scope, term: &str) -> Vec<u8> {
     termed(key::SEARCH_TERM_DOCS, s, term)
 }
 
-/// A term's best documents (`top::List`), for a term with more documents than the list holds.
+/// A term's top list's head (`top::Head`), for a term with more documents than a list holds.
 pub fn top(s: Scope, term: &str) -> Vec<u8> {
     termed(key::SEARCH_TOP, s, term)
 }
 
-/// Changes that no top list followed (a bulk load's): a list built before the last one is stale (a counter).
-pub fn top_generation(s: Scope) -> Vec<u8> {
-    scoped(key::SEARCH_TOP_GENERATION, s)
+/// A term's top list's entries: then the score (`top::put_rank`) and document → the document's `top::Fields`.
+pub fn top_entries(s: Scope, term: &str) -> Vec<u8> {
+    termed(key::SEARCH_TOP_ENTRY, s, term)
+}
+
+pub fn top_entry(s: Scope, term: &str, score: f64, doc: u64) -> Vec<u8> {
+    let mut k = top_entries(s, term);
+    top::put_rank(&mut k, score);
+    put_u64(&mut k, doc);
+    k
+}
+
+/// A term's top list's entries (a counter).
+pub fn top_count(s: Scope, term: &str) -> Vec<u8> {
+    termed(key::SEARCH_TOP_COUNT, s, term)
+}
+
+/// Bulk loads that changed a term's documents without following its list: a list built before the last one is
+/// stale (a counter).
+pub fn top_generation(s: Scope, term: &str) -> Vec<u8> {
+    termed(key::SEARCH_TOP_GENERATION, s, term)
 }
 
 /// Documents whose field holds the term: then the field (a counter each).

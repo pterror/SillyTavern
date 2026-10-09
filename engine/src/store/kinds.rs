@@ -42,6 +42,8 @@ pub mod key {
     pub const SEARCH_SHORTEST: u64 = 44;
     pub const SEARCH_TOP: u64 = 46;
     pub const SEARCH_TOP_GENERATION: u64 = 47;
+    pub const SEARCH_TOP_ENTRY: u64 = 48;
+    pub const SEARCH_TOP_COUNT: u64 = 49;
     /// Per (tag, entity): the `tagAssign` record assigning it.
     pub const MEMBER: u64 = 40;
     /// Per (entity, tag): assigned.
@@ -561,8 +563,8 @@ pub mod test_codes {
     pub const LIBRARY: u64 = 1000;
     pub const TAG_NAME: u64 = 1100;
     /// The list fields: card tags and alternate greetings.
-    pub const CARD_TAGS: u32 = 9;
-    pub const ALTERNATE_GREETINGS: u32 = 10;
+    pub const CARD_TAGS: u32 = 8;
+    pub const ALTERNATE_GREETINGS: u32 = 9;
 
     pub fn field(c: u64) -> Option<SearchField> {
         if c == TAG_NAME {
@@ -573,8 +575,8 @@ pub mod test_codes {
             });
         }
         let i = u32::try_from(c.checked_sub(LIBRARY)?).ok()?;
-        let def = Scope::LIBRARY.fields().get(i as usize)?;
-        (!def.joined).then_some(SearchField {
+        Scope::LIBRARY.fields().get(i as usize)?;
+        Some(SearchField {
             scope: Scope::LIBRARY,
             field: i,
             list: i == CARD_TAGS || i == ALTERNATE_GREETINGS,

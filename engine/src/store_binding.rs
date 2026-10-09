@@ -438,12 +438,22 @@ impl ToNapiValue for SearchPage {
             o.set("score", h.score)?;
             hits.push(o);
         }
+        let mut tags = Vec::with_capacity(f.tags.len());
+        for t in f.tags {
+            let mut o = Object::new(&env)?;
+            o.set("tag", t.tag)?;
+            o.set("name", text_to_js(t.name)?)?;
+            o.set("carriers", t.carriers as f64)?;
+            tags.push(o);
+        }
         let mut obj = Object::new(&env)?;
         obj.set("hits", hits)?;
         obj.set("total", f.total as f64)?;
         obj.set("totalExact", f.total_exact)?;
         obj.set("pageExact", f.page_exact)?;
         obj.set("more", f.more)?;
+        obj.set("tags", tags)?;
+        obj.set("tagsExact", f.tags_exact)?;
         unsafe { Object::to_napi_value(raw_env, obj) }
     }
 }
@@ -672,10 +682,11 @@ impl Store {
     /// A page of search results in relevance order: `{ scope: 'library' | 'tags' | { chat: owner }, clauses:
     /// [{ text, fields?, negate?, quoted? }], filters?: { allTags?, anyTag?, noTag?, ids?, notIds? }, limit,
     /// after? }` (`after` the last hit of the page before). Resolves with `{ hits: [{ doc, score }], total,
-    /// totalExact, pageExact, more }`.
+    /// totalExact, pageExact, more, tags: [{ tag, name, carriers }], tagsExact }`: in the library, `tags` are
+    /// the tags whose names match the query, best first, at most 5.
     #[napi(
         ts_args_type = "query: object",
-        ts_return_type = "Promise<{ hits: { doc: bigint, score: number }[], total: number, totalExact: boolean, pageExact: boolean, more: boolean }>"
+        ts_return_type = "Promise<{ hits: { doc: bigint, score: number }[], total: number, totalExact: boolean, pageExact: boolean, more: boolean, tags: { tag: bigint, name: string, carriers: number }[], tagsExact: boolean }>"
     )]
     pub fn search<'env>(&self, env: &'env Env, query: Object) -> Result<Object<'env>> {
         let q = query_from_js(&query)?;
