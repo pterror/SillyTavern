@@ -2,21 +2,27 @@
 //! the field changed gets its slot in the posting block, its frequency counters and its block maximum; the
 //! document's own slots in that block (read) say whether it still holds the term in any field. A changed
 //! length writes the length, its counters and the block's shortest length. Top lists that hold or could hold
-//! the document follow its new scores: the changed terms', and when the field's length code changed, every
-//! term of the field's. A bulk load leaves top lists alone and marks them stale instead.
+//! the document follow its scores: the changed terms', and when the field's length code changed, every term of
+//! the field's; its entry's key is its old score, found again from its counts and length codes before the
+//! change. A bulk load leaves those lists alone and marks them stale instead.
 
 use std::collections::HashMap;
 
 use super::text::{grams, tokens};
-use super::top::{Entry, List};
+use super::top::{Fields, Head, encode_fields};
 use super::{
     BLOCK_BITS, FIELD_BITS, FieldHit, LENGTH_BITS, SHORTEST_BASE, Scope, TermKind, block_maxima,
     bound_slot, doc_count, doc_freq, field_tokens, length_block, length_code, max_doc, pack,
-    posting_block, shortest, slot, slot_in, term_docs, top, top_generation, unpack, unslot,
+    posting_block, shortest, slot, slot_in, term_docs, top, top_count, top_entries, top_entry,
+    top_generation, unpack, unslot,
 };
 use crate::keyspace::val::{counter_value, map_pairs};
 use crate::store::StoreError;
 use crate::store::derive::{Out, View};
+use crate::store::kinds::key;
+
+/// A document's fields holding a term, with its counts there.
+type Slots = Vec<(u32, FieldHit)>;
 
 /// A term's count in a field as a whole token and as a prefix term.
 type Counts = (u64, u64);
@@ -113,8 +119,8 @@ pub fn update(
             .collect())
     };
     let (bchunk, bslot) = bound_slot(block, field);
-    // The document's slots for each changed term, after the change.
-    let mut after_slots: HashMap<&str, Vec<(u32, FieldHit)>> = HashMap::new();
+    // The document's slots for each changed term, before and after the change.
+    let mut slots_of: HashMap<&str, (Slots, Slots)> = HashMap::new();
     for &(term, o, n) in &changed {
         for (kind, was, is) in [(TermKind::Exact, o.0, n.0), (TermKind::Gram, o.1, n.1)] {
             // Outside the prefix fields a prefix count is the whole-token count: one frequency.
@@ -143,18 +149,20 @@ pub fn update(
                 vec![(bslot, hit.most().min(u64::from(u32::MAX)) as u32)],
             );
         }
-        let mut slots = own_slots(term)?;
-        let had = !slots.is_empty();
+        let had = own_slots(term)?;
+        let mut slots = had.clone();
         slots.retain(|x| x.0 != field);
         if present {
             slots.push((field, hit));
             slots.sort_unstable_by_key(|x| x.0);
         }
-        let has = !slots.is_empty();
-        if had != has {
-            out.add(term_docs(scope, term), if has { 1 } else { -1 });
+        if had.is_empty() != slots.is_empty() {
+            out.add(
+                term_docs(scope, term),
+                if slots.is_empty() { -1 } else { 1 },
+            );
         }
-        after_slots.insert(term, slots);
+        slots_of.insert(term, (had, slots));
     }
     if lo != ln {
         out.add(field_tokens(scope, field), ln as i64 - lo as i64);
@@ -180,60 +188,123 @@ pub fn update(
             }
         }
     }
+    // The terms whose scores for the document changed: the changed ones, and every one of the field's when its
+    // length code changed.
+    let mut affected: Vec<&String> = changed.iter().map(|c| c.0).collect();
+    let code_changed = length_code(lo) != length_code(ln);
+    if code_changed {
+        affected.extend(
+            after
+                .tf
+                .keys()
+                .filter(|t| !slots_of.contains_key(t.as_str())),
+        );
+    }
     if view.is_bulk() {
-        if !changed.is_empty() || lo != ln {
-            out.add(top_generation(scope), 1);
+        // Lists are shared across a load's partitions: the terms' lists are left stale, to be built again.
+        for term in affected {
+            out.add(top_generation(scope, term), 1);
         }
         return Ok(());
     }
 
     // ---- top lists ----
-    let generation = view
-        .get(&top_generation(scope))?
-        .and_then(|b| counter_value(&b))
-        .unwrap_or(0) as u64;
-    // The document's length codes, the field's new.
-    let mut codes = [0u8; 1 << FIELD_BITS];
+    // The document's length codes before and after.
+    let mut old_codes = [0u8; 1 << FIELD_BITS];
     for &(s, len) in &lengths {
         if s >> FIELD_BITS == doc_slot {
-            codes[(s & ((1 << FIELD_BITS) - 1)) as usize] = length_code(u64::from(len));
+            old_codes[(s & ((1 << FIELD_BITS) - 1)) as usize] = length_code(u64::from(len));
         }
     }
-    codes[field as usize] = length_code(ln);
-    let mut affected: Vec<&String> = changed.iter().map(|c| c.0).collect();
-    if length_code(lo) != length_code(ln) {
-        affected.extend(
-            after
-                .tf
-                .keys()
-                .filter(|t| !after_slots.contains_key(t.as_str())),
-        );
-    }
-    for term in affected {
-        let key = top(scope, term);
-        let Some(mut list) = view.get(&key)?.and_then(|b| List::decode(&b)) else {
-            continue;
-        };
-        if list.generation != generation {
-            continue;
-        }
-        let slots = match after_slots.get(term.as_str()) {
-            Some(s) => s.clone(),
-            None => own_slots(term)?,
-        };
-        let fields: Vec<(u32, u64, u8)> = slots
+    let mut new_codes = old_codes;
+    new_codes[field as usize] = length_code(ln);
+    let fields_of = |slots: &[(u32, FieldHit)], codes: &[u8; 1 << FIELD_BITS]| -> Fields {
+        slots
             .iter()
             .filter(|(_, h)| h.tf(true) > 0)
             .map(|&(f, h)| (f, h.tf(true), codes[f as usize]))
-            .collect();
-        let entry = (!fields.is_empty()).then(|| Entry {
-            doc,
-            score: list.score(&fields),
-            fields,
-        });
-        if list.follow(doc, entry) {
-            out.put(key, list.encode());
+            .collect()
+    };
+    for term in affected {
+        let Some(mut head) = view.get(&top(scope, term))?.and_then(|b| Head::decode(&b)) else {
+            continue;
+        };
+        let generation = view
+            .get(&top_generation(scope, term))?
+            .and_then(|b| counter_value(&b))
+            .unwrap_or(0) as u64;
+        if head.generation != generation || head.passing.is_some_and(|b| block >= b) {
+            continue;
+        }
+        let (before, after) = match slots_of.get(term.as_str()) {
+            Some((b, a)) => (fields_of(b, &old_codes), fields_of(a, &new_codes)),
+            None => {
+                let s = own_slots(term)?;
+                (fields_of(&s, &old_codes), fields_of(&s, &new_codes))
+            }
+        };
+        let was = (!before.is_empty())
+            .then(|| head.score(&before))
+            .filter(|&sc| head.holds(sc, doc, block));
+        let is = (!after.is_empty())
+            .then(|| head.score(&after))
+            .filter(|&sc| head.holds(sc, doc, block));
+        if was == is && before == after {
+            continue;
+        }
+        if let Some(sc) = was {
+            out.del(top_entry(scope, term, sc, doc));
+        }
+        if let Some(sc) = is {
+            out.put(top_entry(scope, term, sc, doc), encode_fields(&after));
+        }
+        let delta = i64::from(is.is_some()) - i64::from(was.is_some());
+        if delta != 0 {
+            out.add(top_count(scope, term), delta);
+        }
+        if delta > 0 {
+            trim(view, out, scope, term, &mut head, (is.unwrap(), doc))?;
         }
     }
+    Ok(())
+}
+
+/// After `added` joined a list: past `MAX + SLACK` entries, the lowest go down to `MAX` and the floor rises to the
+/// best of them.
+fn trim(
+    view: &View,
+    out: &mut Out,
+    scope: Scope,
+    term: &str,
+    head: &mut Head,
+    added: (f64, u64),
+) -> Result<(), StoreError> {
+    // The count before this change, which adds `added`.
+    let count = view
+        .get(&top_count(scope, term))?
+        .and_then(|b| counter_value(&b))
+        .unwrap_or(0)
+        .max(0) as usize;
+    if count < top::MAX + top::SLACK {
+        return Ok(());
+    }
+    // `added` isn't in the view yet; this change took nothing else out of the list.
+    let prefix = top_entries(scope, term);
+    let mut ranks: Vec<(f64, u64)> = view
+        .scan(&prefix, &key::prefix_end(&prefix), count + 1)?
+        .iter()
+        .filter_map(|(k, _)| top::parse_rank(&k[prefix.len()..]))
+        .collect();
+    ranks.push(added);
+    ranks.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+    if ranks.len() <= top::MAX {
+        return Ok(());
+    }
+    for &(sc, d) in &ranks[top::MAX..] {
+        out.del(top_entry(scope, term, sc, d));
+        head.raise_floor(sc, d);
+    }
+    out.add(top_count(scope, term), -((ranks.len() - top::MAX) as i64));
+    out.put(top(scope, term), head.encode());
     Ok(())
 }

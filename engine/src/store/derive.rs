@@ -109,15 +109,20 @@ impl View<'_> {
     }
 
     pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
+        Ok(self.get_val(key)?.map(Val::into_bytes))
+    }
+
+    /// `get`, the value settled (`Val::settled`): a map as its pairs.
+    pub fn get_val(&self, key: &[u8]) -> Result<Option<Val>, StoreError> {
         let mut vals = self.unpublished(key)?;
         if vals.iter().all(Val::is_partial) {
-            match self.ks.get(key)? {
-                Some(b) => vals.push(Val::Put(b)),
+            match self.ks.get_val(key)? {
+                Some(v) => vals.push(v),
                 None if vals.is_empty() => return Ok(None),
                 None => {}
             }
         }
-        Ok(fold(vals).and_then(Val::resolved))
+        Ok(fold(vals).and_then(Val::settled))
     }
 
     /// The pairs of the map at `key` whose slots are in `[lo, hi)`, removals dropped; with `published` false,
@@ -202,6 +207,20 @@ impl View<'_> {
 
     /// Up to `limit` keys in `[start, end)` that have values, in order.
     pub fn scan(&self, start: &[u8], end: &[u8], limit: usize) -> Result<Entries, StoreError> {
+        Ok(self
+            .scan_vals(start, end, limit)?
+            .into_iter()
+            .map(|(k, v)| (k, v.into_bytes()))
+            .collect())
+    }
+
+    /// `scan`, the values settled (`Val::settled`).
+    pub fn scan_vals(
+        &self,
+        start: &[u8],
+        end: &[u8],
+        limit: usize,
+    ) -> Result<Vec<(Vec<u8>, Val)>, StoreError> {
         let mut unpublished: BTreeMap<Vec<u8>, Val> = BTreeMap::new();
         let mut over = |k: &Vec<u8>, v: Val| {
             let v = match unpublished.remove(k) {
@@ -232,7 +251,7 @@ impl View<'_> {
         // Each unpublished entry can hide at most one published one.
         let published = self
             .ks
-            .scan(start, end, limit.saturating_add(unpublished.len()))?;
+            .scan_vals(start, end, limit.saturating_add(unpublished.len()))?;
         let mut out = Vec::new();
         let mut published = published.into_iter().peekable();
         let mut unpublished = unpublished.into_iter().peekable();
@@ -247,10 +266,10 @@ impl View<'_> {
                     let (k, v) = unpublished.next().unwrap();
                     let base = published.next_if(|(pk, _)| *pk == k).map(|(_, b)| b);
                     let v = match base {
-                        Some(b) => v.over(&Val::Put(b)),
+                        Some(b) => v.over(&b),
                         None => v,
                     };
-                    Some((k, v.resolved()))
+                    Some((k, v.settled()))
                 }
             };
             if let Some((k, Some(v))) = next {

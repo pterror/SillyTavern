@@ -12,6 +12,11 @@
 //!
 //! Records committed meanwhile must not share a partition with the load's (the load derived its partitions'
 //! entries from the state before it): installing checks, and refuses the load if any does.
+//!
+//! Search top lists are shared across partitions, so derivation leaves them stale (`search::index`). A load into
+//! a store with no searched documents, with nothing committed or derived meanwhile, builds every list from the
+//! merged run (a second run, installed after the first); any other load leaves the lists it changed to be built
+//! again in slices.
 
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -60,6 +65,9 @@ pub struct LoadStats {
     pub merge_micros: u64,
     pub run_bytes: u64,
     pub run_entries: u64,
+    /// Building the search top lists, and their entries.
+    pub lists_micros: u64,
+    pub list_entries: u64,
     /// Holding commits: waiting for them, flushing the buffer, moving files, putting the run in place.
     pub install_micros: u64,
     pub total_micros: u64,
@@ -99,6 +107,8 @@ pub struct Loader<'s> {
     finished: bool,
     /// Installing failed after the install marker was written: the staging stays for opening to resolve.
     keep_staging: bool,
+    /// The store had no searched documents when the load started: it builds the top lists.
+    lists: bool,
 }
 
 impl Store {
@@ -128,6 +138,13 @@ impl Store {
             inner.pipe.lock().unwrap().loading = None;
             return Err(e);
         }
+        let lists = match no_searched_documents(&inner.ks) {
+            Ok(x) => x,
+            Err(e) => {
+                inner.pipe.lock().unwrap().loading = None;
+                return Err(e);
+            }
+        };
         let seq = Arc::new(AtomicU64::new(0));
         let budget = LOAD_BUFFER_BYTES / load_workers();
         let workers = (0..load_workers())
@@ -160,8 +177,22 @@ impl Store {
             failed: None,
             finished: false,
             keep_staging: false,
+            lists,
         })
     }
+}
+
+/// Whether no scope has a document with text, and no top list is kept.
+fn no_searched_documents(ks: &crate::keyspace::Keyspace) -> StoreResult<bool> {
+    use super::kinds::key;
+    let docs = key::of(key::SEARCH_DOCS);
+    for (_, v) in ks.scan(&docs, &key::prefix_end(&docs), usize::MAX)? {
+        if crate::keyspace::val::counter_value(&v).unwrap_or(0) > 0 {
+            return Ok(false);
+        }
+    }
+    let heads = key::of(key::SEARCH_TOP);
+    Ok(ks.scan(&heads, &key::prefix_end(&heads), 1)?.is_empty())
 }
 
 pub(super) const LOAD_DIR: &str = "load";
@@ -306,15 +337,136 @@ impl Loader<'_> {
         self.stats.run_bytes = bytes;
         self.stats.merge_micros = t.elapsed().as_micros() as u64;
 
+        // ---- top lists ----
+        let t = Instant::now();
+        let lists = if self.lists && self.alone() {
+            let lists = self.dir.join("lists.run");
+            self.stats.list_entries = self.build_lists(&path, &lists, block_size)?;
+            Some(lists)
+        } else {
+            None
+        };
+        self.stats.lists_micros = t.elapsed().as_micros() as u64;
+
         // ---- install ----
         let t = Instant::now();
-        self.install(&path, end)?;
+        self.install(&path, lists.as_deref(), end)?;
         self.stats.install_micros = t.elapsed().as_micros() as u64;
         self.stats.total_micros = self.started.elapsed().as_micros() as u64;
         Ok(self.stats)
     }
 
-    fn install(&mut self, run: &Path, end: Cursor) -> StoreResult<()> {
+    /// Nothing was committed or derived since the load started.
+    fn alone(&self) -> bool {
+        let p = self.store.inner.pipe.lock().unwrap();
+        p.loading
+            .as_ref()
+            .is_none_or(|l| l.touched.is_empty() && !l.derived)
+    }
+
+    /// Builds every top list over the store with the load's run in place, on the workers' threads, into a run at
+    /// `out`. Returns its entries.
+    fn build_lists(&self, run: &Path, out: &Path, block_size: usize) -> StoreResult<u64> {
+        use super::kinds::key;
+        use crate::search::query::{build_list, has_list, list_entries_of, parse_term_key};
+        let inner = &self.store.inner;
+        // Everything committed before the load is published.
+        loop {
+            inner.sync_act.kick();
+            inner.sync_act.wait_idle();
+            let p = inner.pipe.lock().unwrap();
+            if p.open.dones.is_empty() && p.syncing.is_none() {
+                break;
+            }
+            drop(p);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let staged = Staged {
+            runs: vec![Arc::new(Run::open(run, 0, 0)?)],
+            cache: Cache::new(256 << 20),
+            counts: ReadCounts::default(),
+            staged_dir: self.dir.clone(),
+            staged_from: log::position(self.first_file, 0),
+        };
+        let view = || View {
+            layers: Vec::new(),
+            pending: Vec::new(),
+            staged: Some(&staged),
+            bulk: false,
+            ks: &inner.ks,
+            log: &inner.log,
+        };
+        // The terms with more documents than a list holds.
+        let mut terms = Vec::new();
+        {
+            let v = view();
+            let start = key::of(key::SEARCH_TERM_DOCS);
+            let end = key::prefix_end(&start);
+            let mut from = start.clone();
+            loop {
+                let page = v.scan(&from, &end, 65536)?;
+                for (k, val) in &page {
+                    let n = crate::keyspace::val::counter_value(val).unwrap_or(0);
+                    if n > crate::search::top::MAX as i64
+                        && let Some((scope, term)) = parse_term_key(k)
+                        && has_list(&term)
+                    {
+                        terms.push((scope, term));
+                    }
+                }
+                match page.last() {
+                    Some((k, _)) if page.len() == 65536 => {
+                        from = k.clone();
+                        from.push(0);
+                    }
+                    _ => break,
+                }
+            }
+        }
+        let threads = self.workers.len().max(1);
+        let next = AtomicU64::new(0);
+        type Entries = Vec<(Vec<u8>, Vec<u8>)>;
+        let parts: Vec<StoreResult<Entries>> = std::thread::scope(|sc| {
+            let handles: Vec<_> = (0..threads)
+                .map(|_| {
+                    sc.spawn(|| -> StoreResult<Entries> {
+                        let v = view();
+                        let mut out = Vec::new();
+                        loop {
+                            let i = next.fetch_add(1, Ordering::Relaxed) as usize;
+                            let Some((scope, term)) = terms.get(i) else {
+                                return Ok(out);
+                            };
+                            let b = build_list(&v, *scope, term)?;
+                            out.extend(list_entries_of(*scope, term, &b));
+                        }
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| {
+                    h.join().unwrap_or_else(|_| {
+                        Err(StoreError::Failed("a list builder panicked".into()))
+                    })
+                })
+                .collect()
+        });
+        let mut all = Vec::new();
+        for p in parts {
+            all.extend(p?);
+        }
+        all.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        let mut w = RunWriter::create(out, block_size)?;
+        for (k, v) in &all {
+            w.add(k, &Val::Put(v.clone()))?;
+        }
+        let n = w.entries();
+        w.finish(0, 0, 0)?;
+        Ok(n)
+    }
+
+    fn install(&mut self, run: &Path, lists: Option<&Path>, end: Cursor) -> StoreResult<()> {
         let inner = self.store.inner.clone();
         let last_file = end.file;
         // Hold commits, and let the ones prepared be written and published.
@@ -381,6 +533,15 @@ impl Loader<'_> {
             inner
                 .ks
                 .install_run(run, log::position(end.file, end.offset))?;
+            // The lists, unless something was committed or derived while they were built. A crash before
+            // this leaves them to be built again in slices.
+            if let Some(lists) = lists
+                && self.alone()
+            {
+                inner
+                    .ks
+                    .install_run(lists, log::position(end.file, end.offset))?;
+            }
             let _ = fs::remove_dir_all(&self.dir);
             Ok(())
         };

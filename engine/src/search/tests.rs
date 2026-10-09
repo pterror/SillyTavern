@@ -151,7 +151,7 @@ impl Lib {
             .library
             .docs
             .entry(doc)
-            .or_insert_with(|| vec![Vec::new(); 11]);
+            .or_insert_with(|| vec![Vec::new(); 10]);
         d[field] = if joined.is_empty() {
             Vec::new()
         } else {
@@ -194,8 +194,8 @@ fn build(dir: &Path, seed: u64, docs: u64) -> Lib {
     for _ in 0..docs {
         // Spread over several score blocks.
         let doc = 1 + r.below(1500);
-        for f in [0usize, 2, 3, 4, 8, 9] {
-            let n = if f == 0 || f == 8 {
+        for f in [0usize, 1, 2, 3, 7, 8] {
+            let n = if f == 0 || f == 7 {
                 1 + r.below(3)
             } else {
                 r.below(12)
@@ -208,7 +208,7 @@ fn build(dir: &Path, seed: u64, docs: u64) -> Lib {
                 sentence(&mut r, n)
             })
             .collect();
-        lib.set(doc, 10, &items);
+        lib.set(doc, 9, &items);
         for _ in 0..r.below(3) {
             lib.assign(doc, 1 + r.below(12), true);
         }
@@ -239,8 +239,8 @@ fn queries() -> Vec<Vec<Clause>> {
         vec![c("supercalifragilisticexpialidoci")],
         vec![c("supercalifragilisticex")],
         vec![clause("dra", Some(vec![0]), false, false)],
-        vec![clause("dra", Some(vec![2]), false, false)],
-        vec![clause("dra", Some(vec![1, 9]), false, false)],
+        vec![clause("dra", Some(vec![1]), false, false)],
+        vec![clause("dra", Some(vec![8]), false, false)],
         vec![c("the"), clause("vampire", None, true, false)],
         vec![clause("dragon", None, true, false)],
         vec![c("strasse")],
@@ -293,7 +293,113 @@ fn check(lib: &Lib, q: &Query) {
     if first.total_exact {
         assert_eq!(first.total, total, "total of {:?}", describe(q));
     }
-    assert_eq!(got, want, "hits of {:?}", describe(q));
+    if got != want {
+        let i = got
+            .iter()
+            .zip(&want)
+            .position(|(a, b)| a != b)
+            .unwrap_or(got.len().min(want.len()));
+        panic!(
+            "hits of {:?} differ at {i} of {} / {}: got {:?}, want {:?}",
+            describe(q),
+            got.len(),
+            want.len(),
+            &got[i.saturating_sub(2)..(i + 3).min(got.len())],
+            &want[i.saturating_sub(2)..(i + 3).min(want.len())],
+        );
+    }
+    let names = lib
+        .world
+        .tags
+        .docs
+        .iter()
+        .map(|(&t, f)| (t, f[0][0].clone()))
+        .collect();
+    let mut carriers = std::collections::HashMap::new();
+    for tags in lib.world.members.values() {
+        for t in tags {
+            *carriers.entry(*t).or_default() += 1;
+        }
+    }
+    let want_tags = if q.scope == Scope::LIBRARY {
+        brute::tag_matches(q, &names, &carriers)
+    } else {
+        Vec::new()
+    };
+    assert!(first.tags_exact, "{q:?}");
+    let got_tags: Vec<u64> = first.tags.iter().map(|t| t.tag).collect();
+    assert_eq!(got_tags, want_tags, "tags of {:?}", describe(q));
+    for t in &first.tags {
+        assert_eq!(t.name, names[&t.tag]);
+        assert_eq!(t.carriers, carriers.get(&t.tag).copied().unwrap_or(0));
+    }
+}
+
+/// Every top list of `terms` that is built holds exactly the documents whose score at its parameters ranks above
+/// its floor, with their counts and length codes.
+fn check_lists(lib: &Lib, terms: &[&str]) {
+    use super::top::{Head, decode_fields, parse_rank, score_at};
+    use super::{length_code, top, top_entries};
+    for &term in terms {
+        let Some(head) = lib
+            .store
+            .get(&top(Scope::LIBRARY, term))
+            .unwrap()
+            .and_then(|b| Head::decode(&b))
+        else {
+            continue;
+        };
+        let generation = lib
+            .store
+            .get(&super::top_generation(Scope::LIBRARY, term))
+            .unwrap()
+            .and_then(|b| crate::keyspace::val::counter_value(&b))
+            .unwrap_or(0) as u64;
+        if head.generation != generation {
+            continue;
+        }
+        let prefix = top_entries(Scope::LIBRARY, term);
+        let mut got: Vec<(u64, super::top::Fields)> = lib
+            .store
+            .scan(&prefix, &key::prefix_end(&prefix), usize::MAX)
+            .unwrap()
+            .into_iter()
+            .map(|(k, v)| {
+                let (_, d) = parse_rank(&k[prefix.len()..]).unwrap();
+                (d, decode_fields(&v).unwrap())
+            })
+            .collect();
+        got.sort_by_key(|x| x.0);
+        let mut want = Vec::new();
+        for (&doc, values) in &lib.world.library.docs {
+            if head.passing.is_some_and(|b| doc >> super::BLOCK_BITS >= b) {
+                continue;
+            }
+            let f = brute::tokenize_fields(values);
+            let d = brute::Doc::new(&f, Scope::LIBRARY);
+            let mut fields = Vec::new();
+            for (i, def) in Scope::LIBRARY.fields().iter().enumerate() {
+                let tf = d.count(i, term, def.prefix);
+                if tf > 0 {
+                    let len: usize = f[i].iter().map(Vec::len).sum();
+                    fields.push((i as u32, tf, length_code(len as u64)));
+                }
+            }
+            if fields.is_empty() {
+                continue;
+            }
+            let sc = score_at(&head.params, &fields);
+            if super::top::above((sc, doc), (head.floor, head.floor_doc)) {
+                want.push((doc, fields));
+            }
+        }
+        assert_eq!(got, want, "the list of {term}: {head:?}");
+    }
+}
+
+/// Waits for every slice of a top list's pass queued so far.
+fn settle(s: &Store) {
+    s.commit_wait(Vec::new()).unwrap();
 }
 
 fn describe(q: &Query) -> Vec<String> {
@@ -362,7 +468,7 @@ fn random_edit(lib: &mut Lib, r: &mut Rng, docs: &[u64], i: u64) {
         0 => {
             // A text edit: replace a span at character boundaries.
             let old = String::from_utf8(
-                lib.world.library.docs[&doc][2]
+                lib.world.library.docs[&doc][1]
                     .first()
                     .cloned()
                     .unwrap_or_default(),
@@ -377,7 +483,7 @@ fn random_edit(lib: &mut Lib, r: &mut Rng, docs: &[u64], i: u64) {
             let b = bounds[r.below(bounds.len() as u64) as usize].max(a);
             let ins = format!(" {} ", r.pick(WORDS));
             if old.is_empty() {
-                lib.set(doc, 2, &[ins]);
+                lib.set(doc, 1, &[ins]);
                 return;
             }
             lib.store
@@ -385,7 +491,7 @@ fn random_edit(lib: &mut Lib, r: &mut Rng, docs: &[u64], i: u64) {
                     "textEdit",
                     vec![
                         Value::Id(doc),
-                        Value::Field(FieldRef::Code(test_codes::LIBRARY + 2)),
+                        Value::Field(FieldRef::Code(test_codes::LIBRARY + 1)),
                         Value::UInt(a as u64),
                         Value::UInt((b - a) as u64),
                         Value::Text(wtf8(&ins)),
@@ -393,7 +499,7 @@ fn random_edit(lib: &mut Lib, r: &mut Rng, docs: &[u64], i: u64) {
                 )])
                 .unwrap();
             let new = format!("{}{}{}", &old[..a], ins, &old[b..]);
-            lib.world.library.docs.get_mut(&doc).unwrap()[2] = vec![new.into_bytes()];
+            lib.world.library.docs.get_mut(&doc).unwrap()[1] = vec![new.into_bytes()];
         }
         1 => {
             let n = r.below(4);
@@ -412,7 +518,7 @@ fn random_edit(lib: &mut Lib, r: &mut Rng, docs: &[u64], i: u64) {
         }
         _ => {
             let items: Vec<String> = (0..r.below(3)).map(|_| sentence(r, 2)).collect();
-            lib.set(doc, 10, &items);
+            lib.set(doc, 9, &items);
         }
     }
 }
@@ -452,12 +558,18 @@ fn one_word_reads_its_best_postings_first_and_other_queries_mark_what_the_limit_
         enumerate: 400,
         ranked: u64::MAX,
         walked: u64::MAX,
-        joined: u64::MAX,
+        tags: u64::MAX,
     };
-    // A word's page comes from its first postings, whatever the walking limit.
+    // A word's page comes from its top list, once its pass has run, whatever the walking limit.
     for clauses in [vec![c("the")], vec![c("dr")], vec![c("vampire")]] {
         let mut q = query(clauses, 5);
         q.limits = limits;
+        for _ in 0..100 {
+            if lib.store.search(&q).unwrap().refill.is_none() {
+                break;
+            }
+            settle(&lib.store);
+        }
         let (want, _) = brute::search(&lib.world, &q);
         let f = lib.store.search(&q).unwrap();
         assert!(f.page_exact, "{q:?}");
@@ -605,7 +717,7 @@ fn a_field_edit_writes_only_its_changed_terms_and_other_kinds_write_no_postings(
     let _turn = turn();
     let dir = temp_dir("writes");
     let s = open(&dir);
-    let code = test_codes::LIBRARY + 2;
+    let code = test_codes::LIBRARY + 1;
     s.commit_wait(vec![text_value(7, code, "alpha gamma delta")])
         .unwrap();
     let inserted = |s: &Store| s.stats().ks.inserted;
@@ -679,6 +791,7 @@ fn top_lists_follow_edits_and_bulk_loads() {
         for w in words {
             let q = query(vec![c(w)], 6);
             check(lib, &q);
+            settle(&lib.store);
             listed += usize::from(lib.store.search(&q).unwrap().listed);
         }
     };
@@ -687,11 +800,12 @@ fn top_lists_follow_edits_and_bulk_loads() {
     let docs: Vec<u64> = lib.world.library.docs.keys().copied().collect();
     for i in 0..400 {
         random_edit(&mut lib, &mut r, &docs, i);
+        check_lists(&lib, &words);
         if i % 50 == 49 {
             check_words(&lib);
         }
     }
-    // A bulk load leaves the lists stale: they are built again.
+    // A bulk load into a store with documents leaves the lists it changed stale: they are built again.
     let mut l = lib.store.loader().unwrap();
     let mut recs = Vec::new();
     for doc in 2000..2200u64 {
@@ -701,10 +815,12 @@ fn top_lists_follow_edits_and_bulk_loads() {
             .library
             .docs
             .entry(doc)
-            .or_insert_with(|| vec![Vec::new(); 11])[0] = vec![text.into_bytes()];
+            .or_insert_with(|| vec![Vec::new(); 10])[0] = vec![text.into_bytes()];
     }
     l.add(recs).unwrap();
     l.finish().unwrap();
+    let q = query(vec![c("the")], 6);
+    assert!(!lib.store.search(&q).unwrap().listed);
     check_words(&lib);
     lib.store.close();
     drop(lib.store);
@@ -714,4 +830,119 @@ fn top_lists_follow_edits_and_bulk_loads() {
     };
     check_words(&lib);
     assert!(listed > 0);
+}
+
+#[test]
+fn a_bulk_load_into_an_empty_store_builds_the_top_lists() {
+    let _turn = turn();
+    let dir = temp_dir("bulk-lists");
+    let mut lib = Lib {
+        store: open(&dir),
+        world: World::default(),
+    };
+    let mut r = Rng(9);
+    let mut l = lib.store.loader().unwrap();
+    let mut recs = Vec::new();
+    for doc in 1..=700u64 {
+        for f in [0usize, 1] {
+            let n = 1 + r.below(10);
+            let text = sentence(&mut r, n);
+            recs.push(text_value(doc, test_codes::LIBRARY + f as u64, &text));
+            lib.world
+                .library
+                .docs
+                .entry(doc)
+                .or_insert_with(|| vec![Vec::new(); 10])[f] = vec![text.into_bytes()];
+        }
+    }
+    l.add(recs).unwrap();
+    let st = l.finish().unwrap();
+    assert!(st.list_entries > 0);
+    let c = |t: &str| clause(t, None, false, false);
+    for w in ["the", "dr", "dark", "love", "knight"] {
+        let q = query(vec![c(w)], 6);
+        let f = lib.store.search(&q).unwrap();
+        assert!(f.listed && f.refill.is_none(), "{q:?}");
+        check(&lib, &q);
+    }
+    // Writes follow the lists; past `top::MAX + top::SLACK` entries they are trimmed.
+    let docs: Vec<u64> = lib.world.library.docs.keys().copied().collect();
+    for i in 0..300 {
+        let doc = docs[(i * 7) % docs.len()];
+        lib.set(doc, 0, &[format!("the {}", r.pick(WORDS))]);
+    }
+    for w in ["the", "dr", "dark", "love", "knight"] {
+        check(&lib, &query(vec![c(w)], 6));
+    }
+}
+
+#[test]
+fn tags_whose_names_match_are_answered_beside_the_page() {
+    let _turn = turn();
+    let dir = temp_dir("tags");
+    let mut lib = Lib {
+        store: open(&dir),
+        world: World::default(),
+    };
+    for (t, name) in [
+        (1, "dragon"),
+        (2, "dragon rider"),
+        (3, "dragons"),
+        (4, "red dragon"),
+        (5, "drama"),
+        (6, "dark"),
+        (7, "Dragon"),
+    ] {
+        lib.tag(t, name);
+    }
+    for e in 1..=20 {
+        lib.set(e, 0, &[format!("card {e}")]);
+        lib.assign(e, 1 + e % 4, true);
+    }
+    lib.assign(1, 7, true);
+    let c = |t: &str, fields: Option<Vec<u32>>, negate: bool| clause(t, fields, negate, false);
+    let ids = |q: Query| -> Vec<u64> {
+        lib.store
+            .search(&q)
+            .unwrap()
+            .tags
+            .iter()
+            .map(|t| t.tag)
+            .collect()
+    };
+    // Exact names first (by carriers), then word matches, then prefixes; at most five.
+    assert_eq!(
+        ids(query(vec![c("dragon", None, false)], 5)),
+        vec![1, 7, 2, 4, 3]
+    );
+    assert_eq!(
+        ids(query(vec![c("dra", None, false)], 5)),
+        vec![1, 2, 3, 4, 7]
+    );
+    assert_eq!(
+        ids(query(
+            vec![c("dragon", None, false), c("red", None, true)],
+            5
+        )),
+        vec![1, 7, 2]
+    );
+    assert_eq!(
+        ids(query(vec![c("dragon", Some(vec![8]), false)], 5)),
+        vec![1, 7, 2, 4, 3]
+    );
+    assert!(ids(query(vec![c("dragon", Some(vec![0]), false)], 5)).is_empty());
+    assert!(
+        ids(query(
+            vec![c("dragon", None, false), c("x", Some(vec![1]), true)],
+            5
+        ))
+        .is_empty()
+    );
+    for clauses in [
+        vec![c("dragon", None, false)],
+        vec![c("red", None, false), c("dr", None, false)],
+        vec![c("dar", None, false)],
+    ] {
+        check(&lib, &query(clauses, 5));
+    }
 }

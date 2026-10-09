@@ -366,6 +366,36 @@ impl Val {
         }
     }
 
+    /// The value it amounts to when nothing older exists, a map kept as its pairs (none removed): `resolved`
+    /// without encoding a map that a reader would decode again.
+    pub fn settled(self) -> Option<Val> {
+        match self {
+            Val::Map(mut pairs) | Val::MaxMap(mut pairs) => {
+                pairs.retain(|&(_, v)| v != 0);
+                (!pairs.is_empty()).then_some(Val::Map(pairs))
+            }
+            v => v.bottom(),
+        }
+    }
+
+    /// A settled value's map pairs.
+    pub fn into_pairs(self) -> Option<Vec<(u32, u32)>> {
+        match self {
+            Val::Map(p) => Some(p),
+            Val::Put(b) => map_pairs(&b),
+            _ => None,
+        }
+    }
+
+    /// A settled value's bytes (a map's encoded).
+    pub fn into_bytes(self) -> Vec<u8> {
+        match self {
+            Val::Put(b) => b,
+            Val::Map(p) => map_bytes(&p),
+            v => v.resolved().unwrap_or_default(),
+        }
+    }
+
     /// The value it resolves to when nothing older exists.
     pub fn resolved(self) -> Option<Vec<u8>> {
         match self.bottom()? {

@@ -66,7 +66,7 @@ impl<'a> Doc<'a> {
     }
 
     /// A term's matches in field `f`: whole tokens, or (`prefix`) tokens starting with it.
-    fn count(&self, f: usize, term: &str, prefix: bool) -> u64 {
+    pub fn count(&self, f: usize, term: &str, prefix: bool) -> u64 {
         if !prefix {
             return self.exact[f].get(term).copied().unwrap_or(0);
         }
@@ -113,8 +113,6 @@ struct Shape {
     prefix: bool,
     phrase: bool,
     negate: bool,
-    /// Matches through the joined field too.
-    joined: Option<u32>,
 }
 
 impl Shape {
@@ -125,25 +123,20 @@ impl Shape {
         last: bool,
         negate: bool,
     ) -> Shape {
-        let defs = scope.fields();
-        let joined = (0..defs.len() as u32)
-            .find(|&f| defs[f as usize].joined && fields.as_ref().is_none_or(|fs| fs.contains(&f)));
+        let _ = scope;
         Shape {
             prefix: last && char_len(toks.last().unwrap()) >= GRAM_MIN,
             phrase: toks.len() > 1,
             toks,
             fields,
             negate,
-            joined,
         }
     }
 
-    fn allowed(&self, scope: Scope, f: usize) -> bool {
-        !scope.fields()[f].joined
-            && self
-                .fields
-                .as_ref()
-                .is_none_or(|fs| fs.contains(&(f as u32)))
+    fn allowed(&self, f: usize) -> bool {
+        self.fields
+            .as_ref()
+            .is_none_or(|fs| fs.contains(&(f as u32)))
     }
 
     /// The term token `i` is looked up as in field `f`, and whether as a prefix term.
@@ -157,7 +150,7 @@ impl Shape {
 
     fn parts(&self, scope: Scope, doc: &Doc) -> Parts {
         let mut out = Vec::new();
-        for f in (0..scope.fields().len()).filter(|&f| self.allowed(scope, f)) {
+        for f in (0..scope.fields().len()).filter(|&f| self.allowed(f)) {
             let vals = &doc.fields[f];
             if self.phrase
                 && (self.toks[..self.toks.len() - 1]
@@ -185,7 +178,7 @@ impl Shape {
 
     fn keys(&self, scope: Scope) -> Vec<Key> {
         (0..scope.fields().len())
-            .filter(|&f| self.allowed(scope, f))
+            .filter(|&f| self.allowed(f))
             .flat_map(|f| (0..self.toks.len()).map(move |i| self.term(scope, i, f)))
             .collect()
     }
@@ -248,20 +241,16 @@ pub struct Checker {
     q: Query,
     shapes: Vec<Shape>,
     stats: Stats,
-    /// Per clause matching through the joined field: the tags whose names match, with their parts.
-    tag_hits: Vec<Option<BTreeMap<u64, Parts>>>,
-    tag_stats: Stats,
-    tag_lens: BTreeMap<u64, f64>,
     /// Carriers per tag, counted in the first pass.
-    carriers: HashMap<u64, u64>,
+    pub carriers: HashMap<u64, u64>,
     best: Vec<(u64, f64)>,
     keep: usize,
     total: u64,
 }
 
 impl Checker {
-    /// `tags`: every tag's name. Keeps the best `keep` matches.
-    pub fn new(q: &Query, tags: &BTreeMap<u64, Vec<u8>>, keep: usize) -> Checker {
+    /// Keeps the best `keep` matches.
+    pub fn new(q: &Query, keep: usize) -> Checker {
         let scope = q.scope;
         let last = q.clauses.iter().rposition(|c| !tokens(&c.text).is_empty());
         let mut shapes = Vec::new();
@@ -280,54 +269,10 @@ impl Checker {
         let mut keys: Vec<Key> = shapes.iter().flat_map(|s| s.keys(scope)).collect();
         keys.sort();
         keys.dedup();
-        let tag_docs: BTreeMap<u64, Fields> = tags
-            .iter()
-            .map(|(&t, name)| (t, vec![vec![tokens(name)]]))
-            .collect();
-        let tag_shapes: Vec<Option<Shape>> = shapes
-            .iter()
-            .map(|s| {
-                s.joined
-                    .map(|_| Shape::new(Scope::TAGS, s.toks.clone(), None, s.prefix, false))
-            })
-            .collect();
-        let mut tag_keys: Vec<Key> = tag_shapes
-            .iter()
-            .flatten()
-            .flat_map(|s| s.keys(Scope::TAGS))
-            .collect();
-        tag_keys.sort();
-        tag_keys.dedup();
-        let mut tag_stats = Stats::new(1, &tag_keys);
-        let mut tag_hits: Vec<Option<BTreeMap<u64, Parts>>> = tag_shapes
-            .iter()
-            .map(|ts| ts.as_ref().map(|_| BTreeMap::new()))
-            .collect();
-        if !tag_keys.is_empty() {
-            for (&t, d) in &tag_docs {
-                let d = Doc::new(d, Scope::TAGS);
-                tag_stats.add(&d);
-                for (ts, hits) in tag_shapes.iter().zip(&mut tag_hits) {
-                    if let (Some(ts), Some(hits)) = (ts, hits) {
-                        let p = ts.parts(Scope::TAGS, &d);
-                        if !p.is_empty() {
-                            hits.insert(t, p);
-                        }
-                    }
-                }
-            }
-        }
-        let tag_lens = tag_docs
-            .iter()
-            .map(|(&t, d)| (t, quantized(d[0].iter().map(Vec::len).sum::<usize>())))
-            .collect();
         Checker {
             q: q.clone(),
             stats: Stats::new(scope.fields().len(), &keys),
             shapes,
-            tag_hits,
-            tag_stats,
-            tag_lens,
             carriers: HashMap::new(),
             best: Vec::new(),
             keep,
@@ -348,31 +293,9 @@ impl Checker {
         let scope = self.q.scope;
         let mut score = 0.0;
         let mut positive = false;
-        for (i, s) in self.shapes.iter().enumerate() {
+        for s in &self.shapes {
             let parts = s.parts(scope, doc);
-            let mut hit = !parts.is_empty();
-            let mut x = self.stats.score(scope, &parts, doc);
-            if let (Some(jf), Some(th)) = (s.joined, &self.tag_hits[i]) {
-                let dfj: u64 = th
-                    .keys()
-                    .map(|t| self.carriers.get(t).copied().unwrap_or(0))
-                    .sum();
-                let idf_j = idf((dfj as f64).min(self.stats.n), self.stats.n);
-                let w = scope.fields()[jf as usize].weight;
-                let mut joined = 0.0;
-                for (t, tp) in th.iter().filter(|(t, _)| tags.contains(t)) {
-                    hit = true;
-                    let len = self.tag_lens[t];
-                    let mut st = 0.0;
-                    for (_, ps) in tp {
-                        for (_, tf) in ps {
-                            st += w * idf_j * tf_norm(*tf as f64, len, self.tag_stats.avg(0));
-                        }
-                    }
-                    joined += st;
-                }
-                x += joined;
-            }
+            let hit = !parts.is_empty();
             if s.negate {
                 if hit {
                     return;
@@ -383,7 +306,7 @@ impl Checker {
                 return;
             }
             positive = true;
-            score += x;
+            score += self.stats.score(scope, &parts, doc);
         }
         let mut included = false;
         for f in &self.q.filters {
@@ -433,20 +356,6 @@ impl Checker {
 
 /// An in-memory world's answer: every match, best first, and their number.
 pub fn search(w: &World, q: &Query) -> (Vec<(u64, f64)>, u64) {
-    let tag_names: BTreeMap<u64, Vec<u8>> = w
-        .tags
-        .docs
-        .iter()
-        .map(|(&t, f)| {
-            (
-                t,
-                f.first()
-                    .and_then(|v| v.first())
-                    .cloned()
-                    .unwrap_or_default(),
-            )
-        })
-        .collect();
     let corpus = if q.scope == Scope::TAGS {
         &w.tags
     } else {
@@ -465,7 +374,7 @@ pub fn search(w: &World, q: &Query) -> (Vec<(u64, f64)>, u64) {
     }
     let empty: Fields = vec![Vec::new(); q.scope.fields().len()];
     let none = BTreeSet::new();
-    let mut c = Checker::new(q, &tag_names, usize::MAX);
+    let mut c = Checker::new(q, usize::MAX);
     for d in &ids {
         c.stats(
             &Doc::new(docs.get(d).unwrap_or(&empty), q.scope),
@@ -480,6 +389,75 @@ pub fn search(w: &World, q: &Query) -> (Vec<(u64, f64)>, u64) {
         );
     }
     c.result()
+}
+
+/// The tags whose names match a library query (`query::Found::tags`), best first: by reading every name.
+pub fn tag_matches(
+    q: &Query,
+    names: &BTreeMap<u64, Vec<u8>>,
+    carriers: &HashMap<u64, u64>,
+) -> Vec<u64> {
+    let tags_field = Scope::LIBRARY
+        .fields()
+        .iter()
+        .position(|d| d.name == "tags")
+        .unwrap() as u32;
+    let mut clauses = Vec::new();
+    for c in &q.clauses {
+        if tokens(&c.text).is_empty() {
+            continue;
+        }
+        if c.fields
+            .as_ref()
+            .is_some_and(|fs| !fs.contains(&tags_field))
+        {
+            return Vec::new();
+        }
+        clauses.push(c.clone());
+    }
+    if !clauses.iter().any(|c| !c.negate) {
+        return Vec::new();
+    }
+    let last = clauses.len() - 1;
+    let words: Vec<Vec<String>> = clauses
+        .iter()
+        .filter(|c| !c.negate)
+        .map(|c| tokens(&c.text))
+        .collect();
+    let all: Vec<String> = words.iter().flatten().cloned().collect();
+    let mut found = Vec::new();
+    for (&tag, name) in names {
+        let toks = tokens(name);
+        let holds = |c: &Clause, i: usize| {
+            let t = tokens(&c.text);
+            occurs(
+                &toks,
+                &t,
+                i == last && char_len(t.last().unwrap()) >= GRAM_MIN,
+            )
+        };
+        if !clauses
+            .iter()
+            .enumerate()
+            .all(|(i, c)| holds(c, i) != c.negate)
+        {
+            continue;
+        }
+        let quality = if toks == all {
+            0
+        } else if words.iter().all(|w| occurs(&toks, w, false)) {
+            1
+        } else {
+            2
+        };
+        found.push((
+            quality,
+            std::cmp::Reverse(carriers.get(&tag).copied().unwrap_or(0)),
+            tag,
+        ));
+    }
+    found.sort();
+    found.into_iter().take(5).map(|x| x.2).collect()
 }
 
 /// A clause from text.

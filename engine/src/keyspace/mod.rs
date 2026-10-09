@@ -338,8 +338,27 @@ impl Keyspace {
         Ok(val::fold(self.values(key)?).and_then(Val::resolved))
     }
 
+    /// The value of `key`, settled (`Val::settled`).
+    pub fn get_val(&self, key: &[u8]) -> KsResult<Option<Val>> {
+        Ok(val::fold(self.values(key)?).and_then(Val::settled))
+    }
+
     /// Up to `limit` keys in `[start, end)` that have values, in order, with their values.
     pub fn scan(&self, start: &[u8], end: &[u8], limit: usize) -> KsResult<Entries> {
+        Ok(self
+            .scan_vals(start, end, limit)?
+            .into_iter()
+            .map(|(k, v)| (k, v.into_bytes()))
+            .collect())
+    }
+
+    /// `scan`, the values settled (`Val::settled`).
+    pub fn scan_vals(
+        &self,
+        start: &[u8],
+        end: &[u8],
+        limit: usize,
+    ) -> KsResult<Vec<(Vec<u8>, Val)>> {
         let v = self.version();
         let mut sources: Vec<Box<dyn Source>> = Vec::new();
         // A buffer's first `limit` live entries bound where the page can end, so nothing past them is needed.
@@ -367,8 +386,8 @@ impl Keyspace {
             if k.as_slice() >= end {
                 break;
             }
-            if let Some(b) = val.resolved() {
-                out.push((k, b));
+            if let Some(v) = val.settled() {
+                out.push((k, v));
             }
         }
         Ok(out)

@@ -144,6 +144,9 @@ for (const [name, engine] of Object.entries(bindings)) {
         assert.deepEqual(found.hits.map(h => h.doc), [3n, 1n, 2n]);
         assert.equal(found.total, 3);
         assert.ok(found.totalExact && found.pageExact && !found.more);
+        // Tags whose names match are answered in the library only.
+        assert.deepEqual(found.tags, []);
+        assert.ok(found.tagsExact);
         assert.deepEqual((await search([{ text: 'cafe' }, { text: 'dragon' }])).hits.map(h => h.doc), [3n]);
         assert.deepEqual((await search([{ text: 'the dragon', quoted: true }])).hits.map(h => h.doc), [1n]);
         assert.deepEqual((await search([{ text: 'dragon' }, { text: 'drake', negate: true }])).hits.map(h => h.doc), [3n, 1n]);

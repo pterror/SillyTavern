@@ -164,10 +164,15 @@ pub fn global_pool() -> Arc<Pool> {
 pub type CommitDone = Box<dyn FnOnce(StoreResult<Vec<u64>>) + Send>;
 type JobDone = Box<dyn FnOnce(StoreResult<()>) + Send>;
 
+/// Derived entries written in the commit queue without a record, from what every commit before them left;
+/// lost in a crash, as nothing in the log holds them.
+type Derive = Box<dyn FnOnce(&View, &mut Out) -> StoreResult<()> + Send>;
+
 enum Job {
     Commit(Vec<Record>, CommitDone),
     /// Records of a file being cleaned, with their positions: the live ones are copied to the log's end.
     Relocate(Vec<(u64, Record)>, JobDone),
+    Derive(Derive, JobDone),
 }
 
 enum Done {
@@ -220,6 +225,8 @@ struct Loading {
     touched: HashSet<u64>,
     /// No job is taken while the load is installed.
     installing: bool,
+    /// Entries were derived without a record meanwhile (`Job::Derive`).
+    derived: bool,
 }
 
 enum Replay {
@@ -283,6 +290,8 @@ struct Inner {
     counters: Counters,
     /// Search statistics per scope, kept between queries while nothing is published.
     search_stats: crate::search::query::StatsCache,
+    /// Top lists whose next slice is queued (`crate::search::query::refill`).
+    refilling: Mutex<HashSet<(crate::search::Scope, String)>>,
 }
 
 #[derive(Default)]
@@ -377,6 +386,7 @@ impl Store {
                 clean_cv: Condvar::new(),
                 counters: Counters::default(),
                 search_stats: Default::default(),
+                refilling: Default::default(),
             }
         });
         ks.start(Box::new(StoreHooks(Arc::downgrade(&inner))))?;
@@ -484,10 +494,9 @@ impl Store {
         &self,
         q: &crate::search::query::Query,
     ) -> StoreResult<crate::search::query::Found> {
-        let mut found =
-            self.derived(|v| crate::search::query::run(v, q, &self.inner.search_stats))?;
-        if let Some((k, v, version)) = found.keep.take() {
-            self.inner.keep_derived(k, v, version);
+        let found = self.derived(|v| crate::search::query::run(v, q, &self.inner.search_stats))?;
+        if let Some(r) = &found.refill {
+            self.inner.refill(r.clone());
         }
         Ok(found)
     }
@@ -694,20 +703,24 @@ impl Inner {
         }
     }
 
-    /// Keeps a derived entry a read built (a top list) from the published entries at `version`, if they are
-    /// still at it and no commit is being prepared or synced: every commit after it then sees it. Lost in a crash
-    /// (it is no record's), it is built again.
-    fn keep_derived(&self, key: Vec<u8>, value: Vec<u8>, version: u64) {
-        let p = self.pipe.lock().unwrap();
-        if p.open.dones.is_empty()
-            && p.open.entries.is_empty()
-            && p.syncing.is_none()
-            && p.loading.is_none()
-            && !p.closed
-            && self.ks.inserted() == version
-        {
-            self.ks.insert([(key, Val::Put(value))], None);
+    /// Queues the next slice of a top list's pass, unless one is queued already.
+    fn refill(&self, r: crate::search::query::Refill) {
+        let id = (r.scope, r.term.clone());
+        if !self.refilling.lock().unwrap().insert(id.clone()) {
+            return;
         }
+        let me = self.me.clone();
+        let done_id = id.clone();
+        self.submit(Job::Derive(
+            Box::new(move |view, out| {
+                crate::search::query::refill(view, out, r.scope, &r.term, &r.params)
+            }),
+            Box::new(move |_| {
+                if let Some(i) = me.upgrade() {
+                    i.refilling.lock().unwrap().remove(&done_id);
+                }
+            }),
+        ));
     }
 
     // ---- replay ----
@@ -835,11 +848,36 @@ impl Inner {
             let recs: Vec<&Record> = match &job {
                 Job::Commit(recs, _) => recs.iter().collect(),
                 Job::Relocate(recs, _) => recs.iter().map(|(_, r)| r).collect(),
+                Job::Derive(..) => Vec::new(),
             };
             for r in recs {
                 l.touched.insert(deriver(r.kind).partition(r));
             }
+            l.derived |= matches!(job, Job::Derive(..));
         }
+        let job = match job {
+            Job::Derive(f, done) => {
+                let mut layers: Vec<&BTreeMap<Vec<u8>, Val>> = vec![&open.entries];
+                let mut pending: Vec<&Pending> = vec![&open.records];
+                if let Some(s) = syncing.as_ref() {
+                    layers.push(&s.entries);
+                    pending.push(&s.records);
+                }
+                let view = self.view(layers, pending);
+                let mut out = Out::default();
+                let r = f(&view, &mut out);
+                drop(view);
+                match r {
+                    Ok(()) => {
+                        out.apply(&mut open.entries);
+                        open.dones.push(Done::Job(done));
+                    }
+                    Err(e) => done(Err(e)),
+                }
+                return;
+            }
+            job => job,
+        };
         let stay = loading.is_some();
         let layout = open
             .layout
@@ -934,6 +972,7 @@ impl Inner {
                         }
                     }
                 }
+                Job::Derive(..) => unreachable!("derived before"),
             }
             let size = layout.offset() - mark.offset();
             if size > max_commit(&self.cfg.log) {
@@ -961,6 +1000,7 @@ impl Inner {
                 open.dones.push(match job {
                     Job::Commit(_, d) => Done::Commit(d, positions),
                     Job::Relocate(_, d) => Done::Job(d),
+                    Job::Derive(..) => unreachable!("derived before"),
                 });
             }
             Err(e) => {
@@ -986,6 +1026,10 @@ impl Inner {
         // A group of jobs that wrote nothing (an empty commit, a relocation whose records had all died) still
         // resolves in its turn: after every group before it has published.
         let Some(layout) = group.layout.as_mut() else {
+            // Entries derived without a record are published in their turn, covering no more of the log.
+            if !group.entries.is_empty() {
+                self.ks.insert(std::mem::take(&mut group.entries), None);
+            }
             drop(p);
             for d in dones {
                 d.succeed();
@@ -1184,7 +1228,7 @@ fn file_from_key(k: &[u8]) -> StoreResult<u64> {
 fn fail_job(job: Job, e: StoreError) {
     match job {
         Job::Commit(_, d) => d(Err(e)),
-        Job::Relocate(_, d) => d(Err(e)),
+        Job::Relocate(_, d) | Job::Derive(_, d) => d(Err(e)),
     }
 }
 

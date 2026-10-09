@@ -50,12 +50,31 @@ const TAGS: usize = 9;
 const ALTERNATE: usize = 10;
 const FIELDS: usize = 11;
 
+/// The library field a generator field is: the generator places words in the names of the tags a card carries
+/// as a field of its own (`RESOLVED`), which the library doesn't have.
+fn library_field(f: usize) -> u32 {
+    assert_ne!(f, RESOLVED);
+    (if f > RESOLVED { f - 1 } else { f }) as u32
+}
+
+/// A generator field by its name (the library's, and `resolved_tags`).
 fn field_index(name: &str) -> usize {
-    Scope::LIBRARY
-        .fields()
-        .iter()
-        .position(|f| f.name == name)
-        .unwrap()
+    [
+        "name",
+        "resolved_tags",
+        "description",
+        "mes_example",
+        "scenario",
+        "personality",
+        "first_mes",
+        "creator_notes",
+        "creator",
+        "tags",
+        "alternate_greetings",
+    ]
+    .iter()
+    .position(|f| *f == name)
+    .unwrap()
 }
 
 // ---- seedpng.mjs ----
@@ -603,7 +622,11 @@ fn card_records(doc: u64, c: &Card) -> Vec<Record> {
         let sep = (ITEM_SEPARATOR as char).to_string();
         let joined = vals.join(&sep);
         if !joined.is_empty() {
-            out.push(text_value(doc, test_codes::LIBRARY + f as u64, &joined));
+            out.push(text_value(
+                doc,
+                test_codes::LIBRARY + u64::from(library_field(f)),
+                &joined,
+            ));
         }
     }
     for &t in &c.tags {
@@ -708,13 +731,13 @@ fn queries(tags: &[(u64, String)]) -> Vec<(String, usize, Vec<Clause>, Vec<Filte
         out.push((format!("\"{q}\""), 2, vec![cl], Vec::new()));
     }
     let mut tag = c("dragon");
-    tag.fields = Some(vec![RESOLVED as u32, TAGS as u32]);
+    tag.fields = Some(vec![library_field(TAGS)]);
     out.push(("tag:dragon".into(), 1, vec![tag], Vec::new()));
     let mut name = c("dr");
-    name.fields = Some(vec![NAME as u32]);
+    name.fields = Some(vec![library_field(NAME)]);
     out.push(("name:dr".into(), 1, vec![name], Vec::new()));
     let mut neg = c("vampire");
-    neg.fields = Some(vec![RESOLVED as u32, TAGS as u32]);
+    neg.fields = Some(vec![library_field(TAGS)]);
     neg.negate = true;
     out.push((
         "girl -tag:vampire".into(),
@@ -739,7 +762,9 @@ type Answer = (Vec<(u64, f64)>, u64);
 fn fields_of(card: &Card) -> Fields {
     card.fields
         .iter()
-        .map(|vals| vals.iter().map(|v| tokens(v.as_bytes())).collect())
+        .enumerate()
+        .filter(|(f, _)| *f != RESOLVED)
+        .map(|(_, vals)| vals.iter().map(|v| tokens(v.as_bytes())).collect())
         .collect()
 }
 
@@ -813,15 +838,13 @@ fn main() {
 
     // ---- the check: every card read twice (statistics, then matches) ----
     let mut checked: Vec<Option<Answer>> = vec![None; results.len()];
+    let mut tags_checked: Vec<Option<bool>> = vec![None; results.len()];
     if check {
         let tag_names: BTreeMap<u64, Vec<u8>> = tags
             .iter()
             .map(|(id, n)| (*id, n.as_bytes().to_vec()))
             .collect();
-        let mut checkers: Vec<Checker> = results
-            .iter()
-            .map(|r| Checker::new(&r.2, &tag_names, 50))
-            .collect();
+        let mut checkers: Vec<Checker> = results.iter().map(|r| Checker::new(&r.2, 50)).collect();
         for pass in 0..2 {
             let mut g = generator(kind, cards);
             for i in 0..cards {
@@ -839,6 +862,10 @@ fn main() {
             }
         }
         for (i, ch) in checkers.into_iter().enumerate() {
+            let want =
+                st_engine::search::brute::tag_matches(&results[i].2, &tag_names, &ch.carriers);
+            let got: Vec<u64> = results[i].3.tags.iter().map(|t| t.tag).collect();
+            tags_checked[i] = Some(got == want);
             checked[i] = Some(ch.result());
         }
     }
@@ -857,7 +884,7 @@ fn main() {
         println!(
             "{{\"phase\":\"query\",\"q\":{:?},\"words\":{words},\"median_ms\":{:.3},\"total\":{},\"total_exact\":{},\
              \"page_exact\":{},\"work\":{},\"scans\":{},\"entries\":{},\"pairs\":{},\"gets\":{},\"texts\":{},\"plan_us\":{},\"blocks\":{blocks},\"file_reads\":{file_reads},\
-             \"brute_total\":{brute_total},\"page_equal\":{same_page},\"total_equal\":{same_total},\"listed\":{}}}",
+             \"brute_total\":{brute_total},\"page_equal\":{same_page},\"total_equal\":{same_total},\"listed\":{},\"tags\":{},\"tags_equal\":{},\"length_reads\":{},\"steps\":{},\"checked\":{}}}",
             label,
             median.as_secs_f64() * 1000.0,
             f.total,
@@ -871,6 +898,11 @@ fn main() {
             f.texts,
             f.plan_micros,
             f.listed,
+            f.tags.len(),
+            tags_checked[i].map_or("null".into(), |x| x.to_string()),
+            f.length_reads,
+            f.steps,
+            f.checked,
         );
     }
 
@@ -878,6 +910,7 @@ fn main() {
         writes(&s, cards);
     } else {
         probe(&s);
+        terms(&s);
     }
     s.close();
 }
@@ -892,24 +925,45 @@ fn load_and_space(
 ) {
     // ---- load ----
     let started = Instant::now();
-    commit_all(
-        s,
-        tags.iter()
-            .map(|(id, name)| text_value(*id, test_codes::TAG_NAME, name)),
-        1000,
-    );
+    let bulk = std::env::args().any(|a| a == "--bulk");
+    let tag_record = |id: u64, name: &str| text_value(id, test_codes::TAG_NAME, name);
+    // --no-lists: tag names committed first, so the bulk load leaves the top lists to slices.
+    let tags_first = !bulk || std::env::args().any(|a| a == "--no-lists");
+    if tags_first {
+        commit_all(s, tags.iter().map(|(id, n)| tag_record(*id, n)), 1000);
+    }
     let mut text_bytes = 0u64;
-    let recs = (0..cards).flat_map(|i| {
-        let card = g.card();
-        text_bytes += card
-            .fields
-            .iter()
-            .flatten()
-            .map(|v| v.len() as u64)
-            .sum::<u64>();
-        card_records(i as u64 + 1, &card)
-    });
-    if std::env::args().any(|a| a == "--bulk") {
+    // Tags and cards share ids: in a load, id by id, so each partition comes once.
+    let by_id: HashMap<u64, &str> = if tags_first {
+        HashMap::new()
+    } else {
+        tags.iter().map(|(id, n)| (*id, n.as_str())).collect()
+    };
+    let recs = (0..cards)
+        .flat_map(|i| {
+            let id = i as u64 + 1;
+            let card = g.card();
+            text_bytes += card
+                .fields
+                .iter()
+                .flatten()
+                .map(|v| v.len() as u64)
+                .sum::<u64>();
+            let mut out: Vec<Record> = by_id
+                .get(&id)
+                .map(|n| tag_record(id, n))
+                .into_iter()
+                .collect();
+            out.extend(card_records(id, &card));
+            out
+        })
+        .chain(
+            tags.iter()
+                .filter(|(id, _)| !tags_first && *id > cards as u64)
+                .map(|(id, n)| tag_record(*id, n)),
+        );
+    if bulk {
+        // Into an empty store, tag names and all: the load builds the top lists.
         let mut l = s.loader().unwrap();
         l.add(recs).unwrap();
         let st = l.finish().unwrap();
@@ -1040,6 +1094,44 @@ fn space_detail(s: &Store) {
         })
         .collect();
     println!("{{\"phase\":\"space-detail\",{}}}", parts.join(","));
+    terms(s);
+}
+
+/// Terms by their documents: how many have more than a top list's documents, and what lists of 128 and of 1024
+/// for each of them would hold together.
+fn terms(s: &Store) {
+    let start = key::of(key::SEARCH_TERM_DOCS);
+    let end = key::prefix_end(&start);
+    let mut from = start.clone();
+    let mut over = [0u64; 4];
+    let mut held = [0u64; 2];
+    let sizes = [128i64, 512, 1024, 4096];
+    loop {
+        let page = s.scan(&from, &end, 65536).unwrap();
+        for (_, v) in &page {
+            let n = st_engine::keyspace::val::counter_value(v).unwrap_or(0);
+            for (i, &m) in sizes.iter().enumerate() {
+                if n > m {
+                    over[i] += 1;
+                }
+            }
+            if n > 128 {
+                held[0] += 128;
+                held[1] += n.min(1024) as u64;
+            }
+        }
+        match page.last() {
+            Some((k, _)) if page.len() == 65536 => {
+                from = k.clone();
+                from.push(0);
+            }
+            _ => break,
+        }
+    }
+    println!(
+        "{{\"phase\":\"terms\",\"over_128\":{},\"over_512\":{},\"over_1024\":{},\"over_4096\":{},\"held_128\":{},\"held_1024\":{}}}",
+        over[0], over[1], over[2], over[3], held[0], held[1]
+    );
 }
 
 fn writes(s: &Store, cards: usize) {
@@ -1193,9 +1285,41 @@ fn probe(s: &Store) {
         s.scan(&p, &key::prefix_end(&p), 1).unwrap();
     }
     let scan_us = t.elapsed().as_secs_f64() * 1e6 / n as f64;
+    // A document's lengths: its length block read, and its pairs decoded.
+    let mut r = 99u64;
+    let docs: Vec<u64> = (0..n)
+        .map(|_| {
+            r = r.wrapping_mul(6364136223846793005).wrapping_add(1);
+            1 + (r >> 33) % 1_000_000
+        })
+        .collect();
+    let t = Instant::now();
+    let blocks: Vec<Vec<u8>> = docs
+        .iter()
+        .map(|d| {
+            s.get(&st_engine::search::length_block(
+                Scope::LIBRARY,
+                d >> st_engine::search::LENGTH_BITS,
+            ))
+            .unwrap()
+            .unwrap_or_default()
+        })
+        .collect();
+    let len_get_us = t.elapsed().as_secs_f64() * 1e6 / n as f64;
+    let t = Instant::now();
+    let mut pairs = 0;
+    for b in &blocks {
+        pairs += st_engine::keyspace::val::map_pairs(b).map_or(0, |p| p.len());
+    }
+    let len_decode_us = t.elapsed().as_secs_f64() * 1e6 / n as f64;
+    eprintln!(
+        "length blocks: {} bytes, {} pairs on average",
+        blocks.iter().map(Vec::len).sum::<usize>() / n,
+        pairs / n
+    );
     let st = s.stats().ks;
     println!(
-        "{{\"phase\":\"probe\",\"get_us\":{get_us:.1},\"scan1_us\":{scan_us:.1},\"runs\":{}}}",
+        "{{\"phase\":\"probe\",\"get_us\":{get_us:.1},\"scan1_us\":{scan_us:.1},\"length_get_us\":{len_get_us:.2},\"length_decode_us\":{len_decode_us:.2},\"runs\":{}}}",
         st.runs
     );
 }
