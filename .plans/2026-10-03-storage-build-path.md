@@ -876,15 +876,20 @@ Done, in order (each section below has its details and choices):
 Left (in the order they build on each other):
 - Chat engine operations not built yet: finding a session by its name for routes taking a chat name (by its UUID
   works now; by name reads the session-name postings, 5d).
-- Compat identifiers wired: `X-ST-Session` in `getRequestHeaders()` (`none` for a tab with no session), the
-  answers' `characters[].chat`, `group.chat_id`, `getCurrentChatId()`, chat names in events, and the tab told
-  its session is gone.
+- Compat identifiers wired at the cut (the header is sent, see "Built, the tab's session"): the answers'
+  `characters[].chat`, `group.chat_id`, `getCurrentChatId()`, chat names in events (each `resolveSession`'s
+  `identifier`), and the tab told its session is gone.
 - State layer 1 steps 2–5, 7, 8 on these records: the engine's operations are built (`changeState`, `revertChange`,
   `stateAt`, below); left are the routes (`/api/state/change`, `/revert`, `/at`, at the cut), the page's compat for
   variables and `chat_metadata`, a change made while producing a reply recorded with the reply (the generate
   route), navigation replacing the state, other tabs.
 - The token-count cache's routes moved onto `TokenCache` at the cut (built, see "Built, the token-count cache").
-- Measured (see "Measured, chats" and "Built, opening a position faster" below).
+- Measured (see "Measured, chats" and "Built, opening a position faster" below). Not re-measured since the shape
+  counter: the isolated actions' device bytes (one sync each, as before).
+- Not settled, for the generate route: a change made while producing a reply hangs on the reply (layer 1 step 3),
+  but a regenerated reply identical to a stored one is that stored reply (`appendMessages`' twin rule); whether the
+  new generation's changes are recorded on it again is open (layer 1 says regenerating doesn't apply an increment
+  twice).
 - At the cut, the answers that move a tab's session call `sessionMoved(uuid)` (the new v7 session's, on its first
   move), and an answer saying the session is gone calls `sessionGone()` (`public/scripts/tab-session.js`).
 - For 5e: old ids as `keyMap` records (counter above any decimal one), labels as bookmarks with `positionCreate`
