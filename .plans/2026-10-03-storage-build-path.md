@@ -868,14 +868,16 @@ Done, in order (each section below has its details and choices):
 - ea27a5700 and the commit after it: `ChatEngine` (appends, edits, select, graft, degraft, swap, delete,
   bookmarks, metadata, load, session resolution), compared with the old store; tombstones; a position shows nothing
   below it.
-- Openings and alternatives; `endPathAt` and the kind `pointerRoot` (see "Built, openings" and "Built, ending a
-  path" below).
+- Openings and alternatives; `endPathAt` and the kind `pointerRoot`; back and forward and card greetings chosen
+  provisionally (answered stop); session and bookmark lists, naming, modes, deletes, and `integrity` (see the "Built"
+  sections below).
 
 Left (in the order they build on each other):
-- Chat engine operations not built yet: the compat chat lists (sessions per tree with meaningful activity, recent sessions), session naming and deletion,
-  bookmark rename, mode and delete, back and forward over history, send-key lookups for `/open` (`storedSendKeys`),
-  the whole-array `saveChat` compat diffed onto the engine, `renameGroupMemberInMessages` (a speaker change),
-  metadata `integrity` (answered below), itemizations' JS (zstd, the `/api/itemized-prompts` routes' shapes).
+- Chat engine operations not built yet: send-key lookups for `/open` (`storedSendKeys`), the whole-array
+  `saveChat` compat diffed onto the engine (refusing a header whose `integrity` isn't the session's UUID),
+  `renameGroupMemberInMessages` (a speaker change), itemizations' JS (zstd, the `/api/itemized-prompts` routes'
+  shapes), finding a session by its name for routes taking a chat name (by its UUID works now; by name reads the
+  session-name postings, 5d).
 - People: an adapter from `LibraryEngine` to `ChatEngine`'s speakers (characters by id and avatar; groups' trees).
 - Compat identifiers wired: `X-ST-Session` in `getRequestHeaders()` (`none` for a tab with no session), the
   answers' `characters[].chat`, `group.chat_id`, `getCurrentChatId()`, chat names in events, and the tab told
@@ -1367,6 +1369,25 @@ Built, back and forward; card greetings chosen (10-10; `format.rs`, `store/chat.
 | headers | 220 and 221 (two bytes) | no one-byte header value is left |
 | a step's record | the entry's number, `n` | what happened, exactly; the writer finds the entry, the deriver checks it is still there |
 | choices per session | one per (session, tree), the record it came from kept live | the answer's "per session"; a tree's root is where it shows |
+
+Built, lists, names and `integrity` (10-10; `src/chat-engine.js`, test `src/chat-engine.test.js`):
+- `sessionsInTree({ tree, before?, limit, withMetadata? })` (the compat chat list of a character or group: sessions
+  with meaningful activity there, most recent first, each at its position in that tree) and `recentSessions({ before?,
+  limit, withMetadata? })` (`/api/chats/recent`: every session by its last move, where its pointer is). Rows:
+  `session` (UUID), `name`, `position` (the cursor for the next page), `tree`, `at`, `message_count` (the
+  position's depth) and `count_estimate`, `last_mes` and `last_activity` (the message's text and receive time; null
+  at a tree's root), `chat_metadata` (the state there, with `integrity`). The routes build upstream's shapes from them
+  (`file_name` from the name, else the UUID) at the cut.
+- `nameSession` (`positionName` on the session; nothing written when unchanged), `deleteSession` (`positionDelete`; a
+  deleted session's UUID is unknown after).
+- `bookmarks({ tree, after?, limit })` (id as a decimal string, name, mode, the message it is at and the one it was made
+  at) and `changeBookmark({ tree, bookmark, change: { name?, mode?, delete? } })`, writing only what changes.
+- `integrity` (answered): `metadata(tree, at, session)` and `load({ tree, at, session })` add it as the session's UUID;
+  `mergeMetadata` never stores, sets or removes `integrity`, `main_chat`, `fork_point` or `_tree_stored` (the old
+  store's tree-owned keys).
+- Tests: rows against the session's own path; paging; naming and clearing a name writing nothing extra; a second
+  session's row, then deleted; bookmarks renamed, made following and deleted, mirrored on the old store's labels so the
+  later comparisons still hold.
 
 Where layer 1 goes: inside 5b, on the engine. Its own storage step (SQLite `state_changes`, saved states every 64th
 depth rebuilt lazily after an epoch bump) conflicts with the design: a structure caught up when read is what revision
