@@ -609,6 +609,7 @@ impl Deriver for EntityCreate {
         out.put(kk, uvarint(e));
         out.max(key::of(key::NEXT_ENTITY), e + 1);
         version(out, e, at);
+        books::container_touched(view, out, kind, k, at)?;
         Ok(())
     }
 
@@ -774,6 +775,7 @@ fn delete_entity(
         tags::deleted(view, out, e, k, at)?;
     }
     tags::entity_gone(view, out, e)?;
+    books::touched(view, out, e, at)?;
     match kind {
         CHARACTER => books::linker_gone(view, out, e)?,
         books::ENTRY => books::entry_gone(view, out, e, k)?,
@@ -906,6 +908,7 @@ impl Deriver for JsonValue {
         }
         out.put(k, loc_bytes(at));
         version(out, e, at);
+        books::touched(view, out, e, at)?;
         books::field_written(view, out, e, f, true)?;
         tags::field_written(view, out, e, at, f, tags::Written::Json(bytes(rec, 2)))
     }
@@ -980,6 +983,7 @@ impl Deriver for ValueDelete {
         }
         drop_json(view, out, e, f)?;
         version(out, e, at);
+        books::touched(view, out, e, at)?;
         books::field_written(view, out, e, f, false)?;
         tags::field_written(view, out, e, at, f, tags::Written::Gone)
     }
@@ -1047,6 +1051,7 @@ impl Deriver for ItemPlace {
         out.put(ik, uvarint(item));
         out.put(ak, place_bytes(position, at));
         version(out, e, at);
+        books::touched(view, out, e, at)?;
         Ok(())
     }
 
@@ -1092,6 +1097,7 @@ impl Deriver for ItemDelete {
         }
         drop_text(view, out, e, &item_field(list, item))?;
         version(out, e, at);
+        books::touched(view, out, e, at)?;
         Ok(())
     }
 

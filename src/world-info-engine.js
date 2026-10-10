@@ -1,0 +1,817 @@
+import { jsonHash } from '../public/scripts/hash-utils.js';
+import { POSITION_GAP, valueRecords } from './entity-values.js';
+import { TYPE } from './library-codes.js';
+import { bookKey } from './world-info-keys.js';
+
+/**
+ * World info on the engine: books and their entries as entities whose values are the engine's records.
+ *
+ * A world book is found by its key (`bookKey()`); a book a character or a world book owns (a card's
+ * `character_book`, a book's `originalData`) by its owner (`<owner id>:c`, `<owner id>:o`). Each top-level key of a
+ * book (but `entries`) and of an entry is its own value: a string as text, anything else as JSON; an entry's keys
+ * lists (`key`, `keysecondary`, `triggers`, `keys`, `secondary_keys`) as items when they are non-empty lists of
+ * strings. Upstream's entry keys have field codes; any other key is stored by its name. A write records only what
+ * differs from what is stored. Assembled, a book or entry has its keys in the order they came.
+ */
+
+/** Field codes of an entry's keys: upstream's World Info entry, then a character book's (`character_book`). */
+const ENTRY_KEYS = Object.freeze([
+    'uid', 'key', 'keysecondary', 'comment', 'content', 'constant', 'vectorized', 'selective', 'selectiveLogic',
+    'addMemo', 'order', 'position', 'disable', 'ignoreBudget', 'excludeRecursion', 'preventRecursion',
+    'matchPersonaDescription', 'matchCharacterDescription', 'matchCharacterPersonality', 'matchCharacterDepthPrompt',
+    'matchScenario', 'matchCreatorNotes', 'delayUntilRecursion', 'probability', 'useProbability', 'depth', 'outletName',
+    'group', 'groupOverride', 'groupWeight', 'scanDepth', 'caseSensitive', 'matchWholeWords', 'useGroupScoring',
+    'automationId', 'role', 'sticky', 'cooldown', 'delay', 'characterFilterNames', 'characterFilterTags',
+    'characterFilterExclude', 'triggers', 'displayIndex', 'characterFilter', 'extensions',
+    'keys', 'secondary_keys', 'insertion_order', 'enabled', 'case_sensitive', 'name', 'priority', 'id',
+]);
+const ENTRY_CODE_BASE = 100;
+/** A whole entry that isn't an object, as JSON. */
+const WHOLE = 96;
+/** A world book's entry with no `uid` key (its default is its key as a number). */
+const NO_UID = 97;
+/** The order of an object's keys, when it isn't the canonical one (`orderValue()`). */
+const ORDER = 98;
+/** A world book's definition marker (`books::DEFINED`). */
+const DEFINED = 41;
+const UID = ENTRY_CODE_BASE;
+
+const ENTRY_CODE = new Map(ENTRY_KEYS.map((k, i) => [k, ENTRY_CODE_BASE + i]));
+const ENTRY_NAME = new Map(ENTRY_KEYS.map((k, i) => [ENTRY_CODE_BASE + i, k]));
+const ENTRY_LIST = new Map([['key', 0], ['keysecondary', 1], ['triggers', 2], ['keys', 3], ['secondary_keys', 4]]);
+const ENTRY_LIST_NAME = new Map([...ENTRY_LIST].map(([k, v]) => [v, k]));
+
+/** Upstream's limit on a new entry's uid (`getFreeWorldEntryUid()`). */
+const MAX_UID = 1_000_000;
+
+/** Book slots of an owned book's key. */
+export const SLOT = Object.freeze({ characterBook: 'c', originalData: 'o' });
+
+const isPlainObject = (/** @type {unknown} */ v) => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/**
+ * Whether a value is a book the store keeps as its own entries: an object whose `entries` is a list of objects.
+ * Anything else a card's `character_book` or a book's `originalData` holds is kept as it came, as JSON.
+ * @param {unknown} v
+ * @returns {v is { entries: object[] }}
+ */
+export function isEntryList(v) {
+    return isPlainObject(v) && Array.isArray(/** @type {any} */ (v).entries) && /** @type {any} */ (v).entries.every(isPlainObject);
+}
+
+/**
+ * @param {Record<string, unknown>} o
+ * @param {string} key
+ * @param {unknown} value
+ */
+function setOwn(o, key, value) {
+    Object.defineProperty(o, key, { value, enumerable: true, writable: true, configurable: true });
+}
+
+/**
+ * The value recording `keys`' order when it isn't `canonical`'s: each key's place in the canonical order, one
+ * character each.
+ * @param {string[]} keys
+ * @param {string[]} canonical
+ * @returns {string | null}
+ */
+function orderValue(keys, canonical) {
+    if (keys.every((k, i) => k === canonical[i])) return null;
+    const place = new Map(canonical.map((k, i) => [k, i]));
+    return keys.map(k => String.fromCharCode(0x20 + /** @type {number} */ (place.get(k)))).join('');
+}
+
+/**
+ * `keys` in the order `orderValue()` recorded (none: as they are).
+ * @param {string[]} canonical
+ * @param {string | undefined} order
+ */
+function ordered(canonical, order) {
+    if (order === undefined || order.length !== canonical.length) return canonical;
+    return [...order].map(c => canonical[c.charCodeAt(0) - 0x20]);
+}
+
+/** An entry's keys in canonical order: upstream's by code, then any other by name. */
+function entryCanonical(/** @type {string[]} */ keys) {
+    const known = keys.filter(k => ENTRY_CODE.has(k)).sort((a, b) => /** @type {number} */ (ENTRY_CODE.get(a)) - /** @type {number} */ (ENTRY_CODE.get(b)));
+    const other = keys.filter(k => !ENTRY_CODE.has(k)).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    return [...known, ...other];
+}
+
+/** A book's keys in canonical order: by name, `entries` last. */
+function bookCanonical(/** @type {string[]} */ keys) {
+    return [...keys.filter(k => k !== 'entries').sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)), ...(keys.includes('entries') ? ['entries'] : [])];
+}
+
+const put = (/** @type {unknown} */ v) => (typeof v === 'string' ? { text: v } : { json: JSON.stringify(v) });
+
+/**
+ * An entry's values and lists. A world book's entry whose `uid` is its key as a number stores no `uid`.
+ * @param {unknown} entry
+ * @param {string} key Its key in its book.
+ * @param {boolean} owned Whether its book is owned (no default `uid`).
+ */
+export function entryValues(entry, key, owned) {
+    /** @type {Map<number | string, { text?: string, json?: string }>} */
+    const values = new Map();
+    /** @type {Map<number, string[]>} */
+    const lists = new Map();
+    if (!isPlainObject(entry)) {
+        values.set(WHOLE, { json: JSON.stringify(entry) ?? 'null' });
+        return { values, lists };
+    }
+    const o = /** @type {Record<string, unknown>} */ (entry);
+    const keys = Object.keys(o).filter(k => o[k] !== undefined);
+    for (const k of keys) {
+        const v = o[k];
+        if (k === 'uid') {
+            if (owned || !(typeof v === 'number' && String(v) === key)) values.set(UID, { json: JSON.stringify(v) });
+            continue;
+        }
+        const list = ENTRY_LIST.get(k);
+        if (list !== undefined && Array.isArray(v) && v.length > 0 && v.every(x => typeof x === 'string')) {
+            lists.set(list, v);
+            continue;
+        }
+        values.set(ENTRY_CODE.get(k) ?? k, put(v));
+    }
+    if (!owned && !keys.includes('uid')) values.set(NO_UID, { json: '' });
+    const order = orderValue(keys, entryCanonical(keys));
+    if (order !== null) values.set(ORDER, { text: order });
+    return { values, lists };
+}
+
+/**
+ * The entry an entity's values hold, the inverse of entryValues().
+ * @param {import('./entity-values.js').StoredEntity} e
+ * @param {boolean} owned
+ */
+export function entryObject(e, owned) {
+    const key = e.key.slice(e.key.indexOf(':') + 1);
+    /** @type {Map<string, unknown>} */
+    const found = new Map();
+    let order;
+    let noUid = false;
+    /** @type {Map<number, { text?: string, json?: string }>} */
+    const items = new Map();
+    for (const v of e.values) {
+        if (typeof v.field === 'number' && v.field >= 1024) {
+            items.set(v.field, v);
+            continue;
+        }
+        if (v.field === WHOLE) return JSON.parse(/** @type {string} */ (v.json));
+        if (v.field === ORDER) {
+            order = v.text;
+            continue;
+        }
+        if (v.field === NO_UID) {
+            noUid = true;
+            continue;
+        }
+        const name = typeof v.field === 'number' ? ENTRY_NAME.get(v.field) : v.field;
+        if (name === undefined) continue;
+        found.set(name, v.text !== undefined ? v.text : JSON.parse(/** @type {string} */ (v.json)));
+    }
+    /** @type {Map<number, string[]>} */
+    const lists = new Map();
+    for (const { list, item } of [...e.items].sort((a, b) => a.position - b.position)) {
+        if (!lists.has(list)) lists.set(list, []);
+        lists.get(list)?.push(items.get(1024 + item * 8 + list)?.text ?? '');
+    }
+    for (const [list, texts] of lists) {
+        const name = ENTRY_LIST_NAME.get(list);
+        if (name !== undefined) found.set(name, texts);
+    }
+    if (!owned && !noUid && !found.has('uid')) found.set('uid', Number(key));
+    const keys = ordered(entryCanonical([...found.keys()]), order);
+    /** @type {Record<string, unknown>} */
+    const out = {};
+    for (const k of keys) setOwn(out, k, found.get(k));
+    return out;
+}
+
+/**
+ * A book's own values (every key but `entries`, and but `originalData` when it is kept as an owned book).
+ * @param {Record<string, unknown>} book
+ * @param {boolean} defined A world book (with its definition marker).
+ */
+function bookValues(book, defined) {
+    /** @type {Map<number | string, { text?: string, json?: string }>} */
+    const values = new Map();
+    const keys = Object.keys(book).filter(k => book[k] !== undefined);
+    for (const k of keys) {
+        if (k === 'entries') continue;
+        if (k === 'originalData' && defined && isEntryList(book[k])) continue;
+        values.set(k, put(book[k]));
+    }
+    const order = orderValue(keys, bookCanonical(keys));
+    if (order !== null) values.set(ORDER, { text: order });
+    // The marker last, so the book is listed once its values are there.
+    if (defined) values.set(DEFINED, { json: '' });
+    return { values, lists: new Map() };
+}
+
+/**
+ * @typedef {object} StoredBook A book as stored, for writing over it.
+ * @property {bigint} id
+ * @property {import('./entity-values.js').StoredEntity | null} entity
+ * @property {Map<string, { entity: import('./entity-values.js').StoredEntity, position: number }>} entries By key.
+ * @property {StoredBook | null} original A world book's owned `originalData`.
+ */
+
+/**
+ * World info of one user's store, beside its library (`LibraryEngine`).
+ */
+export class WorldInfoEngine {
+    /**
+     * @param {import('./library-engine.js').LibraryEngine} lib
+     */
+    constructor(lib) {
+        this.lib = lib;
+        this.store = lib.store;
+    }
+
+    /**
+     * Runs `write` in the lane of the book keyed `key` (and of the keys in `more`, all in one order).
+     * @template T
+     * @param {string[]} keys
+     * @param {() => Promise<T>} write
+     * @returns {Promise<T>}
+     */
+    lane(keys, write) {
+        const sorted = [...new Set(keys)].sort();
+        const run = (/** @type {number} */ i) => (i === sorted.length ? write() : this.lib.serialized(TYPE.book, sorted[i], () => run(i + 1)));
+        return /** @type {Promise<T>} */ (run(0));
+    }
+
+    /**
+     * The world book a name finds: its id and whether it is defined (else an unresolved name a link holds).
+     * @param {string} name
+     * @returns {Promise<{ id: bigint, defined: boolean, key: string } | null>}
+     */
+    async find(name) {
+        const key = bookKey(name);
+        if (!key) return null;
+        const [id] = await this.lib.ids(TYPE.book, [key]);
+        if (id === null) return null;
+        const [r] = await this.store.worldRead('resolved', { ids: [id] });
+        return { id, defined: r?.id === id && r.defined, key };
+    }
+
+    /**
+     * Whether a world book has this name.
+     * @param {string} name
+     */
+    async exists(name) {
+        return (await this.find(name))?.defined ?? false;
+    }
+
+    /**
+     * A book's entries in their places, with their entities.
+     * @param {bigint} book
+     * @returns {Promise<{ entity: import('./entity-values.js').StoredEntity, position: number }[]>}
+     */
+    async storedEntries(book) {
+        /** @type {{ id: bigint, position: number }[]} */
+        const places = [];
+        let after;
+        for (;;) {
+            const page = await this.store.worldRead('entries', { book, after, limit: 1000 });
+            places.push(...page.entries);
+            if (!page.more) break;
+            after = places[places.length - 1].position;
+        }
+        const entities = await this.lib.entities(places.map(p => p.id));
+        return places.flatMap((p, i) => (entities[i] ? [{ entity: /** @type {import('./entity-values.js').StoredEntity} */ (entities[i]), position: p.position }] : []));
+    }
+
+    /**
+     * A book as stored, for writing over it.
+     * @param {bigint} id
+     * @param {boolean} world A world book (which may own its `originalData`).
+     * @returns {Promise<StoredBook>}
+     */
+    async stored(id, world) {
+        const [entity] = await this.lib.entities([id]);
+        const entries = new Map((await this.storedEntries(id)).map(x => [x.entity.key.slice(x.entity.key.indexOf(':') + 1), x]));
+        let original = null;
+        if (world) {
+            const [o] = await this.lib.ids(TYPE.ownedBook, [`${id}:${SLOT.originalData}`]);
+            if (o !== null) original = await this.stored(o, false);
+        }
+        return { id, entity, entries, original };
+    }
+
+    /**
+     * A stored book in upstream's shape: a world book's `entries` an object by key, an owned book's a list.
+     * @param {StoredBook} s
+     * @param {boolean} world
+     * @returns {Record<string, unknown>}
+     */
+    assemble(s, world) {
+        /** @type {Map<string, unknown>} */
+        const found = new Map();
+        let order;
+        for (const v of s.entity?.values ?? []) {
+            if (v.field === DEFINED) continue;
+            if (v.field === ORDER) {
+                order = v.text;
+                continue;
+            }
+            if (typeof v.field === 'string') found.set(v.field, v.text !== undefined ? v.text : JSON.parse(/** @type {string} */ (v.json)));
+        }
+        if (s.original) found.set('originalData', this.assemble(s.original, false));
+        const list = [...s.entries.values()].sort((a, b) => a.position - b.position);
+        if (world) {
+            /** @type {Record<string, unknown>} */
+            const entries = {};
+            for (const x of list) setOwn(entries, x.entity.key.slice(x.entity.key.indexOf(':') + 1), entryObject(x.entity, false));
+            found.set('entries', entries);
+        } else {
+            found.set('entries', list.map(x => entryObject(x.entity, true)));
+        }
+        /** @type {Record<string, unknown>} */
+        const out = {};
+        for (const k of ordered(bookCanonical([...found.keys()]), order)) setOwn(out, k, found.get(k));
+        return out;
+    }
+
+    /**
+     * A world book in upstream's shape (`readWorldInfoFile()`), or null when no book has the name.
+     * @param {string} name
+     */
+    async read(name) {
+        const found = await this.find(name);
+        if (!found?.defined) return null;
+        return this.assemble(await this.stored(found.id, true), true);
+    }
+
+    /**
+     * The defined world books as `/api/worldinfo/list` answers them, in its order.
+     * @returns {Promise<{ file_id: string, name: string, extensions: object }[]>}
+     */
+    async list() {
+        /** @type {{ id: bigint, key: string }[]} */
+        const books = [];
+        let after;
+        for (;;) {
+            const page = await this.store.worldRead('books', { after, limit: 1000 });
+            books.push(...page.books);
+            if (!page.more) break;
+            after = books[books.length - 1].key;
+        }
+        const entities = await this.lib.entities(books.map(b => b.id));
+        const rows = books.map((b, i) => {
+            const values = new Map((entities[i]?.values ?? []).filter(v => typeof v.field === 'string').map(v => [v.field, v.text !== undefined ? v.text : JSON.parse(/** @type {string} */ (v.json))]));
+            const extensions = values.get('extensions');
+            return {
+                file_id: b.key,
+                name: /** @type {string} */ (values.get('name') || b.key),
+                extensions: typeof extensions === 'object' && extensions !== null ? extensions : {},
+            };
+        });
+        return rows.sort((a, b) => `${a.file_id}.json`.localeCompare(`${b.file_id}.json`));
+    }
+
+    /**
+     * The records turning a stored book (`s`, none for a new one) into `book`.
+     * @param {bigint} id
+     * @param {StoredBook | null} s
+     * @param {Record<string, unknown>} book
+     * @param {{ world?: boolean, ownedKey?: string }} where A world book, or an owned book's key.
+     * @returns {Promise<object[]>}
+     */
+    async bookRecords(id, s, book, { world = false, ownedKey } = {}) {
+        const records = valueRecords(id, s?.entity ?? null, bookValues(book, world));
+        if (!s?.entity && !world) records.push({ kind: 'entityCreate', entity: id, type: TYPE.ownedBook, key: ownedKey, added: Date.now() });
+        const raw = book.entries;
+        const stored = s?.entries ?? new Map();
+        if (world) {
+            const incoming = typeof raw === 'object' && raw !== null ? /** @type {Record<string, unknown>} */ (raw) : {};
+            records.push(...this.entryRecords(id, stored, Object.keys(incoming).filter(k => incoming[k] !== undefined).map(k => [k, incoming[k]]), false));
+        } else {
+            records.push(...this.listEntryRecords(id, stored, /** @type {unknown[]} */ (raw)));
+        }
+        if (world) {
+            const original = book.originalData;
+            const [o] = s?.original ? [s.original.id] : [null];
+            if (isEntryList(original)) {
+                const oid = o ?? this.lib.nextId++;
+                records.push(...(await this.bookRecords(oid, s?.original ?? null, /** @type {Record<string, unknown>} */ (original), { ownedKey: `${id}:${SLOT.originalData}` })));
+            } else if (s?.original) {
+                records.push(...this.deleteRecords(s.original));
+            }
+        }
+        return records;
+    }
+
+    /**
+     * The records making a world book's entries `incoming` (key, entry), in that order.
+     * @param {bigint} book
+     * @param {Map<string, { entity: import('./entity-values.js').StoredEntity, position: number }>} stored
+     * @param {[string, unknown][]} incoming
+     * @param {boolean} owned
+     */
+    entryRecords(book, stored, incoming, owned) {
+        const records = [];
+        const keys = new Set(incoming.map(([k]) => k));
+        for (const [k, x] of stored) {
+            if (!keys.has(k)) records.push({ kind: 'entityDelete', entity: x.entity.id });
+        }
+        const positions = placeEntries(incoming.map(([k]) => k), new Map([...stored].map(([k, x]) => [k, x.position])));
+        for (const [k, entry] of incoming) {
+            const had = stored.get(k);
+            const id = had ? had.entity.id : this.lib.nextId++;
+            records.push(...valueRecords(id, had?.entity ?? null, entryValues(entry, k, owned)));
+            if (!had) records.push({ kind: 'entityCreate', entity: id, type: TYPE.entry, key: `${book}:${k}`, added: 0 });
+            const position = positions.get(k);
+            if (position !== undefined) records.push({ kind: 'itemPlace', entity: book, list: 0, item: id, position });
+            const index = isPlainObject(entry) && /** @type {any} */ (entry).displayIndex != null ? Number(/** @type {any} */ (entry).displayIndex) : undefined;
+            if (!Object.is(index, had?.entity.entryIndex)) records.push({ kind: 'entryIndex', entry: id, book, ...(index === undefined ? {} : { index }) });
+        }
+        return records;
+    }
+
+    /**
+     * The records making an owned book's entries the list `incoming`: entries equal at both ends stay, those
+     * between are edited in place, the rest added or deleted.
+     * @param {bigint} book
+     * @param {Map<string, { entity: import('./entity-values.js').StoredEntity, position: number }>} stored
+     * @param {unknown[]} incoming
+     */
+    listEntryRecords(book, stored, incoming) {
+        const before = [...stored.entries()].sort((a, b) => a[1].position - b[1].position);
+        const same = (/** @type {number} */ i, /** @type {number} */ j) => jsonHash(entryObject(before[i][1].entity, true)) === jsonHash(incoming[j]);
+        let head = 0;
+        while (head < before.length && head < incoming.length && same(head, head)) head++;
+        let tail = 0;
+        while (tail < before.length - head && tail < incoming.length - head && same(before.length - 1 - tail, incoming.length - 1 - tail)) tail++;
+        let next = 1 + Math.max(-1, ...[...stored.keys()].map(Number).filter(Number.isInteger));
+        /** @type {[string, unknown][]} */
+        const keyed = incoming.map((entry, j) => {
+            if (j < head) return [before[j][0], entry];
+            if (j >= incoming.length - tail) return [before[before.length - (incoming.length - j)][0], entry];
+            if (j < before.length - tail) return [before[j][0], entry];
+            return [String(next++), entry];
+        });
+        return this.entryRecords(book, stored, keyed, true);
+    }
+
+    /**
+     * The records deleting a book's entries and, for an owned book, the book (a world book's entity stays, its
+     * marker gone, as an unresolved name its links keep).
+     * @param {StoredBook} s
+     * @returns {object[]}
+     */
+    deleteRecords(s) {
+        const records = [];
+        for (const x of s.entries.values()) records.push({ kind: 'entityDelete', entity: x.entity.id });
+        if (s.original) records.push(...this.deleteRecords(s.original));
+        if (s.entity?.type === TYPE.book) {
+            for (const v of s.entity.values) records.push({ kind: 'valueDelete', entity: s.id, field: v.field });
+        } else if (s.entity) {
+            records.push({ kind: 'entityDelete', entity: s.id });
+        }
+        return records;
+    }
+
+    /**
+     * Writes a world book whole (`/edit`, an import, a create with data): only what differs from the stored book.
+     * A book named as an unresolved name takes that entity, so the links holding the name resolve to it.
+     * @param {string} name
+     * @param {Record<string, unknown>} data
+     * @returns {Promise<{ records: number }>}
+     */
+    write(name, data) {
+        const key = bookKey(name);
+        return this.lane([key], async () => {
+            const [found] = await this.lib.ids(TYPE.book, [key]);
+            const id = found ?? this.lib.nextId++;
+            const s = found === null ? null : await this.stored(found, true);
+            const records = await this.bookRecords(id, s, data, { world: true });
+            // Listed once its marker is written, after its values.
+            if (found === null) records.unshift({ kind: 'entityCreate', entity: id, type: TYPE.book, key, added: Date.now() });
+            if (records.length > 0) await this.store.commit(records);
+            return { records: records.length };
+        });
+    }
+
+    /**
+     * Deletes a world book: its entries and values go; its links keep its name, unresolved.
+     * @param {string} name
+     * @returns {Promise<boolean>} Whether there was such a book.
+     */
+    delete(name) {
+        const key = bookKey(name);
+        return this.lane([key], async () => {
+            const found = await this.find(name);
+            if (!found?.defined) return false;
+            await this.store.commit(this.deleteRecords(await this.stored(found.id, true)));
+            return true;
+        });
+    }
+
+    /**
+     * Renames a world book: its key changes, and every link follows it. A new name that is an unresolved name
+     * resolves to this book from now on.
+     * @param {string} name
+     * @param {string} newName
+     * @returns {Promise<'ok' | 'missing' | 'taken'>}
+     */
+    rename(name, newName) {
+        const [from, to] = [bookKey(name), bookKey(newName)];
+        return this.lane([from, to], async () => {
+            const found = await this.find(name);
+            if (!found?.defined) return 'missing';
+            if (from === to) return 'ok';
+            const there = await this.find(newName);
+            if (there?.defined) return 'taken';
+            const [entity] = await this.lib.entities([found.id]);
+            const update = { kind: 'entityUpdate', entity: found.id, type: TYPE.book, key: to, added: entity?.added ?? 0 };
+            await this.store.commit(there
+                ? [{ kind: 'bookForward', from: there.id, into: found.id }, { kind: 'entityDelete', entity: there.id }, update]
+                : [update]);
+            return 'ok';
+        });
+    }
+
+    /**
+     * Applies changes a page made to its copy of a book (`/entries/apply`), each against the version it had.
+     * @param {string} name
+     * @param {{ uid: string | number, base_hash?: number | null, data?: object | null }[]} entryChanges
+     * @param {{ key: string, base_hash?: number | null, value?: unknown }[]} fieldChanges
+     * @returns {Promise<null | { ok: true, entries: Record<string, object>, deleted: string[], fields: Record<string, unknown>, conflicts: object[] }>}
+     */
+    apply(name, entryChanges, fieldChanges) {
+        const key = bookKey(name);
+        return this.lane([key], async () => {
+            const found = await this.find(name);
+            if (!found?.defined) return null;
+            const book = found.id;
+            const [bookEntity] = await this.lib.entities([book]);
+            const keys = entryChanges.map(c => String(c.uid));
+            const ids = await this.lib.ids(TYPE.entry, keys.map(k => `${book}:${k}`));
+            const entities = await this.lib.entities(ids);
+            /** @type {Map<string, { entity: import('./entity-values.js').StoredEntity, position: number }>} */
+            const touched = new Map();
+            /** @type {Map<string, unknown>} */
+            const writes = new Map();
+            const records = [];
+            /** @type {Record<string, object>} */
+            const stored = {};
+            /** @type {string[]} */
+            const deleted = [];
+            /** @type {Record<string, unknown>} */
+            const storedFields = {};
+            /** @type {object[]} */
+            const conflicts = [];
+            /** @type {Map<string, object>} */
+            const current = new Map();
+            entities.forEach((e, i) => {
+                if (e && !current.has(keys[i])) current.set(keys[i], entryObject(e, false));
+            });
+            const deletedUids = [];
+            /** Keys whose stored entry a change deleted. */
+            const gone = new Set();
+            for (const [i, change] of entryChanges.entries()) {
+                const k = keys[i];
+                const cur = current.get(k);
+                const next = isPlainObject(change.data) ? { ...change.data, uid: /** @type {any} */ (cur)?.uid ?? change.uid } : null;
+                const currentHash = cur === undefined ? null : jsonHash(cur);
+                if (currentHash === (next ? jsonHash(next) : null)) continue;
+                if (currentHash !== (change.base_hash ?? null)) {
+                    conflicts.push({ uid: k, current: cur ?? null });
+                    continue;
+                }
+                const e = /** @type {import('./entity-values.js').StoredEntity | null} */ (entities[i]);
+                if (e && !gone.has(k)) touched.set(k, { entity: e, position: 0 });
+                const nextJson = next && JSON.parse(JSON.stringify(next));
+                if (nextJson) {
+                    current.set(k, nextJson);
+                    stored[k] = nextJson;
+                    writes.set(k, nextJson);
+                } else {
+                    current.delete(k);
+                    if (touched.has(k)) records.push({ kind: 'entityDelete', entity: /** @type {any} */ (touched.get(k)).entity.id });
+                    touched.delete(k);
+                    gone.add(k);
+                    writes.delete(k);
+                    deleted.push(k);
+                    deletedUids.push(change.uid);
+                }
+            }
+            if (writes.size > 0) {
+                const numbers = await this.store.worldRead('numbers', { book });
+                let last = numbers.lastPosition ?? 0;
+                for (const [k, entry] of writes) {
+                    const had = touched.get(k);
+                    const id = had ? had.entity.id : this.lib.nextId++;
+                    records.push(...valueRecords(id, had?.entity ?? null, entryValues(entry, k, false)));
+                    if (!had) {
+                        last += POSITION_GAP;
+                        records.push({ kind: 'entityCreate', entity: id, type: TYPE.entry, key: `${book}:${k}`, added: 0 });
+                        records.push({ kind: 'itemPlace', entity: book, list: 0, item: id, position: last });
+                    }
+                    const index = /** @type {any} */ (entry).displayIndex != null ? Number(/** @type {any} */ (entry).displayIndex) : undefined;
+                    if (!Object.is(index, had?.entity.entryIndex)) records.push({ kind: 'entryIndex', entry: id, book, ...(index === undefined ? {} : { index }) });
+                }
+            }
+            if (fieldChanges.length === 0 && deletedUids.length === 0) {
+                if (records.length > 0) await this.store.commit(records);
+                return { ok: true, entries: stored, deleted, fields: storedFields, conflicts };
+            }
+            // The book's own fields, `originalData` among them, read only when a field may change.
+            const s = { id: book, entity: bookEntity, entries: new Map(), original: null };
+            const [o] = await this.lib.ids(TYPE.ownedBook, [`${book}:${SLOT.originalData}`]);
+            if (o !== null) s.original = await this.stored(o, false);
+            const fields = this.assemble(/** @type {StoredBook} */ (s), true);
+            const nextBook = { ...fields };
+            let fieldsChanged = false;
+            for (const change of fieldChanges) {
+                const cur = fields[change.key];
+                const next = change.value ?? undefined;
+                const currentHash = cur === undefined ? null : jsonHash(cur);
+                if (currentHash === (next === undefined ? null : jsonHash(next))) continue;
+                if (currentHash !== (change.base_hash ?? null)) {
+                    conflicts.push({ key: change.key, current: cur ?? null });
+                    continue;
+                }
+                if (next === undefined) delete nextBook[change.key]; else setOwn(nextBook, change.key, next);
+                storedFields[change.key] = next ?? null;
+                fieldsChanged = true;
+            }
+            // A deleted entry leaves the book's `originalData` too (non-strict: uids arrive as numbers or strings).
+            const original = /** @type {any} */ (nextBook.originalData);
+            if (deletedUids.length > 0 && original && Array.isArray(original.entries)) {
+                // eslint-disable-next-line eqeqeq
+                const kept = original.entries.filter((/** @type {any} */ item) => !deletedUids.some(uid => item?.uid == uid));
+                if (kept.length !== original.entries.length) {
+                    nextBook.originalData = { ...original, entries: kept };
+                    fieldsChanged = true;
+                }
+            }
+            if (fieldsChanged) {
+                records.push(...valueRecords(book, bookEntity, bookValues(nextBook, true)));
+                const ob = nextBook.originalData;
+                if (isEntryList(ob)) {
+                    records.push(...(await this.bookRecords(s.original?.id ?? this.lib.nextId++, s.original, /** @type {Record<string, unknown>} */ (ob), { ownedKey: `${book}:${SLOT.originalData}` })));
+                } else if (s.original) {
+                    records.push(...this.deleteRecords(s.original));
+                }
+            }
+            if (records.length > 0) await this.store.commit(records);
+            return { ok: true, entries: stored, deleted, fields: storedFields, conflicts };
+        });
+    }
+
+    /**
+     * A new entry `{ uid }` at the end of a book, under its lowest free integer key (`/entry/create`).
+     * @param {string} name
+     * @returns {Promise<{ entry: { uid: number } } | 'missing' | 'full'>}
+     */
+    createEntry(name) {
+        const key = bookKey(name);
+        return this.lane([key], async () => {
+            const found = await this.find(name);
+            if (!found?.defined) return 'missing';
+            const numbers = await this.store.worldRead('numbers', { book: found.id });
+            if (numbers.freeKey >= MAX_UID) return 'full';
+            const id = this.lib.nextId++;
+            await this.store.commit([
+                { kind: 'entityCreate', entity: id, type: TYPE.entry, key: `${found.id}:${numbers.freeKey}`, added: 0 },
+                { kind: 'itemPlace', entity: found.id, list: 0, item: id, position: (numbers.lastPosition ?? 0) + POSITION_GAP },
+            ]);
+            return { entry: { uid: numbers.freeKey } };
+        });
+    }
+
+    /**
+     * Writes one entry whole (`/entry/edit`); its `uid` stays the stored one.
+     * @param {string} name
+     * @param {string | number} uid
+     * @param {object} data
+     * @returns {Promise<{ entry: object } | 'missing' | 'no entry'>}
+     */
+    editEntry(name, uid, data) {
+        const key = bookKey(name);
+        return this.lane([key], async () => {
+            const found = await this.find(name);
+            if (!found?.defined) return 'missing';
+            const k = String(uid);
+            const [id] = await this.lib.ids(TYPE.entry, [`${found.id}:${k}`]);
+            const [e] = id === null ? [null] : await this.lib.entities([id]);
+            if (!e) return 'no entry';
+            const entry = { ...data, uid: /** @type {any} */ (entryObject(e, false)).uid };
+            const records = valueRecords(e.id, e, entryValues(entry, k, false));
+            const index = /** @type {any} */ (entry).displayIndex != null ? Number(/** @type {any} */ (entry).displayIndex) : undefined;
+            if (!Object.is(index, e.entryIndex)) records.push({ kind: 'entryIndex', entry: e.id, book: found.id, ...(index === undefined ? {} : { index }) });
+            if (records.length > 0) await this.store.commit(records);
+            return { entry };
+        });
+    }
+
+    /**
+     * Moves or copies an entry into another book (`/entry/transplant`): under the target's lowest free integer
+     * key, after its highest `displayIndex`, at its end; both books in one commit.
+     * @param {{ source: string, target: string, uid: string | number, deleteOriginal: boolean }} args
+     * @returns {Promise<{ entry: object } | 'no source' | 'no target' | 'no entry' | 'full'>}
+     */
+    transplant({ source, target, uid, deleteOriginal }) {
+        return this.lane([bookKey(source), bookKey(target)], async () => {
+            const [from, to] = [await this.find(source), await this.find(target)];
+            if (!from?.defined) return 'no source';
+            if (!to?.defined) return 'no target';
+            const [id] = await this.lib.ids(TYPE.entry, [`${from.id}:${String(uid)}`]);
+            const [e] = id === null ? [null] : await this.lib.entities([id]);
+            if (!e) return 'no entry';
+            const numbers = await this.store.worldRead('numbers', { book: to.id });
+            if (numbers.freeKey >= MAX_UID) return 'full';
+            const moved = /** @type {Record<string, unknown>} */ (entryObject(e, false));
+            moved.uid = numbers.freeKey;
+            moved.displayIndex = Math.max(-1, numbers.maxIndex ?? -1) + 1;
+            // As JSON stores it: a NaN index is null.
+            const entry = JSON.parse(JSON.stringify(moved));
+            const nid = this.lib.nextId++;
+            const k = String(numbers.freeKey);
+            const records = [
+                ...valueRecords(nid, null, entryValues(entry, k, false)),
+                { kind: 'entityCreate', entity: nid, type: TYPE.entry, key: `${to.id}:${k}`, added: 0 },
+                { kind: 'itemPlace', entity: to.id, list: 0, item: nid, position: (numbers.lastPosition ?? 0) + POSITION_GAP },
+                ...(entry.displayIndex === null ? [] : [{ kind: 'entryIndex', entry: nid, book: to.id, index: entry.displayIndex }]),
+            ];
+            if (deleteOriginal) records.push({ kind: 'entityDelete', entity: e.id });
+            await this.store.commit(records);
+            return { entry };
+        });
+    }
+
+    /**
+     * An owned book in upstream's shape, or undefined when the owner has none.
+     * @param {bigint} owner
+     * @param {string} slot
+     */
+    async owned(owner, slot) {
+        const [id] = await this.lib.ids(TYPE.ownedBook, [`${owner}:${slot}`]);
+        if (id === null) return undefined;
+        return this.assemble(await this.stored(id, false), false);
+    }
+
+    /**
+     * The records making an owner's book `book` (undefined: none).
+     * @param {bigint} owner
+     * @param {string} slot
+     * @param {Record<string, unknown> | undefined} book
+     */
+    async ownedRecords(owner, slot, book) {
+        const [id] = await this.lib.ids(TYPE.ownedBook, [`${owner}:${slot}`]);
+        const s = id === null ? null : await this.stored(id, false);
+        if (book === undefined) return s ? this.deleteRecords(s) : [];
+        return this.bookRecords(id ?? this.lib.nextId++, s, book, { ownedKey: `${owner}:${slot}` });
+    }
+}
+
+/**
+ * Places for entries in the order of `keys`, given the stored ones: new entries between their neighbours; when the
+ * stored ones are out of that order or no place is free, every entry again, above every place held.
+ * @param {string[]} keys
+ * @param {Map<string, number>} stored
+ * @returns {Map<string, number>} The places that change.
+ */
+function placeEntries(keys, stored) {
+    /** @type {Map<string, number>} */
+    const out = new Map();
+    let prev = -1;
+    let ok = true;
+    for (const k of keys) {
+        const p = stored.get(k);
+        if (p === undefined) continue;
+        if (p <= prev) ok = false;
+        prev = p;
+    }
+    if (ok) {
+        let lo = -1;
+        for (let i = 0; i < keys.length && ok; i++) {
+            const p = stored.get(keys[i]);
+            if (p !== undefined) {
+                lo = p;
+                continue;
+            }
+            let j = i;
+            while (j < keys.length && !stored.has(keys[j])) j++;
+            const hi = j < keys.length ? /** @type {number} */ (stored.get(keys[j])) : lo + POSITION_GAP * (j - i + 1);
+            const step = Math.floor((hi - lo) / (j - i + 1));
+            if (step < 1) {
+                ok = false;
+                break;
+            }
+            for (let m = i; m < j; m++) out.set(keys[m], lo + step * (m - i + 1));
+            lo = lo + step * (j - i);
+            i = j - 1;
+        }
+    }
+    if (ok) return out;
+    out.clear();
+    const top = Math.max(0, ...stored.values());
+    keys.forEach((k, i) => out.set(k, top + POSITION_GAP * (i + 1)));
+    return out;
+}
