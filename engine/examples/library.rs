@@ -480,9 +480,123 @@ fn pages(s: &Store) {
             ),
         ),
         (
+            "two tags, newest (checked)",
+            page_query(
+                Filter {
+                    all_tags: vec![7, 8],
+                    ..all.clone()
+                },
+                Sort::Key {
+                    sort: CREATED,
+                    desc: true,
+                },
+                500,
+            ),
+        ),
+        (
+            "two tags, fav only (checked)",
+            page_query(
+                Filter {
+                    all_tags: vec![7, 8],
+                    fav: Some(true),
+                    ..all.clone()
+                },
+                Sort::Key {
+                    sort: BY_NAME,
+                    desc: false,
+                },
+                500,
+            ),
+        ),
+        (
+            "three tags (checked)",
+            page_query(
+                Filter {
+                    all_tags: vec![7, 8, 9],
+                    ..all.clone()
+                },
+                Sort::Key {
+                    sort: BY_NAME,
+                    desc: false,
+                },
+                500,
+            ),
+        ),
+        (
+            "any of two tags (checked)",
+            page_query(
+                Filter {
+                    any_tags: vec![7, 8],
+                    ..all.clone()
+                },
+                Sort::Key {
+                    sort: BY_NAME,
+                    desc: false,
+                },
+                500,
+            ),
+        ),
+        (
+            "tag and excluded tag (checked)",
+            page_query(
+                Filter {
+                    all_tags: vec![7],
+                    no_tags: vec![8],
+                    ..all.clone()
+                },
+                Sort::Key {
+                    sort: BY_NAME,
+                    desc: false,
+                },
+                500,
+            ),
+        ),
+        (
+            "data range, matching ~15% (checked)",
+            page_query(
+                Filter {
+                    ranges: vec![(RangeField::Data, Some(1025.0), Some(1100.0))],
+                    ..all.clone()
+                },
+                Sort::Key {
+                    sort: BY_NAME,
+                    desc: false,
+                },
+                500,
+            ),
+        ),
+        (
+            "data range, sorted by data size (checked)",
+            page_query(
+                Filter {
+                    ranges: vec![(RangeField::Data, Some(900.0), Some(950.0))],
+                    ..all.clone()
+                },
+                Sort::Key {
+                    sort: DATA,
+                    desc: true,
+                },
+                500,
+            ),
+        ),
+        (
             "random",
             page_query(
                 all.clone(),
+                Sort::Random {
+                    seed: 5,
+                    desc: false,
+                },
+                500,
+            ),
+        ),
+        (
+            "random, two tags (checked)",
+            page_query(
+                Filter {
+                    all_tags: vec![7, 8],
+                    ..all.clone()
+                },
                 Sort::Random {
                     seed: 5,
                     desc: false,
