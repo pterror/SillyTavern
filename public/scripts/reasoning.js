@@ -3,7 +3,7 @@ import { mountChatEditor, unmountChatEditor } from './chat-live-editor.js';
 import {
     moment,
 } from '../lib.js';
-import { chatOpEdit, closeMessageEditor, messageFormatting, saveChatDebounced, saveSettingsDebounced, substituteParams, syncMesToSwipe, updateMessage, updateMessageBlock } from '../script.js';
+import { chatOpEdit, closeMessageEditor, messageFormatting, saveSettingsDebounced, substituteParams, syncMesToSwipe, updateMessage, updateMessageBlock } from '../script.js';
 import { main_api } from './generation-params.js';
 import { chat } from './chat-state.js';
 import { event_types, eventSource } from './events.js';
@@ -1649,7 +1649,7 @@ function registerReasoningAppEvents() {
 
         if (contentUpdated) {
             syncMesToSwipe();
-            saveChatDebounced();
+            chatOpEdit(idx).catch(error => console.error('[Reasoning] Could not save the parsed reasoning', error));
 
             const messageRendered = document.querySelector(`.mes[mesid="${idx}"]`) !== null;
             if (messageRendered) {

@@ -844,7 +844,8 @@ function alternativesFromMessage(msg) {
         if (typeof rawSwipes[i] !== 'string') continue;
         const slotInfo = rawInfo[i];
         kept.push({
-            text: rawSwipes[i],
+            // The shown alternative's text is `mes`, as upstream reads a chat: code that changes `mes` alone changes it.
+            text: i === rawSel && typeof msg.mes === 'string' ? msg.mes : rawSwipes[i],
             info: slotInfo,
             wasSelected: i === rawSel,
             origIndex: i,
@@ -1555,7 +1556,7 @@ export async function loadBranch(directories, ownerId, branchName, fullSwipes = 
  * @param {boolean} [isGroup]
  * @param {OwnerDescriptor} [owner] The owner's kind, recorded if this save creates its anchor. A group save's is
  *   known from `isGroup`.
- * @returns {Promise<{ integrity: string, assignedNodeIds: { index: number, node_id: string }[] } | { empty: true } | null>}
+ * @returns {Promise<{ integrity: string | null, assignedNodeIds: { index: number, node_id: string }[] } | { empty: true } | null>}
  *   `null` means no usable SQLite backend is available (now impossible at runtime - see
  *   server-main.js's boot-time verifySqliteBackend()). `{ empty: true }` means chatData had nothing
  *   to save; distinct from `null` so callers don't mistake "nothing to write" for "backend down".
@@ -1582,13 +1583,17 @@ export async function saveChatToTree(directories, ownerId, chatName, chatData, i
     const assignedNodeIds = [];
     const stats = newWriteStats();
     const ownerDescriptor = owner ?? (isGroup ? /** @type {OwnerDescriptor} */ ({ kind: 'group', rowId: ownerId }) : undefined);
+    /** @type {string | null} The integrity slug the chat's metadata has after the save. */
+    let integrity = nextIntegrity;
 
     entry.db.transaction(() => {
         // Reset here: a transaction that hits busy is rolled back and rerun.
         Object.assign(stats, newWriteStats());
         assignedNodeIds.length = 0;
+        integrity = nextIntegrity;
         const anchor = ensureAnchorSync(entry.db, ownerId, now, ownerDescriptor);
-        const existingNode = getLabeledNodeSync(entry.db, ownerId, chatName);
+        // A chat is named by its name or by a message on it (the node a character's chat is at).
+        const existingNode = chatName === '' ? undefined : resolveNodeOrName(entry.db, ownerId, chatName);
 
         let parentId = anchor.id;
         /** @type {string | null} */
@@ -1708,7 +1713,21 @@ export async function saveChatToTree(directories, ownerId, chatName, chatData, i
         }
 
         if (existingNode) {
-            setMetadataSync(entry.db, existingNode.id, metadataJson);
+            // Unchanged metadata isn't written, and keeps its integrity slug.
+            /** @type {Record<string, unknown>} */
+            let stored = {};
+            try { stored = existingNode.metadata != null && existingNode.metadata !== '' ? JSON.parse(existingNode.metadata) : {}; } catch { stored = {}; }
+            const { integrity: storedIntegrity, ...storedContent } = stored;
+            const savedContent = /** @type {Record<string, unknown>} */ ({ ...metadata });
+            delete savedContent.integrity;
+            if (JSON.stringify(storedContent) === JSON.stringify(savedContent)) {
+                integrity = typeof storedIntegrity === 'string' ? storedIntegrity : null;
+            } else {
+                setMetadataSync(entry.db, existingNode.id, metadataJson);
+            }
+        } else if (firstId !== null && chatName === '') {
+            // An unnamed chat's metadata is on its first message, the one its character is put on.
+            setMetadataSync(entry.db, firstId, metadataJson);
         } else if (firstId !== null) {
             // Label the first message of the new chain. If that node is already another chat's entry
             // point (two chats can open on byte-identical messages, e.g. shared group greetings), labeling
@@ -1724,7 +1743,7 @@ export async function saveChatToTree(directories, ownerId, chatName, chatData, i
     });
 
     await reportOwnerWrite(directories, entry.db, ownerId, stats);
-    return { integrity: nextIntegrity, assignedNodeIds };
+    return { integrity, assignedNodeIds };
 }
 
 /**
