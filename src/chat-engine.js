@@ -5,6 +5,7 @@ import zlib from 'node:zlib';
 import { textEdit } from './text-edit.js';
 import { META, TOP, decodeMessage, encodeMessage, messageRecords } from './chat-codec.js';
 import { ITEMIZED_PROMPT_FLAG } from './message-tree-db.js';
+import { jsonHash } from '../public/scripts/hash-utils.js';
 
 /**
  * Chats on the engine (build path 5b): each character's or group's messages as a tree, sessions and bookmarks as
@@ -1240,6 +1241,105 @@ export class ChatEngine {
     }
 
     // ---- state ----
+
+    /**
+     * Records state changes at a position (state layer 1), each a key set to a value or removed (`value`
+     * absent), a chat variable when `variable`; a change that leaves its key as it is isn't recorded.
+     * @param {object} p
+     * @param {bigint} p.tree
+     * @param {string | null} p.at The message (null: the tree's root).
+     * @param {{ key: string, variable?: boolean, value?: unknown }[]} p.ops
+     * @param {Actor} p.actor
+     * @param {number} [p.author]
+     * @param {string | null} [p.ref] The author's reference (a command, a macro, an extension).
+     * @returns {Promise<{ ok: true, changes: string[] } | { ok: false, reason: string }>} The ids of the changes
+     * recorded.
+     */
+    changeState({ tree, at, ops, actor, author = AUTHOR.user, ref = null }) {
+        return this.serialized(tree, async () => {
+            let message = null;
+            if (at !== null) {
+                [message] = await this.messageIds([at]);
+                const s = message === null ? undefined : (await this.stored([message])).get(message);
+                if (!s || s.owner !== tree) return { ok: false, reason: 'unknown node' };
+            }
+            const state = await this.store.chatRead('state', { tree, ...(message === null ? {} : { at: message }) });
+            const now = new Map(state.map(e => [`${e.variable ? 'v' : 'k'}\u0000${e.field}`, e.json]));
+            const records = [];
+            const { user, session } = await this.actorIds(actor, records);
+            const where = message === null ? { tree } : { message };
+            const time = this.now();
+            const ids = [];
+            for (const op of ops) {
+                if (typeof op?.key !== 'string' || (!op.variable && DERIVED_METADATA.has(op.key))) continue;
+                const json = op.value === undefined ? undefined : JSON.stringify(op.value);
+                const k = `${op.variable ? 'v' : 'k'}\u0000${op.key}`;
+                if (now.get(k) === json) continue;
+                now.set(k, json);
+                const id = this.next.change++;
+                /** @type {Record<string, unknown>} */
+                const r = { kind: 'stateChange', id, ...where, time, author: author | (op.variable ? VARIABLE : 0), key: op.key, user };
+                if (ref !== null) r.ref = ref;
+                if (session !== null) r.session = session;
+                if (json !== undefined) r.value = json;
+                records.push(r);
+                ids.push(String(id));
+            }
+            if (ids.length) await this.store.commit(records);
+            return { ok: true, changes: ids };
+        });
+    }
+
+    /**
+     * Reverts a recorded change (or a revert, restoring what it reverted): the state is as if it never happened.
+     * @param {object} p
+     * @param {string} p.change The change's id.
+     * @param {Actor} p.actor
+     * @param {number} [p.author]
+     * @param {string | null} [p.ref]
+     * @returns {Promise<{ ok: true, change: string } | { ok: false, reason: string }>} The revert's own id.
+     */
+    async revertChange({ change, actor, author = AUTHOR.user, ref = null }) {
+        if (!DECIMAL.test(change)) return { ok: false, reason: 'unknown change' };
+        const records = [];
+        const { user, session } = await this.actorIds(actor, records);
+        const id = this.next.change++;
+        /** @type {Record<string, unknown>} */
+        const r = { kind: 'stateRevert', id, reverts: BigInt(change), time: this.now(), author, user };
+        if (ref !== null) r.ref = ref;
+        if (session !== null) r.session = session;
+        records.push(r);
+        try {
+            await this.store.commit(records);
+        } catch (e) {
+            if (String(e?.message ?? e).includes('no change')) return { ok: false, reason: 'unknown change' };
+            throw e;
+        }
+        return { ok: true, change: String(id) };
+    }
+
+    /**
+     * The state at a position as `chat_metadata` with its hash (`jsonHash()`, as the page hashes its copy), or
+     * `unchanged` when it is `ifHash`.
+     * @param {object} p
+     * @param {bigint} p.tree
+     * @param {string | null} p.at
+     * @param {string | null} [p.session] Adds `integrity`.
+     * @param {number} [p.ifHash]
+     * @returns {Promise<{ state: Record<string, unknown>, hash: number } | { unchanged: true } | null>} null when the
+     * message isn't the tree's.
+     */
+    async stateAt({ tree, at, session = null, ifHash }) {
+        let message = null;
+        if (at !== null) {
+            [message] = await this.messageIds([at]);
+            const s = message === null ? undefined : (await this.stored([message])).get(message);
+            if (!s || s.owner !== tree) return null;
+        }
+        const state = await this.metadata(tree, message, session);
+        const hash = jsonHash(state);
+        return ifHash === hash ? { unchanged: true } : { state, hash };
+    }
 
     /**
      * Sets and removes `chat_metadata` keys at a position, as state changes: only the keys whose value differs.

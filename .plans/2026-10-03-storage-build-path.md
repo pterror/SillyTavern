@@ -879,9 +879,10 @@ Left (in the order they build on each other):
 - Compat identifiers wired: `X-ST-Session` in `getRequestHeaders()` (`none` for a tab with no session), the
   answers' `characters[].chat`, `group.chat_id`, `getCurrentChatId()`, chat names in events, and the tab told
   its session is gone.
-- State layer 1 steps 2–5, 7, 8 on these records (the state routes, the page's compat for variables and
-  `chat_metadata`, a change made while producing a reply hanging on the reply, navigation replacing the state, other
-  tabs).
+- State layer 1 steps 2–5, 7, 8 on these records: the engine's operations are built (`changeState`, `revertChange`,
+  `stateAt`, below); left are the routes (`/api/state/change`, `/revert`, `/at`, at the cut), the page's compat for
+  variables and `chat_metadata`, a change made while producing a reply recorded with the reply (the generate
+  route), navigation replacing the state, other tabs.
 - The token-count cache's routes moved onto `TokenCache` at the cut (built, see "Built, the token-count cache").
 - Measured (see "Measured, chats" below); left from it: opening a position at L = 10,000 takes 354 ms (35 µs a
   message, about 10 point reads each); reading a message's values in fewer reads would cut it.
@@ -1456,6 +1457,15 @@ Built, the token-count cache (10-10; `engine/src/store/token_cache.rs`, binding 
 | a count | a varint | exact, 1–5 bytes against the old row's integer |
 | ids | a chunks flag, the count and each id as varints, then the chunks as JSON | exact (JSON keeps a lone surrogate as an escape), smallest for the ids |
 | ids filled with chunks | written as a replacement, so marked used then | the old row kept its last use within the day; it only orders eviction |
+
+Built, state layer 1's operations (10-10; `src/chat-engine.js`, test `src/chat-engine.test.js`):
+`changeState({ tree, at, ops: [{ key, variable?, value? }], actor, author?, ref? })` records a change per key whose
+value differs at that position (an absent `value` removes the key; a chat variable is its own key; the derived keys
+are never set) and answers the changes' ids (decimal strings of the change id space); `revertChange({ change, actor,
+author?, ref? })` records a revert (of a change or of a revert), `unknown change` for an id that names none;
+`stateAt({ tree, at, session?, ifHash? })` answers the state as `chat_metadata` with its `jsonHash()`, or `unchanged`
+when the page's copy has that hash. Tests: changes at two places on a path, a key left as it is and a derived key
+recording nothing, a revert and its revert, the hash check, removals.
 
 Measured, chats (10-10; `engine/examples/chat.rs`, `cargo run --release --features measure --example chat -- <dir>
 2000`, NVMe btrfs scratchpad, removed after): 2,000 trees of 200 messages in a chain (every fifth with a second
