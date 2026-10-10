@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 
 import _ from 'lodash';
 
-import { deepMerge, humanizedDateTime, tryParse } from './util.js';
+import { deepMerge, tryParse } from './util.js';
 import { readWorldInfoFile, getCharacterWorldLink } from './endpoints/worldinfo.js';
 import { character_world_link } from '../public/scripts/character-world-link.js';
 
@@ -232,7 +232,6 @@ export function charaFormatData(data, directories) {
     // Old ST extension fields (for backward compatibility, will be deprecated)
     _.set(char, 'creatorcomment', data.creator_notes || '');
     _.set(char, 'avatar', 'none');
-    _.set(char, 'chat', data.ch_name + ' - ' + humanizedDateTime());
     _.set(char, 'talkativeness', data.talkativeness || 0.5);
     _.set(char, 'fav', data.fav == 'true');
     _.set(char, 'tags', typeof data.tags == 'string' ? (data.tags.split(',').map(x => x.trim()).filter(x => x)) : data.tags || []);
