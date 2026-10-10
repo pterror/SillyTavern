@@ -868,11 +868,11 @@ Done, in order (each section below has its details and choices):
 - ea27a5700 and the commit after it: `ChatEngine` (appends, edits, select, graft, degraft, swap, delete,
   bookmarks, metadata, load, session resolution), compared with the old store; tombstones; a position shows nothing
   below it.
-- Openings and alternatives (see "Built, openings" below).
+- Openings and alternatives; `endPathAt` and the kind `pointerRoot` (see "Built, openings" and "Built, ending a
+  path" below).
 
 Left (in the order they build on each other):
-- Chat engine operations not built yet: `endPathAt` (with nothing shown below a position: the pointer moves up),
-  the compat chat lists (sessions per tree with meaningful activity, recent sessions), session naming and deletion,
+- Chat engine operations not built yet: the compat chat lists (sessions per tree with meaningful activity, recent sessions), session naming and deletion,
   bookmark rename, mode and delete, back and forward over history, send-key lookups for `/open` (`storedSendKeys`),
   the whole-array `saveChat` compat diffed onto the engine, `renameGroupMemberInMessages` (a speaker change),
   metadata `integrity` (answered below), itemizations' JS (zstd, the `/api/itemized-prompts` routes' shapes).
@@ -1297,6 +1297,22 @@ store's answers, native and wasm:
 | choice | picked | reason |
 |---|---|---|
 | openings read | all of a tree's openings (children pages of 500) | as today; the list, its `total` and the merge with the card need every one; bounded by the tree |
+
+Built, ending a path (10-10; `engine/src/log/format.rs`, `store/chat.rs`, `store/sessions.rs`, `src/chat-engine.js`):
+- `ChatEngine.endPathAt({ tree, node_id, actor })` (`endPathAt`, and `endPathAtAnchor` with `node_id` null): the
+  session's pointer moves to the message, or to the tree's root (nothing shown yet, as a new chat). The replies below
+  stay. Nothing is written when the pointer is already there. Only that session moves; others show what they showed.
+- Kind `pointerRoot { session, user, tree }` (header 127): a session's pointer moves to a tree's root. A history
+  entry's target is a message or a tree's root; `chatRead('history')` answers `{ n, target, tree, gone }` (`target`
+  null and `tree` set for a root).
+- Tests: the model workload moves sessions to roots too (pointers, histories, remembered positions, landings,
+  through a reopen, a crash and cleaning); the JS test ends the path at a message and at the root against the old
+  store.
+
+| choice | picked | reason |
+|---|---|---|
+| a move to a root | its own kind, `pointerRoot` | `pointerMove`'s target is a required message; an optional one would cost every move a header bit and a new base |
+| a history entry's target | the message's id × 2, or the tree's id × 2 + 1 | one value for both, a bit more than before; a root needs its tree to be landed on |
 
 Where layer 1 goes: inside 5b, on the engine. Its own storage step (SQLite `state_changes`, saved states every 64th
 depth rebuilt lazily after an epoch bump) conflicts with the design: a structure caught up when read is what revision

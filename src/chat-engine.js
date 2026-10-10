@@ -718,6 +718,34 @@ export class ChatEngine {
     }
 
     /**
+     * Ends what a session shows at a message (null: at the tree's root, showing nothing yet): its pointer moves
+     * there. The replies below it stay, reachable as alternatives.
+     * @param {object} p
+     * @param {bigint} p.tree
+     * @param {string | null} p.node_id
+     * @param {Actor} p.actor
+     * @returns {Promise<{ ok: boolean, reason?: string }>}
+     */
+    endPathAt({ tree, node_id, actor }) {
+        return this.serialized(tree, async () => {
+            let id = null;
+            if (node_id !== null) {
+                [id] = await this.messageIds([node_id]);
+                const s = id === null ? undefined : (await this.stored([id])).get(id);
+                if (!s || s.owner !== tree) return { ok: false, reason: 'unknown node' };
+            }
+            const records = [];
+            const { user, session } = await this.actorIds(actor, records);
+            if (session === null) throw new Error('A path is ended through a session');
+            const [now] = await this.store.chatRead('sessions', { ids: [session] });
+            if (now && now.tree === tree && now.at === id) return { ok: true };
+            records.push(id === null ? { kind: 'pointerRoot', session, user, tree } : { kind: 'pointerMove', session, user, target: id });
+            await this.store.commit(records);
+            return { ok: true };
+        });
+    }
+
+    /**
      * Inserts a message between `after` and its reply `before`, which moves under it.
      * @param {object} p
      * @param {bigint} p.tree

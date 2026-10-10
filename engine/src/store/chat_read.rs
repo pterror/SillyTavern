@@ -256,14 +256,21 @@ pub fn user_in_tree(view: &View, u: u64, tree: u64) -> Result<Js, StoreError> {
     })
 }
 
+/// A session's history entries from the n-th on: `{ n, target, tree, gone }`, `target` the message (null: `tree`'s
+/// root, `tree` null otherwise).
 pub fn history(view: &View, s: u64, from: u64, limit: usize) -> Result<Js, StoreError> {
     Ok(Js::Arr(
         sessions::history(view, s, from, limit)?
             .into_iter()
             .map(|(n, t, gone)| {
+                let (target, tree) = match t {
+                    sessions::Target::Message(m) => (Js::Big(m), Js::Null),
+                    sessions::Target::Root(t) => (Js::Null, Js::Big(t)),
+                };
                 Js::Obj(vec![
                     ("n", Js::Num(n as f64)),
-                    ("target", Js::Big(t)),
+                    ("target", target),
+                    ("tree", tree),
                     ("gone", Js::Bool(gone)),
                 ])
             })

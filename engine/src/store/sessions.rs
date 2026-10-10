@@ -1,5 +1,5 @@
 //! Sessions, fork choices and depths (`.plans/2026-10-03-storage-build-path.md` 5b, design 4.1): what follows from
-//! the records that move a session's pointer (`pointerMove`, an append made through a session), the records that
+//! the records that move a session's pointer (`pointerMove`, `pointerRoot`, an append made through a session), the records that
 //! choose a reply at a fork (`forkSelection`, the same appends), and the moves and deletes of messages.
 //!
 //! A pointer is a message, or a tree's root (no message: the tree shows its card's greeting, as a new chat does).
@@ -34,8 +34,9 @@ pub const USER_TREE_ORDER: u64 = 125;
 pub const USER_TREE_LAST: u64 = 126;
 pub const SESSION_USERS: u64 = 127;
 /// Per (session, n): the n-th entry of its history, `[target, gone, record position + 1 (0: an append's), record
-/// length]`; per session: how many (a maximum); per (target, session, n): an entry names the target; per record
-/// position: `[session, n]` for a `pointerMove`'s entry.
+/// length]`, the target a message's id times two, or a tree's id times two plus one for its root; per session: how
+/// many (a maximum); per (message, session, n): an entry names the message; per record position: `[session, n]` for
+/// a `pointerMove`'s or `pointerRoot`'s entry.
 pub const HISTORY: u64 = 128;
 pub const HISTORY_N: u64 = 129;
 pub const HISTORY_BY: u64 = 130;
@@ -76,6 +77,30 @@ fn ptr(m: Option<u64>) -> u64 {
 
 fn unptr(p: u64) -> Option<u64> {
     p.checked_sub(1)
+}
+
+/// Where a history entry moved the pointer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    Message(u64),
+    Root(u64),
+}
+
+impl Target {
+    fn code(self) -> u64 {
+        match self {
+            Target::Message(m) => m << 1,
+            Target::Root(t) => (t << 1) | 1,
+        }
+    }
+
+    fn of(code: u64) -> Target {
+        if code & 1 == 0 {
+            Target::Message(code >> 1)
+        } else {
+            Target::Root(code >> 1)
+        }
+    }
 }
 
 fn get_vals<const N: usize>(view: &View, k: &[u8]) -> Result<Option<[u64; N]>, StoreError> {
@@ -270,7 +295,7 @@ pub fn history(
     s: u64,
     from: u64,
     limit: usize,
-) -> Result<Vec<(u64, u64, bool)>, StoreError> {
+) -> Result<Vec<(u64, Target, bool)>, StoreError> {
     let p = key::id(HISTORY, s);
     let mut start = p.clone();
     put_u64(&mut start, from);
@@ -280,7 +305,7 @@ pub fn history(
             let mut at = p.len();
             let n = get_u64(&k, &mut at).ok_or_else(|| bad("a history key"))?;
             let [t, gone, _, _] = parse_varints::<4>(&v)?;
-            Ok((n, t, gone == 1))
+            Ok((n, Target::of(t), gone == 1))
         })
         .collect()
 }
@@ -440,8 +465,8 @@ pub fn check_actor(view: &View, s: Option<u64>, u: Option<u64>) -> Result<(), St
     Ok(())
 }
 
-/// The session's pointer moves to `target` (in `tree`) by `u`, through the record at `at` (`owned`: a
-/// `pointerMove`, whose history entry points at it). `meaningful`: the move counts as activity in the tree
+/// The session's pointer moves to `target` (in `tree`; None: its root) by `u`, through the record at `at` (`owned`:
+/// a `pointerMove` or `pointerRoot`, whose history entry points at it). `meaningful`: the move counts as activity in the tree
 /// whether or not it enters it.
 #[allow(clippy::too_many_arguments)]
 pub fn moved(
@@ -450,20 +475,27 @@ pub fn moved(
     s: u64,
     u: u64,
     tree: u64,
-    target: u64,
+    target: Option<u64>,
     at: Loc,
     owned: bool,
     meaningful: bool,
 ) -> Result<(), StoreError> {
     let entering = session_pointer(view, s)?.map(|(t, _)| t) != Some(tree);
-    set_pointer(view, out, s, tree, Some(target))?;
+    set_pointer(view, out, s, tree, target)?;
     let n = get_vals::<1>(view, &key::id(HISTORY_N, s))?.map_or(1, |[n]| n + 1);
     out.put(key::id(HISTORY_N, s), varints(&[n]));
     let (rp, rl) = if owned { (at.pos + 1, at.len) } else { (0, 0) };
-    out.put(key::ids(HISTORY, s, n), varints(&[target, 0, rp, rl]));
-    let mut hb = key::ids(HISTORY_BY, target, s);
-    put_u64(&mut hb, n);
-    out.put(hb, Vec::new());
+    let code = match target {
+        Some(m) => Target::Message(m),
+        None => Target::Root(tree),
+    }
+    .code();
+    out.put(key::ids(HISTORY, s, n), varints(&[code, 0, rp, rl]));
+    if let Some(m) = target {
+        let mut hb = key::ids(HISTORY_BY, m, s);
+        put_u64(&mut hb, n);
+        out.put(hb, Vec::new());
+    }
     if owned {
         out.put(key::id(HISTORY_AT, at.pos), varints(&[s, n]));
     }
@@ -472,8 +504,8 @@ pub fn moved(
     }
     out.put(key::ids(RECENT, at.pos, s), Vec::new());
     out.put(key::id(RECENT_AT, s), varints(&[at.pos]));
-    set_session_tree(view, out, s, tree, Some(target))?;
-    set_user_tree(view, out, u, tree, s, Some(target))?;
+    set_session_tree(view, out, s, tree, target)?;
+    set_user_tree(view, out, u, tree, s, target)?;
     let mut last = key::ids(USER_TREE_LAST, u, tree);
     put_u64(&mut last, s);
     if let Some([old]) = get_vals::<1>(view, &last)? {
@@ -757,8 +789,8 @@ pub fn session_gone(view: &View, out: &mut Out, s: u64) -> Result<(), StoreError
         let mut at = hp.len();
         let n = get_u64(&k, &mut at).ok_or_else(|| bad("a history key"))?;
         let [t, gone, rp, rl] = parse_varints::<4>(&v)?;
-        if gone == 0 {
-            let mut hb = key::ids(HISTORY_BY, t, s);
+        if let (0, Target::Message(m)) = (gone, Target::of(t)) {
+            let mut hb = key::ids(HISTORY_BY, m, s);
             put_u64(&mut hb, n);
             out.del(hb);
         }
