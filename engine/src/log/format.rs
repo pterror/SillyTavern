@@ -195,8 +195,10 @@ pub enum Space {
     User = 4,
     /// Positions in the log.
     Log = 5,
+    /// State changes (`stateChange`, `stateRevert`).
+    Change = 6,
 }
-pub const SPACES: usize = 6;
+pub const SPACES: usize = 7;
 
 /// A value's type in a kind's schema.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -297,6 +299,8 @@ const fn opt(name: &'static str, ty: Ty) -> Slot {
 
 /// A value's holder: a character, group or tag, or a message.
 pub const HOLDER: &[(Space, &str)] = &[(Space::Entity, "entity"), (Space::Message, "message")];
+/// Where a state change hangs: a tree's root (the character or group), or a message.
+pub const HANG: &[(Space, &str)] = &[(Space::Entity, "tree"), (Space::Message, "message")];
 /// What an outside key names: a message (its id before the engine), a session (its UUID), a user (their handle).
 pub const KEYED: &[(Space, &str)] = &[
     (Space::Message, "message"),
@@ -647,6 +651,39 @@ pub static KINDS: &[Kind] = &[
         slots: &[
             req("message", Ty::Id(Space::Message)),
             opt("parent", Ty::Id(Space::Message)),
+            opt("session", Ty::Id(Space::Position)),
+            opt("user", Ty::Id(Space::User)),
+        ],
+        internal: false,
+    },
+    // A state change (`.plans/2026-10-03-state-layer-1.md`): `id` (stable, given in order), where it hangs, its
+    // author (`state::AUTHOR_*` in the low bits; bit 3: the key is a variable's name) and their reference, a
+    // confidence, the key, and its value as JSON (absent: the key is deleted).
+    Kind {
+        name: "stateChange",
+        base: 152,
+        slots: &[
+            req("id", Ty::Id(Space::Change)),
+            req("at", Ty::Sel(HANG)),
+            req("author", Ty::UInt),
+            opt("ref", Ty::Text),
+            opt("confidence", Ty::F64),
+            req("key", Ty::Field),
+            opt("value", Ty::Text),
+            opt("session", Ty::Id(Space::Position)),
+            opt("user", Ty::Id(Space::User)),
+        ],
+        internal: false,
+    },
+    // A state change (or a revert) is reverted: the state is as if it never happened.
+    Kind {
+        name: "stateRevert",
+        base: 119,
+        slots: &[
+            req("id", Ty::Id(Space::Change)),
+            req("reverts", Ty::Id(Space::Change)),
+            req("author", Ty::UInt),
+            opt("ref", Ty::Text),
             opt("session", Ty::Id(Space::Position)),
             opt("user", Ty::Id(Space::User)),
         ],

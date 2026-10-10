@@ -1084,6 +1084,28 @@ Answered (coordinator, 10-10), two calls the first sessions build made on its ow
 Built (10-10): `sessions::session_gone` drops the session's key and its session-tier choices; tests check that the
 UUID names nothing, the session can't move until it has a key again, and the user's and anyone's choices stay.
 
+Built, state layer 1's storage (10-10; `engine/src/store/state.rs`, tests `state_tests.rs`):
+- Kinds: `stateChange { id, tree | message, author, ref?, confidence?, key, value?, session?, user? }` (header 152,
+  two bytes) and `stateRevert { id, reverts, author, ref?, session?, user? }` (119). `id` is the change's stable id,
+  in a new id space (`Space::Change`), given by the writer in order; `author` holds the author kind (user, script,
+  model, rule, migration) and a bit for a variable's name; `key` is a field (a known metadata key may get a code); an
+  absent `value` deletes the key. A change hangs on a message, or on a tree's root (a position with no message, as a
+  new chat's).
+- Derived: each change by id, the changes hanging at each place in id order, the reverts of each change.
+- Read: `state_at(tree, message)`: the changes on the path from the tree's root down to the message, in order,
+  reverted ones skipped (a revert of a revert restores), keys in the order a JavaScript object holds them after the
+  changes in turn. O(path + changes on it), within what opening a position already reads; nothing saved.
+- A message going takes the changes hanging on it; a moved message takes them along.
+- Tests: a random tree with random changes and reverts against a fold of each path, through a crash, a reopen and
+  cleaning; moves, reverts of reverts, deletes and refusals.
+
+| choice | picked | reason |
+|---|---|---|
+| change ids | their own id space, from the writer | stable through cleaning (log positions move); reverts and later layers name them |
+| author and variable bit | one varint | one byte for the usual change |
+| reverts | their own kind | a change and a revert share no optional values |
+| no time on a change | as the build list names its values | the list (5b "Builds") has none; the layer 1 plan's "when" would add bytes no read uses yet |
+
 Where layer 1 goes: inside 5b, on the engine. Its own storage step (SQLite `state_changes`, saved states every 64th
 depth rebuilt lazily after an epoch bump) conflicts with the design: a structure caught up when read is what revision
 3 dropped (design Q-D7), and its migration step 6 is a background pass (CLAUDE.md: one-off scripts). The design and

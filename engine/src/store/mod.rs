@@ -32,6 +32,7 @@ pub mod kinds;
 pub mod library;
 pub mod library_read;
 pub mod sessions;
+pub mod state;
 pub mod tags;
 
 use std::collections::{BTreeMap, HashSet, VecDeque};
@@ -1627,6 +1628,8 @@ impl Hooks for StoreHooks {
 mod chat_tests;
 #[cfg(test)]
 mod library_tests;
+#[cfg(test)]
+mod state_tests;
 #[cfg(test)]
 mod tags_tests;
 #[cfg(test)]
