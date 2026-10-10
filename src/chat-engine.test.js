@@ -8,7 +8,7 @@ import { after, test } from 'node:test';
 import { loadEngine } from '../engine/load.js';
 
 const tree = await import('./message-tree-db.js');
-const { AUTHOR, ChatEngine, MODE } = await import('./chat-engine.js');
+const { AUTHOR, ChatEngine, MODE, defaultSessionKey, newSessionKey } = await import('./chat-engine.js');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'chat-engine-test-'));
 const directories = { root };
@@ -280,14 +280,21 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
 
         // The session a request acts through: its header's, a new tab's, a stale tab's (deleted), a third party's.
         const handle = actor.user;
-        assert.deepEqual(await chats.resolveSession({ tree: t, user: handle, header: actor.session }), { session: actor.session });
-        assert.deepEqual(await chats.resolveSession({ tree: t, user: handle, header: undefined }), { session: actor.session });
+        assert.deepEqual(await chats.resolveSession({ tree: t, user: handle, header: actor.session }), { session: actor.session, identifier: actor.session });
+        assert.deepEqual(await chats.resolveSession({ tree: t, user: handle, header: undefined }), { session: actor.session, identifier: actor.session });
         const fresh = '0190a1b2-0000-7000-8000-0000000000bb';
-        assert.deepEqual(await chats.resolveSession({ tree: t, user: handle, header: fresh }), { session: fresh });
-        const v5 = (await chats.resolveSession({ tree: t, user: handle, header: 'none' })).session;
+        assert.deepEqual(await chats.resolveSession({ tree: t, user: handle, header: fresh }), { session: fresh, identifier: fresh });
+        // A tab with no session acts through none (it lands through the cascade); its identifier is the v5 one.
+        const v5 = (await chats.resolveSession({ tree: t, user: handle, header: 'none' })).identifier;
+        assert.equal((await chats.resolveSession({ tree: t, user: handle, header: 'none' })).session, null);
+        assert.equal(v5, defaultSessionKey(handle, t));
+        assert.equal((await chats.resolveSession({ tree: t, user: 'nobody', header: undefined })).session, defaultSessionKey('nobody', t));
+        const made = newSessionKey();
+        assert.match(made, /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+        assert.notEqual(made, newSessionKey());
         const [sessionId] = await store.chatRead('ids', { space: 1, keys: [actor.session] });
         await store.commit([{ kind: 'positionDelete', id: sessionId }]);
-        assert.deepEqual(await chats.resolveSession({ tree: t, user: handle, header: actor.session }), { session: v5, gone: true });
+        assert.deepEqual(await chats.resolveSession({ tree: t, user: handle, header: actor.session }), { session: null, identifier: v5, gone: true });
 
         await store.close();
     });

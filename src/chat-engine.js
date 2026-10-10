@@ -39,6 +39,19 @@ const VARIABLE = 8;
 const DERIVED_METADATA = new Set(['integrity', 'main_chat', 'fork_point', '_tree_stored']);
 
 /**
+ * A new session's UUID (v7: its time, then random bits).
+ */
+export function newSessionKey() {
+    const b = crypto.randomBytes(16);
+    const ms = BigInt(Date.now());
+    for (let i = 0; i < 6; i++) b[i] = Number((ms >> BigInt(8 * (5 - i))) & 0xffn);
+    b[6] = (b[6] & 0x0f) | 0x70;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    const h = b.toString('hex');
+    return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+}
+
+/**
  * A UUID v5.
  * @param {string} namespace
  * @param {string} name
@@ -261,15 +274,19 @@ export class ChatEngine {
     // ---- sessions ----
 
     /**
-     * The session a request acts through, by the compat rules (build path 5b): its `X-ST-Session` header's
-     * session; `none` (a tab with no session yet) the user's deterministic session in the tree; no header (a third
-     * party) the user's last session in the tree, else that deterministic one. A deleted session's UUID is answered
-     * as `none`, and `gone` says so; a UUID that names nothing is a new tab's session, made on its first move.
+     * The session a request acts through, and the identifier upstream's compat values name it by
+     * (`getCurrentChatId()`, `characters[].chat`, `group.chat_id`):
+     * - an `X-ST-Session` header's UUID: that session;
+     * - `none` (a tab with no session yet), or a deleted session's UUID (`gone` says so): no session, so the tree is
+     *   landed in through the cascade, and the identifier is the user's deterministic one in the tree; a write then
+     *   acts through a new session (`newSessionKey()`), which the tab keeps;
+     * - no header (a caller with no tab): the user's last session in the tree, else the deterministic one, made on
+     *   its first move.
      * @param {object} p
      * @param {bigint} p.tree
      * @param {string} p.user The user's handle.
      * @param {string | null | undefined} p.header
-     * @returns {Promise<{ session: string, gone?: true }>}
+     * @returns {Promise<{ session: string | null, identifier: string, gone?: true }>}
      */
     async resolveSession({ tree, user, header }) {
         if (header === undefined || header === null) {
@@ -277,14 +294,15 @@ export class ChatEngine {
             const last = uid === null ? null : await this.store.chatRead('userInTree', { user: uid, tree });
             if (last !== null) {
                 const [s] = await this.store.chatRead('sessions', { ids: [last.session] });
-                if (s) return { session: s.key };
+                if (s) return { session: s.key, identifier: s.key };
             }
-            return { session: defaultSessionKey(user, tree) };
+            const v5 = defaultSessionKey(user, tree);
+            return { session: v5, identifier: v5 };
         }
-        if (header === 'none') return { session: defaultSessionKey(user, tree) };
+        if (header === 'none') return { session: null, identifier: defaultSessionKey(user, tree) };
         const [state] = await this.store.chatRead('keyStates', { space: SPACE.session, keys: [header] });
-        if (state === 'gone') return { session: defaultSessionKey(user, tree), gone: true };
-        return { session: header };
+        if (state === 'gone') return { session: null, identifier: defaultSessionKey(user, tree), gone: true };
+        return { session: header, identifier: header };
     }
 
     /**
