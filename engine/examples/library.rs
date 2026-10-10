@@ -1,7 +1,7 @@
 //! Measures the library on a synthetic one: per action, the record and derived bytes and the device bytes of
-//! an isolated commit; and list pages at a size.
+//! an isolated commit; list pages at a size; and list pages after a bulk load of the same library (`bulk`).
 //!
-//!   cargo run --release --example library -- <dir> <cards> [actions|pages]
+//!   cargo run --release --example library -- <dir> <cards> [actions|pages|bulk]
 //!
 //! `dir` is created and removed. Device bytes are `/proc/diskstats` sector deltas of the device holding `dir`
 //! (`ST_DISK`, e.g. nvme0n1p5), less an idle window of the same length taken just before.
@@ -168,6 +168,37 @@ fn load(s: &Store, cards: u64) {
         ks.inserted as f64 / cards as f64,
         ks.run_bytes as f64 / 1e6,
         (ks.flush_bytes + ks.merge_bytes) as f64 / ks.inserted_bytes.max(1) as f64,
+    );
+}
+
+/// The same library as `load`, through a bulk load (as the conversion one-off writes a store).
+fn bulk_load(s: &Store, cards: u64) {
+    let mut r = Rng(1);
+    let started = Instant::now();
+    let mut l = s.loader().unwrap();
+    l.add((1..=TAGS).map(|t| {
+        rec(
+            "entityCreate",
+            vec![
+                Value::Id(t),
+                Value::UInt(TAG),
+                text(&format!("tag{t}")),
+                Value::Time(0),
+            ],
+        )
+    }))
+    .unwrap();
+    for e in FIRST_CARD..FIRST_CARD + cards {
+        l.add(card(&mut r, e)).unwrap();
+    }
+    let st = l.finish().unwrap();
+    eprintln!(
+        "bulk loaded {cards} cards in {:.1} s: run {:.1} MB, {} entries; numberings {:.2} s, {} entries",
+        started.elapsed().as_secs_f64(),
+        st.run_bytes as f64 / 1e6,
+        st.run_entries,
+        st.numbers_micros as f64 / 1e6,
+        st.number_entries,
     );
 }
 
@@ -670,7 +701,11 @@ fn main() {
     let _ = std::fs::remove_dir_all(dir);
     let s = Store::open(dir, StoreConfig::default()).unwrap();
     s.wait_ready().unwrap();
-    load(&s, cards);
+    if mode == "bulk" {
+        bulk_load(&s, cards);
+    } else {
+        load(&s, cards);
+    }
     match mode {
         "actions" => {
             actions(&s, cards, &dev);
@@ -692,7 +727,11 @@ fn main() {
             eprintln!("{rss}");
             s.close();
         }
-        _ => panic!("mode is actions or pages"),
+        "bulk" => {
+            pages(&s);
+            s.close();
+        }
+        _ => panic!("mode is actions, pages or bulk"),
     }
     std::thread::sleep(Duration::from_millis(10));
     let _ = std::fs::remove_dir_all(dir);

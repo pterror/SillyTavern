@@ -63,6 +63,16 @@ pub enum Scope {
 }
 
 impl Scope {
+    /// The scope `put` wrote at `at`.
+    pub fn get(k: &[u8], at: &mut usize) -> Option<Scope> {
+        Some(match get_u64(k, at)? {
+            0 => Scope::All,
+            1 => Scope::Tag(get_u64(k, at)?),
+            2 => Scope::World(get_bytes(k, at)?),
+            _ => return None,
+        })
+    }
+
     pub fn put(&self, k: &mut Vec<u8>) {
         match self {
             Scope::All => put_u64(k, 0),
@@ -183,7 +193,7 @@ pub fn rand_key(scope: &Scope, kind: u64, fav: bool, n: u64) -> Vec<u8> {
     k
 }
 
-fn rand_at_key(scope: &Scope, e: u64) -> Vec<u8> {
+pub fn rand_at_key(scope: &Scope, e: u64) -> Vec<u8> {
     let mut k = key::of(key::RAND_AT);
     scope.put(&mut k);
     put_u64(&mut k, e);

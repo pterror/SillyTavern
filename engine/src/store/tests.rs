@@ -668,9 +668,8 @@ fn a_bulk_load_stopped_while_installing_is_whole_or_absent_after_reopening() {
         s.commit_wait(library(1, 3)).unwrap();
         let mut l = s.loader().unwrap();
         l.add(library(10, 50)).unwrap();
-        bulk::FAIL_AT.store(point, Ordering::Relaxed);
+        l.fail_at(point);
         assert!(l.finish().is_err());
-        bulk::FAIL_AT.store(0, Ordering::Relaxed);
         // Nothing more is written until reopening.
         assert!(s.commit_wait(vec![fav(1, true)]).is_err());
         drop(s);

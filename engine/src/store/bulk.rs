@@ -17,6 +17,12 @@
 //! a store with no searched documents, with nothing committed or derived meanwhile, builds every list from the
 //! merged run (a second run, installed after the first); any other load leaves the lists it changed to be built
 //! again in slices.
+//!
+//! The library's numberings (each scope's entities numbered densely for random pages) are shared too, and can't
+//! be built again later. So characters and groups load only into a store with none, with nothing committed or
+//! derived meanwhile (else the load is refused): every scope is numbered from its name order into a run
+//! installed before the load's, covering only the log before it, so a crash between the two leaves replay to
+//! derive the load over it.
 
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -68,6 +74,9 @@ pub struct LoadStats {
     /// Building the search top lists, and their entries.
     pub lists_micros: u64,
     pub list_entries: u64,
+    /// Numbering the library's scopes for random pages, and the entries.
+    pub numbers_micros: u64,
+    pub number_entries: u64,
     /// Holding commits: waiting for them, flushing the buffer, moving files, putting the run in place.
     pub install_micros: u64,
     pub total_micros: u64,
@@ -109,6 +118,12 @@ pub struct Loader<'s> {
     keep_staging: bool,
     /// The store had no searched documents when the load started: it builds the top lists.
     lists: bool,
+    /// The store had no characters or groups when the load started: a load of some numbers them.
+    library_empty: bool,
+    /// Tests stop the install as a crash would: 1 after the marker, 2 after the files moved, 3 after the
+    /// numberings' run.
+    #[cfg(test)]
+    fail_at: u8,
 }
 
 impl Store {
@@ -138,13 +153,14 @@ impl Store {
             inner.pipe.lock().unwrap().loading = None;
             return Err(e);
         }
-        let lists = match no_searched_documents(&inner.ks) {
-            Ok(x) => x,
-            Err(e) => {
-                inner.pipe.lock().unwrap().loading = None;
-                return Err(e);
-            }
-        };
+        let (lists, library_empty) =
+            match no_searched_documents(&inner.ks).and_then(|l| Ok((l, no_library(&inner.ks)?))) {
+                Ok(x) => x,
+                Err(e) => {
+                    inner.pipe.lock().unwrap().loading = None;
+                    return Err(e);
+                }
+            };
         let seq = Arc::new(AtomicU64::new(0));
         let budget = LOAD_BUFFER_BYTES / load_workers();
         let workers = (0..load_workers())
@@ -178,8 +194,23 @@ impl Store {
             finished: false,
             keep_staging: false,
             lists,
+            library_empty,
+            #[cfg(test)]
+            fail_at: 0,
         })
     }
+}
+
+/// Whether no scope counts a character or group.
+fn no_library(ks: &crate::keyspace::Keyspace) -> StoreResult<bool> {
+    use super::kinds::key;
+    let counts = key::of(key::COUNT);
+    for (_, v) in ks.scan(&counts, &key::prefix_end(&counts), usize::MAX)? {
+        if crate::keyspace::val::counter_value(&v).unwrap_or(0) > 0 {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// Whether no scope has a document with text, and no top list is kept.
@@ -197,12 +228,14 @@ fn no_searched_documents(ks: &crate::keyspace::Keyspace) -> StoreResult<bool> {
 
 pub(super) const LOAD_DIR: &str = "load";
 
-/// Tests stop an install as a crash would: 1 after the marker, 2 after the files moved.
-#[cfg(test)]
-pub(super) static FAIL_AT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 const MARKER: &str = "install";
 
 impl Loader<'_> {
+    #[cfg(test)]
+    pub(super) fn fail_at(&mut self, point: u8) {
+        self.fail_at = point;
+    }
+
     /// Adds records to the load. A refusal (an engine-only kind, or a kind whose commit changes the record)
     /// fails the whole load.
     pub fn add(&mut self, records: impl IntoIterator<Item = Record>) -> StoreResult<()> {
@@ -337,6 +370,25 @@ impl Loader<'_> {
         self.stats.run_bytes = bytes;
         self.stats.merge_micros = t.elapsed().as_micros() as u64;
 
+        // ---- numberings ----
+        // Derivation leaves them out (a numbering is shared across partitions): a load of characters or groups
+        // numbers every scope from its orders, which it can do only over a library that had none.
+        let t = Instant::now();
+        let numbers = if run_holds(&path, super::kinds::key::COUNT)? {
+            if !self.library_empty {
+                return Err(StoreError::Refused(
+                    "characters and groups are bulk loaded only into a store with none; nothing was loaded"
+                        .into(),
+                ));
+            }
+            let numbers = self.dir.join("numbers.run");
+            self.stats.number_entries = self.build_numbers(&path, &numbers, block_size)?;
+            Some(numbers)
+        } else {
+            None
+        };
+        self.stats.numbers_micros = t.elapsed().as_micros() as u64;
+
         // ---- top lists ----
         let t = Instant::now();
         let lists = if self.lists && self.alone() {
@@ -350,7 +402,7 @@ impl Loader<'_> {
 
         // ---- install ----
         let t = Instant::now();
-        self.install(&path, lists.as_deref(), end)?;
+        self.install(&path, lists.as_deref(), numbers.as_deref(), end)?;
         self.stats.install_micros = t.elapsed().as_micros() as u64;
         self.stats.total_micros = self.started.elapsed().as_micros() as u64;
         Ok(self.stats)
@@ -467,7 +519,97 @@ impl Loader<'_> {
         Ok(n)
     }
 
-    fn install(&mut self, run: &Path, lists: Option<&Path>, end: Cursor) -> StoreResult<()> {
+    /// Numbers each (scope, type, fav) densely from 0, in its name order, into a run at `out` (spilled sorted and
+    /// merged, so any size fits the load's memory). Returns its entries. The library had no characters or groups
+    /// before the load, and the install refuses it if anything changed meanwhile, so the load's run holds every
+    /// count and order: it is read alone, in key order.
+    fn build_numbers(&self, run: &Path, out: &Path, block_size: usize) -> StoreResult<u64> {
+        use super::kinds::key;
+        use super::library::{
+            BY_NAME, Scope, order_prefix, parse_uvarint, rand_at_key, rand_key, uvarint,
+        };
+        let run = Arc::new(Run::open(run, 0, 0)?);
+        let bad = || StoreError::Entry("a count key doesn't decode".into());
+        let counts = key::of(key::COUNT);
+        let mut parts = Vec::new();
+        let mut it = RunIter::new(run.clone(), &counts, None, None)?;
+        while let Some(k) = it.key()
+            && k < key::prefix_end(&counts).as_slice()
+        {
+            let k = k.to_vec();
+            if let Some(v) = it.val()?.settled() {
+                let n = crate::keyspace::val::counter_value(&v.into_bytes()).ok_or_else(bad)?;
+                let mut at = counts.len();
+                let scope = Scope::get(&k, &mut at).ok_or_else(bad)?;
+                let kind = crate::keyspace::val::get_u64(&k, &mut at).ok_or_else(bad)?;
+                let fav = crate::keyspace::val::get_u64(&k, &mut at).ok_or_else(bad)? == 1;
+                parts.push((scope, kind, fav, n));
+            }
+            it.advance()?;
+        }
+        let dir = self.dir.join("numbers");
+        fs::create_dir_all(&dir)?;
+        let seq = AtomicU64::new(0);
+        let mut spilled = Spilled::default();
+        let mut spill_staged = Staged {
+            runs: Vec::new(),
+            cache: Cache::new(0),
+            counts: ReadCounts::default(),
+            staged_dir: dir.clone(),
+            staged_from: 0,
+        };
+        let mut sink: HashMap<Vec<u8>, Val> = HashMap::new();
+        let mut sink_bytes = 0;
+        for (scope, kind, fav, n) in parts {
+            let p = order_prefix(&scope, BY_NAME, kind, fav);
+            let end = key::prefix_end(&p);
+            let mut it = RunIter::new(run.clone(), &p, None, None)?;
+            let mut i = 0i64;
+            while let Some(k) = it.key()
+                && k < end.as_slice()
+            {
+                if let Some(v) = it.val()?.settled() {
+                    let e = parse_uvarint(&v.into_bytes())?;
+                    let (rk, ak) = (
+                        rand_key(&scope, kind, fav, i as u64),
+                        rand_at_key(&scope, e),
+                    );
+                    sink_bytes += rk.len() + ak.len() + 2 * ENTRY_OVERHEAD;
+                    sink.insert(rk, Val::Put(uvarint(e)));
+                    sink.insert(ak, Val::Put(uvarint(i as u64)));
+                    i += 1;
+                    if sink_bytes >= LOAD_BUFFER_BYTES {
+                        spill(&mut sink, &mut spilled, &dir, &seq, &mut spill_staged)?;
+                        sink_bytes = 0;
+                    }
+                }
+                it.advance()?;
+            }
+            if i != n {
+                return Err(StoreError::Entry(format!(
+                    "a scope's name order holds {i} entities and its count {n}"
+                )));
+            }
+        }
+        if !sink.is_empty() {
+            spill(&mut sink, &mut spilled, &dir, &seq, &mut spill_staged)?;
+        }
+        spilled.runs.sort_by_key(|(n, _)| std::cmp::Reverse(*n));
+        let runs: Vec<Arc<Run>> = spilled.runs.into_iter().map(|(_, r)| r).collect();
+        let (entries, _) = merge_runs(&runs, &dir, out, block_size, self.workers.len().max(1))?;
+        for r in &runs {
+            r.obsolete.store(true, Ordering::Release);
+        }
+        Ok(entries)
+    }
+
+    fn install(
+        &mut self,
+        run: &Path,
+        lists: Option<&Path>,
+        numbers: Option<&Path>,
+        end: Cursor,
+    ) -> StoreResult<()> {
         let inner = self.store.inner.clone();
         let last_file = end.file;
         // Hold commits, and let the ones prepared be written and published.
@@ -495,6 +637,11 @@ impl Loader<'_> {
                 return Err(StoreError::Failed(why.clone()));
             }
             self.check_partitions()?;
+            if numbers.is_some() && !self.alone() {
+                return Err(StoreError::Refused(
+                    "the library changed during a bulk load of characters or groups; nothing was loaded".into(),
+                ));
+            }
             // The log's files run on without a gap into the load's.
             let before = inner.dir.join(inner.log.file_name(self.first_file - 1));
             if self.first_file > 0 && !before.exists() {
@@ -511,7 +658,7 @@ impl Loader<'_> {
             sync_dir(&self.dir)?;
             marked = true;
             #[cfg(test)]
-            if FAIL_AT.load(Ordering::Relaxed) == 1 {
+            if self.fail_at == 1 {
                 return Err(StoreError::Failed(
                     "failpoint: before moving the files".into(),
                 ));
@@ -522,18 +669,33 @@ impl Loader<'_> {
             }
             sync_dir(&inner.dir)?;
             #[cfg(test)]
-            if FAIL_AT.load(Ordering::Relaxed) == 2 {
+            if self.fail_at == 2 {
                 return Err(StoreError::Failed("failpoint: before the run".into()));
             }
+            // The numberings cover only the log before the load: if the load's run never follows them, replay
+            // derives the load's records over them, numbering every entity again.
+            if let Some(numbers) = numbers {
+                inner
+                    .ks
+                    .install_run(numbers, log::position(self.first_file, 0))?;
+                #[cfg(test)]
+                if self.fail_at == 3 {
+                    return Err(StoreError::Failed(
+                        "failpoint: before the load's run".into(),
+                    ));
+                }
+            }
+            inner
+                .ks
+                .install_run(run, log::position(end.file, end.offset))?;
+            // Only now does the log end past the load: a failure before leaves a flush covering no more than
+            // the runs did, so reopening derives what no run holds.
             {
                 let mut p = inner.pipe.lock().unwrap();
                 p.cursor = end;
                 inner.log.set_durable(end);
                 *inner.tail.lock().unwrap() = TailFile::existing(last_file);
             }
-            inner
-                .ks
-                .install_run(run, log::position(end.file, end.offset))?;
             // The lists, unless something was committed or derived while they were built. A crash before
             // this leaves them to be built again in slices.
             if let Some(lists) = lists
@@ -911,4 +1073,14 @@ pub(super) fn recover(dir: &Path, cfg: &log::Config) -> StoreResult<()> {
     }
     fs::remove_dir_all(&staging)?;
     Ok(())
+}
+
+/// Whether the run at `path` holds an entry of `structure`.
+fn run_holds(path: &Path, structure: u64) -> StoreResult<bool> {
+    use super::kinds::key;
+    let start = key::of(structure);
+    let it = RunIter::new(Arc::new(Run::open(path, 0, 0)?), &start, None, None)?;
+    Ok(it
+        .key()
+        .is_some_and(|k| k < key::prefix_end(&start).as_slice()))
 }
