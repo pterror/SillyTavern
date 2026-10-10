@@ -885,9 +885,8 @@ Left (in the order they build on each other):
   route), navigation replacing the state, other tabs.
 - The token-count cache's routes moved onto `TokenCache` at the cut (built, see "Built, the token-count cache").
 - Measured (see "Measured, chats" and "Built, opening a position faster" below).
-- The page's session (`X-ST-Session` in `getRequestHeaders()`, the tab's and the device's session, as answered above)
-  and `resolveSession` for `none` (lands through the cascade; the first move makes a v7 session the tab keeps; v5 only
-  for compat identifiers on requests without a session).
+- At the cut, the answers that move a tab's session call `sessionMoved(uuid)` (the new v7 session's, on its first
+  move), and an answer saying the session is gone calls `sessionGone()` (`public/scripts/tab-session.js`).
 - For 5e: old ids as `keyMap` records (counter above any decimal one), labels as bookmarks with `positionCreate`
   where they are, `default_child_id` and `characters.active_chat` as the deterministic session's choices and pointer
   moves, itemization rows and files, label metadata as `migration` state changes.
@@ -1493,6 +1492,22 @@ Answered (coordinator, 10-10; behaviour "maximally intuitive": a new tab opens w
 - Opening a position at ~35 µs and ~10 point reads a message is too slow: O(L) by the rule, but not its constant.
   Walk the ancestor chain once, then read the path's records and values in batches or ranges; target a few µs a
   message, reported before and after at L = 100, 1,000, 10,000.
+
+Built, the tab's session (10-11; `public/scripts/tab-session.js`, `request-headers.js`, `src/chat-engine.js`; tests
+`tests/tab-session.test.js`, `src/chat-engine.test.js`), as answered:
+- Every request through `getRequestHeaders()` carries `X-ST-Session`: the tab's session's UUID, or `none`. A tab's
+  session is kept in `sessionStorage` (through reloads; `''` while it has none); a new tab opens the device's default
+  (`localStorage`), the session most recently moved by any tab on the device. `sessionMoved(uuid)` makes it the tab's
+  and the device's; `sessionGone()` leaves the tab with none (and clears the device's default if it was that one).
+  With no storage, the tab keeps its session in memory. Nothing on the server reads the header until the cut.
+- `resolveSession` answers `{ session, identifier, gone? }`: `none` and a deleted session's UUID act through no
+  session (landing through the cascade), the identifier the deterministic v5 (user, tree) one; a write then acts
+  through `newSessionKey()` (a v7), which the answer hands the tab. No header: the user's last session in the tree,
+  else the v5 one (made on its first move), as before.
+
+| choice | picked | reason |
+|---|---|---|
+| where a tab's session lives | `sessionStorage` (`st:tab-session`), the device's default in `localStorage` (`st:device-session`) | per tab through reloads, per device across tabs; browser storage, as the design keeps it |
 
 Measured, chats (10-10; `engine/examples/chat.rs`, `cargo run --release --features measure --example chat -- <dir>
 2000`, NVMe btrfs scratchpad, removed after): 2,000 trees of 200 messages in a chain (every fifth with a second
