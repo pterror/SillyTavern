@@ -580,9 +580,11 @@ export class LibraryEngine {
      * Stores a tag's definition, writing only what differs from the stored one; a key only assignments named gets
      * its definition.
      * @param {{ id: string, name?: string, folder_type?: string, [key: string]: unknown }} tag
+     * @param {object} [options]
+     * @param {(id: bigint) => object[]} [options.extra] Records committed with the definition's, given the tag's id.
      * @returns {Promise<bigint>}
      */
-    writeTag(tag) {
+    writeTag(tag, { extra } = {}) {
         return this.serialized(TYPE.tag, tag.id, async () => {
             const stored = await this.entity(TYPE.tag, tag.id);
             const id = stored ? stored.id : this.nextId++;
@@ -604,6 +606,7 @@ export class LibraryEngine {
             }
             records.push(...valueChanges);
             if (!stored) records.push({ kind: 'entityCreate', entity: id, type: TYPE.tag, key: tag.id, added: Date.now() });
+            if (extra) records.push(...extra(id));
             if (records.length > 0) await this.store.commit(records);
             return id;
         });
