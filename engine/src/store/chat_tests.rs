@@ -6,6 +6,7 @@ use std::sync::atomic::AtomicU64;
 use super::chat::{self, FOLLOWING, MES, PINNED};
 use super::kinds::{Holder, key, parse_loc, text_value_of};
 use super::sessions::{self, Fork};
+use super::stats;
 use super::*;
 use crate::log::format::{Value, kind_by_name, wtf8_from_utf16};
 use crate::search::Scope;
@@ -529,6 +530,39 @@ impl Model {
             })
             .sum();
             assert_eq!(n, self.choices.len(), "choices");
+            // Stats: every message here is a character's, so the ones with a parent count.
+            let mut total = [0i64; stats::COUNTERS];
+            for o in &owners {
+                let mut want = [0i64; stats::COUNTERS];
+                let mut replies: BTreeMap<u64, i64> = BTreeMap::new();
+                for m in self.msgs.values().filter(|m| m.owner == *o) {
+                    let t = m.text.clone().unwrap_or_default();
+                    want[stats::SIZE as usize] += text(&t).len() as i64
+                        + m.values.values().map(|j| text(j).len() as i64).sum::<i64>();
+                    if let Some(p) = m.parent {
+                        want[stats::CHAR_MSGS as usize] += 1;
+                        want[stats::CHAR_WORDS as usize] += stats::count_words(&text(&t));
+                        want[stats::GEN_UNKNOWN as usize] += 1;
+                        *replies.entry(p).or_default() += 1;
+                    }
+                }
+                want[stats::SWIPES as usize] = replies.values().map(|n| (n - 1).max(0)).sum();
+                let got = stats::owner_stats(v, *o)?;
+                assert_eq!(got.counters, want, "stats of {o}");
+                assert_eq!(
+                    got.last_at,
+                    self.msgs
+                        .values()
+                        .filter(|m| m.owner == *o)
+                        .map(|m| m.time)
+                        .max(),
+                    "last chat of {o}"
+                );
+                for i in 0..stats::COUNTERS {
+                    total[i] += want[i];
+                }
+            }
+            assert_eq!(stats::total_stats(v)?.counters, total, "total stats");
             let next = v.get(&key::of(key::NEXT_MESSAGE))?;
             assert_eq!(
                 next.map(|b| library::parse_uvarint(&b).unwrap()),
@@ -1512,4 +1546,193 @@ fn chat_records_round_trip_their_bytes() {
             want
         );
     }
+}
+
+/// A message append with the given flags and name, through no session.
+fn append_with(
+    id: u64,
+    parent: Option<u64>,
+    owner: u64,
+    time: i64,
+    t: &str,
+    flags: u64,
+    name: Option<&str>,
+) -> Record {
+    rec(
+        "messageAppend",
+        vec![
+            Value::Id(id),
+            opt(parent),
+            Value::Id(owner),
+            Value::Absent,
+            name.map_or(Value::Absent, |n| Value::Text(text(n))),
+            Value::Time(time),
+            Value::Text(text(t)),
+            Value::UInt(flags),
+            Value::Absent,
+            Value::Id(1),
+            Value::Absent,
+        ],
+    )
+}
+
+fn msg_time(m: u64, code: u64, delta: i64) -> Record {
+    rec(
+        "messageTime",
+        vec![
+            Value::Id(m),
+            Value::Field(FieldRef::Code(code)),
+            Value::Int(delta),
+            Value::Absent,
+            Value::Absent,
+        ],
+    )
+}
+
+fn msg_json(m: u64, code: u64, json: &str) -> Record {
+    rec(
+        "jsonValue",
+        vec![
+            Value::Sel(1, m),
+            Value::Field(FieldRef::Code(code)),
+            Value::Text(text(json)),
+            Value::Absent,
+            Value::Absent,
+        ],
+    )
+}
+
+#[test]
+fn stats_count_as_today_and_place_the_owner_in_the_library() {
+    let dir = temp_dir("stats");
+    let (s, _) = open_with_actors(&dir);
+    // Two characters in the library, so the stats place them in the last-chat and chat-size orders.
+    let chars: Vec<Record> = [(500, "a.png"), (501, "b.png")]
+        .iter()
+        .map(|(e, k)| {
+            rec(
+                "entityCreate",
+                vec![
+                    Value::Id(*e),
+                    Value::UInt(0),
+                    Value::Text(text(k)),
+                    Value::Time(0),
+                ],
+            )
+        })
+        .collect();
+    s.commit_wait(chars).unwrap();
+    const USER: u64 = 1;
+    const SYSTEM: u64 = 1 << 2;
+    const OTHER_USER: u64 = 3;
+    const NO_SEND_DATE: u64 = 1 << chat::FLAG_SEND_DATE_SHIFT;
+    let t0 = 1_700_000_000_000;
+    s.commit_wait(vec![
+        // A greeting (doesn't count), two replies to it (one swipe), a user message whose send date is its time,
+        // one whose send date is another ISO time, one with an unreadable send date, one with none, a system
+        // message, and a message whose `is_user` is a truthy JSON value.
+        append_with(0, None, 500, t0, "Hello there", 0, None),
+        append_with(1, Some(0), 500, t0 + 1, "one two", 0, Some("Not the name")),
+        append_with(2, Some(0), 500, t0 + 2, "three", 0, None),
+        msg_time(2, chat::GEN_STARTED, 0),
+        msg_time(2, chat::GEN_FINISHED, 1500),
+        append_with(3, Some(1), 500, t0 + 3, "u1 w", USER, None),
+        append_with(4, Some(3), 500, t0 + 4, "u2", USER, None),
+        msg_time(4, chat::SEND_DATE, -10_000),
+        append_with(5, Some(4), 500, t0 + 5, "u3", USER, None),
+        msg_json(5, chat::SEND_DATE, "\"yesterday-ish\""),
+        append_with(6, Some(5), 500, t0 + 6, "u4", USER | NO_SEND_DATE, None),
+        append_with(7, Some(6), 500, t0 + 7, "sys", SYSTEM, None),
+        append_with(8, Some(7), 500, t0 + 8, "odd", OTHER_USER, None),
+        msg_json(8, chat::IS_USER, "\"yes\""),
+        append_with(9, None, 501, t0 + 100, "b's", 0, None),
+    ])
+    .unwrap();
+    let st = s.derived(|v| stats::owner_stats(v, 500)).unwrap();
+    let c = st.counters;
+    // User: 3, 4, 5, 6, 8; character: 1, 2 (0 opens the tree, 7 is a system message).
+    assert_eq!(c[stats::USER_MSGS as usize], 5);
+    assert_eq!(c[stats::USER_WORDS as usize], 2 + 1 + 1 + 1 + 1);
+    assert_eq!(c[stats::CHAR_MSGS as usize], 2);
+    assert_eq!(c[stats::CHAR_WORDS as usize], 3);
+    assert_eq!(c[stats::SWIPES as usize], 1);
+    assert_eq!(c[stats::GEN_MS as usize], 1500);
+    assert_eq!(c[stats::GEN_UNKNOWN as usize], 1);
+    // Message 4's send date is 10 s before its time, the earliest; 5's can't be read, 6 has none.
+    assert_eq!(st.first_user_at, Some(t0 + 4 - 10_000));
+    assert_eq!(st.last_at, Some(t0 + 8));
+    let size: i64 = [
+        "Hello there",
+        "one two",
+        "Not the name",
+        "three",
+        "u1 w",
+        "u2",
+        "u3",
+        "\"yesterday-ish\"",
+        "u4",
+        "sys",
+        "odd",
+        "\"yes\"",
+    ]
+    .iter()
+    .map(|t| t.len() as i64)
+    .sum();
+    assert_eq!(c[stats::SIZE as usize], size);
+    // The writer read message 5's send date as earlier still.
+    s.commit_wait(vec![msg_time(5, chat::SEND_AT, -20_000)])
+        .unwrap();
+    assert_eq!(
+        s.derived(|v| stats::owner_stats(v, 500))
+            .unwrap()
+            .first_user_at,
+        Some(t0 + 5 - 20_000)
+    );
+    // A swipe goes away when its sibling moves elsewhere; a greeting moved under a message starts to count.
+    s.commit_wait(vec![rec(
+        "messageParent",
+        vec![Value::Id(2), Value::Id(8), Value::Absent, Value::Absent],
+    )])
+    .unwrap();
+    let c = s.derived(|v| stats::owner_stats(v, 500)).unwrap().counters;
+    assert_eq!(c[stats::SWIPES as usize], 0);
+    // Deleting the earliest user message brings the next one up.
+    s.commit_wait(vec![rec(
+        "messageDelete",
+        vec![Value::Id(2), Value::Absent, Value::Absent],
+    )])
+    .unwrap();
+    let st = s.derived(|v| stats::owner_stats(v, 500)).unwrap();
+    assert_eq!(st.counters[stats::CHAR_MSGS as usize], 1);
+    assert_eq!(st.counters[stats::GEN_UNKNOWN as usize], 1);
+    // The library orders the characters by these, as their stored places show.
+    s.derived(|v| {
+        for (e, last, size) in [
+            (500u64, t0 + 8, stats::chat_size(v, 500)?),
+            (501, t0 + 100, 3),
+        ] {
+            let st = library::state(v, e)?.unwrap();
+            assert_eq!(
+                st.nums[(library::LAST_CHAT - 1) as usize],
+                Some(last as f64)
+            );
+            assert_eq!(
+                st.nums[(library::CHAT_SIZE - 1) as usize],
+                Some(size as f64)
+            );
+            for sort in [library::LAST_CHAT, library::CHAT_SIZE] {
+                let (kind, sk, tie) = library::sort_place(v, e, sort)?.unwrap();
+                let mut k = library::order_prefix(&library::Scope::All, sort, kind, false);
+                k.extend_from_slice(&sk);
+                crate::keyspace::val::put_bytes(&mut k, &tie);
+                assert!(v.get(&k)?.is_some(), "{e} in order {sort}");
+            }
+        }
+        Ok(())
+    })
+    .unwrap();
+    let totals = s.derived(stats::total_stats).unwrap();
+    assert_eq!(totals.counters[stats::USER_MSGS as usize], 5);
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
 }

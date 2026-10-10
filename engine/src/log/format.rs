@@ -656,8 +656,8 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // A state change (`.plans/2026-10-03-state-layer-1.md`): `id` (stable, given in order), where it hangs, its
-    // author (`state::AUTHOR_*` in the low bits; bit 3: the key is a variable's name) and their reference, a
+    // A state change (`.plans/2026-10-03-state-layer-1.md`): `id` (stable, given in order), where it hangs, when
+    // (ms), its author (`state::AUTHOR_*` in the low bits; bit 3: the key is a variable's name) and their reference, a
     // confidence, the key, and its value as JSON (absent: the key is deleted).
     Kind {
         name: "stateChange",
@@ -665,6 +665,7 @@ pub static KINDS: &[Kind] = &[
         slots: &[
             req("id", Ty::Id(Space::Change)),
             req("at", Ty::Sel(HANG)),
+            req("time", Ty::Time),
             req("author", Ty::UInt),
             opt("ref", Ty::Text),
             opt("confidence", Ty::F64),
@@ -682,6 +683,7 @@ pub static KINDS: &[Kind] = &[
         slots: &[
             req("id", Ty::Id(Space::Change)),
             req("reverts", Ty::Id(Space::Change)),
+            req("time", Ty::Time),
             req("author", Ty::UInt),
             opt("ref", Ty::Text),
             opt("session", Ty::Id(Space::Position)),

@@ -1085,8 +1085,10 @@ Built (10-10): `sessions::session_gone` drops the session's key and its session-
 UUID names nothing, the session can't move until it has a key again, and the user's and anyone's choices stay.
 
 Built, state layer 1's storage (10-10; `engine/src/store/state.rs`, tests `state_tests.rs`):
-- Kinds: `stateChange { id, tree | message, author, ref?, confidence?, key, value?, session?, user? }` (header 152,
-  two bytes) and `stateRevert { id, reverts, author, ref?, session?, user? }` (119). `id` is the change's stable id,
+- Kinds: `stateChange { id, tree | message, time, author, ref?, confidence?, key, value?, session?, user? }`
+  (header 152, two bytes) and `stateRevert { id, reverts, time, author, ref?, session?, user? }` (119). `time` is
+  when the change was made (ms, delta-coded as other times): a change can come long after its message, and history
+  and rollback show when (answered, coordinator, 10-10, overriding the first build's "no time"). `id` is the change's stable id,
   in a new id space (`Space::Change`), given by the writer in order; `author` holds the author kind (user, script,
   model, rule, migration) and a bit for a variable's name; `key` is a field (a known metadata key may get a code); an
   absent `value` deletes the key. A change hangs on a message, or on a tree's root (a position with no message, as a
@@ -1104,7 +1106,40 @@ Built, state layer 1's storage (10-10; `engine/src/store/state.rs`, tests `state
 | change ids | their own id space, from the writer | stable through cleaning (log positions move); reverts and later layers name them |
 | author and variable bit | one varint | one byte for the usual change |
 | reverts | their own kind | a change and a revert share no optional values |
-| no time on a change | as the build list names its values | the list (5b "Builds") has none; the layer 1 plan's "when" would add bytes no read uses yet |
+
+Chat size (answered, coordinator, 10-10; a definition change): the stored bytes of the chat's messages, not their
+JSON as assembled with a derived speaker name. It is a "how big is this chat" stat and sort key; nothing upstream
+depends on its exact byte meaning. So a rename writes only the character. Kept per write like the other stats.
+
+Built, stats (10-10; `engine/src/store/stats.rs`, tests in `chat_tests.rs`):
+- Per owner and in total, exact at every write to a message: user and character messages and words, swipes,
+  generation time and replies with none, chat size; per owner the earliest user send time and the newest message's
+  time. What counts is today's (`message-stats.js`): every user message, every character message not opening its
+  tree, no system message; a swipe is each counted character reply beyond the first under one parent; words are runs
+  of ASCII letters, digits and `_` (`countWords()`); `is_user` / `is_system` held as another value count by their
+  JavaScript truthiness.
+- Chat size counts each message's text values (its own text included), JSON values and stored name, in bytes.
+- Every record that changes a message (an append, a delete, a move, a time, a value or text of it) goes through
+  `stats::Counted`, which reads the message's contribution before and after the record and adds the difference: so
+  a value committed after the append in the same commit counts, and a move changes swipes at both parents.
+- Send and generation times: a `messageTime` (an ISO string the engine reads exactly) or, for a JSON value, the time
+  the writer read with today's `parseTimestamp()`, recorded as `messageTime` of `SEND_AT`, `GEN_STARTED_AT` or
+  `GEN_FINISHED_AT` (as 5a records create dates); with neither, a JSON value counts as unreadable (0).
+- The library's last chat and chat size sort keys are now these (`library::sort_num`), and a change moves the owner
+  in those orders as a fav flip does.
+- Message field codes (`chat.rs`): `mes` 1, `is_user` 2, `is_system` 3, `is_name` 4, `name` 5, `send_date` 6,
+  `extra` 7, `gen_started` 8, `gen_finished` 9, the read times 20–22; top-level codes stay below 64, `extra`'s known
+  keys take 64 on.
+- Tests: the chat model workload checks every owner's counters, last time and the totals; a focused test covers
+  user, system and odd `is_user` messages, each kind of send date, generation time, a swipe moved away, a delete, and
+  the owners' places in the last-chat and chat-size orders.
+
+| choice | picked | reason |
+|---|---|---|
+| keeping stats | a wrapper reading the message's contribution before and after each record | one place, whatever the record changes; the values of a message's append commit come after it |
+| swipes | a counter of counted character replies per parent | O(1) per change; the old count's meaning (each beyond the first) |
+| earliest user time and newest time | orders per owner (and every user time for the total), the first or last entry | the minimum and maximum survive deletes without a scan |
+| times the engine can't parse | the writer's reading, recorded as a `messageTime` only for a JSON value | as 5a's create dates: V8's `Date.parse` isn't reproduced in Rust |
 
 Where layer 1 goes: inside 5b, on the engine. Its own storage step (SQLite `state_changes`, saved states every 64th
 depth rebuilt lazily after an epoch bump) conflicts with the design: a structure caught up when read is what revision

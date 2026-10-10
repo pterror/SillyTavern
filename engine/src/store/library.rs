@@ -374,6 +374,8 @@ pub fn sort_num(
             Some((_, r)) => id(&r, 1) as f64,
             None => 0.0,
         }),
+        LAST_CHAT => Some(super::stats::last_chat(view, e)?.unwrap_or(0) as f64),
+        CHAT_SIZE => Some(super::stats::chat_size(view, e)? as f64),
         _ => Some(0.0),
     })
 }

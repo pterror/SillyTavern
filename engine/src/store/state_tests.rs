@@ -228,6 +228,7 @@ fn workload(s: &Store, model: &mut Model, rng: &mut Rng, from: u64, n: u64) {
                 vec![
                     Value::Id(next_change),
                     hang_value(at),
+                    Value::Time(i as i64),
                     Value::UInt(state::AUTHOR_SCRIPT | if variable { VARIABLE } else { 0 }),
                     Value::Absent,
                     Value::Absent,
@@ -246,6 +247,7 @@ fn workload(s: &Store, model: &mut Model, rng: &mut Rng, from: u64, n: u64) {
                 vec![
                     Value::Id(next_change),
                     Value::Id(t),
+                    Value::Time(i as i64),
                     Value::UInt(state::AUTHOR_USER),
                     Value::Absent,
                     Value::Absent,
@@ -318,6 +320,7 @@ fn a_change_moves_with_its_message_and_goes_with_it() {
             vec![
                 Value::Id(c),
                 hang_value(at),
+                Value::Time(c as i64),
                 Value::UInt(state::AUTHOR_USER),
                 Value::Absent,
                 Value::Absent,
@@ -373,6 +376,7 @@ fn a_change_moves_with_its_message_and_goes_with_it() {
         vec![
             Value::Id(2),
             Value::Id(1),
+            Value::Time(0),
             Value::UInt(0),
             Value::Absent,
             Value::Absent,
@@ -386,6 +390,7 @@ fn a_change_moves_with_its_message_and_goes_with_it() {
         vec![
             Value::Id(3),
             Value::Id(2),
+            Value::Time(0),
             Value::UInt(0),
             Value::Absent,
             Value::Absent,
@@ -414,6 +419,7 @@ fn a_change_moves_with_its_message_and_goes_with_it() {
             vec![
                 Value::Id(9),
                 Value::Id(50),
+                Value::Time(0),
                 Value::UInt(0),
                 Value::Absent,
                 Value::Absent,
@@ -425,6 +431,7 @@ fn a_change_moves_with_its_message_and_goes_with_it() {
             vec![
                 Value::Id(9),
                 Value::Id(0),
+                Value::Time(0),
                 Value::UInt(7),
                 Value::Absent,
                 Value::Absent,

@@ -33,6 +33,7 @@ pub mod library;
 pub mod library_read;
 pub mod sessions;
 pub mod state;
+pub mod stats;
 pub mod tags;
 
 use std::collections::{BTreeMap, HashSet, VecDeque};

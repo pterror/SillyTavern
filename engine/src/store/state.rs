@@ -110,12 +110,12 @@ impl Deriver for StateChange {
     fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
         let c = id(rec, 0);
         new_id(view, c)?;
-        check_author(id(rec, 2))?;
+        check_author(id(rec, 3))?;
         let hang = Hang::of(rec);
         if let Hang::Message(m) = hang {
             require_message(view, m)?;
         }
-        sessions::check_actor(view, opt_id(rec, 7), opt_id(rec, 8))?;
+        sessions::check_actor(view, opt_id(rec, 8), opt_id(rec, 9))?;
         out.put(key::id(CHANGE, c), loc_bytes(at));
         out.put(hang.key(c), Vec::new());
         out.max(key::of(NEXT_CHANGE), c + 1);
@@ -149,11 +149,11 @@ impl Deriver for StateRevert {
     fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
         let (c, target) = (id(rec, 0), id(rec, 1));
         new_id(view, c)?;
-        check_author(id(rec, 2))?;
+        check_author(id(rec, 3))?;
         if change_loc(view, target)?.is_none() {
             return Err(StoreError::Refused(format!("no change {target}")));
         }
-        sessions::check_actor(view, opt_id(rec, 4), opt_id(rec, 5))?;
+        sessions::check_actor(view, opt_id(rec, 5), opt_id(rec, 6))?;
         out.put(key::id(CHANGE, c), loc_bytes(at));
         out.put(key::ids(REVERTED_BY, target, c), Vec::new());
         out.max(key::of(NEXT_CHANGE), c + 1);
@@ -244,17 +244,17 @@ pub fn state_at(view: &View, tree: u64, at: Option<u64>) -> Result<Vec<Entry>, S
                 continue;
             }
             let (rec, _) = view.record(l.pos)?;
-            let variable = id(&rec, 2) & VARIABLE != 0;
-            let key = field(&rec, 5).clone();
+            let variable = id(&rec, 3) & VARIABLE != 0;
+            let key = field(&rec, 6).clone();
             let found = out
                 .iter()
                 .position(|e| e.variable == variable && e.key == key);
-            match (&rec.values[6], found) {
-                (Value::Text(_), Some(i)) => out[i].json = bytes(&rec, 6).to_vec(),
+            match (&rec.values[7], found) {
+                (Value::Text(_), Some(i)) => out[i].json = bytes(&rec, 7).to_vec(),
                 (Value::Text(_), None) => out.push(Entry {
                     variable,
                     key,
-                    json: bytes(&rec, 6).to_vec(),
+                    json: bytes(&rec, 7).to_vec(),
                 }),
                 (_, Some(i)) => {
                     out.remove(i);
