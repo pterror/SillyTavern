@@ -28,11 +28,15 @@ export const TOP = Object.freeze({
     persona: 15,
 });
 
-/** Codes of values the writer keeps about a message: its order and `extra`'s, its shape and speaker after a change. */
+/**
+ * Codes of values the writer keeps about a message: its order and `extra`'s; after a change, its shape, its speaker,
+ * and that its name is the speaker's again (the append's own name aside); the times it read and number times.
+ */
 export const META = Object.freeze({
     order: 10,
     extraOrder: 11,
     flags: 16,
+    nameFromSpeaker: 17,
     speaker: 18,
     sendAt: 20,
     genStartedAt: 21,
@@ -360,7 +364,7 @@ export function decodeMessage(stored, speakerOf) {
     else if (mes === 2) top.set('mes', /** @type {string} */ (values.get(TOP.mes)));
 
     const nameState = state(F.name);
-    const storedName = stored.texts.find(t => t.field === TOP.name)?.text ?? stored.name;
+    const storedName = values.has(META.nameFromSpeaker) ? null : stored.texts.find(t => t.field === TOP.name)?.text ?? stored.name;
     if (nameState === 0) top.set('name', JSON.stringify(storedName ?? speaker?.name ?? ''));
     else if (nameState === 2) top.set('name', /** @type {string} */ (values.get(TOP.name)));
 
