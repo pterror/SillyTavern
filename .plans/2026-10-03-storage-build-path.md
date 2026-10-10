@@ -1178,6 +1178,36 @@ Built, the message codec (10-10; `src/chat-codec.js`, test `src/chat-codec.test.
 | times as numbers | their own codes (`*_NUM`), a delta | upstream and the server write both forms |
 | later changes to fixed slots | values of their own (flags 16, speaker 18, a name as text 5) | the append is never rewritten; a change writes only itself |
 
+Built, the chat engine's first operations (10-10; `src/chat-engine.js`, test `src/chat-engine.test.js`; the text
+edit helpers moved to `src/text-edit.js`, which `library-engine.js` re-exports):
+- `ChatEngine` over a store and the speakers (by entity id and by avatar): outside ids (an old id through its key,
+  else the decimal integer), users and sessions made on their first write, writes serialized per tree.
+- `appendMessages` (send keys answered with what was stored; a reply with the same speaker and text as a sibling is
+  that sibling; through a session the session moves to each and chooses it, from the append), `editMessages` (only
+  the values that differ; blanking stored text and matching a sibling refused and reported), `select`,
+  `graftMessage`, `degraftRange`, `swapAdjacent`, `deleteAlternative`, `createBookmark`, `mergeMetadata` (state
+  changes for the keys whose value differs, each chat variable its own key), `metadata`, and `load` (a position's
+  path in upstream's shape: every alternative's text in `swipes`, `swipe_info`, outside ids, `bookmark_link` and
+  `branches` from the bookmarks made at a message, the itemized flag).
+- Tested against the old store, native and wasm: a conversation built both ways (sends, a retried send, a
+  repeated reply, an alternative added and chosen, an edit, a graft, a degraft) loads the same (ids mapped,
+  `branches` left out as its meaning changed); refusals; bookmark names; metadata at two positions; the stats
+  before any move (the old store's swap doesn't recount its stats: it writes `parent_id` directly).
+
+Stop (10-10), three questions the chat engine needs (behaviour):
+- What a session shows below its pointer when the old store would show nothing. The design reads a position as root
+  to the pointer, then the followed replies below (the cascade, down to the newest reply). Today
+  `default_child_id` can be cleared, so a chat ends at a message that has replies: `endPathAt` (deleting a chat's
+  last messages hides them, the rows stay), and a swap of the last two messages (the moved one's old reply is no
+  longer shown). Under the cascade those replies show again below the pointer. Found by the comparison test: after
+  `swapAdjacent`, the new store shows the grafted-then-degrafted message below the swapped one, the old shows none.
+- A request carrying a session UUID that maps to nothing: a deleted session's (a stale tab: treated as `none`, and
+  the tab told its session is gone) and a new session's (a tab's new v7, which has no key until its first move) look
+  the same once the deleted session's key is gone.
+- Which position's state `chat_metadata` is: 5b says the current session's position (its pointer); layer 1 step 3
+  says a change hangs on "the message the pointer is on (the last message on screen)". The two differ when the
+  session shows replies below its pointer (the first question). `load` answers the pointer's for now.
+
 Where layer 1 goes: inside 5b, on the engine. Its own storage step (SQLite `state_changes`, saved states every 64th
 depth rebuilt lazily after an epoch bump) conflicts with the design: a structure caught up when read is what revision
 3 dropped (design Q-D7), and its migration step 6 is a background pass (CLAUDE.md: one-off scripts). The design and
