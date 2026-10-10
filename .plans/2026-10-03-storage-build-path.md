@@ -1750,12 +1750,31 @@ ordinary value.
 |---|---|---|
 | the link's place | the `world_info` key's own value, marked by a leading `\u0001` | one key, so one change: reverting it restores what was shown before, and no second key can disagree with it |
 
+Measured, one entry edit (10-11; scratchpad `5c/measure.mjs`, `node measure.mjs <dir> nvme0n1 <E> 200 old|engine`: a
+book of E entries of ~400 B, 200 isolated `/entry/edit`s through the old route against `editEntry`, each awaited; NVMe
+btrfs scratchpad, removed after; device bytes are `/proc/diskstats` deltas less an idle window). Also
+`books_tests::an_entry_edit_writes_the_same_whatever_its_books_size` (a content `textEdit` in a book of 10 and of
+1,000 entries: 4 derived entries each, the text's head and edit and the versions of entry and book; ≤ 17 B logged).
+
+| E | today: ms / edit | today: written per edit | engine: ms / edit | engine: logged per edit | engine syncs |
+|---|---|---|---|---|---|
+| 100 | 6.3 | 9.3 KB manifest + the entry file, 2 fsyncs; 100 entry files read, the directory listed | 2.8 | 16 B | 1 |
+| 1,000 | 11.9 | 95 KB manifest + entry, 2 fsyncs; 1,000 files read | 2.8 | 19.5 B | 1 |
+| 10,000 | 75.6 | 968 KB manifest + entry, 2 fsyncs; 10,000 files read | 3.2 | 19.5 B | 1 |
+
+Device bytes per edit: today 347 KB / 235 KB / 1.08 MB, the engine 188 KB at 10,000 (the sync floor, design §0); the
+root disk's other writes put about ±200 KB of noise on each run, so the engine's 100 and 1,000 runs read below and
+above the floor. The edit's cost is O(changed bytes) + one sync whatever E; today's grows with E in time, bytes written
+and files read.
+
+Found while measuring (fixed): a book of 10,000 entries overflowed the stack (`records.push(...list)` with a spread of
+every entry's records); the writers append one by one (`pushAll`), tested with a 12,000-entry book.
+
 Left (handover, 10-11):
 - Not routed: `src/endpoints/worldinfo.js`'s routes, `readWorldInfoFile()`'s readers (generation's
   `candidate-resolution.js`, `text-completion-generation-input.js`, `character-card-normalize.js`, `content-manager.js`,
   `byaf.js`, `sprites.js`, `characters.js`, `settings.js`' `world_names`) and `/rename`'s settings links (still names
   until stage 7) move at the cut.
-- Measure (one entry edit against today's manifest rewrite and directory listing).
 - A card write reads its stored embedded book whole to diff it (O(its entries)).
 - `apply` reads a book's `originalData` whole when a field changes or an entry is deleted.
 - 3a466a484's message is wrong: it holds only rustfmt's line wrap of a line 6f297bdb1 added (the change it describes
