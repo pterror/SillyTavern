@@ -400,16 +400,29 @@ fn check_lists(lib: &Lib, terms: &[&str]) {
     }
 }
 
+type Hook = Box<dyn FnOnce()>;
+
 thread_local! {
-    /// Run once by a query between reading a top list's head and its entries.
-    static AFTER_LIST_HEAD: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
-        const { std::cell::RefCell::new(None) };
+    /// Run once by a query of this thread when it reaches the named point of its read: "list" between a top
+    /// list's head and its entries, "word" after a word's first document read whole, "walk" at a walk's first
+    /// match.
+    static HOOKS: std::cell::RefCell<Vec<(&'static str, Hook)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
-pub(super) fn after_list_head() {
-    if let Some(f) = AFTER_LIST_HEAD.with(|h| h.borrow_mut().take()) {
+pub(super) fn hook(at: &str) {
+    let f = HOOKS.with(|h| {
+        let mut h = h.borrow_mut();
+        let i = h.iter().position(|x| x.0 == at)?;
+        Some(h.remove(i).1)
+    });
+    if let Some(f) = f {
         f();
     }
+}
+
+fn on(at: &'static str, f: impl FnOnce() + 'static) {
+    HOOKS.with(|h| h.borrow_mut().push((at, Box::new(f))));
 }
 
 /// Waits for every slice of a top list's pass queued so far.
@@ -962,13 +975,50 @@ fn tags_whose_names_match_are_answered_beside_the_page() {
     }
 }
 
+/// A query whose read is interrupted at `at` by `write` (run to completion, on another thread so a write that
+/// waited for the read would show as a timeout rather than a hang): its page and total are those of the state
+/// before the write, and the write didn't wait.
+fn read_across_a_write(
+    store: &Arc<Store>,
+    q: &Query,
+    at: &'static str,
+    write: impl FnOnce(&Store) + Send + 'static,
+) -> Found {
+    let s = store.clone();
+    let wrote = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let w = wrote.clone();
+    on(at, move || {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            write(&s);
+            let _ = tx.send(());
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(20))
+            .expect("a write waited for a read");
+        w.store(true, Ordering::SeqCst);
+    });
+    let f = store.search(q).unwrap();
+    assert!(wrote.load(Ordering::SeqCst), "the read reached {at}");
+    f
+}
+
+fn hits(f: &Found) -> Vec<(u64, f64)> {
+    f.hits.iter().map(|h| (h.doc, h.score)).collect()
+}
+
+fn snapshot_lib(name: &str) -> (Arc<Store>, World) {
+    let Lib { store, world } = build(&temp_dir(name), 5, 500);
+    (Arc::new(store), world)
+}
+
 #[test]
-fn a_page_reads_one_version_of_a_list_while_a_slice_rewrites_it() {
+fn a_list_read_sees_one_state_while_a_slice_and_an_edit_publish() {
     let _turn = turn();
-    let dir = temp_dir("snapshot");
-    let Lib { store, world } = build(&dir, 5, 500);
-    let store = Arc::new(store);
-    let q = query(vec![clause("the", None, false, false)], 6);
+    let (store, world) = snapshot_lib("snapshot-list");
+    let c = |t: &str| clause(t, None, false, false);
+
+    // A top list: between its head and its entries, a slice starts it again at other parameters.
+    let q = query(vec![c("the")], 6);
     for _ in 0..100 {
         if store.search(&q).unwrap().refill.is_none() {
             break;
@@ -983,40 +1033,109 @@ fn a_page_reads_one_version_of_a_list_while_a_slice_rewrites_it() {
     };
     let head = head_of(&store);
     assert!(head.passing.is_none());
-    let (want, _) = brute::search(&world, &q);
-    // Between the head and the entries: a slice that starts the list again at other parameters is derived in the
-    // commit queue; it can't be published until the query's read ends.
+    let (want, total) = brute::search(&world, &q);
+    // ... and the best card loses the word.
     let doubled: Vec<(f64, f64)> = head.params.iter().map(|&(w, a)| (w * 2.0, a)).collect();
-    let (s, params) = (store.clone(), doubled.clone());
-    AFTER_LIST_HEAD.with(|h| {
-        *h.borrow_mut() = Some(Box::new(move || {
-            let (derived, published) = s.derived_jobs();
-            s.queue_refill(super::query::Refill {
-                scope: Scope::LIBRARY,
-                term: "the".into(),
-                params,
-            });
-            while s.derived_jobs().0 == derived {
-                std::thread::yield_now();
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            assert_eq!(s.derived_jobs().1, published, "published during the read");
-        }))
+    let params = doubled.clone();
+    let best = want[0].0;
+    let f = read_across_a_write(&store, &q, "list", move |s| {
+        s.queue_refill(super::query::Refill {
+            scope: Scope::LIBRARY,
+            term: "the".into(),
+            params,
+        });
+        settle(s);
+        let recs = (0..10)
+            .map(|f| text_value(best, test_codes::LIBRARY + f, ""))
+            .collect();
+        s.commit_wait(recs).unwrap();
     });
-    let f = store.search(&q).unwrap();
-    assert!(
-        AFTER_LIST_HEAD.with(|h| h.borrow().is_none()),
-        "the hook ran"
+    assert_eq!(
+        head_of(&store).params,
+        doubled,
+        "the slice published during the read"
     );
-    assert!(f.listed && f.page_exact);
-    let got: Vec<(u64, f64)> = f.hits.iter().map(|h| (h.doc, h.score)).collect();
-    assert_eq!(got, want[..6]);
-    // Published once the read ended: the list was started again at the other parameters.
-    settle(&store);
-    assert_eq!(head_of(&store).params, doubled);
-    let lib = Lib {
-        store: Arc::try_unwrap(store).ok().unwrap(),
-        world,
-    };
-    check(&lib, &q);
+    assert!(f.listed && f.page_exact && f.total_exact);
+    assert_eq!((hits(&f), f.total), (want[..6].to_vec(), total));
+}
+
+#[test]
+fn a_word_read_whole_sees_one_state_while_an_edit_publishes() {
+    let _turn = turn();
+    let (store, mut world) = snapshot_lib("snapshot-word");
+    let c = |t: &str| clause(t, None, false, false);
+    // A word read whole: after its first document, a card gets the word many times and another loses it.
+    for d in 3000..3010u64 {
+        let text = format!("zephyr {}", "wind ".repeat((d % 4) as usize));
+        store
+            .commit_wait(vec![text_value(d, test_codes::LIBRARY, &text)])
+            .unwrap();
+        world
+            .library
+            .docs
+            .entry(d)
+            .or_insert_with(|| vec![Vec::new(); 10])[0] = vec![text.into_bytes()];
+    }
+    let q = query(vec![c("zephyr")], 50);
+    let (want, total) = brute::search(&world, &q);
+    assert_eq!(total, 10);
+    // Read in id order: one not read yet gains it, the last loses it.
+    let (gains, loses) = (3020u64, 3009u64);
+    let f = read_across_a_write(&store, &q, "word", move |s| {
+        s.commit_wait(vec![
+            text_value(gains, test_codes::LIBRARY, "zephyr zephyr zephyr zephyr"),
+            text_value(loses, test_codes::LIBRARY, "plain"),
+            text_value(loses, test_codes::LIBRARY + 1, "plain"),
+        ])
+        .unwrap();
+    });
+    assert!(f.page_exact && f.total_exact);
+    assert_eq!((hits(&f), f.total), (want.clone(), total));
+}
+
+#[test]
+fn a_walk_sees_one_state_while_an_edit_publishes() {
+    let _turn = turn();
+    let (store, world) = snapshot_lib("snapshot-walk");
+    let c = |t: &str| clause(t, None, false, false);
+    // A walk: at its first match, the best matches lose a word.
+    let q = query(vec![c("dark"), c("knight")], 5);
+    let (want, total) = brute::search(&world, &q);
+    let gone: Vec<u64> = want.iter().take(5).map(|x| x.0).collect();
+    let f = read_across_a_write(&store, &q, "walk", move |s| {
+        let recs = gone
+            .iter()
+            .flat_map(|&d| (0..10).map(move |f| text_value(d, test_codes::LIBRARY + f, "")))
+            .collect();
+        s.commit_wait(recs).unwrap();
+    });
+    assert!(f.page_exact);
+    assert_eq!(hits(&f), want[..5]);
+    if f.total_exact {
+        assert_eq!(f.total, total);
+    }
+}
+
+#[test]
+fn a_long_read_does_not_delay_writes() {
+    let _turn = turn();
+    let dir = temp_dir("long-read");
+    let Lib { store, .. } = build(&dir, 6, 200);
+    let store = Arc::new(store);
+    let q = query(
+        vec![
+            clause("dark", None, false, false),
+            clause("knight", None, false, false),
+        ],
+        5,
+    );
+    // The read stays open across a hundred commits, each acknowledged while it is open.
+    let started = std::time::Instant::now();
+    read_across_a_write(&store, &q, "walk", |s| {
+        for i in 0..100u64 {
+            s.commit_wait(vec![text_value(5000 + i, test_codes::LIBRARY, "written")])
+                .unwrap();
+        }
+    });
+    assert!(started.elapsed() < std::time::Duration::from_secs(20));
 }

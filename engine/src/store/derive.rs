@@ -196,23 +196,6 @@ impl View<'_> {
         Ok(acc)
     }
 
-    /// Runs `f` with this view reading published entries from one snapshot of the keyspace
-    /// (`Keyspace::with_snapshot`): every read in `f` sees one state of them. `f` must be short.
-    pub fn with_snapshot<T>(&self, f: impl FnOnce(&View) -> T) -> T {
-        self.ks.with_snapshot(|snap| {
-            let v = View {
-                layers: self.layers.clone(),
-                pending: self.pending.clone(),
-                staged: self.staged,
-                bulk: self.bulk,
-                ks: self.ks,
-                snap: Some(snap),
-                log: self.log,
-            };
-            f(&v)
-        })
-    }
-
     /// Whether a bulk load derives through this view (see `bulk`).
     pub fn is_bulk(&self) -> bool {
         self.bulk
