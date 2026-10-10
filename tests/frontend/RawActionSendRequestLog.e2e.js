@@ -208,7 +208,7 @@ test.describe('raw-action send request log', () => {
         for (const { text, browser: requests, mock: backend } of sends) {
             const generate = requests.filter(r => r.url === '/api/backends/text-completions/generate');
             expect(generate).toHaveLength(1);
-            expect(generate[0].body.user_message).toBe(text);
+            expect(generate[0].body.user_message.mes).toBe(text);
             expect(generate[0].body).not.toHaveProperty('prompt');
 
             const countedChatTexts = requests

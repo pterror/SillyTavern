@@ -252,7 +252,7 @@ async function runResumeCase({ avatar, ownerId, branchName, userMessage, expecte
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                type: 'normal', user_message: userMessage, stream: true,
+                type: 'normal', user_message: { is_user: true, name: 'User', mes: userMessage }, stream: true,
             }),
             signal: controller.signal,
         });

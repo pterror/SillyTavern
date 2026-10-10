@@ -312,7 +312,7 @@ async function run() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                    type: 'normal', user_message: 'One more time, Rex?',
+                    type: 'normal', user_message: { is_user: true, name: 'User', mes: 'One more time, Rex?' },
                     trusted_workers: true, models: ['some-horde-model'],
                 }),
             });
@@ -378,7 +378,7 @@ async function run() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     owner_id: 'NoSuchCharacter.png', character_avatar: 'NoSuchCharacter.png',
-                    node_id: null, type: 'normal', user_message: 'Hello?',
+                    node_id: null, type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Hello?' },
                     trusted_workers: false, models: [],
                 }),
             });
@@ -531,7 +531,7 @@ async function run() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                    type: 'normal', user_message: 'Then I vanish.',
+                    type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Then I vanish.' },
                     trusted_workers: false, models: [],
                 }),
                 signal: controller.signal,
@@ -596,7 +596,7 @@ async function run() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                    type: 'normal', user_message: `Question for ${chatName}?`, user_message_ref: ref,
+                    type: 'normal', user_message: { is_user: true, name: 'User', mes: `Question for ${chatName}?` }, user_message_ref: ref,
                     trusted_workers: true, models: ['some-horde-model'],
                 }),
             });
@@ -643,7 +643,7 @@ async function run() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                    type: 'normal', user_message: `Question for ${chatName}?`, user_message_ref: ref,
+                    type: 'normal', user_message: { is_user: true, name: 'User', mes: `Question for ${chatName}?` }, user_message_ref: ref,
                     trusted_workers: true, models: ['some-horde-model'],
                 }),
             });

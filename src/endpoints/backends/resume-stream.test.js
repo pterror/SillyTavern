@@ -201,7 +201,7 @@ async function run() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                type: 'normal', user_message: 'Tell me a story, then vanish.', stream: true,
+                type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Tell me a story, then vanish.' }, stream: true,
             }),
             signal: controller.signal,
         });

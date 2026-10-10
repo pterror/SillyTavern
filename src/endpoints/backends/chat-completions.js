@@ -71,7 +71,8 @@ import { resolveTokenizer, sendTokenizerWarnings, createTokenizerOutcome } from 
 import { readConnectionStateHeader } from '../../connection-state-header.js';
 import { fetchOpenRouterModels, rememberOpenRouterModels } from '../../openrouter-models.js';
 import { prepareOpenAIMessages } from '../../chat-completion-prepare-messages.js';
-import { getAncestorPath, appendMessages, editMessage, sanitizeUserMessageExtra, addAlternatives, selectDefaultChild } from '../../message-tree-db.js';
+import { getAncestorPath, appendMessages, editMessage, addAlternatives, selectDefaultChild } from '../../message-tree-db.js';
+import { generateTurnOf } from '../../page-writes.js';
 import { readCardContent } from '../characters.js';
 import { getGroupsByIds } from '../groups.js';
 import { persistAssistantReply, replyTextAsPageShows, unreadableReplyWarning } from '../../assistant-reply-persist.js';
@@ -4092,8 +4093,7 @@ router.post('/generate', withGenerationStop(async function (request, response) {
         } else if (request.body.owner_id && (request.body.character_avatar || request.body.group_id)) {
             const {
                 character_avatar: characterAvatar, group_id: groupId, owner_id: ownerId,
-                node_id: nodeId, type = 'normal',
-                user_message: userMessageText,
+                type = 'normal',
                 // Chunk (c): `client_tools` (the client's own advertised `ToolManager` tools, see
                 // `buildRawActionChatCompletionRequest()`'s own `clientToolSchemas` doc comment) and
                 // `tool_results` (only meaningful for `type === 'tool_result'`, see the `isToolResult`
@@ -4110,14 +4110,10 @@ router.post('/generate', withGenerationStop(async function (request, response) {
                 // branch below already reads).
                 json_schema: jsonSchema,
             } = request.body;
-            // Server-validated (NOT trusted verbatim) - identical rationale/allowlist to
-            // text-completions.js's own raw-action branch (see `sanitizeUserMessageExtra()`'s own doc
-            // comment, message-tree-db.js). The client only ever forwards a REFERENCE to a file/media
-            // attachment it already uploaded (public/scripts/chats.js's `populateFileAttachment()`),
-            // never bytes.
-            const userMessageExtra = sanitizeUserMessageExtra(request.body.user_message_extra);
-
             const directories = request.user.directories;
+            const turn = await generateTurnOf(response, directories, { ownerId, avatar: characterAvatar, groupId, body: request.body });
+            if (!turn) return;
+            const { nodeId, userMessageText, userMessageExtra } = turn;
 
             // Chunk (c), wire step 3: `type: 'tool_result'` is NOT one of the "generation types" this
             // route otherwise dispatches on (normal/impersonate/continue/swipe/regenerate/quiet) - it
@@ -4205,9 +4201,7 @@ router.post('/generate', withGenerationStop(async function (request, response) {
             // reply should attach after.
             const skipPersistence = isImpersonate || type === 'quiet';
             let replyAnchorNodeId = built.anchorNodeId;
-            const userMessage = typeof userMessageText === 'string'
-                ? { name: built.name1, is_user: true, mes: userMessageText, extra: userMessageExtra, send_date: Date.now() }
-                : null;
+            const userMessage = turn.userMessage;
             if (!isToolResult && !skipPersistence && typeof userMessageText === 'string' && built.anchorNodeId) {
                 const userNodeId = await storeUserMessage(response, {
                     directories, ownerId, anchorNodeId: built.anchorNodeId, ref: request.body.user_message_ref,

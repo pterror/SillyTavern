@@ -724,7 +724,7 @@ async function run() {
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-            type: 'normal', user_message: 'One more time, Rex?', stream: false,
+            type: 'normal', user_message: { is_user: true, name: 'User', mes: 'One more time, Rex?' }, stream: false,
         });
         fakeBackend.server.close();
 
@@ -768,7 +768,7 @@ async function run() {
         try {
             const { status, data } = await postGenerate(buildTestApp(), {
                 owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                type: 'normal', user_message: 'Instruct question, Rex?', stream: false,
+                type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Instruct question, Rex?' }, stream: false,
             });
 
             assert.equal(status, 200);
@@ -809,7 +809,7 @@ async function run() {
         try {
             answer = await postGenerate(buildTestApp(), {
                 owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                type: 'normal', user_message: 'Unreadable question, Rex?', stream: false,
+                type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Unreadable question, Rex?' }, stream: false,
             });
         } finally {
             console.warn = realWarn;
@@ -860,7 +860,7 @@ async function run() {
         const app = buildTestApp();
         const rawAction = await postGenerate(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-            type: 'normal', user_message: 'Bias, Rex?', stream: false,
+            type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Bias, Rex?' }, stream: false,
         });
         const profile = await postGenerate(app, {
             connection_profile_id: 'p-unmapped', messages: [{ role: 'user', content: 'Hi.' }], stream: false,
@@ -906,7 +906,7 @@ async function run() {
         const app = buildTestApp();
         const rawAction = await postGenerate(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-            type: 'normal', user_message: 'Bias with Nemo, Rex?', stream: false,
+            type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Bias with Nemo, Rex?' }, stream: false,
         });
         const profile = await postGenerate(app, {
             connection_profile_id: 'p-nemo', messages: [{ role: 'user', content: 'Hi.' }], stream: false,
@@ -1038,7 +1038,7 @@ async function run() {
         const branchBefore = await loadBranch(directories, ownerId, branchName);
         const sent = await postGenerate(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-            type: 'normal', user_message: 'Count me, Rex.', stream: false,
+            type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Count me, Rex.' }, stream: false,
         });
         const sendRequests = requests.slice();
 
@@ -1181,7 +1181,7 @@ async function run() {
         return {
             backend,
             identity: `llamacpp:${JSON.stringify([modelPath, 'b1-abc'])}`,
-            body: { owner_id: ownerId, character_avatar: avatar, node_id: leafId, type: 'normal', user_message: `Any pears, Rex? (${n})`, stream: false },
+            body: { owner_id: ownerId, character_avatar: avatar, node_id: leafId, type: 'normal', user_message: { is_user: true, name: 'User', mes: `Any pears, Rex? (${n})` }, stream: false },
         };
     }
 
@@ -1313,7 +1313,7 @@ async function run() {
             const before = await storedRowsUnder(identity);
             const { status } = await postGenerate(buildTestApp(), {
                 owner_id: ownerId, character_avatar: avatar, node_id: leafId,
-                type: 'normal', user_message: 'When does the Claude orchard close?', stream: false,
+                type: 'normal', user_message: { is_user: true, name: 'User', mes: 'When does the Claude orchard close?' }, stream: false,
             });
             assert.equal(status, 200);
             assert.ok(whenReceived, 'the backend received the generation');
@@ -1372,7 +1372,7 @@ async function run() {
         const app = buildTestApp();
         const { status } = await postGenerate(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-            type: 'normal', user_message: 'Are you there, Rex?', stream: false,
+            type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Are you there, Rex?' }, stream: false,
         });
         fakeBackend.server.close();
 
@@ -1404,7 +1404,7 @@ async function run() {
             type: 'impersonate', is_impersonate: true,
             // Deliberately included even though a real client never sends this for impersonate - the
             // route must defensively ignore it regardless.
-            user_message: 'This should never be persisted.',
+            user_message: { is_user: true, name: 'User', mes: 'This should never be persisted.' },
             stream: false,
         });
         fakeBackend.server.close();
@@ -1436,7 +1436,7 @@ async function run() {
             type: 'quiet',
             // Also deliberately included to verify the defensive skip - a real quiet call has no
             // fresh user text to send either.
-            user_message: 'This should never be persisted.',
+            user_message: { is_user: true, name: 'User', mes: 'This should never be persisted.' },
             stream: false,
         });
         fakeBackend.server.close();
@@ -1601,7 +1601,7 @@ async function run() {
         const { status, data } = await postGenerate(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: originalLeafId,
             type: 'continue', is_continue: true,
-            user_message: 'Wait, actually - tell me about dragons instead.',
+            user_message: { is_user: true, name: 'User', mes: 'Wait, actually - tell me about dragons instead.' },
             stream: false,
         });
         fakeBackend.server.close();
@@ -1702,7 +1702,7 @@ async function run() {
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
             owner_id: groupId, character_avatar: nova, group_id: groupId, node_id: branchBeforeGroup.branch.leaf_id,
-            type: 'normal', user_message: 'Nova, status report?', stream: false,
+            type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Nova, status report?' }, stream: false,
         });
         fakeBackend.server.close();
 
@@ -1747,7 +1747,7 @@ async function run() {
         const app = buildTestApp();
         const { status, bodyBytes } = await postGenerateStream(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-            type: 'normal', user_message: 'Say hi, streamed.', stream: true,
+            type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Say hi, streamed.' }, stream: true,
         });
         fakeBackend.server.close();
 
@@ -1793,7 +1793,7 @@ async function run() {
         try {
             const { status, bodyBytes } = await postGenerateStream(buildTestApp(), {
                 owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                type: 'normal', user_message: 'Instruct question, streamed?', stream: true,
+                type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Instruct question, streamed?' }, stream: true,
             });
 
             assert.equal(status, 200);
@@ -1953,7 +1953,7 @@ async function run() {
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-            type: 'normal', user_message: 'Say hi, Claude.', stream: false,
+            type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Say hi, Claude.' }, stream: false,
         });
         fakeBackend.server.close();
 
@@ -2009,7 +2009,7 @@ async function run() {
         const app = buildTestApp();
         const { status, bodyBytes } = await postGenerateStream(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: streamNodeId,
-            type: 'normal', user_message: 'Say hi, streamed Claude.', stream: true,
+            type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Say hi, streamed Claude.' }, stream: true,
         });
         fakeBackend.server.close();
 
@@ -2059,7 +2059,7 @@ async function run() {
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-            type: 'normal', user_message: 'Say hi, Gemini.', stream: false,
+            type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Say hi, Gemini.' }, stream: false,
         });
         fakeBackend.server.close();
 
@@ -2103,7 +2103,7 @@ async function run() {
         const app = buildTestApp();
         const { status, bodyBytes } = await postGenerateStream(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: streamNodeId,
-            type: 'normal', user_message: 'Say hi, streamed Gemini.', stream: true,
+            type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Say hi, streamed Gemini.' }, stream: true,
         });
         fakeBackend.server.close();
 
@@ -2144,7 +2144,7 @@ async function run() {
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-            type: 'normal', user_message: 'Say hi, Mistral.', stream: false,
+            type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Say hi, Mistral.' }, stream: false,
         });
         fakeBackend.server.close();
 
@@ -2179,7 +2179,7 @@ async function run() {
         const app = buildTestApp();
         const { status, bodyBytes } = await postGenerateStream(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: streamNodeId,
-            type: 'normal', user_message: 'Say hi, streamed Mistral.', stream: true,
+            type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Say hi, streamed Mistral.' }, stream: true,
         });
         fakeBackend.server.close();
 
@@ -2219,7 +2219,7 @@ async function run() {
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-            type: 'normal', user_message: 'Say hi, DeepSeek.', stream: false,
+            type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Say hi, DeepSeek.' }, stream: false,
         });
         fakeBackend.server.close();
 
@@ -2265,7 +2265,7 @@ async function run() {
         const app = buildTestApp();
         const { status, bodyBytes } = await postGenerateStream(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: streamNodeId,
-            type: 'normal', user_message: 'Say hi, streamed DeepSeek.', stream: true,
+            type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Say hi, streamed DeepSeek.' }, stream: true,
         });
         fakeBackend.server.close();
 
@@ -2303,7 +2303,7 @@ async function run() {
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-            type: 'normal', user_message: 'Say hi, xAI.', stream: false,
+            type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Say hi, xAI.' }, stream: false,
         });
         fakeBackend.server.close();
 
@@ -2338,7 +2338,7 @@ async function run() {
         const app = buildTestApp();
         const { status, bodyBytes } = await postGenerateStream(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: streamNodeId,
-            type: 'normal', user_message: 'Say hi, streamed xAI.', stream: true,
+            type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Say hi, streamed xAI.' }, stream: true,
         });
         fakeBackend.server.close();
 
@@ -2386,7 +2386,7 @@ async function run() {
             const app = buildTestApp();
             const { status, data } = await postGenerate(app, {
                 owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                type: 'normal', user_message: 'Say hi, AI21.', stream: false,
+                type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Say hi, AI21.' }, stream: false,
             });
             fakeBackend.server.close();
             ai21FakeBackendUrl = null;
@@ -2422,7 +2422,7 @@ async function run() {
             const app = buildTestApp();
             const { status, bodyBytes } = await postGenerateStream(app, {
                 owner_id: ownerId, character_avatar: avatar, node_id: streamNodeId,
-                type: 'normal', user_message: 'Say hi, streamed AI21.', stream: true,
+                type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Say hi, streamed AI21.' }, stream: true,
             });
             fakeBackend.server.close();
             ai21FakeBackendUrl = null;
@@ -2461,7 +2461,7 @@ async function run() {
             const app = buildTestApp();
             const { status, bodyBytes } = await postGenerateStream(app, {
                 owner_id: ownerId, character_avatar: avatar, node_id: streamNodeId,
-                type: 'normal', user_message: 'Say hi, coalesced AI21.', stream: true,
+                type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Say hi, coalesced AI21.' }, stream: true,
             });
             fakeBackend.server.close();
             ai21FakeBackendUrl = null;
@@ -2505,7 +2505,7 @@ async function run() {
             const app = buildTestApp();
             const { status, data } = await postGenerate(app, {
                 owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                type: 'normal', user_message: 'Say hi, Cohere.', stream: false,
+                type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Say hi, Cohere.' }, stream: false,
             });
             fakeBackend.server.close();
             cohereFakeBackendUrl = null;
@@ -2557,7 +2557,7 @@ async function run() {
             const app = buildTestApp();
             const { status, bodyBytes } = await postGenerateStream(app, {
                 owner_id: ownerId, character_avatar: avatar, node_id: streamNodeId,
-                type: 'normal', user_message: 'Say hi, streamed Cohere.', stream: true,
+                type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Say hi, streamed Cohere.' }, stream: true,
             });
             fakeBackend.server.close();
             cohereFakeBackendUrl = null;
@@ -2597,7 +2597,7 @@ async function run() {
             const app = buildTestApp();
             const { status, data } = await postGenerate(app, {
                 owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                type: 'normal', user_message: 'Say hi, AI/ML API.', stream: false,
+                type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Say hi, AI/ML API.' }, stream: false,
             });
             fakeBackend.server.close();
             aimlapiFakeBackendUrl = null;
@@ -2633,7 +2633,7 @@ async function run() {
             const app = buildTestApp();
             const { status, bodyBytes } = await postGenerateStream(app, {
                 owner_id: ownerId, character_avatar: avatar, node_id: streamNodeId,
-                type: 'normal', user_message: 'Say hi, streamed AI/ML API.', stream: true,
+                type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Say hi, streamed AI/ML API.' }, stream: true,
             });
             fakeBackend.server.close();
             aimlapiFakeBackendUrl = null;
@@ -2672,7 +2672,7 @@ async function run() {
             const app = buildTestApp();
             const { status, data } = await postGenerate(app, {
                 owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                type: 'normal', user_message: 'Say hi, Chutes.', stream: false,
+                type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Say hi, Chutes.' }, stream: false,
             });
             fakeBackend.server.close();
             chutesFakeBackendUrl = null;
@@ -2708,7 +2708,7 @@ async function run() {
             const app = buildTestApp();
             const { status, bodyBytes } = await postGenerateStream(app, {
                 owner_id: ownerId, character_avatar: avatar, node_id: streamNodeId,
-                type: 'normal', user_message: 'Say hi, streamed Chutes.', stream: true,
+                type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Say hi, streamed Chutes.' }, stream: true,
             });
             fakeBackend.server.close();
             chutesFakeBackendUrl = null;
@@ -2748,7 +2748,7 @@ async function run() {
             const app = buildTestApp();
             const { status, data } = await postGenerate(app, {
                 owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                type: 'normal', user_message: 'Say hi, MiniMax.', stream: false,
+                type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Say hi, MiniMax.' }, stream: false,
             });
             fakeBackend.server.close();
             minimaxFakeBackendUrl = null;
@@ -2784,7 +2784,7 @@ async function run() {
             const app = buildTestApp();
             const { status, bodyBytes } = await postGenerateStream(app, {
                 owner_id: ownerId, character_avatar: avatar, node_id: streamNodeId,
-                type: 'normal', user_message: 'Say hi, streamed MiniMax.', stream: true,
+                type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Say hi, streamed MiniMax.' }, stream: true,
             });
             fakeBackend.server.close();
             minimaxFakeBackendUrl = null;
@@ -2823,7 +2823,7 @@ async function run() {
             const app = buildTestApp();
             const { status, data } = await postGenerate(app, {
                 owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                type: 'normal', user_message: 'Say hi, Electron Hub.', stream: false,
+                type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Say hi, Electron Hub.' }, stream: false,
             });
             fakeBackend.server.close();
             electronhubFakeBackendUrl = null;
@@ -2859,7 +2859,7 @@ async function run() {
             const app = buildTestApp();
             const { status, bodyBytes } = await postGenerateStream(app, {
                 owner_id: ownerId, character_avatar: avatar, node_id: streamNodeId,
-                type: 'normal', user_message: 'Say hi, streamed Electron Hub.', stream: true,
+                type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Say hi, streamed Electron Hub.' }, stream: true,
             });
             fakeBackend.server.close();
             electronhubFakeBackendUrl = null;
@@ -2903,7 +2903,7 @@ async function run() {
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-            type: 'normal', user_message: 'Say hi, Azure.', stream: false,
+            type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Say hi, Azure.' }, stream: false,
         });
         fakeBackend.server.close();
 
@@ -2938,7 +2938,7 @@ async function run() {
         const app = buildTestApp();
         const { status, bodyBytes } = await postGenerateStream(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: streamNodeId,
-            type: 'normal', user_message: 'Say hi, streamed Azure.', stream: true,
+            type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Say hi, streamed Azure.' }, stream: true,
         });
         fakeBackend.server.close();
 
@@ -2975,7 +2975,7 @@ async function run() {
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
             owner_id: ownerId, character_avatar: avatar,
-            type: 'normal', user_message: 'This should be rejected.', stream: false,
+            type: 'normal', user_message: { is_user: true, name: 'User', mes: 'This should be rejected.' }, stream: false,
         });
         assert.equal(status, 400, 'a request body with no node_id key at all is a real 400, not a silent guess');
         assert.match(data.message, /node_id is required/, 'the error names the real, specific problem');
@@ -2988,7 +2988,7 @@ async function run() {
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: null,
-            type: 'normal', user_message: 'This should also be rejected.', stream: false,
+            type: 'normal', user_message: { is_user: true, name: 'User', mes: 'This should also be rejected.' }, stream: false,
         });
         assert.equal(status, 400, 'node_id: null on an owner with real existing history is a real 400');
         assert.match(data.message, /already has an existing conversation/, 'the error explains why null was rejected here');
@@ -3020,8 +3020,8 @@ async function run() {
         const app = buildTestApp();
         const { status } = await postGenerate(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-            type: 'normal', user_message: 'Check the attached file.', stream: false,
-            user_message_extra: { files: [{ url: '/user/files/raw-action-attach.txt', size: 25, name: 'raw-action-attach.txt', created: 1700000000000 }] },
+            type: 'normal', stream: false,
+            user_message: { is_user: true, name: 'User', mes: 'Check the attached file.', extra: { files: [{ url: '/user/files/raw-action-attach.txt', size: 25, name: 'raw-action-attach.txt', created: 1700000000000 }] } },
         });
         fakeBackend.server.close();
 
@@ -3074,8 +3074,8 @@ async function run() {
         const app = buildTestApp();
         const { status } = await postGenerate(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-            type: 'normal', user_message: 'Look at this.', stream: false,
-            user_message_extra: { media: [{ url: dataUrl, type: 'image', source: 'upload' }], media_index: 0 },
+            type: 'normal', stream: false,
+            user_message: { is_user: true, name: 'User', mes: 'Look at this.', extra: { media: [{ url: dataUrl, type: 'image', source: 'upload' }], media_index: 0 } },
         });
         fakeBackend.server.close();
         pointBackendAt(fakeBackend.url); // restore the plain (non-media) fixture for anything after this block
@@ -3096,9 +3096,9 @@ async function run() {
         assert.deepEqual(persistedUserMsg.extra, { media: [{ url: dataUrl, type: 'image', source: 'upload' }], media_index: 0 });
     }
 
-    // --- rejection/sanitization, route-level: a garbage-shaped `user_message_extra` is dropped
-    // rather than stored verbatim or crashing the request - sanitizeUserMessageExtra()'s own
-    // allowlist (message-tree-db.js) is exercised through the real HTTP route. ---
+    // --- route-level: a garbage-shaped user message `extra` doesn't crash the request: the prompt
+    // reads it through sanitizeUserMessageExtra()'s allowlist (message-tree-db.js), and the message
+    // is stored as sent. ---
     {
         const fakeBackend = await startFakeBackend((_req, res) => {
             res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -3110,22 +3110,22 @@ async function run() {
         const app = buildTestApp();
         const { status } = await postGenerate(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-            type: 'normal', user_message: 'This has a garbage attachment payload.', stream: false,
-            user_message_extra: {
+            type: 'normal', stream: false,
+            user_message: { is_user: true, name: 'User', mes: 'This has a garbage attachment payload.', extra: {
                 evil_script: '<script>alert(1)</script>',
                 files: [{ url: 12345, name: 'not-a-real-url.txt' }],
                 media: [{ url: '/user/files/whatever.png', type: 'application/x-not-a-real-media-type' }],
                 media_index: 'not-a-number',
                 inline_image: 'yes',
-            },
+            } },
         });
         fakeBackend.server.close();
-        assert.equal(status, 200, 'a garbage-shaped user_message_extra does not crash the request - it is sanitized, not rejected outright');
+        assert.equal(status, 200, 'a garbage-shaped extra does not crash the request');
 
         const branchAfter = await loadBranch(directories, ownerId, branchName);
         const persistedUserMsg = branchAfter.messages[branchAfter.messages.length - 2];
         assert.equal(persistedUserMsg.mes, 'This has a garbage attachment payload.');
-        assert.deepEqual(persistedUserMsg.extra, {}, 'every field of the garbage payload was dropped by the allowlist - nothing survived, not even partially');
+        assert.equal(persistedUserMsg.extra.evil_script, '<script>alert(1)</script>', 'the message is stored as the page sent it; only the prompt reads its attachments, through the allowlist');
     }
 
     // --- server-native tool calling (chunk (b): wiring src/server-tools.js's registry into this
@@ -3154,7 +3154,7 @@ async function run() {
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-            type: 'normal', user_message: 'Anything new?', stream: false,
+            type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Anything new?' }, stream: false,
         });
         fakeBackend.server.close();
 
@@ -3223,7 +3223,7 @@ async function run() {
         try {
             ({ status, data } = await postGenerate(app, {
                 owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                type: 'normal', user_message: 'What is the weather in Booktown?', stream: false,
+                type: 'normal', user_message: { is_user: true, name: 'User', mes: 'What is the weather in Booktown?' }, stream: false,
             }));
         } finally {
             fakeBackend.server.close();
@@ -3316,7 +3316,7 @@ async function run() {
         try {
             ({ status, data } = await postGenerate(app, {
                 owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                type: 'normal', user_message: 'Try the broken tool.', stream: false,
+                type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Try the broken tool.' }, stream: false,
             }));
         } finally {
             fakeBackend.server.close();
@@ -3379,7 +3379,7 @@ async function run() {
         try {
             ({ status, data } = await postGenerate(app, {
                 owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                type: 'normal', user_message: 'Call something weird.', stream: false,
+                type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Call something weird.' }, stream: false,
             }));
         } finally {
             fakeBackend.server.close();
@@ -3443,7 +3443,7 @@ async function run() {
         try {
             ({ status, data } = await postGenerate(app, {
                 owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                type: 'normal', user_message: 'Keep going forever.', stream: false,
+                type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Keep going forever.' }, stream: false,
             }));
         } finally {
             fakeBackend.server.close();
@@ -3504,7 +3504,7 @@ async function run() {
         try {
             ({ status, data } = await postGenerate(app, {
                 owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                type: 'normal', user_message: 'Open the curtains.', stream: false,
+                type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Open the curtains.' }, stream: false,
                 client_tools: clientTools,
             }));
         } finally {
@@ -3574,7 +3574,7 @@ async function run() {
         const app = buildTestApp();
         const { status: status1, data: data1 } = await postGenerate(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-            type: 'normal', user_message: 'What time is it?', stream: false,
+            type: 'normal', user_message: { is_user: true, name: 'User', mes: 'What time is it?' }, stream: false,
             client_tools: clientTools,
         });
         assert.equal(status1, 200);
@@ -3672,7 +3672,7 @@ async function run() {
         try {
             ({ status: status1, data: data1 } = await postGenerate(app, {
                 owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                type: 'normal', user_message: 'Do both things.', stream: false,
+                type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Do both things.' }, stream: false,
                 client_tools: clientTools,
             }));
 
@@ -3753,7 +3753,7 @@ async function run() {
         try {
             ({ status, data } = await postGenerate(app, {
                 owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                type: 'normal', user_message: 'Call something imaginary.', stream: false,
+                type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Call something imaginary.' }, stream: false,
                 client_tools: clientTools,
             }));
         } finally {
@@ -3822,7 +3822,7 @@ async function run() {
         try {
             ({ status, data } = await postGenerate(app, {
                 owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                type: 'normal', user_message: 'Trigger the shared name.', stream: false,
+                type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Trigger the shared name.' }, stream: false,
                 client_tools: clientTools,
             }));
         } finally {
@@ -3898,7 +3898,7 @@ async function run() {
         try {
             ({ status, bodyBytes } = await postGenerateStream(app, {
                 owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                type: 'normal', user_message: 'What is the weather in Booktown, streamed?', stream: true,
+                type: 'normal', user_message: { is_user: true, name: 'User', mes: 'What is the weather in Booktown, streamed?' }, stream: true,
             }));
         } finally {
             fakeBackend.server.close();
@@ -3967,7 +3967,7 @@ async function run() {
         try {
             ({ status, bodyBytes } = await postGenerateStream(app, {
                 owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                type: 'normal', user_message: 'Open the curtains, streamed.', stream: true,
+                type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Open the curtains, streamed.' }, stream: true,
                 client_tools: [{ type: 'function', function: { name: 'open_curtains', description: 'Opens the curtains.', parameters: { type: 'object', properties: { side: { type: 'string' } } } } }],
             }));
         } finally {
@@ -4059,7 +4059,7 @@ async function run() {
         try {
             ({ status, data } = await postGenerate(app, {
                 owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                type: 'normal', user_message: 'Think something.', stream: false,
+                type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Think something.' }, stream: false,
                 client_tools: clientTools,
                 stealth_tool_names: ['log_secret_thought'],
             }));
@@ -4124,7 +4124,7 @@ async function run() {
         try {
             ({ status, data } = await postGenerate(app, {
                 owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                type: 'normal', user_message: 'Think something and open the curtains.', stream: false,
+                type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Think something and open the curtains.' }, stream: false,
                 client_tools: clientTools,
                 stealth_tool_names: ['log_secret_thought'],
             }));
@@ -4172,7 +4172,7 @@ async function run() {
         try {
             ({ status, bodyBytes } = await postGenerateStream(app, {
                 owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                type: 'normal', user_message: 'Think something, streamed.', stream: true,
+                type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Think something, streamed.' }, stream: true,
                 client_tools: [{ type: 'function', function: { name: 'log_secret_thought', description: 'Silently records a thought (client-only, stealth).', parameters: { type: 'object', properties: {} } } }],
                 stealth_tool_names: ['log_secret_thought'],
             }));
@@ -4400,7 +4400,7 @@ async function run() {
         try {
             ({ status, data } = await postGenerate(app, {
                 owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                type: 'quiet', user_message: '', stream: false,
+                type: 'quiet', user_message: { is_user: true, name: 'User', mes: '' }, stream: false,
                 json_schema: { name: 'mood_schema', description: 'The character\'s mood.', strict: true, value: { type: 'object', properties: { mood: { type: 'string' } }, required: ['mood'] } },
             }));
         } finally {
@@ -4468,7 +4468,7 @@ async function run() {
                 const ref = `ref-${chatName}`;
                 const body = {
                     owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                    type: 'normal', user_message: `Question for ${chatName}?`, user_message_ref: ref, stream,
+                    type: 'normal', user_message: { is_user: true, name: 'User', mes: `Question for ${chatName}?` }, user_message_ref: ref, stream,
                 };
                 let stored;
                 if (stream) {
@@ -4561,7 +4561,7 @@ async function run() {
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                        type: 'normal', user_message: `Question for ${chatName}?`, user_message_ref: ref, stream,
+                        type: 'normal', user_message: { is_user: true, name: 'User', mes: `Question for ${chatName}?` }, user_message_ref: ref, stream,
                     }),
                 });
                 const answer = { status: res.status, headers: res.headers, text: await res.text() };

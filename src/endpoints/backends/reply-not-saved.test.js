@@ -177,7 +177,7 @@ async function storeCase({ label, router, settings, format, json, stream, avatar
         return fetch(`${base}/generate`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-Generation-Id': id },
-            body: JSON.stringify({ owner_id: avatar, character_avatar: avatar, node_id: nodeId, type: 'normal', user_message: 'When do we leave?', user_message_ref: ref, stream }),
+            body: JSON.stringify({ owner_id: avatar, character_avatar: avatar, node_id: nodeId, type: 'normal', user_message: { is_user: true, name: 'User', mes: 'When do we leave?' }, user_message_ref: ref, stream }),
         });
     }
 

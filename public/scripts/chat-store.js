@@ -85,23 +85,69 @@ export function setSendStoredListener(listener) {
     _sendStoredListener = listener;
 }
 
+/** @type {(entry: { ref: string, node_id: string, integrity: string|null }) => void} */
+let _metadataStoredListener = () => {};
+
+/**
+ * Sets what is told when the server says it stored chat metadata keys the page sent under a ref (an entry of
+ * `stored` with `integrity`).
+ * @param {(entry: { ref: string, node_id: string, integrity: string|null }) => void} listener
+ */
+export function setMetadataStoredListener(listener) {
+    _metadataStoredListener = listener;
+}
+
 /**
  * Takes on the node ids the server reports for the messages it stored: each `{ ref, node_id }` goes to
- * the message on screen holding that ref, which is then saved as far as the page is concerned.
+ * the message on screen holding that ref, which is then saved as far as the page is concerned. A greeting
+ * shown without a row takes on its row as ensureOpeningRow() gives it one. An entry with `integrity` reports
+ * chat metadata keys stored instead.
  * @param {unknown} stored The answer's `stored` list.
  */
 export function adoptStored(stored) {
     if (!Array.isArray(stored)) return;
     for (const entry of stored) {
         if (typeof entry?.ref !== 'string' || !isStoredNodeId(entry?.node_id)) continue;
+        if ('integrity' in entry) {
+            _metadataStoredListener({ ref: entry.ref, node_id: entry.node_id, integrity: typeof entry.integrity === 'string' ? entry.integrity : null });
+            continue;
+        }
         _sendStoredListener(entry.ref);
         for (let i = chat.length - 1; i >= 0; i--) {
             if (_storeRefs.get(chat[i]) !== entry.ref) continue;
+            if (isProvisionalNodeId(chat[i].node_id)) {
+                _adoptOpeningRow(i, entry.node_id);
+                break;
+            }
             if (chat[i].node_id !== entry.node_id) updateMessage(i, { node_id: entry.node_id });
             _markMessageSaved(i, entry.node_id);
             break;
         }
     }
+}
+
+/**
+ * A greeting shown without a row now has one: its shown slot takes the row's id, and a character's chat is now
+ * at it, as ensureOpeningRow() leaves them.
+ * @param {number} mesId
+ * @param {string} realId
+ */
+function _adoptOpeningRow(mesId, realId) {
+    const current = chat[mesId];
+    const provisional = current.node_id;
+    const wasClean = _messageSnapshots.get(provisional) === current;
+    const at = current.swipe_id ?? 0;
+    /** @type {Partial<ChatMessage>} */
+    const updates = { node_id: realId };
+    if (Array.isArray(current.swipe_info)) {
+        const swipeInfo = [...current.swipe_info];
+        swipeInfo[at] = { ...(swipeInfo[at] ?? {}), node_id: realId };
+        updates.swipe_info = swipeInfo;
+    }
+    updateMessage(mesId, updates);
+    _messageSnapshots.delete(provisional);
+    if (wasClean) _messageSnapshots.set(realId, chat[mesId]);
+    if (mesId === 0 && (selected_group == null || selected_group === '')) _setCurrentTarget(realId, null);
 }
 
 setStoredAdopter(adoptStored);
