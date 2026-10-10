@@ -528,6 +528,67 @@ impl ToNapiValue for TagPage {
     }
 }
 
+pub struct TagPositions(Vec<Option<Vec<u8>>>);
+
+impl ToNapiValue for TagPositions {
+    unsafe fn to_napi_value(raw_env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
+        let list: Vec<Option<Buffer>> = val.0.into_iter().map(|c| c.map(Buffer::from)).collect();
+        unsafe { Vec::to_napi_value(raw_env, list) }
+    }
+}
+
+pub struct TagQueue(Vec<tags::Queued>, bool);
+
+impl ToNapiValue for TagQueue {
+    unsafe fn to_napi_value(raw_env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
+        let env = Env::from_raw(raw_env);
+        let mut entries = Vec::with_capacity(val.0.len());
+        for e in val.0 {
+            let mut o = Object::new(&env)?;
+            o.set("seq", e.seq as f64)?;
+            o.set("tag", e.tag)?;
+            o.set("after", e.after)?;
+            if let Some(a) = e.anchor {
+                o.set("anchor", a)?;
+            }
+            if let Some(v) = e.value {
+                o.set("value", text_to_js(v)?)?;
+            }
+            entries.push(o);
+        }
+        let mut obj = Object::new(&env)?;
+        obj.set("entries", entries)?;
+        obj.set("more", val.1)?;
+        unsafe { Object::to_napi_value(raw_env, obj) }
+    }
+}
+
+pub struct TagPassStatus(tags::PassStatus);
+
+impl ToNapiValue for TagPassStatus {
+    unsafe fn to_napi_value(raw_env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
+        let env = Env::from_raw(raw_env);
+        let st = val.0;
+        let mut obj = Object::new(&env)?;
+        obj.set("pass", st.pass as f64)?;
+        if let Some(m) = st.mode {
+            obj.set("mode", m as f64)?;
+        }
+        if let Some(p) = st.phase {
+            obj.set("phase", p as f64)?;
+        }
+        if let Some(n) = st.n {
+            obj.set("n", n as f64)?;
+        }
+        if let Some(a) = st.after {
+            obj.set("after", Buffer::from(a))?;
+        }
+        obj.set("stamped", st.stamped as f64)?;
+        obj.set("live", st.live as f64)?;
+        unsafe { Object::to_napi_value(raw_env, obj) }
+    }
+}
+
 pub struct TagCounts(Vec<(i64, bool)>);
 
 impl ToNapiValue for TagCounts {
@@ -634,6 +695,12 @@ fn tag_query_from_js(q: &Object) -> Result<tags::Query> {
             .filter(|c| !c.is_empty()),
         limit: num("limit", 50)? as usize,
         cap: num("cap", tags::WORK_CAP)?,
+        reverse: q.get::<bool>("reverse")?.unwrap_or(false),
+        ordered: q.get::<bool>("ordered")?,
+        unstamped: match q.get::<Unknown>("unstamped")? {
+            Some(v) => Some(integer("unstamped", v)?),
+            None => None,
+        },
     })
 }
 
@@ -1201,6 +1268,62 @@ impl Store {
             .map(|v| integer("id", v))
             .collect::<Result<Vec<_>>>()?;
         derived(env, &self.store, move |s| s.tag_counts(&ids).map(TagCounts))
+    }
+
+    /// Each tag's cursor in a sort's order, null for one that isn't live: `{ id, order? }`, an `order` (a
+    /// number, or null for none) placing it in the manual order as if it had that order.
+    #[napi(
+        ts_args_type = "sort: number, items: { id: bigint | number, order?: number | null }[]",
+        ts_return_type = "Promise<(Buffer | null)[]>"
+    )]
+    pub fn tag_positions<'env>(
+        &self,
+        env: &'env Env,
+        sort: u32,
+        items: Vec<Object>,
+    ) -> Result<Object<'env>> {
+        if u64::from(sort) >= tags::SORTS {
+            return Err(invalid(format!("no tag sort {sort}")));
+        }
+        let items = items
+            .into_iter()
+            .map(|o| {
+                let id = match o.get::<Unknown>("id")? {
+                    Some(v) => integer("id", v)?,
+                    None => return Err(invalid("an item needs an id".into())),
+                };
+                let order = match o.get::<Unknown>("order")? {
+                    None => None,
+                    Some(v) if v.get_type()? == ValueType::Null => Some(None),
+                    Some(v) => Some(Some(f64::from_unknown(v)?)),
+                };
+                Ok((id, order))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        derived(env, &self.store, move |s| {
+            s.tag_positions(u64::from(sort), &items).map(TagPositions)
+        })
+    }
+
+    /// Up to `limit` queued moves of the manual order after `after` (a `seq`, 0 for the first), in order:
+    /// `{ seq, tag, after, anchor?, value? }`; and whether more follow.
+    #[napi(
+        ts_return_type = "Promise<{ entries: { seq: number, tag: bigint, after: boolean, anchor?: bigint, value?: string }[], more: boolean }>"
+    )]
+    pub fn tag_queue<'env>(&self, env: &'env Env, after: u32, limit: u32) -> Result<Object<'env>> {
+        derived(env, &self.store, move |s| {
+            s.tag_queue(u64::from(after), limit as usize)
+                .map(|(e, more)| TagQueue(e, more))
+        })
+    }
+
+    /// The reorder pass: `{ pass, mode?, phase?, n?, after?, stamped, live }`, `pass` the last one's id (0 for
+    /// none), `mode` present while one runs, `stamped` the live tags it has written, `live` the live tags.
+    #[napi(
+        ts_return_type = "Promise<{ pass: number, mode?: number, phase?: number, n?: number, after?: Buffer, stamped: number, live: number }>"
+    )]
+    pub fn tag_pass<'env>(&self, env: &'env Env) -> Result<Object<'env>> {
+        derived(env, &self.store, |s| s.tag_pass().map(TagPassStatus))
     }
 
     /// How many tags nothing carries, and up to `limit` of them in alphabetical order.

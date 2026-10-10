@@ -120,6 +120,14 @@ pub mod key {
     pub const TAG_GONE_KEY: u64 = 75;
     /// Per deleted tag: its key.
     pub const TAG_GONE_ID: u64 = 76;
+    /// Per queued move (by its record's position): its `tagQueue` record.
+    pub const TAG_QUEUE: u64 = 77;
+    /// The `tagPass` record.
+    pub const TAG_PASS: u64 = 78;
+    /// Per tag: the reorder pass that last wrote its order.
+    pub const TAG_STAMP: u64 = 79;
+    /// Per reorder pass: the live tags it has written (a counter).
+    pub const TAG_STAMPED: u64 = 80;
     #[cfg(any(test, feature = "measure"))]
     pub const TEST_SET: u64 = 4096;
     #[cfg(any(test, feature = "measure"))]
@@ -977,6 +985,10 @@ pub fn deriver(kind: &str) -> Option<&'static dyn Deriver> {
         "messageAppend" => &MessageAppend,
         "moved" => &Moved,
         "tagOrder" => &tags::TagOrder,
+        "tagPassOrder" => &tags::TagOrder,
+        "tagQueue" => &tags::TagQueue,
+        "tagQueuePop" => &tags::TagQueuePop,
+        "tagPass" => &tags::TagPass,
         #[cfg(any(test, feature = "measure"))]
         "testSet" => &TestSet,
         other => return library::deriver(other),

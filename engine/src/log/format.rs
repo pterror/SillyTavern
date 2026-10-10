@@ -485,6 +485,52 @@ pub static KINDS: &[Kind] = &[
         slots: &[req("tag", Ty::Id(Space::Tag))],
         internal: false,
     },
+    // A move of the tag manager's manual order, queued until the reorder pass applies it, `seq` its place in the
+    // queue: `tag` right after (`after`) or before `anchor`, or `tag`'s `sort_order` set to `value` (JSON).
+    Kind {
+        name: "tagQueue",
+        base: 36,
+        slots: &[
+            req("seq", Ty::UInt),
+            req("tag", Ty::Id(Space::Tag)),
+            req("after", Ty::Bit),
+            opt("anchor", Ty::Id(Space::Tag)),
+            opt("value", Ty::Text),
+        ],
+        internal: false,
+    },
+    // The queued move `seq` was applied.
+    Kind {
+        name: "tagQueuePop",
+        base: 44,
+        slots: &[req("seq", Ty::UInt)],
+        internal: false,
+    },
+    // The reorder pass: its id, the order it writes (0 alphabetical, 1 by entries; absent: no pass is running),
+    // its phase (0 walk, 1 sweep, 2 drain), the next value the walk gives, and the order's cursor it goes on from.
+    Kind {
+        name: "tagPass",
+        base: 45,
+        slots: &[
+            req("pass", Ty::UInt),
+            opt("mode", Ty::UInt),
+            opt("phase", Ty::UInt),
+            opt("n", Ty::UInt),
+            opt("after", Ty::Bytes),
+        ],
+        internal: false,
+    },
+    // `tagOrder` written by reorder pass `pass`, which marks the tag as done by it.
+    Kind {
+        name: "tagPassOrder",
+        base: 61,
+        slots: &[
+            req("tag", Ty::Id(Space::Tag)),
+            opt("order", Ty::F64),
+            req("pass", Ty::UInt),
+        ],
+        internal: false,
+    },
 ];
 
 /// Kinds that exist only in the crate's tests and measurements (feature `measure`). Their header values are

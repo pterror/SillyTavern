@@ -436,6 +436,7 @@ fn defined(view: &View, out: &mut Out, tag: u64, at: Loc, on: bool) -> Result<()
                 reposition(out, tag, Some((&p, c)), None);
             }
             out.del(key::id(key::TAG_PLACE, tag));
+            unstamp(view, out, tag)?;
             touched(view, out, tag, at)
         }
         _ => Ok(()),
@@ -480,6 +481,7 @@ pub fn deleted(view: &View, out: &mut Out, tag: u64, k: &[u8], at: Loc) -> Resul
         dead(out, parse_loc(&b)?);
         out.del(ok);
     }
+    unstamp(view, out, tag)?;
     let mut gk = key::of(key::TAG_GONE_KEY);
     put_bytes(&mut gk, k);
     out.put(gk, uvarint(tag));
@@ -502,7 +504,7 @@ pub fn key_of(view: &View, tag: u64) -> Result<Option<Vec<u8>>, StoreError> {
     view.get(&key::id(key::TAG_GONE_ID, tag))
 }
 
-/// `tagOrder`: the tag's manual sort order (absent: it has none), as the writer coerced it.
+/// `tagOrder` and `tagPassOrder`: the tag's manual sort order (absent: it has none), as the writer coerced it.
 pub struct TagOrder;
 
 impl super::derive::Deriver for TagOrder {
@@ -516,6 +518,9 @@ impl super::derive::Deriver for TagOrder {
         let order = order_of(rec);
         if change(view, out, tag, |p| p.order = order)? {
             touched(view, out, tag, at)?;
+        }
+        if let Some(Value::UInt(pass)) = rec.values.get(2) {
+            stamp(view, out, tag, *pass)?;
         }
         super::kinds::version(out, tag, at);
         Ok(())
@@ -542,6 +547,164 @@ impl super::derive::Deriver for TagOrder {
         }
         Ok(())
     }
+}
+
+/// The reorder pass running now (the `tagPass` record's, when it has a mode), or None.
+pub fn running_pass(view: &View) -> Result<Option<u64>, StoreError> {
+    Ok(match view.get(&key::of(key::TAG_PASS))? {
+        Some(b) => {
+            let (r, _) = view.record(parse_loc(&b)?.pos)?;
+            match (r.values.first(), r.values.get(1)) {
+                (Some(Value::UInt(pass)), Some(Value::UInt(_))) => Some(*pass),
+                _ => None,
+            }
+        }
+        None => None,
+    })
+}
+
+/// `pass` wrote the tag's order: the tag counts among the pass's live tags once.
+fn stamp(view: &View, out: &mut Out, tag: u64, pass: u64) -> Result<(), StoreError> {
+    let sk = key::id(key::TAG_STAMP, tag);
+    let old = view.get(&sk)?.map(|b| parse_uvarint(&b)).transpose()?;
+    if old == Some(pass) {
+        return Ok(());
+    }
+    if let Some(old) = old
+        && running_pass(view)? == Some(old)
+    {
+        out.add(key::id(key::TAG_STAMPED, old), -1);
+    }
+    out.put(sk, uvarint(pass));
+    if place(view, tag)?.is_some() && running_pass(view)? == Some(pass) {
+        out.add(key::id(key::TAG_STAMPED, pass), 1);
+    }
+    Ok(())
+}
+
+/// The tag stops being live: it leaves its pass's count.
+fn unstamp(view: &View, out: &mut Out, tag: u64) -> Result<(), StoreError> {
+    let sk = key::id(key::TAG_STAMP, tag);
+    let Some(b) = view.get(&sk)? else {
+        return Ok(());
+    };
+    let pass = parse_uvarint(&b)?;
+    if running_pass(view)? == Some(pass) {
+        out.add(key::id(key::TAG_STAMPED, pass), -1);
+    }
+    out.del(sk);
+    Ok(())
+}
+
+/// `tagQueue`: a queued move, kept by its place in the queue until popped.
+pub struct TagQueue;
+
+impl super::derive::Deriver for TagQueue {
+    fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
+        let k = key::id(key::TAG_QUEUE, id(rec, 0));
+        if let Some(b) = view.get(&k)? {
+            dead(out, parse_loc(&b)?);
+        }
+        out.put(k, loc_bytes(at));
+        Ok(())
+    }
+
+    fn is_live(&self, rec: &Record, pos: u64, view: &View) -> Result<bool, StoreError> {
+        Ok(view
+            .get(&key::id(key::TAG_QUEUE, id(rec, 0)))?
+            .map(|b| parse_loc(&b))
+            .transpose()?
+            .is_some_and(|l| l.pos == pos))
+    }
+
+    fn repoint(
+        &self,
+        rec: &Record,
+        from: u64,
+        to: Loc,
+        view: &View,
+        out: &mut Out,
+    ) -> Result<(), StoreError> {
+        if self.is_live(rec, from, view)? {
+            out.put(key::id(key::TAG_QUEUE, id(rec, 0)), loc_bytes(to));
+        }
+        Ok(())
+    }
+}
+
+/// `tagQueuePop`: the queued move leaves the queue.
+pub struct TagQueuePop;
+
+impl super::derive::Deriver for TagQueuePop {
+    fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
+        let k = key::id(key::TAG_QUEUE, id(rec, 0));
+        if let Some(b) = view.get(&k)? {
+            dead(out, parse_loc(&b)?);
+            out.del(k);
+        }
+        dead(out, at);
+        Ok(())
+    }
+
+    fn is_live(&self, _: &Record, _: u64, _: &View) -> Result<bool, StoreError> {
+        Ok(false)
+    }
+
+    fn repoint(&self, _: &Record, _: u64, _: Loc, _: &View, _: &mut Out) -> Result<(), StoreError> {
+        Ok(())
+    }
+}
+
+/// `tagPass`: the reorder pass's record. A pass's count of the tags it wrote goes once another replaces it or
+/// it ends.
+pub struct TagPass;
+
+impl super::derive::Deriver for TagPass {
+    fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
+        let k = key::of(key::TAG_PASS);
+        let running = running_pass(view)?;
+        let new = match (rec.values.first(), rec.values.get(1)) {
+            (Some(Value::UInt(pass)), Some(Value::UInt(_))) => Some(*pass),
+            _ => None,
+        };
+        if let Some(old) = running
+            && new != Some(old)
+        {
+            out.del(key::id(key::TAG_STAMPED, old));
+        }
+        if let Some(b) = view.get(&k)? {
+            dead(out, parse_loc(&b)?);
+        }
+        out.put(k, loc_bytes(at));
+        Ok(())
+    }
+
+    fn is_live(&self, _: &Record, pos: u64, view: &View) -> Result<bool, StoreError> {
+        pass_at(view, pos)
+    }
+
+    fn repoint(
+        &self,
+        _: &Record,
+        from: u64,
+        to: Loc,
+        view: &View,
+        out: &mut Out,
+    ) -> Result<(), StoreError> {
+        if pass_at(view, from)? {
+            out.put(key::of(key::TAG_PASS), loc_bytes(to));
+        }
+        Ok(())
+    }
+}
+
+/// Whether the `tagPass` record is the one at `pos`.
+fn pass_at(view: &View, pos: u64) -> Result<bool, StoreError> {
+    Ok(view
+        .get(&key::of(key::TAG_PASS))?
+        .map(|b| parse_loc(&b))
+        .transpose()?
+        .is_some_and(|l| l.pos == pos))
 }
 
 /// Whether a live tag is unused: no carriers, and no tag merged into it whose carriers wait to move.
@@ -576,6 +739,12 @@ pub struct Query {
     pub after: Option<Vec<u8>>,
     pub limit: usize,
     pub cap: u64,
+    /// The order read last first, from before `after`.
+    pub reverse: bool,
+    /// Manual only: only the tags with an order (Some(true)) or only those without (Some(false)).
+    pub ordered: Option<bool>,
+    /// Only tags reorder pass `unstamped` hasn't written.
+    pub unstamped: Option<u64>,
 }
 
 #[derive(Debug, Default)]
@@ -635,27 +804,59 @@ fn check(q: &Query, names: &Names, p: &Place) -> bool {
     names.matches(&p.name_key) && q.folder_type.as_ref().is_none_or(|t| *t == p.folder_type)
 }
 
-/// One part of an order, read in key order within its ranges.
+/// One part of an order, read in key order within its ranges (in reverse: last first, the ranges last first).
 struct Stream {
     prefix: Vec<u8>,
     ranges: Vec<(Vec<u8>, Vec<u8>)>,
     at: usize,
     buf: std::collections::VecDeque<(Vec<u8>, Place)>,
     window: usize,
+    rev: bool,
 }
 
 impl Stream {
+    fn new(
+        prefix: Vec<u8>,
+        mut ranges: Vec<(Vec<u8>, Vec<u8>)>,
+        window: usize,
+        rev: bool,
+    ) -> Stream {
+        if rev {
+            ranges.reverse();
+        }
+        Stream {
+            prefix,
+            ranges,
+            at: 0,
+            buf: Default::default(),
+            window,
+            rev,
+        }
+    }
+
     fn peek(&mut self, view: &View) -> Result<Option<&(Vec<u8>, Place)>, StoreError> {
         while self.buf.is_empty() && self.at < self.ranges.len() {
             let (lo, hi) = &self.ranges[self.at];
-            let found = view.scan(lo, hi, self.window)?;
+            let window = self.window;
+            let found: Vec<(Vec<u8>, Vec<u8>)> = if self.rev {
+                view.scan_vals_rev(lo, hi, window)?
+                    .into_iter()
+                    .map(|(k, v)| (k, v.into_bytes()))
+                    .collect()
+            } else {
+                view.scan(lo, hi, window)?
+            };
             self.window = (self.window * 2).min(4096);
-            if found.len() < self.window / 2 {
+            if found.len() < window {
                 self.at += 1;
             } else if let Some((k, _)) = found.last() {
-                let mut next = k.clone();
-                next.push(0);
-                self.ranges[self.at].0 = next;
+                if self.rev {
+                    self.ranges[self.at].1 = k.clone();
+                } else {
+                    let mut next = k.clone();
+                    next.push(0);
+                    self.ranges[self.at].0 = next;
+                }
             }
             for (k, v) in found {
                 self.buf
@@ -712,38 +913,51 @@ pub fn page(view: &View, q: &Query) -> Result<Page, StoreError> {
                     let hi = key::prefix_end(&lo);
                     vec![(lo, hi)]
                 }
-                (MANUAL, Some(l)) => {
+                (MANUAL, _) => {
                     let mut ordered = prefix.clone();
                     ordered.push(0);
                     let mut unordered = prefix.clone();
                     unordered.push(1);
-                    unordered.extend_from_slice(l);
+                    if let Some(l) = &lead {
+                        unordered.extend_from_slice(l);
+                    }
                     let hi = key::prefix_end(&unordered);
-                    vec![
-                        (ordered.clone(), key::prefix_end(&ordered)),
-                        (unordered, hi),
-                    ]
+                    let mut r = Vec::new();
+                    if q.ordered != Some(false) {
+                        r.push((ordered.clone(), key::prefix_end(&ordered)));
+                    }
+                    if q.ordered != Some(true) {
+                        r.push((unordered, hi));
+                    }
+                    r
                 }
                 _ => vec![whole],
             };
             if let Some(a) = &after {
                 let mut start = prefix.clone();
                 start.extend_from_slice(a);
-                start.push(0);
-                for r in &mut ranges {
-                    if r.0 < start {
-                        r.0 = start.clone();
+                if q.reverse {
+                    for r in &mut ranges {
+                        if r.1 > start {
+                            r.1 = start.clone();
+                        }
+                    }
+                } else {
+                    start.push(0);
+                    for r in &mut ranges {
+                        if r.0 < start {
+                            r.0 = start.clone();
+                        }
                     }
                 }
                 ranges.retain(|r| r.0 < r.1);
             }
-            streams.push(Stream {
+            streams.push(Stream::new(
                 prefix,
                 ranges,
-                at: 0,
-                buf: Default::default(),
-                window: (q.limit + 1).clamp(16, 4096),
-            });
+                (q.limit + 1).clamp(16, 4096),
+                q.reverse,
+            ));
         }
     }
     let mut ids = Vec::new();
@@ -755,7 +969,8 @@ pub fn page(view: &View, q: &Query) -> Result<Page, StoreError> {
                 continue;
             };
             let s = s.clone();
-            if best.is_none_or(|b| streams[b].buf.front().is_some_and(|(bs, _)| s < *bs)) {
+            let better = |b: &Vec<u8>| if q.reverse { s > *b } else { s < *b };
+            if best.is_none_or(|b| streams[b].buf.front().is_some_and(|(bs, _)| better(bs))) {
                 best = Some(i);
             }
         }
@@ -768,11 +983,10 @@ pub fn page(view: &View, q: &Query) -> Result<Page, StoreError> {
         };
         let (s, p) = streams[b].buf.pop_front().unwrap();
         examined += 1;
-        if check(q, &names, &p) {
-            ids.push(
-                suffix_tag(q.sort, &s)
-                    .ok_or_else(|| StoreError::Entry("a tag order key doesn't decode".into()))?,
-            );
+        let t = suffix_tag(q.sort, &s)
+            .ok_or_else(|| StoreError::Entry("a tag order key doesn't decode".into()))?;
+        if check(q, &names, &p) && !stamped_by(view, t, q.unstamped)? {
+            ids.push(t);
             if ids.len() == q.limit {
                 return Ok(Page {
                     ids,
@@ -789,6 +1003,18 @@ pub fn page(view: &View, q: &Query) -> Result<Page, StoreError> {
             });
         }
     }
+}
+
+/// Whether reorder pass `pass` (None: no pass asked about) has written the tag's order.
+fn stamped_by(view: &View, tag: u64, pass: Option<u64>) -> Result<bool, StoreError> {
+    let Some(pass) = pass else {
+        return Ok(false);
+    };
+    Ok(view
+        .get(&key::id(key::TAG_STAMP, tag))?
+        .map(|b| parse_uvarint(&b))
+        .transpose()?
+        == Some(pass))
 }
 
 fn ids_page(
@@ -808,16 +1034,30 @@ fn ids_page(
             continue;
         };
         let c = carriers(view, t)?;
-        if (q.folders && !p.folder()) || (q.used && c <= 0) || !check(q, names, &p) {
+        if (q.folders && !p.folder())
+            || (q.used && c <= 0)
+            || !check(q, names, &p)
+            || (q.sort == MANUAL && q.ordered.is_some_and(|o| o != p.order.is_some()))
+            || stamped_by(view, t, q.unstamped)?
+        {
             continue;
         }
         let s = suffix(q.sort, &p, c, t);
-        if after.is_some_and(|a| s.as_slice() <= a) {
+        if after.is_some_and(|a| {
+            if q.reverse {
+                s.as_slice() >= a
+            } else {
+                s.as_slice() <= a
+            }
+        }) {
             continue;
         }
         found.push((s, t));
     }
     found.sort();
+    if q.reverse {
+        found.reverse();
+    }
     let full = found.len() >= q.limit;
     found.truncate(q.limit);
     Ok(Page {
@@ -877,17 +1117,19 @@ pub fn unused_count(view: &View) -> Result<u64, StoreError> {
 /// Up to `limit` unused tags, in alphabetical order.
 pub fn unused_page(view: &View, limit: usize) -> Result<Vec<u64>, StoreError> {
     let mut out = Vec::new();
+    if limit == 0 {
+        return Ok(out);
+    }
     let mut streams: Vec<Stream> = [false, true]
         .into_iter()
         .map(|folder| {
             let prefix = part_prefix(ALPHA, folder, false);
-            Stream {
-                ranges: vec![(prefix.clone(), key::prefix_end(&prefix))],
-                prefix,
-                at: 0,
-                buf: Default::default(),
-                window: 64,
-            }
+            Stream::new(
+                prefix.clone(),
+                vec![(prefix.clone(), key::prefix_end(&prefix))],
+                64,
+                false,
+            )
         })
         .collect();
     loop {
@@ -1012,4 +1254,106 @@ pub fn feed_end(view: &View, structure: u64) -> Result<u64, StoreError> {
             None => 0,
         },
     )
+}
+
+/// Each tag's cursor in `sort`'s order (None for one that isn't live): where it is, or, with an order given
+/// (`Some(order)`, `None` inside for none), where it would be in the manual order with that order.
+pub fn positions(
+    view: &View,
+    sort: u64,
+    items: &[(u64, Option<Option<f64>>)],
+) -> Result<Vec<Option<Vec<u8>>>, StoreError> {
+    items
+        .iter()
+        .map(|&(t, order)| {
+            let Some(mut p) = place(view, t)? else {
+                return Ok(None);
+            };
+            if let Some(o) = order {
+                p.order = o;
+            }
+            let c = carriers(view, t)?;
+            Ok(Some(encode_cursor(sort, &suffix(sort, &p, c, t))))
+        })
+        .collect()
+}
+
+/// A queued move.
+#[derive(Debug, Clone)]
+pub struct Queued {
+    pub seq: u64,
+    pub tag: u64,
+    pub after: bool,
+    pub anchor: Option<u64>,
+    pub value: Option<Vec<u8>>,
+}
+
+/// Up to `limit` queued moves after `after` (a `seq`), in order, and whether more follow.
+pub fn queue(view: &View, after: u64, limit: usize) -> Result<(Vec<Queued>, bool), StoreError> {
+    let p = key::of(key::TAG_QUEUE);
+    let found = view.scan(
+        &key::id(key::TAG_QUEUE, after.saturating_add(1)),
+        &key::prefix_end(&p),
+        limit.saturating_add(1),
+    )?;
+    let more = found.len() > limit;
+    let mut out = Vec::new();
+    for (_, b) in found.into_iter().take(limit) {
+        let (r, _) = view.record(parse_loc(&b)?.pos)?;
+        out.push(Queued {
+            seq: id(&r, 0),
+            tag: id(&r, 1),
+            after: r.values[2] == Value::Bit(true),
+            anchor: match r.values[3] {
+                Value::Id(a) => Some(a),
+                _ => None,
+            },
+            value: match &r.values[4] {
+                Value::Text(v) => Some(v.clone()),
+                _ => None,
+            },
+        });
+    }
+    Ok((out, more))
+}
+
+/// The reorder pass as its record holds it, with the live tags it has written and the live tags there are.
+#[derive(Debug, Clone, Default)]
+pub struct PassStatus {
+    /// The last pass's id, 0 for none.
+    pub pass: u64,
+    pub mode: Option<u64>,
+    pub phase: Option<u64>,
+    pub n: Option<u64>,
+    pub after: Option<Vec<u8>>,
+    pub stamped: i64,
+    pub live: i64,
+}
+
+pub fn pass_status(view: &View) -> Result<PassStatus, StoreError> {
+    let mut st = PassStatus::default();
+    if let Some(b) = view.get(&key::of(key::TAG_PASS))? {
+        let (r, _) = view.record(parse_loc(&b)?.pos)?;
+        let uint = |i: usize| match r.values.get(i) {
+            Some(Value::UInt(v)) => Some(*v),
+            _ => None,
+        };
+        st.pass = uint(0).unwrap_or(0);
+        st.mode = uint(1);
+        st.phase = uint(2);
+        st.n = uint(3);
+        st.after = match r.values.get(4) {
+            Some(Value::Bytes(b)) => Some(b.clone()),
+            _ => None,
+        };
+        if st.mode.is_some() {
+            st.stamped = counter(view, &key::id(key::TAG_STAMPED, st.pass))?;
+        }
+    }
+    for folder in [false, true] {
+        for used in [false, true] {
+            st.live += counter(view, &part_count_key(folder, used))?;
+        }
+    }
+    Ok(st)
 }
