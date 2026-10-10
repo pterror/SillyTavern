@@ -78,6 +78,23 @@ describe('world-info search on the engine', () => {
         const { id } = await library.writeCard({}, 'c.png', JSON.stringify(card), { dateAdded: 1 });
         expect(await uids({ character: id, search: 'wyv' })).toEqual(['0']);
         expect(await uids({ character: id, search: '3' })).toEqual(['0']);
+        // Its `extensions`' `group` and `automation_id` (upstream's `group` and `automationId`) are searched, the id
+        // whole; the card reads back as written, extension keys in their order.
+        const ext = { foo: 'bar', automation_id: 'auto-9', group: 'drakes', position: 1 };
+        const card2 = structuredClone(card);
+        card2.data.character_book.entries.push({ id: 4, keys: [], secondary_keys: [], comment: '', content: 'x', extensions: ext });
+        await library.writeCard({}, 'c.png', JSON.stringify(card2), { dateAdded: 1 });
+        expect(await uids({ character: id, search: 'drakes' })).toEqual(['1']);
+        expect(await uids({ character: id, search: 'auto-9' })).toEqual(['1']);
+        expect(await uids({ character: id, search: 'drake' })).toEqual([], 'group is no prefix field');
+        expect(JSON.stringify((await library.cards(['c.png']))[0].data.character_book)).toBe(JSON.stringify(card2.data.character_book));
+        // A changed group writes that value alone, and the search follows it.
+        const card3 = structuredClone(card2);
+        card3.data.character_book.entries[1].extensions.group = 'wyrms';
+        const { records } = await library.writeCard({}, 'c.png', JSON.stringify(card3), { dateAdded: 1 });
+        expect(records).toBeLessThanOrEqual(2);
+        expect(await uids({ character: id, search: 'drakes' })).toEqual([]);
+        expect(await uids({ character: id, search: 'wyrms' })).toEqual(['1']);
         expect(await uids({ character: 999n, search: 'wyvern' })).toBe('missing');
     });
 

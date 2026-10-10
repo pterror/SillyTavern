@@ -1741,6 +1741,7 @@ Built, the world-info layer (10-11; `src/world-info-engine.js`, values code move
 | key order | none stored when an object's keys are in the canonical order (entry: by code, then other keys by name; book: by name, `entries` last); else a text value (field 98) with each key's canonical place, one character each | the usual entries pay nothing; any order round-trips |
 | `uid` | a world book's entry whose `uid` is its key as a number stores none; no `uid` at all is a marker (field 97); an owned book's entries have none by default | the usual entry pays nothing for it |
 | a whole entry that isn't an object | its JSON (field 96) | kept as it came |
+| an entry's `extensions` (5d follow-up 5, 10-11) | an object: a marker (empty JSON in `extensions`' own code, 145), each key its own value (a string as text, else JSON): the keys upstream's `convertCharacterBook` reads by code from 160 in its order (`group` 170, `automation_id` 177), any other as `\u0001` + its name (an entry's own key starting with `\u0001` or `\u0002` after `\u0002`); their order as a text value (99) only when not canonical (codes, then names); anything else in `extensions` its JSON as before | the app reads those keys (Storage: per key), so a changed `group` writes that value alone and is searched; codes are the smallest; world book entries' `extensions` the same way |
 | a new entry's place | after its neighbours in the written order; every entry placed again above every place held when out of order or no place is free | an insert writes one place |
 | versions | a record changing an entry or an owned book changes the version of the book holding it and of that book's owner (`books::touched`) | a page's copy of a book or card is known stale by its version |
 
@@ -1808,7 +1809,8 @@ row; the benches. Nothing routes to it: at the cut (5f) `/query` reads `lib.quer
 new `/api/worldinfo/search` `books.search`, the pair postings' route and setting are added, and the server runs
 `runPairPostings()` after listening. Follow-ups (10-11, in progress): list rows read narrow (done, below); pair lists driving a phrase's candidates
 (done, "Pairs driving the walk" below); the 10^6 bulk load under 300 s (done, "Bulk load under 300 s" below);
-session names unique per store (done, below); a character book entry's `group` and `automationId` searched; then
+session names unique per store (done, below); a character book entry's `group` and `automationId` searched (done: its `extensions` stored per key, 5c's
+choices; searched as 5d's fields); then
 chat search's substring scan on top of whole words (item 6, coordinator 10-11).
 
 Session names (follow-up 4): answered by the coordinator (unique per store) and built; see "Built, session names
@@ -2058,7 +2060,7 @@ Built, the searched fields (10-11; `engine/src/store/searched.rs`, `search/index
 | groups' scope | the library, one ranking with characters | `/query` lists both on one page; per-type scopes would need merged BM25 statistics |
 | a group's `id` | its entity key, indexed at create and `entityUpdate` | the id is the key, not a stored value (5a) |
 | list fields | each item a value; a change reads the other items | items are values (5a); counts and lengths are the field's |
-| a character book entry's `group`, `automationId` | not searched | they sit inside its `extensions` JSON; the fix is storing `extensions` per key (noted) |
+| a character book entry's `group`, `automationId` | its `extensions`' `group` (170) and `automation_id` (177), as `group` 15 and `automationId` exact (follow-up 5) | upstream's `convertCharacterBook` reads them from there; `extensions` is stored per key |
 
 - Derivers feeding P3 (stage 4): card fields (S1, with the design's weights and prefix fields), card tag names and
   resolved tag names joined through membership (Q-F12), groups (S2: name, member names, tags, id), session names (S6),
