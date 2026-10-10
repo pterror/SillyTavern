@@ -31,20 +31,66 @@ pub struct Staged {
     pub counts: ReadCounts,
     pub staged_dir: PathBuf,
     pub staged_from: u64,
+    /// Staged records already in hand (`StagedRecords`).
+    pub records: Arc<StagedRecords>,
 }
 
-/// Unpublished entries, sorted or not.
+/// A load worker's staged records by position, with their lengths: the ones it derived and the ones it read. A
+/// record's derivation reads the records of its entity before it (a tag assignment its card's name and keys, a
+/// create every text it indexes) and the tags it names; a staged read opens its file and decodes its block from the
+/// start. Up to `budget` encoded bytes are kept, then all are let go at once.
+#[derive(Default)]
+pub struct StagedRecords {
+    held: std::sync::Mutex<(Pending, u64)>,
+    budget: u64,
+}
+
+impl StagedRecords {
+    pub fn new(budget: u64) -> StagedRecords {
+        StagedRecords {
+            held: std::sync::Mutex::new((HashMap::new(), 0)),
+            budget,
+        }
+    }
+
+    pub fn get(&self, pos: u64) -> Option<(Record, u64)> {
+        self.held.lock().unwrap().0.get(&pos).cloned()
+    }
+
+    pub fn put(&self, pos: u64, rec: &Record, len: u64) {
+        if len > self.budget {
+            return;
+        }
+        let mut h = self.held.lock().unwrap();
+        if h.1 + len > self.budget {
+            h.0.clear();
+            h.1 = 0;
+        }
+        if h.0.insert(pos, (rec.clone(), len)).is_none() {
+            h.1 += len;
+        }
+    }
+}
+
+/// Unpublished entries, sorted or not. A hashed layer holds keys of the structures listed only, so a scan of
+/// other structures passes it by; one of those reads all of it.
 #[derive(Clone, Copy)]
 pub enum Layer<'a> {
     Sorted(&'a BTreeMap<Vec<u8>, Val>),
-    Hashed(&'a HashMap<Vec<u8>, Val>),
+    Hashed(&'a HashMap<Vec<u8>, Val>, &'a [u64]),
+}
+
+/// The structure a key starts with, or None for a key too short to name one.
+fn structure_of(k: &[u8]) -> Option<u64> {
+    let mut at = 0;
+    crate::keyspace::val::get_u64(k, &mut at)
 }
 
 impl<'a> Layer<'a> {
     fn get(&self, key: &[u8]) -> Option<&'a Val> {
         match self {
             Layer::Sorted(m) => m.get(key),
-            Layer::Hashed(m) => m.get(key),
+            Layer::Hashed(m, _) => m.get(key),
         }
     }
 
@@ -57,7 +103,16 @@ impl<'a> Layer<'a> {
                     std::ops::Bound::Excluded(end),
                 ))
                 .collect(),
-            Layer::Hashed(m) => {
+            // `[start, end)` spans the structures from start's to end's (any, where a bound names none).
+            Layer::Hashed(_, held)
+                if !held.iter().any(|s| {
+                    (structure_of(start).unwrap_or(0)..=structure_of(end).unwrap_or(u64::MAX))
+                        .contains(s)
+                }) =>
+            {
+                Vec::new()
+            }
+            Layer::Hashed(m, _) => {
                 let mut v: Vec<_> = m
                     .iter()
                     .filter(|(k, _)| k.as_slice() >= start && k.as_slice() < end)
@@ -441,7 +496,12 @@ impl View<'_> {
         if let Some(st) = self.staged
             && pos >= st.staged_from
         {
-            return Ok(self.log.read_staged(&st.staged_dir, pos)?);
+            if let Some(r) = st.records.get(pos) {
+                return Ok(r);
+            }
+            let (r, len) = self.log.read_staged(&st.staged_dir, pos)?;
+            st.records.put(pos, &r, len);
+            return Ok((r, len));
         }
         Ok(self.log.read_sized(pos)?)
     }
@@ -487,16 +547,25 @@ impl Out {
         }
     }
 
-    /// Applies the entries over `layer`.
-    pub fn apply_hashed(self, layer: &mut HashMap<Vec<u8>, Val>) {
+    /// Applies the entries over `sorted`, or over `hashed` for the keys `hashed_key` picks.
+    pub fn apply_split(
+        self,
+        sorted: &mut BTreeMap<Vec<u8>, Val>,
+        hashed: &mut HashMap<Vec<u8>, Val>,
+        hashed_key: impl Fn(&[u8]) -> bool,
+    ) {
         for (k, v) in self.entries {
-            match layer.get_mut(&k) {
+            if !hashed_key(&k) {
+                apply(sorted, k, v);
+                continue;
+            }
+            match hashed.get_mut(&k) {
                 Some(old) => {
                     let older = std::mem::replace(old, Val::Del);
                     *old = v.over_owned(older);
                 }
                 None => {
-                    layer.insert(k, v);
+                    hashed.insert(k, v);
                 }
             }
         }

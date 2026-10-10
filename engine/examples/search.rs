@@ -36,7 +36,7 @@ struct Card {
     tags: Vec<u64>,
 }
 
-trait Generator {
+trait Generator: Send {
     /// Every tag: id, name.
     fn tags(&self) -> &[(u64, String)];
     fn card(&mut self) -> Card;
@@ -1122,9 +1122,26 @@ fn load_and_space(
             ),
     );
     if bulk {
-        // Into an empty store, tag names and all: the load builds the top lists.
+        // Into an empty store, tag names and all: the load builds the top lists. The cards are generated on a
+        // thread of their own, so the load's time is the loader's, not the generator's.
         let mut l = s.loader().unwrap();
-        l.add(recs).unwrap();
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<Record>>(16);
+        std::thread::scope(|sc| {
+            let generator = sc.spawn(move || {
+                let mut chunk = Vec::with_capacity(8192);
+                for r in recs {
+                    chunk.push(r);
+                    if chunk.len() == 8192 {
+                        tx.send(std::mem::take(&mut chunk)).unwrap();
+                    }
+                }
+                if !chunk.is_empty() {
+                    tx.send(chunk).unwrap();
+                }
+            });
+            l.add(rx.into_iter().flatten()).unwrap();
+            generator.join().unwrap();
+        });
         let st = l.finish().unwrap();
         println!("{{\"phase\":\"bulk\",\"stats\":\"{st:?}\"}}");
     } else {
