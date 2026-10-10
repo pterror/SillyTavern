@@ -1,8 +1,8 @@
 //! Chat reads for the binding (build path 5b): what the JavaScript side assembles upstream's shapes from.
 //! Each answers a `Js` value, a plain tree the binding turns into JavaScript.
 
-use super::chat::{self, APPEND_OWNER, children_prefix, message_loc, parent_of};
-use super::derive::View;
+use super::chat::{self, APPEND_OWNER, children_prefix};
+use super::derive::{Loc, View};
 use super::kinds::{Holder, bytes, key, parse_loc, parse_varints, text_value_of};
 use super::library::field_after;
 use super::sessions::{self, Fork};
@@ -37,53 +37,111 @@ fn field_js(f: &FieldRef) -> Js {
 }
 
 /// Every message's own values: its append's slots, its values, texts and times, its depth, its itemization's
-/// kind, the bookmarks created at it, and its outside key (its id from before the engine), or null.
+/// kind, the bookmarks created at it, its outside key (its id from before the engine) or null, and how many replies
+/// it has. Read together: the entries and records of all of them at once, and per message only what its shape
+/// says it holds.
 pub fn messages(view: &View, ids: &[u64]) -> Result<Js, StoreError> {
-    let mut out = Vec::with_capacity(ids.len());
-    for &m in ids {
-        let Some(l) = message_loc(view, m)? else {
-            out.push(Js::Null);
-            continue;
-        };
-        let (r, _) = view.record(l.pos)?;
+    let entries = chat::message_entries(view, ids)?;
+    let found: Vec<usize> = (0..ids.len()).filter(|&i| entries[i].is_some()).collect();
+    let fids: Vec<u64> = found.iter().map(|&i| ids[i]).collect();
+    let locs: Vec<(Loc, Option<u64>)> = found.iter().map(|&i| entries[i].unwrap()).collect();
+    let shapes = chat::shapes(view, &fids)?;
+    let records = view.records(&locs.iter().map(|(l, _)| l.pos).collect::<Vec<_>>())?;
+    let depth_keys: Vec<Vec<u8>> = fids.iter().map(|m| key::id(sessions::DEPTH, *m)).collect();
+    let depths = view.get_many(&depth_keys)?;
+    // Outside keys and itemizations, for the messages whose shape says they have one.
+    let keyed: Vec<usize> = (0..fids.len()).filter(|&j| shapes[j].keyed).collect();
+    let key_locs = view.get_many(
+        &keyed
+            .iter()
+            .map(|&j| chat::key_of_key(chat::KEYED_MESSAGE, fids[j]))
+            .collect::<Vec<_>>(),
+    )?;
+    let key_positions = key_locs
+        .iter()
+        .map(|b| {
+            Ok(parse_loc(b.as_deref().ok_or_else(|| {
+                StoreError::Entry("a message's shape has a key it hasn't".into())
+            })?)?
+            .pos)
+        })
+        .collect::<Result<Vec<_>, StoreError>>()?;
+    let key_records = view.records(&key_positions)?;
+    let mut old_keys: Vec<Option<Vec<u8>>> = vec![None; fids.len()];
+    for (n, &j) in keyed.iter().enumerate() {
+        old_keys[j] = Some(bytes(&key_records[n], 1).to_vec());
+    }
+    let mut out: Vec<Js> = vec![Js::Null; ids.len()];
+    for (j, &i) in found.iter().enumerate() {
+        let m = fids[j];
+        let r = &records[j];
+        let shape = shapes[j];
         let h = Holder::Message(m);
         let mut texts = Vec::new();
-        let tp = key::id(key::MSG_TEXT, m);
-        for (k, _) in view.scan(&tp, &key::prefix_end(&tp), usize::MAX)? {
-            let f = field_after(&k, key::MSG_TEXT)?;
-            let t = text_value_of(view, h, &f)?.unwrap_or_default();
-            texts.push(Js::Obj(vec![
-                ("field", field_js(&f)),
-                ("text", Js::Text(t)),
-            ]));
-        }
         let mut values = Vec::new();
-        let vp = key::id(key::MSG_VALUE, m);
-        for (k, v) in view.scan(&vp, &key::prefix_end(&vp), usize::MAX)? {
-            let f = field_after(&k, key::MSG_VALUE)?;
-            let (vr, _) = view.record(parse_loc(&v)?.pos)?;
-            values.push(Js::Obj(vec![
-                ("field", field_js(&f)),
-                ("json", Js::Text(bytes(&vr, 2).to_vec())),
-            ]));
-        }
         let mut times = Vec::new();
-        let mp = key::id(key::MSG_TIME, m);
-        for (k, v) in view.scan(&mp, &key::prefix_end(&mp), usize::MAX)? {
-            let f = field_after(&k, key::MSG_TIME)?;
-            let (tr, _) = view.record(parse_loc(&v)?.pos)?;
-            let d = match tr.values[2] {
-                Value::Int(d) => d,
-                _ => unreachable!("checked by Record::new"),
-            };
-            times.push(Js::Obj(vec![
-                ("field", field_js(&f)),
-                ("delta", Js::Num(d as f64)),
-            ]));
+        let mut branches = Vec::new();
+        if shape.extras == 0 {
+            if chat::text_in_append(super::kinds::id(r, chat::APPEND_FLAGS)) {
+                texts.push(Js::Obj(vec![
+                    ("field", Js::Num(chat::MES as f64)),
+                    ("text", Js::Text(bytes(r, chat::APPEND_TEXT).to_vec())),
+                ]));
+            }
+        } else {
+            let tp = key::id(key::MSG_TEXT, m);
+            for (k, _) in view.scan(&tp, &key::prefix_end(&tp), usize::MAX)? {
+                let f = field_after(&k, key::MSG_TEXT)?;
+                let t = text_value_of(view, h, &f)?.unwrap_or_default();
+                texts.push(Js::Obj(vec![
+                    ("field", field_js(&f)),
+                    ("text", Js::Text(t)),
+                ]));
+            }
+            let vp = key::id(key::MSG_VALUE, m);
+            let vs = view.scan(&vp, &key::prefix_end(&vp), usize::MAX)?;
+            let vrecs = view.records(
+                &vs.iter()
+                    .map(|(_, v)| parse_loc(v).map(|l| l.pos))
+                    .collect::<Result<Vec<_>, _>>()?,
+            )?;
+            for ((k, _), vr) in vs.iter().zip(vrecs) {
+                let f = field_after(k, key::MSG_VALUE)?;
+                values.push(Js::Obj(vec![
+                    ("field", field_js(&f)),
+                    ("json", Js::Text(bytes(&vr, 2).to_vec())),
+                ]));
+            }
+            let mp = key::id(key::MSG_TIME, m);
+            let ts = view.scan(&mp, &key::prefix_end(&mp), usize::MAX)?;
+            let trecs = view.records(
+                &ts.iter()
+                    .map(|(_, v)| parse_loc(v).map(|l| l.pos))
+                    .collect::<Result<Vec<_>, _>>()?,
+            )?;
+            for ((k, _), tr) in ts.iter().zip(trecs) {
+                let f = field_after(k, key::MSG_TIME)?;
+                let d = match tr.values[2] {
+                    Value::Int(d) => d,
+                    _ => unreachable!("checked by Record::new"),
+                };
+                times.push(Js::Obj(vec![
+                    ("field", field_js(&f)),
+                    ("delta", Js::Num(d as f64)),
+                ]));
+            }
+            branches = sessions::branches_from(view, m)?
+                .into_iter()
+                .map(Js::Big)
+                .collect();
         }
-        let itemized = match chat::itemization(view, m)? {
-            Some((raw, _)) => Js::Obj(vec![("raw", Js::Bool(raw))]),
-            None => Js::Null,
+        let itemized = if shape.itemized {
+            match chat::itemization(view, m)? {
+                Some((raw, _)) => Js::Obj(vec![("raw", Js::Bool(raw))]),
+                None => Js::Null,
+            }
+        } else {
+            Js::Null
         };
         let opt_id = |i: usize| match r.values[i] {
             Value::Id(v) => Js::Big(v),
@@ -97,19 +155,23 @@ pub fn messages(view: &View, ids: &[u64]) -> Result<Js, StoreError> {
             Value::Time(t) => t,
             _ => unreachable!("checked by Record::new"),
         };
-        out.push(Js::Obj(vec![
+        let depth = match &depths[j] {
+            Some(b) => Js::Big(parse_varints::<1>(b)?[0]),
+            None => Js::Null,
+        };
+        out[i] = Js::Obj(vec![
             ("id", Js::Big(m)),
-            ("parent", opt_big(parent_of(view, m, &r)?)),
-            ("owner", Js::Big(super::kinds::id(&r, APPEND_OWNER))),
+            ("parent", opt_big(locs[j].1)),
+            ("owner", Js::Big(super::kinds::id(r, APPEND_OWNER))),
             ("speaker", opt_id(3)),
             ("name", opt_text(4)),
             ("time", Js::Num(time as f64)),
             (
                 "flags",
-                Js::Num(super::kinds::id(&r, chat::APPEND_FLAGS) as f64),
+                Js::Num(super::kinds::id(r, chat::APPEND_FLAGS) as f64),
             ),
             ("session", opt_id(chat::APPEND_SESSION)),
-            ("user", Js::Big(super::kinds::id(&r, chat::APPEND_USER))),
+            ("user", Js::Big(super::kinds::id(r, chat::APPEND_USER))),
             (
                 "sendKey",
                 match &r.values[chat::APPEND_SEND_KEY] {
@@ -117,25 +179,15 @@ pub fn messages(view: &View, ids: &[u64]) -> Result<Js, StoreError> {
                     _ => Js::Null,
                 },
             ),
-            ("depth", opt_big(sessions::depth(view, m)?)),
+            ("depth", depth),
             ("texts", Js::Arr(texts)),
             ("values", Js::Arr(values)),
             ("times", Js::Arr(times)),
             ("itemized", itemized),
-            (
-                "branches",
-                Js::Arr(
-                    sessions::branches_from(view, m)?
-                        .into_iter()
-                        .map(Js::Big)
-                        .collect(),
-                ),
-            ),
-            (
-                "oldKey",
-                chat::key_by_id(view, chat::KEYED_MESSAGE, m)?.map_or(Js::Null, Js::Text),
-            ),
-        ]));
+            ("branches", Js::Arr(branches)),
+            ("oldKey", old_keys[j].take().map_or(Js::Null, Js::Text)),
+            ("replies", Js::Num(shape.replies as f64)),
+        ]);
     }
     Ok(Js::Arr(out))
 }
@@ -177,15 +229,9 @@ pub fn children(
 
 /// The messages from the tree's root down to `at` (a position shows nothing below it).
 pub fn path(view: &View, at: Option<u64>) -> Result<Js, StoreError> {
-    let mut above = Vec::new();
-    let mut cur = at;
-    while let Some(m) = cur {
-        above.push(m);
-        let (_, r) = chat::require_message(view, m)?;
-        cur = parent_of(view, m, &r)?;
-    }
-    above.reverse();
-    Ok(Js::Arr(above.into_iter().map(Js::Big).collect()))
+    Ok(Js::Arr(
+        chat::path_to(view, at)?.into_iter().map(Js::Big).collect(),
+    ))
 }
 
 pub fn landing(view: &View, tree: u64, s: Option<u64>, u: Option<u64>) -> Result<Js, StoreError> {

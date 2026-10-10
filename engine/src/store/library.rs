@@ -864,8 +864,9 @@ impl Deriver for JsonValue {
                 drop_text_of(view, out, h, f)?;
                 super::chat::drop_time(view, out, m, f)?;
                 let k = h.value_key(f);
-                if let Some(b) = view.get(&k)? {
-                    dead(out, parse_loc(&b)?);
+                match view.get(&k)? {
+                    Some(b) => dead(out, parse_loc(&b)?),
+                    None => super::chat::shape_add(out, m, super::chat::SHAPE_EXTRA),
                 }
                 out.put(k, loc_bytes(at));
                 return Ok(());
@@ -919,6 +920,9 @@ pub fn drop_json_of(view: &View, out: &mut Out, h: Holder, f: &FieldRef) -> Resu
     if let Some(b) = view.get(&k)? {
         dead(out, parse_loc(&b)?);
         out.del(k);
+        if let Holder::Message(m) = h {
+            super::chat::shape_add(out, m, -super::chat::SHAPE_EXTRA);
+        }
     }
     Ok(())
 }

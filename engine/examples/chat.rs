@@ -368,25 +368,47 @@ fn median_ms(mut f: impl FnMut()) -> f64 {
     t[15]
 }
 
-/// Opening a position as `ChatEngine.load` reads it: the path, each message, each message's alternatives.
+/// The `replies` of each message `chat_read::messages` answers.
+fn replies(js: &chat_read::Js) -> Vec<u64> {
+    let chat_read::Js::Arr(list) = js else {
+        unreachable!()
+    };
+    list.iter()
+        .map(|m| {
+            let chat_read::Js::Obj(fields) = m else {
+                unreachable!()
+            };
+            match fields.iter().find(|(k, _)| *k == "replies") {
+                Some((_, chat_read::Js::Num(n))) => *n as u64,
+                _ => unreachable!(),
+            }
+        })
+        .collect()
+}
+
+/// The alternatives `ChatEngine.load` reads: the openings, and the replies of each message on the path with more
+/// than one.
+fn alternatives(
+    v: &st_engine::store::derive::View,
+    tree: u64,
+    ids: &[u64],
+    replies: &[u64],
+) -> Result<(), st_engine::store::StoreError> {
+    chat_read::children(v, None, tree, None, 500)?;
+    for (i, m) in ids.iter().enumerate() {
+        if i + 1 < ids.len() && replies[i] > 1 {
+            chat_read::children(v, Some(*m), tree, None, 500)?;
+        }
+    }
+    Ok(())
+}
+
+/// Opening a position as `ChatEngine.load` reads it: the path, its messages, their alternatives, the state there.
 fn open_position(s: &Store, tree: u64, at: u64) -> usize {
     s.chat_read(|v| {
-        let chat_read::Js::Arr(path) = chat_read::path(v, Some(at))? else {
-            unreachable!()
-        };
-        let ids: Vec<u64> = path
-            .iter()
-            .map(|j| match j {
-                chat_read::Js::Big(m) => *m,
-                _ => unreachable!(),
-            })
-            .collect();
-        chat_read::messages(v, &ids)?;
-        let mut parent = None;
-        for m in &ids {
-            chat_read::children(v, parent, tree, None, 500)?;
-            parent = Some(*m);
-        }
+        let ids = st_engine::store::chat::path_to(v, Some(at))?;
+        let r = replies(&chat_read::messages(v, &ids)?);
+        alternatives(v, tree, &ids, &r)?;
         chat_read::state_at(v, tree, Some(at))?;
         Ok(ids.len())
     })
@@ -417,6 +439,107 @@ fn reads(s: &Store, l: &Load) {
     ];
     for (name, ms) in rows {
         println!("| {name} | {ms:.3} |");
+    }
+    // Where opening the longest position spends its time.
+    let at = l.long_end;
+    let tree = l.long_tree;
+    let ids: Vec<u64> = s
+        .chat_read(|v| {
+            let chat_read::Js::Arr(p) = chat_read::path(v, Some(at))? else {
+                unreachable!()
+            };
+            Ok(p.iter()
+                .map(|j| match j {
+                    chat_read::Js::Big(m) => *m,
+                    _ => unreachable!(),
+                })
+                .collect())
+        })
+        .unwrap();
+    let parts: Vec<(&str, f64)> = vec![
+        (
+            "path",
+            median_ms(|| drop(s.chat_read(|v| chat_read::path(v, Some(at))).unwrap())),
+        ),
+        (
+            "messages",
+            median_ms(|| drop(s.chat_read(|v| chat_read::messages(v, &ids)).unwrap())),
+        ),
+        (
+            "alternatives",
+            median_ms(|| {
+                s.chat_read(|v| {
+                    let mut parent = None;
+                    for m in &ids {
+                        chat_read::children(v, parent, tree, None, 500)?;
+                        parent = Some(*m);
+                    }
+                    Ok(())
+                })
+                .unwrap()
+            }),
+        ),
+        (
+            "state",
+            median_ms(|| {
+                drop(
+                    s.chat_read(|v| chat_read::state_at(v, tree, Some(at)))
+                        .unwrap(),
+                )
+            }),
+        ),
+    ];
+    for (name, ms) in parts {
+        println!("| open at L = {LONG}: {name} | {ms:.2} |");
+    }
+    if std::env::var_os("ST_PROBE").is_some() {
+        use st_engine::store::kinds::{key, parse_loc};
+        let keys: Vec<Vec<u8>> = ids.iter().map(|m| key::id(key::MESSAGE, *m)).collect();
+        let probes: Vec<(&str, f64)> = vec![
+            (
+                "point gets",
+                median_ms(|| {
+                    s.chat_read(|v| {
+                        for k in &keys {
+                            v.get(k)?;
+                        }
+                        Ok(())
+                    })
+                    .unwrap()
+                }),
+            ),
+            (
+                "get_many",
+                median_ms(|| drop(s.chat_read(|v| v.get_many(&keys)).unwrap())),
+            ),
+            (
+                "prefix scans",
+                median_ms(|| {
+                    s.chat_read(|v| {
+                        for k in &keys {
+                            v.scan(k, &key::prefix_end(k), 10)?;
+                        }
+                        Ok(())
+                    })
+                    .unwrap()
+                }),
+            ),
+            (
+                "record reads",
+                median_ms(|| {
+                    s.chat_read(|v| {
+                        for b in v.get_many(&keys)? {
+                            v.record(parse_loc(&b.unwrap())?.pos)?;
+                        }
+                        Ok(())
+                    })
+                    .unwrap()
+                }),
+            ),
+        ];
+        for (name, ms) in probes {
+            println!("| probe, {LONG} messages: {name} | {ms:.2} |");
+        }
     }
     for len in [100u64, 1000, LONG] {
         let at = l.long_end - (LONG - len);

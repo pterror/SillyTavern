@@ -404,6 +404,33 @@ impl View<'_> {
         Ok(out)
     }
 
+    /// The records at `positions` (durable or not), in the order given; a log block is decoded once for the ones
+    /// it holds.
+    pub fn records(&self, positions: &[u64]) -> Result<Vec<Record>, StoreError> {
+        let mut out: Vec<Option<Record>> = vec![None; positions.len()];
+        let mut from_log = Vec::new();
+        for (i, &pos) in positions.iter().enumerate() {
+            let pending = self.pending.iter().find_map(|p| p.get(&pos));
+            if let Some((r, _)) = pending {
+                out[i] = Some(r.clone());
+            } else if self.staged.is_some_and(|st| pos >= st.staged_from) {
+                out[i] = Some(self.record(pos)?.0);
+            } else {
+                from_log.push(i);
+            }
+        }
+        let read = self
+            .log
+            .read_many(&from_log.iter().map(|&i| positions[i]).collect::<Vec<_>>())?;
+        for (i, (r, _)) in from_log.into_iter().zip(read) {
+            out[i] = Some(r);
+        }
+        Ok(out
+            .into_iter()
+            .map(|r| r.expect("every record read"))
+            .collect())
+    }
+
     /// The record at `pos`, durable or not.
     pub fn record(&self, pos: u64) -> Result<(Record, u64), StoreError> {
         for p in &self.pending {

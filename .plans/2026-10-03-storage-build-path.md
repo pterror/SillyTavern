@@ -884,8 +884,10 @@ Left (in the order they build on each other):
   variables and `chat_metadata`, a change made while producing a reply recorded with the reply (the generate
   route), navigation replacing the state, other tabs.
 - The token-count cache's routes moved onto `TokenCache` at the cut (built, see "Built, the token-count cache").
-- Measured (see "Measured, chats" below); left from it: opening a position at L = 10,000 takes 354 ms (35 µs a
-  message, about 10 point reads each); reading a message's values in fewer reads would cut it.
+- Measured (see "Measured, chats" and "Built, opening a position faster" below).
+- The page's session (`X-ST-Session` in `getRequestHeaders()`, the tab's and the device's session, as answered above)
+  and `resolveSession` for `none` (lands through the cascade; the first move makes a v7 session the tab keeps; v5 only
+  for compat identifiers on requests without a session).
 - For 5e: old ids as `keyMap` records (counter above any decimal one), labels as bookmarks with `positionCreate`
   where they are, `default_child_id` and `characters.active_chat` as the deterministic session's choices and pointer
   moves, itemization rows and files, label metadata as `migration` state changes.
@@ -1479,6 +1481,19 @@ no session yet" sends `none` and acts through the deterministic (user, tree) ses
 - When does the device's default change: whenever a tab opens or makes another session, or only while there is none?
 Not built until answered; the engine side (`resolveSession`) doesn't depend on it.
 
+Answered (coordinator, 10-10; behaviour "maximally intuitive": a new tab opens where you last were on this device):
+- A new tab opens the device's default session.
+- A tab with no session (no device default yet) sends `none` and lands through the cascade; its first pointer move
+  makes a new v7 session, which the tab keeps as its own. The v5 (user, tree) id stays only for compat identifiers on
+  requests without a session.
+- The device's default is the session most recently moved by any tab on this device (last active), updated on each
+  move, kept per device in browser storage.
+- A `bookmark_link` through `saveChat` as a following bookmark: fine (an upstream checkpoint is a chat that
+  continues).
+- Opening a position at ~35 µs and ~10 point reads a message is too slow: O(L) by the rule, but not its constant.
+  Walk the ancestor chain once, then read the path's records and values in batches or ranges; target a few µs a
+  message, reported before and after at L = 100, 1,000, 10,000.
+
 Measured, chats (10-10; `engine/examples/chat.rs`, `cargo run --release --features measure --example chat -- <dir>
 2000`, NVMe btrfs scratchpad, removed after): 2,000 trees of 200 messages in a chain (every fifth with a second
 alternative, sent through 8 of 64 sessions, 3 bookmarks each) and one chain of 10,000: 490,000 messages, loaded through
@@ -1491,6 +1506,8 @@ commits in 96 s, 19.6 derived entries a message, runs 76 MB. Isolated actions (o
 | fork choice | 6.0 | 11 | 177 | 148 | 2.61 |
 | history step back | 6.0 | 16 | 187 | 69 | 2.60 |
 | state change (a variable) | 16.7 | 3 | 27 | 77 | 2.52 |
+
+(After the shape counter: an append writes 94 derived entries, a message's parent gaining a reply; a state change 4.)
 
 Today's append is 14.3 frames (≈ 58 KB) in 2 commits, unsynced (design §6); the engine's is the record (design: ~620 B)
 plus the sync floor (75–190 KB), its derived entries (stats, sessions, children, depth, postings) written again by
@@ -1506,7 +1523,37 @@ flushes and merges. Reads on the reopened store (median of 31):
 | open a position at L = 10,000 | 354 |
 
 Lists are O(log N + P); opening is O(L), about 35 µs a message (the path, each message's values, texts and times, its
-alternatives, the state's fold).
+alternatives, the state's fold). Made 3.8 µs a message since (below).
+
+Built, opening a position faster (10-11; `log/mod.rs`, `store/derive.rs`, `store/chat.rs`, `chat_read.rs`,
+`state.rs`, `kinds.rs`, `library.rs`, `sessions.rs`, `src/chat-engine.js`; tests `chat_tests.rs`, `state_tests.rs`), as
+answered. Where the time went (L = 10,000, 2,000 trees): the path 64 ms, the messages 242, the alternatives 19, the
+state 82; a point read cost about 1 µs, a prefix scan 2 µs, a record read 3.6 µs (decoding its block up to it), and
+the path, the messages and the state each read every append again.
+- A message's entry holds its parent (`[append position, length, parent + 1]`, rewritten by a move), so the path is
+  one point read a message and no record read (`chat::path_to`); the state's fold walks it the same way.
+- A message's shape (`chat::SHAPE`, one counter kept by additions at every write that changes what it sums): its
+  replies, whether it has an itemization or an outside key, and how many values, times, other texts, bookmarks made at
+  it and state changes it holds, plus one while its own text isn't its append's alone. Reads skip what a message
+  doesn't hold: a usual message's texts come from its append, with no scan.
+- `chatRead('messages')` reads every entry, shape and depth together (`View::get_many`) and every append together
+  (`View::records` / `Log::read_many`: each log block decoded once for the records it holds), and answers each
+  message's `replies`; `ChatEngine.load` reads a message's replies only when it has more than one, and each message
+  once.
+- Tests: the model workloads (chats and state) check every message's entry parent and its shape against the
+  structures it sums, through commits, a reopen, a crash and cleaning.
+
+| open a position (median ms) | before | after |
+|---|---|---|
+| L = 100 | 3.5 | 0.38 |
+| L = 1,000 | 35 | 3.8 |
+| L = 10,000 | 354 | 37.8 (path 6.3, messages 19.3, alternatives 2.5, state 10.4) |
+
+| choice | picked | reason |
+|---|---|---|
+| a message's shape | one counter, replies in the low 24 bits, itemization and key bits, extras from bit 32 | one point read (batched) answers what a message holds; additions commute, so a write never reads it |
+| the parent | in the message's entry, beside `MESSAGE_PARENT` (which keeps the move's record live) | the walk reads one entry a message; a move rewrites one entry |
+| record reads | grouped by log block, each block decoded once | a record is decoded from its block's start (records are coded against the ones before them) |
 
 Where layer 1 goes: inside 5b, on the engine. Its own storage step (SQLite `state_changes`, saved states every 64th
 depth rebuilt lazily after an epoch bump) conflicts with the design: a structure caught up when read is what revision

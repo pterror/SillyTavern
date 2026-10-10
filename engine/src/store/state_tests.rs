@@ -165,6 +165,11 @@ impl Model {
                     self.state(*tree, Some(*m)),
                     "state at {m}"
                 );
+                assert_eq!(
+                    super::chat::shapes(v, &[*m])?[0],
+                    super::chat::shape_scanned(v, *m)?,
+                    "shape of {m}"
+                );
             }
             for tree in 1..=2 {
                 assert_eq!(

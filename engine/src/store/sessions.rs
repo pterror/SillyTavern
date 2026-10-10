@@ -1253,8 +1253,10 @@ pub fn any_pending(view: &View) -> Result<bool, StoreError> {
 /// A bookmark created at `m`.
 pub fn branch_created(out: &mut Out, m: u64, b: u64) {
     out.put(key::ids(BRANCH_FROM, m, b), Vec::new());
+    chat::shape_add(out, m, chat::SHAPE_EXTRA);
 }
 
 pub fn branch_gone(out: &mut Out, m: u64, b: u64) {
     out.del(key::ids(BRANCH_FROM, m, b));
+    chat::shape_add(out, m, -chat::SHAPE_EXTRA);
 }

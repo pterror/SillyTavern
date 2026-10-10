@@ -850,6 +850,70 @@ impl Log {
         Err(LogError::Position(pos, "not a record's start"))
     }
 
+    /// The records at durable positions, in the order given: each block holding some is decoded once, up to the last
+    /// of them.
+    pub fn read_many(&self, positions: &[u64]) -> LogResult<Vec<(Record, u64)>> {
+        let end = *self.shared.durable.lock().unwrap();
+        let block = self.shared.cfg.block_size;
+        let mut order: Vec<usize> = (0..positions.len()).collect();
+        order.sort_by_key(|&i| positions[i]);
+        let mut out: Vec<Option<(Record, u64)>> = vec![None; positions.len()];
+        let mut i = 0;
+        while i < order.len() {
+            let pos = positions[order[i]];
+            if pos >= end.position() {
+                return Err(LogError::Position(pos, "not durable"));
+            }
+            let (file, offset) = split(pos);
+            let start = block_start(block, offset);
+            // The positions in this block, in order.
+            let mut j = i;
+            while j < order.len() {
+                let (f, o) = split(positions[order[j]]);
+                if f != file || block_start(block, o) != start {
+                    break;
+                }
+                j += 1;
+            }
+            let reader = self.reader(file)?;
+            let limit = if file == end.file {
+                end.offset
+            } else {
+                u64::MAX
+            };
+            let mut scanner = Scanner::new(&self.shared.cfg, file, &reader, start, limit);
+            let mut next = i;
+            while next < j {
+                let Some((at, item)) = scanner.next()? else {
+                    break;
+                };
+                if split(positions[order[next]]).1 < at {
+                    return Err(LogError::Position(
+                        positions[order[next]],
+                        "not a record's start",
+                    ));
+                }
+                if let Item::Record(r) = item {
+                    while next < j && split(positions[order[next]]).1 == at {
+                        out[order[next]] = Some((r.clone(), scanner.last_len));
+                        next += 1;
+                    }
+                }
+            }
+            if next < j {
+                return Err(LogError::Position(
+                    positions[order[next]],
+                    "not a record's start",
+                ));
+            }
+            i = j;
+        }
+        Ok(out
+            .into_iter()
+            .map(|r| r.expect("every position read"))
+            .collect())
+    }
+
     /// The record at `pos` in a file staged in `dir` (a bulk load's, not yet in the log).
     pub fn read_staged(&self, dir: &Path, pos: u64) -> LogResult<(Record, u64)> {
         let (file, offset) = split(pos);

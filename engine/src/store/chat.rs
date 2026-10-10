@@ -125,10 +125,111 @@ pub fn child_of_key(k: &[u8], prefix_len: usize) -> Result<u64, StoreError> {
     get_u64(k, &mut at).ok_or_else(bad)
 }
 
-pub fn message_loc(view: &View, m: u64) -> Result<Option<Loc>, StoreError> {
+/// A message's append and its parent now (None: it opens its tree).
+pub type MessageEntry = (Loc, Option<u64>);
+
+/// A message's entry: `[append position, append length, parent + 1 (0: it opens its tree)]`.
+fn message_entry_bytes(at: Loc, parent: Option<u64>) -> Vec<u8> {
+    varints(&[at.pos, at.len, parent.map_or(0, |p| p + 1)])
+}
+
+fn parse_message_entry(b: &[u8]) -> Result<(Loc, Option<u64>), StoreError> {
+    let [pos, len, parent] = parse_varints::<3>(b)?;
+    Ok((Loc { pos, len }, parent.checked_sub(1)))
+}
+
+/// A message's append and its parent now.
+pub fn message_entry(view: &View, m: u64) -> Result<Option<(Loc, Option<u64>)>, StoreError> {
     view.get(&key::id(key::MESSAGE, m))?
-        .map(|b| parse_loc(&b))
+        .map(|b| parse_message_entry(&b))
         .transpose()
+}
+
+/// Each message's entry (`message_entry`), read together.
+pub fn message_entries(view: &View, ids: &[u64]) -> Result<Vec<Option<MessageEntry>>, StoreError> {
+    let keys: Vec<Vec<u8>> = ids.iter().map(|m| key::id(key::MESSAGE, *m)).collect();
+    view.get_many(&keys)?
+        .into_iter()
+        .map(|b| b.map(|b| parse_message_entry(&b)).transpose())
+        .collect()
+}
+
+/// The messages from the tree's root down to `at`, through each message's entry.
+pub fn path_to(view: &View, at: Option<u64>) -> Result<Vec<u64>, StoreError> {
+    let mut above = Vec::new();
+    let mut cur = at;
+    while let Some(m) = cur {
+        above.push(m);
+        let Some((_, parent)) = message_entry(view, m)? else {
+            return Err(StoreError::Refused(format!("no message {m}")));
+        };
+        cur = parent;
+    }
+    above.reverse();
+    Ok(above)
+}
+
+pub fn message_loc(view: &View, m: u64) -> Result<Option<Loc>, StoreError> {
+    Ok(message_entry(view, m)?.map(|(l, _)| l))
+}
+
+// ---- a message's shape ----
+
+/// Per message: what it holds besides its append, as one sum: 1 per reply; `SHAPE_ITEMIZED` while it has an
+/// itemization; `SHAPE_KEYED` while it has an outside key; `SHAPE_EXTRA` per value, time, text other than its own,
+/// bookmark made at it and state change hanging on it, and once while its own text isn't its append's alone. A
+/// read skips what a message doesn't hold.
+pub const SHAPE: u64 = 171;
+pub const SHAPE_ITEMIZED: i64 = 1 << 24;
+pub const SHAPE_KEYED: i64 = 1 << 25;
+pub const SHAPE_EXTRA: i64 = 1 << 32;
+
+pub fn shape_add(out: &mut Out, m: u64, n: i64) {
+    if n != 0 {
+        out.add(key::id(SHAPE, m), n);
+    }
+}
+
+/// A message's shape, decoded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Shape {
+    pub replies: u64,
+    pub itemized: bool,
+    pub keyed: bool,
+    pub extras: u64,
+}
+
+fn shape_of(v: i64) -> Shape {
+    Shape {
+        replies: (v & 0xff_ffff) as u64,
+        itemized: v & SHAPE_ITEMIZED != 0,
+        keyed: v & SHAPE_KEYED != 0,
+        extras: (v >> 32) as u64,
+    }
+}
+
+/// Each message's shape, read together.
+pub fn shapes(view: &View, ids: &[u64]) -> Result<Vec<Shape>, StoreError> {
+    let keys: Vec<Vec<u8>> = ids.iter().map(|m| key::id(SHAPE, *m)).collect();
+    view.get_many(&keys)?
+        .into_iter()
+        .map(|b| {
+            Ok(shape_of(match b {
+                Some(b) => crate::keyspace::val::counter_value(&b)
+                    .ok_or_else(|| StoreError::Entry("a message's shape doesn't decode".into()))?,
+                None => 0,
+            }))
+        })
+        .collect()
+}
+
+/// Whether a message's own text is its append's alone: `head` (its text's head) is the append with no edits, or
+/// it has none and the append holds no text.
+pub fn own_text_plain(append: Loc, rec: &Record, head_full: Option<(u64, u64)>) -> bool {
+    match head_full {
+        Some((pos, edits)) => pos == append.pos && edits == 0,
+        None => !text_in_append(id(rec, APPEND_FLAGS)),
+    }
 }
 
 /// The message's `messageAppend` record, or a refusal naming it.
@@ -297,8 +398,11 @@ impl Deriver for MessageAppend {
         }
         let (s, u) = (opt_id(rec, APPEND_SESSION), id(rec, APPEND_USER));
         sessions::check_actor(view, s, Some(u))?;
-        out.put(key::id(key::MESSAGE, m), loc_bytes(at));
+        out.put(key::id(key::MESSAGE, m), message_entry_bytes(at, parent));
         out.max(key::of(key::NEXT_MESSAGE), m + 1);
+        if let Some(p) = parent {
+            shape_add(out, p, 1);
+        }
         sessions::appended(view, out, m, parent)?;
         // Shown through its session: the session moves to it, and continuing there is choosing it.
         if let Some(s) = s {
@@ -344,10 +448,13 @@ impl Deriver for MessageAppend {
         out: &mut Out,
     ) -> Result<(), StoreError> {
         let m = id(rec, APPEND_ID);
-        if !message_loc(view, m)?.is_some_and(|l| l.pos == from) {
+        let Some((l, parent)) = message_entry(view, m)? else {
+            return Ok(());
+        };
+        if l.pos != from {
             return Ok(());
         }
-        out.put(key::id(key::MESSAGE, m), loc_bytes(to));
+        out.put(key::id(key::MESSAGE, m), message_entry_bytes(to, parent));
         super::kinds::repoint_text_of(
             Holder::Message(m),
             &FieldRef::Code(MES),
@@ -409,6 +516,10 @@ impl Deriver for MessageDelete {
         super::state::message_gone(view, out, m)?;
         dead(out, l);
         out.del(key::id(key::MESSAGE, m));
+        if let Some(p) = parent {
+            shape_add(out, p, -1);
+        }
+        out.del(key::id(SHAPE, m));
         Ok(())
     }
 
@@ -471,6 +582,14 @@ impl Deriver for MessageParent {
             dead(out, parse_loc(&v)?);
         }
         out.put(k, loc_bytes(at));
+        let (l, _) = message_entry(view, m)?.expect("required above");
+        out.put(key::id(key::MESSAGE, m), message_entry_bytes(l, new));
+        if let Some(o) = old {
+            shape_add(out, o, -1);
+        }
+        if let Some(n) = new {
+            shape_add(out, n, 1);
+        }
         let t = time_of(&append);
         out.del(child_key(old, owner, t, m));
         out.put(child_key(new, owner, t, m), Vec::new());
@@ -535,8 +654,9 @@ impl Deriver for MessageTime {
         drop_text_of(view, out, h, f)?;
         super::library::drop_json_of(view, out, h, f)?;
         let k = msg_time_key(m, f);
-        if let Some(v) = view.get(&k)? {
-            dead(out, parse_loc(&v)?);
+        match view.get(&k)? {
+            Some(v) => dead(out, parse_loc(&v)?),
+            None => shape_add(out, m, SHAPE_EXTRA),
         }
         out.put(k, loc_bytes(at));
         Ok(())
@@ -570,6 +690,7 @@ pub fn drop_time(view: &View, out: &mut Out, m: u64, f: &FieldRef) -> Result<(),
     if let Some(v) = view.get(&k)? {
         dead(out, parse_loc(&v)?);
         out.del(k);
+        shape_add(out, m, -SHAPE_EXTRA);
     }
     Ok(())
 }
@@ -660,6 +781,9 @@ pub(super) fn drop_key(view: &View, out: &mut Out, space: u8, i: u64) -> Result<
     out.del(key_map_key(space, bytes(&r, 1)));
     out.del(k);
     dead(out, l);
+    if space == KEYED_MESSAGE {
+        shape_add(out, i, -SHAPE_KEYED);
+    }
     Ok(())
 }
 
@@ -689,6 +813,9 @@ impl Deriver for KeyMap {
         }
         out.put(key_map_key(space, k), varints(&[i]));
         out.put(key_of_key(space, i), loc_bytes(at));
+        if space == KEYED_MESSAGE {
+            shape_add(out, i, SHAPE_KEYED);
+        }
         let next = match space {
             KEYED_MESSAGE => key::NEXT_MESSAGE,
             KEYED_SESSION => key::NEXT_POSITION,
@@ -1082,15 +1209,21 @@ impl Deriver for Itemization {
         let m = id(rec, 0);
         require_message(view, m)?;
         let k = key::id(ITEMIZED, m);
-        if let Some(b) = view.get(&k)? {
-            dead(out, parse_loc(&b)?);
-        }
-        if rec.values[2] == Value::Absent {
+        let had = match view.get(&k)? {
+            Some(b) => {
+                dead(out, parse_loc(&b)?);
+                true
+            }
+            None => false,
+        };
+        let has = rec.values[2] != Value::Absent;
+        if has {
+            out.put(k, loc_bytes(at));
+        } else {
             dead(out, at);
             out.del(k);
-        } else {
-            out.put(k, loc_bytes(at));
         }
+        shape_add(out, m, (i64::from(has) - i64::from(had)) * SHAPE_ITEMIZED);
         Ok(())
     }
 
@@ -1128,5 +1261,38 @@ pub fn deriver(kind: &str) -> Option<&'static dyn Deriver> {
         "positionMode" => &PositionMode,
         "positionDelete" => &PositionDelete,
         _ => return None,
+    })
+}
+
+/// A message's shape (`SHAPE`) as the structures it sums hold it.
+#[cfg(test)]
+pub fn shape_scanned(v: &View, m: u64) -> Result<Shape, StoreError> {
+    let count = |p: Vec<u8>| -> Result<usize, StoreError> {
+        Ok(v.scan(&p, &key::prefix_end(&p), usize::MAX)?.len())
+    };
+    let mut extras = 0;
+    let tp = key::id(key::MSG_TEXT, m);
+    let mut mes_head = None;
+    for (k, b) in v.scan(&tp, &key::prefix_end(&tp), usize::MAX)? {
+        if super::library::field_after(&k, key::MSG_TEXT)? == FieldRef::Code(MES) {
+            let [pos, _, _, edits, _] = parse_varints::<5>(&b)?;
+            mes_head = Some((pos, edits));
+        } else {
+            extras += 1;
+        }
+    }
+    let (l, rec) = require_message(v, m)?;
+    if !own_text_plain(l, &rec, mes_head) {
+        extras += 1;
+    }
+    extras += count(key::id(key::MSG_VALUE, m))?;
+    extras += count(key::id(key::MSG_TIME, m))?;
+    extras += count(key::id(sessions::BRANCH_FROM, m))?;
+    extras += count(key::ids(super::state::STATE_AT, 1, m))?;
+    Ok(Shape {
+        replies: count(key::id(key::CHILD, m))? as u64,
+        itemized: v.get(&key::id(ITEMIZED, m))?.is_some(),
+        keyed: v.get(&key_of_key(KEYED_MESSAGE, m))?.is_some(),
+        extras: extras as u64,
     })
 }

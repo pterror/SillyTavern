@@ -4,7 +4,7 @@
 //! key, or (the variable bit) a chat variable's name.
 
 use super::StoreError;
-use super::chat::{opt_id, parent_of, require_message};
+use super::chat::{opt_id, require_message};
 use super::derive::{Deriver, Loc, Out, View};
 use super::kinds::{bytes, dead, field, id, key, loc_bytes, parse_loc};
 use super::sessions;
@@ -114,6 +114,7 @@ impl Deriver for StateChange {
         let hang = Hang::of(rec);
         if let Hang::Message(m) = hang {
             require_message(view, m)?;
+            super::chat::shape_add(out, m, super::chat::SHAPE_EXTRA);
         }
         sessions::check_actor(view, opt_id(rec, 8), opt_id(rec, 9))?;
         out.put(key::id(CHANGE, c), loc_bytes(at));
@@ -222,15 +223,16 @@ pub struct Entry {
 /// The state at a message of tree `tree` (None: at the tree's root), its keys in the order a JavaScript object
 /// would hold them after the changes in turn: a key set keeps its place, a key deleted and set again goes last.
 pub fn state_at(view: &View, tree: u64, at: Option<u64>) -> Result<Vec<Entry>, StoreError> {
-    let mut path = Vec::new();
-    let mut cur = at;
-    while let Some(m) = cur {
-        path.push(m);
-        let (_, r) = require_message(view, m)?;
-        cur = parent_of(view, m, &r)?;
-    }
+    let path = super::chat::path_to(view, at)?;
+    // Only messages whose shape counts something besides their append can hold a change.
+    let shapes = super::chat::shapes(view, &path)?;
     let mut out: Vec<Entry> = Vec::new();
-    let hangs = std::iter::once(Hang::Tree(tree)).chain(path.into_iter().rev().map(Hang::Message));
+    let held = path
+        .iter()
+        .zip(shapes)
+        .filter(|(_, s)| s.extras > 0)
+        .map(|(m, _)| Hang::Message(*m));
+    let hangs = std::iter::once(Hang::Tree(tree)).chain(held);
     for hang in hangs {
         let p = hang.prefix();
         for (k, _) in view.scan(&p, &key::prefix_end(&p), usize::MAX)? {
