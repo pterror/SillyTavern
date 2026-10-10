@@ -851,7 +851,14 @@ impl Deriver for JsonValue {
         let e = match h {
             Holder::Entity(e) => e,
             Holder::Message(m) => {
-                super::chat::require_message(view, m)?;
+                super::chat::edit_activity(
+                    view,
+                    out,
+                    m,
+                    super::chat::opt_id(rec, 3),
+                    super::chat::opt_id(rec, 4),
+                    at,
+                )?;
                 drop_text_of(view, out, h, f)?;
                 super::chat::drop_time(view, out, m, f)?;
                 let k = h.value_key(f);
@@ -923,7 +930,14 @@ impl Deriver for ValueDelete {
         let e = match h {
             Holder::Entity(e) => e,
             Holder::Message(m) => {
-                super::chat::require_message(view, m)?;
+                super::chat::edit_activity(
+                    view,
+                    out,
+                    m,
+                    super::chat::opt_id(rec, 2),
+                    super::chat::opt_id(rec, 3),
+                    at,
+                )?;
                 drop_text_of(view, out, h, f)?;
                 super::chat::drop_time(view, out, m, f)?;
                 return drop_json_of(view, out, h, f);

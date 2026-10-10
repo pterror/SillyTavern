@@ -5,6 +5,7 @@ use std::sync::atomic::AtomicU64;
 
 use super::chat::{self, FOLLOWING, MES, PINNED};
 use super::kinds::{Holder, key, parse_loc, text_value_of};
+use super::sessions::{self, Fork};
 use super::*;
 use crate::log::format::{Value, kind_by_name, wtf8_from_utf16};
 use crate::search::Scope;
@@ -53,6 +54,48 @@ fn opt(v: Option<u64>) -> Value {
 
 const MES_F: FieldRef = FieldRef::Code(MES);
 
+/// Sessions are positions 1..=SESSIONS, users 1..=USERS; bookmarks are numbered after the sessions.
+const SESSIONS: u64 = 4;
+const USERS: u64 = 2;
+
+/// The records that make sessions and users exist: their outside keys.
+fn actors() -> Vec<Record> {
+    let mut out = Vec::new();
+    for s in 1..=SESSIONS {
+        out.push(rec(
+            "keyMap",
+            vec![
+                Value::Sel(chat::KEYED_SESSION, s),
+                Value::Bytes(format!("session-{s}").into_bytes()),
+            ],
+        ));
+    }
+    for u in 1..=USERS {
+        out.push(rec(
+            "keyMap",
+            vec![
+                Value::Sel(chat::KEYED_USER, u),
+                Value::Bytes(format!("user-{u}").into_bytes()),
+            ],
+        ));
+    }
+    out
+}
+
+fn actor_keys() -> BTreeMap<(u8, Vec<u8>), u64> {
+    let mut k = BTreeMap::new();
+    for s in 1..=SESSIONS {
+        k.insert(
+            (chat::KEYED_SESSION, format!("session-{s}").into_bytes()),
+            s,
+        );
+    }
+    for u in 1..=USERS {
+        k.insert((chat::KEYED_USER, format!("user-{u}").into_bytes()), u);
+    }
+    k
+}
+
 #[derive(Clone, Debug)]
 struct Msg {
     owner: u64,
@@ -67,11 +110,19 @@ struct Msg {
 #[derive(Clone, Debug)]
 struct Bookmark {
     at: u64,
+    created_at: u64,
     mode: u64,
     name: Option<String>,
 }
 
-/// What the derived chat structures must show.
+#[derive(Clone, Debug, Default)]
+struct Session {
+    pointer: Option<(u64, Option<u64>)>,
+    history: Vec<(u64, bool)>,
+    trees: BTreeMap<u64, Option<u64>>,
+}
+
+/// What the derived chat structures must show. `seq` orders events as log positions do.
 #[derive(Default, Clone)]
 struct Model {
     msgs: BTreeMap<u64, Msg>,
@@ -79,9 +130,32 @@ struct Model {
     keys: BTreeMap<(u8, Vec<u8>), u64>,
     next_msg: u64,
     next_pos: u64,
+    sessions: BTreeMap<u64, Session>,
+    recent: BTreeMap<u64, u64>,
+    activity: BTreeMap<u64, BTreeMap<u64, u64>>,
+    user_tree: BTreeMap<(u64, u64), (u64, Option<u64>)>,
+    user_order: BTreeMap<(u64, u64), BTreeMap<u64, u64>>,
+    choices: BTreeMap<(u8, u64, Fork), u64>,
+    branches: BTreeMap<u64, Vec<u64>>,
+    seq: u64,
+}
+
+fn fork_of(parent: Option<u64>, owner: u64) -> Fork {
+    match parent {
+        Some(p) => Fork::Message(p),
+        None => Fork::Root(owner),
+    }
 }
 
 impl Model {
+    fn new() -> Model {
+        Model {
+            keys: actor_keys(),
+            next_pos: SESSIONS + 1,
+            ..Model::default()
+        }
+    }
+
     fn children(&self, parent: Option<u64>, owner: u64) -> Vec<u64> {
         let mut c: Vec<(i64, u64)> = self
             .msgs
@@ -104,8 +178,163 @@ impl Model {
         false
     }
 
+    fn depth(&self, m: u64) -> u64 {
+        let mut d = 0;
+        let mut cur = Some(m);
+        while let Some(c) = cur {
+            d += 1;
+            cur = self.msgs[&c].parent;
+        }
+        d
+    }
+
+    fn tick(&mut self) -> u64 {
+        self.seq += 1;
+        self.seq
+    }
+
+    fn act(&mut self, s: u64, tree: u64) {
+        let q = self.tick();
+        self.activity.entry(tree).or_default().insert(s, q);
+    }
+
+    fn moved(&mut self, s: u64, u: u64, tree: u64, target: u64, meaningful: bool) {
+        let q = self.tick();
+        let ses = self.sessions.entry(s).or_default();
+        let entering = ses.pointer.map(|(t, _)| t) != Some(tree);
+        ses.pointer = Some((tree, Some(target)));
+        ses.history.push((target, false));
+        ses.trees.insert(tree, Some(target));
+        self.recent.insert(s, q);
+        self.user_tree.insert((u, tree), (s, Some(target)));
+        self.user_order.entry((u, tree)).or_default().insert(s, q);
+        if meaningful || !entering {
+            self.activity.entry(tree).or_default().insert(s, q);
+        }
+    }
+
+    fn choose(&mut self, s: u64, u: u64, f: Fork, reply: u64) {
+        self.choices.insert((0, s, f), reply);
+        self.choices.insert((1, u, f), reply);
+        self.choices.insert((2, 0, f), reply);
+    }
+
+    fn is_reply_at(&self, reply: u64, f: Fork) -> bool {
+        self.msgs
+            .get(&reply)
+            .is_some_and(|m| fork_of(m.parent, m.owner) == f)
+    }
+
+    fn followed(&self, s: Option<u64>, u: Option<u64>, f: Fork, tree: u64) -> Option<u64> {
+        for k in [s.map(|s| (0, s, f)), u.map(|u| (1, u, f)), Some((2, 0, f))]
+            .into_iter()
+            .flatten()
+        {
+            if let Some(r) = self.choices.get(&k)
+                && self.is_reply_at(*r, f)
+            {
+                return Some(*r);
+            }
+        }
+        let parent = match f {
+            Fork::Message(m) => Some(m),
+            Fork::Root(_) => None,
+        };
+        self.children(parent, tree).last().copied()
+    }
+
+    fn landing(&self, s: Option<u64>, u: Option<u64>, tree: u64) -> Option<u64> {
+        if let Some(s) = s
+            && let Some(p) = self.sessions.get(&s).and_then(|x| x.trees.get(&tree))
+        {
+            return *p;
+        }
+        if let Some(u) = u
+            && let Some((_, p)) = self.user_tree.get(&(u, tree))
+        {
+            return *p;
+        }
+        let mut at = None;
+        let mut f = Fork::Root(tree);
+        while let Some(n) = self.followed(s, u, f, tree) {
+            at = Some(n);
+            f = Fork::Message(n);
+        }
+        at
+    }
+
+    /// Message `m` goes: what points at it moves, its history entries are gone, its choices go.
+    fn message_gone(&mut self, m: u64) {
+        let msg = self.msgs.remove(&m).unwrap();
+        let to = match msg.parent {
+            Some(p) => Some(p),
+            None => self.children(None, msg.owner).last().copied(),
+        };
+        for ses in self.sessions.values_mut() {
+            if let Some((t, Some(p))) = ses.pointer
+                && p == m
+            {
+                ses.pointer = Some((t, to));
+            }
+            for p in ses.trees.values_mut() {
+                if *p == Some(m) {
+                    *p = to;
+                }
+            }
+            for h in &mut ses.history {
+                if h.0 == m {
+                    h.1 = true;
+                }
+            }
+        }
+        for v in self.user_tree.values_mut() {
+            if v.1 == Some(m) {
+                v.1 = to;
+            }
+        }
+        self.choices.retain(|_, r| *r != m);
+        self.branches.remove(&m);
+        self.keys
+            .retain(|(sp, _), v| !(*sp == chat::KEYED_MESSAGE && *v == m));
+    }
+
+    fn session_gone(&mut self, s: u64) {
+        self.sessions.remove(&s);
+        self.recent.remove(&s);
+        for a in self.activity.values_mut() {
+            a.remove(&s);
+        }
+        let keys: Vec<(u64, u64)> = self.user_order.keys().copied().collect();
+        for k in keys {
+            self.user_order.get_mut(&k).unwrap().remove(&s);
+            if self.user_tree.get(&k).is_some_and(|(us, _)| *us == s) {
+                let next = self.user_order[&k]
+                    .iter()
+                    .max_by_key(|(_, q)| **q)
+                    .map(|(o, _)| *o);
+                match next {
+                    Some(o) => {
+                        let p = self.sessions[&o].trees[&k.1];
+                        self.user_tree.insert(k, (o, p));
+                    }
+                    None => {
+                        self.user_tree.remove(&k);
+                    }
+                }
+            }
+        }
+    }
+
     fn check(&self, s: &Store) {
+        // Depth rewrites run between commits: wait for them.
+        for _ in 0..2000 {
+            if !s.derived(sessions::any_pending).unwrap() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
         s.derived(|v| {
+            assert!(!sessions::any_pending(v)?);
             let scan_ids = |prefix: Vec<u8>| -> Vec<u64> {
                 v.scan(&prefix, &key::prefix_end(&prefix), usize::MAX)
                     .unwrap()
@@ -114,43 +343,47 @@ impl Model {
                     .collect()
             };
             for (id, m) in &self.msgs {
-                let (_, r) = chat::require_message(v, *id).unwrap();
-                assert_eq!(
-                    chat::parent_of(v, *id, &r).unwrap(),
-                    m.parent,
-                    "parent of {id}"
-                );
+                let (_, r) = chat::require_message(v, *id)?;
+                assert_eq!(chat::parent_of(v, *id, &r)?, m.parent, "parent of {id}");
                 assert_eq!(
                     scan_ids(chat::children_prefix(Some(*id), m.owner)),
                     self.children(Some(*id), m.owner),
                     "replies to {id}"
                 );
-                let t = text_value_of(v, Holder::Message(*id), &MES_F).unwrap();
+                let t = text_value_of(v, Holder::Message(*id), &MES_F)?;
                 assert_eq!(t, m.text.as_deref().map(text), "text of {id}");
                 for (k, json) in &m.values {
                     let f = FieldRef::Key(k.as_bytes().to_vec());
-                    let b = v.get(&Holder::Message(*id).value_key(&f)).unwrap().unwrap();
-                    let (vr, _) = v.record(parse_loc(&b).unwrap().pos).unwrap();
+                    let b = v.get(&Holder::Message(*id).value_key(&f))?.unwrap();
+                    let (vr, _) = v.record(parse_loc(&b)?.pos)?;
                     assert_eq!(vr.values[2], Value::Text(text(json)), "{k} of {id}");
                 }
                 let vp = key::id(key::MSG_VALUE, *id);
                 assert_eq!(
-                    v.scan(&vp, &key::prefix_end(&vp), usize::MAX)
-                        .unwrap()
-                        .len(),
+                    v.scan(&vp, &key::prefix_end(&vp), usize::MAX)?.len(),
                     m.values.len(),
                     "values of {id}"
                 );
                 for (k, d) in &m.times {
                     let f = FieldRef::Key(k.as_bytes().to_vec());
-                    let b = v.get(&chat::msg_time_key(*id, &f)).unwrap().unwrap();
-                    let (tr, _) = v.record(parse_loc(&b).unwrap().pos).unwrap();
+                    let b = v.get(&chat::msg_time_key(*id, &f))?.unwrap();
+                    let (tr, _) = v.record(parse_loc(&b)?.pos)?;
                     assert_eq!(tr.values[2], Value::Int(*d), "{k} of {id}");
                 }
                 if let Some(sk) = &m.send_key {
-                    let b = v.get(&chat::send_key_key(m.owner, sk)).unwrap().unwrap();
-                    assert_eq!(kinds::parse_varints::<1>(&b).unwrap(), [*id]);
+                    let b = v.get(&chat::send_key_key(m.owner, sk))?.unwrap();
+                    assert_eq!(kinds::parse_varints::<1>(&b)?, [*id]);
                 }
+                assert_eq!(
+                    sessions::depth(v, *id)?,
+                    Some(self.depth(*id)),
+                    "depth of {id}"
+                );
+                assert_eq!(
+                    sessions::branches_from(v, *id)?,
+                    self.branches.get(id).cloned().unwrap_or_default(),
+                    "branches at {id}"
+                );
             }
             let owners: BTreeSet<u64> = self.msgs.values().map(|m| m.owner).collect();
             for o in &owners {
@@ -162,23 +395,18 @@ impl Model {
             }
             let all = key::of(key::MESSAGE);
             assert_eq!(
-                v.scan(&all, &key::prefix_end(&all), usize::MAX)
-                    .unwrap()
-                    .len(),
+                v.scan(&all, &key::prefix_end(&all), usize::MAX)?.len(),
+                self.msgs.len()
+            );
+            let all = key::of(sessions::DEPTH);
+            assert_eq!(
+                v.scan(&all, &key::prefix_end(&all), usize::MAX)?.len(),
                 self.msgs.len()
             );
             for (b, bm) in &self.bookmarks {
-                assert_eq!(
-                    chat::bookmark_at(v, *b).unwrap(),
-                    Some(bm.at),
-                    "bookmark {b}"
-                );
-                assert_eq!(
-                    chat::bookmark_mode(v, *b).unwrap(),
-                    Some(bm.mode),
-                    "mode of {b}"
-                );
-                let name = v.get(&key::id(key::POSITION_NAME, *b)).unwrap().map(|l| {
+                assert_eq!(chat::bookmark_at(v, *b)?, Some(bm.at), "bookmark {b}");
+                assert_eq!(chat::bookmark_mode(v, *b)?, Some(bm.mode), "mode of {b}");
+                let name = v.get(&key::id(key::POSITION_NAME, *b))?.map(|l| {
                     let (r, _) = v.record(parse_loc(&l).unwrap().pos).unwrap();
                     r.values[1].clone()
                 });
@@ -187,36 +415,117 @@ impl Model {
                     bm.name.as_deref().map(|n| Value::Text(text(n))),
                     "name of {b}"
                 );
-                assert!(chat::bookmarks_at(v, bm.at).unwrap().contains(b));
+                assert!(chat::bookmarks_at(v, bm.at)?.contains(b));
                 let owner = self.msgs[&bm.at].owner;
-                assert!(
-                    v.get(&key::ids(key::TREE_BOOKMARK, owner, *b))
-                        .unwrap()
-                        .is_some()
-                );
+                assert!(v.get(&key::ids(key::TREE_BOOKMARK, owner, *b))?.is_some());
             }
             let all = key::of(key::BOOKMARK_AT);
             assert_eq!(
-                v.scan(&all, &key::prefix_end(&all), usize::MAX)
-                    .unwrap()
-                    .len(),
+                v.scan(&all, &key::prefix_end(&all), usize::MAX)?.len(),
                 self.bookmarks.len()
             );
             for ((space, k), i) in &self.keys {
-                assert_eq!(chat::id_by_key(v, *space, k).unwrap(), Some(*i));
+                assert_eq!(chat::id_by_key(v, *space, k)?, Some(*i));
                 assert_eq!(
-                    chat::key_by_id(v, *space, *i).unwrap().as_deref(),
+                    chat::key_by_id(v, *space, *i)?.as_deref(),
                     Some(k.as_slice())
                 );
             }
             let all = key::of(key::KEY_OF);
             assert_eq!(
-                v.scan(&all, &key::prefix_end(&all), usize::MAX)
-                    .unwrap()
-                    .len(),
+                v.scan(&all, &key::prefix_end(&all), usize::MAX)?.len(),
                 self.keys.len()
             );
-            let next = v.get(&key::of(key::NEXT_MESSAGE)).unwrap();
+            // Sessions.
+            for s in 1..=SESSIONS {
+                let ses = self.sessions.get(&s).cloned().unwrap_or_default();
+                assert_eq!(
+                    sessions::session_pointer(v, s)?,
+                    ses.pointer,
+                    "pointer of {s}"
+                );
+                let h: Vec<(u64, bool)> = sessions::history(v, s, 0, usize::MAX)?
+                    .into_iter()
+                    .map(|(_, t, g)| (t, g))
+                    .collect();
+                assert_eq!(h, ses.history, "history of {s}");
+                for t in &owners {
+                    assert_eq!(
+                        sessions::session_in_tree(v, s, *t)?,
+                        ses.trees.get(t).copied(),
+                        "{s} in {t}"
+                    );
+                }
+            }
+            let mut recent: Vec<(u64, u64)> = self.recent.iter().map(|(s, q)| (*q, *s)).collect();
+            recent.sort_by(|a, b| b.cmp(a));
+            let got: Vec<u64> = sessions::recent(v, None, usize::MAX)?
+                .into_iter()
+                .map(|(_, s)| s)
+                .collect();
+            assert_eq!(
+                got,
+                recent.into_iter().map(|(_, s)| s).collect::<Vec<_>>(),
+                "recent sessions"
+            );
+            for t in &owners {
+                let mut want: Vec<(u64, u64)> = self
+                    .activity
+                    .get(t)
+                    .map(|a| a.iter().map(|(s, q)| (*q, *s)).collect())
+                    .unwrap_or_default();
+                want.sort_by(|a, b| b.cmp(a));
+                let got: Vec<u64> = sessions::in_tree(v, *t, None, usize::MAX)?
+                    .into_iter()
+                    .map(|(_, s)| s)
+                    .collect();
+                assert_eq!(
+                    got,
+                    want.into_iter().map(|(_, s)| s).collect::<Vec<_>>(),
+                    "sessions active in {t}"
+                );
+                for u in 1..=USERS {
+                    assert_eq!(
+                        sessions::user_in_tree(v, u, *t)?,
+                        self.user_tree.get(&(u, *t)).copied(),
+                        "user {u} in {t}"
+                    );
+                    for s in [None, Some(1), Some(2)] {
+                        assert_eq!(
+                            sessions::landing(v, s, Some(u), *t)?,
+                            self.landing(s, Some(u), *t),
+                            "landing of {s:?}, {u} in {t}"
+                        );
+                    }
+                }
+                assert_eq!(
+                    sessions::landing(v, None, None, *t)?,
+                    self.landing(None, None, *t),
+                    "landing in {t}"
+                );
+            }
+            for ((tier, who, f), reply) in &self.choices {
+                let k = match tier {
+                    0 => sessions::fork_key(sessions::FORK_SESSION, Some(*who), *f),
+                    1 => sessions::fork_key(sessions::FORK_USER, Some(*who), *f),
+                    _ => sessions::fork_key(sessions::FORK_ANY, None, *f),
+                };
+                let [r, _, _] = kinds::parse_varints::<3>(&v.get(&k)?.unwrap())?;
+                assert_eq!(r, *reply, "choice {tier} {who} {f:?}");
+            }
+            let n: usize = [
+                sessions::FORK_SESSION,
+                sessions::FORK_USER,
+                sessions::FORK_ANY,
+            ]
+            .iter()
+            .map(|s| {
+                let p = key::of(*s);
+                v.scan(&p, &key::prefix_end(&p), usize::MAX).unwrap().len()
+            })
+            .sum();
+            assert_eq!(n, self.choices.len(), "choices");
+            let next = v.get(&key::of(key::NEXT_MESSAGE))?;
             assert_eq!(
                 next.map(|b| library::parse_uvarint(&b).unwrap()),
                 (self.next_msg > 0).then_some(self.next_msg)
@@ -242,6 +551,8 @@ impl Rng {
     }
 }
 
+/// An append, through `session` when given (it moves there and chooses it).
+#[allow(clippy::too_many_arguments)]
 fn append(
     model: &mut Model,
     owner: u64,
@@ -249,10 +560,11 @@ fn append(
     time: i64,
     t: &str,
     sk: Option<Vec<u8>>,
+    session: Option<u64>,
+    user: u64,
 ) -> Record {
     let id = model.next_msg;
     model.next_msg += 1;
-    // Following bookmarks at the parent move to the reply.
     if let Some(p) = parent {
         for b in model.bookmarks.values_mut() {
             if b.at == p && b.mode == FOLLOWING {
@@ -272,6 +584,10 @@ fn append(
             send_key: sk.clone(),
         },
     );
+    if let Some(s) = session {
+        model.moved(s, user, owner, id, true);
+        model.choose(s, user, fork_of(parent, owner), id);
+    }
     rec(
         "messageAppend",
         vec![
@@ -283,8 +599,8 @@ fn append(
             Value::Time(time),
             Value::Text(text(t)),
             Value::UInt(0),
-            Value::Id(1),
-            Value::Id(1),
+            opt(session),
+            Value::Id(user),
             sk.map_or(Value::Absent, Value::Bytes),
         ],
     )
@@ -296,7 +612,17 @@ fn step(model: &mut Model, rng: &mut Rng, i: u64) -> Vec<Record> {
     let pick = |rng: &mut Rng| ids[rng.below(ids.len() as u64) as usize];
     let time = 1_700_000_000_000 + (i as i64) * 1000 - (rng.below(3) as i64) * 500;
     let owner = 1 + rng.below(3);
-    match rng.below(14) {
+    let session = 1 + rng.below(SESSIONS);
+    let user = 1 + rng.below(USERS);
+    let through = (rng.below(3) > 0).then_some(session);
+    let actor = |rng: &mut Rng| {
+        if rng.below(2) == 0 {
+            (Value::Id(session), Value::Id(user))
+        } else {
+            (Value::Absent, Value::Absent)
+        }
+    };
+    match rng.below(18) {
         _ if ids.is_empty() => vec![append(
             model,
             owner,
@@ -304,6 +630,8 @@ fn step(model: &mut Model, rng: &mut Rng, i: u64) -> Vec<Record> {
             time,
             &format!("opening {i}"),
             None,
+            through,
+            user,
         )],
         0 => vec![append(
             model,
@@ -312,6 +640,8 @@ fn step(model: &mut Model, rng: &mut Rng, i: u64) -> Vec<Record> {
             time,
             &format!("opening {i}"),
             None,
+            through,
+            user,
         )],
         1..=4 => {
             let p = pick(rng);
@@ -324,13 +654,20 @@ fn step(model: &mut Model, rng: &mut Rng, i: u64) -> Vec<Record> {
                 time,
                 &format!("reply {i} to {p} ünï"),
                 sk,
+                through,
+                user,
             )]
         }
         5 => {
             let m = pick(rng);
+            let (sv, uv) = actor(rng);
+            if let Value::Id(s) = sv {
+                let tree = model.msgs[&m].owner;
+                model.act(s, tree);
+            }
             let msg = model.msgs.get_mut(&m).unwrap();
             match &mut msg.text {
-                Some(t) if !t.is_empty() => {
+                Some(t) if !t.is_empty() && !i.is_multiple_of(4) => {
                     let at = t.find(' ').unwrap_or(0);
                     t.replace_range(at..at, " edited");
                     vec![rec(
@@ -341,6 +678,8 @@ fn step(model: &mut Model, rng: &mut Rng, i: u64) -> Vec<Record> {
                             Value::UInt(at as u64),
                             Value::UInt(0),
                             Value::Text(text(" edited")),
+                            sv,
+                            uv,
                         ],
                     )]
                 }
@@ -352,6 +691,8 @@ fn step(model: &mut Model, rng: &mut Rng, i: u64) -> Vec<Record> {
                             Value::Sel(1, m),
                             Value::Field(MES_F),
                             Value::Text(text(&format!("rewritten {i}"))),
+                            sv,
+                            uv,
                         ],
                     )]
                 }
@@ -370,6 +711,8 @@ fn step(model: &mut Model, rng: &mut Rng, i: u64) -> Vec<Record> {
                     Value::Sel(1, m),
                     Value::Field(FieldRef::Key(k.into_bytes())),
                     Value::Text(text(&json)),
+                    Value::Absent,
+                    Value::Absent,
                 ],
             )]
         }
@@ -385,11 +728,13 @@ fn step(model: &mut Model, rng: &mut Rng, i: u64) -> Vec<Record> {
                     Value::Id(m),
                     Value::Field(FieldRef::Key(k.into_bytes())),
                     Value::Int(-(i as i64)),
+                    Value::Absent,
+                    Value::Absent,
                 ],
             )]
         }
         8 => {
-            // A leaf with no bookmark goes.
+            // A message nothing replies to and no bookmark is at goes.
             let leaves: Vec<u64> = ids
                 .iter()
                 .copied()
@@ -402,14 +747,15 @@ fn step(model: &mut Model, rng: &mut Rng, i: u64) -> Vec<Record> {
                 return Vec::new();
             }
             let m = leaves[rng.below(leaves.len() as u64) as usize];
-            model.msgs.remove(&m);
-            model
-                .keys
-                .retain(|(sp, _), v| !(*sp == chat::KEYED_MESSAGE && *v == m));
-            vec![rec("messageDelete", vec![Value::Id(m)])]
+            let tree = model.msgs[&m].owner;
+            let (sv, uv) = actor(rng);
+            if let Value::Id(s) = sv {
+                model.act(s, tree);
+            }
+            model.message_gone(m);
+            vec![rec("messageDelete", vec![Value::Id(m), sv, uv])]
         }
         9 => {
-            // A message moves under another of its tree (not below itself), or to the tree's openings.
             let m = pick(rng);
             let o = model.msgs[&m].owner;
             let cands: Vec<u64> = ids
@@ -423,7 +769,10 @@ fn step(model: &mut Model, rng: &mut Rng, i: u64) -> Vec<Record> {
                 Some(cands[rng.below(cands.len() as u64) as usize])
             };
             model.msgs.get_mut(&m).unwrap().parent = new;
-            vec![rec("messageParent", vec![Value::Id(m), opt(new)])]
+            vec![rec(
+                "messageParent",
+                vec![Value::Id(m), opt(new), Value::Absent, Value::Absent],
+            )]
         }
         10 => {
             let m = pick(rng);
@@ -438,17 +787,21 @@ fn step(model: &mut Model, rng: &mut Rng, i: u64) -> Vec<Record> {
                 b,
                 Bookmark {
                     at: m,
+                    created_at: m,
                     mode,
                     name: None,
                 },
             );
+            model.branches.entry(m).or_default().push(b);
+            let tree = model.msgs[&m].owner;
+            model.act(session, tree);
             vec![rec(
                 "positionCreate",
                 vec![
                     Value::Id(b),
                     Value::UInt(mode),
-                    Value::Id(0),
-                    Value::Id(1),
+                    Value::Id(session),
+                    Value::Id(user),
                     Value::Id(m),
                 ],
             )]
@@ -481,14 +834,24 @@ fn step(model: &mut Model, rng: &mut Rng, i: u64) -> Vec<Record> {
                     )]
                 }
                 _ => {
-                    model.bookmarks.remove(&b);
+                    let bm = model.bookmarks.remove(&b).unwrap();
+                    if let Some(l) = model.branches.get_mut(&bm.created_at) {
+                        l.retain(|x| *x != b);
+                        if l.is_empty() {
+                            model.branches.remove(&bm.created_at);
+                        }
+                    }
                     vec![rec("positionDelete", vec![Value::Id(b)])]
                 }
             }
         }
         12 => {
             let m = pick(rng);
-            if model.keys.values().any(|v| *v == m) {
+            if model
+                .keys
+                .iter()
+                .any(|((sp, _), v)| *sp == chat::KEYED_MESSAGE && *v == m)
+            {
                 return Vec::new();
             }
             let k = format!("old-{m}").into_bytes();
@@ -497,6 +860,34 @@ fn step(model: &mut Model, rng: &mut Rng, i: u64) -> Vec<Record> {
                 "keyMap",
                 vec![Value::Sel(chat::KEYED_MESSAGE, m), Value::Bytes(k)],
             )]
+        }
+        13 | 14 => {
+            let m = pick(rng);
+            let tree = model.msgs[&m].owner;
+            model.moved(session, user, tree, m, false);
+            vec![rec(
+                "pointerMove",
+                vec![Value::Id(session), Value::Id(user), Value::Id(m)],
+            )]
+        }
+        15 => {
+            let r = pick(rng);
+            let (parent, tree) = (model.msgs[&r].parent, model.msgs[&r].owner);
+            model.choose(session, user, fork_of(parent, tree), r);
+            model.act(session, tree);
+            vec![rec(
+                "forkSelection",
+                vec![
+                    opt(parent),
+                    Value::Id(r),
+                    Value::Id(session),
+                    Value::Id(user),
+                ],
+            )]
+        }
+        16 if i.is_multiple_of(5) && model.sessions.contains_key(&session) => {
+            model.session_gone(session);
+            vec![rec("positionDelete", vec![Value::Id(session)])]
         }
         _ => {
             let m = pick(rng);
@@ -511,6 +902,8 @@ fn step(model: &mut Model, rng: &mut Rng, i: u64) -> Vec<Record> {
                 vec![
                     Value::Sel(1, m),
                     Value::Field(FieldRef::Key(k.into_bytes())),
+                    Value::Absent,
+                    Value::Absent,
                 ],
             )]
         }
@@ -526,12 +919,17 @@ fn workload(s: &Store, model: &mut Model, rng: &mut Rng, from: u64, n: u64) {
     }
 }
 
+fn open_with_actors(dir: &std::path::Path) -> (Store, Model) {
+    let s = Store::open_in(dir, SMALL, small_pool()).unwrap();
+    s.commit_wait(actors()).unwrap();
+    (s, Model::new())
+}
+
 #[test]
 fn chat_structures_follow_commits_reopens_crashes_and_cleaning() {
     let dir = temp_dir("follow");
-    let mut model = Model::default();
     let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
-    let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
+    let (s, mut model) = open_with_actors(&dir);
     workload(&s, &mut model, &mut rng, 0, 1500);
     model.check(&s);
     s.close();
@@ -549,6 +947,9 @@ fn chat_structures_follow_commits_reopens_crashes_and_cleaning() {
     let ids: Vec<u64> = model.msgs.keys().copied().take(5).collect();
     for i in 0..4000u64 {
         let m = ids[(i % 5) as usize];
+        if !model.msgs.contains_key(&m) {
+            continue;
+        }
         let json = format!("{{\"v\":\"{}\"}}", "x".repeat((i % 40) as usize));
         let msg = model.msgs.get_mut(&m).unwrap();
         msg.times.remove("extra.k0");
@@ -559,10 +960,12 @@ fn chat_structures_follow_commits_reopens_crashes_and_cleaning() {
                 Value::Sel(1, m),
                 Value::Field(FieldRef::Key(b"extra.k0".to_vec())),
                 Value::Text(text(&json)),
+                Value::Absent,
+                Value::Absent,
             ],
         )])
         .unwrap();
-        // Live records among them, so cleaning copies messages, values and positions.
+        // Live records among them, so cleaning copies messages, values, positions, moves and choices.
         if i % 40 == 0 {
             let recs = step(&mut model, &mut rng, 5000 + i);
             if !recs.is_empty() {
@@ -588,37 +991,252 @@ fn chat_structures_follow_commits_reopens_crashes_and_cleaning() {
 }
 
 #[test]
+fn a_large_moved_subtree_gets_its_depths_in_slices_marked_meanwhile() {
+    let dir = temp_dir("depth");
+    let (s, mut model) = open_with_actors(&dir);
+    // A chain longer than a slice, under one opening, and a second opening to move it under a new parent.
+    let n = (sessions::DEPTH_SLICE * 3) as u64;
+    let mut recs = vec![append(&mut model, 1, None, 0, "root", None, None, 1)];
+    for i in 1..n {
+        recs.push(append(
+            &mut model,
+            1,
+            Some(i - 1),
+            i as i64,
+            "x",
+            None,
+            None,
+            1,
+        ));
+    }
+    recs.push(append(
+        &mut model, 1, None, n as i64, "other", None, None, 1,
+    ));
+    s.commit_wait(recs).unwrap();
+    s.commit_wait(vec![rec(
+        "pointerMove",
+        vec![Value::Id(1), Value::Id(1), Value::Id(n - 1)],
+    )])
+    .unwrap();
+    model.moved(1, 1, 1, n - 1, false);
+    model.check(&s);
+    // Move message 1 (and the chain below it) under the second opening: every depth below it goes up by one.
+    model.msgs.get_mut(&1).unwrap().parent = Some(n);
+    s.commit_wait(vec![rec(
+        "messageParent",
+        vec![Value::Id(1), Value::Id(n), Value::Absent, Value::Absent],
+    )])
+    .unwrap();
+    // Meanwhile a reply under the chain, and a second move in the same tree, queue behind it.
+    s.commit_wait(vec![append(
+        &mut model,
+        1,
+        Some(n - 1),
+        n as i64 + 1,
+        "late",
+        None,
+        None,
+        1,
+    )])
+    .unwrap();
+    model.msgs.get_mut(&5).unwrap().parent = Some(0);
+    s.commit_wait(vec![rec(
+        "messageParent",
+        vec![Value::Id(5), Value::Id(0), Value::Absent, Value::Absent],
+    )])
+    .unwrap();
+    model.check(&s);
+    assert_eq!(
+        s.derived(|v| sessions::message_count(v, 1, Some(n - 1)))
+            .unwrap(),
+        (model.depth(n - 1), false)
+    );
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_depth_rewrite_cut_off_by_a_crash_resumes_on_open() {
+    let dir = temp_dir("depth-crash");
+    let (s, mut model) = open_with_actors(&dir);
+    let n = (sessions::DEPTH_SLICE * 4) as u64;
+    let mut recs = vec![append(&mut model, 1, None, 0, "root", None, None, 1)];
+    for i in 1..n {
+        recs.push(append(
+            &mut model,
+            1,
+            Some(i - 1),
+            i as i64,
+            "x",
+            None,
+            None,
+            1,
+        ));
+    }
+    recs.push(append(
+        &mut model, 1, None, n as i64, "other", None, None, 1,
+    ));
+    s.commit_wait(recs).unwrap();
+    model.msgs.get_mut(&1).unwrap().parent = Some(n);
+    // Committed through the store's inner path, so no slice is queued: as a crash right after the move.
+    let done = std::sync::mpsc::channel();
+    let tx = done.0;
+    s.inner.submit(Job::Commit(
+        vec![rec(
+            "messageParent",
+            vec![Value::Id(1), Value::Id(n), Value::Absent, Value::Absent],
+        )],
+        Box::new(move |r| {
+            let _ = tx.send(r.map(|_| ()));
+        }),
+    ));
+    done.1.recv().unwrap().unwrap();
+    assert!(
+        s.derived(|v| sessions::message_count(v, 1, Some(n - 1)))
+            .unwrap()
+            .1
+    );
+    s.abandon();
+    std::mem::forget(s);
+    let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
+    model.check(&s);
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn deleting_messages_and_sessions_moves_what_named_them() {
+    let dir = temp_dir("gone");
+    let (s, mut model) = open_with_actors(&dir);
+    // Two openings; session 1 shows a reply to the first, session 2 the second opening; user 1 moved through both.
+    let recs = vec![
+        append(&mut model, 7, None, 1, "a", None, None, 1),
+        append(&mut model, 7, None, 2, "b", None, Some(2), 1),
+        append(&mut model, 7, Some(0), 3, "a1", None, Some(1), 1),
+    ];
+    s.commit_wait(recs).unwrap();
+    model.check(&s);
+    // The reply goes: session 1 moves to its parent; its history keeps the entry, marked gone.
+    model.message_gone(2);
+    s.commit_wait(vec![rec(
+        "messageDelete",
+        vec![Value::Id(2), Value::Id(1), Value::Id(1)],
+    )])
+    .unwrap();
+    model.act(1, 7);
+    model.check(&s);
+    assert_eq!(
+        s.derived(|v| sessions::session_pointer(v, 1)).unwrap(),
+        Some((7, Some(0)))
+    );
+    // An opening another session shows goes: that session moves to the newest other opening; the last opening
+    // going leaves pointers at the tree's root.
+    model.message_gone(1);
+    s.commit_wait(vec![rec(
+        "messageDelete",
+        vec![Value::Id(1), Value::Absent, Value::Absent],
+    )])
+    .unwrap();
+    model.check(&s);
+    assert_eq!(
+        s.derived(|v| sessions::session_pointer(v, 2)).unwrap(),
+        Some((7, Some(0)))
+    );
+    model.message_gone(0);
+    s.commit_wait(vec![rec(
+        "messageDelete",
+        vec![Value::Id(0), Value::Absent, Value::Absent],
+    )])
+    .unwrap();
+    model.check(&s);
+    assert_eq!(
+        s.derived(|v| sessions::session_pointer(v, 1)).unwrap(),
+        Some((7, None))
+    );
+    assert_eq!(
+        s.derived(|v| sessions::landing(v, Some(1), Some(1), 7))
+            .unwrap(),
+        None
+    );
+    // A session goes: user 1's last session in the tree falls back to their other one.
+    let recs = vec![
+        append(&mut model, 7, None, 10, "c", None, Some(1), 1),
+        append(&mut model, 7, Some(3), 11, "c1", None, Some(2), 1),
+    ];
+    s.commit_wait(recs).unwrap();
+    assert_eq!(
+        s.derived(|v| sessions::user_in_tree(v, 1, 7)).unwrap(),
+        Some((2, Some(4)))
+    );
+    model.session_gone(2);
+    s.commit_wait(vec![rec("positionDelete", vec![Value::Id(2)])])
+        .unwrap();
+    model.check(&s);
+    assert_eq!(
+        s.derived(|v| sessions::user_in_tree(v, 1, 7)).unwrap(),
+        Some((1, Some(3)))
+    );
+    model.session_gone(1);
+    s.commit_wait(vec![rec("positionDelete", vec![Value::Id(1)])])
+        .unwrap();
+    model.check(&s);
+    assert_eq!(
+        s.derived(|v| sessions::user_in_tree(v, 1, 7)).unwrap(),
+        None
+    );
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn chat_writes_that_cant_apply_are_refused_and_write_nothing() {
     let dir = temp_dir("refuse");
-    let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
-    let mut model = Model::default();
-    let a = append(&mut model, 1, None, 10, "a", Some(vec![1; 16]));
-    let b = append(&mut model, 1, Some(0), 11, "b", None);
-    let c = append(&mut model, 2, None, 12, "c", None);
+    let (s, mut model) = open_with_actors(&dir);
+    let a = append(&mut model, 1, None, 10, "a", Some(vec![1; 16]), Some(1), 1);
+    let b = append(&mut model, 1, Some(0), 11, "b", None, None, 1);
+    let c = append(&mut model, 2, None, 12, "c", None, None, 1);
     s.commit_wait(vec![a, b, c]).unwrap();
     let end = s.durable_end();
     let next = |parent: Option<u64>, sk: Option<Vec<u8>>| {
-        append(&mut model.clone(), 1, parent, 13, "x", sk)
+        append(&mut model.clone(), 1, parent, 13, "x", sk, None, 1)
     };
     let mut taken = next(None, None);
     taken.values[0] = Value::Id(0);
+    let mut stranger = next(None, None);
+    stranger.values[9] = Value::Id(99);
+    let mut no_session = next(None, None);
+    no_session.values[8] = Value::Id(50);
     for bad in [
-        // The id is taken; the parent is in another tree; no such parent; the send key is stored.
+        // The id is taken; the parent is in another tree; no such parent; the send key is stored; no such user;
+        // no such session.
         vec![taken],
         vec![next(Some(2), None)],
         vec![next(Some(77), None)],
         vec![next(Some(1), Some(vec![1; 16]))],
+        vec![stranger],
+        vec![no_session],
         // A message with replies doesn't go; a move below itself or into another tree is refused.
-        vec![rec("messageDelete", vec![Value::Id(0)])],
-        vec![rec("messageParent", vec![Value::Id(0), Value::Id(1)])],
-        vec![rec("messageParent", vec![Value::Id(1), Value::Id(2)])],
-        // Values of a message that doesn't exist; a bookmark at one; a mode that isn't one.
+        vec![rec(
+            "messageDelete",
+            vec![Value::Id(0), Value::Absent, Value::Absent],
+        )],
+        vec![rec(
+            "messageParent",
+            vec![Value::Id(0), Value::Id(1), Value::Absent, Value::Absent],
+        )],
+        vec![rec(
+            "messageParent",
+            vec![Value::Id(1), Value::Id(2), Value::Absent, Value::Absent],
+        )],
+        // Values of a message that doesn't exist; a bookmark at one; a mode that isn't one; a name of nothing.
         vec![rec(
             "textValue",
             vec![
                 Value::Sel(1, 50),
                 Value::Field(MES_F),
                 Value::Text(text("x")),
+                Value::Absent,
+                Value::Absent,
             ],
         )],
         vec![rec(
@@ -627,6 +1245,8 @@ fn chat_writes_that_cant_apply_are_refused_and_write_nothing() {
                 Value::Sel(1, 50),
                 Value::Field(MES_F),
                 Value::Text(text("1")),
+                Value::Absent,
+                Value::Absent,
             ],
         )],
         vec![rec(
@@ -634,7 +1254,7 @@ fn chat_writes_that_cant_apply_are_refused_and_write_nothing() {
             vec![
                 Value::Id(9),
                 Value::UInt(1),
-                Value::Id(0),
+                Value::Id(1),
                 Value::Id(1),
                 Value::Id(50),
             ],
@@ -644,7 +1264,7 @@ fn chat_writes_that_cant_apply_are_refused_and_write_nothing() {
             vec![
                 Value::Id(9),
                 Value::UInt(3),
-                Value::Id(0),
+                Value::Id(1),
                 Value::Id(1),
                 Value::Id(1),
             ],
@@ -653,33 +1273,41 @@ fn chat_writes_that_cant_apply_are_refused_and_write_nothing() {
             "positionName",
             vec![Value::Id(9), Value::Text(text("n"))],
         )],
+        // A move of a session that isn't one; a choice of a reply at another fork.
+        vec![rec(
+            "pointerMove",
+            vec![Value::Id(9), Value::Id(1), Value::Id(1)],
+        )],
+        vec![rec(
+            "forkSelection",
+            vec![Value::Id(2), Value::Id(1), Value::Id(1), Value::Id(1)],
+        )],
+        vec![rec(
+            "forkSelection",
+            vec![Value::Absent, Value::Id(1), Value::Id(1), Value::Id(1)],
+        )],
     ] {
         let r = s.commit_wait(bad);
         assert!(matches!(r, Err(StoreError::Refused(_))), "{r:?}");
     }
     assert_eq!(s.durable_end(), end);
     // A key names one id, and an id has one key.
-    s.commit_wait(vec![rec(
-        "keyMap",
-        vec![Value::Sel(1, 5), Value::Bytes(b"uuid".to_vec())],
-    )])
-    .unwrap();
     for bad in [
         rec(
             "keyMap",
-            vec![Value::Sel(1, 6), Value::Bytes(b"uuid".to_vec())],
+            vec![Value::Sel(1, 6), Value::Bytes(b"session-1".to_vec())],
         ),
         rec(
             "keyMap",
-            vec![Value::Sel(1, 5), Value::Bytes(b"other".to_vec())],
+            vec![Value::Sel(1, 1), Value::Bytes(b"other".to_vec())],
         ),
         // A session isn't a bookmark.
         rec(
             "positionCreate",
             vec![
-                Value::Id(5),
+                Value::Id(1),
                 Value::UInt(1),
-                Value::Id(5),
+                Value::Id(1),
                 Value::Id(1),
                 Value::Id(1),
             ],
@@ -696,25 +1324,28 @@ fn chat_writes_that_cant_apply_are_refused_and_write_nothing() {
         vec![
             Value::Id(9),
             Value::UInt(2),
-            Value::Id(5),
+            Value::Id(1),
             Value::Id(1),
             Value::Id(1),
         ],
     )])
     .unwrap();
-    model
-        .keys
-        .insert((chat::KEYED_SESSION, b"uuid".to_vec()), 5);
     model.bookmarks.insert(
         9,
         Bookmark {
             at: 1,
+            created_at: 1,
             mode: PINNED,
             name: None,
         },
     );
+    model.branches.entry(1).or_default().push(9);
+    model.act(1, 1);
     assert!(matches!(
-        s.commit_wait(vec![rec("messageDelete", vec![Value::Id(1)])]),
+        s.commit_wait(vec![rec(
+            "messageDelete",
+            vec![Value::Id(1), Value::Absent, Value::Absent]
+        )]),
         Err(StoreError::Refused(_))
     ));
     model.check(&s);
@@ -725,8 +1356,7 @@ fn chat_writes_that_cant_apply_are_refused_and_write_nothing() {
 #[test]
 fn a_message_text_lives_in_its_append_until_replaced_and_its_search_follows() {
     let dir = temp_dir("text");
-    let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
-    let mut model = Model::default();
+    let (s, mut model) = open_with_actors(&dir);
     s.commit_wait(vec![append(
         &mut model,
         4,
@@ -734,6 +1364,8 @@ fn a_message_text_lives_in_its_append_until_replaced_and_its_search_follows() {
         1,
         "hello brave world",
         None,
+        None,
+        1,
     )])
     .unwrap();
     let edit = |off: u64, removed: u64, t: &str| {
@@ -745,6 +1377,8 @@ fn a_message_text_lives_in_its_append_until_replaced_and_its_search_follows() {
                 Value::UInt(off),
                 Value::UInt(removed),
                 Value::Text(text(t)),
+                Value::Absent,
+                Value::Absent,
             ],
         )
     };
@@ -753,28 +1387,37 @@ fn a_message_text_lives_in_its_append_until_replaced_and_its_search_follows() {
         .derived(|v| text_value_of(v, Holder::Message(0), &MES_F))
         .unwrap();
     assert_eq!(t, Some(text("hello bold world")));
-    // The append still holds the message: replacing its text never marks the append dead.
-    let dead_before = s.derived(|v| v.get(&key::id(key::DEAD, 0))).unwrap();
+    let append_pos = s.derived(|v| chat::message_loc(v, 0)).unwrap().unwrap().pos;
+    let file = kinds::file_of(append_pos);
+    let dead = |s: &Store| {
+        s.derived(|v| v.get(&key::id(key::DEAD, file)))
+            .unwrap()
+            .and_then(|b| crate::keyspace::val::counter_value(&b))
+            .unwrap_or(0)
+    };
+    let before = dead(&s);
     s.commit_wait(vec![rec(
         "textValue",
         vec![
             Value::Sel(1, 0),
             Value::Field(MES_F),
             Value::Text(text("new")),
+            Value::Absent,
+            Value::Absent,
         ],
     )])
     .unwrap();
-    let dead_after = s.derived(|v| v.get(&key::id(key::DEAD, 0))).unwrap();
-    let n = |b: Option<Vec<u8>>| {
-        b.and_then(|b| crate::keyspace::val::counter_value(&b))
-            .unwrap_or(0)
-    };
-    assert!(n(dead_after) > n(dead_before), "the edit died");
-    let append_live = s.derived(|v| chat::message_loc(v, 0)).unwrap().unwrap();
-    assert_eq!(append_live.pos, 0);
+    // The edit died; the append, which still holds the message, didn't.
+    assert!(dead(&s) > before);
+    assert_eq!(
+        s.derived(|v| chat::message_loc(v, 0)).unwrap().unwrap().pos,
+        append_pos
+    );
     s.derived(|v| {
-        let texts = kinds::search_texts(v, Scope::chat(4), 0, 0)?;
-        assert_eq!(texts, vec![text("new")]);
+        assert_eq!(
+            kinds::search_texts(v, Scope::chat(4), 0, 0)?,
+            vec![text("new")]
+        );
         assert!(kinds::search_texts(v, Scope::chat(5), 0, 0)?.is_empty());
         Ok(())
     })
@@ -785,7 +1428,7 @@ fn a_message_text_lives_in_its_append_until_replaced_and_its_search_follows() {
 
 #[test]
 fn chat_records_round_trip_their_bytes() {
-    // Every chat kind decodes as encoded, and a message's id after its parent's costs one byte.
+    // A message's id after its parent's costs one byte.
     let k = kind_by_name("messageAppend").unwrap();
     let r = Record::new(
         k,

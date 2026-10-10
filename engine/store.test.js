@@ -21,6 +21,8 @@ const message = {
     text: 'héllo \ud800 lone 😀', flags: 1, session: 7n, user: 1n, sendKey: Buffer.alloc(16, 7),
 };
 const samples = [
+    { kind: 'keyMap', session: 7n, key: Buffer.from('0190a1b2-0000-7000-8000-000000000000') },
+    { kind: 'keyMap', user: 1n, key: Buffer.from('default-user') },
     { kind: 'fav', entity: 2n ** 40n, fav: true },
     { kind: 'fav', entity: 5n, fav: false },
     { kind: 'tagAssign', entity: 5n, tag: 9n, assigned: true },
@@ -30,7 +32,6 @@ const samples = [
     { kind: 'forkSelection', message: 9n, reply: 10n, session: 7n, user: 1n },
     { kind: 'textValue', message: 10n, field: 1, text: 'edited' },
     { kind: 'jsonValue', message: 10n, field: 'extra.api', json: '"openai"' },
-    { kind: 'keyMap', session: 7n, key: Buffer.from('0190a1b2-0000-7000-8000-000000000000') },
     { kind: 'positionCreate', id: 8n, mode: 1, session: 7n, user: 1n, pointer: 10n },
     { kind: 'textValue', entity: 5n, field: 2, text: 'a description '.repeat(20) },
     { kind: 'textEdit', entity: 5n, field: 2, offset: 10, removed: 4, text: 'word' },
@@ -140,6 +141,8 @@ for (const [name, engine] of Object.entries(bindings)) {
         let store = await engine.Store.open(dir);
         const say = (id, owner, text) => ({ kind: 'messageAppend', id, owner, time: 1, text, flags: 0, session: 1n, user: 1n });
         await store.commit([
+            { kind: 'keyMap', session: 1n, key: Buffer.from('s') },
+            { kind: 'keyMap', user: 1n, key: Buffer.from('u') },
             say(1n, 5n, 'The Dragon sleeps.'),
             say(2n, 5n, 'a dragon? No, a drake'),
             say(3n, 5n, 'Café au lait \ud800 dragon dragon'),

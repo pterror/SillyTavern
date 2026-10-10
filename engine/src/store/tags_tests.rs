@@ -64,21 +64,38 @@ fn create(e: u64, kind: u64, key: &str) -> Record {
 fn set(e: u64, f: u64, s: &str) -> Record {
     rec(
         "textValue",
-        vec![Value::Sel(0, e), Value::Field(FieldRef::Code(f)), text(s)],
+        vec![
+            Value::Sel(0, e),
+            Value::Field(FieldRef::Code(f)),
+            text(s),
+            Value::Absent,
+            Value::Absent,
+        ],
     )
 }
 
 fn json(e: u64, f: FieldRef, s: &str) -> Record {
     rec(
         "jsonValue",
-        vec![Value::Sel(0, e), Value::Field(f), text(s)],
+        vec![
+            Value::Sel(0, e),
+            Value::Field(f),
+            text(s),
+            Value::Absent,
+            Value::Absent,
+        ],
     )
 }
 
 fn unset(e: u64, f: u64) -> Record {
     rec(
         "valueDelete",
-        vec![Value::Sel(0, e), Value::Field(FieldRef::Code(f))],
+        vec![
+            Value::Sel(0, e),
+            Value::Field(FieldRef::Code(f)),
+            Value::Absent,
+            Value::Absent,
+        ],
     )
 }
 

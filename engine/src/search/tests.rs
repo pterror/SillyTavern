@@ -65,6 +65,8 @@ fn text_value(e: u64, code: u64, s: &str) -> Record {
             Value::Sel(0, e),
             Value::Field(FieldRef::Code(code)),
             Value::Text(wtf8(s)),
+            Value::Absent,
+            Value::Absent,
         ],
     )
 }
@@ -523,6 +525,8 @@ fn random_edit(lib: &mut Lib, r: &mut Rng, docs: &[u64], i: u64) {
                         Value::UInt(a as u64),
                         Value::UInt((b - a) as u64),
                         Value::Text(wtf8(&ins)),
+                        Value::Absent,
+                        Value::Absent,
                     ],
                 )])
                 .unwrap();
@@ -760,6 +764,8 @@ fn a_field_edit_writes_only_its_changed_terms_and_other_kinds_write_no_postings(
             Value::UInt(0),
             Value::UInt(5),
             Value::Text(wtf8("betas")),
+            Value::Absent,
+            Value::Absent,
         ],
     )])
     .unwrap();

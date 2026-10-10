@@ -79,6 +79,8 @@ fn records(n: u64) -> Vec<Record> {
                     Value::UInt(i),
                     Value::UInt(4),
                     text("new"),
+                    Value::Absent,
+                    Value::Absent,
                 ],
             ),
             _ => rec(
@@ -87,6 +89,8 @@ fn records(n: u64) -> Vec<Record> {
                     Value::Sel(0, i % 5),
                     Value::Field(FieldRef::Key(b"ext/x".to_vec())),
                     text(&"x".repeat((i % 3000) as usize)),
+                    Value::Absent,
+                    Value::Absent,
                 ],
             ),
         })

@@ -64,6 +64,8 @@ fn card(r: &mut Rng, e: u64) -> Vec<Record> {
                 Value::Sel(0, e),
                 Value::Field(FieldRef::Code(NAME)),
                 text(&name),
+                Value::Absent,
+                Value::Absent,
             ],
         ),
         rec(
@@ -72,6 +74,8 @@ fn card(r: &mut Rng, e: u64) -> Vec<Record> {
                 Value::Sel(0, e),
                 Value::Field(FieldRef::Code(DESCRIPTION)),
                 text(&desc),
+                Value::Absent,
+                Value::Absent,
             ],
         ),
         rec(
@@ -98,6 +102,8 @@ fn card(r: &mut Rng, e: u64) -> Vec<Record> {
                 Value::Sel(0, e),
                 Value::Field(FieldRef::Code(WORLD)),
                 text("lore"),
+                Value::Absent,
+                Value::Absent,
             ],
         ));
     }
@@ -319,6 +325,8 @@ fn actions(s: &Store, cards: u64, dev: &str) {
                             Value::UInt(0),
                             Value::UInt(0),
                             text("brave "),
+                            Value::Absent,
+                            Value::Absent,
                         ],
                     ),
                     rec("dataSize", vec![Value::Id(e), Value::UInt(9999 + i)]),
@@ -344,6 +352,8 @@ fn actions(s: &Store, cards: u64, dev: &str) {
                         Value::UInt(4),
                         Value::UInt(0),
                         text("old "),
+                        Value::Absent,
+                        Value::Absent,
                     ],
                 )]
             }),
@@ -357,6 +367,8 @@ fn actions(s: &Store, cards: u64, dev: &str) {
                         Value::Sel(0, FIRST_CARD + 2000 + i),
                         Value::Field(FieldRef::Code(NAME)),
                         text(&format!("renamed {i}")),
+                        Value::Absent,
+                        Value::Absent,
                     ],
                 )]
             }),

@@ -66,7 +66,13 @@ fn create(e: u64, kind: u64, key: &str, added: i64) -> Record {
 fn set(e: u64, f: u64, s: &str) -> Record {
     rec(
         "textValue",
-        vec![Value::Sel(0, e), Value::Field(FieldRef::Code(f)), text(s)],
+        vec![
+            Value::Sel(0, e),
+            Value::Field(FieldRef::Code(f)),
+            text(s),
+            Value::Absent,
+            Value::Absent,
+        ],
     )
 }
 
@@ -550,6 +556,8 @@ impl Lib {
                         Value::UInt(0),
                         Value::UInt(1),
                         text("X"),
+                        Value::Absent,
+                        Value::Absent,
                     ],
                 )]
             }
@@ -566,7 +574,12 @@ impl Lib {
                 } else {
                     vec![rec(
                         "valueDelete",
-                        vec![Value::Sel(0, e), Value::Field(FieldRef::Code(WORLD))],
+                        vec![
+                            Value::Sel(0, e),
+                            Value::Field(FieldRef::Code(WORLD)),
+                            Value::Absent,
+                            Value::Absent,
+                        ],
                     )]
                 }
             }
@@ -738,6 +751,8 @@ fn an_entity_key_is_taken_once_and_deleting_frees_everything_it_held() {
                 Value::Sel(0, 1),
                 Value::Field(FieldRef::Key(b"ext:x".to_vec())),
                 text("{\"a\":1}"),
+                Value::Absent,
+                Value::Absent,
             ],
         ),
         rec(
@@ -755,6 +770,8 @@ fn an_entity_key_is_taken_once_and_deleting_frees_everything_it_held() {
                 Value::Sel(0, 1),
                 Value::Field(library::item_field(0, 3)),
                 text("hi"),
+                Value::Absent,
+                Value::Absent,
             ],
         ),
         rec(

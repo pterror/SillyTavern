@@ -304,8 +304,8 @@ pub const KEYED: &[(Space, &str)] = &[
     (Space::User, "user"),
 ];
 
-/// Every kind the log knows. Header values 0 and 1 are the pad and the trailer; every kind's are below 128, so
-/// a header is one byte.
+/// Every kind the log knows. Header values 0 and 1 are the pad and the trailer. Kinds written often have header
+/// values below 128 (one byte); the tag manager's queue and reorder pass, written rarely, are above.
 pub static KINDS: &[Kind] = &[
     Kind {
         name: "fav",
@@ -334,12 +334,13 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // At the fork `message`, `reply` is chosen, through `session` by `user`.
+    // At the fork `message` (absent: among the messages opening the reply's tree), `reply` is chosen, through
+    // `session` by `user`.
     Kind {
         name: "forkSelection",
         base: 7,
         slots: &[
-            req("message", Ty::Id(Space::Message)),
+            opt("message", Ty::Id(Space::Message)),
             req("reply", Ty::Id(Space::Message)),
             req("session", Ty::Id(Space::Position)),
             req("user", Ty::Id(Space::User)),
@@ -349,49 +350,60 @@ pub static KINDS: &[Kind] = &[
     // A text edit of a holder's field: `removed` bytes at `offset` replaced by `text`.
     Kind {
         name: "textEdit",
-        base: 8,
+        base: 9,
         slots: &[
             req("entity", Ty::Sel(HOLDER)),
             req("field", Ty::Field),
             req("offset", Ty::UInt),
             req("removed", Ty::UInt),
             req("text", Ty::Text),
+            opt("session", Ty::Id(Space::Position)),
+            opt("user", Ty::Id(Space::User)),
         ],
         internal: false,
     },
     Kind {
         name: "textValue",
-        base: 10,
+        base: 17,
         slots: &[
             req("entity", Ty::Sel(HOLDER)),
             req("field", Ty::Field),
             req("text", Ty::Text),
+            opt("session", Ty::Id(Space::Position)),
+            opt("user", Ty::Id(Space::User)),
         ],
         internal: false,
     },
     // A value the app keeps as it came (JSON text), or, empty, a marker that something is present.
     Kind {
         name: "jsonValue",
-        base: 12,
+        base: 25,
         slots: &[
             req("entity", Ty::Sel(HOLDER)),
             req("field", Ty::Field),
             req("json", Ty::Text),
+            opt("session", Ty::Id(Space::Position)),
+            opt("user", Ty::Id(Space::User)),
         ],
         internal: false,
     },
     // The field's value (text or JSON) goes.
     Kind {
         name: "valueDelete",
-        base: 14,
-        slots: &[req("entity", Ty::Sel(HOLDER)), req("field", Ty::Field)],
+        base: 33,
+        slots: &[
+            req("entity", Ty::Sel(HOLDER)),
+            req("field", Ty::Field),
+            opt("session", Ty::Id(Space::Position)),
+            opt("user", Ty::Id(Space::User)),
+        ],
         internal: false,
     },
     // A bookmark comes to be: following (mode 1: it moves to a reply added right after it) or pinned (mode 2),
     // made through `session` by `user`, at `pointer`.
     Kind {
         name: "positionCreate",
-        base: 16,
+        base: 56,
         slots: &[
             req("id", Ty::Id(Space::Position)),
             req("mode", Ty::UInt),
@@ -404,14 +416,14 @@ pub static KINDS: &[Kind] = &[
     // A position's name (absent: it has none).
     Kind {
         name: "positionName",
-        base: 106,
+        base: 59,
         slots: &[req("id", Ty::Id(Space::Position)), opt("name", Ty::Text)],
         internal: false,
     },
     // The next record is a copy, written by cleaning, of the record at `from`.
     Kind {
         name: "moved",
-        base: 18,
+        base: 41,
         slots: &[req("from", Ty::Id(Space::Log))],
         internal: true,
     },
@@ -420,7 +432,7 @@ pub static KINDS: &[Kind] = &[
     // avatar, a group's or tag's id), and the date it was added.
     Kind {
         name: "entityCreate",
-        base: 19,
+        base: 42,
         slots: &[
             req("entity", Ty::Id(Space::Entity)),
             req("type", Ty::UInt),
@@ -432,21 +444,21 @@ pub static KINDS: &[Kind] = &[
     // Everything the entity holds goes; a tag's assignments go with its `tagMerge`.
     Kind {
         name: "entityDelete",
-        base: 20,
+        base: 43,
         slots: &[req("entity", Ty::Id(Space::Entity))],
         internal: false,
     },
     // A position's mode changes (1 following, 2 pinned; a session's never does).
     Kind {
         name: "positionMode",
-        base: 17,
+        base: 57,
         slots: &[req("id", Ty::Id(Space::Position)), req("mode", Ty::UInt)],
         internal: false,
     },
     // A list item's place in its list; its text is the text value of `item_field(list, item)`.
     Kind {
         name: "itemPlace",
-        base: 23,
+        base: 44,
         slots: &[
             req("entity", Ty::Id(Space::Entity)),
             req("list", Ty::UInt),
@@ -458,7 +470,7 @@ pub static KINDS: &[Kind] = &[
     // The item and its text go.
     Kind {
         name: "itemDelete",
-        base: 24,
+        base: 45,
         slots: &[
             req("entity", Ty::Id(Space::Entity)),
             req("list", Ty::UInt),
@@ -470,20 +482,20 @@ pub static KINDS: &[Kind] = &[
     // epoch ms (absent: none, or not a date).
     Kind {
         name: "dataSize",
-        base: 25,
+        base: 46,
         slots: &[req("entity", Ty::Id(Space::Entity)), req("size", Ty::UInt)],
         internal: false,
     },
     Kind {
         name: "createDate",
-        base: 26,
+        base: 47,
         slots: &[req("entity", Ty::Id(Space::Entity)), opt("ms", Ty::F64)],
         internal: false,
     },
     // A hash a card is found by (`library::HASH_*`); absent: it has none.
     Kind {
         name: "cardHash",
-        base: 28,
+        base: 49,
         slots: &[
             req("entity", Ty::Id(Space::Entity)),
             req("which", Ty::UInt),
@@ -494,7 +506,7 @@ pub static KINDS: &[Kind] = &[
     // A tag goes: its carriers become `into`'s (or, with none, carry nothing).
     Kind {
         name: "tagMerge",
-        base: 30,
+        base: 51,
         slots: &[
             req("tag", Ty::Id(Space::Tag)),
             opt("into", Ty::Id(Space::Tag)),
@@ -504,7 +516,7 @@ pub static KINDS: &[Kind] = &[
     // An entity's key (a character's avatar) or date added changes; its type is `entityCreate`'s, repeated.
     Kind {
         name: "entityUpdate",
-        base: 32,
+        base: 53,
         slots: &[
             req("entity", Ty::Id(Space::Entity)),
             req("type", Ty::UInt),
@@ -516,7 +528,7 @@ pub static KINDS: &[Kind] = &[
     // A tag's manual sort order: its stored `sort_order` as upstream coerces it (absent: it has none).
     Kind {
         name: "tagOrder",
-        base: 33,
+        base: 54,
         slots: &[req("tag", Ty::Id(Space::Tag)), opt("order", Ty::F64)],
         internal: false,
     },
@@ -524,7 +536,7 @@ pub static KINDS: &[Kind] = &[
     // merged into it whose carriers haven't moved); else nothing happens.
     Kind {
         name: "tagPrune",
-        base: 35,
+        base: 113,
         slots: &[req("tag", Ty::Id(Space::Tag))],
         internal: false,
     },
@@ -532,7 +544,7 @@ pub static KINDS: &[Kind] = &[
     // queue: `tag` right after (`after`) or before `anchor`, or `tag`'s `sort_order` set to `value` (JSON).
     Kind {
         name: "tagQueue",
-        base: 36,
+        base: 128,
         slots: &[
             req("seq", Ty::UInt),
             req("tag", Ty::Id(Space::Tag)),
@@ -545,7 +557,7 @@ pub static KINDS: &[Kind] = &[
     // The queued move `seq` was applied.
     Kind {
         name: "tagQueuePop",
-        base: 44,
+        base: 114,
         slots: &[req("seq", Ty::UInt)],
         internal: false,
     },
@@ -553,7 +565,7 @@ pub static KINDS: &[Kind] = &[
     // its phase (0 walk, 1 sweep, 2 drain), the next value the walk gives, and the order's cursor it goes on from.
     Kind {
         name: "tagPass",
-        base: 45,
+        base: 136,
         slots: &[
             req("pass", Ty::UInt),
             opt("mode", Ty::UInt),
@@ -566,14 +578,14 @@ pub static KINDS: &[Kind] = &[
     // A value the app keeps for itself by name (`json`; absent: it has none), such as what an import has done.
     Kind {
         name: "metaValue",
-        base: 63,
+        base: 115,
         slots: &[req("key", Ty::Text), opt("json", Ty::Text)],
         internal: false,
     },
     // `tagOrder` written by reorder pass `pass`, which marks the tag as done by it.
     Kind {
         name: "tagPassOrder",
-        base: 61,
+        base: 117,
         slots: &[
             req("tag", Ty::Id(Space::Tag)),
             opt("order", Ty::F64),
@@ -606,42 +618,50 @@ pub static KINDS: &[Kind] = &[
     // An outside key names an id: a message's id from before the engine, a session's UUID, a user's handle.
     Kind {
         name: "keyMap",
-        base: 97,
+        base: 61,
         slots: &[req("id", Ty::Sel(KEYED)), req("key", Ty::Bytes)],
         internal: false,
     },
-    // A position goes.
+    // A bookmark goes; or a session, with its pointer and its history.
     Kind {
         name: "positionDelete",
-        base: 21,
+        base: 58,
         slots: &[req("id", Ty::Id(Space::Position))],
         internal: false,
     },
     // A message goes (only one nothing replies to).
     Kind {
         name: "messageDelete",
-        base: 102,
-        slots: &[req("message", Ty::Id(Space::Message))],
+        base: 97,
+        slots: &[
+            req("message", Ty::Id(Space::Message)),
+            opt("session", Ty::Id(Space::Position)),
+            opt("user", Ty::Id(Space::User)),
+        ],
         internal: false,
     },
     // A message moves under another parent (absent: it opens its owner's tree).
     Kind {
         name: "messageParent",
-        base: 103,
+        base: 101,
         slots: &[
             req("message", Ty::Id(Space::Message)),
             opt("parent", Ty::Id(Space::Message)),
+            opt("session", Ty::Id(Space::Position)),
+            opt("user", Ty::Id(Space::User)),
         ],
         internal: false,
     },
     // One of a message's times as the ISO string `new Date(time + delta).toISOString()`: which is its field.
     Kind {
         name: "messageTime",
-        base: 105,
+        base: 109,
         slots: &[
             req("message", Ty::Id(Space::Message)),
             req("field", Ty::Field),
             req("delta", Ty::Int),
+            opt("session", Ty::Id(Space::Position)),
+            opt("user", Ty::Id(Space::User)),
         ],
         internal: false,
     },
@@ -1149,7 +1169,9 @@ mod tests {
                     Value::Field(FieldRef::Code(0)),
                     Value::UInt(0),
                     Value::UInt(0),
-                    Value::Text(vec![])
+                    Value::Text(vec![]),
+                    Value::Absent,
+                    Value::Absent
                 ]
             )
             .is_err()
