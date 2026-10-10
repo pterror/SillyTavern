@@ -78,6 +78,47 @@ pub fn update(
     old: &[&[u8]],
     new: &[&[u8]],
 ) -> Result<(), StoreError> {
+    update_fields(view, out, scope, doc, &[(field, old, new)])
+}
+
+/// A field's change: the field, its values before and after.
+pub type FieldChange<'a> = (u32, &'a [&'a [u8]], &'a [&'a [u8]]);
+
+/// `update` for several fields of one document changing together: each sees the document as the ones before it
+/// left it, which `view` doesn't hold yet.
+pub fn update_fields(
+    view: &View,
+    out: &mut Out,
+    scope: Scope,
+    doc: u64,
+    changes: &[FieldChange],
+) -> Result<(), StoreError> {
+    let mut seen = Seen::default();
+    for &(field, old, new) in changes {
+        update_one(view, out, scope, doc, field, old, new, &mut seen)?;
+    }
+    Ok(())
+}
+
+/// What earlier changes in the same `update_fields` left of the document: its slots per term, and its length
+/// block.
+#[derive(Default)]
+struct Seen {
+    slots: HashMap<String, Slots>,
+    lengths: Option<Vec<(u32, u32)>>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn update_one(
+    view: &View,
+    out: &mut Out,
+    scope: Scope,
+    doc: u64,
+    field: u32,
+    old: &[&[u8]],
+    new: &[&[u8]],
+    seen: &mut Seen,
+) -> Result<(), StoreError> {
     let defs = scope.fields();
     let prefix = defs[field as usize].prefix;
     let (before, after) = (Terms::of(old, prefix), Terms::of(new, prefix));
@@ -85,7 +126,10 @@ pub fn update(
     let block = doc >> BLOCK_BITS;
     let lblock = doc >> LENGTH_BITS;
     let doc_slot = slot_in(LENGTH_BITS, doc, 0) >> FIELD_BITS;
-    let lengths = pairs(view.get(&length_block(scope, lblock))?)?;
+    let lengths = match &seen.lengths {
+        Some(l) => l.clone(),
+        None => pairs(view.get(&length_block(scope, lblock))?)?,
+    };
     let published = pairs(view.get_published(&length_block(scope, lblock))?)?
         .iter()
         .any(|&(s, _)| s >> FIELD_BITS == doc_slot);
@@ -149,7 +193,10 @@ pub fn update(
                 vec![(bslot, hit.most().min(u64::from(u32::MAX)) as u32)],
             );
         }
-        let had = own_slots(term)?;
+        let had = match seen.slots.get(term.as_str()) {
+            Some(s) => s.clone(),
+            None => own_slots(term)?,
+        };
         let mut slots = had.clone();
         slots.retain(|x| x.0 != field);
         if present {
@@ -164,9 +211,16 @@ pub fn update(
         }
         slots_of.insert(term, (had, slots));
     }
+    let lslot = slot_in(LENGTH_BITS, doc, field);
+    if lo != ln {
+        let mut now: Vec<(u32, u32)> = lengths.iter().copied().filter(|p| p.0 != lslot).collect();
+        if ln > 0 {
+            now.push((lslot, ln as u32));
+        }
+        seen.lengths = Some(now);
+    }
     if lo != ln {
         out.add(field_tokens(scope, field), ln as i64 - lo as i64);
-        let lslot = slot_in(LENGTH_BITS, doc, field);
         out.map(length_block(scope, lblock), vec![(lslot, ln as u32)]);
         if ln > 0 {
             let (schunk, sslot) = bound_slot(block, 0);
@@ -205,6 +259,7 @@ pub fn update(
         for term in affected {
             out.add(top_generation(scope, term), 1);
         }
+        remember(seen, slots_of);
         return Ok(());
     }
 
@@ -239,7 +294,10 @@ pub fn update(
         let (before, after) = match slots_of.get(term.as_str()) {
             Some((b, a)) => (fields_of(b, &old_codes), fields_of(a, &new_codes)),
             None => {
-                let s = own_slots(term)?;
+                let s = match seen.slots.get(term.as_str()) {
+                    Some(s) => s.clone(),
+                    None => own_slots(term)?,
+                };
                 (fields_of(&s, &old_codes), fields_of(&s, &new_codes))
             }
         };
@@ -266,7 +324,14 @@ pub fn update(
             trim(view, out, scope, term, &mut head, (is.unwrap(), doc))?;
         }
     }
+    remember(seen, slots_of);
     Ok(())
+}
+
+fn remember(seen: &mut Seen, slots_of: HashMap<&str, (Slots, Slots)>) {
+    for (term, (_, slots)) in slots_of {
+        seen.slots.insert(term.to_string(), slots);
+    }
 }
 
 /// After `added` joined a list: past `MAX + SLACK` entries, the lowest go down to `MAX` and the floor rises to the

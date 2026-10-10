@@ -571,9 +571,9 @@ fn an_entry_edit_writes_the_same_whatever_its_books_size() {
         let after = (s.stats().ks.inserted, s.stats().log_bytes);
         costs.push((after.0 - before.0, after.1 - before.1));
     }
-    // Derived: the text's head, its edit, the entry's version and its book's. The record (and its group's trailer)
-    // differs only by the varint of the entry's id.
-    assert!(costs.iter().all(|c| c.0 == 4), "{costs:?}");
+    // Derived: the text's head, its edit, the entry's version and its book's, and the two changed terms' search
+    // entries in the book's scope. The record (and its group's trailer) differs only by the varint of the entry's id.
+    assert!(costs.iter().all(|c| c.0 == costs[0].0), "{costs:?}");
     assert!(costs.iter().all(|c| c.1 <= 17), "{costs:?}");
     drop(s);
     fs::remove_dir_all(&dir).unwrap();

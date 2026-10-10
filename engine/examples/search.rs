@@ -22,7 +22,8 @@ use st_engine::search::Scope;
 use st_engine::search::brute::{Checker, Doc, Fields};
 use st_engine::search::query::{Clause, Filter, Limits, Order, Query};
 use st_engine::search::text::tokens;
-use st_engine::store::kinds::{ITEM_SEPARATOR, key, test_codes};
+use st_engine::store::kinds::test_codes::ITEM_SEPARATOR;
+use st_engine::store::kinds::{key, test_codes};
 use st_engine::store::{Store, StoreConfig};
 
 /// A card: per library field, its values; and its tags.

@@ -16,9 +16,10 @@ use super::StoreError;
 use super::books;
 use super::derive::{Deriver, Loc, Out, View};
 use super::kinds::{
-    Holder, bytes, dead, drop_text, drop_text_of, field, id, key, loc_bytes, parse_loc, text_value,
-    version,
+    Holder, bytes, dead, drop_text, drop_text_of, drop_text_unsearched, field, id, key, loc_bytes,
+    parse_loc, text_value, version,
 };
+use super::searched;
 use super::tags;
 use crate::keyspace::val::{counter_value, get_bytes, get_u64, put_bytes, put_u64};
 use crate::log::format::{FieldRef, Record, Value, get_uvarint, put_uvarint};
@@ -605,6 +606,7 @@ impl Deriver for EntityCreate {
             books::ENTRY => books::entry_created(view, out, k)?,
             _ => {}
         }
+        searched::created(view, out, e, kind, k)?;
         out.put(key::id(key::ENTITY, e), loc_bytes(at));
         out.put(kk, uvarint(e));
         out.max(key::of(key::NEXT_ENTITY), e + 1);
@@ -665,6 +667,7 @@ impl Deriver for EntityUpdate {
             }
             out.del(entity_key_key(kind, &old_k));
             out.put(kk, uvarint(e));
+            searched::rekeyed(view, out, e, kind, &old_k, k)?;
         }
         let old = state_of(view, e, kind, old_k, old_added)?;
         let new = state_of(view, e, kind, k.to_vec(), added)?;
@@ -774,6 +777,7 @@ fn delete_entity(
     if kind == TAG {
         tags::deleted(view, out, e, k, at)?;
     }
+    searched::gone(view, out, e, kind, k)?;
     tags::entity_gone(view, out, e)?;
     books::touched(view, out, e, at)?;
     match kind {
@@ -806,7 +810,7 @@ fn delete_entity(
     let end = key::prefix_end(&start);
     for (tk, _) in view.scan(&start, &end, usize::MAX)? {
         let f = field_after(&tk, key::TEXT)?;
-        drop_text(view, out, e, &f)?;
+        drop_text_unsearched(view, out, e, &f)?;
     }
     for s in [
         key::VALUE,
@@ -902,6 +906,7 @@ impl Deriver for JsonValue {
         if drop_text(view, out, e, f)?.is_some() {
             text_changed(view, out, e, f, None)?;
         }
+        searched::json_written(view, out, e, f, Some(bytes(rec, 2)))?;
         let k = key::field(key::VALUE, e, f);
         if let Some(b) = view.get(&k)? {
             dead(out, parse_loc(&b)?);
@@ -981,6 +986,7 @@ impl Deriver for ValueDelete {
         if drop_text(view, out, e, f)?.is_some() {
             text_changed(view, out, e, f, None)?;
         }
+        searched::json_written(view, out, e, f, None)?;
         drop_json(view, out, e, f)?;
         version(out, e, at);
         books::touched(view, out, e, at)?;
