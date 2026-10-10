@@ -187,6 +187,20 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         await chats.mergeMetadata({ tree: t, at: nb, set: { variables: {} }, unset: [], actor });
         assert.deepEqual(await chats.metadata(t, (await chats.messageIds([nb]))[0]), { variables: {} });
 
+        // The path ended at the first message, then at the root.
+        await tree.endPathAt(directories, owner, old1.node_ids[0]);
+        assert.deepEqual(await chats.endPathAt({ tree: t, node_id: new1.node_ids[0], actor }), { ok: true });
+        await compare('after ending the path');
+        const ends = (await store.chatRead('history', { session: (await store.chatRead('ids', { space: 1, keys: [actor.session] }))[0], limit: 1000 })).length;
+        assert.deepEqual(await chats.endPathAt({ tree: t, node_id: new1.node_ids[0], actor }), { ok: true });
+        assert.equal((await store.chatRead('history', { session: (await store.chatRead('ids', { space: 1, keys: [actor.session] }))[0], limit: 1000 })).length, ends, 'nothing written when nothing moves');
+        await tree.endPathAtAnchor(directories, owner);
+        assert.deepEqual(await chats.endPathAt({ tree: t, node_id: null, actor }), { ok: true });
+        assert.equal(await tree.loadDefaultChain(directories, owner), null);
+        assert.deepEqual(await chats.pointer(actor.session), { tree: t, at: null });
+        assert.deepEqual((await chats.load({ tree: t, at: null })).messages, []);
+        assert.deepEqual(await chats.endPathAt({ tree: t, node_id: 'no such message', actor }), { ok: false, reason: 'unknown node' });
+
         // The session a request acts through: its header's, a new tab's, a stale tab's (deleted), a third party's.
         const handle = actor.user;
         assert.deepEqual(await chats.resolveSession({ tree: t, user: handle, header: actor.session }), { session: actor.session });

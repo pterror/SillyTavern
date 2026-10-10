@@ -302,7 +302,7 @@ impl Deriver for MessageAppend {
         sessions::appended(view, out, m, parent)?;
         // Shown through its session: the session moves to it, and continuing there is choosing it.
         if let Some(s) = s {
-            sessions::moved(view, out, s, u, owner, m, at, false, true)?;
+            sessions::moved(view, out, s, u, owner, Some(m), at, false, true)?;
             let f = match parent {
                 Some(p) => Fork::Message(p),
                 None => Fork::Root(owner),
@@ -915,11 +915,37 @@ impl Deriver for PointerMove {
             s,
             u,
             id(&r, APPEND_OWNER),
-            target,
+            Some(target),
             at,
             true,
             false,
         )
+    }
+
+    fn is_live(&self, _: &Record, pos: u64, view: &View) -> Result<bool, StoreError> {
+        Ok(sessions::history_entry(view, pos)?.is_some())
+    }
+
+    fn repoint(
+        &self,
+        _: &Record,
+        from: u64,
+        to: Loc,
+        view: &View,
+        out: &mut Out,
+    ) -> Result<(), StoreError> {
+        sessions::history_repoint(view, out, from, to)
+    }
+}
+
+/// `pointerRoot`: a session's pointer moves to a tree's root; the record is its history entry's, as a `pointerMove`'s.
+pub struct PointerRoot;
+
+impl Deriver for PointerRoot {
+    fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
+        let (s, u, tree) = (id(rec, 0), id(rec, 1), id(rec, 2));
+        sessions::check_actor(view, Some(s), Some(u))?;
+        sessions::moved(view, out, s, u, tree, None, at, true, false)
     }
 
     fn is_live(&self, _: &Record, pos: u64, view: &View) -> Result<bool, StoreError> {
@@ -1036,6 +1062,7 @@ pub fn deriver(kind: &str) -> Option<&'static dyn Deriver> {
     Some(match kind {
         "itemization" => &Itemization,
         "pointerMove" => &PointerMove,
+        "pointerRoot" => &PointerRoot,
         "forkSelection" => &ForkSelection,
         "messageAppend" => &MessageAppend,
         "messageDelete" => &MessageDelete,

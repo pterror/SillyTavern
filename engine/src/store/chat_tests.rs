@@ -119,7 +119,7 @@ struct Bookmark {
 #[derive(Clone, Debug, Default)]
 struct Session {
     pointer: Option<(u64, Option<u64>)>,
-    history: Vec<(u64, bool)>,
+    history: Vec<(sessions::Target, bool)>,
     trees: BTreeMap<u64, Option<u64>>,
 }
 
@@ -200,15 +200,18 @@ impl Model {
         self.activity.entry(tree).or_default().insert(s, q);
     }
 
-    fn moved(&mut self, s: u64, u: u64, tree: u64, target: u64, meaningful: bool) {
+    fn moved(&mut self, s: u64, u: u64, tree: u64, target: Option<u64>, meaningful: bool) {
         let q = self.tick();
         let ses = self.sessions.entry(s).or_default();
         let entering = ses.pointer.map(|(t, _)| t) != Some(tree);
-        ses.pointer = Some((tree, Some(target)));
-        ses.history.push((target, false));
-        ses.trees.insert(tree, Some(target));
+        ses.pointer = Some((tree, target));
+        ses.history.push((
+            target.map_or(sessions::Target::Root(tree), sessions::Target::Message),
+            false,
+        ));
+        ses.trees.insert(tree, target);
         self.recent.insert(s, q);
-        self.user_tree.insert((u, tree), (s, Some(target)));
+        self.user_tree.insert((u, tree), (s, target));
         self.user_order.entry((u, tree)).or_default().insert(s, q);
         if meaningful || !entering {
             self.activity.entry(tree).or_default().insert(s, q);
@@ -284,7 +287,7 @@ impl Model {
                 }
             }
             for h in &mut ses.history {
-                if h.0 == m {
+                if h.0 == sessions::Target::Message(m) {
                     h.1 = true;
                 }
             }
@@ -451,7 +454,7 @@ impl Model {
                     ses.pointer,
                     "pointer of {s}"
                 );
-                let h: Vec<(u64, bool)> = sessions::history(v, s, 0, usize::MAX)?
+                let h: Vec<(sessions::Target, bool)> = sessions::history(v, s, 0, usize::MAX)?
                     .into_iter()
                     .map(|(_, t, g)| (t, g))
                     .collect();
@@ -637,7 +640,7 @@ fn append(
         },
     );
     if let Some(s) = session {
-        model.moved(s, user, owner, id, true);
+        model.moved(s, user, owner, Some(id), true);
         model.choose(s, user, fork_of(parent, owner), id);
     }
     rec(
@@ -913,10 +916,17 @@ fn step(model: &mut Model, rng: &mut Rng, i: u64) -> Vec<Record> {
                 vec![Value::Sel(chat::KEYED_MESSAGE, m), Value::Bytes(k)],
             )]
         }
+        13 | 14 if rng.below(4) == 0 => {
+            model.moved(session, user, owner, None, false);
+            vec![rec(
+                "pointerRoot",
+                vec![Value::Id(session), Value::Id(user), Value::Id(owner)],
+            )]
+        }
         13 | 14 => {
             let m = pick(rng);
             let tree = model.msgs[&m].owner;
-            model.moved(session, user, tree, m, false);
+            model.moved(session, user, tree, Some(m), false);
             vec![rec(
                 "pointerMove",
                 vec![Value::Id(session), Value::Id(user), Value::Id(m)],
@@ -1097,7 +1107,7 @@ fn a_large_moved_subtree_gets_its_depths_in_slices_marked_meanwhile() {
         vec![Value::Id(1), Value::Id(1), Value::Id(n - 1)],
     )])
     .unwrap();
-    model.moved(1, 1, 1, n - 1, false);
+    model.moved(1, 1, 1, Some(n - 1), false);
     model.check(&s);
     // Move message 1 (and the chain below it) under the second opening: every depth below it goes up by one.
     model.msgs.get_mut(&1).unwrap().parent = Some(n);

@@ -338,6 +338,17 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
+    // A session's pointer moves to the root of `tree` (no message), by `user`.
+    Kind {
+        name: "pointerRoot",
+        base: 127,
+        slots: &[
+            req("session", Ty::Id(Space::Position)),
+            req("user", Ty::Id(Space::User)),
+            req("tree", Ty::Id(Space::Entity)),
+        ],
+        internal: false,
+    },
     // At the fork `message` (absent: among the messages opening the reply's tree), `reply` is chosen, through
     // `session` by `user`.
     Kind {

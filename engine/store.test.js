@@ -323,7 +323,7 @@ for (const [name, engine] of Object.entries(bindings)) {
         assert.equal(await store.chatRead('landing', { tree: 3n, session: 1n }), 1n);
         assert.deepEqual((await store.chatRead('sessions', { ids: [1n, 5n] }))[1], null);
         assert.deepEqual(await store.chatRead('userInTree', { user: 1n, tree: 3n }), { session: 1n, at: 1n });
-        assert.deepEqual(await store.chatRead('history', { session: 1n, limit: 10 }), [{ n: 1, target: 1n, gone: false }]);
+        assert.deepEqual(await store.chatRead('history', { session: 1n, limit: 10 }), [{ n: 1, target: 1n, tree: null, gone: false }]);
         assert.equal((await store.chatRead('recent', { limit: 10 }))[0].session, 1n);
         assert.deepEqual(await store.chatRead('messageCount', { tree: 3n, at: 1n }), { count: 2, estimate: false });
         assert.deepEqual(await store.chatRead('ids', { space: 1, keys: ['0190a1b2-0000-7000-8000-00000000000a', 'nope'] }), [1n, null]);
