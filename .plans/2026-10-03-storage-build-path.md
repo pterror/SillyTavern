@@ -891,7 +891,12 @@ Builds:
 Record shapes (answered, coordinator, 10-10, from "A write costs what actually changed", the stage 2 rule that a
 kind's schema is fixed once written to a real store, and compat). Kinds 6–8 (`pointerMove`, `forkSelection`,
 `messageAppend`) were revised here, before any real store held them:
-- Message ids: still open (see the stop below).
+- Message ids: integers inside the engine. Converted messages keep their old text ids through a key mapping (as
+  `entityCreate` maps an avatar), so browser drafts and send keys holding old ids keep resolving. New messages get no
+  mapping record: their external id is the integer's decimal string. Resolving an external id checks the key mapping
+  first; only with no mapping is a decimal string read as an integer. This holds whatever the old data contains (see
+  the stop below, answered): 5e maps every old id, and starts the message-id counter above the largest old id that
+  is a canonical decimal string, so a new message's id never equals an old one.
 - `messageAppend` is changed in place. A user message's append carries its send key (16 B) as a slot, which the
   server's repeat check reads. `extra`: each top-level key is its own value (per-key records, as card extensions are),
   written only when it changes; unknown keys are kept as they came (JSON per key).
@@ -908,7 +913,8 @@ new messages' external id is the integer's decimal string; the JS layer reads a 
 if no old id can be a decimal string. The code allowed one. From 7be404771 (08-25) until 27ea2c71b (08-28),
 `saveChat` stored a message under its `msg.node_id || newId()`: any string the request's message carried. Since then
 ids come only from `newId()` (`crypto.randomUUID()`), or are existing rows' ids. Whether a store written in those
-days holds a non-UUID id can only be seen in the user's data, which this work doesn't read.
+days holds a non-UUID id can only be seen in the user's data, which this work doesn't read. Answered (coordinator,
+10-10): the scheme above holds whatever the data holds, without reading it now.
 
 Where layer 1 goes: inside 5b, on the engine. Its own storage step (SQLite `state_changes`, saved states every 64th
 depth rebuilt lazily after an epoch bump) conflicts with the design: a structure caught up when read is what revision
@@ -1009,6 +1015,9 @@ What it reads, and what each becomes:
 - `message-tree.sqlite` (with the 4 old `message_stats_*` triggers still present: read-only, so they don't matter):
   - each message as a message record (text and flags split out of `content`, `extra` kept, speaker by id where it
     resolves);
+  - every old message id mapped to its new integer by a key record; if any old id is a canonical decimal string, the
+    message-id counter starts above the largest such value; the dry run and the apply report how many old ids
+    weren't UUIDs (a count only);
   - each label as a bookmark, at the latest message below it on the default chain (shim plan answer 10), pinned or
     following by the shim plan's D24 (its wording, then the old chat files, then the backup; otherwise following,
     listed in a warning);
