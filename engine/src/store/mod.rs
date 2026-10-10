@@ -36,6 +36,7 @@ pub mod sessions;
 pub mod state;
 pub mod stats;
 pub mod tags;
+pub mod token_cache;
 
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::Path;
@@ -664,6 +665,44 @@ impl Store {
     /// A chat read (`chat_read`), against one state of the keyspace.
     pub fn chat_read<T>(&self, f: impl FnOnce(&View) -> StoreResult<T>) -> StoreResult<T> {
         self.derived(f)
+    }
+
+    /// Keeps tokenizing results in the cache (`token_cache::put`), in the commit queue after every job before
+    /// them; `done` once they are published.
+    pub fn token_cache_put(
+        &self,
+        puts: Vec<token_cache::Put>,
+        now: u64,
+        granularity: u64,
+        done: Box<dyn FnOnce(StoreResult<()>) + Send>,
+    ) {
+        self.inner.submit(Job::Derive(
+            Box::new(move |view, out| token_cache::put(view, out, &puts, now, granularity)),
+            done,
+        ));
+    }
+
+    /// Evicts one slice of a cache table's least recently used entries over `cap`; `done` with whether it is still
+    /// over.
+    pub fn token_cache_evict(
+        &self,
+        table: u64,
+        cap: u64,
+        batch: usize,
+        done: Box<dyn FnOnce(StoreResult<bool>) + Send>,
+    ) {
+        let more = Arc::new(AtomicBool::new(false));
+        let found = more.clone();
+        self.inner.submit(Job::Derive(
+            Box::new(move |view, out| {
+                found.store(
+                    token_cache::evict_step(view, out, table, cap, batch)?,
+                    Ordering::Relaxed,
+                );
+                Ok(())
+            }),
+            Box::new(move |r| done(r.map(|()| more.load(Ordering::Relaxed)))),
+        ));
     }
 
     /// The reorder pass's record and counts.
@@ -1641,3 +1680,5 @@ mod state_tests;
 mod tags_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod token_cache_tests;
