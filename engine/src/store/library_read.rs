@@ -1028,6 +1028,49 @@ pub fn by_hash(view: &View, which: u64, hash: &[u8], limit: usize) -> Result<Vec
         .collect()
 }
 
+/// The entities both hashes find, at most `limit`: each list read from the other's last entity on, so the reads
+/// follow the shorter one.
+pub fn by_hashes(
+    view: &View,
+    a: (u64, &[u8]),
+    b: (u64, &[u8]),
+    limit: usize,
+) -> Result<Vec<u64>, StoreError> {
+    let first_from = |which: u64, hash: &[u8], from: u64| -> Result<Option<u64>, StoreError> {
+        let p = library::hash_index_prefix(which, hash);
+        let mut start = p.clone();
+        put_u64(&mut start, from);
+        let Some((k, _)) = view
+            .scan(&start, &key::prefix_end(&p), 1)?
+            .into_iter()
+            .next()
+        else {
+            return Ok(None);
+        };
+        let mut at = p.len();
+        get_u64(&k, &mut at)
+            .map(Some)
+            .ok_or_else(|| StoreError::Entry("a hash key doesn't decode".into()))
+    };
+    let mut out = Vec::new();
+    let mut from = 0;
+    while out.len() < limit {
+        let Some(x) = first_from(a.0, a.1, from)? else {
+            break;
+        };
+        let Some(y) = first_from(b.0, b.1, x)? else {
+            break;
+        };
+        if x == y {
+            out.push(x);
+            from = x + 1;
+        } else {
+            from = y;
+        }
+    }
+    Ok(out)
+}
+
 // ---- random pages ----
 
 fn mix64(x: u64) -> u64 {

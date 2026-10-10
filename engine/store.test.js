@@ -262,6 +262,18 @@ for (const [name, engine] of Object.entries(bindings)) {
         assert.equal(entity.dataSize, 20);
         assert.deepEqual(entity.tags, [100n]);
         assert.deepEqual(entity.values.map(v => [v.field, v.text ?? v.json]).sort(), [[1, 'émile'], ['ext:depth_prompt', '{"depth":4}']]);
+        // A new key and date added: found by the new key only, placed by both.
+        await store.commit([{ kind: 'entityUpdate', entity: 3n, type: 0, key: 'zz.png', added: 5000 }]);
+        await assert.rejects(store.commit([{ kind: 'entityUpdate', entity: 1n, type: 0, key: 'zz.png', added: 1 }]), /has that key already/);
+        assert.deepEqual(await store.libraryIds([[0, 'Ana.png'], [0, 'zz.png']]), [null, 3n]);
+        assert.deepEqual((await store.libraryPage({ characters: true, sort: { key: 2, desc: true }, limit: 1 })).ids, [3n]);
+        const hash = (/** @type {number} */ n) => Buffer.alloc(32, n);
+        await store.commit([1n, 2n, 3n].flatMap(e => [
+            { kind: 'cardHash', entity: e, which: 0, hash: hash(e === 3n ? 2 : 1) },
+            { kind: 'cardHash', entity: e, which: 3, hash: hash(e === 1n ? 9 : 8) },
+        ]));
+        assert.deepEqual(await store.libraryByHashes(0, hash(1), 3, hash(8), 5), [2n]);
+        assert.deepEqual(await store.libraryByHashes(0, hash(2), 3, hash(9), 5), []);
         await store.close();
     });
 }

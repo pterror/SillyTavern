@@ -458,6 +458,18 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
+    // An entity's key (a character's avatar) or date added changes; its type is `entityCreate`'s, repeated.
+    Kind {
+        name: "entityUpdate",
+        base: 32,
+        slots: &[
+            req("entity", Ty::Id(Space::Entity)),
+            req("type", Ty::UInt),
+            req("key", Ty::Text),
+            req("added", Ty::Time),
+        ],
+        internal: false,
+    },
 ];
 
 /// Kinds that exist only in the crate's tests and measurements (feature `measure`). Their header values are

@@ -609,6 +609,65 @@ impl Deriver for EntityCreate {
     }
 }
 
+/// The `entityCreate` or latest `entityUpdate` record is the entity's: `entity_info` reads its type, key and date
+/// added from it.
+pub struct EntityUpdate;
+
+impl Deriver for EntityUpdate {
+    fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
+        let (e, kind, k) = (id(rec, 0), id(rec, 1), bytes(rec, 2));
+        let added = match rec.values[3] {
+            Value::Time(t) => t,
+            _ => unreachable!("checked by Record::new"),
+        };
+        let Some((old_kind, old_k, old_added)) = entity_info(view, e)? else {
+            return Err(StoreError::Refused(format!("no entity {e}")));
+        };
+        if kind != old_kind {
+            return Err(StoreError::Refused(format!(
+                "entity {e} is of type {old_kind}, not {kind}"
+            )));
+        }
+        if k != old_k.as_slice() {
+            let kk = entity_key_key(kind, k);
+            if view.get(&kk)?.is_some() {
+                return Err(StoreError::Refused(format!(
+                    "an entity of type {kind} has that key already"
+                )));
+            }
+            out.del(entity_key_key(kind, &old_k));
+            out.put(kk, uvarint(e));
+        }
+        let old = state_of(view, e, kind, old_k, old_added)?;
+        let new = state_of(view, e, kind, k.to_vec(), added)?;
+        if old != new {
+            reposition(view, out, e, old.as_ref(), new.as_ref())?;
+        }
+        let ek = key::id(key::ENTITY, e);
+        if let Some(b) = view.get(&ek)? {
+            dead(out, parse_loc(&b)?);
+        }
+        out.put(ek, loc_bytes(at));
+        version(out, e, at);
+        Ok(())
+    }
+
+    fn is_live(&self, rec: &Record, pos: u64, view: &View) -> Result<bool, StoreError> {
+        live_at(view, &key::id(key::ENTITY, id(rec, 0)), pos)
+    }
+
+    fn repoint(
+        &self,
+        rec: &Record,
+        from: u64,
+        to: Loc,
+        view: &View,
+        out: &mut Out,
+    ) -> Result<(), StoreError> {
+        repoint_at(view, out, &key::id(key::ENTITY, id(rec, 0)), from, to)
+    }
+}
+
 fn live_at(view: &View, k: &[u8], pos: u64) -> Result<bool, StoreError> {
     Ok(view
         .get(k)?
@@ -1177,6 +1236,7 @@ pub fn deriver(kind: &str) -> Option<&'static dyn Deriver> {
         "createDate" => &SortValue(CREATED),
         "cardHash" => &CardHash,
         "tagMerge" => &TagMerge,
+        "entityUpdate" => &EntityUpdate,
         _ => return None,
     })
 }

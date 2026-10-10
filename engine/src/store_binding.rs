@@ -938,6 +938,27 @@ impl Store {
         })
     }
 
+    /// The entities both a hash of kind `which_a` and one of kind `which_b` find, at most `limit`.
+    #[napi(ts_return_type = "Promise<bigint[]>")]
+    pub fn library_by_hashes<'env>(
+        &self,
+        env: &'env Env,
+        which_a: u32,
+        hash_a: Uint8Array,
+        which_b: u32,
+        hash_b: Uint8Array,
+        limit: u32,
+    ) -> Result<Object<'env>> {
+        let (hash_a, hash_b) = (hash_a.to_vec(), hash_b.to_vec());
+        derived(env, &self.store, move |s| {
+            s.library_by_hashes(
+                (u64::from(which_a), &hash_a),
+                (u64::from(which_b), &hash_b),
+                limit as usize,
+            )
+        })
+    }
+
     /// The position after the last durable record.
     #[napi]
     pub fn durable_end(&self) -> u64 {
