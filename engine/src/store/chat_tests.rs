@@ -1774,6 +1774,17 @@ fn stats_count_as_today_and_place_the_owner_in_the_library() {
     .unwrap();
     let totals = s.derived(stats::total_stats).unwrap();
     assert_eq!(totals.counters[stats::USER_MSGS as usize], 5);
+    // A user message whose flags change to a system message's stops counting.
+    s.commit_wait(vec![msg_json(
+        3,
+        chat::FLAGS,
+        &(1 | (2 << chat::FLAG_IS_SYSTEM)).to_string(),
+    )])
+    .unwrap();
+    assert_eq!(
+        s.derived(stats::total_stats).unwrap().counters[stats::USER_MSGS as usize],
+        4
+    );
     drop(s);
     fs::remove_dir_all(&dir).unwrap();
 }

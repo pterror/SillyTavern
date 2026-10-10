@@ -161,7 +161,16 @@ fn contrib(view: &View, m: u64) -> Result<Option<Contrib>, StoreError> {
         Value::Time(t) => t,
         _ => unreachable!("checked by Record::new"),
     };
-    let flags = id(&r, APPEND_FLAGS);
+    // A later change of the fixed values' shape is a value of its own (`chat::FLAGS`).
+    let flags = match json_value(view, m, chat::FLAGS)? {
+        Some(j) => std::str::from_utf8(&j)
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .ok_or_else(|| {
+                StoreError::Entry(format!("message {m}'s flags value isn't a number"))
+            })?,
+        None => id(&r, APPEND_FLAGS),
+    };
     let parent = parent_of(view, m, &r)?;
     let who = if flag(view, m, flags, chat::FLAG_IS_SYSTEM, 2, IS_SYSTEM)? {
         None
