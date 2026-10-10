@@ -287,6 +287,71 @@ impl View<'_> {
         Ok(out)
     }
 
+    /// `scan_vals` last first: up to `limit` keys in `[start, end)` from the last down.
+    pub fn scan_vals_rev(
+        &self,
+        start: &[u8],
+        end: &[u8],
+        limit: usize,
+    ) -> Result<Vec<(Vec<u8>, Val)>, StoreError> {
+        let mut unpublished: BTreeMap<Vec<u8>, Val> = BTreeMap::new();
+        let mut over = |k: &Vec<u8>, v: Val| {
+            let v = match unpublished.remove(k) {
+                Some(older) => v.over(&older),
+                None => v,
+            };
+            unpublished.insert(k.clone(), v);
+        };
+        if let Some(st) = self.staged {
+            for r in st.runs.iter().rev() {
+                let mut it = RunIter::new(r.clone(), start, Some(&st.cache), Some(&st.counts))?;
+                while let Some(k) = it.key() {
+                    if k >= end {
+                        break;
+                    }
+                    let k = k.to_vec();
+                    over(&k, it.val()?);
+                    it.advance()?;
+                }
+            }
+        }
+        for layer in self.layers.iter().rev() {
+            for (k, v) in layer.range(start, end) {
+                over(k, v.clone());
+            }
+        }
+        let limit_published = limit.saturating_add(unpublished.len());
+        let published = match self.snap {
+            Some(s) => s.scan_vals_rev(start, end, limit_published)?,
+            None => self.ks.scan_vals_rev(start, end, limit_published)?,
+        };
+        let mut out = Vec::new();
+        let mut published = published.into_iter().peekable();
+        let mut unpublished = unpublished.into_iter().rev().peekable();
+        while out.len() < limit {
+            let next = match (published.peek(), unpublished.peek()) {
+                (None, None) => break,
+                (Some(_), None) => published.next().map(|(k, v)| (k, Some(v))),
+                (Some((pk, _)), Some((uk, _))) if pk > uk => {
+                    published.next().map(|(k, v)| (k, Some(v)))
+                }
+                _ => {
+                    let (k, v) = unpublished.next().unwrap();
+                    let base = published.next_if(|(pk, _)| *pk == k).map(|(_, b)| b);
+                    let v = match base {
+                        Some(b) => v.over(&b),
+                        None => v,
+                    };
+                    Some((k, v.settled()))
+                }
+            };
+            if let Some((k, Some(v))) = next {
+                out.push((k, v));
+            }
+        }
+        Ok(out)
+    }
+
     /// The record at `pos`, durable or not.
     pub fn record(&self, pos: u64) -> Result<(Record, u64), StoreError> {
         for p in &self.pending {

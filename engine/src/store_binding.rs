@@ -21,7 +21,7 @@ use crate::log::format::{
 };
 use crate::search::Scope;
 use crate::search::query::{After, Clause, Filter, Found, Limits, Order, Query};
-use crate::store::{Store as Inner, StoreConfig, StoreError, StoreResult};
+use crate::store::{Store as Inner, StoreConfig, StoreError, StoreResult, library, library_read};
 
 fn invalid(msg: String) -> Error {
     Error::new(Status::InvalidArg, msg)
@@ -423,6 +423,167 @@ macro_rules! object_type_name {
 object_type_name!(RecordAt);
 object_type_name!(Page);
 object_type_name!(SearchPage);
+object_type_name!(LibraryPage);
+object_type_name!(LibraryEntities);
+
+/// A page of the library list as JavaScript sees it.
+pub struct LibraryPage(library_read::Page);
+
+impl ToNapiValue for LibraryPage {
+    unsafe fn to_napi_value(raw_env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
+        let env = Env::from_raw(raw_env);
+        let p = val.0;
+        let mut obj = Object::new(&env)?;
+        obj.set("ids", p.ids)?;
+        if let Some(t) = p.total {
+            obj.set("total", t as f64)?;
+        }
+        obj.set("totalExact", p.total_exact)?;
+        obj.set("more", p.more)?;
+        if let Some(c) = p.cursor {
+            obj.set("cursor", Buffer::from(c))?;
+        }
+        unsafe { Object::to_napi_value(raw_env, obj) }
+    }
+}
+
+/// Entities with their values as JavaScript sees them; null where there is none.
+pub struct LibraryEntities(Vec<Option<library_read::Entity>>);
+
+impl ToNapiValue for LibraryEntities {
+    unsafe fn to_napi_value(raw_env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
+        let env = Env::from_raw(raw_env);
+        let mut list = Vec::with_capacity(val.0.len());
+        for e in val.0 {
+            let Some(e) = e else {
+                list.push(None);
+                continue;
+            };
+            let mut o = Object::new(&env)?;
+            o.set("id", e.id)?;
+            o.set("type", e.kind as f64)?;
+            o.set("key", text_to_js(e.key)?)?;
+            o.set("added", e.added as f64)?;
+            o.set("version", e.version)?;
+            o.set("fav", e.fav)?;
+            o.set("tags", e.tags)?;
+            let mut values = Vec::with_capacity(e.values.len());
+            for (f, v) in e.values {
+                let mut vo = Object::new(&env)?;
+                match f {
+                    FieldRef::Code(c) => vo.set("field", c as f64)?,
+                    FieldRef::Key(k) => vo.set("field", text_to_js(k)?)?,
+                }
+                match v {
+                    library_read::Stored::Text(t) => vo.set("text", text_to_js(t)?)?,
+                    library_read::Stored::Json(j) => vo.set("json", text_to_js(j)?)?,
+                }
+                values.push(vo);
+            }
+            o.set("values", values)?;
+            let mut items = Vec::with_capacity(e.items.len());
+            for (list, item) in e.items {
+                let mut io = Object::new(&env)?;
+                io.set("list", list as f64)?;
+                io.set("item", item as f64)?;
+                items.push(io);
+            }
+            o.set("items", items)?;
+            if let Some(n) = e.data_size {
+                o.set("dataSize", n as f64)?;
+            }
+            if let Some(ms) = e.create_ms {
+                o.set("createMs", ms)?;
+            }
+            let mut hashes = Vec::with_capacity(e.hashes.len());
+            for (which, h) in e.hashes {
+                let mut ho = Object::new(&env)?;
+                ho.set("which", which as f64)?;
+                ho.set("hash", Buffer::from(h))?;
+                hashes.push(ho);
+            }
+            o.set("hashes", hashes)?;
+            list.push(Some(o));
+        }
+        unsafe { Vec::<Option<Object>>::to_napi_value(raw_env, list) }
+    }
+}
+
+fn library_query_from_js(q: &Object) -> Result<library_read::Query> {
+    use library_read::{Filter, Query, RangeField, Sort};
+    let tags = |name: &str| ids_arg(name, q.get(name)?).map(Option::unwrap_or_default);
+    let mut ranges = Vec::new();
+    for r in q.get::<Vec<Object>>("ranges")?.unwrap_or_default() {
+        let field = match r.get::<Unknown>("field")? {
+            Some(v) if v.get_type()? == ValueType::String => match String::from_unknown(v)?.as_str() {
+                "create_date" => RangeField::Created,
+                "date_last_chat" => RangeField::LastChat,
+                "chat_size" => RangeField::ChatSize,
+                "data_size" => RangeField::Data,
+                "closed_folders" => RangeField::ClosedFolders,
+                other => return Err(invalid(format!("no range field {other}"))),
+            },
+            Some(v) => RangeField::Tag(integer("field", v)?),
+            None => return Err(invalid("a range needs a field".into())),
+        };
+        ranges.push((field, r.get::<f64>("min")?, r.get::<f64>("max")?));
+    }
+    let world = match q.get::<Unknown>("world")? {
+        Some(v) => Some(string("world", v)?),
+        None => None,
+    };
+    let filter = Filter {
+        characters: q.get::<bool>("characters")?.unwrap_or(false),
+        groups: q.get::<bool>("groups")?.unwrap_or(false),
+        fav: q.get::<bool>("fav")?,
+        all_tags: tags("allTags")?,
+        any_tags: tags("anyTags")?,
+        no_tags: tags("noTags")?,
+        world,
+        ranges,
+        ids: ids_arg("ids", q.get("ids")?)?,
+        not_ids: tags("notIds")?,
+    };
+    let s: Object = q
+        .get("sort")?
+        .ok_or_else(|| invalid("a library page needs a sort".into()))?;
+    let desc = s.get::<bool>("desc")?.unwrap_or(false);
+    let sort = if let Some(k) = s.get::<Unknown>("key")? {
+        let key = integer("key", k)?;
+        if key >= library::SORTS {
+            return Err(invalid(format!("no sort key {key}")));
+        }
+        Sort::Key { sort: key, desc }
+    } else if s.get::<bool>("fav")?.unwrap_or(false) {
+        Sort::Fav { desc }
+    } else if let Some(seed) = s.get::<Unknown>("seed")? {
+        let seed = match seed.get_type()? {
+            ValueType::BigInt => BigInt::from_unknown(seed)?.get_u64().1,
+            _ => f64::from_unknown(seed)?.trunc() as i64 as u64,
+        };
+        Sort::Random { seed, desc }
+    } else {
+        return Err(invalid("a sort is { key }, { fav: true } or { seed }".into()));
+    };
+    let num = |name: &str, default: u64| -> Result<u64> {
+        match q.get::<Unknown>(name)? {
+            Some(v) => integer(name, v),
+            None => Ok(default),
+        }
+    };
+    Ok(Query {
+        filter,
+        sort,
+        offset: num("offset", 0)?,
+        limit: num("limit", 500)? as usize,
+        cursor: q
+            .get::<Uint8Array>("cursor")?
+            .map(|c| c.to_vec())
+            .filter(|c| !c.is_empty()),
+        count: q.get::<bool>("count")?.unwrap_or(false),
+        cap: num("cap", 20_000)?,
+    })
+}
 
 /// A page of search results as JavaScript sees it.
 pub struct SearchPage(Found);
@@ -691,6 +852,69 @@ impl Store {
     pub fn search<'env>(&self, env: &'env Env, query: Object) -> Result<Object<'env>> {
         let q = query_from_js(&query)?;
         derived(env, &self.store, move |s| s.search(&q).map(SearchPage))
+    }
+
+    /// A page of the library list: `{ characters, groups, fav?, allTags?, anyTags?, noTags?, world?, ranges?:
+    /// [{ field: 'create_date' | 'date_last_chat' | 'chat_size' | 'data_size' | 'closed_folders' | tag id,
+    /// min?, max? }], ids?, notIds?, sort: { key, desc? } | { fav: true, desc? } | { seed, desc? }, offset?,
+    /// limit?, cursor?, count?, cap? }`. Resolves with `{ ids, total?, totalExact, more, cursor? }`: `more`
+    /// when the work cap cut the page short, `cursor` to read on from.
+    #[napi(
+        ts_args_type = "query: object",
+        ts_return_type = "Promise<{ ids: bigint[], total?: number, totalExact: boolean, more: boolean, cursor?: Buffer }>"
+    )]
+    pub fn library_page<'env>(&self, env: &'env Env, query: Object) -> Result<Object<'env>> {
+        let q = library_query_from_js(&query)?;
+        derived(env, &self.store, move |s| s.library_page(&q).map(LibraryPage))
+    }
+
+    /// Each entity with everything it holds, or null.
+    #[napi(
+        ts_args_type = "ids: (bigint | number)[]",
+        ts_return_type = "Promise<(object | null)[]>"
+    )]
+    pub fn library_entities<'env>(&self, env: &'env Env, ids: Vec<Unknown>) -> Result<Object<'env>> {
+        let ids = ids
+            .into_iter()
+            .map(|v| integer("id", v))
+            .collect::<Result<Vec<_>>>()?;
+        derived(env, &self.store, move |s| {
+            s.library_entities(&ids).map(LibraryEntities)
+        })
+    }
+
+    /// The entity of each `[type, key]`, or null.
+    #[napi(
+        ts_args_type = "keys: [number, string][]",
+        ts_return_type = "Promise<(bigint | null)[]>"
+    )]
+    pub fn library_ids<'env>(&self, env: &'env Env, keys: Vec<Vec<Unknown>>) -> Result<Object<'env>> {
+        let keys = keys
+            .into_iter()
+            .map(|pair| {
+                let mut it = pair.into_iter();
+                let (Some(t), Some(k), None) = (it.next(), it.next(), it.next()) else {
+                    return Err(invalid("a key is [type, key]".into()));
+                };
+                Ok((integer("type", t)?, string("key", k)?))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        derived(env, &self.store, move |s| s.library_ids(&keys))
+    }
+
+    /// The entities a card hash of kind `which` finds, at most `limit`.
+    #[napi(ts_return_type = "Promise<bigint[]>")]
+    pub fn library_by_hash<'env>(
+        &self,
+        env: &'env Env,
+        which: u32,
+        hash: Uint8Array,
+        limit: u32,
+    ) -> Result<Object<'env>> {
+        let hash = hash.to_vec();
+        derived(env, &self.store, move |s| {
+            s.library_by_hash(u64::from(which), &hash, limit as usize)
+        })
     }
 
     /// The position after the last durable record.

@@ -5,6 +5,7 @@
 
 use super::StoreError;
 use super::derive::{Deriver, Loc, Out, View};
+use super::library;
 use crate::log::FILE_SHIFT;
 use crate::log::format::{
     Ctx, FieldRef, Record, Value, encode, get_uvarint, kind_by_name, put_uvarint, wtf8_to_utf16,
@@ -64,6 +65,38 @@ pub mod key {
     }
     /// Per message: its `messageAppend` record.
     pub const MESSAGE: u64 = 43;
+    /// The library (`store::library`).
+    /// Per entity: its `entityCreate` record.
+    pub const ENTITY: u64 = 50;
+    /// Per (type, key): the entity.
+    pub const ENTITY_KEY: u64 = 51;
+    /// Per (scope, sort, type, fav, sort key, tie): the entity.
+    pub const ORDER: u64 = 52;
+    /// Per (scope, type, fav, number): the entity at that number of the dense numbering.
+    pub const RAND: u64 = 53;
+    /// Per (scope, entity): its number.
+    pub const RAND_AT: u64 = 54;
+    /// Per (scope, type, fav): its entities (a counter).
+    pub const COUNT: u64 = 55;
+    /// Per entity: its `dataSize`, `createDate` record.
+    pub const DATA_SIZE: u64 = 56;
+    pub const CREATE_DATE: u64 = 57;
+    /// Per (entity, which): its `cardHash` record.
+    pub const HASH: u64 = 58;
+    /// Per (which, hash, entity): present.
+    pub const HASH_INDEX: u64 = 59;
+    /// Per (entity, list, position): the item.
+    pub const ITEM: u64 = 60;
+    /// Per (entity, list, item): its position and `itemPlace` record.
+    pub const ITEM_AT: u64 = 61;
+    /// Per (entity, field): its `jsonValue` record.
+    pub const VALUE: u64 = 62;
+    /// Per tag: its `tagMerge` record.
+    pub const MERGE: u64 = 63;
+    /// Per (target, tag): the tag merges into the target and its carriers aren't the target's yet.
+    pub const MERGED_INTO: u64 = 64;
+    /// Per tag: merged, and its carriers not yet moved.
+    pub const FOLD: u64 = 65;
     #[cfg(any(test, feature = "measure"))]
     pub const TEST_SET: u64 = 4096;
     #[cfg(any(test, feature = "measure"))]
@@ -127,7 +160,7 @@ pub fn file_of(pos: u64) -> u64 {
     pos >> FILE_SHIFT
 }
 
-fn varints(vals: &[u64]) -> Vec<u8> {
+pub(super) fn varints(vals: &[u64]) -> Vec<u8> {
     let mut out = Vec::new();
     for v in vals {
         put_uvarint(&mut out, *v);
@@ -135,7 +168,7 @@ fn varints(vals: &[u64]) -> Vec<u8> {
     out
 }
 
-fn parse_varints<const N: usize>(b: &[u8]) -> Result<[u64; N], StoreError> {
+pub(super) fn parse_varints<const N: usize>(b: &[u8]) -> Result<[u64; N], StoreError> {
     let mut out = [0; N];
     let mut at = 0;
     for v in &mut out {
@@ -157,11 +190,11 @@ pub fn parse_loc(b: &[u8]) -> Result<Loc, StoreError> {
     Ok(Loc { pos, len })
 }
 
-fn dead(out: &mut Out, l: Loc) {
+pub(super) fn dead(out: &mut Out, l: Loc) {
     out.add(key::id(key::DEAD, file_of(l.pos)), l.len as i64);
 }
 
-fn version(out: &mut Out, entity: u64, at: Loc) {
+pub(super) fn version(out: &mut Out, entity: u64, at: Loc) {
     out.put(key::id(key::VERSION, entity), pos_bytes(at.pos));
 }
 
@@ -174,21 +207,21 @@ pub fn parse_pos(b: &[u8]) -> Result<u64, StoreError> {
     Ok(pos)
 }
 
-fn id(rec: &Record, i: usize) -> u64 {
+pub(super) fn id(rec: &Record, i: usize) -> u64 {
     match rec.values[i] {
         Value::Id(v) | Value::UInt(v) => v,
         _ => unreachable!("checked by Record::new"),
     }
 }
 
-fn field(rec: &Record, i: usize) -> &FieldRef {
+pub(super) fn field(rec: &Record, i: usize) -> &FieldRef {
     match &rec.values[i] {
         Value::Field(f) => f,
         _ => unreachable!("checked by Record::new"),
     }
 }
 
-fn bytes(rec: &Record, i: usize) -> &[u8] {
+pub(super) fn bytes(rec: &Record, i: usize) -> &[u8] {
     match &rec.values[i] {
         Value::Text(b) | Value::Bytes(b) => b,
         _ => unreachable!("checked by Record::new"),
@@ -257,9 +290,11 @@ impl Pointer for Fav {
         rec: &Record,
         at: Loc,
         _: Option<Loc>,
-        _: &View,
+        view: &View,
         out: &mut Out,
     ) -> Result<(), StoreError> {
+        let fav = rec.values[1] == Value::Bit(true);
+        library::change(view, out, id(rec, 0), |st| st.fav = fav)?;
         version(out, id(rec, 0), at);
         Ok(())
     }
@@ -324,7 +359,12 @@ fn edits(
         .collect()
 }
 
-fn apply_edit(text: &[u8], offset: u64, removed: u64, inserted: &[u8]) -> Option<Vec<u8>> {
+pub(super) fn apply_edit(
+    text: &[u8],
+    offset: u64,
+    removed: u64,
+    inserted: &[u8],
+) -> Option<Vec<u8>> {
     let start = usize::try_from(offset).ok()?;
     let end = start.checked_add(usize::try_from(removed).ok()?)?;
     let kept_after = text.get(end..)?;
@@ -357,6 +397,29 @@ pub(super) fn text_value(
         Some(h) => materialize(view, entity, f, &h).map(Some),
         None => Ok(None),
     }
+}
+
+/// Removes the text value of (entity, f), if it has one, with its search entries; its records die. Returns it.
+pub(super) fn drop_text(
+    view: &View,
+    out: &mut Out,
+    entity: u64,
+    f: &FieldRef,
+) -> Result<Option<Vec<u8>>, StoreError> {
+    let Some(head) = Head::get(view, entity, f)? else {
+        return Ok(None);
+    };
+    let old = materialize(view, entity, f, &head)?;
+    if let Some(sf) = search_field(f) {
+        index_text(view, out, sf, entity, &old, &[])?;
+    }
+    dead(out, head.full);
+    for (k, l) in edits(view, entity, f, &head)? {
+        dead(out, l);
+        out.del(k);
+    }
+    out.del(key::field(key::TEXT, entity, f));
+    Ok(Some(old))
 }
 
 /// Points the text's head or edit entry at `to` if it points at `from`; returns whether one did.
@@ -401,6 +464,8 @@ impl Deriver for TextValue {
             let old = text_value(view, entity, f)?.unwrap_or_default();
             index_text(view, out, sf, entity, &old, bytes(rec, 2))?;
         }
+        library::drop_json(view, out, entity, f)?;
+        library::text_changed(view, out, entity, f, Some(bytes(rec, 2)))?;
         if let Some(old) = Head::get(view, entity, f)? {
             dead(out, old.full);
             for (k, l) in edits(view, entity, f, &old)? {
@@ -481,12 +546,16 @@ impl Deriver for TextEdit {
         let mut head = Head::get(view, entity, f)?.ok_or_else(|| {
             StoreError::Entry(format!("a textEdit of entity {entity} with no value"))
         })?;
-        if let Some(sf) = search_field(f) {
+        let sf = search_field(f);
+        if sf.is_some() || library::places(f) {
             let old = materialize(view, entity, f, &head)?;
             let new = apply_edit(&old, id(rec, 2), id(rec, 3), bytes(rec, 4)).ok_or_else(|| {
                 StoreError::Entry(format!("an edit of entity {entity}'s text is out of range"))
             })?;
-            index_text(view, out, sf, entity, &old, &new)?;
+            if let Some(sf) = sf {
+                index_text(view, out, sf, entity, &old, &new)?;
+            }
+            library::text_changed(view, out, entity, f, Some(&new))?;
         }
         head.size = head.size.checked_sub(id(rec, 3)).ok_or_else(|| {
             StoreError::Entry(format!(
@@ -604,7 +673,7 @@ fn items(text: &[u8], list: bool) -> Vec<&[u8]> {
     }
 }
 
-fn index_text(
+pub(super) fn index_text(
     view: &View,
     out: &mut Out,
     sf: SearchField,
@@ -654,49 +723,81 @@ pub fn search_texts(
 /// unassignment removes the entry and points at nothing.
 struct TagAssign;
 
-fn member_key(rec: &Record) -> Vec<u8> {
-    key::ids(key::MEMBER, id(rec, 1), id(rec, 0))
+/// Takes `entity` out of `tag`'s carriers, its record dead.
+pub(super) fn unassign(
+    view: &View,
+    out: &mut Out,
+    entity: u64,
+    tag: u64,
+) -> Result<bool, StoreError> {
+    let k = key::ids(key::MEMBER, tag, entity);
+    let Some(b) = view.get(&k)? else {
+        return Ok(false);
+    };
+    dead(out, parse_loc(&b)?);
+    out.del(key::ids(key::MEMBER_OF, entity, tag));
+    out.add(key::id(key::MEMBER_COUNT, tag), -1);
+    out.map(
+        key::member_block(tag, entity),
+        vec![(key::member_slot(entity), 0)],
+    );
+    out.del(k);
+    Ok(true)
+}
+
+/// Makes `entity` one of `tag`'s carriers, by the record at `at`.
+pub(super) fn assign(out: &mut Out, entity: u64, tag: u64, at: Loc, existed: bool) {
+    if !existed {
+        out.put(key::ids(key::MEMBER_OF, entity, tag), Vec::new());
+        out.add(key::id(key::MEMBER_COUNT, tag), 1);
+        out.map(
+            key::member_block(tag, entity),
+            vec![(key::member_slot(entity), 1)],
+        );
+    }
+    out.put(key::ids(key::MEMBER, tag, entity), loc_bytes(at));
 }
 
 impl Deriver for TagAssign {
+    /// A tag merged away is assigned as the tag it merged into (none: nothing is assigned).
     fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
-        let (entity, tag) = (id(rec, 0), id(rec, 1));
-        let k = member_key(rec);
-        let old = view.get(&k)?.map(|b| parse_loc(&b)).transpose()?;
-        if let Some(old) = old {
-            dead(out, old);
-        }
+        let (entity, raw) = (id(rec, 0), id(rec, 1));
+        let tag = library::resolve_tag(view, raw)?;
         if rec.values[2] == Value::Bit(true) {
-            if old.is_none() {
-                out.put(key::ids(key::MEMBER_OF, entity, tag), Vec::new());
-                out.add(key::id(key::MEMBER_COUNT, tag), 1);
-                out.map(
-                    key::member_block(tag, entity),
-                    vec![(key::member_slot(entity), 1)],
-                );
+            let Some(tag) = tag else {
+                dead(out, at);
+                return Ok(());
+            };
+            let k = key::ids(key::MEMBER, tag, entity);
+            let old = view.get(&k)?.map(|b| parse_loc(&b)).transpose()?;
+            if let Some(old) = old {
+                dead(out, old);
+            } else {
+                library::change(view, out, entity, |st| {
+                    st.tags.push(tag);
+                    st.tags.sort_unstable();
+                })?;
             }
-            out.put(k, loc_bytes(at));
+            assign(out, entity, tag, at, old.is_some());
         } else {
             dead(out, at);
-            if old.is_some() {
-                out.del(key::ids(key::MEMBER_OF, entity, tag));
-                out.add(key::id(key::MEMBER_COUNT, tag), -1);
-                out.map(
-                    key::member_block(tag, entity),
-                    vec![(key::member_slot(entity), 0)],
-                );
-                out.del(k);
+            let mut gone = Vec::new();
+            for t in [Some(raw), tag].into_iter().flatten() {
+                if !gone.contains(&t) && unassign(view, out, entity, t)? {
+                    gone.push(t);
+                }
+            }
+            if !gone.is_empty() {
+                library::change(view, out, entity, |st| {
+                    st.tags.retain(|t| !gone.contains(t))
+                })?;
             }
         }
         Ok(())
     }
 
     fn is_live(&self, rec: &Record, pos: u64, view: &View) -> Result<bool, StoreError> {
-        Ok(view
-            .get(&member_key(rec))?
-            .map(|b| parse_loc(&b))
-            .transpose()?
-            .is_some_and(|l| l.pos == pos))
+        Ok(self.live_key(rec, pos, view)?.is_some())
     }
 
     fn repoint(
@@ -707,10 +808,36 @@ impl Deriver for TagAssign {
         view: &View,
         out: &mut Out,
     ) -> Result<(), StoreError> {
-        if self.is_live(rec, from, view)? {
-            out.put(member_key(rec), loc_bytes(to));
+        if let Some(k) = self.live_key(rec, from, view)? {
+            out.put(k, loc_bytes(to));
         }
         Ok(())
+    }
+}
+
+impl TagAssign {
+    /// The membership entry pointing at the record at `pos`: under its own tag, or, once merged away, the
+    /// tag it leads to.
+    fn live_key(&self, rec: &Record, pos: u64, view: &View) -> Result<Option<Vec<u8>>, StoreError> {
+        let raw = id(rec, 1);
+        let mut tags = vec![raw];
+        if let Some(t) = library::resolve_tag(view, raw)?
+            && t != raw
+        {
+            tags.push(t);
+        }
+        for t in tags {
+            let k = key::ids(key::MEMBER, t, id(rec, 0));
+            if view
+                .get(&k)?
+                .map(|b| parse_loc(&b))
+                .transpose()?
+                .is_some_and(|l| l.pos == pos)
+            {
+                return Ok(Some(k));
+            }
+        }
+        Ok(None)
     }
 }
 
@@ -828,6 +955,6 @@ pub fn deriver(kind: &str) -> Option<&'static dyn Deriver> {
         "moved" => &Moved,
         #[cfg(any(test, feature = "measure"))]
         "testSet" => &TestSet,
-        _ => return None,
+        other => return library::deriver(other),
     })
 }
