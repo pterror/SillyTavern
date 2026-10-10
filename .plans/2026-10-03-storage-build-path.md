@@ -898,9 +898,9 @@ Left (in the order they build on each other):
 - For 5e: old ids as `keyMap` records (counter above any decimal one), labels as bookmarks with `positionCreate`
   where they are, `default_child_id` and `characters.active_chat` as the deterministic session's choices and pointer
   moves, itemization rows and files, label metadata as `migration` state changes.
-- Known: the old store's `swapAdjacent` doesn't recount its stats (it writes `parent_id` directly). One engine test
-  fails on HEAD before this work too (`search::tests::a_field_edit_writes_only_its_changed_terms...`, 8 entries for
-  6).
+- Known: the old store's `swapAdjacent` doesn't recount its stats (it writes `parent_id` directly). The engine test
+  that failed before this work (`search::tests::a_field_edit_writes_only_its_changed_terms...`, 8 entries for 6) was
+  stale; fixed in 1fa821e57 (5c).
 
 Answered (coordinator, 10-10), the two items left undecided:
 - Metadata `integrity`: upstream sets it once per chat and checks it to refuse a save into a different chat. It is
@@ -1650,6 +1650,38 @@ Follows from those:
   engine.
 - Measured: device and derived bytes of a one-entry edit, against today's (the book's manifest rewritten and its
   directory listed, O(E), `worldinfo.js:219-257`): O(changed bytes) + one sync, independent of E.
+
+Status (10-11, handover): stopped before building, on the three questions below. Landed: 1fa821e57, the stale
+search test (`a_field_edit_writes_only_its_changed_terms...` counted 6 entries for a tag assign plus a fav; since
+38e89f5df an assign also moves the entity in the assignment change feed, 2 entries; the test now counts them).
+
+Read from the plans and the code, to build on once answered (not built):
+- A book is found by today's key, the file stem `path.parse(sanitize(`${name}.json`)).name`, so every route's `name`
+  finds what it finds today; a rename changes the key (as `entityUpdate` does an avatar). An owned book (a card's
+  `character_book`) has no key and isn't in the books list.
+- `originalData` (a book's copy of the `character_book` it was imported from) is read into and changed by the page
+  (`setWIOriginalDataValue`, `deleteWIOriginalDataValue`) and by `/entries/apply`'s delete, so by Storage it is its own
+  values: a book owned by the book, in the same entry storage.
+- An entry's assembled JSON keeps its key order (`jsonHash()`, the versions `/entries/apply` checks, is key-order
+  sensitive), under the encoding rule.
+
+Stop (10-11), three questions (behaviour):
+- Search over entries. 5c keeps "entry search postings for every book"; 5d lists "world-info entries (S7)" among the
+  derivers it wires, and 5a left card postings to 5d (`kinds::search_field` has codes only in test builds). Which
+  stage builds them? And which fields, weights and prefix fields: Q-F10 says "titles, names and content"; upstream's
+  `fuzzySearchWorldInfo` keys are `key` 20, `group` 15, `comment` 10, `keysecondary` 10, `content` 3, `uid` 1,
+  `automationId` 1 (the library took upstream's Fuse keys as its fields and weights; its prefix fields, Q-F1, were
+  name, creator and tags, with no counterpart named for entries). "Every book": owned books (`character_book`,
+  `originalData`) too, which no editor searches?
+- Links by id (5e converts names to ids; 5a: "links by id come with 5c/5e"). Does 5c change a card's
+  `data.extensions.world` from its text to a book id now? And what a link holds when it names no book: a card imported
+  with a `world` naming no book (kept as its text; and if a book with that name appears later, by import, create or
+  rename, does the card link to it, as today's lookup by name does?), and a book deleted while cards link to it (today
+  the card keeps the name and shows the book missing; with an id, what does the card assemble as its `world`?).
+- "An entry's order" (a record kind) and "each book's entry order" (derived): read as the entry's place in its book
+  (a `character_book`'s `entries` is an array, so its order must be stored; a world book's object order is upstream's
+  JS key order, integer uids first). The other reading is an order by `displayIndex` (the editor's custom sort,
+  and what `/entry/transplant` reads the maximum of), which is otherwise just an entry value. Which is meant, or both?
 
 **5d. search wired.**
 - Derivers feeding P3 (stage 4): card fields (S1, with the design's weights and prefix fields), card tag names and
