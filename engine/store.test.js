@@ -245,6 +245,7 @@ for (const [name, engine] of Object.entries(bindings)) {
         }
         await assert.rejects(store.commit([{ kind: 'entityCreate', entity: 9n, type: 0, key: 'Ana.png', added: 1 }]), /has that key already/);
         assert.deepEqual(await store.libraryIds([[0, 'Ana.png'], [0, 'nobody.png'], [2, 'tag-a']]), [3n, null, 100n]);
+        assert.equal(await store.libraryNextId(), 101n);
         const page = await store.libraryPage({ characters: true, groups: true, sort: { key: 0 }, limit: 3, count: true });
         assert.deepEqual(page.ids, [3n, 4n, 2n]);
         assert.equal(page.total, 4);

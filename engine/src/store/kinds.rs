@@ -97,6 +97,8 @@ pub mod key {
     pub const MERGED_INTO: u64 = 64;
     /// Per tag: merged, and its carriers not yet moved.
     pub const FOLD: u64 = 65;
+    /// One more than the highest entity id ever created (a maximum).
+    pub const NEXT_ENTITY: u64 = 66;
     #[cfg(any(test, feature = "measure"))]
     pub const TEST_SET: u64 = 4096;
     #[cfg(any(test, feature = "measure"))]
