@@ -433,6 +433,181 @@ impl Source for RunIter<'_> {
     }
 }
 
+/// A block's entries, decoded.
+type Decoded = Vec<(Vec<u8>, Val)>;
+
+/// A run's entries before a key, last first. Each block on the path is decoded whole, since a block reads
+/// forward only.
+pub struct RunRevIter<'a> {
+    run: Arc<Run>,
+    cache: Option<&'a Cache>,
+    counts: Option<&'a ReadCounts>,
+    /// One decoded block per level, top first, with the place of the current entry.
+    path: Vec<(Decoded, usize)>,
+}
+
+impl<'a> RunRevIter<'a> {
+    /// At the last entry before `before`.
+    pub fn new(
+        run: Arc<Run>,
+        before: &[u8],
+        cache: Option<&'a Cache>,
+        counts: Option<&'a ReadCounts>,
+    ) -> KsResult<RunRevIter<'a>> {
+        let mut it = RunRevIter {
+            path: Vec::new(),
+            run,
+            cache,
+            counts,
+        };
+        let top = it.decode(it.run.top.clone())?;
+        it.enter(top, Some(before))?;
+        Ok(it)
+    }
+
+    fn decode(&self, block: Arc<super::block::Block>) -> KsResult<Vec<(Vec<u8>, Val)>> {
+        let mut c = Cursor::first(block).map_err(|e| self.run.corrupt(e))?;
+        let mut out = Vec::new();
+        while c.valid {
+            out.push((c.key.clone(), c.val().map_err(|e| self.run.corrupt(e))?));
+            c.advance().map_err(|e| self.run.corrupt(e))?;
+        }
+        Ok(out)
+    }
+
+    /// Pushes a decoded block at its last entry before `before` (its last entry without one), then descends
+    /// to the data level; steps back wherever a block holds nothing before it.
+    fn enter(&mut self, entries: Vec<(Vec<u8>, Val)>, before: Option<&[u8]>) -> KsResult<()> {
+        let data = self.path.len() as u32 == self.run.levels;
+        let at = match before {
+            // An index entry is its child's last key: the child holding the last key before `before` is the
+            // first whose last key reaches it.
+            Some(b) if !data => {
+                let i = entries.partition_point(|(k, _)| k.as_slice() < b);
+                entries.len().checked_sub(1).map(|last| i.min(last))
+            }
+            Some(b) => entries
+                .partition_point(|(k, _)| k.as_slice() < b)
+                .checked_sub(1),
+            None => entries.len().checked_sub(1),
+        };
+        match at {
+            None => {
+                self.path.push((entries, 0));
+                self.back()
+            }
+            Some(i) => {
+                self.path.push((entries, i));
+                if data {
+                    return Ok(());
+                }
+                self.down(before)
+            }
+        }
+    }
+
+    fn down(&mut self, before: Option<&[u8]>) -> KsResult<()> {
+        let level = self.run.levels - self.path.len() as u32;
+        let kind = if level == 0 { KIND_DATA } else { KIND_INDEX };
+        let (entries, i) = self.path.last().unwrap();
+        let h = Handle::from_val(&entries[*i].1)
+            .ok_or_else(|| self.run.corrupt("index entry isn't a handle".into()))?;
+        let block = self.run.read_block(h, kind, self.cache, self.counts)?;
+        let decoded = self.decode(block)?;
+        self.enter(decoded, before)
+    }
+
+    /// Drops the exhausted last block and moves its parent to the child before, or ends.
+    fn back(&mut self) -> KsResult<()> {
+        self.path.pop();
+        loop {
+            let Some((_, i)) = self.path.last_mut() else {
+                return Ok(());
+            };
+            if *i == 0 {
+                self.path.pop();
+                continue;
+            }
+            *i -= 1;
+            return self.down(None);
+        }
+    }
+}
+
+impl Source for RunRevIter<'_> {
+    fn key(&self) -> Option<&[u8]> {
+        if self.path.len() as u32 != self.run.levels + 1 {
+            return None;
+        }
+        self.path.last().map(|(e, i)| e[*i].0.as_slice())
+    }
+
+    fn val(&self) -> KsResult<Val> {
+        let (e, i) = self.path.last().unwrap();
+        Ok(e[*i].1.clone())
+    }
+
+    fn advance(&mut self) -> KsResult<()> {
+        let Some((_, i)) = self.path.last_mut() else {
+            return Ok(());
+        };
+        if *i == 0 {
+            return self.back();
+        }
+        *i -= 1;
+        Ok(())
+    }
+}
+
+/// Merges sources ordered last first, the first source the newest: yields each key once, with its values
+/// folded newest first.
+pub struct MergeRev<'a> {
+    sources: Vec<Box<dyn Source + 'a>>,
+    heap: BinaryHeap<(Vec<u8>, Reverse<usize>)>,
+    started: bool,
+}
+
+impl<'a> MergeRev<'a> {
+    pub fn new(sources: Vec<Box<dyn Source + 'a>>) -> MergeRev<'a> {
+        MergeRev {
+            sources,
+            heap: BinaryHeap::new(),
+            started: false,
+        }
+    }
+
+    pub fn next_entry(&mut self) -> KsResult<Option<(Vec<u8>, Val)>> {
+        if !self.started {
+            self.started = true;
+            for (i, s) in self.sources.iter().enumerate() {
+                if let Some(k) = s.key() {
+                    self.heap.push((k.to_vec(), Reverse(i)));
+                }
+            }
+        }
+        let Some((key, Reverse(first))) = self.heap.pop() else {
+            return Ok(None);
+        };
+        let mut at = vec![first];
+        while let Some((k, _)) = self.heap.peek()
+            && *k == key
+        {
+            let (_, Reverse(i)) = self.heap.pop().unwrap();
+            at.push(i);
+        }
+        let mut vals = Vec::with_capacity(at.len());
+        for i in at {
+            let s = &mut self.sources[i];
+            vals.push(s.val()?);
+            s.advance()?;
+            if let Some(k) = s.key() {
+                self.heap.push((k.to_vec(), Reverse(i)));
+            }
+        }
+        Ok(Some((key, super::val::fold(vals).unwrap())))
+    }
+}
+
 /// Entries held in memory, in order.
 pub struct VecSource {
     entries: Vec<(Vec<u8>, Val)>,

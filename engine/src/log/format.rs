@@ -358,6 +358,106 @@ pub static KINDS: &[Kind] = &[
         slots: &[req("from", Ty::Id(Space::Log))],
         internal: true,
     },
+    // ---- the library: characters, groups and tags share the entity ids ----
+    // An entity comes to be: its kind (0 character, 1 group, 2 tag), the key the app knows it by (a character's
+    // avatar, a group's or tag's id), and the date it was added.
+    Kind {
+        name: "entityCreate",
+        base: 19,
+        slots: &[
+            req("entity", Ty::Id(Space::Entity)),
+            req("type", Ty::UInt),
+            req("key", Ty::Text),
+            req("added", Ty::Time),
+        ],
+        internal: false,
+    },
+    // Everything the entity holds goes; a tag's assignments go with its `tagMerge`.
+    Kind {
+        name: "entityDelete",
+        base: 20,
+        slots: &[req("entity", Ty::Id(Space::Entity))],
+        internal: false,
+    },
+    // A value the app keeps as it came (JSON text), or, empty, a marker that something is present.
+    Kind {
+        name: "jsonValue",
+        base: 21,
+        slots: &[
+            req("entity", Ty::Id(Space::Entity)),
+            req("field", Ty::Field),
+            req("json", Ty::Text),
+        ],
+        internal: false,
+    },
+    // The field's value (text or JSON) goes.
+    Kind {
+        name: "valueDelete",
+        base: 22,
+        slots: &[
+            req("entity", Ty::Id(Space::Entity)),
+            req("field", Ty::Field),
+        ],
+        internal: false,
+    },
+    // A list item's place in its list; its text is the text value of `item_field(list, item)`.
+    Kind {
+        name: "itemPlace",
+        base: 23,
+        slots: &[
+            req("entity", Ty::Id(Space::Entity)),
+            req("list", Ty::UInt),
+            req("item", Ty::UInt),
+            req("position", Ty::UInt),
+        ],
+        internal: false,
+    },
+    // The item and its text go.
+    Kind {
+        name: "itemDelete",
+        base: 24,
+        slots: &[
+            req("entity", Ty::Id(Space::Entity)),
+            req("list", Ty::UInt),
+            req("item", Ty::UInt),
+        ],
+        internal: false,
+    },
+    // Sort keys the writer computes with the app's own functions: a card's data size, and its create date as
+    // epoch ms (absent: none, or not a date).
+    Kind {
+        name: "dataSize",
+        base: 25,
+        slots: &[req("entity", Ty::Id(Space::Entity)), req("size", Ty::UInt)],
+        internal: false,
+    },
+    Kind {
+        name: "createDate",
+        base: 26,
+        slots: &[req("entity", Ty::Id(Space::Entity)), opt("ms", Ty::F64)],
+        internal: false,
+    },
+    // A hash a card is found by (`library::HASH_*`); absent: it has none.
+    Kind {
+        name: "cardHash",
+        base: 28,
+        slots: &[
+            req("entity", Ty::Id(Space::Entity)),
+            req("which", Ty::UInt),
+            opt("hash", Ty::Bytes),
+        ],
+        internal: false,
+    },
+    // A tag goes: its carriers become `into`'s (or, with none, carry nothing).
+    Kind {
+        name: "tagMerge",
+        base: 30,
+        slots: &[
+            req("tag", Ty::Id(Space::Tag)),
+            opt("into", Ty::Id(Space::Tag)),
+        ],
+        internal: false,
+    },
 ];
 
 /// Kinds that exist only in the crate's tests and measurements (feature `measure`). Their header values are

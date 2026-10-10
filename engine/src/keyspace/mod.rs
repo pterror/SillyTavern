@@ -134,6 +134,27 @@ impl Snapshot<'_> {
         self.ks
             .merge_scan(pages, &self.version.runs, start, end, limit)
     }
+
+    /// `Keyspace::scan_vals_rev` in this state.
+    pub fn scan_vals_rev(
+        &self,
+        start: &[u8],
+        end: &[u8],
+        limit: usize,
+    ) -> KsResult<Vec<(Vec<u8>, Val)>> {
+        let pages = self
+            .version
+            .mems
+            .iter()
+            .map(|m| {
+                m.read()
+                    .unwrap()
+                    .page_rev(start, end, limit, Some(self.seq))
+            })
+            .collect();
+        self.ks
+            .merge_scan_rev(pages, &self.version.runs, start, end, limit)
+    }
 }
 
 /// Work the store does around flushes.
@@ -437,6 +458,58 @@ impl Keyspace {
             .map(|m| m.read().unwrap().page(start, end, limit))
             .collect();
         self.merge_scan(pages, &v.runs, start, end, limit)
+    }
+
+    /// `scan_vals` last first: up to `limit` keys in `[start, end)` from the last down.
+    pub fn scan_vals_rev(
+        &self,
+        start: &[u8],
+        end: &[u8],
+        limit: usize,
+    ) -> KsResult<Vec<(Vec<u8>, Val)>> {
+        let v = self.version();
+        let pages = v
+            .mems
+            .iter()
+            .map(|m| m.read().unwrap().page_rev(start, end, limit, None))
+            .collect();
+        self.merge_scan_rev(pages, &v.runs, start, end, limit)
+    }
+
+    fn merge_scan_rev(
+        &self,
+        pages: Vec<Vec<(Vec<u8>, Val)>>,
+        runs: &[Arc<Run>],
+        start: &[u8],
+        end: &[u8],
+        limit: usize,
+    ) -> KsResult<Vec<(Vec<u8>, Val)>> {
+        let mut sources: Vec<Box<dyn Source>> = Vec::new();
+        for p in pages {
+            sources.push(Box::new(VecSource::new(p)));
+        }
+        for r in runs {
+            sources.push(Box::new(run::RunRevIter::new(
+                r.clone(),
+                end,
+                Some(&self.pool.cache),
+                Some(&self.counts),
+            )?));
+        }
+        let mut merge = run::MergeRev::new(sources);
+        let mut out = Vec::new();
+        while out.len() < limit {
+            let Some((k, val)) = merge.next_entry()? else {
+                break;
+            };
+            if k.as_slice() < start {
+                break;
+            }
+            if let Some(v) = val.settled() {
+                out.push((k, v));
+            }
+        }
+        Ok(out)
     }
 
     /// A scan's page from the buffers' pages and the runs.

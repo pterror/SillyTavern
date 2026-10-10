@@ -28,6 +28,8 @@
 pub mod bulk;
 pub mod derive;
 pub mod kinds;
+pub mod library;
+pub mod library_read;
 
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::Path;
@@ -292,6 +294,8 @@ struct Inner {
     search_stats: crate::search::query::StatsCache,
     /// Top lists whose next slice is queued (`crate::search::query::refill`).
     refilling: Mutex<HashSet<(crate::search::Scope, String)>>,
+    /// Tag folds (`library::fold_step`): one step queued at a time; `.1` asks for another pass once it ends.
+    folding: Mutex<(bool, bool)>,
 }
 
 #[derive(Default)]
@@ -387,6 +391,7 @@ impl Store {
                 counters: Counters::default(),
                 search_stats: Default::default(),
                 refilling: Default::default(),
+                folding: Default::default(),
             }
         });
         ks.start(Box::new(StoreHooks(Arc::downgrade(&inner))))?;
@@ -405,6 +410,17 @@ impl Store {
                 "{} records are written by the engine only",
                 r.kind.name
             ))));
+        }
+        if records.iter().any(|r| r.kind.name == "tagMerge") {
+            let me = Arc::downgrade(&self.inner);
+            let done: CommitDone = Box::new(move |r| {
+                let merged = r.is_ok();
+                done(r);
+                if merged && let Some(i) = me.upgrade() {
+                    i.kick_folds();
+                }
+            });
+            return self.inner.submit(Job::Commit(records, done));
         }
         self.inner.submit(Job::Commit(records, done));
     }
@@ -493,6 +509,30 @@ impl Store {
     }
 
     /// A page of search results (`crate::search::query`).
+    /// A page of the library list.
+    pub fn library_page(&self, q: &library_read::Query) -> StoreResult<library_read::Page> {
+        self.derived(|v| library_read::page(v, q))
+    }
+
+    /// Each entity with its values, or None where there is none, in the order asked.
+    pub fn library_entities(&self, ids: &[u64]) -> StoreResult<Vec<Option<library_read::Entity>>> {
+        self.derived(|v| ids.iter().map(|e| library_read::entity(v, *e)).collect())
+    }
+
+    /// The entity of each (type, key), or None.
+    pub fn library_ids(&self, keys: &[(u64, Vec<u8>)]) -> StoreResult<Vec<Option<u64>>> {
+        self.derived(|v| {
+            keys.iter()
+                .map(|(t, k)| library::entity_by_key(v, *t, k))
+                .collect()
+        })
+    }
+
+    /// The entities a card hash finds.
+    pub fn library_by_hash(&self, which: u64, hash: &[u8], limit: usize) -> StoreResult<Vec<u64>> {
+        self.derived(|v| library_read::by_hash(v, which, hash, limit))
+    }
+
     pub fn search(
         &self,
         q: &crate::search::query::Query,
@@ -733,6 +773,43 @@ impl Inner {
         ));
     }
 
+    /// Moves merged tags' carriers, a bounded step at a time between commits, until none waits.
+    pub(crate) fn kick_folds(&self) {
+        {
+            let mut f = self.folding.lock().unwrap();
+            if f.0 {
+                f.1 = true;
+                return;
+            }
+            *f = (true, false);
+        }
+        self.queue_fold();
+    }
+
+    fn queue_fold(&self) {
+        let more = Arc::new(AtomicBool::new(false));
+        let found = more.clone();
+        let me = self.me.clone();
+        self.submit(Job::Derive(
+            Box::new(move |view, out| {
+                found.store(library::fold_step(view, out)?, Ordering::Relaxed);
+                Ok(())
+            }),
+            Box::new(move |r| {
+                let Some(i) = me.upgrade() else { return };
+                let again = {
+                    let mut f = i.folding.lock().unwrap();
+                    let again = r.is_ok() && (more.load(Ordering::Relaxed) || f.1);
+                    *f = (again, false);
+                    again
+                };
+                if again {
+                    i.queue_fold();
+                }
+            }),
+        ));
+    }
+
     // ---- replay ----
 
     /// Derives the records after `from` into the buffer, as at their commits.
@@ -811,6 +888,11 @@ impl Inner {
             self.replayed.store(true, Ordering::Release);
             self.set_ready(replayed);
             self.clean_act.kick();
+            let fold = key::of(key::FOLD);
+            // A failed read queues the step, which reports it.
+            if !matches!(self.ks.scan(&fold, &key::prefix_end(&fold), 1), Ok(f) if f.is_empty()) {
+                self.kick_folds();
+            }
             return true;
         }
         let mut p = self.pipe.lock().unwrap();
@@ -1294,5 +1376,7 @@ impl Hooks for StoreHooks {
     }
 }
 
+#[cfg(test)]
+mod library_tests;
 #[cfg(test)]
 mod tests;

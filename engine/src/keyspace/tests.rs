@@ -116,7 +116,42 @@ fn check(ks: &Keyspace, model: &BTreeMap<Vec<u8>, Vec<u8>>) {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
         assert_eq!(page, expect, "page from {i}");
+        let rev: Vec<_> = ks
+            .scan_vals_rev(&key(0), &key(i), 10)
+            .unwrap()
+            .into_iter()
+            .map(|(k, v)| (k, v.into_bytes()))
+            .collect();
+        let expect: Vec<_> = model
+            .range(..key(i))
+            .rev()
+            .take(10)
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        assert_eq!(rev, expect, "page down from {i}");
+        let snap: Vec<_> = ks
+            .snapshot()
+            .scan_vals_rev(&key(i), &[8], 7)
+            .unwrap()
+            .into_iter()
+            .map(|(k, v)| (k, v.into_bytes()))
+            .collect();
+        let expect: Vec<_> = model
+            .range(key(i)..)
+            .rev()
+            .take(7)
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        assert_eq!(snap, expect, "snapshot page down to {i}");
     }
+    let all: Vec<_> = ks
+        .scan_vals_rev(&key(0), &[8], usize::MAX)
+        .unwrap()
+        .into_iter()
+        .map(|(k, v)| (k, v.into_bytes()))
+        .collect();
+    let expect: Vec<_> = model.clone().into_iter().rev().collect();
+    assert_eq!(all, expect);
 }
 
 #[test]

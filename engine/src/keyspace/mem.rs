@@ -321,6 +321,39 @@ impl Mem {
         out
     }
 
+    /// `page_at` (or, with no `seq`, `page`) last first.
+    pub(super) fn page_rev(
+        &self,
+        start: &[u8],
+        end: &[u8],
+        live: usize,
+        seq: Option<u64>,
+    ) -> Vec<(Vec<u8>, Val)> {
+        let mut out = Vec::new();
+        let mut n = 0;
+        for (k, slot) in self
+            .map
+            .range::<[u8], _>((Bound::Included(start), Bound::Excluded(end)))
+            .rev()
+        {
+            if n == live {
+                break;
+            }
+            let v = match seq {
+                Some(seq) => match slot.at(seq) {
+                    Some(v) => v.val(),
+                    None => continue,
+                },
+                None => slot.val.val(),
+            };
+            if v != Val::Del {
+                n += 1;
+            }
+            out.push((k.get().to_vec(), v));
+        }
+        out
+    }
+
     pub fn get(&self, key: &[u8]) -> Option<Val> {
         self.map.get(key).map(|s| s.val.val())
     }

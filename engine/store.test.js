@@ -226,3 +226,41 @@ for (const [name, engine] of Object.entries(bindings)) {
         await assert.rejects(engine.Store.open(dir), /the runs cover the log up to/);
     });
 }
+
+for (const [name, engine] of Object.entries(bindings)) {
+    test(`${name}: library entities are found by key and paged in their orders`, async () => {
+        const dir = path.join(tmp, `${name}-library`);
+        const store = await engine.Store.open(dir);
+        await store.commit([{ kind: 'entityCreate', entity: 100n, type: 2, key: 'tag-a', added: 0 }]);
+        const names = ['Zed', 'émile', 'Ana', 'bob'];
+        for (const [i, n] of names.entries()) {
+            const e = BigInt(i + 1);
+            await store.commit([
+                { kind: 'entityCreate', entity: e, type: 0, key: `${n}.png`, added: 1000 + i },
+                { kind: 'textValue', entity: e, field: 1, text: n },
+                { kind: 'dataSize', entity: e, size: 10 * (i + 1) },
+                { kind: 'jsonValue', entity: e, field: 'ext:depth_prompt', json: '{"depth":4}' },
+                ...(i % 2 ? [{ kind: 'tagAssign', entity: e, tag: 100n, assigned: true }] : []),
+            ]);
+        }
+        await assert.rejects(store.commit([{ kind: 'entityCreate', entity: 9n, type: 0, key: 'Ana.png', added: 1 }]), /has that key already/);
+        assert.deepEqual(await store.libraryIds([[0, 'Ana.png'], [0, 'nobody.png'], [2, 'tag-a']]), [3n, null, 100n]);
+        const page = await store.libraryPage({ characters: true, groups: true, sort: { key: 0 }, limit: 3, count: true });
+        assert.deepEqual(page.ids, [3n, 4n, 2n]);
+        assert.equal(page.total, 4);
+        assert.equal(page.totalExact, true);
+        const next = await store.libraryPage({ characters: true, groups: true, sort: { key: 0 }, limit: 3, cursor: page.cursor });
+        assert.deepEqual(next.ids, [1n]);
+        const tagged = await store.libraryPage({ characters: true, allTags: [100n], sort: { key: 5, desc: true }, count: true });
+        assert.deepEqual(tagged.ids, [4n, 2n]);
+        const random = await store.libraryPage({ characters: true, sort: { seed: -7 }, limit: 10 });
+        assert.deepEqual([...random.ids].sort(), [1n, 2n, 3n, 4n]);
+        const [entity, none] = await store.libraryEntities([2n, 50n]);
+        assert.equal(none, null);
+        assert.equal(entity.key, 'émile.png');
+        assert.equal(entity.dataSize, 20);
+        assert.deepEqual(entity.tags, [100n]);
+        assert.deepEqual(entity.values.map(v => [v.field, v.text ?? v.json]).sort(), [[1, 'émile'], ['ext:depth_prompt', '{"depth":4}']]);
+        await store.close();
+    });
+}
