@@ -64,7 +64,7 @@ pub mod key {
     pub fn member_slot(entity: u64) -> u32 {
         (entity & ((1 << MEMBER_BITS) - 1)) as u32
     }
-    /// Per message: its `messageAppend` record.
+    /// Per message: its `messageAppend` record and its parent now (`chat::message_entry`).
     pub const MESSAGE: u64 = 43;
     /// Chats (`store::chat`). Per (message, field): its text's head; the n-th edit; its JSON value's record.
     pub const MSG_TEXT: u64 = 90;
@@ -556,6 +556,30 @@ fn owns_full(view: &View, h: Holder, head: &Head) -> Result<bool, StoreError> {
     })
 }
 
+/// Keeps a message's shape (`chat::SHAPE`) as its text head for `f` goes from the one the view holds to `after`
+/// (the full value's position and the edits since; None: no head).
+fn text_shape(
+    view: &View,
+    out: &mut Out,
+    h: Holder,
+    f: &FieldRef,
+    after: Option<(u64, u64)>,
+) -> Result<(), StoreError> {
+    let Holder::Message(m) = h else {
+        return Ok(());
+    };
+    let before = Head::get(view, h, f)?.map(|hd| (hd.full.pos, hd.edits));
+    let d = if *f == FieldRef::Code(super::chat::MES) {
+        let (l, rec) = super::chat::require_message(view, m)?;
+        i64::from(super::chat::own_text_plain(l, &rec, before))
+            - i64::from(super::chat::own_text_plain(l, &rec, after))
+    } else {
+        i64::from(after.is_some()) - i64::from(before.is_some())
+    };
+    super::chat::shape_add(out, m, d * super::chat::SHAPE_EXTRA);
+    Ok(())
+}
+
 /// Removes the text value of (h, f), if it has one, with its search entries; its records die. Returns it.
 pub(super) fn drop_text(
     view: &View,
@@ -575,6 +599,7 @@ pub(super) fn drop_text_of(
     let Some(head) = Head::get(view, h, f)? else {
         return Ok(None);
     };
+    text_shape(view, out, h, f, None)?;
     let old = materialize(view, h, f, &head)?;
     match h {
         Holder::Entity(entity) => {
@@ -667,6 +692,7 @@ impl Deriver for TextValue {
                 library::drop_json_of(view, out, h, f)?;
             }
         }
+        text_shape(view, out, h, f, Some((at.pos, 0)))?;
         if let Some(old) = Head::get(view, h, f)? {
             if owns_full(view, h, &old)? {
                 dead(out, old.full);
@@ -801,6 +827,7 @@ impl Deriver for TextEdit {
         head.size = head.size.checked_sub(id(rec, 3)).ok_or_else(|| {
             StoreError::Entry(format!("a textEdit of {h:?} removes more than it has"))
         })? + bytes(rec, 4).len() as u64;
+        text_shape(view, out, h, f, Some((head.full.pos, head.edits + 1)))?;
         head.edits += 1;
         head.edit_bytes += at.len;
         out.put(h.edit_key(f, head.edits), loc_bytes(at));

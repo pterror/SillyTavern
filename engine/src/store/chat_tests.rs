@@ -433,6 +433,16 @@ impl Model {
                     self.branches.get(id).cloned().unwrap_or_default(),
                     "branches at {id}"
                 );
+                assert_eq!(
+                    chat::message_entry(v, *id)?.map(|(_, p)| p),
+                    Some(self.msgs[id].parent),
+                    "parent of {id} in its entry"
+                );
+                assert_eq!(
+                    chat::shapes(v, &[*id])?[0],
+                    chat::shape_scanned(v, *id)?,
+                    "shape of {id}"
+                );
             }
             let owners: BTreeSet<u64> = self.msgs.values().map(|m| m.owner).collect();
             for o in &owners {

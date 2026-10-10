@@ -1818,10 +1818,14 @@ export class ChatEngine {
         for (const id of ids) {
             const s = stored.get(id);
             const key = String(s.parent);
-            if (!siblings.has(key)) siblings.set(key, await this.children(tree, s.parent));
+            if (siblings.has(key)) continue;
+            // A message on the path with one reply has only the next one on the path.
+            const parent = s.parent === null ? undefined : stored.get(s.parent);
+            siblings.set(key, parent?.replies === 1 ? [id] : await this.children(tree, s.parent));
         }
         const allIds = [...new Set([...siblings.values()].flat())];
-        const all = await this.stored(allIds);
+        const others = await this.stored(allIds.filter(id => !stored.has(id)));
+        const all = new Map([...stored, ...others]);
         const decodedList = await this.decoded(allIds.map(id => all.get(id)));
         const decoded = new Map(allIds.map((id, i) => [id, decodedList[i]]));
         const bookmarkIds = [...new Set(ids.flatMap(id => all.get(id).branches))];
