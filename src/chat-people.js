@@ -39,6 +39,13 @@ export function libraryPeople(lib) {
             });
             return out;
         },
+        /** @type {import('./chat-engine.js').Books} */
+        books: {
+            lane: (keys, fn) => lib.books.lane(keys, fn),
+            find: async key => (await lib.ids(TYPE.book, [key]))[0],
+            newId: () => lib.nextId++,
+            resolved: ids => lib.store.worldRead('resolved', { ids }),
+        },
         /**
          * The tree of each character (by avatar) or group (by id), or null when there is none.
          * @param {{ avatar?: string, group?: string }[]} owners

@@ -292,6 +292,39 @@ describe.each(['native', 'wasm'])('%s', (kind) => {
     });
 
     describe('what only the engine has', () => {
+        test('a chat-bound lorebook follows its book', async () => {
+            const { ChatEngine } = await import('../src/chat-engine.js');
+            const { libraryPeople } = await import('../src/chat-people.js');
+            await library.writeCard(directories, 'c.png', JSON.stringify({ spec: 'chara_card_v2', spec_version: '2.0', data: { name: 'C', extensions: {} } }));
+            const [tree] = await library.ids(lib.TYPE.character, ['c.png']);
+            const chats = await ChatEngine.open(library.store, libraryPeople(library));
+            const actor = { user: 'u' };
+            const lorebook = async () => (await chats.metadata(/** @type {bigint} */ (tree), null)).world_info;
+            await books.write('Lore', { entries: {} });
+            await chats.mergeMetadata({ tree, at: null, set: { world_info: 'Lore', other: 1 }, unset: [], actor });
+            expect(await lorebook()).toBe('Lore');
+            await books.rename('Lore', 'Lore 2');
+            expect(await lorebook()).toBe('Lore 2');
+            // Set to the name it reads as, nothing is recorded.
+            expect((await chats.changeState({ tree, at: null, ops: [{ key: 'world_info', value: 'Lore 2' }], actor })).changes).toEqual([]);
+            await books.delete('Lore 2');
+            expect(await lorebook()).toBe('Lore 2');
+            // A name no book has resolves once a book takes it.
+            const ghost = await chats.changeState({ tree, at: null, ops: [{ key: 'world_info', value: 'Ghost' }], actor });
+            expect(await lorebook()).toBe('Ghost');
+            await books.write('Ghost', { entries: {} });
+            await books.rename('Ghost', 'Found');
+            expect(await lorebook()).toBe('Found');
+            await chats.revertChange({ change: /** @type {any} */ (ghost).changes[0], actor });
+            expect(await lorebook()).toBe('Lore 2');
+            await chats.mergeMetadata({ tree, at: null, set: { world_info: 'a/b' }, unset: [], actor });
+            expect(await lorebook()).toBe('a/b');
+            await chats.mergeMetadata({ tree, at: null, set: { world_info: null }, unset: [], actor });
+            expect(await lorebook()).toBeNull();
+            await chats.mergeMetadata({ tree, at: null, set: {}, unset: ['world_info'], actor });
+            expect(await chats.metadata(/** @type {bigint} */ (tree), null)).toEqual({ other: 1 });
+        }, 120_000);
+
         test('a name sanitize changes finds the same book', async () => {
             await books.write('a/b', { entries: {} });
             expect(await books.exists('ab')).toBe(true);

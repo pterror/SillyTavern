@@ -6,6 +6,7 @@ import { textEdit } from './text-edit.js';
 import { META, TOP, decodeMessage, encodeMessage, messageRecords } from './chat-codec.js';
 import { ITEMIZED_PROMPT_FLAG } from './message-tree-db.js';
 import { jsonHash } from '../public/scripts/hash-utils.js';
+import { bookKey } from './world-info-keys.js';
 
 /**
  * Chats on the engine (build path 5b): each character's or group's messages as a tree, sessions and bookmarks as
@@ -37,6 +38,14 @@ const VARIABLE = 8;
 
 /** `chat_metadata` keys the engine derives (`integrity` is the session's UUID): never stored, set or removed. */
 const DERIVED_METADATA = new Set(['integrity', 'main_chat', 'fork_point', '_tree_stored']);
+
+/**
+ * The chat-bound lorebook (`chat_metadata.world_info`): a name is recorded as a link to the book its key finds, so it
+ * follows the book's renames: `LINK`, the book's id, then a space and the name's JSON when the name isn't the key
+ * itself (JSON text never starts with `LINK`). Any other value is recorded as it is.
+ */
+const WORLD_INFO = 'world_info';
+const LINK = '\u0001';
 
 /**
  * A new session's UUID (v7: its time, then random bits).
@@ -171,6 +180,15 @@ function alternativeEntry(nodeId, o, itemized) {
  * @typedef {object} People Who speaks: characters by entity id and by avatar.
  * @property {(ids: bigint[]) => Promise<Map<bigint, Speaker>>} speakers
  * @property {(avatars: string[]) => Promise<Map<string, Speaker>>} byAvatar
+ * @property {Books} [books] World books, for lorebook links (without: a lorebook name is an ordinary value).
+ */
+
+/**
+ * @typedef {object} Books
+ * @property {<T>(keys: string[], fn: () => Promise<T>) => Promise<T>} lane Runs `fn` in these book keys' lanes.
+ * @property {(key: string) => Promise<bigint | null>} find The book (or unresolved name) a key finds.
+ * @property {() => bigint} newId An entity id for an unresolved name made here.
+ * @property {(ids: bigint[]) => Promise<({ key: string | null } | null)[]>} resolved Each book as it resolves.
  */
 
 /**
@@ -1281,30 +1299,33 @@ export class ChatEngine {
                 const s = message === null ? undefined : (await this.stored([message])).get(message);
                 if (!s || s.owner !== tree) return { ok: false, reason: 'unknown node' };
             }
-            const state = await this.store.chatRead('state', { tree, ...(message === null ? {} : { at: message }) });
+            const state = await this.shownState(await this.store.chatRead('state', { tree, ...(message === null ? {} : { at: message }) }));
             const now = new Map(state.map(e => [`${e.variable ? 'v' : 'k'}\u0000${e.field}`, e.json]));
-            const records = [];
-            const { user, session } = await this.actorIds(actor, records);
-            const where = message === null ? { tree } : { message };
-            const time = this.now();
-            const ids = [];
-            for (const op of ops) {
-                if (typeof op?.key !== 'string' || (!op.variable && DERIVED_METADATA.has(op.key))) continue;
-                const json = op.value === undefined ? undefined : JSON.stringify(op.value);
-                const k = `${op.variable ? 'v' : 'k'}\u0000${op.key}`;
-                if (now.get(k) === json) continue;
-                now.set(k, json);
-                const id = this.next.change++;
-                /** @type {Record<string, unknown>} */
-                const r = { kind: 'stateChange', id, ...where, time, author: author | (op.variable ? VARIABLE : 0), key: op.key, user };
-                if (ref !== null) r.ref = ref;
-                if (session !== null) r.session = session;
-                if (json !== undefined) r.value = json;
-                records.push(r);
-                ids.push(String(id));
-            }
-            if (ids.length) await this.store.commit(records);
-            return { ok: true, changes: ids };
+            const lorebooks = (Array.isArray(ops) ? ops : []).filter(op => op?.key === WORLD_INFO && !op.variable).map(op => op.value);
+            return this.withWorldLinks(lorebooks, async link => {
+                const records = [];
+                const { user, session } = await this.actorIds(actor, records);
+                const where = message === null ? { tree } : { message };
+                const time = this.now();
+                const ids = [];
+                for (const op of ops) {
+                    if (typeof op?.key !== 'string' || (!op.variable && DERIVED_METADATA.has(op.key))) continue;
+                    const json = op.value === undefined ? undefined : JSON.stringify(op.value);
+                    const k = `${op.variable ? 'v' : 'k'}\u0000${op.key}`;
+                    if (now.get(k) === json) continue;
+                    now.set(k, json);
+                    const id = this.next.change++;
+                    /** @type {Record<string, unknown>} */
+                    const r = { kind: 'stateChange', id, ...where, time, author: author | (op.variable ? VARIABLE : 0), key: op.key, user };
+                    if (ref !== null) r.ref = ref;
+                    if (session !== null) r.session = session;
+                    if (json !== undefined) r.value = !op.variable && op.key === WORLD_INFO ? await link(json, records) : json;
+                    records.push(r);
+                    ids.push(String(id));
+                }
+                if (ids.length) await this.store.commit(records);
+                return { ok: true, changes: ids };
+            });
         });
     }
 
@@ -1376,19 +1397,13 @@ export class ChatEngine {
                 [message] = await this.messageIds([at]);
                 if (message === null) return { ok: false, reason: 'unknown chat' };
             }
-            const state = await this.store.chatRead('state', { tree, ...(message === null ? {} : { at: message }) });
+            const state = await this.shownState(await this.store.chatRead('state', { tree, ...(message === null ? {} : { at: message }) }));
             const now = new Map(state.filter(e => !e.variable).map(e => [e.field, e.json]));
             const vars = new Map(state.filter(e => e.variable).map(e => [e.field, e.json]));
-            const records = [];
-            const { user, session } = await this.actorIds(actor, records);
-            const where = message === null ? { tree } : { message };
-            const time = this.now();
+            /** @type {[string, string | undefined, boolean][]} */
+            const changes = [];
             const change = (/** @type {string} */ key, /** @type {string | undefined} */ value, variable = false) => {
-                /** @type {Record<string, unknown>} */
-                const r = { kind: 'stateChange', id: this.next.change++, ...where, time, author: author | (variable ? VARIABLE : 0), key, user };
-                if (session !== null) r.session = session;
-                if (value !== undefined) r.value = value;
-                records.push(r);
+                changes.push([key, value, variable]);
             };
             for (const [key, value] of Object.entries(set ?? {})) {
                 if (value === undefined || DERIVED_METADATA.has(key)) continue;
@@ -1413,9 +1428,72 @@ export class ChatEngine {
                     if (now.has('variables')) change('variables', undefined);
                 } else if (now.has(key)) change(key, undefined);
             }
-            if (records.some(r => r.kind === 'stateChange')) await this.store.commit(records);
+            if (changes.length === 0) return { ok: true };
+            const lorebooks = changes.filter(([key, , variable]) => key === WORLD_INFO && !variable).map(([, value]) => (value === undefined ? undefined : JSON.parse(value)));
+            await this.withWorldLinks(lorebooks, async link => {
+                const records = [];
+                const { user, session } = await this.actorIds(actor, records);
+                const where = message === null ? { tree } : { message };
+                const time = this.now();
+                for (const [key, value, variable] of changes) {
+                    /** @type {Record<string, unknown>} */
+                    const r = { kind: 'stateChange', id: this.next.change++, ...where, time, author: author | (variable ? VARIABLE : 0), key, user };
+                    if (session !== null) r.session = session;
+                    if (value !== undefined) r.value = !variable && key === WORLD_INFO ? await link(value, records) : value;
+                    records.push(r);
+                }
+                await this.store.commit(records);
+            });
             return { ok: true };
         });
+    }
+
+    /**
+     * State entries as `chat_metadata` shows them: a lorebook link as the name of the book it resolves as (or its
+     * own name).
+     * @param {{ variable: boolean, field: string, json: string }[]} state
+     */
+    async shownState(state) {
+        const isLink = (/** @type {{ variable: boolean, field: string, json: string }} */ e) => !e.variable && e.field === WORLD_INFO && e.json.startsWith(LINK);
+        const links = state.filter(isLink);
+        const resolved = links.length && this.people.books ? await this.people.books.resolved(links.map(e => BigInt(e.json.slice(1).split(' ')[0]))) : [];
+        let i = 0;
+        return state.map(e => {
+            if (!isLink(e)) return e;
+            const [id, ...own] = e.json.slice(1).split(' ');
+            const name = own.length ? JSON.parse(own.join(' ')) : resolved[i]?.key ?? id;
+            i++;
+            return { ...e, json: JSON.stringify(name) };
+        });
+    }
+
+    /**
+     * Runs `fn` with the lanes of the books the `world_info` values in `values` would link held, giving it what to
+     * record for a `world_info` value's JSON: a link to the book its key finds (an unresolved name made in
+     * `records` when there is none), or the JSON itself.
+     * @template T
+     * @param {unknown[]} values
+     * @param {(link: (json: string, records: object[]) => Promise<string>) => Promise<T>} fn
+     * @returns {Promise<T>}
+     */
+    withWorldLinks(values, fn) {
+        const books = this.people.books;
+        const keys = books ? values.filter(v => typeof v === 'string').map(v => bookKey(/** @type {string} */ (v))).filter(Boolean) : [];
+        /** @type {Map<string, bigint>} */
+        const made = new Map();
+        const link = async (/** @type {string} */ json, /** @type {object[]} */ records) => {
+            const value = JSON.parse(json);
+            const key = books && typeof value === 'string' ? bookKey(value) : '';
+            if (!key || !books) return json;
+            let id = made.get(key) ?? await books.find(key);
+            if (id === null) {
+                id = books.newId();
+                records.push({ kind: 'entityCreate', entity: id, type: 3, key, added: Date.now() });
+            }
+            made.set(key, id);
+            return value === key ? `${LINK}${id}` : `${LINK}${id} ${json}`;
+        };
+        return keys.length && books ? books.lane(keys, () => fn(link)) : fn(link);
     }
 
     /**
@@ -1426,7 +1504,7 @@ export class ChatEngine {
      * @param {string | null} [session]
      */
     async metadata(tree, at, session = null) {
-        const state = await this.store.chatRead('state', { tree, ...(at === null ? {} : { at }) });
+        const state = await this.shownState(await this.store.chatRead('state', { tree, ...(at === null ? {} : { at }) }));
         /** @type {Record<string, unknown>} */
         const out = {};
         for (const e of state) {
