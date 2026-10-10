@@ -86,6 +86,60 @@ export function storedForm(msg) {
 }
 
 /**
+ * A message of upstream's chat array as the alternatives it stands for, each as stored: its `swipes` (a hole is one
+ * the page wasn't sent, left out; the shown one's text is `mes`), with their `swipe_info`, and which is shown, and
+ * the id each claims (`swipe_info[i].node_id`, the shown one's also `node_id`).
+ * @param {Record<string, any>} msg
+ * @returns {{ contents: Record<string, any>[], selected: number, nodeIds: (string | null)[] }}
+ */
+function alternativesOf(msg) {
+    const rawSwipes = Array.isArray(msg.swipes) ? msg.swipes : null;
+    const single = { contents: [storedForm(msg)], selected: 0, nodeIds: [msg.node_id ?? null] };
+    if (rawSwipes === null || rawSwipes.length === 0) return single;
+    const rawSel = Number.isInteger(msg.swipe_id) ? msg.swipe_id : 0;
+    const rawInfo = Array.isArray(msg.swipe_info) ? msg.swipe_info : [];
+    const kept = [];
+    for (let i = 0; i < rawSwipes.length; i++) {
+        if (typeof rawSwipes[i] !== 'string') continue;
+        const info = rawInfo[i];
+        kept.push({
+            text: i === rawSel && typeof msg.mes === 'string' ? msg.mes : rawSwipes[i],
+            info,
+            wasSelected: i === rawSel,
+            nodeId: info && typeof info === 'object' && info.node_id != null ? info.node_id : (i === rawSel ? msg.node_id ?? null : null),
+        });
+    }
+    if (kept.length === 0) return single;
+    const def = msg.swipe_speaker_default;
+    const defName = def && def.name !== undefined ? def.name : msg.name;
+    const defIsUser = def ? (def.is_user ?? false) : (msg.is_user ?? false);
+    const contents = kept.map(({ text, info }) => {
+        const alt = { ...msg, mes: text, name: defName, is_user: defIsUser };
+        if (info && typeof info === 'object') {
+            if (info.send_date !== undefined) alt.send_date = info.send_date;
+            if (info.extra && typeof info.extra === 'object') alt.extra = { ...(msg.extra || {}), ...info.extra };
+            if (info.gen_started !== undefined) alt.gen_started = info.gen_started;
+            if (info.gen_finished !== undefined) alt.gen_finished = info.gen_finished;
+            if (info.name !== undefined) alt.name = info.name;
+            if (info.is_user !== undefined) alt.is_user = !!info.is_user;
+        }
+        return storedForm(alt);
+    });
+    const selected = Math.max(0, kept.findIndex(k => k.wasSelected));
+    return { contents, selected, nodeIds: kept.map(k => k.nodeId) };
+}
+
+/**
+ * Whether writing `incoming` over `stored` would replace its text with nothing: a page echoing a slot it wasn't
+ * sent, not an edit.
+ * @param {Record<string, any>} stored
+ * @param {Record<string, any>} incoming
+ */
+function blanksText(stored, incoming) {
+    return (stored?.mes ?? '').length > 0 && (incoming?.mes ?? '').length === 0;
+}
+
+/**
  * An alternative as the alternatives and openings lists show it.
  * @param {string} nodeId
  * @param {Record<string, any>} o The message.
@@ -990,6 +1044,199 @@ export class ChatEngine {
             await this.store.commit(records);
             return b;
         });
+    }
+
+    // ---- a whole chat saved (upstream's `saveChat`) ----
+
+    /**
+     * Stores upstream's whole chat array (`[header, ...messages]`) as the session's conversation in the tree, writing
+     * only what differs: each message matched by its id when it still replies to the message before it (its
+     * alternatives by their ids, a changed one edited unless that would blank stored text, one matching a sibling's
+     * speaker and text taken as that sibling), anything else stored as new; the shown alternative at each message
+     * chosen; a message's `bookmark_link` a bookmark made there; the session moved to the last message; the header's
+     * `chat_metadata` the state there (keys it lacks removed). A header whose `integrity` isn't the session's UUID
+     * is refused unless `force`.
+     * @param {object} p
+     * @param {bigint} p.tree
+     * @param {Speaker | null} p.treeSpeaker
+     * @param {any[]} p.chat
+     * @param {Actor} p.actor Through a session.
+     * @param {boolean} [p.force]
+     * @returns {Promise<{ ok: true, integrity: string, assigned_node_ids: { index: number, node_id: string }[] } | { ok: false, reason: 'integrity' } | { empty: true }>}
+     */
+    async saveChat({ tree, treeSpeaker, chat, actor, force = false }) {
+        if (!actor.session) throw new Error('A chat is saved through a session');
+        if (!Array.isArray(chat) || chat.length === 0) return { empty: true };
+        const header = chat[0] ?? {};
+        const incoming = header.chat_metadata?.integrity;
+        if (!force && typeof incoming === 'string' && incoming !== actor.session) return { ok: false, reason: 'integrity' };
+        const messages = chat.slice(1);
+        const written = await this.serialized(tree, async () => {
+            const records = [];
+            const { user, session } = await this.actorIds(actor, records);
+            const sessionId = /** @type {bigint} */ (session);
+            const now = this.now();
+            /** @type {{ index: number, id: bigint }[]} */
+            const assigned = [];
+            /** @type {bigint | null} */
+            let parent = null;
+            let movedByAppend = false;
+            const claimed = await this.messageIds(messages.map(m => (m?.node_id == null ? '' : String(m.node_id))));
+            const known = await this.stored(claimed.filter(id => id !== null));
+            for (const [i, msg] of messages.entries()) {
+                const id = claimed[i];
+                const row = id === null ? undefined : known.get(id);
+                const level = await this.level(tree, parent);
+                if (row && row.owner === tree && row.parent === parent) {
+                    let chosen = row.id;
+                    if (msg._unchanged !== true) {
+                        const { contents, selected, nodeIds } = alternativesOf(msg);
+                        const ids = await this.messageIds(nodeIds.map(n => n ?? ''));
+                        for (const [k, content] of contents.entries()) {
+                            const existing = ids[k] !== null && level.byId.has(ids[k]) ? ids[k] : null;
+                            let sid;
+                            if (existing !== null) {
+                                sid = existing;
+                                const before = level.byId.get(existing);
+                                if (JSON.stringify(before) !== JSON.stringify(content) && !blanksText(before, content)) {
+                                    const twin = level.twin(content, existing);
+                                    if (twin !== null) sid = twin;
+                                    else {
+                                        const changed = this.editRecords(level.stored.get(existing), content, await this.speakerFor(content, treeSpeaker));
+                                        records.push(...changed.map(r => ({ ...r, session: sessionId, user })));
+                                        level.set(existing, content);
+                                    }
+                                }
+                            } else {
+                                sid = level.twin(content, null);
+                                if (sid === null) {
+                                    sid = this.next.message++;
+                                    const time = now + k;
+                                    const through = k === selected ? sessionId : null;
+                                    records.push(...messageRecords(sid, encodeMessage(content, time, await this.speakerFor(content, treeSpeaker)), { parent, owner: tree, time, session: through, user, sendKey: null }));
+                                    level.add(sid, content);
+                                }
+                            }
+                            if (k === selected) chosen = sid;
+                        }
+                        await this.bookmarkLinkRecords(msg, chosen, sessionId, user, records);
+                    }
+                    movedByAppend = await this.chooseIn(records, tree, parent, chosen, sessionId, user);
+                    parent = chosen;
+                    continue;
+                }
+                if (msg?._unchanged === true) continue;
+                const { contents, selected } = alternativesOf(msg);
+                let chosen = null;
+                for (const [k, content] of contents.entries()) {
+                    let sid = level.twin(content, null);
+                    if (sid === null) {
+                        sid = this.next.message++;
+                        const time = now + k;
+                        const through = k === selected ? sessionId : null;
+                        records.push(...messageRecords(sid, encodeMessage(content, time, await this.speakerFor(content, treeSpeaker)), { parent, owner: tree, time, session: through, user, sendKey: null }));
+                        level.add(sid, content);
+                    }
+                    if (k === selected) chosen = sid;
+                }
+                const chosenId = /** @type {bigint} */ (chosen);
+                assigned.push({ index: i, id: chosenId });
+                movedByAppend = await this.chooseIn(records, tree, parent, chosenId, sessionId, user);
+                await this.bookmarkLinkRecords(msg, chosenId, sessionId, user, records);
+                parent = chosenId;
+            }
+            if (!movedByAppend) {
+                const [where] = await this.store.chatRead('sessions', { ids: [sessionId] });
+                const there = !!where && where.tree === tree && where.at === parent;
+                if (!there) records.push(parent === null ? { kind: 'pointerRoot', session: sessionId, user, tree } : { kind: 'pointerMove', session: sessionId, user, target: parent });
+            }
+            if (records.some(r => r.kind !== 'keyMap')) await this.store.commit(records);
+            return { at: parent, assigned };
+        });
+        const metadata = { ...(header.chat_metadata ?? {}) };
+        const atExternal = written.at === null ? null : (await this.externalIds([written.at]))[0];
+        const current = await this.metadata(tree, written.at);
+        const unset = Object.keys(current).filter(k => !Object.hasOwn(metadata, k));
+        await this.mergeMetadata({ tree, at: atExternal, set: metadata, unset, actor });
+        const external = await this.externalIds(written.assigned.map(a => a.id));
+        return { ok: true, integrity: actor.session, assigned_node_ids: written.assigned.map((a, i) => ({ index: a.index, node_id: external[i] })) };
+    }
+
+    /**
+     * The replies of a message (null: the tree's openings) as upstream's objects, kept current while a save adds to
+     * and edits them.
+     * @param {bigint} tree
+     * @param {bigint | null} parent
+     */
+    async level(tree, parent) {
+        const ids = await this.children(tree, parent);
+        const stored = await this.stored(ids);
+        const decoded = await this.decoded(ids.map(id => stored.get(id)));
+        /** @type {Map<bigint, Record<string, any>>} */
+        const byId = new Map(ids.map((id, i) => [id, decoded[i]]));
+        return {
+            stored,
+            byId,
+            /** The reply other than `except` with the speaker and text of `content`, or null. */
+            twin: (/** @type {Record<string, any>} */ content, /** @type {bigint | null} */ except) => {
+                const want = identityOf(content);
+                for (const [id, m] of byId) if (id !== except && identityOf(m) === want) return id;
+                return null;
+            },
+            add: (/** @type {bigint} */ id, /** @type {Record<string, any>} */ content) => byId.set(id, content),
+            set: (/** @type {bigint} */ id, /** @type {Record<string, any>} */ content) => byId.set(id, content),
+        };
+    }
+
+    /**
+     * Makes `reply` the session's choice at its fork: an append of it through the session already did; otherwise a
+     * choice record, unless the session already follows it. Answers whether the append moved the session to it.
+     * @param {object[]} records
+     * @param {bigint} tree
+     * @param {bigint | null} fork
+     * @param {bigint} reply
+     * @param {bigint} session
+     * @param {bigint} user
+     */
+    async chooseIn(records, tree, fork, reply, session, user) {
+        if (records.some(r => r.kind === 'messageAppend' && r.id === reply && r.session === session)) return true;
+        records.push(...await this.choiceRecords(tree, fork, reply, session, user));
+        return false;
+    }
+
+    /**
+     * The record choosing `reply` at its fork through the session, when it doesn't already follow it.
+     * @param {bigint} tree
+     * @param {bigint | null} fork
+     * @param {bigint} reply
+     * @param {bigint} session
+     * @param {bigint} user
+     */
+    async choiceRecords(tree, fork, reply, session, user) {
+        const followed = await this.store.chatRead('followed', { tree, ...(fork === null ? {} : { at: fork }), session, user });
+        if (followed === reply) return [];
+        return [this.moveTo(session, user, fork, reply)[0]];
+    }
+
+    /**
+     * A bookmark named by the message's `extra.bookmark_link`, made at `at`, when the latest one made there isn't
+     * named that already.
+     * @param {Record<string, any>} msg
+     * @param {bigint} at
+     * @param {bigint} session
+     * @param {bigint} user
+     * @param {object[]} records
+     */
+    async bookmarkLinkRecords(msg, at, session, user, records) {
+        const link = msg?.extra?.bookmark_link;
+        if (typeof link !== 'string' || link === '') return;
+        const s = (await this.stored([at])).get(at);
+        if (s) {
+            const made = s.branches.length ? await this.store.chatRead('bookmarks', { ids: [s.branches[s.branches.length - 1]] }) : [];
+            if (made[0]?.name === link) return;
+        }
+        const b = this.next.position++;
+        records.push({ kind: 'positionCreate', id: b, mode: MODE.following, session, user, pointer: at }, { kind: 'positionName', id: b, name: link });
     }
 
     // ---- state ----
