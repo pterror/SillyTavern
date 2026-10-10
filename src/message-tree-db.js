@@ -145,7 +145,70 @@ const SCHEMA_SQL = `
         node_id  TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_send_keys_node ON send_keys(node_id);
+
+    -- A reply's prompt itemization (what the "Prompt" view of that message shows), recorded when the reply is
+    -- stored: the itemization's JSON, zstd-compressed (itemization-store.js). has_raw_prompt: whether it holds the
+    -- prompt as sent, which the view diffs against the nearest earlier one that does. Removed with its node.
+    CREATE TABLE IF NOT EXISTS itemizations (
+        node_id        TEXT PRIMARY KEY,
+        data           BLOB NOT NULL,
+        has_raw_prompt INTEGER NOT NULL
+    );
 `;
+
+/** The `extra` key a loaded message carries when its node has a prompt itemization; never stored in a message. */
+export const ITEMIZED_PROMPT_FLAG = 'has_itemized_prompt';
+
+/** The most ids one itemization lookup binds at once. */
+const ITEMIZED_LOOKUP_CHUNK = 500;
+
+/**
+ * Of these node ids, the ones with a prompt itemization.
+ * @param {Pick<import('./endpoints/sqlite-engine.js').SqliteEngineHandle, 'iterate'>} db
+ * @param {string[]} ids
+ * @returns {Set<string>}
+ */
+function itemizedNodeIdsSync(db, ids) {
+    const unique = [...new Set(ids)];
+    /** @type {Set<string>} */
+    const out = new Set();
+    for (let at = 0; at < unique.length; at += ITEMIZED_LOOKUP_CHUNK) {
+        const chunk = unique.slice(at, at + ITEMIZED_LOOKUP_CHUNK);
+        const params = Object.fromEntries(chunk.map((id, i) => [`n${i}`, id]));
+        for (const row of /** @type {Iterable<{ node_id: string }>} */ (db.iterate(
+            `SELECT node_id FROM itemizations WHERE node_id IN (${chunk.map((_, i) => `@n${i}`).join(', ')})`, params))) {
+            out.add(row.node_id);
+        }
+    }
+    return out;
+}
+
+/**
+ * Sets {@link ITEMIZED_PROMPT_FLAG} in the `extra` of each message, and of each loaded alternative in its
+ * `swipe_info`, whose node has a prompt itemization.
+ * @param {Pick<import('./endpoints/sqlite-engine.js').SqliteEngineHandle, 'iterate'>} db
+ * @param {{ node_id?: string|null, extra?: any, swipe_info?: any[] }[]} messages
+ */
+function markItemizedSync(db, messages) {
+    /** @type {string[]} */
+    const ids = [];
+    for (const message of messages) {
+        if (typeof message.node_id === 'string') ids.push(message.node_id);
+        for (const info of Array.isArray(message.swipe_info) ? message.swipe_info : []) {
+            if (typeof info?.node_id === 'string') ids.push(info.node_id);
+        }
+    }
+    if (ids.length === 0) return;
+    const itemized = itemizedNodeIdsSync(db, ids);
+    if (itemized.size === 0) return;
+    const flagged = (/** @type {any} */ extra) => ({ ...(extra && typeof extra === 'object' ? extra : {}), [ITEMIZED_PROMPT_FLAG]: true });
+    for (const message of messages) {
+        if (typeof message.node_id === 'string' && itemized.has(message.node_id)) message.extra = flagged(message.extra);
+        if (!Array.isArray(message.swipe_info)) continue;
+        message.swipe_info = message.swipe_info.map(info =>
+            typeof info?.node_id === 'string' && itemized.has(info.node_id) ? { ...info, extra: flagged(info.extra) } : info);
+    }
+}
 
 /**
  * The node a send with this key was already stored at for this owner, or null.
@@ -614,6 +677,7 @@ function sanitizeForStorage(msg) {
         delete clone.extra.branches;
         // bookmark_link becomes the label column
         delete clone.extra.bookmark_link;
+        delete clone.extra[ITEMIZED_PROMPT_FLAG];
     }
 
     return JSON.stringify(clone);
@@ -1409,6 +1473,8 @@ function buildPathMessages(db, rows, branchName = null, fullSwipes = false) {
             /** @type {Record<string, any>} */ (messages[i].extra).branches = names;
         }
     }
+    // An export (fullSwipes) is upstream's chat file, which has no such flag.
+    if (!fullSwipes) markItemizedSync(db, messages);
     return messages;
 }
 
@@ -1964,6 +2030,7 @@ export async function getAlternatives(directories, nodeId, range = {}) {
             is_user: !!o?.is_user,
         };
     });
+    markItemizedSync(entry.db, alternatives);
 
     return { selected: selected < 0 ? 0 : selected, total: siblings.length, alternatives };
 }
@@ -2705,6 +2772,8 @@ export async function getOpeningAlternatives(directories, ownerId, range = {}, c
         ? Math.max(0, /** @type {number} */ (range.offset))
         : Math.max(0, center - Math.floor(width / 2));
     const to = Math.min(all.length, from + width);
+    const alternatives = all.slice(from, to);
+    markItemizedSync(entry.db, alternatives);
 
     return {
         has_saved_chats: hasSavedChats,
@@ -2714,7 +2783,7 @@ export async function getOpeningAlternatives(directories, ownerId, range = {}, c
         default_node_id: defaultNodeId,
         default_chosen: chosen,
         offset: from,
-        alternatives: all.slice(from, to),
+        alternatives,
     };
 }
 
@@ -2796,7 +2865,9 @@ export async function findOpeningToLandOn(directories, ownerId, cardGreetings, c
     /** @type {any} */
     let o = {};
     try { o = JSON.parse(row.content); } catch { /* leave empty */ }
-    return { index: target, opening: { node_id: row.id, mes: o?.mes ?? '', send_date: o?.send_date, extra: o?.extra ?? {}, name: o?.name, is_user: !!o?.is_user } };
+    const opening = { node_id: row.id, mes: o?.mes ?? '', send_date: o?.send_date, extra: o?.extra ?? {}, name: o?.name, is_user: !!o?.is_user };
+    markItemizedSync(entry.db, [opening]);
+    return { index: target, opening };
 }
 
 /**
@@ -2933,6 +3004,22 @@ export async function loadAtNode(directories, ownerId, nodeId) {
         node_id: node.id,
         label: node.label ?? null,
     };
+}
+
+/**
+ * The node ids of a chat's messages, in the order a chat load answers them: the chat named by `chat` (a node id,
+ * else a chat name, as `/open` resolves one) down to the end of its path.
+ * @param {Directories} directories
+ * @param {string} ownerId
+ * @param {string} chat
+ * @returns {Promise<string[] | null>} null when the owner has no such chat.
+ */
+export async function chatPathNodeIds(directories, ownerId, chat) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    const node = resolveNodeOrName(entry.db, ownerId, chat);
+    if (!node) return null;
+    return getPathSync(entry.db, descendDefaultSync(entry.db, node.id)).filter(r => !isAnchorRow(r)).map(r => r.id);
 }
 
 /**
@@ -3189,6 +3276,7 @@ function deleteNodesSync(db, ownerId, ids) {
     if (rows.length === 0) return 0;
     const deleted = deleteMessagesCountedSync(db, rows, () => db.run(`DELETE FROM messages WHERE ${where}`, { ownerId, ...params }).changes);
     db.run(`DELETE FROM send_keys WHERE node_id IN (${ids.map((_, i) => `@id${i}`).join(', ')})`, params);
+    db.run(`DELETE FROM itemizations WHERE node_id IN (${ids.map((_, i) => `@id${i}`).join(', ')})`, params);
     return deleted;
 }
 
@@ -3196,7 +3284,7 @@ export {
     insertMessageSync, createBranchSync, getPathSync, getBranchByNameSync, hasBranchesSync,
     newId, sanitizeForStorage, extractLastMes,
     ensureAnchorSync, descendDefaultSync, setDefaultChildSync, alternativesFromMessage, branchViewSync,
-    setNodeMetadataSync, labelNodeSync, reparentNodeSync, swapDefaultChildSync, deleteNodesSync,
+    setNodeMetadataSync, labelNodeSync, reparentNodeSync, swapDefaultChildSync, deleteNodesSync, resolveNodeOrName,
 };
 
 /** Closes all open DB handles (close() also TRUNCATE-checkpoints the WAL). */

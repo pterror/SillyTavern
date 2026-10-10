@@ -35,6 +35,7 @@ import { storeUserMessage, withStoredMessages } from '../../stored-messages.js';
 import { readCardContent } from '../characters.js';
 import { getGroupsByIds } from '../groups.js';
 import { persistAssistantReply, replyTextAsPageShows, unreadableReplyWarning } from '../../assistant-reply-persist.js';
+import { itemizationOf } from '../../itemization-store.js';
 import { withGenerationStop, generationIdFor, isGenerationStopped, onGenerationStop, onGenerationStopFlush, stoppableController, handleGenerationStop } from '../../generation-stop.js';
 
 export const router = express.Router();
@@ -682,8 +683,7 @@ export async function buildRawActionTextCompletionRequest(directories, {
         tokenCountRows: storedCounter.pending,
         name1: orchestratorInput.name1, name2: orchestratorInput.name2,
         warnings: sendTokenizerWarnings(tokenizerState, resolvedTokenizer, tokenizerOutcome, assembled.droppedEntries),
-        // Prompt-itemization breakdown for the client's itemizedPrompts entry - see
-        // buildItemizationBreakdown()'s own doc comment (text-completion-prompt-orchestrator.js).
+        // The server's part of the reply's stored prompt itemization (itemization-store.js itemizationOf()).
         itemization: buildItemizationBreakdown(assembled),
     };
 }
@@ -949,6 +949,7 @@ router.post('/generate', withGenerationStop(async function (request, response) {
                     isSwipe, isContinue, anchorContent: continuesUserMessage ? userMessage : built.anchorContent,
                     warnings,
                     generationStop: response.locals.generationStop,
+                    itemization: itemizationOf(request.body.itemization, built.itemization),
                 };
                 // Same gating as `pendingAssistantPersist` above, not unconditional on `built.itemization`
                 // existing - impersonate/quiet must still reach the client completely unmodified

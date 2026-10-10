@@ -5,8 +5,8 @@ import {
     doChatInject, extension_prompts, extension_prompt_types,
     extractImagesFromData, extractJsonFromData, extractMessageFromData, extractMultiSwipes, extractTitleFromData,
     flushWIInjections, formatMessageHistoryItem,
-    getAllExtensionPrompts, getBiasStrings, getCharacterCardFields, getCurrentCharacter, getCurrentChatId, getCurrentDraftContext,
-    getExtensionPrompt, getExtensionPromptRoleByName, getMaxPromptTokens, getNextMessageId, getSelectionState,
+    getAllExtensionPrompts, getBiasStrings, getCharacterCardFields, getCurrentCharacter, getCurrentDraftContext,
+    getExtensionPrompt, getExtensionPromptRoleByName, getMaxPromptTokens, getSelectionState,
     hideStopButton, hideSwipeButtons, isStreamingEnabled,
     menu_type, name2, neutralCharacterName, online_status,
     parseAndSaveLogprobs, parseMesExamples, parseTokenCounts, pingServer, processCommands,
@@ -14,7 +14,7 @@ import {
     saveReply, sendGenerationRequest, sendMessageAsUser, sendStreamingRequest,
     setCharacterName, setExtensionPrompt, setGenerationProgress, setInContextMessages, setSendButtonState,
     showStopButton, StreamingProcessor, substituteParams, swipe,
-    triggerAutoContinue, unblockGeneration, unshallowCharacter, updateMessageBlock,
+    triggerAutoContinue, unblockGeneration, unshallowCharacter, updateMessageBlock, updateMessageItemizedPromptButton,
 } from '../script.js';
 import { chat, chat_metadata } from './chat-state.js';
 import { amount_gen, main_api, max_context } from './generation-params.js';
@@ -38,7 +38,7 @@ import { generateGroupWrapper, getGroupDepthPrompts, groupsStore, is_group_gener
 import { adjustHordeGenerationParams, horde_settings, isHordeGenerationNotAllowed, MIN_LENGTH } from './horde.js';
 import { t } from './i18n.js';
 import { force_output_sequence, formatInstructModeChat, formatInstructModeExamples, formatInstructModePrompt, formatInstructModeStoryString } from './instruct-mode.js';
-import { applyItemizedPromptBreakdown, deleteItemizedPromptForMessage, itemizedPrompts, saveItemizedPrompts } from './itemized-prompts.js';
+import { ITEMIZED_PROMPT_FLAG } from './itemized-prompts.js';
 import { getKoboldGenerationData, kai_flags, kai_settings, koboldai_setting_names, koboldai_settings } from './kai-settings.js';
 import { adjustNovelInstructionPrompt, getNovelGenerationData, nai_settings, novelai_setting_names, novelai_settings } from './nai-settings.js';
 import { user_avatar, getPersonaDescriptionPosition } from './personas.js';
@@ -98,6 +98,9 @@ export function _snapshotMessages() {
 // _messageSnapshots, so the generic save (still reachable through getContext().saveChat() for
 // extensions, and through StreamingProcessor's own fallback below) sees nothing to write again.
 /** @param {string} nodeId */
+// Whether the last generation sent the server an itemization to store with its reply.
+let replyItemizationSent = false;
+
 function _stampAssistantNodeId(nodeId) {
     if (!nodeId) return;
     const mesId = chat.length - 1;
@@ -109,10 +112,14 @@ function _stampAssistantNodeId(nodeId) {
     const selected = msg.swipe_id ?? 0;
     /** @type {Partial<ChatMessage>} */
     const updates = { node_id: nodeId };
+    if (replyItemizationSent) {
+        updates.extra = { ...msg.extra, [ITEMIZED_PROMPT_FLAG]: true };
+    }
     const swipeInfoEntry = Array.isArray(msg.swipe_info) ? /** @type {SwipeInfo | undefined} */ (msg.swipe_info[selected]) : undefined;
-    if (swipeInfoEntry != null && !isStoredNodeId(swipeInfoEntry.node_id)) {
+    if (swipeInfoEntry != null && (!isStoredNodeId(swipeInfoEntry.node_id) || replyItemizationSent)) {
         const newSwipeInfo = [...msg.swipe_info];
         newSwipeInfo[selected] = { ...newSwipeInfo[selected], node_id: nodeId };
+        if (replyItemizationSent) newSwipeInfo[selected].extra = { ...newSwipeInfo[selected].extra, [ITEMIZED_PROMPT_FLAG]: true };
         updates.swipe_info = newSwipeInfo;
     }
     updateMessage(mesId, updates);
@@ -120,6 +127,7 @@ function _stampAssistantNodeId(nodeId) {
     if (isStoredNodeId(stamped?.node_id)) {
         _messageSnapshots.set(stamped.node_id, stamped);
     }
+    if (stamped) updateMessageItemizedPromptButton(stamped, { messageId: mesId });
 }
 
 // The generation whose reply the server just said it couldn't store, until the reply is marked.
@@ -208,13 +216,8 @@ export function _isBlankUnwrittenSwipe(message) {
 // method (finalizeIntermediaryMessage(), the auto-swipe check, playMessageSound()) - this is just its
 // save/persist decision, so the DOM-coupled class can stay in script.js while this invariant-critical
 // branch is checked under strict null checks with the rest of this file.
-/** @param {{assistantNodeId?: string|null, itemization?: Record<string, *>|null}} params */
-export async function finishStreamedReplyPersistence({ assistantNodeId, itemization }) {
-    // Same "last chat message is this reply" convention _stampAssistantNodeId() already uses -
-    // valid here too since this only ever runs once the streamed reply has actually been appended.
-    if (itemization) {
-        applyItemizedPromptBreakdown(chat.length - 1, itemization);
-    }
+/** @param {{assistantNodeId?: string|null}} params */
+export async function finishStreamedReplyPersistence({ assistantNodeId }) {
     const stop = await takeStreamStopResult();
     if (isStoredNodeId(assistantNodeId)) {
         _stampAssistantNodeId(assistantNodeId);
@@ -450,7 +453,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
         if (chat.length && lastMessage?.is_user === true) {
             //do nothing? why does this check exist?
         } else if (type !== 'quiet' && type !== 'swipe' && !isImpersonate && !dryRun && !depth && chat.length) {
-            deleteItemizedPromptForMessage(chat.length - 1);
             chat.length = chat.length - 1;
             await removeLastMessage();
             await eventSource.emit(event_types.MESSAGE_DELETED, chat.length);
@@ -2461,7 +2463,7 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
 
         showStopButton();
 
-        //set array object for prompt token itemization of this message
+        // What the page put into this prompt, for the itemization the server stores with the reply.
         let currentArrayEntry = Number(thisPromptBits.length - 1);
         // Cross-file note: main_api (script.js) is declared `let main_api;` with no JSDoc type, so it's
         // `any` here - indexed via a Record<string, any> to avoid propagating that any-ness into an
@@ -2487,7 +2489,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
         let additionalPromptStuff = {
             ...thisPromptBits[currentArrayEntry],
             rawPrompt: generate_data.prompt || generate_data.input,
-            mesId: getNextMessageId(type),
             allAnchors: await getAllExtensionPrompts(),
             chatInjects: injectedIndices.map(index => arrMes[arrMes.length - index - 1]).join('') || '',
             summarizeString: extensionPromptsTable['1_memory']?.value ?? '',
@@ -2523,16 +2524,12 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
             historyParts: main_api === 'openai' ? oaiMessages.map(m => m.content) : mesSend.map(e => e.message),
         };
 
-        //console.log(additionalPromptStuff);
-        const itemizedIndex = itemizedPrompts.findIndex((item) => item.mesId === additionalPromptStuff.mesId);
-
-        if (itemizedIndex !== -1) {
-            itemizedPrompts[itemizedIndex] = additionalPromptStuff;
-        } else {
-            itemizedPrompts.push(additionalPromptStuff);
+        // Sent only where the server stores the reply: a raw-action request that isn't quiet or an impersonation.
+        const rawAction = rawActionGenerateData ?? rawActionChatCompletionData;
+        replyItemizationSent = rawAction !== null && type !== 'quiet' && !isImpersonate;
+        if (rawAction !== null && replyItemizationSent) {
+            rawAction.itemization = additionalPromptStuff;
         }
-
-        console.debug(`pushed prompt bits to itemizedPrompts array. Length is now: ${itemizedPrompts.length}`);
 
         if (isStreamingEnabled() && type !== 'quiet') {
             continue_mag = promptReasoning.removePrefix(continue_mag);
@@ -2804,12 +2801,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
             } else {
                 _markReplyNotSaved();
             }
-            // Non-streaming raw-action response - see finishStreamedReplyPersistence()'s identical
-            // streaming-path application of `itemization` for why this exists and the same
-            // chat.length-1 convention.
-            if (data.itemization) {
-                applyItemizedPromptBreakdown(chat.length - 1, data.itemization);
-            }
         }
 
         if (canPerformToolCalls) {
@@ -3036,9 +3027,8 @@ export async function saveChatConditional({ heal = false } = {}) {
             await saveChat({ heal });
         }
 
-        // Save token and prompts cache to IndexedDB storage
+        // Save token cache to IndexedDB storage
         saveTokenCache();
-        saveItemizedPrompts(getCurrentChatId());
     } catch (error) {
         console.error('Error saving chat', error);
     } finally {

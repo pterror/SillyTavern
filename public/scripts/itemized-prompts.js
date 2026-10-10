@@ -1,10 +1,11 @@
-import { DiffMatchPatch, DOMPurify, localforage } from '../lib.js';
-import { getCurrentChatId, reloadCurrentChat } from '../script.js';
+import { DiffMatchPatch, DOMPurify } from '../lib.js';
+import { getCurrentChatId, getSelectionState, reloadCurrentChat } from '../script.js';
 import { chat } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { event_types, eventSource } from './events.js';
 import { t } from './i18n.js';
 import { oai_settings } from './chat-completion-settings.js';
+import { isStoredNodeId } from './node-identity.js';
 import { Popup, POPUP_TYPE } from './popup.js';
 import { power_user, registerDebugFunction } from './power-user.js';
 import { isMobile } from './RossAscends-mods.js';
@@ -16,420 +17,196 @@ import { copyText } from './utils.js';
 let PromptArrayItemForRawPromptDisplay;
 let priorPromptArrayItemForRawPromptDisplay;
 
-/** Server-side storage is the source of truth; this is a local mirror for offline/instant reads. */
-const promptStorage = localforage.createInstance({ name: 'SillyTavern_Prompts' });
+/**
+ * The itemizations the page holds, each with its message's position in the chat as `mesId`: the one whose "Prompt"
+ * view is open, or what upstream's `loadItemizedPrompts()` was last asked for. The server keeps one per reply
+ * (src/itemization-store.js) and records it when it stores the reply; nothing else in the page keeps them.
+ */
 export let itemizedPrompts = [];
 
-/**
- * What the server has for the open chat, as of the last load or save: the chat, its entries (by identity) and
- * whether one of them was changed in place since. Lets a chat switch skip saving when nothing changed.
- * @type {{ chatId: string|null, entries: object[], changedInPlace: boolean }}
- */
-let persisted = { chatId: null, entries: [], changedInPlace: false };
+/** `extra` key the server sets on a loaded message whose node has an itemization (message-tree-db.js). */
+export const ITEMIZED_PROMPT_FLAG = 'has_itemized_prompt';
 
-function markPersisted(chatId) {
-    persisted = { chatId, entries: itemizedPrompts.slice(), changedInPlace: false };
+/**
+ * @param {string} route
+ * @param {object} body
+ * @returns {Promise<Response>}
+ */
+function post(route, body) {
+    return fetch(`/api/itemized-prompts/${route}`, { method: 'POST', headers: getRequestHeaders(), body: JSON.stringify(body) });
+}
+
+/** @returns {{ group_id: string } | { avatar_url: string } | null} The open chat's owner, as the routes name one. */
+function currentOwner() {
+    const selection = getSelectionState();
+    if (selection.type === 'group') return { group_id: selection.groupId };
+    if (selection.type === 'character') return { avatar_url: selection.avatar };
+    return null;
 }
 
 /**
+ * One message's itemization.
+ * @param {string} nodeId
+ * @returns {Promise<{ entry: Record<string, any>, previous_node_id: string|null } | null>} null when it has none.
+ */
+async function fetchItemization(nodeId) {
+    const response = await post('message', { node_id: nodeId });
+    if (response.status === 404) return null;
+    if (!response.ok) throw new Error(`the server answered ${response.status}`);
+    return response.json();
+}
+
+/**
+ * The itemizations of a chat of the open character or group, each as `{ index, node_id, entry }`.
  * @param {string} chatId
- * @returns {boolean} Whether the itemized prompts differ from what the server has for this chat.
+ * @returns {Promise<{ index: number, node_id: string, entry: Record<string, any> }[]>}
  */
-function differsFromPersisted(chatId) {
-    if (persisted.chatId !== chatId || persisted.changedInPlace) return true;
-    if (persisted.entries.length !== itemizedPrompts.length) return true;
-    return itemizedPrompts.some((entry, i) => entry !== persisted.entries[i]);
-}
-
-/** Bumped only if the pool-dedup wire format itself changes. */
-const POOL_VERSION = 2;
-
-/** Exact-content dedup (plain Map lookup, not diffing) - replaces each non-empty string, recursively, with a reference into a shared per-chat pool. */
-function poolizeValue(value, pool, poolOut) {
-    if (typeof value === 'string') {
-        if (value.length === 0) {
-            return value;
-        }
-        let key = pool.get(value);
-        if (key === undefined) {
-            key = poolOut.length;
-            poolOut.push(value);
-            pool.set(value, key);
-        }
-        return { $r: key };
-    }
-    if (Array.isArray(value)) {
-        return value.map(item => poolizeValue(item, pool, poolOut));
-    }
-    if (value && typeof value === 'object') {
-        const out = {};
-        for (const key of Object.keys(value)) {
-            out[key] = poolizeValue(value[key], pool, poolOut);
-        }
-        return out;
-    }
-    return value;
-}
-
-/** Inverse of poolizeValue(). */
-function unpoolizeValue(value, poolOut) {
-    if (Array.isArray(value)) {
-        return value.map(item => unpoolizeValue(item, poolOut));
-    }
-    if (value && typeof value === 'object') {
-        const keys = Object.keys(value);
-        if (keys.length === 1 && keys[0] === '$r' && typeof value.$r === 'number') {
-            return poolOut[value.$r];
-        }
-        const out = {};
-        for (const key of keys) {
-            out[key] = unpoolizeValue(value[key], poolOut);
-        }
-        return out;
-    }
-    return value;
-}
-
-/** Pool-dedupes every entry from scratch (no previous pool to reuse against). */
-function poolDedupAll(entries) {
-    const pool = new Map();
-    const poolOut = [];
-    const outEntries = entries.map(entry => poolizeValue(entry, pool, poolOut));
-    return { v: POOL_VERSION, pool: poolOut, entries: outEntries };
-}
-
-/** Cache for poolDedupIncremental(); invalidated implicitly whenever a different chatId is saved. */
-let incrementalPoolCache = /** @type {{chatId: string, sourceEntries: object[], pool: Map<string, number>, poolOut: string[], entries: object[]} | null} */ (null);
-
-/**
- * Same contract as poolDedupAll(), but reuses the cached pool for any entries-array prefix that's still
- * reference-identical to last time, since the whole chat is re-sent (not patched) on every save.
- */
-function poolDedupIncremental(chatId, entries) {
-    const cached = incrementalPoolCache?.chatId === chatId ? incrementalPoolCache : null;
-    const cachedSource = cached?.sourceEntries ?? [];
-
-    let firstChanged = 0;
-    const maxShared = Math.min(cachedSource.length, entries.length);
-    while (firstChanged < maxShared && cachedSource[firstChanged] === entries[firstChanged]) {
-        firstChanged++;
-    }
-
-    if (cached && firstChanged === entries.length && firstChanged === cachedSource.length) {
-        // Nothing at all changed since last time - reuse the whole cached result untouched.
-        return { v: POOL_VERSION, pool: cached.poolOut, entries: cached.entries };
-    }
-
-    const pool = firstChanged > 0 ? new Map(cached.pool) : new Map();
-    const poolOut = firstChanged > 0 ? cached.poolOut.slice() : [];
-    const outEntries = firstChanged > 0 ? cached.entries.slice(0, firstChanged) : [];
-
-    for (let i = firstChanged; i < entries.length; i++) {
-        outEntries.push(poolizeValue(entries[i], pool, poolOut));
-    }
-
-    incrementalPoolCache = { chatId, sourceEntries: entries.slice(), pool, poolOut, entries: outEntries };
-    return { v: POOL_VERSION, pool: poolOut, entries: outEntries };
-}
-
-/** Decodes a stored value into a plain `entries[]` array, handling the plain-array, pool-dedup, and legacy diff-patch formats this file has written over time. */
-function decodeStoredItemizedPrompts(stored) {
-    if (Array.isArray(stored)) {
-        return stored;
-    }
-    if (!stored || !Array.isArray(stored.entries)) {
-        return [];
-    }
-    if (Array.isArray(stored.pool)) {
-        return stored.entries.map(entry => unpoolizeValue(entry, stored.pool));
-    }
-    if (Array.isArray(stored.rawPromptDelta)) {
-        const dmp = new DiffMatchPatch();
-        dmp.Diff_Timeout = 2.0;
-        /** @type {string|undefined} */
-        let previousRawPrompt;
-        return stored.entries.map((entry, i) => {
-            const delta = stored.rawPromptDelta[i];
-            if (typeof delta === 'string' && typeof previousRawPrompt === 'string') {
-                entry.rawPrompt = dmp.diff_text2(dmp.diff_fromDelta(previousRawPrompt, delta));
-            }
-            if (typeof entry.rawPrompt === 'string') {
-                previousRawPrompt = entry.rawPrompt;
-            }
-            const dedupFields = stored.dedup?.[i];
-            if (dedupFields?.length && typeof entry.rawPrompt === 'string') {
-                for (const field of dedupFields) {
-                    entry[field] = entry.rawPrompt;
-                }
-            }
-            return entry;
-        });
-    }
-    return [];
+async function fetchChatItemizations(chatId) {
+    const owner = currentOwner();
+    if (!owner) return [];
+    const response = await post('chat', { ...owner, chat: chatId });
+    if (response.status === 404) return [];
+    if (!response.ok) throw new Error(`the server answered ${response.status}`);
+    return (await response.json()).entries ?? [];
 }
 
 /**
- * Reads the local mirror first for an instant result, then reconciles against the server, which is
- * authoritative. ITEMIZED_PROMPTS_LOADED fires once per source, so listeners may see it twice.
+ * Upstream's export: holds the itemizations of a chat of the open character or group in `itemizedPrompts`.
+ * @param {string} chatId
  */
 export async function loadItemizedPrompts(chatId) {
     if (!chatId) {
         itemizedPrompts = [];
         return;
     }
-
     try {
-        const local = await promptStorage.getItem(chatId);
-        if (local) {
-            itemizedPrompts = decodeStoredItemizedPrompts(local);
-            markPersisted(chatId);
-            await eventSource.emit(event_types.ITEMIZED_PROMPTS_LOADED, { chatId: chatId, fromLocalMirror: true });
-        }
-    } catch (error) {
-        console.log('Error reading local itemized-prompts mirror for chat', chatId, error);
-    }
-
-    try {
-        const response = await fetch('/api/itemized-prompts/get', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({ chatId }),
-        });
-
-        // Avoid clobbering with a stale response if the user switched chats while this was in flight.
-        if (getCurrentChatId() !== chatId) {
-            return;
-        }
-
-        if (response.status === 404) {
-            itemizedPrompts = [];
-            markPersisted(chatId);
-            await promptStorage.removeItem(chatId);
-        } else if (response.ok) {
-            const stored = await response.json();
-            itemizedPrompts = decodeStoredItemizedPrompts(stored);
-            markPersisted(chatId);
-            await promptStorage.setItem(chatId, stored);
-        } else {
-            console.log('Error loading itemized prompts for chat', chatId, response.statusText);
-        }
-
+        const entries = await fetchChatItemizations(chatId);
+        itemizedPrompts = entries.map(({ index, entry }) => ({ ...entry, mesId: index }));
         await eventSource.emit(event_types.ITEMIZED_PROMPTS_LOADED, { chatId: chatId });
     } catch (error) {
-        console.log('Error loading itemized prompts for chat', chatId, error);
+        console.error('Error loading itemized prompts for chat', chatId, error);
+        itemizedPrompts = [];
     }
 }
 
 /**
- * Saves the itemized prompts for a chat, unless they are what the server already has.
+ * Upstream's export: stores the entries of `itemizedPrompts` for the messages of a chat of the open character or
+ * group, each at the message its `mesId` is the position of. A message with no entry here keeps the one it has.
  * @param {string} chatId
  */
-export async function saveItemizedPromptsIfChanged(chatId) {
-    if (!chatId || !differsFromPersisted(chatId)) return;
-    await saveItemizedPrompts(chatId);
-}
-
-/** Pool-dedupes and saves the itemized prompts for a chat to both server storage and the local mirror. */
 export async function saveItemizedPrompts(chatId) {
+    if (!chatId || !Array.isArray(itemizedPrompts) || itemizedPrompts.length === 0) return;
     try {
-        if (!chatId) {
-            return;
+        /** @type {(string|undefined)[]} */
+        let nodeIds;
+        if (chatId === getCurrentChatId()) {
+            nodeIds = chat.map(message => (isStoredNodeId(message?.node_id) ? message.node_id : undefined));
+        } else {
+            const owner = currentOwner();
+            const response = owner ? await post('chat', { ...owner, chat: chatId, ids_only: true }) : null;
+            if (!response?.ok) throw new Error(`no chat ${chatId}`);
+            nodeIds = (await response.json()).node_ids ?? [];
         }
-
-        const data = poolDedupIncremental(chatId, itemizedPrompts);
-        const response = await fetch('/api/itemized-prompts/save', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({ chatId, data }),
-        });
-
-        if (!response.ok) {
-            console.log('Error saving itemized prompts for chat', chatId, response.statusText);
-            return;
+        const items = [];
+        const unplaced = [];
+        for (const entry of itemizedPrompts) {
+            const nodeId = nodeIds[Number(entry?.mesId)];
+            if (nodeId) items.push({ node_id: nodeId, entry });
+            else unplaced.push(entry?.mesId);
         }
-
-        markPersisted(chatId);
-        await promptStorage.setItem(chatId, data);
+        if (unplaced.length) {
+            toastr.warning(t`Not saved: the prompt breakdowns for messages ${unplaced.join(', ')}, which aren't saved messages of that chat.`);
+        }
+        if (items.length === 0) return;
+        const response = await post('set', { items });
+        if (!response.ok) throw new Error(`the server answered ${response.status}`);
         await eventSource.emit(event_types.ITEMIZED_PROMPTS_SAVED, { chatId: chatId });
     } catch (error) {
-        console.log('Error saving itemized prompts for chat', chatId, error);
+        console.error('Error saving itemized prompts for chat', chatId, error);
+        toastr.error(t`The prompt breakdowns couldn't be saved.`);
     }
 }
 
-let allChatsMigrationStarted = false;
-
-// Safe to persist permanently: every promptStorage write (loadItemizedPrompts, saveItemizedPrompts) happens only
-// after the server already has the same data, so nothing written to promptStorage is ever unmigrated backlog.
-const ALL_CHATS_MIGRATED_KEY = 'AllItemizedPrompts_migrated_to_server';
-
-/** One-time upload of this browser's local backlog to server storage; scans the whole store since loadItemizedPrompts() only mirrors chats that get reopened, and batches uploads since a backlog can run to tens of thousands of chats. */
-export async function migrateAllItemizedPrompts() {
-    if (allChatsMigrationStarted) {
-        return;
-    }
-    allChatsMigrationStarted = true;
-
-    if (localStorage.getItem(ALL_CHATS_MIGRATED_KEY) === '1') {
-        return;
-    }
-
-    /** @type {[string, object[]|object][]} */
-    const local = [];
-    try {
-        await promptStorage.iterate((value, chatId) => {
-            const hasContent = Array.isArray(value)
-                ? value.length > 0
-                : (Array.isArray(value?.entries) && value.entries.length > 0);
-            if (hasContent) {
-                local.push([chatId, value]);
-            }
-        });
-    } catch (error) {
-        console.log('Error scanning local itemized prompts for server migration', error);
-        return;
-    }
-
-    if (local.length === 0) {
-        localStorage.setItem(ALL_CHATS_MIGRATED_KEY, '1');
-        return;
-    }
-
-    // MAX_BATCH_CHATS also caps backlogs of many small chats, where the byte cap alone wouldn't limit count.
-    const MAX_BATCH_BYTES = 4 * 1024 * 1024;
-    const MAX_BATCH_CHATS = 200;
-    const BATCH_CONCURRENCY = 4;
-
-    const items = local.map(([chatId, value]) => {
-        const data = poolDedupAll(decodeStoredItemizedPrompts(value));
-        return { chatId, data, size: JSON.stringify(data).length };
-    });
-
-    /** @type {{chatId: string, data: object}[][]} */
-    const batches = [];
-    let current = [];
-    let currentBytes = 0;
-    for (const item of items) {
-        if (current.length > 0 && (currentBytes + item.size > MAX_BATCH_BYTES || current.length >= MAX_BATCH_CHATS)) {
-            batches.push(current);
-            current = [];
-            currentBytes = 0;
-        }
-        current.push({ chatId: item.chatId, data: item.data });
-        currentBytes += item.size;
-    }
-    if (current.length > 0) {
-        batches.push(current);
-    }
-
-    console.log(`[itemized-prompts] Migrating ${local.length} locally-cached chat(s) to server storage in ${batches.length} batch(es)...`);
-
-    let cursor = 0;
-    let migratedCount = 0;
-
-    async function worker() {
-        while (cursor < batches.length) {
-            const batch = batches[cursor++];
-            try {
-                const response = await fetch('/api/itemized-prompts/migrate', {
-                    method: 'POST',
-                    headers: getRequestHeaders(),
-                    body: JSON.stringify({ chats: batch }),
-                });
-
-                if (!response.ok) {
-                    // Leave this batch's chats in place for a future boot's scan to retry, rather than looping here.
-                    console.log('Error migrating a batch of itemized prompts to server:', response.statusText);
-                    continue;
-                }
-
-                const { migrated } = await response.json();
-                for (const chatId of migrated ?? []) {
-                    await promptStorage.removeItem(chatId);
-                    migratedCount++;
-                }
-            } catch (error) {
-                console.log('Error migrating a batch of itemized prompts to server:', error);
-            }
-        }
-    }
-
-    await Promise.all(Array.from({ length: Math.min(BATCH_CONCURRENCY, batches.length) }, () => worker()));
-    console.log(`[itemized-prompts] Server migration pass complete (${migratedCount}/${local.length} chat(s) migrated across ${batches.length} batch(es)).`);
-
-    if (migratedCount === local.length) {
-        localStorage.setItem(ALL_CHATS_MIGRATED_KEY, '1');
-    }
-}
-
+/**
+ * Upstream's export: replaces the prompt text of a message's itemization.
+ * @param {number} mesId
+ * @param {string} promptText
+ */
 export async function replaceItemizedPromptText(mesId, promptText) {
     if (!Array.isArray(itemizedPrompts)) {
         itemizedPrompts = [];
     }
+    const held = itemizedPrompts.find(x => x.mesId === mesId);
+    if (held) held.rawPrompt = promptText;
 
-    const itemizedPrompt = itemizedPrompts.find(x => x.mesId === mesId);
-
-    if (!itemizedPrompt) {
-        return;
+    const nodeId = chat[mesId]?.node_id;
+    if (!isStoredNodeId(nodeId)) return;
+    try {
+        const response = await post('set', { items: [{ node_id: nodeId, fields: { rawPrompt: promptText } }] });
+        if (!response.ok) throw new Error(`the server answered ${response.status}`);
+    } catch (error) {
+        console.error('Error replacing the itemized prompt text of message', mesId, error);
+        toastr.error(t`The prompt text couldn't be saved.`);
     }
-
-    itemizedPrompt.rawPrompt = promptText;
-    persisted.changedInPlace = true;
 }
 
 /**
- * Merges a raw-action generation's server-computed prompt-breakdown fields (storyString,
- * worldInfoString, examplesString, mesSendString, promptBias, generatedPromptCache,
- * beforeScenarioAnchor, afterScenarioAnchor, finalPrompt, rawPrompt) into the already-pushed
- * itemizedPrompts entry for `mesId`. Needed because finishGenerating() (generation.js) pushes the
- * entry synchronously before dispatching the request, but for a raw-action request the actual
- * values are only known once the server's response (or its streamed control frame) arrives.
- * @param {number} mesId
- * @param {Record<string, *>} breakdown
+ * Upstream's export: removes the itemizations of a chat of the open character or group.
+ * @param {string} chatId
  */
-export function applyItemizedPromptBreakdown(mesId, breakdown) {
-    if (!breakdown || !Array.isArray(itemizedPrompts)) {
-        return;
-    }
-
-    const itemizedPrompt = itemizedPrompts.find(x => x.mesId === mesId);
-
-    if (!itemizedPrompt) {
-        return;
-    }
-
-    Object.assign(itemizedPrompt, breakdown);
-    persisted.changedInPlace = true;
-}
-
 export async function deleteItemizedPrompts(chatId) {
+    if (!chatId) return;
+    const owner = currentOwner();
     try {
-        if (!chatId) {
-            return;
-        }
-
-        await fetch('/api/itemized-prompts/delete', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({ chatId }),
-        });
-        await promptStorage.removeItem(chatId);
+        const response = owner ? await post('delete', { ...owner, chat: chatId }) : null;
+        if (response && !response.ok && response.status !== 404) throw new Error(`the server answered ${response.status}`);
         await eventSource.emit(event_types.ITEMIZED_PROMPTS_DELETED, { chatId: chatId, all: false });
-    } catch {
-        console.log('Error deleting itemized prompts for chat', chatId);
+    } catch (error) {
+        console.error('Error deleting itemized prompts for chat', chatId, error);
+        toastr.error(t`The prompt breakdowns couldn't be deleted.`);
     }
 }
 
+/** Upstream's export: removes every itemization. */
 export async function clearItemizedPrompts() {
     try {
-        await fetch('/api/itemized-prompts/clear', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-        });
-        await promptStorage.clear();
+        const response = await post('clear', {});
+        if (!response.ok) throw new Error(`the server answered ${response.status}`);
         itemizedPrompts = [];
         await eventSource.emit(event_types.ITEMIZED_PROMPTS_DELETED, { all: true });
-    } catch {
-        console.log('Error clearing itemized prompts');
+    } catch (error) {
+        console.error('Error clearing itemized prompts', error);
+        toastr.error(t`The prompt breakdowns couldn't be deleted.`);
+    }
+}
+
+/**
+ * Opens a message's "Prompt" view: fetches its itemization, and the one it is diffed against only when asked.
+ * @param {number} mesId
+ */
+async function showMessageItemization(mesId) {
+    const nodeId = chat[mesId]?.node_id;
+    if (!isStoredNodeId(nodeId)) return;
+    let found;
+    try {
+        found = await fetchItemization(nodeId);
+    } catch (error) {
+        console.error('Error reading the itemized prompt of message', mesId, error);
+        toastr.error(t`The prompt breakdown couldn't be loaded.`);
+        return;
+    }
+    if (!found) {
+        toastr.info(t`This message has no prompt breakdown.`);
+        return;
+    }
+    const previousNodeId = found.previous_node_id;
+    itemizedPrompts = [{ ...found.entry, mesId }];
+    try {
+        await promptItemize(itemizedPrompts, mesId, {
+            loadPrevious: previousNodeId ? async () => (await fetchItemization(previousNodeId))?.entry ?? null : undefined,
+        });
+    } finally {
+        itemizedPrompts = [];
     }
 }
 
@@ -600,7 +377,15 @@ export function findItemizedPromptSet(itemizedPrompts, incomingMesId) {
     return thisPromptSet;
 }
 
-export async function promptItemize(itemizedPrompts, requestedMesId) {
+/**
+ * Shows the "Prompt" view of a message's entry in `itemizedPrompts`.
+ * @param {Record<string, any>[]} itemizedPrompts
+ * @param {number|string} requestedMesId
+ * @param {{ loadPrevious?: () => Promise<Record<string, any>|null> }} [options] `loadPrevious`: the entry to diff
+ * against, fetched when the diff is asked for; without it, the nearest earlier entry in `itemizedPrompts` that holds
+ * a raw prompt, as upstream finds it.
+ */
+export async function promptItemize(itemizedPrompts, requestedMesId, { loadPrevious } = {}) {
     var incomingMesId = Number(requestedMesId);
     var thisPromptSet = findItemizedPromptSet(itemizedPrompts, incomingMesId);
 
@@ -624,12 +409,26 @@ export async function promptItemize(itemizedPrompts, requestedMesId) {
 
     /** @type {HTMLElement} */
     const diffPrevPrompt = popup.dlg.querySelector('#diffPrevPrompt');
-    if (priorPromptArrayItemForRawPromptDisplay >= 0) {
+    const shownSet = PromptArrayItemForRawPromptDisplay;
+    const priorSet = priorPromptArrayItemForRawPromptDisplay;
+    /** @type {() => Promise<Record<string, any>|null>} */
+    const previousEntry = loadPrevious ?? (async () => itemizedPrompts[priorSet]);
+    if (loadPrevious || priorSet >= 0) {
         diffPrevPrompt.style.display = '';
-        diffPrevPrompt.addEventListener('click', function () {
+        diffPrevPrompt.addEventListener('click', async function () {
+            let previous;
+            try {
+                previous = await previousEntry();
+            } catch (error) {
+                console.error('Error reading the previous prompt', error);
+            }
+            if (!previous) {
+                toastr.error(t`The previous prompt couldn't be loaded.`);
+                return;
+            }
             const dmp = new DiffMatchPatch();
-            const text1 = flatten(itemizedPrompts[priorPromptArrayItemForRawPromptDisplay].rawPrompt);
-            const text2 = flatten(itemizedPrompts[PromptArrayItemForRawPromptDisplay].rawPrompt);
+            const text1 = flatten(previous.rawPrompt);
+            const text2 = flatten(itemizedPrompts[shownSet].rawPrompt);
 
             dmp.Diff_Timeout = 2.0;
 
@@ -683,10 +482,9 @@ export async function promptItemize(itemizedPrompts, requestedMesId) {
     await popup.show();
 }
 
-export function initItemizedPrompts() {
-    migrateAllItemizedPrompts(); // fire-and-forget
 
-    registerDebugFunction('clearPrompts', 'Delete itemized prompts', 'Deletes all itemized prompts from the local storage.', async () => {
+export function initItemizedPrompts() {
+    registerDebugFunction('clearPrompts', 'Delete itemized prompts', 'Deletes every stored prompt breakdown.', async () => {
         await clearItemizedPrompts();
         toastr.info('Itemized prompts deleted.');
         if (getCurrentChatId()) {
@@ -695,49 +493,6 @@ export function initItemizedPrompts() {
     });
 
     $(document).on('pointerup', '.mes_prompt', async function () {
-        let mesIdForItemization = $(this).closest('.mes').attr('mesId');
-        if (itemizedPrompts.length !== undefined && itemizedPrompts.length !== 0) {
-            await promptItemize(itemizedPrompts, mesIdForItemization);
-        }
+        await showMessageItemization(Number($(this).closest('.mes').attr('mesId')));
     });
-
-    eventSource.on(event_types.CHAT_DELETED, async (name) => {
-        await deleteItemizedPrompts(name);
-    });
-    eventSource.on(event_types.GROUP_CHAT_DELETED, async (name) => {
-        await deleteItemizedPrompts(name);
-    });
-}
-
-export function swapItemizedPrompts(sourceMessageId, targetMessageId) {
-    if (!Array.isArray(itemizedPrompts)) {
-        return;
-    }
-
-    const sourcePrompts = itemizedPrompts.filter(x => x.mesId === sourceMessageId);
-    const targetPrompts = itemizedPrompts.filter(x => x.mesId === targetMessageId);
-
-    sourcePrompts.forEach(prompt => {
-        prompt.mesId = targetMessageId;
-    });
-
-    targetPrompts.forEach(prompt => {
-        prompt.mesId = sourceMessageId;
-    });
-    persisted.changedInPlace = true;
-
-    itemizedPrompts.sort((a, b) => a.mesId - b.mesId);
-}
-
-export function deleteItemizedPromptForMessage(messageId) {
-    if (!Array.isArray(itemizedPrompts)) {
-        return;
-    }
-
-    itemizedPrompts = itemizedPrompts.filter(x => x.mesId !== messageId);
-
-    for (const prompt of itemizedPrompts.filter(x => x.mesId > messageId)) {
-        prompt.mesId -= 1;
-        persisted.changedInPlace = true;
-    }
 }

@@ -16,6 +16,7 @@ import { storeUserMessage, withStoredMessages } from '../../stored-messages.js';
 import { readCardContent } from '../characters.js';
 import { getGroupsByIds } from '../groups.js';
 import { persistAssistantReply } from '../../assistant-reply-persist.js';
+import { itemizationOf } from '../../itemization-store.js';
 import { withGenerationStop } from '../../generation-stop.js';
 import { forwardAndPersistCompactStream } from './text-completions.js';
 
@@ -165,8 +166,7 @@ export async function buildRawActionKoboldRequest(directories, {
         params: assembled.generate_data, anchorNodeId, anchorContent, tokenCountRows: storedCounter.pending,
         name1: orchestratorInput.name1, name2: orchestratorInput.name2,
         warnings: sendTokenizerWarnings(tokenizerState, resolvedTokenizer, tokenizerOutcome, assembled.droppedEntries),
-        // Prompt-itemization breakdown for the client's itemizedPrompts entry - see
-        // buildItemizationBreakdown()'s own doc comment (text-completion-prompt-orchestrator.js).
+        // The server's part of the reply's stored prompt itemization (itemization-store.js itemizationOf()).
         itemization: buildItemizationBreakdown(assembled),
     };
 }
@@ -265,6 +265,7 @@ router.post('/generate', withGenerationStop(async function (request, response_ge
                 directories, ownerId, anchorNodeId: replyAnchorNodeId, name2: built.name2,
                 isSwipe, isContinue, anchorContent: continuesUserMessage ? userMessage : built.anchorContent,
                 warnings, generationStop: response_generate.locals.generationStop,
+                itemization: itemizationOf(request.body.itemization, built.itemization),
             };
             // Same gating as `pendingAssistantPersist` above - see text-completions.js's identical
             // comment for why impersonate/quiet must still reach the client completely unmodified.

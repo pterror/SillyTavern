@@ -44,7 +44,6 @@ export const USER_DIRECTORY_TEMPLATE = Object.freeze({
     backups: 'backups',
     sysprompt: 'sysprompt',
     reasoning: 'reasoning',
-    itemizedPrompts: 'itemized prompts',
 });
 
 /**

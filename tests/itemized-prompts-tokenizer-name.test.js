@@ -17,12 +17,13 @@ let view = null;
 jest.unstable_mockModule('../public/lib.js', () => ({
     DiffMatchPatch: jest.fn(),
     DOMPurify: { sanitize: jest.fn() },
-    localforage: { createInstance: () => ({}) },
 }));
 jest.unstable_mockModule('../public/script.js', () => ({
     getCurrentChatId: jest.fn(),
+    getSelectionState: jest.fn(() => ({ type: 'none' })),
     reloadCurrentChat: jest.fn(),
 }));
+jest.unstable_mockModule('../public/scripts/node-identity.js', () => ({ isStoredNodeId: jest.fn(() => true) }));
 jest.unstable_mockModule('../public/scripts/chat-state.js', () => ({ chat: [] }));
 jest.unstable_mockModule('../public/scripts/request-headers.js', () => ({ getRequestHeaders: jest.fn(() => ({})) }));
 jest.unstable_mockModule('../public/scripts/events.js', () => ({

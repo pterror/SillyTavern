@@ -16,6 +16,7 @@ import { storeUserMessage, withStoredMessages } from '../stored-messages.js';
 import { readCardContent } from './characters.js';
 import { getGroupsByIds } from './groups.js';
 import { persistAssistantReply } from '../assistant-reply-persist.js';
+import { itemizationOf } from '../itemization-store.js';
 import { withGenerationStop } from '../generation-stop.js';
 import { forwardAndPersistCompactStream } from './backends/text-completions.js';
 
@@ -377,6 +378,7 @@ router.post('/generate', withGenerationStop(async function (req, res) {
                 directories, ownerId, anchorNodeId: replyAnchorNodeId, name2: built.name2,
                 isSwipe, isContinue, anchorContent: continuesUserMessage ? userMessage : built.anchorContent,
                 warnings, generationStop: res.locals.generationStop,
+                itemization: itemizationOf(req.body.itemization, null),
             };
         }
 

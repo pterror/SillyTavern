@@ -3,7 +3,7 @@ import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.
 
 // Opening a character or group is one request (POST /api/chats/open): the server resolves which conversation,
 // records what was opened, and answers what the screen draws. Viewing writes nothing else: no chat name is
-// minted, no chat pointer or settings are saved from the page, no itemized prompts are saved, and a group chat
+// minted, no chat pointer or settings are saved from the page, no itemized prompts are read or saved, and a group chat
 // with no messages yet shows its members' greetings without storing them until a message follows them.
 
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
@@ -67,7 +67,7 @@ test('opening a character is one request and writes nothing but what was opened'
         }, avatar);
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toContainText('Welcome in.');
     });
-    expect(seen.filter(path => path !== '/api/itemized-prompts/get')).toEqual(['/api/chats/open']);
+    expect(seen).toEqual(['/api/chats/open']);
 
     const state = await page.evaluate(async (avatar) => {
         // @ts-ignore
@@ -105,7 +105,7 @@ test('a group chat with no messages shows its greetings unsaved, and stores them
         }, groupId);
         await expect(page.locator('#chat .mes')).toHaveCount(2);
     });
-    expect(seen.filter(path => path !== '/api/itemized-prompts/get' && path !== '/api/groups/members')).toEqual(['/api/chats/open']);
+    expect(seen.filter(path => path !== '/api/groups/members')).toEqual(['/api/chats/open']);
 
     // The first message stores the greetings, then itself after them.
     const stored = await page.evaluate(async () => {
