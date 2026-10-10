@@ -35,6 +35,8 @@ pub const SEND_AT: u64 = 20;
 pub const GEN_STARTED_AT: u64 = 21;
 pub const GEN_FINISHED_AT: u64 = 22;
 pub const SEND_DATE_NUM: u64 = 23;
+/// A message's flags after a change (JSON, a number): the append's are never rewritten.
+pub const FLAGS: u64 = 16;
 pub const GEN_STARTED_NUM: u64 = 24;
 pub const GEN_FINISHED_NUM: u64 = 25;
 
