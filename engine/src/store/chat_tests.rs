@@ -1654,10 +1654,11 @@ fn stats_count_as_today_and_place_the_owner_in_the_library() {
         })
         .collect();
     s.commit_wait(chars).unwrap();
+    // Send dates are their own values unless said; no `is_system` unless said.
     const USER: u64 = 1;
-    const SYSTEM: u64 = 1 << 2;
+    const SYSTEM: u64 = 2 << chat::FLAG_IS_SYSTEM;
     const OTHER_USER: u64 = 3;
-    const NO_SEND_DATE: u64 = 1 << chat::FLAG_SEND_DATE_SHIFT;
+    const NO_SEND_DATE: u64 = 3 << chat::FLAG_SEND_DATE;
     let t0 = 1_700_000_000_000;
     s.commit_wait(vec![
         // A greeting (doesn't count), two replies to it (one swipe), a user message whose send date is its time,
@@ -1668,7 +1669,15 @@ fn stats_count_as_today_and_place_the_owner_in_the_library() {
         append_with(2, Some(0), 500, t0 + 2, "three", 0, None),
         msg_time(2, chat::GEN_STARTED, 0),
         msg_time(2, chat::GEN_FINISHED, 1500),
-        append_with(3, Some(1), 500, t0 + 3, "u1 w", USER, None),
+        append_with(
+            3,
+            Some(1),
+            500,
+            t0 + 3,
+            "u1 w",
+            USER | (2 << chat::FLAG_SEND_DATE),
+            None,
+        ),
         append_with(4, Some(3), 500, t0 + 4, "u2", USER, None),
         msg_time(4, chat::SEND_DATE, -10_000),
         append_with(5, Some(4), 500, t0 + 5, "u3", USER, None),

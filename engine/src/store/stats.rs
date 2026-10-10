@@ -9,8 +9,9 @@ use std::collections::HashMap;
 
 use super::StoreError;
 use super::chat::{
-    self, APPEND_FLAGS, APPEND_OWNER, APPEND_TIME, GEN_FINISHED, GEN_FINISHED_AT, GEN_STARTED,
-    GEN_STARTED_AT, IS_SYSTEM, IS_USER, MES, SEND_AT, SEND_DATE, message_loc, parent_of,
+    self, APPEND_FLAGS, APPEND_OWNER, APPEND_TIME, GEN_FINISHED, GEN_FINISHED_AT, GEN_FINISHED_NUM,
+    GEN_STARTED, GEN_STARTED_AT, GEN_STARTED_NUM, IS_SYSTEM, IS_USER, MES, SEND_AT, SEND_DATE,
+    SEND_DATE_NUM, message_loc, parent_of,
 };
 use super::derive::{Deriver, Layer, Loc, Out, View};
 use super::kinds::{Holder, bytes, id, key, parse_loc, parse_varints, text_value_of};
@@ -111,27 +112,38 @@ fn time_value(view: &View, m: u64, code: u64) -> Result<Option<i64>, StoreError>
     }
 }
 
-/// A fixed boolean's value from its two flag bits (0 false, 1 true, 2 absent, 3 its JSON value's truthiness).
-fn flag(view: &View, m: u64, flags: u64, shift: u32, code: u64) -> Result<bool, StoreError> {
-    Ok(match (flags >> shift) & 3 {
-        1 => true,
-        3 => json_value(view, m, code)?.is_some_and(|j| truthy(&j)),
-        _ => false,
+/// A fixed boolean's value from its two flag bits: `on` is the state meaning true, 3 its JSON value's truthiness.
+fn flag(
+    view: &View,
+    m: u64,
+    flags: u64,
+    shift: u32,
+    on: u64,
+    code: u64,
+) -> Result<bool, StoreError> {
+    let state = (flags >> shift) & 3;
+    Ok(if state == 3 {
+        json_value(view, m, code)?.is_some_and(|j| truthy(&j))
+    } else {
+        state == on
     })
 }
 
-/// A time value as `parseTimestamp()` reads it: its ISO time (`messageTime` of `code`), else the time the writer
-/// read from its JSON value (`messageTime` of `parsed`), else 0 for a JSON value it couldn't read; None when the
-/// message doesn't have it or it is falsy. `own` is the append's time, which the delta is from.
+/// A time value as `parseTimestamp()` reads it: its ISO time (`messageTime` of `code`) or number (of `num`; 0 is
+/// falsy), else the time the writer read from its JSON value (`messageTime` of `parsed`), else 0 for a JSON value it
+/// couldn't read; None when the message doesn't have it or it is falsy. `own` is the append's time, which the deltas
+/// are from.
 fn parsed_time(
     view: &View,
     m: u64,
     own: i64,
-    code: u64,
-    parsed: u64,
+    [code, num, parsed]: [u64; 3],
 ) -> Result<Option<i64>, StoreError> {
     if let Some(d) = time_value(view, m, code)? {
         return Ok(Some(own + d));
+    }
+    if let Some(d) = time_value(view, m, num)? {
+        return Ok((own + d != 0).then_some(own + d));
     }
     match json_value(view, m, code)? {
         Some(j) if truthy(&j) => Ok(Some(time_value(view, m, parsed)?.map_or(0, |d| own + d))),
@@ -151,9 +163,9 @@ fn contrib(view: &View, m: u64) -> Result<Option<Contrib>, StoreError> {
     };
     let flags = id(&r, APPEND_FLAGS);
     let parent = parent_of(view, m, &r)?;
-    let who = if flag(view, m, flags, 2, IS_SYSTEM)? {
+    let who = if flag(view, m, flags, chat::FLAG_IS_SYSTEM, 2, IS_SYSTEM)? {
         None
-    } else if flag(view, m, flags, 0, IS_USER)? {
+    } else if flag(view, m, flags, chat::FLAG_IS_USER, 1, IS_USER)? {
         Some(Who::User)
     } else {
         Some(Who::Char)
@@ -168,22 +180,38 @@ fn contrib(view: &View, m: u64) -> Result<Option<Contrib>, StoreError> {
         None => 0,
     };
     let send_at = match counted {
-        Some(Who::User) if (flags >> chat::FLAG_SEND_DATE_SHIFT) & 1 == 0 => {
-            let at = match time_value(view, m, SEND_DATE)? {
-                Some(d) => time + d,
-                None => match json_value(view, m, SEND_DATE)? {
-                    Some(_) => time_value(view, m, SEND_AT)?.map_or(0, |d| time + d),
-                    None => time,
-                },
+        Some(Who::User) => {
+            let at = match (flags >> chat::FLAG_SEND_DATE) & 3 {
+                1 | 2 => Some(time),
+                3 => None,
+                _ => Some(if let Some(d) = time_value(view, m, SEND_DATE)? {
+                    time + d
+                } else if let Some(d) = time_value(view, m, SEND_DATE_NUM)? {
+                    time + d
+                } else if json_value(view, m, SEND_DATE)?.is_some() {
+                    time_value(view, m, SEND_AT)?.map_or(0, |d| time + d)
+                } else {
+                    0
+                }),
             };
-            (at > 0).then_some(at)
+            at.filter(|t| *t > 0)
         }
         _ => None,
     };
     let gen_ms = match counted {
         Some(Who::Char) => {
-            let started = parsed_time(view, m, time, GEN_STARTED, GEN_STARTED_AT)?;
-            let finished = parsed_time(view, m, time, GEN_FINISHED, GEN_FINISHED_AT)?;
+            let started = parsed_time(
+                view,
+                m,
+                time,
+                [GEN_STARTED, GEN_STARTED_NUM, GEN_STARTED_AT],
+            )?;
+            let finished = parsed_time(
+                view,
+                m,
+                time,
+                [GEN_FINISHED, GEN_FINISHED_NUM, GEN_FINISHED_AT],
+            )?;
             match (started, finished) {
                 (Some(s), Some(f)) if s > 0 && f >= s => Some(f - s),
                 _ => None,
