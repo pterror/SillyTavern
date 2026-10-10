@@ -1737,16 +1737,29 @@ Built, the world-info layer (10-11; `src/world-info-engine.js`, values code move
 | a new entry's place | after its neighbours in the written order; every entry placed again above every place held when out of order or no place is free | an insert writes one place |
 | versions | a record changing an entry or an owned book changes the version of the book holding it and of that book's owner (`books::touched`) | a page's copy of a book or card is known stale by its version |
 
+Built, the chat-bound lorebook by id (10-11; `src/chat-engine.js`, `src/chat-people.js`; test in
+`tests/world-info-engine.test.js`): a `world_info` state change whose value is a name records a link to the book its
+key finds (an unresolved name made when none, in that key's lane): the value `\u0001<book id>`, or
+`\u0001<book id> <the name's JSON>` when the name isn't the key itself. JSON never starts with `\u0001`, so any other
+value is recorded as it came. `chat_metadata` shows a link as the name of the book it resolves as; a change compares
+against what is shown, so setting the name it reads as records nothing; a revert restores the link before it. The
+people adapter gives the chat engine the books (`People.books`); without it (the chat engine's own tests) a name is an
+ordinary value.
+
+| choice | picked | reason |
+|---|---|---|
+| the link's place | the `world_info` key's own value, marked by a leading `\u0001` | one key, so one change: reverting it restores what was shown before, and no second key can disagree with it |
+
 Left (handover, 10-11):
 - Not routed: `src/endpoints/worldinfo.js`'s routes, `readWorldInfoFile()`'s readers (generation's
   `candidate-resolution.js`, `text-completion-generation-input.js`, `character-card-normalize.js`, `content-manager.js`,
   `byaf.js`, `sprites.js`, `characters.js`, `settings.js`' `world_names`) and `/rename`'s settings links (still names
   until stage 7) move at the cut.
-- The chat-bound link (`chat_metadata.world_info`, a 5b state key) still holds a name; making it a book id is left to
-  build on the state layer's keys.
 - Measure (one entry edit against today's manifest rewrite and directory listing).
 - A card write reads its stored embedded book whole to diff it (O(its entries)).
 - `apply` reads a book's `originalData` whole when a field changes or an entry is deleted.
+- 3a466a484's message is wrong: it holds only rustfmt's line wrap of a line 6f297bdb1 added (the change it describes
+  was already in 6f297bdb1).
 - A book rename doesn't rewrite its linkers' content identity hashes (the card reads the new name; the hash, made from
   the old, is rewritten at the card's next write), as "rename writes only the book" answers.
 
