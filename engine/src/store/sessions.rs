@@ -725,10 +725,10 @@ pub fn message_gone(
 // ---- a session goes ----
 
 /// A session goes: its pointer, its history, its places in the orders, its remembered positions, its own fork
-/// choices (the user's and anyone's stay) and its outside key (its UUID names nothing after). A user whose last move
+/// choices (the user's and anyone's stay); its outside key becomes a tombstone (its UUID says it was deleted). A user whose last move
 /// in a tree was through it falls back to their most recent other session there, if any.
 pub fn session_gone(view: &View, out: &mut Out, s: u64) -> Result<(), StoreError> {
-    chat::drop_key(view, out, chat::KEYED_SESSION, s)?;
+    chat::tombstone_key(view, out, chat::KEYED_SESSION, s)?;
     let fp = key::id(FORK_SESSION, s);
     let mut gone = Vec::new();
     let mut owned = Vec::new();

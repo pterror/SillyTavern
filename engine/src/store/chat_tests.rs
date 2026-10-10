@@ -1263,12 +1263,17 @@ fn deleting_messages_and_sessions_moves_what_named_them() {
         s.derived(|v| sessions::user_in_tree(v, 1, 7)).unwrap(),
         None
     );
-    // Its UUID names nothing, its own choices went and the user's stayed; it can't move until it is a session
-    // again.
+    // Its UUID is a tombstone, naming nothing; its own choices went and the user's stayed; it can't move until it
+    // is a session again.
     assert_eq!(
         s.derived(|v| chat::id_by_key(v, chat::KEYED_SESSION, b"session-1"))
             .unwrap(),
         None
+    );
+    assert_eq!(
+        s.derived(|v| chat::key_state(v, chat::KEYED_SESSION, b"session-1"))
+            .unwrap(),
+        chat::KeyState::Gone
     );
     s.derived(|v| {
         let f = Fork::Root(7);

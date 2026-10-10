@@ -852,6 +852,48 @@ to `/api/characters/changes/stream` as the old ones do; a store the server creat
 
 **5b. chats: trees, positions, state.**
 
+Status (10-10, handover): in progress. The engine side is built (records, derivers, sessions, fork choices, depths,
+state, stats, itemizations, reads); the JS side has the message codec and the chat engine's first operations,
+compared with the old store. Nothing routes to it.
+
+Done, in order (each section below has its details and choices):
+- 753a7a6aa, 19cb0cd96, 3c14574ae, dce5ab13f: record shapes, message ids, piece 1's questions, the depth rewrite
+  (answers recorded).
+- 465f303b7: chat record kinds and their derivers (messages, values, times, outside keys, bookmarks).
+- e37e8b537, 2a9ce318e: sessions, history, fork choices, landing, activity, depths with slices; a deleted session's
+  own choices go.
+- 9759f4bc7: state layer 1's storage (changes, reverts, the fold); 03a02c263: stats feeding the library's last chat
+  and chat size, state changes with a time.
+- 79b191a75: itemizations and `chatRead`; 56b9e6f0a, 96b502297: the message codec, flags after a change.
+- ea27a5700 and the commit after it: `ChatEngine` (appends, edits, select, graft, degraft, swap, delete,
+  bookmarks, metadata, load, session resolution), compared with the old store; tombstones; a position shows nothing
+  below it.
+
+Left (in the order they build on each other):
+- Chat engine operations not built yet: openings (`addOpeningAlternatives`, the opening chosen with no row,
+  `chooseCardOpening` / `opening_choices`, `getOpeningAlternatives`, `findOpeningToLandOn`), `getAlternatives`
+  windows, `endPathAt` (with nothing shown below a position: the pointer moves up), the compat chat lists (sessions
+  per tree with meaningful activity, recent sessions), session naming and deletion, bookmark rename, mode and delete,
+  back and forward over history, send-key lookups for `/open` (`storedSendKeys`), the whole-array `saveChat` compat
+  diffed onto the engine, `renameGroupMemberInMessages` (a speaker change), metadata `integrity` (a value derived from
+  the state at the position, not yet picked), itemizations' JS (zstd, the `/api/itemized-prompts` routes' shapes).
+- People: an adapter from `LibraryEngine` to `ChatEngine`'s speakers (characters by id and avatar; groups' trees).
+- Compat identifiers wired: `X-ST-Session` in `getRequestHeaders()` (`none` for a tab with no session), the
+  answers' `characters[].chat`, `group.chat_id`, `getCurrentChatId()`, chat names in events, and the tab told
+  its session is gone.
+- State layer 1 steps 2–5, 7, 8 on these records (the state routes, the page's compat for variables and
+  `chat_metadata`, a change made while producing a reply hanging on the reply, navigation replacing the state, other
+  tabs).
+- The token-count cache's home: today it is in `message-tree.sqlite`, which 5f deletes.
+- Measured (the 5b rows of "Stage 5 measured against"): device bytes per append and per sync, a session list page,
+  a bookmark list, opening a position at L messages, on the synthetic library.
+- For 5e: old ids as `keyMap` records (counter above any decimal one), labels as bookmarks with `positionCreate`
+  where they are, `default_child_id` and `characters.active_chat` as the deterministic session's choices and pointer
+  moves, itemization rows and files, label metadata as `migration` state changes.
+- Known: the old store's `swapAdjacent` doesn't recount its stats (it writes `parent_id` directly). One engine test
+  fails on HEAD before this work too (`search::tests::a_field_edit_writes_only_its_changed_terms...`, 8 entries for
+  6).
+
 Answered (coordinator, 10-03). {{user}}: chats "doesn't fucking exist. bookmarks are what replaced them but that
 doesn't make them the same". The model is trees, sessions and bookmarks (one structure, a pointer plus a movement
 mode). Upstream's chat concepts exist only at the compat edge:
@@ -882,8 +924,9 @@ Builds:
   meaningful activity); each session's history (session, seq) → target; fork choices (session, message),
   (user, message), (message) → reply; (session, tree) and (user, tree) → last position; session-name postings; a
   message's state changes in order; a message's depth (the session list's message count).
-- Reads: open a position (root to pointer, every alternative's text, design 5); the landing cascade; the fork cascade
-  below the pointer; the session list and bookmark lists; the state at a message, folded along the path the read
+- Reads: open a position (root to pointer, nothing below it, every alternative's text; corrected 10-10, see "a
+  position shows nothing below it"); the landing cascade (the fork cascade still picks the default path's end); the
+  session list and bookmark lists; the state at a message, folded along the path the read
   already loads.
 - JS: record building for every chat action; the compat identifiers above; upstream's shapes assembled on read
   (`[header, ...messages]`, `swipes`, `extra`); the token-count cache (Q-C6).
@@ -1207,6 +1250,29 @@ Stop (10-10), three questions the chat engine needs (behaviour):
 - Which position's state `chat_metadata` is: 5b says the current session's position (its pointer); layer 1 step 3
   says a change hangs on "the message the pointer is on (the last message on screen)". The two differ when the
   session shows replies below its pointer (the first question). `load` answers the pointer's for now.
+
+Answered (coordinator, 10-10), the chat engine's three questions:
+- A position shows nothing below it (corrects design 5's "below the pointer, each fork follows the cascade"): a
+  session shows the path from the root down to its pointer (CLAUDE.md's tree model: opening shows "the conversation
+  from the first message down to that one"; the pointer is the message you're at). Replies below stay reachable
+  through the swipe and branch UI as today. The fork cascade still decides where a session lands with no
+  remembered position (the default path's end) and which reply a choice-free read follows.
+- A deleted session's key becomes a tombstone (its UUID says the session was deleted) instead of going: one entry per
+  deleted session. A request with a tombstoned UUID is told its session is gone and treated like
+  `X-ST-Session: none`; an unknown UUID is a new tab's session. The v5 (user, tree) UUID may be made again over its
+  tombstone (a new integer, no history).
+- `chat_metadata` reads the state at the pointer, which after the first answer is also the last message on screen;
+  the two plans agree.
+- `variables: {}` round-trips: an explicit marker (the top-level key `variables` as `{}`) while the object exists,
+  empty or not.
+- `branches` is compared with its new meaning (the bookmarks made at a message) against what the old store's
+  labels imply (a labeled message lists its own label).
+Built (10-10): `chatRead('path')` answers root to the position only; `ChatEngine.load({ tree, at })` shows that path,
+its metadata the state there; `ChatEngine.pointer(session)`; `ChatEngine.resolveSession({ tree, user, header })` (the
+header's session, `none` and a tombstone the deterministic one with `gone`, no header the user's last session in the
+tree else the deterministic one); `chatRead('keyStates')`; the session's key a tombstone (`KEY_MAP` entry `[id, 1]`),
+a `keyMap` allowed over it; the variables marker. The comparison test now compares the session's path after every
+step (the swap included) and `branches`; tests cover tombstones in Rust and through `resolveSession`.
 
 Where layer 1 goes: inside 5b, on the engine. Its own storage step (SQLite `state_changes`, saved states every 64th
 depth rebuilt lazily after an epoch bump) conflicts with the design: a structure caught up when read is what revision

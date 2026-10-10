@@ -175,14 +175,8 @@ pub fn children(
     ]))
 }
 
-/// The messages from the tree's root down to `at`, and below it along the followed replies.
-pub fn path(
-    view: &View,
-    tree: u64,
-    at: Option<u64>,
-    s: Option<u64>,
-    u: Option<u64>,
-) -> Result<Js, StoreError> {
+/// The messages from the tree's root down to `at` (a position shows nothing below it).
+pub fn path(view: &View, at: Option<u64>) -> Result<Js, StoreError> {
     let mut above = Vec::new();
     let mut cur = at;
     while let Some(m) = cur {
@@ -191,11 +185,7 @@ pub fn path(
         cur = parent_of(view, m, &r)?;
     }
     above.reverse();
-    let below = sessions::path_below(view, s, u, tree, at)?;
-    Ok(Js::Obj(vec![
-        ("above", Js::Arr(above.into_iter().map(Js::Big).collect())),
-        ("below", Js::Arr(below.into_iter().map(Js::Big).collect())),
-    ]))
+    Ok(Js::Arr(above.into_iter().map(Js::Big).collect()))
 }
 
 pub fn landing(view: &View, tree: u64, s: Option<u64>, u: Option<u64>) -> Result<Js, StoreError> {
@@ -318,6 +308,21 @@ pub fn ids_by_keys(view: &View, space: u8, keys: &[Vec<u8>]) -> Result<Js, Store
         keys.iter()
             .map(|k| chat::id_by_key(view, space, k).map(opt_big))
             .collect::<Result<_, _>>()?,
+    ))
+}
+
+/// What each outside key names in a space: `{ id }`, `'gone'` (a deleted session's), or null.
+pub fn key_states(view: &View, space: u8, keys: &[Vec<u8>]) -> Result<Js, StoreError> {
+    Ok(Js::Arr(
+        keys.iter()
+            .map(|k| {
+                Ok(match chat::key_state(view, space, k)? {
+                    chat::KeyState::Live(i) => Js::Obj(vec![("id", Js::Big(i))]),
+                    chat::KeyState::Gone => Js::Text(b"gone".to_vec()),
+                    chat::KeyState::None => Js::Null,
+                })
+            })
+            .collect::<Result<_, StoreError>>()?,
     ))
 }
 
