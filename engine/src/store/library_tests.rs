@@ -66,7 +66,7 @@ fn create(e: u64, kind: u64, key: &str, added: i64) -> Record {
 fn set(e: u64, f: u64, s: &str) -> Record {
     rec(
         "textValue",
-        vec![Value::Id(e), Value::Field(FieldRef::Code(f)), text(s)],
+        vec![Value::Sel(0, e), Value::Field(FieldRef::Code(f)), text(s)],
     )
 }
 
@@ -545,7 +545,7 @@ impl Lib {
                 vec![rec(
                     "textEdit",
                     vec![
-                        Value::Id(e),
+                        Value::Sel(0, e),
                         Value::Field(FieldRef::Code(NAME)),
                         Value::UInt(0),
                         Value::UInt(1),
@@ -566,7 +566,7 @@ impl Lib {
                 } else {
                     vec![rec(
                         "valueDelete",
-                        vec![Value::Id(e), Value::Field(FieldRef::Code(WORLD))],
+                        vec![Value::Sel(0, e), Value::Field(FieldRef::Code(WORLD))],
                     )]
                 }
             }
@@ -735,7 +735,7 @@ fn an_entity_key_is_taken_once_and_deleting_frees_everything_it_held() {
         rec(
             "jsonValue",
             vec![
-                Value::Id(1),
+                Value::Sel(0, 1),
                 Value::Field(FieldRef::Key(b"ext:x".to_vec())),
                 text("{\"a\":1}"),
             ],
@@ -752,7 +752,7 @@ fn an_entity_key_is_taken_once_and_deleting_frees_everything_it_held() {
         rec(
             "textValue",
             vec![
-                Value::Id(1),
+                Value::Sel(0, 1),
                 Value::Field(library::item_field(0, 3)),
                 text("hi"),
             ],

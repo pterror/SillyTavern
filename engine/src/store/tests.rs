@@ -52,7 +52,7 @@ fn set_text(e: u64, f: u64, s: &str) -> Record {
     rec(
         "textValue",
         vec![
-            Value::Id(e),
+            Value::Sel(0, e),
             Value::Field(FieldRef::Code(f)),
             Value::Text(text(s)),
         ],
@@ -63,7 +63,7 @@ fn edit(e: u64, f: u64, offset: u64, removed: u64, s: &str) -> Record {
     rec(
         "textEdit",
         vec![
-            Value::Id(e),
+            Value::Sel(0, e),
             Value::Field(FieldRef::Code(f)),
             Value::UInt(offset),
             Value::UInt(removed),

@@ -61,7 +61,7 @@ fn card(r: &mut Rng, e: u64) -> Vec<Record> {
         rec(
             "textValue",
             vec![
-                Value::Id(e),
+                Value::Sel(0, e),
                 Value::Field(FieldRef::Code(NAME)),
                 text(&name),
             ],
@@ -69,7 +69,7 @@ fn card(r: &mut Rng, e: u64) -> Vec<Record> {
         rec(
             "textValue",
             vec![
-                Value::Id(e),
+                Value::Sel(0, e),
                 Value::Field(FieldRef::Code(DESCRIPTION)),
                 text(&desc),
             ],
@@ -95,7 +95,7 @@ fn card(r: &mut Rng, e: u64) -> Vec<Record> {
         recs.push(rec(
             "textValue",
             vec![
-                Value::Id(e),
+                Value::Sel(0, e),
                 Value::Field(FieldRef::Code(WORLD)),
                 text("lore"),
             ],
@@ -314,7 +314,7 @@ fn actions(s: &Store, cards: u64, dev: &str) {
                     rec(
                         "textEdit",
                         vec![
-                            Value::Id(e),
+                            Value::Sel(0, e),
                             Value::Field(FieldRef::Code(DESCRIPTION)),
                             Value::UInt(0),
                             Value::UInt(0),
@@ -339,7 +339,7 @@ fn actions(s: &Store, cards: u64, dev: &str) {
                 vec![rec(
                     "textEdit",
                     vec![
-                        Value::Id(FIRST_CARD + 1000 + i),
+                        Value::Sel(0, FIRST_CARD + 1000 + i),
                         Value::Field(FieldRef::Code(DESCRIPTION)),
                         Value::UInt(4),
                         Value::UInt(0),
@@ -354,7 +354,7 @@ fn actions(s: &Store, cards: u64, dev: &str) {
                 vec![rec(
                     "textValue",
                     vec![
-                        Value::Id(FIRST_CARD + 2000 + i),
+                        Value::Sel(0, FIRST_CARD + 2000 + i),
                         Value::Field(FieldRef::Code(NAME)),
                         text(&format!("renamed {i}")),
                     ],

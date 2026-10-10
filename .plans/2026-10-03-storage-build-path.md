@@ -916,6 +916,71 @@ ids come only from `newId()` (`crypto.randomUUID()`), or are existing rows' ids.
 days holds a non-UUID id can only be seen in the user's data, which this work doesn't read. Answered (coordinator,
 10-10): the scheme above holds whatever the data holds, without reading it now.
 
+Message shape (answered, coordinator, 10-10; the rule: store exactly what upstream's message holds, so it round-trips
+byte for byte through `/api/chats/get`, at the fewest bytes, each value its own record so a later change writes only
+that value):
+- `flags` holds the top-level booleans upstream defines (`is_user`, `is_system`, `is_name`) as bits; any other
+  top-level value, boolean or not, is a value of its own.
+- `time` is the server's receive time in ms (what recent-chat orders use). `send_date` is kept as it came, as its own
+  value, only when it differs from what the formatter makes from `time`; otherwise it is derived on read.
+- Every other top-level key (`force_avatar`, `original_avatar`, `title`, extension keys, ...) is its own value,
+  unknown ones as JSON as they came. `gen_started` / `gen_finished` are D14's generation times, stored as values.
+- Messages and entities have separate key spaces: the value and text kinds name their holder's space, so a message id
+  and an entity id never meet; no duplicate kinds.
+- The append holds only its fixed slots; `extra` keys and the other top-level values are separate records in the same
+  commit, so later edits use the same kinds.
+- One key-mapping kind, with the space it names in (an old message id, a session UUID, a user handle).
+- Further questions of this class (internal encoding, decided by the round trip and the byte count): the smallest
+  encoding that round-trips exactly, recorded below. Stops are only for behaviour, compat or data safety.
+
+Built, record kinds and their derivers (10-10; `engine/src/log/format.rs`, `engine/src/store/chat.rs`, tests
+`engine/src/store/chat_tests.rs`, `engine/store.test.js`):
+- Kinds: `messageAppend { id, parent?, owner, speaker?, name?, time, text, flags, session?, user, sendKey? }`,
+  `messageParent { message, parent? }` (graft, degraft and swap move a message), `messageDelete { message }`,
+  `messageTime { message, field, delta }`, `keyMap { message | session | user, key }`, `positionCreate { id, mode,
+  session, user, pointer }`, `positionName { id, name? }`, `positionMode { id, mode }`, `positionDelete { id }`.
+  `textEdit`, `textValue`, `jsonValue` and `valueDelete` name their holder as `entity` or `message` (`Ty::Sel`: a
+  header bit picks the id space, and the id is coded against that space's previous id). Every kind's header is below
+  128, so one byte.
+- Derived (Rust, at commit): a message's record (`MESSAGE`), its place among its parent's replies or its owner's
+  openings by (time, id) (`CHILD`, `ROOT`), its text (`MSG_TEXT`: the append is the text's first full value, and
+  edits and full values follow as for any text), its values and times (`MSG_VALUE`, `MSG_TIME`), a moved message's
+  parent (`MESSAGE_PARENT`), send keys per owner (`SEND_KEY`), the owner's chat search postings of its text, outside
+  keys both ways (`KEY_MAP`, `KEY_OF`), bookmarks (their record, name, mode; the message each is at, bookmarks per
+  message and per tree), and the next message, position and user ids (maxima). A following bookmark at a message
+  moves to a reply appended to it, in the append's own derivation.
+- Refused: an append whose id is taken, whose parent is missing or in another tree, or whose send key is stored in
+  that tree; a move below itself or into another tree; a delete of a message with replies or a bookmark at it (as
+  today's `deleteAlternative` refuses a labeled one); values of a missing message; a key naming two ids or an id with
+  two keys; a bookmark at a missing message, with a mode other than 1 (following) or 2 (pinned), or on a session's id.
+- Tests: a deterministic workload of every chat kind against a model, read back after commits, a clean reopen, a crash
+  (replay), and cleaning that copies live messages, values and bookmarks (`relocated_records > 0`); refusals write
+  nothing; a message's text replaced or edited leaves its append live and its search follows; record bytes.
+
+| choice | picked | reason |
+|---|---|---|
+| flags | one varint: `is_user` and `is_system` 2 bits each (false, true, absent, another value), `send_date` present 1 bit, `mes`, `extra` and `name` 2 bits each (the usual shape, absent, another value), `is_name` 2 bits, and 1 bit each for `original_avatar` and `force_avatar` derived from the speaker (`chat::FLAGS`) | the usual messages (a user's or a character's) are 0 or 1: one byte; absent and other values round-trip |
+| `send_date` and the generation times | `messageTime { message, field, delta }` from the append's time when the value is a canonical ISO string; JSON otherwise; nothing when equal to the append's time | a delta is 1–3 bytes against 24 for the string; equal costs nothing |
+| holder | `Ty::Sel` on the value kinds (one header bit), derived keys under their own structures (`MSG_TEXT`, `MSG_TEXT_EDIT`, `MSG_VALUE`) | no byte per record; ids coded against their own space's previous id |
+| message text | the append's `text` is the first full value of field `MES` | the text is written once; an edit is a `textEdit` like any other |
+| session on an append | optional | an append made by no session (an import, the conversion, an opening asserted on open) moves no pointer |
+| sibling order | (time, id) | today's (created_at, id); 5e numbers converted messages in that order, so ties keep it |
+| key map | one kind; the space in the header (`Sel` over message, session, user) | as answered; the id is coded against its space |
+| position slots | `id` | the binding adds `position` (the record's log position) to every record it reads |
+
+Measured (`chat_records_round_trip_their_bytes`): a reply appended right after its parent, with a 2-byte text, through
+a session: 12 bytes (header 1, id 1, parent 1, owner 1, time 2, text 3, flags 1, session 1, user 1). By the same
+encoding a 600-byte reply is 611 bytes, against design §6's ~620 and today's 14.3 frames (~58 KB) in 2 commits.
+
+Questions found for later pieces (behaviour or compat; not decided here):
+- `extra.branches` (today: at a fork, the names of the labels anywhere in each reply's subtree, a subtree walk per fork
+  on every load): what a fork shows under sessions and bookmarks, at a bounded cost.
+- `extra.bookmark_link` (today: the label on that message; upstream's checkpoints read it): which name it carries when
+  several bookmarks are at one message, and whether a following bookmark's moving pointer carries it.
+- Deleting a message a session's pointer or history names (history is kept in full); deleting a session.
+- An append's pointer move: today `addAlternatives` and `addOpeningAlternatives` add replies without changing the
+  shown one, `appendMessages` and graft change it; under sessions, which of these move the session's pointer.
+
 Where layer 1 goes: inside 5b, on the engine. Its own storage step (SQLite `state_changes`, saved states every 64th
 depth rebuilt lazily after an epoch bump) conflicts with the design: a structure caught up when read is what revision
 3 dropped (design Q-D7), and its migration step 6 is a background pass (CLAUDE.md: one-off scripts). The design and

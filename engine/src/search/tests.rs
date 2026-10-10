@@ -62,7 +62,7 @@ fn text_value(e: u64, code: u64, s: &str) -> Record {
     rec(
         "textValue",
         vec![
-            Value::Id(e),
+            Value::Sel(0, e),
             Value::Field(FieldRef::Code(code)),
             Value::Text(wtf8(s)),
         ],
@@ -518,7 +518,7 @@ fn random_edit(lib: &mut Lib, r: &mut Rng, docs: &[u64], i: u64) {
                 .commit_wait(vec![rec(
                     "textEdit",
                     vec![
-                        Value::Id(doc),
+                        Value::Sel(0, doc),
                         Value::Field(FieldRef::Code(test_codes::LIBRARY + 1)),
                         Value::UInt(a as u64),
                         Value::UInt((b - a) as u64),
@@ -755,7 +755,7 @@ fn a_field_edit_writes_only_its_changed_terms_and_other_kinds_write_no_postings(
     s.commit_wait(vec![rec(
         "textEdit",
         vec![
-            Value::Id(7),
+            Value::Sel(0, 7),
             Value::Field(FieldRef::Code(code)),
             Value::UInt(0),
             Value::UInt(5),
