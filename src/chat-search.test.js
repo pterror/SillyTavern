@@ -48,15 +48,26 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         assert.deepEqual(await found('even'), [two.session], 'a name is a prefix field');
         assert.deepEqual(await found('evening hello'), [], 'the name and the path each match the whole query or not at all');
 
-        // A name finds its session exactly, for the user who moved it in the tree.
-        const named = (/** @type {string} */ name, user = one.user) => chats.sessionsNamed({ tree: t, user, name });
-        assert.deepEqual(await named('Evening walk'), [two.session]);
-        assert.deepEqual(await named('evening walk'), []);
-        assert.deepEqual(await named('Evening walk', 'someone else'), []);
-        await chats.nameSession({ session: one.session, name: '!!!', actor: one });
-        assert.deepEqual(await named('!!!'), [one.session]);
+        // A name finds its session exactly; names are the store's, whoever asks.
+        const named = (/** @type {string} */ name) => chats.sessionNamed(name);
+        assert.equal(await named('Evening walk'), two.session);
+        assert.equal(await named('evening walk'), null);
+        assert.deepEqual(await chats.nameSession({ session: one.session, name: '!!!', actor: one }), { ok: true, name: '!!!' });
+        assert.equal(await named('!!!'), one.session);
+        // A name another session holds gets upstream's suffix, whichever user names it; its own name is kept.
+        assert.deepEqual(await chats.nameSession({ session: one.session, name: 'Evening walk', actor: { ...one, user: 'someone else' } }), { ok: true, name: 'Evening walk (1)' });
+        assert.equal(await named('Evening walk (1)'), one.session);
+        assert.equal(await named('!!!'), null);
+        assert.deepEqual(await chats.nameSession({ session: two.session, name: 'Evening walk', actor: one }), { ok: true, name: 'Evening walk' });
+        assert.deepEqual(await chats.nameSession({ session: two.session, name: 'Evening walk (1)', actor: one }), { ok: true, name: 'Evening walk (1) (1)' }, 'as getUniqueName() builds on the name given');
+        assert.deepEqual(await chats.nameSession({ session: one.session, name: 'Evening walk', actor: one }), { ok: true, name: 'Evening walk' });
+        assert.equal(await named('Evening walk'), one.session);
+        // The engine refuses a name another session holds.
+        const [sid] = await store.chatRead('ids', { space: 1, keys: [two.session] });
+        await assert.rejects(store.commit([{ kind: 'positionName', id: sid, name: 'Evening walk' }]));
         await chats.nameSession({ session: one.session, name: null, actor: one });
-        assert.deepEqual(await named('!!!'), []);
+        assert.equal(await named('Evening walk'), null);
+        await chats.nameSession({ session: two.session, name: 'Evening walk', actor: one });
 
         // Pages of one, read on through `next`.
         const first = await chats.searchSessions({ tree: t, search: 'hello', limit: 1 });

@@ -876,8 +876,8 @@ Done, in order (each section below has its details and choices):
 
 Left (in the order they build on each other):
 - Chat engine operations not built yet: resolving a chat name for routes taking one (by its UUID works now; the
-  exact lookup `sessionsNamed` is built, 5d); names unique per (user, tree) with upstream's suffix scheme on create
-  and rename (answered 10-11, 5d), not built.
+  exact lookup `sessionNamed` is built, 5d). Names are unique per store with upstream's suffix scheme (built, 5d
+  follow-up 4).
 - Compat identifiers wired at the cut (the header is sent, see "Built, the tab's session"): the answers'
   `characters[].chat`, `group.chat_id`, `getCurrentChatId()`, chat names in events (each `resolveSession`'s
   `identifier`), and the tab told its session is gone.
@@ -1618,8 +1618,12 @@ The session at the server (answered, coordinator, 10-03; corrected the same day,
   created with exactly that id on its first pointer move.
 - A tab with no session yet: the same deterministic (user, tree) identifier for the tree it is in, created on its
   first pointer move.
-- Routes taking a chat name resolve it per user as a session name or id; they need no tab. A name matching nothing
-  gets upstream's "not found" for a missing chat.
+- Routes taking a chat name resolve it as a session name or id; they need no tab. A name matching nothing gets
+  upstream's "not found" for a missing chat. Session names are unique per store (answered, coordinator, 10-11,
+  replacing "per (user, tree)"): each handle has its own store and a shared chat lives in its owner's, so the store
+  is upstream's user data directory; upstream's names were unique there per character, ours across trees. Every user
+  acting in the store shares the namespace, so no session owner is recorded, and a move (or another user's first
+  move) never makes a clash.
 
 Follows from those:
 - The (user, tree) entry holds the session that made the last move as well as the position, so "this user's last
@@ -1804,17 +1808,11 @@ row; the benches. Nothing routes to it: at the cut (5f) `/query` reads `lib.quer
 new `/api/worldinfo/search` `books.search`, the pair postings' route and setting are added, and the server runs
 `runPairPostings()` after listening. Follow-ups (10-11, in progress): list rows read narrow (done, below); pair lists driving a phrase's candidates
 (done, "Pairs driving the walk" below); the 10^6 bulk load under 300 s (done, "Bulk load under 300 s" below);
-session names unique per user (stopped, below); a character book entry's `group` and `automationId` searched; then
+session names unique per store (done, below); a character book entry's `group` and `automationId` searched; then
 chat search's substring scan on top of whole words (item 6, coordinator 10-11).
 
-Stop (10-11), session names unique per user (follow-up 4). Names are to be unique per user across trees, so a
-session moving into another tree never clashes. But a session has no one user: every move, append and choice
-carries the user who made it (design D8, D9), and nothing records a session's owner (its key record names no user).
-Today's exact lookup (`sessions::by_name`) keeps the sessions the asking user has moved in the tree. Not settled:
-whose names a session's name must differ from, and so which set the suffix scheme checks on a create or rename: the
-sessions of the user who first moved it (an owner, which would need recording), every user who has moved it (a
-rename then checks each of their sets, and a second user's first move could bring a clash), or the namer's (the
-user renaming it).
+Session names (follow-up 4): answered by the coordinator (unique per store) and built; see "Built, session names
+unique per store" below.
 
 Built, list rows read narrow (10-11, 5d follow-up 1; `library_read::entities_only`, `keys_many`, binding
 `libraryEntities(ids, only?)`; JS `listRowValues()`, `LibraryEngine.query`, `tagKeys`; tests
@@ -1898,12 +1896,18 @@ uid), with `total`, `totalExact` and a `cursor` (`s<score>:<entry>`) when more f
 The route (picked: `POST /api/worldinfo/search { name | avatar, search, limit, cursor }` with that answer) comes at
 the cut with the wiki's server-searched books (lorebook-wiki 4c). No labels: none was decided for entries.
 
-Built, sessions by exact name (10-11; `sessions::SESSION_NAMED`, `by_name`, chat read `sessionsNamed`,
-`ChatEngine.sessionsNamed({ tree, user, name })`; test in `src/chat-search.test.js`): one entry per named session,
-(name bytes, session), kept by `positionName` and a session's delete; the lookup reads the name's entries and keeps
-the sessions the user has moved in the tree (`USER_TREE_LAST`). The session-name postings fold case and accents and
-skip names without words (`!!!`), so the exact lookup has its own entries. Open for 5b's naming: a session moved into
-a tree where the user already has a session of the same name makes two; the lookup answers both.
+Built, sessions by exact name (10-11; `sessions::SESSION_NAMED`, `by_name`, chat read `sessionsNamed { name }`,
+`ChatEngine.sessionNamed(name)`; test in `src/chat-search.test.js`): one entry per named session, (name bytes,
+session), kept by `positionName` and a session's delete. The session-name postings fold case and accents and skip
+names without words (`!!!`), so the exact lookup has its own entries.
+
+Built, session names unique per store (follow-up 4, 10-11, as answered in 5b; `chat.rs` `PositionName`,
+`ChatEngine.nameSession`): the lookup reads the name's entry in the store, whoever asks and whatever tree the session
+is in (a route acting in another tree moves the session there, as a tab does). `nameSession` takes upstream's
+`getUniqueName()` scheme server-side: the name, then `name (1)`, `name (2)`, ... built on the name given (so
+`a (1)` taken gives `a (1) (1)`), up to 1000 tries (else `{ ok: false, reason: 'no free name' }`); it answers the
+name given, and checks and writes in one lane for the store. The engine refuses a session's `positionName` whose
+name another session holds, so no write path makes two. Bookmark names aren't session names and aren't checked.
 
 | choice | picked | reason |
 |---|---|---|
@@ -2078,8 +2082,9 @@ Answered (coordinator, 10-11):
 - A tag chip: shown in a row above the results. Clicking it adds the tag to the tag filter and removes from the
   search text the words that matched the tag's name; other words stay ("dragon knight" with chip "dragon" →
   filter tag dragon, search "knight").
-- Session names (for 5b's lookup by name): unique per (user, tree), as upstream's file names were per character;
-  creating or renaming to a taken name gets upstream's suffix scheme, so a name resolves to one session.
+- Session names (for 5b's lookup by name): unique per store (corrected 10-11; was "per (user, tree)", which a session
+  moving between trees breaks); creating or renaming to a taken name gets upstream's suffix scheme, so a name
+  resolves to one session.
 
 Settled from the plans (recorded by the 5d builder, 10-11):
 - Chat search (S5) matches whole words, with no last-word prefix: design 7.3 ("words looked up in that owner's
