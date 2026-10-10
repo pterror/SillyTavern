@@ -1797,7 +1797,7 @@ Left (handover, 10-11):
 **5d. search wired.**
 
 Status (10-11, handover): in progress. Built: the searched fields; the library's search with closed-quote phrases;
-chat search (below). Left, in order: world-info search; the exact session lookup by name for 5b; pair postings
+chat search; world-info search (below). Left, in order: the exact session lookup by name for 5b; pair postings
 with their setting; the chip row (the client); `bench-search-synth.mjs`; measurements. The `/query` route reads
 `lib.query({ search })` at the cut (5f).
 
@@ -1847,6 +1847,13 @@ test `src/chat-search.test.js`, native and wasm):
 |---|---|---|
 | a session's path | read whole per session (`path_to`, a point read a message), matches memoized per message | O(L) per session like opening it; no ancestor index to keep at commit |
 | a match | name or path, each the whole query | upstream's `chatInfo.match || hasTextMatch([file_id])` |
+
+Built, world-info search (10-11; `WorldInfoEngine.search`, `Store.search` with `scope: { book }`; test
+`tests/world-info-search.test.js`): `search({ name } | { character }, search, limit, cursor? })` answers a page of
+a world book's or a character's own book's entries, best first, each by its key in the book (a world book's: its
+uid), with `total`, `totalExact` and a `cursor` (`s<score>:<entry>`) when more follow; `'missing'` for no such book.
+The route (picked: `POST /api/worldinfo/search { name | avatar, search, limit, cursor }` with that answer) comes at
+the cut with the wiki's server-searched books (lorebook-wiki 4c). No labels: none was decided for entries.
 
 
 Built, the searched fields (10-11; `engine/src/store/searched.rs`, `search/index.rs` `update_fields`; test
