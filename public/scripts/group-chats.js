@@ -79,6 +79,8 @@ import {
     chatElement,
     ensureMessageMediaIsArray,
     requestChatOpen,
+    takeChatOpenAnswer,
+    chatOpenSendKeys,
 } from '../script.js';
 import { getCharacters, showCharacterSyncFailedToast, SYNC_REQUEST_TIMEOUT_MS, queryWithSortFallback } from './character-list.js';
 import { chat, chat_metadata } from './chat-state.js';
@@ -2414,7 +2416,7 @@ async function createGroup() {
  * @param {string} groupId Group ID
  * @returns {Promise<void>} Promise that resolves when the new group chat is created
  */
-export async function createNewGroupChat(groupId) {
+export async function createNewGroupChat(groupId, { replace = null } = {}) {
     const group = groupsStore.get(groupId);
 
     if (!group) {
@@ -2423,23 +2425,28 @@ export async function createNewGroupChat(groupId) {
 
     await clearChat({ clearData: true });
 
-    const response = await fetch('/api/groups/new-chat', {
+    // One request: the new chat, the one it replaces deleted, and the new one opened.
+    const response = await fetch('/api/chats/new', {
         method: 'POST',
         headers: getRequestHeaders(),
-        body: JSON.stringify({ id: group.id }),
+        body: JSON.stringify({ group_id: group.id, ...(replace ? { replace } : {}), send_keys: chatOpenSendKeys({ group_id: group.id }) }),
     });
     if (!response.ok) {
         toastr.error(t`The new chat was not created. Check the server console for details.`, t`Group chat could not be created`);
         console.error('Group chat could not be created', response);
         return;
     }
-    const { chat_id, chats } = await response.json();
+    const { chat_id, chats, deleted, opened } = await response.json();
     group.chats = chats;
+    group.chat_id = chat_id;
     updateChatMetadata({}, true);
     _setCurrentTarget(chat_id, null, { group_id: groupId });
     groupsStore.update(group.id, { chats: group.chats, chat_id: group.chat_id });
 
-    await getGroupChat(group.id);
+    await openGroupConversation(group.id, { opened: opened ? takeChatOpenAnswer({ group_id: group.id }, opened) : null });
+    for (const chatId of Array.isArray(deleted) ? deleted : []) {
+        await eventSource.emit(event_types.GROUP_CHAT_DELETED, chatId);
+    }
 }
 
 /**
@@ -2536,47 +2543,38 @@ export async function deleteGroupChatByName(groupId, chatName) {
         return;
     }
 
-    group.chats.splice(group.chats.indexOf(chatName), 1);
-
-    const response = await fetch('/api/chats/group/delete', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        // Required here, not just an optimization like it is on save/get: the chat has already been spliced
-        // out of `group.chats` above, so the server's reverse lookup from chat id can no longer find which
-        // group owns it, and without an owner there is no branch to unlabel.
-        body: JSON.stringify({ id: chatName, group_id: group.id }),
-    });
-
-    if (!response.ok) {
-        toastr.error(t`Check the server connection and reload the page to prevent data loss.`, t`Group chat could not be deleted`);
-        console.error('Group chat could not be deleted');
-        return;
-    }
-
-    // If the deleted chat was the current chat, switch to the last chat in the group
-    if (group.chat_id === chatName) {
-        if (group.chats.length) {
-            _setCurrentTarget(group.chats[group.chats.length - 1], null, { group_id: groupId });
-        } else {
-            const newChatResponse = await fetch('/api/groups/new-chat', {
-                method: 'POST',
-                headers: getRequestHeaders(),
-                body: JSON.stringify({ id: group.id }),
-            });
-            if (newChatResponse.ok) {
-                const { chat_id, chats } = await newChatResponse.json();
-                group.chats = chats;
-                _setCurrentTarget(chat_id, null, { group_id: groupId });
-            } else {
-                toastr.error(t`The replacement chat was not created. Check the server console for details.`, t`Group chat could not be created`);
-                console.error('Group chat could not be created', newChatResponse);
-            }
+    // The group's last chat is replaced by a new one, in one request.
+    if (group.chat_id === chatName && group.chats.length === 1) {
+        const response = await fetch('/api/chats/new', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ group_id: group.id, replace: chatName }),
+        });
+        if (!response.ok) {
+            toastr.error(t`The replacement chat was not created. Check the server console for details.`, t`Group chat could not be created`);
+            console.error('Group chat could not be created', response);
+            return;
         }
+        const { chat_id, chats } = await response.json();
+        _setCurrentTarget(chat_id, null, { group_id: groupId });
+        groupsStore.update(group.id, { chats, chat_id });
+    } else {
+        const response = await fetch('/api/chats/group/delete', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ id: chatName, group_id: group.id }),
+        });
+        if (!response.ok) {
+            toastr.error(t`Check the server connection and reload the page to prevent data loss.`, t`Group chat could not be deleted`);
+            console.error('Group chat could not be deleted');
+            return;
+        }
+        // The server moved the group's current chat when it was this one.
+        const { chats, chat_id } = await response.json();
+        if (group.chat_id === chatName) _setCurrentTarget(chat_id, null, { group_id: groupId });
+        groupsStore.update(group.id, { chats, chat_id });
     }
 
-    groupsStore.update(group.id, { chats: group.chats, chat_id: group.chat_id });
-
-    await saveGroupProperty(groupId, { chats: group.chats, chat_id: group.chat_id });
     await getCharacters({ silentGroups: true });
     await eventSource.emit(event_types.GROUP_CHAT_DELETED, chatName);
 }
@@ -2595,38 +2593,35 @@ export async function deleteGroupChat(groupId, chatId, { jumpToNewChat = true } 
         return;
     }
 
-    group.chats.splice(group.chats.indexOf(chatId), 1);
-
-    if (group.chat_id === chatId) {
-        updateChatMetadata({}, true);
-        _setCurrentTarget('', null, { group_id: groupId });
+    // The last chat is replaced by a new one, opened, in one request (createNewGroupChat() fires the event).
+    if (jumpToNewChat && group.chats.length === 1) {
+        await createNewGroupChat(groupId, { replace: chatId });
+        return;
     }
-
-    // group.chats/chat_id already mutated above, regardless of how the delete fetch below turns out (matches
-    // the existing behavior of not rolling the local state back on failure - only a toastr warning). Reported
-    // here rather than after openGroupChat()/createNewGroupChat() below, since those aren't reached when
-    // jumpToNewChat is false, but this local mutation still happened either way.
-    groupsStore.update(group.id, { chats: group.chats, chat_id: group.chat_id });
 
     const response = await fetch('/api/chats/group/delete', {
         method: 'POST',
         headers: getRequestHeaders(),
-        // See deleteGroupChatByName() - the chat is already out of `group.chats`, so the group id is the
-        // only thing left that can name the owner.
         body: JSON.stringify({ id: chatId, group_id: group.id }),
     });
 
-    if (response.ok) {
-        if (jumpToNewChat) {
-            if (group.chats.length) {
-                await openGroupChat(groupId, group.chats[group.chats.length - 1]);
-            } else {
-                await createNewGroupChat(groupId);
-            }
-        }
-
-        await eventSource.emit(event_types.GROUP_CHAT_DELETED, chatId);
+    if (!response.ok) {
+        toastr.warning(t`The chat could not be deleted. Check the server console for details.`, t`Group chat not deleted`);
+        return;
     }
+
+    const wasCurrent = group.chat_id === chatId;
+    const { chats, chat_id } = await response.json();
+    groupsStore.update(group.id, { chats, chat_id });
+    if (wasCurrent) {
+        updateChatMetadata({}, true);
+        _setCurrentTarget(chat_id, null, { group_id: groupId });
+    }
+    if (jumpToNewChat && chats.length) {
+        await openGroupChat(groupId, chats[chats.length - 1]);
+    }
+
+    await eventSource.emit(event_types.GROUP_CHAT_DELETED, chatId);
 }
 
 /**

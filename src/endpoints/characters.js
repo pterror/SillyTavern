@@ -1969,7 +1969,8 @@ router.post('/allow-global-styles', async function (request, response) {
  * @param {import('express').Request} request The HTTP request object (used for `request.user.directories`).
  * @param {string} avatarUrl Avatar filename of the character to delete.
  * @param {boolean} deleteChats Whether to also remove the character's chats directory.
- * @returns {Promise<{ok: true}|{ok: false, status: number}>}
+ * @returns {Promise<{ok: true, chats: string[]}|{ok: false, status: number}>} `chats`: with `deleteChats`, the names of
+ * the character's chats (each a `CHAT_DELETED` on the page).
  */
 async function deleteOneCharacter(request, avatarUrl, deleteChats) {
     if (avatarUrl !== sanitize(avatarUrl)) {
@@ -1984,6 +1985,7 @@ async function deleteOneCharacter(request, avatarUrl, deleteChats) {
     }
 
     const dir_name = avatarUrl.replace('.png', '');
+    const chats = deleteChats && dir_name ? (await listTreeBranches(request.user.directories, dir_name)).map(branch => branch.name) : [];
 
     if (fileExists) fs.unlinkSync(avatarPath);
     invalidateThumbnail(request.user.directories, 'avatar', avatarUrl);
@@ -2003,7 +2005,7 @@ async function deleteOneCharacter(request, avatarUrl, deleteChats) {
         }
     }
 
-    return { ok: true };
+    return { ok: true, chats };
 }
 
 router.post('/delete', validateAvatarUrlMiddleware, async function (request, response) {
@@ -2022,7 +2024,7 @@ router.post('/delete', validateAvatarUrlMiddleware, async function (request, res
                 continue;
             }
             const result = await deleteOneCharacter(request, avatarUrl, deleteChats);
-            results.push({ avatar_url: avatarUrl, ok: result.ok });
+            results.push(result.ok ? { avatar_url: avatarUrl, ok: true, chats: result.chats } : { avatar_url: avatarUrl, ok: false });
         }
         return response.send({ results });
     }

@@ -62,7 +62,6 @@ import { character_world_link } from './scripts/character-world-link.js';
 import {
     groupsStore,
     selected_group,
-    saveGroupField,
     is_group_generating,
     resetSelectedGroup,
     select_group_chats,
@@ -1679,21 +1678,27 @@ export async function selectCharacterByAvatar(avatar, { switchMenu = true } = {}
 
 
 async function delChat(chatfile) {
+    const name = chatfile.replace('.jsonl', '');
+    const avatar = getCurrentCharacter().avatar;
+    // Deleting the open chat opens the one the character moves to, in the same request.
+    const isCurrent = name === getCurrentCharacter().chat;
     const response = await fetch('/api/chats/delete', {
         method: 'POST',
         headers: getRequestHeaders(),
         body: JSON.stringify({
             chatfile: chatfile,
-            avatar_url: getCurrentCharacter().avatar,
+            avatar_url: avatar,
+            ...(isCurrent ? { open: true, send_keys: chatOpenSendKeys({ avatar_url: avatar }) } : {}),
         }),
     });
     if (response.ok === true) {
-        // choose another chat if current was deleted
-        const name = chatfile.replace('.jsonl', '');
-        if (name === getCurrentCharacter().chat) {
+        const answer = await response.json().catch(() => null);
+        if (isCurrent) {
             setChatMetadata({});
             _resetMetadataSaveSnapshot();
-            await replaceCurrentChat();
+            await clearChat({ clearData: true });
+            const opened = answer?.opened ? takeChatOpenAnswer({ avatar_url: avatar }, answer.opened) : null;
+            await openCharacterConversation({ opened });
         }
         await eventSource.emit(event_types.CHAT_DELETED, name);
     }
@@ -1757,7 +1762,7 @@ export async function deleteCharacterChatByName(characterId, fileName) {
  * never-touched character, or one whose card-only greeting has never been used, falls back to an
  * empty pointer here.
  */
-async function pointToFreshChat() {
+async function pointToFreshChat(replace = null) {
     _setCurrentTarget('', null);
     $('#selected_chat_pole').val('');
     setFormBaseline('#selected_chat_pole', String($('#selected_chat_pole').val()));
@@ -1767,7 +1772,20 @@ async function pointToFreshChat() {
     _setCurrentTarget(pointer, chat_metadata.integrity ?? null);
     $('#selected_chat_pole').val(pointer);
     setFormBaseline('#selected_chat_pole', String($('#selected_chat_pole').val()));
-    await saveActiveChat(getCurrentCharacter().avatar, pointer);
+    // One request: the character's chat moves to the new one, and the chat it replaces (if any) is deleted.
+    try {
+        const response = await fetch('/api/chats/new', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ avatar_url: getCurrentCharacter().avatar, chat: pointer, ...(replace ? { replace } : {}) }),
+        });
+        if (!response.ok) throw new Error(String(response.status));
+        const answer = await response.json();
+        for (const name of answer.deleted ?? []) await eventSource.emit(event_types.CHAT_DELETED, name);
+    } catch (error) {
+        console.error('Failed to start the new chat', error);
+        toastr.error(t`Failed to save active chat.`);
+    }
 }
 
 /**
@@ -12794,19 +12812,12 @@ export async function doNewChat({ deleteCurrentChat = false } = {}) {
 
     chat_file_for_del = getCurrentChatDetails()?.sessionName;
 
-    if (deleteCurrentChat) {
-        if (selected_group) {
-            // Every message already persisted itself directly via chatOp*() at its own call site - this
-            // chat isn't being resaved, just stamped as recently active, same as the solo branch below.
-            await saveGroupField(selected_group, { date_last_chat: Date.now() }, true, false);
-        } else {
-            charactersStore.update(getCurrentCharacter().avatar, { date_last_chat: Date.now() });
-        }
+    if (deleteCurrentChat && !selected_group) {
+        charactersStore.update(getCurrentCharacter().avatar, { date_last_chat: Date.now() });
     }
 
     if (selected_group) {
-        await createNewGroupChat(selected_group);
-        if (deleteCurrentChat) await deleteGroupChat(selected_group, chat_file_for_del, { jumpToNewChat: false }); // don't jump, new chat was already created and jumped to above
+        await createNewGroupChat(selected_group, { replace: deleteCurrentChat ? chat_file_for_del : null });
     } else {
         // Workstream 6: a brand-new conversation needs no name-minting step at all, client- or
         // server-side - it's just an empty tree under this character's anchor until the user
@@ -12814,8 +12825,7 @@ export async function doNewChat({ deleteCurrentChat = false } = {}) {
         // pointToFreshChat() for how the pointer is (or isn't) actually resolved.
         setChatMetadata({});
         _resetMetadataSaveSnapshot();
-        await pointToFreshChat();
-        if (deleteCurrentChat) await delChat(chat_file_for_del + '.jsonl');
+        await pointToFreshChat(deleteCurrentChat ? chat_file_for_del : null);
     }
 }
 
@@ -13083,14 +13093,6 @@ export async function deleteCharacter(characterKey, { deleteChats = true, [DELET
         return deleted;
     }
 
-    // Only needed when chats are actually being deleted (to fire per-chat CHAT_DELETED events below),
-    // so skip the fetch entirely otherwise. Fetched in parallel across characters since there's no batch endpoint for it.
-    const pastChatsByAvatar = new Map();
-    if (deleteChats) {
-        const pastChatsResults = await Promise.all(characters.map(character => getPastCharacterChats(character.avatar)));
-        characters.forEach((character, index) => pastChatsByAvatar.set(character.avatar, pastChatsResults[index]));
-    }
-
     const response = await fetch('/api/characters/delete', {
         method: 'POST',
         headers: getRequestHeaders(),
@@ -13106,6 +13108,8 @@ export async function deleteCharacter(characterKey, { deleteChats = true, [DELET
 
     const data = await response.json();
     const okAvatars = new Set((data.results ?? []).filter(entry => entry.ok).map(entry => entry.avatar_url));
+    /** The deleted characters' chats, by avatar, as the server named them. @type {Map<string, string[]>} */
+    const deletedChats = new Map((data.results ?? []).filter(entry => entry.ok).map(entry => [entry.avatar_url, Array.isArray(entry.chats) ? entry.chats : []]));
 
     for (const character of characters) {
         if (!okAvatars.has(character.avatar)) {
@@ -13119,9 +13123,7 @@ export async function deleteCharacter(characterKey, { deleteChats = true, [DELET
         select_rm_info('char_delete', character.name);
 
         if (deleteChats) {
-            const pastChats = pastChatsByAvatar.get(character.avatar) ?? [];
-            for (const chat of pastChats) {
-                const name = chat.file_name.replace('.jsonl', '');
+            for (const name of deletedChats.get(character.avatar) ?? []) {
                 await eventSource.emit(event_types.CHAT_DELETED, name);
             }
         }

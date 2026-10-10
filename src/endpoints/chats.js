@@ -819,40 +819,95 @@ router.post('/rename', validateAvatarUrlMiddleware, async function (request, res
     }
 });
 
+/**
+ * Deletes a character's chat (upstream's route). When it was the character's current chat, the character moves to its
+ * most recently active remaining chat (`activeChat`, '' when none remains). With `open`, the character's chat is then
+ * opened as /open opens it, answered as `opened`.
+ */
 router.post('/delete', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         if (!path.extname(request.body.chatfile)) {
             request.body.chatfile += '.jsonl';
         }
 
-        const dirName = String(request.body.avatar_url).replace('.png', '');
+        const directories = request.user.directories;
+        const avatar = String(request.body.avatar_url);
+        const ownerId = avatar.replace('.png', '');
         const chatName = String(request.body.chatfile).replace(/\.jsonl$/, '');
 
-        const activeChats = await getCharacterActiveChatsByIds(request.user.directories, [dirName]);
-        const wasActiveChat = activeChats[dirName] === chatName;
-
-        if (!await hasSavedChats(request.user.directories, dirName)) {
+        if (!await hasSavedChats(directories, ownerId)) {
             return response.sendStatus(400);
         }
 
-        const deleted = await deleteBranch(request.user.directories, dirName, chatName);
-        if (!deleted) {
+        // Absent when the character has no current chat.
+        const current = /** @type {string|undefined} */ ((await getCharacterActiveChatsByIds(directories, [avatar]))[avatar]) ?? null;
+        const deleted = await deleteBranch(directories, ownerId, chatName);
+        if (deleted === false) {
             return response.sendStatus(400);
         }
-        if (!wasActiveChat) {
-            return response.send({ ok: true });
+        const opened = async () => request.body.open === true
+            ? (await openChatAnswer(request, { avatar_url: avatar, send_keys: request.body.send_keys })).answer
+            : undefined;
+        // The pointer names the chat by its name or by the message it is at.
+        if (current === null || (current !== chatName && current !== deleted)) {
+            return response.send({ ok: true, opened: await opened() });
         }
         // Same recency measure listRecentBranches() already sorts by: last_activity (a branch's
         // leaf message), falling back to the label's own creation time for a branch with no
         // activity of its own yet.
-        const remaining = await listBranches(request.user.directories, dirName);
+        const remaining = await listBranches(directories, ownerId);
         remaining.sort((a, b) => b.last_activity - a.last_activity);
         const activeChat = remaining.length ? remaining[0].id : null;
-        await setCharacterActiveChat(request.user.directories, dirName, activeChat);
-        return response.send({ ok: true, activeChat: activeChat ?? '' });
+        await setCharacterActiveChat(directories, avatar, activeChat);
+        return response.send({ ok: true, activeChat: activeChat ?? '', opened: await opened() });
     } catch (error) {
         console.error(error);
         return response.sendStatus(500);
+    }
+});
+
+/**
+ * Starts a new chat. A character's chat moves to `chat` (the greeting the page shows for a new chat: its stored row's
+ * id, or '' for a card greeting with no row); a group gets a new chat id, made its current one, and the answer carries
+ * it opened (`opened`, as /open answers). With `replace`, the chat it replaces is deleted, as /delete or /group/delete
+ * deletes one, and named in `deleted`.
+ */
+router.post('/new', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const directories = request.user.directories;
+        const replace = typeof request.body.replace === 'string' && request.body.replace !== '' ? request.body.replace : null;
+        /** @type {string[]} */
+        const deleted = [];
+
+        if (request.body.group_id) {
+            const groupId = String(request.body.group_id);
+            const made = await withGroupLock(directories, groupId, async () => {
+                const group = readGroupFile(directories, groupId);
+                if (!group) return null;
+                const chatId = String(Date.now());
+                const chats = Array.isArray(group.chats) ? group.chats.filter(id => id !== replace) : [];
+                group.chats = [...chats, chatId];
+                group.chat_id = chatId;
+                if (replace !== null && await deleteBranch(directories, groupId, replace) !== false) deleted.push(replace);
+                await writeGroupFile(directories, group);
+                return { chatId, chats: group.chats };
+            });
+            if (!made) return response.sendStatus(404);
+            const opened = (await openChatAnswer(request, { group_id: groupId, send_keys: request.body.send_keys })).answer;
+            return response.send({ ok: true, chat_id: made.chatId, chats: made.chats, deleted, opened });
+        }
+
+        const avatar = String(request.body.avatar_url || '');
+        if (!avatar) return response.sendStatus(400);
+        const ownerId = avatar.replace('.png', '');
+        const chat = typeof request.body.chat === 'string' && request.body.chat !== '' ? request.body.chat : null;
+        const current = /** @type {string|undefined} */ ((await getCharacterActiveChatsByIds(directories, [avatar]))[avatar]) ?? null;
+        if (current !== chat) await setCharacterActiveChat(directories, avatar, chat);
+        if (replace !== null && replace !== chat && await deleteBranch(directories, ownerId, replace) !== false) deleted.push(replace);
+        return response.send({ ok: true, deleted });
+    } catch (error) {
+        console.error('Error starting a new chat:', error);
+        return response.status(500).send({ error: true });
     }
 });
 
@@ -1771,26 +1826,33 @@ router.post('/group/delete', async (request, response) => {
             return response.sendStatus(400);
         }
 
+        /** The group's chats and current chat after the delete, answered so the page needn't decide them. */
+        const groupAfter = /** @type {{ chats?: string[], chat_id?: string }} */ ({});
         // Same lock as /api/groups/new-chat's read-modify-write of `chats`, which would otherwise write the id back.
         const outcome = await withGroupLock(request.user.directories, group.id, async () => {
             // A chat with no saved messages has no labelled branch, but its id is still in `chats`.
             const branchDeleted = await deleteBranch(request.user.directories, group.id, id);
             const fullGroup = /** @type {{ chats?: string[] } | null} */ (readGroupFile(request.user.directories, group.id));
             if (!fullGroup || !Array.isArray(fullGroup.chats) || !fullGroup.chats.includes(id)) {
-                return branchDeleted ? 'ok' : 'not_deleted';
+                return branchDeleted !== false ? 'ok' : 'not_deleted';
             }
             fullGroup.chats = fullGroup.chats.filter(chatId => chatId !== id);
+            // The group's current chat moves to its last remaining one ('' when none remains).
+            const groupFile = /** @type {{ chats: string[], chat_id?: string }} */ (fullGroup);
+            if (groupFile.chat_id === id) groupFile.chat_id = groupFile.chats[groupFile.chats.length - 1] ?? '';
             try {
                 await writeGroupFile(request.user.directories, fullGroup);
             } catch (err) {
                 console.error(`Could not remove deleted chat id "${id}" from group ${group.id}:`, err);
                 return 'list_not_saved';
             }
+            groupAfter.chats = groupFile.chats;
+            groupAfter.chat_id = groupFile.chat_id ?? '';
             return 'ok';
         });
 
         if (outcome === 'ok') {
-            return response.send({ ok: true });
+            return response.send({ ok: true, ...groupAfter });
         }
         if (outcome === 'list_not_saved') {
             return response.status(500).send({ error: 'The chat was deleted, but it could not be removed from the group\'s chat list. See the server console for details.' });
