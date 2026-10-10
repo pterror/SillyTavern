@@ -866,9 +866,10 @@ export function getTextgenTypeTokenizer(type) {
  * @param {number} padding Added to each non-empty count.
  * @param {boolean} async
  * @param {boolean} [promptStart] Every text begins the prompt a generation sends, and is counted as that prompt is.
+ * @param {boolean} [recount] Every count is taken again, and the server's stored ones are replaced.
  * @returns {{ counts: number[], tokenizer: CurrentTokenizer|null }|Promise<{ counts: number[], tokenizer: CurrentTokenizer|null }>}
  */
-function countTexts(strings, padding, async, promptStart = false) {
+function countTexts(strings, padding, async, promptStart = false, recount = false) {
     const cacheSuffix = promptStart ? '^' : '';
     const results = new Array(strings.length).fill(0);
     const tokenizer = getRememberedTokenizer();
@@ -880,7 +881,7 @@ function countTexts(strings, padding, async, promptStart = false) {
         if (typeof str !== 'string' || !str.length) {
             continue;
         }
-        const cached = tokenizer ? countCache.get(`${tokenizer.key}-${getStringHash(str)}+${padding}${cacheSuffix}`) : undefined;
+        const cached = tokenizer && !recount ? countCache.get(`${tokenizer.key}-${getStringHash(str)}+${padding}${cacheSuffix}`) : undefined;
         if (typeof cached === 'number') {
             results[i] = cached;
         } else {
@@ -912,7 +913,7 @@ function countTexts(strings, padding, async, promptStart = false) {
         });
         return { counts: results, tokenizer: answered };
     };
-    const body = { state, texts: pending.map(i => strings[i]), padding, ...(promptStart ? { promptStart } : {}) };
+    const body = { state, texts: pending.map(i => strings[i]), padding, ...(promptStart ? { promptStart } : {}), ...(recount ? { recount } : {}) };
     return async ? postCurrent('count', body, true).then(apply) : apply(postCurrent('count', body, false));
 }
 
@@ -929,6 +930,41 @@ export async function getTokenCountsAsyncBatch(strings, padding = 0) {
     }
     const { counts } = await countTexts(strings, padding, true);
     return counts;
+}
+
+/**
+ * The token counts of messages' texts for their counters: those not counted yet in one request, which the server
+ * answers from its token-count store, tokenizing only what it hasn't stored. A chat-completion api counts each text
+ * as one message, as upstream's counters do.
+ * @param {string[]} texts
+ * @param {{ recount?: boolean }} [options] `recount`: take every count again, replacing the server's stored ones.
+ * @returns {Promise<number[]>} Same order and length as `texts`; 0 for an empty text.
+ */
+export async function getMessageTokenCounts(texts, { recount = false } = {}) {
+    if (!isOpenAiApi()) {
+        const { counts } = await countTexts(texts, 0, true, false, recount);
+        return counts;
+    }
+    const { state, stateKey, tokenizer } = getMessageCountContext();
+    const results = new Array(texts.length).fill(0);
+    /** @type {number[]} */
+    const pending = [];
+    texts.forEach((text, i) => {
+        if (typeof text !== 'string' || !text.length) return;
+        const cached = tokenizer && !recount ? countCache.get(`${tokenizer.key}-${getStringHash(JSON.stringify({ content: text }))}`) : undefined;
+        if (typeof cached === 'number') {
+            results[i] = cached;
+        } else {
+            pending.push(i);
+        }
+    });
+    if (pending.length === 0) return results;
+    const data = await postCurrent('count', { state, messages_each: pending.map(i => ({ content: texts[i] })), ...(recount ? { recount } : {}) }, true);
+    const counts = Array.isArray(data?.counts) ? data.counts : null;
+    pending.forEach((i, j) => {
+        results[i] = applyMessageCount(stateKey, { content: texts[i] }, counts ? { count: counts[j], tokenizer: data.tokenizer } : null);
+    });
+    return results;
 }
 
 /**

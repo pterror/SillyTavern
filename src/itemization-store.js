@@ -2,6 +2,7 @@ import zlib from 'node:zlib';
 import { promisify } from 'node:util';
 
 import { chatPathNodeIds, getMessageTreeDb } from './message-tree-db.js';
+import { clearItemizationsSync, deleteItemizationsSync, writeItemizationSync } from './itemization-rows.js';
 
 const zstdCompress = promisify(zlib.zstdCompress);
 const zstdDecompress = promisify(zlib.zstdDecompress);
@@ -94,8 +95,7 @@ export async function recordItemization(directories, nodeId, entry) {
     const data = await encode(stored);
     if (!nodeExistsSync(db, nodeId)) return 'no-message';
     if (sameBytes(storedBytesSync(db, nodeId), data)) return 'unchanged';
-    db.run('INSERT OR REPLACE INTO itemizations (node_id, data, has_raw_prompt) VALUES (@nodeId, @data, @hasRawPrompt)',
-        { nodeId, data, hasRawPrompt: stored.rawPrompt ? 1 : 0 });
+    writeItemizationSync(db, nodeId, data, Boolean(stored.rawPrompt));
     return 'written';
 }
 
@@ -120,8 +120,7 @@ export async function updateItemizationFields(directories, nodeId, fields) {
         if (now == null) return 'no-itemization';
         if (!sameBytes(now, Buffer.from(before))) continue;
         if (sameBytes(now, data)) return 'unchanged';
-        db.run('UPDATE itemizations SET data = @data, has_raw_prompt = @hasRawPrompt WHERE node_id = @nodeId',
-            { nodeId, data, hasRawPrompt: merged.rawPrompt ? 1 : 0 });
+        writeItemizationSync(db, nodeId, data, Boolean(merged.rawPrompt));
         return 'written';
     }
     throw new Error('the itemization kept changing while it was being updated');
@@ -182,7 +181,7 @@ export async function deleteChatItemizations(directories, ownerId, chat) {
     let removed = 0;
     db.transaction(() => {
         removed = 0;
-        for (const nodeId of ids) removed += db.run('DELETE FROM itemizations WHERE node_id = @nodeId', { nodeId }).changes;
+        for (const nodeId of ids) removed += deleteItemizationsSync(db, [nodeId]);
     });
     return removed;
 }
@@ -194,5 +193,5 @@ export async function deleteChatItemizations(directories, ownerId, chat) {
 export async function clearItemizations(directories) {
     const db = await getMessageTreeDb(directories);
     if (!db) throw new Error('the message store is unavailable');
-    db.run('DELETE FROM itemizations');
+    clearItemizationsSync(db);
 }

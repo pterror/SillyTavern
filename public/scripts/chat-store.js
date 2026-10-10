@@ -175,6 +175,20 @@ export function updateMessage(mesId, updates) {
     return result;
 }
 
+/**
+ * Sets `extra` fields that are derived for display and never stored (a token count), without the message counting as
+ * changed against what was last stored.
+ * @param {number} mesId
+ * @param {Record<string, unknown>} values
+ */
+export function setUnstoredExtra(mesId, values) {
+    const old = _chatAt(mesId);
+    if (!old) return;
+    const wasClean = old.node_id != null && _messageSnapshots.get(old.node_id) === old;
+    const updated = updateMessage(mesId, { extra: { ...(old.extra ?? {}), ...values } });
+    if (wasClean && updated) _messageSnapshots.set(old.node_id, updated);
+}
+
 // Write path for nested fields; updateMessage() only shallow-merges, so writing through `extra`
 // via `{ ...old }` would still throw. Copies only the nodes along `path`, sharing the rest.
 // `path`/`value` address arbitrary nested structure inside a ChatMessage (any depth, array or

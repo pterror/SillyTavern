@@ -555,6 +555,15 @@ await testCase('/current/count: chat-completion messages count like /openai/coun
     assert.deepEqual({ id, name, model, basis, key }, { id: tokenizers.OPENAI, name: 'gpt-4o', model: 'gpt-4o', basis: 'local', key: 'openai|openai||gpt-4o|openai' });
 });
 
+await testCase('/current/count: messages_each counts each chat-completion message on its own', async () => {
+    const state = { api: 'openai', source: 'openai', model: 'gpt-4o' };
+    const each = [{ content: 'Hello there.' }, { content: 'A second, longer message to count.' }];
+    const counted = await postCurrent('count', { state, messages_each: each });
+    const one = await postCurrent('count', { state, messages: [each[0]] });
+    const two = await postCurrent('count', { state, messages: [each[1]] });
+    assert.deepEqual(counted.counts, [one.count, two.count]);
+});
+
 await testCase('/current/*: the answer carries the server-built `dropped` wording for the browser to fill in', async () => {
     const unmapped = (await postCurrent('tokenizer', { state: unmappedState })).tokenizer;
     assert.deepEqual(unmapped.messages, {
