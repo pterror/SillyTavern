@@ -888,6 +888,28 @@ Builds:
 - JS: record building for every chat action; the compat identifiers above; upstream's shapes assembled on read
   (`[header, ...messages]`, `swipes`, `extra`); the token-count cache (Q-C6).
 
+Record shapes (answered, coordinator, 10-10, from "A write costs what actually changed", the stage 2 rule that a
+kind's schema is fixed once written to a real store, and compat). Kinds 6–8 (`pointerMove`, `forkSelection`,
+`messageAppend`) were revised here, before any real store held them:
+- Message ids: still open (see the stop below).
+- `messageAppend` is changed in place. A user message's append carries its send key (16 B) as a slot, which the
+  server's repeat check reads. `extra`: each top-level key is its own value (per-key records, as card extensions are),
+  written only when it changes; unknown keys are kept as they came (JSON per key).
+- Session ids are UUIDs (v7 for a new session, v5 for the deterministic one), mapped to integers by a key record
+  written when the session first exists (on its first pointer move). The integer slots stay.
+- Users: a handle maps to an integer by a key record in the store, created on that user's first write there. A chat
+  lives in one handle's store (the owner's), and other users acting in it are recorded by their handle, mapped in
+  that store. The v5 id uses the handle string.
+- Positions: separate small kinds, each writing only what changes: create (id, mode, creating session, user,
+  starting pointer), name (id, text), mode (id, mode), delete (id). Pointer moves stay `pointerMove`.
+
+Stop (10-10): the coordinator's message-id answer (converted messages keep their text ids through a key mapping;
+new messages' external id is the integer's decimal string; the JS layer reads a decimal id as an integer) holds only
+if no old id can be a decimal string. The code allowed one. From 7be404771 (08-25) until 27ea2c71b (08-28),
+`saveChat` stored a message under its `msg.node_id || newId()`: any string the request's message carried. Since then
+ids come only from `newId()` (`crypto.randomUUID()`), or are existing rows' ids. Whether a store written in those
+days holds a non-UUID id can only be seen in the user's data, which this work doesn't read.
+
 Where layer 1 goes: inside 5b, on the engine. Its own storage step (SQLite `state_changes`, saved states every 64th
 depth rebuilt lazily after an epoch bump) conflicts with the design: a structure caught up when read is what revision
 3 dropped (design Q-D7), and its migration step 6 is a background pass (CLAUDE.md: one-off scripts). The design and
