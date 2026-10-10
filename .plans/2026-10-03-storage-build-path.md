@@ -870,12 +870,12 @@ Done, in order (each section below has its details and choices):
   below it.
 - Openings and alternatives; `endPathAt` and the kind `pointerRoot`; back and forward and card greetings chosen
   provisionally (answered stop); session and bookmark lists, naming, modes, deletes, and `integrity` (see the "Built"
-  sections below); send keys, itemizations' JS and a member's messages changing speaker; the whole-chat save.
+  sections below); send keys, itemizations' JS and a member's messages changing speaker; the whole-chat save; the
+  people adapter.
 
 Left (in the order they build on each other):
 - Chat engine operations not built yet: finding a session by its name for routes taking a chat name (by its UUID
   works now; by name reads the session-name postings, 5d).
-- People: an adapter from `LibraryEngine` to `ChatEngine`'s speakers (characters by id and avatar; groups' trees).
 - Compat identifiers wired: `X-ST-Session` in `getRequestHeaders()` (`none` for a tab with no session), the
   answers' `characters[].chat`, `group.chat_id`, `getCurrentChatId()`, chat names in events, and the tab told
   its session is gone.
@@ -1428,6 +1428,12 @@ Built, the whole-chat save (10-10; `src/chat-engine.js`, test `src/chat-engine.t
 |---|---|---|
 | a `bookmark_link` bookmark's mode | following | the engine's default for a new bookmark; 5e defaults labels to following when D24 doesn't say |
 | one commit per save | messages, choices, moves and bookmarks in one commit, the metadata after it | the state change hangs on the last message, which may be new in that commit; `mergeMetadata` reads the state there first |
+
+Built, people (10-10; `src/chat-people.js`, test `src/chat-people.test.js`): `libraryPeople(lib)` gives `ChatEngine`
+its speakers from `LibraryEngine` on the same store (characters by entity id and by avatar, each with its name now)
+and `trees([{ avatar } | { group }])`, a character's or group's tree being its entity id. Tested: a character renamed
+in the library shows its new name in its own tree and in a group's, with nothing written to the messages. Left: a
+speaker read loads the whole entity (`libraryEntities`); reading only the name would cut it, as for list rows (5a).
 
 Where layer 1 goes: inside 5b, on the engine. Its own storage step (SQLite `state_changes`, saved states every 64th
 depth rebuilt lazily after an epoch bump) conflicts with the design: a structure caught up when read is what revision
