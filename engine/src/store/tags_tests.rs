@@ -857,3 +857,35 @@ fn queued_moves_read_in_order_until_popped() {
     s.close();
     let _ = fs::remove_dir_all(&dir);
 }
+
+fn meta_value(name: &str, json: Option<&str>) -> Record {
+    rec(
+        "metaValue",
+        vec![text(name), json.map_or(Value::Absent, text)],
+    )
+}
+
+#[test]
+fn a_meta_value_reads_back_until_removed() {
+    let dir = temp_dir("meta");
+    let mut s = Store::open_in(&dir, SMALL, pool()).unwrap();
+    let names = vec![b"a".to_vec(), b"b".to_vec()];
+    assert_eq!(s.meta(&names).unwrap(), vec![None, None]);
+    s.commit_wait(vec![
+        meta_value("a", Some("1")),
+        meta_value("b", Some("\"x\"")),
+    ])
+    .unwrap();
+    s.commit_wait(vec![meta_value("a", Some("2"))]).unwrap();
+    assert_eq!(
+        s.meta(&names).unwrap(),
+        vec![Some(b"2".to_vec()), Some(b"\"x\"".to_vec())]
+    );
+    s.commit_wait(vec![meta_value("b", None)]).unwrap();
+    s.close();
+    drop(s);
+    s = Store::open_in(&dir, SMALL, pool()).unwrap();
+    assert_eq!(s.meta(&names).unwrap(), vec![Some(b"2".to_vec()), None]);
+    s.close();
+    let _ = fs::remove_dir_all(&dir);
+}

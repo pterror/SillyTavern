@@ -70,3 +70,12 @@ export function valuesBefore(base, count) {
     }
     return values.reverse();
 }
+
+/**
+ * @param {string} a
+ * @param {string} b
+ * @returns {number} SQLite's BINARY order on the UTF-8 bytes.
+ */
+export function compareNameKeys(a, b) {
+    return Buffer.compare(Buffer.from(a, 'utf8'), Buffer.from(b, 'utf8'));
+}

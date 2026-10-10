@@ -589,6 +589,19 @@ impl ToNapiValue for TagPassStatus {
     }
 }
 
+pub struct MetaValues(Vec<Option<Vec<u8>>>);
+
+impl ToNapiValue for MetaValues {
+    unsafe fn to_napi_value(raw_env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
+        let list = val
+            .0
+            .into_iter()
+            .map(|v| v.map(text_to_js).transpose())
+            .collect::<Result<Vec<Option<JsText>>>>()?;
+        unsafe { Vec::to_napi_value(raw_env, list) }
+    }
+}
+
 pub struct TagCounts(Vec<(i64, bool)>);
 
 impl ToNapiValue for TagCounts {
@@ -1324,6 +1337,19 @@ impl Store {
     )]
     pub fn tag_pass<'env>(&self, env: &'env Env) -> Result<Object<'env>> {
         derived(env, &self.store, |s| s.tag_pass().map(TagPassStatus))
+    }
+
+    /// Each name's value as its `metaValue` record holds it (JSON text), or null for none.
+    #[napi(
+        ts_args_type = "names: string[]",
+        ts_return_type = "Promise<(string | null)[]>"
+    )]
+    pub fn meta<'env>(&self, env: &'env Env, names: Vec<Unknown>) -> Result<Object<'env>> {
+        let names = names
+            .into_iter()
+            .map(|v| string("name", v))
+            .collect::<Result<Vec<_>>>()?;
+        derived(env, &self.store, move |s| s.meta(&names).map(MetaValues))
     }
 
     /// How many tags nothing carries, and up to `limit` of them in alphabetical order.

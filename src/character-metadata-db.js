@@ -8,7 +8,7 @@ import { isMainThread } from 'node:worker_threads';
 import _ from 'lodash';
 import sanitize from 'sanitize-filename';
 
-import { color, delay, generateTimestamp, getConfigValue, mapWithConcurrency, parseCreateDateToEpochMs } from './util.js';
+import { color, delay, getConfigValue, mapWithConcurrency, parseCreateDateToEpochMs } from './util.js';
 import { ProgressLog } from './progress-log.js';
 import { changedValues, writeRowIfChanged } from './row-values.js';
 import extract from 'png-chunks-extract';
@@ -24,7 +24,8 @@ import { isReadOnlyMode } from './read-only-mode.js';
 import { legacySettingsPath, settingsDirPath } from './settings-store.js';
 import { normalizeGroupRecord, tagEntityTypeOf } from './group-id.js';
 import { expandTagFilter, resolveTagId, resolveTagIds, NO_TAG_DELETIONS } from './tag-deletions.js';
-import { tagDerivedColumns, valuesAfter, valuesBefore } from './tag-order.js';
+import { compareNameKeys, tagDerivedColumns, valuesAfter, valuesBefore } from './tag-order.js';
+import { DEFAULT_TAG_NAMES, moveImportedSettingsFile, readSettingsTagsSource } from './settings-tags-source.js';
 export { tagDerivedColumns };
 import { SEARCH_WORK_CAP, SEARCH_WALK_WINDOW } from './endpoints/search-walk.js';
 import { orderKey, permute, unpermute } from './random-order.js';
@@ -6004,8 +6005,6 @@ const SETTINGS_TAGS_IMPORT_BATCH_SIZE = 500;
 
 // Written when getEntry() creates the database file, so only a store's first settings tags import decides the seed.
 const TAGS_SEED_PENDING_KEY = 'tags_seed_pending';
-// Upstream's DEFAULT_TAGS (public/scripts/tags.js), which upstream shows when settings have no `tags` key.
-const DEFAULT_TAG_NAMES = ['Plain Text', 'OpenAI', 'W++', 'Boostyle', 'PList', 'AliChat'];
 
 /**
  * On a store with TAGS_SEED_PENDING_KEY, decides whether it gets upstream's default tags, and clears the key in the
@@ -6039,24 +6038,6 @@ function seedDefaultTagsIfPendingSync(entry, settings) {
     }
 }
 
-/**
- * @param {string} filePath
- * @returns {{ missing: true } | { error: string } | { text: string, value: unknown }}
- */
-function readSettingsTagsSource(filePath) {
-    let text;
-    try {
-        text = fs.readFileSync(filePath, 'utf8');
-    } catch (err) {
-        if (/** @type {any} */ (err)?.code === 'ENOENT') return { missing: true };
-        return { error: String(/** @type {any} */ (err)?.message ?? err) };
-    }
-    try {
-        return { text, value: JSON.parse(text) };
-    } catch (err) {
-        return { error: String(/** @type {any} */ (err)?.message ?? err) };
-    }
-}
 
 /**
  * Creates each tag of `tags` whose id has no `tags` row and no tag_deletions mark, as createTagDefinition() does:
@@ -6181,46 +6162,6 @@ async function importSettingsTagsSource(entry, label, source, totals) {
     return imported.failedKeys === 0;
 }
 
-/**
- * Moves an imported settings key file out of the settings store, to `<file>.migrated`, or to a timestamped name when
- * that is taken. Never overwrites a file, and leaves the file where it is if it no longer holds what was imported.
- * @param {string} filePath
- * @param {string} importedText
- * @returns {boolean} Whether the file is gone from its place.
- */
-function moveImportedSettingsFile(filePath, importedText) {
-    const current = readSettingsTagsSource(filePath);
-    if ('missing' in current) return true;
-    if (!('text' in current) || current.text !== importedText) {
-        console.warn(color.yellow(`[character-metadata] ${filePath} changed after it was imported; left in place, imported again next boot.`));
-        return false;
-    }
-    const stamp = generateTimestamp();
-    for (let attempt = 0; ; attempt++) {
-        const target = attempt === 0 ? `${filePath}.migrated` : `${filePath}.migrated-${stamp}${attempt > 1 ? `-${attempt}` : ''}`;
-        try {
-            fs.copyFileSync(filePath, target, fs.constants.COPYFILE_EXCL);
-        } catch (err) {
-            const code = /** @type {any} */ (err)?.code;
-            if (code === 'EEXIST') continue;
-            if (code === 'ENOENT') return true;
-            console.error(`[character-metadata] Imported ${filePath} but could not copy it to ${target}; left in place:`, /** @type {any} */ (err)?.message);
-            return false;
-        }
-        try {
-            if (fs.readFileSync(target, 'utf8') !== importedText || fs.readFileSync(filePath, 'utf8') !== importedText) {
-                fs.rmSync(target, { force: true });
-                console.warn(color.yellow(`[character-metadata] ${filePath} changed after it was imported; left in place, imported again next boot.`));
-                return false;
-            }
-            fs.rmSync(filePath);
-        } catch (err) {
-            console.error(`[character-metadata] Imported ${filePath} and copied it to ${target}, but could not remove it; left in place:`, /** @type {any} */ (err)?.message);
-            return false;
-        }
-        return true;
-    }
-}
 
 // Imports settings' `tags` and `tag_map` into the tag store: from a legacy settings.json not yet split, then from
 // the key files settings/tags.json + settings/tag_map.json. It reads the files itself: going through the settings
@@ -7895,14 +7836,6 @@ function tagQueryPassSync(db) {
     return pass !== null && pass.at?.phase !== 'drain' ? { id: pass.id, mode: pass.mode } : null;
 }
 
-/**
- * @param {string} a
- * @param {string} b
- * @returns {number} SQLite's BINARY order on the UTF-8 bytes.
- */
-function compareNameKeys(a, b) {
-    return Buffer.compare(Buffer.from(a, 'utf8'), Buffer.from(b, 'utf8'));
-}
 
 /**
  * Compares two positions of one sort, without their rowids.

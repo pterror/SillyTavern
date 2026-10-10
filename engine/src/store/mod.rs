@@ -641,6 +641,11 @@ impl Store {
         self.derived(|v| tags::queue(v, after, limit))
     }
 
+    /// Each name's `metaValue` JSON, or None.
+    pub fn meta(&self, names: &[Vec<u8>]) -> StoreResult<Vec<Option<Vec<u8>>>> {
+        self.derived(|v| kinds::meta(v, names))
+    }
+
     /// The reorder pass's record and counts.
     pub fn tag_pass(&self) -> StoreResult<tags::PassStatus> {
         self.derived(tags::pass_status)
