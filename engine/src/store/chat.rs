@@ -914,6 +914,13 @@ impl Deriver for PositionName {
                 Value::Text(t) => Some(t.as_slice()),
                 _ => None,
             };
+            // Session names are unique in the store (its users share them, as upstream's chat files in a user
+            // data directory): a name another session holds is refused.
+            if let Some(n) = name
+                && sessions::by_name(view, n)?.iter().any(|&s| s != p)
+            {
+                return Err(StoreError::Refused("the session name is taken".into()));
+            }
             let old = super::searched::position_name(view, p)?;
             super::searched::session_named(view, out, p, old.as_deref(), name)?;
             if let Some(o) = &old {

@@ -31,6 +31,9 @@ export const SESSION_NAMESPACE = 'b3c3d5a0-6b5e-4f61-9d2e-5a0c1f7e9e21';
 /** Bookmark modes. */
 export const MODE = Object.freeze({ following: 1, pinned: 2 });
 
+/** Names `nameSession()` tries before giving up, as upstream's `getUniqueName()`'s `maxTries`. */
+const SESSION_NAME_TRIES = 1000;
+
 const DECIMAL = /^(0|[1-9][0-9]*)$/;
 
 /** State change author kinds (`state.rs`), and the bit naming a variable. */
@@ -338,21 +341,17 @@ export class ChatEngine {
     }
 
     /**
-     * The sessions named exactly `name` that a user has moved in a tree (their UUIDs): what a route taking a chat
-     * name resolves it to (names are unique per user and tree, so normally one).
-     * @param {object} p
-     * @param {bigint} p.tree
-     * @param {string} p.user The user's handle.
-     * @param {string} p.name
-     * @returns {Promise<string[]>}
+     * The session named exactly `name` (its UUID), or null: what a route taking a chat name resolves it to. Names
+     * are unique in the store, which is the owner's: every user acting in it shares them, as upstream's chat file
+     * names in a user data directory, so a session moving between trees keeps its name and never clashes.
+     * @param {string} name
+     * @returns {Promise<string | null>}
      */
-    async sessionsNamed({ tree, user, name }) {
-        const [uid] = await this.store.chatRead('ids', { space: SPACE.user, keys: [user] });
-        if (uid === null) return [];
-        const ids = await this.store.chatRead('sessionsNamed', { user: uid, tree, name });
-        if (ids.length === 0) return [];
-        const rows = await this.store.chatRead('sessions', { ids });
-        return rows.flatMap((/** @type {any} */ r) => (r ? [r.key] : []));
+    async sessionNamed(name) {
+        const ids = await this.store.chatRead('sessionsNamed', { name });
+        if (ids.length === 0) return null;
+        const [row] = await this.store.chatRead('sessions', { ids: [ids[0]] });
+        return row?.key ?? null;
     }
 
     // ---- reads ----
@@ -1837,22 +1836,39 @@ export class ChatEngine {
     }
 
     /**
-     * Names a session (null: no name). Nothing is written when it already has that name.
+     * Names a session (null: no name). A name another session holds gets upstream's suffix (`getUniqueName()`:
+     * `name`, then `name (1)`, `name (2)`, ... up to 1000 tries). Answers the name given; nothing is written when the
+     * session already has it.
      * @param {object} p
      * @param {string} p.session
      * @param {string | null} p.name
      * @param {Actor} p.actor
+     * @returns {Promise<{ ok: true, name: string | null } | { ok: false, reason: 'no free name' }>}
      */
     nameSession({ session, name, actor }) {
-        return this.serialized(`session:${session}`, async () => {
+        // Names are checked and written in one lane for the store, so two sessions never take the same one.
+        return this.serialized('session-names', () => this.serialized(`session:${session}`, async () => {
             const records = [];
             const { session: sid } = await this.actorIds({ ...actor, session }, records);
+            let free = name;
+            if (name !== null) {
+                free = null;
+                for (let i = 0; i < SESSION_NAME_TRIES; i++) {
+                    const candidate = i === 0 ? name : `${name} (${i})`;
+                    const held = await this.store.chatRead('sessionsNamed', { name: candidate });
+                    if (held.every((/** @type {bigint} */ s) => s === sid)) {
+                        free = candidate;
+                        break;
+                    }
+                }
+                if (free === null) return { ok: false, reason: 'no free name' };
+            }
             const [now] = await this.store.chatRead('sessions', { ids: [sid] });
-            if ((now?.name ?? null) === name) return { ok: true };
-            records.push({ kind: 'positionName', id: sid, ...(name === null ? {} : { name }) });
+            if ((now?.name ?? null) === free) return { ok: true, name: free };
+            records.push({ kind: 'positionName', id: sid, ...(free === null ? {} : { name: free }) });
             await this.store.commit(records);
-            return { ok: true };
-        });
+            return { ok: true, name: free };
+        }));
     }
 
     /**
