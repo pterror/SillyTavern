@@ -1651,9 +1651,10 @@ Follows from those:
 - Measured: device and derived bytes of a one-entry edit, against today's (the book's manifest rewritten and its
   directory listed, O(E), `worldinfo.js:219-257`): O(changed bytes) + one sync, independent of E.
 
-Status (10-11, handover): in progress. Landed: 1fa821e57 (the stale search test: since 38e89f5df an assign also moves
-the entity in the assignment change feed, 2 entries; the test now counts them), the stop below (answered), and the
-pieces listed under "Built" as they land.
+Status (10-11, handover): **built behind the cut** (6f297bdb1 books, entries and links; e35eb4f63 the world-info
+layer and embedded books; 9d2918224 the chat-bound lorebook by id; 787fee81d measured, a large book's stack overflow
+fixed). Also 1fa821e57 (the stale search test: since 38e89f5df an assign also moves the entity in the assignment change
+feed, 2 entries; the test now counts them). Nothing routes to it; what is left is under "Left" below.
 
 Answered (coordinator, 10-11; compat: upstream's meaning, behaviour: maximally intuitive, Data safety):
 - Entry search: 5d builds it with the other search wiring; 5c stores entries only. Fields and weights follow
