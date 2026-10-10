@@ -1550,7 +1550,9 @@ impl Store {
     /// - `entries { book, after?, limit }`: `{ entries: [{ id, position }], more }`, a book's entries in place order;
     /// - `resolved { ids }`: each book as its forwards resolve it, `{ id, key, defined }` or null;
     /// - `links { ids }`: each character's linked book, or null;
-    /// - `numbers { book }`: `{ freeKey, maxIndex }`.
+    /// - `numbers { book }`: `{ lastPosition, freeKey, maxIndex }`;
+    /// - `linkers { book, after?, limit }`: `{ ids, more }`, the characters linking the book itself, in id order;
+    /// - `resolving { book }`: the book and every unresolved book resolving as it.
     #[napi(
         ts_args_type = "op: string, args: object",
         ts_return_type = "Promise<any>"
@@ -1599,6 +1601,21 @@ impl Store {
             "numbers" => {
                 let book = req_integer(a, "book")?;
                 Box::new(move |s| s.chat_read(|v| b::book_numbers(v, book)).map(JsTree))
+            }
+            "linkers" => {
+                let (book, after, limit) = (
+                    req_integer(a, "book")?,
+                    opt_integer(a, "after")?,
+                    req_integer(a, "limit")? as usize,
+                );
+                Box::new(move |s| {
+                    s.chat_read(|v| b::linkers_page(v, book, after, limit))
+                        .map(JsTree)
+                })
+            }
+            "resolving" => {
+                let book = req_integer(a, "book")?;
+                Box::new(move |s| s.chat_read(|v| b::resolving_page(v, book)).map(JsTree))
             }
             other => return Err(invalid(format!("no world read {other}"))),
         };

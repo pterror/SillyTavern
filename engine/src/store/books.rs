@@ -745,3 +745,37 @@ pub fn book_numbers(view: &View, book: u64) -> Result<Js, StoreError> {
         ("maxIndex", max_index(view, book)?.map_or(Js::Null, Js::Num)),
     ]))
 }
+
+/// Up to `limit` characters linking `book` itself (not through forwards) after the id `after`: `{ ids, more }`.
+pub fn linkers_page(
+    view: &View,
+    book: u64,
+    after: Option<u64>,
+    limit: usize,
+) -> Result<Js, StoreError> {
+    let prefix = key::id(LINKED, book);
+    let start = match after {
+        Some(a) => key::ids(LINKED, book, a + 1),
+        None => prefix.clone(),
+    };
+    let found = view.scan(&start, &key::prefix_end(&prefix), limit + 1)?;
+    let more = found.len() > limit;
+    let mut ids = Vec::new();
+    for (k, _) in found.into_iter().take(limit) {
+        let mut at = prefix.len();
+        ids.push(Js::Big(
+            get_u64(&k, &mut at).ok_or_else(|| err("a linked key doesn't decode"))?,
+        ));
+    }
+    Ok(Js::Obj(vec![
+        ("ids", Js::Arr(ids)),
+        ("more", Js::Bool(more)),
+    ]))
+}
+
+/// `book` and every unresolved book resolving as it.
+pub fn resolving_page(view: &View, book: u64) -> Result<Js, StoreError> {
+    Ok(Js::Arr(
+        resolving_as(view, book)?.into_iter().map(Js::Big).collect(),
+    ))
+}
