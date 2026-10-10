@@ -9,6 +9,7 @@ import { textEdit, wtf8Length } from './text-edit.js';
 import { itemField, pushAll, storedValues, valueRecords } from './entity-values.js';
 import { FIELD, TAG_KEY_PREFIX, TYPE } from './library-codes.js';
 import { bookKey } from './world-info-keys.js';
+import { LIBRARY_LABELS, searchClauses } from './search-clauses.js';
 import { SLOT, WorldInfoEngine, isEntryList } from './world-info-engine.js';
 import { groupDigestContentHash, groupDigestFavHash, groupDigestTagIdsHash, normalizeFav, normalizeTagIds } from '../public/scripts/hash-utils.js';
 
@@ -58,6 +59,18 @@ const GROUP_READ_KEYS = new Set(['id', 'fav', 'tag_ids', 'date_added', 'create_d
 export const HASH = Object.freeze({ identity: 0, content: 1, avatar: 2, avatarIdentity: 3 });
 
 /** Sort key codes of `Store.libraryPage`. */
+/**
+ * A relevance page's cursor (`s<score>:<entity>`, the page's last hit) as the engine's `after`.
+ * @param {string} cursor
+ * @returns {{ score: number, doc: bigint } | null}
+ */
+function parseRelevanceCursor(cursor) {
+    const m = /^s([^:]+):(\d+)$/.exec(cursor);
+    if (!m) return null;
+    const score = Number(m[1]);
+    return Number.isFinite(score) ? { score, doc: BigInt(m[2]) } : null;
+}
+
 const SORT_KEYS = Object.freeze({ name: 0, create_date: 1, date_added: 2, date_last_chat: 3, chat_size: 4, data_size: 5 });
 
 const EXTENSION_PREFIX = 'ext:';
@@ -647,9 +660,14 @@ export class LibraryEngine {
      * @param {boolean} [params.includeCreatorNotes]
      * @param {boolean} [params.wantHidden] Also `hidden` and `approxHidden`, as `/query`'s `want: 'hidden'`.
      * @param {number} [params.cap]
+     * @param {string} [params.search] Only the characters and groups the search string matches (`searchClauses()`
+     *   with the library's labels); with `sortField: 'search'` best match first. The answer then also holds
+     *   `tagMatches` (up to 5 tags whose names match the search, best first: `{ id, name, carriers }`) and
+     *   `tagMatchesExact` (every tag was weighed).
      */
     async query(params) {
-        const { tags, fav, world, ranges, excludeIds, ids, sortField, sortOrder, seed, offset = 0, limit = 500, cursor, wantRows = true, wantTotal = true, wantHashes = false, wantHidden = false, groupsOnly = false, includeGroups = true, includeCreatorNotes = false, cap = 20_000 } = params;
+        const { tags, fav, world, ranges, excludeIds, ids, sortField, sortOrder, seed, offset = 0, limit = 500, cursor, wantRows = true, wantTotal = true, wantHashes = false, wantHidden = false, groupsOnly = false, includeGroups = true, includeCreatorNotes = false, cap = 20_000, search } = params;
+        const clauses = typeof search === 'string' ? searchClauses(search, LIBRARY_LABELS) : [];
         // Upstream's "N hidden": every entity of the kinds listed (every character, and every group with groups)
         // less the rows on this page.
         const hiddenOf = async (/** @type {number} */ shown) => {
@@ -705,13 +723,34 @@ export class LibraryEngine {
         else if (Object.hasOwn(SORT_KEYS, sortField ?? '')) q.sort = { key: SORT_KEYS[/** @type {keyof typeof SORT_KEYS} */ (sortField)], desc };
         else q.sort = { key: SORT_KEYS.name, desc: false };
         if (typeof cursor === 'string' && cursor.startsWith('e')) q.cursor = Buffer.from(cursor.slice(1), 'base64url');
-        const page = await this.store.libraryPage(q);
+        const relevance = clauses.length > 0 && sortField === 'search';
+        let page;
+        /** @type {Record<string, unknown>} */
+        let found = {};
+        if (clauses.length > 0) {
+            const after = relevance && typeof cursor === 'string' ? parseRelevanceCursor(cursor) : null;
+            if (relevance) delete q.sort;
+            const s = await this.store.librarySearch({ ...q, clauses, relevance, ...(after ? { after } : {}) });
+            const relevanceCursor = relevance && s.more && s.ids.length > 0
+                ? `s${s.scores[s.scores.length - 1]}:${s.ids[s.ids.length - 1]}`
+                : undefined;
+            const tagEntities = await this.entities(s.tags.map(t => t.tag));
+            found = {
+                tagMatches: s.tags.map((t, i) => ({ id: tagEntities[i]?.key, name: t.name, carriers: t.carriers })).filter(t => t.id !== undefined),
+                tagMatchesExact: s.tagsExact,
+            };
+            page = { ...s, cursor: relevance ? undefined : s.cursor, relevanceCursor, more: relevance ? false : s.more };
+        } else {
+            page = await this.store.libraryPage(q);
+        }
         const entities = /** @type {StoredEntity[]} */ ((await this.entities(page.ids)).filter(e => e !== null));
         const out = {
             total: wantTotal ? page.total : undefined,
             approxTotal: wantTotal ? !page.totalExact : false,
             ...(page.cursor ? { cursor: `e${page.cursor.toString('base64url')}` } : {}),
+            ...(page.relevanceCursor ? { cursor: page.relevanceCursor } : {}),
             ...(page.more ? { more: true } : {}),
+            ...found,
         };
         const groups = entities.filter(e => e.type === TYPE.group);
         const groupTags = new Map((await this.tagKeys(groups)).map((t, i) => [groups[i].id, t]));

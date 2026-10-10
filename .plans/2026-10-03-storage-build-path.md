@@ -1796,10 +1796,40 @@ Left (handover, 10-11):
 
 **5d. search wired.**
 
-Status (10-11, handover): in progress. Built: the searched fields (below). Left, in order: the query binding with
-sort keys, filters and the new scopes, and the library's `/query` search; chat search; world-info search; the exact
-session lookup by name for 5b; closed-quote phrases and pair postings with their setting; the chip row;
-`bench-search-synth.mjs`; measurements.
+Status (10-11, handover): in progress. Built: the searched fields; the library's search with closed-quote phrases
+(below). Left, in order: chat search; world-info search; the exact session lookup by name for 5b; pair postings
+with their setting; the chip row (the client); `bench-search-synth.mjs`; measurements. The `/query` route reads
+`lib.query({ search })` at the cut (5f).
+
+Built, the library's search (10-11; `engine/src/store/library_search.rs`, `library_read::page_with`,
+`search::query::{DocCheck, Matching}`, binding `librarySearch`; JS `src/search-clauses.js`, `LibraryEngine.query({
+search })`; tests `store/library_search_tests.rs`, `tests/library-engine-search.test.js`):
+- `query({ search, sortField, ... })` takes `/query`'s parameters plus the search string; `sortField: 'search'` is
+  best match first, any other the list's order. The answer is the list's, plus `tagMatches` (`{ id, name, carriers
+  }`, at most 5, as `Found::tags` ranks them) and `tagMatchesExact`. A relevance page's cursor is `s<score>:<entity>`
+  (the page's last hit); without one, `offset` hits are skipped.
+- `searchClauses()` parses the string (closed `"…"` → `quoted`; an unclosed quote takes the rest of the string as one
+  phrase whose last word is a prefix; `label:` / `-label:`; today's labels plus `member(s):` and `id:`; `tag:` the
+  membership filter). The engine's `Clause::quoted` makes a closed-quote phrase's last word whole.
+- Relevance: the search runs with the list's filter as search filters: its tags and ids lead, the rest (kinds, fav,
+  lorebook, ranges, folders) is checked per document (`Filter::Check`, the list's `Checker`). A list order: a search
+  with at most min(cap, √(page · library)) matches, counted exactly, is read whole and its matches paged as listed
+  ids (exact total); otherwise the list's order is walked, each entity checked against the search (`Matching`,
+  random access) under the list's work cap; the total is the search's.
+- Found: an empty sum of scores is -0.0 in Rust, which orders below the 0.0 a cursor comes back as, so a page of a
+  query with only filters (`tag:riders`) repeated forever; scores are now +0.0.
+- Tests: three filters × six clauses (words, prefixes, an unclosed and two closed phrases) against a model, every
+  page through `after` and through cursors by name both ways, favourites first and random; a walk past the few; a
+  tag's chip; in JS, eight searches (labels, a negation, `tag:`, `members:`) in relevance and four list orders, each
+  list order equal to the list's own pages of the matches as ids; a write, an edit and a delete found by the next
+  query.
+
+| choice | picked | reason |
+|---|---|---|
+| sorted searches | matches read whole when few, else the order walked with a check | design 7.3's √(P·N); reuses the list's orders, cursors and random spaces, so a searched page orders exactly as an unsearched one |
+| the list's filter in relevance | a per-document check after the search's own filters | the search leads with its postings; the check is the list page's, so both agree on what passes |
+| relevance cursor | the last hit's score and id | the engine's `After::Score`; no state kept between pages |
+
 
 Built, the searched fields (10-11; `engine/src/store/searched.rs`, `search/index.rs` `update_fields`; test
 `store/searched_tests.rs`):

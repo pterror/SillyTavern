@@ -24,7 +24,8 @@ use crate::search::Scope;
 use crate::search::query::{After, Clause, Filter, Found, Limits, Order, Query};
 use crate::store::kinds::key;
 use crate::store::{
-    Store as Inner, StoreConfig, StoreError, StoreResult, library, library_read, tags,
+    Store as Inner, StoreConfig, StoreError, StoreResult, library, library_read, library_search,
+    tags,
 };
 
 fn invalid(msg: String) -> Error {
@@ -842,6 +843,36 @@ fn tag_query_from_js(q: &Object) -> Result<tags::Query> {
     })
 }
 
+/// A searched page of the library list as JavaScript sees it.
+pub struct LibrarySearched(library_search::Searched);
+
+impl ToNapiValue for LibrarySearched {
+    unsafe fn to_napi_value(raw_env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
+        let env = Env::from_raw(raw_env);
+        let p = val.0;
+        let mut obj = Object::new(&env)?;
+        obj.set("ids", p.ids)?;
+        obj.set("scores", p.scores)?;
+        obj.set("total", p.total as f64)?;
+        obj.set("totalExact", p.total_exact)?;
+        obj.set("more", p.more)?;
+        if let Some(c) = p.cursor {
+            obj.set("cursor", Buffer::from(c))?;
+        }
+        let mut tags = Vec::with_capacity(p.tags.len());
+        for t in p.tags {
+            let mut o = Object::new(&env)?;
+            o.set("tag", t.tag)?;
+            o.set("name", text_to_js(t.name)?)?;
+            o.set("carriers", t.carriers as f64)?;
+            tags.push(o);
+        }
+        obj.set("tags", tags)?;
+        obj.set("tagsExact", p.tags_exact)?;
+        unsafe { Object::to_napi_value(raw_env, obj) }
+    }
+}
+
 /// A page of the library list as JavaScript sees it.
 pub struct LibraryPage(library_read::Page);
 
@@ -942,8 +973,9 @@ impl ToNapiValue for LibraryEntities {
     }
 }
 
-fn library_query_from_js(q: &Object) -> Result<library_read::Query> {
-    use library_read::{Filter, Query, RangeField, Sort};
+/// `sorted`: the query needs a sort (a relevance search has none; its page is read as by name).
+fn library_query_from_js(q: &Object, sorted: bool) -> Result<library_read::Query> {
+    use library_read::{Filter, RangeField, Sort};
     let tags = |name: &str| ids_arg(name, q.get(name)?).map(Option::unwrap_or_default);
     let mut ranges = Vec::new();
     for r in q.get::<Vec<Object>>("ranges")?.unwrap_or_default() {
@@ -979,9 +1011,20 @@ fn library_query_from_js(q: &Object) -> Result<library_read::Query> {
         ids: ids_arg("ids", q.get("ids")?)?,
         not_ids: tags("notIds")?,
     };
-    let s: Object = q
-        .get("sort")?
-        .ok_or_else(|| invalid("a library page needs a sort".into()))?;
+    let s: Option<Object> = q.get("sort")?;
+    let Some(s) = s.filter(|_| sorted) else {
+        if sorted {
+            return Err(invalid("a library page needs a sort".into()));
+        }
+        return library_query_rest(
+            q,
+            filter,
+            Sort::Key {
+                sort: library::BY_NAME,
+                desc: false,
+            },
+        );
+    };
     let desc = s.get::<bool>("desc")?.unwrap_or(false);
     let sort = if let Some(k) = s.get::<Unknown>("key")? {
         let key = integer("key", k)?;
@@ -1002,13 +1045,21 @@ fn library_query_from_js(q: &Object) -> Result<library_read::Query> {
             "a sort is { key }, { fav: true } or { seed }".into(),
         ));
     };
+    library_query_rest(q, filter, sort)
+}
+
+fn library_query_rest(
+    q: &Object,
+    filter: library_read::Filter,
+    sort: library_read::Sort,
+) -> Result<library_read::Query> {
     let num = |name: &str, default: u64| -> Result<u64> {
         match q.get::<Unknown>(name)? {
             Some(v) => integer(name, v),
             None => Ok(default),
         }
     };
-    Ok(Query {
+    Ok(library_read::Query {
         filter,
         sort,
         offset: num("offset", 0)?,
@@ -1061,22 +1112,7 @@ fn ids_arg(name: &str, v: Option<Vec<Unknown>>) -> Result<Option<Vec<u64>>> {
         .transpose()
 }
 
-fn query_from_js(q: &Object) -> Result<Query> {
-    let scope = match q.get::<Unknown>("scope")? {
-        None => return Err(invalid("a search needs a scope".into())),
-        Some(v) if v.get_type()? == ValueType::String => match String::from_unknown(v)?.as_str() {
-            "library" => Scope::LIBRARY,
-            "tags" => Scope::TAGS,
-            other => return Err(invalid(format!("no search scope {other}"))),
-        },
-        Some(v) => {
-            let o = Object::from_unknown(v)?;
-            let owner = o.get::<Unknown>("chat")?.ok_or_else(|| {
-                invalid("a search scope is 'library', 'tags' or { chat: owner }".into())
-            })?;
-            Scope::chat(integer("chat", owner)?)
-        }
-    };
+fn clauses_from_js(q: &Object, scope: Scope) -> Result<Vec<Clause>> {
     let nfields = scope.fields().len() as u64;
     let mut clauses = Vec::new();
     for c in q.get::<Vec<Object>>("clauses")?.unwrap_or_default() {
@@ -1106,6 +1142,33 @@ fn query_from_js(q: &Object) -> Result<Query> {
             quoted: c.get::<bool>("quoted")?.unwrap_or(false),
         });
     }
+    Ok(clauses)
+}
+
+fn query_from_js(q: &Object) -> Result<Query> {
+    let scope = match q.get::<Unknown>("scope")? {
+        None => return Err(invalid("a search needs a scope".into())),
+        Some(v) if v.get_type()? == ValueType::String => match String::from_unknown(v)?.as_str() {
+            "library" => Scope::LIBRARY,
+            "tags" => Scope::TAGS,
+            "sessions" => Scope::SESSIONS,
+            other => return Err(invalid(format!("no search scope {other}"))),
+        },
+        Some(v) => {
+            let o = Object::from_unknown(v)?;
+            if let Some(owner) = o.get::<Unknown>("chat")? {
+                Scope::chat(integer("chat", owner)?)
+            } else if let Some(book) = o.get::<Unknown>("book")? {
+                Scope::book(integer("book", book)?)
+            } else {
+                return Err(invalid(
+                    "a search scope is 'library', 'tags', 'sessions', { chat: owner } or { book }"
+                        .into(),
+                ));
+            }
+        }
+    };
+    let clauses = clauses_from_js(q, scope)?;
     let mut filters = Vec::new();
     if let Some(f) = q.get::<Object>("filters")? {
         if let Some(t) = ids_arg("allTags", f.get("allTags")?)? {
@@ -1656,9 +1719,45 @@ impl Store {
         ts_return_type = "Promise<{ ids: bigint[], total?: number, totalExact: boolean, more: boolean, cursor?: Buffer }>"
     )]
     pub fn library_page<'env>(&self, env: &'env Env, query: Object) -> Result<Object<'env>> {
-        let q = library_query_from_js(&query)?;
+        let q = library_query_from_js(&query, true)?;
         derived(env, &self.store, move |s| {
             s.library_page(&q).map(LibraryPage)
+        })
+    }
+
+    /// A page of the library list searched: `libraryPage`'s query plus `clauses` (as `search` takes them, in the
+    /// library scope) and `relevance: true` for best match first (then `after: { score, doc }`, the last hit of
+    /// the page before; `sort` is ignored). Resolves with `{ ids, scores, total, totalExact, more, cursor?, tags,
+    /// tagsExact }`: `scores` in relevance order, `cursor` in a list order, `tags` the tags whose names match.
+    #[napi(
+        ts_args_type = "query: object",
+        ts_return_type = "Promise<{ ids: bigint[], scores: number[], total: number, totalExact: boolean, more: boolean, cursor?: Buffer, tags: { tag: bigint, name: string, carriers: number }[], tagsExact: boolean }>"
+    )]
+    pub fn library_search<'env>(&self, env: &'env Env, query: Object) -> Result<Object<'env>> {
+        let relevance = query.get::<bool>("relevance")?.unwrap_or(false);
+        let q = library_query_from_js(&query, !relevance)?;
+        let clauses = clauses_from_js(&query, Scope::LIBRARY)?;
+        let ordered = if relevance {
+            let after = match query.get::<Object>("after")? {
+                None => None,
+                Some(a) => {
+                    let score: f64 = a
+                        .get("score")?
+                        .ok_or_else(|| invalid("after needs a score".into()))?;
+                    let doc = integer(
+                        "doc",
+                        a.get::<Unknown>("doc")?
+                            .ok_or_else(|| invalid("after needs a doc".into()))?,
+                    )?;
+                    Some((score, doc))
+                }
+            };
+            library_search::Ordered::Relevance { after }
+        } else {
+            library_search::Ordered::List
+        };
+        derived(env, &self.store, move |s| {
+            s.library_search(&q, &clauses, ordered).map(LibrarySearched)
         })
     }
 

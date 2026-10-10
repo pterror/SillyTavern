@@ -258,7 +258,11 @@ impl Checker {
     /// `tags`: every tag's name. Keeps the best `keep` matches.
     pub fn new(q: &Query, tags: &BTreeMap<u64, Vec<u8>>, keep: usize) -> Checker {
         let scope = q.scope;
-        let last = q.clauses.iter().rposition(|c| !tokens(&c.text).is_empty());
+        let last = q
+            .clauses
+            .iter()
+            .rposition(|c| !tokens(&c.text).is_empty())
+            .filter(|&i| !q.clauses[i].quoted);
         let tags_field = (scope == Scope::LIBRARY)
             .then(|| scope.fields().iter().position(|d| d.name == "tags"))
             .flatten()
@@ -352,6 +356,7 @@ impl Checker {
                     ids.contains(&id)
                 }
                 Filter::NotIds(ids) => !ids.contains(&id),
+                Filter::Check(_) => unimplemented!("the reference has no document checks"),
             };
             if !ok {
                 return;
@@ -474,7 +479,7 @@ pub fn tag_matches(
             occurs(
                 &toks,
                 &t,
-                i == last && char_len(t.last().unwrap()) >= GRAM_MIN,
+                i == last && !c.quoted && char_len(t.last().unwrap()) >= GRAM_MIN,
             )
         };
         if !clauses
