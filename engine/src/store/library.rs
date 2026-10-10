@@ -15,7 +15,8 @@
 use super::StoreError;
 use super::derive::{Deriver, Loc, Out, View};
 use super::kinds::{
-    bytes, dead, drop_text, field, id, key, loc_bytes, parse_loc, text_value, version,
+    Holder, bytes, dead, drop_text, drop_text_of, field, id, key, loc_bytes, parse_loc, text_value,
+    version,
 };
 use super::tags;
 use crate::keyspace::val::{counter_value, get_bytes, get_u64, put_bytes, put_u64};
@@ -846,7 +847,21 @@ pub struct JsonValue;
 
 impl Deriver for JsonValue {
     fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
-        let (e, f) = (id(rec, 0), field(rec, 1));
+        let (h, f) = (Holder::of(rec, 0), field(rec, 1));
+        let e = match h {
+            Holder::Entity(e) => e,
+            Holder::Message(m) => {
+                super::chat::require_message(view, m)?;
+                drop_text_of(view, out, h, f)?;
+                super::chat::drop_time(view, out, m, f)?;
+                let k = h.value_key(f);
+                if let Some(b) = view.get(&k)? {
+                    dead(out, parse_loc(&b)?);
+                }
+                out.put(k, loc_bytes(at));
+                return Ok(());
+            }
+        };
         if drop_text(view, out, e, f)?.is_some() {
             text_changed(view, out, e, f, None)?;
         }
@@ -859,12 +874,12 @@ impl Deriver for JsonValue {
         tags::field_written(view, out, e, at, f, tags::Written::Json(bytes(rec, 2)))
     }
 
+    fn partition(&self, rec: &Record) -> u64 {
+        Holder::of(rec, 0).id()
+    }
+
     fn is_live(&self, rec: &Record, pos: u64, view: &View) -> Result<bool, StoreError> {
-        live_at(
-            view,
-            &key::field(key::VALUE, id(rec, 0), field(rec, 1)),
-            pos,
-        )
+        live_at(view, &Holder::of(rec, 0).value_key(field(rec, 1)), pos)
     }
 
     fn repoint(
@@ -878,7 +893,7 @@ impl Deriver for JsonValue {
         repoint_at(
             view,
             out,
-            &key::field(key::VALUE, id(rec, 0), field(rec, 1)),
+            &Holder::of(rec, 0).value_key(field(rec, 1)),
             from,
             to,
         )
@@ -887,7 +902,11 @@ impl Deriver for JsonValue {
 
 /// Clears a value of `json` kind from (e, f) before a text value takes its place.
 pub fn drop_json(view: &View, out: &mut Out, e: u64, f: &FieldRef) -> Result<(), StoreError> {
-    let k = key::field(key::VALUE, e, f);
+    drop_json_of(view, out, Holder::Entity(e), f)
+}
+
+pub fn drop_json_of(view: &View, out: &mut Out, h: Holder, f: &FieldRef) -> Result<(), StoreError> {
+    let k = h.value_key(f);
     if let Some(b) = view.get(&k)? {
         dead(out, parse_loc(&b)?);
         out.del(k);
@@ -899,14 +918,27 @@ pub struct ValueDelete;
 
 impl Deriver for ValueDelete {
     fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
-        let (e, f) = (id(rec, 0), field(rec, 1));
+        let (h, f) = (Holder::of(rec, 0), field(rec, 1));
         dead(out, at);
+        let e = match h {
+            Holder::Entity(e) => e,
+            Holder::Message(m) => {
+                super::chat::require_message(view, m)?;
+                drop_text_of(view, out, h, f)?;
+                super::chat::drop_time(view, out, m, f)?;
+                return drop_json_of(view, out, h, f);
+            }
+        };
         if drop_text(view, out, e, f)?.is_some() {
             text_changed(view, out, e, f, None)?;
         }
         drop_json(view, out, e, f)?;
         version(out, e, at);
         tags::field_written(view, out, e, at, f, tags::Written::Gone)
+    }
+
+    fn partition(&self, rec: &Record) -> u64 {
+        Holder::of(rec, 0).id()
     }
 
     fn is_live(&self, _: &Record, _: u64, _: &View) -> Result<bool, StoreError> {

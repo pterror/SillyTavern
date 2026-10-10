@@ -211,6 +211,9 @@ pub enum Ty {
     F64,
     /// An id below 2^63: a zigzag varint of its difference from the previous id of the space in the block.
     Id(Space),
+    /// An id of one of these spaces, each named as JavaScript gives it: header bits pick the space (as few as
+    /// tell them apart), and the id is coded as an `Id` of that space.
+    Sel(&'static [(Space, &'static str)]),
     /// Milliseconds since the epoch, within ±(2^53 - 1): a zigzag varint of the difference from the previous
     /// time in the block.
     Time,
@@ -249,12 +252,31 @@ impl PartialEq for Kind {
 }
 
 impl Kind {
-    /// Bits carried in the header: one per `Bit` value and one per optional value (present or not).
+    /// Bits carried in the header: one per `Bit` value, one per optional value (present or not), and a `Sel`
+    /// value's space.
     pub fn header_bits(&self) -> u32 {
-        self.slots
-            .iter()
-            .filter(|s| s.ty == Ty::Bit || s.optional)
-            .count() as u32
+        self.slots.iter().map(Slot::header_bits).sum()
+    }
+}
+
+impl Slot {
+    /// The header bits this slot's value takes.
+    pub fn header_bits(&self) -> u32 {
+        let own = match self.ty {
+            Ty::Bit => 1,
+            Ty::Sel(spaces) => sel_bits(spaces.len()),
+            _ => 0,
+        };
+        own + u32::from(self.optional)
+    }
+}
+
+/// The header bits that tell `n` spaces apart.
+pub const fn sel_bits(n: usize) -> u32 {
+    if n <= 1 {
+        0
+    } else {
+        usize::BITS - (n - 1).leading_zeros()
     }
 }
 
@@ -273,7 +295,17 @@ const fn opt(name: &'static str, ty: Ty) -> Slot {
     }
 }
 
-/// Every kind the log knows. Header values 0 and 1 are the pad and the trailer.
+/// A value's holder: a character, group or tag, or a message.
+pub const HOLDER: &[(Space, &str)] = &[(Space::Entity, "entity"), (Space::Message, "message")];
+/// What an outside key names: a message (its id before the engine), a session (its UUID), a user (their handle).
+pub const KEYED: &[(Space, &str)] = &[
+    (Space::Message, "message"),
+    (Space::Position, "session"),
+    (Space::User, "user"),
+];
+
+/// Every kind the log knows. Header values 0 and 1 are the pad and the trailer; every kind's are below 128, so
+/// a header is one byte.
 pub static KINDS: &[Kind] = &[
     Kind {
         name: "fav",
@@ -291,6 +323,7 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
+    // A session's pointer moves to `target`, by `user`.
     Kind {
         name: "pointerMove",
         base: 6,
@@ -301,6 +334,7 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
+    // At the fork `message`, `reply` is chosen, through `session` by `user`.
     Kind {
         name: "forkSelection",
         base: 7,
@@ -312,28 +346,12 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    Kind {
-        name: "messageAppend",
-        base: 8,
-        slots: &[
-            req("id", Ty::Id(Space::Message)),
-            opt("parent", Ty::Id(Space::Message)),
-            req("owner", Ty::Id(Space::Entity)),
-            opt("speaker", Ty::Id(Space::Entity)),
-            opt("name", Ty::Text),
-            req("time", Ty::Time),
-            req("text", Ty::Text),
-            req("flags", Ty::UInt),
-            req("session", Ty::Id(Space::Position)),
-            req("user", Ty::Id(Space::User)),
-        ],
-        internal: false,
-    },
+    // A text edit of a holder's field: `removed` bytes at `offset` replaced by `text`.
     Kind {
         name: "textEdit",
-        base: 16,
+        base: 8,
         slots: &[
-            req("entity", Ty::Id(Space::Entity)),
+            req("entity", Ty::Sel(HOLDER)),
             req("field", Ty::Field),
             req("offset", Ty::UInt),
             req("removed", Ty::UInt),
@@ -343,12 +361,51 @@ pub static KINDS: &[Kind] = &[
     },
     Kind {
         name: "textValue",
-        base: 17,
+        base: 10,
         slots: &[
-            req("entity", Ty::Id(Space::Entity)),
+            req("entity", Ty::Sel(HOLDER)),
             req("field", Ty::Field),
             req("text", Ty::Text),
         ],
+        internal: false,
+    },
+    // A value the app keeps as it came (JSON text), or, empty, a marker that something is present.
+    Kind {
+        name: "jsonValue",
+        base: 12,
+        slots: &[
+            req("entity", Ty::Sel(HOLDER)),
+            req("field", Ty::Field),
+            req("json", Ty::Text),
+        ],
+        internal: false,
+    },
+    // The field's value (text or JSON) goes.
+    Kind {
+        name: "valueDelete",
+        base: 14,
+        slots: &[req("entity", Ty::Sel(HOLDER)), req("field", Ty::Field)],
+        internal: false,
+    },
+    // A bookmark comes to be: following (mode 1: it moves to a reply added right after it) or pinned (mode 2),
+    // made through `session` by `user`, at `pointer`.
+    Kind {
+        name: "positionCreate",
+        base: 16,
+        slots: &[
+            req("id", Ty::Id(Space::Position)),
+            req("mode", Ty::UInt),
+            req("session", Ty::Id(Space::Position)),
+            req("user", Ty::Id(Space::User)),
+            req("pointer", Ty::Id(Space::Message)),
+        ],
+        internal: false,
+    },
+    // A position's name (absent: it has none).
+    Kind {
+        name: "positionName",
+        base: 106,
+        slots: &[req("id", Ty::Id(Space::Position)), opt("name", Ty::Text)],
         internal: false,
     },
     // The next record is a copy, written by cleaning, of the record at `from`.
@@ -379,25 +436,11 @@ pub static KINDS: &[Kind] = &[
         slots: &[req("entity", Ty::Id(Space::Entity))],
         internal: false,
     },
-    // A value the app keeps as it came (JSON text), or, empty, a marker that something is present.
+    // A position's mode changes (1 following, 2 pinned; a session's never does).
     Kind {
-        name: "jsonValue",
-        base: 21,
-        slots: &[
-            req("entity", Ty::Id(Space::Entity)),
-            req("field", Ty::Field),
-            req("json", Ty::Text),
-        ],
-        internal: false,
-    },
-    // The field's value (text or JSON) goes.
-    Kind {
-        name: "valueDelete",
-        base: 22,
-        slots: &[
-            req("entity", Ty::Id(Space::Entity)),
-            req("field", Ty::Field),
-        ],
+        name: "positionMode",
+        base: 17,
+        slots: &[req("id", Ty::Id(Space::Position)), req("mode", Ty::UInt)],
         internal: false,
     },
     // A list item's place in its list; its text is the text value of `item_field(list, item)`.
@@ -537,6 +580,70 @@ pub static KINDS: &[Kind] = &[
             req("pass", Ty::UInt),
         ],
         internal: false,
+    }, // ---- chats ----
+    // A message: `parent` (absent: it opens its owner's tree), `owner` (the character or group whose tree it is
+    // in), `speaker` (absent: none by id), `name` (absent: the speaker's), the time the server took it, its text,
+    // the shape of its fixed values (`chat::FLAGS`), the session it was sent through (absent: none) and the
+    // user, and the key its sender made for it (absent: none).
+    Kind {
+        name: "messageAppend",
+        base: 65,
+        slots: &[
+            req("id", Ty::Id(Space::Message)),
+            opt("parent", Ty::Id(Space::Message)),
+            req("owner", Ty::Id(Space::Entity)),
+            opt("speaker", Ty::Id(Space::Entity)),
+            opt("name", Ty::Text),
+            req("time", Ty::Time),
+            req("text", Ty::Text),
+            req("flags", Ty::UInt),
+            opt("session", Ty::Id(Space::Position)),
+            req("user", Ty::Id(Space::User)),
+            opt("sendKey", Ty::Bytes),
+        ],
+        internal: false,
+    },
+    // An outside key names an id: a message's id from before the engine, a session's UUID, a user's handle.
+    Kind {
+        name: "keyMap",
+        base: 97,
+        slots: &[req("id", Ty::Sel(KEYED)), req("key", Ty::Bytes)],
+        internal: false,
+    },
+    // A position goes.
+    Kind {
+        name: "positionDelete",
+        base: 21,
+        slots: &[req("id", Ty::Id(Space::Position))],
+        internal: false,
+    },
+    // A message goes (only one nothing replies to).
+    Kind {
+        name: "messageDelete",
+        base: 102,
+        slots: &[req("message", Ty::Id(Space::Message))],
+        internal: false,
+    },
+    // A message moves under another parent (absent: it opens its owner's tree).
+    Kind {
+        name: "messageParent",
+        base: 103,
+        slots: &[
+            req("message", Ty::Id(Space::Message)),
+            opt("parent", Ty::Id(Space::Message)),
+        ],
+        internal: false,
+    },
+    // One of a message's times as the ISO string `new Date(time + delta).toISOString()`: which is its field.
+    Kind {
+        name: "messageTime",
+        base: 105,
+        slots: &[
+            req("message", Ty::Id(Space::Message)),
+            req("field", Ty::Field),
+            req("delta", Ty::Int),
+        ],
+        internal: false,
     },
 ];
 
@@ -612,6 +719,8 @@ pub enum Value {
     Int(i64),
     F64(f64),
     Id(u64),
+    /// A `Sel` slot's id: which of its spaces (an index into them) and the id.
+    Sel(u8, u64),
     Time(i64),
     Field(FieldRef),
     /// WTF-8.
@@ -637,6 +746,7 @@ pub fn check_value(slot: &Slot, value: &Value) -> Result<(), String> {
         (Ty::Int, Value::Int(v)) | (Ty::Time, Value::Time(v)) => v.unsigned_abs() <= MAX_SAFE,
         (Ty::F64, Value::F64(_)) => true,
         (Ty::Id(_), Value::Id(v)) => *v <= MAX_ID,
+        (Ty::Sel(spaces), Value::Sel(i, v)) => usize::from(*i) < spaces.len() && *v <= MAX_ID,
         (Ty::Field, Value::Field(FieldRef::Code(c))) => *c >= 1 && *c <= MAX_SAFE,
         (Ty::Field, Value::Field(FieldRef::Key(_)))
         | (Ty::Text, Value::Text(_))
@@ -693,6 +803,12 @@ pub fn encode(rec: &Record, ctx: &mut Ctx, out: &mut Vec<u8>) {
             bits |= u64::from(set) << bit;
             bit += 1;
         }
+        if let Ty::Sel(spaces) = slot.ty {
+            if let Value::Sel(i, _) = value {
+                bits |= u64::from(*i) << bit;
+            }
+            bit += sel_bits(spaces.len());
+        }
     }
     put_uvarint(out, rec.kind.base + bits);
     for (slot, value) in rec.kind.slots.iter().zip(&rec.values) {
@@ -703,6 +819,11 @@ pub fn encode(rec: &Record, ctx: &mut Ctx, out: &mut Vec<u8>) {
             (_, Value::F64(v)) => out.extend_from_slice(&v.to_le_bytes()),
             (Ty::Id(space), Value::Id(v)) => {
                 let prev = &mut ctx.ids[space as usize];
+                put_uvarint(out, zigzag((*v as i64).wrapping_sub(*prev as i64)));
+                *prev = *v;
+            }
+            (Ty::Sel(spaces), Value::Sel(i, v)) => {
+                let prev = &mut ctx.ids[spaces[usize::from(*i)].0 as usize];
                 put_uvarint(out, zigzag((*v as i64).wrapping_sub(*prev as i64)));
                 *prev = *v;
             }
@@ -720,7 +841,7 @@ pub fn encode(rec: &Record, ctx: &mut Ctx, out: &mut Vec<u8>) {
                 put_uvarint(out, b.len() as u64);
                 out.extend_from_slice(b);
             }
-            (_, Value::Id(_)) => unreachable!("checked by Record::new"),
+            (_, Value::Id(_) | Value::Sel(..)) => unreachable!("checked by Record::new"),
         }
     }
 }
@@ -748,11 +869,14 @@ pub fn skip_body(
         if slot.ty == Ty::Bit || slot.optional {
             bits >>= 1;
         }
+        if let Ty::Sel(spaces) = slot.ty {
+            bits >>= sel_bits(spaces.len());
+        }
         if slot.ty == Ty::Bit || (slot.optional && !set) {
             continue;
         }
         match slot.ty {
-            Ty::UInt | Ty::Int | Ty::Id(_) | Ty::Time => {
+            Ty::UInt | Ty::Int | Ty::Id(_) | Ty::Sel(_) | Ty::Time => {
                 get_uvarint(buf, at)?;
             }
             Ty::F64 => {
@@ -794,6 +918,15 @@ pub fn decode_body(
             values.push(Value::Bit(set));
             continue;
         }
+        let sel = match slot.ty {
+            Ty::Sel(spaces) => {
+                let n = sel_bits(spaces.len());
+                let i = bits & ((1 << n) - 1);
+                bits >>= n;
+                i
+            }
+            _ => 0,
+        };
         if slot.optional && !set {
             values.push(Value::Absent);
             continue;
@@ -812,6 +945,18 @@ pub fn decode_body(
                 }
                 *prev = v as u64;
                 Value::Id(v as u64)
+            }
+            Ty::Sel(spaces) => {
+                let Some((space, _)) = spaces.get(sel as usize) else {
+                    return invalid("no such id space");
+                };
+                let prev = &mut ctx.ids[*space as usize];
+                let v = (*prev as i64).wrapping_add(unzigzag(get_uvarint(buf, at)?));
+                if v < 0 {
+                    return invalid("negative id");
+                }
+                *prev = v as u64;
+                Value::Sel(sel as u8, v as u64)
             }
             Ty::Time => {
                 let d = unzigzag(get_uvarint(buf, at)?);
@@ -1000,7 +1145,7 @@ mod tests {
             Record::new(
                 k,
                 vec![
-                    Value::Id(1),
+                    Value::Sel(0, 1),
                     Value::Field(FieldRef::Code(0)),
                     Value::UInt(0),
                     Value::UInt(0),

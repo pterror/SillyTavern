@@ -64,12 +64,17 @@ fn records(n: u64) -> Vec<Record> {
                     Value::UInt(i % 4),
                     Value::Id(3),
                     Value::Id(1),
+                    if i % 2 == 0 {
+                        Value::Bytes(vec![7; 16])
+                    } else {
+                        Value::Absent
+                    },
                 ],
             ),
             5 => rec(
                 "textEdit",
                 vec![
-                    Value::Id(i % 5),
+                    Value::Sel(0, i % 5),
                     Value::Field(FieldRef::Code(2)),
                     Value::UInt(i),
                     Value::UInt(4),
@@ -79,7 +84,7 @@ fn records(n: u64) -> Vec<Record> {
             _ => rec(
                 "textValue",
                 vec![
-                    Value::Id(i % 5),
+                    Value::Sel(0, i % 5),
                     Value::Field(FieldRef::Key(b"ext/x".to_vec())),
                     text(&"x".repeat((i % 3000) as usize)),
                 ],

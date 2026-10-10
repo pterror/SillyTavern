@@ -17,7 +17,8 @@ use napi::{Env, Error, Result, Status, Task, ValueType, sys};
 use napi_derive::napi;
 
 use crate::log::format::{
-    FieldRef, MAX_SAFE, Record, Slot, Ty, Value, kind_by_name, wtf8_from_utf16, wtf8_to_utf16,
+    FieldRef, MAX_SAFE, Record, Slot, Space, Ty, Value, kind_by_name, wtf8_from_utf16,
+    wtf8_to_utf16,
 };
 use crate::search::Scope;
 use crate::search::query::{After, Clause, Filter, Found, Limits, Order, Query};
@@ -96,6 +97,7 @@ fn value_from_js(slot: &Slot, v: Option<Unknown>) -> Result<Value> {
         }
         Ty::UInt => Value::UInt(integer(name, v)?),
         Ty::Id(_) => Value::Id(integer(name, v)?),
+        Ty::Sel(_) => unreachable!("read by sel_from_js"),
         Ty::Int => Value::Int(signed(name, v)?),
         Ty::Time => Value::Time(signed(name, v)?),
         Ty::F64 => {
@@ -117,6 +119,40 @@ fn value_from_js(slot: &Slot, v: Option<Unknown>) -> Result<Value> {
     })
 }
 
+/// The names a slot's value may be given by: its own, or for a `Sel` slot each of its spaces'.
+fn slot_names(slot: &Slot) -> Vec<&'static str> {
+    match slot.ty {
+        Ty::Sel(spaces) => spaces.iter().map(|(_, n)| *n).collect(),
+        _ => vec![slot.name],
+    }
+}
+
+/// A `Sel` slot's value: exactly one of its spaces' names given.
+fn sel_from_js(slot: &Slot, spaces: &[(Space, &str)], obj: &Object) -> Result<Value> {
+    let mut found = None;
+    for (i, (_, n)) in spaces.iter().enumerate() {
+        if let Some(v) = obj.get::<Unknown>(n)? {
+            if found.is_some() {
+                return Err(invalid(format!(
+                    "{} takes one of {}",
+                    slot.name,
+                    slot_names(slot).join(", ")
+                )));
+            }
+            found = Some(Value::Sel(i as u8, integer(n, v)?));
+        }
+    }
+    match found {
+        Some(v) => Ok(v),
+        None if slot.optional => Ok(Value::Absent),
+        None => Err(invalid(format!(
+            "{} is missing: give one of {}",
+            slot.name,
+            slot_names(slot).join(", ")
+        ))),
+    }
+}
+
 fn record_from_js(obj: &Object) -> Result<Record> {
     let kind_name: String = obj
         .get("kind")?
@@ -125,14 +161,22 @@ fn record_from_js(obj: &Object) -> Result<Record> {
         .filter(|k| !k.internal)
         .ok_or_else(|| invalid(format!("no record kind {kind_name}")))?;
     for key in Object::keys(obj)? {
-        if key != "kind" && !kind.slots.iter().any(|s| s.name == key) {
+        if key != "kind"
+            && !kind
+                .slots
+                .iter()
+                .any(|s| slot_names(s).contains(&key.as_str()))
+        {
             return Err(invalid(format!("{kind_name} has no value {key}")));
         }
     }
     let values = kind
         .slots
         .iter()
-        .map(|slot| value_from_js(slot, obj.get::<Unknown>(slot.name)?))
+        .map(|slot| match slot.ty {
+            Ty::Sel(spaces) => sel_from_js(slot, spaces, obj),
+            _ => value_from_js(slot, obj.get::<Unknown>(slot.name)?),
+        })
         .collect::<Result<Vec<_>>>()?;
     Record::new(kind, values).map_err(invalid)
 }
@@ -155,6 +199,7 @@ impl ToNapiValue for RecordAt {
                 Value::Int(n) | Value::Time(n) => obj.set(slot.name, n as f64)?,
                 Value::F64(n) => obj.set(slot.name, n)?,
                 Value::Id(n) => obj.set(slot.name, n)?,
+                Value::Sel(i, n) => obj.set(slot_names(slot)[usize::from(i)], n)?,
                 Value::Field(FieldRef::Code(c)) => obj.set(slot.name, c as f64)?,
                 Value::Field(FieldRef::Key(k)) | Value::Text(k) => {
                     obj.set(slot.name, text_to_js(k)?)?

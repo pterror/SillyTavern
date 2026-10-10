@@ -606,7 +606,7 @@ fn text_value(e: u64, code: u64, s: &str) -> Record {
     rec(
         "textValue",
         vec![
-            Value::Id(e),
+            Value::Sel(0, e),
             Value::Field(FieldRef::Code(code)),
             Value::Text(s.as_bytes().to_vec()),
         ],
@@ -1183,7 +1183,7 @@ fn writes(s: &Store, cards: usize) {
         s.commit_wait(vec![rec(
             "textEdit",
             vec![
-                Value::Id(doc),
+                Value::Sel(0, doc),
                 Value::Field(FieldRef::Code(code)),
                 Value::UInt(a as u64),
                 Value::UInt((b - a) as u64),

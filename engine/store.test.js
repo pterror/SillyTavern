@@ -18,16 +18,20 @@ const bindings = {
 
 const message = {
     kind: 'messageAppend', id: 10n, parent: 9n, owner: 3n, speaker: 3n, time: 1_700_000_000_123,
-    text: 'héllo \ud800 lone 😀', flags: 1, session: 7n, user: 1n,
+    text: 'héllo \ud800 lone 😀', flags: 1, session: 7n, user: 1n, sendKey: Buffer.alloc(16, 7),
 };
 const samples = [
     { kind: 'fav', entity: 2n ** 40n, fav: true },
     { kind: 'fav', entity: 5n, fav: false },
     { kind: 'tagAssign', entity: 5n, tag: 9n, assigned: true },
+    { kind: 'messageAppend', id: 9n, owner: 3n, name: 'Narrator', time: -5, text: '', flags: 0, user: 1n },
+    message,
     { kind: 'pointerMove', session: 7n, user: 1n, target: 10n },
     { kind: 'forkSelection', message: 9n, reply: 10n, session: 7n, user: 1n },
-    message,
-    { kind: 'messageAppend', id: 1n, owner: 3n, name: 'Narrator', time: -5, text: '', flags: 0, session: 7n, user: 1n },
+    { kind: 'textValue', message: 10n, field: 1, text: 'edited' },
+    { kind: 'jsonValue', message: 10n, field: 'extra.api', json: '"openai"' },
+    { kind: 'keyMap', session: 7n, key: Buffer.from('0190a1b2-0000-7000-8000-000000000000') },
+    { kind: 'positionCreate', id: 8n, mode: 1, session: 7n, user: 1n, pointer: 10n },
     { kind: 'textValue', entity: 5n, field: 2, text: 'a description '.repeat(20) },
     { kind: 'textEdit', entity: 5n, field: 2, offset: 10, removed: 4, text: 'word' },
     { kind: 'textValue', entity: 5n, field: 'my-extension/key', text: 'x'.repeat(40_000) },
@@ -101,6 +105,8 @@ for (const [name, engine] of Object.entries(bindings)) {
             { kind: 'textEdit', entity: 1n, field: 0, offset: 0, removed: 0, text: '' },
             { kind: 'textEdit', entity: 1n, field: 1, offset: 2 ** 53, removed: 0, text: '' },
             { kind: 'messageAppend', ...message, parent: null },
+            { kind: 'textValue', entity: 1n, message: 1n, field: 1, text: '' },
+            { kind: 'keyMap', key: Buffer.from('x') },
             { kind: 'moved', from: 0n },
         ]) {
             assert.throws(() => log.commit([samples[0], bad]), /./, JSON.stringify(bad, (_, v) => typeof v === 'bigint' ? `${v}n` : v));

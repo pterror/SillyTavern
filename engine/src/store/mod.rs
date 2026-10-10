@@ -26,6 +26,7 @@
 //! it.
 
 pub mod bulk;
+pub mod chat;
 pub mod derive;
 pub mod kinds;
 pub mod library;
@@ -1569,6 +1570,8 @@ impl Hooks for StoreHooks {
     }
 }
 
+#[cfg(test)]
+mod chat_tests;
 #[cfg(test)]
 mod library_tests;
 #[cfg(test)]

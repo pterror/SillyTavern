@@ -1,7 +1,7 @@
 //! The derivers: current values for `fav`, `textValue` and `textEdit` (with the entity's version), search
 //! entries for the text fields that are searched, tag membership for `tagAssign`, a message's record and its
-//! chat search entries for `messageAppend`, the cleaner's `moved` marker, and the test kind `testSet`. Each
-//! store stage adds its kinds' derivers here.
+//! the cleaner's `moved` marker, and the test kind `testSet`. Each store stage adds its kinds' derivers here or in
+//! its own module (`library`, `tags`, `chat`).
 
 use super::StoreError;
 use super::derive::{Deriver, Loc, Out, View};
@@ -66,6 +66,35 @@ pub mod key {
     }
     /// Per message: its `messageAppend` record.
     pub const MESSAGE: u64 = 43;
+    /// Chats (`store::chat`). Per (message, field): its text's head; the n-th edit; its JSON value's record.
+    pub const MSG_TEXT: u64 = 90;
+    pub const MSG_TEXT_EDIT: u64 = 91;
+    pub const MSG_VALUE: u64 = 92;
+    /// Per (parent, time, message): a reply. Per (owner, time, message): a message opening the owner's tree.
+    pub const CHILD: u64 = 93;
+    pub const ROOT: u64 = 94;
+    /// Per (message, field): its `messageTime` record.
+    pub const MSG_TIME: u64 = 95;
+    /// Per (space, key): the id an outside key names. Per (space, id): the `keyMap` record.
+    pub const KEY_MAP: u64 = 96;
+    pub const KEY_OF: u64 = 97;
+    /// Per position: its `positionCreate`, `positionName`, `positionMode` record.
+    pub const POSITION: u64 = 98;
+    pub const POSITION_NAME: u64 = 99;
+    pub const POSITION_MODE: u64 = 100;
+    /// One more than the highest message, position, user id ever given (maxima).
+    pub const NEXT_MESSAGE: u64 = 101;
+    pub const NEXT_POSITION: u64 = 102;
+    pub const NEXT_USER: u64 = 103;
+    /// Per message moved off its first parent: its `messageParent` record.
+    pub const MESSAGE_PARENT: u64 = 104;
+    /// Per (owner, send key): the message stored for it.
+    pub const SEND_KEY: u64 = 105;
+    /// Per bookmark: the message it is at. Per (message, bookmark): a bookmark at it. Per (owner, bookmark): a
+    /// bookmark in that owner's tree.
+    pub const BOOKMARK_AT: u64 = 106;
+    pub const BOOKMARKS_AT: u64 = 107;
+    pub const TREE_BOOKMARK: u64 = 108;
     /// The library (`store::library`).
     /// Per entity: its `entityCreate` record.
     pub const ENTITY: u64 = 50;
@@ -242,7 +271,7 @@ pub fn parse_pos(b: &[u8]) -> Result<u64, StoreError> {
 
 pub(super) fn id(rec: &Record, i: usize) -> u64 {
     match rec.values[i] {
-        Value::Id(v) | Value::UInt(v) => v,
+        Value::Id(v) | Value::UInt(v) | Value::Sel(_, v) => v,
         _ => unreachable!("checked by Record::new"),
     }
 }
@@ -335,17 +364,86 @@ impl Pointer for Fav {
 
 // ---- text ----
 
+/// What holds a value: a character, group or tag, or a message. Each has its own structures, so their ids never
+/// meet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Holder {
+    Entity(u64),
+    Message(u64),
+}
+
+impl Holder {
+    /// The holder named by the record's `Sel(HOLDER)` value at `i`.
+    pub fn of(rec: &Record, i: usize) -> Holder {
+        match rec.values[i] {
+            Value::Sel(1, m) => Holder::Message(m),
+            Value::Sel(_, e) | Value::Id(e) => Holder::Entity(e),
+            _ => unreachable!("checked by Record::new"),
+        }
+    }
+
+    pub fn id(self) -> u64 {
+        match self {
+            Holder::Entity(i) | Holder::Message(i) => i,
+        }
+    }
+
+    /// The record value naming it.
+    pub fn value(self) -> Value {
+        match self {
+            Holder::Entity(e) => Value::Sel(0, e),
+            Holder::Message(m) => Value::Sel(1, m),
+        }
+    }
+
+    pub fn text_key(self, f: &FieldRef) -> Vec<u8> {
+        match self {
+            Holder::Entity(e) => key::field(key::TEXT, e, f),
+            Holder::Message(m) => key::field(key::MSG_TEXT, m, f),
+        }
+    }
+
+    pub fn edit_key(self, f: &FieldRef, n: u64) -> Vec<u8> {
+        let mut k = self.edits_prefix(f);
+        crate::keyspace::val::put_u64(&mut k, n);
+        k
+    }
+
+    fn edits_prefix(self, f: &FieldRef) -> Vec<u8> {
+        match self {
+            Holder::Entity(e) => key::field(key::TEXT_EDIT, e, f),
+            Holder::Message(m) => key::field(key::MSG_TEXT_EDIT, m, f),
+        }
+    }
+
+    pub fn value_key(self, f: &FieldRef) -> Vec<u8> {
+        match self {
+            Holder::Entity(e) => key::field(key::VALUE, e, f),
+            Holder::Message(m) => key::field(key::MSG_VALUE, m, f),
+        }
+    }
+}
+
 /// A text value: its last full value, its size in bytes, and the edits since (count and encoded bytes).
 #[derive(Debug, Clone, Copy)]
-struct Head {
-    full: Loc,
+pub(super) struct Head {
+    pub(super) full: Loc,
     size: u64,
     edits: u64,
     edit_bytes: u64,
 }
 
 impl Head {
-    fn bytes(&self) -> Vec<u8> {
+    pub(super) fn new(full: Loc, size: u64) -> Head {
+        Head {
+            full,
+            size,
+            edits: 0,
+            edit_bytes: 0,
+        }
+    }
+
+    pub(super) fn bytes(&self) -> Vec<u8> {
         varints(&[
             self.full.pos,
             self.full.len,
@@ -355,8 +453,8 @@ impl Head {
         ])
     }
 
-    fn get(view: &View, entity: u64, f: &FieldRef) -> Result<Option<Head>, StoreError> {
-        let Some(b) = view.get(&key::field(key::TEXT, entity, f))? else {
+    pub(super) fn get(view: &View, h: Holder, f: &FieldRef) -> Result<Option<Head>, StoreError> {
+        let Some(b) = view.get(&h.text_key(f))? else {
             return Ok(None);
         };
         let [pos, len, size, edits, edit_bytes] = parse_varints(&b)?;
@@ -372,16 +470,16 @@ impl Head {
 /// The edits since the head's full value, in order.
 fn edits(
     view: &View,
-    entity: u64,
+    h: Holder,
     f: &FieldRef,
     head: &Head,
 ) -> Result<Vec<(Vec<u8>, Loc)>, StoreError> {
-    let start = key::field(key::TEXT_EDIT, entity, f);
+    let start = h.edits_prefix(f);
     let end = key::prefix_end(&start);
     let found = view.scan(&start, &end, head.edits as usize)?;
     if found.len() as u64 != head.edits {
         return Err(StoreError::Entry(format!(
-            "entity {entity}'s text has {} edit entries, its head says {}",
+            "{h:?}'s text has {} edit entries, its head says {}",
             found.len(),
             head.edits
         )));
@@ -408,15 +506,22 @@ pub(super) fn apply_edit(
     Some(out)
 }
 
+/// The full text a head's record holds: a `textValue`'s, or a message's own text in its `messageAppend`.
+fn full_text(rec: &Record) -> &[u8] {
+    match rec.kind.name {
+        "messageAppend" => bytes(rec, super::chat::APPEND_TEXT),
+        _ => bytes(rec, 2),
+    }
+}
+
 /// The text's current value: its full value with the edits since applied.
-fn materialize(view: &View, entity: u64, f: &FieldRef, head: &Head) -> Result<Vec<u8>, StoreError> {
+fn materialize(view: &View, h: Holder, f: &FieldRef, head: &Head) -> Result<Vec<u8>, StoreError> {
     let (full, _) = view.record(head.full.pos)?;
-    let mut text = bytes(&full, 2).to_vec();
-    for (_, l) in edits(view, entity, f, head)? {
+    let mut text = full_text(&full).to_vec();
+    for (_, l) in edits(view, h, f, head)? {
         let (e, _) = view.record(l.pos)?;
-        text = apply_edit(&text, id(&e, 2), id(&e, 3), bytes(&e, 4)).ok_or_else(|| {
-            StoreError::Entry(format!("an edit of entity {entity}'s text is out of range"))
-        })?;
+        text = apply_edit(&text, id(&e, 2), id(&e, 3), bytes(&e, 4))
+            .ok_or_else(|| StoreError::Entry(format!("an edit of {h:?}'s text is out of range")))?;
     }
     Ok(text)
 }
@@ -426,60 +531,95 @@ pub(super) fn text_value(
     entity: u64,
     f: &FieldRef,
 ) -> Result<Option<Vec<u8>>, StoreError> {
-    match Head::get(view, entity, f)? {
-        Some(h) => materialize(view, entity, f, &h).map(Some),
+    text_value_of(view, Holder::Entity(entity), f)
+}
+
+pub(super) fn text_value_of(
+    view: &View,
+    h: Holder,
+    f: &FieldRef,
+) -> Result<Option<Vec<u8>>, StoreError> {
+    match Head::get(view, h, f)? {
+        Some(head) => materialize(view, h, f, &head).map(Some),
         None => Ok(None),
     }
 }
 
-/// Removes the text value of (entity, f), if it has one, with its search entries; its records die. Returns it.
+/// Whether the head's full value is a record other than the one holding the message itself, so it dies with
+/// the value (a message's own text lives in its `messageAppend`, which lives on).
+fn owns_full(view: &View, h: Holder, head: &Head) -> Result<bool, StoreError> {
+    Ok(match h {
+        Holder::Entity(_) => true,
+        Holder::Message(m) => {
+            super::chat::message_loc(view, m)?.is_none_or(|l| l.pos != head.full.pos)
+        }
+    })
+}
+
+/// Removes the text value of (h, f), if it has one, with its search entries; its records die. Returns it.
 pub(super) fn drop_text(
     view: &View,
     out: &mut Out,
     entity: u64,
     f: &FieldRef,
 ) -> Result<Option<Vec<u8>>, StoreError> {
-    let Some(head) = Head::get(view, entity, f)? else {
+    drop_text_of(view, out, Holder::Entity(entity), f)
+}
+
+pub(super) fn drop_text_of(
+    view: &View,
+    out: &mut Out,
+    h: Holder,
+    f: &FieldRef,
+) -> Result<Option<Vec<u8>>, StoreError> {
+    let Some(head) = Head::get(view, h, f)? else {
         return Ok(None);
     };
-    let old = materialize(view, entity, f, &head)?;
-    if let Some(sf) = search_field(f) {
-        index_text(view, out, sf, entity, &old, &[])?;
+    let old = materialize(view, h, f, &head)?;
+    match h {
+        Holder::Entity(entity) => {
+            if let Some(sf) = search_field(f) {
+                index_text(view, out, sf, entity, &old, &[])?;
+            }
+        }
+        Holder::Message(m) => super::chat::text_changed(view, out, m, f, Some(&old), None)?,
     }
-    dead(out, head.full);
-    for (k, l) in edits(view, entity, f, &head)? {
+    if owns_full(view, h, &head)? {
+        dead(out, head.full);
+    }
+    for (k, l) in edits(view, h, f, &head)? {
         dead(out, l);
         out.del(k);
     }
-    out.del(key::field(key::TEXT, entity, f));
+    out.del(h.text_key(f));
     Ok(Some(old))
 }
 
 /// Points the text's head or edit entry at `to` if it points at `from`; returns whether one did.
-fn repoint_text(
-    rec: &Record,
+pub(super) fn repoint_text_of(
+    h: Holder,
+    f: &FieldRef,
     from: u64,
     to: Option<Loc>,
     view: &View,
     out: &mut Out,
 ) -> Result<bool, StoreError> {
-    let (entity, f) = (id(rec, 0), field(rec, 1));
-    let Some(mut head) = Head::get(view, entity, f)? else {
+    let Some(mut head) = Head::get(view, h, f)? else {
         return Ok(false);
     };
     if head.full.pos == from {
         if let Some(to) = to {
             head.full = to;
-            out.put(key::field(key::TEXT, entity, f), head.bytes());
+            out.put(h.text_key(f), head.bytes());
         }
         return Ok(true);
     }
-    for (k, l) in edits(view, entity, f, &head)? {
+    for (k, l) in edits(view, h, f, &head)? {
         if l.pos == from {
             if let Some(to) = to {
                 // An edit's length counts toward the full-value rule, so the head follows the copy's.
                 head.edit_bytes = head.edit_bytes - l.len + to.len;
-                out.put(key::field(key::TEXT, entity, f), head.bytes());
+                out.put(h.text_key(f), head.bytes());
                 out.put(k, loc_bytes(to));
             }
             return Ok(true);
@@ -488,34 +628,59 @@ fn repoint_text(
     Ok(false)
 }
 
+fn repoint_text(
+    rec: &Record,
+    from: u64,
+    to: Option<Loc>,
+    view: &View,
+    out: &mut Out,
+) -> Result<bool, StoreError> {
+    repoint_text_of(Holder::of(rec, 0), field(rec, 1), from, to, view, out)
+}
+
 struct TextValue;
 
 impl Deriver for TextValue {
     fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
-        let (entity, f) = (id(rec, 0), field(rec, 1));
-        if let Some(sf) = search_field(f) {
-            let old = text_value(view, entity, f)?.unwrap_or_default();
-            index_text(view, out, sf, entity, &old, bytes(rec, 2))?;
+        let (h, f) = (Holder::of(rec, 0), field(rec, 1));
+        match h {
+            Holder::Entity(entity) => {
+                if let Some(sf) = search_field(f) {
+                    let old = text_value(view, entity, f)?.unwrap_or_default();
+                    index_text(view, out, sf, entity, &old, bytes(rec, 2))?;
+                }
+                library::drop_json(view, out, entity, f)?;
+                library::text_changed(view, out, entity, f, Some(bytes(rec, 2)))?;
+                tags::field_written(view, out, entity, at, f, Written::Text(bytes(rec, 2)))?;
+            }
+            Holder::Message(m) => {
+                super::chat::require_message(view, m)?;
+                let old = text_value_of(view, h, f)?;
+                super::chat::text_changed(view, out, m, f, old.as_deref(), Some(bytes(rec, 2)))?;
+                library::drop_json_of(view, out, h, f)?;
+            }
         }
-        library::drop_json(view, out, entity, f)?;
-        library::text_changed(view, out, entity, f, Some(bytes(rec, 2)))?;
-        tags::field_written(view, out, entity, at, f, Written::Text(bytes(rec, 2)))?;
-        if let Some(old) = Head::get(view, entity, f)? {
-            dead(out, old.full);
-            for (k, l) in edits(view, entity, f, &old)? {
+        if let Some(old) = Head::get(view, h, f)? {
+            if owns_full(view, h, &old)? {
+                dead(out, old.full);
+            }
+            for (k, l) in edits(view, h, f, &old)? {
                 dead(out, l);
                 out.del(k);
             }
         }
-        let head = Head {
-            full: at,
-            size: bytes(rec, 2).len() as u64,
-            edits: 0,
-            edit_bytes: 0,
-        };
-        out.put(key::field(key::TEXT, entity, f), head.bytes());
-        version(out, entity, at);
+        out.put(
+            h.text_key(f),
+            Head::new(at, bytes(rec, 2).len() as u64).bytes(),
+        );
+        if let Holder::Entity(entity) = h {
+            version(out, entity, at);
+        }
         Ok(())
+    }
+
+    fn partition(&self, rec: &Record) -> u64 {
+        Holder::of(rec, 0).id()
     }
 
     fn is_live(&self, rec: &Record, pos: u64, view: &View) -> Result<bool, StoreError> {
@@ -544,64 +709,82 @@ impl Deriver for TextEdit {
     /// Applies the edit to the current value to check it; writes the new full value instead once the edits
     /// since the last one would reach the value's size (design 4.1), so a read stays within about twice it.
     fn prepare(&self, rec: Record, view: &View) -> Result<Record, StoreError> {
-        let (entity, f) = (id(&rec, 0), field(&rec, 1).clone());
-        let head = Head::get(view, entity, &f)?;
+        let (h, f) = (Holder::of(&rec, 0), field(&rec, 1).clone());
+        if let Holder::Message(m) = h {
+            super::chat::require_message(view, m)?;
+        }
+        let head = Head::get(view, h, &f)?;
         let current = match &head {
-            Some(h) => materialize(view, entity, &f, h)?,
+            Some(hd) => materialize(view, h, &f, hd)?,
             None => Vec::new(),
         };
         let (offset, removed) = (id(&rec, 2), id(&rec, 3));
         let new = apply_edit(&current, offset, removed, bytes(&rec, 4)).ok_or_else(|| {
             StoreError::Refused(format!(
-                "textEdit of entity {entity}: bytes {offset}..{} are outside its {} bytes",
+                "textEdit of {h:?}: bytes {offset}..{} are outside its {} bytes",
                 offset.saturating_add(removed),
                 current.len()
             ))
         })?;
         if wtf8_to_utf16(&new).is_err() {
             return Err(StoreError::Refused(format!(
-                "textEdit of entity {entity}: an offset falls inside a character"
+                "textEdit of {h:?}: an offset falls inside a character"
             )));
         }
         let mut encoded = Vec::new();
         encode(&rec, &mut Ctx::default(), &mut encoded);
-        if head.is_none_or(|h| h.edit_bytes + encoded.len() as u64 >= new.len() as u64) {
+        if head.is_none_or(|hd| hd.edit_bytes + encoded.len() as u64 >= new.len() as u64) {
             return Ok(Record::new(
                 kind_by_name("textValue").unwrap(),
-                vec![Value::Id(entity), Value::Field(f), Value::Text(new)],
+                vec![h.value(), Value::Field(f), Value::Text(new)],
             )
             .expect("a textValue of a textEdit's values"));
         }
         Ok(rec)
     }
 
+    fn partition(&self, rec: &Record) -> u64 {
+        Holder::of(rec, 0).id()
+    }
+
     fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
-        let (entity, f) = (id(rec, 0), field(rec, 1));
-        let mut head = Head::get(view, entity, f)?.ok_or_else(|| {
-            StoreError::Entry(format!("a textEdit of entity {entity} with no value"))
-        })?;
-        let sf = search_field(f);
-        if sf.is_some() || library::places(f) || tags::tag_field(f) {
-            let old = materialize(view, entity, f, &head)?;
-            let new = apply_edit(&old, id(rec, 2), id(rec, 3), bytes(rec, 4)).ok_or_else(|| {
-                StoreError::Entry(format!("an edit of entity {entity}'s text is out of range"))
-            })?;
-            if let Some(sf) = sf {
-                index_text(view, out, sf, entity, &old, &new)?;
+        let (h, f) = (Holder::of(rec, 0), field(rec, 1));
+        let mut head = Head::get(view, h, f)?
+            .ok_or_else(|| StoreError::Entry(format!("a textEdit of {h:?} with no value")))?;
+        let wants_old = match h {
+            Holder::Entity(_) => {
+                search_field(f).is_some() || library::places(f) || tags::tag_field(f)
             }
-            library::text_changed(view, out, entity, f, Some(&new))?;
-            tags::field_written(view, out, entity, at, f, Written::Text(&new))?;
+            Holder::Message(_) => super::chat::text_watched(f),
+        };
+        if wants_old {
+            let old = materialize(view, h, f, &head)?;
+            let new = apply_edit(&old, id(rec, 2), id(rec, 3), bytes(rec, 4)).ok_or_else(|| {
+                StoreError::Entry(format!("an edit of {h:?}'s text is out of range"))
+            })?;
+            match h {
+                Holder::Entity(entity) => {
+                    if let Some(sf) = search_field(f) {
+                        index_text(view, out, sf, entity, &old, &new)?;
+                    }
+                    library::text_changed(view, out, entity, f, Some(&new))?;
+                    tags::field_written(view, out, entity, at, f, Written::Text(&new))?;
+                }
+                Holder::Message(m) => {
+                    super::chat::text_changed(view, out, m, f, Some(&old), Some(&new))?
+                }
+            }
         }
         head.size = head.size.checked_sub(id(rec, 3)).ok_or_else(|| {
-            StoreError::Entry(format!(
-                "a textEdit of entity {entity} removes more than it has"
-            ))
+            StoreError::Entry(format!("a textEdit of {h:?} removes more than it has"))
         })? + bytes(rec, 4).len() as u64;
         head.edits += 1;
         head.edit_bytes += at.len;
-        out.put(key::edit(entity, f, head.edits), loc_bytes(at));
-        out.put(key::field(key::TEXT, entity, f), head.bytes());
-        version(out, entity, at);
+        out.put(h.edit_key(f, head.edits), loc_bytes(at));
+        out.put(h.text_key(f), head.bytes());
+        if let Holder::Entity(entity) = h {
+            version(out, entity, at);
+        }
         Ok(())
     }
 
@@ -735,15 +918,17 @@ pub fn search_texts(
     field: u32,
 ) -> Result<Vec<Vec<u8>>, StoreError> {
     if scope.kind == search::CHAT {
-        let Some(b) = view.get(&key::id(key::MESSAGE, doc))? else {
+        let Some(l) = super::chat::message_loc(view, doc)? else {
             return Ok(Vec::new());
         };
-        let (rec, _) = view.record(parse_loc(&b)?.pos)?;
-        return Ok(if id(&rec, 2) == scope.owner {
-            vec![bytes(&rec, 6).to_vec()]
-        } else {
-            Vec::new()
-        });
+        let (rec, _) = view.record(l.pos)?;
+        if id(&rec, super::chat::APPEND_OWNER) != scope.owner {
+            return Ok(Vec::new());
+        }
+        let mes = FieldRef::Code(super::chat::MES);
+        return Ok(text_value_of(view, Holder::Message(doc), &mes)?
+            .into_iter()
+            .collect());
     }
     let Some((f, list)) = search_code(scope, field) else {
         return Ok(Vec::new());
@@ -874,63 +1059,6 @@ impl TagAssign {
     }
 }
 
-// ---- messages ----
-
-/// `messageAppend`: the message's record, and its text in its owner's chat search.
-struct MessageAppend;
-
-impl Pointer for MessageAppend {
-    fn key(&self, rec: &Record) -> Vec<u8> {
-        key::id(key::MESSAGE, id(rec, 0))
-    }
-
-    fn others(
-        &self,
-        rec: &Record,
-        _: Loc,
-        old: Option<Loc>,
-        view: &View,
-        out: &mut Out,
-    ) -> Result<(), StoreError> {
-        let doc = id(rec, 0);
-        let (owner, text) = (id(rec, 2), bytes(rec, 6));
-        if let Some(old) = old {
-            let (prev, _) = view.record(old.pos)?;
-            let prev_owner = id(&prev, 2);
-            if prev_owner != owner {
-                search::index::update(
-                    view,
-                    out,
-                    Scope::chat(prev_owner),
-                    doc,
-                    0,
-                    &items(bytes(&prev, 6), false),
-                    &[],
-                )?;
-            } else {
-                return search::index::update(
-                    view,
-                    out,
-                    Scope::chat(owner),
-                    doc,
-                    0,
-                    &items(bytes(&prev, 6), false),
-                    &items(text, false),
-                );
-            }
-        }
-        search::index::update(
-            view,
-            out,
-            Scope::chat(owner),
-            doc,
-            0,
-            &[],
-            &items(text, false),
-        )
-    }
-}
-
 /// `metaValue`: the value of a name the app keeps for itself.
 struct MetaValue;
 
@@ -1049,7 +1177,6 @@ pub fn deriver(kind: &str) -> Option<&'static dyn Deriver> {
         "textValue" => &TextValue,
         "textEdit" => &TextEdit,
         "tagAssign" => &TagAssign,
-        "messageAppend" => &MessageAppend,
         "moved" => &Moved,
         "tagOrder" => &tags::TagOrder,
         "tagPassOrder" => &tags::TagOrder,
@@ -1059,6 +1186,6 @@ pub fn deriver(kind: &str) -> Option<&'static dyn Deriver> {
         "metaValue" => &MetaValue,
         #[cfg(any(test, feature = "measure"))]
         "testSet" => &TestSet,
-        other => return library::deriver(other),
+        other => return library::deriver(other).or_else(|| super::chat::deriver(other)),
     })
 }
