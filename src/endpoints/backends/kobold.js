@@ -254,9 +254,8 @@ router.post('/generate', withGenerationStop(async function (request, response_ge
                 directories, ownerId, anchorNodeId: built.anchorNodeId, ref: request.body.user_message_ref,
                 message: userMessage,
             });
-            if (userNodeId) {
-                replyAnchorNodeId = userNodeId;
-            }
+            if (!userNodeId) return;
+            replyAnchorNodeId = userNodeId;
         }
         // A continue sent with text in the box stores that text as the user's message first, and the page then
         // continues that message, as upstream does: the reply is stored as an edit of it.

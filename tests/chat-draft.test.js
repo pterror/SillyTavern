@@ -4,6 +4,9 @@ import {
     saveDraft,
     loadDraft,
     clearDraft,
+    holdDraft,
+    isDraftHeld,
+    releaseDraft,
 } from '../public/scripts/chat-draft.js';
 
 /** Minimal in-memory stand-in for localStorage's `{ getItem, setItem, removeItem }` surface. */
@@ -128,5 +131,38 @@ describe('incomplete context handling', () => {
         const storage = makeStorage();
         expect(() => clearDraft(storage, context)).not.toThrow();
         expect(storage.removeItem).not.toHaveBeenCalled();
+    });
+});
+
+describe('holdDraft / releaseDraft', () => {
+    test('a sent text stays the draft until it is released', () => {
+        const storage = makeStorage();
+        const context = { ...charContext, chatId: 'held-1' };
+        holdDraft(storage, context, 'sent text');
+        expect(isDraftHeld(context)).toBe(true);
+        expect(loadDraft(storage, context)).toBe('sent text');
+        releaseDraft(storage, context, 'sent text');
+        expect(isDraftHeld(context)).toBe(false);
+        expect(loadDraft(storage, context)).toBeNull();
+    });
+
+    test('release keeps a draft typed after the send', () => {
+        const storage = makeStorage();
+        const context = { ...charContext, chatId: 'held-2' };
+        holdDraft(storage, context, 'sent text');
+        saveDraft(storage, context, 'typed afterwards');
+        releaseDraft(storage, context, 'sent text');
+        expect(loadDraft(storage, context)).toBe('typed afterwards');
+        expect(isDraftHeld(context)).toBe(false);
+    });
+
+    test('a later send stays held when an earlier one is released', () => {
+        const storage = makeStorage();
+        const context = { ...charContext, chatId: 'held-3' };
+        holdDraft(storage, context, 'first');
+        holdDraft(storage, context, 'second');
+        releaseDraft(storage, context, 'first');
+        expect(isDraftHeld(context)).toBe(true);
+        expect(loadDraft(storage, context)).toBe('second');
     });
 });

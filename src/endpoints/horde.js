@@ -334,9 +334,8 @@ async function buildRawActionHordePayload(request, response) {
             directories, ownerId, anchorNodeId: built.anchorNodeId, ref: request.body.user_message_ref,
             message: userMessage,
         });
-        if (userNodeId) {
-            replyAnchorNodeId = userNodeId;
-        }
+        if (!userNodeId) return null;
+        replyAnchorNodeId = userNodeId;
     }
     // A continue sent with text in the box stores that text as the user's message first, and the page then
     // continues that message, as upstream does: the reply is stored as an edit of it.
