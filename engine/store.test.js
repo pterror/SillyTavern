@@ -318,8 +318,8 @@ for (const [name, engine] of Object.entries(bindings)) {
         assert.deepEqual(m1.sendKey, Buffer.alloc(16, 1));
         assert.deepEqual(await store.chatRead('children', { parent: 0n, tree: 3n, limit: 1 }), { ids: [1n], more: true });
         assert.deepEqual(await store.chatRead('children', { tree: 3n, limit: 5 }), { ids: [0n], more: false });
-        // Session 1 is at its reply; a reader with no choice of their own follows the last choice anyone made.
-        assert.deepEqual(await store.chatRead('path', { tree: 3n, at: 0n }), { above: [0n], below: [1n] });
+        // A position shows the path from the tree's root down to it; session 1 lands at its reply.
+        assert.deepEqual(await store.chatRead('path', { tree: 3n, at: 1n }), [0n, 1n]);
         assert.equal(await store.chatRead('landing', { tree: 3n, session: 1n }), 1n);
         assert.deepEqual((await store.chatRead('sessions', { ids: [1n, 5n] }))[1], null);
         assert.deepEqual(await store.chatRead('userInTree', { user: 1n, tree: 3n }), { session: 1n, at: 1n });
@@ -327,6 +327,7 @@ for (const [name, engine] of Object.entries(bindings)) {
         assert.equal((await store.chatRead('recent', { limit: 10 }))[0].session, 1n);
         assert.deepEqual(await store.chatRead('messageCount', { tree: 3n, at: 1n }), { count: 2, estimate: false });
         assert.deepEqual(await store.chatRead('ids', { space: 1, keys: ['0190a1b2-0000-7000-8000-00000000000a', 'nope'] }), [1n, null]);
+        assert.deepEqual(await store.chatRead('keyStates', { space: 1, keys: ['0190a1b2-0000-7000-8000-00000000000a', 'nope'] }), [{ id: 1n }, null]);
         assert.deepEqual(await store.chatRead('nextIds', {}), { message: 3n, position: 10n, user: 2n, change: 2n });
         const [b] = await store.chatRead('treeBookmarks', { tree: 3n, limit: 10 });
         assert.deepEqual(b, { id: 9n, at: 1n, mode: 2, name: 'Checkpoint', createdAt: 1n, session: 1n, user: 1n });

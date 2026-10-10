@@ -593,9 +593,33 @@ pub fn key_of_key(space: u8, i: u64) -> Vec<u8> {
 
 /// The id an outside key names in `space`.
 pub fn id_by_key(view: &View, space: u8, k: &[u8]) -> Result<Option<u64>, StoreError> {
-    view.get(&key_map_key(space, k))?
-        .map(|v| parse_varints::<1>(&v).map(|[i]| i))
-        .transpose()
+    Ok(match key_state(view, space, k)? {
+        KeyState::Live(i) => Some(i),
+        _ => None,
+    })
+}
+
+/// What an outside key names: an id, a deleted session (its tombstone), or nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyState {
+    Live(u64),
+    Gone,
+    None,
+}
+
+/// A key's entry is `[id]`, or `[id, 1]` once the session it named was deleted.
+pub fn key_state(view: &View, space: u8, k: &[u8]) -> Result<KeyState, StoreError> {
+    let Some(v) = view.get(&key_map_key(space, k))? else {
+        return Ok(KeyState::None);
+    };
+    let mut at = 0;
+    let i = crate::log::format::get_uvarint(&v, &mut at)
+        .map_err(|_| StoreError::Entry("a key entry doesn't decode".into()))?;
+    Ok(if at == v.len() {
+        KeyState::Live(i)
+    } else {
+        KeyState::Gone
+    })
 }
 
 /// The outside key naming `i` in `space`.
@@ -604,6 +628,25 @@ pub fn key_by_id(view: &View, space: u8, i: u64) -> Result<Option<Vec<u8>>, Stor
         Some(v) => Ok(Some(bytes(&view.record(parse_loc(&v)?.pos)?.0, 1).to_vec())),
         None => Ok(None),
     }
+}
+
+/// Leaves a deleted session's key a tombstone: it names no id, and says the session was deleted.
+pub(super) fn tombstone_key(
+    view: &View,
+    out: &mut Out,
+    space: u8,
+    i: u64,
+) -> Result<(), StoreError> {
+    let k = key_of_key(space, i);
+    let Some(v) = view.get(&k)? else {
+        return Ok(());
+    };
+    let l = parse_loc(&v)?;
+    let (r, _) = view.record(l.pos)?;
+    out.put(key_map_key(space, bytes(&r, 1)), varints(&[i, 1]));
+    out.del(k);
+    dead(out, l);
+    Ok(())
 }
 
 /// Drops `i`'s outside key, if it has one.
@@ -627,7 +670,8 @@ fn keyed(rec: &Record) -> (u8, u64) {
     }
 }
 
-/// `keyMap`: an outside key names an id, one key per id and one id per key.
+/// `keyMap`: an outside key names an id, one key per id and one id per key; a deleted session's key (a tombstone)
+/// may name a new id.
 pub struct KeyMap;
 
 impl Deriver for KeyMap {

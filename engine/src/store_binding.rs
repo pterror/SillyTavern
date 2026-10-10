@@ -1244,12 +1244,13 @@ impl Store {
     /// A chat read (`store::chat_read`), by `op` with its arguments in `args`:
     /// - `messages { ids }`: each message's values, or null;
     /// - `children { parent?, tree, after?, limit }`: `{ ids, more }`, a message's replies or a tree's openings;
-    /// - `path { tree, at?, session?, user? }`: `{ above, below }`, root to `at` and the followed replies below;
+    /// - `path { tree, at? }`: the messages from the tree's root down to `at`;
     /// - `landing { tree, session?, user? }`, `followed { tree, at?, session?, user? }`: a message or null;
     /// - `sessions { ids }`, `sessionInTree { session, tree }`, `userInTree { user, tree }`;
     /// - `history { session, from, limit }`, `recent { before?, limit }`, `inTree { tree, before?, limit }`;
     /// - `messageCount { tree, at? }`: `{ count, estimate }`;
-    /// - `ids { space: 0 message | 1 session | 2 user, keys }`, `nextIds {}`;
+    /// - `ids { space: 0 message | 1 session | 2 user, keys }`, `keyStates { space, keys }` (`{ id }`, `'gone'` for a
+    ///   deleted session's, or null), `nextIds {}`;
     /// - `bookmarks { ids }`, `treeBookmarks { tree, after?, limit }`, `bookmarksAt { message }`;
     /// - `state { tree, at? }`: `[{ variable, field, json }]`;
     /// - `stats { owners }`: `{ owners, totals }`; `itemization { message }`; `sent { owner, keys }`.
@@ -1293,7 +1294,7 @@ impl Store {
                 let op = op.clone();
                 Box::new(move |s| {
                     s.chat_read(|v| match op.as_str() {
-                        "path" => cr::path(v, tree, at, ses, user),
+                        "path" => cr::path(v, at),
                         "followed" => cr::followed(v, tree, at, ses, user),
                         _ => cr::landing(v, tree, ses, user),
                     })
@@ -1353,6 +1354,17 @@ impl Store {
                 let keys = byte_list(a, "keys")?;
                 Box::new(move |s| {
                     s.chat_read(|v| cr::ids_by_keys(v, space as u8, &keys))
+                        .map(JsTree)
+                })
+            }
+            "keyStates" => {
+                let space = req_integer(a, "space")?;
+                if space > 2 {
+                    return Err(invalid(format!("no key space {space}")));
+                }
+                let keys = byte_list(a, "keys")?;
+                Box::new(move |s| {
+                    s.chat_read(|v| cr::key_states(v, space as u8, &keys))
                         .map(JsTree)
                 })
             }

@@ -32,18 +32,31 @@ const user2 = { name: 'You', is_user: true, is_system: false, send_date: '2025-1
 const inserted = { name: 'You', is_user: true, is_system: false, send_date: '2025-10-10T10:05:00.000Z', mes: '(an aside)', extra: {} };
 
 /**
- * A loaded path with every message's ids replaced by the name it was made under, `branches` left out (their
- * meaning changed: the bookmarks made at a message, not the labels below a fork).
+ * A loaded path with every message's ids replaced by the name it was made under.
  */
 function normalized(messages, names) {
     return messages.map(m => {
         const out = structuredClone(m);
         out.node_id = names.get(m.node_id) ?? m.node_id;
-        if (out.extra) delete out.extra.branches;
-        if (Array.isArray(out.swipe_info)) {
-            for (const i of out.swipe_info) {
-                i.node_id = names.get(i.node_id) ?? i.node_id;
-                if (i.extra) delete i.extra.branches;
+        for (const i of Array.isArray(out.swipe_info) ? out.swipe_info : []) i.node_id = names.get(i.node_id) ?? i.node_id;
+        return out;
+    });
+}
+
+/**
+ * What the old store's answer means for `branches` now: the old store listed, at a fork, the labels anywhere below
+ * it; a message's `branches` are now the bookmarks made at it, so a labeled message lists its own label.
+ */
+function withBranchesOfLabels(messages) {
+    return messages.map(m => {
+        const out = structuredClone(m);
+        if (out.extra && typeof out.extra === 'object') {
+            delete out.extra.branches;
+            if (typeof out.extra.bookmark_link === 'string') {
+                const { bookmark_link: link, ...rest } = out.extra;
+                const flagged = Object.hasOwn(rest, tree.ITEMIZED_PROMPT_FLAG);
+                delete rest[tree.ITEMIZED_PROMPT_FLAG];
+                out.extra = { ...rest, bookmark_link: link, branches: [link], ...(flagged ? { [tree.ITEMIZED_PROMPT_FLAG]: true } : {}) };
             }
         }
         return out;
@@ -93,10 +106,12 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         const new2 = await chats.appendMessages({ tree: t, treeSpeaker: cara, after: nb, contents: [user2], actor });
         name(old2.node_ids[0], new2.node_ids[0], 'user2');
 
+        // The old store shows the default path from the greeting; the session shows the path to its pointer.
         const compare = async (label) => {
             const o = await tree.loadAtNode(directories, owner, og);
-            const n = await chats.load({ tree: t, at: ng, session: actor.session, user: actor.user });
-            assert.deepEqual(normalized(n.messages, newNames), normalized(o.messages, oldNames), label);
+            const { at } = await chats.pointer(actor.session);
+            const n = await chats.load({ tree: t, at });
+            assert.deepEqual(normalized(n.messages, newNames), normalized(withBranchesOfLabels(o.messages), oldNames), label);
         };
         await compare('after sends, a retry, an alternative and a choice');
 
@@ -127,17 +142,30 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         await compare('after a degraft');
         await tree.swapAdjacent(directories, owner, ob, old2.node_ids[0]);
         assert.deepEqual(await chats.swapAdjacent({ tree: t, upper: nb, lower: new2.node_ids[0], actor }), { ok: true });
+        await compare('after a swap');
+        // A bookmark on the shown path: the old label and the new bookmark name the same message.
+        await tree.labelNode(directories, old1.node_ids[0], 'Saved here', { ownerId: owner });
+        await chats.createBookmark({ tree: t, node_id: new1.node_ids[0], name: 'Saved here', actor });
+        await compare('after a bookmark on the path');
 
         // A bookmark at the first reply: its name is the message's bookmark_link, and in `branches` there.
         await tree.labelNode(directories, old1.node_ids[1], 'Checkpoint', { ownerId: owner });
         await chats.createBookmark({ tree: t, node_id: new1.node_ids[1], name: 'Checkpoint', mode: MODE.pinned, actor });
-        const atFirst = await chats.load({ tree: t, at: new1.node_ids[1], session: actor.session, user: actor.user });
+        const atFirst = await chats.load({ tree: t, at: new1.node_ids[1] });
         const reply = atFirst.messages.find(m => m.node_id === new1.node_ids[1]);
         assert.equal(reply.extra.bookmark_link, 'Checkpoint');
         assert.deepEqual(reply.extra.branches, ['Checkpoint']);
+        // Opened at the bookmark, the path is the same; the old store hid the opened chat's own label there, and a
+        // bookmark isn't a chat, so the new one shows it (checked above).
         const oldAtFirst = await tree.loadAtNode(directories, owner, old1.node_ids[1]);
-        assert.deepEqual(normalized(atFirst.messages, newNames).map(m => { delete m.extra?.bookmark_link; return m; }),
-            normalized(oldAtFirst.messages, oldNames).map(m => { delete m.extra?.bookmark_link; return m; }));
+        const withoutLast = ms => ms.map((m, i) => {
+            if (i === ms.length - 1) {
+                delete m.extra?.bookmark_link;
+                delete m.extra?.branches;
+            }
+            return m;
+        });
+        assert.deepEqual(withoutLast(normalized(atFirst.messages, newNames)), withoutLast(normalized(withBranchesOfLabels(oldAtFirst.messages), oldNames)));
 
         // An alternative nothing continues goes; the one shown, or one with replies, doesn't.
         assert.deepEqual(await chats.deleteAlternative({ tree: t, node_id: nb, actor }), { ok: false, reason: 'is default' });
@@ -150,6 +178,20 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         assert.deepEqual(await chats.metadata(t, (await chats.messageIds([new1.node_ids[1]]))[0]), { note_prompt: 'A', variables: { hp: 3 } });
         await chats.mergeMetadata({ tree: t, at: nb, set: {}, unset: ['note_prompt', 'variables'], actor });
         assert.deepEqual(await chats.metadata(t, (await chats.messageIds([nb]))[0]), {});
+        // An empty `variables` object stays one.
+        await chats.mergeMetadata({ tree: t, at: nb, set: { variables: {} }, unset: [], actor });
+        assert.deepEqual(await chats.metadata(t, (await chats.messageIds([nb]))[0]), { variables: {} });
+
+        // The session a request acts through: its header's, a new tab's, a stale tab's (deleted), a third party's.
+        const handle = actor.user;
+        assert.deepEqual(await chats.resolveSession({ tree: t, user: handle, header: actor.session }), { session: actor.session });
+        assert.deepEqual(await chats.resolveSession({ tree: t, user: handle, header: undefined }), { session: actor.session });
+        const fresh = '0190a1b2-0000-7000-8000-0000000000bb';
+        assert.deepEqual(await chats.resolveSession({ tree: t, user: handle, header: fresh }), { session: fresh });
+        const v5 = (await chats.resolveSession({ tree: t, user: handle, header: 'none' })).session;
+        const [sid] = await store.chatRead('ids', { space: 1, keys: [actor.session] });
+        await store.commit([{ kind: 'positionDelete', id: sid }]);
+        assert.deepEqual(await chats.resolveSession({ tree: t, user: handle, header: actor.session }), { session: v5, gone: true });
 
         await store.close();
     });

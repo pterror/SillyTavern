@@ -166,6 +166,48 @@ export class ChatEngine {
         return { user, session };
     }
 
+    // ---- sessions ----
+
+    /**
+     * The session a request acts through, by the compat rules (build path 5b): its `X-ST-Session` header's
+     * session; `none` (a tab with no session yet) the user's deterministic session in the tree; no header (a third
+     * party) the user's last session in the tree, else that deterministic one. A deleted session's UUID is answered
+     * as `none`, and `gone` says so; a UUID that names nothing is a new tab's session, made on its first move.
+     * @param {object} p
+     * @param {bigint} p.tree
+     * @param {string} p.user The user's handle.
+     * @param {string | null | undefined} p.header
+     * @returns {Promise<{ session: string, gone?: true }>}
+     */
+    async resolveSession({ tree, user, header }) {
+        if (header === undefined || header === null) {
+            const [uid] = await this.store.chatRead('ids', { space: SPACE.user, keys: [user] });
+            const last = uid === null ? null : await this.store.chatRead('userInTree', { user: uid, tree });
+            if (last !== null) {
+                const [s] = await this.store.chatRead('sessions', { ids: [last.session] });
+                if (s) return { session: s.key };
+            }
+            return { session: defaultSessionKey(user, tree) };
+        }
+        if (header === 'none') return { session: defaultSessionKey(user, tree) };
+        const [state] = await this.store.chatRead('keyStates', { space: SPACE.session, keys: [header] });
+        if (state === 'gone') return { session: defaultSessionKey(user, tree), gone: true };
+        return { session: header };
+    }
+
+    /**
+     * Where a session's pointer is: its tree and the message's outside id (null: the tree's root); null for a
+     * session that hasn't moved.
+     * @param {string} session
+     */
+    async pointer(session) {
+        const [sid] = await this.store.chatRead('ids', { space: SPACE.session, keys: [session] });
+        if (sid === null) return null;
+        const [s] = await this.store.chatRead('sessions', { ids: [sid] });
+        if (!s || s.tree === null) return null;
+        return { tree: s.tree, at: s.at === null ? null : (await this.externalIds([s.at]))[0] };
+    }
+
     // ---- reads ----
 
     /**
@@ -663,7 +705,8 @@ export class ChatEngine {
             for (const [key, value] of Object.entries(set ?? {})) {
                 if (value === undefined) continue;
                 if (key === 'variables' && value !== null && typeof value === 'object' && !Array.isArray(value)) {
-                    // Each chat variable is a key of its own.
+                    // Each chat variable is a key of its own; the object itself, empty or not, a marker.
+                    if (!now.has('variables')) change('variables', '{}');
                     for (const [name, v] of Object.entries(value)) {
                         if (v === undefined) continue;
                         const json = JSON.stringify(v);
@@ -677,8 +720,10 @@ export class ChatEngine {
             }
             for (const key of Array.isArray(unset) ? unset : []) {
                 if (typeof key !== 'string') continue;
-                if (key === 'variables') for (const name of vars.keys()) change(name, undefined, true);
-                else if (now.has(key)) change(key, undefined);
+                if (key === 'variables') {
+                    for (const name of vars.keys()) change(name, undefined, true);
+                    if (now.has('variables')) change('variables', undefined);
+                } else if (now.has(key)) change(key, undefined);
             }
             if (records.some(r => r.kind === 'stateChange')) await this.store.commit(records);
             return { ok: true };
@@ -686,7 +731,8 @@ export class ChatEngine {
     }
 
     /**
-     * The state at a position as `chat_metadata`: its keys in order, `variables` holding the chat variables.
+     * The state at a position as `chat_metadata`: its keys in order, `variables` holding the chat variables (an
+     * object since it was first set, even when empty).
      * @param {bigint} tree
      * @param {bigint | null} at
      */
@@ -698,6 +744,8 @@ export class ChatEngine {
             if (e.variable) {
                 if (!out.variables || typeof out.variables !== 'object') out.variables = {};
                 /** @type {Record<string, unknown>} */ (out.variables)[e.field] = JSON.parse(e.json);
+            } else if (e.field === 'variables' && e.json === '{}') {
+                if (!out.variables || typeof out.variables !== 'object') out.variables = {};
             } else out[e.field] = JSON.parse(e.json);
         }
         return out;
@@ -706,24 +754,20 @@ export class ChatEngine {
     // ---- reading a position ----
 
     /**
-     * A position's messages in upstream's shape: the path from the tree's root to `at` and on along the followed
-     * replies, each with every alternative's text in `swipes`, its outside id, and the bookmarks made at it.
+     * A position's messages in upstream's shape: the path from the tree's root down to `at` (nothing below it),
+     * each with every alternative's text in `swipes`, its outside id, and the bookmarks made at it; and the state
+     * there as `chat_metadata`.
      * @param {object} p
      * @param {bigint} p.tree
-     * @param {string | null} p.at The message (null: from the tree's root).
-     * @param {string | null} [p.session]
-     * @param {string | null} [p.user]
+     * @param {string | null} p.at The message (null: the tree's root, no message).
      */
-    async load({ tree, at, session = null, user = null }) {
+    async load({ tree, at }) {
         let atId = null;
         if (at !== null) {
             [atId] = await this.messageIds([at]);
             if (atId === null) return null;
         }
-        const [sessionId] = session ? await this.store.chatRead('ids', { space: SPACE.session, keys: [session] }) : [null];
-        const [userId] = user ? await this.store.chatRead('ids', { space: SPACE.user, keys: [user] }) : [null];
-        const path = await this.store.chatRead('path', { tree, ...(atId === null ? {} : { at: atId }), ...(sessionId === null ? {} : { session: sessionId }), ...(userId === null ? {} : { user: userId }) });
-        const ids = [...path.above, ...path.below];
+        const ids = atId === null ? [] : await this.store.chatRead('path', { tree, at: atId });
         const stored = await this.stored(ids);
         /** @type {Map<string, bigint[]>} parent → replies */
         const siblings = new Map();
@@ -764,6 +808,6 @@ export class ChatEngine {
             if (s.itemized) msg.extra = { ...(msg.extra && typeof msg.extra === 'object' ? msg.extra : {}), [ITEMIZED_PROMPT_FLAG]: true };
             messages.push(msg);
         }
-        return { messages, metadata: await this.metadata(tree, atId), node_id: atId === null ? null : this.externalId(stored.get(atId)) };
+        return { messages, metadata: await this.metadata(tree, atId), node_id: atId === null ? null : this.externalId(/** @type {any} */ (stored.get(atId))) };
     }
 }
