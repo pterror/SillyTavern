@@ -1811,7 +1811,27 @@ new `/api/worldinfo/search` `books.search`, the pair postings' route and setting
 (done, "Pairs driving the walk" below); the 10^6 bulk load under 300 s (done, "Bulk load under 300 s" below);
 session names unique per store (done, below); a character book entry's `group` and `automationId` searched (done: its `extensions` stored per key, 5c's
 choices; searched as 5d's fields); then
-chat search's substring scan on top of whole words (item 6, coordinator 10-11).
+chat search's substring scan on top of whole words (item 6, coordinator 10-11): built in the working tree, not
+landed, stopped below.
+
+Stop (10-11), chat search's ancestry (item 6). Measured on a 10^6-message character (one chain, 8 sessions on it,
+~600 B messages): every search took ~3.6 s, the substring scan's 4 MiB cap (6,301 messages) a small part of it:
+today's search reads each session's whole path (`chat::path_to`, a point read a message, not counted as work).
+Answered (coordinator): whole-word matching starts from the owner's message postings; a matching message maps to the
+sessions whose path goes through it by a bounded ancestry test; the scan reads text in bounded chunks under the cap;
+every read counts as work. The ancestry structure is a trade the bounds don't decide (estimates from this build's
+unit costs: a batched point read ~1 µs, an entry ~20 B, log2 10^6 = 20):
+- Euler-tour order labels (order maintenance over each message's open and close, 64-bit labels): a test is O(1)
+  (two labels compared); a clause's matching messages become nested intervals a session's label is looked up in.
+  Per append one label entry (~12 B) plus relabels, amortized O(log N) (~20 entries, ~400 B, at 10^6: a chain's
+  appends all split the same gap), with rare commits relabelling large ranges (or slices with stale labels).
+- Jump pointers (Myers' skew-binary: one extra ancestor per message, in the entry the append already writes):
+  ~3 B and no entry per append; a test is a level-ancestor walk, up to ~2·log2 D ≈ 40 point reads (~40 µs). A
+  subtree can't be enumerated, so a session is tested against a clause's matching messages one by one: cheap for
+  rare words, O(matches · log D) for common ones.
+- Binary lifting (an ancestor at every power-of-two depth): ~20 entries per append for O(log D) reads; the same
+  query shape as jump pointers, dominated by them.
+Moves (graft, degraft, swap) rewrite the moved subtree's labels or pointers with its depths in each.
 
 Session names (follow-up 4): answered by the coordinator (unique per store) and built; see "Built, session names
 unique per store" below.
