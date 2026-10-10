@@ -1608,6 +1608,42 @@ impl Store {
         derived(env, &self.store, read)
     }
 
+    /// A page of a tree's sessions searched (`store::chat_search`): `{ tree, clauses, before?, limit }`, `clauses`
+    /// as `search` takes them (their fields ignored). Resolves with `{ hits: [{ position, session, at }], more,
+    /// next? }`: most recent first; `next` is the `before` to read on from.
+    #[napi(
+        ts_args_type = "query: object",
+        ts_return_type = "Promise<{ hits: { position: bigint, session: bigint, at: bigint | null }[], more: boolean, next?: bigint }>"
+    )]
+    pub fn chat_search<'env>(&self, env: &'env Env, query: Object) -> Result<Object<'env>> {
+        use crate::store::chat_read::Js;
+        let tree = req_integer(&query, "tree")?;
+        let (before, limit) = (
+            opt_integer(&query, "before")?,
+            req_integer(&query, "limit")? as usize,
+        );
+        let clauses = clauses_from_js(&query, Scope::LIBRARY)?;
+        derived(env, &self.store, move |s| {
+            let p = s.chat_search(tree, &clauses, before, limit)?;
+            let hits = p
+                .hits
+                .into_iter()
+                .map(|h| {
+                    Js::Obj(vec![
+                        ("position", Js::Big(h.position)),
+                        ("session", Js::Big(h.session)),
+                        ("at", h.at.map_or(Js::Null, Js::Big)),
+                    ])
+                })
+                .collect();
+            let mut o = vec![("hits", Js::Arr(hits)), ("more", Js::Bool(p.more))];
+            if let Some(n) = p.next {
+                o.push(("next", Js::Big(n)));
+            }
+            Ok(JsTree(Js::Obj(o)))
+        })
+    }
+
     /// A world-info read (`store::books`), by `op` with its arguments in `args`:
     /// - `books { after?, limit }`: `{ books: [{ id, key }], more }`, the defined world books in key order;
     /// - `entries { book, after?, limit }`: `{ entries: [{ id, position }], more }`, a book's entries in place order;

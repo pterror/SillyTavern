@@ -1796,8 +1796,8 @@ Left (handover, 10-11):
 
 **5d. search wired.**
 
-Status (10-11, handover): in progress. Built: the searched fields; the library's search with closed-quote phrases
-(below). Left, in order: chat search; world-info search; the exact session lookup by name for 5b; pair postings
+Status (10-11, handover): in progress. Built: the searched fields; the library's search with closed-quote phrases;
+chat search (below). Left, in order: world-info search; the exact session lookup by name for 5b; pair postings
 with their setting; the chip row (the client); `bench-search-synth.mjs`; measurements. The `/query` route reads
 `lib.query({ search })` at the cut (5f).
 
@@ -1829,6 +1829,24 @@ search })`; tests `store/library_search_tests.rs`, `tests/library-engine-search.
 | sorted searches | matches read whole when few, else the order walked with a check | design 7.3's √(P·N); reuses the list's orders, cursors and random spaces, so a searched page orders exactly as an unsearched one |
 | the list's filter in relevance | a per-document check after the search's own filters | the search leads with its postings; the check is the list page's, so both agree on what passes |
 | relevance cursor | the last hit's score and id | the engine's `After::Score`; no state kept between pages |
+
+Built, chat search (10-11; `engine/src/store/chat_search.rs`, binding `chatSearch`; JS `ChatEngine.searchSessions`;
+test `src/chat-search.test.js`, native and wasm):
+- `searchSessions({ tree, search, before?, limit, withMetadata? })`: the tree's sessions with meaningful activity
+  there, most recent first, rows as `sessionsInTree()`'s, that match: by name (every clause, in the session-name
+  postings; only with a word to find), or by path (every positive clause matches some message from the root to the
+  session's position, no negated one any). Upstream's route matched a chat's file name or its messages the same way,
+  by substrings. `next` is the `before` of the next page.
+- Each path message is matched once per page through the tree's chat postings (`Matching`, its block maps read once
+  a query), so sessions sharing a path pay for it once; a page stops at `chat_search::WORK` (2·10^6 units, about
+  0.3 s) and says `more`.
+- Not here: the route (`/api/chats/search` builds upstream's rows from these at the cut); an unnamed session isn't
+  matched by its UUID.
+
+| choice | picked | reason |
+|---|---|---|
+| a session's path | read whole per session (`path_to`, a point read a message), matches memoized per message | O(L) per session like opening it; no ancestor index to keep at commit |
+| a match | name or path, each the whole query | upstream's `chatInfo.match || hasTextMatch([file_id])` |
 
 
 Built, the searched fields (10-11; `engine/src/store/searched.rs`, `search/index.rs` `update_fields`; test

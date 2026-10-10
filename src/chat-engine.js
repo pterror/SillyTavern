@@ -7,6 +7,7 @@ import { META, TOP, decodeMessage, encodeMessage, messageRecords } from './chat-
 import { ITEMIZED_PROMPT_FLAG } from './message-tree-db.js';
 import { jsonHash } from '../public/scripts/hash-utils.js';
 import { bookKey } from './world-info-keys.js';
+import { searchClauses } from './search-clauses.js';
 
 /**
  * Chats on the engine (build path 5b): each character's or group's messages as a tree, sessions and bookmarks as
@@ -1782,6 +1783,24 @@ export class ChatEngine {
             entries.push({ sid: session, position, tree, at: where?.at ?? null });
         }
         return { rows: await this.sessionRows(entries, withMetadata), more: page.length > limit };
+    }
+
+    /**
+     * A page of a tree's sessions a search string matches (`/api/chats/search`): by its name, or by every word
+     * matching a message on its path in the tree (whole words; a closed-quote phrase as a phrase), most recent first,
+     * rows as `sessionsInTree()` gives them. `before` is the page before's `next`; `more` says one may follow.
+     * @param {object} p
+     * @param {bigint} p.tree
+     * @param {string} p.search
+     * @param {bigint} [p.before]
+     * @param {number} p.limit
+     * @param {boolean} [p.withMetadata]
+     */
+    async searchSessions({ tree, search, before, limit, withMetadata = false }) {
+        const clauses = searchClauses(search);
+        const page = await this.store.chatSearch({ tree, clauses, limit, ...(before === undefined ? {} : { before }) });
+        const entries = page.hits.map((/** @type {any} */ h) => ({ sid: h.session, position: h.position, tree, at: h.at }));
+        return { rows: await this.sessionRows(entries, withMetadata), more: page.more, ...(page.next === undefined ? {} : { next: page.next }) };
     }
 
     /**
