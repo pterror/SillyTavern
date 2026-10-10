@@ -292,11 +292,6 @@ struct Inner {
     search_stats: crate::search::query::StatsCache,
     /// Top lists whose next slice is queued (`crate::search::query::refill`).
     refilling: Mutex<HashSet<(crate::search::Scope, String)>>,
-    /// Tests: jobs derived without a record, and groups published.
-    #[cfg(test)]
-    pub(crate) derived_jobs: AtomicU64,
-    #[cfg(test)]
-    pub(crate) published_groups: AtomicU64,
 }
 
 #[derive(Default)]
@@ -392,10 +387,6 @@ impl Store {
                 counters: Counters::default(),
                 search_stats: Default::default(),
                 refilling: Default::default(),
-                #[cfg(test)]
-                derived_jobs: AtomicU64::new(0),
-                #[cfg(test)]
-                published_groups: AtomicU64::new(0),
             }
         });
         ks.start(Box::new(StoreHooks(Arc::downgrade(&inner))))?;
@@ -463,13 +454,15 @@ impl Store {
     fn derived<T>(&self, f: impl FnOnce(&View) -> StoreResult<T>) -> StoreResult<T> {
         self.inner.wait_ready()?;
         let _g = self.inner.gate.read().unwrap();
+        // Every read of one request sees one state of the keyspace.
+        let snap = self.inner.ks.snapshot();
         let view = View {
             layers: Vec::new(),
             pending: Vec::new(),
             staged: None,
             bulk: false,
             ks: &self.inner.ks,
-            snap: None,
+            snap: Some(&snap),
             log: &self.inner.log,
         };
         f(&view)
@@ -511,19 +504,10 @@ impl Store {
         Ok(found)
     }
 
-    /// Tests: queues a slice of a top list's pass; jobs derived without a record so far, and groups of them
-    /// published.
+    /// Tests: queues a slice of a top list's pass.
     #[cfg(test)]
     pub(crate) fn queue_refill(&self, r: crate::search::query::Refill) {
         self.inner.refill(r);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn derived_jobs(&self) -> (u64, u64) {
-        (
-            self.inner.derived_jobs.load(Ordering::SeqCst),
-            self.inner.published_groups.load(Ordering::SeqCst),
-        )
     }
 
     /// A derived entry's value.
@@ -897,8 +881,6 @@ impl Inner {
                     Ok(()) => {
                         out.apply(&mut open.entries);
                         open.dones.push(Done::Job(done));
-                        #[cfg(test)]
-                        self.derived_jobs.fetch_add(1, Ordering::SeqCst);
                     }
                     Err(e) => done(Err(e)),
                 }
@@ -1057,8 +1039,6 @@ impl Inner {
             // Entries derived without a record are published in their turn, covering no more of the log.
             if !group.entries.is_empty() {
                 self.ks.insert(std::mem::take(&mut group.entries), None);
-                #[cfg(test)]
-                self.published_groups.fetch_add(1, Ordering::SeqCst);
             }
             drop(p);
             for d in dones {

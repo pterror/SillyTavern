@@ -1872,6 +1872,8 @@ impl Plan {
             let floor = best.worst().map(|r| Ranked(r.0, r.1));
             match self.next_match(ctx, d, u64::MAX, budget, floor.as_ref(), &mut walk)? {
                 Step::Match(doc, matched) => {
+                    #[cfg(test)]
+                    super::tests::hook("walk");
                     total += 1;
                     let r = Ranked(self.score(&matched), doc);
                     if after.as_ref().is_none_or(|a| r > *a) {
@@ -1929,6 +1931,8 @@ impl Plan {
                     .map(|(f, v)| (f, unpack(defs[f as usize].prefix, v)))
                     .collect();
                 let tfs = tfs_of(ctx, scope, hits, doc, mask, true)?;
+                #[cfg(test)]
+                super::tests::hook("word");
                 docs.seek(ctx, doc + 1)?;
                 if !self.passes(ctx, doc)? {
                     continue;
@@ -1967,29 +1971,22 @@ impl Plan {
             Some(After::Score(s, d)) => Some(Ranked(*s, *d)),
             _ => None,
         };
-        // The head and every entry from one state of the keyspace: a page never mixes two versions of a list.
-        let (head, entries, read) = ctx.view.with_snapshot(|v| {
-            let mut sub = Ctx::new(v, None);
-            let generation = sub.counter(&top_generation(scope, &term))?;
-            let head = sub
-                .get(&super::top(scope, &term))?
-                .and_then(|b| Head::decode(&b));
-            let count = sub.counter(&top_count(scope, &term))?;
-            #[cfg(test)]
-            super::tests::after_list_head();
-            let head = head.filter(|h| {
-                h.generation == generation && h.passing.is_none() && count >= top::MIN as u64
-            });
-            let entries = match head {
-                Some(_) => list_entries(&mut sub, scope, &term)?,
-                None => Vec::new(),
-            };
-            StoreResult::Ok((head, entries, (sub.work, sub.gets, sub.scans, sub.entries)))
-        })?;
-        ctx.work += read.0;
-        ctx.gets += read.1;
-        ctx.scans += read.2;
-        ctx.entries += read.3;
+        // The query's view reads one state of the keyspace (`Store`'s snapshot): the head and the entries are
+        // of one version of the list.
+        let generation = ctx.counter(&top_generation(scope, &term))?;
+        let head = ctx
+            .get(&super::top(scope, &term))?
+            .and_then(|b| Head::decode(&b));
+        let count = ctx.counter(&top_count(scope, &term))?;
+        #[cfg(test)]
+        super::tests::hook("list");
+        let head = head.filter(|h| {
+            h.generation == generation && h.passing.is_none() && count >= top::MIN as u64
+        });
+        let entries = match head {
+            Some(_) => list_entries(ctx, scope, &term)?,
+            None => Vec::new(),
+        };
         if head
             .as_ref()
             .is_none_or(|h| drift(&h.params, &params) > DRIFT)

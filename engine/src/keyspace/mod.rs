@@ -82,19 +82,31 @@ pub struct Version {
     pub runs: Vec<Arc<Run>>,
 }
 
-/// One state of the keyspace (`Keyspace::with_snapshot`).
+/// One state of the keyspace (`Keyspace::snapshot`).
 pub struct Snapshot<'a> {
     ks: &'a Keyspace,
-    runs: &'a [Arc<Run>],
-    mems: Vec<std::sync::RwLockReadGuard<'a, Mem>>,
+    version: Arc<Version>,
+    seq: u64,
+}
+
+impl Drop for Snapshot<'_> {
+    fn drop(&mut self) {
+        let mut seqs = self.ks.seqs.lock().unwrap();
+        if let std::collections::btree_map::Entry::Occupied(mut e) = seqs.readers.entry(self.seq) {
+            *e.get_mut() -= 1;
+            if *e.get() == 0 {
+                e.remove();
+            }
+        }
+    }
 }
 
 impl Snapshot<'_> {
     /// `Keyspace::get_val` in this state.
     pub fn get_val(&self, key: &[u8]) -> KsResult<Option<Val>> {
         let mut out = Vec::new();
-        for m in &self.mems {
-            if let Some(val) = m.get(key) {
+        for m in &self.version.mems {
+            if let Some(val) = m.read().unwrap().get_at(key, self.seq) {
                 let done = !val.is_partial();
                 out.push(val);
                 if done {
@@ -102,7 +114,7 @@ impl Snapshot<'_> {
                 }
             }
         }
-        let out = self.ks.run_values(self.runs, key, out)?;
+        let out = self.ks.run_values(&self.version.runs, key, out)?;
         Ok(val::fold(out).and_then(Val::settled))
     }
 
@@ -114,11 +126,13 @@ impl Snapshot<'_> {
         limit: usize,
     ) -> KsResult<Vec<(Vec<u8>, Val)>> {
         let pages = self
+            .version
             .mems
             .iter()
-            .map(|m| m.page(start, end, limit))
+            .map(|m| m.read().unwrap().page_at(start, end, limit, self.seq))
             .collect();
-        self.ks.merge_scan(pages, self.runs, start, end, limit)
+        self.ks
+            .merge_scan(pages, &self.version.runs, start, end, limit)
     }
 }
 
@@ -200,6 +214,15 @@ pub struct Keyspace {
     hooks: OnceLock<Box<dyn Hooks>>,
     /// Bytes of the last run flushed from a full buffer: the size of tier 0.
     flush_unit: AtomicU64,
+    /// Inserts' sequence numbers and the live snapshots'.
+    seqs: Mutex<Seqs>,
+}
+
+/// The last insert's sequence number, and the live snapshots by sequence (with how many at each).
+#[derive(Default)]
+struct Seqs {
+    published: u64,
+    readers: std::collections::BTreeMap<u64, usize>,
 }
 
 fn sync_dir(dir: &Path) -> io::Result<()> {
@@ -290,6 +313,7 @@ impl Keyspace {
                 freeze_requested: AtomicBool::new(false),
                 counts: ReadCounts::default(),
                 counters: Counters::default(),
+                seqs: Mutex::new(Seqs::default()),
                 hooks: OnceLock::new(),
                 // Until a full buffer has been flushed: entries take about 6 times their run bytes in memory.
                 flush_unit: AtomicU64::new(unit),
@@ -454,17 +478,20 @@ impl Keyspace {
         Ok(out)
     }
 
-    /// Runs `f` with a snapshot of the keyspace: its buffers are held for reading meanwhile, so nothing is
-    /// inserted until `f` returns and every read through the snapshot sees one state. `f` must be short: inserts
-    /// wait for it.
-    pub fn with_snapshot<T>(&self, f: impl FnOnce(&Snapshot) -> T) -> T {
-        let v = self.version();
-        let mems = v.mems.iter().map(|m| m.read().unwrap()).collect();
-        f(&Snapshot {
+    /// A snapshot: reads through it see the keyspace as it was now, whatever is inserted, flushed or merged
+    /// meanwhile. It holds the runs and buffers of now, and the buffers keep the values it reads, until it is
+    /// dropped; nothing waits for it.
+    pub fn snapshot(&self) -> Snapshot<'_> {
+        let mut seqs = self.seqs.lock().unwrap();
+        let seq = seqs.published;
+        *seqs.readers.entry(seq).or_default() += 1;
+        let version = self.version();
+        drop(seqs);
+        Snapshot {
             ks: self,
-            runs: &v.runs,
-            mems,
-        })
+            version,
+            seq,
+        }
     }
 
     // ---- writes ----
@@ -480,14 +507,21 @@ impl Keyspace {
     ) {
         let mut w = self.write.lock().unwrap();
         {
+            // Snapshots wait while an insert applies, so each sees all of an insert or none of it.
+            let mut seqs = self.seqs.lock().unwrap();
+            let seq = seqs.published + 1;
+            let readers: Vec<u64> = seqs.readers.keys().copied().collect();
             let v = self.version();
             let mut m = v.mems[0].write().unwrap();
             let (mut n, mut bytes, mut grew) = (0, 0, 0);
             for (k, val) in entries {
                 bytes += (k.len() + val.payload_len() + 1) as u64;
-                grew += m.insert(&k, val);
+                grew += m.insert(&k, val, seq, &mem::Readers(&readers));
                 n += 1;
             }
+            drop(m);
+            seqs.published = seq;
+            drop(seqs);
             self.pool.add_active(grew);
             self.counters.inserted.fetch_add(n, Ordering::Relaxed);
             self.counters
