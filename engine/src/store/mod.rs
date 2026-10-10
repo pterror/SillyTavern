@@ -508,7 +508,6 @@ impl Store {
         })
     }
 
-    /// A page of search results (`crate::search::query`).
     /// A page of the library list.
     pub fn library_page(&self, q: &library_read::Query) -> StoreResult<library_read::Page> {
         self.derived(|v| library_read::page(v, q))
@@ -542,6 +541,17 @@ impl Store {
         self.derived(|v| library_read::by_hash(v, which, hash, limit))
     }
 
+    /// The entities two card hashes both find.
+    pub fn library_by_hashes(
+        &self,
+        a: (u64, &[u8]),
+        b: (u64, &[u8]),
+        limit: usize,
+    ) -> StoreResult<Vec<u64>> {
+        self.derived(|v| library_read::by_hashes(v, a, b, limit))
+    }
+
+    /// A page of search results (`crate::search::query`).
     pub fn search(
         &self,
         q: &crate::search::query::Query,
