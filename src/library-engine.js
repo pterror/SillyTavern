@@ -544,13 +544,41 @@ export class LibraryEngine {
      */
     async cards(avatars) {
         const entities = await this.entities(await this.ids(TYPE.character, avatars));
-        return Promise.all(entities.map(async e => {
-            if (!e) return null;
-            const parts = cardParts(e);
-            const book = await this.books.owned(e.id, SLOT.characterBook);
-            if (book !== undefined) parts.extra.push({ path: 'data:character_book', value: JSON.stringify(book) });
-            return assembleCard(parts);
-        }));
+        return Promise.all(entities.map(e => (e ? this.assembled(e) : null)));
+    }
+
+    /**
+     * A stored character's card, its own book included.
+     * @param {StoredEntity} e
+     */
+    async assembled(e) {
+        const parts = cardParts(e);
+        const book = await this.books.owned(e.id, SLOT.characterBook);
+        if (book !== undefined) parts.extra.push({ path: 'data:character_book', value: JSON.stringify(book) });
+        return assembleCard(parts);
+    }
+
+    /**
+     * The `cardHash` records keeping characters' content identity hashes current when the name their lorebook
+     * link reads as becomes `world` (a book renamed): for each one whose card then hashes differently.
+     * @param {bigint[]} ids Characters linking the book.
+     * @param {string} world
+     * @returns {Promise<object[]>}
+     */
+    async identityRecords(ids, world) {
+        const records = [];
+        for (let i = 0; i < ids.length; i += 256) {
+            const entities = await this.entities(ids.slice(i, i + 256));
+            for (const e of entities) {
+                if (!e || e.type !== TYPE.character || !e.link) continue;
+                const card = await this.assembled({ ...e, link: { ...e.link, key: world } });
+                const hex = computeContentIdentityHash(card);
+                if (e.hashes.find(h => h.which === HASH.identity)?.hash.toString('hex') !== hex) {
+                    records.push({ kind: 'cardHash', entity: e.id, which: HASH.identity, hash: Buffer.from(hex, 'hex') });
+                }
+            }
+        }
+        return records;
     }
 
     /**

@@ -506,7 +506,10 @@ export class WorldInfoEngine {
         return this.lane([key], async () => {
             const found = await this.find(name);
             if (!found?.defined) return false;
-            await this.store.commit(this.deleteRecords(await this.stored(found.id, true)));
+            const records = this.deleteRecords(await this.stored(found.id, true));
+            // The links keep the book's name; a card whose hash was made from another reading is made current.
+            pushAll(records, await this.lib.identityRecords(await this.linkers(found.id), key));
+            await this.store.commit(records);
             return true;
         });
     }
@@ -528,11 +531,34 @@ export class WorldInfoEngine {
             if (there?.defined) return 'taken';
             const [entity] = await this.lib.entities([found.id]);
             const update = { kind: 'entityUpdate', entity: found.id, type: TYPE.book, key: to, added: entity?.added ?? 0 };
-            await this.store.commit(there
+            const records = there
                 ? [{ kind: 'bookForward', from: there.id, into: found.id }, { kind: 'entityDelete', entity: there.id }, update]
-                : [update]);
+                : [update];
+            // The cards linking either now read as the new name: their identity hashes follow, in the same commit.
+            const linkers = [...await this.linkers(found.id), ...(there ? await this.linkers(there.id) : [])];
+            pushAll(records, await this.lib.identityRecords(linkers, to));
+            await this.store.commit(records);
             return 'ok';
         });
+    }
+
+    /**
+     * Every character whose lorebook link resolves as `book`: linking it, or an unresolved name forwarded into it.
+     * @param {bigint} book
+     * @returns {Promise<bigint[]>}
+     */
+    async linkers(book) {
+        const out = [];
+        for (const b of await this.store.worldRead('resolving', { book })) {
+            let after;
+            for (;;) {
+                const page = await this.store.worldRead('linkers', { book: b, after, limit: 1000 });
+                pushAll(out, page.ids);
+                if (!page.more) break;
+                after = page.ids[page.ids.length - 1];
+            }
+        }
+        return out;
     }
 
     /**

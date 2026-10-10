@@ -1653,7 +1653,7 @@ Follows from those:
 
 Status (10-11, handover): **built behind the cut** (6f297bdb1 books, entries and links; e35eb4f63 the world-info
 layer and embedded books; 9d2918224 the chat-bound lorebook by id; 787fee81d measured, a large book's stack overflow
-fixed). Also 1fa821e57 (the stale search test: since 38e89f5df an assign also moves the entity in the assignment change
+fixed; the identity hash commit after c5dbb8b9f). Also 1fa821e57 (the stale search test: since 38e89f5df an assign also moves the entity in the assignment change
 feed, 2 entries; the test now counts them). Nothing routes to it; what is left is under "Left" below.
 
 Answered (coordinator, 10-11; compat: upstream's meaning, behaviour: maximally intuitive, Data safety):
@@ -1751,6 +1751,15 @@ ordinary value.
 |---|---|---|
 | the link's place | the `world_info` key's own value, marked by a leading `\u0001` | one key, so one change: reverting it restores what was shown before, and no second key can disagree with it |
 
+Built, identity hashes follow a book (10-11, coordinator: derived data kept current; `src/world-info-engine.js`
+`rename` and `delete`, `LibraryEngine.identityRecords`, `worldRead` `linkers` and `resolving`; test in
+`tests/world-info-engine.test.js`): a card's content identity hash covers its `world`, so a rename recomputes the hash
+of every card whose link resolves as the book (linking it, or an unresolved name forwarded into it, and the unresolved
+name a rename takes over), from the card as it will read, and records those that change in the rename's own commit:
+the cost is the linked cards. A delete does the same (its links keep the book's name, so normally none change). The
+test checks after each rename, delete and re-creation that every card's stored hash is its card's as read now, and
+that the old name's hash finds nothing.
+
 Measured, one entry edit (10-11; scratchpad `5c/measure.mjs`, `node measure.mjs <dir> nvme0n1 <E> 200 old|engine`: a
 book of E entries of ~400 B, 200 isolated `/entry/edit`s through the old route against `editEntry`, each awaited; NVMe
 btrfs scratchpad, removed after; device bytes are `/proc/diskstats` deltas less an idle window). Also
@@ -1780,8 +1789,9 @@ Left (handover, 10-11):
 - `apply` reads a book's `originalData` whole when a field changes or an entry is deleted.
 - 3a466a484's message is wrong: it holds only rustfmt's line wrap of a line 6f297bdb1 added (the change it describes
   was already in 6f297bdb1).
-- A book rename doesn't rewrite its linkers' content identity hashes (the card reads the new name; the hash, made from
-  the old, is rewritten at the card's next write), as "rename writes only the book" answers.
+- A card write and a rename of the book it links aren't ordered against each other (a card's lane is taken before a
+  book's, so a rename can't take its linkers' lanes): a card saved with the old name while the book is renamed links
+  that name as an unresolved one.
 
 **5d. search wired.**
 - Derivers feeding P3 (stage 4): card fields (S1, with the design's weights and prefix fields), card tag names and

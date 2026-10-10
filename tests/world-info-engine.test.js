@@ -366,12 +366,20 @@ describe.each(['native', 'wasm'])('%s', (kind) => {
         }, 120_000);
 
         test('links follow a rename, survive a delete and resolve when a book takes the name', async () => {
-            const card = (/** @type {string} */ world) => JSON.stringify({ spec: 'chara_card_v2', spec_version: '2.0', data: { name: 'C', extensions: { world } } });
+            const card = (/** @type {string} */ world, name = 'A') => JSON.stringify({ spec: 'chara_card_v2', spec_version: '2.0', data: { name, extensions: { world } } });
             const worldOf = async (/** @type {string} */ avatar) => /** @type {any} */ ((await library.cards([avatar]))[0]).data.extensions.world;
             const linked = async (/** @type {string} */ world) => (await library.query({ world, wantRows: false, wantHashes: true })).hashRows.map((/** @type {any} */ row) => row.id).sort();
+            const { computeContentIdentityHash } = await import('../src/character-card-normalize.js');
+            /** Each card's stored identity hash is its card's as it reads now: import dedup finds it by that. */
+            const hashesCurrent = async () => {
+                for (const avatar of ['a.png', 'b.png']) {
+                    const [read] = await library.cards([avatar]);
+                    expect(await library.findByHash(lib.HASH.identity, computeContentIdentityHash(read))).toBe(avatar);
+                }
+            };
             await books.write('Lore', { entries: {} });
             await library.writeCard(directories, 'a.png', card('Lore'));
-            await library.writeCard(directories, 'b.png', card('Ghost'));
+            await library.writeCard(directories, 'b.png', card('Ghost', 'B'));
             expect(await linked('Lore')).toEqual(['a.png']);
             expect(await linked('Ghost')).toEqual(['b.png']);
             const before = (await library.query({ ids: ['a.png'], wantRows: false, wantHashes: true })).hashRows[0].version;
@@ -381,23 +389,27 @@ describe.each(['native', 'wasm'])('%s', (kind) => {
             expect(await linked('Lore')).toEqual([]);
             const after = (await library.query({ ids: ['a.png'], wantRows: false, wantHashes: true })).hashRows[0].version;
             expect(after).toBeGreaterThan(before);
+            await hashesCurrent();
+            // The hash made from the old name no longer finds the card.
+            expect(await library.findByHash(lib.HASH.identity, computeContentIdentityHash(JSON.parse(card('Lore'))))).toBeNull();
             // Renamed onto the unresolved name, the book takes its links.
             expect(await books.rename('Lore 2', 'Ghost')).toBe('ok');
             expect(await worldOf('a.png')).toBe('Ghost');
             expect(await worldOf('b.png')).toBe('Ghost');
             expect(await linked('Ghost')).toEqual(['a.png', 'b.png']);
+            await hashesCurrent();
             // Deleted, the links keep the name; a book taking the name again resolves them.
             expect(await books.delete('Ghost')).toBe(true);
             expect(await worldOf('a.png')).toBe('Ghost');
             expect(await linked('Ghost')).toEqual(['a.png', 'b.png']);
             expect(await books.exists('Ghost')).toBe(false);
+            await hashesCurrent();
             await books.write('Ghost', { entries: {} });
             expect(await books.rename('Ghost', 'Found')).toBe('ok');
             expect(await worldOf('b.png')).toBe('Found');
-            // A card saved with the name it already reads as writes nothing for its link (its identity hash, made when
-            // it read 'Ghost', is written once).
-            await library.writeCard(directories, 'b.png', card('Found'));
-            expect((await library.writeCard(directories, 'b.png', card('Found'))).records).toBe(0);
+            await hashesCurrent();
+            // A card saved with the name it already reads as writes nothing.
+            expect((await library.writeCard(directories, 'b.png', card('Found', 'B'))).records).toBe(0);
             expect(await books.rename('Found', 'Found')).toBe('ok');
             await books.write('Other', { entries: {} });
             expect(await books.rename('Other', 'Found')).toBe('taken');
