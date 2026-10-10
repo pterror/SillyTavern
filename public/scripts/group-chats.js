@@ -61,7 +61,7 @@ import {
     displayPastChats,
     sendMessageAsUser,
     getBiasStrings,
-    saveChatConditional,
+    saveMetadata,
     deactivateSendButtons,
     activateSendButtons,
     getCurrentChatId,
@@ -1245,7 +1245,7 @@ async function generateGroupWrapper(byAutoMode, type = null, params = {}) {
             // Send user message as is
             const bias = getBiasStrings(userInput, type);
             await sendMessageAsUser(userInput, bias.messageBias);
-            await saveChatConditional();
+            await saveMetadata();
             $('#send_textarea').val('')[0].dispatchEvent(new Event('input', { bubbles: true }));
         }
         groupChatQueueOrder = new Map();

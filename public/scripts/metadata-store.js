@@ -58,6 +58,16 @@ export function changedMetadataKeys() {
 }
 
 /**
+ * Takes on chat metadata the server stored whole (a compat chat save), so it is what the page last had from the
+ * server and isn't saved again unchanged.
+ * @param {ChatMetadata} metadata What was sent.
+ */
+export function noteMetadataStored(metadata) {
+    _metadataBaseline = _baselineOf(metadata);
+    _lastSavedMetadataJSON = _metadataContentJSON(metadata);
+}
+
+/**
  * Remembers changes sent under `ref`, so they count as stored once the server says so.
  * @param {string} ref
  * @param {MetadataChanges} changes

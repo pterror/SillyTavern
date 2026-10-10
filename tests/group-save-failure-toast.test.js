@@ -137,7 +137,7 @@ jest.unstable_mockModule('../public/script.js', () => ({
     displayPastChats: jest.fn(),
     sendMessageAsUser: jest.fn(),
     getBiasStrings: jest.fn(),
-    saveChatConditional: jest.fn(),
+    saveMetadata: jest.fn(),
     deactivateSendButtons: jest.fn(),
     activateSendButtons: jest.fn(),
     getCurrentChatId: jest.fn(),

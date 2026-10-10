@@ -17,24 +17,25 @@ import {
     triggerAutoContinue, unblockGeneration, unshallowCharacter, updateMessageBlock, updateMessageItemizedPromptButton,
 } from '../script.js';
 import { chat, chat_metadata } from './chat-state.js';
+import { getRequestHeaders } from './request-headers.js';
 import { amount_gen, main_api, max_context } from './generation-params.js';
 import { name1 } from './app-selection-state.js';
 import { charactersStore, setCharacterId } from './character-store.js';
-import { _postChatMetadata, changedMetadataKeys, deriveChatAddressNode, noteMetadataSent, saveMetadata } from './metadata-store.js';
+import { changedMetadataKeys, deriveChatAddressNode, noteMetadataSent, noteMetadataStored } from './metadata-store.js';
 import { isProvisionalNodeId, isStoredNodeId, provisionalNodeId } from './node-identity.js';
 import { setFloatingPrompt } from './authors-note.js';
 import { getCfgPrompt, getGuidanceScale } from './cfg-scale.js';
 import { oai_settings, openai_messages_count, prepareOpenAIMessages, setOpenAIMessageExamples, setOpenAIMessages } from './chat-completion-settings.js';
 import { holdDraft, releaseDraft } from './chat-draft.js';
 import { isFailedSend, keepFailedSend, wasSendStored } from './failed-sends.js';
-import { healDirtyMessages, updateMessage, setStoreRef, storeRefOf, adoptStored } from './chat-store.js';
+import { updateMessage, setStoreRef, storeRefOf, adoptStored, _setCurrentTarget } from './chat-store.js';
 import { appendFileContent, hasPendingFileAttachment } from './chats.js';
 import { GENERATION_TYPE_TRIGGERS, inject_ids, SWIPE_DIRECTION, SWIPE_SOURCE } from './constants.js';
 import { collectMessageTitles, isSystemChatItem } from './core-chat-predicates.js';
 import { eventSource, event_types } from './events.js';
 import { extension_settings, runGenerationInterceptors } from './extensions.js';
 import { getRegexedString, regex_placement } from './extensions/regex/engine.js';
-import { generateGroupWrapper, getGroupDepthPrompts, groupsStore, is_group_generating, saveGroupField, selected_group } from './group-chats.js';
+import { generateGroupWrapper, getGroupDepthPrompts, groupsStore, is_group_generating, selected_group } from './group-chats.js';
 import { adjustHordeGenerationParams, horde_settings, isHordeGenerationNotAllowed, MIN_LENGTH } from './horde.js';
 import { t } from './i18n.js';
 import { force_output_sequence, formatInstructModeChat, formatInstructModeExamples, formatInstructModePrompt, formatInstructModeStoryString } from './instruct-mode.js';
@@ -138,7 +139,7 @@ window.addEventListener(REPLY_NOT_SAVED_EVENT, (/** @type {any} */ event) => {
 });
 
 // Marks the reply that just arrived as not stored (`extra.reply_not_saved` = its generation id), when
-// the server said so. Nothing on the page writes it (healDirtyMessages() and rawActionWritesFor() stop at it), and a
+// the server said so. Nothing on the page writes it (rawActionWritesFor() and a compat chat save stop at it), and a
 // send after it is refused until the server stores it (REPLY_STORED_EVENT below).
 function _markReplyNotSaved() {
     const generationId = notSavedGenerationId;
@@ -2904,7 +2905,59 @@ export function stopGeneration() {
 }
 
 /**
- * Saves the chat to the server.
+ * The messages of a chat a compat save sends: up to, not including, a message the page must not write (a reply the
+ * server couldn't store, which it stores on retry; a send that wasn't stored, kept until saved again or discarded).
+ * Each message without a stored id gets a ref, so the save's answer can be taken on (adoptStored()).
+ * @param {ChatMessage[]} messages
+ * @returns {ChatMessage[]}
+ */
+function storableMessages(messages) {
+    let end = messages.findIndex(message => typeof message.extra?.reply_not_saved === 'string' || isFailedSend(message));
+    if (end < 0) end = messages.length;
+    if (end < messages.length) {
+        toastr.warning(t`${messages.length - end} message(s) after an unsaved message weren't saved: save or discard that message first.`, t`Not saved`, { preventDuplicates: true });
+    }
+    const storable = messages.slice(0, end);
+    for (const message of storable) {
+        if (!isStoredNodeId(message.node_id) && storeRefOf(message) === undefined) setStoreRef(message, uuidv4());
+    }
+    return storable;
+}
+
+/**
+ * Posts a whole chat to upstream's save route (`/api/chats/save` or `/api/chats/group/save`), which stores what
+ * changed. When the chat is the open one, its new messages take on their stored ids.
+ * @param {string} url
+ * @param {object} body The route's body, without `chat`.
+ * @param {ChatMetadata} metadata
+ * @param {ChatMessage[]} messages
+ * @param {boolean} isOpenChat
+ * @returns {Promise<any>} The answer.
+ */
+async function postWholeChat(url, body, metadata, messages, isOpenChat) {
+    const header = { chat_metadata: metadata, user_name: name1, character_name: name2 };
+    const response = await fetch(url, {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ ...body, chat: [header, ...messages] }),
+    });
+    if (!response.ok) throw new Error(`${url} responded ${response.status}`);
+    const answer = await response.json();
+    if (isOpenChat) {
+        const stored = (Array.isArray(answer.assigned_node_ids) ? answer.assigned_node_ids : [])
+            .map((/** @type {{ index: number, node_id: string }} */ { index, node_id }) => ({ ref: storeRefOf(messages[index]), node_id }))
+            .filter(entry => typeof entry.ref === 'string');
+        adoptStored(stored);
+        noteMetadataStored(metadata);
+        if (typeof answer.integrity === 'string') chat_metadata.integrity = answer.integrity;
+        _snapshotMessages();
+    }
+    return answer;
+}
+
+/**
+ * Saves the chat to the server, as upstream does: the whole chat goes to `/api/chats/save`, which stores what
+ * changed (a message an extension added or changed included).
  * @param {object} [options] - Additional options.
  * @param {string} [options.chatName] The name of the chat file to save to
  * @param {object} [options.withMetadata] Additional metadata to save with the chat
@@ -2913,14 +2966,11 @@ export function stopGeneration() {
  * @param {ChatMessage[]} [options.chatData] Chat snapshot to save instead of the current in-memory chat
  * @param {boolean} [options.unique] Ask the server to mint a unique file name if `chatName` collides,
  * instead of asserting a name the caller uniquified against its own fetched chat list (e.g. branching).
- * @param {boolean} [options.heal] Whether to reconcile `chat[]` against chatOp*() before saving - see
- * saveChatConditional()'s own `heal` doc comment for the full rationale (this is the solo-chat half
- * of that same flag).
  *
  * @returns {Promise<string|void>} The chat name actually saved under (may differ from `chatName` when
  * `unique` caused a rename), or void when nothing was saved.
  */
-export async function saveChat({ chatName, withMetadata, mesId, force = false, chatData = undefined, unique = false, heal = false } = {}) {
+export async function saveChat({ chatName, withMetadata, mesId, force = false, chatData = undefined, unique = false } = {}) {
     if (selected_group != null) {
         toastr.error(t`Operation was aborted to prevent data corruption.`, t`saveChat called for a group chat`);
         throw new Error('saveChat called for a group chat');
@@ -2932,63 +2982,33 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
     }
 
     const metadata = { ...chat_metadata, ...(withMetadata || {}) };
-    const fileName = chatName ?? getCurrentCharacter()?.chat;
 
     if (getSelectionState().type === 'none' && name2 === neutralCharacterName) {
-        // Checking selection state, not `fileName`: a character left selected from before could fall through to a real save under it.
+        // Checking selection state, not the chat name: a character left selected from before could fall through to a real save under it.
         return;
     }
 
-    // getCurrentCharacter() is typed `Character|undefined` (script.js); the `getSelectionState()`
-    // bail-out above only covers the "no selection AND neutral name" case, so a real "no character"
-    // state could in principle still reach here - a pre-existing assumption (this call already threw
-    // on a missing character before this typing pass), not a new behavior change.
-    charactersStore.update(/** @type {Character} */ (getCurrentCharacter()).avatar, { date_last_chat: Date.now() });
+    const character = /** @type {Character} */ (getCurrentCharacter());
+    charactersStore.update(character.avatar, { date_last_chat: Date.now() });
 
-    const trimmedChat = Array.isArray(chatData)
+    const isOpenChat = !Array.isArray(chatData) && chatName === undefined;
+    const source = Array.isArray(chatData)
         ? chatData
         : (mesId !== undefined && mesId >= 0 && mesId < chat.length)
             ? chat.slice(0, Number(mesId) + 1)
             : chat.slice();
+    const messages = storableMessages(source);
+    // The open chat is named by the message its character is at; an unnamed one is stored unnamed.
+    const target = chatName ?? deriveChatAddressNode(character.chat) ?? '';
 
     try {
-        // `heal` is true when this call arrived via getContext().saveChat() (st-context.js) - the
-        // one truly generic entry point where a third-party extension may have mutated `chat[]`
-        // directly, without stating any chatOp*() of its own, and so can't be assumed to already be
-        // in sync - or via StreamingProcessor.onFinishStreaming()'s own no-assistant-node-id
-        // fallback, whose trailing message is an unstated mutation for the same reason (see that
-        // call site's own comment). Every OTHER first-party save (send, edit, swipe reaching this
-        // function via saveChatConditional()) never sets it: their mutation already persisted
-        // itself directly via its own chatOp*() call, and a write that fails now says so immediately
-        // (_chatOpPost()'s own failure reporting) instead of relying on this function to notice
-        // later. chat-store.js's healDirtyMessages() is that diff; it's owner-agnostic, but this
-        // function is solo-only (see the guard at the top), so it only ever runs it for the solo
-        // case here - see saveChatConditional() for where the identical `heal` flag applies to a
-        // group instead.
-        if (heal) {
-            await healDirtyMessages().catch(error =>
-                console.error('[saveChat] Could not sync unstated changes:', error));
+        const answer = await postWholeChat('/api/chats/save', {
+            avatar_url: character.avatar, ch_name: character.name, file_name: target, force, ...(unique ? { unique } : {}),
+        }, metadata, messages, isOpenChat);
+        if (isOpenChat && target === '' && typeof answer.file_name === 'string' && answer.file_name !== '') {
+            _setCurrentTarget(answer.file_name, chat_metadata.integrity ?? null);
         }
-
-        const addressedByName = chatName !== undefined;
-        const treeAvatar = getCurrentCharacter()?.avatar;
-        let hasPersistedOpening = false;
-        if (treeAvatar != null) {
-            const hasPersisted = trimmedChat.some(m => isStoredNodeId(m.node_id));
-
-            if (hasPersisted) {
-                hasPersistedOpening = true;
-                const target = addressedByName ? fileName : deriveChatAddressNode(fileName);
-
-                await _postChatMetadata({ avatar_url: treeAvatar }, /** @type {string} */ (target), metadata);
-            }
-        }
-
-        if (hasPersistedOpening) {
-            _snapshotMessages();
-        } else {
-            // An opening with no node_id has never touched the tree - opening this chat is a selection, not a write.
-        }
+        return typeof answer.file_name === 'string' ? answer.file_name : chatName;
     } catch (error) {
         console.error(error);
         toastr.error(t`Check the server connection and reload the page to prevent data loss.`, t`Chat could not be saved`);
@@ -2996,19 +3016,11 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
 }
 
 /**
- * @param {object} [options]
- * @param {boolean} [options.heal] Whether to reconcile `chat[]` against chatOp*() before saving. True
- * for getContext().saveChat() (st-context.js), the one generic entry point a third-party extension
- * can reach without having stated any chatOp*() of its own - an ordinary first-party call never
- * needed it before, since every mutation already persisted itself directly at its own call site.
- * The one first-party exception is StreamingProcessor.onFinishStreaming()'s own fallback (no
- * assistant_node_id came back - not raw-action, a failed server-side persist, or a stopped stream):
- * that trailing message is a genuine unstated mutation too, so it needs the same reconciliation.
- * See saveChat()'s own use of this same flag for the solo case; healDirtyMessages() (chat-store.js)
- * is owner-agnostic, so the group branch below applies it identically, just without a dedicated
- * function of its own to pass it through to.
+ * Saves the open chat as upstream does: saveChat() for a character's, the whole chat to `/api/chats/group/save` for a
+ * group's. Waits for a save already running.
+ * @param {object} [_options] Kept for callers that pass `{ heal }`; every save stores what changed.
  */
-export async function saveChatConditional({ heal = false } = {}) {
+export async function saveChatConditional(_options = {}) {
     try {
         await waitUntilCondition(() => !isChatSaving, DEFAULT_SAVE_EDIT_TIMEOUT, 100);
     } catch {
@@ -3022,20 +3034,16 @@ export async function saveChatConditional({ heal = false } = {}) {
         isChatSaving = true;
 
         if (selected_group != null) {
-            if (heal) {
-                await healDirtyMessages().catch(error =>
-                    console.error('[saveChatConditional] Could not sync unstated changes:', error));
+            const group = groupsStore.get(selected_group);
+            if (group && group.chat_id) {
+                await postWholeChat('/api/chats/group/save', { id: group.chat_id, group_id: group.id }, { ...chat_metadata }, storableMessages(chat.slice()), true)
+                    .catch(error => {
+                        console.error('Error saving the group chat', error);
+                        toastr.error(t`Check the server connection and reload the page to prevent data loss.`, t`Chat could not be saved`);
+                    });
             }
-            // Every message mutation already persisted itself directly via chatOp*() (chat-store.js) at
-            // its own call site - this is metadata catch-up only, mirroring what saveChat()'s tree
-            // branch does for solo below.
-            await saveMetadata();
-            // saveGroupChat()'s old shouldSaveGroup=true path bumped this same field the same way
-            // (debounced, no reload) after every whole-array resave; keep that bump on its own now that
-            // the resave it rode along with is gone.
-            await saveGroupField(selected_group, { date_last_chat: Date.now() }, false, false);
         } else {
-            await saveChat({ heal });
+            await saveChat();
         }
 
         // Save token cache to IndexedDB storage

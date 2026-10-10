@@ -182,11 +182,8 @@ export function getContext() {
         extensionPrompts: extension_prompts,
         setExtensionPrompt,
         updateChatMetadata,
-        // The one truly generic save entry point: an extension may have mutated `chat[]` directly
-        // without calling editMessage/appendMessage/etc. above, so { heal: true } tells
-        // saveChatConditional() to reconcile it against chatOp*() first - see that flag's own doc
-        // comment for why every other caller of it leaves this false.
-        saveChat: () => saveChatConditional({ heal: true }),
+        // Upstream's whole-chat save: the server stores what an extension changed in `chat[]` directly.
+        saveChat: () => saveChatConditional(),
         editMessage: chatOpEdit,
         editMessages: chatOpEditMany,
         appendMessage: chatOpAppend,

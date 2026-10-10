@@ -491,7 +491,8 @@ router.post('/save', validateAvatarUrlMiddleware, async function (request, respo
     try {
         const cardName = String(request.body.avatar_url).replace('.png', '');
         const chatData = request.body.chat;
-        let chatName = String(request.body.file_name);
+        // An unnamed chat (no file_name) is stored without a name; a character with no current chat is then on it.
+        let chatName = typeof request.body.file_name === 'string' ? request.body.file_name.replace(/\.jsonl$/, '') : '';
 
         if (!Array.isArray(chatData)) {
             return response.status(400).send({ error: 'The request\'s body.chat is not an array.' });
@@ -509,6 +510,14 @@ router.post('/save', validateAvatarUrlMiddleware, async function (request, respo
 
         const result = await saveChatToTree(request.user.directories, cardName, chatName, chatData, false, owner);
         if (result && 'integrity' in result) {
+            if (chatName === '' && result.assignedNodeIds.length > 0) {
+                const avatar = String(request.body.avatar_url);
+                const current = /** @type {string|undefined} */ ((await getCharacterActiveChatsByIds(request.user.directories, [avatar]))[avatar]);
+                if (current === undefined) {
+                    chatName = result.assignedNodeIds[0].node_id;
+                    await setCharacterActiveChat(request.user.directories, avatar, chatName);
+                }
+            }
             return response.send({
                 ok: true,
                 integrity: result.integrity,
