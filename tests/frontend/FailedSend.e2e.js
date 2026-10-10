@@ -182,6 +182,50 @@ test.describe('a send the server did not store', () => {
         await expect.poll(async () => (await chatState(page)).map(m => m.mes)).toEqual(['Hello.', text, REPLY]);
     });
 
+    test('a reload while it is being sent brings it back, unless the server had stored it', async ({ page }) => {
+        await testSetup.awaitST({ page });
+        const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+        const avatar = await createCharacter(page, `FailedSendReload-${stamp}`);
+        await openCharacter(page, avatar);
+        await connectLlamaCpp(page, mock.url);
+
+        // The request never reaches the server, and the page is reloaded before it settles.
+        await page.route('**/api/backends/text-completions/generate', () => new Promise(() => {}));
+        const lost = `Lost in flight ${stamp}`;
+        await chatBox(page).fill(lost);
+        await page.locator('#send_but').click();
+        await expect(page.locator('#chat .mes .mes_text', { hasText: lost })).toHaveCount(1);
+        // Left routed through the reload: unrouting first would let the held request through.
+        await reopen(page, avatar);
+        await page.unroute('**/api/backends/text-completions/generate');
+        await expect(page.locator('#chat .mes.failed_send .mes_text')).toContainText(lost);
+        await expect(notice(page, 'Message not saved')).toBeVisible();
+        await notice(page, 'Message not saved').getByRole('button', { name: 'Save it again' }).click();
+        await expect(page.locator('#chat .mes.failed_send')).toHaveCount(0);
+        await connectLlamaCpp(page, mock.url);
+
+        // The server stores it, but the page is reloaded before hearing so.
+        await page.route('**/api/backends/text-completions/generate', async (route) => {
+            await route.fetch();
+            await new Promise(() => {});
+        });
+        const stored = `Stored in flight ${stamp}`;
+        await chatBox(page).fill(stored);
+        await page.locator('#send_but').click();
+        await expect.poll(() => page.evaluate(async ({ avatar, stored }) => {
+            // @ts-ignore
+            const context = SillyTavern.getContext();
+            const response = await fetch('/api/chats/open', { method: 'POST', headers: context.getRequestHeaders(), body: JSON.stringify({ avatar_url: avatar }) });
+            return (await response.json()).messages.some(m => m.mes === stored);
+        }, { avatar, stored }), { timeout: 15000 }).toBe(true);
+        await reopen(page, avatar);
+        await page.unroute('**/api/backends/text-completions/generate');
+        await expect(page.locator('#chat .mes .mes_text', { hasText: stored })).toHaveCount(1);
+        await expect(page.locator('#chat .mes.failed_send')).toHaveCount(0);
+        await expect(notice(page, 'Message not saved')).toHaveCount(0);
+        expect(await page.evaluate(() => Object.keys(localStorage).filter(k => k.startsWith('FailedSends:')).length)).toBe(0);
+    });
+
     test('whose place moved on is shown at the end, and can be sent as a reply to what it followed', async ({ page }) => {
         await testSetup.awaitST({ page });
         const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
