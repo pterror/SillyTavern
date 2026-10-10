@@ -58,15 +58,6 @@ fn card(r: &mut Rng, e: u64) -> Vec<Record> {
     let desc = sentence(r, 150);
     let mut recs = vec![
         rec(
-            "entityCreate",
-            vec![
-                Value::Id(e),
-                Value::UInt(CHARACTER),
-                text(&format!("{name}.png")),
-                Value::Time(1_700_000_000_000 + e as i64),
-            ],
-        ),
-        rec(
             "textValue",
             vec![
                 Value::Id(e),
@@ -118,6 +109,16 @@ fn card(r: &mut Rng, e: u64) -> Vec<Record> {
             vec![Value::Id(e), Value::Id(1 + r.below(TAGS)), Value::Bit(true)],
         ));
     }
+    // After the values, as the writer does, so the card enters the orders once.
+    recs.push(rec(
+        "entityCreate",
+        vec![
+            Value::Id(e),
+            Value::UInt(CHARACTER),
+            text(&format!("{name}.png")),
+            Value::Time(1_700_000_000_000 + e as i64),
+        ],
+    ));
     recs
 }
 
