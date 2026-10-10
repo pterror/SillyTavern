@@ -3,8 +3,9 @@
 //!
 //! Matching: every positive clause and filter must match, no negated one. A clause of one token is a word; one
 //! of several tokens (quoted, or split by the tokenizer, as `foo-bar`) is a phrase: its tokens adjacent and in
-//! order within one value of one field. The query's last token is a prefix (from 2 characters): for a word in
-//! the prefix fields only, an exact token elsewhere; for a phrase in every field. A phrase is found through its
+//! order within one value of one field. The query's last token is a prefix (from 2 characters), unless its
+//! clause is `quoted` (a closed-quote phrase): for a word in the prefix fields only, an exact token elsewhere; for
+//! a phrase in every field. A phrase is found through its
 //! exact tokens' postings, then checked on the candidates' text.
 //!
 //! One word in relevance order reads its term's top list (`top`) when the term has more documents than a list
@@ -84,7 +85,21 @@ pub struct Clause {
     /// The fields it matches in (indexes into the scope's fields); all of them when None.
     pub fields: Option<Vec<u32>>,
     pub negate: bool,
+    /// A closed-quote phrase: its last word is whole even when it ends the query.
     pub quoted: bool,
+}
+
+/// A check of each document a filter adds, begun once per query on the query's view.
+pub trait DocCheck: Send + Sync {
+    fn begin<'v>(&self, view: &'v View<'v>) -> StoreResult<CheckFn<'v>>;
+}
+
+pub type CheckFn<'v> = Box<dyn FnMut(u64) -> StoreResult<bool> + 'v>;
+
+impl std::fmt::Debug for dyn DocCheck {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DocCheck")
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -97,6 +112,8 @@ pub enum Filter {
     NoTag(Vec<u64>),
     Ids(Vec<u64>),
     NotIds(Vec<u64>),
+    /// Documents the check passes (about two point reads each).
+    Check(Arc<dyn DocCheck>),
 }
 
 /// An order of documents by a key, kept by the structure that owns the key.
@@ -217,6 +234,8 @@ pub fn run(view: &View, q: &Query, cache: &StatsCache) -> StoreResult<Found> {
         found.total_exact = false;
         found.more = true;
     }
+    // The page's document checks don't apply to tags.
+    ctx.checks.clear();
     (found.tags, found.tags_exact) = if q.scope == Scope::LIBRARY {
         tag_matches(&mut ctx, q)?
     } else {
@@ -234,6 +253,40 @@ pub fn run(view: &View, q: &Query, cache: &StatsCache) -> StoreResult<Found> {
     found.plan_micros = plan_micros;
     found.refill = ctx.refill.take();
     Ok(found)
+}
+
+/// Whether documents match a query's clauses and filters, one document at a time in any order: for walking
+/// another structure's order and checking each document.
+pub struct Matching<'a> {
+    ctx: Ctx<'a>,
+    plan: Plan,
+}
+
+impl<'a> Matching<'a> {
+    pub fn new(view: &'a View<'a>, q: &Query, cache: &'a StatsCache) -> StoreResult<Matching<'a>> {
+        let mut ctx = Ctx::new(view, Some(cache));
+        let plan = Plan::new(&mut ctx, q)?;
+        Ok(Matching { ctx, plan })
+    }
+
+    /// Every tag a tag-restricted clause matches was found (else its matches are some of them).
+    pub fn complete(&self) -> bool {
+        self.plan.complete
+    }
+
+    pub fn matches(&mut self, d: u64) -> StoreResult<bool> {
+        for m in &mut self.plan.pos {
+            if m.check(&mut self.ctx, d)?.is_none() {
+                return Ok(false);
+            }
+        }
+        self.plan.passes(&mut self.ctx, d)
+    }
+
+    /// Work done so far, in `Ctx` units.
+    pub fn work(&self) -> u64 {
+        self.ctx.work
+    }
 }
 
 // ---- reading ----
@@ -261,6 +314,8 @@ pub(crate) struct Ctx<'a> {
     /// The last document's length codes read.
     codes: Option<(Scope, u64, [u8; 1 << FIELD_BITS])>,
     refill: Option<Refill>,
+    /// The query's `Filter::Check`s, begun.
+    checks: Vec<CheckFn<'a>>,
 }
 
 impl<'a> Ctx<'a> {
@@ -283,6 +338,7 @@ impl<'a> Ctx<'a> {
             map_pairs: 0,
             codes: None,
             refill: None,
+            checks: Vec::new(),
         }
     }
 
@@ -1485,7 +1541,12 @@ enum Step {
 impl Plan {
     fn new(ctx: &mut Ctx, q: &Query) -> StoreResult<Plan> {
         let stats = scope_stats(ctx, q.scope)?;
-        let last = q.clauses.iter().rposition(|c| !tokens(&c.text).is_empty());
+        // The last word is a prefix unless its clause is a closed-quote phrase.
+        let last = q
+            .clauses
+            .iter()
+            .rposition(|c| !tokens(&c.text).is_empty())
+            .filter(|&i| !q.clauses[i].quoted);
         let (mut pos, mut neg) = (Vec::new(), Vec::new());
         let (mut include, mut exclude) = (Vec::new(), Vec::new());
         let mut complete = true;
@@ -1541,6 +1602,10 @@ impl Plan {
                 Filter::NotIds(ids) => exclude.push(Filtered::Ids(Listed::new(
                     ids.iter().map(|&d| (d, ())).collect(),
                 ))),
+                Filter::Check(c) => {
+                    let f = c.begin(ctx.view)?;
+                    ctx.checks.push(f);
+                }
             }
         }
         let all = (pos.is_empty() && include.is_empty())
@@ -1575,6 +1640,12 @@ impl Plan {
                 return Ok(false);
             }
         }
+        for i in 0..ctx.checks.len() {
+            ctx.work += 2 * SEEK;
+            if !(ctx.checks[i])(d)? {
+                return Ok(false);
+            }
+        }
         for m in &mut self.neg {
             if m.check(ctx, d)?.is_some() {
                 return Ok(false);
@@ -1584,11 +1655,13 @@ impl Plan {
     }
 
     fn score(&self, matched: &[Matched]) -> f64 {
+        // An empty sum is -0.0, which orders below the 0.0 a page's `after` comes back as.
         self.pos
             .iter()
             .zip(matched)
             .map(|(m, x)| m.score(x, &self.stats))
-            .sum()
+            .sum::<f64>()
+            + 0.0
     }
 
     /// In id order: the first match at or after `d` (and before `end`). With `floor`, documents and blocks that

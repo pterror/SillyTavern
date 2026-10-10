@@ -20,6 +20,7 @@ use super::library::{
 };
 use crate::keyspace::val::{Val, get_bytes, get_u64, max_value, put_bytes, put_u64};
 use crate::log::format::FieldRef;
+use crate::search::query::{CheckFn, DocCheck};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Sort {
@@ -266,7 +267,9 @@ fn resolve(view: &View, f: &Filter) -> Result<Resolved, StoreError> {
 /// What decides whether an entity passes, each fact read only when the filter needs it.
 struct Checker<'a> {
     view: &'a View<'a>,
-    f: &'a Filter,
+    f: std::sync::Arc<Filter>,
+    /// A search's match, checked after everything else.
+    search: Option<CheckFn<'a>>,
     r: Resolved,
     folders: HashMap<u64, bool>,
     /// Member blocks read, as bits by place, per (tag, block).
@@ -277,14 +280,15 @@ struct Checker<'a> {
 }
 
 impl<'a> Checker<'a> {
-    fn new(view: &'a View<'a>, f: &'a Filter) -> Result<Checker<'a>, StoreError> {
+    fn new(view: &'a View<'a>, f: &Filter) -> Result<Checker<'a>, StoreError> {
         let next = view
             .get(&key::of(key::NEXT_ENTITY))?
             .and_then(|b| max_value(&b))
             .unwrap_or(0);
         Ok(Checker {
             view,
-            f,
+            f: std::sync::Arc::new(f.clone()),
+            search: None,
             r: resolve(view, f)?,
             folders: HashMap::new(),
             blocks: HashMap::new(),
@@ -344,7 +348,7 @@ impl<'a> Checker<'a> {
 
     /// Whether `e`, of type `kind` with fav `fav`, passes everything but the scope it was read from.
     fn passes(&mut self, e: u64, kind: u64, fav: bool) -> Result<bool, StoreError> {
-        let f = self.f;
+        let f = self.f.clone();
         if self.r.empty || f.not_ids.contains(&e) {
             return Ok(false);
         }
@@ -413,7 +417,10 @@ impl<'a> Checker<'a> {
                 return Ok(false);
             }
         }
-        Ok(true)
+        match &mut self.search {
+            Some(m) => m(e),
+            None => Ok(true),
+        }
     }
 
     /// `passes` for an entity whose type and fav aren't known yet.
@@ -1617,7 +1624,19 @@ fn total(
 
 /// A page of the library under `q`.
 pub fn page(view: &View, q: &Query) -> Result<Page, StoreError> {
+    page_with(view, q, None)
+}
+
+/// `page` for the entities `search` also passes: every one is checked, and the page has no total (a search's
+/// count is the caller's).
+pub fn page_with<'a>(
+    view: &'a View<'a>,
+    q: &Query,
+    search: Option<CheckFn<'a>>,
+) -> Result<Page, StoreError> {
+    let searched = search.is_some();
     let mut chk = Checker::new(view, &q.filter)?;
+    chk.search = search;
     if chk.r.empty || q.filter.ids.as_ref().is_some_and(Vec::is_empty) {
         return Ok(Page {
             total: q.count.then_some(0),
@@ -1626,7 +1645,16 @@ pub fn page(view: &View, q: &Query) -> Result<Page, StoreError> {
         });
     }
     let random = matches!(q.sort, Sort::Random { .. });
-    let d = driver(view, &q.filter, &chk.r, !random)?;
+    let mut d = driver(view, &q.filter, &chk.r, !random)?;
+    if searched {
+        d.covers = false;
+        d.whole = false;
+        d.light = false;
+    }
+    let q = &Query {
+        count: q.count && !searched,
+        ..q.clone()
+    };
     let (read, range_over) = if q.filter.ids.is_some() {
         (Read::Walk(None), 0)
     } else {
@@ -1659,4 +1687,14 @@ pub fn page(view: &View, q: &Query) -> Result<Page, StoreError> {
         more,
         cursor,
     })
+}
+
+/// The library filter as a search filter: each document checked as a page checks it.
+pub struct LibraryCheck(pub Filter);
+
+impl DocCheck for LibraryCheck {
+    fn begin<'v>(&self, view: &'v View<'v>) -> Result<CheckFn<'v>, StoreError> {
+        let mut chk = Checker::new(view, &self.0)?;
+        Ok(Box::new(move |e| Ok(chk.passes_any(e)?.is_some())))
+    }
 }

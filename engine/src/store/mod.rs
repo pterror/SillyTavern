@@ -33,6 +33,7 @@ pub mod derive;
 pub mod kinds;
 pub mod library;
 pub mod library_read;
+pub mod library_search;
 pub mod searched;
 pub mod sessions;
 pub mod state;
@@ -585,6 +586,21 @@ impl Store {
     /// A page of the library list.
     pub fn library_page(&self, q: &library_read::Query) -> StoreResult<library_read::Page> {
         self.derived(|v| library_read::page(v, q))
+    }
+
+    /// A page of the library list searched (`library_search`).
+    pub fn library_search(
+        &self,
+        q: &library_read::Query,
+        clauses: &[crate::search::query::Clause],
+        ordered: library_search::Ordered,
+    ) -> StoreResult<library_search::Searched> {
+        let found = self
+            .derived(|v| library_search::page(v, q, clauses, ordered, &self.inner.search_stats))?;
+        if let Some(r) = &found.refill {
+            self.inner.refill(r.clone());
+        }
+        Ok(found)
     }
 
     /// Each entity with its values, or None where there is none, in the order asked.
@@ -1676,6 +1692,8 @@ impl Hooks for StoreHooks {
 mod books_tests;
 #[cfg(test)]
 mod chat_tests;
+#[cfg(test)]
+mod library_search_tests;
 #[cfg(test)]
 mod library_tests;
 #[cfg(test)]
