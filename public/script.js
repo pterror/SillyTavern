@@ -299,17 +299,18 @@ import {
     updateMessage, updateIn, deepFreeze,
     ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpEndPath, chatOpEndPathAtAnchor, chatOpSelect, chatOpGraft, chatOpDegraft, chatOpSwapAdjacent, chatOpDeleteAlternative, chatOpDeleteAlternativeNode,
     _mergeCardGreetingsIntoOpening, _restoreContinuation, _isBlankSlot, _setCurrentTarget, setStoreRef, storeRefOf, adoptStored, chatOpAppendAfter, setSendStoredListener,
+    openingForRequest,
 } from './scripts/chat-store.js';
 export {
-    updateMessage, updateIn,
+    updateMessage, updateIn, adoptStored, openingForRequest,
     ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpEndPath, chatOpEndPathAtAnchor, chatOpSelect, chatOpGraft, chatOpDegraft, chatOpSwapAdjacent, chatOpDeleteAlternative, chatOpDeleteAlternativeNode,
 };
 // Lives in node-identity.js, a standalone module with no dependency on anything else in this cluster; re-exported for existing importers.
 import { isStoredNodeId, isProvisionalNodeId, provisionalNodeId } from './scripts/node-identity.js';
 export { isStoredNodeId, isProvisionalNodeId, provisionalNodeId };
 // Lives in metadata-store.js, isolated so it can be typechecked under strict null checks; re-exported for existing importers.
-import { saveMetadata, _resetMetadataSaveSnapshot } from './scripts/metadata-store.js';
-export { saveMetadata };
+import { saveMetadata, _resetMetadataSaveSnapshot, deriveChatAddressNode } from './scripts/metadata-store.js';
+export { saveMetadata, deriveChatAddressNode };
 // Lives in node-navigation.js, isolated so it can be typechecked under strict null checks; re-exported for existing importers.
 import { switchToNode, switchToAlternativePath } from './scripts/node-navigation.js';
 export { switchToNode };
@@ -7047,8 +7048,7 @@ export async function unshallowCharacter(characterId) {
  * @returns {Promise<ChatOpenAnswer>}
  */
 export async function requestChatOpen(body) {
-    /** @type {{ type: 'character'|'group', id: string }} */
-    const owner = body.group_id ? { type: 'group', id: body.group_id } : { type: 'character', id: String(body.avatar_url) };
+    const owner = chatOpenOwner(body);
     const response = await fetch('/api/chats/open', {
         method: 'POST',
         headers: getRequestHeaders(),
@@ -7056,9 +7056,36 @@ export async function requestChatOpen(body) {
         body: JSON.stringify({ ...body, send_keys: keptSendKeys(owner) }),
     });
     if (!response.ok) throw new Error(`/api/chats/open responded ${response.status}`);
-    /** @type {ChatOpenAnswer} */
-    const answer = await response.json();
-    forgetStoredSends(owner, Array.isArray(answer.stored_sends) ? answer.stored_sends : []);
+    return takeChatOpenAnswer(body, await response.json());
+}
+
+/**
+ * @param {{ avatar_url?: string, group_id?: string }} body
+ * @returns {{ type: 'character'|'group', id: string }}
+ */
+function chatOpenOwner(body) {
+    return body.group_id ? { type: 'group', id: body.group_id } : { type: 'character', id: String(body.avatar_url) };
+}
+
+/**
+ * The send keys this page keeps for a character's or group's sends (failed-sends.js), which an open asks the server
+ * about (`send_keys`).
+ * @param {{ avatar_url?: string, group_id?: string }} body
+ * @returns {string[]}
+ */
+export function chatOpenSendKeys(body) {
+    return keptSendKeys(chatOpenOwner(body));
+}
+
+/**
+ * Takes on what an open answered (from /api/chats/open, or another action that opened a chat): the kept sends the
+ * server has stored, and the "last opened" settings.
+ * @param {{ avatar_url?: string, group_id?: string }} body The open's owner.
+ * @param {ChatOpenAnswer} answer
+ * @returns {ChatOpenAnswer}
+ */
+export function takeChatOpenAnswer(body, answer) {
+    forgetStoredSends(chatOpenOwner(body), Array.isArray(answer.stored_sends) ? answer.stored_sends : []);
     setActiveCharacter(answer.active_character);
     setActiveGroup(answer.active_group);
     seedKeyHashes(serverKeyHashes, answer.active_character, 'active_character');
@@ -7080,14 +7107,15 @@ export function takeServerSettings(values, settingsHash) {
 
 /**
  * Opens the selected character's conversation and draws it.
- * @param {{ chat?: string|null, makeCurrent?: boolean, fresh?: boolean }} [options] See requestChatOpen(). Without
- * `chat`, the server opens the one the character is on.
+ * @param {{ chat?: string|null, makeCurrent?: boolean, fresh?: boolean, opened?: ChatOpenAnswer|null }} [options] See
+ * requestChatOpen(). Without `chat`, the server opens the one the character is on. `opened`: an answer already in
+ * hand, drawn as it is.
  */
-async function openCharacterConversation({ chat: requested = null, makeCurrent = false, fresh = false } = {}) {
+async function openCharacterConversation({ chat: requested = null, makeCurrent = false, fresh = false, opened = null } = {}) {
     /** @type {ChatOpenAnswer|null} */
-    let answer = null;
+    let answer = opened;
     try {
-        answer = await requestChatOpen({ avatar_url: getCurrentCharacter().avatar, chat: requested, make_current: makeCurrent, fresh });
+        answer ??= await requestChatOpen({ avatar_url: getCurrentCharacter().avatar, chat: requested, make_current: makeCurrent, fresh });
     } catch (error) {
         console.error('Could not open the chat:', error);
         toastr.error(t`The chat could not be opened. Check the server connection and try again.`, t`Chat not opened`);
@@ -7329,13 +7357,15 @@ export async function saveActiveChat(avatar, chat) {
 /**
  * Opens one of the selected character's chats and makes it the character's current one (the server records it).
  * @param {string} file_name The chat's name or node id.
+ * @param {{ opened?: ChatOpenAnswer|null }} [options] `opened`: the answer of an action that already opened it
+ * (taken on with takeChatOpenAnswer()), drawn instead of asking the server again.
  */
-export async function openCharacterChat(file_name) {
+export async function openCharacterChat(file_name, { opened = null } = {}) {
     await waitUntilCondition(() => !isChatSaving, debounce_timeout.extended, 10);
     await clearChat({ clearData: true });
     setChatMetadata({});
     _resetMetadataSaveSnapshot();
-    await openCharacterConversation({ chat: file_name, makeCurrent: true });
+    await openCharacterConversation({ chat: file_name, makeCurrent: true, opened });
 }
 
 ////////// OPTIMZED MAIN API CHANGE FUNCTION ////////////

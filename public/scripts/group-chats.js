@@ -489,12 +489,12 @@ export async function getGroupChat(groupId, reload = false) {
  * Opens a group's conversation (POST /api/chats/open) and draws it. A chat with no messages yet shows each
  * member's greeting, unsaved: the greetings are stored when the first message is (chat-store.js ensureOpeningRow()).
  * @param {string} groupId
- * @param {{ chat?: string|null, makeCurrent?: boolean, reload?: boolean }} [options] `chat`: open this chat when the
- * group has it, else the group's current one; `makeCurrent`: and make it the group's current chat; `reload`: also
- * redraw the group's panel.
+ * @param {{ chat?: string|null, makeCurrent?: boolean, reload?: boolean, opened?: import('../script.js').ChatOpenAnswer|null }} [options]
+ * `chat`: open this chat when the group has it, else the group's current one; `makeCurrent`: and make it the group's
+ * current chat; `reload`: also redraw the group's panel; `opened`: an answer already in hand, drawn as it is.
  * @returns {Promise<void>}
  */
-async function openGroupConversation(groupId, { chat: requested = null, makeCurrent = false, reload = false } = {}) {
+async function openGroupConversation(groupId, { chat: requested = null, makeCurrent = false, reload = false, opened = null } = {}) {
     const group = groupsStore.get(groupId);
     if (!group) {
         console.warn('Group not found', groupId);
@@ -507,7 +507,7 @@ async function openGroupConversation(groupId, { chat: requested = null, makeCurr
     /** @type {import('../script.js').ChatOpenAnswer} */
     let answer;
     try {
-        answer = await requestChatOpen({ group_id: groupId, chat: requested, make_current: makeCurrent });
+        answer = opened ?? await requestChatOpen({ group_id: groupId, chat: requested, make_current: makeCurrent });
     } catch (error) {
         console.error('Could not open the group chat:', error);
         toastr.error(t`The chat could not be opened. Check the server connection and try again.`, t`Chat not opened`);
@@ -2479,9 +2479,11 @@ export async function getGroupPastChats(groupId) {
  * Opens a specific group chat for the specified group by its ID.
  * @param {string} groupId Group ID
  * @param {string} chatId Chat ID
+ * @param {{ opened?: import('../script.js').ChatOpenAnswer|null }} [options] `opened`: the answer of an action that
+ * already opened it (taken on with takeChatOpenAnswer()), drawn instead of asking the server again.
  * @returns {Promise<void>}
  */
-export async function openGroupChat(groupId, chatId) {
+export async function openGroupChat(groupId, chatId, { opened = null } = {}) {
     await waitUntilCondition(() => !isChatSaving, debounce_timeout.extended, 10);
     const group = groupsStore.get(groupId);
 
@@ -2491,7 +2493,7 @@ export async function openGroupChat(groupId, chatId) {
 
     await clearChat({ clearData: true });
     updateChatMetadata({}, true);
-    await openGroupConversation(groupId, { chat: chatId, makeCurrent: true });
+    await openGroupConversation(groupId, { chat: chatId, makeCurrent: true, opened });
 }
 
 /**
