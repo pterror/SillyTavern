@@ -299,6 +299,10 @@ impl Model {
     }
 
     fn session_gone(&mut self, s: u64) {
+        self.keys
+            .retain(|(sp, _), v| !(*sp == chat::KEYED_SESSION && *v == s));
+        self.choices
+            .retain(|(tier, who, _), _| !(*tier == 0 && *who == s));
         self.sessions.remove(&s);
         self.recent.remove(&s);
         for a in self.activity.values_mut() {
@@ -886,8 +890,17 @@ fn step(model: &mut Model, rng: &mut Rng, i: u64) -> Vec<Record> {
             )]
         }
         16 if i.is_multiple_of(5) && model.sessions.contains_key(&session) => {
+            // The session goes, and the test's tab takes up a new session with the same number.
             model.session_gone(session);
-            vec![rec("positionDelete", vec![Value::Id(session)])]
+            let k = format!("session-{session}-{i}").into_bytes();
+            model.keys.insert((chat::KEYED_SESSION, k.clone()), session);
+            vec![
+                rec("positionDelete", vec![Value::Id(session)]),
+                rec(
+                    "keyMap",
+                    vec![Value::Sel(chat::KEYED_SESSION, session), Value::Bytes(k)],
+                ),
+            ]
         }
         _ => {
             let m = pick(rng);
@@ -1184,6 +1197,37 @@ fn deleting_messages_and_sessions_moves_what_named_them() {
         s.derived(|v| sessions::user_in_tree(v, 1, 7)).unwrap(),
         None
     );
+    // Its UUID names nothing, its own choices went and the user's stayed; it can't move until it is a session
+    // again.
+    assert_eq!(
+        s.derived(|v| chat::id_by_key(v, chat::KEYED_SESSION, b"session-1"))
+            .unwrap(),
+        None
+    );
+    s.derived(|v| {
+        let f = Fork::Root(7);
+        assert!(
+            v.get(&sessions::fork_key(sessions::FORK_SESSION, Some(1), f))?
+                .is_none()
+        );
+        assert!(
+            v.get(&sessions::fork_key(sessions::FORK_USER, Some(1), f))?
+                .is_some()
+        );
+        assert!(
+            v.get(&sessions::fork_key(sessions::FORK_ANY, None, f))?
+                .is_some()
+        );
+        Ok(())
+    })
+    .unwrap();
+    assert!(matches!(
+        s.commit_wait(vec![rec(
+            "pointerMove",
+            vec![Value::Id(1), Value::Id(1), Value::Id(3)]
+        )]),
+        Err(StoreError::Refused(_))
+    ));
     drop(s);
     fs::remove_dir_all(&dir).unwrap();
 }
