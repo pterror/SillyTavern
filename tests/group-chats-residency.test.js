@@ -379,13 +379,6 @@ describe('validateGroup()', () => {
         globalThis.fetch = originalFetch;
     });
 
-    /** Parsed JSON body of the single save-partial request. */
-    function savedBody() {
-        const saveCalls = globalThis.fetch.mock.calls.filter(([url]) => url === SAVE_URL);
-        expect(saveCalls).toHaveLength(1);
-        return JSON.parse(saveCalls[0][1].body);
-    }
-
     test('keeps members that resolve locally without calling exists()', async () => {
         addResidentCharacter('alice.png', 'Alice');
         const group = { id: 'g1', members: ['alice.png'], chats: ['c1'] };
