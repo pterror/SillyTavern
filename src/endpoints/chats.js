@@ -24,6 +24,8 @@ import { triggerAutoSave } from './settings.js';
 import { readAllSettingsAsJson, readSettingsAtPaths, writeSettingsKeys } from '../settings-store.js';
 import { getStringHash } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel } from '../greeting-list.js';
+import { applyPageWrites } from '../page-writes.js';
+import { storedMessagesOf } from '../stored-messages.js';
 import {
     isAvailable as isTreeAvailable, hasSavedChats,
     saveChatToTree, loadBranch, forkBranch, labelNode,
@@ -1226,21 +1228,37 @@ router.post('/message/alternative/delete', validateAvatarUrlMiddleware, async fu
     }
 });
 
+/**
+ * Selects a message: it becomes the shown alternative where it is, and with `activate` the character's chat is at
+ * it. `opening` (the chat's greetings, shown but not stored yet) stores them first and selects the first
+ * (applyPageWrites()); the answer's `stored` names their rows. Answers the conversation below the message, and with
+ * `with_ancestry` the path down to it too.
+ */
 router.post('/message/select', validateAvatarUrlMiddleware, async function (request, response) {
     try {
-        const child = String(request.body.node_id || '');
+        const directories = request.user.directories;
+        let child = String(request.body.node_id || '');
+        if (!child && request.body.opening) {
+            const written = await applyPageWrites(response, directories, {
+                ownerId: ownerOf(request), avatar: request.body.avatar_url, groupId: request.body.group_id,
+                body: { node_id: null, opening: request.body.opening, page_metadata: request.body.page_metadata },
+            });
+            if (!written) return;
+            child = storedMessagesOf(response)?.find(s => !('integrity' in s))?.node_id ?? '';
+        }
         if (!child) return response.status(400).send({ error: 'node_id is required' });
 
-        const ok = await selectDefaultChild(request.user.directories, child);
+        const ok = await selectDefaultChild(directories, child);
         if (!ok) {
             return response.status(409).send({ ok, reason: 'unknown node, or it has no parent' });
         }
         if (request.body.activate && request.body.avatar_url) {
-            await setCharacterActiveChat(request.user.directories, request.body.avatar_url, child);
+            await setCharacterActiveChat(directories, request.body.avatar_url, child);
         }
         const branchName = request.body.chat_name ? String(request.body.chat_name) : null;
-        const continuation = await getContinuation(request.user.directories, child, branchName);
-        return response.send({ ok: true, messages: continuation?.messages ?? [] });
+        const continuation = await getContinuation(directories, child, branchName);
+        const ancestry = request.body.with_ancestry ? await getAncestorPath(directories, child, branchName) : undefined;
+        return response.send({ ok: true, messages: continuation?.messages ?? [], ancestry, stored: storedMessagesOf(response) ?? undefined });
     } catch (error) {
         console.error('Error selecting alternative:', error);
         return response.status(500).send({ error: true });

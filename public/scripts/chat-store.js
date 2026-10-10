@@ -8,8 +8,9 @@ import { charactersStore } from './character-store.js';
 import { getMessageTimeStamp } from './RossAscends-mods.js';
 // A group has no avatar of its own - while one is open it, not getCurrentCharacter(), is the tree
 // owner for every chatOp*() below. See _currentOwner().
-import { selected_group, groupsStore, materializeGroupOpening } from './group-chats.js';
+import { selected_group, groupsStore } from './group-chats.js';
 import { t } from './i18n.js';
+import { uuidv4 } from './utils.js';
 import { setStoredAdopter } from './stored-report.js';
 
 // Without `noUncheckedIndexedAccess` (a project-wide tsconfig flag, out of scope to flip here since
@@ -88,6 +89,9 @@ export function setSendStoredListener(listener) {
 /** @type {(entry: { ref: string, node_id: string, integrity: string|null }) => void} */
 let _metadataStoredListener = () => {};
 
+/** Refs of the metadata a group chat's greetings were stored with (ensureOpeningRow()), until the answer comes. */
+const _openingMetadataRefs = new Set();
+
 /**
  * Sets what is told when the server says it stored chat metadata keys the page sent under a ref (an entry of
  * `stored` with `integrity`).
@@ -109,6 +113,10 @@ export function adoptStored(stored) {
     for (const entry of stored) {
         if (typeof entry?.ref !== 'string' || !isStoredNodeId(entry?.node_id)) continue;
         if ('integrity' in entry) {
+            if (_openingMetadataRefs.delete(entry.ref)) {
+                chat_metadata.integrity = typeof entry.integrity === 'string' ? entry.integrity : undefined;
+                continue;
+            }
             _metadataStoredListener({ ref: entry.ref, node_id: entry.node_id, integrity: typeof entry.integrity === 'string' ? entry.integrity : null });
             continue;
         }
@@ -269,6 +277,9 @@ export function _setCurrentTarget(nodeId, integrity = null, owner = null) {
 // The only writer of chat[0].node_id — minting a row in more than one place raced (two rows for
 // one greeting, two ideas of which was the opening).
 /**
+ * Gives a greeting shown without a row its row, in one request that also makes it the chat's position: a
+ * character's greeting, or a group chat's members' greetings in a row (stored together, under the group's chat
+ * name).
  * @param {number} [mesId]
  * @returns {Promise<string|null>}
  */
@@ -279,92 +290,67 @@ export async function ensureOpeningRow(mesId = 0) {
     // Not a tree-backed opening (JSONL chat, or never-saved message); nothing to mint.
     if (!isProvisionalNodeId(message.node_id)) return null;
 
-    // A group chat's unsaved greetings are its members' greetings in a row, stored together.
-    if (selected_group != null && selected_group !== '') {
-        if (!await materializeGroupOpening()) return null;
-        const stored = _chatAt(mesId)?.node_id;
-        return isStoredNodeId(stored) ? stored : null;
-    }
-
+    const inGroup = selected_group != null && selected_group !== '';
     const character = getCurrentCharacter();
-    const text = typeof message.mes === 'string' ? message.mes : '';
+    if (!inGroup && (character?.avatar == null || character.avatar === '')) return null;
+    let from = mesId;
+    let to = mesId + 1;
+    if (inGroup) {
+        from = 0;
+        to = 0;
+        while (to < chat.length && isProvisionalNodeId(_chatAt(to)?.node_id)) to++;
+    }
     // No text means no greeting to store — the server refuses it, so skip the round trip.
-    if (character?.avatar == null || character.avatar === '' || text.trim() === '') return null;
+    if (String(_chatAt(from)?.mes ?? '').trim() === '') return null;
 
-    const provisional = message.node_id;
-    const wasClean = _messageSnapshots.get(provisional) === message;
-
+    const provisional = /** @type {string} */ (_chatAt(from)?.node_id);
     let pending = _openingRowInFlight.get(provisional);
     if (!pending) {
+        /** @type {string[]} */
+        const refs = [];
+        /** @type {object[]} */
+        const messages = [];
+        for (let i = from; i < to; i++) {
+            const shown = _chatAt(i);
+            let ref = storeRefOf(shown);
+            if (ref === undefined) {
+                ref = uuidv4();
+                setStoreRef(shown, ref);
+            }
+            refs.push(ref);
+            messages.push({
+                name: shown.name ?? character?.name,
+                is_user: shown.is_user === true,
+                is_system: shown.is_system === true,
+                send_date: shown.send_date ?? getMessageTimeStamp(),
+                mes: shown.mes,
+                extra: shown.extra ?? {},
+            });
+        }
+        const metadataRef = uuidv4();
+        if (inGroup) _openingMetadataRefs.add(metadataRef);
         pending = (async () => {
-            const response = await fetch('/api/chats/openings/ensure', {
+            const response = await fetch('/api/chats/message/select', {
                 method: 'POST',
                 headers: getRequestHeaders(),
-                body: JSON.stringify({
-                    avatar_url: character.avatar,
-                    contents: [{
-                        name: message.name ?? character.name,
-                        is_user: message.is_user === true,
-                        is_system: false,
-                        send_date: message.send_date ?? getMessageTimeStamp(),
-                        mes: text,
-                        extra: message.extra ?? {},
-                    }],
-                }),
+                body: JSON.stringify(inGroup
+                    ? { group_id: selected_group, opening: { refs, messages }, page_metadata: { ref: metadataRef, target: null, set: {}, unset: [] } }
+                    : { avatar_url: character?.avatar, opening: { refs, messages }, activate: true }),
             });
-            const made = response.ok ? await response.json().catch(() => null) : null;
-            return made?.node_ids?.[0] ?? null;
+            const answer = response.ok ? await response.json().catch(() => null) : null;
+            adoptStored(answer?.stored);
         })().finally(() => _openingRowInFlight.delete(provisional));
         _openingRowInFlight.set(provisional, pending);
     }
 
-    let realId = null;
     try {
-        realId = await pending;
+        await pending;
     } catch (error) {
         console.warn('[greetings] Could not give this greeting a row:', error);
         return null;
     }
-    if (realId == null) return null;
-
-    // Re-read: the await means the opening may have been replaced or the chat moved on.
-    const current = _chatAt(mesId);
-    if (!current || current.node_id !== provisional) {
-        const reread = _chatAt(mesId);
-        return isStoredNodeId(reread?.node_id) ? reread.node_id : null;
-    }
-
-    // Update the shown slot too, or the save path re-reads it as still-unsaved.
-    const at = current.swipe_id ?? 0;
-    /** @type {Partial<ChatMessage>} */
-    const updates = { node_id: realId };
-    if (Array.isArray(current.swipe_info)) {
-        const swipeInfo = [...current.swipe_info];
-        swipeInfo[at] = { ...(swipeInfo[at] ?? {}), node_id: realId };
-        updates.swipe_info = swipeInfo;
-    }
-    updateMessage(mesId, updates);
-
-    // Move the snapshot to the new key; the old one can never match again.
-    _messageSnapshots.delete(provisional);
-    if (wasClean && chat[mesId]?.node_id === realId) {
-        _messageSnapshots.set(realId, chat[mesId]);
-    }
-
-    // Record the position now that the greeting has a row — a load descends from the character's
-    // pointer, so leaving it on the old opening would strand this reply on a sibling never visited.
-    try {
-        await fetch('/api/chats/message/select', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({ avatar_url: character.avatar, node_id: realId, activate: true }),
-        });
-        _setCurrentTarget(realId, null);
-    } catch (error) {
-        console.warn('[greetings] The greeting has a row, but the position could not be recorded:', error);
-    }
-
-    return realId;
+    const stored = _chatAt(mesId)?.node_id;
+    return isStoredNodeId(stored) ? stored : null;
 }
 
 /**
@@ -932,15 +918,8 @@ export async function healDirtyMessages() {
     let lastPersisted = null;
     let firstNewIndex = -1;
 
-    // The opening row is a special case of "no node_id at all": unlike every other position, it has
-    // no earlier persisted message to anchor a chatOpAppend() onto - the loop below's `lastPersisted`
-    // guard can never fire for it (see this function's own module-level heal-call site in
-    // generation.js for why this matters: a genuinely brand-new chat's greeting can reach here with
-    // no node_id - e.g. _openingFromTree()'s (or _bootstrapGroupChat()'s) own eager-materialize call
-    // having failed - and a lone entry at index 0 would otherwise leave `lastPersisted` null forever).
-    // Same treatment ensureOpeningRow() already gives a PROVISIONAL greeting - stamp the same
-    // provisional id `_openingFromTree()` would have (script.js), then let ensureOpeningRow() mint
-    // the real row, so it flows through the exact same, already-tested materialization path.
+    // A first message with no node_id at all has nothing stored before it to follow: it is stored as the opening,
+    // as a card greeting is (ensureOpeningRow()).
     const opening = _chatAt(0);
     if (opening && (opening.node_id == null || opening.node_id === '')) {
         updateMessage(0, { node_id: provisionalNodeId(opening.name, opening.mes) });
