@@ -357,3 +357,263 @@ describe('tags on the engine against the old store', () => {
         expect((await library.tags.changes(Number.MAX_SAFE_INTEGER, { limit: 5 })).reset).toBe(true);
     });
 });
+
+/** Every manual page, through cursors of `pageSize`, as ids. */
+async function manualPages(query, filter = {}, pageSize = 3) {
+    const ids = [];
+    let cursor = null;
+    for (let page = 0; page < 500; page++) {
+        const r = await query({ sort: 'manual', ...filter, pageSize, cursor });
+        if (r === 'invalid-cursor' || r === null) throw new Error(String(r));
+        ids.push(...r.rows.map((/** @type {any} */ row) => row.id));
+        if (!r.cursor) return ids;
+        cursor = r.cursor;
+    }
+    throw new Error('a manual walk never ended');
+}
+
+const oldManual = (/** @type {any} */ filter, /** @type {number} */ pageSize) => manualPages(p => metadataDb.queryTags(directories, { ...p, after: p.cursor ? metadataDb.decodeTagQueryCursor(p.cursor, 'manual') : null }), filter, pageSize);
+const engManual = (/** @type {any} */ filter, /** @type {number} */ pageSize) => manualPages(p => library.tags.query(p), filter, pageSize);
+
+/** Both stores' manual order, every way it is read. */
+async function compareManual() {
+    for (const filter of [{}, { used: true }, { search: 'a' }, { folders: true }]) {
+        for (const pageSize of [2, 50]) {
+            const old = await oldManual(filter, pageSize);
+            expect({ filter, pageSize, ids: await engManual(filter, pageSize) }).toEqual({ filter, pageSize, ids: old });
+        }
+    }
+    const ids = ['m00', 'm03', 'm07', 'm11', 'm15', 'm20', 'nobody'];
+    const old = /** @type {any} */ (await metadataDb.queryTags(directories, { sort: 'manual', ids, pageSize: 50 })).rows.map((/** @type {any} */ t) => t.id);
+    const eng = /** @type {any} */ (await library.tags.query({ sort: 'manual', ids, pageSize: 50 })).rows.map((/** @type {any} */ t) => t.id);
+    expect(eng).toEqual(old);
+}
+
+/** Every tag's stored sort_order, both stores. */
+async function compareOrders(ids) {
+    const sorted = (/** @type {any[]} */ tags) => Object.fromEntries(tags.map(t => [t.id, t.sort_order]));
+    const old = sorted(/** @type {any[]} */ (await metadataDb.getTagDefinitionsByIds(directories, ids)));
+    const eng = sorted((await library.tags.byIds(ids)).tags);
+    expect(eng).toEqual(old);
+}
+
+/** Tags with orders, ties, none and a few odd values, a few carried, in both stores. */
+async function setUpOrderedTags(r, n = 24) {
+    const keys = await setUpEntities(r, 6, 0);
+    const orders = [1, 2, 3, 3, 3, 4, 5, undefined, undefined, 'x', 7.5, 7.5, null, 10, 11, undefined, 12, 13, 13, 14, undefined, 20, 21, 22];
+    const ids = [];
+    for (let i = 0; i < n; i++) {
+        const id = `m${String(i).padStart(2, '0')}`;
+        /** @type {Record<string, unknown>} */
+        const tag = { id, name: TAG_NAMES[i % TAG_NAMES.length] || `n${i}` };
+        if (orders[i] !== undefined) tag.sort_order = orders[i];
+        if (i % 5 === 0) tag.folder_type = 'OPEN';
+        await both.create(tag);
+        ids.push(id);
+    }
+    for (const [k, key] of keys.entries()) for (const id of ids.filter((_, i) => i % (k + 2) === 0)) await both.assign(key, id);
+    return ids;
+}
+
+describe('moves and reorders against the old store', () => {
+    test.each([11, 12])('moves write what the old store writes, and the order reads back as its (seed %i)', async (seed) => {
+        const r = rng(seed);
+        const ids = await setUpOrderedTags(r);
+        await compareManual();
+        const placements = [];
+        for (let k = 0; k < 40; k++) {
+            const id = ids[Math.floor(r() * ids.length)];
+            const anchor = r() < 0.05 ? id : r() < 0.05 ? 'nobody' : ids[Math.floor(r() * ids.length)];
+            placements.push([id, r() < 0.5 ? { before: anchor } : { after: anchor }]);
+        }
+        // Moves to one place again and again run out of room between neighbours, so windows are spread.
+        for (let k = 0; k < 60; k++) placements.push([ids[k % 3], { after: ids[3] }], [ids[4 + (k % 3)], { before: ids[7] }]);
+        for (const [id, placement] of placements) {
+            const old = /** @type {any} */ (await metadataDb.moveTagDefinition(directories, id, placement));
+            const eng = await library.tags.moveDefinition(id, placement);
+            const byId = (/** @type {any[]} */ w) => [...w].sort((a, b) => (a.id < b.id ? -1 : 1));
+            expect({ id, placement, refused: eng.refused, written: byId(eng.written) }).toEqual({ id, placement, refused: old.refused, written: byId(old.written) });
+        }
+        await compareManual();
+        await compareOrders(ids);
+    });
+
+    test('a tie, a spent gap and an anchor with no order are handled as the old store handles them', async () => {
+        const tags = [['a', 1], ['b', 1], ['c', 1], ['d', 'no'], ['e', 'no'], ['f', 'no'], ['g', 'x'], ['h', 5], ['i', 6]];
+        for (const [id, order] of tags) await both.create({ id, name: `name ${id}`, ...(order === undefined ? {} : { sort_order: order }) });
+        let spread = 0;
+        const move = async (/** @type {string} */ id, /** @type {any} */ placement) => {
+            const old = /** @type {any} */ (await metadataDb.moveTagDefinition(directories, id, placement));
+            const eng = await library.tags.moveDefinition(id, placement);
+            const byId = (/** @type {any[]} */ w) => [...w].sort((x, y) => (x.id < y.id ? -1 : 1));
+            expect({ id, placement, refused: eng.refused, written: byId(eng.written) }).toEqual({ id, placement, refused: old.refused, written: byId(old.written) });
+            if (eng.written.length > 1) spread++;
+            return eng;
+        };
+        // Next to a tie: no room between the neighbours, so a window is spread.
+        expect((await move('h', { after: 'a' })).written.length).toBeGreaterThan(1);
+        // Already in place among the tags with no order.
+        expect((await move('d', { before: 'e' })).written).toEqual([]);
+        // An anchor with no order: the tags with none before it are numbered first.
+        expect((await move('f', { before: 'e' })).written.length).toBeGreaterThan(2);
+        // Two tags taking turns right after one anchor halve the gap until it is spent.
+        for (let k = 0; k < 70; k++) await move(k % 2 ? 'b' : 'c', { after: 'i' });
+        expect(spread).toBeGreaterThan(2);
+        await move('g', { before: 'a' });
+        await compareManual();
+        await compareOrders(tags.map(([id]) => /** @type {string} */ (id)));
+    });
+
+    test.each(['alphabetical', 'by_entries'])('a reorder in %s mode, with moves, values and creates queued behind it, reads and ends as the old store\'s', async (mode) => {
+        const r = rng(mode.length);
+        const ids = await setUpOrderedTags(r);
+        library.tags.passBatch = 5;
+        const [o1, e1] = [await metadataDb.reorderTagDefinitions(directories, ids[3], { after: ids[9] }, mode), await library.tags.reorderDefinitions(ids[3], { after: ids[9] }, mode)];
+        expect(e1).toEqual(o1);
+        await compareManual();
+        const queued = [
+            () => both.edit(ids[1], { sort_order: 2.5 }),
+            async () => [await metadataDb.moveTagDefinition(directories, ids[5], { before: ids[3] }), await library.tags.moveDefinition(ids[5], { before: ids[3] })],
+            async () => [await metadataDb.moveTagDefinition(directories, ids[12], { after: ids[5] }), await library.tags.moveDefinition(ids[12], { after: ids[5] })],
+            () => both.create({ id: 'late', name: 'Late', sort_order: 0.5 }),
+            () => both.create({ id: 'later', name: 'aaa later' }),
+            async () => [await metadataDb.moveTagDefinition(directories, ids[3], { after: ids[3] }), await library.tags.moveDefinition(ids[3], { after: ids[3] })],
+            () => both.edit(ids[7], { sort_order: 'x' }),
+            async () => [await metadataDb.moveTagDefinition(directories, ids[20], { before: ids[1] }), await library.tags.moveDefinition(ids[20], { before: ids[1] })],
+            async () => [await metadataDb.moveTagDefinition(directories, ids[2], { before: 'later' }), await library.tags.moveDefinition(ids[2], { before: 'later' })],
+        ];
+        for (const step of queued) {
+            const [o, e] = await step();
+            expect(e).toEqual(o);
+            await compareManual();
+        }
+        await metadataDb.runTagReorderPassIfNeeded(directories);
+        await library.tags.startPass();
+        expect((await library.store.tagPass()).mode).toBeUndefined();
+        expect((await library.tags.queue()).length).toBe(0);
+        await compareManual();
+        await compareOrders([...ids, 'late', 'later']);
+    });
+});
+
+describe('the reorder pass on the engine', () => {
+    /** The stored manual order: the tags with an order by it, then the rest by name. */
+    const storedManual = async () => {
+        const ids = [];
+        let after;
+        for (;;) {
+            const page = await library.store.tagPage({ sort: 2, limit: 100, ...(after ? { after } : {}) });
+            ids.push(...page.ids);
+            if (!page.cursor) break;
+            after = page.cursor;
+        }
+        return library.tags.tagKeys(ids);
+    };
+
+    test('while it drains, a manual read shows where the queued moves will leave the tags', async () => {
+        const ids = await setUpOrderedTags(rng(5));
+        library.tags.passBatch = 4;
+        await library.tags.reorderDefinitions(ids[2], { before: ids[15] }, 'alphabetical');
+        while ((await library.store.tagPass()).phase !== 2) await library.tags.lane(() => library.tags.passStep());
+        await library.tags.moveDefinition(ids[8], { after: ids[2] });
+        await library.tags.edit(ids[9], { sort_order: -3 });
+        await library.tags.moveDefinition(ids[11], { before: ids[9] });
+        await library.tags.moveDefinition(ids[12], { after: ids[11] });
+        await library.tags.edit(ids[13], { sort_order: 'no order' });
+        await library.tags.moveDefinition(ids[14], { before: ids[13] });
+        const shown = await engManual({}, 3);
+        const cursorBefore = /** @type {any} */ (await library.tags.query({ sort: 'manual', pageSize: 2 })).cursor;
+        await library.tags.startPass();
+        expect(await storedManual()).toEqual(shown);
+        // A cursor made while it drained names the stored order, so it still reads on.
+        expect(await library.tags.query({ sort: 'manual', pageSize: 2, cursor: cursorBefore })).not.toBe('invalid-cursor');
+    });
+
+    test('a cursor is good only in the order it was made in', async () => {
+        const ids = await setUpOrderedTags(rng(6));
+        const stored = /** @type {any} */ (await library.tags.query({ sort: 'manual', pageSize: 2 })).cursor;
+        const oldStored = /** @type {any} */ (await metadataDb.queryTags(directories, { sort: 'manual', pageSize: 2 })).cursor;
+        await metadataDb.reorderTagDefinitions(directories, ids[1], { after: ids[2] }, 'alphabetical');
+        await library.tags.reorderDefinitions(ids[1], { after: ids[2] }, 'alphabetical');
+        expect(await library.tags.query({ sort: 'manual', pageSize: 2, cursor: stored })).toBe('invalid-cursor');
+        expect(await metadataDb.queryTags(directories, { sort: 'manual', pageSize: 2, after: metadataDb.decodeTagQueryCursor(oldStored, 'manual') })).toBe('invalid-cursor');
+        const underPass = /** @type {any} */ (await library.tags.query({ sort: 'manual', pageSize: 2 })).cursor;
+        expect(await library.tags.query({ sort: 'manual', pageSize: 2, cursor: underPass })).not.toBe('invalid-cursor');
+        await library.tags.reorderDefinitions(ids[1], { after: ids[3] }, 'by_entries');
+        expect(await library.tags.query({ sort: 'manual', pageSize: 2, cursor: underPass })).toBe('invalid-cursor');
+        await library.tags.startPass();
+        expect(await library.tags.query({ sort: 'manual', pageSize: 2, cursor: underPass })).toBe('invalid-cursor');
+    });
+
+    test('tags whose counts move behind the walk, and tags made meanwhile, get orders after the rest', async () => {
+        const ids = await setUpOrderedTags(rng(8));
+        library.tags.passBatch = 3;
+        await library.tags.reorderDefinitions(ids[0], { after: ids[1] }, 'by_entries');
+        await library.tags.lane(() => library.tags.passStep());
+        await library.tags.lane(() => library.tags.passStep());
+        // Tags the walk hasn't reached yet move ahead of it: it passes them by.
+        const unwalked = (await library.store.tagPage({ sort: 1, unstamped: (await library.store.tagPass()).pass, limit: 100 })).ids;
+        const behind = (await library.tags.tagKeys(unwalked.slice(-3))).map(String);
+        for (const key of ['c0.png', 'c1.png', 'c2.png', 'c3.png', 'c4.png', 'c5.png']) for (const tag of behind) await library.tags.assign(key, tag);
+        await library.tags.create({ id: 'made-meanwhile', name: 'made meanwhile' });
+        while ((await library.store.tagPass()).phase === 0) await library.tags.lane(() => library.tags.passStep());
+        const walked = await library.store.tagPass();
+        expect(walked.live - walked.stamped).toBe(behind.length);
+        await library.tags.startPass();
+        const order = await storedManual();
+        const live = (await library.store.tagPass()).live;
+        expect(order.length).toBe(live);
+        // Every tag got an order from the pass: none is left with an older one, and none shares one.
+        const defs = (await library.tags.byIds(/** @type {string[]} */ (order))).tags;
+        const values = defs.map(t => t.sort_order);
+        expect(new Set(values).size).toBe(values.length);
+        expect(values.every(v => typeof v === 'number')).toBe(true);
+        const byKey = Object.fromEntries(defs.map(t => [t.id, t.sort_order]));
+        for (const key of [...behind, 'made-meanwhile']) expect(byKey[key]).toBeGreaterThanOrEqual(live - 4);
+    });
+
+    test('a queued move whose anchor was deleted leaves its tag where the pass put it, and says so', async () => {
+        const ids = await setUpOrderedTags(rng(10));
+        for (const [o, e] of [
+            [await metadataDb.reorderTagDefinitions(directories, ids[1], { after: ids[2] }, 'alphabetical'), await library.tags.reorderDefinitions(ids[1], { after: ids[2] }, 'alphabetical')],
+            [await metadataDb.moveTagDefinition(directories, ids[3], { before: ids[6] }), await library.tags.moveDefinition(ids[3], { before: ids[6] })],
+            [await metadataDb.moveTagDefinition(directories, ids[4], { after: ids[10] }), await library.tags.moveDefinition(ids[4], { after: ids[10] })],
+            await both.delete(ids[6], null),
+            await both.delete(ids[4], null),
+        ]) expect(e).toEqual(o);
+        await metadataDb.finishDeletedTags(directories);
+        /** @type {any[]} */
+        const failed = [];
+        library.tags.on('tag-move-failed', payload => failed.push(payload));
+        /** @type {any[]} */
+        const oldFailed = [];
+        const onOld = (/** @type {string} */ _root, /** @type {any} */ payload) => oldFailed.push(payload);
+        metadataDb.characterChangeEmitter.on(metadataDb.TAG_MOVE_FAILED_EVENT, onOld);
+        try {
+            await metadataDb.runTagReorderPassIfNeeded(directories);
+        } finally {
+            metadataDb.characterChangeEmitter.off(metadataDb.TAG_MOVE_FAILED_EVENT, onOld);
+        }
+        await library.tags.startPass();
+        expect(failed).toEqual(oldFailed);
+        expect(failed.map(f => [f.tagId, f.anchorId, f.reason])).toEqual([[ids[3], ids[6], 'deleted']]);
+        await compareManual();
+        await compareOrders(ids.filter((_, i) => i !== 4 && i !== 6));
+    });
+
+    test('a pass a stop left recorded resumes from its place when started again', async () => {
+        const ids = await setUpOrderedTags(rng(9));
+        await metadataDb.reorderTagDefinitions(directories, ids[4], { before: ids[0] }, 'alphabetical');
+        await metadataDb.runTagReorderPassIfNeeded(directories);
+        library.tags.passBatch = 4;
+        await library.tags.reorderDefinitions(ids[4], { before: ids[0] }, 'alphabetical');
+        await library.tags.lane(() => library.tags.passStep());
+        await library.tags.lane(() => library.tags.passStep());
+        await library.close();
+        library = await lib.LibraryEngine.open(engine, path.join(directories.root, 'store'));
+        expect((await library.store.tagPass()).n).toBe(8);
+        await library.tags.startPass();
+        await compareManual();
+        await compareOrders(ids);
+    });
+});

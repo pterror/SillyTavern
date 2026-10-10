@@ -24,7 +24,7 @@ import { isReadOnlyMode } from './read-only-mode.js';
 import { legacySettingsPath, settingsDirPath } from './settings-store.js';
 import { normalizeGroupRecord, tagEntityTypeOf } from './group-id.js';
 import { expandTagFilter, resolveTagId, resolveTagIds, NO_TAG_DELETIONS } from './tag-deletions.js';
-import { tagDerivedColumns } from './tag-order.js';
+import { tagDerivedColumns, valuesAfter, valuesBefore } from './tag-order.js';
 export { tagDerivedColumns };
 import { SEARCH_WORK_CAP, SEARCH_WALK_WINDOW } from './endpoints/search-walk.js';
 import { orderKey, permute, unpermute } from './random-order.js';
@@ -6911,49 +6911,6 @@ function parseTagObject(data) {
 function writeTagSortOrderSync(db, rowid, tag, sortOrder) {
     tag.sort_order = sortOrder;
     writeRowIfChanged(db, 'tags', { rowid }, { data: JSON.stringify(tag), sort_order: tagDerivedColumns(tag).sortOrder });
-}
-
-/**
- * `count` distinct finite values after `base`, rising in steps of 1, or of the smallest power of two that still
- * moves `base` once 1 doesn't.
- * @param {number} base
- * @param {number} count
- * @returns {number[]} Shorter than `count` where the values would stop being finite; empty for a non-finite `base`,
- *   which no step moves.
- */
-function valuesAfter(base, count) {
-    if (!Number.isFinite(base)) return [];
-    let step = 1;
-    while (base + step === base) step *= 2;
-    /** @type {number[]} */
-    const values = [];
-    for (let i = 1; i <= count; i++) {
-        const value = base + step * i;
-        if (!Number.isFinite(value)) break;
-        values.push(value);
-    }
-    return values;
-}
-
-/**
- * valuesAfter()'s mirror: `count` distinct finite values before `base`, ascending.
- * @param {number} base
- * @param {number} count
- * @returns {number[]} Shorter than `count` where the values would stop being finite, dropping the farthest from
- *   `base`; empty for a non-finite `base`.
- */
-function valuesBefore(base, count) {
-    if (!Number.isFinite(base)) return [];
-    let step = 1;
-    while (base - step === base) step *= 2;
-    /** @type {number[]} */
-    const values = [];
-    for (let i = 1; i <= count; i++) {
-        const value = base - step * i;
-        if (!Number.isFinite(value)) break;
-        values.push(value);
-    }
-    return values.reverse();
 }
 
 /**

@@ -27,3 +27,46 @@ export function tagDerivedColumns(tag) {
     const folderType = rawFolder === undefined ? 'NONE' : typeof rawFolder === 'string' ? rawFolder : String(JSON.stringify(rawFolder));
     return { sortOrder, folderType, isFolder: folderType === 'NONE' ? 0 : 1 };
 }
+
+/**
+ * `count` distinct finite values after `base`, rising in steps of 1, or of the smallest power of two that still
+ * moves `base` once 1 doesn't.
+ * @param {number} base
+ * @param {number} count
+ * @returns {number[]} Shorter than `count` where the values would stop being finite; empty for a non-finite `base`,
+ *   which no step moves.
+ */
+export function valuesAfter(base, count) {
+    if (!Number.isFinite(base)) return [];
+    let step = 1;
+    while (base + step === base) step *= 2;
+    /** @type {number[]} */
+    const values = [];
+    for (let i = 1; i <= count; i++) {
+        const value = base + step * i;
+        if (!Number.isFinite(value)) break;
+        values.push(value);
+    }
+    return values;
+}
+
+/**
+ * valuesAfter()'s mirror: `count` distinct finite values before `base`, ascending.
+ * @param {number} base
+ * @param {number} count
+ * @returns {number[]} Shorter than `count` where the values would stop being finite, dropping the farthest from
+ *   `base`; empty for a non-finite `base`.
+ */
+export function valuesBefore(base, count) {
+    if (!Number.isFinite(base)) return [];
+    let step = 1;
+    while (base - step === base) step *= 2;
+    /** @type {number[]} */
+    const values = [];
+    for (let i = 1; i <= count; i++) {
+        const value = base - step * i;
+        if (!Number.isFinite(value)) break;
+        values.push(value);
+    }
+    return values.reverse();
+}
