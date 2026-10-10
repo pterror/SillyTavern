@@ -29,6 +29,9 @@ const DECIMAL = /^(0|[1-9][0-9]*)$/;
 export const AUTHOR = Object.freeze({ user: 0, script: 1, model: 2, rule: 3, migration: 4 });
 const VARIABLE = 8;
 
+/** `chat_metadata` keys the engine derives (`integrity` is the session's UUID): never stored, set or removed. */
+const DERIVED_METADATA = new Set(['integrity', 'main_chat', 'fork_point', '_tree_stored']);
+
 /**
  * A UUID v5.
  * @param {string} namespace
@@ -127,9 +130,9 @@ export class ChatEngine {
     }
 
     /**
-     * Runs `write` after every earlier write to the same tree has settled.
+     * Runs `write` after every earlier write to the same tree (or session, named `session:<uuid>`) has settled.
      * @template T
-     * @param {bigint} tree
+     * @param {bigint | string} tree
      * @param {() => Promise<T>} write
      * @returns {Promise<T>}
      */
@@ -1017,7 +1020,7 @@ export class ChatEngine {
                 records.push(r);
             };
             for (const [key, value] of Object.entries(set ?? {})) {
-                if (value === undefined) continue;
+                if (value === undefined || DERIVED_METADATA.has(key)) continue;
                 if (key === 'variables' && value !== null && typeof value === 'object' && !Array.isArray(value)) {
                     // Each chat variable is a key of its own; the object itself, empty or not, a marker.
                     if (!now.has('variables')) change('variables', '{}');
@@ -1033,7 +1036,7 @@ export class ChatEngine {
                 if (now.get(key) !== json) change(key, json);
             }
             for (const key of Array.isArray(unset) ? unset : []) {
-                if (typeof key !== 'string') continue;
+                if (typeof key !== 'string' || DERIVED_METADATA.has(key)) continue;
                 if (key === 'variables') {
                     for (const name of vars.keys()) change(name, undefined, true);
                     if (now.has('variables')) change('variables', undefined);
@@ -1046,11 +1049,12 @@ export class ChatEngine {
 
     /**
      * The state at a position as `chat_metadata`: its keys in order, `variables` holding the chat variables (an
-     * object since it was first set, even when empty).
+     * object since it was first set, even when empty), and, read through a session, `integrity`: the session's UUID.
      * @param {bigint} tree
      * @param {bigint | null} at
+     * @param {string | null} [session]
      */
-    async metadata(tree, at) {
+    async metadata(tree, at, session = null) {
         const state = await this.store.chatRead('state', { tree, ...(at === null ? {} : { at }) });
         /** @type {Record<string, unknown>} */
         const out = {};
@@ -1062,7 +1066,171 @@ export class ChatEngine {
                 if (!out.variables || typeof out.variables !== 'object') out.variables = {};
             } else out[e.field] = JSON.parse(e.json);
         }
+        if (session !== null) out.integrity = session;
         return out;
+    }
+
+    // ---- sessions and bookmarks as lists ----
+
+    /**
+     * List rows of sessions at positions: name, where (tree and message), message count, the message's text and
+     * time.
+     * @param {{ sid: bigint, position: bigint, tree: bigint | null, at: bigint | null }[]} entries
+     * @param {boolean} withMetadata Adds each position's state as `chat_metadata`.
+     */
+    async sessionRows(entries, withMetadata) {
+        const sessions = entries.length ? await this.store.chatRead('sessions', { ids: entries.map(e => e.sid) }) : [];
+        const ats = entries.map(e => e.at).filter(a => a !== null);
+        const stored = await this.stored(/** @type {bigint[]} */ (ats));
+        const ids = [...stored.keys()];
+        const decoded = new Map((await this.decoded(ids.map(id => stored.get(id)))).map((d, i) => [ids[i], d]));
+        const rows = [];
+        for (const [i, e] of entries.entries()) {
+            const s = sessions[i];
+            if (!s || e.tree === null) continue;
+            const m = e.at === null ? undefined : stored.get(e.at);
+            const count = await this.store.chatRead('messageCount', { tree: e.tree, ...(e.at === null ? {} : { at: e.at }) });
+            /** @type {Record<string, any>} */
+            const row = {
+                session: s.key,
+                name: s.name,
+                position: e.position,
+                tree: e.tree,
+                at: m ? this.externalId(m) : null,
+                message_count: count.count,
+                count_estimate: count.estimate,
+                last_mes: m ? decoded.get(e.at)?.mes || null : null,
+                last_activity: m ? m.time : null,
+            };
+            if (withMetadata) row.chat_metadata = await this.metadata(e.tree, e.at, s.key);
+            rows.push(row);
+        }
+        return rows;
+    }
+
+    /**
+     * A page of a tree's sessions with meaningful activity there, the most recent first, each at its position in the
+     * tree; `before` is the last row's `position` of the page before.
+     * @param {object} p
+     * @param {bigint} p.tree
+     * @param {bigint} [p.before]
+     * @param {number} p.limit
+     * @param {boolean} [p.withMetadata]
+     */
+    async sessionsInTree({ tree, before, limit, withMetadata = false }) {
+        const page = await this.store.chatRead('inTree', { tree, limit: limit + 1, ...(before === undefined ? {} : { before }) });
+        const entries = [];
+        for (const { position, session } of page.slice(0, limit)) {
+            const where = await this.store.chatRead('sessionInTree', { session, tree });
+            entries.push({ sid: session, position, tree, at: where?.at ?? null });
+        }
+        return { rows: await this.sessionRows(entries, withMetadata), more: page.length > limit };
+    }
+
+    /**
+     * A page of every session by its last move, the most recent first, each where its pointer is.
+     * @param {object} p
+     * @param {bigint} [p.before]
+     * @param {number} p.limit
+     * @param {boolean} [p.withMetadata]
+     */
+    async recentSessions({ before, limit, withMetadata = false }) {
+        const page = await this.store.chatRead('recent', { limit: limit + 1, ...(before === undefined ? {} : { before }) });
+        const shown = page.slice(0, limit);
+        const sessions = shown.length ? await this.store.chatRead('sessions', { ids: shown.map(e => e.session) }) : [];
+        const entries = shown.map((e, i) => ({ sid: e.session, position: e.position, tree: sessions[i]?.tree ?? null, at: sessions[i]?.at ?? null }));
+        return { rows: await this.sessionRows(entries, withMetadata), more: page.length > limit };
+    }
+
+    /**
+     * Names a session (null: no name). Nothing is written when it already has that name.
+     * @param {object} p
+     * @param {string} p.session
+     * @param {string | null} p.name
+     * @param {Actor} p.actor
+     */
+    nameSession({ session, name, actor }) {
+        return this.serialized(`session:${session}`, async () => {
+            const records = [];
+            const { session: sid } = await this.actorIds({ ...actor, session }, records);
+            const [now] = await this.store.chatRead('sessions', { ids: [sid] });
+            if ((now?.name ?? null) === name) return { ok: true };
+            records.push({ kind: 'positionName', id: sid, ...(name === null ? {} : { name }) });
+            await this.store.commit(records);
+            return { ok: true };
+        });
+    }
+
+    /**
+     * Deletes a session: its pointer, history, remembered positions and its own choices; its UUID then says it was
+     * deleted.
+     * @param {string} session
+     */
+    deleteSession(session) {
+        return this.serialized(`session:${session}`, async () => {
+            const [sid] = await this.store.chatRead('ids', { space: SPACE.session, keys: [session] });
+            if (sid === null) return { ok: false, reason: 'unknown session' };
+            await this.store.commit([{ kind: 'positionDelete', id: sid }]);
+            return { ok: true };
+        });
+    }
+
+    /**
+     * A page of a tree's bookmarks in the order they were made: id (a decimal string), name, mode, the message it is
+     * at and the one it was made at; `after` is the last id of the page before.
+     * @param {object} p
+     * @param {bigint} p.tree
+     * @param {string} [p.after]
+     * @param {number} p.limit
+     */
+    async bookmarks({ tree, after, limit }) {
+        const page = await this.store.chatRead('treeBookmarks', { tree, limit: limit + 1, ...(after === undefined ? {} : { after: BigInt(after) }) });
+        const shown = page.slice(0, limit);
+        const external = await this.externalIds(shown.flatMap(b => [b.at, b.createdAt]));
+        const rows = shown.map((b, i) => ({
+            id: String(b.id),
+            name: b.name,
+            mode: b.mode === MODE.pinned ? 'pinned' : 'following',
+            at: external[2 * i],
+            made_at: external[2 * i + 1],
+        }));
+        return { rows, more: page.length > limit };
+    }
+
+    /**
+     * A bookmark of the tree, or null.
+     * @param {bigint} tree
+     * @param {string} bookmark
+     */
+    async bookmarkOf(tree, bookmark) {
+        if (!DECIMAL.test(bookmark)) return null;
+        const [b] = await this.store.chatRead('bookmarks', { ids: [BigInt(bookmark)] });
+        if (!b || b.at === null) return null;
+        const s = (await this.stored([b.at])).get(b.at);
+        return s && s.owner === tree ? b : null;
+    }
+
+    /**
+     * Renames a bookmark (null: no name), makes it following or pinned, or deletes it; nothing is written when
+     * nothing changes.
+     * @param {object} p
+     * @param {bigint} p.tree
+     * @param {string} p.bookmark
+     * @param {{ name?: string | null, mode?: number, delete?: true }} p.change
+     */
+    changeBookmark({ tree, bookmark, change }) {
+        return this.serialized(tree, async () => {
+            const b = await this.bookmarkOf(tree, bookmark);
+            if (!b) return { ok: false, reason: 'unknown bookmark' };
+            const records = [];
+            if (change.delete) records.push({ kind: 'positionDelete', id: b.id });
+            else {
+                if (change.name !== undefined && change.name !== b.name) records.push({ kind: 'positionName', id: b.id, ...(change.name === null ? {} : { name: change.name }) });
+                if (change.mode !== undefined && change.mode !== b.mode) records.push({ kind: 'positionMode', id: b.id, mode: change.mode });
+            }
+            if (records.length) await this.store.commit(records);
+            return { ok: true };
+        });
     }
 
     // ---- reading a position ----
@@ -1070,12 +1238,13 @@ export class ChatEngine {
     /**
      * A position's messages in upstream's shape: the path from the tree's root down to `at` (nothing below it),
      * each with every alternative's text in `swipes`, its outside id, and the bookmarks made at it; and the state
-     * there as `chat_metadata`.
+     * there as `chat_metadata` (with `integrity` when read through a session).
      * @param {object} p
      * @param {bigint} p.tree
      * @param {string | null} p.at The message (null: the tree's root, no message).
+     * @param {string | null} [p.session] The session's UUID.
      */
-    async load({ tree, at }) {
+    async load({ tree, at, session = null }) {
         let atId = null;
         if (at !== null) {
             [atId] = await this.messageIds([at]);
@@ -1122,6 +1291,6 @@ export class ChatEngine {
             if (s.itemized) msg.extra = { ...(msg.extra && typeof msg.extra === 'object' ? msg.extra : {}), [ITEMIZED_PROMPT_FLAG]: true };
             messages.push(msg);
         }
-        return { messages, metadata: await this.metadata(tree, atId), node_id: atId === null ? null : this.externalId(/** @type {any} */ (stored.get(atId))) };
+        return { messages, metadata: await this.metadata(tree, atId, session), node_id: atId === null ? null : this.externalId(/** @type {any} */ (stored.get(atId))) };
     }
 }

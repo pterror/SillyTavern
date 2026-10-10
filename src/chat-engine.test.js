@@ -187,6 +187,50 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         await chats.mergeMetadata({ tree: t, at: nb, set: { variables: {} }, unset: [], actor });
         assert.deepEqual(await chats.metadata(t, (await chats.messageIds([nb]))[0]), { variables: {} });
 
+        // Read through the session, the metadata carries its UUID as `integrity`, which is never stored.
+        assert.equal((await chats.load({ tree: t, at: nb, session: actor.session })).metadata.integrity, actor.session);
+        const history = async () => store.chatRead('history', { session: (await store.chatRead('ids', { space: 1, keys: [actor.session] }))[0], limit: 1000 });
+        await chats.mergeMetadata({ tree: t, at: nb, set: { integrity: 'other', main_chat: 'x' }, unset: ['integrity'], actor });
+        assert.deepEqual(await chats.metadata(t, (await chats.messageIds([nb]))[0]), { variables: {} });
+
+        // The tree's sessions and every session, at their positions; a name, then none; a second session's row.
+        const [inTree] = (await chats.sessionsInTree({ tree: t, limit: 10 })).rows;
+        const where = (await chats.pointer(actor.session)).at;
+        const shownPath = (await chats.load({ tree: t, at: where })).messages;
+        assert.deepEqual(
+            { session: inTree.session, name: inTree.name, at: inTree.at, count: inTree.message_count, last: inTree.last_mes },
+            { session: actor.session, name: null, at: where, count: shownPath.length, last: shownPath[shownPath.length - 1].mes },
+        );
+        assert.deepEqual((await chats.recentSessions({ limit: 10 })).rows.map(r => r.session), [actor.session]);
+        await chats.nameSession({ session: actor.session, name: 'Evening', actor });
+        const named = (await chats.sessionsInTree({ tree: t, limit: 10, withMetadata: true })).rows[0];
+        assert.equal(named.name, 'Evening');
+        assert.equal(named.chat_metadata.integrity, actor.session);
+        const before = (await history()).length;
+        await chats.nameSession({ session: actor.session, name: 'Evening', actor });
+        await chats.nameSession({ session: actor.session, name: null, actor });
+        assert.equal((await chats.recentSessions({ limit: 10 })).rows[0].name, null);
+        assert.equal((await history()).length, before);
+        const second = { user: actor.user, session: '0190a1b2-0000-7000-8000-0000000000dd' };
+        await chats.select({ tree: t, node_id: ng, actor: second });
+        const both = await chats.sessionsInTree({ tree: t, limit: 1 });
+        assert.deepEqual([both.rows[0].session, both.more], [second.session, true]);
+        assert.deepEqual((await chats.sessionsInTree({ tree: t, limit: 1, before: both.rows[0].position })).rows.map(r => r.session), [actor.session]);
+        assert.deepEqual(await chats.deleteSession(second.session), { ok: true });
+        assert.deepEqual((await chats.recentSessions({ limit: 10 })).rows.map(r => r.session), [actor.session]);
+        assert.deepEqual(await chats.deleteSession(second.session), { ok: false, reason: 'unknown session' });
+
+        // The tree's bookmarks: renamed, made following, deleted.
+        const marks = (await chats.bookmarks({ tree: t, limit: 10 })).rows;
+        assert.deepEqual(marks.map(b => [b.name, b.mode, b.at]), [['Saved here', 'following', new1.node_ids[0]], ['Checkpoint', 'pinned', new1.node_ids[1]]]);
+        await chats.changeBookmark({ tree: t, bookmark: marks[1].id, change: { name: 'Renamed', mode: MODE.following } });
+        assert.deepEqual((await chats.bookmarks({ tree: t, after: marks[0].id, limit: 10 })).rows.map(b => [b.name, b.mode]), [['Renamed', 'following']]);
+        await tree.labelNode(directories, old1.node_ids[1], 'Renamed', { ownerId: owner });
+        assert.deepEqual(await chats.changeBookmark({ tree: t, bookmark: marks[0].id, change: { delete: true } }), { ok: true });
+        await tree.labelNode(directories, old1.node_ids[0], null, { ownerId: owner });
+        assert.deepEqual((await chats.bookmarks({ tree: t, limit: 10 })).rows.map(b => b.name), ['Renamed']);
+        assert.deepEqual(await chats.changeBookmark({ tree: t + 1n, bookmark: marks[1].id, change: { name: 'x' } }), { ok: false, reason: 'unknown bookmark' });
+
         // The path ended at the first message, then at the root.
         await tree.endPathAt(directories, owner, old1.node_ids[0]);
         assert.deepEqual(await chats.endPathAt({ tree: t, node_id: new1.node_ids[0], actor }), { ok: true });
