@@ -313,7 +313,6 @@ router.post('/generate', withGenerationStop(async function (request, response_ge
     request.socket.on('close', async function () {
         if (request.body.can_abort && !response_generate.writableEnded) {
             try {
-                console.info('Aborting Kobold generation...');
                 // send abort signal to koboldcpp
                 const abortResponse = await fetch(`${request.body.api_server}/extra/abort`, {
                     method: 'POST',

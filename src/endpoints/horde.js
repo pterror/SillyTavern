@@ -239,7 +239,6 @@ router.post('/cancel-task', async (request, response) => {
         });
 
         const data = await fetchResult.json();
-        console.info(`Cancelled Horde task ${taskId}`);
         return response.send(data);
     } catch (error) {
         console.error(error);
@@ -258,7 +257,6 @@ router.post('/task-status', async (request, response) => {
         });
 
         const data = await fetchResult.json();
-        console.info(`Horde task ${taskId} status:`, data);
         return response.send(data);
     } catch (error) {
         console.error(error);
@@ -446,7 +444,6 @@ async function streamHordeGeneration({ response, jobId, agent, rawActionPersist,
         let workerInfo = null;
         for (let attempt = 0; attempt < HORDE_MAX_RETRIES; attempt++) {
             if (pollState.cancelled) {
-                console.info(`Horde task ${jobId} was cancelled; stopping the server-side poll loop.`);
                 break;
             }
 
