@@ -58,7 +58,6 @@ const GROUP_READ_KEYS = new Set(['id', 'fav', 'tag_ids', 'date_added', 'create_d
 /** `cardHash` kinds. */
 export const HASH = Object.freeze({ identity: 0, content: 1, avatar: 2, avatarIdentity: 3 });
 
-/** Sort key codes of `Store.libraryPage`. */
 /**
  * A relevance page's cursor (`s<score>:<entity>`, the page's last hit) as the engine's `after`.
  * @param {string} cursor
@@ -74,6 +73,7 @@ function parseRelevanceCursor(cursor) {
 /** The pair postings' modes (`search::pairs`; 0 is off). */
 const PAIRS = Object.freeze({ building: 1, on: 2, deleting: 3 });
 
+/** Sort key codes of `Store.libraryPage`. */
 const SORT_KEYS = Object.freeze({ name: 0, create_date: 1, date_added: 2, date_last_chat: 3, chat_size: 4, data_size: 5 });
 
 const EXTENSION_PREFIX = 'ext:';

@@ -11,6 +11,10 @@
 //!   (`SAMPLE`).
 //!
 //! Prints one JSON object per phase: load, space, writes, and one per query.
+//!
+//! `--real`: the library as the app stores it (build path 5d): tags and characters as entities (`entityCreate`),
+//! each card field its code's text value, card tags and alternate greetings as list items; tags take ids
+//! 1..=tags, cards the ids after them. The store can then be opened by `LibraryEngine` (`scripts/bench-search-synth.mjs`).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -616,7 +620,79 @@ fn text_value(e: u64, code: u64, s: &str) -> Record {
     )
 }
 
+/// `--real`: the library as the app stores it.
+fn real() -> bool {
+    static REAL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *REAL.get_or_init(|| std::env::args().any(|a| a == "--real"))
+}
+
+/// The id of the generator's card `i` (from 0): after the tags' ids with `--real`.
+fn card_id(i: usize, tags: usize) -> u64 {
+    i as u64 + 1 + if real() { tags as u64 } else { 0 }
+}
+
+/// A generator field's text code (`src/library-codes.js`) or list (`LIST`), as the app stores a card.
+fn real_code(f: usize) -> Result<u64, u64> {
+    match f {
+        NAME => Ok(1),
+        DESCRIPTION => Ok(10),
+        MES_EXAMPLE => Ok(14),
+        SCENARIO => Ok(12),
+        PERSONALITY => Ok(11),
+        FIRST_MES => Ok(13),
+        CREATOR_NOTES => Ok(15),
+        CREATOR => Ok(2),
+        TAGS => Err(2),
+        ALTERNATE => Err(0),
+        _ => unreachable!(),
+    }
+}
+
+/// The field code a description edit writes.
+fn description_code() -> u64 {
+    if real() {
+        10
+    } else {
+        test_codes::LIBRARY + u64::from(library_field(DESCRIPTION))
+    }
+}
+
+fn entity_create(e: u64, kind: u64, key: &str) -> Record {
+    rec(
+        "entityCreate",
+        vec![
+            Value::Id(e),
+            Value::UInt(kind),
+            Value::Text(key.as_bytes().to_vec()),
+            Value::Time(0),
+        ],
+    )
+}
+
+fn tag_records(id: u64, name: &str) -> Vec<Record> {
+    if !real() {
+        return vec![text_value(id, test_codes::TAG_NAME, name)];
+    }
+    vec![
+        text_value(id, 1, name),
+        rec(
+            "jsonValue",
+            vec![
+                Value::Sel(0, id),
+                Value::Field(FieldRef::Code(41)),
+                Value::Text(Vec::new()),
+                Value::Absent,
+                Value::Absent,
+            ],
+        ),
+        entity_create(id, 2, &format!("t{id}")),
+    ]
+}
+
 fn card_records(doc: u64, c: &Card) -> Vec<Record> {
+    if real() {
+        return real_card_records(doc, c);
+    }
     let mut out = Vec::new();
     for (f, vals) in c.fields.iter().enumerate() {
         if f == RESOLVED || vals.is_empty() {
@@ -632,6 +708,66 @@ fn card_records(doc: u64, c: &Card) -> Vec<Record> {
             ));
         }
     }
+    for &t in &c.tags {
+        out.push(rec(
+            "tagAssign",
+            vec![Value::Id(doc), Value::Id(t), Value::Bit(true)],
+        ));
+    }
+    out
+}
+
+fn real_card_records(doc: u64, c: &Card) -> Vec<Record> {
+    // What `splitCard()` keeps of a V2 card besides its fields.
+    let mut out: Vec<Record> = [
+        ("name:data", ""),
+        ("present:data", ""),
+        ("top:spec", "\"chara_card_v2\""),
+        ("top:spec_version", "\"2.0\""),
+    ]
+    .iter()
+    .map(|(k, v)| {
+        rec(
+            "jsonValue",
+            vec![
+                Value::Sel(0, doc),
+                Value::Field(FieldRef::Key(k.as_bytes().to_vec())),
+                Value::Text(v.as_bytes().to_vec()),
+                Value::Absent,
+                Value::Absent,
+            ],
+        )
+    })
+    .collect();
+    for (f, vals) in c.fields.iter().enumerate() {
+        if f == RESOLVED || vals.is_empty() {
+            continue;
+        }
+        match real_code(f) {
+            Ok(code) => {
+                let joined = vals.join(" ");
+                if !joined.is_empty() {
+                    out.push(text_value(doc, code, &joined));
+                }
+            }
+            Err(list) => {
+                for (i, v) in vals.iter().enumerate() {
+                    let item = i as u64;
+                    out.push(text_value(doc, 1024 + item * 8 + list, v));
+                    out.push(rec(
+                        "itemPlace",
+                        vec![
+                            Value::Id(doc),
+                            Value::UInt(list),
+                            Value::UInt(item),
+                            Value::UInt((item + 1) << 20),
+                        ],
+                    ));
+                }
+            }
+        }
+    }
+    out.push(entity_create(doc, 0, &format!("c{doc}.png")));
     for &t in &c.tags {
         out.push(rec(
             "tagAssign",
@@ -763,12 +899,16 @@ fn queries(tags: &[(u64, String)]) -> Vec<(String, usize, Vec<Clause>, Vec<Filte
 type Answer = (Vec<(u64, f64)>, u64);
 
 fn fields_of(card: &Card) -> Fields {
-    card.fields
+    let mut out: Fields = card
+        .fields
         .iter()
         .enumerate()
         .filter(|(f, _)| *f != RESOLVED)
         .map(|(_, vals)| vals.iter().map(|v| tokens(v.as_bytes())).collect())
-        .collect()
+        .collect();
+    // A card has no group fields.
+    out.resize(Scope::LIBRARY.fields().len(), Vec::new());
+    out
 }
 
 fn main() {
@@ -851,6 +991,7 @@ fn main() {
             .iter()
             .map(|r| Checker::new(&r.2, &tag_names, 50))
             .collect();
+        let tag_count = tags.len();
         for pass in 0..2 {
             let mut g = generator(kind, cards);
             for i in 0..cards {
@@ -862,7 +1003,7 @@ fn main() {
                     if pass == 0 {
                         ch.stats(&d, &tags);
                     } else {
-                        ch.matches(i as u64 + 1, &d, &tags);
+                        ch.matches(card_id(i, tag_count), &d, &tags);
                     }
                 }
             }
@@ -913,7 +1054,7 @@ fn main() {
     }
 
     if !reuse {
-        writes(&s, cards);
+        writes(&s, cards, tags.len());
     } else {
         probe(&s);
         terms(&s);
@@ -932,11 +1073,11 @@ fn load_and_space(
     // ---- load ----
     let started = Instant::now();
     let bulk = std::env::args().any(|a| a == "--bulk");
-    let tag_record = |id: u64, name: &str| text_value(id, test_codes::TAG_NAME, name);
-    // --no-lists: tag names committed first, so the bulk load leaves the top lists to slices.
+    // --no-lists: tag names committed first, so the bulk load leaves the top lists to slices. With --real the tags
+    // come first in the load (their ids are below the cards').
     let tags_first = !bulk || std::env::args().any(|a| a == "--no-lists");
     if tags_first {
-        commit_all(s, tags.iter().map(|(id, n)| tag_record(*id, n)), 1000);
+        commit_all(s, tags.iter().flat_map(|(id, n)| tag_records(*id, n)), 1000);
     }
     let mut text_bytes = 0u64;
     // Tags and cards share ids: in a load, id by id, so each partition comes once.
@@ -945,29 +1086,41 @@ fn load_and_space(
     } else {
         tags.iter().map(|(id, n)| (*id, n.as_str())).collect()
     };
-    let recs = (0..cards)
-        .flat_map(|i| {
-            let id = i as u64 + 1;
-            let card = g.card();
-            text_bytes += card
-                .fields
-                .iter()
-                .flatten()
-                .map(|v| v.len() as u64)
-                .sum::<u64>();
-            let mut out: Vec<Record> = by_id
-                .get(&id)
-                .map(|n| tag_record(id, n))
-                .into_iter()
-                .collect();
-            out.extend(card_records(id, &card));
-            out
-        })
-        .chain(
-            tags.iter()
-                .filter(|(id, _)| !tags_first && *id > cards as u64)
-                .map(|(id, n)| tag_record(*id, n)),
-        );
+    let real_tags: Vec<Record> = if real() && !tags_first {
+        tags.iter()
+            .flat_map(|(id, n)| tag_records(*id, n))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let by_id = if real() { HashMap::new() } else { by_id };
+    let tag_count = tags.len();
+    let recs = real_tags.into_iter().chain(
+        (0..cards)
+            .flat_map(|i| {
+                let id = card_id(i, tag_count);
+                let card = g.card();
+                text_bytes += card
+                    .fields
+                    .iter()
+                    .flatten()
+                    .map(|v| v.len() as u64)
+                    .sum::<u64>();
+                let mut out: Vec<Record> = by_id
+                    .get(&id)
+                    .map(|n| tag_records(id, n))
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                out.extend(card_records(id, &card));
+                out
+            })
+            .chain(
+                tags.iter()
+                    .filter(|(id, _)| !real() && !tags_first && *id > cards as u64)
+                    .flat_map(|(id, n)| tag_records(*id, n)),
+            ),
+    );
     if bulk {
         // Into an empty store, tag names and all: the load builds the top lists.
         let mut l = s.loader().unwrap();
@@ -1140,7 +1293,7 @@ fn terms(s: &Store) {
     );
 }
 
-fn writes(s: &Store, cards: usize) {
+fn writes(s: &Store, cards: usize, tag_count: usize) {
     // ---- writes per action ----
     let mut r = 12345u64;
     let mut next = || {
@@ -1149,11 +1302,12 @@ fn writes(s: &Store, cards: usize) {
             .wrapping_add(1442695040888963407);
         r >> 33
     };
-    let code = test_codes::LIBRARY + DESCRIPTION as u64;
+    let code = description_code();
     let (mut entries, mut bytes, mut changed, mut n) = (0u64, 0u64, 0u64, 0u64);
+    let (mut found, mut found_ms) = (0u64, Vec::new());
     let mut per: Vec<u64> = Vec::new();
     for _ in 0..200 {
-        let doc = 1 + next() % cards as u64;
+        let doc = card_id((next() % cards as u64) as usize, tag_count);
         let Some(old) = s.text(doc, &FieldRef::Code(code)).unwrap() else {
             continue;
         };
@@ -1165,7 +1319,9 @@ fn writes(s: &Store, cards: usize) {
         }
         let w = (next() as usize) % (spaces.len() - 1);
         let (a, b) = (spaces[w] + 1, spaces[w + 1]);
-        let word = ["zebra", "lantern", "ocean", "marble", "thunder"][(next() % 5) as usize];
+        // A word no card has: the next query finds this card by it, or the write wasn't found.
+        let fresh = format!("fresh{n}word");
+        let word = fresh.as_str();
         let new = format!("{}{}{}", &old[..a], word, &old[b..]);
         let count = |t: &str| {
             let mut m: HashMap<String, i64> = HashMap::new();
@@ -1197,6 +1353,20 @@ fn writes(s: &Store, cards: usize) {
         )])
         .unwrap();
         let after = s.stats().ks;
+        let t = Instant::now();
+        let f = s
+            .search(&Query {
+                scope: Scope::LIBRARY,
+                clauses: vec![c(word)],
+                filters: Vec::new(),
+                order: Order::Relevance,
+                limit: 5,
+                after: None,
+                limits: Limits::default(),
+            })
+            .unwrap();
+        found_ms.push(t.elapsed().as_secs_f64() * 1000.0);
+        found += u64::from(f.hits.iter().any(|h| h.doc == doc));
         entries += after.inserted - before.inserted;
         bytes += after.inserted_bytes - before.inserted_bytes;
         per.push(after.inserted - before.inserted);
@@ -1204,6 +1374,12 @@ fn writes(s: &Store, cards: usize) {
         n += 1;
     }
     per.sort_unstable();
+    found_ms.sort_by(f64::total_cmp);
+    println!(
+        "{{\"phase\":\"freshness\",\"edits\":{n},\"found_by_next_query\":{found},\"query_ms_p50\":{:.3},\"query_ms_max\":{:.3}}}",
+        found_ms[found_ms.len() / 2],
+        found_ms.last().unwrap()
+    );
     let entries_of = |recs: Vec<Record>| {
         let before = s.stats().ks;
         s.commit_wait(recs).unwrap();
@@ -1213,24 +1389,34 @@ fn writes(s: &Store, cards: usize) {
             after.inserted_bytes - before.inserted_bytes,
         )
     };
-    let fav = entries_of(vec![rec("fav", vec![Value::Id(1), Value::Bit(true)])]);
+    let first = card_id(0, tag_count);
+    let fav = entries_of(vec![rec("fav", vec![Value::Id(first), Value::Bit(true)])]);
     let assign = entries_of(vec![rec(
         "tagAssign",
-        vec![Value::Id(1), Value::Id(1), Value::Bit(true)],
+        vec![Value::Id(first), Value::Id(1), Value::Bit(true)],
     )]);
+    s.commit_wait(vec![rec(
+        "keyMap",
+        vec![
+            Value::Sel(st_engine::store::chat::KEYED_USER, 1),
+            Value::Bytes(b"bench".to_vec()),
+        ],
+    )])
+    .unwrap();
     let message = entries_of(vec![rec(
         "messageAppend",
         vec![
             Value::Id(1),
             Value::Absent,
-            Value::Id(1),
+            Value::Id(first),
             Value::Absent,
             Value::Absent,
             Value::Time(0),
             Value::Text(b"a short reply about the dragon".to_vec()),
             Value::UInt(0),
+            Value::Absent,
             Value::Id(1),
-            Value::Id(1),
+            Value::Absent,
         ],
     )]);
     // The tag the most cards carry, renamed.
@@ -1253,7 +1439,7 @@ fn writes(s: &Store, cards: usize) {
         .unwrap();
     let rename = entries_of(vec![text_value(
         top_tag,
-        test_codes::TAG_NAME,
+        if real() { 1 } else { test_codes::TAG_NAME },
         "renamed tag",
     )]);
     settle(s);
