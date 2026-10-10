@@ -586,30 +586,38 @@ export class LibraryEngine {
      */
     writeTag(tag, { extra } = {}) {
         return this.serialized(TYPE.tag, tag.id, async () => {
-            const stored = await this.entity(TYPE.tag, tag.id);
-            const id = stored ? stored.id : this.nextId++;
-            const records = [];
-            /** @type {Map<number | string, { text?: string, json?: string }>} */
-            const values = new Map();
-            for (const [k, v] of Object.entries(tag)) {
-                if (k === 'id' || v === undefined) continue;
-                const field = k === 'name' ? FIELD.name : k === 'folder_type' ? FIELD.folder_type : `${TAG_KEY_PREFIX}${k}`;
-                values.set(field, typeof v === 'string' && typeof field === 'number' ? { text: v } : { json: JSON.stringify(v) });
-            }
-            // The marker is the last value, so the tag enters its orders once, with its name, folder type and order.
-            values.set(FIELD.defined, { json: '' });
-            const valueChanges = valueRecords(id, stored, { values, lists: new Map() });
-            const marker = valueChanges.findIndex(r => r.field === FIELD.defined);
-            const order = tagDerivedColumns(tag).sortOrder;
-            if ((stored?.tagOrder ?? null) !== order) {
-                valueChanges.splice(marker === -1 ? valueChanges.length : marker, 0, { kind: 'tagOrder', tag: id, ...(order === null ? {} : { order }) });
-            }
-            records.push(...valueChanges);
-            if (!stored) records.push({ kind: 'entityCreate', entity: id, type: TYPE.tag, key: tag.id, added: Date.now() });
+            const { id, records } = await this.tagRecords(tag);
             if (extra) records.push(...extra(id));
             if (records.length > 0) await this.store.commit(records);
             return id;
         });
+    }
+
+    /**
+     * The records writeTag() commits for `tag`, read against what is stored now; a new tag's id is given out here.
+     * @param {{ id: string, [key: string]: unknown }} tag
+     * @returns {Promise<{ id: bigint, records: object[] }>}
+     */
+    async tagRecords(tag) {
+        const stored = await this.entity(TYPE.tag, tag.id);
+        const id = stored ? stored.id : this.nextId++;
+        /** @type {Map<number | string, { text?: string, json?: string }>} */
+        const values = new Map();
+        for (const [k, v] of Object.entries(tag)) {
+            if (k === 'id' || v === undefined) continue;
+            const field = k === 'name' ? FIELD.name : k === 'folder_type' ? FIELD.folder_type : `${TAG_KEY_PREFIX}${k}`;
+            values.set(field, typeof v === 'string' && typeof field === 'number' ? { text: v } : { json: JSON.stringify(v) });
+        }
+        // The marker is the last value, so the tag enters its orders once, with its name, folder type and order.
+        values.set(FIELD.defined, { json: '' });
+        const records = valueRecords(id, stored, { values, lists: new Map() });
+        const marker = records.findIndex(r => /** @type {any} */ (r).field === FIELD.defined);
+        const order = tagDerivedColumns(tag).sortOrder;
+        if ((stored?.tagOrder ?? null) !== order) {
+            records.splice(marker === -1 ? records.length : marker, 0, { kind: 'tagOrder', tag: id, ...(order === null ? {} : { order }) });
+        }
+        if (!stored) records.push({ kind: 'entityCreate', entity: id, type: TYPE.tag, key: tag.id, added: Date.now() });
+        return { id, records };
     }
 
     /**

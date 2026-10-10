@@ -520,6 +520,13 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
+    // A value the app keeps for itself by name (`json`; absent: it has none), such as what an import has done.
+    Kind {
+        name: "metaValue",
+        base: 63,
+        slots: &[req("key", Ty::Text), opt("json", Ty::Text)],
+        internal: false,
+    },
     // `tagOrder` written by reorder pass `pass`, which marks the tag as done by it.
     Kind {
         name: "tagPassOrder",

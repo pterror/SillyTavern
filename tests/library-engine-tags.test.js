@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeAll, beforeEach, afterEach } from '@jest/globals';
+import { describe, test, expect, beforeAll, beforeEach, afterEach, jest } from '@jest/globals';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -225,14 +225,14 @@ const FILTERS = [
     { used: true, search: 'b' },
 ];
 
-/** Compares every read the tag manager makes, both stores. */
-async function compareReads(keys, tagIds) {
+/** Compares every read the tag manager makes, both stores; the whole list holds more than `minimum` tags. */
+async function compareReads(keys, tagIds, minimum = 20) {
     for (const sort of ['manual', 'alphabetical', 'by_entries']) {
         for (const filter of FILTERS) {
             for (const pageSize of [3, 50]) {
                 const { old, eng } = await bothQueryPages({ sort, ...filter }, pageSize);
                 expect({ sort, filter, ids: eng.ids }).toEqual({ sort, filter, ids: old.ids });
-                if (Object.keys(filter).length === 0) expect(eng.ids.length).toBeGreaterThan(20);
+                if (Object.keys(filter).length === 0) expect(eng.ids.length).toBeGreaterThan(minimum);
                 expect(eng.counts).toEqual(old.counts);
                 expect(eng.approximate).toEqual(old.approximate);
             }
@@ -615,5 +615,159 @@ describe('the reorder pass on the engine', () => {
         await library.tags.startPass();
         await compareManual();
         await compareOrders(ids);
+    });
+});
+
+describe('restore and the settings import against the old store', () => {
+    /** @type {any} */
+    let cryptoModule;
+    let uuids = 0;
+    beforeAll(async () => {
+        cryptoModule = (await import('node:crypto')).default;
+    });
+    /** Runs `old` then `eng`, each with uuids handed out from the same start. */
+    async function sameUuids(/** @type {() => Promise<any>} */ old, /** @type {() => Promise<any>} */ eng) {
+        const spy = jest.spyOn(cryptoModule, 'randomUUID');
+        try {
+            uuids = 0;
+            spy.mockImplementation(() => `00000000-0000-4000-8000-${String(++uuids).padStart(12, '0')}`);
+            const o = await old();
+            uuids = 0;
+            const e = await eng();
+            return [o, e];
+        } finally {
+            spy.mockRestore();
+        }
+    }
+
+    /**
+     * Tags, assignments and a merged and a deleted tag, in both stores. The old store forgets a deletion once it
+     * finishes it, so it finishes after what is compared.
+     */
+    async function setUp() {
+        const keys = await setUpEntities(rng(21), 6, 2);
+        for (const tag of [
+            { id: 'keep', name: 'Keep', color: 'red', sort_order: 3 },
+            { id: 'named', name: 'Same Name', sort_order: 4 },
+            { id: 'other', name: 'Other', sort_order: 5 },
+            // Below the live tags' orders: the old store counts a deleted tag's order until it finishes it.
+            { id: 'merged', name: 'Merged', sort_order: 0.5 },
+            { id: 'dropped', name: 'Dropped', sort_order: 0.75 },
+            { id: 'odd', name: 'Odd', sort_order: 'x' },
+        ]) await both.create(tag);
+        await both.assign(keys[0], 'keep');
+        await both.assign(keys[1], 'merged');
+        await both.delete('merged', 'keep');
+        await both.delete('dropped', null);
+        return keys;
+    }
+
+    async function finish() {
+        await metadataDb.finishDeletedTags(directories);
+        await settle();
+    }
+
+    const backup = (/** @type {string[]} */ keys) => ({
+        tags: [
+            { id: 'keep', name: 'Keep', color: 'blue', sort_order: 30 },
+            { id: 'renamed', name: 'same name', color: 'green' },
+            { id: 'other', name: 'Keep' },
+            { id: 'merged', name: 'Merged again' },
+            { id: 'brand-new', name: 'Brand New' },
+            { id: 'alpha-new', name: 'alpha new' },
+            { id: 'ordered-new', name: 'Ordered', sort_order: 1.5 },
+            { id: 'odd', name: 'Odd', sort_order: 'still x', folder_type: 'OPEN' },
+            { id: '', name: 'no id' },
+            { id: 'no-name' },
+            'not a tag',
+            { id: 'brand-new', name: 'Brand New twice' },
+        ],
+        tagMap: {
+            [keys[0]]: ['keep', 'renamed', 'merged', 'dropped', 'ghost', 7, ''],
+            [keys[2]]: ['brand-new', 'alpha-new'],
+            [keys[7]]: ['ordered-new'],
+            'nobody.png': ['keep'],
+            [keys[3]]: 'not a list',
+        },
+    });
+
+    const sorted = (/** @type {any} */ result) => ({
+        ...result,
+        undefinedTagIds: [...result.undefinedTagIds].sort((a, b) => (a.key < b.key ? -1 : 1)),
+    });
+
+    test.each([true, false])('a restore (overwrite %s) restores what the old store restores and reads back as its', async (overwrite) => {
+        const keys = await setUp();
+        const { tags, tagMap } = backup(keys);
+        const [old, eng] = await sameUuids(
+            () => metadataDb.restoreTagBackup(directories, { tags: structuredClone(tags), tagMap, overwrite }),
+            () => library.tags.restore({ tags: structuredClone(tags), tagMap, overwrite }),
+        );
+        expect(sorted(eng)).toEqual(sorted(old));
+        await finish();
+        const ids = ['keep', 'renamed', 'other', 'named', 'brand-new', 'alpha-new', 'ordered-new', 'odd', '00000000-0000-4000-8000-000000000001'];
+        await compareReads(keys, ids, 6);
+        await compareManual();
+        await compareOrders(ids);
+    });
+
+    test('a restore while moves queue queues its orders behind them', async () => {
+        const keys = await setUp();
+        await metadataDb.reorderTagDefinitions(directories, 'keep', { after: 'other' }, 'alphabetical');
+        await library.tags.reorderDefinitions('keep', { after: 'other' }, 'alphabetical');
+        const { tags, tagMap } = backup(keys);
+        const [old, eng] = await sameUuids(
+            () => metadataDb.restoreTagBackup(directories, { tags: structuredClone(tags), tagMap, overwrite: true }),
+            () => library.tags.restore({ tags: structuredClone(tags), tagMap, overwrite: true }),
+        );
+        expect(sorted(eng)).toEqual(sorted(old));
+        await finish();
+        await compareManual();
+        await metadataDb.runTagReorderPassIfNeeded(directories);
+        await library.tags.startPass();
+        await compareManual();
+        await compareOrders(['keep', 'renamed', 'other', 'named', 'brand-new', 'alpha-new', 'ordered-new', 'odd']);
+    });
+
+    test('settings\' tags and tag_map import as the old store imports them, from the legacy file and the key files', async () => {
+        const keys = await setUp();
+        await library.tags.markSeedPending();
+        const legacy = { tags: [{ id: 'keep', name: 'Keep from settings' }, { id: 'dropped', name: 'Dropped' }, { id: 's1', name: 'zeta' }, { id: 's2', name: 'Beta', sort_order: 0.25 }, { bad: true }], tag_map: { [keys[4]]: ['s1', 's2', 'nowhere'], 'nobody.png': ['s1'] }, other: 1 };
+        fs.writeFileSync(path.join(directories.root, 'settings.json'), JSON.stringify(legacy));
+        const settingsDir = path.join(directories.root, 'settings');
+        fs.mkdirSync(settingsDir, { recursive: true });
+        const keyFiles = () => {
+            fs.writeFileSync(path.join(settingsDir, 'tags.json'), JSON.stringify([{ id: 's3', name: 'from key files' }, { id: 's1', name: 'zeta again' }]));
+            fs.writeFileSync(path.join(settingsDir, 'tag_map.json'), JSON.stringify({ [keys[5]]: ['s3', 'keep'] }));
+        };
+        keyFiles();
+        await sameUuids(() => metadataDb.migrateSettingsTagsIfNeeded(directories), async () => {
+            keyFiles();
+            fs.rmSync(path.join(settingsDir, 'tags.json.migrated'));
+            fs.rmSync(path.join(settingsDir, 'tag_map.json.migrated'));
+            return library.tags.importSettingsTags(directories);
+        });
+        expect(fs.existsSync(path.join(settingsDir, 'tags.json'))).toBe(false);
+        expect(fs.existsSync(path.join(settingsDir, 'tags.json.migrated'))).toBe(true);
+        await finish();
+        const ids = ['keep', 's1', 's2', 's3', 'dropped'];
+        await compareReads(keys, ids, 6);
+        await compareManual();
+        await compareOrders(ids);
+        // The legacy file stays, so neither is marked done; the seed was decided once, with a `tags` key: none.
+        expect(await library.store.meta(['settings_tags_migrated', 'tags_seed_pending'])).toEqual([null, null]);
+    });
+
+    test('a new store with no settings tags gets upstream\'s default tags, once', async () => {
+        await setUpEntities(rng(22), 1, 0);
+        await library.tags.markSeedPending();
+        await sameUuids(() => metadataDb.migrateSettingsTagsIfNeeded(directories), () => library.tags.importSettingsTags(directories));
+        const names = async (/** @type {(p: any) => Promise<any>} */ query) => (await query({ sort: 'manual', pageSize: 50 })).rows.map((/** @type {any} */ t) => [t.id, t.name, t.sort_order]);
+        expect(await names(p => library.tags.query(p))).toEqual(await names(p => metadataDb.queryTags(directories, p)));
+        expect((await names(p => library.tags.query(p))).length).toBe(6);
+        expect(await library.store.meta(['settings_tags_migrated', 'tags_seed_pending'])).toEqual([expect.any(String), null]);
+        await library.tags.restartSettingsImport();
+        await library.tags.importSettingsTags(directories);
+        expect((await names(p => library.tags.query(p))).length).toBe(6);
     });
 });

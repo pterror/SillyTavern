@@ -128,6 +128,8 @@ pub mod key {
     pub const TAG_STAMP: u64 = 79;
     /// Per reorder pass: the live tags it has written (a counter).
     pub const TAG_STAMPED: u64 = 80;
+    /// Per name: its `metaValue` record.
+    pub const META: u64 = 81;
     #[cfg(any(test, feature = "measure"))]
     pub const TEST_SET: u64 = 4096;
     #[cfg(any(test, feature = "measure"))]
@@ -929,6 +931,71 @@ impl Pointer for MessageAppend {
     }
 }
 
+/// `metaValue`: the value of a name the app keeps for itself.
+struct MetaValue;
+
+/// The entry holding a name's `metaValue` record.
+pub fn meta_key(name: &[u8]) -> Vec<u8> {
+    let mut k = key::of(key::META);
+    crate::keyspace::val::put_bytes(&mut k, name);
+    k
+}
+
+impl Deriver for MetaValue {
+    fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
+        let k = meta_key(bytes(rec, 0));
+        if let Some(b) = view.get(&k)? {
+            dead(out, parse_loc(&b)?);
+        }
+        if rec.values[1] == Value::Absent {
+            out.del(k);
+            dead(out, at);
+        } else {
+            out.put(k, loc_bytes(at));
+        }
+        Ok(())
+    }
+
+    fn is_live(&self, rec: &Record, pos: u64, view: &View) -> Result<bool, StoreError> {
+        Ok(view
+            .get(&meta_key(bytes(rec, 0)))?
+            .map(|b| parse_loc(&b))
+            .transpose()?
+            .is_some_and(|l| l.pos == pos))
+    }
+
+    fn repoint(
+        &self,
+        rec: &Record,
+        from: u64,
+        to: Loc,
+        view: &View,
+        out: &mut Out,
+    ) -> Result<(), StoreError> {
+        if self.is_live(rec, from, view)? {
+            out.put(meta_key(bytes(rec, 0)), loc_bytes(to));
+        }
+        Ok(())
+    }
+}
+
+/// Each name's `metaValue` JSON, or None.
+pub fn meta(view: &View, names: &[Vec<u8>]) -> Result<Vec<Option<Vec<u8>>>, StoreError> {
+    names
+        .iter()
+        .map(|n| match view.get(&meta_key(n))? {
+            Some(b) => {
+                let (r, _) = view.record(parse_loc(&b)?.pos)?;
+                Ok(match &r.values[1] {
+                    Value::Text(t) => Some(t.clone()),
+                    _ => None,
+                })
+            }
+            None => Ok(None),
+        })
+        .collect()
+}
+
 /// `moved`: points nowhere; replay pairs it with the copy after it.
 struct Moved;
 
@@ -989,6 +1056,7 @@ pub fn deriver(kind: &str) -> Option<&'static dyn Deriver> {
         "tagQueue" => &tags::TagQueue,
         "tagQueuePop" => &tags::TagQueuePop,
         "tagPass" => &tags::TagPass,
+        "metaValue" => &MetaValue,
         #[cfg(any(test, feature = "measure"))]
         "testSet" => &TestSet,
         other => return library::deriver(other),

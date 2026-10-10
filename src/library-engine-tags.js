@@ -1,10 +1,14 @@
 import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
+import fs from 'node:fs';
+import path from 'node:path';
 
 import { tagEntityTypeOf } from './group-id.js';
 import { FIELD, TAG_KEY_PREFIX, TYPE } from './library-codes.js';
-import { tagDerivedColumns, valuesAfter, valuesBefore } from './tag-order.js';
-import { contentHashOf, normalizeTagIds } from '../public/scripts/hash-utils.js';
+import { DEFAULT_TAG_NAMES, moveImportedSettingsFile, readSettingsTagsSource } from './settings-tags-source.js';
+import { legacySettingsPath, settingsDirPath } from './settings-store.js';
+import { compareNameKeys, tagDerivedColumns, valuesAfter, valuesBefore } from './tag-order.js';
+import { contentHashOf, normalizeTagIds, tagNameKey } from '../public/scripts/hash-utils.js';
 
 /**
  * The tag manager on the engine: tag definitions, assignments and their change feeds, answered in the shapes the
@@ -29,6 +33,14 @@ const PASS_BATCH = 1000;
 const PASS_PAUSE_MS = 10;
 /** A reorder pass's phases (`tagPass`). */
 const PHASE = Object.freeze({ walk: 0, sweep: 1, drain: 2 });
+/** Tags or tag_map keys a restore or an import writes per commit, and the pause between its commits. */
+const IMPORT_BATCH = 500;
+const IMPORT_PAUSE_MS = 10;
+/**
+ * `metaValue` names: the settings tags import found no source left (its time), and the store is new, so its first
+ * settings tags import decides whether it gets upstream's default tags (tag-actions D34.7).
+ */
+export const TAG_META = Object.freeze({ settingsImported: 'settings_tags_migrated', seedPending: 'tags_seed_pending' });
 /** The orders a reorder switches from (tag-actions D3). */
 export const TAG_REORDER_MODES = Object.freeze(['alphabetical', 'by_entries']);
 
@@ -1334,6 +1346,411 @@ export class LibraryTags extends EventEmitter {
         const result = { rows, cursor, more };
         if (!params.counts) return result;
         return { ...result, ...(await this.counts(shownIds, rows.map(r => /** @type {string} */ (r.id)))) };
+    }
+
+    // ---- restore and the settings import ----
+
+    /**
+     * The tag a definition being restored or imported names: the live one with its id, else (with `byName`) the
+     * first live one with its name; and whether its id is a deleted tag's.
+     * @param {string} id
+     * @param {string} name
+     * @param {boolean} byName
+     * @returns {Promise<{ existing: TagStatus & { key: string } | null, gone: boolean }>}
+     */
+    async definitionTarget(id, name, byName) {
+        const [status] = await this.status([id]);
+        if (status?.state === 'live') return { existing: { ...status, key: id }, gone: false };
+        const gone = status?.state === 'gone';
+        if (!byName) return { existing: null, gone };
+        const [found] = await this.store.tagByNames([name]);
+        if (found === null) return { existing: null, gone };
+        const [key] = await this.tagKeys([found]);
+        return { existing: { id: found, state: 'live', key: /** @type {string} */ (key) }, gone };
+    }
+
+    /**
+     * Definitions in the order they are created in: those with their own sort_order as listed, then the rest by name,
+     * as upstream shows them (the list's order kept for equal names).
+     * @template {{ name?: unknown }} T
+     * @param {T[]} tags
+     * @returns {T[]}
+     */
+    static creationOrder(tags) {
+        const ordered = tags.filter(t => Object.hasOwn(t, 'sort_order'));
+        const orderless = tags.filter(t => !Object.hasOwn(t, 'sort_order'));
+        const key = (/** @type {T} */ t) => (typeof t.name === 'string' ? tagNameKey(t.name) : '');
+        orderless.sort((a, b) => compareNameKeys(key(a), key(b)));
+        return [...ordered, ...orderless];
+    }
+
+    /**
+     * Writes definitions in batches of IMPORT_BATCH, each batch in the lane and committed together, a pause between
+     * batches. `decide` reads the store and returns what to write for an item, if anything: the definition, the name
+     * keys it touches, a sort_order to queue while moves queue (`queue`, when present), and an order the next
+     * created tag's must come after (`bump`). An item whose id or name an earlier write of the batch touched is
+     * decided once that write is committed.
+     * @template T
+     * @param {T[]} sequence
+     * @param {(item: T, batch: { next: number, settled: boolean }) => Promise<{ tag: Record<string, unknown> & { id: string }, names: string[], queue?: unknown, bump: number | null } | null>} decide
+     */
+    async writeDefinitions(sequence, decide) {
+        for (let i = 0; i < sequence.length; i += IMPORT_BATCH) {
+            if (i > 0) await delay(IMPORT_PAUSE_MS);
+            await this.lane(async () => {
+                const settled = await this.settled();
+                let seq = settled ? 0 : await this.nextSeq();
+                const batch = { next: await this.nextOrder(), settled };
+                /** @type {object[]} */
+                let records = [];
+                const touched = new Set();
+                for (const item of sequence.slice(i, i + IMPORT_BATCH)) {
+                    const { id, name } = /** @type {{ id?: unknown, name?: unknown }} */ (item);
+                    const nameKey = typeof name === 'string' ? tagNameKey(name) : '';
+                    if (records.length > 0 && (touched.has(`id:${id}`) || touched.has(`name:${nameKey}`))) {
+                        await this.store.commit(records);
+                        records = [];
+                        touched.clear();
+                    }
+                    const write = await decide(item, batch);
+                    if (!write) continue;
+                    const { id: entity, records: own } = await this.lib.tagRecords(write.tag);
+                    records.push(...own);
+                    if (!settled && Object.hasOwn(write, 'queue')) records.push(queueRecord(seq++, entity, { value: write.queue }));
+                    if (write.bump !== null && write.bump >= batch.next) batch.next = write.bump + 1;
+                    touched.add(`id:${write.tag.id}`);
+                    for (const n of write.names) touched.add(`name:${n}`);
+                }
+                if (records.length > 0) await this.store.commit(records);
+            });
+        }
+    }
+
+    /**
+     * restoreTagBackup(): a backup's definitions, then its assignments, so no assignment names a tag that isn't
+     * there. A backup tag is the live tag with its id, else the first live one with its name, and is created when
+     * there is neither; a deleted tag's id is created under a new id. `overwrite` writes the backup's fields onto the
+     * stored tag as edit() does, leaving out a name another live tag has. Created tags with no sort_order get the
+     * next orders, in name order. Assignments are added, never removed. Everything not restored is listed.
+     * @param {{ tags: unknown[], tagMap: Record<string, unknown>, overwrite: boolean }} backup
+     */
+    async restore({ tags, tagMap, overwrite }) {
+        const definitions = {
+            createdTagIds: /** @type {string[]} */ ([]),
+            updatedTagIds: /** @type {string[]} */ ([]),
+            invalidTags: /** @type {string[]} */ ([]),
+            keptTags: /** @type {{ id: string, name: string, existingId: string }[]} */ ([]),
+            namesTaken: /** @type {{ id: string, name: string }[]} */ ([]),
+            unreadableTags: /** @type {{ id: string, name: string }[]} */ ([]),
+        };
+        /** @type {Map<string, string>} Backup id → the id its tag has here, where they differ. */
+        const actualIds = new Map();
+        /** @type {(Record<string, unknown> & { id: string, name: string })[]} */
+        const valid = [];
+        for (const raw of tags) {
+            const tag = /** @type {any} */ (raw);
+            if (!tag || typeof tag !== 'object' || Array.isArray(tag) || typeof tag.id !== 'string' || !tag.id || typeof tag.name !== 'string' || !tag.name) {
+                definitions.invalidTags.push(String(JSON.stringify(raw)));
+                continue;
+            }
+            valid.push(tag);
+        }
+        await this.writeDefinitions(LibraryTags.creationOrder(valid), async (source, batch) => {
+            const { id, name } = source;
+            const nameKey = tagNameKey(name);
+            const { existing, gone } = await this.definitionTarget(id, name, nameKey !== '');
+            const orderOf = (/** @type {Record<string, unknown>} */ t) => (Object.hasOwn(t, 'sort_order') ? tagDerivedColumns(t).sortOrder : null);
+            if (existing) {
+                if (existing.key !== id) actualIds.set(id, existing.key);
+                if (!overwrite) {
+                    definitions.keptTags.push({ id, name, existingId: existing.key });
+                    return null;
+                }
+                const [old] = await this.definitions([existing.id]);
+                /** @type {Record<string, unknown>} */
+                const patch = { ...source };
+                delete patch.id;
+                const oldKey = typeof old?.name === 'string' ? tagNameKey(old.name) : '';
+                if (existing.key === id && oldKey !== nameKey) {
+                    const [holder] = await this.store.tagByNames([name]);
+                    if (holder !== null && holder !== existing.id) {
+                        delete patch.name;
+                        definitions.namesTaken.push({ id, name });
+                    }
+                }
+                // While moves queue, a sort_order is queued and the rest written (as edit() does).
+                const queued = Object.hasOwn(patch, 'sort_order') && !batch.settled;
+                const { sort_order: patchedOrder, ...rest } = patch;
+                const merged = { ...old, ...(queued ? rest : patch), id: existing.key };
+                if (JSON.stringify(merged) !== JSON.stringify(old)) definitions.updatedTagIds.push(existing.key);
+                const names = [oldKey, typeof merged.name === 'string' ? tagNameKey(merged.name) : ''];
+                return { tag: merged, names, ...(queued ? { queue: patchedOrder } : {}), bump: orderOf(patch) };
+            }
+            const newId = gone ? crypto.randomUUID() : id;
+            if (newId !== id) actualIds.set(id, newId);
+            const tag = { ...source, id: newId };
+            const own = Object.hasOwn(tag, 'sort_order');
+            if (!own) tag.sort_order = batch.next;
+            definitions.createdTagIds.push(newId);
+            return { tag, names: [nameKey], ...(own ? { queue: tag.sort_order } : {}), bump: orderOf(tag) };
+        });
+        /** @type {{ key: string, value: string }[]} */
+        const invalidKeys = [];
+        /** @type {Record<string, string[]>} */
+        const toAssign = {};
+        /** @type {Map<string, unknown[]>} */
+        const notTagIds = new Map();
+        for (const [key, value] of Object.entries(tagMap)) {
+            if (!Array.isArray(value)) {
+                invalidKeys.push({ key, value: String(JSON.stringify(value)) });
+                continue;
+            }
+            const tagIds = [];
+            const others = [];
+            for (const tagId of value) {
+                if (typeof tagId === 'string' && tagId !== '') tagIds.push(actualIds.get(tagId) ?? tagId);
+                else others.push(tagId);
+            }
+            if (others.length > 0) notTagIds.set(key, others);
+            if (tagIds.length > 0 || others.length > 0) toAssign[key] = tagIds;
+        }
+        const assigned = await this.assignMap(toAssign, 'tag backup restore');
+        const missing = new Set(assigned.droppedKeys);
+        /** @type {Map<string, unknown[]>} */
+        const undefinedByKey = new Map(assigned.undefinedTagIds.map(u => [u.key, /** @type {unknown[]} */ (u.tagIds)]));
+        for (const [key, others] of notTagIds) {
+            if (!missing.has(key)) undefinedByKey.set(key, [...(undefinedByKey.get(key) ?? []), ...others]);
+        }
+        return {
+            ...definitions,
+            invalidKeys,
+            missingKeys: assigned.droppedKeys,
+            undefinedTagIds: [...undefinedByKey].map(([key, tagIds]) => ({ key, tagIds })),
+            deletedTagIds: assigned.notAssigned,
+            failedKeys: [],
+        };
+    }
+
+    /**
+     * Adds a `{ key: tagIds }` map's assignments (importTagMap() with its definitions required), IMPORT_BATCH keys a
+     * commit, a pause between commits. A deleted tag is assigned as the live tag its merges lead to; one deleted with
+     * none, or with no definition, isn't assigned.
+     * @param {Record<string, unknown>} tagMap
+     * @param {string} label Names the import in its warnings.
+     * @returns {Promise<{ droppedKeys: string[], undefinedTagIds: { key: string, tagIds: string[] }[], notAssigned: { key: string, tagIds: string[] }[] }>}
+     *   droppedKeys: neither a character nor a group; undefinedTagIds and notAssigned per known key.
+     */
+    async assignMap(tagMap, label) {
+        /** @type {string[]} */
+        const droppedKeys = [];
+        /** @type {{ key: string, tagIds: string[] }[]} */
+        const undefinedTagIds = [];
+        /** @type {{ key: string, tagIds: string[] }[]} */
+        const notAssigned = [];
+        const entries = Object.entries(tagMap);
+        for (let i = 0; i < entries.length; i += IMPORT_BATCH) {
+            if (i > 0) await delay(IMPORT_PAUSE_MS);
+            const batch = entries.slice(i, i + IMPORT_BATCH).filter(([key, value]) => {
+                if (Array.isArray(value)) return true;
+                console.warn(`[library-engine-tags] ${label}: tag_map entry ${key} is not a list, nothing imported for it: ${JSON.stringify(value)}`);
+                return false;
+            });
+            const keys = batch.map(([key]) => key).filter(key => tagEntityTypeOf(key) !== null);
+            await this.withEntities(keys, async (entities) => {
+                const byKey = new Map(keys.map((k, n) => [k, entities[n]]));
+                const tagKeys = [...new Set(batch.flatMap(([, ids]) => /** @type {string[]} */ (ids)))];
+                const statuses = await this.status(tagKeys);
+                const targets = [...new Set(statuses.flatMap(st => (st?.state === 'gone' && st.into !== undefined ? [st.into] : [])))];
+                const targetStatus = new Map((await this.status(targets)).map((st, n) => [targets[n], st]));
+                /** @type {Map<string, { id: bigint, key: string } | 'deleted' | 'undefined'>} */
+                const resolved = new Map();
+                tagKeys.forEach((k, n) => {
+                    const st = statuses[n];
+                    if (st?.state === 'live') resolved.set(k, { id: st.id, key: k });
+                    else if (st?.state === 'gone' && st.into === undefined) resolved.set(k, 'deleted');
+                    else if (st?.state === 'gone') {
+                        const t = targetStatus.get(/** @type {string} */ (st.into));
+                        resolved.set(k, t?.state === 'live' ? { id: t.id, key: /** @type {string} */ (st.into) } : 'undefined');
+                    } else resolved.set(k, 'undefined');
+                });
+                const records = [];
+                for (const [key, ids] of batch) {
+                    const entity = byKey.get(key);
+                    if (!entity) {
+                        droppedKeys.push(key);
+                        continue;
+                    }
+                    const dropped = [];
+                    const missing = new Set();
+                    const assign = new Map();
+                    for (const k of /** @type {string[]} */ (ids)) {
+                        const r = resolved.get(k);
+                        if (r === 'deleted') dropped.push(k);
+                        else if (r === 'undefined') missing.add(k);
+                        else if (r) assign.set(r.key, r.id);
+                    }
+                    if (dropped.length > 0) {
+                        notAssigned.push({ key, tagIds: dropped });
+                        console.warn(`[library-engine-tags] Not assigned to ${key}: tag(s) deleted with no merge target: ${dropped.join(', ')}`);
+                    }
+                    if (missing.size > 0) undefinedTagIds.push({ key, tagIds: [...missing] });
+                    records.push(...this.addRecords(entity, [...assign.values()]));
+                }
+                if (records.length > 0) await this.store.commit(records);
+            });
+        }
+        return { droppedKeys, undefinedTagIds, notAssigned };
+    }
+
+    /**
+     * migrateSettingsTagsIfNeeded() on the engine: imports settings' `tags` and `tag_map` from a legacy settings.json
+     * not yet split, then from the key files settings/tags.json + settings/tag_map.json (tag-actions D33, D34). A
+     * source is imported whole or not at all; what exists is skipped, so a rerun is safe. Imported key files leave
+     * the settings store; the legacy file is never touched. Done once no source is left (TAG_META.settingsImported),
+     * until restartSettingsImport(). A new store's first run decides the default tags (TAG_META.seedPending).
+     * @param {import('./users.js').UserDirectoryList} directories
+     */
+    async importSettingsTags(directories) {
+        const [done] = await this.store.meta([TAG_META.settingsImported]);
+        if (done !== null) return;
+        let sourceLeft = false;
+        const seedCheck = { tagsKey: false, unreadable: /** @type {string[]} */ ([]) };
+        const legacyPath = legacySettingsPath(directories);
+        const legacy = readSettingsTagsSource(legacyPath);
+        if (!('missing' in legacy)) {
+            sourceLeft = true;
+            const label = `settings tags import (${legacyPath})`;
+            if ('error' in legacy) {
+                seedCheck.unreadable.push(legacyPath);
+                console.error(`[library-engine-tags] ${label}: could not read ${legacyPath}, nothing imported from it; retrying next boot: ${legacy.error}`);
+            } else if (!legacy.value || typeof legacy.value !== 'object' || Array.isArray(legacy.value)) {
+                console.warn(`[library-engine-tags] ${label}: ${legacyPath} is not an object, nothing imported from it.`);
+            } else {
+                if (Object.hasOwn(legacy.value, 'tags')) seedCheck.tagsKey = true;
+                await this.importSettingsSource(label, /** @type {object} */ (legacy.value));
+            }
+        }
+        const dir = settingsDirPath(directories);
+        const keyFiles = [path.join(dir, 'tags.json'), path.join(dir, 'tag_map.json')].map(filePath => ({ filePath, read: readSettingsTagsSource(filePath) }));
+        const present = keyFiles.filter(file => !('missing' in file.read));
+        if (!('missing' in keyFiles[0].read)) seedCheck.tagsKey = true;
+        if (present.length > 0) {
+            const label = `settings tags import (${present.map(file => file.filePath).join(' + ')})`;
+            const unreadable = present.filter(file => 'error' in file.read);
+            if (unreadable.length > 0) {
+                sourceLeft = true;
+                seedCheck.unreadable.push(...unreadable.map(file => file.filePath));
+                for (const file of unreadable) {
+                    console.error(`[library-engine-tags] ${label}: could not read ${file.filePath}, nothing imported from the key files; retrying next boot: ${/** @type {{ error: string }} */ (file.read).error}`);
+                }
+            } else {
+                /** @type {{ tags?: unknown, tag_map?: unknown }} */
+                const source = {};
+                const [tagsFile, tagMapFile] = keyFiles;
+                if ('value' in tagsFile.read) source.tags = tagsFile.read.value;
+                if ('value' in tagMapFile.read) source.tag_map = tagMapFile.read.value;
+                await this.importSettingsSource(label, source);
+                for (const file of present) {
+                    if (!moveImportedSettingsFile(file.filePath, /** @type {{ text: string }} */ (file.read).text)) sourceLeft = true;
+                }
+            }
+        }
+        await this.seedDefaultTagsIfPending(seedCheck);
+        if (!sourceLeft) {
+            await this.store.commit([{ kind: 'metaValue', key: TAG_META.settingsImported, json: JSON.stringify(Date.now()) }]);
+            // A restore may have written a source after it was looked for, and cleared the mark before it was set.
+            if ([legacyPath, ...keyFiles.map(file => file.filePath)].some(filePath => fs.existsSync(filePath))) await this.restartSettingsImport();
+        }
+    }
+
+    /** Makes importSettingsTags() read the settings sources again on its next run. */
+    async restartSettingsImport() {
+        await this.store.commit([{ kind: 'metaValue', key: TAG_META.settingsImported }]);
+    }
+
+    /** Marks a store just created, so its first settings tags import decides the default tags. */
+    async markSeedPending() {
+        await this.store.commit([{ kind: 'metaValue', key: TAG_META.seedPending, json: 'true' }]);
+    }
+
+    /**
+     * One settings source: its `tags` (when it has the key), created as create() creates them, every tag not
+     * created listed; then its `tag_map`, leaving out assignments of tags with no definition.
+     * @param {string} label
+     * @param {{ tags?: unknown, tag_map?: unknown }} source Only own keys are read.
+     */
+    async importSettingsSource(label, source) {
+        if (Object.hasOwn(source, 'tags')) {
+            if (Array.isArray(source.tags)) {
+                /** @type {string[]} */
+                const skipped = [];
+                /** @type {Record<string, unknown>[]} */
+                const valid = [];
+                for (const raw of source.tags) {
+                    const tag = /** @type {any} */ (raw);
+                    if (!tag || typeof tag !== 'object' || Array.isArray(tag) || typeof tag.id !== 'string' || !tag.id) skipped.push(`  ${JSON.stringify(raw)}: not a tag with a non-empty string id`);
+                    else valid.push(tag);
+                }
+                const created = new Set();
+                await this.writeDefinitions(LibraryTags.creationOrder(valid), async (source, batch) => {
+                    const id = /** @type {string} */ (source.id);
+                    const [status] = await this.status([id]);
+                    if (status?.state === 'gone') {
+                        skipped.push(`  ${id}: deleted`);
+                        return null;
+                    }
+                    if (status?.state === 'live' || created.has(id)) {
+                        skipped.push(`  ${id}: already exists`);
+                        return null;
+                    }
+                    created.add(id);
+                    const tag = /** @type {Record<string, unknown> & { id: string }} */ ({ ...source });
+                    const own = Object.hasOwn(tag, 'sort_order');
+                    if (!own) tag.sort_order = batch.next;
+                    return { tag, names: [], ...(own ? { queue: tag.sort_order } : {}), bump: tagDerivedColumns(tag).sortOrder };
+                });
+                if (skipped.length > 0) console.warn(`[library-engine-tags] ${label}: ${skipped.length} tag(s) not imported:\n${skipped.join('\n')}`);
+            } else {
+                console.warn(`[library-engine-tags] ${label}: tags is not a list, no tag imported from it: ${JSON.stringify(source.tags)}`);
+            }
+        }
+        if (!Object.hasOwn(source, 'tag_map')) return;
+        const tagMap = source.tag_map;
+        if (!tagMap || typeof tagMap !== 'object' || Array.isArray(tagMap)) {
+            console.warn(`[library-engine-tags] ${label}: tag_map is not an object, no assignment imported from it: ${JSON.stringify(tagMap)}`);
+            return;
+        }
+        const imported = await this.assignMap(/** @type {Record<string, unknown>} */ (tagMap), label);
+        if (imported.droppedKeys.length > 0) {
+            console.warn(`[library-engine-tags] ${label}: ${imported.droppedKeys.length} tag_map key(s) matched neither a known character nor a known group, not imported: ${imported.droppedKeys.join(', ')}`);
+        }
+        if (imported.undefinedTagIds.length > 0) {
+            console.warn(`[library-engine-tags] ${label}: tag ids with no tag definition, not assigned:\n${imported.undefinedTagIds.map(u => `  ${u.key}: ${u.tagIds.join(', ')}`).join('\n')}`);
+        }
+    }
+
+    /**
+     * On a store marked new, decides whether it gets upstream's default tags, and clears the mark in the same commit:
+     * it gets them when every settings source was read and none has a `tags` key. They get the next orders in name
+     * order, as upstream shows them.
+     * @param {{ tagsKey: boolean, unreadable: string[] }} settings
+     */
+    async seedDefaultTagsIfPending(settings) {
+        await this.lane(async () => {
+            const [pending] = await this.store.meta([TAG_META.seedPending]);
+            if (pending === null) return;
+            const records = [{ kind: 'metaValue', key: TAG_META.seedPending }];
+            if (!settings.tagsKey && settings.unreadable.length === 0) {
+                let next = await this.nextOrder();
+                for (const tag of LibraryTags.creationOrder(DEFAULT_TAG_NAMES.map(name => ({ id: crypto.randomUUID(), name, create_date: Date.now() })))) {
+                    records.push(...(await this.lib.tagRecords({ ...tag, sort_order: next++ })).records);
+                }
+            }
+            await this.store.commit(records);
+            if (settings.unreadable.length > 0) {
+                console.warn(`[library-engine-tags] This store is new, but the default tags were not added, because these settings files could not be read, so whether they have tags is unknown: ${settings.unreadable.join(', ')}`);
+            }
+        });
     }
 
     /**
