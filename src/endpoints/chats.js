@@ -30,7 +30,7 @@ import {
     isAvailable as isTreeAvailable, hasSavedChats,
     saveChatToTree, loadBranch, forkBranch, labelNode,
     deleteBranch, renameBranch as renameBranchInTree, listBranches, listRecentBranches, searchBranchesByContent,
-    ownerDescriptorOf, renameCharacterInMessages, renameGroupMemberInMessages, getAlternatives, getContinuation, getAncestorPath, editMessage, editMessages, appendMessages, addAlternatives, setChatMetadata, getOpeningAlternatives, loadDefaultChain, storedSendKeys, chooseCardOpening, findOpeningToLandOn, LANDING_EDITS_MAX, addOpeningAlternatives, loadAtNode, listLabels, setNodeMetadata, selectDefaultChild, endPathAt, endPathAtAnchor, graftMessage, degraftRange, swapAdjacent, deleteAlternative,
+    ownerDescriptorOf, renameCharacterInMessages, renameGroupMemberInMessages, getAlternatives, getContinuation, getAncestorPath, editMessage, editMessages, appendMessages, addAlternatives, setChatMetadata, getOpeningAlternatives, loadDefaultChain, storedSendKeys, chooseCardOpening, findOpeningToLandOn, LANDING_EDITS_MAX, addOpeningAlternatives, loadAtNode, mergeChatMetadataKeys, listLabels, setNodeMetadata, selectDefaultChild, endPathAt, endPathAtAnchor, graftMessage, degraftRange, swapAdjacent, deleteAlternative,
 } from '../message-tree-db.js';
 
 /**
@@ -618,32 +618,40 @@ async function openingsForPage(directories, ownerId, avatar) {
  * /get answers them after the header; `openings`/`card_openings` for a character only (null for a group);
  * for a group also `chats` and `date_last_chat` as stored. 404 when the character or group doesn't exist.
  */
-router.post('/open', validateAvatarUrlMiddleware, async function (request, response) {
-    try {
-        const directories = request.user.directories;
-        const requested = typeof request.body.chat === 'string' && request.body.chat !== '' ? request.body.chat : null;
-        const makeCurrent = request.body.make_current === true;
+/**
+ * What `/open` answers: resolves which conversation a character or group opens on, records what was opened, and
+ * reads everything the screen draws.
+ * @param {import('express').Request} request
+ * @param {{ avatar_url?: unknown, group_id?: unknown, chat?: unknown, make_current?: unknown, fresh?: unknown, send_keys?: unknown }} body
+ * @returns {Promise<{ status: number, answer?: object }>}
+ */
+async function openChatAnswer(request, body) {
+    const directories = request.user.directories;
+    const requested = typeof body.chat === 'string' && body.chat !== '' ? body.chat : null;
+    const makeCurrent = body.make_current === true;
 
-        if (request.body.group_id) {
-            const groupId = String(request.body.group_id);
-            const opened = await withGroupLock(directories, groupId, async () => {
-                const group = readGroupFile(directories, groupId);
-                if (!group) return null;
-                const chats = Array.isArray(group.chats) ? group.chats : [];
-                const target = requested !== null && chats.includes(requested) ? requested : group.chat_id;
-                if (makeCurrent && target !== group.chat_id) {
-                    group.chat_id = target;
-                    group.date_last_chat = Date.now();
-                    await writeGroupFile(directories, group);
-                }
-                return { chatId: String(target ?? ''), chats, dateLastChat: group.date_last_chat };
-            });
-            if (!opened) return response.sendStatus(404);
+    if (body.group_id) {
+        const groupId = String(body.group_id);
+        const opened = await withGroupLock(directories, groupId, async () => {
+            const group = readGroupFile(directories, groupId);
+            if (!group) return null;
+            const chats = Array.isArray(group.chats) ? group.chats : [];
+            const target = requested !== null && chats.includes(requested) ? requested : group.chat_id;
+            if (makeCurrent && target !== group.chat_id) {
+                group.chat_id = target;
+                group.date_last_chat = Date.now();
+                await writeGroupFile(directories, group);
+            }
+            return { chatId: String(target ?? ''), chats, dateLastChat: group.date_last_chat };
+        });
+        if (!opened) return { status: 404 };
 
-            const loaded = opened.chatId
-                ? await loadAtNode(directories, groupId, opened.chatId) ?? await loadBranch(directories, groupId, opened.chatId)
-                : null;
-            return response.send({
+        const loaded = opened.chatId
+            ? await loadAtNode(directories, groupId, opened.chatId) ?? await loadBranch(directories, groupId, opened.chatId)
+            : null;
+        return {
+            status: 200,
+            answer: {
                 chat: opened.chatId,
                 chat_metadata: { ...(loaded?.metadata ?? {}) },
                 messages: loaded?.messages ?? [],
@@ -651,52 +659,129 @@ router.post('/open', validateAvatarUrlMiddleware, async function (request, respo
                 card_openings: null,
                 chats: opened.chats,
                 date_last_chat: opened.dateLastChat,
-                stored_sends: await storedSendKeys(directories, groupId, request.body.send_keys),
+                stored_sends: await storedSendKeys(directories, groupId, body.send_keys),
                 ...recordLastOpened(request, { character: null, group: groupId }),
-            });
-        }
+            },
+        };
+    }
 
-        const avatar = String(request.body.avatar_url || '');
-        if (!avatar) return response.sendStatus(400);
-        const ownerId = avatar.replace('.png', '');
-        if ((await readCardContent(directories, avatar)) == null) return response.sendStatus(404);
+    const avatar = String(body.avatar_url || '');
+    if (!avatar) return { status: 400 };
+    const ownerId = avatar.replace('.png', '');
+    if ((await readCardContent(directories, avatar)) == null) return { status: 404 };
 
-        const fresh = request.body.fresh === true;
-        const current = (await getCharacterActiveChatsByIds(directories, [avatar]))[avatar] ?? null;
-        /** @type {{ messages: TreeChatMessage[], metadata: ChatMetadata } | null} */
-        let loaded = null;
-        let chatId = '';
-        for (const target of fresh ? [] : [requested, current]) {
-            if (target === null || loaded) continue;
-            loaded = await loadAtNode(directories, ownerId, target) ?? await loadBranch(directories, ownerId, target);
-            if (loaded) chatId = target;
+    const fresh = body.fresh === true;
+    const current = (await getCharacterActiveChatsByIds(directories, [avatar]))[avatar] ?? null;
+    /** @type {{ messages: TreeChatMessage[], metadata: ChatMetadata } | null} */
+    let loaded = null;
+    let chatId = '';
+    for (const target of fresh ? [] : [requested, current]) {
+        if (target === null || loaded) continue;
+        loaded = await loadAtNode(directories, ownerId, target) ?? await loadBranch(directories, ownerId, target);
+        if (loaded) chatId = target;
+    }
+    if (loaded && makeCurrent && chatId === requested && requested !== current) {
+        await setCharacterActiveChat(directories, avatar, requested);
+    }
+    if (!loaded && !fresh) {
+        const branches = await listBranches(directories, ownerId);
+        branches.sort((a, b) => b.last_activity - a.last_activity);
+        if (branches.length) {
+            loaded = await loadAtNode(directories, ownerId, branches[0].id);
+            if (loaded) chatId = branches[0].id;
         }
-        if (loaded && makeCurrent && chatId === requested && requested !== current) {
-            await setCharacterActiveChat(directories, avatar, requested);
-        }
-        if (!loaded && !fresh) {
-            const branches = await listBranches(directories, ownerId);
-            branches.sort((a, b) => b.last_activity - a.last_activity);
-            if (branches.length) {
-                loaded = await loadAtNode(directories, ownerId, branches[0].id);
-                if (loaded) chatId = branches[0].id;
-            }
-        }
-        if (!loaded && !fresh) {
-            loaded = await loadDefaultChain(directories, ownerId);
-            chatId = loaded?.messages[0]?.node_id ?? '';
-        }
+    }
+    if (!loaded && !fresh) {
+        loaded = await loadDefaultChain(directories, ownerId);
+        chatId = loaded?.messages[0]?.node_id ?? '';
+    }
 
-        return response.send({
+    return {
+        status: 200,
+        answer: {
             chat: chatId,
             chat_metadata: { ...(loaded?.metadata ?? {}) },
             messages: loaded?.messages ?? [],
             ...await openingsForPage(directories, ownerId, avatar),
-            stored_sends: await storedSendKeys(directories, ownerId, request.body.send_keys),
+            stored_sends: await storedSendKeys(directories, ownerId, body.send_keys),
             ...recordLastOpened(request, { character: avatar, group: null }),
-        });
+        },
+    };
+}
+
+router.post('/open', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const { status, answer } = await openChatAnswer(request, request.body);
+        return answer ? response.send(answer) : response.sendStatus(status);
     } catch (error) {
         console.error('Error opening a chat:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
+/**
+ * Bookmarks a message: names it `label` (with `unique`, "<label> - Branch #N" when the name is taken). A greeting
+ * shown without a row (`opening`) is stored first, as /message/select stores it. The bookmark carries the chat
+ * metadata of the chat it was made from (`from`, a node id or chat name), unless the message already has its own.
+ * With `also_node_id` (a fork at an alternative) that message, the one shown, is named too. A group's bookmark is
+ * added to the group's chats. With `open`, the bookmark is opened as /open opens a chat (`make_current`), and its
+ * answer is `opened`.
+ */
+router.post('/bookmark', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const directories = request.user.directories;
+        const ownerId = ownerOf(request);
+        const groupId = request.body.group_id ? String(request.body.group_id) : null;
+        const label = typeof request.body.label === 'string' ? request.body.label.trim() : '';
+        if (!label) return response.status(400).send({ error: 'label is required' });
+
+        let nodeId = String(request.body.node_id || '');
+        if (!nodeId && request.body.opening) {
+            const written = await applyPageWrites(response, directories, {
+                ownerId, avatar: request.body.avatar_url, groupId: groupId ?? undefined,
+                body: { node_id: null, opening: request.body.opening, page_metadata: request.body.page_metadata },
+            });
+            if (!written) return;
+            nodeId = storedMessagesOf(response)?.find(s => !('integrity' in s))?.node_id ?? '';
+        }
+        if (!nodeId) return response.status(400).send({ error: 'node_id is required' });
+
+        const labeled = await labelNode(directories, nodeId, label, { ownerId, unique: request.body.unique === true });
+        if (!labeled.ok || typeof labeled.label !== 'string' || labeled.label === '') return response.status(409).send({ ok: false, reason: 'unknown message' });
+        const name = labeled.label;
+
+        const from = typeof request.body.from === 'string' && request.body.from !== '' ? request.body.from : null;
+        if (from !== null && from !== nodeId) {
+            const source = await loadAtNode(directories, ownerId, from) ?? await loadBranch(directories, ownerId, from);
+            const target = await loadAtNode(directories, ownerId, nodeId);
+            const own = Object.keys(target?.metadata ?? {}).filter(key => key !== 'integrity');
+            if (source && own.length === 0) {
+                const merged = await mergeChatMetadataKeys(directories, ownerId, nodeId, { ...source.metadata, ...(groupId !== null ? { __is_group: true } : {}) }, []);
+                if (!merged.ok) return response.status(500).send({ error: 'The bookmark was made, but the chat\'s metadata could not be copied to it.' });
+            }
+        }
+
+        const alsoNodeId = String(request.body.also_node_id || '');
+        if (alsoNodeId && alsoNodeId !== nodeId) {
+            await labelNode(directories, alsoNodeId, name, { ownerId });
+        }
+
+        /** @type {string[]|undefined} */
+        let chats;
+        if (groupId !== null) {
+            const group = resolveGroupOwner(directories.groups, { groupId });
+            if (group) {
+                await registerGroupChatIdIfNew(directories, group, name);
+                chats = /** @type {{ chats?: string[] } | null} */ (readGroupFile(directories, groupId))?.chats;
+            }
+        }
+
+        const opened = request.body.open === true
+            ? (await openChatAnswer(request, { avatar_url: request.body.avatar_url, group_id: groupId, chat: name, make_current: true, send_keys: request.body.send_keys })).answer
+            : undefined;
+        return response.send({ ok: true, node_id: nodeId, label: name, chats, opened, stored: storedMessagesOf(response) ?? undefined });
+    } catch (error) {
+        console.error('Error bookmarking a message:', error);
         return response.status(500).send({ error: true });
     }
 });

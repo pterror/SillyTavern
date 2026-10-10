@@ -10,9 +10,14 @@ import {
     getCurrentChatDetails,
     updateMessage,
     hydrateSwipes,
-    ensureOpeningRow,
     switchToNode,
     isStoredNodeId,
+    isProvisionalNodeId,
+    takeChatOpenAnswer,
+    chatOpenSendKeys,
+    adoptStored,
+    openingForRequest,
+    deriveChatAddressNode,
 } from '../script.js';
 import { getCharacters } from './character-list.js';
 import { chat_metadata, chat } from './chat-state.js';
@@ -190,7 +195,73 @@ function _labelOwner() {
     return selected_group ? { group_id: selected_group } : { avatar_url: getCurrentCharacter()?.avatar };
 }
 
+/**
+ * @typedef {object} BookmarkAnswer
+ * @property {string} label The name the bookmark got.
+ * @property {string[]} [chats] A group's chats, the bookmark among them.
+ * @property {import('../script.js').ChatOpenAnswer} [opened] With `open`: the bookmark, opened.
+ */
+
+/**
+ * Bookmarks a message in one request (POST /api/chats/bookmark): names it, stores it first when it's a greeting
+ * shown without a row, and gives it the open chat's metadata.
+ * @param {number} mesId The message.
+ * @param {object} options
+ * @param {string} options.label
+ * @param {string|null} [options.nodeId] One of the message's alternatives instead of the one shown.
+ * @param {boolean} [options.unique] Name it "<label> - Branch #N" when the name is taken.
+ * @param {string|null} [options.alsoNodeId] A message to give the same name (the shown one, when forking at an
+ * alternative).
+ * @param {boolean} [options.open] Open the bookmark too.
+ * @returns {Promise<BookmarkAnswer|null>} Null when it wasn't made.
+ */
+async function requestBookmark(mesId, { label, nodeId = null, unique = false, alsoNodeId = null, open = false }) {
+    const owner = _labelOwner();
+    const message = chat[mesId];
+    /** @type {Record<string, unknown>} */
+    const body = {
+        ...owner,
+        label,
+        unique,
+        from: selected_group ? groupsStore.get(selected_group)?.chat_id : deriveChatAddressNode(null),
+    };
+    if (nodeId) {
+        body.node_id = nodeId;
+    } else if (isStoredNodeId(message?.node_id)) {
+        body.node_id = message.node_id;
+    } else if (isProvisionalNodeId(message?.node_id)) {
+        const opening = openingForRequest(mesId);
+        if (!opening) return null;
+        Object.assign(body, opening);
+    } else {
+        return null;
+    }
+    if (alsoNodeId) body.also_node_id = alsoNodeId;
+    if (open) {
+        body.open = true;
+        body.send_keys = chatOpenSendKeys(owner);
+    }
+    const response = await fetch('/api/chats/bookmark', { method: 'POST', headers: getRequestHeaders(), body: JSON.stringify(body) });
+    if (!response.ok) return null;
+    const answer = await response.json();
+    adoptStored(answer.stored);
+    if (selected_group && Array.isArray(answer.chats)) groupsStore.update(selected_group, { chats: answer.chats });
+    if (answer.opened) takeChatOpenAnswer(owner, answer.opened);
+    return answer;
+}
+
 export async function createBranch(mesId, { swipeId = null } = {}) {
+    return (await makeBranch(mesId, { swipeId }))?.label ?? undefined;
+}
+
+/**
+ * Branches the chat at a message (or one of its alternatives): names it after the open chat, made unique.
+ * @param {number} mesId
+ * @param {{ swipeId?: number|null, open?: boolean, alsoLabelShown?: boolean }} [options] `open`: open the branch
+ * too; `alsoLabelShown`: when branching at an alternative, give the shown message the same name.
+ * @returns {Promise<BookmarkAnswer|null|undefined>}
+ */
+async function makeBranch(mesId, { swipeId = null, open = false, alsoLabelShown = false } = {}) {
     if (!chat.length) {
         toastr.warning('The chat is empty.', 'Branch creation failed');
         return;
@@ -210,61 +281,40 @@ export async function createBranch(mesId, { swipeId = null } = {}) {
         return;
     }
 
-    // A card-only greeting has no node yet - being branched at is what earns it one.
-    const branchNodeId = await ensureOpeningRow(mesId);
-
-    if (branchNodeId) {
-        // Default to the currently-selected swipe's node; an alt-swipe branch resolves its own node
-        // below instead. A swipe alternative that already exists is *already a row in the tree* (it was
-        // generated and persisted, or fetched from /api/chats/alternatives) - branching it is naming
-        // that row, the same "nothing to copy" case as the non-alt-swipe path just below. There is no
-        // snapshot to build or save here: doing so used to send a plain-array chatData through saveChat(),
-        // which saveChat() itself only recognizes as tree-shaped when chatData is NOT an array - so it
-        // silently fell through to the legacy whole-chat /api/chats/save route for a chat that is in fact
-        // tree-stored, and it labeled the wrong node besides (the pre-computed branchNodeId, i.e. the
-        // *currently selected* swipe, never the alternate one actually requested).
-        let targetNodeId = branchNodeId;
+    if (isStoredNodeId(lastMes?.node_id) || isProvisionalNodeId(lastMes?.node_id)) {
+        /** @type {string|null} */
+        let nodeId = null;
         if (selectedSwipeId !== null) {
-            // The alternative may still be a hole (never fetched into swipe_info) - hydrate before
-            // resolving its node id, same as getBranchChatSnapshot() did for the old snapshot-swap.
+            // The alternative may still be a hole (never fetched into swipe_info).
             await hydrateSwipes(Number(mesId), { index: selectedSwipeId });
             const swipeNodeId = chat[mesId]?.swipe_info?.[selectedSwipeId]?.node_id;
             if (!isStoredNodeId(swipeNodeId)) {
                 toastr.warning('Could not prepare the selected swipe for branching.', 'Branch creation failed');
                 return;
             }
-            targetNodeId = swipeNodeId;
+            nodeId = swipeNodeId;
         }
-
-        // Nothing to copy - the node already exists, so branching is just naming it.
-        const response = await fetch('/api/chats/label', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({
-                ..._labelOwner(),
-                node_id: targetNodeId,
-                label: mainChatName,
-                unique: true,
-            }),
+        const shownNodeId = chat[mesId]?.node_id;
+        const answer = await requestBookmark(mesId, {
+            label: mainChatName,
+            nodeId,
+            unique: true,
+            alsoNodeId: alsoLabelShown && nodeId !== null && isStoredNodeId(shownNodeId) ? shownNodeId : null,
+            open,
         });
-
-        if (!response.ok) {
+        if (!answer) {
             toastr.error('Could not name that point.', 'Branch creation failed');
             return;
         }
 
-        const { ok, label: name } = await response.json();
-        if (!ok || !name) {
-            toastr.error('Could not name that point.', 'Branch creation failed');
-            return;
+        if (chat[mesId] === lastMes || chat[mesId]?.node_id === lastMes.node_id) {
+            const extra = typeof lastMes.extra === 'object' ? { ...lastMes.extra } : {};
+            const branches = Array.isArray(extra.branches) ? [...extra.branches] : [];
+            if (!branches.includes(answer.label)) branches.push(answer.label);
+            extra.branches = branches;
+            updateMessage(mesId, { extra });
         }
-
-        const extra = typeof lastMes.extra === 'object' ? { ...lastMes.extra } : {};
-        const branches = Array.isArray(extra.branches) ? [...extra.branches] : [];
-        if (!branches.includes(name)) branches.push(name);
-        extra.branches = branches;
-        updateMessage(mesId, { extra });
-        return name;
+        return answer;
     }
 
     // Legacy JSONL path: copy the chat prefix into a new file. Uniqueness is minted server-side (same
@@ -293,7 +343,7 @@ export async function createBranch(mesId, { swipeId = null } = {}) {
     if (!branches.includes(name)) branches.push(name);
     extra.branches = branches;
     updateMessage(mesId, { extra });
-    return name;
+    return { label: name };
 }
 
 /**
@@ -330,31 +380,16 @@ export async function createNewBookmark(mesId, { forceName = null } = {}) {
         return null;
     }
 
-    const bookmarkNodeId = await ensureOpeningRow(mesId);
-
-    if (bookmarkNodeId) {
-        const response = await fetch('/api/chats/label', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({
-                ..._labelOwner(),
-                node_id: bookmarkNodeId,
-                label: name,
-            }),
-        });
-
-        if (!response.ok) {
+    if (isStoredNodeId(lastMes.node_id) || isProvisionalNodeId(lastMes.node_id)) {
+        const answer = await requestBookmark(mesId, { label: name });
+        if (!answer) {
             toastr.error('Could not save the bookmark.', 'Bookmark');
             return null;
         }
 
-        // The label IS the bookmark link - rowToMessage() (message-tree-db.js) re-synthesizes
-        // extra.bookmark_link from the node's `label` column on every read, and sanitizeForStorage()
-        // strips extra.bookmark_link before any content write for the same reason - so the label
-        // response above is already the full persistence step. Mirror it into the in-memory chat array
-        // for immediate UI use; no second write needed.
-        const { label: resolvedName } = await response.json();
-        const extra = typeof lastMes.extra === 'object' ? { ...lastMes.extra } : {};
+        // The label is the bookmark link: a read gives a message its `extra.bookmark_link` from it.
+        const resolvedName = answer.label;
+        const extra = typeof chat[mesId]?.extra === 'object' ? { ...chat[mesId].extra } : {};
         extra.bookmark_link = resolvedName;
         updateMessage(mesId, { extra });
         toastr.success('Bookmarked. It shows up in the chat list.', 'Bookmark', { timeOut: 6000 });
@@ -540,18 +575,25 @@ export async function branchChat(mesId, { swipeId = null } = {}) {
         return null;
     }
 
-    const fileName = await createBranch(mesId, { swipeId });
-    if (!fileName) {
+    return openBranch(await makeBranch(mesId, { swipeId, open: true }));
+}
+
+/**
+ * Opens a branch makeBranch() made, from the answer it got when it opened it (or by asking, for a branch made the
+ * old way).
+ * @param {BookmarkAnswer|null|undefined} made
+ * @returns {Promise<string|null>} The branch's name.
+ */
+async function openBranch(made) {
+    if (!made?.label) {
         return null;
     }
-
     if (selected_group) {
-        await openGroupChat(selected_group, fileName);
+        await openGroupChat(selected_group, made.label, { opened: made.opened ?? null });
     } else {
-        await openCharacterChat(fileName);
+        await openCharacterChat(made.label, { opened: made.opened ?? null });
     }
-
-    return fileName;
+    return made.label;
 }
 
 /**
@@ -567,50 +609,9 @@ export async function forkChat(mesId, { swipeId = null } = {}) {
         return null;
     }
 
-    const lastMes = chat[mesId];
-    // Resolved before the branch is made, not after: createBranch() may move the client to the new
-    // chat, and by then chat[mesId] is a different conversation's message.
-    const nodeId = await ensureOpeningRow(mesId);
-
-    const fileName = await createBranch(mesId, { swipeId });
-    if (!fileName) {
-        return null;
-    }
-
-    // Label the fork point with the branch name, so it also acts as a checkpoint on the source chat.
-    // When forking the currently-selected swipe (swipeId === null, the only path anything calls this
-    // with today), nodeId IS the node createBranch() just labeled with this exact fileName while
-    // minting the branch - re-POSTing the same label to the same node here would be a redundant
-    // round trip for a no-op write. Mirror that already-persisted label into the in-memory chat
-    // array instead, same as createNewBookmark() does with its own label response. Forking an
-    // alternate swipe labels THAT swipe's own node instead (see createBranch()'s targetNodeId), so
-    // nodeId - the currently-viewed row - still needs its own checkpoint label in that case.
-    if (!selected_group && nodeId) {
-        if (swipeId !== null) {
-            const character = getCurrentCharacter();
-            await fetch('/api/chats/label', {
-                method: 'POST',
-                headers: getRequestHeaders(),
-                body: JSON.stringify({
-                    avatar_url: character?.avatar,
-                    node_id: nodeId,
-                    label: fileName,
-                }),
-            });
-        }
-
-        const extra = typeof lastMes.extra === 'object' ? { ...lastMes.extra } : {};
-        extra.bookmark_link = fileName;
-        updateMessage(mesId, { extra });
-    }
-
-    if (selected_group) {
-        await openGroupChat(selected_group, fileName);
-    } else {
-        await openCharacterChat(fileName);
-    }
-
-    return fileName;
+    // The branch's name is the fork point's own label when forking the shown message; forking an alternative names
+    // the shown message too, so it marks the fork on the source chat.
+    return openBranch(await makeBranch(mesId, { swipeId, open: true, alsoLabelShown: !selected_group }));
 }
 
 function registerBookmarksSlashCommands() {

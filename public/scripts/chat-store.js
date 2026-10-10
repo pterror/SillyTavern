@@ -214,7 +214,7 @@ export function updateIn(mesId, path, value) {
 
 
 /** In-flight ensureOpeningRow() calls, keyed by provisional id, so two callers make one row. */
-/** @type {Map<string, Promise<string|null>>} */
+/** @type {Map<string|undefined, Promise<void>>} */
 const _openingRowInFlight = new Map();
 
 // global.d.ts's SwipeInfo (client-side) has no `name`/`is_user` - TreeSwipeInfo (src/message-tree-db.js,
@@ -274,22 +274,16 @@ export function _setCurrentTarget(nodeId, integrity = null, owner = null) {
     }
 }
 
-// The only writer of chat[0].node_id — minting a row in more than one place raced (two rows for
-// one greeting, two ideas of which was the opening).
 /**
- * Gives a greeting shown without a row its row, in one request that also makes it the chat's position: a
- * character's greeting, or a group chat's members' greetings in a row (stored together, under the group's chat
- * name).
- * @param {number} [mesId]
- * @returns {Promise<string|null>}
+ * What a request that stores the greeting(s) shown at chat[mesId] without a row sends (`opening`, and for a group the
+ * metadata ref its new integrity is answered under): a character's greeting, or a group chat's members' greetings in
+ * a row. adoptStored() takes on the answer.
+ * @param {number} mesId
+ * @returns {{ opening: { refs: string[], messages: object[] }, page_metadata?: object } | null} Null when there is no
+ * such greeting to store (or no text: the server refuses an empty greeting).
  */
-export async function ensureOpeningRow(mesId = 0) {
-    const message = _chatAt(mesId);
-    if (!message) return null;
-    if (isStoredNodeId(message.node_id)) return message.node_id;
-    // Not a tree-backed opening (JSONL chat, or never-saved message); nothing to mint.
-    if (!isProvisionalNodeId(message.node_id)) return null;
-
+export function openingForRequest(mesId) {
+    if (!isProvisionalNodeId(_chatAt(mesId)?.node_id)) return null;
     const inGroup = selected_group != null && selected_group !== '';
     const character = getCurrentCharacter();
     if (!inGroup && (character?.avatar == null || character.avatar === '')) return null;
@@ -300,42 +294,61 @@ export async function ensureOpeningRow(mesId = 0) {
         to = 0;
         while (to < chat.length && isProvisionalNodeId(_chatAt(to)?.node_id)) to++;
     }
-    // No text means no greeting to store — the server refuses it, so skip the round trip.
     if (String(_chatAt(from)?.mes ?? '').trim() === '') return null;
 
-    const provisional = /** @type {string} */ (_chatAt(from)?.node_id);
+    /** @type {string[]} */
+    const refs = [];
+    /** @type {object[]} */
+    const messages = [];
+    for (let i = from; i < to; i++) {
+        const shown = _chatAt(i);
+        let ref = storeRefOf(shown);
+        if (ref === undefined) {
+            ref = uuidv4();
+            setStoreRef(shown, ref);
+        }
+        refs.push(ref);
+        messages.push({
+            name: shown.name ?? character?.name,
+            is_user: shown.is_user === true,
+            is_system: shown.is_system === true,
+            send_date: shown.send_date ?? getMessageTimeStamp(),
+            mes: shown.mes,
+            extra: shown.extra ?? {},
+        });
+    }
+    if (!inGroup) return { opening: { refs, messages } };
+    const metadataRef = uuidv4();
+    _openingMetadataRefs.add(metadataRef);
+    return { opening: { refs, messages }, page_metadata: { ref: metadataRef, target: null, set: {}, unset: [] } };
+}
+
+// The only writer of chat[0].node_id — minting a row in more than one place raced (two rows for
+// one greeting, two ideas of which was the opening).
+/**
+ * Gives a greeting shown without a row its row, in one request that also makes it the chat's position.
+ * @param {number} [mesId]
+ * @returns {Promise<string|null>}
+ */
+export async function ensureOpeningRow(mesId = 0) {
+    const message = _chatAt(mesId);
+    if (!message) return null;
+    if (isStoredNodeId(message.node_id)) return message.node_id;
+
+    const inGroup = selected_group != null && selected_group !== '';
+    // A group's greetings are stored together, so one request covers all of them.
+    const provisional = inGroup ? _chatAt(0)?.node_id : message.node_id;
     let pending = _openingRowInFlight.get(provisional);
     if (!pending) {
-        /** @type {string[]} */
-        const refs = [];
-        /** @type {object[]} */
-        const messages = [];
-        for (let i = from; i < to; i++) {
-            const shown = _chatAt(i);
-            let ref = storeRefOf(shown);
-            if (ref === undefined) {
-                ref = uuidv4();
-                setStoreRef(shown, ref);
-            }
-            refs.push(ref);
-            messages.push({
-                name: shown.name ?? character?.name,
-                is_user: shown.is_user === true,
-                is_system: shown.is_system === true,
-                send_date: shown.send_date ?? getMessageTimeStamp(),
-                mes: shown.mes,
-                extra: shown.extra ?? {},
-            });
-        }
-        const metadataRef = uuidv4();
-        if (inGroup) _openingMetadataRefs.add(metadataRef);
+        const request = openingForRequest(mesId);
+        if (!request) return null;
         pending = (async () => {
             const response = await fetch('/api/chats/message/select', {
                 method: 'POST',
                 headers: getRequestHeaders(),
                 body: JSON.stringify(inGroup
-                    ? { group_id: selected_group, opening: { refs, messages }, page_metadata: { ref: metadataRef, target: null, set: {}, unset: [] } }
-                    : { avatar_url: character?.avatar, opening: { refs, messages }, activate: true }),
+                    ? { group_id: selected_group, ...request }
+                    : { avatar_url: getCurrentCharacter()?.avatar, ...request, activate: true }),
             });
             const answer = response.ok ? await response.json().catch(() => null) : null;
             adoptStored(answer?.stored);

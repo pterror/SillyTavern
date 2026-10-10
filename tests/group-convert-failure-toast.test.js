@@ -115,6 +115,12 @@ jest.unstable_mockModule('../public/script.js', () => ({
     ensureOpeningRow: ensureOpeningRowMock,
     switchToNode: switchToNodeMock,
     isStoredNodeId: isStoredNodeIdMock,
+    isProvisionalNodeId: jest.fn((nodeId) => typeof nodeId === 'string' && nodeId.startsWith('card:')),
+    takeChatOpenAnswer: jest.fn((_owner, answer) => answer),
+    chatOpenSendKeys: jest.fn(() => []),
+    adoptStored: jest.fn(),
+    openingForRequest: jest.fn(() => null),
+    deriveChatAddressNode: jest.fn(() => null),
 }));
 
 jest.unstable_mockModule('../public/scripts/RossAscends-mods.js', () => ({
