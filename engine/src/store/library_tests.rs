@@ -841,3 +841,54 @@ fn permute_is_a_bijection_and_unpermute_its_inverse() {
         }
     }
 }
+
+#[test]
+fn a_bulk_load_into_an_empty_library_numbers_every_scope() {
+    for failpoint in [0u8, 3] {
+        let dir = temp_dir("bulk-numbers");
+        let mut lib = Lib {
+            m: BTreeMap::new(),
+            seed: 11,
+        };
+        let s = Store::open_in(&dir, SMALL, pool()).unwrap();
+        let mut l = s.loader().unwrap();
+        l.add(tag_records()).unwrap();
+        for e in 1..=80 {
+            l.add(lib.records_for_new(e)).unwrap();
+        }
+        l.fail_at(failpoint);
+        let done = l.finish();
+        let s = if failpoint == 0 {
+            assert!(done.unwrap().number_entries > 0);
+            s
+        } else {
+            // Stopped between the numberings and the load's run: replay numbers the load again over them.
+            assert!(done.is_err());
+            drop(s);
+            Store::open_in(&dir, SMALL, pool()).unwrap()
+        };
+        check(&s, &lib.m);
+        // The commit path numbers on from the load's.
+        for _ in 0..120 {
+            let r = lib.change();
+            if !r.is_empty() {
+                s.commit_wait(r).unwrap();
+            }
+        }
+        for e in 2000..2005 {
+            s.commit_wait(lib.records_for_new(e)).unwrap();
+        }
+        check(&s, &lib.m);
+        // Characters and groups load only into a library with none.
+        let mut l = s.loader().unwrap();
+        l.add(lib.records_for_new(3000)).unwrap();
+        lib.m.remove(&3000);
+        assert!(matches!(l.finish(), Err(StoreError::Refused(_))));
+        check(&s, &lib.m);
+        drop(s);
+        let s = Store::open_in(&dir, SMALL, pool()).unwrap();
+        check(&s, &lib.m);
+        drop(s);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+}
