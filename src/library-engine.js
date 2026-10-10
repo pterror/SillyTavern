@@ -1,5 +1,5 @@
 import { CARD_COLUMNS, assembleCard, splitCard } from './character-card-storage.js';
-import { cardListValues } from './character-card-reader.js';
+import { LIST_CREATOR_NOTES_PATHS, LIST_EXTRA_PATHS, cardListValues } from './character-card-reader.js';
 import { getCharaCardV2, computeContentIdentityHash } from './character-card-normalize.js';
 import { calculateDataSize } from './character-shallow.js';
 import { parseCreateDateToEpochMs } from './util.js';
@@ -77,6 +77,27 @@ const PAIRS = Object.freeze({ building: 1, on: 2, deleting: 3 });
 const SORT_KEYS = Object.freeze({ name: 0, create_date: 1, date_added: 2, date_last_chat: 3, chat_size: 4, data_size: 5 });
 
 const EXTENSION_PREFIX = 'ext:';
+
+/**
+ * The values a character's list row is made from (the old store's `listRowsFromFieldsSync()` reads the same): its
+ * name, creator, version, lorebook and create date, the few paths and the extension those can be in, its card tags,
+ * and creator notes when the list shows them.
+ * @param {boolean} includeCreatorNotes
+ * @returns {{ fields: (number | string)[], lists: number[] }}
+ */
+export function listRowValues(includeCreatorNotes) {
+    return {
+        fields: [
+            FIELD.name, FIELD.creator, FIELD.character_version, FIELD.world, FIELD.create_date, FIELD.allow_global_styles,
+            ...(includeCreatorNotes ? [FIELD.creator_notes, ...LIST_CREATOR_NOTES_PATHS] : []),
+            `${EXTENSION_PREFIX}world`, ...LIST_EXTRA_PATHS,
+        ],
+        lists: [LIST.tags],
+    };
+}
+
+/** No values: an entity's key, dates, sizes, fav, tags, link and version. */
+const NO_VALUES = Object.freeze({ fields: [], lists: [] });
 
 /**
  * A card's parts as the values and lists the engine stores.
@@ -305,11 +326,12 @@ export class LibraryEngine {
 
     /**
      * @param {(bigint | null)[]} ids
+     * @param {{ fields: (number | string)[], lists: number[] }} [only] Read only these values, and no hashes.
      * @returns {Promise<(StoredEntity | null)[]>}
      */
-    async entities(ids) {
+    async entities(ids, only) {
         const present = ids.filter(id => id !== null);
-        const found = present.length > 0 ? await this.store.libraryEntities(present) : [];
+        const found = present.length > 0 ? await this.store.libraryEntities(present, only) : [];
         const byId = new Map(present.map((id, i) => [id, found[i]]));
         return ids.map(id => (id === null ? null : byId.get(id) ?? null));
     }
@@ -656,14 +678,14 @@ export class LibraryEngine {
      */
     async tagKeys(entities) {
         const tagIds = [...new Set(entities.flatMap(e => e.tags))];
-        const tags = await this.entities(tagIds);
+        const tags = tagIds.length > 0 ? await this.store.libraryKeys(tagIds) : [];
         const keyOf = new Map(tagIds.map((t, i) => [t, tags[i]?.key]));
         return entities.map(e => normalizeTagIds(e.tags.map(t => keyOf.get(t)).filter(k => k !== undefined)));
     }
 
     /**
      * Character list rows (toShallow()'s shape), as the old store's readListRowsSync() gives them.
-     * @param {StoredEntity[]} entities Characters.
+     * @param {StoredEntity[]} entities Characters, read whole or with `listRowValues()`.
      * @param {boolean} includeCreatorNotes
      */
     async listRows(entities, includeCreatorNotes) {
@@ -798,7 +820,9 @@ export class LibraryEngine {
         } else {
             page = await this.store.libraryPage(q);
         }
-        const entities = /** @type {StoredEntity[]} */ ((await this.entities(page.ids)).filter(e => e !== null));
+        // A row reads only what the list draws; a group's object is all its own values.
+        const read = wantRows && !wantHashes ? listRowValues(includeCreatorNotes) : NO_VALUES;
+        const pageEntities = /** @type {StoredEntity[]} */ ((await this.entities(page.ids, read)).filter(e => e !== null));
         const out = {
             total: wantTotal ? page.total : undefined,
             approxTotal: wantTotal ? !page.totalExact : false,
@@ -807,10 +831,13 @@ export class LibraryEngine {
             ...(page.more ? { more: true } : {}),
             ...found,
         };
-        const groups = entities.filter(e => e.type === TYPE.group);
+        const groups = /** @type {StoredEntity[]} */ ((await this.entities(pageEntities.filter(e => e.type === TYPE.group).map(e => e.id))).filter(e => e !== null));
+        const groupOf = new Map(groups.map(g => [g.id, g]));
+        // A group deleted between the two reads is gone, as one deleted before the first.
+        const entities = pageEntities.filter(e => e.type !== TYPE.group || groupOf.has(e.id));
         const groupTags = new Map((await this.tagKeys(groups)).map((t, i) => [groups[i].id, t]));
         if (wantHashes) {
-            const hashRows = entities.map(e => this.hashRow(e, groupTags.get(e.id) ?? []));
+            const hashRows = entities.map(e => this.hashRow(groupOf.get(e.id) ?? e, groupTags.get(e.id) ?? []));
             return { ...out, rows: undefined, hashRows, ...(await hiddenOf(hashRows.length)) };
         }
         if (!wantRows) return { ...out, rows: undefined, hashRows: undefined, ...(await hiddenOf(0)) };
@@ -824,7 +851,7 @@ export class LibraryEngine {
             date_last_chat: 0,
             chat_size: 0,
             item: e.type === TYPE.group
-                ? { ...groupObject(e), fav: e.fav, date_added: e.added, date_last_chat: 0, chat_size: 0, tag_ids: groupTags.get(e.id) ?? [] }
+                ? { ...groupObject(groupOf.get(e.id) ?? e), fav: e.fav, date_added: e.added, date_last_chat: 0, chat_size: 0, tag_ids: groupTags.get(e.id) ?? [] }
                 : listRows.get(e.id) ?? null,
         }));
         return { ...out, hashRows: undefined, rows, ...(await hiddenOf(rows.length)) };

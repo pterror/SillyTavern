@@ -392,7 +392,98 @@ fn filters() -> Vec<Filter> {
     ]
 }
 
+/// A narrowed read (`entities_only`) of `ids` is the whole read less the values it leaves out: every other part
+/// equal, and of the values just the fields asked (one asked of no entity) and the listed lists' items.
+fn narrow_reads_are_whole_reads(s: &Store, ids: &[u64]) {
+    let whole = s.library_entities(ids).unwrap();
+    let mut fields: Vec<FieldRef> = whole
+        .iter()
+        .flatten()
+        .flat_map(|e| e.values.iter().map(|(f, _)| f.clone()))
+        .filter(|f| !matches!(f, FieldRef::Code(c) if *c >= library::ITEM_BASE))
+        .collect();
+    fields.sort_by_key(|f| format!("{f:?}"));
+    fields.dedup();
+    for half in 0..2 {
+        // Every other field, and one nobody holds.
+        let asked: Vec<FieldRef> = fields
+            .iter()
+            .skip(half)
+            .step_by(2)
+            .cloned()
+            .chain([FieldRef::Key(b"none".to_vec())])
+            .collect();
+        let only = library_read::Only {
+            fields: asked.clone(),
+            lists: vec![half as u64, 2],
+        };
+        narrow_is_whole(s, ids, &whole, &asked, &only);
+    }
+}
+
+fn narrow_is_whole(
+    s: &Store,
+    ids: &[u64],
+    whole: &[Option<library_read::Entity>],
+    asked: &[FieldRef],
+    only: &library_read::Only,
+) {
+    let narrow = s.library_entities_with(ids, Some(only)).unwrap();
+    let sorted = |mut v: Vec<String>| {
+        v.sort();
+        v
+    };
+    for (w, n) in whole.iter().zip(&narrow) {
+        let (Some(w), Some(n)) = (w, n) else {
+            assert!(w.is_none() && n.is_none());
+            continue;
+        };
+        assert_eq!(
+            (w.id, w.kind, &w.key, w.added, w.version, w.fav, &w.tags),
+            (n.id, n.kind, &n.key, n.added, n.version, n.fav, &n.tags)
+        );
+        assert_eq!(
+            (
+                w.data_size,
+                w.create_ms,
+                w.tag_order,
+                &w.link,
+                w.entry_index
+            ),
+            (
+                n.data_size,
+                n.create_ms,
+                n.tag_order,
+                &n.link,
+                n.entry_index
+            )
+        );
+        assert!(n.hashes.is_empty());
+        let item_listed = |f: &FieldRef| {
+            matches!(f, FieldRef::Code(c) if *c >= library::ITEM_BASE
+                && only.lists.contains(&((*c - library::ITEM_BASE) % library::LISTS)))
+        };
+        let want_values = w
+            .values
+            .iter()
+            .filter(|(f, _)| asked.contains(f) || item_listed(f))
+            .map(|v| format!("{v:?}"))
+            .collect();
+        let got_values = n.values.iter().map(|v| format!("{v:?}")).collect();
+        assert_eq!(sorted(got_values), sorted(want_values), "entity {}", w.id);
+        let want_items = w
+            .items
+            .iter()
+            .filter(|(l, _, _)| only.lists.contains(l))
+            .map(|i| format!("{i:?}"))
+            .collect();
+        let got_items = n.items.iter().map(|i| format!("{i:?}")).collect();
+        assert_eq!(sorted(got_items), sorted(want_items));
+    }
+}
+
 fn check(s: &Store, m: &BTreeMap<u64, M>) {
+    narrow_reads_are_whole_reads(s, &m.keys().copied().chain([999_999]).collect::<Vec<_>>());
     for f in filters() {
         let mut want: Vec<u64> = m
             .keys()
@@ -670,6 +761,7 @@ fn a_merged_tags_carriers_read_as_the_targets_before_and_after_the_fold() {
     };
     s.commit_wait(vec![rec("tagMerge", vec![Value::Id(a), Value::Id(b)])])
         .unwrap();
+    narrow_reads_are_whole_reads(&s, &[2, 3, 6]);
     // Whether or not the fold has run, b's readers see a's carriers, each once.
     let (got, first) = all_pages(&s, query(f.clone(), byname, 50));
     assert_eq!(got, want);
@@ -709,6 +801,7 @@ fn a_merged_tags_carriers_read_as_the_targets_before_and_after_the_fold() {
     assert_eq!(all_pages(&s, query(fa, byname, 50)).0, want1);
     let ents = s.library_entities(&[6]).unwrap();
     assert_eq!(ents[0].as_ref().unwrap().tags, vec![b]);
+    narrow_reads_are_whole_reads(&s, &[1, 2, 3, 6, a, b]);
     // Reopened, the same; random pages cover every carrier.
     s.close();
     drop(s);
@@ -778,6 +871,7 @@ fn an_entity_key_is_taken_once_and_deleting_frees_everything_it_held() {
         ),
     ])
     .unwrap();
+    narrow_reads_are_whole_reads(&s, &[1, 900]);
     assert!(
         s.commit_wait(vec![create(2, CHARACTER, "a.png", 6)])
             .is_err()

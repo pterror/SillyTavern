@@ -530,7 +530,7 @@ pub(super) fn apply_edit(
 }
 
 /// The full text a head's record holds: a `textValue`'s, or a message's own text in its `messageAppend`.
-fn full_text(rec: &Record) -> &[u8] {
+pub(super) fn full_text(rec: &Record) -> &[u8] {
     match rec.kind.name {
         "messageAppend" => bytes(rec, super::chat::APPEND_TEXT),
         _ => bytes(rec, 2),

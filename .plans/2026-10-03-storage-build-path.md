@@ -734,7 +734,7 @@ read 1,300 blocks, 100 ms); fixed by committing the create last (65a2fc3fc). The
 surrogate into U+FFFD (name `a\ud800b` reads `a���b`); the engine keeps it.
 
 Left (handover, 10-10):
-- List rows read whole cards; a read of only the listed fields would cut a page's log reads.
+- List rows read whole cards: done (5d follow-ups, below in 5d, "List rows read narrow").
 - `/query`'s folder case (`applyFolderCase()`) is route code at the cut; the engine reads its `closed_folders` range.
 - The identity-pair lookup has no fallback for cards without an avatar identity hash (the old store reads the PNG):
   5e records one for every card it converts.
@@ -1802,10 +1802,37 @@ search with closed-quote phrases; chat search; world-info search; the exact sess
 row; the benches. Nothing routes to it: at the cut (5f) `/query` reads `lib.query({ search })` (passing
 `tagMatches` in its JSON and hash answers), `/api/chats/search` `searchSessions`, a chat name `sessionsNamed`, the
 new `/api/worldinfo/search` `books.search`, the pair postings' route and setting are added, and the server runs
-`runPairPostings()` after listening. Left (reported, not built): pair lists driving a phrase's candidates (as the
-measured option 2 did; now pairs only remove text reads); a page's rows read whole cards and every carried tag's
-entity (5a's left item; it is now most of a searched page's time, below); 5b's naming with the suffix scheme and the
-moved-session name clash.
+`runPairPostings()` after listening. Follow-ups (10-11, in progress): list rows read narrow (done, below); pair lists driving a phrase's candidates;
+the 10^6 bulk load under 300 s; session names unique per user; a character book entry's `group` and
+`automationId` searched.
+
+Built, list rows read narrow (10-11, 5d follow-up 1; `library_read::entities_only`, `keys_many`, binding
+`libraryEntities(ids, only?)`; JS `listRowValues()`, `LibraryEngine.query`, `tagKeys`; tests
+`library_tests::narrow_reads_are_whole_reads` in the model workload, the merge and the delete tests,
+`tests/library-engine.test.js` "list rows"):
+- A `/query` page reads each character with only what its row draws, the values the old store's
+  `listRowsFromFieldsSync()` reads: name, creator, version, lorebook, create date, `allow_global_styles`, creator
+  notes when shown, the `ext:world` extension and the `LIST_EXTRA_PATHS` paths, and the card tags' list; no hashes.
+  A hash-mode page reads no values. A group is read whole (its row is its object). Rows are unchanged: the test
+  compares narrow rows with whole ones (creator notes or not) and the page rows with the old `/query`'s.
+- The reads are batched: every entity's fixed entries (record, version, fav, sizes, link, tag order) through one
+  `View::get_many`; each entity's texts and JSON values found by a scan of its own heads (codes below the items, and
+  keyed fields), so a field it lacks costs nothing; item heads together; merges of the page's distinct tags together;
+  then every record pointed at through one `View::records`. A text with edits since its full value is read on its
+  own. Tag keys (`libraryKeys`, the rows' `tag_ids`) read the entity entries together and their records together,
+  no longer whole tag entities.
+
+| page of 50 through `LibraryEngine.query`, 10^5 (median ms) | before | after |
+|---|---|---|
+| one word or prefix, relevance | 39–44 | 6.8–7.6 |
+| the same by name | 42–54 | 7.6–17 |
+| 2–3 words | 42–57 | 9–25 |
+| `tag:dragon` relevance / by name | 41 / 58 | 8.7 / 24 |
+
+What is left of a row's cost is log-block decoding: a record read decodes its 4 KB block from the start, about 4 µs
+for a card's block and about 21 µs for a block of small records (the synthetic cards carry ~12 tags each, 334
+distinct tags on a page; their keys are 2.7 ms of the 7). Of a relevance page at 10^5: rows 3.6 ms, tag keys 2.7 ms,
+the search under 1 ms.
 
 Built, the library's search (10-11; `engine/src/store/library_search.rs`, `library_read::page_with`,
 `search::query::{DocCheck, Matching}`, binding `librarySearch`; JS `src/search-clauses.js`, `LibraryEngine.query({

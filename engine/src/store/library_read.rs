@@ -998,7 +998,22 @@ pub fn tags_now(view: &View, e: u64) -> Result<Vec<u64>, StoreError> {
     Ok(out)
 }
 
+/// The values an entity read is narrowed to (`entity_with`): these fields and these lists' items, and no hashes.
+#[derive(Debug, Clone, Default)]
+pub struct Only {
+    pub fields: Vec<FieldRef>,
+    pub lists: Vec<u64>,
+}
+
 pub fn entity(view: &View, e: u64) -> Result<Option<Entity>, StoreError> {
+    entity_with(view, e, None)
+}
+
+/// An entity as `entity` reads it, or with `only` just the values named there and no hashes (`entities_only`).
+pub fn entity_with(view: &View, e: u64, only: Option<&Only>) -> Result<Option<Entity>, StoreError> {
+    if let Some(only) = only {
+        return Ok(entities_only(view, &[e], only)?.pop().flatten());
+    }
     let Some((kind, k, added)) = library::entity_info(view, e)? else {
         return Ok(None);
     };
@@ -1068,6 +1083,19 @@ pub fn entity(view: &View, e: u64) -> Result<Option<Entity>, StoreError> {
         let position = get_u64(&ik, &mut at).ok_or_else(bad)?;
         out.items.push((list, parse_uvarint(&v)?, position));
     }
+    sizes(view, e, &mut out)?;
+    let hp = key::id(key::HASH, e);
+    for (_, v) in view.scan(&hp, &key::prefix_end(&hp), usize::MAX)? {
+        let (r, _) = view.record(super::kinds::parse_loc(&v)?.pos)?;
+        if let crate::log::format::Value::Bytes(h) = &r.values[2] {
+            out.hashes.push((super::kinds::id(&r, 1), h.clone()));
+        }
+    }
+    Ok(Some(out))
+}
+
+/// An entity's data size and create date.
+fn sizes(view: &View, e: u64, out: &mut Entity) -> Result<(), StoreError> {
     for s in [key::DATA_SIZE, key::CREATE_DATE] {
         let Some(b) = view.get(&key::id(s, e))? else {
             continue;
@@ -1079,14 +1107,295 @@ pub fn entity(view: &View, e: u64) -> Result<Option<Entity>, StoreError> {
             _ => {}
         }
     }
-    let hp = key::id(key::HASH, e);
-    for (_, v) in view.scan(&hp, &key::prefix_end(&hp), usize::MAX)? {
-        let (r, _) = view.record(super::kinds::parse_loc(&v)?.pos)?;
-        if let crate::log::format::Value::Bytes(h) = &r.values[2] {
-            out.hashes.push((super::kinds::id(&r, 1), h.clone()));
+    Ok(())
+}
+
+/// Entities with only the values `only` names (each field's text, else its JSON; each list's items with their
+/// texts) and no hashes, as `entity` reads the rest. Each entity's texts and JSON values are found by a scan of its
+/// own entries (a key per value it holds, no value read), so a field it lacks costs nothing; the point reads of
+/// every entity are read together (`View::get_many`, a run block read once for the keys it holds), and so are the
+/// records they point at (`View::records`, a log block decoded once for the records it holds). A page's rows cost
+/// a few batched reads, not a record read per value.
+pub fn entities_only(
+    view: &View,
+    ids: &[u64],
+    only: &Only,
+) -> Result<Vec<Option<Entity>>, StoreError> {
+    use super::kinds::{full_text, parse_loc, parse_pos, parse_varints};
+    use crate::log::format::Value;
+    // Per entity: its record, version, fav, data size, create date, lorebook link and tag order.
+    const FIXED: [u64; 7] = [
+        key::ENTITY,
+        key::VERSION,
+        key::FAV,
+        key::DATA_SIZE,
+        key::CREATE_DATE,
+        books::LINK,
+        key::TAG_ORDER_REC,
+    ];
+    let per = FIXED.len();
+    let keys: Vec<Vec<u8>> = ids
+        .iter()
+        .flat_map(|&e| FIXED.iter().map(move |&s| key::id(s, e)))
+        .collect();
+    let got = view.get_many(&keys)?;
+    let want_field = |f: &FieldRef| only.fields.iter().position(|w| w == f);
+    // Per entity and asked field: its text head and its JSON value's entry; then its list items, whose text heads
+    // are read together.
+    type Found = Vec<(Option<Vec<u8>>, Option<Vec<u8>>)>;
+    let mut found: Vec<Found> = Vec::with_capacity(ids.len());
+    let mut items: Vec<Vec<(u64, u64, u64)>> = Vec::with_capacity(ids.len());
+    let mut item_keys = Vec::new();
+    let mut carried: Vec<Vec<u64>> = Vec::with_capacity(ids.len());
+    for (n, &e) in ids.iter().enumerate() {
+        let mut fields: Found = vec![(None, None); only.fields.len()];
+        let mut mine = Vec::new();
+        let mut tags = Vec::new();
+        if got[n * per].is_some() {
+            if !only.fields.is_empty() {
+                let tp = key::id(key::TEXT, e);
+                // Codes below the list items' and keys; item texts are read by their lists.
+                let codes_end = key::field(key::TEXT, e, &FieldRef::Code(library::ITEM_BASE));
+                let mut keyed = tp.clone();
+                keyed.push(2);
+                for (from, to) in [(tp.clone(), codes_end), (keyed, key::prefix_end(&tp))] {
+                    for (k, v) in view.scan(&from, &to, usize::MAX)? {
+                        if let Some(i) = want_field(&library::field_after(&k, key::TEXT)?) {
+                            fields[i].0 = Some(v);
+                        }
+                    }
+                }
+                let vp = key::id(key::VALUE, e);
+                for (k, v) in view.scan(&vp, &key::prefix_end(&vp), usize::MAX)? {
+                    if let Some(i) = want_field(&library::field_after(&k, key::VALUE)?) {
+                        fields[i].1 = Some(v);
+                    }
+                }
+            }
+            for &list in &only.lists {
+                let lp = key::ids(key::ITEM, e, list);
+                for (ik, v) in view.scan(&lp, &key::prefix_end(&lp), usize::MAX)? {
+                    let mut at = lp.len();
+                    let position = get_u64(&ik, &mut at)
+                        .ok_or_else(|| StoreError::Entry("an item key doesn't decode".into()))?;
+                    let item = parse_uvarint(&v)?;
+                    item_keys.push(key::field(key::TEXT, e, &library::item_field(list, item)));
+                    mine.push((list, item, position));
+                }
+            }
+            tags = library::tags_of(view, e)?;
         }
+        found.push(fields);
+        items.push(mine);
+        carried.push(tags);
     }
-    Ok(Some(out))
+    let item_heads = view.get_many(&item_keys)?;
+    // Tags as they are now: a merged one (rare) resolved on its own, the merge entries read together.
+    let mut distinct: Vec<u64> = carried.iter().flatten().copied().collect();
+    distinct.sort_unstable();
+    distinct.dedup();
+    let merges = view.get_many(
+        &distinct
+            .iter()
+            .map(|&t| key::id(key::MERGE, t))
+            .collect::<Vec<_>>(),
+    )?;
+    let mut resolved: HashMap<u64, Option<u64>> = HashMap::with_capacity(distinct.len());
+    for (&t, m) in distinct.iter().zip(&merges) {
+        let r = if m.is_some() {
+            library::resolve_tag(view, t)?
+        } else {
+            Some(t)
+        };
+        resolved.insert(t, r);
+    }
+    // Every record pointed at, read together; a text with edits since its full value is read on its own.
+    let mut positions = Vec::new();
+    let want =
+        |b: &Option<Vec<u8>>, positions: &mut Vec<u64>| -> Result<Option<usize>, StoreError> {
+            Ok(match b {
+                Some(b) => {
+                    positions.push(parse_loc(b)?.pos);
+                    Some(positions.len() - 1)
+                }
+                None => None,
+            })
+        };
+    // A text head: Some(Ok(record index)) without edits, Some(Err(())) with edits, None for no text.
+    type TextAt = Option<Result<usize, ()>>;
+    let head = |b: &Option<Vec<u8>>, positions: &mut Vec<u64>| -> Result<TextAt, StoreError> {
+        let Some(b) = b else { return Ok(None) };
+        let [pos, _len, _size, edits, _bytes] = parse_varints::<5>(b)?;
+        if edits > 0 {
+            return Ok(Some(Err(())));
+        }
+        positions.push(pos);
+        Ok(Some(Ok(positions.len() - 1)))
+    };
+    struct Plan {
+        fixed: [Option<usize>; 7],
+        fields: Vec<(TextAt, Option<usize>)>,
+        items: Vec<TextAt>,
+    }
+    let mut plans: Vec<Option<Plan>> = Vec::with_capacity(ids.len());
+    let mut item_at = 0;
+    for n in 0..ids.len() {
+        let row = &got[n * per..(n + 1) * per];
+        if row[0].is_none() {
+            plans.push(None);
+            continue;
+        }
+        let mut fixed = [None; 7];
+        for (i, slot) in fixed.iter_mut().enumerate() {
+            // The version is a position, not a record's place.
+            if i != 1 {
+                *slot = want(&row[i], &mut positions)?;
+            }
+        }
+        let mut fields = Vec::with_capacity(only.fields.len());
+        for (t, v) in &found[n] {
+            let t = head(t, &mut positions)?;
+            let v = if t.is_none() {
+                want(v, &mut positions)?
+            } else {
+                None
+            };
+            fields.push((t, v));
+        }
+        let mut its = Vec::with_capacity(items[n].len());
+        for _ in 0..items[n].len() {
+            its.push(head(&item_heads[item_at], &mut positions)?);
+            item_at += 1;
+        }
+        plans.push(Some(Plan {
+            fixed,
+            fields,
+            items: its,
+        }));
+    }
+    let recs = view.records(&positions)?;
+    let mut books_seen: HashMap<u64, (Vec<u8>, u64)> = HashMap::new();
+    let mut out = Vec::with_capacity(ids.len());
+    for ((n, &e), plan) in ids.iter().enumerate().zip(plans) {
+        let Some(plan) = plan else {
+            out.push(None);
+            continue;
+        };
+        let rec = |i: Option<usize>| i.map(|i| &recs[i]);
+        let info = rec(plan.fixed[0]).expect("an entity's record");
+        let kind = super::kinds::id(info, 1);
+        let added = match info.values[3] {
+            Value::Time(t) => t,
+            _ => unreachable!("checked by Record::new"),
+        };
+        let mut ent = Entity {
+            id: e,
+            kind,
+            key: super::kinds::bytes(info, 2).to_vec(),
+            added,
+            ..Entity::default()
+        };
+        ent.version = got[n * per + 1]
+            .as_deref()
+            .map(parse_pos)
+            .transpose()?
+            .unwrap_or(0);
+        ent.fav = rec(plan.fixed[2]).is_some_and(|r| r.values[1] == Value::Bit(true));
+        for r in [rec(plan.fixed[3]), rec(plan.fixed[4])]
+            .into_iter()
+            .flatten()
+        {
+            match &r.values[1] {
+                Value::UInt(x) => ent.data_size = Some(*x),
+                Value::F64(x) => ent.create_ms = Some(*x),
+                _ => {}
+            }
+        }
+        if let Some(r) = rec(plan.fixed[6]) {
+            ent.tag_order = Some(match r.values.get(1) {
+                Some(Value::F64(v)) => Some(*v),
+                _ => None,
+            });
+        }
+        // As `tags_now`: resolved, deduplicated, in id order.
+        for t in &carried[n] {
+            if let Some(Some(r)) = resolved.get(t)
+                && !ent.tags.contains(r)
+            {
+                ent.tags.push(*r);
+            }
+        }
+        ent.tags.sort_unstable();
+        if kind == library::CHARACTER
+            && let Some(r) = rec(plan.fixed[5])
+            && let Some(Value::Id(b)) = r.values.get(1)
+        {
+            let b = *b;
+            let r = books::resolve(view, b)?;
+            let (k, version) = match books_seen.entry(r) {
+                std::collections::hash_map::Entry::Occupied(o) => o.get().clone(),
+                std::collections::hash_map::Entry::Vacant(v) => {
+                    let k = library::entity_info(view, r)?
+                        .map(|(_, k, _)| k)
+                        .unwrap_or_default();
+                    let version = view
+                        .get(&key::id(key::VERSION, r))?
+                        .map(|b| parse_pos(&b))
+                        .transpose()?
+                        .unwrap_or(0);
+                    v.insert((k, version)).clone()
+                }
+            };
+            ent.link = Some((b, k, version));
+        }
+        if kind == books::ENTRY {
+            ent.entry_index = books::entry_index(view, e)?;
+        }
+        let text = |t: Result<usize, ()>, f: &FieldRef| -> Result<Vec<u8>, StoreError> {
+            match t {
+                Ok(i) => Ok(full_text(&recs[i]).to_vec()),
+                Err(()) => Ok(text_value(view, e, f)?.unwrap_or_default()),
+            }
+        };
+        for (f, (t, v)) in only.fields.iter().zip(plan.fields) {
+            if let Some(t) = t {
+                ent.values.push((f.clone(), Stored::Text(text(t, f)?)));
+            } else if let Some(v) = rec(v) {
+                ent.values
+                    .push((f.clone(), Stored::Json(super::kinds::bytes(v, 2).to_vec())));
+            }
+        }
+        for (&(list, item, position), t) in items[n].iter().zip(plan.items) {
+            ent.items.push((list, item, position));
+            if let Some(t) = t {
+                let f = library::item_field(list, item);
+                let tx = text(t, &f)?;
+                ent.values.push((f, Stored::Text(tx)));
+            }
+        }
+        out.push(Some(ent));
+    }
+    Ok(out)
+}
+
+/// Each entity's type and key, or None: the entity entries read together, then their records.
+pub fn keys_many(view: &View, ids: &[u64]) -> Result<Vec<Option<super::EntityKey>>, StoreError> {
+    let keys: Vec<Vec<u8>> = ids.iter().map(|&e| key::id(key::ENTITY, e)).collect();
+    let got = view.get_many(&keys)?;
+    let mut positions = Vec::new();
+    for b in got.iter().flatten() {
+        positions.push(super::kinds::parse_loc(b)?.pos);
+    }
+    let mut recs = view.records(&positions)?.into_iter();
+    Ok(got
+        .iter()
+        .map(|b| {
+            b.as_ref().map(|_| {
+                let r = recs.next().expect("a record per entry");
+                (super::kinds::id(&r, 1), super::kinds::bytes(&r, 2).to_vec())
+            })
+        })
+        .collect())
 }
 
 /// The entities a hash of kind `which` finds, at most `limit`.
