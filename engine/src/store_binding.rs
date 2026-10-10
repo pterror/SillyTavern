@@ -1254,7 +1254,8 @@ impl Store {
     ///   deleted session's, or null), `nextIds {}`;
     /// - `bookmarks { ids }`, `treeBookmarks { tree, after?, limit }`, `bookmarksAt { message }`;
     /// - `state { tree, at? }`: `[{ variable, field, json }]`;
-    /// - `stats { owners }`: `{ owners, totals }`; `itemization { message }`; `sent { owner, keys }`.
+    /// - `stats { owners }`: `{ owners, totals }`; `itemization { message }`; `sent { owner, keys }`;
+    /// - `itemized { after?, limit }`: `{ ids, more }`, messages with an itemization in id order.
     #[napi(
         ts_args_type = "op: string, args: object",
         ts_return_type = "Promise<any>"
@@ -1409,6 +1410,10 @@ impl Store {
             "itemization" => {
                 let m = req_integer(a, "message")?;
                 Box::new(move |s| s.chat_read(|v| cr::itemization(v, m)).map(JsTree))
+            }
+            "itemized" => {
+                let (after, limit) = (opt_integer(a, "after")?, limit(a)?);
+                Box::new(move |s| s.chat_read(|v| cr::itemized(v, after, limit)).map(JsTree))
             }
             "sent" => {
                 let (owner, keys) = (req_integer(a, "owner")?, byte_list(a, "keys")?);

@@ -1,4 +1,6 @@
 import crypto from 'node:crypto';
+import { promisify } from 'node:util';
+import zlib from 'node:zlib';
 
 import { textEdit } from './text-edit.js';
 import { META, TOP, decodeMessage, encodeMessage, messageRecords } from './chat-codec.js';
@@ -13,6 +15,9 @@ import { ITEMIZED_PROMPT_FLAG } from './message-tree-db.js';
  * integer as a decimal string; a session by its UUID; a user by their handle. Writes to one tree run one after
  * another, so each reads what the one before it stored.
  */
+
+const zstdCompress = promisify(zlib.zstdCompress);
+const zstdDecompress = promisify(zlib.zstdDecompress);
 
 /** `chatRead('ids')` spaces. */
 const SPACE = Object.freeze({ message: 0, session: 1, user: 2 });
@@ -263,7 +268,8 @@ export class ChatEngine {
         for (const s of stored) {
             if (s.speaker !== null) speakerIds.add(s.speaker);
             const over = s.values.find(v => v.field === META.speaker);
-            if (over) speakerIds.add(BigInt(JSON.parse(over.json)));
+            const overId = over ? JSON.parse(over.json) : null;
+            if (overId !== null) speakerIds.add(BigInt(overId));
         }
         const speakers = speakerIds.size ? await this.people.speakers([...speakerIds]) : new Map();
         return stored.map(s => JSON.parse(decodeMessage(s, id => speakers.get(id) ?? null)));
@@ -1068,6 +1074,214 @@ export class ChatEngine {
         }
         if (session !== null) out.integrity = session;
         return out;
+    }
+
+    /**
+     * Of these send keys, the ones the tree has a stored message for (at most the first 100 strings are looked up).
+     * @param {bigint} tree
+     * @param {unknown} keys
+     * @returns {Promise<string[]>}
+     */
+    async storedSendKeys(tree, keys) {
+        const wanted = Array.isArray(keys) ? keys.filter(k => typeof k === 'string' && k !== '').slice(0, 100) : [];
+        if (!wanted.length) return [];
+        const found = await this.store.chatRead('sent', { owner: tree, keys: wanted.map(k => Buffer.from(k, 'utf8')) });
+        return wanted.filter((_, i) => found[i] !== null);
+    }
+
+    /**
+     * Every message of a tree, in batches of up to `size` ids (each a message's replies or a part of them), parents
+     * before their replies.
+     * @param {bigint} tree
+     * @param {number} size
+     * @returns {AsyncGenerator<bigint[]>}
+     */
+    async* treeMessages(tree, size) {
+        /** @type {{ parent: bigint | null, after?: bigint }[]} */
+        const stack = [{ parent: null }];
+        while (stack.length) {
+            const top = stack[stack.length - 1];
+            const page = await this.store.chatRead('children', { tree, ...(top.parent === null ? {} : { parent: top.parent }), ...(top.after === undefined ? {} : { after: top.after }), limit: size });
+            if (page.more) top.after = page.ids[page.ids.length - 1];
+            else stack.pop();
+            if (!page.ids.length) continue;
+            yield page.ids;
+            for (const id of page.ids) stack.push({ parent: id });
+        }
+    }
+
+    /**
+     * A group member's messages in the group's tree become another character's: each message whose
+     * `original_avatar` is `oldAvatar` gets `newAvatar` and `newName`, and `force_avatar`'s path follows.
+     * @param {object} p
+     * @param {bigint} p.tree
+     * @param {string} p.oldAvatar
+     * @param {string} p.newAvatar
+     * @param {string} p.newName
+     * @returns {Promise<number>} How many messages were the member's.
+     */
+    renameMemberInMessages({ tree, oldAvatar, newAvatar, newName }) {
+        return this.serialized(tree, async () => {
+            const oldEncoded = encodeURIComponent(oldAvatar);
+            const newEncoded = encodeURIComponent(newAvatar);
+            let updated = 0;
+            for await (const ids of this.treeMessages(tree, 256)) {
+                const stored = await this.stored(ids);
+                const list = ids.map(id => stored.get(id));
+                const decoded = await this.decoded(list);
+                const records = [];
+                for (const [i, msg] of decoded.entries()) {
+                    if (msg?.original_avatar !== oldAvatar) continue;
+                    const next = { ...msg, name: newName, original_avatar: newAvatar };
+                    if (typeof next.force_avatar === 'string') next.force_avatar = next.force_avatar.replace(oldEncoded, newEncoded);
+                    records.push(...this.editRecords(list[i], next, await this.speakerFor(next, null)));
+                    updated++;
+                }
+                if (records.length) await this.store.commit(records);
+            }
+            return updated;
+        });
+    }
+
+    // ---- prompt itemizations ----
+
+    /**
+     * Stores a message's itemization (zstd-compressed JSON, without `mesId`), replacing the one it had; nothing is
+     * written when it is the one stored.
+     * @param {object} p
+     * @param {string} p.node_id
+     * @param {Record<string, unknown>} p.entry
+     * @returns {Promise<'written' | 'unchanged' | 'no-message'>}
+     */
+    async recordItemization({ node_id, entry }) {
+        const [id] = await this.messageIds([node_id]);
+        const s = id === null ? undefined : (await this.stored([id])).get(id);
+        if (!s) return 'no-message';
+        const stored = { ...entry };
+        delete stored.mesId;
+        const data = await zstdCompress(Buffer.from(JSON.stringify(stored)));
+        return this.serialized(s.owner, async () => {
+            const now = await this.store.chatRead('itemization', { message: id });
+            if (now && Buffer.compare(Buffer.from(now.data), data) === 0) return 'unchanged';
+            if (!(await this.stored([s.id])).has(s.id)) return 'no-message';
+            await this.store.commit([{ kind: 'itemization', message: id, raw: Boolean(stored.rawPrompt), data }]);
+            return 'written';
+        });
+    }
+
+    /**
+     * Changes some fields of a message's itemization; nothing is written when they already have these values.
+     * @param {object} p
+     * @param {string} p.node_id
+     * @param {Record<string, unknown>} p.fields
+     * @returns {Promise<'written' | 'unchanged' | 'no-itemization'>}
+     */
+    async updateItemizationFields({ node_id, fields }) {
+        const [id] = await this.messageIds([node_id]);
+        const s = id === null ? undefined : (await this.stored([id])).get(id);
+        if (!s) return 'no-itemization';
+        return this.serialized(s.owner, async () => {
+            const now = await this.store.chatRead('itemization', { message: id });
+            if (!now) return 'no-itemization';
+            const merged = { ...JSON.parse((await zstdDecompress(now.data)).toString('utf8')), ...fields };
+            delete merged.mesId;
+            const data = await zstdCompress(Buffer.from(JSON.stringify(merged)));
+            if (Buffer.compare(Buffer.from(now.data), data) === 0) return 'unchanged';
+            await this.store.commit([{ kind: 'itemization', message: id, raw: Boolean(merged.rawPrompt), data }]);
+            return 'written';
+        });
+    }
+
+    /**
+     * A message's itemization, and the nearest message above it whose itemization holds the prompt as sent.
+     * @param {object} p
+     * @param {string} p.node_id
+     * @returns {Promise<{ entry: Record<string, unknown>, previous_node_id: string | null } | null>} null when it has
+     * none.
+     */
+    async readItemization({ node_id }) {
+        const [id] = await this.messageIds([node_id]);
+        const s = id === null ? undefined : (await this.stored([id])).get(id);
+        if (!s) return null;
+        const found = await this.store.chatRead('itemization', { message: id });
+        if (!found) return null;
+        const above = (await this.store.chatRead('path', { tree: s.owner, at: id })).slice(0, -1).reverse();
+        const stored = await this.stored(above);
+        const previous = above.find(m => stored.get(m)?.itemized?.raw === true);
+        return {
+            entry: JSON.parse((await zstdDecompress(found.data)).toString('utf8')),
+            previous_node_id: previous === undefined ? null : this.externalId(stored.get(previous)),
+        };
+    }
+
+    /**
+     * The itemizations of a position's messages, each with its message's place on the path.
+     * @param {object} p
+     * @param {bigint} p.tree
+     * @param {string | null} p.at
+     * @returns {Promise<{ index: number, node_id: string, entry: Record<string, unknown> }[] | null>} null when the
+     * message isn't the tree's.
+     */
+    async chatItemizations({ tree, at }) {
+        const ids = await this.pathIds(tree, at);
+        if (!ids) return null;
+        const stored = await this.stored(ids);
+        const out = [];
+        for (const [index, id] of ids.entries()) {
+            if (!stored.get(id)?.itemized) continue;
+            const found = await this.store.chatRead('itemization', { message: id });
+            out.push({ index, node_id: this.externalId(stored.get(id)), entry: JSON.parse((await zstdDecompress(found.data)).toString('utf8')) });
+        }
+        return out;
+    }
+
+    /**
+     * Removes the itemizations of a position's messages.
+     * @param {object} p
+     * @param {bigint} p.tree
+     * @param {string | null} p.at
+     * @returns {Promise<number | null>} How many were removed; null when the message isn't the tree's.
+     */
+    deleteChatItemizations({ tree, at }) {
+        return this.serialized(tree, async () => {
+            const ids = await this.pathIds(tree, at);
+            if (!ids) return null;
+            const stored = await this.stored(ids);
+            const records = ids.filter(id => stored.get(id)?.itemized).map(message => ({ kind: 'itemization', message, raw: false }));
+            if (records.length) await this.store.commit(records);
+            return records.length;
+        });
+    }
+
+    /**
+     * Removes every itemization, in batches of `batch` with `pause` ms between them.
+     * @param {{ batch?: number, pause?: number }} [p]
+     * @returns {Promise<number>} How many were removed.
+     */
+    async clearItemizations({ batch = 256, pause = 10 } = {}) {
+        let removed = 0;
+        for (;;) {
+            const page = await this.store.chatRead('itemized', { limit: batch });
+            if (!page.ids.length) return removed;
+            await this.store.commit(page.ids.map(message => ({ kind: 'itemization', message, raw: false })));
+            removed += page.ids.length;
+            if (!page.more) return removed;
+            await new Promise(resolve => setTimeout(resolve, pause));
+        }
+    }
+
+    /**
+     * The message ids from the tree's root down to a message of the tree (null: none), or null when it isn't one.
+     * @param {bigint} tree
+     * @param {string | null} at
+     * @returns {Promise<bigint[] | null>}
+     */
+    async pathIds(tree, at) {
+        if (at === null) return [];
+        const [id] = await this.messageIds([at]);
+        const s = id === null ? undefined : (await this.stored([id])).get(id);
+        if (!s || s.owner !== tree) return null;
+        return this.store.chatRead('path', { tree, at: id });
     }
 
     // ---- sessions and bookmarks as lists ----

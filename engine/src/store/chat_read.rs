@@ -492,6 +492,31 @@ pub fn itemization(view: &View, m: u64) -> Result<Js, StoreError> {
     })
 }
 
+/// Messages with an itemization, in id order, after `after`, at most `limit`: `{ ids, more }`.
+pub fn itemized(view: &View, after: Option<u64>, limit: usize) -> Result<Js, StoreError> {
+    let p = key::of(chat::ITEMIZED);
+    let start = match after {
+        Some(a) => key::id(chat::ITEMIZED, a + 1),
+        None => p.clone(),
+    };
+    let found = view.scan(&start, &key::prefix_end(&p), limit + 1)?;
+    let more = found.len() > limit;
+    let ids = found
+        .iter()
+        .take(limit)
+        .map(|(k, _)| {
+            let mut at = p.len();
+            get_u64(k, &mut at)
+                .map(Js::Big)
+                .ok_or_else(|| StoreError::Entry("an itemization key doesn't decode".into()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Js::Obj(vec![
+        ("ids", Js::Arr(ids)),
+        ("more", Js::Bool(more)),
+    ]))
+}
+
 /// The message stored for each send key in the owner's tree, or null.
 pub fn sent(view: &View, owner: u64, keys: &[Vec<u8>]) -> Result<Js, StoreError> {
     let mut out = Vec::new();
