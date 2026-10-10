@@ -1797,9 +1797,15 @@ Left (handover, 10-11):
 
 **5d. search wired.**
 
-Status (10-11, handover): in progress. Built: the searched fields; the library's search with closed-quote phrases;
-chat search; world-info search; the exact session lookup; pair postings; the chip row (below). Left, in order: `bench-search-synth.mjs`; measurements. The `/query` route reads
-`lib.query({ search })` at the cut (5f).
+Status (10-11, handover): **built behind the cut**, measured (below). Built: the searched fields; the library's
+search with closed-quote phrases; chat search; world-info search; the exact session lookup; pair postings; the chip
+row; the benches. Nothing routes to it: at the cut (5f) `/query` reads `lib.query({ search })` (passing
+`tagMatches` in its JSON and hash answers), `/api/chats/search` `searchSessions`, a chat name `sessionsNamed`, the
+new `/api/worldinfo/search` `books.search`, the pair postings' route and setting are added, and the server runs
+`runPairPostings()` after listening. Left (reported, not built): pair lists driving a phrase's candidates (as the
+measured option 2 did; now pairs only remove text reads); a page's rows read whole cards and every carried tag's
+entity (5a's left item; it is now most of a searched page's time, below); 5b's naming with the suffix scheme and the
+moved-session name clash.
 
 Built, the library's search (10-11; `engine/src/store/library_search.rs`, `library_read::page_with`,
 `search::query::{DocCheck, Matching}`, binding `librarySearch`; JS `src/search-clauses.js`, `LibraryEngine.query({
@@ -1895,6 +1901,36 @@ Built, pair postings (10-11; `engine/src/search/pairs.rs`, kind `searchPairs { o
 | a pair's entry | its posting slot only | presence and count are all a phrase check reads; counters and bounds would double the entries |
 | reads | a check before the text, candidates still from the words | the measured case (option 2) drove candidates by pairs; this keeps one walk and removes the text reads, the cost at scale |
 | pass order | the length entries' key order | every searched document has one per 16 ids, across every scope |
+
+Measured, 5d (10-11; `engine/examples/search.rs ... synth <cards> --real --bulk` on the app's records: tags and
+characters as entities, card fields by their codes, card tags and greetings as items; then
+`scripts/bench-search-synth.mjs --store <dir>` through `LibraryEngine.query`; NVMe btrfs scratchpad, removed after;
+check = the same queries by a two-pass scan of every card; today = the search plan's 9–57 ms medians at ~380k
+cards, every match scored, its 1 s index lag):
+
+| | 10^5 | 10^6 |
+|---|---|---|
+| bulk load (records, s) | 5.3 M, 53.6 | 51.2 M, 380.5 (stage 4's test codes: 270; the real library also writes orders, numberings, items) |
+| runs | 0.56 GB (search entries 0.27) | 4.85 GB (search entries 2.44) |
+| one word or prefix, engine | 0.10–0.24 ms | 0.10–0.32 ms |
+| 2–3 words, engine | 1.7–4.4 ms | 10–20 ms |
+| closed-quote phrase, engine | 14–16 ms, marked | 14–17 ms, marked |
+| `tag:dragon`, `name:dr` | 0.29, 0.75 ms | 2.3, 6.5 ms |
+| a page of 50 through `LibraryEngine.query`, relevance | 45–55 ms (rows ~45) | 40–65 ms |
+| the same by name | 43–200 ms | 42–88 ms; `"the dragon"` 185 |
+| one-word description edit | 9.47 entries, 195 B | 9.42 entries, 198 B |
+| found by the next query | 200 of 200 (engine), 50 of 50 (JS `writeCard`, 3.4 ms the write) | 200 of 200, 50 of 50 |
+
+Every page the engine marks exact equals the scan at both sizes, every exact total equals it, and the tag matches
+equal a scan of every name. A searched page through the app costs mostly its rows (`libraryEntities` and
+`listRows` read whole cards, ~9 KB of text each here, and each carried tag's entity: ~16 + ~28 ms for 50 rows);
+the search itself is under 1 ms for words and under 20 ms otherwise. A list-ordered search walks the order unless
+its matches are under √(page · N / 512): reading a match whole (type, fav, filter, sort key) costs ~150 µs against
+~0.2 µs a walk step (10^5: `detective` by name 214 → 1.8 ms in the engine).
+
+Pair postings at 10^5 (`--pairs`): the build ran 173 s in slices with 10 ms between; runs 0.56 → 1.9 GB before
+merging (1.4 GB after). `"dark knight"` became exact (1 match, 12 ms; was 16 ms marked); `"the dragon"` stayed
+marked (22~ at 33 ms): candidates still come from both words' postings, so the walk's limit still cuts.
 
 Built, the chip row (10-11; `public/scripts/tag-match-chips.js`, `character-list.js` `showTagMatches`,
 `#character_tag_matches` above the list's pagination; the hash-mode answer's tag matches in
