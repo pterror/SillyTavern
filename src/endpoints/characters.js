@@ -2380,10 +2380,12 @@ const HASH_QUERY_SEARCH_BACKEND_CODES = { tantivy: 1, native: 2, wasm: 3, unavai
  * @param {{seq:number, token:string|null, total:number|undefined, approxTotal:boolean, hashRows:object[], searchBackend?:string, hidden?:number, approxHidden?:boolean, more?:boolean, cursor?:string}} params
  * @returns {Buffer}
  */
-function serializeQueryHashesBinary({ seq, token, total, approxTotal, hashRows, searchBackend, hidden, approxHidden = false, more = false, cursor }) {
+export function serializeQueryHashesBinary({ seq, token, total, approxTotal, hashRows, searchBackend, hidden, approxHidden = false, more = false, cursor, tagMatches, tagMatchesExact = true }) {
     const hasTotal = typeof total === 'number';
     const hasCursor = typeof cursor === 'string' && cursor.length > 0;
     const cursorBytes = hasCursor ? Buffer.byteLength(cursor, 'utf8') : 0;
+    const hasTagMatches = Array.isArray(tagMatches);
+    const tags = hasTagMatches ? tagMatches.slice(0, 255) : [];
     const hasHidden = typeof hidden === 'number';
     const searchBackendCode = HASH_QUERY_SEARCH_BACKEND_CODES[searchBackend] ?? 0;
 
@@ -2396,12 +2398,16 @@ function serializeQueryHashesBinary({ seq, token, total, approxTotal, hashRows, 
     }
     totalSize += 2 + tokenBytes; // trailer
     if (hasCursor) totalSize += 2 + cursorBytes;
+    if (hasTagMatches) {
+        totalSize += 1 + 1;
+        for (const tag of tags) totalSize += 2 + Buffer.byteLength(tag.id, 'utf8') + 2 + Buffer.byteLength(tag.name, 'utf8') + 8;
+    }
     if (hasHidden) totalSize += 1 + 8;
 
     const buf = Buffer.allocUnsafe(totalSize);
     let offset = 0;
 
-    const headerFlags = (hasTotal ? 0b01 : 0) | (hasTotal && approxTotal ? 0b10 : 0) | (more ? 0b100 : 0) | (hasCursor ? 0b1000 : 0);
+    const headerFlags = (hasTotal ? 0b01 : 0) | (hasTotal && approxTotal ? 0b10 : 0) | (more ? 0b100 : 0) | (hasCursor ? 0b1000 : 0) | (hasTagMatches ? 0b10000 : 0);
     buf.writeUInt8(headerFlags, offset); offset += 1;
     buf.writeUInt8(searchBackendCode, offset); offset += 1;
     buf.writeDoubleLE(seq ?? 0, offset); offset += 8;
@@ -2445,6 +2451,18 @@ function serializeQueryHashesBinary({ seq, token, total, approxTotal, hashRows, 
     if (hasCursor) {
         buf.writeUInt16LE(cursorBytes, offset); offset += 2;
         buf.write(cursor, offset, cursorBytes, 'utf8'); offset += cursorBytes;
+    }
+    if (hasTagMatches) {
+        buf.writeUInt8(tagMatchesExact ? 1 : 0, offset); offset += 1;
+        buf.writeUInt8(tags.length, offset); offset += 1;
+        for (const tag of tags) {
+            for (const text of [tag.id, tag.name]) {
+                const n = Buffer.byteLength(text, 'utf8');
+                buf.writeUInt16LE(n, offset); offset += 2;
+                buf.write(text, offset, n, 'utf8'); offset += n;
+            }
+            buf.writeDoubleLE(tag.carriers, offset); offset += 8;
+        }
     }
     if (hasHidden) {
         buf.writeUInt8(approxHidden ? 0b1 : 0, offset); offset += 1;

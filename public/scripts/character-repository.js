@@ -14,6 +14,7 @@ import { charactersStore } from './character-store.js';
 import { isFetchedTagIdsCurrent, tagFetchStamp } from './tag-fetch-stamps.js';
 import { getCachedEntriesByIds, saveCachedCharacters, getCachedGroupEntriesByIds, saveCachedGroups, getCacheUserHandle } from './character-cache.js';
 import { readQueryCache, writeQueryCache, setQueryCacheUser, pinQueryCache } from './query-result-cache.js';
+import { deserializeQueryHashesBinary } from './query-hashes-binary.js';
 
 /**
  * @typedef {import('../script.js').Character} Character
@@ -63,6 +64,9 @@ import { readQueryCache, writeQueryCache, setQueryCacheUser, pinQueryCache } fro
  * when approximate like `total`.
  * @property {string} [cursor] - where a walked search (the server's runSearchWalk()) stopped: present when rows match
  * past this page. `query()` sends it back for the next page.
+ * @property {{ id: string, name: string, carriers: number }[]} [tagMatches] - with a search: up to 5 tags whose names
+ * match it, best first, shown as chips above the list.
+ * @property {boolean} [tagMatchesExact] - every tag was weighed for `tagMatches`.
  */
 
 const DEFAULT_QUERY_WANT = /** @type {const} */ (['rows', 'total']);
@@ -269,93 +273,6 @@ async function postJson(url, body) {
         throw new CharacterQueryError(`${url} failed with ${response.status}${detail ? `: ${detail}` : ''}`, { status: response.status, reason, body: errorBody });
     }
     return response.json();
-}
-
-/**
- * Search-backend enum codes for `/query`'s binary hash-mode response - mirrors HASH_QUERY_SEARCH_BACKEND_CODES
- * server-side (src/endpoints/characters.js). 0 means "absent".
- */
-const HASH_QUERY_SEARCH_BACKEND_NAMES = { 1: 'tantivy', 2: 'native', 3: 'wasm', 4: 'unavailable' };
-
-/**
- * Decodes `/query`'s hash-only mode (`want: ['hashes']`) binary response. See
- * `serializeQueryHashesBinary()` server-side (src/endpoints/characters.js) for the matching encoder and the
- * field-by-field layout spec this just walks with a `DataView`.
- * @param {ArrayBuffer} buffer
- * @returns {{seq: number, token: string|null, total: number|undefined, totalApprox: boolean, hidden: number|undefined, hiddenApprox: boolean, searchBackend: string|undefined, more: boolean, cursor: string|undefined, hashRows: {id:string, isGroup:boolean, version:number|null, favHash:number, tagIdsHash:number, contentHash:number, date_added:number, create_date:number|null, date_last_chat:number, chat_size:number, data_size:number, chat:string|null}[]}}
- */
-function deserializeQueryHashesBinary(buffer) {
-    const view = new DataView(buffer);
-    const decoder = new TextDecoder();
-    let offset = 0;
-
-    const headerFlags = view.getUint8(offset); offset += 1;
-    const hasTotal = (headerFlags & 0b01) !== 0;
-    const totalApprox = (headerFlags & 0b10) !== 0;
-    const more = (headerFlags & 0b100) !== 0;
-    const hasCursor = (headerFlags & 0b1000) !== 0;
-    const searchBackendCode = view.getUint8(offset); offset += 1;
-    const searchBackend = HASH_QUERY_SEARCH_BACKEND_NAMES[searchBackendCode];
-    const seq = view.getFloat64(offset, true); offset += 8;
-    const total = view.getFloat64(offset, true); offset += 8;
-    const rowCount = view.getUint16(offset, true); offset += 2;
-
-    const hashRows = [];
-    for (let i = 0; i < rowCount; i++) {
-        const flags = view.getUint8(offset); offset += 1;
-        const isGroup = (flags & 0b1) !== 0;
-        const hasCreateDate = (flags & 0b10) !== 0;
-
-        const idLen = view.getUint16(offset, true); offset += 2;
-        const id = decoder.decode(new Uint8Array(buffer, offset, idLen)); offset += idLen;
-
-        // A character's cache key is its version; a group's, its three digests.
-        let version = null, favHash = 0, tagIdsHash = 0, contentHash = 0;
-        if (isGroup) {
-            favHash = view.getUint32(offset, true); offset += 4;
-            tagIdsHash = view.getUint32(offset, true); offset += 4;
-            contentHash = view.getUint32(offset, true); offset += 4;
-        } else {
-            version = view.getFloat64(offset, true); offset += 8;
-        }
-
-        const date_added = view.getFloat64(offset, true); offset += 8;
-        const createDateRaw = view.getFloat64(offset, true); offset += 8;
-        const date_last_chat = view.getFloat64(offset, true); offset += 8;
-        const chat_size = view.getFloat64(offset, true); offset += 8;
-        const data_size = view.getFloat64(offset, true); offset += 8;
-
-        const chatLen = view.getUint16(offset, true); offset += 2;
-        const chat = chatLen > 0 ? decoder.decode(new Uint8Array(buffer, offset, chatLen)) : null;
-        offset += chatLen;
-
-        hashRows.push({
-            id, isGroup, version, favHash, tagIdsHash, contentHash,
-            date_added, create_date: hasCreateDate ? createDateRaw : null, date_last_chat, chat_size, data_size, chat,
-        });
-    }
-
-    // Trailer: tokenLen(2) + token(tokenLen, utf8); tokenLen 0 means a null token.
-    const tokenLen = view.getUint16(offset, true); offset += 2;
-    const token = tokenLen > 0 ? decoder.decode(new Uint8Array(buffer, offset, tokenLen)) : null;
-    offset += tokenLen;
-
-    let cursor;
-    if (hasCursor) {
-        const cursorLen = view.getUint16(offset, true); offset += 2;
-        cursor = decoder.decode(new Uint8Array(buffer, offset, cursorLen));
-        offset += cursorLen;
-    }
-
-    // Present only when the request wanted 'hidden': hiddenFlags(1) [bit0=approx] + hidden(8).
-    let hidden;
-    let hiddenApprox = false;
-    if (offset + 9 <= buffer.byteLength) {
-        hiddenApprox = (view.getUint8(offset) & 0b1) !== 0; offset += 1;
-        hidden = view.getFloat64(offset, true); offset += 8;
-    }
-
-    return { seq, token, total: hasTotal ? total : undefined, totalApprox, searchBackend, hashRows, hidden, hiddenApprox, more, cursor };
 }
 
 /**
@@ -708,7 +625,7 @@ export class CharacterRepository {
     async #resultFromKept(kept, includeGroups) {
         /** @type {CharacterQueryResult} */
         const result = { seq: kept.seq, token: kept.token, rows: await this.#resolveHashRows(kept.hashRows, includeGroups) };
-        for (const field of /** @type {const} */ (['total', 'hidden', 'searchBackend', 'cursor'])) {
+        for (const field of /** @type {const} */ (['total', 'hidden', 'searchBackend', 'cursor', 'tagMatches', 'tagMatchesExact'])) {
             if (kept[field] !== undefined) result[field] = kept[field];
         }
         resultHashRows.set(result, kept.hashRows);
@@ -768,7 +685,7 @@ export class CharacterRepository {
             if (hashRows) {
                 /** @type {import('./query-result-cache.js').QueryCacheEntry} */
                 const entry = { hashRows, token: result.token, seq: result.seq };
-                for (const field of /** @type {const} */ (['total', 'hidden', 'searchBackend', 'cursor'])) {
+                for (const field of /** @type {const} */ (['total', 'hidden', 'searchBackend', 'cursor', 'tagMatches', 'tagMatchesExact'])) {
                     if (result[field] !== undefined) entry[field] = result[field];
                 }
                 void writeQueryCache(signature, entry);
@@ -840,6 +757,10 @@ export class CharacterRepository {
         if (decoded.searchBackend !== undefined) result.searchBackend = decoded.searchBackend;
         if (decoded.more) result.more = true;
         if (decoded.cursor !== undefined) result.cursor = decoded.cursor;
+        if (decoded.tagMatches !== undefined) {
+            result.tagMatches = decoded.tagMatches;
+            result.tagMatchesExact = decoded.tagMatchesExact;
+        }
         result.rows = await this.#resolveHashRows(decoded.hashRows, includeGroups);
         resultHashRows.set(result, decoded.hashRows);
         return result;

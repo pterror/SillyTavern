@@ -3224,6 +3224,29 @@ input[type="file"] {
     padding: 4px 5px;
 }
 
+.tag_match_chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    padding: 2px 1px;
+}
+
+.tag_match_chips[hidden] {
+    display: none;
+}
+
+.tag_match_chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    margin: 0;
+    padding: 2px 8px;
+}
+
+.tag_match_chip small {
+    opacity: 0.7;
+}
+
 .bulk_select_checkbox {
     align-self: center;
 }

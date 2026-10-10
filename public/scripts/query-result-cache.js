@@ -18,6 +18,8 @@ const INDEX_KEY = '__index__';
  * @property {number|string} [hidden]
  * @property {string} [searchBackend]
  * @property {string} [cursor]
+ * @property {{ id: string, name: string, carriers: number }[]} [tagMatches]
+ * @property {boolean} [tagMatchesExact]
  */
 
 /** @typedef {Record<string, { size: number, used: number, pins: string[] }>} QueryCacheIndex */
