@@ -714,6 +714,17 @@ small {
     opacity: 0.7;
 }
 
+/* A sent message the server hasn't stored (failed-sends.js). */
+.mes.failed_send {
+    outline: 1px dashed var(--warning);
+    outline-offset: -1px;
+}
+
+.mes.failed_send .failed_send_note {
+    color: var(--warning);
+    font-size: calc(var(--mainFontSize) * 0.85);
+}
+
 .mes.smallSysMes {
     padding: 5px !important;
     font-size: calc(var(--mainFontSize)* 0.9);

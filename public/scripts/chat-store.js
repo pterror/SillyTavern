@@ -73,6 +73,18 @@ function _carryStoreRef(from, to) {
     if (ref !== undefined) _storeRefs.set(to, ref);
 }
 
+/** @type {(ref: string) => void} */
+let _sendStoredListener = () => {};
+
+/**
+ * Sets what is told each time the server says it stored a sent message, by the message's ref (its send key),
+ * whether or not the message is still on screen.
+ * @param {(ref: string) => void} listener
+ */
+export function setSendStoredListener(listener) {
+    _sendStoredListener = listener;
+}
+
 /**
  * Takes on the node ids the server reports for the messages it stored: each `{ ref, node_id }` goes to
  * the message on screen holding that ref, which is then saved as far as the page is concerned.
@@ -82,6 +94,7 @@ export function adoptStored(stored) {
     if (!Array.isArray(stored)) return;
     for (const entry of stored) {
         if (typeof entry?.ref !== 'string' || !isStoredNodeId(entry?.node_id)) continue;
+        _sendStoredListener(entry.ref);
         for (let i = chat.length - 1; i >= 0; i--) {
             if (_storeRefs.get(chat[i]) !== entry.ref) continue;
             if (chat[i].node_id !== entry.node_id) updateMessage(i, { node_id: entry.node_id });
@@ -787,12 +800,14 @@ export async function chatOpEditMany(mesIds, silent = false) {
 }
 
 // An opening with no row yet earns one here, since an append must name the row it attaches to.
-/** @param {number} fromIndex */
 /**
+ * Stores chat[fromIndex..toIndex) after the nearest stored message before them.
  * @param {number} fromIndex
  * @param {number} [toIndex] Exclusive end; the rest of the chat when left out.
+ * @param {{ silent?: boolean }} [options] `silent`: for a caller that reports the failure itself.
+ * @returns {Promise<string[]>} The stored node ids; empty when there is no stored message to follow.
  */
-export async function chatOpAppend(fromIndex, toIndex = chat.length) {
+export async function chatOpAppend(fromIndex, toIndex = chat.length, { silent = false } = {}) {
     /** @type {string|null} */
     let after = null;
     for (let i = fromIndex - 1; i >= 0; i--) {
@@ -802,18 +817,36 @@ export async function chatOpAppend(fromIndex, toIndex = chat.length) {
     }
     if (after == null || after === '') return [];
 
+    return (await chatOpAppendAfter(after, fromIndex, toIndex, { silent })).node_ids;
+}
+
+/**
+ * Stores chat[fromIndex..toIndex) after the stored node `after`, each with its send key when it has one.
+ * @param {string} after
+ * @param {number} fromIndex
+ * @param {number} [toIndex] Exclusive end; the rest of the chat when left out.
+ * @param {{ silent?: boolean }} [options] `silent`: for a caller that reports the failure itself.
+ * @returns {Promise<{ node_ids: string[], already_stored: string[] }>} `already_stored`: the nodes of
+ * messages whose send was stored before, wherever that was.
+ */
+export async function chatOpAppendAfter(after, fromIndex, toIndex = chat.length, { silent = false } = {}) {
+    const messages = chat.slice(fromIndex, toIndex);
+    const sendKeys = messages.map(message => storeRefOf(message) ?? null);
     const result = await _chatOpPost('/api/chats/message/append', {
         after_node_id: after,
-        messages: chat.slice(fromIndex, toIndex),
-    });
+        messages,
+        send_keys: sendKeys,
+    }, silent);
     /** @type {string[]} */
     const ids = result.node_ids ?? [];
     ids.forEach((node_id, offset) => {
         const index = fromIndex + offset;
         if (index < chat.length) updateMessage(index, { node_id });
         _markMessageSaved(index, node_id);
+        const sendKey = sendKeys[offset];
+        if (sendKey != null) _sendStoredListener(sendKey);
     });
-    return ids;
+    return { node_ids: ids, already_stored: result.already_stored ?? [] };
 }
 
 // The one remaining reason `chat[]` can hold a change no chatOp*() has stated: getContext().saveChat()
@@ -968,11 +1001,15 @@ export async function healDirtyMessages() {
 
 // Splices a new message in between two existing ones. Nothing to graft before when mesId lands at
 // the tail (nothing follows it yet) — that's a plain append, so delegate rather than duplicate it.
-/** @param {number} mesId */
-export async function chatOpGraft(mesId) {
+/**
+ * @param {number} mesId
+ * @param {{ silent?: boolean }} [options] `silent`: for a caller that reports the failure itself.
+ * @returns {Promise<string|null>} The stored node id; null when there is nothing stored on either side to place it between.
+ */
+export async function chatOpGraft(mesId, { silent = false } = {}) {
     const msg = _chatAt(mesId);
     if (!msg) return null;
-    if (mesId + 1 >= chat.length) return (await chatOpAppend(mesId))[0] ?? null;
+    if (mesId + 1 >= chat.length) return (await chatOpAppend(mesId, undefined, { silent }))[0] ?? null;
 
     /** @type {string|null} */
     let after = null;
@@ -986,13 +1023,16 @@ export async function chatOpGraft(mesId) {
     const before = _chatAt(mesId + 1)?.node_id;
     if (!isStoredNodeId(before)) return null;
 
+    const sendKey = storeRefOf(msg);
     const result = await _chatOpPost('/api/chats/message/graft', {
         after_node_id: after,
         before_node_id: before,
         content: _messageContent(msg),
-    });
+        send_key: sendKey,
+    }, silent);
     updateMessage(mesId, { node_id: result.node_id });
     _markMessageSaved(mesId, result.node_id);
+    if (sendKey !== undefined) _sendStoredListener(sendKey);
     return result.node_id;
 }
 

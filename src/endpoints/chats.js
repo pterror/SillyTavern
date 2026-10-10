@@ -839,14 +839,18 @@ router.post('/message/edit-batch', validateAvatarUrlMiddleware, async function (
     }
 });
 
-/** Appends one or more messages after a node. */
+/**
+ * Appends one or more messages after a node. `send_keys[i]` is the key the page made when the user sent
+ * `messages[i]`; a send already stored under its key is answered with its node (in `already_stored` too).
+ */
 router.post('/message/append', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const after = String(request.body.after_node_id || '');
         if (!after) return response.status(400).send({ error: 'after_node_id is required' });
 
         const contents = Array.isArray(request.body.messages) ? request.body.messages : [];
-        const result = await appendMessages(request.user.directories, ownerOf(request), after, contents);
+        const sendKeys = Array.isArray(request.body.send_keys) ? request.body.send_keys : [];
+        const result = await appendMessages(request.user.directories, ownerOf(request), after, contents, { sendKeys });
 
         return response.status(result.ok ? 200 : 409).send(result);
     } catch (error) {
@@ -1024,7 +1028,10 @@ router.post('/message/end-path', validateAvatarUrlMiddleware, async function (re
     }
 });
 
-/** Inserts a new node between two adjacent nodes — the mid-chain-insert primitive (a user-typed message spliced into the middle of a chain, not appended at the end). */
+/**
+ * Inserts a new node between two adjacent nodes — the mid-chain-insert primitive (a user-typed message spliced into the
+ * middle of a chain, not appended at the end). A `send_key` already stored is answered with its node and `already_stored`.
+ */
 router.post('/message/graft', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const after = String(request.body.after_node_id || '');
@@ -1032,7 +1039,7 @@ router.post('/message/graft', validateAvatarUrlMiddleware, async function (reque
         const before = String(request.body.before_node_id || '');
         if (!before) return response.status(400).send({ error: 'before_node_id is required' });
 
-        const result = await graftMessage(request.user.directories, ownerOf(request), after, before, request.body.content);
+        const result = await graftMessage(request.user.directories, ownerOf(request), after, before, request.body.content, { sendKey: request.body.send_key });
 
         return response.status(result.ok ? 200 : 409).send(result);
     } catch (error) {

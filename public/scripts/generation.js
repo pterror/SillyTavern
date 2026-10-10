@@ -25,7 +25,8 @@ import { isProvisionalNodeId, isStoredNodeId } from './node-identity.js';
 import { setFloatingPrompt } from './authors-note.js';
 import { getCfgPrompt, getGuidanceScale } from './cfg-scale.js';
 import { oai_settings, openai_messages_count, prepareOpenAIMessages, setOpenAIMessageExamples, setOpenAIMessages } from './chat-completion-settings.js';
-import { clearDraft } from './chat-draft.js';
+import { holdDraft, releaseDraft } from './chat-draft.js';
+import { isFailedSend, keepFailedSend, wasSendStored } from './failed-sends.js';
 import { ensureOpeningRow, healDirtyMessages, updateMessage, storeRefOf, adoptStored } from './chat-store.js';
 import { appendFileContent, hasPendingFileAttachment } from './chats.js';
 import { GENERATION_TYPE_TRIGGERS, inject_ids, SWIPE_DIRECTION, SWIPE_SOURCE } from './constants.js';
@@ -261,6 +262,29 @@ export async function finishStreamedReplyPersistence({ assistantNodeId, itemizat
  */
 
 /**
+ * A user message a generate request asked the server to store, until that request has settled.
+ * @typedef {object} PendingSend
+ * @property {string} key The message's send key.
+ * @property {ChatMessage} message
+ * @property {import('./chat-draft.js').DraftContext|null} context The chat it was sent in.
+ * @property {string|null} draftText The box's text it was sent from, held as the draft until then.
+ */
+
+/**
+ * Settles the sends a generate request carried: one the server stored lets go of its draft; one it didn't is
+ * kept as a failed send (failed-sends.js), which then holds its text instead of the draft.
+ * @param {PendingSend[]} pendingSends
+ */
+function settlePendingSends(pendingSends) {
+    for (const pending of pendingSends) {
+        if (!wasSendStored(pending.key)) {
+            keepFailedSend({ key: pending.key, kind: 'append', context: pending.context, message: pending.message });
+        }
+        if (pending.context && pending.draftText != null) releaseDraft(localStorage, pending.context, pending.draftText);
+    }
+}
+
+/**
  * MARK:Generate()
  * Runs a generation using the current chat context.
  * @param {string} type Generation type
@@ -269,6 +293,24 @@ export async function finishStreamedReplyPersistence({ assistantNodeId, itemizat
  * @returns {Promise<any>} Returns a promise that resolves when the text is done generating.
  */
 export async function Generate(type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, force_avatar, signal, quietImage, quietName, jsonSchema = null, depth = 0 } = {}, dryRun = false) {
+    /** @type {PendingSend[]} */
+    const pendingSends = [];
+    try {
+        return await generateOnce(type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, force_avatar, signal, quietImage, quietName, jsonSchema, depth }, dryRun, pendingSends);
+    } finally {
+        settlePendingSends(pendingSends);
+    }
+}
+
+/**
+ * {@link Generate}, leaving the user message its request carries in `pendingSends` to be settled.
+ * @param {string} type Generation type
+ * @param {GenerateOptions} options Generation options
+ * @param {boolean} dryRun Whether to actually generate a message or just assemble the prompt
+ * @param {PendingSend[]} pendingSends
+ * @returns {Promise<any>}
+ */
+async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, force_avatar, signal, quietImage, quietName, jsonSchema = null, depth = 0 } = {}, dryRun = false, pendingSends = []) {
     console.log('Generate entered');
     setGenerationProgress(0);
     generation_started = new Date();
@@ -312,6 +354,11 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     const unsavedReply = /** @type {ChatMessage | undefined} */ (chat[chat.length - 1]);
     if (!dryRun && type !== 'quiet' && type !== 'impersonate' && typeof unsavedReply?.extra?.reply_not_saved === 'string') {
         toastr.error(t`The last reply isn't saved yet. Use "Save it again" on its notice first, or delete it.`, t`Reply not saved`, { preventDuplicates: true });
+        unblockGeneration(type);
+        return Promise.resolve();
+    }
+    if (!dryRun && type !== 'quiet' && type !== 'impersonate' && isFailedSend(unsavedReply)) {
+        toastr.error(t`Your last message isn't saved yet. Save it or discard it on its notice first.`, t`Message not saved`, { preventDuplicates: true });
         unblockGeneration(type);
         return Promise.resolve();
     }
@@ -390,16 +437,17 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     let lastMessageIndex = chat.length - 1;
 
     let textareaText;
+    /** @type {import('./chat-draft.js').DraftContext|null} */
+    let sentDraftContext = null;
     if (type !== 'regenerate' && type !== 'swipe' && type !== 'quiet' && !isImpersonate && !dryRun && !depth) {
         setSendButtonState(true);
         textareaText = String($('#send_textarea').val());
-        $('#send_textarea').val('')[0].dispatchEvent(new Event('input', { bubbles: true }));
-        // Explicit synchronous clear: a message just sent must not be resurrectable as a draft by a reload
-        // landing before the debounced save observes the now-empty box.
-        const sentDraftContext = getCurrentDraftContext();
+        // The text stays this chat's draft until the server has stored the message it is sent as.
+        sentDraftContext = getCurrentDraftContext();
         if (sentDraftContext) {
-            clearDraft(localStorage, sentDraftContext);
+            holdDraft(localStorage, sentDraftContext, textareaText);
         }
+        $('#send_textarea').val('')[0].dispatchEvent(new Event('input', { bubbles: true }));
     } else {
         textareaText = '';
         if (chat.length && lastMessage?.is_user === true) {
@@ -510,6 +558,18 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     } else if (textareaText == '' && automatic_trigger !== true && !dryRun && [undefined, 'normal'].includes(type) && main_api == 'openai' && oai_settings.send_if_empty.trim().length > 0 && !depth) {
         // Use send_if_empty if set and the user message is empty. Only when sending messages normally
         sentUserMessage = await sendMessageAsUser(oai_settings.send_if_empty.trim(), messageBias, /** @type {number} */ (/** @type {unknown} */ (null)), false, name1, user_avatar, willUseRawAction);
+    }
+
+    const sentKey = storeRefOf(sentUserMessage);
+    if (sentUserMessage && willUseRawAction && sentKey !== undefined) {
+        pendingSends.push({ key: sentKey, message: sentUserMessage, context: sentDraftContext, draftText: textareaText || null });
+    } else if (sentDraftContext && textareaText) {
+        // Stored, kept as a failed send, or not sent as a message at all (a command, a bias-only message).
+        releaseDraft(localStorage, sentDraftContext, textareaText);
+    }
+    if (sentUserMessage && !willUseRawAction && isFailedSend(sentUserMessage)) {
+        unblockGeneration(type);
+        return Promise.resolve();
     }
 
     const canUseTools = ToolManager.isToolCallingSupported();

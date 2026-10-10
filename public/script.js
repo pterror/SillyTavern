@@ -273,7 +273,8 @@ import { initReasoning, parseReasoningInSwipes, PromptReasoning, ReasoningHandle
 import { accountStorage } from './scripts/util/AccountStorage.js';
 import { initWelcomeScreen, openPermanentAssistantChat, openPermanentAssistantCard } from './scripts/welcome-screen.js';
 import { initDataMaid } from './scripts/data-maid.js';
-import { saveDraft, loadDraft } from './scripts/chat-draft.js';
+import { saveDraft, loadDraft, isDraftHeld } from './scripts/chat-draft.js';
+import { initFailedSends, keepFailedSend } from './scripts/failed-sends.js';
 import { clearItemizedPrompts, deleteItemizedPromptForMessage, deleteItemizedPrompts, findItemizedPromptSet, initItemizedPrompts, itemizedParams, itemizedPrompts, loadItemizedPrompts, promptItemize, replaceItemizedPromptText, saveItemizedPrompts, swapItemizedPrompts } from './scripts/itemized-prompts.js';
 import { getSystemMessageByType, initSystemMessages, SAFETY_CHAT, sendSystemMessage, system_message_types, system_messages } from './scripts/system-messages.js';
 import { event_types, eventSource } from './scripts/events.js';
@@ -298,7 +299,7 @@ export { messageFormatting };
 import {
     updateMessage, updateIn, deepFreeze,
     ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpEndPath, chatOpEndPathAtAnchor, chatOpSelect, chatOpGraft, chatOpDegraft, chatOpSwapAdjacent, chatOpDeleteAlternative, chatOpDeleteAlternativeNode,
-    _mergeCardGreetingsIntoOpening, _restoreContinuation, _isBlankSlot, _setCurrentTarget, setStoreRef, adoptStored,
+    _mergeCardGreetingsIntoOpening, _restoreContinuation, _isBlankSlot, _setCurrentTarget, setStoreRef, storeRefOf, adoptStored, chatOpAppendAfter, setSendStoredListener,
 } from './scripts/chat-store.js';
 export {
     updateMessage, updateIn,
@@ -1141,6 +1142,7 @@ export function getCurrentChatId() {
 
 // null means no fully-resolved chat to scope a draft to - callers must skip save/load/clear, not fall back to
 // a shared key that unrelated chats could collide on.
+/** @returns {import('./scripts/chat-draft.js').DraftContext|null} */
 export function getCurrentDraftContext() {
     const selection = getSelectionState();
     const chatId = getCurrentChatId();
@@ -1162,7 +1164,12 @@ export function flushDraftSave() {
     if (!context) {
         return;
     }
-    saveDraft(localStorage, context, String($('#send_textarea').val()));
+    const text = String($('#send_textarea').val());
+    // The box was emptied by a send the server hasn't stored yet: the sent text stays the draft.
+    if (!text.trim() && isDraftHeld(context)) {
+        return;
+    }
+    saveDraft(localStorage, context, text);
 }
 
 const saveDraftDebounced = debounce(flushDraftSave, debounce_timeout.standard);
@@ -1493,6 +1500,12 @@ async function firstLoadInit() {
     await initScrapers();
     initCustomSelectedSamplers();
     initDataMaid();
+    initFailedSends({
+        addOneMessage, deleteMessage, getCurrentDraftContext, redisplayChat, reloadCurrentChat, updateViewMessageIds,
+        switchToNode, chatOpAppendAfter, chatOpGraft, ensureOpeningRow, setSendStoredListener, setStoreRef, storeRefOf,
+        isStoredNodeId, isProvisionalNodeId, t,
+        confirmDiscard: async (text) => await callGenericPopup(text, POPUP_TYPE.CONFIRM, '', { okButton: t`Discard`, cancelButton: t`Keep it` }) === POPUP_RESULT.AFFIRMATIVE,
+    });
     initItemizedPrompts();
     initAccessibility();
     initSwipePicker();
@@ -4982,8 +4995,8 @@ export async function sendMessageAsUser(messageText, messageBias, insertAt = nul
         // `skipTreePersistence: true` from Generate() today (it never passes `insertAt`), kept
         // here purely so the parameter's contract holds for any future/other caller.
         if (!skipTreePersistence) {
-            await chatOpGraft(insertAt).catch(error =>
-                console.error('Could not save the inserted message:', error));
+            const nodeId = await chatOpGraft(insertAt, { silent: true }).catch(() => null);
+            if (!isStoredNodeId(nodeId)) keepFailedSend({ key: storeRefOf(message), kind: 'graft' });
         }
         await eventSource.emit(event_types.MESSAGE_SENT, insertAt);
         await reloadCurrentChat();
@@ -4999,8 +5012,8 @@ export async function sendMessageAsUser(messageText, messageBias, insertAt = nul
         // Awaited, not fire-and-forget: otherwise the next save can miss the isChatSaving window and drop the AI message.
         // See skipTreePersistence's own doc comment above.
         if (!skipTreePersistence) {
-            await chatOpAppend(chat_id).catch(error =>
-                console.error('Could not save the new user message:', error));
+            const nodeIds = await chatOpAppend(chat_id, undefined, { silent: true }).catch(() => []);
+            if (!isStoredNodeId(nodeIds[0])) keepFailedSend({ key: storeRefOf(message), kind: 'append' });
         }
     }
 

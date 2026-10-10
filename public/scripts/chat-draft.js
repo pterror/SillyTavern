@@ -59,3 +59,50 @@ export function clearDraft(storage, context) {
     }
     storage.removeItem(buildDraftStorageKey(context));
 }
+
+// Text sent from the box, kept as the box's draft until the server has stored the message (or the send has
+// failed and its text is kept with the failed send instead), by storage key.
+/** @type {Map<string, string>} */
+const heldDrafts = new Map();
+
+/**
+ * Keeps `text` as this chat's draft while it is being sent: the box being emptied doesn't clear it.
+ * @param {DraftStorage} storage
+ * @param {DraftContext} context
+ * @param {string} text
+ */
+export function holdDraft(storage, context, text) {
+    if (!isCompleteContext(context) || !text || !text.trim()) {
+        return;
+    }
+    const key = buildDraftStorageKey(context);
+    heldDrafts.set(key, text);
+    storage.setItem(key, text);
+}
+
+/**
+ * @param {DraftContext} context
+ * @returns {boolean} Whether a sent text is held as this chat's draft.
+ */
+export function isDraftHeld(context) {
+    return isCompleteContext(context) && heldDrafts.has(buildDraftStorageKey(context));
+}
+
+/**
+ * The sent text no longer needs the draft: clears it, unless the draft has since become something else.
+ * @param {DraftStorage} storage
+ * @param {DraftContext} context
+ * @param {string} text
+ */
+export function releaseDraft(storage, context, text) {
+    if (!isCompleteContext(context)) {
+        return;
+    }
+    const key = buildDraftStorageKey(context);
+    if (heldDrafts.get(key) === text) {
+        heldDrafts.delete(key);
+    }
+    if (storage.getItem(key) === text) {
+        storage.removeItem(key);
+    }
+}

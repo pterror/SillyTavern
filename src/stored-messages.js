@@ -7,7 +7,11 @@ import { appendMessages } from './message-tree-db.js';
 
 /**
  * Stores the user message a raw-action generate request carries, as a child of `anchorNodeId`, and
- * records it under the page's `ref` for this request's answer (see storedMessagesOf()).
+ * records it under the page's `ref` for this request's answer (see storedMessagesOf()). The ref is the
+ * send's key: a send already stored under it is answered with that node, not stored again.
+ *
+ * When it can't be stored, answers the request with an error itself and returns null: the caller then
+ * returns without generating, so nothing is generated onto a message the chat doesn't have.
  * @param {import('express').Response} response The generate request's response.
  * @param {object} params
  * @param {import('./users.js').UserDirectoryList} params.directories
@@ -15,15 +19,17 @@ import { appendMessages } from './message-tree-db.js';
  * @param {string} params.anchorNodeId
  * @param {object} params.message The message content to store.
  * @param {unknown} params.ref The request's `user_message_ref`; nothing is recorded unless it is a non-empty string.
- * @returns {Promise<string|null>} The stored message's node id, or null when the write failed.
+ * @returns {Promise<string|null>} The stored message's node id; null when the request has been answered with the failure.
  */
 export async function storeUserMessage(response, { directories, ownerId, anchorNodeId, message, ref }) {
-    const appendResult = await appendMessages(directories, ownerId, anchorNodeId, [message]);
-    if (!appendResult.ok) {
-        console.error('Failed to persist user message onto the tree:', appendResult.reason);
+    const appendResult = await appendMessages(directories, ownerId, anchorNodeId, [message], { sendKeys: [ref] });
+    const nodeId = appendResult.ok ? appendResult.node_ids?.[appendResult.node_ids.length - 1] ?? null : null;
+    if (!nodeId) {
+        const reason = appendResult.reason ?? 'no node was stored';
+        console.error('Could not store the user\'s message:', reason);
+        response.status(500).send({ error: { message: `Your message couldn't be saved (${reason}), so nothing was generated.` }, user_message_not_saved: true });
         return null;
     }
-    const nodeId = appendResult.node_ids?.[appendResult.node_ids.length - 1] ?? null;
     if (nodeId && typeof ref === 'string' && ref !== '') {
         response.locals.storedMessages ??= [];
         response.locals.storedMessages.push({ ref, node_id: nodeId });

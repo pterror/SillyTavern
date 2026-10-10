@@ -21,8 +21,9 @@ setConfigFilePath(path.join(__dirname, '..', '..', '..', 'config.yaml'));
 // and `POST /api/generation/store/:id` stores it from the text the server kept.
 
 const realTree = await import('../../message-tree-db.js');
-// Set to fail the next reply store (an append of a non-user message); the user's own message still stores.
-const failures = { reply: 0 };
+// `reply`: fail the next reply store (an append of a non-user message); the user's own message still stores.
+// `user`: fail the next store of the user's message.
+const failures = { reply: 0, user: 0 };
 mock.module('../../message-tree-db.js', {
     namedExports: {
         ...realTree,
@@ -30,6 +31,10 @@ mock.module('../../message-tree-db.js', {
             if (failures.reply > 0 && Array.isArray(messages) && messages.some(m => m?.is_user === false)) {
                 failures.reply--;
                 return { ok: false, reason: 'disk is full' };
+            }
+            if (failures.user > 0 && Array.isArray(messages) && messages.some(m => m?.is_user === true)) {
+                failures.user--;
+                return { ok: false, reason: 'disk is full', node_ids: [] };
             }
             return realTree.appendMessages(directories, ownerId, anchorNodeId, messages, ...rest);
         },
@@ -98,6 +103,7 @@ function chatSettings(url) {
 
 /** A fake backend answering every generation with `reply`, streamed in three pieces or as one JSON body. */
 async function startBackend({ reply, format, json }) {
+    const hits = { generations: 0 };
     const server = http.createServer((req, res) => {
         let body = '';
         req.on('data', chunk => { body += chunk; });
@@ -111,6 +117,7 @@ async function startBackend({ reply, format, json }) {
             if (route === '/tokenize') return send({ tokens: String(JSON.parse(body || '{}').content ?? '').split(/(?=\s)/).filter(Boolean).map((_, i) => i) });
             if (route.endsWith('/models')) return send({ data: [] });
             const parsed = JSON.parse(body || '{}');
+            hits.generations++;
             if (!parsed.stream) return send(json(reply));
             res.writeHead(200, { 'Content-Type': 'text/event-stream' });
             const pieces = [reply.slice(0, 4), reply.slice(4, 9), reply.slice(9)];
@@ -119,7 +126,7 @@ async function startBackend({ reply, format, json }) {
         });
     });
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-    return { server, url: `http://127.0.0.1:${server.address().port}` };
+    return { server, hits, url: `http://127.0.0.1:${server.address().port}` };
 }
 
 const genericFormat = (text, last) => last ? 'data: [DONE]\n\n' : `data: ${JSON.stringify({ choices: [{ text }] })}\n\n`;
@@ -166,14 +173,18 @@ async function storeCase({ label, router, settings, format, json, stream, avatar
     writeAllSettings(directories, settings(backend.url));
     const { server, base } = await startApp(router);
 
+    async function post(branch, { id = randomUUID(), ref = randomUUID(), nodeId = branch.branch.leaf_id } = {}) {
+        return fetch(`${base}/generate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Generation-Id': id },
+            body: JSON.stringify({ owner_id: avatar, character_avatar: avatar, node_id: nodeId, type: 'normal', user_message: 'When do we leave?', user_message_ref: ref, stream }),
+        });
+    }
+
     async function generate(branchName) {
         const branch = await newBranch(avatar, branchName);
         const id = randomUUID();
-        const res = await fetch(`${base}/generate`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-Generation-Id': id },
-            body: JSON.stringify({ owner_id: avatar, character_avatar: avatar, node_id: branch.branch.leaf_id, type: 'normal', user_message: 'When do we leave?', stream }),
-        });
+        const res = await post(branch, { id });
         assert.equal(res.status, 200, `${label}: generation answered`);
         let text = '';
         let nodeId = null;
@@ -261,6 +272,41 @@ async function storeCase({ label, router, settings, format, json, stream, avatar
             assert.equal(last.node_id, stored.node_id);
             // A retry keeps the times of the generation, not of the retry.
             assertGenerationTimes(last, before, generatedBy);
+        }
+
+        // The user's message can't be stored: the request says so and generates nothing.
+        {
+            const branch = await newBranch(avatar, `user-fail-${label}`);
+            const generationsBefore = backend.hits.generations;
+            failures.user = 1;
+            const res = await post(branch);
+            failures.user = 0;
+            assert.equal(res.status, 500, `${label}: the request fails`);
+            const body = await res.json();
+            assert.equal(body.user_message_not_saved, true, `${label}: the answer says the message wasn't saved`);
+            assert.match(body.error.message, /couldn't be saved \(disk is full\)/, `${label}: and why`);
+            assert.equal(body.stored, undefined, `${label}: nothing is reported stored`);
+            assert.equal(backend.hits.generations, generationsBefore, `${label}: nothing was generated`);
+            const after = await loadBranch(directories, avatar, `user-fail-${label}`);
+            assert.equal(after.messages.length, branch.messages.length, `${label}: nothing was stored`);
+        }
+
+        // A send repeated with its key is stored once, even when the repeat names another place: it lands
+        // on the stored message.
+        {
+            const branch = await newBranch(avatar, `repeat-${label}`);
+            const ref = randomUUID();
+            const first = await post(branch, { ref });
+            await first.arrayBuffer();
+            const afterFirst = await loadBranch(directories, avatar, `repeat-${label}`);
+            const userNode = afterFirst.messages[branch.messages.length].node_id;
+            const replyNode = afterFirst.messages[afterFirst.messages.length - 1].node_id;
+            const second = await post(branch, { ref, nodeId: replyNode });
+            await second.arrayBuffer();
+            const db = await realTree.getDbHandle(directories);
+            assert.equal(db.get('SELECT parent_id FROM messages WHERE id = @id', { id: userNode }).parent_id, branch.branch.leaf_id, `${label}: the stored message stays where it was`);
+            const underReply = db.get('SELECT COUNT(*) AS n FROM messages WHERE parent_id = @id AND content LIKE @text', { id: replyNode, text: '%When do we leave?%' });
+            assert.equal(underReply.n, 0, `${label}: the repeat stored nothing new`);
         }
     } finally {
         backend.server.close();

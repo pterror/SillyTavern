@@ -205,6 +205,65 @@ describe('message deduplication', () => {
     });
 });
 
+describe('send keys', () => {
+    /** @param {{ root: string }} directories */
+    async function chain(directories) {
+        await treeDb.saveChatToTree(directories, 'owner', 'chat', [{ chat_metadata: {} },
+            makeMessage({ mes: 'm0', sendDate: 'd0' }), makeMessage({ mes: 'm1', sendDate: 'd1' })], false);
+        return (await treeDb.loadBranch(directories, 'owner', 'chat')).messages.map(m => m.node_id);
+    }
+
+    test('a send repeated under its key is answered with the stored message, even after another parent', async () => {
+        const directories = makeDirectories();
+        const [n0, n1] = await chain(directories);
+
+        const first = await treeDb.appendMessages(directories, 'owner', n1, [makeMessage({ mes: 'hi', sendDate: 'a', isUser: true })], { sendKeys: ['k1'] });
+        expect(first.already_stored).toBeUndefined();
+        // Same key, different content (a later send_date) and a different parent: still the one stored message.
+        const repeat = await treeDb.appendMessages(directories, 'owner', n0, [makeMessage({ mes: 'hi', sendDate: 'b', isUser: true })], { sendKeys: ['k1'] });
+        expect(repeat).toEqual({ ok: true, node_ids: first.node_ids, already_stored: first.node_ids });
+        expect((await treeDb.getAlternatives(directories, n1)).total).toBe(1);
+
+        // Without a key the same text after another parent is a new message.
+        const unkeyed = await treeDb.appendMessages(directories, 'owner', n0, [makeMessage({ mes: 'hi', sendDate: 'c', isUser: true })]);
+        expect(unkeyed.node_ids[0]).not.toBe(first.node_ids[0]);
+    });
+
+    test('a key stored for another owner is not this owner\'s send', async () => {
+        const directories = makeDirectories();
+        const [, n1] = await chain(directories);
+        await treeDb.saveChatToTree(directories, 'other', 'chat', [{ chat_metadata: {} }, makeMessage({ mes: 'x', sendDate: 'd0' })], false);
+        const otherLeaf = (await treeDb.loadBranch(directories, 'other', 'chat')).messages[0].node_id;
+        await treeDb.appendMessages(directories, 'other', otherLeaf, [makeMessage({ mes: 'hi', sendDate: 'a', isUser: true })], { sendKeys: ['k2'] });
+
+        const mine = await treeDb.appendMessages(directories, 'owner', n1, [makeMessage({ mes: 'hi', sendDate: 'a', isUser: true })], { sendKeys: ['k2'] });
+        expect(mine.already_stored).toBeUndefined();
+        const db = await treeDb.getDbHandle(directories);
+        expect(db.get('SELECT owner_id FROM messages WHERE id = @id', { id: mine.node_ids[0] }).owner_id).toBe('owner');
+    });
+
+    test('a graft repeated under its key writes nothing and answers the stored message', async () => {
+        const directories = makeDirectories();
+        const [n0, n1] = await chain(directories);
+        const first = await treeDb.graftMessage(directories, 'owner', n0, n1, makeMessage({ mes: 'between', sendDate: 'a', isUser: true }), { sendKey: 'k3' });
+        expect(first.ok).toBe(true);
+        const repeat = await treeDb.graftMessage(directories, 'owner', n0, n1, makeMessage({ mes: 'between', sendDate: 'b', isUser: true }), { sendKey: 'k3' });
+        expect(repeat).toEqual({ ok: true, node_id: first.node_id, already_stored: true });
+        expect((await treeDb.loadBranch(directories, 'owner', 'chat')).messages.map(m => m.mes)).toEqual(['m0', 'between', 'm1']);
+    });
+
+    test('deleting a message removes its key', async () => {
+        const directories = makeDirectories();
+        const [, n1] = await chain(directories);
+        const kept = await treeDb.appendMessages(directories, 'owner', n1, [makeMessage({ mes: 'kept', sendDate: 'a' })]);
+        const alt = await treeDb.addAlternatives(directories, 'owner', kept.node_ids[0], [makeMessage({ mes: 'alt', sendDate: 'b', isUser: true })]);
+        const db = await treeDb.getDbHandle(directories);
+        db.run('INSERT INTO send_keys (send_key, node_id) VALUES (@k, @id)', { k: 'k4', id: alt.node_ids[0] });
+        expect(await treeDb.deleteAlternative(directories, 'owner', alt.node_ids[0])).toEqual({ ok: true });
+        expect(db.get('SELECT node_id FROM send_keys WHERE send_key = @k', { k: 'k4' })).toBeFalsy();
+    });
+});
+
 describe('labeling nodes', () => {
     test('labelNode() sets a label that loadBranch() surfaces as extra.bookmark_link', async () => {
         const directories = makeDirectories();

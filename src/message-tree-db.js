@@ -136,7 +136,42 @@ const SCHEMA_SQL = `
         text_hash  TEXT NOT NULL,
         card_index INTEGER NOT NULL
     );
+
+    -- The key the page made when the user sent a message (a UUID, reused on every retry of that send), and the node
+    -- the send was stored at. A repeat of a stored send is answered with that node instead of storing it again.
+    -- Removed with its node (deleteNodesSync()).
+    CREATE TABLE IF NOT EXISTS send_keys (
+        send_key TEXT PRIMARY KEY,
+        node_id  TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_send_keys_node ON send_keys(node_id);
 `;
+
+/**
+ * The node a send with this key was already stored at for this owner, or null.
+ * @param {Pick<import('./endpoints/sqlite-engine.js').SqliteEngineHandle, 'get'>} db
+ * @param {string} ownerId
+ * @param {unknown} sendKey
+ * @returns {string|null}
+ */
+function storedSendSync(db, ownerId, sendKey) {
+    if (typeof sendKey !== 'string' || sendKey === '') return null;
+    const row = /** @type {{ id: string } | undefined} */ (db.get(
+        `SELECT m.id FROM send_keys k JOIN messages m ON m.id = k.node_id
+         WHERE k.send_key = @sendKey AND m.owner_id = @ownerId`, { sendKey, ownerId }));
+    return row?.id ?? null;
+}
+
+/**
+ * Records that the send with this key was stored at `nodeId`.
+ * @param {Pick<import('./endpoints/sqlite-engine.js').SqliteEngineHandle, 'run'>} db
+ * @param {unknown} sendKey
+ * @param {string} nodeId
+ */
+function recordSendSync(db, sendKey, nodeId) {
+    if (typeof sendKey !== 'string' || sendKey === '') return;
+    db.run('INSERT OR REPLACE INTO send_keys (send_key, node_id) VALUES (@sendKey, @nodeId)', { sendKey, nodeId });
+}
 
 /**
  * @param {string} text
@@ -2058,13 +2093,17 @@ function editMessageSync(db, ownerId, nodeId, content, stats) {
 
 /**
  * Appends messages after a node, chaining each onto the last and pointing the fork at them.
+ * A message whose send key was already stored for this owner is not stored again: its stored node is
+ * answered in its place (listed in `already_stored`), nothing is written for it, and the messages after
+ * it chain onto that node.
  * @param {Directories} directories
  * @param {string} ownerId
  * @param {string} afterNodeId
  * @param {TreeChatMessage[]} contents
- * @returns {Promise<{ ok: boolean, reason?: string, node_ids: string[] }>}
+ * @param {{ sendKeys?: unknown[] }} [options] `sendKeys[i]`: the key the page made when the user sent `contents[i]`.
+ * @returns {Promise<{ ok: boolean, reason?: string, node_ids: string[], already_stored?: string[] }>}
  */
-export async function appendMessages(directories, ownerId, afterNodeId, contents) {
+export async function appendMessages(directories, ownerId, afterNodeId, contents, { sendKeys = [] } = {}) {
     const entry = await getEntry(directories);
     if (!entry) return { ok: false, reason: 'unavailable', node_ids: [] };
     if (!Array.isArray(contents) || contents.length === 0) return { ok: true, node_ids: [] };
@@ -2076,13 +2115,24 @@ export async function appendMessages(directories, ownerId, afterNodeId, contents
     const now = Date.now();
     /** @type {string[]} */
     const nodeIds = [];
+    /** @type {string[]} */
+    const alreadyStored = [];
     const stats = newWriteStats();
     entry.db.transaction(() => {
         // Reset here: a transaction that hits busy is rolled back and rerun.
         Object.assign(stats, newWriteStats());
         nodeIds.length = 0;
+        alreadyStored.length = 0;
         let cursor = afterNodeId;
-        for (const c of contents) {
+        for (const [index, c] of contents.entries()) {
+            const sendKey = Array.isArray(sendKeys) ? sendKeys[index] : undefined;
+            const stored = storedSendSync(entry.db, ownerId, sendKey);
+            if (stored !== null) {
+                nodeIds.push(stored);
+                alreadyStored.push(stored);
+                cursor = stored;
+                continue;
+            }
             const body = sanitizeForStorage(c);
             // A retry/double-send that matches an existing sibling lands on that row instead of duplicating.
             const twin = /** @type {Pick<MessageRow, 'id'> | undefined} */ (entry.db.get(
@@ -2095,13 +2145,16 @@ export async function appendMessages(directories, ownerId, afterNodeId, contents
                 });
                 countInsert(stats, body, now + nodeIds.length);
             }
+            recordSendSync(entry.db, sendKey, id);
             setDefaultChildSync(entry.db, cursor, id);
             nodeIds.push(id);
             cursor = id;
         }
     });
     await reportOwnerWrite(directories, entry.db, ownerId, stats);
-    return { ok: true, node_ids: nodeIds };
+    return alreadyStored.length
+        ? { ok: true, node_ids: nodeIds, already_stored: [...alreadyStored] }
+        : { ok: true, node_ids: nodeIds };
 }
 
 /**
@@ -2117,12 +2170,17 @@ export async function appendMessages(directories, ownerId, afterNodeId, contents
  * @param {string} ownerId
  * @param {string} afterNodeId
  * @param {string} beforeNodeId
+ * A send whose key was already stored for this owner is answered with its stored node, and nothing is written.
  * @param {TreeChatMessage} content
- * @returns {Promise<{ ok: boolean, reason?: string, node_id?: string }>}
+ * @param {{ sendKey?: unknown }} [options] `sendKey`: the key the page made when the user sent `content`.
+ * @returns {Promise<{ ok: boolean, reason?: string, node_id?: string, already_stored?: boolean }>}
  */
-export async function graftMessage(directories, ownerId, afterNodeId, beforeNodeId, content) {
+export async function graftMessage(directories, ownerId, afterNodeId, beforeNodeId, content, { sendKey } = {}) {
     const entry = await getEntry(directories);
     if (!entry) return { ok: false, reason: 'unavailable' };
+
+    const stored = storedSendSync(entry.db, ownerId, sendKey);
+    if (stored !== null) return { ok: true, node_id: stored, already_stored: true };
 
     const after = /** @type {Pick<MessageRow, 'id' | 'default_child_id'> | undefined} */ (entry.db.get(
         'SELECT id, default_child_id FROM messages WHERE id = @id AND owner_id = @ownerId', { id: afterNodeId, ownerId }));
@@ -2154,6 +2212,7 @@ export async function graftMessage(directories, ownerId, afterNodeId, beforeNode
             insertMessageSync(entry.db, { id: newNodeId, parentId: afterNodeId, ownerId, content: body, createdAt: now });
             countInsert(stats, body, now);
         }
+        recordSendSync(entry.db, sendKey, newNodeId);
 
         // Reparent beforeNodeId onto the new node — identity_hash bakes in parent_id, so it must be
         // recomputed, not just the row's parent pointer.
@@ -3088,7 +3147,9 @@ function deleteNodesSync(db, ownerId, ids) {
     const rows = Array.from(/** @type {Iterable<import('./message-stats.js').StatsMessageRow>} */ (db.iterate(
         `SELECT id, parent_id, owner_id, content FROM messages WHERE ${where}`, { ownerId, ...params })));
     if (rows.length === 0) return 0;
-    return deleteMessagesCountedSync(db, rows, () => db.run(`DELETE FROM messages WHERE ${where}`, { ownerId, ...params }).changes);
+    const deleted = deleteMessagesCountedSync(db, rows, () => db.run(`DELETE FROM messages WHERE ${where}`, { ownerId, ...params }).changes);
+    db.run(`DELETE FROM send_keys WHERE node_id IN (${ids.map((_, i) => `@id${i}`).join(', ')})`, params);
+    return deleted;
 }
 
 export {

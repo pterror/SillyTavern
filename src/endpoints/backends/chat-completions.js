@@ -4212,9 +4212,8 @@ router.post('/generate', withGenerationStop(async function (request, response) {
                     directories, ownerId, anchorNodeId: built.anchorNodeId, ref: request.body.user_message_ref,
                     message: userMessage,
                 });
-                if (userNodeId) {
-                    replyAnchorNodeId = userNodeId;
-                }
+                if (!userNodeId) return;
+                replyAnchorNodeId = userNodeId;
             }
 
             // Stash what's needed to persist the ASSISTANT's reply once a (streaming or
