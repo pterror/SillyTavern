@@ -17,8 +17,23 @@ use crate::search::{self, Scope};
 
 use super::sessions::{self, Fork};
 
-/// The message's text, the field upstream calls `mes`.
+/// A message's known top-level keys as field codes (1–63; `extra`'s known keys take 64 on): its text (`mes`),
+/// the fixed booleans and `name` when they hold another value than the flags can say, `send_date`, `extra` when not
+/// an object, and the generation times. `SEND_AT`, `GEN_STARTED_AT` and `GEN_FINISHED_AT` hold, as `messageTime`,
+/// the time the writer read from a JSON `send_date` or generation time the engine can't read as `Date.parse()`
+/// does.
 pub const MES: u64 = 1;
+pub const IS_USER: u64 = 2;
+pub const IS_SYSTEM: u64 = 3;
+pub const IS_NAME: u64 = 4;
+pub const NAME: u64 = 5;
+pub const SEND_DATE: u64 = 6;
+pub const EXTRA: u64 = 7;
+pub const GEN_STARTED: u64 = 8;
+pub const GEN_FINISHED: u64 = 9;
+pub const SEND_AT: u64 = 20;
+pub const GEN_STARTED_AT: u64 = 21;
+pub const GEN_FINISHED_AT: u64 = 22;
 
 /// `messageAppend`'s slots.
 pub const APPEND_ID: usize = 0;
@@ -40,6 +55,7 @@ pub const APPEND_SEND_KEY: usize = 10;
 /// - bits 9–10 `name`: 0 a string (the append's `name`, else the speaker's), 1 absent, 2 another value;
 /// - bits 11–12 `is_name`: 0 absent, 1 true, 2 false, 3 another value;
 /// - bit 13: `original_avatar` is the speaker's key; bit 14: `force_avatar` is the speaker's thumbnail URL.
+pub const FLAG_SEND_DATE_SHIFT: u32 = 4;
 pub const FLAG_MES_SHIFT: u32 = 5;
 
 /// A message's text is the append's own (its `mes` is a string).

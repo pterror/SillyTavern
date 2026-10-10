@@ -1194,11 +1194,27 @@ impl Pointer for TestSet {
     }
 }
 
+static COUNTED_TEXT_VALUE: super::stats::Counted = super::stats::Counted(&TextValue);
+static COUNTED_TEXT_EDIT: super::stats::Counted = super::stats::Counted(&TextEdit);
+static COUNTED_JSON: super::stats::Counted = super::stats::Counted(&library::JsonValue);
+static COUNTED_DELETE: super::stats::Counted = super::stats::Counted(&library::ValueDelete);
+static COUNTED_APPEND: super::stats::Counted = super::stats::Counted(&super::chat::MessageAppend);
+static COUNTED_MESSAGE_DELETE: super::stats::Counted =
+    super::stats::Counted(&super::chat::MessageDelete);
+static COUNTED_PARENT: super::stats::Counted = super::stats::Counted(&super::chat::MessageParent);
+static COUNTED_TIME: super::stats::Counted = super::stats::Counted(&super::chat::MessageTime);
+
 pub fn deriver(kind: &str) -> Option<&'static dyn Deriver> {
     Some(match kind {
         "fav" => &Fav,
-        "textValue" => &TextValue,
-        "textEdit" => &TextEdit,
+        "textValue" => &COUNTED_TEXT_VALUE,
+        "textEdit" => &COUNTED_TEXT_EDIT,
+        "jsonValue" => &COUNTED_JSON,
+        "valueDelete" => &COUNTED_DELETE,
+        "messageAppend" => &COUNTED_APPEND,
+        "messageDelete" => &COUNTED_MESSAGE_DELETE,
+        "messageParent" => &COUNTED_PARENT,
+        "messageTime" => &COUNTED_TIME,
         "tagAssign" => &TagAssign,
         "moved" => &Moved,
         "tagOrder" => &tags::TagOrder,
