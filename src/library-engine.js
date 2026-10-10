@@ -3,6 +3,7 @@ import { cardListValues } from './character-card-reader.js';
 import { getCharaCardV2, computeContentIdentityHash } from './character-card-normalize.js';
 import { calculateDataSize } from './character-shallow.js';
 import { parseCreateDateToEpochMs } from './util.js';
+import { tagDerivedColumns } from './tag-order.js';
 import { groupDigestContentHash, groupDigestFavHash, groupDigestTagIdsHash, normalizeFav, normalizeTagIds } from '../public/scripts/hash-utils.js';
 
 /**
@@ -17,7 +18,7 @@ import { groupDigestContentHash, groupDigestFavHash, groupDigestTagIdsHash, norm
 
 export const TYPE = Object.freeze({ character: 0, group: 1, tag: 2 });
 
-/** Field codes; the engine reads NAME, WORLD and FOLDER_TYPE itself. */
+/** Field codes; the engine reads NAME, WORLD, FOLDER_TYPE and DEFINED itself. */
 export const FIELD = Object.freeze({
     name: 1,
     creator: 2,
@@ -37,7 +38,12 @@ export const FIELD = Object.freeze({
     modification_date: 20,
     allow_global_styles: 30,
     folder_type: 40,
+    /** A tag's definition marker (empty JSON): without it, the tag is a key only assignments name. */
+    defined: 41,
 });
+
+/** A tag's keys other than its name and folder type are stored by key. */
+const TAG_KEY_PREFIX = 'tag:';
 
 /** List codes. */
 export const LIST = Object.freeze({ alternate_greetings: 0, group_only_greetings: 1, tags: 2 });
@@ -247,6 +253,7 @@ export function groupObject(entity) {
  * @property {number} [dataSize]
  * @property {number} [createMs]
  * @property {{ which: number, hash: Buffer }[]} hashes
+ * @property {number | null} [tagOrder] A tag's manual sort order as recorded; absent when none was.
  */
 
 /**
@@ -594,7 +601,8 @@ export class LibraryEngine {
     }
 
     /**
-     * Creates a tag (with its definition's values) unless one has that id.
+     * Stores a tag's definition, writing only what differs from the stored one; a key only assignments named gets
+     * its definition.
      * @param {{ id: string, name?: string, folder_type?: string, [key: string]: unknown }} tag
      * @returns {Promise<bigint>}
      */
@@ -607,10 +615,18 @@ export class LibraryEngine {
             const values = new Map();
             for (const [k, v] of Object.entries(tag)) {
                 if (k === 'id' || v === undefined) continue;
-                const field = k === 'name' ? FIELD.name : k === 'folder_type' ? FIELD.folder_type : `tag:${k}`;
+                const field = k === 'name' ? FIELD.name : k === 'folder_type' ? FIELD.folder_type : `${TAG_KEY_PREFIX}${k}`;
                 values.set(field, typeof v === 'string' && typeof field === 'number' ? { text: v } : { json: JSON.stringify(v) });
             }
-            records.push(...valueRecords(id, stored, { values, lists: new Map() }));
+            // The marker is the last value, so the tag enters its orders once, with its name, folder type and order.
+            values.set(FIELD.defined, { json: '' });
+            const valueChanges = valueRecords(id, stored, { values, lists: new Map() });
+            const marker = valueChanges.findIndex(r => r.field === FIELD.defined);
+            const order = tagDerivedColumns(tag).sortOrder;
+            if ((stored?.tagOrder ?? null) !== order) {
+                valueChanges.splice(marker === -1 ? valueChanges.length : marker, 0, { kind: 'tagOrder', tag: id, ...(order === null ? {} : { order }) });
+            }
+            records.push(...valueChanges);
             if (!stored) records.push({ kind: 'entityCreate', entity: id, type: TYPE.tag, key: tag.id, added: Date.now() });
             if (records.length > 0) await this.store.commit(records);
             return id;
