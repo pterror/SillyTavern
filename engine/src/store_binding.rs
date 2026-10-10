@@ -433,6 +433,83 @@ object_type_name!(TagCounts);
 object_type_name!(TagUnused);
 object_type_name!(TagStatuses);
 object_type_name!(TagFeed);
+object_type_name!(LibraryKeys);
+object_type_name!(TagAssignments);
+object_type_name!(TagKeys);
+
+fn tag_state_js(st: crate::store::TagState) -> &'static str {
+    match st {
+        crate::store::TagState::Live => "live",
+        crate::store::TagState::Undefined => "undefined",
+        crate::store::TagState::Gone => "gone",
+    }
+}
+
+pub struct LibraryKeys(Vec<Option<(u64, Vec<u8>)>>);
+
+impl ToNapiValue for LibraryKeys {
+    unsafe fn to_napi_value(raw_env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
+        let env = Env::from_raw(raw_env);
+        let mut list = Vec::with_capacity(val.0.len());
+        for e in val.0 {
+            list.push(match e {
+                Some((t, k)) => {
+                    let mut o = Object::new(&env)?;
+                    o.set("type", t as f64)?;
+                    o.set("key", text_to_js(k)?)?;
+                    Some(o)
+                }
+                None => None,
+            });
+        }
+        unsafe { Vec::<Option<Object>>::to_napi_value(raw_env, list) }
+    }
+}
+
+pub struct TagAssignments(Vec<(u64, Vec<u64>)>, Option<u64>);
+
+impl ToNapiValue for TagAssignments {
+    unsafe fn to_napi_value(raw_env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
+        let env = Env::from_raw(raw_env);
+        let mut entries = Vec::with_capacity(val.0.len());
+        for (e, tags) in val.0 {
+            let mut o = Object::new(&env)?;
+            o.set("entity", e)?;
+            o.set("tags", tags)?;
+            entries.push(o);
+        }
+        let mut obj = Object::new(&env)?;
+        obj.set("entries", entries)?;
+        if let Some(n) = val.1 {
+            obj.set("next", n)?;
+        }
+        unsafe { Object::to_napi_value(raw_env, obj) }
+    }
+}
+
+pub struct TagKeys(Vec<Option<(Vec<u8>, crate::store::TagStatus)>>);
+
+impl ToNapiValue for TagKeys {
+    unsafe fn to_napi_value(raw_env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
+        let env = Env::from_raw(raw_env);
+        let mut list = Vec::with_capacity(val.0.len());
+        for e in val.0 {
+            list.push(match e {
+                Some((k, st)) => {
+                    let mut o = Object::new(&env)?;
+                    o.set("key", text_to_js(k)?)?;
+                    o.set("state", tag_state_js(st.state))?;
+                    if let Some(i) = st.into {
+                        o.set("into", text_to_js(i)?)?;
+                    }
+                    Some(o)
+                }
+                None => None,
+            });
+        }
+        unsafe { Vec::<Option<Object>>::to_napi_value(raw_env, list) }
+    }
+}
 
 /// A page of the tag manager's list as JavaScript sees it.
 pub struct TagPage(tags::Page);
@@ -492,7 +569,7 @@ impl ToNapiValue for TagStatuses {
             };
             let mut o = Object::new(&env)?;
             o.set("id", st.id)?;
-            o.set("live", st.live)?;
+            o.set("state", tag_state_js(st.state))?;
             if let Some(k) = st.into {
                 o.set("into", text_to_js(k)?)?;
             }
@@ -638,6 +715,12 @@ impl ToNapiValue for LibraryEntities {
                 hashes.push(ho);
             }
             o.set("hashes", hashes)?;
+            if let Some(order) = e.tag_order {
+                match order {
+                    Some(v) => o.set("tagOrder", v)?,
+                    None => o.set("tagOrder", napi::bindgen_prelude::Null)?,
+                }
+            }
             list.push(Some(o));
         }
         unsafe { Vec::<Option<Object>>::to_napi_value(raw_env, list) }
@@ -1142,17 +1225,78 @@ impl Store {
         derived(env, &self.store, move |s| s.tag_by_names(&names))
     }
 
+    /// Each entity's `{ type, key }`, or null.
+    #[napi(
+        ts_args_type = "ids: (bigint | number)[]",
+        ts_return_type = "Promise<({ type: number, key: string } | null)[]>"
+    )]
+    pub fn library_keys<'env>(&self, env: &'env Env, ids: Vec<Unknown>) -> Result<Object<'env>> {
+        let ids = ids
+            .into_iter()
+            .map(|v| integer("id", v))
+            .collect::<Result<Vec<_>>>()?;
+        derived(env, &self.store, move |s| {
+            s.library_keys(&ids).map(LibraryKeys)
+        })
+    }
+
+    /// The tags each entity carries as they are now (merged tags as their targets), in id order.
+    #[napi(
+        ts_args_type = "ids: (bigint | number)[]",
+        ts_return_type = "Promise<bigint[][]>"
+    )]
+    pub fn library_tag_ids<'env>(&self, env: &'env Env, ids: Vec<Unknown>) -> Result<Object<'env>> {
+        let ids = ids
+            .into_iter()
+            .map(|v| integer("id", v))
+            .collect::<Result<Vec<_>>>()?;
+        derived(env, &self.store, move |s| s.library_tag_ids(&ids))
+    }
+
+    /// Up to `limit` entities from id `from` on that carry tags, `{ entity, tags }` in id order, and `next`, the
+    /// id to go on from (none at the end).
+    #[napi(
+        ts_args_type = "from: bigint | number, limit: number",
+        ts_return_type = "Promise<{ entries: { entity: bigint, tags: bigint[] }[], next?: bigint }>"
+    )]
+    pub fn tag_assignments<'env>(
+        &self,
+        env: &'env Env,
+        from: Unknown,
+        limit: u32,
+    ) -> Result<Object<'env>> {
+        let from = integer("from", from)?;
+        derived(env, &self.store, move |s| {
+            s.tag_assignments(from, limit as usize)
+                .map(|(e, next)| TagAssignments(e, next))
+        })
+    }
+
+    /// For each tag id: `{ key, state, into? }` as `tagStatus` gives them, or null.
+    #[napi(
+        ts_args_type = "ids: (bigint | number)[]",
+        ts_return_type = "Promise<({ key: string, state: 'live' | 'undefined' | 'gone', into?: string } | null)[]>"
+    )]
+    pub fn tag_keys<'env>(&self, env: &'env Env, ids: Vec<Unknown>) -> Result<Object<'env>> {
+        let ids = ids
+            .into_iter()
+            .map(|v| integer("id", v))
+            .collect::<Result<Vec<_>>>()?;
+        derived(env, &self.store, move |s| s.tag_keys(&ids).map(TagKeys))
+    }
+
     /// The highest manual sort order of a live tag, or null.
     #[napi(ts_return_type = "Promise<number | null>")]
     pub fn tag_max_order<'env>(&self, env: &'env Env) -> Result<Object<'env>> {
         derived(env, &self.store, |s| s.tag_max_order())
     }
 
-    /// For each tag key: `{ id, live: true }`, `{ id, live: false, into? }` for a deleted tag (`into` the key of
-    /// the live tag its merges lead to), or null for a key no tag ever had.
+    /// For each tag key: `{ id, state, into? }`, `state` 'live' for a defined tag, 'undefined' for a key only
+    /// assignments name, 'gone' for a deleted tag (`into` the key of the live tag its merges lead to); null for a
+    /// key no tag entity ever had.
     #[napi(
         ts_args_type = "keys: string[]",
-        ts_return_type = "Promise<({ id: bigint, live: boolean, into?: string } | null)[]>"
+        ts_return_type = "Promise<({ id: bigint, state: 'live' | 'undefined' | 'gone', into?: string } | null)[]>"
     )]
     pub fn tag_status<'env>(&self, env: &'env Env, keys: Vec<Unknown>) -> Result<Object<'env>> {
         let keys = keys

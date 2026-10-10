@@ -374,7 +374,9 @@ pub enum Written<'a> {
 /// Whether a field may be one of a tag's: its name, its folder type, or a key the tag writer stores (`tag:`).
 pub fn tag_field(f: &FieldRef) -> bool {
     match f {
-        FieldRef::Code(c) => *c == super::library::NAME || *c == super::library::FOLDER_TYPE,
+        FieldRef::Code(c) => {
+            *c == super::library::NAME || *c == super::library::FOLDER_TYPE || *c == DEFINED
+        }
         FieldRef::Key(k) => k.starts_with(b"tag:"),
     }
 }
@@ -393,6 +395,7 @@ pub fn field_written(
         return Ok(());
     }
     let live = match f {
+        FieldRef::Code(DEFINED) => return defined(view, out, e, at, !matches!(new, Written::Gone)),
         FieldRef::Code(super::library::NAME) => {
             let nk = match new {
                 Written::Text(t) => name_key(t),
@@ -415,8 +418,44 @@ pub fn field_written(
     Ok(())
 }
 
-/// A tag comes to be (`entityCreate` of type `TAG`, its values already in `view`).
+/// A tag entity's definition marker: a tag entity without one is a key only assignments name (as upstream's
+/// `tag_map` may name a tag no definition has), in no order and not listed until a definition is written.
+pub const DEFINED: u64 = 41;
+
+/// A tag entity's definition marker was written (`on`) or removed.
+fn defined(view: &View, out: &mut Out, tag: u64, at: Loc, on: bool) -> Result<(), StoreError> {
+    if !matches!(entity_info(view, tag)?, Some((TAG, _, _))) {
+        return Ok(());
+    }
+    let old = place(view, tag)?;
+    match (old, on) {
+        (None, true) => placed(view, out, tag, at),
+        (Some(p), false) => {
+            if !view.is_bulk() {
+                let c = carriers(view, tag)?;
+                reposition(out, tag, Some((&p, c)), None);
+            }
+            out.del(key::id(key::TAG_PLACE, tag));
+            touched(view, out, tag, at)
+        }
+        _ => Ok(()),
+    }
+}
+
+/// A tag entity comes to be (`entityCreate` of type `TAG`, its values already in `view`), or gets its definition:
+/// with its definition marker, it is placed.
 pub fn created(view: &View, out: &mut Out, tag: u64, at: Loc) -> Result<(), StoreError> {
+    if view
+        .get(&key::field(key::VALUE, tag, &FieldRef::Code(DEFINED)))?
+        .is_none()
+    {
+        return Ok(());
+    }
+    placed(view, out, tag, at)
+}
+
+/// A defined tag enters its orders, placed by its values.
+fn placed(view: &View, out: &mut Out, tag: u64, at: Loc) -> Result<(), StoreError> {
     let p = place_from_values(view, tag)?;
     if !view.is_bulk() {
         let c = carriers(view, tag)?;

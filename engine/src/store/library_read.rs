@@ -945,6 +945,22 @@ pub struct Entity {
     pub data_size: Option<u64>,
     pub create_ms: Option<f64>,
     pub hashes: Vec<(u64, Vec<u8>)>,
+    /// A tag's `tagOrder`: None without one, Some(None) for one holding no order.
+    pub tag_order: Option<Option<f64>>,
+}
+
+/// The tags an entity carries as they are now (`Entity::tags`).
+pub fn tags_now(view: &View, e: u64) -> Result<Vec<u64>, StoreError> {
+    let mut out = Vec::new();
+    for t in library::tags_of(view, e)? {
+        if let Some(t) = library::resolve_tag(view, t)?
+            && !out.contains(&t)
+        {
+            out.push(t);
+        }
+    }
+    out.sort_unstable();
+    Ok(out)
 }
 
 pub fn entity(view: &View, e: u64) -> Result<Option<Entity>, StoreError> {
@@ -964,14 +980,14 @@ pub fn entity(view: &View, e: u64) -> Result<Option<Entity>, StoreError> {
         .transpose()?
         .unwrap_or(0);
     out.fav = library::fav_of(view, e)?;
-    for t in library::tags_of(view, e)? {
-        if let Some(t) = library::resolve_tag(view, t)?
-            && !out.tags.contains(&t)
-        {
-            out.tags.push(t);
-        }
+    if let Some(b) = view.get(&key::id(key::TAG_ORDER_REC, e))? {
+        let (r, _) = view.record(super::kinds::parse_loc(&b)?.pos)?;
+        out.tag_order = Some(match r.values.get(1) {
+            Some(crate::log::format::Value::F64(v)) => Some(*v),
+            _ => None,
+        });
     }
-    out.tags.sort_unstable();
+    out.tags = tags_now(view, e)?;
     let tp = key::id(key::TEXT, e);
     for (tk, _) in view.scan(&tp, &key::prefix_end(&tp), usize::MAX)? {
         let f = library::field_after(&tk, key::TEXT)?;
