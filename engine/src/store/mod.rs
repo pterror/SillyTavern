@@ -528,6 +528,15 @@ impl Store {
         })
     }
 
+    /// One more than the highest entity id ever created.
+    pub fn library_next_id(&self) -> StoreResult<u64> {
+        self.derived(|v| {
+            Ok(v.get(&key::of(key::NEXT_ENTITY))?
+                .and_then(|b| crate::keyspace::val::max_value(&b))
+                .unwrap_or(1))
+        })
+    }
+
     /// The entities a card hash finds.
     pub fn library_by_hash(&self, which: u64, hash: &[u8], limit: usize) -> StoreResult<Vec<u64>> {
         self.derived(|v| library_read::by_hash(v, which, hash, limit))

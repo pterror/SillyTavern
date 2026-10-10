@@ -482,10 +482,11 @@ impl ToNapiValue for LibraryEntities {
             }
             o.set("values", values)?;
             let mut items = Vec::with_capacity(e.items.len());
-            for (list, item) in e.items {
+            for (list, item, position) in e.items {
                 let mut io = Object::new(&env)?;
                 io.set("list", list as f64)?;
                 io.set("item", item as f64)?;
+                io.set("position", position as f64)?;
                 items.push(io);
             }
             o.set("items", items)?;
@@ -515,14 +516,16 @@ fn library_query_from_js(q: &Object) -> Result<library_read::Query> {
     let mut ranges = Vec::new();
     for r in q.get::<Vec<Object>>("ranges")?.unwrap_or_default() {
         let field = match r.get::<Unknown>("field")? {
-            Some(v) if v.get_type()? == ValueType::String => match String::from_unknown(v)?.as_str() {
-                "create_date" => RangeField::Created,
-                "date_last_chat" => RangeField::LastChat,
-                "chat_size" => RangeField::ChatSize,
-                "data_size" => RangeField::Data,
-                "closed_folders" => RangeField::ClosedFolders,
-                other => return Err(invalid(format!("no range field {other}"))),
-            },
+            Some(v) if v.get_type()? == ValueType::String => {
+                match String::from_unknown(v)?.as_str() {
+                    "create_date" => RangeField::Created,
+                    "date_last_chat" => RangeField::LastChat,
+                    "chat_size" => RangeField::ChatSize,
+                    "data_size" => RangeField::Data,
+                    "closed_folders" => RangeField::ClosedFolders,
+                    other => return Err(invalid(format!("no range field {other}"))),
+                }
+            }
             Some(v) => RangeField::Tag(integer("field", v)?),
             None => return Err(invalid("a range needs a field".into())),
         };
@@ -563,7 +566,9 @@ fn library_query_from_js(q: &Object) -> Result<library_read::Query> {
         };
         Sort::Random { seed, desc }
     } else {
-        return Err(invalid("a sort is { key }, { fav: true } or { seed }".into()));
+        return Err(invalid(
+            "a sort is { key }, { fav: true } or { seed }".into(),
+        ));
     };
     let num = |name: &str, default: u64| -> Result<u64> {
         match q.get::<Unknown>(name)? {
@@ -865,7 +870,9 @@ impl Store {
     )]
     pub fn library_page<'env>(&self, env: &'env Env, query: Object) -> Result<Object<'env>> {
         let q = library_query_from_js(&query)?;
-        derived(env, &self.store, move |s| s.library_page(&q).map(LibraryPage))
+        derived(env, &self.store, move |s| {
+            s.library_page(&q).map(LibraryPage)
+        })
     }
 
     /// Each entity with everything it holds, or null.
@@ -873,7 +880,11 @@ impl Store {
         ts_args_type = "ids: (bigint | number)[]",
         ts_return_type = "Promise<(object | null)[]>"
     )]
-    pub fn library_entities<'env>(&self, env: &'env Env, ids: Vec<Unknown>) -> Result<Object<'env>> {
+    pub fn library_entities<'env>(
+        &self,
+        env: &'env Env,
+        ids: Vec<Unknown>,
+    ) -> Result<Object<'env>> {
         let ids = ids
             .into_iter()
             .map(|v| integer("id", v))
@@ -888,7 +899,11 @@ impl Store {
         ts_args_type = "keys: [number, string][]",
         ts_return_type = "Promise<(bigint | null)[]>"
     )]
-    pub fn library_ids<'env>(&self, env: &'env Env, keys: Vec<Vec<Unknown>>) -> Result<Object<'env>> {
+    pub fn library_ids<'env>(
+        &self,
+        env: &'env Env,
+        keys: Vec<Vec<Unknown>>,
+    ) -> Result<Object<'env>> {
         let keys = keys
             .into_iter()
             .map(|pair| {
@@ -900,6 +915,12 @@ impl Store {
             })
             .collect::<Result<Vec<_>>>()?;
         derived(env, &self.store, move |s| s.library_ids(&keys))
+    }
+
+    /// One more than the highest entity id ever created (1 for none).
+    #[napi(ts_return_type = "Promise<bigint>")]
+    pub fn library_next_id<'env>(&self, env: &'env Env) -> Result<Object<'env>> {
+        derived(env, &self.store, |s| s.library_next_id())
     }
 
     /// The entities a card hash of kind `which` finds, at most `limit`.

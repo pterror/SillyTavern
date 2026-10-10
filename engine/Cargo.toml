@@ -31,6 +31,10 @@ required-features = ["measure"]
 name = "search"
 required-features = ["measure"]
 
+[[example]]
+name = "library"
+required-features = ["measure"]
+
 [build-dependencies]
 napi-build = "2.6.0"
 

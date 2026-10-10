@@ -11,7 +11,7 @@ use super::StoreError;
 use super::derive::View;
 use super::kinds::{key, text_value};
 use super::library::{
-    self, CHARACTER, CREATED, FOLDER_TYPE, GROUP, Scope, State, count_key, counter, order_prefix,
+    self, CHARACTER, FOLDER_TYPE, GROUP, Scope, State, count_key, counter, order_prefix,
     parse_uvarint, rand_key, rand_prefix, split_order_key,
 };
 use crate::keyspace::val::{get_bytes, get_u64, put_bytes, put_u64};
@@ -136,23 +136,24 @@ fn resolve(view: &View, f: &Filter) -> Result<Resolved, StoreError> {
     Ok(r)
 }
 
-/// What decides whether an entity passes, read as needed and kept for the request.
+/// What decides whether an entity passes, each fact read only when the filter needs it.
 struct Checker<'a> {
     view: &'a View<'a>,
     f: &'a Filter,
     r: Resolved,
     folders: HashMap<u64, bool>,
-    resolved: HashMap<u64, Option<u64>>,
+    sources: HashMap<u64, Vec<u64>>,
 }
 
-impl Checker<'_> {
-    fn resolve(&mut self, t: u64) -> Result<Option<u64>, StoreError> {
-        if let Some(r) = self.resolved.get(&t) {
-            return Ok(*r);
-        }
-        let r = library::resolve_tag(self.view, t)?;
-        self.resolved.insert(t, r);
-        Ok(r)
+impl<'a> Checker<'a> {
+    fn new(view: &'a View<'a>, f: &'a Filter) -> Result<Checker<'a>, StoreError> {
+        Ok(Checker {
+            view,
+            f,
+            r: resolve(view, f)?,
+            folders: HashMap::new(),
+            sources: HashMap::new(),
+        })
     }
 
     fn closed(&mut self, t: u64) -> Result<bool, StoreError> {
@@ -166,8 +167,49 @@ impl Checker<'_> {
         Ok(c)
     }
 
-    /// Whether the entity, in state `st`, passes everything but the scope it was read from.
-    fn passes(&mut self, e: u64, st: &State) -> Result<bool, StoreError> {
+    /// Whether `e` carries tag `t` (as resolved: itself, or a tag merged into it whose carriers haven't moved).
+    fn carries(&mut self, e: u64, t: u64) -> Result<bool, StoreError> {
+        if !self.sources.contains_key(&t) {
+            let s = library::tag_sources(self.view, t)?;
+            self.sources.insert(t, s);
+        }
+        for s in &self.sources[&t] {
+            if self.view.get(&key::ids(key::MEMBER, *s, e))?.is_some() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn sort_value(&self, e: u64, kind: u64, field: RangeField) -> Result<Option<f64>, StoreError> {
+        let pointed = |s: u64| -> Result<Option<crate::log::format::Value>, StoreError> {
+            let Some(b) = self.view.get(&key::id(s, e))? else {
+                return Ok(None);
+            };
+            let (r, _) = self.view.record(super::kinds::parse_loc(&b)?.pos)?;
+            Ok(Some(r.values[1].clone()))
+        };
+        use crate::log::format::Value;
+        Ok(match field {
+            RangeField::Created if kind == GROUP => {
+                library::entity_info(self.view, e)?.map(|(_, _, added)| added as f64)
+            }
+            RangeField::Created => match pointed(key::CREATE_DATE)? {
+                Some(Value::F64(x)) => Some(x),
+                _ => None,
+            },
+            RangeField::Data if kind == GROUP => None,
+            RangeField::Data => match pointed(key::DATA_SIZE)? {
+                Some(Value::UInt(n)) => Some(n as f64),
+                _ => Some(0.0),
+            },
+            RangeField::LastChat | RangeField::ChatSize => Some(0.0),
+            RangeField::ClosedFolders | RangeField::Tag(_) => unreachable!(),
+        })
+    }
+
+    /// Whether `e`, of type `kind` with fav `fav`, passes everything but the scope it was read from.
+    fn passes(&mut self, e: u64, kind: u64, fav: bool) -> Result<bool, StoreError> {
         let f = self.f;
         if self.r.empty || f.not_ids.contains(&e) {
             return Ok(false);
@@ -177,54 +219,61 @@ impl Checker<'_> {
         {
             return Ok(false);
         }
-        if !(if st.kind == CHARACTER {
+        if !(if kind == CHARACTER {
             f.characters
         } else {
             f.groups
-        }) {
-            return Ok(false);
-        }
-        if f.fav.is_some_and(|v| v != st.fav) {
-            return Ok(false);
-        }
-        if st.kind == CHARACTER
-            && let Some(w) = &f.world
-            && st.world.as_ref() != Some(w)
+        }) || f.fav.is_some_and(|v| v != fav)
         {
             return Ok(false);
         }
-        let needs_tags =
-            !self.r.all.is_empty() || !self.r.any.is_empty() || !self.r.none.is_empty();
-        if needs_tags {
-            let mut carried = Vec::with_capacity(st.tags.len());
-            for t in &st.tags {
-                if let Some(t) = self.resolve(*t)? {
-                    carried.push(t);
+        if kind == CHARACTER
+            && let Some(w) = &f.world
+            && text_value(self.view, e, &FieldRef::Code(library::WORLD))?.as_ref() != Some(w)
+        {
+            return Ok(false);
+        }
+        for t in self.r.all.clone() {
+            if !self.carries(e, t)? {
+                return Ok(false);
+            }
+        }
+        if !self.r.any.is_empty() {
+            let mut any = false;
+            for t in self.r.any.clone() {
+                if self.carries(e, t)? {
+                    any = true;
+                    break;
                 }
             }
-            if !self.r.all.iter().all(|t| carried.contains(t))
-                || (!self.r.any.is_empty() && !self.r.any.iter().any(|t| carried.contains(t)))
-                || self.r.none.iter().any(|t| carried.contains(t))
-            {
+            if !any {
+                return Ok(false);
+            }
+        }
+        for t in self.r.none.clone() {
+            if self.carries(e, t)? {
                 return Ok(false);
             }
         }
         for (field, min, max) in &f.ranges {
             let v = match field {
-                RangeField::Created => st.nums[(CREATED - 1) as usize],
-                RangeField::LastChat => st.nums[2],
-                RangeField::ChatSize => st.nums[3],
-                RangeField::Data => st.nums[4],
                 RangeField::ClosedFolders => {
                     let mut n = 0;
-                    for t in st.tags.clone() {
+                    for t in library::tags_of(self.view, e)? {
                         if self.closed(t)? {
                             n += 1;
                         }
                     }
                     Some(f64::from(n))
                 }
-                RangeField::Tag(t) => Some(if st.tags.contains(t) { 1.0 } else { 0.0 }),
+                RangeField::Tag(t) => {
+                    Some(if self.view.get(&key::ids(key::MEMBER, *t, e))?.is_some() {
+                        1.0
+                    } else {
+                        0.0
+                    })
+                }
+                other => self.sort_value(e, kind, *other)?,
             };
             let Some(v) = v else { return Ok(false) };
             if min.is_some_and(|m| v < m) || max.is_some_and(|m| v > m) {
@@ -232,6 +281,14 @@ impl Checker<'_> {
             }
         }
         Ok(true)
+    }
+
+    /// `passes` for an entity whose type and fav aren't known yet.
+    fn passes_any(&mut self, e: u64) -> Result<Option<State>, StoreError> {
+        let Some(st) = library::state(self.view, e)? else {
+            return Ok(None);
+        };
+        Ok(self.passes(e, st.kind, st.fav)?.then_some(st))
     }
 }
 
@@ -330,6 +387,7 @@ fn driver(view: &View, f: &Filter, r: &Resolved) -> Result<Driver, StoreError> {
 struct Stream {
     prefix: Vec<u8>,
     kind: u64,
+    fav: bool,
     /// The fav group this part is in for a fav sort (0 first), else 0.
     group: u8,
     desc: bool,
@@ -462,6 +520,7 @@ fn sorted_page(
                     },
                     prefix,
                     kind,
+                    fav,
                     group,
                     desc,
                     buf: Default::default(),
@@ -521,7 +580,8 @@ fn sorted_page(
         }
         let Some(b) = best else { break };
         let (sk, tie, e) = streams[b].buf.pop_front().unwrap();
-        let place = (streams[b].group, sk, streams[b].kind, tie);
+        let (kind, fav) = (streams[b].kind, streams[b].fav);
+        let place = (streams[b].group, sk, kind, tie);
         examined += 1;
         last = Some(place);
         // The same entity from two tags' orders (a merge waiting for its fold) comes twice in a row.
@@ -529,13 +589,8 @@ fn sorted_page(
             continue;
         }
         last_entity = Some(e);
-        if check_all {
-            let Some(st) = library::state(view, e)? else {
-                continue;
-            };
-            if !chk.passes(e, &st)? {
-                continue;
-            }
+        if check_all && !chk.passes(e, kind, fav)? {
+            continue;
         }
         if skip > 0 {
             skip -= 1;
@@ -571,8 +626,8 @@ pub struct Entity {
     pub tags: Vec<u64>,
     /// Field values; a list item's text under its item field.
     pub values: Vec<(FieldRef, Stored)>,
-    /// List items in order: (list, item).
-    pub items: Vec<(u64, u64)>,
+    /// List items in order: (list, item, position).
+    pub items: Vec<(u64, u64, u64)>,
     pub data_size: Option<u64>,
     pub create_ms: Option<f64>,
     pub hashes: Vec<(u64, Vec<u8>)>,
@@ -620,9 +675,10 @@ pub fn entity(view: &View, e: u64) -> Result<Option<Entity>, StoreError> {
     let ip = key::id(key::ITEM, e);
     for (ik, v) in view.scan(&ip, &key::prefix_end(&ip), usize::MAX)? {
         let mut at = ip.len();
-        let list = get_u64(&ik, &mut at)
-            .ok_or_else(|| StoreError::Entry("an item key doesn't decode".into()))?;
-        out.items.push((list, parse_uvarint(&v)?));
+        let bad = || StoreError::Entry("an item key doesn't decode".into());
+        let list = get_u64(&ik, &mut at).ok_or_else(bad)?;
+        let position = get_u64(&ik, &mut at).ok_or_else(bad)?;
+        out.items.push((list, parse_uvarint(&v)?, position));
     }
     for s in [key::DATA_SIZE, key::CREATE_DATE] {
         let Some(b) = view.get(&key::id(s, e))? else {
@@ -783,12 +839,13 @@ impl Numbering {
         })
     }
 
-    fn at(&self, view: &View, mut r: u64) -> Result<Option<u64>, StoreError> {
+    /// The entity numbered `r`, with its type and fav.
+    fn at(&self, view: &View, mut r: u64) -> Result<Option<(u64, u64, bool)>, StoreError> {
         for (k, fav, size) in &self.parts {
             if r < *size {
                 return view
                     .get(&rand_key(&self.scope, *k, *fav, r))?
-                    .map(|b| parse_uvarint(&b))
+                    .map(|b| Ok((parse_uvarint(&b)?, *k, *fav)))
                     .transpose();
             }
             r -= size;
@@ -796,8 +853,8 @@ impl Numbering {
         Ok(None)
     }
 
-    /// The entities numbered `from..from + len` of the whole numbering, in order.
-    fn range(&self, view: &View, from: u64, len: u64) -> Result<Vec<u64>, StoreError> {
+    /// The entities numbered `from..from + len` of the whole numbering, in order, with their types and favs.
+    fn range(&self, view: &View, from: u64, len: u64) -> Result<Vec<(u64, u64, bool)>, StoreError> {
         let mut out = Vec::new();
         let (mut r, mut left) = (from, len);
         for (k, fav, size) in &self.parts {
@@ -815,7 +872,7 @@ impl Numbering {
                 &key::prefix_end(&p),
                 take as usize,
             )? {
-                out.push(parse_uvarint(&v)?);
+                out.push((parse_uvarint(&v)?, *k, *fav));
             }
             left -= take;
             r = 0;
@@ -880,12 +937,9 @@ fn random_page(
     if let Some(ids) = &q.filter.ids {
         let mut placed = Vec::new();
         for e in ids {
-            let Some(st) = library::state(view, *e)? else {
+            let Some(st) = chk.passes_any(*e)? else {
                 continue;
             };
-            if !chk.passes(*e, &st)? {
-                continue;
-            }
             let pos = match num.rank_of(view, *e, &st)? {
                 Some(r) => unpermute(r, n, k),
                 None => continue,
@@ -910,7 +964,7 @@ fn random_page(
         let end = n.min(start + q.limit as u64);
         let mut ids = Vec::new();
         for j in start..end {
-            if let Some(e) = num.at(view, rank(j))? {
+            if let Some((e, _, _)) = num.at(view, rank(j))? {
                 ids.push(e);
             }
         }
@@ -921,14 +975,11 @@ fn random_page(
     let mut examined = 0;
     let mut ids = Vec::new();
     while ids.len() < q.limit && j < n && examined < q.cap + q.limit as u64 {
-        let e = num.at(view, rank(j))?;
+        let at = num.at(view, rank(j))?;
         j += 1;
         examined += 1;
-        let Some(e) = e else { continue };
-        let Some(st) = library::state(view, e)? else {
-            continue;
-        };
-        if !chk.passes(e, &st)? {
+        let Some((e, kind, fav)) = at else { continue };
+        if !chk.passes(e, kind, fav)? {
             continue;
         }
         if skip > 0 {
@@ -956,9 +1007,7 @@ fn total(view: &View, q: &Query, d: &Driver, chk: &mut Checker) -> Result<(u64, 
                 continue;
             }
             seen.push(*e);
-            if let Some(st) = library::state(view, *e)?
-                && chk.passes(*e, &st)?
-            {
+            if chk.passes_any(*e)?.is_some() {
                 n += 1;
             }
         }
@@ -974,22 +1023,14 @@ fn total(view: &View, q: &Query, d: &Driver, chk: &mut Checker) -> Result<(u64, 
     let rest_r = resolve(view, &rest)?;
     if d.sources.len() == 1 && driver(view, &rest, &rest_r)?.whole {
         let mut n = scope_size(view, &d.sources, &rest)?.max(0);
-        let mut c = Checker {
-            view,
-            f: &rest,
-            r: rest_r,
-            folders: HashMap::new(),
-            resolved: HashMap::new(),
-        };
+        let mut c = Checker::new(view, &rest)?;
         let mut seen = Vec::new();
         for e in &q.filter.not_ids {
             if seen.contains(e) {
                 continue;
             }
             seen.push(*e);
-            if let Some(st) = library::state(view, *e)?
-                && c.passes(*e, &st)?
-            {
+            if c.passes_any(*e)?.is_some() {
                 n -= 1;
             }
         }
@@ -1022,10 +1063,8 @@ fn total(view: &View, q: &Query, d: &Driver, chk: &mut Checker) -> Result<(u64, 
     }
     let read = sample.len() as u64;
     let mut hits = 0u64;
-    for e in sample {
-        if let Some(st) = library::state(view, e)?
-            && chk.passes(e, &st)?
-        {
+    for (e, kind, fav) in sample {
+        if chk.passes(e, kind, fav)? {
             hits += 1;
         }
     }
@@ -1043,13 +1082,7 @@ pub fn page(view: &View, q: &Query) -> Result<Page, StoreError> {
     let r = resolve(view, &q.filter)?;
     let empty = r.empty || q.filter.ids.as_ref().is_some_and(|i| i.is_empty());
     let d = driver(view, &q.filter, &r)?;
-    let mut chk = Checker {
-        view,
-        f: &q.filter,
-        r,
-        folders: HashMap::new(),
-        resolved: HashMap::new(),
-    };
+    let mut chk = Checker::new(view, &q.filter)?;
     if empty {
         return Ok(Page {
             total: q.count.then_some(0),
@@ -1059,7 +1092,7 @@ pub fn page(view: &View, q: &Query) -> Result<Page, StoreError> {
     }
     let (ids, more, cursor) = match q.sort {
         Sort::Random { seed, desc } => random_page(view, q, &d, &mut chk, seed, desc)?,
-        _ if q.filter.ids.is_some() => ids_page(view, q, &mut chk)?,
+        _ if q.filter.ids.is_some() => ids_page(q, &mut chk)?,
         _ => sorted_page(view, q, &d, &mut chk)?,
     };
     let (total, total_exact) = if q.count {
@@ -1078,7 +1111,7 @@ pub fn page(view: &View, q: &Query) -> Result<Page, StoreError> {
 }
 
 /// A sorted page of a listed set of ids: each looked up, sorted in memory (the list bounds the work).
-fn ids_page(view: &View, q: &Query, chk: &mut Checker) -> Result<Walked, StoreError> {
+fn ids_page(q: &Query, chk: &mut Checker) -> Result<Walked, StoreError> {
     let (sort, desc, fav_first) = match q.sort {
         Sort::Key { sort, desc } => (sort, desc, None),
         Sort::Fav { desc } => (library::BY_NAME, false, Some(desc)),
@@ -1091,12 +1124,9 @@ fn ids_page(view: &View, q: &Query, chk: &mut Checker) -> Result<Walked, StoreEr
             continue;
         }
         seen.push(*e);
-        let Some(st) = library::state(view, *e)? else {
+        let Some(st) = chk.passes_any(*e)? else {
             continue;
         };
-        if !chk.passes(*e, &st)? {
-            continue;
-        }
         let group = fav_first.map_or(0, |f| u8::from(st.fav != f));
         rows.push(((group, st.sort_key(sort), st.kind, st.tie.clone()), *e));
     }

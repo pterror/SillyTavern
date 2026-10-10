@@ -531,6 +531,7 @@ impl Deriver for EntityCreate {
         }
         out.put(key::id(key::ENTITY, e), loc_bytes(at));
         out.put(kk, uvarint(e));
+        out.max(key::of(key::NEXT_ENTITY), e + 1);
         version(out, e, at);
         Ok(())
     }

@@ -727,7 +727,7 @@ fn an_entity_key_is_taken_once_and_deleting_frees_everything_it_held() {
     );
     assert_eq!(s.library_by_hash(0, &[1, 2, 3], 10).unwrap(), vec![1]);
     let e = s.library_entities(&[1]).unwrap()[0].clone().unwrap();
-    assert_eq!(e.items, vec![(0, 3)]);
+    assert_eq!(e.items, vec![(0, 3, 10)]);
     assert!(e.fav);
     assert_eq!(e.tags, vec![900]);
     assert_eq!(e.values.len(), 3);
