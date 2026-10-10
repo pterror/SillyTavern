@@ -286,3 +286,61 @@ for (const [name, engine] of Object.entries(bindings)) {
         await store.close();
     });
 }
+
+for (const [name, engine] of Object.entries(bindings)) {
+    test(`${name}: chat reads answer the tree, sessions, state and stats`, async () => {
+        const store = await engine.Store.open(path.join(tmp, `${name}-chat`));
+        const say = (id, parent, text, extra = {}) => ({ kind: 'messageAppend', id, ...(parent === null ? {} : { parent }), owner: 3n, time: 1_700_000_000_000 + Number(id), text, flags: 0, user: 1n, ...extra });
+        await store.commit([
+            { kind: 'keyMap', session: 1n, key: Buffer.from('0190a1b2-0000-7000-8000-00000000000a') },
+            { kind: 'keyMap', user: 1n, key: Buffer.from('default-user') },
+            say(0n, null, 'Hello'),
+            say(1n, 0n, 'reply one', { session: 1n, sendKey: Buffer.alloc(16, 1) }),
+            say(2n, 0n, 'reply two'),
+            { kind: 'jsonValue', message: 1n, field: 'api', json: '"openai"' },
+            { kind: 'messageTime', message: 1n, field: 6, delta: -5 },
+            { kind: 'stateChange', id: 0n, message: 1n, time: 5, author: 0, key: 'note', value: '"hi"' },
+            { kind: 'stateChange', id: 1n, tree: 3n, time: 5, author: 8, key: 'x', value: '1' },
+            { kind: 'positionCreate', id: 9n, mode: 2, session: 1n, user: 1n, pointer: 1n },
+            { kind: 'positionName', id: 9n, name: 'Checkpoint' },
+            { kind: 'itemization', message: 1n, raw: true, data: Buffer.from([1, 2, 3]) },
+        ]);
+        const [m0, m1, none] = await store.chatRead('messages', { ids: [0n, 1n, 77n] });
+        assert.equal(none, null);
+        assert.equal(m0.parent, null);
+        assert.deepEqual(m0.texts, [{ field: 1, text: 'Hello' }]);
+        assert.equal(m1.parent, 0n);
+        assert.equal(m1.depth, 2n);
+        assert.deepEqual(m1.values, [{ field: 'api', json: '"openai"' }]);
+        assert.deepEqual(m1.times, [{ field: 6, delta: -5 }]);
+        assert.deepEqual(m1.itemized, { raw: true });
+        assert.deepEqual(m1.branches, [9n]);
+        assert.deepEqual(m1.sendKey, Buffer.alloc(16, 1));
+        assert.deepEqual(await store.chatRead('children', { parent: 0n, tree: 3n, limit: 1 }), { ids: [1n], more: true });
+        assert.deepEqual(await store.chatRead('children', { tree: 3n, limit: 5 }), { ids: [0n], more: false });
+        // Session 1 is at its reply; a reader with no choice of their own follows the last choice anyone made.
+        assert.deepEqual(await store.chatRead('path', { tree: 3n, at: 0n }), { above: [0n], below: [1n] });
+        assert.equal(await store.chatRead('landing', { tree: 3n, session: 1n }), 1n);
+        assert.deepEqual((await store.chatRead('sessions', { ids: [1n, 5n] }))[1], null);
+        assert.deepEqual(await store.chatRead('userInTree', { user: 1n, tree: 3n }), { session: 1n, at: 1n });
+        assert.deepEqual(await store.chatRead('history', { session: 1n, limit: 10 }), [{ n: 1, target: 1n, gone: false }]);
+        assert.equal((await store.chatRead('recent', { limit: 10 }))[0].session, 1n);
+        assert.deepEqual(await store.chatRead('messageCount', { tree: 3n, at: 1n }), { count: 2, estimate: false });
+        assert.deepEqual(await store.chatRead('ids', { space: 1, keys: ['0190a1b2-0000-7000-8000-00000000000a', 'nope'] }), [1n, null]);
+        assert.deepEqual(await store.chatRead('nextIds', {}), { message: 3n, position: 10n, user: 2n, change: 2n });
+        const [b] = await store.chatRead('treeBookmarks', { tree: 3n, limit: 10 });
+        assert.deepEqual(b, { id: 9n, at: 1n, mode: 2, name: 'Checkpoint', createdAt: 1n, session: 1n, user: 1n });
+        assert.deepEqual(await store.chatRead('state', { tree: 3n, at: 1n }), [
+            { variable: true, field: 'x', json: '1' },
+            { variable: false, field: 'note', json: '"hi"' },
+        ]);
+        assert.deepEqual(await store.chatRead('state', { tree: 3n, at: 2n }), [{ variable: true, field: 'x', json: '1' }]);
+        const { owners: [s3] } = await store.chatRead('stats', { owners: [3n] });
+        assert.equal(s3.charMsgs, 2);
+        assert.equal(s3.swipes, 1);
+        assert.deepEqual(await store.chatRead('itemization', { message: 1n }), { raw: true, data: Buffer.from([1, 2, 3]) });
+        assert.deepEqual(await store.chatRead('sent', { owner: 3n, keys: [Buffer.alloc(16, 1), Buffer.alloc(16, 2)] }), [1n, null]);
+        assert.throws(() => store.chatRead('nope', {}), /no chat read/);
+        await store.close();
+    });
+}

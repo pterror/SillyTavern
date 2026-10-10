@@ -1141,6 +1141,17 @@ Built, stats (10-10; `engine/src/store/stats.rs`, tests in `chat_tests.rs`):
 | earliest user time and newest time | orders per owner (and every user time for the total), the first or last entry | the minimum and maximum survive deletes without a scan |
 | times the engine can't parse | the writer's reading, recorded as a `messageTime` only for a JSON value | as 5a's create dates: V8's `Date.parse` isn't reproduced in Rust |
 
+Built, itemizations and the chat reads (10-10; `chat.rs`, `chat_read.rs`, binding `Store.chatRead(op, args)`, tests
+in `chat_tests.rs` and `engine/store.test.js`):
+- Kind `itemization { message, raw, data? }` (header 216, two bytes): a reply's prompt itemization as today's table
+  holds it (zstd-compressed JSON, whether it holds the prompt as sent); absent data removes it; it goes with its
+  message. Not counted in chat size (not a message value).
+- `chatRead(op, args)`: `messages` (each message's slots, texts, JSON values, times, depth, itemization kind,
+  bookmarks created at it, old id), `children`, `path` (root to a position and the followed replies below),
+  `landing`, `followed`, `sessions`, `sessionInTree`, `userInTree`, `history`, `recent`, `inTree`, `messageCount`,
+  `ids` (outside keys), `nextIds`, `bookmarks`, `treeBookmarks`, `bookmarksAt`, `state`, `stats`, `itemization`,
+  `sent` (send keys). Each runs against one state of the keyspace, after replay.
+
 Where layer 1 goes: inside 5b, on the engine. Its own storage step (SQLite `state_changes`, saved states every 64th
 depth rebuilt lazily after an epoch bump) conflicts with the design: a structure caught up when read is what revision
 3 dropped (design Q-D7), and its migration step 6 is a background pass (CLAUDE.md: one-off scripts). The design and

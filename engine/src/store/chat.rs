@@ -372,7 +372,7 @@ impl Deriver for MessageDelete {
             let f = super::library::field_after(&tk, key::MSG_TEXT)?;
             drop_text_of(view, out, h, &f)?;
         }
-        for s in [key::MSG_VALUE, key::MSG_TIME] {
+        for s in [key::MSG_VALUE, key::MSG_TIME, ITEMIZED] {
             let p = key::id(s, m);
             for (k, v) in view.scan(&p, &key::prefix_end(&p), usize::MAX)? {
                 dead(out, parse_loc(&v)?);
@@ -919,8 +919,62 @@ impl Deriver for ForkSelection {
     }
 }
 
+/// Per message: its `itemization` record.
+pub const ITEMIZED: u64 = 170;
+
+/// The message's itemization: whether it holds the prompt as sent, and its data.
+pub fn itemization(view: &View, m: u64) -> Result<Option<(bool, Vec<u8>)>, StoreError> {
+    match view.get(&key::id(ITEMIZED, m))? {
+        Some(b) => {
+            let (r, _) = view.record(parse_loc(&b)?.pos)?;
+            Ok(Some((
+                r.values[1] == Value::Bit(true),
+                bytes(&r, 2).to_vec(),
+            )))
+        }
+        None => Ok(None),
+    }
+}
+
+/// `itemization`: a message's prompt itemization is set, or goes.
+pub struct Itemization;
+
+impl Deriver for Itemization {
+    fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
+        let m = id(rec, 0);
+        require_message(view, m)?;
+        let k = key::id(ITEMIZED, m);
+        if let Some(b) = view.get(&k)? {
+            dead(out, parse_loc(&b)?);
+        }
+        if rec.values[2] == Value::Absent {
+            dead(out, at);
+            out.del(k);
+        } else {
+            out.put(k, loc_bytes(at));
+        }
+        Ok(())
+    }
+
+    fn is_live(&self, rec: &Record, pos: u64, view: &View) -> Result<bool, StoreError> {
+        live_at(view, &key::id(ITEMIZED, id(rec, 0)), pos)
+    }
+
+    fn repoint(
+        &self,
+        rec: &Record,
+        from: u64,
+        to: Loc,
+        view: &View,
+        out: &mut Out,
+    ) -> Result<(), StoreError> {
+        repoint_at(view, out, &key::id(ITEMIZED, id(rec, 0)), from, to)
+    }
+}
+
 pub fn deriver(kind: &str) -> Option<&'static dyn Deriver> {
     Some(match kind {
+        "itemization" => &Itemization,
         "pointerMove" => &PointerMove,
         "forkSelection" => &ForkSelection,
         "messageAppend" => &MessageAppend,

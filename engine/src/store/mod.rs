@@ -27,6 +27,7 @@
 
 pub mod bulk;
 pub mod chat;
+pub mod chat_read;
 pub mod derive;
 pub mod kinds;
 pub mod library;
@@ -658,6 +659,11 @@ impl Store {
     /// Each name's `metaValue` JSON, or None.
     pub fn meta(&self, names: &[Vec<u8>]) -> StoreResult<Vec<Option<Vec<u8>>>> {
         self.derived(|v| kinds::meta(v, names))
+    }
+
+    /// A chat read (`chat_read`), against one state of the keyspace.
+    pub fn chat_read<T>(&self, f: impl FnOnce(&View) -> StoreResult<T>) -> StoreResult<T> {
+        self.derived(f)
     }
 
     /// The reorder pass's record and counts.
