@@ -266,6 +266,12 @@ describe('the library on the engine', () => {
         for (const [i, avatar] of avatars.entries()) {
             expect(rows[i]).toEqual(old[avatar]);
         }
+        // Read with only the values a row is made from, the rows are the same, creator notes or not.
+        for (const notes of [false, true]) {
+            const narrow = await library.entities(ents.map(e => e?.id ?? null), lib.listRowValues(notes));
+            expect(narrow.every(e => e?.hashes.length === 0)).toBe(true);
+            expect(await library.listRows(/** @type {any[]} */ (narrow), notes)).toEqual(await library.listRows(/** @type {any[]} */ (ents), notes));
+        }
     });
 
     test('query pages and totals are the old store\'s, through cursors', async () => {

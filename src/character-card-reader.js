@@ -228,10 +228,10 @@ export function cardListValues(card, includeCreatorNotes) {
 }
 
 /** The card_extra paths cardListValues() can read (the rest of the card it reads is in columns and card_tags). */
-const LIST_EXTRA_PATHS = Object.freeze(['whole', 'top:spec', 'present:data', 'top:data', 'name:data', 'name:top', 'data:name', 'top:name',
+export const LIST_EXTRA_PATHS = Object.freeze(['whole', 'top:spec', 'present:data', 'top:data', 'name:data', 'name:top', 'data:name', 'top:name',
     'mirror:name', 'data:tags', 'top:tags', 'mirror:tags', 'top:create_date', 'data:creator', 'data:character_version', 'top:creator',
     'present:extensions', 'data:extensions']);
-const LIST_CREATOR_NOTES_PATHS = Object.freeze(['data:creator_notes', 'top:creatorcomment', 'mirror:creatorcomment']);
+export const LIST_CREATOR_NOTES_PATHS = Object.freeze(['data:creator_notes', 'top:creatorcomment', 'mirror:creatorcomment']);
 
 /**
  * List rows from the fields layout, in the blob layout's shallow-copy shape (toShallow() as character-metadata-db.js

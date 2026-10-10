@@ -1835,22 +1835,44 @@ impl Store {
         })
     }
 
-    /// Each entity with everything it holds, or null.
+    /// Each entity with everything it holds, or null. With `only: { fields, lists }` just those values (a field
+    /// by code or key; a list's items with their texts) and no hashes.
     #[napi(
-        ts_args_type = "ids: (bigint | number)[]",
+        ts_args_type = "ids: (bigint | number)[], only?: { fields: (number | string)[], lists: number[] }",
         ts_return_type = "Promise<(object | null)[]>"
     )]
     pub fn library_entities<'env>(
         &self,
         env: &'env Env,
         ids: Vec<Unknown>,
+        only: Option<Object>,
     ) -> Result<Object<'env>> {
         let ids = ids
             .into_iter()
             .map(|v| integer("id", v))
             .collect::<Result<Vec<_>>>()?;
+        let only = match only {
+            None => None,
+            Some(o) => {
+                let mut fields = Vec::new();
+                for v in o.get::<Vec<Unknown>>("fields")?.unwrap_or_default() {
+                    fields.push(match v.get_type()? {
+                        ValueType::String => FieldRef::Key(string("field", v)?),
+                        _ => FieldRef::Code(integer("field", v)?),
+                    });
+                }
+                let lists = o
+                    .get::<Vec<Unknown>>("lists")?
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|v| integer("list", v))
+                    .collect::<Result<Vec<_>>>()?;
+                Some(library_read::Only { fields, lists })
+            }
+        };
         derived(env, &self.store, move |s| {
-            s.library_entities(&ids).map(LibraryEntities)
+            s.library_entities_with(&ids, only.as_ref())
+                .map(LibraryEntities)
         })
     }
 

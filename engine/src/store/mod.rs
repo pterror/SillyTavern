@@ -619,7 +619,19 @@ impl Store {
 
     /// Each entity with its values, or None where there is none, in the order asked.
     pub fn library_entities(&self, ids: &[u64]) -> StoreResult<Vec<Option<library_read::Entity>>> {
-        self.derived(|v| ids.iter().map(|e| library_read::entity(v, *e)).collect())
+        self.library_entities_with(ids, None)
+    }
+
+    /// Each entity as `library_read::entity_with` reads it, or None where there is none, in the order asked.
+    pub fn library_entities_with(
+        &self,
+        ids: &[u64],
+        only: Option<&library_read::Only>,
+    ) -> StoreResult<Vec<Option<library_read::Entity>>> {
+        self.derived(|v| match only {
+            Some(only) => library_read::entities_only(v, ids, only),
+            None => ids.iter().map(|e| library_read::entity(v, *e)).collect(),
+        })
     }
 
     /// The entity of each (type, key), or None.
@@ -768,11 +780,7 @@ impl Store {
 
     /// Each entity's type and key, or None.
     pub fn library_keys(&self, ids: &[u64]) -> StoreResult<Vec<Option<EntityKey>>> {
-        self.derived(|v| {
-            ids.iter()
-                .map(|e| Ok(library::entity_info(v, *e)?.map(|(t, k, _)| (t, k))))
-                .collect()
-        })
+        self.derived(|v| library_read::keys_many(v, ids))
     }
 
     /// The tags each entity carries as they are now (merged tags as their targets), in id order.
