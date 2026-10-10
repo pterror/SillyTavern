@@ -11,10 +11,12 @@
  *
  * Usage:
  *   cargo run --release --features measure --example search -- <store dir> synth <cards> --real --bulk --no-check
- *   node scripts/bench-search-synth.mjs --store <store dir> [--edits 50]
- * Prints one JSON object per query, and one for the edits.
+ *   node scripts/bench-search-synth.mjs --store <store dir> [--edits 50] [--pairs]
+ * `--pairs` turns pair postings on first and times their build. Prints one JSON object per query, one for the
+ * edits, and one for the build.
  */
 
+import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { performance } from 'node:perf_hooks';
@@ -46,14 +48,22 @@ async function median(run) {
 }
 
 async function main() {
-    const { values } = parseArgs({ options: { store: { type: 'string' }, edits: { type: 'string', default: '50' } } });
+    const { values } = parseArgs({ options: { store: { type: 'string' }, edits: { type: 'string', default: '50' }, pairs: { type: 'boolean', default: false } } });
     if (!values.store) throw new Error('--store <dir>: a store the engine bench wrote with --real');
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(REPO_ROOT, 'default', 'config.yaml'));
     const { LibraryEngine } = await import('../src/library-engine.js');
     const { loadEngine } = await import('../engine/load.js');
     const lib = await LibraryEngine.open(loadEngine().binding, path.resolve(values.store));
+    const runBytes = () => fs.readdirSync(path.join(values.store, 'runs')).reduce((n, f) => n + fs.statSync(path.join(values.store, 'runs', f)).size, 0);
     try {
+        if (values.pairs) {
+            const before = runBytes();
+            const t = performance.now();
+            await lib.setPairPostings(true);
+            await lib.runPairPostings(0);
+            console.log(JSON.stringify({ phase: 'pairs', build_s: Number(((performance.now() - t) / 1000).toFixed(1)), runs_before: before, runs_after: runBytes() }));
+        }
         for (const search of QUERIES) {
             for (const sortField of ['search', 'name']) {
                 const query = () => lib.query({ search, sortField, limit: 50, includeGroups: true });

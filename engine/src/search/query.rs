@@ -255,6 +255,37 @@ pub fn run(view: &View, q: &Query, cache: &StatsCache) -> StoreResult<Found> {
     Ok(found)
 }
 
+/// Up to `most` documents matching the query, in id order, unscored; None when more match or the work limit cut
+/// the walk short.
+pub fn matches_whole(
+    view: &View,
+    q: &Query,
+    cache: &StatsCache,
+    most: usize,
+) -> StoreResult<Option<Vec<u64>>> {
+    let mut ctx = Ctx::new(view, Some(cache));
+    let mut plan = Plan::new(&mut ctx, q)?;
+    if !plan.complete {
+        return Ok(None);
+    }
+    let budget = ctx.work.saturating_add(q.limits.enumerate);
+    let mut out = Vec::new();
+    let mut d = 0;
+    loop {
+        match plan.next_match(&mut ctx, d, u64::MAX, budget, None, &mut Walk::default())? {
+            Step::Match(doc, _) => {
+                if out.len() == most {
+                    return Ok(None);
+                }
+                out.push(doc);
+                d = doc + 1;
+            }
+            Step::End => return Ok(Some(out)),
+            Step::Stopped(_) => return Ok(None),
+        }
+    }
+}
+
 /// Whether documents match a query's clauses and filters, one document at a time in any order: for walking
 /// another structure's order and checking each document.
 pub struct Matching<'a> {

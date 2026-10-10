@@ -2,9 +2,9 @@
 //! under the list's filter, in relevance order or any of the list's orders, with the tags whose names match.
 //!
 //! In relevance order the search reads its postings, the list's filter checked per document. In a list order,
-//! a search whose matches all come within its best √(page · library) is read whole and its matches placed in the
-//! order (as listed ids); otherwise the order is walked, each entity checked against the search, under the list's
-//! work cap. The total is the search's (the listed ids' count when read whole).
+//! a search with at most √(page · library / READ_WHOLE) matches is read whole and its matches placed in the order
+//! (as listed ids); otherwise the order is walked, each entity checked against the search, under the list's work
+//! cap. The total is the search's (the listed ids' count when read whole).
 
 use super::StoreError;
 use super::derive::View;
@@ -14,6 +14,11 @@ use crate::search::Scope;
 use crate::search::query::{
     self, After, Clause, Filter, Found, Limits, Matching, Order, Refill, StatsCache, TagMatch,
 };
+
+/// What reading one match whole costs (its type, fav, filter and sort key read, then sorted) in walk steps (an
+/// entity of the order examined and checked against the search): measured 10-11 at 10^5 synthetic cards, ~150 µs
+/// against ~0.2 µs, rounded down. Matches are read whole when M · READ_WHOLE < P · N / M.
+const READ_WHOLE: u64 = 512;
 
 /// How a searched page is ordered.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -39,21 +44,17 @@ pub struct Searched {
     pub refill: Option<Refill>,
 }
 
-/// The search filters standing for the list's filter: its tags and ids lead the search, and the rest is checked
-/// per document as a list page checks it.
+/// The search filters standing for the list's filter: its ids lead the search, and the rest is checked per
+/// document as a list page checks it (tags through their merges, which a leading tag filter wouldn't follow).
 fn filters(q: &Query) -> Vec<Filter> {
     let f = &q.filter;
     let mut out = Vec::new();
-    if !f.all_tags.is_empty() {
-        out.push(Filter::AllTags(f.all_tags.clone()));
-    }
-    if !f.any_tags.is_empty() {
-        out.push(Filter::AnyTag(f.any_tags.clone()));
-    }
     if let Some(ids) = &f.ids {
         out.push(Filter::Ids(ids.clone()));
     }
-    out.push(Filter::Check(std::sync::Arc::new(LibraryCheck(f.clone()))));
+    if LibraryCheck::needed(f) {
+        out.push(Filter::Check(std::sync::Arc::new(LibraryCheck(f.clone()))));
+    }
     out
 }
 
@@ -144,12 +145,23 @@ fn by_list(
     let page = (q.limit as u64).saturating_add(q.offset).max(1);
     let few = q
         .cap
-        .min(page.saturating_mul(library_size(view, q)?).isqrt());
-    // The best `few` matches: every match when the search ends within them.
-    let found = query::run(view, &search_query(q, clauses, few as usize, None), cache)?;
+        .min((page.saturating_mul(library_size(view, q)?) / READ_WHOLE).isqrt());
+    // A count first (a word's is its counter); unless it is exact and over `few`, the matches read in id order,
+    // all of them when at most `few`.
+    let counted = query::run(view, &search_query(q, clauses, 1, None), cache)?;
+    let over = counted.total_exact && counted.total > few;
+    let all = if over {
+        None
+    } else {
+        query::matches_whole(
+            view,
+            &search_query(q, clauses, 0, None),
+            cache,
+            few as usize,
+        )?
+    };
     let mut out = Searched::default();
-    let all = (found.page_exact && !found.more).then(|| found.hits.iter().map(|h| h.doc).collect());
-    found_into(found, &mut out);
+    found_into(counted, &mut out);
     if let Some(ids) = all {
         let mut listed = q.clone();
         listed.filter.ids = Some(ids);
