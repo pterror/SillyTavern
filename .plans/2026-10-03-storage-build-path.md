@@ -972,14 +972,31 @@ Measured (`chat_records_round_trip_their_bytes`): a reply appended right after i
 a session: 12 bytes (header 1, id 1, parent 1, owner 1, time 2, text 3, flags 1, session 1, user 1). By the same
 encoding a 600-byte reply is 611 bytes, against design §6's ~620 and today's 14.3 frames (~58 KB) in 2 commits.
 
-Questions found for later pieces (behaviour or compat; not decided here):
-- `extra.branches` (today: at a fork, the names of the labels anywhere in each reply's subtree, a subtree walk per fork
-  on every load): what a fork shows under sessions and bookmarks, at a bounded cost.
-- `extra.bookmark_link` (today: the label on that message; upstream's checkpoints read it): which name it carries when
-  several bookmarks are at one message, and whether a following bookmark's moving pointer carries it.
-- Deleting a message a session's pointer or history names (history is kept in full); deleting a session.
-- An append's pointer move: today `addAlternatives` and `addOpeningAlternatives` add replies without changing the
-  shown one, `appendMessages` and graft change it; under sessions, which of these move the session's pointer.
+Answered (coordinator, 10-10), the questions piece 1 found:
+- `extra.branches` is upstream's compat field (upstream adds a branch's name to the message it was created from, and
+  upstream code and extensions read it), not something our UI shows. A message's `branches` are the names of the
+  bookmarks created from that message, recorded at creation (from `positionCreate`'s starting pointer and the name),
+  never a subtree walk; bounded per message. Today's subtree walk in `buildPathMessages` goes at the cut.
+- `extra.bookmark_link` on a message is the name of the latest bookmark created at that message. It stays on the
+  creation message (upstream's checkpoints don't move) and doesn't follow a following bookmark's pointer.
+- Deletes: a session's pointer naming a deleted message moves to its nearest surviving ancestor. History keeps the
+  entry, marked gone; back and forward skip gone entries. Deleting a session is an explicit action that removes its
+  pointer and its history.
+- An append moves the session's pointer when it becomes the shown message: a sent message, a generated reply, a newly
+  generated swipe, a graft that changes what is shown. Greetings and alternatives added without being shown (editor
+  additions, `addOpeningAlternatives`) don't. Routes pass the session accordingly.
+- Depth (the session list's message count): stored at the append from the parent's. Graft, degraft and swap rewrite
+  the depths of the moved subtree (those values really change; the move is a rare explicit action bounded by the
+  subtree), through the bulk path in bounded slices when the subtree is large, the moved messages' depth reads
+  consistent via the snapshot.
+
+Stop (10-10), on the last answer: how a large subtree's depth rewrite runs and what a read sees meanwhile. The store has
+two bounded paths, and neither fits as named. Bulk loads (`store::bulk`) go only into a store holding none of their
+kind, with nothing committed meanwhile. `Job::Derive` slices (the tag fold, search top lists) write derived entries in
+the commit queue between commits, so a read between two slices sees the published entries as they are: some moved
+messages at their new depth, the rest at their old one. The tag fold covers its gap with a pending-merge entry that
+readers fold in, and with counts marked as estimates. For depth, nothing names what the reads between slices answer
+(a count marked as an estimate, a pending offset folded in on read, or waiting), or what a snapshot is taken of.
 
 Where layer 1 goes: inside 5b, on the engine. Its own storage step (SQLite `state_changes`, saved states every 64th
 depth rebuilt lazily after an epoch bump) conflicts with the design: a structure caught up when read is what revision
