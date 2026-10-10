@@ -459,8 +459,8 @@ and the non-commutative entries it writes are its partition's), finished partiti
 spilled sorted, spills merged in parallel key ranges and the parts' blocks joined into one run; installing holds
 commits briefly (buffer flushed, files moved with an install marker, run put in place newest). Crash before the move:
 store as before; after: replay derives what the run didn't hold. A commit in a partition the load holds refuses it;
-`textEdit` isn't loaded (its commit changes the record). Picked: buffers 1 GiB together (resident peak ~2 GB at 10^6),
-partitions to workers in units of 64 ids. 10^6 synth: 183 s (commit path 93 min); split: caller thread 143 s (the
+`textEdit` isn't loaded (its commit changes the record). Picked: buffers 1 GiB together (resident peak ~2 GB at 10^6; 2.6 GB
+after 5d's follow-up 3), partitions to workers in units of 64 ids (1,024 since 5d's follow-up 3, a posting block). 10^6 synth: 183 s (commit path 93 min); split: caller thread 143 s (the
 generator ~90 s of it, layout and staged writes the rest), derivation 1,491 s and spilling 336 s of CPU over 22
 workers, merge 38 s, install 0.08 s; bound by the caller thread. 10^5: 18 s (282 s), the same derived entries.
 
@@ -1803,8 +1803,8 @@ row; the benches. Nothing routes to it: at the cut (5f) `/query` reads `lib.quer
 `tagMatches` in its JSON and hash answers), `/api/chats/search` `searchSessions`, a chat name `sessionsNamed`, the
 new `/api/worldinfo/search` `books.search`, the pair postings' route and setting are added, and the server runs
 `runPairPostings()` after listening. Follow-ups (10-11, in progress): list rows read narrow (done, below); pair lists driving a phrase's candidates
-(done, "Pairs driving the walk" below);
-the 10^6 bulk load under 300 s; session names unique per user; a character book entry's `group` and
+(done, "Pairs driving the walk" below); the 10^6 bulk load under 300 s (done, "Bulk load under 300 s" below);
+session names unique per user; a character book entry's `group` and
 `automationId` searched.
 
 Built, list rows read narrow (10-11, 5d follow-up 1; `library_read::entities_only`, `keys_many`, binding
@@ -1940,7 +1940,7 @@ cards, every match scored, its 1 s index lag):
 
 | | 10^5 | 10^6 |
 |---|---|---|
-| bulk load (records, s) | 5.3 M, 53.6 | 51.2 M, 380.5 (stage 4's test codes: 270; the real library also writes orders, numberings, items) |
+| bulk load (records, s) | 5.3 M, 53.6 (41.5 after follow-up 3) | 51.2 M, 380.5 (stage 4's test codes: 270; the real library also writes orders, numberings, items); 272.4 after follow-up 3 |
 | runs | 0.56 GB (search entries 0.27) | 4.85 GB (search entries 2.44) |
 | one word or prefix, engine | 0.10–0.24 ms | 0.10–0.32 ms |
 | 2–3 words, engine | 1.7–4.4 ms | 10–20 ms |
@@ -1975,6 +1975,34 @@ the page through `LibraryEngine.query` after it):
 
 By name, a phrase with few matches is counted, read in id order, then listed by `library_read::page` with those ids,
 each entity's state read (~0.4 ms a match here). An unclosed phrase with one whole word has no pair to drive it.
+
+Bulk load under 300 s (follow-up 3, 10-11; `store/bulk.rs`, `store/derive.rs`, `examples/search.rs`). Where the
+10^6 load's 398.5 s went (this run; 380.5 before): the caller thread 244 s, bound by the workers (derivation
+4,843 s and spilling 515 s of CPU over 22), then merge 78 s, top lists 62 s, numberings 12 s. Per record on a worker:
+a tag assignment 165 µs, a create 730 µs. Found:
+- A worker's partition layer was a hash map, and a scan of it (a card's tags, a text's edits, the state a tag
+  assignment reads) went through every entry the partition held, a card's search postings included: a tag
+  assignment's state read was ~140 µs. The layer is now two: a sorted map, scanned by range, and a hash map for the
+  search index's structures (`SEARCH_STRUCTURES`, read by key, many and cheaper to add to a hash map), which a scan
+  of any other structure passes by (`Layer::Hashed` names its structures). Assignment 165 → 26 µs.
+- A record read during a load opened its staged file and decoded its block each time (4.6 M reads, 51 s of CPU at
+  10^5). Each worker keeps the staged records it derived or read, up to 16 MiB encoded (`StagedRecords`, all let go
+  at once past that): 4.6 M → 431 reads at 10^5.
+- Workers took partitions in units of 64 ids, so the cards a worker held between spills each added their own posting
+  maps; in units of a posting block (1,024 ids) they share them: spills 3,146 → 2,526, 12.3 → 10.3 GB, spilling
+  CPU 617 → 315 s, merge 66 → 51 s.
+- The bench's card generator (the synthetic text, ~165 s at 10^6 alone) ran on the caller thread; it now runs on a
+  thread of its own, so the load's time is the loader's. A conversion (5e) reading files has its own reader there.
+
+| 10^6, s | before | after |
+|---|---|---|
+| load | 398.5 | 272.4 |
+| caller phase (layout, staged writes, waiting on workers or the generator) | 244 | 148 |
+| derivation / spilling (CPU, 22 workers) | 4,843 / 515 | 2,539 / 315 |
+| merge / top lists / numberings | 78 / 62 / 12 | 51 / 59 / 12 |
+| resident peak | 2.1 GB | 2.6 GB |
+
+The run is the same (202,172,151 entries); at 10^5 every query the engine marks exact equals the scan.
 
 Built, the chip row (10-11; `public/scripts/tag-match-chips.js`, `character-list.js` `showTagMatches`,
 `#character_tag_matches` above the list's pagination; the hash-mode answer's tag matches in

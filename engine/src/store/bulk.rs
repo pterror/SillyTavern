@@ -24,7 +24,7 @@
 //! installed before the load's, covering only the log before it, so a crash between the two leaves replay to
 //! derive the load over it.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File};
 use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
@@ -34,7 +34,7 @@ use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::thread::JoinHandle;
 use std::time::Instant;
 
-use super::derive::{Layer, Loc, Out, Staged, View, deriver};
+use super::derive::{Layer, Loc, Out, Staged, StagedRecords, View, deriver};
 use super::{Inner, Loading, Store, StoreError, StoreResult};
 use crate::keyspace::cache::Cache;
 use crate::keyspace::run::{Merge, ReadCounts, Run, RunIter, RunWriter, Source};
@@ -48,8 +48,11 @@ pub const LOAD_BUFFER_BYTES: usize = 1 << 30;
 pub fn load_workers() -> usize {
     std::thread::available_parallelism().map_or(1, |n| n.get().saturating_sub(2).max(1))
 }
-/// Partitions go to workers in units of `1 << UNIT_BITS` consecutive ids.
-const UNIT_BITS: u32 = 6;
+/// Partitions go to workers in units of `1 << UNIT_BITS` consecutive ids: a posting block's (`BLOCK_BITS`), so the
+/// cards a worker holds between spills share their terms' posting maps instead of each adding its own.
+const UNIT_BITS: u32 = crate::search::BLOCK_BITS;
+/// Encoded bytes of staged records a worker keeps in hand (`StagedRecords`).
+const RECORDS_HELD: u64 = 16 << 20;
 /// A sink entry's memory besides its key and value.
 const ENTRY_OVERHEAD: usize = 128;
 
@@ -444,6 +447,7 @@ impl Loader<'_> {
             counts: ReadCounts::default(),
             staged_dir: self.dir.clone(),
             staged_from: log::position(self.first_file, 0),
+            records: Arc::new(StagedRecords::default()),
         };
         let view = || View {
             layers: Vec::new(),
@@ -562,6 +566,7 @@ impl Loader<'_> {
             counts: ReadCounts::default(),
             staged_dir: dir.clone(),
             staged_from: 0,
+            records: Arc::new(StagedRecords::default()),
         };
         let mut sink: HashMap<Vec<u8>, Val> = HashMap::new();
         let mut sink_bytes = 0;
@@ -856,18 +861,23 @@ fn work(
     seq: &AtomicU64,
 ) -> StoreResult<Spilled> {
     let mut out = Spilled::default();
-    let mut cur: HashMap<Vec<u8>, Val> = HashMap::new();
+    // The partition's entries: sorted, so a derivation's scans read a range of them, not all; the search index's
+    // many entries (postings, maxima, frequencies; read by key) in a hash map, cheaper to add to.
+    let mut cur: BTreeMap<Vec<u8>, Val> = BTreeMap::new();
+    let mut cur_search: HashMap<Vec<u8>, Val> = HashMap::new();
     let mut cur_partition: Option<u64> = None;
     let mut cur_again = false;
     let mut highest: Option<u64> = None;
     let mut sink: HashMap<Vec<u8>, Val> = HashMap::new();
     let mut sink_bytes = 0usize;
+    let records = Arc::new(StagedRecords::new(RECORDS_HELD));
     let mut staged = Staged {
         runs: Vec::new(),
         cache: Cache::new(16 << 20),
         counts: ReadCounts::default(),
         staged_dir: dir.to_path_buf(),
         staged_from,
+        records: records.clone(),
     };
     let records_only = Staged {
         runs: Vec::new(),
@@ -875,13 +885,17 @@ fn work(
         counts: ReadCounts::default(),
         staged_dir: dir.to_path_buf(),
         staged_from,
+        records: records.clone(),
     };
     let mut parts = BufWriter::new(File::create(dir.join(format!("parts-{w}")))?);
     for batch in rx {
         let (t, spilling) = (Instant::now(), out.spill_micros);
         for (rec, at, partition) in batch {
             if cur_partition != Some(partition) {
-                for (k, v) in cur.drain() {
+                for (k, v) in std::mem::take(&mut cur)
+                    .into_iter()
+                    .chain(cur_search.drain())
+                {
                     sink_bytes += sink_add(&mut sink, k, v);
                 }
                 let again = highest.is_some_and(|h| partition <= h);
@@ -895,7 +909,10 @@ fn work(
                 highest = Some(highest.map_or(partition, |h| h.max(partition)));
             }
             let view = View {
-                layers: vec![Layer::Hashed(&cur)],
+                layers: vec![
+                    Layer::Sorted(&cur),
+                    Layer::Hashed(&cur_search, SEARCH_STRUCTURES),
+                ],
                 pending: Vec::new(),
                 staged: Some(if cur_again { &staged } else { &records_only }),
                 bulk: true,
@@ -910,11 +927,15 @@ fn work(
                     StoreError::Failed(format!("the {} record at {}: {e}", rec.kind.name, at.pos))
                 })?;
             drop(view);
-            o.apply_hashed(&mut cur);
+            records.put(at.pos, &rec, at.len);
+            o.apply_split(&mut cur, &mut cur_search, search_entry);
         }
         out.derive_micros += t.elapsed().as_micros() as u64 - (out.spill_micros - spilling);
     }
-    for (k, v) in cur.drain() {
+    for (k, v) in std::mem::take(&mut cur)
+        .into_iter()
+        .chain(cur_search.drain())
+    {
         sink_add(&mut sink, k, v);
     }
     if !sink.is_empty() {
@@ -922,6 +943,32 @@ fn work(
     }
     parts.flush()?;
     Ok(out)
+}
+
+/// The search index's structures: a load worker keeps their entries in a hash map.
+const SEARCH_STRUCTURES: &[u64] = {
+    use super::kinds::key;
+    &[
+        key::SEARCH_POSTING,
+        key::SEARCH_DOC_FREQ,
+        key::SEARCH_BLOCK_MAX,
+        key::SEARCH_LENGTH,
+        key::SEARCH_TERM_DOCS,
+        key::SEARCH_FIELD_TOKENS,
+        key::SEARCH_DOCS,
+        key::SEARCH_MAX_DOC,
+        key::SEARCH_SHORTEST,
+        key::SEARCH_TOP,
+        key::SEARCH_TOP_GENERATION,
+        key::SEARCH_TOP_ENTRY,
+        key::SEARCH_TOP_COUNT,
+    ]
+};
+
+/// Whether a key is a search index entry (`SEARCH_STRUCTURES`).
+fn search_entry(k: &[u8]) -> bool {
+    let mut at = 0;
+    crate::keyspace::val::get_u64(k, &mut at).is_some_and(|s| SEARCH_STRUCTURES.contains(&s))
 }
 
 /// Merges `runs` (newest first) into one run at `path`: key ranges merged in parallel, each into a part, the
