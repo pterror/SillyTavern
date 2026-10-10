@@ -592,8 +592,9 @@ library; nothing routes to them until 5-cut.
   edit (31.2): record bytes, device bytes per isolated action (one sync), derived bytes amortized over a flush; and
   `/query` pages and counts (O(log N + P)) at the three engine sizes of stage 3.
 
-Status: **characters, groups, tag assignments and merges, filtered pages and bulk numberings built; tag definitions
-in full and the tag manager left** (699b6c82c, 128d87d59, 52205f041, 65a2fc3fc; 10-10 later: 334c6fdbe filtered pages,
+Status: **characters, groups, tag assignments and merges, filtered pages and bulk numberings built; the tag
+manager's engine side built (38e89f5df, 331d897c2); its JS layer, moves and reorders, restore and the settings import
+left** (see "Tags on the engine, 10-10" and its handover below) (699b6c82c, 128d87d59, 52205f041, 65a2fc3fc; 10-10 later: 334c6fdbe filtered pages,
 ad5e1fb37 `entityUpdate` and two-hash lookups, 5891f55f0 groups and the small writers, 25d235045 bulk numberings).
 Nothing routes to it. Answered (coordinator, 10-10): a tag merge is one record, readers of the target take the merged tags'
 orders while the carriers move in bounded steps off the request path, counts of the target marked estimates
@@ -730,32 +731,117 @@ read 1,300 blocks, 100 ms); fixed by committing the create last (65a2fc3fc). The
 surrogate into U+FFFD (name `a\ud800b` reads `a���b`); the engine keeps it.
 
 Left (handover, 10-10):
-- Tag definitions in full and the tag manager (`src/endpoints/tags.js`'s 20 routes; the old store's `queryTags()`,
-  `character-metadata-db.js` ~7960-8655, is the answer to compare against). What exists: a tag is an entity (type 2,
-  key its id) whose name is text field 1 and folder type text field 40, every other key JSON as `tag:<key>`
-  (`writeTag()`); merges and folds; usage per tag is `MEMBER_COUNT`. To build, read from the old store's code:
-  - orders over tags for the list's three sorts: alphabetical (`tagNameKey()`: NFD, U+0300–036F dropped, lower-cased;
-    UTF-8 byte order, unlike `fold_name()`), by entries (usage descending, then name key), manual (the
-    `tagDerivedColumns()` sort order, numbers first ascending, then the unordered by name key); ties by entity id
-    (the old store's rowid is insertion order too); each split by the folder bit (folder type present and not
-    `NONE`) and the used bit (usage > 0), the `folders` and `used` filters being parts as fav and type are for
-    characters. `tagAssign` and the fold move a tag's by-entries entry when its count changes (one read of the
-    count at commit). The manual key needs the writer's coerced sort order recorded beside the stored JSON value,
-    as `createDate` is for cards (only when it changes);
-  - `queryTags()`'s filters (`search` prefix, `name`, `contains`, `ids`, `folderType`) checked per row under its work
-    cap, cursors, and `counts` from `MEMBER_COUNT` plus the merges still folding (those marked approximate);
-  - the writers for create, edit, rename-key (`entityUpdate`), delete with merge (`deleteTag()`), prune, backup and
-    restore, the settings tag import, and moves: a move is one tag's new sort order between its neighbours'; the old
-    store's reorder passes (a whole order's sort orders written in a non-manual mode) are its answer to a write over
-    every tag, which on the engine is a write per tag, so how a reorder in another mode is answered is read from
-    `reorderTagDefinitions()` and the tag-actions plan before building.
 - List rows read whole cards; a read of only the listed fields would cut a page's log reads.
 - `/query`'s folder case (`applyFolderCase()`) is route code at the cut; the engine reads its `closed_folders` range.
 - The identity-pair lookup has no fallback for cards without an avatar identity hash (the old store reads the PNG):
   5e records one for every card it converts.
 - Random pages over a driver larger than the cap read a point per permutation place (97 ms for two tags at 2.2M);
-  a ~15% size range is bounded by its sampled total's record reads (107 ms at 2.2M).
+  a ~15% size range is bounded by its sampled total's record reads (107 ms at 2.2M). Both still open (below).
 - Last chat and chat size keys are 0 until 5b's message derivers feed them; groups' `chat_id` and `chats` come from 5b.
+
+Tags on the engine, 10-10 (38e89f5df, 331d897c2; `engine/src/store/tags.rs`, tests `tags_tests.rs`):
+- A tag is an entity of type 2, key its id. Its name is text field 1 and its folder type text field 40 (JSON for a value
+  that isn't a string). Every other key is JSON `tag:<key>`. A definition marker, JSON '' in field 41
+  (`tags::DEFINED`), says it has a definition. A tag entity without the marker is a key that only assignments
+  name (upstream's `tag_map` may name such a key; the old store keeps the assignments with `defined: false`). It is
+  assigned like any tag and listed nowhere until a definition with the marker is written.
+- Each defined tag has a place (`TAG_PLACE`: its name folded as `tagNameKey()`, its folder type, its manual order) and
+  three orders (`TAG_ORDER`: alphabetical, by entries (carriers most first, then the name), manual (ordered tags by
+  order, then the rest by name)). Each order is split by the folder bit and the used bit. Counts are kept per part
+  (`TAG_PART_COUNT`). All of these are kept at commit: on names, folder types, orders and carrier counts
+  (`tagAssign`, entity deletes, fold steps). Bulk loads leave them out, and the load builds them after its merge,
+  only into a library with no characters, groups or tags.
+- New kinds: `tagOrder { tag, order? }` (base 33) holds `sort_order` as upstream coerces it (JS `Number()`; null
+  is 0; anything else unordered). The writer computes it and records it beside the stored JSON whenever it changes,
+  as it does `createDate`. `tagPrune { tag }` (base 35) deletes the tag only if nothing carries it (nor a merged tag
+  whose carriers are still moving); otherwise it does nothing, so a prune racing an assign loses nothing.
+- Change feeds: `TAG_CHANGE (position, tag)` holds one entry per tag (deleted ones included) at its last definition
+  change. `ENTITY_TAG_CHANGE (position, entity)` holds one entry per entity at the last change of its tags. Each feed
+  is one entry per item, so it never needs a reset for having lost its history.
+- A deleted tag's key stays found (`TAG_GONE_KEY` / `TAG_GONE_ID`): `tagStatus` answers `gone` and the key of the
+  live tag its merges lead to.
+- Fixed (331d897c2): unassigning a tag merged into another used to also remove the target's membership. An entity
+  carrying both lost the target, because the client's delete-and-merge unassigns the merged tag from each carrier.
+  Now only the named tag's own membership goes, as in the old store (test `unassigning_a_merged_tag_keeps_its_target`).
+- Binding (`Store.*`): `tagPage({ sort: 0 alphabetical | 1 by entries | 2 manual, folders?, used?, folderType?,
+  search?, name?, contains?, ids?, after?, limit, cap? })` → `{ ids, more, cursor? }`. Names are folded in Rust; the
+  cursor is opaque; a cursor made for another sort rejects with `invalid-cursor`. Also `tagCounts(ids)` →
+  `[{ count, approximate }]`, `tagUnused(limit)` → `{ count, ids }`, `tagByNames(names)`, `tagMaxOrder()`,
+  `tagStatus(keys)` → `{ id, state: live|undefined|gone, into? }`, `tagKeys(ids)` (the same by id, with the key),
+  `tagFeed('tags' | 'entities', after, limit)` → `{ entries: [{ pos, id }], more, end }`, `libraryKeys(ids)`,
+  `libraryTagIds(ids)` (tags as they are now, merges resolved), and `tagAssignments(from, limit)` (entities with
+  tags in id order, for the backup). `libraryEntities` gains `tagOrder` for tags.
+
+Engineering choices (decided from the bounds; each picked and recorded):
+
+| choice | picked | reason |
+|---|---|---|
+| tie order | entity id in every tag order | ids are given out in creation order, as the old store's rowids were |
+| deleted tag ids | kept for good: `/by-ids` reports `merged` (or `gone`) permanently, and a create with a deleted id is refused `deleted` forever | the old store forgot the mark when its finishing pass ended; keeping it lets a saved filter holding the id be replaced instead of dropped (Data safety), at one entry per deleted tag |
+| feed positions | log positions, sent as plain JSON numbers | exact below 2^53, i.e. until about 2 TiB of log (2^17 files of 16 MiB) |
+| assignment feed cursors | one feed, so `groupsVersion` = `seq` in `/assignment-changes` and `/manifest` | the old store had two logs; the engine has one ordered feed; read from min(sinceSeq, sinceGroupsVersion) when a client sends both |
+| name folding | `tagNameKey()` reimplemented in Rust (NFD, U+0300–036F dropped, lower-cased, a lone surrogate as U+FFFD), with query strings folded in Rust too | stored and queried keys come from one function; it can differ from V8 only where Unicode versions differ |
+
+Handover for the tag JS layer (a fresh builder; the first attempt was withdrawn unlanded):
+- Module: `src/library-engine-tags.js` (picked name), a `LibraryTags` the `LibraryEngine` holds. It answers in the
+  old store's shapes what `src/endpoints/tags.js`'s routes call today. All definition writes go through one
+  serialized lane (`lib.serialized(2, '', ...)`), so the next sort order and free names are read and written with
+  nothing in between.
+- Writer: update `LibraryEngine.writeTag()` so it writes the marker (field 41) last among the values, before the
+  `entityCreate` of a new tag. It must also write `tagOrder` when the coerced order differs from the entity's
+  `tagOrder` (absent counts as null). The coercion is `tagDerivedColumns()`'s, which moves out of the old module.
+  The definition read is `{ id: key, name, folder_type, ...tag:* }`, field 41 left out (`contentHashOf` is
+  canonical, so key order doesn't matter).
+- API to expose, each against the old function named:
+  - `create` (`createTagDefinition`, freeName via `tagByNames`, next order `max(0, tagMaxOrder) + 1`): refused
+    `exists` for a live key and `deleted` for a gone one; an undefined key gets its definition.
+  - `edit` (`editTagDefinition`; patch merged over the stored definition, written only if it changed).
+  - `delete` (`deleteTagDefinition`; `tagMerge` + `entityDelete` in one commit; `mergeInto` resolved through
+    `tagStatus`'s `into`; refusals `deleted` / `missing` / `same`; `unreadable` can't happen on the engine).
+  - `countUnused` and `prune` (`tagUnused`, then one commit of `tagPrune` per id, then `tagKeys` to report those
+    now `gone`).
+  - `query` (`queryTags` incl. `counts` / `approximate` from `tagCounts`; ids through `tagStatus`, live ones only;
+    the cursor is base64url of the engine's cursor).
+  - `byIds` (the `/by-ids` answer: `tags` / `gone` / `merged` / `unchanged`; an undefined key is `gone`).
+  - `findByNames` (`findTagsByNames`).
+  - `changes` and `changesSeq` (`/changes`, `/manifest`, from `tagFeed('tags')` and `tagKeys`: live entries are
+    `tags`, gone ones `removed: { id, mergedInto }`; reset only for an unusable cursor or one past the end).
+  - `entityChanges` and `entityChangesEnd` (`/assignment-changes`, from `tagFeed('entities')` and `libraryKeys`).
+  - `tagIdsFor` (`/for`; `libraryTagIds`, then `tagKeys`, then `normalizeTagIds`; undefined keys included, as the
+    old store returns them).
+  - `assign` (`assignEntityTagReporting`): an unknown key gets an undefined tag entity (`entityCreate` type 2, no
+    marker), created in the lane, then the `tagAssign`; `assigned` / `reason` / `defined` come from `tagStatus`.
+  - `unassign`, `copy`, `move` (`/rename-key`).
+  - The backup streams (`tagPage` alphabetical in pages of 1000 for definitions; `tagAssignments` + `libraryKeys`
+    + `tagKeys` for `tag_map`).
+  - The upstream-facing routes keep their shapes (`by-ids`'s `tags` / `gone` / `merged`; the change feed's
+    `removed.mergedInto`; saved filters replace merged ids from `merged`).
+- Test: `tests/library-engine-tags.test.js` (picked name), set up as `tests/library-engine.test.js` is. It writes
+  the same tags, edits, assignments, merges (old store finished with `finishDeletedTags` before comparing), prunes and
+  undefined-key assignments to both stores, then compares: every sort × `used` / `folders` / `folderType` ×
+  `search` / `name` / `contains` page through cursors, `counts`, `by-ids`, `by-names`, `for`, unused counts, and the
+  changes feeds as sets of ids. Name sets include case, accents and ties.
+- Moves and reorders, read from `moveTagDefinition()` / `reorderTagDefinitions()` and tag-actions D1, D3, D10–D11,
+  D15–D19, D23–D28 before building:
+  - A move writes the moved tag's `sort_order` (JSON + `tagOrder`) at the midpoint with the anchor's neighbour in
+    the manual order (`tagPage` manual with ids/after reads it). With no room, it respreads a window of 16 rows,
+    doubling as needed. An unordered anchor first numbers the tail through it under the work cap, else it is
+    refused `unordered`.
+  - A reorder in alphabetical or by-entries mode is a pass writing `sort_order` 0, 1, 2, ... in that mode's live
+    order, in batches of commits with pauses (Boot and batches), resumable from a recorded place. Tags missed or
+    created mid-walk get max+1 at the end, then the queued moves and values apply in arrival order.
+  - While the pass walks, manual reads show the mode's order. Once it drains, they show the stored order. Either
+    way the queued entries are folded on top in memory (O(queued), as D16 bounds it), with cursors naming the
+    order they were made in. The pass record and the queue need record kinds of their own.
+- Restore (`restoreTagBackup`) and the settings tag import (`migrateSettingsTagsIfNeeded`, tag-actions D33–D35):
+  the same rules on the engine writers. Restore matches by id, then by first name (`tagByNames`); a gone id is
+  created under a new uuid; tags without an order get max+1 in alphabetical order; assignments are added and never
+  removed; every skip is listed.
+- Perf, not started:
+  - a ~15% size range's estimated total samples 10,000 stored values (74–107 ms); derive a cheaper estimate (e.g.
+    from the order's key distribution in run index metadata) if one holds the bounds;
+  - random with two tags at 2.2M reads a point per permutation place past the cap (97 ms); improve if the bounds
+    allow, else record why not.
 
 **5b. chats: trees, positions, state.**
 
