@@ -20,12 +20,15 @@ import { resolveGroupOwner } from '../character-shallow.js';
 import { readGroupFile, writeGroupFile } from './groups.js';
 import { withGroupLock } from '../group-lock.js';
 import { readCardContent } from './characters.js';
+import { triggerAutoSave } from './settings.js';
+import { readAllSettingsAsJson, readSettingsAtPaths, writeSettingsKeys } from '../settings-store.js';
+import { getStringHash } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel } from '../greeting-list.js';
 import {
     isAvailable as isTreeAvailable, hasSavedChats,
     saveChatToTree, loadBranch, forkBranch, labelNode,
     deleteBranch, renameBranch as renameBranchInTree, listBranches, listRecentBranches, searchBranchesByContent,
-    ownerDescriptorOf, renameCharacterInMessages, renameGroupMemberInMessages, getAlternatives, getContinuation, getAncestorPath, editMessage, editMessages, appendMessages, addAlternatives, setChatMetadata, getOpeningAlternatives, chooseCardOpening, findOpeningToLandOn, LANDING_EDITS_MAX, addOpeningAlternatives, loadAtNode, listLabels, setNodeMetadata, selectDefaultChild, endPathAt, endPathAtAnchor, graftMessage, degraftRange, swapAdjacent, deleteAlternative,
+    ownerDescriptorOf, renameCharacterInMessages, renameGroupMemberInMessages, getAlternatives, getContinuation, getAncestorPath, editMessage, editMessages, appendMessages, addAlternatives, setChatMetadata, getOpeningAlternatives, loadDefaultChain, chooseCardOpening, findOpeningToLandOn, LANDING_EDITS_MAX, addOpeningAlternatives, loadAtNode, listLabels, setNodeMetadata, selectDefaultChild, endPathAt, endPathAtAnchor, graftMessage, degraftRange, swapAdjacent, deleteAlternative,
 } from '../message-tree-db.js';
 
 /**
@@ -550,19 +553,146 @@ router.post('/get', validateAvatarUrlMiddleware, async function (request, respon
             return response.status(404).send({ error: 'not_found' });
         }
 
-        // No file_name: the frontend always sends one, but a direct API caller might not. Ensure the
-        // character's chat directory exists (other routes assume it does) and report an empty chat.
-        const directoryPath = path.join(request.user.directories.chats, dirName);
-        if (!isPathUnderParent(request.user.directories.chats, directoryPath)) {
-            return response.sendStatus(400);
-        }
-        if (!fs.existsSync(directoryPath)) {
-            fs.mkdirSync(directoryPath);
-        }
+        // No file_name: an empty chat, as upstream answers it.
         return response.send({});
     } catch (error) {
         console.error(error);
         return response.send({});
+    }
+});
+
+/**
+ * Records which character or group the user last opened (the `active_character` and `active_group` settings),
+ * when it changed.
+ * @param {import('express').Request} request
+ * @param {{ character: string|null, group: string|null }} opened
+ * @returns {{ active_character: string|null, active_group: string|null, settings_hash?: number }} The stored values;
+ * `settings_hash` (the whole settings' hash, as /api/settings answers it) when they were written.
+ */
+function recordLastOpened(request, opened) {
+    const directories = request.user.directories;
+    const current = readSettingsAtPaths(directories, ['active_character', 'active_group']);
+    const stored = { active_character: opened.character, active_group: opened.group };
+    if ((current.active_character ?? null) === stored.active_character && (current.active_group ?? null) === stored.active_group) {
+        return stored;
+    }
+    writeSettingsKeys(directories, stored);
+    triggerAutoSave(request.user.profile.handle);
+    return { ...stored, settings_hash: getStringHash(readAllSettingsAsJson(directories)) };
+}
+
+/**
+ * A card's openings as the page draws them: the first window (`openings`, as /openings answers an empty body) and,
+ * when the card has greetings with no row, all of those (`card_openings`, as /openings answers `{ offset: stored,
+ * limit: card-only count }`).
+ * @param {Directories} directories
+ * @param {string} ownerId
+ * @param {string} avatar
+ */
+async function openingsForPage(directories, ownerId, avatar) {
+    const cardGreetings = await _cardGreetingsFromDisk(directories, avatar);
+    const openings = await getOpeningAlternatives(directories, ownerId, {}, cardGreetings);
+    if (!openings) return { openings: null, card_openings: null };
+    const stored = openings.stored;
+    const cardOnly = openings.total - stored;
+    const cardOpenings = cardOnly > 0
+        ? await getOpeningAlternatives(directories, ownerId, { offset: stored, limit: cardOnly }, cardGreetings)
+        : null;
+    return { openings, card_openings: cardOpenings };
+}
+
+/**
+ * Opens a character's or a group's conversation: the one named by `chat` (a chat name or node id, as upstream names
+ * chats) when it exists, else the one it is on, else (a character) its most recently active bookmark, else the
+ * choices last made from its first message, else nothing yet (the card's greetings). With `make_current`, a `chat`
+ * that exists becomes the owner's current one. Records which character or group was opened last. Writes only what
+ * changed; mints no names and creates nothing on disk.
+ *
+ * Body: `{ avatar_url }` or `{ group_id }`; optionally `chat`, `make_current`, and (a character) `fresh`: open no
+ * conversation, only the card's greetings (a new chat).
+ * Answers `{ chat, chat_metadata, messages, openings, card_openings, active_character, active_group, settings_hash? }`:
+ * `chat` is upstream's identifier for the open chat ('' when there is no conversation yet), `messages` as
+ * /get answers them after the header; `openings`/`card_openings` for a character only (null for a group);
+ * for a group also `chats` and `date_last_chat` as stored. 404 when the character or group doesn't exist.
+ */
+router.post('/open', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const directories = request.user.directories;
+        const requested = typeof request.body.chat === 'string' && request.body.chat !== '' ? request.body.chat : null;
+        const makeCurrent = request.body.make_current === true;
+
+        if (request.body.group_id) {
+            const groupId = String(request.body.group_id);
+            const opened = await withGroupLock(directories, groupId, async () => {
+                const group = readGroupFile(directories, groupId);
+                if (!group) return null;
+                const chats = Array.isArray(group.chats) ? group.chats : [];
+                const target = requested !== null && chats.includes(requested) ? requested : group.chat_id;
+                if (makeCurrent && target !== group.chat_id) {
+                    group.chat_id = target;
+                    group.date_last_chat = Date.now();
+                    await writeGroupFile(directories, group);
+                }
+                return { chatId: String(target ?? ''), chats, dateLastChat: group.date_last_chat };
+            });
+            if (!opened) return response.sendStatus(404);
+
+            const loaded = opened.chatId
+                ? await loadAtNode(directories, groupId, opened.chatId) ?? await loadBranch(directories, groupId, opened.chatId)
+                : null;
+            return response.send({
+                chat: opened.chatId,
+                chat_metadata: { ...(loaded?.metadata ?? {}) },
+                messages: loaded?.messages ?? [],
+                openings: null,
+                card_openings: null,
+                chats: opened.chats,
+                date_last_chat: opened.dateLastChat,
+                ...recordLastOpened(request, { character: null, group: groupId }),
+            });
+        }
+
+        const avatar = String(request.body.avatar_url || '');
+        if (!avatar) return response.sendStatus(400);
+        const ownerId = avatar.replace('.png', '');
+        if ((await readCardContent(directories, avatar)) == null) return response.sendStatus(404);
+
+        const fresh = request.body.fresh === true;
+        const current = (await getCharacterActiveChatsByIds(directories, [avatar]))[avatar] ?? null;
+        /** @type {{ messages: TreeChatMessage[], metadata: ChatMetadata } | null} */
+        let loaded = null;
+        let chatId = '';
+        for (const target of fresh ? [] : [requested, current]) {
+            if (target === null || loaded) continue;
+            loaded = await loadAtNode(directories, ownerId, target) ?? await loadBranch(directories, ownerId, target);
+            if (loaded) chatId = target;
+        }
+        if (loaded && makeCurrent && chatId === requested && requested !== current) {
+            await setCharacterActiveChat(directories, avatar, requested);
+        }
+        if (!loaded && !fresh) {
+            const branches = await listBranches(directories, ownerId);
+            branches.sort((a, b) => b.last_activity - a.last_activity);
+            if (branches.length) {
+                loaded = await loadAtNode(directories, ownerId, branches[0].id);
+                if (loaded) chatId = branches[0].id;
+            }
+        }
+        if (!loaded && !fresh) {
+            loaded = await loadDefaultChain(directories, ownerId);
+            chatId = loaded?.messages[0]?.node_id ?? '';
+        }
+
+        return response.send({
+            chat: chatId,
+            chat_metadata: { ...(loaded?.metadata ?? {}) },
+            messages: loaded?.messages ?? [],
+            ...await openingsForPage(directories, ownerId, avatar),
+            ...recordLastOpened(request, { character: avatar, group: null }),
+        });
+    } catch (error) {
+        console.error('Error opening a chat:', error);
+        return response.status(500).send({ error: true });
     }
 });
 

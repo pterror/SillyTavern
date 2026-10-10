@@ -275,7 +275,7 @@ import { initWelcomeScreen, openPermanentAssistantChat, openPermanentAssistantCa
 import { initDataMaid } from './scripts/data-maid.js';
 import { saveDraft, loadDraft, isDraftHeld } from './scripts/chat-draft.js';
 import { initFailedSends, keepFailedSend } from './scripts/failed-sends.js';
-import { clearItemizedPrompts, deleteItemizedPromptForMessage, deleteItemizedPrompts, findItemizedPromptSet, initItemizedPrompts, itemizedParams, itemizedPrompts, loadItemizedPrompts, promptItemize, replaceItemizedPromptText, saveItemizedPrompts, swapItemizedPrompts } from './scripts/itemized-prompts.js';
+import { clearItemizedPrompts, deleteItemizedPromptForMessage, deleteItemizedPrompts, findItemizedPromptSet, initItemizedPrompts, itemizedParams, itemizedPrompts, loadItemizedPrompts, promptItemize, replaceItemizedPromptText, saveItemizedPrompts, saveItemizedPromptsIfChanged, swapItemizedPrompts } from './scripts/itemized-prompts.js';
 import { getSystemMessageByType, initSystemMessages, SAFETY_CHAT, sendSystemMessage, system_message_types, system_messages } from './scripts/system-messages.js';
 import { event_types, eventSource } from './scripts/events.js';
 import { token, setToken, getRequestHeaders } from './scripts/request-headers.js';
@@ -1158,6 +1158,22 @@ export function getCurrentDraftContext() {
     return null;
 }
 
+/**
+ * The open chat, as getCurrentDraftContext() names it, but also for a chat with no messages stored yet (`chatId` '').
+ * @returns {import('./scripts/chat-draft.js').DraftContext|null} null when no character or group is open.
+ */
+export function getCurrentChatContext() {
+    const selection = getSelectionState();
+    const chatId = getCurrentChatId() ?? '';
+    if (selection.type === 'group') {
+        return { type: 'group', id: selection.groupId, chatId };
+    }
+    if (selection.type === 'character') {
+        return { type: 'character', id: selection.avatar, chatId };
+    }
+    return null;
+}
+
 // Synchronous, so safe to call directly right before a page reload rather than relying on the debounced wrapper.
 export function flushDraftSave() {
     const context = getCurrentDraftContext();
@@ -1501,7 +1517,7 @@ async function firstLoadInit() {
     initCustomSelectedSamplers();
     initDataMaid();
     initFailedSends({
-        addOneMessage, deleteMessage, getCurrentDraftContext, redisplayChat, reloadCurrentChat, updateViewMessageIds,
+        addOneMessage, deleteMessage, getCurrentChatContext, redisplayChat, reloadCurrentChat, updateViewMessageIds,
         switchToNode, chatOpAppendAfter, chatOpGraft, ensureOpeningRow, setSendStoredListener, setStoreRef, storeRefOf,
         isStoredNodeId, isProvisionalNodeId, t,
         confirmDiscard: async (text) => await callGenericPopup(text, POPUP_TYPE.CONFIRM, '', { okButton: t`Discard`, cancelButton: t`Keep it` }) === POPUP_RESULT.AFFIRMATIVE,
@@ -1649,7 +1665,7 @@ export async function selectCharacterByAvatar(avatar, { switchMenu = true } = {}
             setCharacterId(entity);
             setChatMetadata({});
             _resetMetadataSaveSnapshot();
-            await getChat();
+            await openCharacterConversation();
         } else {
             toastr.info(t`Please wait until the current generation finishes before switching characters.`, t`Generation in progress...`);
         }
@@ -1745,8 +1761,7 @@ async function pointToFreshChat() {
     _setCurrentTarget('', null);
     $('#selected_chat_pole').val('');
     setFormBaseline('#selected_chat_pole', String($('#selected_chat_pole').val()));
-    await getChat({ isNewChat: true });
-    // getChat() can refetch and clobber the clear above back to a still-old server value; reapply it before the save below.
+    await openCharacterConversation({ fresh: true });
     const openingNodeId = chat[0]?.node_id;
     const pointer = isStoredNodeId(openingNodeId) ? openingNodeId : '';
     _setCurrentTarget(pointer, chat_metadata.integrity ?? null);
@@ -1755,35 +1770,13 @@ async function pointToFreshChat() {
     await saveActiveChat(getCurrentCharacter().avatar, pointer);
 }
 
+/**
+ * Upstream's "the current chat is gone, open another": opens the character's conversation the server resolves
+ * (its current chat, else its most recently active one, else a new one).
+ */
 export async function replaceCurrentChat() {
     await clearChat({ clearData: true });
-
-    const chatsResponse = await fetch('/api/characters/chats', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({ avatar_url: getCurrentCharacter().avatar }),
-    });
-
-    if (chatsResponse.ok) {
-        const chats = Object.values(await chatsResponse.json());
-        chats.sort((a, b) => sortMoments(timestampToMoment(a.last_mes), timestampToMoment(b.last_mes)));
-
-        if (chats.length && typeof chats[0] === 'object') {
-            // Resume the most recently active labeled checkpoint. `/api/characters/chats` lists
-            // branches (labeled tree nodes) when this character is tree-backed - node_id addresses
-            // it exactly; the JSONL-era fallback shape has no node_id, so fall back to its name.
-            const pointer = chats[0].node_id || chats[0].file_name.replace('.jsonl', '');
-            _setCurrentTarget(pointer, null);
-            $('#selected_chat_pole').val(getCurrentCharacter().chat);
-            setFormBaseline('#selected_chat_pole', String($('#selected_chat_pole').val()));
-            await saveActiveChat(getCurrentCharacter().avatar, getCurrentCharacter().chat);
-            await getChat();
-        } else {
-            // No labeled checkpoint exists for this character. That does not mean "nothing to
-            // resume" - it only means nothing has been explicitly named (see pointToFreshChat()).
-            await pointToFreshChat();
-        }
-    }
+    await openCharacterConversation();
 }
 
 export async function showMoreMessages(messagesToLoad = null) {
@@ -1966,7 +1959,7 @@ export async function clearChat({ clearData = false } = {}) {
         $('.zoomed_avatar[forChar]').remove();
     } else { console.debug('saw no avatars'); }
 
-    await saveItemizedPrompts(getCurrentChatId());
+    await saveItemizedPromptsIfChanged(getCurrentChatId());
     itemizedPrompts.length = 0;
 
     if (clearData) {
@@ -2176,7 +2169,7 @@ export async function reloadCurrentChatUnsafe() {
     if (selection.type === 'group') {
         await getGroupChat(selection.groupId, true);
     } else if (selection.type === 'character') {
-        await getChat();
+        await openCharacterConversation({ chat: getCurrentCharacter().chat || null });
     } else {
         resetChatState();
         restoreNeutralChat();
@@ -7068,95 +7061,117 @@ export async function unshallowCharacter(characterId) {
 }
 
 /**
+ * The answer to POST /api/chats/open (see src/endpoints/chats.js).
+ * @typedef {object} ChatOpenAnswer
+ * @property {string} chat Upstream's identifier for the open chat; '' when there is no conversation yet.
+ * @property {ChatMetadata} chat_metadata
+ * @property {ChatMessage[]} messages
+ * @property {import('./scripts/chat-store.js').OpeningsResponse|null} openings
+ * @property {import('./scripts/chat-store.js').OpeningsResponse|null} card_openings
+ * @property {string[]} [chats] A group's chats.
+ * @property {number} [date_last_chat] A group's.
+ * @property {string|null} active_character
+ * @property {string|null} active_group
+ * @property {number} [settings_hash]
+ */
+
+/**
+ * Opens a character's or group's conversation on the server, which resolves which one, records what was
+ * opened, and answers everything the screen draws. Takes on the "last opened" settings it answers.
+ * @param {{ avatar_url?: string, group_id?: string, chat?: string|null, make_current?: boolean, fresh?: boolean }} body
+ * `chat`: open this chat (a chat name or node id) when it exists; `make_current`: and make it the owner's
+ * current chat; `fresh`: open no conversation, only the card's greetings (a new chat).
+ * @returns {Promise<ChatOpenAnswer>}
+ */
+export async function requestChatOpen(body) {
+    const response = await fetch('/api/chats/open', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        cache: 'no-cache',
+        body: JSON.stringify(body),
+    });
+    if (!response.ok) throw new Error(`/api/chats/open responded ${response.status}`);
+    /** @type {ChatOpenAnswer} */
+    const answer = await response.json();
+    setActiveCharacter(answer.active_character);
+    setActiveGroup(answer.active_group);
+    seedKeyHashes(serverKeyHashes, answer.active_character, 'active_character');
+    seedKeyHashes(serverKeyHashes, answer.active_group, 'active_group');
+    if (answer.settings_hash != null) knownServerSettingsHash = answer.settings_hash;
+    return answer;
+}
+
+/**
+ * Opens the selected character's conversation and draws it.
+ * @param {{ chat?: string|null, makeCurrent?: boolean, fresh?: boolean }} [options] See requestChatOpen(). Without
+ * `chat`, the server opens the one the character is on.
+ */
+async function openCharacterConversation({ chat: requested = null, makeCurrent = false, fresh = false } = {}) {
+    /** @type {ChatOpenAnswer|null} */
+    let answer = null;
+    try {
+        answer = await requestChatOpen({ avatar_url: getCurrentCharacter().avatar, chat: requested, make_current: makeCurrent, fresh });
+    } catch (error) {
+        console.error('Could not open the chat:', error);
+        toastr.error(t`The chat could not be opened. Check the server connection and try again.`, t`Chat not opened`);
+        await getChatResult();
+        return;
+    }
+
+    setChatMetadata(answer.chat_metadata ?? {});
+    _setCurrentTarget(answer.chat, chat_metadata.integrity ?? null);
+    _resetMetadataSaveSnapshot();
+    $('#selected_chat_pole').val(answer.chat);
+    setFormBaseline('#selected_chat_pole', String($('#selected_chat_pole').val()));
+    chat.splice(0, chat.length, ...answer.messages);
+    chat.forEach(ensureMessageMediaIsArray);
+    // Messages are immutable values, replaced only via updateMessage().
+    for (let i = 0; i < chat.length; i++) {
+        chat[i] = deepFreeze(chat[i]);
+    }
+    _snapshotMessages();
+    const openings = { openings: answer.openings, card_openings: answer.card_openings };
+    if (chat.length) await _mergeCardGreetingsIntoOpening({ openings });
+    await getChatResult({ openings });
+
+    // printMessages() -> ensureSwipes() synthesizes missing swipe shape via updateMessage(); re-snapshot so that alone doesn't queue an edit.
+    _snapshotMessages();
+
+    eventSource.emit(event_types.CHAT_LOADED, { detail: { character: getCurrentCharacter() } });
+
+    // Focus on the textarea if not already focused on a visible text input
+    delay(debounce_timeout.short).then(() => {
+        if (getMountedTextarea(document.activeElement) || $(document.activeElement).is('input:visible, textarea:visible')) {
+            return;
+        }
+        $('#send_textarea').trigger('click').trigger('focus');
+    });
+}
+
+/**
+ * Upstream's: loads the selected character's chat named by its `chat` (when that exists; otherwise the one the
+ * server resolves). Doesn't change which chat is the character's current one.
  * @param {object} [options]
- * @param {boolean} [options.isNewChat] True when the filename has never been saved, so a 404 is expected rather than a deleted-chat resurrection.
+ * @param {boolean} [options.isNewChat] Open no conversation, only the card's greetings (a new chat).
  */
 export async function getChat({ isNewChat = false } = {}) {
-    try {
-        await unshallowCharacter(getCurrentCharacter()?.avatar);
-
-        if (!isNewChat && !getCurrentCharacter().chat) {
-            // No chat pointer at all yet - nothing on disk could possibly match, so don't burn
-            // a request finding that out. Go straight to the same resolution a 404 would trigger.
-            await replaceCurrentChat();
-            return;
-        }
-
-        const response = await fetch('/api/chats/get', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            cache: 'no-cache',
-            body: JSON.stringify({
-                ch_name: getCurrentCharacter().name,
-                file_name: getCurrentCharacter().chat,
-                avatar_url: getCurrentCharacter().avatar,
-            }),
-        });
-
-        if (response.status === 404 && !isNewChat) {
-            // The persisted "current chat" pointer names a file gone from disk; fall back the same way delChat() does.
-            console.warn(`Chat file not found for ${getCurrentCharacter()?.chat}, replacing with an existing or new chat`);
-            await replaceCurrentChat();
-            return;
-        }
-
-        if (!response.ok && !(isNewChat && response.status === 404)) {
-            throw new Error('Chat could not be loaded');
-        }
-
-        // A brand-new, never-yet-saved chat file legitimately 404s - treat like the "empty/corrupted chat" case below.
-        const data = response.ok ? await response.json() : [];
-        if (Array.isArray(data) && data.length > 0) {
-            /** @type {ChatHeader} */
-            const chatHeader = data.shift();
-            setChatMetadata(chatHeader?.chat_metadata ?? {});
-            _setCurrentTarget(getCurrentCharacter().chat, chat_metadata.integrity ?? null);
-            _resetMetadataSaveSnapshot();
-            chat.splice(0, chat.length, ...data);
-            chat.forEach(ensureMessageMediaIsArray);
-            // Freeze messages loaded from tree DB: immutable values, replaced only via updateMessage()
-            for (let i = 0; i < chat.length; i++) {
-                chat[i] = deepFreeze(chat[i]);
-            }
-            _snapshotMessages();
-            await _mergeCardGreetingsIntoOpening();
-        } else {
-            // An empty/corrupted chat file
-            chat.splice(0, chat.length);
-            setChatMetadata({});
-            _setCurrentTarget(getCurrentCharacter().chat, null);
-            _resetMetadataSaveSnapshot();
-        }
-        await getChatResult();
-
-        // printMessages() -> ensureSwipes() synthesizes missing swipe shape via updateMessage(); re-snapshot so that alone doesn't queue an edit.
-        _snapshotMessages();
-
-        eventSource.emit(event_types.CHAT_LOADED, { detail: { character: getCurrentCharacter() } });
-
-        // Focus on the textarea if not already focused on a visible text input
-        delay(debounce_timeout.short).then(() => {
-            if (getMountedTextarea(document.activeElement) || $(document.activeElement).is('input:visible, textarea:visible')) {
-                return;
-            }
-            $('#send_textarea').trigger('click').trigger('focus');
-        });
-    } catch (error) {
-        await getChatResult();
-        console.log(error);
-    }
+    await unshallowCharacter(getCurrentCharacter()?.avatar);
+    await openCharacterConversation({ chat: getCurrentCharacter().chat || null, fresh: isNewChat });
 }
 
 /**
  * Puts the character's greeting into an empty chat as message 0. The caller prints the chat afterwards.
  * @returns {Promise<boolean>} Whether a message was pushed.
  */
-async function pushFirstMessageIntoEmptyChat() {
+/**
+ * @param {{ openings?: import('./scripts/chat-store.js').OpeningsResponse|null }} [options] The character's openings, when already read.
+ */
+async function pushFirstMessageIntoEmptyChat({ openings = null } = {}) {
     if (chat.length !== 0) {
         return false;
     }
     let pushed = false;
-    const message = await getFirstMessage();
+    const message = await getFirstMessage({ openings });
     if (message.mes) {
         if (power_user.message_token_count_enabled) {
             message.extra.token_count = await getTokenCountAsync(message.mes, 0);
@@ -7171,9 +7186,12 @@ async function pushFirstMessageIntoEmptyChat() {
     return pushed;
 }
 
-async function getChatResult() {
+/**
+ * @param {{ openings?: { openings: import('./scripts/chat-store.js').OpeningsResponse|null } }} [options] The character's openings, when already read.
+ */
+async function getChatResult({ openings = undefined } = {}) {
     name2 = getCurrentCharacter().name;
-    const freshChat = await pushFirstMessageIntoEmptyChat();
+    const freshChat = await pushFirstMessageIntoEmptyChat({ openings: openings?.openings ?? null });
     await loadItemizedPrompts(getCurrentChatId());
     await printMessages();
     select_selected_character(getCurrentCharacter()?.avatar);
@@ -7191,13 +7209,16 @@ async function getChatResult() {
 // _openingFromTree() is the only builder of a real greeting; its null return means the card itself
 // has no greeting text (not a failure - see that function's own doc comment), which callers treat as
 // "nothing to open on" via the empty `mes` below.
-async function getFirstMessage() {
+/**
+ * @param {{ openings?: import('./scripts/chat-store.js').OpeningsResponse|null }} [options] The character's openings, when already read.
+ */
+async function getFirstMessage({ openings = null } = {}) {
     const character = getCurrentCharacter();
     const { greetings, defaultIndex } = cardToGreetingsModel(character);
     const swipeId = defaultIndex ?? 0;
 
     // Raw greetings, not regexed: identity is the message as stored, and regex is a display transform.
-    const fromTree = await _openingFromTree(greetings, swipeId);
+    const fromTree = await _openingFromTree(greetings, swipeId, openings);
     if (fromTree) return fromTree;
 
     return {
@@ -7213,7 +7234,12 @@ async function getFirstMessage() {
 // Builds the opening from existing opening nodes so it carries a real node_id - the only place a
 // greeting is ever built. A null return means the card genuinely has no greeting text; a failure to
 // resolve the character or reach the store is a thrown error, not a silent, less-correct fallback.
-async function _openingFromTree(cardGreetings, preferredIndex) {
+/**
+ * @param {string[]} cardGreetings
+ * @param {number} preferredIndex
+ * @param {import('./scripts/chat-store.js').OpeningsResponse|null} [prefetched] The character's openings (as /api/chats/openings answers an empty body), when already read.
+ */
+async function _openingFromTree(cardGreetings, preferredIndex, prefetched = null) {
     const character = getCurrentCharacter();
     if (!character?.avatar) throw new Error('_openingFromTree: no resolvable character avatar');
 
@@ -7245,7 +7271,7 @@ async function _openingFromTree(cardGreetings, preferredIndex) {
 
     // A malformed (non-JSON) response is a real failure too, same as the request itself not being ok -
     // neither means "no chat history yet" or "no openings yet".
-    const openings = await post('/api/chats/openings', {});
+    const openings = prefetched ?? await post('/api/chats/openings', {});
     if (!openings) throw new Error('_openingFromTree: /api/chats/openings returned no usable body');
 
     const windowStart = openings.offset ?? 0;
@@ -7322,21 +7348,16 @@ export async function saveActiveChat(avatar, chat) {
     }
 }
 
+/**
+ * Opens one of the selected character's chats and makes it the character's current one (the server records it).
+ * @param {string} file_name The chat's name or node id.
+ */
 export async function openCharacterChat(file_name) {
     await waitUntilCondition(() => !isChatSaving, debounce_timeout.extended, 10);
     await clearChat({ clearData: true });
     setChatMetadata({});
-    _setCurrentTarget(file_name, null);
     _resetMetadataSaveSnapshot();
-
-    // Must run even if getChat fails, or "which chat was open" is lost on reload.
-    try {
-        await getChat();
-    } finally {
-        $('#selected_chat_pole').val(file_name);
-        setFormBaseline('#selected_chat_pole', String($('#selected_chat_pole').val()));
-        await saveActiveChat(getCurrentCharacter().avatar, file_name);
-    }
+    await openCharacterConversation({ chat: file_name, makeCurrent: true });
 }
 
 ////////// OPTIMZED MAIN API CHANGE FUNCTION ////////////

@@ -20,6 +20,27 @@ let priorPromptArrayItemForRawPromptDisplay;
 const promptStorage = localforage.createInstance({ name: 'SillyTavern_Prompts' });
 export let itemizedPrompts = [];
 
+/**
+ * What the server has for the open chat, as of the last load or save: the chat, its entries (by identity) and
+ * whether one of them was changed in place since. Lets a chat switch skip saving when nothing changed.
+ * @type {{ chatId: string|null, entries: object[], changedInPlace: boolean }}
+ */
+let persisted = { chatId: null, entries: [], changedInPlace: false };
+
+function markPersisted(chatId) {
+    persisted = { chatId, entries: itemizedPrompts.slice(), changedInPlace: false };
+}
+
+/**
+ * @param {string} chatId
+ * @returns {boolean} Whether the itemized prompts differ from what the server has for this chat.
+ */
+function differsFromPersisted(chatId) {
+    if (persisted.chatId !== chatId || persisted.changedInPlace) return true;
+    if (persisted.entries.length !== itemizedPrompts.length) return true;
+    return itemizedPrompts.some((entry, i) => entry !== persisted.entries[i]);
+}
+
 /** Bumped only if the pool-dedup wire format itself changes. */
 const POOL_VERSION = 2;
 
@@ -161,6 +182,7 @@ export async function loadItemizedPrompts(chatId) {
         const local = await promptStorage.getItem(chatId);
         if (local) {
             itemizedPrompts = decodeStoredItemizedPrompts(local);
+            markPersisted(chatId);
             await eventSource.emit(event_types.ITEMIZED_PROMPTS_LOADED, { chatId: chatId, fromLocalMirror: true });
         }
     } catch (error) {
@@ -181,10 +203,12 @@ export async function loadItemizedPrompts(chatId) {
 
         if (response.status === 404) {
             itemizedPrompts = [];
+            markPersisted(chatId);
             await promptStorage.removeItem(chatId);
         } else if (response.ok) {
             const stored = await response.json();
             itemizedPrompts = decodeStoredItemizedPrompts(stored);
+            markPersisted(chatId);
             await promptStorage.setItem(chatId, stored);
         } else {
             console.log('Error loading itemized prompts for chat', chatId, response.statusText);
@@ -194,6 +218,15 @@ export async function loadItemizedPrompts(chatId) {
     } catch (error) {
         console.log('Error loading itemized prompts for chat', chatId, error);
     }
+}
+
+/**
+ * Saves the itemized prompts for a chat, unless they are what the server already has.
+ * @param {string} chatId
+ */
+export async function saveItemizedPromptsIfChanged(chatId) {
+    if (!chatId || !differsFromPersisted(chatId)) return;
+    await saveItemizedPrompts(chatId);
 }
 
 /** Pool-dedupes and saves the itemized prompts for a chat to both server storage and the local mirror. */
@@ -215,6 +248,7 @@ export async function saveItemizedPrompts(chatId) {
             return;
         }
 
+        markPersisted(chatId);
         await promptStorage.setItem(chatId, data);
         await eventSource.emit(event_types.ITEMIZED_PROMPTS_SAVED, { chatId: chatId });
     } catch (error) {
@@ -339,6 +373,7 @@ export async function replaceItemizedPromptText(mesId, promptText) {
     }
 
     itemizedPrompt.rawPrompt = promptText;
+    persisted.changedInPlace = true;
 }
 
 /**
@@ -363,6 +398,7 @@ export function applyItemizedPromptBreakdown(mesId, breakdown) {
     }
 
     Object.assign(itemizedPrompt, breakdown);
+    persisted.changedInPlace = true;
 }
 
 export async function deleteItemizedPrompts(chatId) {
@@ -688,6 +724,7 @@ export function swapItemizedPrompts(sourceMessageId, targetMessageId) {
     targetPrompts.forEach(prompt => {
         prompt.mesId = sourceMessageId;
     });
+    persisted.changedInPlace = true;
 
     itemizedPrompts.sort((a, b) => a.mesId - b.mesId);
 }
@@ -701,5 +738,6 @@ export function deleteItemizedPromptForMessage(messageId) {
 
     for (const prompt of itemizedPrompts.filter(x => x.mesId > messageId)) {
         prompt.mesId -= 1;
+        persisted.changedInPlace = true;
     }
 }

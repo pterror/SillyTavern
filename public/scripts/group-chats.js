@@ -79,6 +79,7 @@ import {
     unshallowCharacter,
     chatElement,
     ensureMessageMediaIsArray,
+    requestChatOpen,
 } from '../script.js';
 import { getCharacters, showCharacterSyncFailedToast, SYNC_REQUEST_TIMEOUT_MS, queryWithSortFallback } from './character-list.js';
 import { chat, chat_metadata } from './chat-state.js';
@@ -87,7 +88,7 @@ import { charactersStore, exposedGroups, holdCharacter, setCharacterId, setExpos
 import { eventSource, event_types } from './events.js';
 import { printTagList, createTagMapFromList, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, printTagFilters, tag_filter_type, removeEntityTags, heldTagsForIds, compareTagsForSort } from './tags.js';
 import { _setCurrentTarget, updateMessage } from './chat-store.js';
-import { provisionalNodeId } from './node-identity.js';
+import { isProvisionalNodeId, provisionalNodeId } from './node-identity.js';
 import { FILTER_TYPES, FILTER_STATES, FilterHelper, isFilterState } from './filters.js';
 import { isExternalMediaAllowed } from './chats.js';
 import { POPUP_TYPE, Popup, callGenericPopup } from './popup.js';
@@ -297,31 +298,6 @@ async function regenerateGroup() {
 }
 
 /**
- * Loads group chat messages from the server.
- * Passing groupId avoids the server having to scan the whole groups directory to reverse-look-up the group from the chat id.
- * @param {string} chatId Chat ID
- * @param {string} groupId The owning group's ID
- * @returns {Promise<ChatFile>} Array of chat messages
- */
-async function loadGroupChat(chatId, groupId) {
-    const response = await fetch('/api/chats/group/get', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({ id: chatId, group_id: groupId }),
-    });
-
-    if (response.ok) {
-        const data = await response.json();
-        if (!Array.isArray(data)) {
-            return [];
-        }
-        return data;
-    }
-
-    return [];
-}
-
-/**
  * Resolves a group member entry to its character among the characters the page holds, by avatar. A miss means
  * "not held", not "does not exist" - see `characterRepository.exists()` for that, and `findLegacyMemberByName()`
  * for an entry stored by display name.
@@ -526,12 +502,26 @@ export async function validateGroup(group) {
 }
 
 /**
- * Loads the chat messages for a specific group.
+ * Upstream's: loads the group's chat named by its `chat_id` (when that exists; otherwise the one the server
+ * resolves). Doesn't change which chat is the group's current one.
  * @param {string} groupId - The ID of the group to load chat messages for.
  * @param {boolean} reload - Whether to reload the group chat after loading.
  * @returns {Promise<void>} A promise that resolves when the chat messages have been loaded.
  */
 export async function getGroupChat(groupId, reload = false) {
+    await openGroupConversation(groupId, { chat: groupsStore.get(groupId)?.chat_id ?? null, reload });
+}
+
+/**
+ * Opens a group's conversation (POST /api/chats/open) and draws it. A chat with no messages yet shows each
+ * member's greeting, unsaved: the greetings are stored when the first message is (see materializeGroupOpening()).
+ * @param {string} groupId
+ * @param {{ chat?: string|null, makeCurrent?: boolean, reload?: boolean }} [options] `chat`: open this chat when the
+ * group has it, else the group's current one; `makeCurrent`: and make it the group's current chat; `reload`: also
+ * redraw the group's panel.
+ * @returns {Promise<void>}
+ */
+async function openGroupConversation(groupId, { chat: requested = null, makeCurrent = false, reload = false } = {}) {
     const group = groupsStore.get(groupId);
     if (!group) {
         console.warn('Group not found', groupId);
@@ -541,15 +531,20 @@ export async function getGroupChat(groupId, reload = false) {
     await validateGroup(group);
     await unshallowGroupMembers(groupId);
 
-    const chat_id = group.chat_id;
-    const data = await loadGroupChat(chat_id, group.id);
-    const metadata = data?.[0]?.chat_metadata ?? {};
-    const freshChat = !metadata.tainted && (!Array.isArray(data) || !data.length);
-
-    // Remove chat file header if present
-    if (Array.isArray(data) && data.length && Object.hasOwn(data[0], 'chat_metadata')) {
-        data.shift();
+    /** @type {import('../script.js').ChatOpenAnswer} */
+    let answer;
+    try {
+        answer = await requestChatOpen({ group_id: groupId, chat: requested, make_current: makeCurrent });
+    } catch (error) {
+        console.error('Could not open the group chat:', error);
+        toastr.error(t`The chat could not be opened. Check the server connection and try again.`, t`Chat not opened`);
+        return;
     }
+    groupsStore.update(group.id, { chat_id: answer.chat, chats: answer.chats ?? group.chats, date_last_chat: answer.date_last_chat ?? group.date_last_chat });
+
+    const data = Array.isArray(answer.messages) ? answer.messages : [];
+    const metadata = answer.chat_metadata ?? {};
+    const freshChat = !metadata.tainted && !data.length;
 
     await loadItemizedPrompts(getCurrentChatId());
 
@@ -573,11 +568,6 @@ export async function getGroupChat(groupId, reload = false) {
             await eventSource.emit(event_types.MESSAGE_RECEIVED, (chat.length - 1), 'first_message');
             addOneMessage(mes);
             await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, (chat.length - 1), 'first_message');
-        }
-        const bootstrapped = await _bootstrapGroupChat(groupId, group.chat_id);
-        if (!bootstrapped) {
-            toastr.error(t`Check the server connection and reload the page to prevent data loss.`, t`Group Chat could not be saved`);
-            console.error('Could not bootstrap the new group chat', groupId);
         }
     } else if (Array.isArray(data) && data.length) {
         chat.splice(0, chat.length, ...data);
@@ -907,24 +897,40 @@ function resetSelectedGroup() {
     is_group_generating = false;
 }
 
+/** @type {Promise<boolean>|null} */
+let groupOpeningInFlight = null;
+
 /**
- * Mints the tree rows for a brand-new group chat's member greetings directly, instead of resaving the
- * whole array. `chat[]` here carries no node_id at all yet (getGroupChat()'s freshChat branch just
- * pushed plain message objects) - the shape is one linear chain (each member's greeting is the next
- * turn), not alternatives, so this is: mint the first turn via /openings/ensure (which also creates the
- * group's anchor), point the anchor at it, append every remaining turn after it, then label the first
- * turn with the group's own pre-assigned chat_id (a group's chat_id is decided at group/chat creation,
- * unlike a fresh solo chat's - it can't become the new node's own id the way a character's `.chat`
- * pointer does, since group.chats/branch-switching already resolves other chats by that pre-assigned
- * string).
+ * Stores the open group chat's member greetings, which a chat with no messages yet shows unsaved, so a message
+ * can follow them. Called before the first message of such a chat is stored (chat-store.js ensureOpeningRow()).
+ * @returns {Promise<boolean>} Whether they are stored.
+ */
+export function materializeGroupOpening() {
+    if (selected_group == null) return Promise.resolve(false);
+    const group = groupsStore.get(selected_group);
+    if (!group) return Promise.resolve(false);
+    groupOpeningInFlight ??= _bootstrapGroupChat(group.id, group.chat_id).finally(() => { groupOpeningInFlight = null; });
+    return groupOpeningInFlight;
+}
+
+/**
+ * Mints the tree rows for a group chat's unsaved member greetings (the leading run of `chat[]` with
+ * provisional ids) directly. The shape is one linear chain (each member's greeting is the next turn), not
+ * alternatives, so this is: mint the first turn via /openings/ensure (which also creates the group's anchor),
+ * point the anchor at it, append the remaining greetings after it, then label the first turn with the group's
+ * own pre-assigned chat_id (a group's chat_id is decided at group/chat creation, unlike a fresh solo chat's - it
+ * can't become the new node's own id the way a character's `.chat` pointer does, since group.chats/branch-switching
+ * already resolves other chats by that pre-assigned string).
  * The label is what makes the chat reachable, so it goes last: a failure before it leaves the chat
- * unreachable, and the next open bootstraps it again from scratch.
+ * unreachable, and the next try mints it again from scratch.
  * @param {string} groupId
  * @param {string} chatName group.chat_id - the name this chat needs to be reachable under
- * @returns {Promise<boolean>} Whether every message in `chat[]` now carries a real node_id.
+ * @returns {Promise<boolean>} Whether every greeting now carries a real node_id.
  */
 async function _bootstrapGroupChat(groupId, chatName) {
-    if (!chat.length) return true;
+    let greetings = 0;
+    while (greetings < chat.length && isProvisionalNodeId(chat[greetings].node_id)) greetings++;
+    if (!greetings) return true;
 
     const contentOf = (msg) => ({
         name: msg.name, is_user: !!msg.is_user, is_system: !!msg.is_system,
@@ -946,14 +952,14 @@ async function _bootstrapGroupChat(groupId, chatName) {
         const selectResponse = await post('/api/chats/message/select', { node_id: firstId });
         if (!selectResponse.ok) return false;
 
-        if (chat.length > 1) {
-            const appendResponse = await post('/api/chats/message/append', { after_node_id: firstId, messages: chat.slice(1) });
+        if (greetings > 1) {
+            const appendResponse = await post('/api/chats/message/append', { after_node_id: firstId, messages: chat.slice(1, greetings) });
             if (!appendResponse.ok) return false;
             const nodeIds = (await appendResponse.json().catch(() => null))?.node_ids ?? [];
             nodeIds.forEach((node_id, offset) => {
                 if (chat[offset + 1]) updateMessage(offset + 1, { node_id });
             });
-            if (nodeIds.length !== chat.length - 1) return false;
+            if (nodeIds.length !== greetings - 1) return false;
         }
 
         // /label always answers 200 even on refusal (e.g. unknown node) - the real result is in the body.
@@ -2400,7 +2406,7 @@ export async function openGroupById(groupId) {
             setEditedMessageId(undefined);
             updateChatMetadata({}, true);
             await holdOpenGroupMembers();
-            await getGroupChat(groupId);
+            await openGroupConversation(groupId);
             return true;
         }
     }
@@ -2578,14 +2584,8 @@ export async function openGroupChat(groupId, chatId) {
     }
 
     await clearChat({ clearData: true });
-    group.date_last_chat = Date.now();
     updateChatMetadata({}, true);
-    _setCurrentTarget(chatId, null, { group_id: groupId });
-
-    groupsStore.update(group.id, { chat_id: group.chat_id, date_last_chat: group.date_last_chat });
-
-    await saveGroupField(groupId, { chat_id: group.chat_id, date_last_chat: group.date_last_chat }, true, false);
-    await getGroupChat(groupId);
+    await openGroupConversation(groupId, { chat: chatId, makeCurrent: true });
 }
 
 /**
