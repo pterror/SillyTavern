@@ -61,6 +61,11 @@ const ENTRY_GROUP: u64 = 127;
 const ENTRY_AUTOMATION_ID: u64 = 134;
 /// A character book entry's `id`, which upstream's `convertCharacterBook` makes the entry's `uid`.
 const ENTRY_ID: u64 = 153;
+/// A character book entry's `extensions.group` and `extensions.automation_id`, which upstream's
+/// `convertCharacterBook` makes the entry's `group` and `automationId` (`EXTENSION_KEYS` in
+/// `src/world-info-engine.js`).
+const EXT_GROUP: u64 = 170;
+const EXT_AUTOMATION_ID: u64 = 177;
 /// A world book's entry stored without `uid` (otherwise its `uid` is its key as a number).
 const ENTRY_NO_UID: u64 = 97;
 const ENTRY_KEY: u64 = 0;
@@ -101,14 +106,16 @@ static WORLD_ENTRY_DEFS: &[Def] = &[
     def(6, Source::Text(ENTRY_AUTOMATION_ID)),
 ];
 
-/// A character book's entry as upstream's `convertCharacterBook` reads it: `keys`, `secondary_keys`, `id`. Its
-/// `group` and `automation_id` are inside its `extensions` JSON, which isn't searched.
+/// A character book's entry as upstream's `convertCharacterBook` reads it: `keys`, `secondary_keys`, `id`, and
+/// its `extensions`' `group` and `automation_id`.
 static OWNED_ENTRY_DEFS: &[Def] = &[
     def(0, Source::List(ENTRY_KEYS)),
+    def(1, Source::Text(EXT_GROUP)),
     def(2, Source::Text(ENTRY_COMMENT)),
     def(3, Source::List(ENTRY_SECONDARY_KEYS)),
     def(4, Source::Text(ENTRY_CONTENT)),
     def(5, Source::Uid),
+    def(6, Source::Text(EXT_AUTOMATION_ID)),
 ];
 
 /// What an entity is to search: its scope, its fields, and (an entry) whether its book is a world book.

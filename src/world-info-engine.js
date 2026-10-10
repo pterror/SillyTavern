@@ -11,8 +11,10 @@ import { searchClauses } from './search-clauses.js';
  * `character_book`, a book's `originalData`) by its owner (`<owner id>:c`, `<owner id>:o`). Each top-level key of a
  * book (but `entries`) and of an entry is its own value: a string as text, anything else as JSON; an entry's keys
  * lists (`key`, `keysecondary`, `triggers`, `keys`, `secondary_keys`) as items when they are non-empty lists of
- * strings. Upstream's entry keys have field codes; any other key is stored by its name. A write records only what
- * differs from what is stored. Assembled, a book or entry has its keys in the order they came.
+ * strings. Upstream's entry keys have field codes; any other key is stored by its name. An entry's `extensions`,
+ * when an object, is stored a key at a time too (`EXTENSION_KEYS`), so the keys upstream reads from it (a character
+ * book entry's `group`, `automation_id`, ...) are values of their own, edited and searched. A write records only
+ * what differs from what is stored. Assembled, a book or entry has its keys in the order they came.
  */
 
 /** Field codes of an entry's keys: upstream's World Info entry, then a character book's (`character_book`). */
@@ -27,6 +29,24 @@ const ENTRY_KEYS = Object.freeze([
     'keys', 'secondary_keys', 'insertion_order', 'enabled', 'case_sensitive', 'name', 'priority', 'id',
 ]);
 const ENTRY_CODE_BASE = 100;
+/** The `extensions` keys upstream's `convertCharacterBook()` reads, in its order: field codes from 160. */
+const EXTENSION_KEYS = Object.freeze([
+    'position', 'exclude_recursion', 'prevent_recursion', 'delay_until_recursion', 'display_index', 'probability',
+    'useProbability', 'depth', 'selectiveLogic', 'outlet_name', 'group', 'group_override', 'group_weight',
+    'scan_depth', 'case_sensitive', 'match_whole_words', 'use_group_scoring', 'automation_id', 'role', 'vectorized',
+    'sticky', 'cooldown', 'delay', 'match_persona_description', 'match_character_description',
+    'match_character_personality', 'match_character_depth_prompt', 'match_scenario', 'match_creator_notes',
+    'triggers', 'ignore_budget',
+]);
+const EXTENSION_CODE_BASE = 160;
+const EXTENSION_CODE = new Map(EXTENSION_KEYS.map((k, i) => [k, EXTENSION_CODE_BASE + i]));
+const EXTENSION_NAME = new Map(EXTENSION_KEYS.map((k, i) => [EXTENSION_CODE_BASE + i, k]));
+/** Another `extensions` key is stored by its name after this mark; an entry's own key starting with either mark
+ * after `KEY_ESCAPE`. */
+const EXTENSION_MARK = '\u0001';
+const KEY_ESCAPE = '\u0002';
+/** The order of `extensions`' keys, when it isn't the canonical one. */
+const EXTENSION_ORDER = 99;
 /** A whole entry that isn't an object, as JSON. */
 const WHOLE = 96;
 /** A world book's entry with no `uid` key (its default is its key as a number). */
@@ -38,6 +58,8 @@ const DEFINED = 41;
 const UID = ENTRY_CODE_BASE;
 
 const ENTRY_CODE = new Map(ENTRY_KEYS.map((k, i) => [k, ENTRY_CODE_BASE + i]));
+/** An entry's `extensions` (its value a marker, empty JSON, when it is an object stored a key at a time). */
+const EXTENSIONS = /** @type {number} */ (ENTRY_CODE.get('extensions'));
 const ENTRY_NAME = new Map(ENTRY_KEYS.map((k, i) => [ENTRY_CODE_BASE + i, k]));
 const ENTRY_LIST = new Map([['key', 0], ['keysecondary', 1], ['triggers', 2], ['keys', 3], ['secondary_keys', 4]]);
 const ENTRY_LIST_NAME = new Map([...ENTRY_LIST].map(([k, v]) => [v, k]));
@@ -99,6 +121,16 @@ function entryCanonical(/** @type {string[]} */ keys) {
     return [...known, ...other];
 }
 
+/** `extensions`' keys in canonical order: upstream's by code, then any other by name. */
+function extensionCanonical(/** @type {string[]} */ keys) {
+    const known = keys.filter(k => EXTENSION_CODE.has(k)).sort((a, b) => /** @type {number} */ (EXTENSION_CODE.get(a)) - /** @type {number} */ (EXTENSION_CODE.get(b)));
+    const other = keys.filter(k => !EXTENSION_CODE.has(k)).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    return [...known, ...other];
+}
+
+/** The field an entry's own key without a code is stored by: its name, escaped when it starts with a mark. */
+const ownKeyField = (/** @type {string} */ k) => (k.startsWith(EXTENSION_MARK) || k.startsWith(KEY_ESCAPE) ? KEY_ESCAPE + k : k);
+
 /** A book's keys in canonical order: by name, `entries` last. */
 function bookCanonical(/** @type {string[]} */ keys) {
     return [...keys.filter(k => k !== 'entries').sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)), ...(keys.includes('entries') ? ['entries'] : [])];
@@ -134,7 +166,16 @@ export function entryValues(entry, key, owned) {
             lists.set(list, v);
             continue;
         }
-        values.set(ENTRY_CODE.get(k) ?? k, put(v));
+        if (k === 'extensions' && isPlainObject(v)) {
+            const ext = /** @type {Record<string, unknown>} */ (v);
+            const extKeys = Object.keys(ext).filter(x => ext[x] !== undefined);
+            values.set(EXTENSIONS, { json: '' });
+            for (const x of extKeys) values.set(EXTENSION_CODE.get(x) ?? EXTENSION_MARK + x, put(ext[x]));
+            const extOrder = orderValue(extKeys, extensionCanonical(extKeys));
+            if (extOrder !== null) values.set(EXTENSION_ORDER, { text: extOrder });
+            continue;
+        }
+        values.set(ENTRY_CODE.get(k) ?? ownKeyField(k), put(v));
     }
     if (!owned && !keys.includes('uid')) values.set(NO_UID, { json: '' });
     const order = orderValue(keys, entryCanonical(keys));
@@ -152,7 +193,12 @@ export function entryObject(e, owned) {
     /** @type {Map<string, unknown>} */
     const found = new Map();
     let order;
+    let extOrder;
     let noUid = false;
+    /** @type {Map<string, unknown> | null} */
+    let ext = null;
+    /** @type {Map<string, unknown>} */
+    const extFound = new Map();
     /** @type {Map<number, { text?: string, json?: string }>} */
     const items = new Map();
     for (const v of e.values) {
@@ -169,9 +215,30 @@ export function entryObject(e, owned) {
             noUid = true;
             continue;
         }
-        const name = typeof v.field === 'number' ? ENTRY_NAME.get(v.field) : v.field;
+        if (v.field === EXTENSION_ORDER) {
+            extOrder = v.text;
+            continue;
+        }
+        const value = () => (v.text !== undefined ? v.text : JSON.parse(/** @type {string} */ (v.json)));
+        if (v.field === EXTENSIONS && v.json === '') {
+            ext = extFound;
+            found.set('extensions', null);
+            continue;
+        }
+        const extName = typeof v.field === 'number' ? EXTENSION_NAME.get(v.field) : v.field.startsWith(EXTENSION_MARK) ? v.field.slice(1) : undefined;
+        if (extName !== undefined) {
+            extFound.set(extName, value());
+            continue;
+        }
+        const name = typeof v.field === 'number' ? ENTRY_NAME.get(v.field) : v.field.startsWith(KEY_ESCAPE) ? v.field.slice(1) : v.field;
         if (name === undefined) continue;
-        found.set(name, v.text !== undefined ? v.text : JSON.parse(/** @type {string} */ (v.json)));
+        found.set(name, value());
+    }
+    if (ext !== null) {
+        /** @type {Record<string, unknown>} */
+        const o = {};
+        for (const k of ordered(extensionCanonical([...extFound.keys()]), extOrder)) setOwn(o, k, extFound.get(k));
+        found.set('extensions', o);
     }
     /** @type {Map<number, string[]>} */
     const lists = new Map();
