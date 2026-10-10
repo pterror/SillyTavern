@@ -5,6 +5,16 @@ import { textEdit } from './text-edit.js';
  * and world info's entities alike.
  */
 
+/**
+ * Appends `items` to `list` one by one (a spread argument list overflows the stack for a large book's records).
+ * @template T
+ * @param {T[]} list
+ * @param {Iterable<T>} items
+ */
+export function pushAll(list, items) {
+    for (const x of items) list.push(x);
+}
+
 /** A list item's text is the text value of this field. */
 export function itemField(list, item) {
     return 1024 + item * 8 + list;

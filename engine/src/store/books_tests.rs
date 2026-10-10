@@ -517,3 +517,64 @@ fn a_change_to_an_entry_or_owned_book_changes_its_books_and_owners_versions() {
     drop(s);
     fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn an_entry_edit_writes_the_same_whatever_its_books_size() {
+    let dir = temp_dir("edit-cost");
+    let s = Store::open_in(&dir, SMALL, pool()).unwrap();
+    let content = |e: u64, t: &str| {
+        rec(
+            "textValue",
+            vec![
+                Value::Sel(0, e),
+                Value::Field(FieldRef::Code(104)),
+                text(t),
+                Value::Absent,
+                Value::Absent,
+            ],
+        )
+    };
+    let mut costs = Vec::new();
+    let mut next = 10;
+    for (book, size) in [(1, 10u64), (2, 1000)] {
+        s.commit_wait(vec![
+            defined(book, true),
+            create(book, BOOK, &format!("b{book}")),
+        ])
+        .unwrap();
+        for i in 0..size {
+            let e = next;
+            next += 1;
+            s.commit_wait(vec![
+                content(e, "the castle by the river"),
+                create(e, ENTRY, &format!("{book}:{i}")),
+                place(book, e, (i + 1) << 20),
+                index(e, book, Some(i as f64)),
+            ])
+            .unwrap();
+        }
+        let e = next - 1 - size / 2;
+        let before = (s.stats().ks.inserted, s.stats().log_bytes);
+        s.commit_wait(vec![rec(
+            "textEdit",
+            vec![
+                Value::Sel(0, e),
+                Value::Field(FieldRef::Code(104)),
+                Value::UInt(4),
+                Value::UInt(6),
+                text("tower"),
+                Value::Absent,
+                Value::Absent,
+            ],
+        )])
+        .unwrap();
+        let after = (s.stats().ks.inserted, s.stats().log_bytes);
+        costs.push((after.0 - before.0, after.1 - before.1));
+    }
+    // Derived: the text's head, its edit, the entry's version and its book's. The record (and its group's trailer)
+    // differs only by the varint of the entry's id.
+    assert!(costs.iter().all(|c| c.0 == 4), "{costs:?}");
+    assert!(costs.iter().all(|c| c.1 <= 17), "{costs:?}");
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}

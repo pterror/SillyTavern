@@ -1,5 +1,5 @@
 import { jsonHash } from '../public/scripts/hash-utils.js';
-import { POSITION_GAP, valueRecords } from './entity-values.js';
+import { POSITION_GAP, pushAll, valueRecords } from './entity-values.js';
 import { TYPE } from './library-codes.js';
 import { bookKey } from './world-info-keys.js';
 
@@ -277,7 +277,7 @@ export class WorldInfoEngine {
         let after;
         for (;;) {
             const page = await this.store.worldRead('entries', { book, after, limit: 1000 });
-            places.push(...page.entries);
+            pushAll(places, page.entries);
             if (!page.more) break;
             after = places[places.length - 1].position;
         }
@@ -356,7 +356,7 @@ export class WorldInfoEngine {
         let after;
         for (;;) {
             const page = await this.store.worldRead('books', { after, limit: 1000 });
-            books.push(...page.books);
+            pushAll(books, page.books);
             if (!page.more) break;
             after = books[books.length - 1].key;
         }
@@ -388,18 +388,18 @@ export class WorldInfoEngine {
         const stored = s?.entries ?? new Map();
         if (world) {
             const incoming = typeof raw === 'object' && raw !== null ? /** @type {Record<string, unknown>} */ (raw) : {};
-            records.push(...this.entryRecords(id, stored, Object.keys(incoming).filter(k => incoming[k] !== undefined).map(k => [k, incoming[k]]), false));
+            pushAll(records, this.entryRecords(id, stored, Object.keys(incoming).filter(k => incoming[k] !== undefined).map(k => [k, incoming[k]]), false));
         } else {
-            records.push(...this.listEntryRecords(id, stored, /** @type {unknown[]} */ (raw)));
+            pushAll(records, this.listEntryRecords(id, stored, /** @type {unknown[]} */ (raw)));
         }
         if (world) {
             const original = book.originalData;
             const [o] = s?.original ? [s.original.id] : [null];
             if (isEntryList(original)) {
                 const oid = o ?? this.lib.nextId++;
-                records.push(...(await this.bookRecords(oid, s?.original ?? null, /** @type {Record<string, unknown>} */ (original), { ownedKey: `${id}:${SLOT.originalData}` })));
+                pushAll(records, (await this.bookRecords(oid, s?.original ?? null, /** @type {Record<string, unknown>} */ (original), { ownedKey: `${id}:${SLOT.originalData}` })));
             } else if (s?.original) {
-                records.push(...this.deleteRecords(s.original));
+                pushAll(records, this.deleteRecords(s.original));
             }
         }
         return records;
@@ -422,7 +422,7 @@ export class WorldInfoEngine {
         for (const [k, entry] of incoming) {
             const had = stored.get(k);
             const id = had ? had.entity.id : this.lib.nextId++;
-            records.push(...valueRecords(id, had?.entity ?? null, entryValues(entry, k, owned)));
+            pushAll(records, valueRecords(id, had?.entity ?? null, entryValues(entry, k, owned)));
             if (!had) records.push({ kind: 'entityCreate', entity: id, type: TYPE.entry, key: `${book}:${k}`, added: 0 });
             const position = positions.get(k);
             if (position !== undefined) records.push({ kind: 'itemPlace', entity: book, list: 0, item: id, position });
@@ -446,7 +446,7 @@ export class WorldInfoEngine {
         while (head < before.length && head < incoming.length && same(head, head)) head++;
         let tail = 0;
         while (tail < before.length - head && tail < incoming.length - head && same(before.length - 1 - tail, incoming.length - 1 - tail)) tail++;
-        let next = 1 + Math.max(-1, ...[...stored.keys()].map(Number).filter(Number.isInteger));
+        let next = 1 + [...stored.keys()].map(Number).filter(Number.isInteger).reduce((m, n) => Math.max(m, n), -1);
         /** @type {[string, unknown][]} */
         const keyed = incoming.map((entry, j) => {
             if (j < head) return [before[j][0], entry];
@@ -466,7 +466,7 @@ export class WorldInfoEngine {
     deleteRecords(s) {
         const records = [];
         for (const x of s.entries.values()) records.push({ kind: 'entityDelete', entity: x.entity.id });
-        if (s.original) records.push(...this.deleteRecords(s.original));
+        if (s.original) pushAll(records, this.deleteRecords(s.original));
         if (s.entity?.type === TYPE.book) {
             for (const v of s.entity.values) records.push({ kind: 'valueDelete', entity: s.id, field: v.field });
         } else if (s.entity) {
@@ -606,7 +606,7 @@ export class WorldInfoEngine {
                 for (const [k, entry] of writes) {
                     const had = touched.get(k);
                     const id = had ? had.entity.id : this.lib.nextId++;
-                    records.push(...valueRecords(id, had?.entity ?? null, entryValues(entry, k, false)));
+                    pushAll(records, valueRecords(id, had?.entity ?? null, entryValues(entry, k, false)));
                     if (!had) {
                         last += POSITION_GAP;
                         records.push({ kind: 'entityCreate', entity: id, type: TYPE.entry, key: `${book}:${k}`, added: 0 });
@@ -651,12 +651,12 @@ export class WorldInfoEngine {
                 }
             }
             if (fieldsChanged) {
-                records.push(...valueRecords(book, bookEntity, bookValues(nextBook, true)));
+                pushAll(records, valueRecords(book, bookEntity, bookValues(nextBook, true)));
                 const ob = nextBook.originalData;
                 if (isEntryList(ob)) {
-                    records.push(...(await this.bookRecords(s.original?.id ?? this.lib.nextId++, s.original, /** @type {Record<string, unknown>} */ (ob), { ownedKey: `${book}:${SLOT.originalData}` })));
+                    pushAll(records, (await this.bookRecords(s.original?.id ?? this.lib.nextId++, s.original, /** @type {Record<string, unknown>} */ (ob), { ownedKey: `${book}:${SLOT.originalData}` })));
                 } else if (s.original) {
-                    records.push(...this.deleteRecords(s.original));
+                    pushAll(records, this.deleteRecords(s.original));
                 }
             }
             if (records.length > 0) await this.store.commit(records);
@@ -811,7 +811,7 @@ function placeEntries(keys, stored) {
     }
     if (ok) return out;
     out.clear();
-    const top = Math.max(0, ...stored.values());
+    const top = [...stored.values()].reduce((m, p) => Math.max(m, p), 0);
     keys.forEach((k, i) => out.set(k, top + POSITION_GAP * (i + 1)));
     return out;
 }

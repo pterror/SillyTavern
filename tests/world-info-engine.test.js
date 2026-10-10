@@ -325,6 +325,15 @@ describe.each(['native', 'wasm'])('%s', (kind) => {
             expect(await chats.metadata(/** @type {bigint} */ (tree), null)).toEqual({ other: 1 });
         }, 120_000);
 
+        test('a large book is written and edited one entry at a time', async () => {
+            const entries = Object.fromEntries(Array.from({ length: 12_000 }, (_, i) => [i, { uid: i, key: [`k${i}`], content: `c${i}`, displayIndex: i }]));
+            await books.write('Big', { entries });
+            const read = /** @type {any} */ (await books.read('Big'));
+            expect(Object.keys(read.entries).length).toBe(12_000);
+            expect(await books.editEntry('Big', 6000, { ...entries[6000], content: 'changed' })).toEqual({ entry: { ...entries[6000], content: 'changed' } });
+            expect((await books.write('Big', { entries: { ...entries, 6000: { ...entries[6000], content: 'changed' } } })).records).toBe(0);
+        }, 300_000);
+
         test('a name sanitize changes finds the same book', async () => {
             await books.write('a/b', { entries: {} });
             expect(await books.exists('ab')).toBe(true);

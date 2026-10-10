@@ -6,7 +6,7 @@ import { parseCreateDateToEpochMs } from './util.js';
 import { tagDerivedColumns } from './tag-order.js';
 import { LibraryTags } from './library-engine-tags.js';
 import { textEdit, wtf8Length } from './text-edit.js';
-import { itemField, storedValues, valueRecords } from './entity-values.js';
+import { itemField, pushAll, storedValues, valueRecords } from './entity-values.js';
 import { FIELD, TAG_KEY_PREFIX, TYPE } from './library-codes.js';
 import { bookKey } from './world-info-keys.js';
 import { SLOT, WorldInfoEngine, isEntryList } from './world-info-engine.js';
@@ -283,7 +283,7 @@ export class LibraryEngine {
             const bookAt = parts.extra.findIndex(x => x.path === 'data:character_book');
             const book = bookAt === -1 ? undefined : JSON.parse(/** @type {string} */ (parts.extra[bookAt].value));
             if (isEntryList(book)) parts.extra.splice(bookAt, 1);
-            records.push(...(await this.books.ownedRecords(id, SLOT.characterBook, isEntryList(book) ? book : undefined)));
+            pushAll(records, (await this.books.ownedRecords(id, SLOT.characterBook, isEntryList(book) ? book : undefined)));
             const next = cardValues(parts);
             const world = next.values.get(FIELD.world)?.text;
             const linkKey = world ? bookKey(world) : '';
