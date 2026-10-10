@@ -120,7 +120,9 @@ struct Bookmark {
 struct Session {
     pointer: Option<(u64, Option<u64>)>,
     history: Vec<(sessions::Target, bool)>,
+    cursor: Option<u64>,
     trees: BTreeMap<u64, Option<u64>>,
+    openings: BTreeMap<u64, u64>,
 }
 
 /// What the derived chat structures must show. `seq` orders events as log positions do.
@@ -201,14 +203,45 @@ impl Model {
     }
 
     fn moved(&mut self, s: u64, u: u64, tree: u64, target: Option<u64>, meaningful: bool) {
-        let q = self.tick();
-        let ses = self.sessions.entry(s).or_default();
-        let entering = ses.pointer.map(|(t, _)| t) != Some(tree);
-        ses.pointer = Some((tree, target));
+        self.pointer_moved(s, u, tree, target, meaningful);
+        let ses = self.sessions.get_mut(&s).unwrap();
         ses.history.push((
             target.map_or(sessions::Target::Root(tree), sessions::Target::Message),
             false,
         ));
+        ses.cursor = Some(ses.history.len() as u64);
+    }
+
+    /// The entry a step from the session's cursor reaches.
+    fn step_target(&self, s: u64, back: bool) -> Option<(u64, sessions::Target)> {
+        let ses = self.sessions.get(&s)?;
+        let c = ses.cursor?;
+        let live = |n: u64| {
+            let (t, gone) = ses.history[n as usize - 1];
+            (!gone).then_some((n, t))
+        };
+        if back {
+            (1..c).rev().find_map(live)
+        } else {
+            (c + 1..=ses.history.len() as u64).find_map(live)
+        }
+    }
+
+    fn stepped(&mut self, s: u64, u: u64, n: u64) {
+        let t = self.sessions[&s].history[n as usize - 1].0;
+        let (tree, target) = match t {
+            sessions::Target::Message(m) => (self.msgs[&m].owner, Some(m)),
+            sessions::Target::Root(tree) => (tree, None),
+        };
+        self.pointer_moved(s, u, tree, target, false);
+        self.sessions.get_mut(&s).unwrap().cursor = Some(n);
+    }
+
+    fn pointer_moved(&mut self, s: u64, u: u64, tree: u64, target: Option<u64>, meaningful: bool) {
+        let q = self.tick();
+        let ses = self.sessions.entry(s).or_default();
+        let entering = ses.pointer.map(|(t, _)| t) != Some(tree);
+        ses.pointer = Some((tree, target));
         ses.trees.insert(tree, target);
         self.recent.insert(s, q);
         self.user_tree.insert((u, tree), (s, target));
@@ -219,6 +252,11 @@ impl Model {
     }
 
     fn choose(&mut self, s: u64, u: u64, f: Fork, reply: u64) {
+        if let Fork::Root(tree) = f
+            && let Some(ses) = self.sessions.get_mut(&s)
+        {
+            ses.openings.remove(&tree);
+        }
         self.choices.insert((0, s, f), reply);
         self.choices.insert((1, u, f), reply);
         self.choices.insert((2, 0, f), reply);
@@ -459,6 +497,21 @@ impl Model {
                     .map(|(_, t, g)| (t, g))
                     .collect();
                 assert_eq!(h, ses.history, "history of {s}");
+                assert_eq!(sessions::cursor(v, s)?, ses.cursor, "cursor of {s}");
+                for back in [true, false] {
+                    assert_eq!(
+                        sessions::step_target(v, s, back)?,
+                        self.step_target(s, back),
+                        "step of {s}, back {back}"
+                    );
+                }
+                for t in 1..=3 {
+                    assert_eq!(
+                        sessions::opening_choice(v, s, t)?,
+                        ses.openings.get(&t).copied(),
+                        "opening choice of {s} in {t}"
+                    );
+                }
                 for t in &owners {
                     assert_eq!(
                         sessions::session_in_tree(v, s, *t)?,
@@ -914,6 +967,36 @@ fn step(model: &mut Model, rng: &mut Rng, i: u64) -> Vec<Record> {
             vec![rec(
                 "keyMap",
                 vec![Value::Sel(chat::KEYED_MESSAGE, m), Value::Bytes(k)],
+            )]
+        }
+        13 | 14 if rng.below(5) == 0 => {
+            let back = rng.below(3) > 0;
+            let Some((n, _)) = model.step_target(session, back) else {
+                return Vec::new();
+            };
+            model.stepped(session, user, n);
+            vec![rec(
+                "historyStep",
+                vec![Value::Id(session), Value::Id(user), Value::UInt(n)],
+            )]
+        }
+        13 | 14 if rng.below(6) == 0 => {
+            let index = rng.below(4);
+            model.act(session, owner);
+            model
+                .sessions
+                .entry(session)
+                .or_default()
+                .openings
+                .insert(owner, index);
+            vec![rec(
+                "openingChoice",
+                vec![
+                    Value::Id(session),
+                    Value::Id(user),
+                    Value::Id(owner),
+                    Value::UInt(index),
+                ],
             )]
         }
         13 | 14 if rng.below(4) == 0 => {
@@ -1802,4 +1885,102 @@ fn stats_count_as_today_and_place_the_owner_in_the_library() {
     );
     drop(s);
     fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn history_steps_move_a_cursor_and_opening_choices_last_until_an_opening_is_chosen() {
+    let dir = temp_dir("steps");
+    let (s, mut model) = open_with_actors(&dir);
+    // Session 1 sends a, b, c in a row (history 1..3), then goes to the root of tree 2 (4).
+    let recs = vec![
+        append(&mut model, 1, None, 1, "a", None, Some(1), 1),
+        append(&mut model, 1, Some(0), 2, "b", None, Some(1), 1),
+        append(&mut model, 1, Some(1), 3, "c", None, Some(1), 1),
+    ];
+    s.commit_wait(recs).unwrap();
+    model.moved(1, 1, 2, None, false);
+    s.commit_wait(vec![rec(
+        "pointerRoot",
+        vec![Value::Id(1), Value::Id(1), Value::Id(2)],
+    )])
+    .unwrap();
+    let step = |model: &mut Model, back: bool| {
+        let (n, _) = model.step_target(1, back).unwrap();
+        model.stepped(1, 1, n);
+        s.commit_wait(vec![rec(
+            "historyStep",
+            vec![Value::Id(1), Value::Id(1), Value::UInt(n)],
+        )])
+        .unwrap();
+        n
+    };
+    // Back twice goes back step by step, adding no entry; forward comes back.
+    assert_eq!(step(&mut model, true), 3);
+    assert_eq!(step(&mut model, true), 2);
+    assert_eq!(step(&mut model, false), 3);
+    model.check(&s);
+    assert_eq!(
+        s.derived(|v| sessions::history(v, 1, 0, usize::MAX))
+            .unwrap()
+            .len(),
+        4
+    );
+    assert_eq!(
+        s.derived(|v| sessions::session_pointer(v, 1)).unwrap(),
+        Some((1, Some(2)))
+    );
+    // A step to a gone entry is refused; a step skips gone entries.
+    model.message_gone(2);
+    s.commit_wait(vec![rec(
+        "messageDelete",
+        vec![Value::Id(2), Value::Absent, Value::Absent],
+    )])
+    .unwrap();
+    assert!(
+        s.commit_wait(vec![rec(
+            "historyStep",
+            vec![Value::Id(1), Value::Id(1), Value::UInt(3)],
+        )])
+        .is_err()
+    );
+    model.check(&s);
+    assert_eq!(step(&mut model, false), 4);
+    assert_eq!(step(&mut model, true), 2);
+    // A new move after stepping back appends at the end: forward reaches nothing.
+    model.moved(1, 1, 1, Some(0), false);
+    s.commit_wait(vec![rec(
+        "pointerMove",
+        vec![Value::Id(1), Value::Id(1), Value::Id(0)],
+    )])
+    .unwrap();
+    model.check(&s);
+    assert_eq!(
+        s.derived(|v| sessions::step_target(v, 1, false)).unwrap(),
+        None
+    );
+    assert_eq!(s.derived(|v| sessions::cursor(v, 1)).unwrap(), Some(5));
+    // A card greeting chosen for tree 2 stays until the session chooses an opening there.
+    model.act(1, 2);
+    model.sessions.get_mut(&1).unwrap().openings.insert(2, 3);
+    s.commit_wait(vec![rec(
+        "openingChoice",
+        vec![Value::Id(1), Value::Id(1), Value::Id(2), Value::UInt(3)],
+    )])
+    .unwrap();
+    model.check(&s);
+    assert_eq!(
+        s.derived(|v| sessions::opening_choice(v, 1, 2)).unwrap(),
+        Some(3)
+    );
+    let recs = vec![append(&mut model, 2, None, 5, "greeting", None, Some(1), 1)];
+    s.commit_wait(recs).unwrap();
+    model.check(&s);
+    assert_eq!(
+        s.derived(|v| sessions::opening_choice(v, 1, 2)).unwrap(),
+        None
+    );
+    // The structures survive a reopen.
+    drop(s);
+    let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
+    model.check(&s);
 }

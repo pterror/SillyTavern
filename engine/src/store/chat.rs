@@ -964,6 +964,58 @@ impl Deriver for PointerRoot {
     }
 }
 
+/// `historyStep`: a session steps back or forward in its history; the record is its cursor's while it stays there.
+pub struct HistoryStep;
+
+impl Deriver for HistoryStep {
+    fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
+        let (s, u, n) = (id(rec, 0), id(rec, 1), id(rec, 2));
+        sessions::check_actor(view, Some(s), Some(u))?;
+        sessions::stepped(view, out, s, u, n, at)
+    }
+
+    fn is_live(&self, rec: &Record, pos: u64, view: &View) -> Result<bool, StoreError> {
+        sessions::step_live(view, id(rec, 0), pos)
+    }
+
+    fn repoint(
+        &self,
+        rec: &Record,
+        from: u64,
+        to: Loc,
+        view: &View,
+        out: &mut Out,
+    ) -> Result<(), StoreError> {
+        sessions::step_repoint(view, out, id(rec, 0), from, to)
+    }
+}
+
+/// `openingChoice`: a session chooses a card greeting for a tree with no message stored.
+pub struct OpeningChoice;
+
+impl Deriver for OpeningChoice {
+    fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
+        let (s, u, tree, index) = (id(rec, 0), id(rec, 1), id(rec, 2), id(rec, 3));
+        sessions::check_actor(view, Some(s), Some(u))?;
+        sessions::opening_chosen(view, out, s, tree, index, at)
+    }
+
+    fn is_live(&self, rec: &Record, pos: u64, view: &View) -> Result<bool, StoreError> {
+        sessions::opening_choice_live(view, id(rec, 0), id(rec, 2), pos)
+    }
+
+    fn repoint(
+        &self,
+        rec: &Record,
+        from: u64,
+        to: Loc,
+        view: &View,
+        out: &mut Out,
+    ) -> Result<(), StoreError> {
+        sessions::opening_choice_repoint(view, out, id(rec, 0), id(rec, 2), from, to)
+    }
+}
+
 /// `forkSelection`: a reply is chosen at its fork by a session and a user.
 pub struct ForkSelection;
 
@@ -1063,6 +1115,8 @@ pub fn deriver(kind: &str) -> Option<&'static dyn Deriver> {
         "itemization" => &Itemization,
         "pointerMove" => &PointerMove,
         "pointerRoot" => &PointerRoot,
+        "historyStep" => &HistoryStep,
+        "openingChoice" => &OpeningChoice,
         "forkSelection" => &ForkSelection,
         "messageAppend" => &MessageAppend,
         "messageDelete" => &MessageDelete,

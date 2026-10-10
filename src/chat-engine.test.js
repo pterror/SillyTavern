@@ -201,6 +201,21 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         assert.deepEqual((await chats.load({ tree: t, at: null })).messages, []);
         assert.deepEqual(await chats.endPathAt({ tree: t, node_id: 'no such message', actor }), { ok: false, reason: 'unknown node' });
 
+        // Back goes step by step through where the session was, adding nothing; forward returns; a move after
+        // stepping back leaves nothing forward.
+        const sid = (await store.chatRead('ids', { space: 1, keys: [actor.session] }))[0];
+        const entries = await store.chatRead('history', { session: sid, limit: 1000 });
+        const back1 = await chats.step({ back: true, actor });
+        assert.deepEqual(back1, { ok: true, tree: t, at: new1.node_ids[0] });
+        const back2 = await chats.step({ back: true, actor });
+        assert.equal(back2.ok, true);
+        assert.deepEqual(await chats.pointer(actor.session), { tree: t, at: back2.at });
+        assert.deepEqual(await chats.step({ back: false, actor }), back1);
+        assert.equal((await store.chatRead('history', { session: sid, limit: 1000 })).length, entries.length);
+        await chats.endPathAt({ tree: t, node_id: ng, actor });
+        assert.deepEqual(await chats.step({ back: false, actor }), { ok: false, reason: 'nothing forward' });
+        assert.deepEqual(await chats.step({ back: true, actor: { user: actor.user, session: '0190a1b2-0000-7000-8000-0000000000cc' } }), { ok: false, reason: 'nothing back' });
+
         // The session a request acts through: its header's, a new tab's, a stale tab's (deleted), a third party's.
         const handle = actor.user;
         assert.deepEqual(await chats.resolveSession({ tree: t, user: handle, header: actor.session }), { session: actor.session });
@@ -208,8 +223,8 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         const fresh = '0190a1b2-0000-7000-8000-0000000000bb';
         assert.deepEqual(await chats.resolveSession({ tree: t, user: handle, header: fresh }), { session: fresh });
         const v5 = (await chats.resolveSession({ tree: t, user: handle, header: 'none' })).session;
-        const [sid] = await store.chatRead('ids', { space: 1, keys: [actor.session] });
-        await store.commit([{ kind: 'positionDelete', id: sid }]);
+        const [sessionId] = await store.chatRead('ids', { space: 1, keys: [actor.session] });
+        await store.commit([{ kind: 'positionDelete', id: sessionId }]);
         assert.deepEqual(await chats.resolveSession({ tree: t, user: handle, header: actor.session }), { session: v5, gone: true });
 
         await store.close();
@@ -262,20 +277,41 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         await sameAsOld({ limit: 2, around: g(3) }, 'around a stored opening');
         await sameAsOld({ limit: 2, around: g(5) }, 'around a card greeting (the default)');
 
-        // A card greeting chosen is stored and shown, as the select action stores it.
+        // A card greeting chosen with no row: nothing is stored, and the session shows the card's text at its
+        // position, also after the card's greeting there is edited.
+        const nextBefore = await store.chatRead('nextIds', {});
         await tree.chooseCardOpening(directories, owner, g(5).mes, 2);
+        assert.deepEqual(await chats.chooseCardGreeting({ tree: t, index: 2, actor }), { ok: true });
+        assert.equal((await store.chatRead('nextIds', {})).message, nextBefore.message);
+        assert.deepEqual(await chats.pointer(actor.session), { tree: t, at: null });
+        await sameAsOld({}, 'a card greeting chosen');
+        const edited5 = [g(1), g(4), { ...g(5), mes: 'Greeting 5, edited' }, g(6)];
+        const sameAsOldFor = async greetings => {
+            const o = await tree.getOpeningAlternatives(directories, owner, {}, greetings);
+            const n = await chats.openingAlternatives({ tree: t, actor, cardGreetings: greetings });
+            assert.deepEqual(mapped({ ...n, has_saved_chats: o.has_saved_chats }), mapped(o));
+            return n;
+        };
+        const afterEdit = await sameAsOldFor(edited5);
+        assert.equal(afterEdit.alternatives[afterEdit.default_index - afterEdit.offset].mes, 'Greeting 5, edited');
+        assert.equal(afterEdit.default_chosen, true);
+        // Choosing it again writes nothing.
+        const positionBefore = await store.chatRead('history', { session: (await store.chatRead('ids', { space: 1, keys: [actor.session] }))[0], limit: 1000 });
+        await chats.chooseCardGreeting({ tree: t, index: 2, actor });
+        assert.deepEqual(await store.chatRead('history', { session: (await store.chatRead('ids', { space: 1, keys: [actor.session] }))[0], limit: 1000 }), positionBefore);
+        // A reply sent from it stores it as an opening, with its text then, which the session then shows.
         const [n5] = (await chats.appendMessages({ tree: t, treeSpeaker: ivy, after: null, contents: [g(5)], actor })).node_ids;
-        const oChosen = await tree.getOpeningAlternatives(directories, owner, {}, card);
-        const nChosen = await chats.openingAlternatives({ tree: t, actor, cardGreetings: card });
-        assert.equal(nChosen.default_node_id, n5);
-        assert.equal(nChosen.alternatives[nChosen.default_index - nChosen.offset].mes, oChosen.alternatives[oChosen.default_index - oChosen.offset].mes);
-        assert.deepEqual((await chats.load({ tree: t, at: (await chats.pointer(actor.session)).at })).messages.map(m => m.mes), [g(5).mes]);
+        const [o5] = (await tree.addOpeningAlternatives(directories, owner, [g(5)])).node_ids;
+        await tree.selectDefaultChild(directories, o5);
+        names.set(o5, 'g5');
+        names.set(n5, 'g5');
+        const stored5 = await sameAsOldFor(card);
+        assert.equal(stored5.default_chosen, false);
+        assert.equal(stored5.default_node_id, n5);
         // Another user, with no session there, is shown where the last choice was made.
         assert.equal((await chats.openingAlternatives({ tree: t, actor: { user: 'someone' }, cardGreetings: card })).default_node_id, n5);
 
         // Where a chat showing a card greeting lands, with the fifth stored in both.
-        names.set((await tree.addOpeningAlternatives(directories, owner, [g(5)])).node_ids[0], 'g5');
-        names.set(n5, 'g5');
         const card2 = [g(1), g(4), g(6)];
         for (const request of [
             { shownText: g(3).mes, index: 0, edits: [] },
