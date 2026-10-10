@@ -1250,6 +1250,19 @@ fn pair_postings_are_built_kept_and_deleted_while_writes_go_on() {
         .unwrap();
     assert!(!f.hits.is_empty());
     assert_eq!(f.texts, 0);
+    // The phrase's candidates are the documents holding its pair, not every document holding both words.
+    let pair = super::pairs::term("dark", "knight");
+    let holding: std::collections::BTreeSet<u64> = pair_slots(&lib.store)
+        .keys()
+        .filter(|(k, t, _, _)| *k == Scope::LIBRARY.kind && *t == pair)
+        .map(|&(_, _, d, _)| d)
+        .collect();
+    assert!(
+        f.checked <= holding.len() as u64,
+        "{} > {}",
+        f.checked,
+        holding.len()
+    );
     // Off: deleted while writes go on.
     pairs_on(&lib.store, false);
     while pairs_step(&lib.store) {

@@ -961,9 +961,11 @@ struct Part {
 }
 
 /// A list a clause reads: a term's postings, in the fields `mask`, standing for token `token`; counted as a
-/// prefix term in the prefix fields when `as_prefix`.
+/// prefix term in the prefix fields when `as_prefix`. A phrase's pair list (`pair`: two adjacent whole tokens'
+/// pair postings) only says where the phrase may be: it has no block maxima and scores nothing.
 struct List {
     term: String,
+    pair: bool,
     mask: u64,
     token: usize,
     as_prefix: bool,
@@ -1071,6 +1073,7 @@ impl Matcher {
             }
             let list = |term: &str, mask, as_prefix| List {
                 term: term.to_string(),
+                pair: false,
                 mask,
                 token: i,
                 as_prefix,
@@ -1094,6 +1097,26 @@ impl Matcher {
                 }
             }
         }
+        // With pair postings, a phrase's candidates are where every pair of its adjacent whole tokens is: the
+        // pairs' lists are walked with the words', so the walk goes from one document holding them all to the next.
+        let whole = if prefix { last_i } else { last_i + 1 };
+        if phrase && whole >= 2 && ctx.pairs_on()? {
+            for i in 0..whole - 1 {
+                let term = super::pairs::term(&toks[i], &toks[i + 1]);
+                m.lists.push(List {
+                    dir: BlockDocs::postings(scope, &term),
+                    term,
+                    pair: true,
+                    mask,
+                    token: usize::MAX,
+                    as_prefix: false,
+                    bound: None,
+                    weights: [0.0; 1 << FIELD_BITS],
+                    shortest: None,
+                    next: None,
+                });
+            }
+        }
         for l in &mut m.lists {
             for f in fields_of(scope, l.mask) {
                 if let Some(&p) = m.parts.get(&(l.token, f)) {
@@ -1112,6 +1135,9 @@ impl Matcher {
     /// The most a document in list `li`'s block `block` scores for its term: each field's highest count there at
     /// the block's shortest length.
     fn block_bound(&mut self, ctx: &mut Ctx, li: usize, block: u64) -> StoreResult<f64> {
+        if self.lists[li].pair {
+            return Ok(0.0);
+        }
         if let Some((b, s)) = self.lists[li].bound
             && b == block
         {
@@ -1145,6 +1171,10 @@ impl Matcher {
         let mut s = 0.0;
         let mut any = false;
         for li in 0..self.lists.len() {
+            // A pair has no maxima; `next_block` found it in the block.
+            if self.lists[li].pair {
+                continue;
+            }
             let b = self.block_bound(ctx, li, block)?;
             if b > 0.0 {
                 any = true;
@@ -1171,8 +1201,14 @@ impl Matcher {
                 let x = match self.lists[li].next {
                     Some((asked, answer)) if asked <= b && answer.is_none_or(|a| b <= a) => answer,
                     _ => {
-                        let l = &self.lists[li];
-                        let x = list_next_block(ctx, self.scope, &l.term, l.mask, b)?;
+                        let l = &mut self.lists[li];
+                        // A pair's blocks are its postings' (it has no maxima).
+                        let x = if l.pair {
+                            l.dir.seek(ctx, b << BLOCK_BITS)?;
+                            l.dir.block
+                        } else {
+                            list_next_block(ctx, self.scope, &l.term, l.mask, b)?
+                        };
                         self.lists[li].next = Some((b, x));
                         x
                     }
@@ -1444,30 +1480,14 @@ impl Matcher {
             for (t, _, p) in &data {
                 tok.insert(*t, p.clone());
             }
-            // With pair postings, each pair of whole tokens must be in the field; two whole tokens are decided by
-            // their pair.
+            // With pair postings, `common` holds only fields holding every pair of whole tokens (their lists are
+            // among the clause's); two whole tokens are decided by their pair.
             let whole = if self.prefix { last } else { last + 1 };
-            let pairs: Vec<String> = if whole >= 2 && ctx.pairs_on()? {
-                (0..whole - 1)
-                    .map(|i| super::pairs::term(&self.tokens[i], &self.tokens[i + 1]))
-                    .collect()
-            } else {
-                Vec::new()
-            };
-            let mut pair_fields = u64::MAX;
-            for p in &pairs {
-                pair_fields &= doc_hits(ctx, scope, p, doc)?
-                    .iter()
-                    .filter(|(_, h)| h.exact > 0)
-                    .fold(0u64, |m, (f, _)| m | 1 << f);
-            }
-            for f in fields_of(scope, common & self.mask & pair_fields) {
+            let paired = self.lists.iter().any(|l| l.pair);
+            for f in fields_of(scope, common & self.mask) {
                 let prefix_field = scope.fields()[f as usize].prefix;
                 let mut last_tf = 0;
-                let mut found = false;
-                if !pairs.is_empty() && whole == self.tokens.len() && whole == 2 {
-                    found = true;
-                }
+                let mut found = paired && whole == self.tokens.len() && whole == 2;
                 for t in if found {
                     Vec::new()
                 } else {
