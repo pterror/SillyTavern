@@ -14,6 +14,10 @@ let metadataDb;
 let lib;
 /** @type {typeof import('../src/character-card-storage.js')} */
 let storage;
+/** @type {typeof import('../public/scripts/hash-utils.js')} */
+let hashUtils;
+/** @type {typeof import('../src/character-card-normalize.js')} */
+let storageNormalize;
 /** @type {any} */
 let engine;
 /** @type {import('../src/users.js').UserDirectoryList} */
@@ -27,6 +31,8 @@ beforeAll(async () => {
     metadataDb = await import('../src/character-metadata-db.js');
     lib = await import('../src/library-engine.js');
     storage = await import('../src/character-card-storage.js');
+    hashUtils = await import('../public/scripts/hash-utils.js');
+    storageNormalize = await import('../src/character-card-normalize.js');
     engine = (await import('../engine/load.js')).loadEngine().binding;
 });
 
@@ -119,6 +125,59 @@ async function writeBoth(entries) {
             await library.assignTag(lib.TYPE.character, avatar, t, true);
         }
     }
+}
+
+/**
+ * Writes `n` varied groups to both stores (the old store's file and row, the engine's group) with the same date
+ * added, fav and tags.
+ * @param {number} n
+ * @param {number} seed
+ */
+async function writeGroupsBoth(n, seed) {
+    const r = rng(seed);
+    const groups = [];
+    for (let i = 0; i < n; i++) {
+        const id = String(1_700_000_000_000 + seed * 1000 + i);
+        const group = {
+            id,
+            name: NAMES[Math.floor(r() * NAMES.length)],
+            members: Array.from({ length: Math.floor(r() * 4) }, (_, k) => `m${k}-${i}.png`),
+            avatar_url: r() < 0.5 ? '' : `g${i}.png`,
+            allow_self_responses: r() < 0.5,
+            activation_strategy: Math.floor(r() * 3),
+            generation_mode: 0,
+            disabled_members: r() < 0.3 ? ['x.png'] : [],
+            fav: r() < 0.4,
+            chat_id: id,
+            chats: [id],
+            auto_mode_delay: 5,
+            generation_mode_join_prefix: '',
+            generation_mode_join_suffix: r() < 0.3 ? '\n' : '',
+            ...(r() < 0.3 ? { hideMutedSprites: true } : {}),
+            ...(r() < 0.3 ? { someone_elses: { a: [1, 'x'] } } : {}),
+        };
+        fs.writeFileSync(path.join(directories.groups, `${id}.json`), JSON.stringify(group));
+        await metadataDb.upsertGroupRow(directories, id, group.name, { fav: group.fav, group });
+        const row = /** @type {any} */ (await metadataDb.queryEntities(directories, { ids: [id], groupsOnly: true })).rows[0];
+        await library.writeGroup(group, { dateAdded: row.date_added });
+        for (const t of TAG_IDS.filter(() => r() < 0.35)) {
+            await metadataDb.assignEntityTag(directories, id, t);
+            await library.assignTag(lib.TYPE.group, id, t, true);
+        }
+        groups.push(group);
+    }
+    return groups;
+}
+
+/**
+ * A group object without the chat ids, which the sessions in its tree answer for.
+ * @param {Record<string, any>} group
+ */
+function withoutChats(group) {
+    const copy = { ...group };
+    delete copy.chat_id;
+    delete copy.chats;
+    return copy;
 }
 
 async function setUpTags() {
@@ -265,6 +324,128 @@ describe('the library on the engine', () => {
         expect((await library.writeCard(directories, 'lone.png', JSON.stringify(card))).records).toBe(2);
         const [stored] = await library.cards(['lone.png']);
         expect(storage.canonicalJson(stored)).toBe(storage.canonicalJson(card));
+    });
+
+    test('groups read back and page as the old store has them, beside characters', async () => {
+        await setUpTags();
+        await writeBoth(library50(5));
+        const groups = await writeGroupsBoth(12, 6);
+        for (const filter of [...QUERIES, { groupsOnly: true }, { groupsOnly: true, fav: true, tags: { include: ['t-red'] } }]) {
+            for (const [field, order] of SORTS) {
+                const { old, eng } = await bothPages(filter, field, order);
+                expect({ filter, field, order, ids: eng.ids }).toEqual({ filter, field, order, ids: old.ids });
+                const exact = !old.approx && !eng.approx;
+                expect(exact ? eng.total : null).toBe(exact ? old.total : null);
+            }
+        }
+        // Rows and hash rows: the old store's hydrated rows, less the chat ids the sessions answer for.
+        const params = { groupsOnly: true, sortField: 'name', limit: 100 };
+        const oldRows = /** @type {any} */ (await metadataDb.queryEntities(directories, params)).rows;
+        const engRows = (await library.query(params)).rows;
+        expect(engRows.map(r => r.id)).toEqual(oldRows.map(r => r.id));
+        const files = Object.fromEntries(groups.map(g => [g.id, JSON.parse(fs.readFileSync(path.join(directories.groups, `${g.id}.json`), 'utf8'))]));
+        const oldTags = /** @type {Record<string, string[]>} */ (await metadataDb.getEntityTagIdsForMany(directories, groups.map(g => g.id), { type: 'group' }));
+        for (const [i, row] of engRows.entries()) {
+            const o = oldRows[i];
+            const hydrated = { ...withoutChats(files[o.id]), fav: o.fav, date_added: o.date_added, date_last_chat: o.date_last_chat, chat_size: o.chat_size, tag_ids: [...oldTags[o.id]].sort() };
+            expect(row.item).toEqual(hydrated);
+        }
+        const oldHashes = /** @type {any} */ (await metadataDb.queryEntities(directories, { ...params, wantRows: false, wantHashes: true })).hashRows;
+        const engHashes = /** @type {any[]} */ ((await library.query({ ...params, wantRows: false, wantHashes: true })).hashRows);
+        const batch = await library.groups(engHashes.map(h => h.id));
+        for (const [i, h] of engHashes.entries()) {
+            expect([h.favHash, h.tagIdsHash]).toEqual([oldHashes[i].favHash, oldHashes[i].tagIdsHash]);
+            expect(h.contentHash).toBe(hashUtils.groupDigestContentHash(batch[i]) >>> 0);
+        }
+    });
+
+    test('a group\'s member changes write only the members that changed', async () => {
+        const group = { id: '1700000000001', name: 'G', members: ['a.png', 'b.png', 'c.png'], disabled_members: [], avatar_url: '', allow_self_responses: false, chat_id: '1', chats: ['1'], unknown_key: { x: 1 } };
+        await library.writeGroup(group);
+        const steps = [
+            [{ ...group, members: ['a.png', 'b.png', 'c.png'] }, 0],
+            [{ ...group, members: ['d.png', 'a.png', 'b.png', 'c.png'] }, 2],
+            [{ ...group, members: ['d.png', 'a.png', 'c.png'] }, 1],
+            [{ ...group, members: ['d.png', 'a.png', 'c.png'], disabled_members: ['a.png'] }, 3],
+            [{ ...group, members: ['d.png', 'a.png', 'c.png'], disabled_members: ['a.png'], name: 'G2' }, 1],
+            [{ ...group, members: [], disabled_members: ['a.png'], name: 'G2', fav: true }, 5],
+        ];
+        for (const [next, records] of steps) {
+            expect((await library.writeGroup(/** @type {any} */ (next))).records).toBe(records);
+            const [stored] = await library.groups([group.id]);
+            const want = withoutChats(/** @type {any} */ (next));
+            expect(stored).toEqual({ ...want, fav: !!want.fav, tag_ids: [] });
+        }
+    });
+
+    test('allow_global_styles, a date added and an avatar rename read as the old store\'s', async () => {
+        await setUpTags();
+        const entries = library50(6);
+        await writeBoth(entries);
+        const [a, b, c] = entries;
+        await metadataDb.setCharacterAllowGlobalStyles(directories, a.avatar, true);
+        expect(await library.setAllowGlobalStyles(a.avatar, true)).toBe(true);
+        await metadataDb.setCharacterAllowGlobalStyles(directories, b.avatar, false);
+        await library.setAllowGlobalStyles(b.avatar, false);
+        const before = library.store.stats().logBytes;
+        await library.setAllowGlobalStyles(b.avatar, false);
+        expect(library.store.stats().logBytes).toBe(before);
+        await metadataDb.setCharacterDateAdded(directories, c.avatar, 5);
+        expect(await library.updateEntity(lib.TYPE.character, c.avatar, { dateAdded: 5 })).toBe(true);
+        // A rename keeps the character: its fav, tags and date added go with it.
+        const renamed = 'renamed-avatar.png';
+        await metadataDb.upsertCharacterFromWrite(directories, renamed, JSON.stringify(a.card));
+        await metadataDb.setCharacterAllowGlobalStyles(directories, renamed, true);
+        await metadataDb.setCharacterFav(directories, renamed, a.fav);
+        await metadataDb.renameCharacterRow(directories, a.avatar, renamed);
+        expect(await library.updateEntity(lib.TYPE.character, a.avatar, { key: renamed })).toBe(true);
+        expect(await library.updateEntity(lib.TYPE.character, b.avatar, { key: renamed })).toBe(false);
+        const avatars = [renamed, ...entries.slice(1).map(e => e.avatar)];
+        const old = await metadataDb.getShallowByIds(directories, avatars);
+        const rows = await library.listRows(/** @type {any[]} */ (await library.entities(await library.ids(lib.TYPE.character, avatars))), false);
+        for (const [i, avatar] of avatars.entries()) expect(rows[i]).toEqual(old[avatar]);
+        expect(await library.ids(lib.TYPE.character, [a.avatar])).toEqual([null]);
+        for (const [field, order] of [['name', 'asc'], ['date_added', 'desc'], ['fav', 'desc']]) {
+            const { old: o, eng } = await bothPages({ tags: { include: ['t-red'] } }, field, order);
+            expect(eng.ids).toEqual(o.ids);
+            const all = await bothPages({}, field, order);
+            expect(all.eng.ids).toEqual(all.old.ids);
+        }
+    });
+
+    test('import dedup finds a card by each of its hashes as the old store does', async () => {
+        const card = (/** @type {string} */ name) => JSON.stringify({ spec: 'chara_card_v2', spec_version: '2.0', name, data: { name, description: name } });
+        const hex = (/** @type {number} */ n) => n.toString(16).padStart(64, '0');
+        const cards = [['x1.png', 'one', hex(1), hex(11)], ['x2.png', 'two', hex(2), hex(12)], ['x3.png', 'one', hex(3), hex(13)]];
+        for (const [avatar, name, content, avatarIdentity] of cards) {
+            await metadataDb.upsertCharacterFromWrite(directories, avatar, card(name), content, avatarIdentity);
+            await library.writeCard(directories, avatar, card(name), { contentHash: content, avatarIdentityHash: avatarIdentity });
+        }
+        const identity = (/** @type {string} */ name) => storageNormalize.computeContentIdentityHash(JSON.parse(card(name)));
+        const lookups = [
+            [metadataDb.findCharacterIdByContentHash, (/** @type {string} */ h) => library.findByHash(lib.HASH.content, h), [hex(2), hex(9), null]],
+            [metadataDb.findCharacterIdByContentIdentityHash, (/** @type {string} */ h) => library.findByHash(lib.HASH.identity, h), [identity('two'), identity('none'), null]],
+            [metadataDb.findCharacterIdByAvatarIdentityHash, (/** @type {string} */ h) => library.findByHash(lib.HASH.avatarIdentity, h), [hex(13), hex(9), null]],
+        ];
+        for (const [oldFind, engFind, hashes] of lookups) {
+            for (const h of /** @type {any[]} */ (hashes)) expect(await /** @type {any} */ (engFind)(h)).toBe(await /** @type {any} */ (oldFind)(directories, h));
+        }
+        for (const [cih, aih] of [[identity('one'), hex(13)], [identity('one'), hex(11)], [identity('two'), hex(13)], [identity('one'), null]]) {
+            expect(await library.findByIdentityHashes(cih, aih)).toBe(await metadataDb.findCharacterIdByIdentityHashes(directories, cih, aih));
+        }
+    });
+
+    test('hidden counts every entity of the kinds listed, less the page\'s rows', async () => {
+        await setUpTags();
+        await writeBoth(library50(7));
+        await writeGroupsBoth(5, 7);
+        for (const params of [{ includeGroups: true }, { includeGroups: false }, { groupsOnly: true }]) {
+            const r = await library.query({ ...params, tags: { include: ['t-red'] }, limit: 7, wantHidden: true });
+            const all = params.includeGroups === false
+                ? await metadataDb.queryCharacters(directories, { wantRows: false, wantTotal: true })
+                : await metadataDb.queryEntities(directories, { wantRows: false, wantTotal: true, groupsOnly: params.groupsOnly === true });
+            expect({ hidden: r.hidden, approx: r.approxHidden }).toEqual({ hidden: Number(all?.total) - r.rows.length, approx: false });
+        }
     });
 
     test('a list item inserted between two with no room left places the list again', async () => {
