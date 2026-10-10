@@ -28,7 +28,7 @@ import {
     isAvailable as isTreeAvailable, hasSavedChats,
     saveChatToTree, loadBranch, forkBranch, labelNode,
     deleteBranch, renameBranch as renameBranchInTree, listBranches, listRecentBranches, searchBranchesByContent,
-    ownerDescriptorOf, renameCharacterInMessages, renameGroupMemberInMessages, getAlternatives, getContinuation, getAncestorPath, editMessage, editMessages, appendMessages, addAlternatives, setChatMetadata, getOpeningAlternatives, loadDefaultChain, chooseCardOpening, findOpeningToLandOn, LANDING_EDITS_MAX, addOpeningAlternatives, loadAtNode, listLabels, setNodeMetadata, selectDefaultChild, endPathAt, endPathAtAnchor, graftMessage, degraftRange, swapAdjacent, deleteAlternative,
+    ownerDescriptorOf, renameCharacterInMessages, renameGroupMemberInMessages, getAlternatives, getContinuation, getAncestorPath, editMessage, editMessages, appendMessages, addAlternatives, setChatMetadata, getOpeningAlternatives, loadDefaultChain, storedSendKeys, chooseCardOpening, findOpeningToLandOn, LANDING_EDITS_MAX, addOpeningAlternatives, loadAtNode, listLabels, setNodeMetadata, selectDefaultChild, endPathAt, endPathAtAnchor, graftMessage, degraftRange, swapAdjacent, deleteAlternative,
 } from '../message-tree-db.js';
 
 /**
@@ -608,8 +608,9 @@ async function openingsForPage(directories, ownerId, avatar) {
  * that exists becomes the owner's current one. Records which character or group was opened last. Writes only what
  * changed; mints no names and creates nothing on disk.
  *
- * Body: `{ avatar_url }` or `{ group_id }`; optionally `chat`, `make_current`, and (a character) `fresh`: open no
- * conversation, only the card's greetings (a new chat).
+ * Body: `{ avatar_url }` or `{ group_id }`; optionally `chat`, `make_current`, (a character) `fresh`: open no
+ * conversation, only the card's greetings (a new chat), and `send_keys`: keys of sends the page kept because it
+ * doesn't know they were stored; `stored_sends` answers those the owner has.
  * Answers `{ chat, chat_metadata, messages, openings, card_openings, active_character, active_group, settings_hash? }`:
  * `chat` is upstream's identifier for the open chat ('' when there is no conversation yet), `messages` as
  * /get answers them after the header; `openings`/`card_openings` for a character only (null for a group);
@@ -648,6 +649,7 @@ router.post('/open', validateAvatarUrlMiddleware, async function (request, respo
                 card_openings: null,
                 chats: opened.chats,
                 date_last_chat: opened.dateLastChat,
+                stored_sends: await storedSendKeys(directories, groupId, request.body.send_keys),
                 ...recordLastOpened(request, { character: null, group: groupId }),
             });
         }
@@ -688,6 +690,7 @@ router.post('/open', validateAvatarUrlMiddleware, async function (request, respo
             chat_metadata: { ...(loaded?.metadata ?? {}) },
             messages: loaded?.messages ?? [],
             ...await openingsForPage(directories, ownerId, avatar),
+            stored_sends: await storedSendKeys(directories, ownerId, request.body.send_keys),
             ...recordLastOpened(request, { character: avatar, group: null }),
         });
     } catch (error) {

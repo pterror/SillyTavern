@@ -266,21 +266,18 @@ export async function finishStreamedReplyPersistence({ assistantNodeId, itemizat
  * @typedef {object} PendingSend
  * @property {string} key The message's send key.
  * @property {ChatMessage} message
- * @property {import('./chat-draft.js').DraftContext|null} context The chat it was sent in.
- * @property {string|null} draftText The box's text it was sent from, held as the draft until then.
  */
 
 /**
- * Settles the sends a generate request carried: one the server stored lets go of its draft; one it didn't is
- * kept as a failed send (failed-sends.js), which then holds its text instead of the draft.
+ * Settles the sends a generate request carried: one the server didn't store is shown as a failed send
+ * (failed-sends.js).
  * @param {PendingSend[]} pendingSends
  */
 function settlePendingSends(pendingSends) {
     for (const pending of pendingSends) {
         if (!wasSendStored(pending.key)) {
-            keepFailedSend({ key: pending.key, kind: 'append', context: pending.context, message: pending.message });
+            keepFailedSend({ key: pending.key, kind: 'append', message: pending.message });
         }
-        if (pending.context && pending.draftText != null) releaseDraft(localStorage, pending.context, pending.draftText);
     }
 }
 
@@ -442,7 +439,7 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
     if (type !== 'regenerate' && type !== 'swipe' && type !== 'quiet' && !isImpersonate && !dryRun && !depth) {
         setSendButtonState(true);
         textareaText = String($('#send_textarea').val());
-        // The text stays this chat's draft until the server has stored the message it is sent as.
+        // The text stays this chat's draft until the message it is sent as has been recorded (failed-sends.js).
         sentDraftContext = getCurrentDraftContext();
         if (sentDraftContext) {
             holdDraft(localStorage, sentDraftContext, textareaText);
@@ -560,12 +557,13 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
         sentUserMessage = await sendMessageAsUser(oai_settings.send_if_empty.trim(), messageBias, /** @type {number} */ (/** @type {unknown} */ (null)), false, name1, user_avatar, willUseRawAction);
     }
 
+    if (sentDraftContext && textareaText) {
+        // Recorded as a send (kept until the server has it), or not sent as a message at all (a command, a bias-only message).
+        releaseDraft(localStorage, sentDraftContext, textareaText);
+    }
     const sentKey = storeRefOf(sentUserMessage);
     if (sentUserMessage && willUseRawAction && sentKey !== undefined) {
-        pendingSends.push({ key: sentKey, message: sentUserMessage, context: sentDraftContext, draftText: textareaText || null });
-    } else if (sentDraftContext && textareaText) {
-        // Stored, kept as a failed send, or not sent as a message at all (a command, a bias-only message).
-        releaseDraft(localStorage, sentDraftContext, textareaText);
+        pendingSends.push({ key: sentKey, message: sentUserMessage });
     }
     if (sentUserMessage && !willUseRawAction && isFailedSend(sentUserMessage)) {
         unblockGeneration(type);

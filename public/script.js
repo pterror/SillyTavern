@@ -274,7 +274,7 @@ import { accountStorage } from './scripts/util/AccountStorage.js';
 import { initWelcomeScreen, openPermanentAssistantChat, openPermanentAssistantCard } from './scripts/welcome-screen.js';
 import { initDataMaid } from './scripts/data-maid.js';
 import { saveDraft, loadDraft, isDraftHeld } from './scripts/chat-draft.js';
-import { initFailedSends, keepFailedSend } from './scripts/failed-sends.js';
+import { initFailedSends, keepFailedSend, recordSend, keptSendKeys, forgetStoredSends } from './scripts/failed-sends.js';
 import { clearItemizedPrompts, deleteItemizedPromptForMessage, deleteItemizedPrompts, findItemizedPromptSet, initItemizedPrompts, itemizedParams, itemizedPrompts, loadItemizedPrompts, promptItemize, replaceItemizedPromptText, saveItemizedPrompts, saveItemizedPromptsIfChanged, swapItemizedPrompts } from './scripts/itemized-prompts.js';
 import { getSystemMessageByType, initSystemMessages, SAFETY_CHAT, sendSystemMessage, system_message_types, system_messages } from './scripts/system-messages.js';
 import { event_types, eventSource } from './scripts/events.js';
@@ -1519,7 +1519,7 @@ async function firstLoadInit() {
     initFailedSends({
         addOneMessage, deleteMessage, getCurrentChatContext, redisplayChat, reloadCurrentChat, updateViewMessageIds,
         switchToNode, chatOpAppendAfter, chatOpGraft, ensureOpeningRow, setSendStoredListener, setStoreRef, storeRefOf,
-        isStoredNodeId, isProvisionalNodeId, t,
+        isStoredNodeId, isProvisionalNodeId, provisionalNodeId, t,
         confirmDiscard: async (text) => await callGenericPopup(text, POPUP_TYPE.CONFIRM, '', { okButton: t`Discard`, cancelButton: t`Keep it` }) === POPUP_RESULT.AFFIRMATIVE,
     });
     initItemizedPrompts();
@@ -4981,6 +4981,7 @@ export async function sendMessageAsUser(messageText, messageBias, insertAt = nul
 
     if (typeof insertAt === 'number' && insertAt >= 0 && insertAt <= chat.length) {
         chat.splice(insertAt, 0, message);
+        recordSend({ key: storeRefOf(message), kind: 'graft' });
         // A mid-chain insert is a graft (the new node lands between the message that used to precede
         // this slot and the one that used to follow it) — the diff engine can't see this correctly,
         // since every message after the insertion point keeps its own unchanged node_id.
@@ -4997,6 +4998,7 @@ export async function sendMessageAsUser(messageText, messageBias, insertAt = nul
     } else {
         chat.push(message);
         const chat_id = (chat.length - 1);
+        recordSend({ key: storeRefOf(message), kind: 'append' });
 
         addOneMessage(message);
         await eventSource.emit(event_types.MESSAGE_SENT, chat_id);
@@ -7073,6 +7075,7 @@ export async function unshallowCharacter(characterId) {
  * @property {string|null} active_character
  * @property {string|null} active_group
  * @property {number} [settings_hash]
+ * @property {string[]} [stored_sends] Of the send keys the request named, those the server has stored.
  */
 
 /**
@@ -7084,15 +7087,18 @@ export async function unshallowCharacter(characterId) {
  * @returns {Promise<ChatOpenAnswer>}
  */
 export async function requestChatOpen(body) {
+    /** @type {{ type: 'character'|'group', id: string }} */
+    const owner = body.group_id ? { type: 'group', id: body.group_id } : { type: 'character', id: String(body.avatar_url) };
     const response = await fetch('/api/chats/open', {
         method: 'POST',
         headers: getRequestHeaders(),
         cache: 'no-cache',
-        body: JSON.stringify(body),
+        body: JSON.stringify({ ...body, send_keys: keptSendKeys(owner) }),
     });
     if (!response.ok) throw new Error(`/api/chats/open responded ${response.status}`);
     /** @type {ChatOpenAnswer} */
     const answer = await response.json();
+    forgetStoredSends(owner, Array.isArray(answer.stored_sends) ? answer.stored_sends : []);
     setActiveCharacter(answer.active_character);
     setActiveGroup(answer.active_group);
     seedKeyHashes(serverKeyHashes, answer.active_character, 'active_character');

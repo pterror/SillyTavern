@@ -1,6 +1,7 @@
-// A message the user sent that the server didn't store. It stays where it was sent, marked, with a notice
-// that never fades: "Save it again" or "Discard". It is kept in browser storage, keyed to the chat, until
-// one of them succeeds, so a reload brings it back where it was. If the chat has moved on since (something
+// A message the user sends is kept in browser storage from the moment it is sent until the server has stored
+// it, keyed to its character or group and its position there (the message it followed), so a reload brings it
+// back where it was. One the server didn't store stays where it was sent, marked, with a notice that never
+// fades: "Save it again" or "Discard". An open asks the server which kept sends it has stored after all. If the chat has moved on since (something
 // was added after the message it followed, or that message is gone), it is shown at the end instead, never
 // moved or sent on its own: "Send here", "Send as reply to that message" (a new branch) or "Discard". If
 // the message it followed is only on another branch, the chat shows a notice with a way to go there.
@@ -31,6 +32,7 @@ import { getRequestHeaders } from './request-headers.js';
  * @property {typeof import('./chat-store.js').storeRefOf} storeRefOf
  * @property {typeof import('./node-identity.js').isStoredNodeId} isStoredNodeId
  * @property {typeof import('./node-identity.js').isProvisionalNodeId} isProvisionalNodeId
+ * @property {typeof import('./node-identity.js').provisionalNodeId} provisionalNodeId
  * @property {typeof import('./i18n.js').t} t
  * @property {(text: string) => Promise<boolean>} confirmDiscard
  */
@@ -46,9 +48,11 @@ let deps;
  * @property {string|null} after The node of the message it followed.
  * @property {string|null} before `graft`: the node of the message it preceded.
  * @property {string} afterText The start of the text of the message it followed, to name it by.
+ * @property {boolean} [pending] Still being sent by this page (recorded before its request), not yet known to have failed.
  */
 
 /** @typedef {import('./chat-draft.js').DraftContext} DraftContext */
+/** @typedef {{ type: string, id: string }} Owner A character (by avatar) or group (by id). */
 
 /**
  * How a failed send is shown: at its place (`spot`), at the end because its place is gone (`moved`), or
@@ -65,13 +69,16 @@ const notices = new Map();
 /** Send keys the server said it stored, this page load. @type {Set<string>} */
 const storedKeys = new Set();
 
-/** @param {DraftContext} context */
-function storageKey(context) {
-    return `${STORAGE_PREFIX}:${context.type}:${context.id}:${context.chatId}`;
+/**
+ * Sends are kept per character or group (its tree of messages): where each one goes is its own position in it.
+ * @param {{ type: string, id: string }} owner
+ */
+function storageKey(owner) {
+    return `${STORAGE_PREFIX}:${owner.type}:${owner.id}`;
 }
 
 /**
- * @param {DraftContext|null} context
+ * @param {Owner|null} context
  * @returns {FailedSend[]}
  */
 function readEntries(context) {
@@ -85,7 +92,7 @@ function readEntries(context) {
 }
 
 /**
- * @param {DraftContext} context
+ * @param {Owner} context
  * @param {FailedSend[]} entries
  */
 function writeEntries(context, entries) {
@@ -100,7 +107,7 @@ function writeEntries(context, entries) {
     }
 }
 
-/** @param {DraftContext|null} a @param {DraftContext|null} b */
+/** @param {Owner|null} a @param {Owner|null} b */
 function sameContext(a, b) {
     return !!a && !!b && storageKey(a) === storageKey(b);
 }
@@ -123,34 +130,70 @@ function shortText(text) {
     return flat.length > AFTER_TEXT_LENGTH ? `${flat.slice(0, AFTER_TEXT_LENGTH)}…` : flat;
 }
 
+/** The chat each send recorded by this page was sent in, by send key. @type {Map<string, DraftContext>} */
+const recordedIn = new Map();
+
 /**
- * Keeps a send the server didn't store, and shows it as not saved when its chat is open.
- * @param {object} params
- * @param {string|undefined} params.key The message's send key.
- * @param {'append'|'graft'} params.kind
- * @param {DraftContext|null} [params.context] The chat it was sent in; the open one when left out.
- * @param {object} [params.message] The message, when it may no longer be on screen.
+ * The record of a send, with its position read from the screen as it is now.
+ * @param {'append'|'graft'} kind
+ * @param {object} shown The message.
+ * @param {number} index Its place on screen, -1 when it isn't shown.
+ * @param {string} key
+ * @returns {FailedSend}
  */
-export function keepFailedSend({ key, kind, context = undefined, message = undefined }) {
-    context ??= deps.getCurrentChatContext();
-    if (typeof key !== 'string' || storedKeys.has(key) || !context) return;
-
-    const open = sameContext(context, deps.getCurrentChatContext());
-    const index = open ? indexOfKey(key) : -1;
-    const shown = index >= 0 ? chat[index] : message;
-    if (!shown) return;
-
+function entryFor(kind, shown, index, key) {
     const previous = index > 0 ? chat[index - 1] : null;
-    /** @type {FailedSend} */
-    const entry = {
+    return {
         key,
         kind,
         message: plainMessage(shown),
         after: previous?.node_id ?? null,
         before: kind === 'graft' && index >= 0 ? chat[index + 1]?.node_id ?? null : null,
         afterText: shortText(previous?.mes),
+        pending: true,
     };
-    writeEntries(context, [...readEntries(context).filter(e => e.key !== key), entry]);
+}
+
+/**
+ * Records a message as it is sent, before any request: until the server has stored it, a reload brings it back
+ * (as a failed send, unless the server says it has it). Called with the message already on screen.
+ * @param {object} params
+ * @param {string|undefined} params.key The message's send key.
+ * @param {'append'|'graft'} params.kind
+ */
+export function recordSend({ key, kind }) {
+    const context = deps.getCurrentChatContext();
+    const index = typeof key === 'string' ? indexOfKey(key) : -1;
+    if (typeof key !== 'string' || !context || index < 0) return;
+    recordedIn.set(key, context);
+    writeEntries(context, [...readEntries(context).filter(e => e.key !== key), entryFor(kind, chat[index], index, key)]);
+}
+
+/**
+ * Shows a send the server didn't store as not saved (when its chat is open), keeping it until it is saved or
+ * discarded.
+ * @param {object} params
+ * @param {string|undefined} params.key The message's send key.
+ * @param {'append'|'graft'} params.kind
+ * @param {object} [params.message] The message, when it may no longer be on screen.
+ */
+export function keepFailedSend({ key, kind, message = undefined }) {
+    if (typeof key !== 'string' || storedKeys.has(key)) return;
+    const context = recordedIn.get(key) ?? deps.getCurrentChatContext();
+    if (!context) return;
+
+    const open = sameContext(context, deps.getCurrentChatContext());
+    const index = open ? indexOfKey(key) : -1;
+    const entries = readEntries(context);
+    const recorded = entries.find(e => e.key === key);
+    const shown = index >= 0 ? chat[index] : message;
+    if (!recorded && !shown) return;
+    // Where it is on screen now is the latest word on its position (a greeting may have been stored since).
+    /** @type {FailedSend} */
+    const entry = index >= 0 || !recorded
+        ? { ...entryFor(recorded?.kind ?? kind, shown, index, key), pending: false }
+        : { ...recorded, message: shown ? plainMessage(shown) : recorded.message, pending: false };
+    writeEntries(context, [...entries.filter(e => e.key !== key), entry]);
 
     if (index >= 0) {
         showNotice(entry, 'spot');
@@ -164,7 +207,7 @@ export function keepFailedSend({ key, kind, context = undefined, message = undef
  */
 export function isFailedSend(message) {
     const key = deps.storeRefOf(message);
-    return typeof key === 'string' && readEntries(deps.getCurrentChatContext()).some(entry => entry.key === key);
+    return typeof key === 'string' && readEntries(deps.getCurrentChatContext()).some(entry => entry.key === key && !entry.pending);
 }
 
 /**
@@ -177,7 +220,8 @@ export function wasSendStored(key) {
 
 /** @param {string} key */
 function forget(key) {
-    const context = deps.getCurrentChatContext();
+    const context = recordedIn.get(key) ?? deps.getCurrentChatContext();
+    recordedIn.delete(key);
     if (context) {
         const entries = readEntries(context);
         if (entries.some(entry => entry.key === key)) {
@@ -398,14 +442,46 @@ let placing = Promise.resolve();
 /**
  * Shows the open chat's failed sends: each at its place when the chat still has it, otherwise at the end
  * (or named, when the message it followed is on another branch). Runs once at a time.
+ * @param {{ fromOtherTab?: boolean }} [options] `fromOtherTab`: another tab changed the list; its sends still
+ * pending are left alone.
  * @returns {Promise<void>}
  */
-export function placeFailedSends() {
-    placing = placing.then(placeNow, placeNow);
+export function placeFailedSends(options = {}) {
+    const run = () => placeNow(options);
+    placing = placing.then(run, run);
     return placing;
 }
 
-async function placeNow() {
+/**
+ * A send recorded after a greeting that had no row yet names the greeting by its provisional id; once the greeting
+ * on screen has its row, the send is after that row.
+ * @param {Owner} context
+ * @param {FailedSend} entry
+ * @returns {FailedSend}
+ */
+function withStoredGreeting(context, entry) {
+    if (!deps.isProvisionalNodeId(entry.after)) return entry;
+    const greeting = chat.find(message => deps.isStoredNodeId(message.node_id) && deps.provisionalNodeId(message.name, message.mes) === entry.after);
+    if (!greeting) return entry;
+    const updated = { ...entry, after: greeting.node_id };
+    writeEntries(context, readEntries(context).map(e => e.key === entry.key ? updated : e));
+    return updated;
+}
+
+/**
+ * A pending send whose page is gone (reloaded or closed) is a failed one.
+ * @param {DraftContext} context
+ * @param {FailedSend} entry
+ * @returns {FailedSend}
+ */
+function markFailed(context, entry) {
+    const failed = { ...entry, pending: false };
+    writeEntries(context, readEntries(context).map(e => e.key === entry.key ? failed : e));
+    return failed;
+}
+
+/** @param {{ fromOtherTab?: boolean }} [options] */
+async function placeNow({ fromOtherTab = false } = {}) {
     const context = deps.getCurrentChatContext();
     const entries = readEntries(context);
     const keys = new Set(entries.map(entry => entry.key));
@@ -413,14 +489,18 @@ async function placeNow() {
         if (!keys.has(key)) clearNotice(key);
     }
 
-    for (const entry of entries) {
-        const index = indexOfKey(entry.key);
+    for (const kept of entries) {
+        const recorded = context ? withStoredGreeting(context, kept) : kept;
+        const index = indexOfKey(recorded.key);
+        if (index >= 0 && deps.isStoredNodeId(chat[index].node_id)) {
+            forget(recorded.key);
+            continue;
+        }
+        // Being sent by this page, or (another tab's) not known to have failed: not shown as failed yet.
+        if (recorded.pending && (recordedIn.has(recorded.key) || fromOtherTab)) continue;
+        const entry = recorded.pending ? markFailed(context, recorded) : recorded;
         if (index >= 0) {
-            if (deps.isStoredNodeId(chat[index].node_id)) {
-                forget(entry.key);
-            } else if (!notices.has(entry.key)) {
-                showNotice(entry, 'spot');
-            }
+            if (!notices.has(entry.key)) showNotice(entry, 'spot');
             continue;
         }
 
@@ -488,7 +568,38 @@ async function onOtherTab(event) {
         await deps.reloadCurrentChat();
         return;
     }
-    await placeFailedSends();
+    await placeFailedSends({ fromOtherTab: true });
+}
+
+/** How many kept sends of one character or group an open asks the server about. */
+const KEYS_PER_OPEN = 100;
+
+
+/**
+ * The send keys of a character's or group's kept sends, for an open to ask the server which of them it has.
+ * @param {Owner} owner
+ * @returns {string[]}
+ */
+export function keptSendKeys(owner) {
+    /** @type {string[]} */
+    const keys = [];
+    keys.push(...readEntries(owner).map(e => e.key));
+    return keys.slice(0, KEYS_PER_OPEN);
+}
+
+/**
+ * Lets go of kept sends the server has after all (an open answered that it stored them).
+ * @param {Owner} owner
+ * @param {string[]} keys
+ */
+export function forgetStoredSends(owner, keys) {
+    if (!keys.length) return;
+    const stored = new Set(keys);
+    keys.forEach(key => storedKeys.add(key));
+    const entries = readEntries(owner);
+    const left = entries.filter(e => !stored.has(e.key));
+    if (left.length !== entries.length) writeEntries(owner, left);
+    keys.forEach(key => { recordedIn.delete(key); clearNotice(key); });
 }
 
 /** @param {FailedSendsDeps} dependencies */
@@ -496,7 +607,7 @@ export function initFailedSends(dependencies) {
     deps = dependencies;
     deps.setSendStoredListener((key) => {
         storedKeys.add(key);
-        if (notices.has(key) || readEntries(deps.getCurrentChatContext()).some(entry => entry.key === key)) forget(key);
+        if (recordedIn.has(key) || notices.has(key) || readEntries(deps.getCurrentChatContext()).some(entry => entry.key === key)) forget(key);
     });
     eventSource.on(event_types.CHAT_CHANGED, () => placeFailedSends());
     eventSource.on(event_types.MESSAGE_EDITED, onEdited);

@@ -129,6 +129,13 @@ try {
         const opened = await open({ avatar_url: 'Ivy.png' });
         assert.deepEqual(opened.body.messages.map(m => m.mes), ['Hey.', 'Hi Ivy']);
         assert.equal(opened.body.chat, openingId);
+
+        // Of the send keys the page kept, the ones stored for this character are named.
+        await appendMessages(directories, 'Ivy', openingId, [{ name: 'User', is_user: true, mes: 'Kept?', send_date: 3, extra: {} }], { sendKeys: ['key-stored'] });
+        const asked = await open({ avatar_url: 'Ivy.png', send_keys: ['key-stored', 'key-never-arrived'] });
+        assert.deepEqual(asked.body.stored_sends, ['key-stored']);
+        const otherOwner = await open({ avatar_url: 'Rex.png', send_keys: ['key-stored'] });
+        assert.deepEqual(otherOwner.body.stored_sends, [], 'another owner\'s key is not this one\'s');
     }
 
     // A group: its current chat, or a named one, made current only when asked.

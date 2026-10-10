@@ -162,6 +162,27 @@ function storedSendSync(db, ownerId, sendKey) {
     return row?.id ?? null;
 }
 
+/** The most send keys {@link storedSendKeys} looks up at once. */
+const STORED_SEND_KEYS_MAX = 100;
+
+/**
+ * Of these send keys, the ones the owner has a stored message for.
+ * @param {Directories} directories
+ * @param {string} ownerId
+ * @param {unknown} keys At most the first {@link STORED_SEND_KEYS_MAX} strings are looked up.
+ * @returns {Promise<string[]>}
+ */
+export async function storedSendKeys(directories, ownerId, keys) {
+    const entry = await getEntry(directories);
+    const wanted = Array.isArray(keys) ? keys.filter(k => typeof k === 'string' && k !== '').slice(0, STORED_SEND_KEYS_MAX) : [];
+    if (!entry || !wanted.length) return [];
+    const params = Object.fromEntries(wanted.map((k, i) => [`k${i}`, k]));
+    const rows = /** @type {Iterable<{ send_key: string }>} */ (entry.db.iterate(
+        `SELECT k.send_key FROM send_keys k JOIN messages m ON m.id = k.node_id
+         WHERE m.owner_id = @ownerId AND k.send_key IN (${wanted.map((_, i) => `@k${i}`).join(', ')})`, { ownerId, ...params }));
+    return Array.from(rows, row => row.send_key);
+}
+
 /**
  * Records that the send with this key was stored at `nodeId`.
  * @param {Pick<import('./endpoints/sqlite-engine.js').SqliteEngineHandle, 'run'>} db
