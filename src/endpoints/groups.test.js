@@ -276,6 +276,35 @@ async function run() {
         assert.equal(status, 400);
     }
 
+    // /members: one member changed against the group as stored, whatever the page held.
+    {
+        const id = 'group-members';
+        writeGroupFixture(id);
+        const step = async (op, avatar, extra = {}) => (await postJson(app, '/api/groups/members', { id, op, avatar, ...extra })).data;
+
+        assert.deepEqual(await step('add', 'carol.png'), { members: ['carol.png', 'alice.png', 'bob.png'], disabled_members: ['bob.png'] });
+        // Another tab adds dave meanwhile; removing alice here keeps dave.
+        await step('add', 'dave.png');
+        assert.deepEqual((await step('remove', 'alice.png')).members, ['dave.png', 'carol.png', 'bob.png']);
+        assert.deepEqual((await step('down', 'dave.png')).members, ['carol.png', 'dave.png', 'bob.png']);
+        assert.deepEqual((await step('up', 'bob.png')).members, ['carol.png', 'bob.png', 'dave.png']);
+        assert.deepEqual((await step('unmute', 'bob.png')).disabled_members, []);
+        assert.deepEqual((await step('mute', 'dave.png')).disabled_members, ['dave.png']);
+        assert.deepEqual(await step('replace', 'dave.png', { new_avatar: 'erin.png' }), { members: ['carol.png', 'bob.png', 'erin.png'], disabled_members: ['erin.png'] });
+        assert.deepEqual((await step('remove', 'erin.png')).disabled_members, [], 'a removed member is unmuted too');
+
+        const stored = readGroupFromDisk(id);
+        assert.deepEqual(stored.members, ['carol.png', 'bob.png']);
+        assert.equal(stored.name, 'Original Name', 'nothing else in the group changes');
+
+        const before = fs.statSync(path.join(groupsDir, `${id}.json`)).mtimeMs;
+        await step('add', 'carol.png');
+        assert.equal(fs.statSync(path.join(groupsDir, `${id}.json`)).mtimeMs, before, 'no change, no write');
+
+        assert.equal((await postJson(app, '/api/groups/members', { id, op: 'swap', avatar: 'x.png' })).status, 400);
+        assert.equal((await postJson(app, '/api/groups/members', { id: 'nope', op: 'add', avatar: 'x.png' })).status, 404);
+    }
+
     console.log('groups.test.js: all assertions passed');
 }
 

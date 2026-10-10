@@ -109,6 +109,7 @@ jest.unstable_mockModule('../public/scripts/character-repository.js', () => ({
 }));
 
 jest.unstable_mockModule('../public/script.js', () => ({
+    requestChatOpen: jest.fn(),
     sendSystemMessage: jest.fn(),
     printMessages: jest.fn(),
     substituteParams: jest.fn(),
@@ -251,6 +252,7 @@ jest.unstable_mockModule('../public/scripts/chat-store.js', () => ({
 
 jest.unstable_mockModule('../public/scripts/node-identity.js', () => ({
     provisionalNodeId: jest.fn(),
+    isProvisionalNodeId: jest.fn(() => false),
 }));
 
 jest.unstable_mockModule('../public/scripts/filters.js', () => ({
@@ -419,16 +421,16 @@ describe('validateGroup()', () => {
         expect(globalThis.fetch).not.toHaveBeenCalledWith(SAVE_URL, expect.anything());
     });
 
-    test('prunes a member exists() authoritatively says does not exist, and saves', async () => {
+    test('keeps a member exists() says does not exist, warns, and writes nothing', async () => {
         existsMock.mockResolvedValue({ 'ghost.png': false });
         const group = { id: 'g1', members: ['ghost.png'], chats: [] };
 
         await validateGroup(group);
 
         expect(existsMock).toHaveBeenCalledWith(['ghost.png']);
-        expect(group.members).toEqual([]);
-        expect(globalThis.fetch).toHaveBeenCalledWith(SAVE_URL, expect.anything());
-        expect(savedBody()).toEqual({ id: 'g1', props: { members: [] } });
+        expect(group.members).toEqual(['ghost.png']);
+        expect(globalThis.fetch).not.toHaveBeenCalledWith(SAVE_URL, expect.anything());
+        expect(global.toastr.warning).toHaveBeenCalledWith(expect.stringContaining('ghost.png'), expect.anything(), expect.anything());
     });
 
     test('keeps a non-resident member that exists() says still exists (not deleted, just not resident)', async () => {
@@ -461,16 +463,15 @@ describe('validateGroup()', () => {
         expect(globalThis.fetch).not.toHaveBeenCalledWith(SAVE_URL, expect.anything());
     });
 
-    test('still dedupes chat ids even when the member existence check aborts', async () => {
+    test('writes nothing for duplicate chat ids: opening a group never writes', async () => {
         existsMock.mockRejectedValue(new Error('network down'));
         const group = { id: 'g1', members: ['ghost.png'], chats: ['c1', 'c1', 'c2'] };
 
         await validateGroup(group);
 
         expect(group.members).toEqual(['ghost.png']);
-        expect(group.chats).toEqual(['c1', 'c2']);
-        expect(globalThis.fetch).toHaveBeenCalledWith(SAVE_URL, expect.anything());
-        expect(savedBody()).toEqual({ id: 'g1', props: { chats: ['c1', 'c2'] } });
+        expect(group.chats).toEqual(['c1', 'c1', 'c2']);
+        expect(globalThis.fetch).not.toHaveBeenCalledWith(SAVE_URL, expect.anything());
     });
 
     test('does nothing (no dirty save) when there is nothing to prune or dedupe', async () => {

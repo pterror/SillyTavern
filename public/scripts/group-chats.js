@@ -463,41 +463,15 @@ export async function validateGroup(group) {
         }
     }
 
-    let membersDirty = false;
-    if (existsResult !== null) {
-        const filtered = membersArray.filter(member => {
-            if (findGroupMemberCharacter(member)) return true;
-            if (existsResult[member]) return true;
-            if (foundByName.has(member)) return true;
-            const msg = t`Warning: Listed member ${member} does not exist as a character. It will be removed from the group.`;
-            toastr.warning(msg, t`Group Validation`);
-            console.warn(msg);
-            membersDirty = true;
-            return false;
-        });
-        if (membersDirty) {
-            group.members = filtered;
-        }
-    }
-
-    // Remove duplicate chat ids
-    let chatsDirty = false;
-    if (Array.isArray(group.chats)) {
-        const lengthBefore = group.chats.length;
-        group.chats = group.chats.filter(onlyUnique);
-        const lengthAfter = group.chats.length;
-        if (lengthBefore !== lengthAfter) {
-            chatsDirty = true;
-        }
-    }
-
-    if (membersDirty || chatsDirty) {
-        // One user-triggered validation pass, so one request even when both fields changed.
-        /** @type {Record<string, any>} */
-        const props = {};
-        if (membersDirty) props.members = group.members;
-        if (chatsDirty) props.chats = group.chats;
-        await saveGroupField(group.id, props, true, false);
+    // Viewing writes nothing: a member whose card can't be found stays in the group, shown as missing with a way
+    // to remove it (renderMissingMembers()), since a card that is only unreadable for now must not cost its place.
+    const missing = existsResult === null
+        ? []
+        : membersArray.filter(member => !findGroupMemberCharacter(member) && !existsResult[member] && !foundByName.has(member));
+    missingGroupMembers.set(group.id, new Set(missing));
+    if (missing.length) {
+        toastr.warning(t`These members of the group can't be found as characters: ${missing.join(', ')}. They stay in the group; remove them from its member list if they are gone.`,
+            t`Group Validation`, { preventDuplicates: true, escapeHtml: true });
     }
 }
 
@@ -992,7 +966,8 @@ async function _bootstrapGroupChat(groupId, chatName) {
 }
 
 /**
- * Renames a group member across all groups and their chats.
+ * Upstream's: renames a group member across the groups this page holds and their chats. Our own rename doesn't call
+ * it (a rename keeps the avatar, and group chats keep the speaker names they carry until speakers are stored by id).
  * @param {string} oldAvatar Old avatar name
  * @param {string} newAvatar New avatar name
  * @param {string} newName New character name
@@ -1009,11 +984,17 @@ export async function renameGroupMember(oldAvatar, newAvatar, newName) {
                 continue;
             }
 
-            // Replace group member avatar id and save the changes
-            group.members[memberIndex] = newAvatar;
-            groupsStore.update(group.id, { members: group.members });
-            await saveGroupField(group.id, { members: group.members }, true, false);
-            console.log(`Renamed character ${newName} in group: ${group.name}`);
+            // The member's avatar id, changed in place on the server.
+            if (newAvatar !== oldAvatar) {
+                const response = await fetch('/api/groups/members', {
+                    method: 'POST',
+                    headers: getRequestHeaders(),
+                    body: JSON.stringify({ id: group.id, op: 'replace', avatar: oldAvatar, new_avatar: newAvatar }),
+                });
+                if (!response.ok) throw new Error('Group member could not be replaced');
+                const { members, disabled_members } = await response.json();
+                groupsStore.update(group.id, { members, disabled_members });
+            }
 
             // Every group is tree-stored (forced-migrated at server startup) - one server-side
             // statement renames the member across every chat under this group's anchor.
@@ -1026,12 +1007,9 @@ export async function renameGroupMember(oldAvatar, newAvatar, newName) {
             if (!response.ok) {
                 throw new Error('Group member could not be renamed');
             }
-
-            const data = await response.json();
-            console.log(`Renamed character ${newName} in ${data.updated} messages of group: ${group.name}`);
         } catch (error) {
-            console.log(`An error during renaming the character ${newName} in group: ${group.name}`);
-            console.error(error);
+            console.error(`Could not rename a member of group ${group.id}:`, error);
+            toastr.error(t`${newName} could not be renamed in the group ${group.name}.`, t`Group could not be saved`);
         }
     }
 }
@@ -1713,6 +1691,56 @@ async function groupChatAutoModeWorker() {
     await generateGroupWrapper(true, 'auto', { signal: groupAutoModeAbortController.signal });
 }
 
+/** Members of each group whose card couldn't be found when it was last opened, by group id. @type {Map<string, Set<string>>} */
+const missingGroupMembers = new Map();
+
+/** Lists the open group's members whose card can't be found, each with a button to remove it from the group. */
+function renderMissingMembers() {
+    $('#rm_group_missing_members').remove();
+    const group = openGroupId ? groupsStore.get(openGroupId) : null;
+    const missing = [...(missingGroupMembers.get(openGroupId) ?? [])].filter(member => group?.members?.includes(member));
+    if (!group || !missing.length) return;
+    const block = $('<div id="rm_group_missing_members" class="flex-container flexFlowColumn"></div>');
+    block.append($('<small></small>').text(t`Not found as characters, kept in the group:`));
+    for (const member of missing) {
+        const row = $('<div class="flex-container alignItemsCenter missing_group_member"></div>');
+        row.append($('<span class="flex1"></span>').text(member));
+        row.append($('<div class="menu_button"></div>').text(t`Remove from group`).on('click', async () => {
+            if (await changeGroupMember(group.id, 'remove', member)) {
+                missingGroupMembers.get(group.id)?.delete(member);
+                renderMissingMembers();
+            }
+        }));
+        block.append(row);
+    }
+    $('.rm_group_members').last().after(block);
+}
+
+/**
+ * Changes one member of a stored group on the server (POST /api/groups/members), and takes on the members it answers.
+ * @param {string} groupId
+ * @param {'add'|'remove'|'up'|'down'|'mute'|'unmute'} op
+ * @param {string} avatar
+ * @returns {Promise<boolean>} Whether it was stored; a failure shows an error toast.
+ */
+async function changeGroupMember(groupId, op, avatar) {
+    try {
+        const response = await fetch('/api/groups/members', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ id: groupId, op, avatar }),
+        });
+        if (!response.ok) throw new Error(`/api/groups/members responded ${response.status}`);
+        const { members, disabled_members } = await response.json();
+        groupsStore.update(groupId, { members, disabled_members });
+        return true;
+    } catch (error) {
+        console.error('Could not change a group member:', error);
+        toastr.error(t`The change was not saved. Check the server console for details.`, t`Group could not be saved`);
+        return false;
+    }
+}
+
 /**
  * Modifies a group member by adding or removing them.
  * @param {string} groupId Group ID
@@ -1724,7 +1752,9 @@ async function modifyGroupMember(groupId, groupMember, isDelete) {
     const thisGroup = groupsStore.get(groupId);
     const membersArray = thisGroup?.members ?? newGroupMembers;
 
-    if (isDelete) {
+    if (thisGroup) {
+        await changeGroupMember(groupId, isDelete ? 'remove' : 'add', id);
+    } else if (isDelete) {
         const index = membersArray.findIndex((x) => x === id);
         if (index !== -1) {
             membersArray.splice(membersArray.indexOf(id), 1);
@@ -1733,11 +1763,7 @@ async function modifyGroupMember(groupId, groupMember, isDelete) {
         membersArray.unshift(id);
     }
 
-    if (thisGroup) {
-        // membersArray === thisGroup.members (already mutated above in place) - this is purely to report the
-        // change via groupsStore, not to actually change the value again.
-        groupsStore.update(groupId, { members: membersArray });
-    } else {
+    if (!thisGroup) {
         // No existing group yet (still on the "create new group" screen, mutating newGroupMembers directly) -
         // there's no groupsStore entity to update/report, so the groupsStore.onChange subscriber
         // (rebuildGroupsStore()) that normally reprints these lists won't fire. Reprint directly.
@@ -1747,10 +1773,7 @@ async function modifyGroupMember(groupId, groupMember, isDelete) {
 
     if (openGroupId) {
         await unshallowGroupMembers(openGroupId);
-        // Adding/removing a member is a single discrete click - dispatch immediately (see savePropertyDebounced's
-        // note above; this was only debounced as a leftover of the old shared-timer pattern).
-        await saveGroupField(openGroupId, { members: thisGroup.members }, true, false);
-        updateGroupAvatar(thisGroup);
+        updateGroupAvatar(groupsStore.get(openGroupId));
     }
 
     // Refresh the tag filters for both lists to reflect any new tags
@@ -1773,6 +1796,13 @@ async function reorderGroupMember(groupId, groupMember, direction) {
     const thisGroup = groupsStore.get(groupId);
     const memberArray = thisGroup?.members ?? newGroupMembers;
 
+    if (thisGroup) {
+        if (await changeGroupMember(groupId, direction === 'down' ? 'down' : 'up', id) && openGroupId) {
+            updateGroupAvatar(groupsStore.get(groupId));
+        }
+        return;
+    }
+
     const indexOf = memberArray.indexOf(id);
     if (direction == 'down') {
         const next = memberArray[indexOf + 1];
@@ -1789,25 +1819,8 @@ async function reorderGroupMember(groupId, groupMember, direction) {
         }
     }
 
-    if (thisGroup) {
-        // memberArray === thisGroup.members (already mutated above in place) - this is purely to report the
-        // change via groupsStore, not to actually change the value again. printGroupMembers() is handled by
-        // the groupsStore.onChange subscriber (rebuildGroupsStore()), triggered by this call.
-        groupsStore.update(groupId, { members: memberArray });
-    } else {
-        // No existing group yet (still on the "create new group" screen, mutating newGroupMembers directly) -
-        // there's no groupsStore entity to update/report, so the subscriber above won't fire. Reprint directly.
-        printGroupMembers();
-    }
-
-    // Existing groups need to modify members list
-    if (openGroupId) {
-        // Reordering via the up/down arrow is a single discrete click - dispatch immediately (see
-        // savePropertyDebounced's note above; this was only debounced as a leftover of the old
-        // shared-timer pattern).
-        await saveGroupField(groupId, { members: memberArray }, true, false);
-        updateGroupAvatar(thisGroup);
-    }
+    // No group stored yet (the "create new group" screen): only the page's list changes.
+    printGroupMembers();
 }
 
 async function onGroupActivationStrategyInput(e) {
@@ -2033,6 +2046,7 @@ async function printGroupMembers() {
             },
         });
     });
+    renderMissingMembers();
 }
 
 /**
@@ -2325,23 +2339,12 @@ async function onGroupActionClick(event) {
 
     if (action === 'enable') {
         member.removeClass('disabled');
-        const _thisGroup = groupsStore.get(openGroupId);
-        const index = _thisGroup.disabled_members.indexOf(member.data('id'));
-        if (index !== -1) {
-            _thisGroup.disabled_members.splice(index, 1);
-            groupsStore.update(openGroupId, { disabled_members: _thisGroup.disabled_members });
-            await saveGroupProperty(openGroupId, { disabled_members: _thisGroup.disabled_members });
-        }
+        await changeGroupMember(openGroupId, 'unmute', member.data('id'));
     }
 
     if (action === 'disable') {
         member.addClass('disabled');
-        const _thisGroup = groupsStore.get(openGroupId);
-        if (!_thisGroup.disabled_members.includes(member.data('id'))) {
-            _thisGroup.disabled_members.push(member.data('id'));
-            groupsStore.update(openGroupId, { disabled_members: _thisGroup.disabled_members });
-            await saveGroupProperty(openGroupId, { disabled_members: _thisGroup.disabled_members });
-        }
+        await changeGroupMember(openGroupId, 'mute', member.data('id'));
     }
 
     if (action === 'up' || action === 'down') {

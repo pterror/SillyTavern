@@ -105,6 +105,7 @@ jest.unstable_mockModule('../public/scripts/character-repository.js', () => ({
 }));
 
 jest.unstable_mockModule('../public/script.js', () => ({
+    requestChatOpen: jest.fn(),
     sendSystemMessage: jest.fn(),
     printMessages: jest.fn(),
     substituteParams: jest.fn(),
@@ -232,6 +233,7 @@ jest.unstable_mockModule('../public/scripts/chat-store.js', () => ({
 
 jest.unstable_mockModule('../public/scripts/node-identity.js', () => ({
     provisionalNodeId: jest.fn(),
+    isProvisionalNodeId: jest.fn(() => false),
 }));
 
 jest.unstable_mockModule('../public/scripts/filters.js', () => ({
@@ -320,11 +322,11 @@ afterEach(() => {
 });
 
 describe('a failed group write shows an error toast', () => {
-    test('saveGroupProperty() (POST /api/groups/save-partial), via validateGroup()', async () => {
-        existsMock.mockResolvedValue({ 'ghost.png': false });
+    test('saveGroupProperty() (POST /api/groups/save-partial), via renameGroupChat()', async () => {
+        groupChats.groupsStore.create({ id: 'g-rename', members: [], chats: ['c1'], chat_id: 'c1' });
         fakeFetch({ '/api/groups/save-partial': 500 });
 
-        await groupChats.validateGroup({ id: 'g1', members: ['ghost.png'], chats: [] });
+        await groupChats.renameGroupChat('g-rename', 'c1', 'c2');
 
         expect(globalThis.fetch).toHaveBeenCalledWith('/api/groups/save-partial', expect.anything());
         expect(global.toastr.error).toHaveBeenCalledTimes(1);

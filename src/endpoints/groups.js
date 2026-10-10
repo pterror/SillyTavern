@@ -585,6 +585,53 @@ router.post('/save-partial', validateGroupIdBody, async (request, response) => {
     });
 });
 
+/**
+ * Changes one member of a group: `op` is `add` (to the front), `remove`, `up`, `down`, `mute`, `unmute` or `replace`
+ * (by `new_avatar`, in place), for the member `avatar`. Works on the group as stored, so two tabs changing different members both keep their change.
+ * Answers `{ members, disabled_members }` as stored. Writes nothing when nothing changes.
+ */
+router.post('/members', validateGroupIdBody, async (request, response) => {
+    const { id, op, avatar, new_avatar: newAvatar } = request.body;
+    if (typeof avatar !== 'string' || !avatar || !['add', 'remove', 'up', 'down', 'mute', 'unmute', 'replace'].includes(op)) {
+        return response.status(400).send({ error: 'avatar and op (add, remove, up, down, mute, unmute, replace) are required' });
+    }
+    if (op === 'replace' && (typeof newAvatar !== 'string' || !newAvatar)) {
+        return response.status(400).send({ error: 'replace needs new_avatar' });
+    }
+    return withGroupLock(request.user.directories, id, async () => {
+        const group = readGroupFile(request.user.directories, id);
+        if (!group) {
+            return response.sendStatus(404);
+        }
+        const members = Array.isArray(group.members) ? [...group.members] : [];
+        const disabled = Array.isArray(group.disabled_members) ? [...group.disabled_members] : [];
+        const at = members.indexOf(avatar);
+        if (op === 'add' && at === -1) members.unshift(avatar);
+        if (op === 'remove' && at !== -1) members.splice(at, 1);
+        if (op === 'remove' && disabled.includes(avatar)) disabled.splice(disabled.indexOf(avatar), 1);
+        const swapWith = op === 'up' ? at - 1 : op === 'down' ? at + 1 : -1;
+        if (at !== -1 && swapWith >= 0 && swapWith < members.length) [members[at], members[swapWith]] = [members[swapWith], members[at]];
+        if (op === 'mute' && at !== -1 && !disabled.includes(avatar)) disabled.push(avatar);
+        if (op === 'unmute' && disabled.includes(avatar)) disabled.splice(disabled.indexOf(avatar), 1);
+        if (op === 'replace' && at !== -1) {
+            members[at] = newAvatar;
+            if (disabled.includes(avatar)) disabled[disabled.indexOf(avatar)] = newAvatar;
+        }
+
+        const same = (/** @type {unknown[]} */ a, /** @type {unknown} */ b) => Array.isArray(b) && a.length === b.length && a.every((x, i) => x === b[i]);
+        if (!same(members, group.members) || !same(disabled, group.disabled_members ?? [])) {
+            group.members = members;
+            group.disabled_members = disabled;
+            try {
+                await writeGroupFile(request.user.directories, group);
+            } catch (error) {
+                return sendGroupSaveFailed(response, id, error);
+            }
+        }
+        return response.send({ members, disabled_members: disabled });
+    });
+});
+
 // Mints a new chat id for an existing group, the same way /create mints one for a brand new group.
 router.post('/new-chat', validateGroupIdBody, async (request, response) => {
     const { id } = request.body;

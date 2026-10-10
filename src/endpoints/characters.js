@@ -25,7 +25,7 @@ import { calculateDataSize, toShallow } from '../character-shallow.js';
 import { touchBrowserPresence, PRESENCE_PING_INTERVAL_MS } from '../browser-presence.js';
 import { invalidateThumbnail, getThumbnailVersion } from './thumbnails.js';
 import { importRisuSprites, importChubExpressions, importChubRelatedLorebooks } from './sprites.js';
-import { hasSavedChats, listBranches as listTreeBranches } from '../message-tree-db.js';
+import { hasSavedChats, listBranches as listTreeBranches, renameCharacterInMessages } from '../message-tree-db.js';
 import { ByafParser } from '../byaf.js';
 import { CharXParser, persistCharXAssets } from '../charx.js';
 import cacheBuster from '../middleware/cacheBuster.js';
@@ -1117,6 +1117,11 @@ router.post('/create', getFileNameValidationFunction('file_name'), async functio
  * @param  {import("express").Response} response The HTTP response object.
  * @return {Promise<void>}
  */
+/**
+ * Renames a character. The avatar (its id) stays. With `rename_past_chats`, the character's name in its own chats'
+ * messages changes too; group chats keep the name their messages carry (they name speakers by id from storage stage 5).
+ * Answers `{ avatar, past_chats_renamed? }` (the number of messages renamed).
+ */
 router.post('/rename', validateAvatarUrlMiddleware, async function (request, response) {
     if (!request.body.avatar_url || !request.body.new_name) {
         return response.sendStatus(400);
@@ -1138,6 +1143,10 @@ router.post('/rename', validateAvatarUrlMiddleware, async function (request, res
         // Leaves date_added frozen.
         await writeCharacterData(avatarPath, newData, path.parse(avatarName).name, request);
 
+        if (request.body.rename_past_chats === true) {
+            const renamed = await renameCharacterInMessages(request.user.directories, path.parse(avatarName).name, newName);
+            return response.send({ avatar: avatarName, past_chats_renamed: renamed });
+        }
         return response.send({ avatar: avatarName });
     } catch (err) {
         console.error(err);
