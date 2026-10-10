@@ -1398,6 +1398,7 @@ impl Store {
     /// - `path { tree, at? }`: the messages from the tree's root down to `at`;
     /// - `landing { tree, session?, user? }`, `followed { tree, at?, session?, user? }`: a message or null;
     /// - `sessions { ids }`, `sessionInTree { session, tree }`, `userInTree { user, tree }`;
+    /// - `sessionsNamed { user, tree, name }`: the sessions named exactly `name` that the user has moved in the tree;
     /// - `history { session, from, limit }`, `recent { before?, limit }`, `inTree { tree, before?, limit }`;
     /// - `historyStep { session, back }`: the entry a step reaches, or null; `openingChoice { session, tree }`;
     /// - `messageCount { tree, at? }`: `{ count, estimate }`;
@@ -1464,6 +1465,25 @@ impl Store {
                 Box::new(move |s| {
                     s.chat_read(|v| cr::session_in_tree(v, ses, tree))
                         .map(JsTree)
+                })
+            }
+            "sessionsNamed" => {
+                let (user, tree) = (req_integer(a, "user")?, req_integer(a, "tree")?);
+                let name = string(
+                    "name",
+                    a.get::<Unknown>("name")?
+                        .ok_or_else(|| invalid("sessionsNamed needs a name".into()))?,
+                )?;
+                Box::new(move |s| {
+                    s.chat_read(|v| {
+                        Ok(cr::Js::Arr(
+                            crate::store::sessions::by_name(v, user, tree, &name)?
+                                .into_iter()
+                                .map(cr::Js::Big)
+                                .collect(),
+                        ))
+                    })
+                    .map(JsTree)
                 })
             }
             "userInTree" => {

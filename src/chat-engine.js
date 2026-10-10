@@ -337,6 +337,24 @@ export class ChatEngine {
         return { tree: s.tree, at: s.at === null ? null : (await this.externalIds([s.at]))[0] };
     }
 
+    /**
+     * The sessions named exactly `name` that a user has moved in a tree (their UUIDs): what a route taking a chat
+     * name resolves it to (names are unique per user and tree, so normally one).
+     * @param {object} p
+     * @param {bigint} p.tree
+     * @param {string} p.user The user's handle.
+     * @param {string} p.name
+     * @returns {Promise<string[]>}
+     */
+    async sessionsNamed({ tree, user, name }) {
+        const [uid] = await this.store.chatRead('ids', { space: SPACE.user, keys: [user] });
+        if (uid === null) return [];
+        const ids = await this.store.chatRead('sessionsNamed', { user: uid, tree, name });
+        if (ids.length === 0) return [];
+        const rows = await this.store.chatRead('sessions', { ids });
+        return rows.flatMap((/** @type {any} */ r) => (r ? [r.key] : []));
+    }
+
     // ---- reads ----
 
     /**

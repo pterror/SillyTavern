@@ -1,5 +1,6 @@
 // A tree's sessions searched on the engine (`ChatEngine.searchSessions`, `/api/chats/search`): by name, or by every
-// word matching a message on the session's path, and a write found by the next search.
+// word matching a message on the session's path, and a write found by the next search; and found by exact name
+// (`sessionsNamed`).
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -46,6 +47,16 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         assert.deepEqual(await found('visit'), [], 'a word is matched whole');
         assert.deepEqual(await found('even'), [two.session], 'a name is a prefix field');
         assert.deepEqual(await found('evening hello'), [], 'the name and the path each match the whole query or not at all');
+
+        // A name finds its session exactly, for the user who moved it in the tree.
+        const named = (/** @type {string} */ name, user = one.user) => chats.sessionsNamed({ tree: t, user, name });
+        assert.deepEqual(await named('Evening walk'), [two.session]);
+        assert.deepEqual(await named('evening walk'), []);
+        assert.deepEqual(await named('Evening walk', 'someone else'), []);
+        await chats.nameSession({ session: one.session, name: '!!!', actor: one });
+        assert.deepEqual(await named('!!!'), [one.session]);
+        await chats.nameSession({ session: one.session, name: null, actor: one });
+        assert.deepEqual(await named('!!!'), []);
 
         // Pages of one, read on through `next`.
         const first = await chats.searchSessions({ tree: t, search: 'hello', limit: 1 });
