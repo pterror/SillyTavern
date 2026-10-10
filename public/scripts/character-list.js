@@ -12,6 +12,7 @@ import { FILTER_STATES, FILTER_TYPES, FilterHelper, isFilterState } from './filt
 import { characterRepository, buildCharacterQuery, isInvalidSortFieldError, normalizeQueryRow, parseQueryTotal } from './character-repository.js';
 import { cleanRanges, parseSearchText, sameView, serializeSearchText, viewToQueryState } from './character-view.js';
 import { initViewPills, makeSearchGuide } from './character-view-pills.js';
+import { renderTagMatchChips, viewForTagChip } from './tag-match-chips.js';
 import { initSavedViews, refreshSavedViewState, restoreCurrentView } from './saved-views.js';
 import { initFolderSwitcher, refreshFolderSwitcher } from './folder-switcher.js';
 import { getRandomSortSeed } from './random-sort.js';
@@ -547,6 +548,7 @@ export async function printCharacters(fullRefresh = false) {
         let pendingFirstPage = firstPage;
         // Whether the latest page response's `total` was `~`-prefixed (approximate).
         let pageTotalApprox = isApproxTotal(firstPage.total);
+        showTagMatches(firstPage);
 
         serverPagedList = true;
         $('#rm_print_characters_pagination').pagination({
@@ -590,6 +592,7 @@ export async function printCharacters(fullRefresh = false) {
                             totalApprox: pageTotalApprox,
                         };
                         if (result.searchBackend !== undefined) showSearchBackend(result.searchBackend);
+                        showTagMatches(result);
                         ajaxParams.success({ rows: pageEntities, total: result.total });
                     })
                     .catch(error => {
@@ -603,6 +606,18 @@ export async function printCharacters(fullRefresh = false) {
             callback: makePageCallback(() => pageHidden),
         });
     }
+}
+
+/**
+ * Shows a page's tag matches as chips above the list (none without a search); picking one filters by the tag and
+ * takes its matched words out of the search.
+ * @param {{ tagMatches?: { id: string, name: string, carriers: number }[] }} result
+ */
+function showTagMatches(result) {
+    const container = document.getElementById('character_tag_matches');
+    if (!container) return;
+    const chips = hasActiveCharacterSearch() && Array.isArray(result.tagMatches) ? result.tagMatches : [];
+    renderTagMatchChips(container, chips, chip => setCharacterView(viewForTagChip(getCharacterView(), chip)), name => t`Show only those tagged "${name}"`);
 }
 
 // Auto-selects the "Search" sort option only when the search term first becomes active, preserving a manual switch away from it.

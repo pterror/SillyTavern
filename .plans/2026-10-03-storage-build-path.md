@@ -1798,8 +1798,7 @@ Left (handover, 10-11):
 **5d. search wired.**
 
 Status (10-11, handover): in progress. Built: the searched fields; the library's search with closed-quote phrases;
-chat search; world-info search; the exact session lookup; pair postings (below). Left, in order: the chip row
-and the pair postings' setting (the client); `bench-search-synth.mjs`; measurements. The `/query` route reads
+chat search; world-info search; the exact session lookup; pair postings; the chip row (below). Left, in order: `bench-search-synth.mjs`; measurements. The `/query` route reads
 `lib.query({ search })` at the cut (5f).
 
 Built, the library's search (10-11; `engine/src/store/library_search.rs`, `library_read::page_with`,
@@ -1896,6 +1895,17 @@ Built, pair postings (10-11; `engine/src/search/pairs.rs`, kind `searchPairs { o
 | a pair's entry | its posting slot only | presence and count are all a phrase check reads; counters and bounds would double the entries |
 | reads | a check before the text, candidates still from the words | the measured case (option 2) drove candidates by pairs; this keeps one walk and removes the text reads, the cost at scale |
 | pass order | the length entries' key order | every searched document has one per 16 ids, across every scope |
+
+Built, the chip row (10-11; `public/scripts/tag-match-chips.js`, `character-list.js` `showTagMatches`,
+`#character_tag_matches` above the list's pagination; the hash-mode answer's tag matches in
+`serializeQueryHashesBinary()` and `public/scripts/query-hashes-binary.js` (the decoder, moved out of
+`character-repository.js`); test `tests/tag-match-chips.test.js`): a page whose answer holds `tagMatches` shows
+them as chips (the tag's name and its carriers); picking one adds the tag to the view's tag filter (and out of its
+excluded tags) and takes out of the free text each word whose folded words are all the name's (the text's last
+unquoted word also when its last word begins one of the name's, two characters or more), as `searchClauses()` reads
+a last word. Hash mode carries them after the cursor, flagged by header bit `0b10000`: exact (1), count (1), then per
+tag id and name (each a u16 length and UTF-8) and carriers (f64). Inert until the cut: the old `/query` sends none;
+at the cut `/query` passes `lib.query()`'s `tagMatches` and `tagMatchesExact` in both its JSON and hash answers.
 
 
 Built, the searched fields (10-11; `engine/src/store/searched.rs`, `search/index.rs` `update_fields`; test
