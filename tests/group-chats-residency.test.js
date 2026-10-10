@@ -110,6 +110,8 @@ jest.unstable_mockModule('../public/scripts/character-repository.js', () => ({
 
 jest.unstable_mockModule('../public/script.js', () => ({
     requestChatOpen: jest.fn(),
+    takeChatOpenAnswer: jest.fn((_owner, answer) => answer),
+    chatOpenSendKeys: jest.fn(() => []),
     sendSystemMessage: jest.fn(),
     printMessages: jest.fn(),
     substituteParams: jest.fn(),
