@@ -9688,7 +9688,10 @@ export async function importCharacterChat(formData, { refresh = true } = {}) {
 
     if (fetchResult.ok) {
         const data = await fetchResult.json();
-        if (data.res && refresh) {
+        if (data.error) {
+            toastr.error(typeof data.message === 'string' ? data.message : t`The chat could not be imported.`, t`Import failed`, { timeOut: 0, extendedTimeOut: 0 });
+        }
+        if ((data.res || data.fileNames?.length) && refresh) {
             await displayPastChats();
         }
         return data?.fileNames || [];

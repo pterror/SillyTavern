@@ -25,7 +25,7 @@ import { calculateDataSize, toShallow } from '../character-shallow.js';
 import { touchBrowserPresence, PRESENCE_PING_INTERVAL_MS } from '../browser-presence.js';
 import { invalidateThumbnail, getThumbnailVersion } from './thumbnails.js';
 import { importRisuSprites, importChubExpressions, importChubRelatedLorebooks } from './sprites.js';
-import { hasSavedChats, listBranches as listTreeBranches, renameCharacterInMessages } from '../message-tree-db.js';
+import { hasSavedChats, listBranches as listTreeBranches, ownerDescriptorOf, renameCharacterInMessages, saveChatToTree } from '../message-tree-db.js';
 import { ByafParser } from '../byaf.js';
 import { CharXParser, persistCharXAssets } from '../charx.js';
 import cacheBuster from '../middleware/cacheBuster.js';
@@ -748,7 +748,6 @@ async function importFromYaml(uploadPath, context, preservedFileName) {
         'description': yamlData.context ?? '',
         'first_mes': yamlData.greeting ?? '',
         'create_date': new Date().toISOString(),
-        'chat': `${yamlData.name} - ${humanizedDateTime()}`,
         'personality': '',
         'creatorcomment': '',
         'avatar': 'none',
@@ -832,13 +831,13 @@ async function importFromByaf(uploadPath, { request, contentHash }, preservedFil
         /**
          * @param {Partial<ByafScenario>} scenario
         */
-        const createChatAsCurrentPersona = (scenario) => {
-            const chatName = sanitize(`${scenario.title || card.name} - ${humanizedDateTime()} imported.jsonl`, { replacement: sanitizeSafeCharacterReplacements });
-            const filePath = path.join(request.user.directories.chats, path.basename(fileName), chatName);
-            const dir = path.dirname(filePath);
-            if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-            writeFileAtomicSync(filePath, ByafParser.getChatFromScenario(scenario, request.body.user_name, card.name, byafData.chatBackgrounds), 'utf8');
-            console.log(`Created ${chatName} chat from BYAF import`);
+        const createChatAsCurrentPersona = async (scenario) => {
+            const chatName = sanitize(`${scenario.title || card.name} - ${humanizedDateTime()} imported`, { replacement: sanitizeSafeCharacterReplacements });
+            const chatText = ByafParser.getChatFromScenario(scenario, request.body.user_name, card.name, byafData.chatBackgrounds);
+            const chatData = chatText.split('\n').map(line => tryParse(line)).filter(x => x);
+            const ownerId = path.basename(fileName);
+            const saved = await saveChatToTree(request.user.directories, ownerId, chatName, chatData, false, ownerDescriptorOf({ avatar: `${ownerId}.png` }));
+            if (!saved || !('integrity' in saved)) throw new Error(`The chat "${chatName}" in the BYAF file could not be stored.`);
             return chatName;
         };
 
@@ -861,13 +860,13 @@ async function importFromByaf(uploadPath, { request, contentHash }, preservedFil
         // Create chats for each scenario
         if (Array.isArray(byafData.scenarios)) {
             for (const scenario of byafData.scenarios) {
-                chats.push(createChatAsCurrentPersona(scenario));
+                chats.push(await createChatAsCurrentPersona(scenario));
             }
         }
 
         // Update the default chat if there are any so we open to an existing chat instead of creating a new one and opening that.
         if (chats.length > 0) {
-            card.chat = path.basename(chats[0], path.extname(chats[0]));
+            card.chat = chats[0];
         }
 
         // Save alternate icons for the character.
@@ -947,7 +946,6 @@ export function buildJsonImportData(rawText, directories, avatarFileName = null)
             'personality': jsonData.personality ?? '',
             'first_mes': jsonData.first_mes ?? '',
             'avatar': 'none',
-            'chat': jsonData.name + ' - ' + humanizedDateTime(),
             'mes_example': jsonData.mes_example ?? '',
             'scenario': jsonData.scenario ?? '',
             'create_date': new Date().toISOString(),
@@ -971,7 +969,6 @@ export function buildJsonImportData(rawText, directories, avatarFileName = null)
             'personality': '',
             'first_mes': jsonData.char_greeting ?? '',
             'avatar': 'none',
-            'chat': jsonData.name + ' - ' + humanizedDateTime(),
             'mes_example': jsonData.example_dialogue ?? '',
             'scenario': jsonData.world_scenario ?? '',
             'create_date': new Date().toISOString(),
@@ -1050,7 +1047,6 @@ export function buildPngImportData(rawText, directories, avatarFileName = null) 
             'personality': jsonData.personality ?? '',
             'first_mes': jsonData.first_mes ?? '',
             'avatar': 'none',
-            'chat': jsonData.name + ' - ' + humanizedDateTime(),
             'mes_example': jsonData.mes_example ?? '',
             'scenario': jsonData.scenario ?? '',
             'create_date': new Date().toISOString(),

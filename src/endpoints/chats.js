@@ -5,7 +5,6 @@ import readline from 'node:readline';
 
 import express from 'express';
 import sanitize from 'sanitize-filename';
-import { sync as writeFileAtomicSync } from 'write-file-atomic';
 import _ from 'lodash';
 
 import validateAvatarUrlMiddleware from '../middleware/validateFileName.js';
@@ -1575,19 +1574,15 @@ router.post('/group/import', async function (request, response) {
             }
 
             const result = await saveChatToTree(request.user.directories, group.id, chatname, chatData, true);
+            fs.unlinkSync(pathToUpload);
             if (result && 'integrity' in result) {
-                fs.unlinkSync(pathToUpload);
                 return response.send({ res: chatname });
             }
-            // Backend unavailable (now impossible at runtime, see server-main.js's boot-time
-            // verifySqliteBackend()) - fall through to the file write rather than losing the upload.
-            // (chatData can't be empty here: it was already rejected above when parsed from the upload.)
         }
 
-        const pathToNewFile = path.join(request.user.directories.groupChats, `${chatname}.jsonl`);
-        fs.copyFileSync(pathToUpload, pathToNewFile);
-        fs.unlinkSync(pathToUpload);
-        return response.send({ res: chatname });
+        if (fs.existsSync(pathToUpload)) fs.unlinkSync(pathToUpload);
+        console.error(group ? 'Group chat import failed: the chat could not be stored.' : 'Group chat import failed: no group was named (group_id).');
+        return response.send({ error: true });
     } catch (error) {
         console.error(error);
         return response.send({ error: true });
@@ -1617,16 +1612,14 @@ router.post('/import', validateAvatarUrlMiddleware, async function (request, res
         const pathToUpload = path.join(request.file.destination, request.file.filename);
         const data = fs.readFileSync(pathToUpload, 'utf8');
 
-        const useTree = await isTreeAvailable(request.user.directories);
-
+        /** Chats of the upload that couldn't be stored, by name. @type {string[]} */
+        const notSaved = [];
         /**
          * @param {string} chatText jsonl-formatted chat text (header line + one message per line)
          * @param {string} chatName
-         * @returns {Promise<boolean>} true if saved to the tree, false if the caller must fall back
-         * to a raw file write.
+         * @returns {Promise<boolean>} Whether it was stored.
          */
         const saveImportToTree = async (chatText, chatName) => {
-            if (!useTree) return false;
             const chatData = chatText.split('\n').map(line => tryParse(line)).filter(x => x);
             const result = await saveChatToTree(request.user.directories, avatarUrl, chatName, chatData, false, ownerDescriptorOf({ avatar: request.body.avatar_url }));
             return !!(result && 'integrity' in result);
@@ -1659,10 +1652,11 @@ router.post('/import', validateAvatarUrlMiddleware, async function (request, res
 
             const handleChat = async (/** @type {string} */ chat) => {
                 const fileName = `${characterName} - ${humanizedDateTime()} imported.jsonl`;
-                fileNames.push(fileName);
-                if (await saveImportToTree(chat, fileName.replace(/\.jsonl$/, ''))) return;
-                const filePath = path.join(directoryPath, fileName);
-                writeFileAtomicSync(filePath, chat, 'utf8');
+                if (await saveImportToTree(chat, fileName.replace(/\.jsonl$/, ''))) {
+                    fileNames.push(fileName);
+                } else {
+                    notSaved.push(fileName);
+                }
             };
 
             const chat = importFunc(userName, characterName, jsonData);
@@ -1673,7 +1667,9 @@ router.post('/import', validateAvatarUrlMiddleware, async function (request, res
                 await handleChat(chat);
             }
 
-            return response.send({ res: true, fileNames });
+            return notSaved.length
+                ? response.send({ error: true, message: `These chats could not be saved: ${notSaved.join(', ')}`, not_saved: notSaved, fileNames })
+                : response.send({ res: true, fileNames });
         }
 
         if (format === 'jsonl') {
@@ -1699,16 +1695,12 @@ router.post('/import', validateAvatarUrlMiddleware, async function (request, res
             }
 
             const fileName = `${characterName} - ${humanizedDateTime()} imported.jsonl`;
-            fileNames.push(fileName);
-            if (!(await saveImportToTree(flattenedChat, fileName.replace(/\.jsonl$/, '')))) {
-                const filePath = path.join(directoryPath, fileName);
-                if (flattenedChat !== data) {
-                    writeFileAtomicSync(filePath, flattenedChat, 'utf8');
-                } else {
-                    fs.copyFileSync(pathToUpload, filePath);
-                }
-            }
+            const saved = await saveImportToTree(flattenedChat, fileName.replace(/\.jsonl$/, ''));
             fs.unlinkSync(pathToUpload);
+            if (!saved) {
+                return response.send({ error: true, message: `This chat could not be saved: ${fileName}`, not_saved: [fileName], fileNames });
+            }
+            fileNames.push(fileName);
             response.send({ res: true, fileNames });
         }
     } catch (error) {
