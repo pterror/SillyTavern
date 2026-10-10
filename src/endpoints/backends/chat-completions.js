@@ -75,6 +75,7 @@ import { getAncestorPath, appendMessages, editMessage, sanitizeUserMessageExtra,
 import { readCardContent } from '../characters.js';
 import { getGroupsByIds } from '../groups.js';
 import { persistAssistantReply, replyTextAsPageShows, unreadableReplyWarning } from '../../assistant-reply-persist.js';
+import { itemizationOf } from '../../itemization-store.js';
 import { storeUserMessage, withStoredMessages } from '../../stored-messages.js';
 import { getEnabledServerTools, toOpenAIToolSchema } from '../../server-tools.js';
 import {
@@ -4247,6 +4248,7 @@ router.post('/generate', withGenerationStop(async function (request, response) {
                     isSwipe, isContinue, anchorContent: continuesUserMessage ? userMessage : built.anchorContent,
                     warnings,
                     generationStop: response.locals.generationStop,
+                    itemization: itemizationOf(request.body.itemization, null),
                 };
                 // Only wired up when this request actually advertised at least one server-native
                 // tool OR at least one client-advertised tool (chunk (c) - see `built.enabledServerTools`/

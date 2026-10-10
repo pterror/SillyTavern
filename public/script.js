@@ -274,7 +274,7 @@ import { initWelcomeScreen, openPermanentAssistantChat, openPermanentAssistantCa
 import { initDataMaid } from './scripts/data-maid.js';
 import { saveDraft, loadDraft, isDraftHeld } from './scripts/chat-draft.js';
 import { initFailedSends, keepFailedSend, recordSend, keptSendKeys, forgetStoredSends } from './scripts/failed-sends.js';
-import { clearItemizedPrompts, deleteItemizedPromptForMessage, deleteItemizedPrompts, findItemizedPromptSet, initItemizedPrompts, itemizedParams, itemizedPrompts, loadItemizedPrompts, promptItemize, replaceItemizedPromptText, saveItemizedPrompts, saveItemizedPromptsIfChanged, swapItemizedPrompts } from './scripts/itemized-prompts.js';
+import { clearItemizedPrompts, deleteItemizedPrompts, findItemizedPromptSet, initItemizedPrompts, ITEMIZED_PROMPT_FLAG, itemizedParams, itemizedPrompts, loadItemizedPrompts, promptItemize, replaceItemizedPromptText, saveItemizedPrompts } from './scripts/itemized-prompts.js';
 import { getSystemMessageByType, initSystemMessages, SAFETY_CHAT, sendSystemMessage, system_message_types, system_messages } from './scripts/system-messages.js';
 import { event_types, eventSource } from './scripts/events.js';
 import { token, setToken, getRequestHeaders } from './scripts/request-headers.js';
@@ -1958,7 +1958,6 @@ export async function clearChat({ clearData = false } = {}) {
         $('.zoomed_avatar[forChar]').remove();
     } else { console.debug('saw no avatars'); }
 
-    await saveItemizedPromptsIfChanged(getCurrentChatId());
     itemizedPrompts.length = 0;
 
     if (clearData) {
@@ -1971,7 +1970,6 @@ export async function deleteLastMessage() {
     if (this_edit_mes_id !== undefined && Number(this_edit_mes_id) === chat.length - 1) {
         closeMessageEditor();
     }
-    deleteItemizedPromptForMessage(chat.length - 1);
     chat.length = chat.length - 1;
     chatElement.children('.mes').last().remove();
     await eventSource.emit(event_types.MESSAGE_DELETED, chat.length);
@@ -2078,7 +2076,6 @@ export async function deleteMessage(id, swipeDeletionIndex = undefined, askConfi
     for (const messageId of messageIds) {
         chat.splice(messageId, 1);
         chatElement.find(`.mes[mesid="${messageId}"]`).remove();
-        deleteItemizedPromptForMessage(messageId);
     }
 
     chat_metadata.tainted = true;
@@ -2291,6 +2288,7 @@ export function updateMessageBlock(messageId, message, { rerenderMessage = true 
     }
 
     updateReasoningUI(messageElement);
+    updateMessageItemizedPromptButton(message, { messageId, messageElement });
 
     addCopyToCodeBlocks(messageElement);
     appendMediaToMessage(message, messageElement);
@@ -2768,14 +2766,8 @@ export function addCopyToCodeBlocks(messageElement) {
  * @param {JQuery<HTMLElement>} [options.messageElement] Message element
  * @return {void}
  */
-function updateMessageItemizedPromptButton(message, { messageId = chat.indexOf(message), messageElement = chatElement.find(`.mes[mesid="${messageId}"]`) }) {
-    //if we have itemized messages, and the array isn't null..
-    if (!message.is_user && Array.isArray(itemizedPrompts) && itemizedPrompts.length > 0) {
-        const itemizedPrompt = itemizedPrompts.find(x => Number(x.mesId) === Number(messageId));
-        if (itemizedPrompt) {
-            messageElement.find('.mes_prompt').show();
-        }
-    }
+export function updateMessageItemizedPromptButton(message, { messageId = chat.indexOf(message), messageElement = chatElement.find(`.mes[mesid="${messageId}"]`) }) {
+    messageElement.find('.mes_prompt').toggle(!message.is_user && message.extra?.[ITEMIZED_PROMPT_FLAG] === true);
 }
 
 /**
@@ -3859,8 +3851,6 @@ export class StreamingProcessor {
         this.toolCallAborted = false;
         /** @type {string?} The node persistAssistantReply() wrote, if the server sent one ahead of [DONE]. */
         this.assistantNodeId = null;
-        /** @type {Record<string, *>?} Raw-action prompt-breakdown fields for itemized-prompts.js, if the server sent them via a control frame. */
-        this.itemization = null;
         /** @type {unknown} The server's last `stored` list this stream adopted (see adoptStored(), chat-store.js). */
         this.adoptedStored = null;
         // Initialize reasoning in its own handler
@@ -4118,7 +4108,7 @@ export class StreamingProcessor {
         // Save/persist decision extracted to generation.js (finishStreamedReplyPersistence()) so it can
         // be typechecked under strict null checks with the rest of that invariant-critical cluster -
         // see that function's own comment for the assistantNodeId-vs-heal reasoning.
-        await finishStreamedReplyPersistence({ assistantNodeId: this.assistantNodeId, itemization: this.itemization });
+        await finishStreamedReplyPersistence({ assistantNodeId: this.assistantNodeId });
 
         playMessageSound();
     }
@@ -4228,7 +4218,6 @@ export class StreamingProcessor {
                 // declaration comment above.
                 this.toolCallAborted = state?.toolCallAborted ?? this.toolCallAborted;
                 this.assistantNodeId = state?.assistantNodeId ?? this.assistantNodeId;
-                this.itemization = state?.itemization ?? this.itemization;
                 if (state?.stored && state.stored !== this.adoptedStored) {
                     this.adoptedStored = state.stored;
                     adoptStored(state.stored);
@@ -7180,7 +7169,8 @@ async function pushFirstMessageIntoEmptyChat({ openings = null } = {}) {
 async function getChatResult({ openings = undefined } = {}) {
     name2 = getCurrentCharacter().name;
     const freshChat = await pushFirstMessageIntoEmptyChat({ openings: openings?.openings ?? null });
-    await loadItemizedPrompts(getCurrentChatId());
+    // A message's itemization is read when its "Prompt" view is opened; the event keeps upstream's timing.
+    await eventSource.emit(event_types.ITEMIZED_PROMPTS_LOADED, { chatId: getCurrentChatId() });
     await printMessages();
     select_selected_character(getCurrentCharacter()?.avatar);
 
@@ -8340,7 +8330,6 @@ async function messageEditMove(sourceId, targetId) {
         this_edit_mes_id = targetId;
     }
 
-    swapItemizedPrompts(sourceId, targetId);
     updateViewMessageIds();
     refreshSwipeButtons();
     return true;
@@ -14078,9 +14067,6 @@ jQuery(async function () {
         });
 
         if (this_del_mes >= 0) {
-            for (let i = (chat.length - 1); i >= this_del_mes; i--) {
-                deleteItemizedPromptForMessage(i);
-            }
             chatElement.find(`.mes[mesid="${this_del_mes}"]`).nextAll('div').remove();
             chatElement.find(`.mes[mesid="${this_del_mes}"]`).remove();
             chat.length = this_del_mes;

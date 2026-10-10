@@ -72,7 +72,6 @@ import {
     baseChatReplace,
     createLazyFields,
     depth_prompt_depth_default,
-    loadItemizedPrompts,
     animation_duration,
     depth_prompt_role_default,
     shouldAutoContinue,
@@ -520,7 +519,8 @@ async function openGroupConversation(groupId, { chat: requested = null, makeCurr
     const metadata = answer.chat_metadata ?? {};
     const freshChat = !metadata.tainted && !data.length;
 
-    await loadItemizedPrompts(getCurrentChatId());
+    // A message's itemization is read when its "Prompt" view is opened; the event keeps upstream's timing.
+    await eventSource.emit(event_types.ITEMIZED_PROMPTS_LOADED, { chatId: getCurrentChatId() });
 
     if (group && Array.isArray(group.members) && freshChat) {
         chat.splice(0, chat.length);

@@ -7,7 +7,6 @@ import {
     openCharacterChat,
     getThumbnailUrl,
     saveChatConditional,
-    saveItemizedPrompts,
     getCurrentChatDetails,
     updateMessage,
     hydrateSwipes,
@@ -366,7 +365,6 @@ export async function createNewBookmark(mesId, { forceName = null } = {}) {
     // successful save regardless of what's sent, same as the already-fixed getChat()/getGroupChat() fills.
     const mainChat = selected_group ? groupsStore.get(selected_group)?.chat_id : getCurrentCharacter().chat;
     const newMetadata = { main_chat: mainChat };
-    await saveItemizedPrompts(name);
 
     if (selected_group) {
         await saveGroupBookmarkChat(selected_group, name, newMetadata, mesId);
@@ -547,8 +545,6 @@ export async function branchChat(mesId, { swipeId = null } = {}) {
         return null;
     }
 
-    await saveItemizedPrompts(fileName);
-
     if (selected_group) {
         await openGroupChat(selected_group, fileName);
     } else {
@@ -607,8 +603,6 @@ export async function forkChat(mesId, { swipeId = null } = {}) {
         extra.bookmark_link = fileName;
         updateMessage(mesId, { extra });
     }
-
-    await saveItemizedPrompts(fileName);
 
     if (selected_group) {
         await openGroupChat(selected_group, fileName);

@@ -2,7 +2,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { EventEmitter } from 'node:events';
 
 import { forwardFetchResponse } from '../../util.js';
-import { persistAssistantReply, takeReplyNotSaved } from '../../assistant-reply-persist.js';
+import { persistAssistantReply, takeItemizationNotSaved, takeReplyNotSaved } from '../../assistant-reply-persist.js';
 import { storedMessagesOf } from '../../stored-messages.js';
 import { generationIdFor, isGenerationStopped } from '../../generation-stop.js';
 
@@ -165,14 +165,19 @@ export function encodeControlFrame(data) {
 }
 
 /**
- * The frame that ends a raw-action stream: the stored reply's node id, or, when storing it failed, a
- * warnings frame naming the generation so the page can ask for it to be stored again.
+ * The frames that end a raw-action stream: the stored reply's node id (followed by a warnings frame when its prompt
+ * itemization wasn't stored), or, when storing the reply failed, a warnings frame naming the generation so the page
+ * can ask for it to be stored again.
  * @param {{node_id: string}|null} persisted
  * @param {object|null|undefined} persist
  * @returns {Buffer|null}
  */
 export function encodeStoredReplyFrame(persisted, persist) {
-    if (persisted) return encodeAssistantNodeIdFrame(persisted.node_id);
+    if (persisted) {
+        const itemizationWarning = takeItemizationNotSaved(persist);
+        const nodeFrame = encodeAssistantNodeIdFrame(persisted.node_id);
+        return itemizationWarning ? Buffer.concat([nodeFrame, encodeControlFrame({ warnings: [itemizationWarning] })]) : nodeFrame;
+    }
     const warning = takeReplyNotSaved(persist);
     return warning ? encodeControlFrame({ warnings: [warning] }) : null;
 }

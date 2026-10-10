@@ -7,6 +7,7 @@ import { buildRawActionKoboldRequest } from './backends/kobold.js';
 import { sanitizeUserMessageExtra } from '../message-tree-db.js';
 import { storeUserMessage } from '../stored-messages.js';
 import { persistAssistantReply } from '../assistant-reply-persist.js';
+import { itemizationOf } from '../itemization-store.js';
 import { withGenerationStop } from '../generation-stop.js';
 import {
     createGenerationRecord, createResumableWriter, createBackpressureWriter, detachFromResponse,
@@ -341,7 +342,10 @@ async function buildRawActionHordePayload(request, response) {
     // continues that message, as upstream does: the reply is stored as an edit of it.
     const continuesUserMessage = isContinue && replyAnchorNodeId !== built.anchorNodeId;
     const rawActionPersist = !skipPersistence
-        ? { anchorNodeId: replyAnchorNodeId, name2: built.name2, isSwipe, isContinue, anchorContent: continuesUserMessage ? userMessage : built.anchorContent }
+        ? {
+            anchorNodeId: replyAnchorNodeId, name2: built.name2, isSwipe, isContinue, anchorContent: continuesUserMessage ? userMessage : built.anchorContent,
+            itemization: itemizationOf(request.body.itemization, built.itemization),
+        }
         : null;
 
     // Horde's own real params shape: `prompt` is a SEPARATE top-level field (never inside `params`),

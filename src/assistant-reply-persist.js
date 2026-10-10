@@ -1,5 +1,6 @@
 import { appendMessages, addAlternatives, selectDefaultChild, editMessage } from './message-tree-db.js';
 import { recordGenerationPersisted } from './generation-stop.js';
+import { recordItemization } from './itemization-store.js';
 
 /**
  * The reply text in a non-streaming answer, read exactly as the page's `extractMessageFromData()`
@@ -179,6 +180,15 @@ export function takeReplyNotSaved(pending) {
 }
 
 /**
+ * For a stream: the warning that the stored reply's itemization wasn't stored, if it wasn't, to send in its own frame.
+ * @param {object|null|undefined} pending
+ * @returns {object|null}
+ */
+export function takeItemizationNotSaved(pending) {
+    return pending?.itemizationNotSaved ?? null;
+}
+
+/**
  * When the reply was generated, as upstream's page stored it on every reply: ISO strings, the request's arrival
  * and the moment the text was complete. A retry keeps the first attempt's times.
  * @param {object} pending
@@ -192,8 +202,40 @@ function generationTimes(pending) {
         : { gen_finished: pending.genFinished };
 }
 
-/** @returns {Promise<{node_id: string, mes: string}|{error: string}|null>} */
+/**
+ * Stores the reply, then the itemization of the prompt it was generated from (`pending.itemization`) at the node it
+ * was stored at. An itemization that can't be stored is reported, in `pending.warnings` and to a stream through
+ * `takeItemizationNotSaved()`; the reply stays stored.
+ * @returns {Promise<{node_id: string, mes: string}|{error: string}|null>}
+ */
 async function persistReply(pending, generatedText) {
+    const result = await storeReply(pending, generatedText);
+    if (result && !('error' in result) && pending.itemization) {
+        try {
+            await recordItemization(pending.directories, result.node_id, pending.itemization);
+        } catch (error) {
+            console.error('Failed to store the prompt itemization of a reply:', error);
+            pending.itemizationNotSaved = itemizationNotSavedWarning(result.node_id);
+            if (Array.isArray(pending.warnings)) pending.warnings.push(pending.itemizationNotSaved);
+        }
+    }
+    return result;
+}
+
+/**
+ * The warning the page gets when a reply was stored but the itemization of its prompt wasn't.
+ * @param {string} nodeId
+ */
+export function itemizationNotSavedWarning(nodeId) {
+    return {
+        kind: 'itemization-not-saved',
+        key: nodeId,
+        message: 'The reply was saved, but its prompt breakdown (the Prompt view) wasn\'t.',
+    };
+}
+
+/** @returns {Promise<{node_id: string, mes: string}|{error: string}|null>} */
+async function storeReply(pending, generatedText) {
     const { directories, ownerId, anchorNodeId, name2, isSwipe, isContinue, anchorContent } = pending;
     if (!generatedText) {
         return null;
