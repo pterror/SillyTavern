@@ -298,38 +298,93 @@ fn state_of(
     if kind != CHARACTER && kind != GROUP {
         return Ok(None);
     }
-    let name = text_value(view, e, &FieldRef::Code(NAME))?
+    let world = if kind == CHARACTER {
+        text_value(view, e, &FieldRef::Code(WORLD))?.filter(|w| !w.is_empty())
+    } else {
+        None
+    };
+    let mut nums = [None; 5];
+    for (sort, n) in (CREATED..SORTS).zip(nums.iter_mut()) {
+        *n = sort_num(view, e, kind, Some(added), sort)?;
+    }
+    Ok(Some(State {
+        kind,
+        tie: tie(kind, k),
+        fav: fav_of(view, e)?,
+        name: folded_name(view, e)?,
+        nums,
+        tags: tags_of(view, e)?,
+        world,
+    }))
+}
+
+/// What breaks ties in a character's or group's orders: a character's avatar, a group's `<id>.json`.
+fn tie(kind: u64, mut k: Vec<u8>) -> Vec<u8> {
+    if kind == GROUP {
+        k.extend_from_slice(b".json");
+    }
+    k
+}
+
+fn folded_name(view: &View, e: u64) -> Result<Vec<u8>, StoreError> {
+    Ok(text_value(view, e, &FieldRef::Code(NAME))?
         .map(|n| fold_name(&n))
-        .unwrap_or_default();
-    let added = Some(added as f64);
-    let (created, data, world, tie) = if kind == CHARACTER {
-        let created = match pointed(view, &key::id(key::CREATE_DATE, e))? {
+        .unwrap_or_default())
+}
+
+/// A character's or group's value of a numeric sort key (`CREATED..SORTS`); None sorts below every number.
+/// `added` is its date added, read here when the key needs it and it isn't given.
+pub fn sort_num(
+    view: &View,
+    e: u64,
+    kind: u64,
+    added: Option<i64>,
+    sort: u64,
+) -> Result<Option<f64>, StoreError> {
+    let added = || -> Result<Option<f64>, StoreError> {
+        Ok(match added {
+            Some(a) => Some(a as f64),
+            None => entity_info(view, e)?.map(|(_, _, a)| a as f64),
+        })
+    };
+    Ok(match sort {
+        CREATED | ADDED if kind == GROUP => added()?,
+        ADDED => added()?,
+        CREATED => match pointed(view, &key::id(key::CREATE_DATE, e))? {
             Some((_, r)) => match r.values[1] {
                 Value::F64(v) => Some(v),
                 _ => None,
             },
             None => None,
-        };
-        let data = match pointed(view, &key::id(key::DATA_SIZE, e))? {
-            Some((_, r)) => Some(id(&r, 1) as f64),
-            None => Some(0.0),
-        };
-        let world = text_value(view, e, &FieldRef::Code(WORLD))?.filter(|w| !w.is_empty());
-        (created, data, world, k)
-    } else {
-        let mut tie = k;
-        tie.extend_from_slice(b".json");
-        (added, None, None, tie)
+        },
+        DATA if kind == GROUP => None,
+        DATA => Some(match pointed(view, &key::id(key::DATA_SIZE, e))? {
+            Some((_, r)) => id(&r, 1) as f64,
+            None => 0.0,
+        }),
+        _ => Some(0.0),
+    })
+}
+
+/// A character's or group's type, sort key and tie.
+pub type Placement = (u64, Vec<u8>, Vec<u8>);
+
+/// Where a character or group sits in the orders of `sort`: its type, sort key and tie, reading only what that
+/// order needs. None for anything else.
+pub fn sort_place(view: &View, e: u64, sort: u64) -> Result<Option<Placement>, StoreError> {
+    let Some((kind, k, added)) = entity_info(view, e)? else {
+        return Ok(None);
     };
-    Ok(Some(State {
-        kind,
-        tie,
-        fav: fav_of(view, e)?,
-        name,
-        nums: [created, added, Some(0.0), Some(0.0), data],
-        tags: tags_of(view, e)?,
-        world,
-    }))
+    if kind != CHARACTER && kind != GROUP {
+        return Ok(None);
+    }
+    let mut sk = Vec::new();
+    if sort == BY_NAME {
+        put_bytes(&mut sk, &folded_name(view, e)?);
+    } else {
+        num_key(&mut sk, sort_num(view, e, kind, Some(added), sort)?);
+    }
+    Ok(Some((kind, sk, tie(kind, k))))
 }
 
 /// Moves the entity's entries in every order, numbering and count from `old` to `new`.

@@ -321,6 +321,52 @@ fn filters() -> Vec<Filter> {
             ..both.clone()
         },
         Filter {
+            ranges: vec![(RangeField::Data, Some(50.0), Some(80.0))],
+            ..both.clone()
+        },
+        Filter {
+            ranges: vec![
+                (RangeField::Created, Some(-500.0), Some(0.0)),
+                (RangeField::Data, Some(0.0), Some(200.0)),
+            ],
+            all_tags: vec![TAGS[2]],
+            ..both.clone()
+        },
+        Filter {
+            ranges: vec![
+                (RangeField::Data, Some(10.0), Some(390.0)),
+                (RangeField::Data, Some(120.0), None),
+            ],
+            ..both.clone()
+        },
+        Filter {
+            ranges: vec![(RangeField::Data, Some(300.0), Some(100.0))],
+            ..both.clone()
+        },
+        Filter {
+            ranges: vec![(RangeField::Tag(TAGS[0]), None, Some(0.0))],
+            ..both.clone()
+        },
+        Filter {
+            ranges: vec![(RangeField::Tag(TAGS[0]), Some(2.0), None)],
+            ..both.clone()
+        },
+        Filter {
+            all_tags: vec![TAGS[0], TAGS[1], TAGS[2]],
+            ..both.clone()
+        },
+        Filter {
+            all_tags: vec![TAGS[0]],
+            no_tags: vec![TAGS[1]],
+            ..both.clone()
+        },
+        Filter {
+            any_tags: vec![TAGS[0], TAGS[2]],
+            no_tags: vec![TAGS[1]],
+            fav: Some(true),
+            ..both.clone()
+        },
+        Filter {
             not_ids: vec![3, 4, 5, 1_000_000],
             ..both.clone()
         },

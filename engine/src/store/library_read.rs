@@ -1,20 +1,23 @@
 //! Pages of the library list: a sorted or random page of characters and groups under a filter, its total, and
 //! a cursor to carry on from.
 //!
-//! The page is read from the orders of one scope (the whole library, a tag, a lorebook), the smallest that holds
-//! every match, merging its (type, fav) parts. Whatever that scope doesn't decide is checked per entity under a
-//! work cap: past it the page is short and says `more`, with a cursor at the last entity examined.
+//! A page is read from the orders of one scope (the whole library, a tag, the tags of which a match carries
+//! one, a lorebook), the one holding every match with the fewest entities, merging its (type, fav) parts. A
+//! range on the page's own sort key narrows those orders to the range's keys; a range on another key whose
+//! entities in the scope are few enough is read whole and sorted instead. Whatever is left is checked per
+//! entity under a work cap: past it the page is short and says `more`, with a cursor at the last entity
+//! examined.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use super::StoreError;
 use super::derive::View;
 use super::kinds::{key, text_value};
 use super::library::{
-    self, CHARACTER, FOLDER_TYPE, GROUP, Scope, State, count_key, counter, order_prefix,
-    parse_uvarint, rand_key, rand_prefix, split_order_key,
+    self, CHARACTER, CHAT_SIZE, CREATED, DATA, FOLDER_TYPE, GROUP, LAST_CHAT, Scope, count_key,
+    counter, num_key, order_prefix, parse_uvarint, rand_key, rand_prefix, split_order_key,
 };
-use crate::keyspace::val::{get_bytes, get_u64, put_bytes, put_u64};
+use crate::keyspace::val::{Val, get_bytes, get_u64, max_value, put_bytes, put_u64};
 use crate::log::format::FieldRef;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -90,16 +93,69 @@ const SAMPLE_RUN: u64 = 500;
 /// A page's ids, whether it stopped at the work cap, and where the next page starts.
 type Walked = (Vec<u64>, bool, Option<Vec<u8>>);
 
-/// Entries a stream reads at once.
+/// Entries a stream reads at first, and at most: each read takes twice the one before, so a page reads few
+/// past its end and a long walk seeks the runs a few times, not once per window.
 const WINDOW: usize = 64;
+const WINDOW_MAX: usize = 4096;
 
-/// The filter resolved against merges: the tags to require, any of, and exclude, as their targets.
+/// Member blocks a check holds at most (2 KiB each). Checks read a tag's member block instead of each entity's
+/// membership entry while every block of the id space fits, so each block is read once.
+const BLOCKS_KEPT: usize = 4096;
+
+/// A filter's bounds on one numeric sort key: a match's value of it lies in [lo, hi].
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct KeyRange {
+    sort: u64,
+    lo: Option<f64>,
+    hi: Option<f64>,
+}
+
+impl KeyRange {
+    fn holds(&self, v: Option<f64>) -> bool {
+        v.is_some_and(|v| self.lo.is_none_or(|m| v >= m) && self.hi.is_none_or(|m| v <= m))
+    }
+
+    /// The keys `[start, end)` of the order part with prefix `p` whose sort keys are in the range (an entity
+    /// with no value sorts first, below every number, and is left out).
+    fn span(&self, p: &[u8]) -> (Vec<u8>, Vec<u8>) {
+        let mut start = p.to_vec();
+        match self.lo {
+            Some(lo) => num_key(&mut start, Some(lo)),
+            None => start.push(1),
+        }
+        let end = match self.hi {
+            Some(hi) => {
+                let mut e = p.to_vec();
+                num_key(&mut e, Some(hi));
+                key::prefix_end(&e)
+            }
+            None => key::prefix_end(p),
+        };
+        (start, end)
+    }
+}
+
+/// The filter resolved against merges, its ranges as tags and key ranges.
 struct Resolved {
+    /// Tags to require, fewest carriers first.
     all: Vec<u64>,
+    /// Tags of which one is required, most carriers first.
     any: Vec<u64>,
+    /// Tags to exclude, most carriers first.
     none: Vec<u64>,
-    /// A required tag leads nowhere, or every `any` tag does: nothing matches.
+    keys: Vec<KeyRange>,
+    /// Bounds on the number of closed folder tags carried.
+    folders: Vec<(Option<f64>, Option<f64>)>,
+    /// Each tag's sources (itself and the tags merged into it whose carriers haven't moved).
+    sources: HashMap<u64, Vec<u64>>,
+    /// Nothing matches.
     empty: bool,
+}
+
+fn push_new(list: &mut Vec<u64>, t: u64) {
+    if !list.contains(&t) {
+        list.push(t);
+    }
 }
 
 fn resolve(view: &View, f: &Filter) -> Result<Resolved, StoreError> {
@@ -107,32 +163,89 @@ fn resolve(view: &View, f: &Filter) -> Result<Resolved, StoreError> {
         all: Vec::new(),
         any: Vec::new(),
         none: Vec::new(),
+        keys: Vec::new(),
+        folders: Vec::new(),
+        sources: HashMap::new(),
         empty: false,
     };
     for t in &f.all_tags {
         match library::resolve_tag(view, *t)? {
-            Some(t) if !r.all.contains(&t) => r.all.push(t),
-            Some(_) => {}
+            Some(t) => push_new(&mut r.all, t),
             None => r.empty = true,
         }
     }
     for t in &f.any_tags {
-        if let Some(t) = library::resolve_tag(view, *t)?
-            && !r.any.contains(&t)
-        {
-            r.any.push(t);
+        if let Some(t) = library::resolve_tag(view, *t)? {
+            push_new(&mut r.any, t);
         }
     }
     if !f.any_tags.is_empty() && r.any.is_empty() {
         r.empty = true;
     }
     for t in &f.no_tags {
-        if let Some(t) = library::resolve_tag(view, *t)?
-            && !r.none.contains(&t)
-        {
-            r.none.push(t);
+        if let Some(t) = library::resolve_tag(view, *t)? {
+            push_new(&mut r.none, t);
         }
     }
+    for (field, lo, hi) in &f.ranges {
+        let (lo, hi) = (lo.filter(|v| !v.is_nan()), hi.filter(|v| !v.is_nan()));
+        let sort = match field {
+            RangeField::Created => CREATED,
+            RangeField::LastChat => LAST_CHAT,
+            RangeField::ChatSize => CHAT_SIZE,
+            RangeField::Data => DATA,
+            RangeField::ClosedFolders => {
+                r.folders.push((lo, hi));
+                continue;
+            }
+            RangeField::Tag(t) => {
+                // Carrying the tag counts 1, not carrying it 0.
+                let held = |v: f64| lo.is_none_or(|m| v >= m) && hi.is_none_or(|m| v <= m);
+                match (held(0.0), held(1.0), library::resolve_tag(view, *t)?) {
+                    (true, true, _) | (true, false, None) => {}
+                    (false, true, Some(t)) => push_new(&mut r.all, t),
+                    (true, false, Some(t)) => push_new(&mut r.none, t),
+                    (false, _, _) => r.empty = true,
+                }
+                continue;
+            }
+        };
+        match r.keys.iter_mut().find(|k| k.sort == sort) {
+            Some(k) => {
+                k.lo = match (k.lo, lo) {
+                    (Some(a), Some(b)) => Some(a.max(b)),
+                    (a, b) => a.or(b),
+                };
+                k.hi = match (k.hi, hi) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (a, b) => a.or(b),
+                };
+            }
+            None => r.keys.push(KeyRange { sort, lo, hi }),
+        }
+    }
+    if r.keys
+        .iter()
+        .any(|k| matches!((k.lo, k.hi), (Some(a), Some(b)) if a > b))
+    {
+        r.empty = true;
+    }
+    let mut sizes = HashMap::new();
+    for t in r.all.iter().chain(&r.any).chain(&r.none) {
+        if r.sources.contains_key(t) {
+            continue;
+        }
+        let s = library::tag_sources(view, *t)?;
+        let mut n = 0;
+        for x in &s {
+            n += counter(view, &key::id(key::MEMBER_COUNT, *x))?;
+        }
+        sizes.insert(*t, n);
+        r.sources.insert(*t, s);
+    }
+    r.all.sort_by_key(|t| sizes[t]);
+    r.any.sort_by_key(|t| std::cmp::Reverse(sizes[t]));
+    r.none.sort_by_key(|t| std::cmp::Reverse(sizes[t]));
     Ok(r)
 }
 
@@ -142,17 +255,27 @@ struct Checker<'a> {
     f: &'a Filter,
     r: Resolved,
     folders: HashMap<u64, bool>,
-    sources: HashMap<u64, Vec<u64>>,
+    /// Member blocks read, as bits by place, per (tag, block).
+    blocks: HashMap<(u64, u64), Box<[u64; 256]>>,
+    use_blocks: bool,
+    /// The sort key whose range every entity checked is already in.
+    decided: Option<u64>,
 }
 
 impl<'a> Checker<'a> {
     fn new(view: &'a View<'a>, f: &'a Filter) -> Result<Checker<'a>, StoreError> {
+        let next = view
+            .get(&key::of(key::NEXT_ENTITY))?
+            .and_then(|b| max_value(&b))
+            .unwrap_or(0);
         Ok(Checker {
             view,
             f,
             r: resolve(view, f)?,
             folders: HashMap::new(),
-            sources: HashMap::new(),
+            blocks: HashMap::new(),
+            use_blocks: next >> key::MEMBER_BITS < BLOCKS_KEPT as u64,
+            decided: None,
         })
     }
 
@@ -167,45 +290,42 @@ impl<'a> Checker<'a> {
         Ok(c)
     }
 
+    /// Whether `e` is one of tag `s`'s own carriers (not through merges).
+    fn member(&mut self, s: u64, e: u64) -> Result<bool, StoreError> {
+        if self.use_blocks {
+            let at = (s, e >> key::MEMBER_BITS);
+            if !self.blocks.contains_key(&at) && self.blocks.len() < BLOCKS_KEPT {
+                let mut bits = Box::new([0u64; 256]);
+                let pairs = self
+                    .view
+                    .get_val(&key::member_block(s, e))?
+                    .and_then(Val::into_pairs)
+                    .unwrap_or_default();
+                for (p, v) in pairs {
+                    if v != 0 && p < 1 << key::MEMBER_BITS {
+                        bits[(p / 64) as usize] |= 1 << (p % 64);
+                    }
+                }
+                self.blocks.insert(at, bits);
+            }
+            if let Some(bits) = self.blocks.get(&at) {
+                let p = key::member_slot(e);
+                return Ok(bits[(p / 64) as usize] >> (p % 64) & 1 == 1);
+            }
+        }
+        Ok(self.view.get(&key::ids(key::MEMBER, s, e))?.is_some())
+    }
+
     /// Whether `e` carries tag `t` (as resolved: itself, or a tag merged into it whose carriers haven't moved).
     fn carries(&mut self, e: u64, t: u64) -> Result<bool, StoreError> {
-        if !self.sources.contains_key(&t) {
-            let s = library::tag_sources(self.view, t)?;
-            self.sources.insert(t, s);
-        }
-        for s in &self.sources[&t] {
-            if self.view.get(&key::ids(key::MEMBER, *s, e))?.is_some() {
+        let n = self.r.sources.get(&t).map_or(0, Vec::len);
+        for i in 0..n {
+            let s = self.r.sources[&t][i];
+            if self.member(s, e)? {
                 return Ok(true);
             }
         }
         Ok(false)
-    }
-
-    fn sort_value(&self, e: u64, kind: u64, field: RangeField) -> Result<Option<f64>, StoreError> {
-        let pointed = |s: u64| -> Result<Option<crate::log::format::Value>, StoreError> {
-            let Some(b) = self.view.get(&key::id(s, e))? else {
-                return Ok(None);
-            };
-            let (r, _) = self.view.record(super::kinds::parse_loc(&b)?.pos)?;
-            Ok(Some(r.values[1].clone()))
-        };
-        use crate::log::format::Value;
-        Ok(match field {
-            RangeField::Created if kind == GROUP => {
-                library::entity_info(self.view, e)?.map(|(_, _, added)| added as f64)
-            }
-            RangeField::Created => match pointed(key::CREATE_DATE)? {
-                Some(Value::F64(x)) => Some(x),
-                _ => None,
-            },
-            RangeField::Data if kind == GROUP => None,
-            RangeField::Data => match pointed(key::DATA_SIZE)? {
-                Some(Value::UInt(n)) => Some(n as f64),
-                _ => Some(0.0),
-            },
-            RangeField::LastChat | RangeField::ChatSize => Some(0.0),
-            RangeField::ClosedFolders | RangeField::Tag(_) => unreachable!(),
-        })
     }
 
     /// Whether `e`, of type `kind` with fav `fav`, passes everything but the scope it was read from.
@@ -227,21 +347,15 @@ impl<'a> Checker<'a> {
         {
             return Ok(false);
         }
-        if kind == CHARACTER
-            && let Some(w) = &f.world
-            && text_value(self.view, e, &FieldRef::Code(library::WORLD))?.as_ref() != Some(w)
-        {
-            return Ok(false);
-        }
-        for t in self.r.all.clone() {
-            if !self.carries(e, t)? {
+        for i in 0..self.r.all.len() {
+            if !self.carries(e, self.r.all[i])? {
                 return Ok(false);
             }
         }
         if !self.r.any.is_empty() {
             let mut any = false;
-            for t in self.r.any.clone() {
-                if self.carries(e, t)? {
+            for i in 0..self.r.any.len() {
+                if self.carries(e, self.r.any[i])? {
                     any = true;
                     break;
                 }
@@ -250,33 +364,36 @@ impl<'a> Checker<'a> {
                 return Ok(false);
             }
         }
-        for t in self.r.none.clone() {
-            if self.carries(e, t)? {
+        for i in 0..self.r.none.len() {
+            if self.carries(e, self.r.none[i])? {
                 return Ok(false);
             }
         }
-        for (field, min, max) in &f.ranges {
-            let v = match field {
-                RangeField::ClosedFolders => {
-                    let mut n = 0;
-                    for t in library::tags_of(self.view, e)? {
-                        if self.closed(t)? {
-                            n += 1;
-                        }
-                    }
-                    Some(f64::from(n))
+        if kind == CHARACTER
+            && let Some(w) = &f.world
+            && text_value(self.view, e, &FieldRef::Code(library::WORLD))?.as_ref() != Some(w)
+        {
+            return Ok(false);
+        }
+        for i in 0..self.r.keys.len() {
+            let k = self.r.keys[i];
+            if self.decided == Some(k.sort) {
+                continue;
+            }
+            if !k.holds(library::sort_num(self.view, e, kind, None, k.sort)?) {
+                return Ok(false);
+            }
+        }
+        for i in 0..self.r.folders.len() {
+            let (lo, hi) = self.r.folders[i];
+            let mut n = 0;
+            for t in library::tags_of(self.view, e)? {
+                if self.closed(t)? {
+                    n += 1;
                 }
-                RangeField::Tag(t) => {
-                    Some(if self.view.get(&key::ids(key::MEMBER, *t, e))?.is_some() {
-                        1.0
-                    } else {
-                        0.0
-                    })
-                }
-                other => self.sort_value(e, kind, *other)?,
-            };
-            let Some(v) = v else { return Ok(false) };
-            if min.is_some_and(|m| v < m) || max.is_some_and(|m| v > m) {
+            }
+            let n = f64::from(n);
+            if lo.is_some_and(|m| n < m) || hi.is_some_and(|m| n > m) {
                 return Ok(false);
             }
         }
@@ -284,7 +401,7 @@ impl<'a> Checker<'a> {
     }
 
     /// `passes` for an entity whose type and fav aren't known yet.
-    fn passes_any(&mut self, e: u64) -> Result<Option<State>, StoreError> {
+    fn passes_any(&mut self, e: u64) -> Result<Option<library::State>, StoreError> {
         let Some(st) = library::state(self.view, e)? else {
             return Ok(None);
         };
@@ -310,13 +427,22 @@ fn favs(f: &Filter) -> Vec<bool> {
     }
 }
 
-/// The scope a read is driven by: the one of the scopes every match is in with the fewest entities, and the
-/// tags whose orders it takes (more than one while merges into it wait for their folds).
+/// The scope a read is driven by: of the scopes every match is in, the one with the fewest entities.
 struct Driver {
+    /// The scope whose numbering a random page or a count sample reads (the whole library when the driver is
+    /// several tags' orders).
     scope: Scope,
+    /// The scopes whose orders it reads: several for tags of which a match carries one, or a tag whose merges
+    /// wait for their folds.
     sources: Vec<Scope>,
+    /// Its entities of the filter's types and favs (counted once per source).
+    size: i64,
+    /// Every tag, lorebook and id condition is decided by the scope: only ranges may be left to check.
+    covers: bool,
     /// Matches are exactly the driver's entities of the filter's types and fav: no check needed.
     whole: bool,
+    /// What is left to check reads no values: only tags (through member blocks) and listed ids.
+    light: bool,
 }
 
 fn scope_size(view: &View, sources: &[Scope], f: &Filter) -> Result<i64, StoreError> {
@@ -331,61 +457,156 @@ fn scope_size(view: &View, sources: &[Scope], f: &Filter) -> Result<i64, StoreEr
     Ok(n)
 }
 
-fn tag_sources(view: &View, t: u64) -> Result<Vec<Scope>, StoreError> {
-    Ok(library::tag_sources(view, t)?
-        .into_iter()
-        .map(Scope::Tag)
-        .collect())
-}
-
-fn driver(view: &View, f: &Filter, r: &Resolved) -> Result<Driver, StoreError> {
-    let mut best = Driver {
-        scope: Scope::All,
-        sources: vec![Scope::All],
-        whole: false,
-    };
-    let mut best_n = scope_size(view, &best.sources, f)?;
-    let mut candidates: Vec<Scope> = r.all.iter().map(|t| Scope::Tag(*t)).collect();
-    if r.any.len() == 1 {
-        candidates.push(Scope::Tag(r.any[0]));
+/// The driver; `union` lets several tags' orders drive (not for random pages, which need one numbering).
+fn driver(view: &View, f: &Filter, r: &Resolved, union: bool) -> Result<Driver, StoreError> {
+    #[derive(PartialEq)]
+    enum By {
+        All,
+        Required,
+        AnyOf,
+        World,
+    }
+    let tags = |t: &u64| -> Vec<Scope> { r.sources[t].iter().map(|s| Scope::Tag(*s)).collect() };
+    let mut candidates: Vec<(By, Scope, Vec<Scope>)> =
+        vec![(By::All, Scope::All, vec![Scope::All])];
+    for t in &r.all {
+        candidates.push((By::Required, Scope::Tag(*t), tags(t)));
+    }
+    if r.any.len() == 1 || (union && !r.any.is_empty()) {
+        let mut sources = Vec::new();
+        for t in &r.any {
+            for s in tags(t) {
+                if !sources.contains(&s) {
+                    sources.push(s);
+                }
+            }
+        }
+        let scope = match r.any[..] {
+            [t] => Scope::Tag(t),
+            _ => Scope::All,
+        };
+        candidates.push((By::AnyOf, scope, sources));
     }
     if let Some(w) = &f.world
         && !f.groups
     {
-        candidates.push(Scope::World(w.clone()));
+        candidates.push((
+            By::World,
+            Scope::World(w.clone()),
+            vec![Scope::World(w.clone())],
+        ));
     }
-    for c in candidates {
-        let sources = match &c {
-            Scope::Tag(t) => tag_sources(view, *t)?,
-            s => vec![s.clone()],
-        };
+    let mut best: Option<(By, Scope, Vec<Scope>, i64)> = None;
+    for (by, scope, sources) in candidates {
         let n = scope_size(view, &sources, f)?;
-        if n < best_n {
-            best_n = n;
-            best = Driver {
-                scope: c,
-                sources,
-                whole: false,
-            };
+        if best.as_ref().is_none_or(|b| n < b.3) {
+            best = Some((by, scope, sources, n));
         }
     }
-    let tags_left =
-        r.all.len() + r.any.len() + r.none.len() - usize::from(matches!(best.scope, Scope::Tag(_)));
-    let world_left = f.world.is_some() && !matches!(best.scope, Scope::World(_));
-    best.whole = !r.empty
-        && tags_left == 0
+    let (by, scope, sources, size) = best.expect("the whole library is a candidate");
+    let world_left = f.world.is_some() && by != By::World;
+    let covers = !r.empty
+        && r.all.len() == usize::from(by == By::Required)
+        && (r.any.is_empty() || by == By::AnyOf)
+        && r.none.is_empty()
         && !world_left
-        && f.ranges.is_empty()
         && f.ids.is_none()
         && f.not_ids.is_empty();
-    Ok(best)
+    Ok(Driver {
+        scope,
+        sources,
+        size,
+        covers,
+        whole: covers && r.keys.is_empty() && r.folders.is_empty(),
+        light: !world_left && r.keys.is_empty() && r.folders.is_empty(),
+    })
+}
+
+/// Entities with their types and favs.
+type Members = Vec<(u64, u64, bool)>;
+
+/// How a page reads its entities.
+enum Read {
+    /// The driver's orders, narrowed to a range on the page's sort key when there is one.
+    Walk(Option<KeyRange>),
+    /// The driver's entities (with types and favs) in a range on another sort key, few enough to read whole;
+    /// the range's sort key.
+    Set(u64, Members),
+}
+
+/// Reads the driver's entities in range `k` with their types and favs, each once; None when more than `most`.
+fn range_set(
+    view: &View,
+    f: &Filter,
+    d: &Driver,
+    k: &KeyRange,
+    most: u64,
+) -> Result<Option<Members>, StoreError> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for src in &d.sources {
+        for kind in kinds(f) {
+            for fav in favs(f) {
+                let (mut from, end) = k.span(&order_prefix(src, k.sort, kind, fav));
+                loop {
+                    let got = view.scan(&from, &end, 256)?;
+                    for (_, v) in &got {
+                        let e = parse_uvarint(v)?;
+                        if seen.insert(e) {
+                            out.push((e, kind, fav));
+                            if out.len() as u64 > most {
+                                return Ok(None);
+                            }
+                        }
+                    }
+                    match got.last() {
+                        Some((last, _)) if got.len() == 256 => {
+                            from = last.clone();
+                            from.push(0);
+                        }
+                        _ => break,
+                    }
+                }
+            }
+        }
+    }
+    Ok(Some(out))
+}
+
+/// A range set is read whole when it holds at most √(page · driver) entities (the cheaper of reading and
+/// sorting it, and walking the order checking the range), and never more than the work cap. Also the number a
+/// lone range's set was found to hold more than (0: not read).
+fn plan(view: &View, q: &Query, d: &Driver, r: &Resolved) -> Result<(Read, u64), StoreError> {
+    let own = match q.sort {
+        Sort::Key { sort, .. } => r.keys.iter().find(|k| k.sort == sort).copied(),
+        _ => None,
+    };
+    if own.is_some() || r.keys.is_empty() {
+        return Ok((Read::Walk(own), 0));
+    }
+    let page = (q.limit as u64).saturating_add(q.offset).max(1);
+    let mut most = q.cap.min(page.saturating_mul(d.size.max(0) as u64).isqrt());
+    let mut best = None;
+    for k in &r.keys {
+        if let Some(set) = range_set(view, &q.filter, d, k, most)? {
+            most = (set.len() as u64).saturating_sub(1);
+            best = Some(Read::Set(k.sort, set));
+        }
+    }
+    let over = if r.keys.len() == 1 { most } else { 0 };
+    Ok(match best {
+        Some(set) => (set, 0),
+        None => (Read::Walk(None), over),
+    })
 }
 
 // ---- sorted pages ----
 
-/// One (source, type, fav) part of an order, read in the page's direction.
+/// One (source, type, fav) part of an order, read in the page's direction within `[lo, hi)`.
 struct Stream {
     prefix: Vec<u8>,
+    lo: Vec<u8>,
+    hi: Vec<u8>,
     kind: u64,
     fav: bool,
     /// The fav group this part is in for a fav sort (0 first), else 0.
@@ -395,6 +616,7 @@ struct Stream {
     bound: Vec<u8>,
     buf: std::collections::VecDeque<(Vec<u8>, Vec<u8>, u64)>,
     done: bool,
+    window: usize,
 }
 
 impl Stream {
@@ -403,13 +625,14 @@ impl Stream {
             return Ok(());
         }
         let found = if self.desc {
-            view.scan_vals_rev(&self.prefix, &self.bound, WINDOW)?
+            view.scan_vals_rev(&self.lo, &self.bound, self.window)?
         } else {
-            view.scan_vals(&self.bound, &key::prefix_end(&self.prefix), WINDOW)?
+            view.scan_vals(&self.bound, &self.hi, self.window)?
         };
-        if found.len() < WINDOW {
+        if found.len() < self.window {
             self.done = true;
         }
+        self.window = (self.window * 2).min(WINDOW_MAX);
         if let Some((k, _)) = found.last() {
             self.bound = if self.desc {
                 k.clone()
@@ -431,6 +654,14 @@ impl Stream {
 
 /// A place in a sorted page's order: fav group, sort key, type, tie.
 type Place = (u8, Vec<u8>, u64, Vec<u8>);
+
+/// `a` against `b` in the page's order.
+fn place_cmp(a: &Place, b: &Place, desc: bool) -> std::cmp::Ordering {
+    a.0.cmp(&b.0).then_with(|| {
+        let (x, y) = ((&a.1, a.2, &a.3), (&b.1, b.2, &b.3));
+        if desc { y.cmp(&x) } else { x.cmp(&y) }
+    })
+}
 
 fn encode_place(p: &Place, skip: u64, examined_before: u64) -> Vec<u8> {
     let mut b = vec![0u8];
@@ -491,17 +722,25 @@ fn bound_after(s: &Stream, p: &Place) -> Option<Vec<u8>> {
     })
 }
 
+/// The page's sort key, direction and, for a fav sort, whether favourites come first.
+fn page_sort(q: &Query) -> (u64, bool, Option<bool>) {
+    match q.sort {
+        Sort::Key { sort, desc } => (sort, desc, None),
+        Sort::Fav { desc } => (library::BY_NAME, false, Some(desc)),
+        Sort::Random { .. } => unreachable!("a random page has no sort key"),
+    }
+}
+
+/// A sorted page walked from the driver's orders; with the total when the walk read them to their end from the
+/// start.
 fn sorted_page(
     view: &View,
     q: &Query,
     d: &Driver,
     chk: &mut Checker,
-) -> Result<Walked, StoreError> {
-    let (sort, desc, fav_sort) = match q.sort {
-        Sort::Key { sort, desc } => (sort, desc, None),
-        Sort::Fav { desc } => (library::BY_NAME, false, Some(desc)),
-        Sort::Random { .. } => unreachable!(),
-    };
+    range: Option<KeyRange>,
+) -> Result<(Walked, Option<u64>), StoreError> {
+    let (sort, desc, fav_sort) = page_sort(q);
     let at = q.cursor.as_deref().and_then(decode_place);
     let mut streams = Vec::new();
     for src in &d.sources {
@@ -512,25 +751,32 @@ fn sorted_page(
                     None => 0,
                 };
                 let prefix = order_prefix(src, sort, kind, fav);
+                let (lo, hi) = match &range {
+                    Some(k) => k.span(&prefix),
+                    None => (prefix.clone(), key::prefix_end(&prefix)),
+                };
                 let mut s = Stream {
-                    bound: if desc {
-                        key::prefix_end(&prefix)
-                    } else {
-                        prefix.clone()
-                    },
+                    bound: if desc { hi.clone() } else { lo.clone() },
                     prefix,
+                    lo,
+                    hi,
                     kind,
                     fav,
                     group,
                     desc,
                     buf: Default::default(),
                     done: false,
+                    window: WINDOW,
                 };
                 if let Some((p, _)) = &at {
                     match bound_after(&s, p) {
-                        Some(b) => s.bound = b,
+                        Some(b) if desc => s.bound = b.min(s.hi.clone()),
+                        Some(b) => s.bound = b.max(s.lo.clone()),
                         None => s.done = true,
                     }
+                }
+                if (desc && s.bound <= s.lo) || (!desc && s.bound >= s.hi) {
+                    s.done = true;
                 }
                 streams.push(s);
             }
@@ -540,7 +786,8 @@ fn sorted_page(
     let budget = q.cap + skip + q.limit as u64;
     let mut ids = Vec::new();
     let mut examined = 0u64;
-    let mut last: Option<Place> = at.map(|(p, _)| p);
+    let mut passed = 0u64;
+    let mut last: Option<Place> = at.as_ref().map(|(p, _)| p.clone());
     let mut last_entity = None;
     let check_all = !d.whole;
     loop {
@@ -549,7 +796,7 @@ fn sorted_page(
         }
         if examined >= budget {
             let cursor = last.as_ref().map(|p| encode_place(p, skip, 0));
-            return Ok((ids, true, cursor));
+            return Ok(((ids, true, cursor), None));
         }
         let mut best: Option<usize> = None;
         for i in 0..streams.len() {
@@ -578,13 +825,16 @@ fn sorted_page(
                 best = Some(i);
             }
         }
-        let Some(b) = best else { break };
+        let Some(b) = best else {
+            let total = at.is_none().then_some(passed);
+            return Ok(((ids, false, None), total));
+        };
         let (sk, tie, e) = streams[b].buf.pop_front().unwrap();
         let (kind, fav) = (streams[b].kind, streams[b].fav);
         let place = (streams[b].group, sk, kind, tie);
         examined += 1;
         last = Some(place);
-        // The same entity from two tags' orders (a merge waiting for its fold) comes twice in a row.
+        // The same entity from two tags' orders comes twice in a row.
         if last_entity == Some(e) {
             continue;
         }
@@ -592,16 +842,80 @@ fn sorted_page(
         if check_all && !chk.passes(e, kind, fav)? {
             continue;
         }
+        passed += 1;
         if skip > 0 {
             skip -= 1;
             continue;
         }
         ids.push(e);
     }
-    let cursor = (ids.len() == q.limit && !ids.is_empty())
+    let cursor = (!ids.is_empty())
         .then(|| last.as_ref().map(|p| encode_place(p, 0, 0)))
         .flatten();
-    Ok((ids, false, cursor))
+    Ok(((ids, false, cursor), None))
+}
+
+/// A sorted page of rows read whole: sorted, then taken after the cursor's place (or the offset).
+fn rows_page(q: &Query, mut rows: Vec<(Place, u64)>) -> Walked {
+    let (_, desc, _) = page_sort(q);
+    rows.sort_by(|a, b| place_cmp(&a.0, &b.0, desc));
+    let (after, skip) = match q.cursor.as_deref().and_then(decode_place) {
+        Some((p, skip)) => (
+            rows.partition_point(|r| place_cmp(&r.0, &p, desc) != std::cmp::Ordering::Greater),
+            skip,
+        ),
+        None => (0, q.offset),
+    };
+    let start = after.saturating_add(skip as usize).min(rows.len());
+    let end = start.saturating_add(q.limit).min(rows.len());
+    let cursor = (end - start == q.limit && end > start && end < rows.len())
+        .then(|| encode_place(&rows[end - 1].0, 0, 0));
+    (
+        rows[start..end].iter().map(|r| r.1).collect(),
+        false,
+        cursor,
+    )
+}
+
+/// A sorted page of a range set: each entity checked and placed.
+fn set_page(
+    view: &View,
+    q: &Query,
+    chk: &mut Checker,
+    set: &[(u64, u64, bool)],
+) -> Result<(Walked, Option<u64>), StoreError> {
+    let (sort, _, fav_first) = page_sort(q);
+    let mut rows = Vec::new();
+    for &(e, kind, fav) in set {
+        if !chk.passes(e, kind, fav)? {
+            continue;
+        }
+        let Some((_, sk, tie)) = library::sort_place(view, e, sort)? else {
+            continue;
+        };
+        let group = fav_first.map_or(0, |f| u8::from(fav != f));
+        rows.push(((group, sk, kind, tie), e));
+    }
+    let total = rows.len() as u64;
+    Ok((rows_page(q, rows), Some(total)))
+}
+
+/// A sorted page of a listed set of ids: each looked up, sorted in memory (the list bounds the work).
+fn ids_page(q: &Query, chk: &mut Checker) -> Result<Walked, StoreError> {
+    let (sort, _, fav_first) = page_sort(q);
+    let mut rows: Vec<(Place, u64)> = Vec::new();
+    let mut seen = HashSet::new();
+    for e in q.filter.ids.as_ref().unwrap() {
+        if !seen.insert(*e) {
+            continue;
+        }
+        let Some(st) = chk.passes_any(*e)? else {
+            continue;
+        };
+        let group = fav_first.map_or(0, |f| u8::from(st.fav != f));
+        rows.push(((group, st.sort_key(sort), st.kind, st.tie.clone()), *e));
+    }
+    Ok(rows_page(q, rows))
 }
 
 // ---- one entity ----
@@ -853,37 +1167,53 @@ impl Numbering {
         Ok(None)
     }
 
-    /// The entities numbered `from..from + len` of the whole numbering, in order, with their types and favs.
-    fn range(&self, view: &View, from: u64, len: u64) -> Result<Vec<(u64, u64, bool)>, StoreError> {
+    /// The entities numbered `from..from + len` of the whole numbering, in order: (number, entity, type, fav).
+    fn range(
+        &self,
+        view: &View,
+        from: u64,
+        len: u64,
+    ) -> Result<Vec<(u64, u64, u64, bool)>, StoreError> {
         let mut out = Vec::new();
-        let (mut r, mut left) = (from, len);
+        let (mut r, mut left, mut off) = (from, len, 0);
         for (k, fav, size) in &self.parts {
             if left == 0 {
                 break;
             }
             if r >= *size {
                 r -= size;
+                off += size;
                 continue;
             }
             let take = left.min(size - r);
             let p = rand_prefix(&self.scope, *k, *fav);
-            for (_, v) in view.scan(
+            for (rk, v) in view.scan(
                 &rand_key(&self.scope, *k, *fav, r),
                 &key::prefix_end(&p),
                 take as usize,
             )? {
-                out.push((parse_uvarint(&v)?, *k, *fav));
+                let mut at = p.len();
+                let number = get_u64(&rk, &mut at)
+                    .ok_or_else(|| StoreError::Entry("a numbering key doesn't decode".into()))?;
+                out.push((off + number, parse_uvarint(&v)?, *k, *fav));
             }
             left -= take;
             r = 0;
+            off += size;
         }
         Ok(out)
     }
 
-    fn rank_of(&self, view: &View, e: u64, st: &State) -> Result<Option<u64>, StoreError> {
+    fn rank_of(
+        &self,
+        view: &View,
+        e: u64,
+        kind: u64,
+        fav: bool,
+    ) -> Result<Option<u64>, StoreError> {
         let mut off = 0;
-        for (k, fav, size) in &self.parts {
-            if *k == st.kind && *fav == st.fav {
+        for (k, f, size) in &self.parts {
+            if *k == kind && *f == fav {
                 let mut ak = key::of(key::RAND_AT);
                 self.scope.put(&mut ak);
                 put_u64(&mut ak, e);
@@ -915,15 +1245,17 @@ fn decode_position(b: &[u8]) -> Option<(u64, u64)> {
     (at == b.len()).then_some((p, s))
 }
 
+/// A random page; with the total when it read every match.
 fn random_page(
     view: &View,
     q: &Query,
     d: &Driver,
     chk: &mut Checker,
+    read: &Read,
     seed: u64,
     desc: bool,
-) -> Result<Walked, StoreError> {
-    // A tag whose merges wait for their folds has no one numbering: its target's whole library is walked.
+) -> Result<(Walked, Option<u64>), StoreError> {
+    // Several sources have no one numbering: the whole library's is walked.
     let (scope, whole) = if d.sources.len() == 1 {
         (d.scope.clone(), d.whole)
     } else {
@@ -934,30 +1266,58 @@ fn random_page(
     let n = num.n;
     let at = q.cursor.as_deref().and_then(decode_position);
     let rank = |j: u64| permute(if desc { n - 1 - j } else { j }, n, k);
+    let place = |r: u64| {
+        let pos = unpermute(r, n, k);
+        if desc { n - 1 - pos } else { pos }
+    };
+    // A set read whole, each match placed where the permutation shows it: listed ids, a range set, or a numbering
+    // no larger than the work cap whose checks read no values (cheaper read in order than a get per place).
+    let mut shown = None;
     if let Some(ids) = &q.filter.ids {
-        let mut placed = Vec::new();
+        let mut s = Vec::new();
+        let mut seen = HashSet::new();
         for e in ids {
-            let Some(st) = chk.passes_any(*e)? else {
+            if !seen.insert(*e) {
                 continue;
-            };
-            let pos = match num.rank_of(view, *e, &st)? {
-                Some(r) => unpermute(r, n, k),
-                None => continue,
-            };
-            placed.push((if desc { n - 1 - pos } else { pos }, *e));
+            }
+            if let Some(st) = chk.passes_any(*e)?
+                && let Some(r) = num.rank_of(view, *e, st.kind, st.fav)?
+            {
+                s.push((place(r), *e));
+            }
         }
-        placed.sort_unstable();
-        let start = at.map_or(q.offset, |(p, _)| p) as usize;
-        let end = placed.len().min(start + q.limit);
-        let page: Vec<u64> = placed
-            .get(start..end)
-            .unwrap_or(&[])
-            .iter()
-            .map(|x| x.1)
-            .collect();
-        let cursor = (end - start.min(end) == q.limit && end < placed.len())
-            .then(|| encode_position(end as u64, 0));
-        return Ok((page, false, cursor));
+        shown = Some(s);
+    } else if let Read::Set(_, set) = read {
+        let mut s = Vec::new();
+        for &(e, kind, fav) in set {
+            if chk.passes(e, kind, fav)?
+                && let Some(r) = num.rank_of(view, e, kind, fav)?
+            {
+                s.push((place(r), e));
+            }
+        }
+        shown = Some(s);
+    } else if !whole && d.light && n <= q.cap {
+        let mut s = Vec::new();
+        for (r, e, kind, fav) in num.range(view, 0, n)? {
+            if chk.passes(e, kind, fav)? {
+                s.push((place(r), e));
+            }
+        }
+        shown = Some(s);
+    }
+    if let Some(mut shown) = shown {
+        shown.sort_unstable();
+        let (from, skip) = at.unwrap_or((0, q.offset));
+        let start = shown
+            .partition_point(|x| x.0 < from)
+            .saturating_add(skip as usize)
+            .min(shown.len());
+        let end = start.saturating_add(q.limit).min(shown.len());
+        let cursor = (end - start == q.limit && end > start && end < shown.len())
+            .then(|| encode_position(shown[end - 1].0 + 1, 0));
+        let ids = shown[start..end].iter().map(|x| x.1).collect();
+        return Ok(((ids, false, cursor), Some(shown.len() as u64)));
     }
     if whole {
         let start = at.map_or(q.offset, |(p, _)| p);
@@ -969,10 +1329,11 @@ fn random_page(
             }
         }
         let cursor = (end - start.min(end) == q.limit as u64).then(|| encode_position(end, 0));
-        return Ok((ids, false, cursor));
+        return Ok(((ids, false, cursor), None));
     }
     let (mut j, mut skip) = at.unwrap_or((0, q.offset));
     let mut examined = 0;
+    let mut passed = 0;
     let mut ids = Vec::new();
     while ids.len() < q.limit && j < n && examined < q.cap + q.limit as u64 {
         let at = num.at(view, rank(j))?;
@@ -982,6 +1343,7 @@ fn random_page(
         if !chk.passes(e, kind, fav)? {
             continue;
         }
+        passed += 1;
         if skip > 0 {
             skip -= 1;
             continue;
@@ -990,24 +1352,31 @@ fn random_page(
     }
     let more = ids.len() < q.limit && j < n;
     let full = ids.len() == q.limit && j < n;
-    Ok((ids, more, (more || full).then(|| encode_position(j, skip))))
+    let total = (j >= n && at.is_none()).then_some(passed);
+    Ok((
+        (ids, more, (more || full).then(|| encode_position(j, skip))),
+        total,
+    ))
 }
 
 // ---- totals ----
 
-fn total(view: &View, q: &Query, d: &Driver, chk: &mut Checker) -> Result<(u64, bool), StoreError> {
+/// The page's total; `range_over`: a number the lone range's set is known to hold more than.
+fn total(
+    view: &View,
+    q: &Query,
+    d: &Driver,
+    chk: &mut Checker,
+    range_over: u64,
+) -> Result<(u64, bool), StoreError> {
     if chk.r.empty {
         return Ok((0, true));
     }
     if let Some(ids) = &q.filter.ids {
         let mut n = 0;
-        let mut seen = Vec::new();
+        let mut seen = HashSet::new();
         for e in ids {
-            if seen.contains(e) {
-                continue;
-            }
-            seen.push(*e);
-            if chk.passes_any(*e)?.is_some() {
+            if seen.insert(*e) && chk.passes_any(*e)?.is_some() {
                 n += 1;
             }
         }
@@ -1017,20 +1386,40 @@ fn total(view: &View, q: &Query, d: &Driver, chk: &mut Checker) -> Result<(u64, 
         let n = scope_size(view, &d.sources, &q.filter)?.max(0) as u64;
         return Ok((n, d.sources.len() == 1));
     }
+    let r = &chk.r;
+    // One range left: its entries in the driver's orders, when few enough to count.
+    if d.covers
+        && r.folders.is_empty()
+        && range_over < SAMPLE_BUDGET
+        && let [k] = r.keys[..]
+        && let Some(set) = range_set(view, &q.filter, d, &k, SAMPLE_BUDGET)?
+    {
+        return Ok((set.len() as u64, true));
+    }
+    // One tag excluded from the whole library: the library's count less the tag's.
+    if d.sources == [Scope::All]
+        && r.all.is_empty()
+        && r.any.is_empty()
+        && r.keys.is_empty()
+        && r.folders.is_empty()
+        && q.filter.world.is_none()
+        && q.filter.not_ids.is_empty()
+        && let [x] = r.none[..]
+        && let [s] = r.sources[&x][..]
+    {
+        let n = d.size - scope_size(view, &[Scope::Tag(s)], &q.filter)?;
+        return Ok((n.max(0) as u64, true));
+    }
     // Only listed ids are left out beyond the scope: the scope's count less each of them that would match.
     let mut rest = q.filter.clone();
     rest.not_ids.clear();
-    let rest_r = resolve(view, &rest)?;
-    if d.sources.len() == 1 && driver(view, &rest, &rest_r)?.whole {
-        let mut n = scope_size(view, &d.sources, &rest)?.max(0);
+    let rest_d = driver(view, &rest, &resolve(view, &rest)?, true)?;
+    if rest_d.whole && rest_d.sources.len() == 1 {
+        let mut n = rest_d.size.max(0);
         let mut c = Checker::new(view, &rest)?;
-        let mut seen = Vec::new();
+        let mut seen = HashSet::new();
         for e in &q.filter.not_ids {
-            if seen.contains(e) {
-                continue;
-            }
-            seen.push(*e);
-            if c.passes_any(*e)?.is_some() {
+            if seen.insert(*e) && c.passes_any(*e)?.is_some() {
                 n -= 1;
             }
         }
@@ -1063,7 +1452,7 @@ fn total(view: &View, q: &Query, d: &Driver, chk: &mut Checker) -> Result<(u64, 
     }
     let read = sample.len() as u64;
     let mut hits = 0u64;
-    for (e, kind, fav) in sample {
+    for (_, e, kind, fav) in sample {
         if chk.passes(e, kind, fav)? {
             hits += 1;
         }
@@ -1079,27 +1468,40 @@ fn total(view: &View, q: &Query, d: &Driver, chk: &mut Checker) -> Result<(u64, 
 
 /// A page of the library under `q`.
 pub fn page(view: &View, q: &Query) -> Result<Page, StoreError> {
-    let r = resolve(view, &q.filter)?;
-    let empty = r.empty || q.filter.ids.as_ref().is_some_and(|i| i.is_empty());
-    let d = driver(view, &q.filter, &r)?;
     let mut chk = Checker::new(view, &q.filter)?;
-    if empty {
+    if chk.r.empty || q.filter.ids.as_ref().is_some_and(Vec::is_empty) {
         return Ok(Page {
             total: q.count.then_some(0),
             total_exact: true,
             ..Page::default()
         });
     }
-    let (ids, more, cursor) = match q.sort {
-        Sort::Random { seed, desc } => random_page(view, q, &d, &mut chk, seed, desc)?,
-        _ if q.filter.ids.is_some() => ids_page(q, &mut chk)?,
-        _ => sorted_page(view, q, &d, &mut chk)?,
-    };
-    let (total, total_exact) = if q.count {
-        let (t, x) = total(view, q, &d, &mut chk)?;
-        (Some(t), x)
+    let random = matches!(q.sort, Sort::Random { .. });
+    let d = driver(view, &q.filter, &chk.r, !random)?;
+    let (read, range_over) = if q.filter.ids.is_some() {
+        (Read::Walk(None), 0)
     } else {
-        (None, true)
+        plan(view, q, &d, &chk.r)?
+    };
+    chk.decided = match &read {
+        Read::Walk(k) => k.map(|k| k.sort),
+        Read::Set(sort, _) => Some(*sort),
+    };
+    let ((ids, more, cursor), known) = match (q.sort, &read) {
+        (Sort::Random { seed, desc }, _) => random_page(view, q, &d, &mut chk, &read, seed, desc)?,
+        _ if q.filter.ids.is_some() => (ids_page(q, &mut chk)?, None),
+        (_, Read::Walk(range)) => sorted_page(view, q, &d, &mut chk, *range)?,
+        (_, Read::Set(_, set)) => set_page(view, q, &mut chk, set)?,
+    };
+    // A count reads entities from anywhere in the driver, not just the range a walk was narrowed to.
+    chk.decided = None;
+    let (total, total_exact) = match (q.count, known) {
+        (false, _) => (None, true),
+        (true, Some(n)) => (Some(n), true),
+        (true, None) => {
+            let (t, x) = total(view, q, &d, &mut chk, range_over)?;
+            (Some(t), x)
+        }
     };
     Ok(Page {
         ids,
@@ -1108,47 +1510,4 @@ pub fn page(view: &View, q: &Query) -> Result<Page, StoreError> {
         more,
         cursor,
     })
-}
-
-/// A sorted page of a listed set of ids: each looked up, sorted in memory (the list bounds the work).
-fn ids_page(q: &Query, chk: &mut Checker) -> Result<Walked, StoreError> {
-    let (sort, desc, fav_first) = match q.sort {
-        Sort::Key { sort, desc } => (sort, desc, None),
-        Sort::Fav { desc } => (library::BY_NAME, false, Some(desc)),
-        Sort::Random { .. } => unreachable!(),
-    };
-    let mut rows: Vec<(Place, u64)> = Vec::new();
-    let mut seen = Vec::new();
-    for e in q.filter.ids.as_ref().unwrap() {
-        if seen.contains(e) {
-            continue;
-        }
-        seen.push(*e);
-        let Some(st) = chk.passes_any(*e)? else {
-            continue;
-        };
-        let group = fav_first.map_or(0, |f| u8::from(st.fav != f));
-        rows.push(((group, st.sort_key(sort), st.kind, st.tie.clone()), *e));
-    }
-    rows.sort_by(|a, b| {
-        if a.0.0 != b.0.0 {
-            return a.0.0.cmp(&b.0.0);
-        }
-        if desc { b.0.cmp(&a.0) } else { a.0.cmp(&b.0) }
-    });
-    let start = q
-        .cursor
-        .as_deref()
-        .and_then(decode_position)
-        .map_or(q.offset, |(p, _)| p) as usize;
-    let end = rows.len().min(start + q.limit);
-    let ids = rows
-        .get(start.min(end)..end)
-        .unwrap_or(&[])
-        .iter()
-        .map(|r| r.1)
-        .collect();
-    let cursor = (end - start.min(end) == q.limit && end < rows.len())
-        .then(|| encode_position(end as u64, 0));
-    Ok((ids, false, cursor))
 }
