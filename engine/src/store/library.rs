@@ -17,6 +17,7 @@ use super::derive::{Deriver, Loc, Out, View};
 use super::kinds::{
     bytes, dead, drop_text, field, id, key, loc_bytes, parse_loc, text_value, version,
 };
+use super::tags;
 use crate::keyspace::val::{counter_value, get_bytes, get_u64, put_bytes, put_u64};
 use crate::log::format::{FieldRef, Record, Value, get_uvarint, put_uvarint};
 use unicode_normalization::UnicodeNormalization;
@@ -537,8 +538,9 @@ pub fn resolve_tag(view: &View, tag: u64) -> Result<Option<u64>, StoreError> {
         let Some((_, rec)) = pointed(view, &key::id(key::MERGE, t))? else {
             return Ok(Some(t));
         };
-        match rec.values[1] {
-            Value::Id(into) => t = into,
+        // A `tagPrune` merges into none.
+        match rec.values.get(1) {
+            Some(Value::Id(into)) => t = *into,
             _ => return Ok(None),
         }
     }
@@ -595,6 +597,9 @@ impl Deriver for EntityCreate {
         }
         if let Some(st) = state_of(view, e, kind, k.to_vec(), added)? {
             reposition(view, out, e, None, Some(&st))?;
+        }
+        if kind == TAG {
+            tags::created(view, out, e, at)?;
         }
         out.put(key::id(key::ENTITY, e), loc_bytes(at));
         out.put(kk, uvarint(e));
@@ -659,6 +664,9 @@ impl Deriver for EntityUpdate {
         }
         out.put(ek, loc_bytes(at));
         version(out, e, at);
+        if kind == TAG {
+            tags::touched(view, out, e, at)?;
+        }
         Ok(())
     }
 
@@ -724,65 +732,7 @@ impl Deriver for EntityDelete {
             )));
         }
         dead(out, at);
-        if let Some(st) = state(view, e)? {
-            reposition(view, out, e, Some(&st), None)?;
-            for tag in &st.tags {
-                let mk = key::ids(key::MEMBER, *tag, e);
-                if let Some(b) = view.get(&mk)? {
-                    dead(out, parse_loc(&b)?);
-                }
-                out.del(mk);
-                out.del(key::ids(key::MEMBER_OF, e, *tag));
-                out.add(key::id(key::MEMBER_COUNT, *tag), -1);
-                out.map(key::member_block(*tag, e), vec![(key::member_slot(e), 0)]);
-            }
-        }
-        // Text values (list items' included), then the rest of what the entity holds.
-        let start = key::id(key::TEXT, e);
-        let end = key::prefix_end(&start);
-        for (tk, _) in view.scan(&start, &end, usize::MAX)? {
-            let f = field_after(&tk, key::TEXT)?;
-            drop_text(view, out, e, &f)?;
-        }
-        for s in [
-            key::VALUE,
-            key::ITEM_AT,
-            key::DATA_SIZE,
-            key::CREATE_DATE,
-            key::FAV,
-        ] {
-            if s == key::ITEM_AT {
-                let p = key::id(s, e);
-                let pend = key::prefix_end(&p);
-                for (ik, v) in view.scan(&p, &pend, usize::MAX)? {
-                    let (_, l) = parse_place(&v)?;
-                    dead(out, l);
-                    out.del(ik);
-                }
-                continue;
-            }
-            drop_pointers(view, out, &key::id(s, e))?;
-        }
-        let ip = key::id(key::ITEM, e);
-        for (ik, _) in view.scan(&ip, &key::prefix_end(&ip), usize::MAX)? {
-            out.del(ik);
-        }
-        let hp = key::id(key::HASH, e);
-        for (hk, v) in view.scan(&hp, &key::prefix_end(&hp), usize::MAX)? {
-            let l = parse_loc(&v)?;
-            let (r, _) = view.record(l.pos)?;
-            if let Value::Bytes(h) = &r.values[2] {
-                let mut ik = hash_index_prefix(id(&r, 1), h);
-                put_u64(&mut ik, e);
-                out.del(ik);
-            }
-            dead(out, l);
-            out.del(hk);
-        }
-        drop_pointers(view, out, &key::id(key::ENTITY, e))?;
-        out.del(entity_key_key(kind, &k));
-        out.del(key::id(key::VERSION, e));
-        Ok(())
+        delete_entity(view, out, e, kind, &k, at)
     }
 
     fn is_live(&self, _: &Record, _: u64, _: &View) -> Result<bool, StoreError> {
@@ -792,6 +742,81 @@ impl Deriver for EntityDelete {
     fn repoint(&self, _: &Record, _: u64, _: Loc, _: &View, _: &mut Out) -> Result<(), StoreError> {
         Ok(())
     }
+}
+
+/// Everything entity `e` (of type `kind`, key `k`) holds goes, by the record at `at`.
+fn delete_entity(
+    view: &View,
+    out: &mut Out,
+    e: u64,
+    kind: u64,
+    k: &[u8],
+    at: Loc,
+) -> Result<(), StoreError> {
+    if kind == TAG {
+        tags::deleted(view, out, e, k, at)?;
+    }
+    tags::entity_gone(view, out, e)?;
+    if let Some(st) = state(view, e)? {
+        reposition(view, out, e, Some(&st), None)?;
+        for tag in &st.tags {
+            tags::carriers_changed(view, out, *tag, -1)?;
+            let mk = key::ids(key::MEMBER, *tag, e);
+            if let Some(b) = view.get(&mk)? {
+                dead(out, parse_loc(&b)?);
+            }
+            out.del(mk);
+            out.del(key::ids(key::MEMBER_OF, e, *tag));
+            out.add(key::id(key::MEMBER_COUNT, *tag), -1);
+            out.map(key::member_block(*tag, e), vec![(key::member_slot(e), 0)]);
+        }
+    }
+    // Text values (list items' included), then the rest of what the entity holds.
+    let start = key::id(key::TEXT, e);
+    let end = key::prefix_end(&start);
+    for (tk, _) in view.scan(&start, &end, usize::MAX)? {
+        let f = field_after(&tk, key::TEXT)?;
+        drop_text(view, out, e, &f)?;
+    }
+    for s in [
+        key::VALUE,
+        key::ITEM_AT,
+        key::DATA_SIZE,
+        key::CREATE_DATE,
+        key::FAV,
+    ] {
+        if s == key::ITEM_AT {
+            let p = key::id(s, e);
+            let pend = key::prefix_end(&p);
+            for (ik, v) in view.scan(&p, &pend, usize::MAX)? {
+                let (_, l) = parse_place(&v)?;
+                dead(out, l);
+                out.del(ik);
+            }
+            continue;
+        }
+        drop_pointers(view, out, &key::id(s, e))?;
+    }
+    let ip = key::id(key::ITEM, e);
+    for (ik, _) in view.scan(&ip, &key::prefix_end(&ip), usize::MAX)? {
+        out.del(ik);
+    }
+    let hp = key::id(key::HASH, e);
+    for (hk, v) in view.scan(&hp, &key::prefix_end(&hp), usize::MAX)? {
+        let l = parse_loc(&v)?;
+        let (r, _) = view.record(l.pos)?;
+        if let Value::Bytes(h) = &r.values[2] {
+            let mut ik = hash_index_prefix(id(&r, 1), h);
+            put_u64(&mut ik, e);
+            out.del(ik);
+        }
+        dead(out, l);
+        out.del(hk);
+    }
+    drop_pointers(view, out, &key::id(key::ENTITY, e))?;
+    out.del(entity_key_key(kind, k));
+    out.del(key::id(key::VERSION, e));
+    Ok(())
 }
 
 /// The field of a `key::field` key, after its entity.
@@ -831,7 +856,7 @@ impl Deriver for JsonValue {
         }
         out.put(k, loc_bytes(at));
         version(out, e, at);
-        Ok(())
+        tags::field_written(view, out, e, at, f, tags::Written::Json(bytes(rec, 2)))
     }
 
     fn is_live(&self, rec: &Record, pos: u64, view: &View) -> Result<bool, StoreError> {
@@ -881,7 +906,7 @@ impl Deriver for ValueDelete {
         }
         drop_json(view, out, e, f)?;
         version(out, e, at);
-        Ok(())
+        tags::field_written(view, out, e, at, f, tags::Written::Gone)
     }
 
     fn is_live(&self, _: &Record, _: u64, _: &View) -> Result<bool, StoreError> {
@@ -1144,7 +1169,7 @@ impl Deriver for TagMerge {
                 out.put(key::ids(key::MERGED_INTO, t, from), Vec::new());
             }
         }
-        Ok(())
+        tags::touched(view, out, tag, at)
     }
 
     fn is_live(&self, rec: &Record, pos: u64, view: &View) -> Result<bool, StoreError> {
@@ -1197,6 +1222,7 @@ pub fn fold_step(view: &View, out: &mut Out) -> Result<bool, StoreError> {
         };
         let mut o = Out::default();
         let old = state(&lv, e)?;
+        tags::carriers_changed(&lv, &mut o, tag, -1)?;
         o.del(mk.clone());
         o.del(key::ids(key::MEMBER_OF, e, tag));
         o.add(key::id(key::MEMBER_COUNT, tag), -1);
@@ -1204,6 +1230,7 @@ pub fn fold_step(view: &View, out: &mut Out) -> Result<bool, StoreError> {
         let mut added = None;
         match target {
             Some(t) if lv.get(&key::ids(key::MEMBER, t, e))?.is_none() => {
+                tags::carriers_changed(&lv, &mut o, t, 1)?;
                 super::kinds::assign(&mut o, e, t, l, false);
                 added = Some(t);
             }
@@ -1234,6 +1261,40 @@ pub fn fold_step(view: &View, out: &mut Out) -> Result<bool, StoreError> {
     Ok(true)
 }
 
+/// `tagPrune`: the tag goes as a merge into none would take it, if it is unused (`tags::unused`).
+pub struct TagPrune;
+
+impl Deriver for TagPrune {
+    fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
+        let tag = id(rec, 0);
+        let mk = key::id(key::MERGE, tag);
+        let k = match entity_info(view, tag)? {
+            Some((TAG, k, _)) if view.get(&mk)?.is_none() && tags::unused(view, tag)? => k,
+            _ => {
+                dead(out, at);
+                return Ok(());
+            }
+        };
+        out.put(mk, loc_bytes(at));
+        delete_entity(view, out, tag, TAG, &k, at)
+    }
+
+    fn is_live(&self, rec: &Record, pos: u64, view: &View) -> Result<bool, StoreError> {
+        live_at(view, &key::id(key::MERGE, id(rec, 0)), pos)
+    }
+
+    fn repoint(
+        &self,
+        rec: &Record,
+        from: u64,
+        to: Loc,
+        view: &View,
+        out: &mut Out,
+    ) -> Result<(), StoreError> {
+        repoint_at(view, out, &key::id(key::MERGE, id(rec, 0)), from, to)
+    }
+}
+
 pub fn deriver(kind: &str) -> Option<&'static dyn Deriver> {
     Some(match kind {
         "entityCreate" => &EntityCreate,
@@ -1247,6 +1308,7 @@ pub fn deriver(kind: &str) -> Option<&'static dyn Deriver> {
         "cardHash" => &CardHash,
         "tagMerge" => &TagMerge,
         "entityUpdate" => &EntityUpdate,
+        "tagPrune" => &TagPrune,
         _ => return None,
     })
 }

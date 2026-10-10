@@ -30,6 +30,7 @@ pub mod derive;
 pub mod kinds;
 pub mod library;
 pub mod library_read;
+pub mod tags;
 
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::Path;
@@ -46,6 +47,37 @@ use crate::keyspace::val::{Val, counter_value, fold};
 use crate::keyspace::{Hooks, Keyspace, KsConfig, KsError, Mem};
 use crate::log::format::{FieldRef, Record, Value, kind_by_name};
 use crate::log::{self, Cursor, Layout, Log, LogError, Opened, Start, TailFile, max_commit};
+
+/// A tag's key as a reader names it: the live tag with that key, or the deleted one and where it leads.
+#[derive(Debug, Clone)]
+pub struct TagStatus {
+    pub id: u64,
+    pub live: bool,
+    /// A deleted tag's: the key of the live tag its merges lead to.
+    pub into: Option<Vec<u8>>,
+}
+
+fn tag_status(v: &View, k: &[u8]) -> StoreResult<Option<TagStatus>> {
+    if let Some(id) = library::entity_by_key(v, library::TAG, k)? {
+        return Ok(Some(TagStatus {
+            id,
+            live: true,
+            into: None,
+        }));
+    }
+    let Some(id) = tags::gone_by_key(v, k)? else {
+        return Ok(None);
+    };
+    let into = match library::resolve_tag(v, id)? {
+        Some(t) if tags::place(v, t)?.is_some() => tags::key_of(v, t)?,
+        _ => None,
+    };
+    Ok(Some(TagStatus {
+        id,
+        live: false,
+        into,
+    }))
+}
 
 #[derive(Debug)]
 pub enum StoreError {
@@ -549,6 +581,50 @@ impl Store {
         limit: usize,
     ) -> StoreResult<Vec<u64>> {
         self.derived(|v| library_read::by_hashes(v, a, b, limit))
+    }
+
+    /// A page of the tag manager's list.
+    pub fn tag_page(&self, q: &tags::Query) -> StoreResult<tags::Page> {
+        self.derived(|v| tags::page(v, q))
+    }
+
+    /// Each tag's carriers and whether the count may be too high (`tags::counts`).
+    pub fn tag_counts(&self, ids: &[u64]) -> StoreResult<Vec<(i64, bool)>> {
+        self.derived(|v| tags::counts(v, ids))
+    }
+
+    /// How many tags are unused, and up to `limit` of them.
+    pub fn tag_unused(&self, limit: usize) -> StoreResult<(u64, Vec<u64>)> {
+        self.derived(|v| Ok((tags::unused_count(v)?, tags::unused_page(v, limit)?)))
+    }
+
+    /// The live tag each name stands for.
+    pub fn tag_by_names(&self, names: &[Vec<u8>]) -> StoreResult<Vec<Option<u64>>> {
+        self.derived(|v| names.iter().map(|n| tags::by_name(v, n)).collect())
+    }
+
+    /// The highest manual sort order of a live tag.
+    pub fn tag_max_order(&self) -> StoreResult<Option<f64>> {
+        self.derived(tags::max_order)
+    }
+
+    /// For each key: the live tag, or the deleted one and the key of the live tag its merges lead to.
+    pub fn tag_status(&self, keys: &[Vec<u8>]) -> StoreResult<Vec<Option<TagStatus>>> {
+        self.derived(|v| keys.iter().map(|k| tag_status(v, k)).collect())
+    }
+
+    /// Up to `limit` entries of a tag change feed after `after`: (position, id), and whether more follow; with
+    /// the feed's end.
+    pub fn tag_feed(
+        &self,
+        structure: u64,
+        after: u64,
+        limit: usize,
+    ) -> StoreResult<tags::FeedPage> {
+        self.derived(|v| {
+            let (entries, more) = tags::feed(v, structure, after, limit)?;
+            Ok((entries, more, tags::feed_end(v, structure)?))
+        })
     }
 
     /// A page of search results (`crate::search::query`).
@@ -1397,5 +1473,7 @@ impl Hooks for StoreHooks {
 
 #[cfg(test)]
 mod library_tests;
+#[cfg(test)]
+mod tags_tests;
 #[cfg(test)]
 mod tests;

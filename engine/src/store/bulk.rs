@@ -204,10 +204,12 @@ impl Store {
 /// Whether no scope counts a character or group.
 fn no_library(ks: &crate::keyspace::Keyspace) -> StoreResult<bool> {
     use super::kinds::key;
-    let counts = key::of(key::COUNT);
-    for (_, v) in ks.scan(&counts, &key::prefix_end(&counts), usize::MAX)? {
-        if crate::keyspace::val::counter_value(&v).unwrap_or(0) > 0 {
-            return Ok(false);
+    for structure in [key::COUNT, key::TAG_PART_COUNT] {
+        let counts = key::of(structure);
+        for (_, v) in ks.scan(&counts, &key::prefix_end(&counts), usize::MAX)? {
+            if crate::keyspace::val::counter_value(&v).unwrap_or(0) > 0 {
+                return Ok(false);
+            }
         }
     }
     Ok(true)
@@ -374,10 +376,13 @@ impl Loader<'_> {
         // Derivation leaves them out (a numbering is shared across partitions): a load of characters or groups
         // numbers every scope from its orders, which it can do only over a library that had none.
         let t = Instant::now();
-        let numbers = if run_holds(&path, super::kinds::key::COUNT)? {
+        let numbers = if run_holds(&path, super::kinds::key::COUNT)?
+            || run_holds(&path, super::kinds::key::TAG_PLACE)?
+            || run_holds(&path, super::kinds::key::MEMBER_COUNT)?
+        {
             if !self.library_empty {
                 return Err(StoreError::Refused(
-                    "characters and groups are bulk loaded only into a store with none; nothing was loaded"
+                    "characters, groups, tags and their assignments are bulk loaded only into a store with none; nothing was loaded"
                         .into(),
                 ));
             }
@@ -590,6 +595,45 @@ impl Loader<'_> {
                     "a scope's name order holds {i} entities and its count {n}"
                 )));
             }
+        }
+        // The tags' orders follow their carriers, counted across partitions: every tag is placed here.
+        let places = key::of(key::TAG_PLACE);
+        let mut it = RunIter::new(run.clone(), &places, None, None)?;
+        let tag_bad = || StoreError::Entry("a tag place key doesn't decode".into());
+        while let Some(k) = it.key()
+            && k < key::prefix_end(&places).as_slice()
+        {
+            let k = k.to_vec();
+            if let Some(v) = it.val()?.settled() {
+                let mut at = places.len();
+                let tag = crate::keyspace::val::get_u64(&k, &mut at).ok_or_else(tag_bad)?;
+                let place = super::tags::Place::parse(&v.into_bytes())?;
+                let count = match run.get(
+                    &key::id(key::MEMBER_COUNT, tag),
+                    &Cache::new(0),
+                    &ReadCounts::default(),
+                )? {
+                    Some(v) => v
+                        .settled()
+                        .and_then(|v| crate::keyspace::val::counter_value(&v.into_bytes()))
+                        .unwrap_or(0),
+                    None => 0,
+                };
+                let mut out = super::derive::Out::default();
+                super::tags::reposition(&mut out, tag, None, Some((&place, count)));
+                for (ek, ev) in out.entries {
+                    sink_bytes += ek.len() + ENTRY_OVERHEAD;
+                    match sink.remove(&ek) {
+                        Some(old) => sink.insert(ek, ev.over_owned(old)),
+                        None => sink.insert(ek, ev),
+                    };
+                }
+                if sink_bytes >= LOAD_BUFFER_BYTES {
+                    spill(&mut sink, &mut spilled, &dir, &seq, &mut spill_staged)?;
+                    sink_bytes = 0;
+                }
+            }
+            it.advance()?;
         }
         if !sink.is_empty() {
             spill(&mut sink, &mut spilled, &dir, &seq, &mut spill_staged)?;

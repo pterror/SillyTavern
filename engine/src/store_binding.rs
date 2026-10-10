@@ -21,7 +21,10 @@ use crate::log::format::{
 };
 use crate::search::Scope;
 use crate::search::query::{After, Clause, Filter, Found, Limits, Order, Query};
-use crate::store::{Store as Inner, StoreConfig, StoreError, StoreResult, library, library_read};
+use crate::store::kinds::key;
+use crate::store::{
+    Store as Inner, StoreConfig, StoreError, StoreResult, library, library_read, tags,
+};
 
 fn invalid(msg: String) -> Error {
     Error::new(Status::InvalidArg, msg)
@@ -425,6 +428,137 @@ object_type_name!(Page);
 object_type_name!(SearchPage);
 object_type_name!(LibraryPage);
 object_type_name!(LibraryEntities);
+object_type_name!(TagPage);
+object_type_name!(TagCounts);
+object_type_name!(TagUnused);
+object_type_name!(TagStatuses);
+object_type_name!(TagFeed);
+
+/// A page of the tag manager's list as JavaScript sees it.
+pub struct TagPage(tags::Page);
+
+impl ToNapiValue for TagPage {
+    unsafe fn to_napi_value(raw_env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
+        let env = Env::from_raw(raw_env);
+        let p = val.0;
+        let mut obj = Object::new(&env)?;
+        obj.set("ids", p.ids)?;
+        obj.set("more", p.more)?;
+        if let Some(c) = p.cursor {
+            obj.set("cursor", Buffer::from(c))?;
+        }
+        unsafe { Object::to_napi_value(raw_env, obj) }
+    }
+}
+
+pub struct TagCounts(Vec<(i64, bool)>);
+
+impl ToNapiValue for TagCounts {
+    unsafe fn to_napi_value(raw_env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
+        let env = Env::from_raw(raw_env);
+        let mut list = Vec::with_capacity(val.0.len());
+        for (count, approximate) in val.0 {
+            let mut o = Object::new(&env)?;
+            o.set("count", count as f64)?;
+            o.set("approximate", approximate)?;
+            list.push(o);
+        }
+        unsafe { Vec::<Object>::to_napi_value(raw_env, list) }
+    }
+}
+
+pub struct TagUnused(u64, Vec<u64>);
+
+impl ToNapiValue for TagUnused {
+    unsafe fn to_napi_value(raw_env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
+        let env = Env::from_raw(raw_env);
+        let mut obj = Object::new(&env)?;
+        obj.set("count", val.0 as f64)?;
+        obj.set("ids", val.1)?;
+        unsafe { Object::to_napi_value(raw_env, obj) }
+    }
+}
+
+pub struct TagStatuses(Vec<Option<crate::store::TagStatus>>);
+
+impl ToNapiValue for TagStatuses {
+    unsafe fn to_napi_value(raw_env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
+        let env = Env::from_raw(raw_env);
+        let mut list = Vec::with_capacity(val.0.len());
+        for st in val.0 {
+            let Some(st) = st else {
+                list.push(None);
+                continue;
+            };
+            let mut o = Object::new(&env)?;
+            o.set("id", st.id)?;
+            o.set("live", st.live)?;
+            if let Some(k) = st.into {
+                o.set("into", text_to_js(k)?)?;
+            }
+            list.push(Some(o));
+        }
+        unsafe { Vec::<Option<Object>>::to_napi_value(raw_env, list) }
+    }
+}
+
+pub struct TagFeed(Vec<(u64, u64)>, bool, u64);
+
+impl ToNapiValue for TagFeed {
+    unsafe fn to_napi_value(raw_env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
+        let env = Env::from_raw(raw_env);
+        let mut entries = Vec::with_capacity(val.0.len());
+        for (pos, id) in val.0 {
+            let mut o = Object::new(&env)?;
+            o.set("pos", pos)?;
+            o.set("id", id)?;
+            entries.push(o);
+        }
+        let mut obj = Object::new(&env)?;
+        obj.set("entries", entries)?;
+        obj.set("more", val.1)?;
+        obj.set("end", val.2)?;
+        unsafe { Object::to_napi_value(raw_env, obj) }
+    }
+}
+
+fn tag_query_from_js(q: &Object) -> Result<tags::Query> {
+    let sort = match q.get::<Unknown>("sort")? {
+        Some(v) => integer("sort", v)?,
+        None => return Err(invalid("a tag page needs a sort".into())),
+    };
+    if sort >= tags::SORTS {
+        return Err(invalid(format!("no tag sort {sort}")));
+    }
+    let text = |name: &str| -> Result<Option<Vec<u8>>> {
+        match q.get::<Unknown>(name)? {
+            Some(v) => Ok(Some(string(name, v)?)),
+            None => Ok(None),
+        }
+    };
+    let num = |name: &str, default: u64| -> Result<u64> {
+        match q.get::<Unknown>(name)? {
+            Some(v) => integer(name, v),
+            None => Ok(default),
+        }
+    };
+    Ok(tags::Query {
+        sort,
+        folders: q.get::<bool>("folders")?.unwrap_or(false),
+        used: q.get::<bool>("used")?.unwrap_or(false),
+        folder_type: text("folderType")?,
+        search: text("search")?,
+        name: text("name")?,
+        contains: text("contains")?,
+        ids: ids_arg("ids", q.get("ids")?)?,
+        after: q
+            .get::<Uint8Array>("after")?
+            .map(|c| c.to_vec())
+            .filter(|c| !c.is_empty()),
+        limit: num("limit", 50)? as usize,
+        cap: num("cap", tags::WORK_CAP)?,
+    })
+}
 
 /// A page of the library list as JavaScript sees it.
 pub struct LibraryPage(library_read::Page);
@@ -956,6 +1090,103 @@ impl Store {
                 (u64::from(which_b), &hash_b),
                 limit as usize,
             )
+        })
+    }
+
+    /// A page of the tag manager's list: `{ sort: 0 alphabetical | 1 by entries | 2 manual, folders?, used?,
+    /// folderType?, search?, name?, contains?, ids?, after?, limit, cap? }`. Resolves with `{ ids, more,
+    /// cursor? }`: `more` when the work cap cut the page short, `cursor` to read on from (none at the end).
+    /// Rejects a cursor made for another sort.
+    #[napi(
+        ts_args_type = "query: object",
+        ts_return_type = "Promise<{ ids: bigint[], more: boolean, cursor?: Buffer }>"
+    )]
+    pub fn tag_page<'env>(&self, env: &'env Env, query: Object) -> Result<Object<'env>> {
+        let q = tag_query_from_js(&query)?;
+        derived(env, &self.store, move |s| s.tag_page(&q).map(TagPage))
+    }
+
+    /// Each tag's carriers, with the carriers of tags merged into it that haven't moved yet; `approximate` when
+    /// those may count an entity twice.
+    #[napi(
+        ts_args_type = "ids: (bigint | number)[]",
+        ts_return_type = "Promise<{ count: number, approximate: boolean }[]>"
+    )]
+    pub fn tag_counts<'env>(&self, env: &'env Env, ids: Vec<Unknown>) -> Result<Object<'env>> {
+        let ids = ids
+            .into_iter()
+            .map(|v| integer("id", v))
+            .collect::<Result<Vec<_>>>()?;
+        derived(env, &self.store, move |s| s.tag_counts(&ids).map(TagCounts))
+    }
+
+    /// How many tags nothing carries, and up to `limit` of them in alphabetical order.
+    #[napi(ts_return_type = "Promise<{ count: number, ids: bigint[] }>")]
+    pub fn tag_unused<'env>(&self, env: &'env Env, limit: u32) -> Result<Object<'env>> {
+        derived(env, &self.store, move |s| {
+            s.tag_unused(limit as usize)
+                .map(|(n, ids)| TagUnused(n, ids))
+        })
+    }
+
+    /// The live tag each name stands for (names compared folded), or null.
+    #[napi(
+        ts_args_type = "names: string[]",
+        ts_return_type = "Promise<(bigint | null)[]>"
+    )]
+    pub fn tag_by_names<'env>(&self, env: &'env Env, names: Vec<Unknown>) -> Result<Object<'env>> {
+        let names = names
+            .into_iter()
+            .map(|v| string("name", v))
+            .collect::<Result<Vec<_>>>()?;
+        derived(env, &self.store, move |s| s.tag_by_names(&names))
+    }
+
+    /// The highest manual sort order of a live tag, or null.
+    #[napi(ts_return_type = "Promise<number | null>")]
+    pub fn tag_max_order<'env>(&self, env: &'env Env) -> Result<Object<'env>> {
+        derived(env, &self.store, |s| s.tag_max_order())
+    }
+
+    /// For each tag key: `{ id, live: true }`, `{ id, live: false, into? }` for a deleted tag (`into` the key of
+    /// the live tag its merges lead to), or null for a key no tag ever had.
+    #[napi(
+        ts_args_type = "keys: string[]",
+        ts_return_type = "Promise<({ id: bigint, live: boolean, into?: string } | null)[]>"
+    )]
+    pub fn tag_status<'env>(&self, env: &'env Env, keys: Vec<Unknown>) -> Result<Object<'env>> {
+        let keys = keys
+            .into_iter()
+            .map(|v| string("key", v))
+            .collect::<Result<Vec<_>>>()?;
+        derived(env, &self.store, move |s| {
+            s.tag_status(&keys).map(TagStatuses)
+        })
+    }
+
+    /// Up to `limit` entries of a change feed after position `after`, each `{ pos, id }` once at its last
+    /// change: `'tags'` lists tags whose definitions changed (deleted ones too), `'entities'` characters and
+    /// groups whose tags changed. `end` is the feed's last position (0n for none).
+    #[napi(
+        ts_args_type = "which: 'tags' | 'entities', after: bigint, limit: number",
+        ts_return_type = "Promise<{ entries: { pos: bigint, id: bigint }[], more: boolean, end: bigint }>"
+    )]
+    pub fn tag_feed<'env>(
+        &self,
+        env: &'env Env,
+        which: String,
+        after: BigInt,
+        limit: u32,
+    ) -> Result<Object<'env>> {
+        let structure = match which.as_str() {
+            "tags" => key::TAG_CHANGE,
+            "entities" => key::ENTITY_TAG_CHANGE,
+            other => return Err(invalid(format!("no tag feed {other}"))),
+        };
+        let after = position_arg(after)?;
+        derived(env, &self.store, move |s| {
+            s.tag_feed(structure, after, limit as usize)
+                .map(|(e, more, end)| TagFeed(e, more, end))
         })
     }
 

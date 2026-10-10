@@ -470,6 +470,21 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
+    // A tag's manual sort order: its stored `sort_order` as upstream coerces it (absent: it has none).
+    Kind {
+        name: "tagOrder",
+        base: 33,
+        slots: &[req("tag", Ty::Id(Space::Tag)), opt("order", Ty::F64)],
+        internal: false,
+    },
+    // A tag goes, as a `tagMerge` into none and its `entityDelete` would, only if nothing carries it (nor a tag
+    // merged into it whose carriers haven't moved); else nothing happens.
+    Kind {
+        name: "tagPrune",
+        base: 35,
+        slots: &[req("tag", Ty::Id(Space::Tag))],
+        internal: false,
+    },
 ];
 
 /// Kinds that exist only in the crate's tests and measurements (feature `measure`). Their header values are
