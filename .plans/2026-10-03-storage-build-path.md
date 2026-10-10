@@ -870,14 +870,12 @@ Done, in order (each section below has its details and choices):
   below it.
 - Openings and alternatives; `endPathAt` and the kind `pointerRoot`; back and forward and card greetings chosen
   provisionally (answered stop); session and bookmark lists, naming, modes, deletes, and `integrity` (see the "Built"
-  sections below).
+  sections below); send keys, itemizations' JS and a member's messages changing speaker.
 
 Left (in the order they build on each other):
-- Chat engine operations not built yet: send-key lookups for `/open` (`storedSendKeys`), the whole-array
-  `saveChat` compat diffed onto the engine (refusing a header whose `integrity` isn't the session's UUID),
-  `renameGroupMemberInMessages` (a speaker change), itemizations' JS (zstd, the `/api/itemized-prompts` routes'
-  shapes), finding a session by its name for routes taking a chat name (by its UUID works now; by name reads the
-  session-name postings, 5d).
+- Chat engine operations not built yet: the whole-array `saveChat` compat diffed onto the engine (refusing a header
+  whose `integrity` isn't the session's UUID), finding a session by its name for routes taking a chat name (by its
+  UUID works now; by name reads the session-name postings, 5d).
 - People: an adapter from `LibraryEngine` to `ChatEngine`'s speakers (characters by id and avatar; groups' trees).
 - Compat identifiers wired: `X-ST-Session` in `getRequestHeaders()` (`none` for a tab with no session), the
   answers' `characters[].chat`, `group.chat_id`, `getCurrentChatId()`, chat names in events, and the tab told
@@ -1388,6 +1386,26 @@ Built, lists, names and `integrity` (10-10; `src/chat-engine.js`, test `src/chat
 - Tests: rows against the session's own path; paging; naming and clearing a name writing nothing extra; a second
   session's row, then deleted; bookmarks renamed, made following and deleted, mirrored on the old store's labels so the
   later comparisons still hold.
+
+Built, send keys, itemizations and a member's messages (10-10; `src/chat-engine.js`, `chat_read.rs`; tests
+`src/chat-engine.test.js` (a group tree against the old store), `chat_tests.rs`):
+- `storedSendKeys(tree, keys)`: of the first 100 string keys, those the tree stored a message for.
+- Itemizations (D14's record): `recordItemization`, `updateItemizationFields`, `readItemization` (with the nearest
+  message above whose itemization holds the prompt as sent), `chatItemizations` and `deleteChatItemizations` (a
+  position's path, root to its message), `clearItemizations` (every one, through `chatRead('itemized', { after?,
+  limit })` in batches of 256 with 10 ms between). zstd JSON without `mesId`, as today; writing the same bytes writes
+  nothing. Writes to a message's itemization run in its tree's lane, so a field update needs no retry loop.
+- `renameMemberInMessages({ tree, oldAvatar, newAvatar, newName })` (`renameGroupMemberInMessages`): every message of
+  the tree whose `original_avatar` is the old avatar takes the new avatar and name, and `force_avatar`'s file
+  follows; its speaker becomes the character with that avatar (or none, the avatar then its own value). Walks the
+  tree (parents first, pages of 256), committing per page; bounded by the tree, as today's keyset walk over the
+  owner's messages. A character renamed here keeps its id and avatar, so its messages need nothing.
+- Found and fixed: a message whose speaker was changed to none (`speaker` value `null`) made reading it throw.
+
+| choice | picked | reason |
+|---|---|---|
+| itemization paths | a position's path (root to its message) | a position shows nothing below it; the old store's chat went on down its default replies |
+| clearing | id-ordered pages of the itemized messages, a batch per commit | it touches every itemization; Boot and batches |
 
 Where layer 1 goes: inside 5b, on the engine. Its own storage step (SQLite `state_changes`, saved states every 64th
 depth rebuilt lazily after an epoch bump) conflicts with the design: a structure caught up when read is what revision

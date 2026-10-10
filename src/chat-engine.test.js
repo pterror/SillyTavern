@@ -392,3 +392,76 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         await store.close();
     });
 }
+
+const itemizations = await import('./itemization-store.js');
+const cara2 = { id: 4n, name: 'Cara Two', avatar: 'cara2.png' };
+const groupPeople = {
+    speakers: async ids => new Map(ids.flatMap(id => [cara, ivy, cara2].filter(c => c.id === id).map(c => [id, c]))),
+    byAvatar: async avatars => new Map(avatars.flatMap(a => [cara, ivy, cara2].filter(c => c.avatar === a).map(c => [a, c]))),
+};
+
+for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm: loadEngine({ platform: null }).binding })) {
+    test(`${kind}: a group's send keys, itemizations and a member's messages answer as the old store's`, async () => {
+        const owner = `group-${kind}`;
+        const store = await engine.Store.open(path.join(root, `engine-group-${kind}`));
+        const chats = await ChatEngine.open(store, groupPeople);
+        let clock = 1_760_090_000_000;
+        chats.now = () => (clock += 1000);
+        const t = 3n;
+        const speak = (c, mes) => ({ name: c.name, is_user: false, is_system: false, send_date: '2025-10-10T10:00:00.000Z', mes, extra: {}, original_avatar: c.avatar, force_avatar: `/thumbnail?type=avatar&file=${encodeURIComponent(c.avatar)}` });
+        const you = { name: 'You', is_user: true, is_system: false, send_date: '2025-10-10T10:01:00.000Z', mes: 'Hello both.', extra: {} };
+        const [og] = (await tree.addOpeningAlternatives(directories, owner, [speak(cara, 'Hi from Cara.')])).node_ids;
+        const [ng] = (await chats.addOpenings({ tree: t, treeSpeaker: null, contents: [speak(cara, 'Hi from Cara.')], actor: { user: actor.user } })).node_ids;
+        const rest = [you, speak(ivy, 'Hi from Ivy.'), speak(cara, 'Cara again.')];
+        const oldIds = (await tree.appendMessages(directories, owner, og, rest, { sendKeys: ['s1', null, null] })).node_ids;
+        const newIds = (await chats.appendMessages({ tree: t, treeSpeaker: null, after: ng, contents: rest, sendKeys: ['s1', null, null], actor })).node_ids;
+        const names = new Map([[og, 'g'], [ng, 'g'], ...oldIds.map((id, i) => [id, `m${i}`]), ...newIds.map((id, i) => [id, `m${i}`])]);
+        const mapped = value => JSON.parse(JSON.stringify(value), (_, v) => (typeof v === 'string' ? names.get(v) ?? v : v));
+
+        // Which kept sends are stored.
+        assert.deepEqual(await chats.storedSendKeys(t, ['s1', 'nope', 3]), await tree.storedSendKeys(directories, owner, ['s1', 'nope', 3]));
+
+        // Itemizations recorded, read with the one above holding the prompt as sent, listed, changed, removed.
+        const entry = n => ({ mesId: n, rawPrompt: n === 1 ? 'the prompt' : undefined, total: n * 10 });
+        for (const i of [1, 2]) {
+            assert.equal(await chats.recordItemization({ node_id: newIds[i], entry: entry(i) }), await itemizations.recordItemization(directories, oldIds[i], entry(i)));
+        }
+        assert.equal(await chats.recordItemization({ node_id: newIds[2], entry: entry(2) }), 'unchanged');
+        assert.equal(await chats.recordItemization({ node_id: 'no such message', entry: entry(2) }), 'no-message');
+        assert.deepEqual(mapped(await chats.readItemization({ node_id: newIds[2] })), mapped(await itemizations.readItemization(directories, oldIds[2])));
+        assert.equal(await chats.readItemization({ node_id: newIds[0] }), null);
+        assert.deepEqual(mapped(await chats.chatItemizations({ tree: t, at: newIds[2] })), mapped(await itemizations.chatItemizations(directories, owner, oldIds[2])));
+        assert.equal(await chats.updateItemizationFields({ node_id: newIds[2], fields: { total: 99 } }), await itemizations.updateItemizationFields(directories, oldIds[2], { total: 99 }));
+        assert.equal(await chats.updateItemizationFields({ node_id: newIds[2], fields: { total: 99 } }), 'unchanged');
+        assert.equal(await chats.updateItemizationFields({ node_id: newIds[0], fields: { total: 1 } }), 'no-itemization');
+        assert.deepEqual(mapped(await chats.chatItemizations({ tree: t, at: newIds[2] })), mapped(await itemizations.chatItemizations(directories, owner, oldIds[2])));
+        // The flag the page reads.
+        assert.equal((await chats.load({ tree: t, at: newIds[2] })).messages[2].extra[tree.ITEMIZED_PROMPT_FLAG], true);
+        // A position is the path down to its message (the old store's chat went on down its default replies).
+        assert.equal(await chats.deleteChatItemizations({ tree: t, at: newIds[2] }), await itemizations.deleteChatItemizations(directories, owner, oldIds[2]));
+        assert.deepEqual(mapped(await chats.chatItemizations({ tree: t, at: newIds[2] })), mapped(await itemizations.chatItemizations(directories, owner, oldIds[2])));
+        assert.equal(await chats.chatItemizations({ tree: t + 1n, at: newIds[2] }), null);
+        await chats.recordItemization({ node_id: newIds[1], entry: entry(1) });
+        await chats.recordItemization({ node_id: newIds[2], entry: entry(2) });
+        assert.equal(await chats.clearItemizations({ batch: 1, pause: 0 }), 2);
+        assert.deepEqual(await chats.chatItemizations({ tree: t, at: newIds[2] }), []);
+
+        // A member's messages become another character's (one known to the library, then one that isn't).
+        const loaded = async () => normalizedGroup((await chats.load({ tree: t, at: newIds[2] })).messages, mapped);
+        const oldLoaded = async () => normalizedGroup((await tree.loadAtNode(directories, owner, og)).messages, mapped);
+        for (const [from, to, name] of [['cara.png', 'cara2.png', 'Cara Two'], ['ivy.png', 'someone new.png', 'Someone']]) {
+            const n = await chats.renameMemberInMessages({ tree: t, oldAvatar: from, newAvatar: to, newName: name });
+            assert.equal(n, await tree.renameGroupMemberInMessages(directories, owner, from, to, name));
+            assert.deepEqual(await loaded(), await oldLoaded(), `${from} to ${to}`);
+        }
+        await store.close();
+    });
+}
+
+/** A loaded path with mapped ids and no itemized flags (the old store's itemizations are cleared separately). */
+function normalizedGroup(messages, mapped) {
+    return mapped(messages).map(m => {
+        if (m.extra) delete m.extra[tree.ITEMIZED_PROMPT_FLAG];
+        return m;
+    });
+}

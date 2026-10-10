@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 
 use super::chat::{self, FOLLOWING, MES, PINNED};
+use super::chat_read::Js;
 use super::kinds::{Holder, key, parse_loc, text_value_of};
 use super::sessions::{self, Fork};
 use super::stats;
@@ -600,6 +601,26 @@ impl Model {
                 v.scan(&all, &key::prefix_end(&all), usize::MAX)?.len(),
                 self.itemized.len()
             );
+            // Read in pages of 3, the itemized messages are the model's, in id order.
+            let mut paged = Vec::new();
+            let mut after = None;
+            loop {
+                let Js::Obj(page) = super::chat_read::itemized(v, after, 3)? else {
+                    unreachable!()
+                };
+                let (Js::Arr(ids), Js::Bool(more)) = (&page[0].1, &page[1].1) else {
+                    unreachable!()
+                };
+                for i in ids {
+                    let Js::Big(m) = i else { unreachable!() };
+                    paged.push(*m);
+                    after = Some(*m);
+                }
+                if !more {
+                    break;
+                }
+            }
+            assert_eq!(paged, self.itemized.keys().copied().collect::<Vec<_>>());
             // Stats: every message here is a character's, so the ones with a parent count.
             let mut total = [0i64; stats::COUNTERS];
             for o in &owners {
