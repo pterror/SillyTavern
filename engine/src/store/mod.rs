@@ -33,6 +33,7 @@ pub mod derive;
 pub mod kinds;
 pub mod library;
 pub mod library_read;
+pub mod searched;
 pub mod sessions;
 pub mod state;
 pub mod stats;
@@ -1677,6 +1678,8 @@ mod books_tests;
 mod chat_tests;
 #[cfg(test)]
 mod library_tests;
+#[cfg(test)]
+mod searched_tests;
 #[cfg(test)]
 mod state_tests;
 #[cfg(test)]

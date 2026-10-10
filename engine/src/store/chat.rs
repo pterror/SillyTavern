@@ -909,6 +909,14 @@ impl Deriver for PositionName {
             return Err(StoreError::Refused(format!("no position {p}")));
         }
         let k = key::id(key::POSITION_NAME, p);
+        if is_session(view, p)? {
+            let name = match &rec.values[1] {
+                Value::Text(t) => Some(t.as_slice()),
+                _ => None,
+            };
+            let old = super::searched::position_name(view, p)?;
+            super::searched::session_named(view, out, p, old.as_deref(), name)?;
+        }
         if let Some(v) = view.get(&k)? {
             dead(out, parse_loc(&v)?);
         }
@@ -994,6 +1002,8 @@ impl Deriver for PositionDelete {
                 return Err(StoreError::Refused(format!("no position {b}")));
             }
             dead(out, at);
+            let old = super::searched::position_name(view, b)?;
+            super::searched::session_named(view, out, b, old.as_deref(), None)?;
             if let Some(n) = view.get(&key::id(key::POSITION_NAME, b))? {
                 dead(out, parse_loc(&n)?);
                 out.del(key::id(key::POSITION_NAME, b));

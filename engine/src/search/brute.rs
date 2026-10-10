@@ -10,11 +10,14 @@ use super::{Scope, idf, tf_norm};
 /// A document: per field, its values' tokens.
 pub type Fields = Vec<Vec<Vec<String>>>;
 
-pub fn tokenize_fields(values: &[Vec<Vec<u8>>]) -> Fields {
-    values
+/// A document's values tokenized, with an empty field for each of the scope's fields it doesn't give.
+pub fn tokenize_fields(scope: Scope, values: &[Vec<Vec<u8>>]) -> Fields {
+    let mut out: Fields = values
         .iter()
         .map(|vals| vals.iter().map(|v| tokens(v)).collect())
-        .collect()
+        .collect();
+    out.resize(out.len().max(scope.fields().len()), Vec::new());
+    out
 }
 
 /// One scope's documents: per document, per field, its values.
@@ -388,7 +391,7 @@ pub fn search(w: &World, q: &Query) -> (Vec<(u64, f64)>, u64) {
     let docs: BTreeMap<u64, Fields> = corpus
         .docs
         .iter()
-        .map(|(&d, f)| (d, tokenize_fields(f)))
+        .map(|(&d, f)| (d, tokenize_fields(q.scope, f)))
         .collect();
     let mut ids: BTreeSet<u64> = docs.keys().copied().collect();
     for f in &q.filters {

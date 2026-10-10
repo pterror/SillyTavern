@@ -8,8 +8,9 @@
 //! (block-max WAND). A term with more documents than a page or two also keeps its best documents (`top`), so a
 //! word's first page reads those. No positions: a phrase is checked on the candidates' text.
 //!
-//! A scope is one searchable set of documents: the library (documents are entities), the tag names (documents
-//! are tags), one owner's chat messages (documents are messages).
+//! A scope is one searchable set of documents: the library (documents are characters and groups), the tag names
+//! (documents are tags), one owner's chat messages (documents are messages), the session names (documents are
+//! sessions), one world-info book's entries (documents are entries).
 
 #[cfg(any(test, feature = "measure"))]
 pub mod brute;
@@ -39,11 +40,13 @@ pub const CHUNK_BITS: u32 = 16;
 pub const LIBRARY: u64 = 1;
 pub const TAGS: u64 = 2;
 pub const CHAT: u64 = 3;
+pub const SESSIONS: u64 = 4;
+pub const BOOK: u64 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Scope {
     pub kind: u64,
-    /// The chat's owner for `CHAT`; 0 otherwise.
+    /// The chat's owner for `CHAT`, the book for `BOOK`; 0 otherwise.
     pub owner: u64,
 }
 
@@ -57,14 +60,28 @@ impl Scope {
         owner: 0,
     };
 
+    pub const SESSIONS: Scope = Scope {
+        kind: SESSIONS,
+        owner: 0,
+    };
+
     pub fn chat(owner: u64) -> Scope {
         Scope { kind: CHAT, owner }
+    }
+
+    pub fn book(book: u64) -> Scope {
+        Scope {
+            kind: BOOK,
+            owner: book,
+        }
     }
 
     pub fn fields(&self) -> &'static [FieldDef] {
         match self.kind {
             LIBRARY => LIBRARY_FIELDS,
             TAGS => TAG_FIELDS,
+            SESSIONS => SESSION_FIELDS,
+            BOOK => BOOK_FIELDS,
             _ => CHAT_FIELDS,
         }
     }
@@ -88,8 +105,10 @@ const fn field(name: &'static str, weight: f64, prefix: bool) -> FieldDef {
 /// Weights: upstream's Fuse keys for `fuzzySearchCharacters` (name 20, description and example 3, scenario,
 /// personality, first message and notes 2, creator, card tags and alternate greetings 1), which the old index used
 /// as BM25 field boosts too; with them a match in the name outranks body matches. Prefix on name, creator and
-/// tags (design 7.1, Q-F1). The names of the tags an entity carries are not a field: a query's matching tags are
-/// answered beside its page (`query::Found::tags`).
+/// tags (design 7.1, Q-F1). Groups are documents of the same scope: their name is the name field, and upstream's
+/// `fuzzySearchGroups` keys `members` (the members' avatar keys) 15 and `id` 1 are their own fields. The names of the
+/// tags an entity carries are not a field: a query's matching tags are answered beside its page
+/// (`query::Found::tags`).
 pub static LIBRARY_FIELDS: &[FieldDef] = &[
     field("name", 20.0, true),
     field("description", 3.0, false),
@@ -101,11 +120,26 @@ pub static LIBRARY_FIELDS: &[FieldDef] = &[
     field("creator", 1.0, true),
     field("tags", 1.0, true),
     field("alternate_greetings", 1.0, false),
+    field("members", 15.0, false),
+    field("id", 1.0, false),
 ];
 
 pub static TAG_FIELDS: &[FieldDef] = &[field("name", 1.0, true)];
 
 pub static CHAT_FIELDS: &[FieldDef] = &[field("text", 1.0, false)];
+
+pub static SESSION_FIELDS: &[FieldDef] = &[field("name", 1.0, true)];
+
+/// Upstream's `fuzzySearchWorldInfo` keys and weights; `uid` and `automationId` match whole tokens only.
+pub static BOOK_FIELDS: &[FieldDef] = &[
+    field("key", 20.0, true),
+    field("group", 15.0, false),
+    field("comment", 10.0, true),
+    field("keysecondary", 10.0, false),
+    field("content", 3.0, false),
+    field("uid", 1.0, false),
+    field("automationId", 1.0, false),
+];
 
 /// Which document frequency a term's count is: of the term as a whole token, or as a prefix term (a token's
 /// first 2–20 characters) in a prefix field.

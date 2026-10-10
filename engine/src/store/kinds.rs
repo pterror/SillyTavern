@@ -590,11 +590,31 @@ pub(super) fn drop_text(
     drop_text_of(view, out, Holder::Entity(entity), f)
 }
 
+/// `drop_text` for an entity whose searched fields `searched::gone` has removed already.
+pub(super) fn drop_text_unsearched(
+    view: &View,
+    out: &mut Out,
+    entity: u64,
+    f: &FieldRef,
+) -> Result<Option<Vec<u8>>, StoreError> {
+    drop_text_with(view, out, Holder::Entity(entity), f, false)
+}
+
 pub(super) fn drop_text_of(
     view: &View,
     out: &mut Out,
     h: Holder,
     f: &FieldRef,
+) -> Result<Option<Vec<u8>>, StoreError> {
+    drop_text_with(view, out, h, f, true)
+}
+
+fn drop_text_with(
+    view: &View,
+    out: &mut Out,
+    h: Holder,
+    f: &FieldRef,
+    search: bool,
 ) -> Result<Option<Vec<u8>>, StoreError> {
     let Some(head) = Head::get(view, h, f)? else {
         return Ok(None);
@@ -603,8 +623,8 @@ pub(super) fn drop_text_of(
     let old = materialize(view, h, f, &head)?;
     match h {
         Holder::Entity(entity) => {
-            if let Some(sf) = search_field(f) {
-                index_text(view, out, sf, entity, &old, &[])?;
+            if search {
+                super::searched::text_written(view, out, entity, f, Some(&old), None)?;
             }
         }
         Holder::Message(m) => super::chat::text_changed(view, out, m, f, Some(&old), None)?,
@@ -670,9 +690,16 @@ impl Deriver for TextValue {
         let (h, f) = (Holder::of(rec, 0), field(rec, 1));
         match h {
             Holder::Entity(entity) => {
-                if let Some(sf) = search_field(f) {
-                    let old = text_value(view, entity, f)?.unwrap_or_default();
-                    index_text(view, out, sf, entity, &old, bytes(rec, 2))?;
+                if super::searched::wants(view, entity, f)? {
+                    let old = text_value(view, entity, f)?;
+                    super::searched::text_written(
+                        view,
+                        out,
+                        entity,
+                        f,
+                        old.as_deref(),
+                        Some(bytes(rec, 2)),
+                    )?;
                 }
                 library::drop_json(view, out, entity, f)?;
                 library::text_changed(view, out, entity, f, Some(bytes(rec, 2)))?;
@@ -802,8 +829,8 @@ impl Deriver for TextEdit {
         let mut head = Head::get(view, h, f)?
             .ok_or_else(|| StoreError::Entry(format!("a textEdit of {h:?} with no value")))?;
         let wants_old = match h {
-            Holder::Entity(_) => {
-                search_field(f).is_some() || library::places(f) || tags::tag_field(f)
+            Holder::Entity(entity) => {
+                super::searched::wants(view, entity, f)? || library::places(f) || tags::tag_field(f)
             }
             Holder::Message(_) => super::chat::text_watched(f),
         };
@@ -814,9 +841,7 @@ impl Deriver for TextEdit {
             })?;
             match h {
                 Holder::Entity(entity) => {
-                    if let Some(sf) = search_field(f) {
-                        index_text(view, out, sf, entity, &old, &new)?;
-                    }
+                    super::searched::text_written(view, out, entity, f, Some(&old), Some(&new))?;
                     library::text_changed(view, out, entity, f, Some(&new))?;
                     tags::field_written(view, out, entity, at, f, Written::Text(&new))?;
                 }
@@ -858,54 +883,55 @@ impl Deriver for TextEdit {
 
 // ---- search ----
 
-/// A text field that is searched: where, and whether its value is a list of items.
-#[derive(Debug, Clone, Copy)]
-pub struct SearchField {
-    pub scope: Scope,
-    pub field: u32,
-    pub list: bool,
-}
-
-/// Separates a list field's items in its text value (test and measurement builds; the library stage defines
-/// how card fields are stored).
-pub const ITEM_SEPARATOR: u8 = 0x1e;
-
-/// The searched field a record field is. Card and tag fields get their codes with the library's records; until
-/// then only test and measurement builds have any.
-pub fn search_field(f: &FieldRef) -> Option<SearchField> {
-    #[cfg(any(test, feature = "measure"))]
-    if let FieldRef::Code(c) = f {
-        return test_codes::field(*c);
+/// A searched field's values, for checking a phrase on them.
+pub fn search_texts(
+    view: &View,
+    scope: Scope,
+    doc: u64,
+    field: u32,
+) -> Result<Vec<Vec<u8>>, StoreError> {
+    if scope.kind != search::CHAT {
+        return super::searched::texts(view, scope, doc, field);
     }
-    let _ = f;
-    None
-}
-
-/// The record field a searched field is stored in, the inverse of `search_field`.
-pub fn search_code(scope: Scope, field: u32) -> Option<(FieldRef, bool)> {
-    #[cfg(any(test, feature = "measure"))]
-    return test_codes::code(scope, field);
-    #[cfg(not(any(test, feature = "measure")))]
-    {
-        let _ = (scope, field);
-        None
+    let Some(l) = super::chat::message_loc(view, doc)? else {
+        return Ok(Vec::new());
+    };
+    let (rec, _) = view.record(l.pos)?;
+    if id(&rec, super::chat::APPEND_OWNER) != scope.owner {
+        return Ok(Vec::new());
     }
+    let mes = FieldRef::Code(super::chat::MES);
+    Ok(text_value_of(view, Holder::Message(doc), &mes)?
+        .into_iter()
+        .collect())
 }
 
+/// Test and measurement builds search fields of documents that aren't entities: library field i is code
+/// `LIBRARY + i`, a tag's name `TAG_NAME`, a list field's items separated by `ITEM_SEPARATOR` in one text.
 #[cfg(any(test, feature = "measure"))]
 pub mod test_codes {
-    use super::SearchField;
     use crate::log::format::FieldRef;
     use crate::search::Scope;
 
-    /// Library field i is code `LIBRARY + i`; a tag's name is `TAG_NAME`.
     pub const LIBRARY: u64 = 1000;
     pub const TAG_NAME: u64 = 1100;
     /// The list fields: card tags and alternate greetings.
     pub const CARD_TAGS: u32 = 8;
     pub const ALTERNATE_GREETINGS: u32 = 9;
+    pub const ITEM_SEPARATOR: u8 = 0x1e;
 
-    pub fn field(c: u64) -> Option<SearchField> {
+    /// A searched text field: where, and whether its value is a list of items.
+    #[derive(Debug, Clone, Copy)]
+    pub struct SearchField {
+        pub scope: Scope,
+        pub field: u32,
+        pub list: bool,
+    }
+
+    pub fn field(f: &FieldRef) -> Option<SearchField> {
+        let FieldRef::Code(c) = *f else {
+            return None;
+        };
         if c == TAG_NAME {
             return Some(SearchField {
                 scope: Scope::TAGS,
@@ -928,25 +954,26 @@ pub mod test_codes {
             crate::search::LIBRARY => LIBRARY + u64::from(field),
             _ => return None,
         };
-        let sf = self::field(c)?;
+        let sf = self::field(&FieldRef::Code(c))?;
         (sf.scope == scope && sf.field == field).then_some((FieldRef::Code(c), sf.list))
     }
-}
 
-fn items(text: &[u8], list: bool) -> Vec<&[u8]> {
-    if text.is_empty() {
-        Vec::new()
-    } else if list {
-        text.split(|b| *b == ITEM_SEPARATOR).collect()
-    } else {
-        vec![text]
+    pub fn items(text: &[u8], list: bool) -> Vec<&[u8]> {
+        if text.is_empty() {
+            Vec::new()
+        } else if list {
+            text.split(|b| *b == ITEM_SEPARATOR).collect()
+        } else {
+            vec![text]
+        }
     }
 }
 
-pub(super) fn index_text(
+#[cfg(any(test, feature = "measure"))]
+pub(super) fn index_test_text(
     view: &View,
     out: &mut Out,
-    sf: SearchField,
+    sf: test_codes::SearchField,
     doc: u64,
     old: &[u8],
     new: &[u8],
@@ -957,36 +984,26 @@ pub(super) fn index_text(
         sf.scope,
         doc,
         sf.field,
-        &items(old, sf.list),
-        &items(new, sf.list),
+        &test_codes::items(old, sf.list),
+        &test_codes::items(new, sf.list),
     )
 }
 
-/// A searched field's values, for checking a phrase on them.
-pub fn search_texts(
+#[cfg(any(test, feature = "measure"))]
+pub(super) fn test_texts(
     view: &View,
     scope: Scope,
     doc: u64,
     field: u32,
 ) -> Result<Vec<Vec<u8>>, StoreError> {
-    if scope.kind == search::CHAT {
-        let Some(l) = super::chat::message_loc(view, doc)? else {
-            return Ok(Vec::new());
-        };
-        let (rec, _) = view.record(l.pos)?;
-        if id(&rec, super::chat::APPEND_OWNER) != scope.owner {
-            return Ok(Vec::new());
-        }
-        let mes = FieldRef::Code(super::chat::MES);
-        return Ok(text_value_of(view, Holder::Message(doc), &mes)?
-            .into_iter()
-            .collect());
-    }
-    let Some((f, list)) = search_code(scope, field) else {
+    let Some((f, list)) = test_codes::code(scope, field) else {
         return Ok(Vec::new());
     };
     let text = text_value(view, doc, &f)?.unwrap_or_default();
-    Ok(items(&text, list).into_iter().map(<[u8]>::to_vec).collect())
+    Ok(test_codes::items(&text, list)
+        .into_iter()
+        .map(<[u8]>::to_vec)
+        .collect())
 }
 
 // ---- tag membership ----

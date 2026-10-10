@@ -1796,10 +1796,41 @@ Left (handover, 10-11):
 
 **5d. search wired.**
 
-Status (10-11, handover): in progress; nothing built yet. Pieces in order: the indexer's searched fields per
-entity type (cards, groups, tag names, entries per book); session-name postings; the query binding with sort keys
-and filters, and the library's `/query` search; chat search; world-info search; closed-quote phrases and pair
-postings with their setting; the chip row; `bench-search-synth.mjs`; measurements.
+Status (10-11, handover): in progress. Built: the searched fields (below). Left, in order: the query binding with
+sort keys, filters and the new scopes, and the library's `/query` search; chat search; world-info search; the exact
+session lookup by name for 5b; closed-quote phrases and pair postings with their setting; the chip row;
+`bench-search-synth.mjs`; measurements.
+
+Built, the searched fields (10-11; `engine/src/store/searched.rs`, `search/index.rs` `update_fields`; test
+`store/searched_tests.rs`):
+- Scopes: the library (characters and groups; fields as stage 4's, plus a group's `members` 15 and `id` 1), the tag
+  names, a chat owner's messages (as before), the session names (`SESSIONS`, `name`, prefix) and one book's entries
+  (`BOOK`, owner = the book: `key` 20 prefix, `group` 15, `comment` 10 prefix, `keysecondary` 10, `content` 3, `uid`
+  1, `automationId` 1).
+- What feeds them: a character's name, description, example messages, scenario, personality, first message, creator
+  notes, creator (codes 1, 10, 14, 12, 11, 13, 15, 2), its card tags and alternate greetings (lists 2 and 0); a
+  group's name, members (list 3) and key; a tag's name; a world book's entry's `key` and `keysecondary` (lists 0, 1),
+  `group`, `comment`, `content`, `automationId` (codes 127, 103, 104, 134) and `uid` (its stored JSON, code 100, else
+  its key unless it has the no-`uid` marker, 97); a character book's entry's `keys`, `secondary_keys` (lists 3, 4),
+  `comment`, `content` and `id` (153, upstream's `convertCharacterBook` makes it the `uid`); a session's name.
+  `originalData` books get none.
+- The deriver reads the entity's type before indexing a text write (`entity_info`, one record read): codes are
+  shared across types. Values written before their entity's create are indexed by the create, all fields in one
+  `update_fields`; a delete removes every field once, before its values go (`drop_text_unsearched`). A list item's
+  write reads the list's other items (bounded by the entity), so the field's counts and length are the list's.
+- `update_fields`: several fields of one document in one deriver call see what the earlier ones left (the view
+  doesn't hold a call's own output); without it a document's term counter (`SEARCH_TERM_DOCS`) drifted when a create
+  or delete touched two fields holding the same term.
+- Test: three seeds of 600 random changes (creates, deletes, text values, edits, items, `uid` and the marker, a group
+  rekeyed, sessions named and deleted) checked against a model's word matches per scope and field, and every search
+  entry (but maxima and top lists) equal to a store written from the final state alone.
+
+| choice | picked | reason |
+|---|---|---|
+| groups' scope | the library, one ranking with characters | `/query` lists both on one page; per-type scopes would need merged BM25 statistics |
+| a group's `id` | its entity key, indexed at create and `entityUpdate` | the id is the key, not a stored value (5a) |
+| list fields | each item a value; a change reads the other items | items are values (5a); counts and lengths are the field's |
+| a character book entry's `group`, `automationId` | not searched | they sit inside its `extensions` JSON; the fix is storing `extensions` per key (noted) |
 
 - Derivers feeding P3 (stage 4): card fields (S1, with the design's weights and prefix fields), card tag names and
   resolved tag names joined through membership (Q-F12), groups (S2: name, member names, tags, id), session names (S6),

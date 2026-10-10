@@ -11,7 +11,8 @@ use crate::keyspace::val::get_u64;
 use crate::log;
 use crate::log::format::{FieldRef, Record, Value, kind_by_name, wtf8_from_utf16};
 use crate::store::derive::View;
-use crate::store::kinds::{ITEM_SEPARATOR, key, parse_loc, test_codes};
+use crate::store::kinds::test_codes::ITEM_SEPARATOR;
+use crate::store::kinds::{key, parse_loc, test_codes};
 use crate::store::{Store, StoreConfig, StoreResult};
 
 /// The phrase structures are a process-wide switch: tests here take turns.
@@ -380,7 +381,7 @@ fn check_lists(lib: &Lib, terms: &[&str]) {
             if head.passing.is_some_and(|b| doc >> super::BLOCK_BITS >= b) {
                 continue;
             }
-            let f = brute::tokenize_fields(values);
+            let f = brute::tokenize_fields(Scope::LIBRARY, values);
             let d = brute::Doc::new(&f, Scope::LIBRARY);
             let mut fields = Vec::new();
             for (i, def) in Scope::LIBRARY.fields().iter().enumerate() {
