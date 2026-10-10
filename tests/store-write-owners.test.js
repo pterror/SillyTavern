@@ -16,6 +16,7 @@ const TREE_OVERRIDES = {
     owner_message_stats: 'message-stats.js',
     token_counts: 'token-count-store.js',
     token_ids: 'token-count-store.js',
+    itemizations: 'itemization-rows.js',
 };
 
 /** Writes whatever table its caller names; the call names the table, and that is what's checked (writtenTables()). */

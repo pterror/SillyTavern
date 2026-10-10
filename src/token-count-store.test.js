@@ -274,6 +274,20 @@ try {
         assert.deepEqual(other.pending.counts.map(row => row.identity), ['llamacpp:["/models/test.gguf","b2"]']);
     }
 
+    // --- recount: counts are taken again and replace the stored ones; ids are still read ---
+    {
+        resetFake();
+        const recounter = createStoredCounter({ resolved: llamaCpp(), identity: llamaIdentity, directories: storedDirs, recount: true });
+        assert.equal(await recounter.countText(t1), bytes(t1));
+        assert.deepEqual(Array.from(await recounter.encodeText(t1)), byteIds(t1));
+        assert.equal(tokenizerCalls(), 1, 'the count is taken again; the ids are read');
+        assert.equal(recounter.pending.counts[0].replace, true);
+        await writeBack(storedDirs, { counts: [{ ...recounter.pending.counts[0], count: 12345 }] });
+        const after = createStoredCounter({ resolved: llamaCpp(), identity: llamaIdentity, directories: storedDirs });
+        assert.equal(await after.countText(t1), 12345, 'the recounted value replaced the stored one');
+        await writeBack(storedDirs, { counts: [{ ...recounter.pending.counts[0] }] });
+    }
+
     // --- a pending object shared across counters ---
     {
         resetFake();

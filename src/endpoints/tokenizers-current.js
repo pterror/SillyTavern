@@ -73,7 +73,8 @@ async function trimToTokenLimit(resolved, text, limit, direction, options) {
  * wins over the state's resolution on every api; the answer's `key` still comes from `state`.
  * One that isn't an explicit pick answers 400.
  * `handle` gets a `storedCounter()` that counts and encodes through the token tables; what it counted is
- * written back after the response.
+ * written back after the response. With `recount: true` in the body, counts are taken again and written over the
+ * stored ones.
  * @template T
  * @param {(body: any, state: import('../tokenizer-resolve.js').TokenizerState) => T|null} parse The
  * route's input; null answers 400.
@@ -109,7 +110,10 @@ function currentTokenizerRoute(parse, handle) {
                 if (!counter) {
                     const identityFacts = { textgenApiType: state.type, llamaCppProps: llamaCppProps.props };
                     const identity = await tokenizerIdentity(resolved, identityFacts);
-                    counter = createStoredCounter({ resolved, identity, directories: options.directories, encodeOptions: options, identityFacts });
+                    counter = createStoredCounter({
+                        resolved, identity, directories: options.directories, encodeOptions: options, identityFacts,
+                        recount: request.body?.recount === true,
+                    });
                 }
                 return counter;
             };
@@ -145,6 +149,10 @@ router.post('/current/count', currentTokenizerRoute(
         if (Array.isArray(body.messages)) {
             return state.api === 'openai' ? { messages: body.messages } : null;
         }
+        // Several chat-completion messages, each counted on its own (a chat's messages, for their counters).
+        if (Array.isArray(body.messages_each)) {
+            return state.api === 'openai' ? { messagesEach: body.messages_each } : null;
+        }
         const texts = readTexts(body);
         const padding = Number(body.padding ?? 0);
         // `promptStart`: every text begins the prompt a generation sends, so it is counted as that prompt is.
@@ -154,6 +162,9 @@ router.post('/current/count', currentTokenizerRoute(
         const counter = await storedCounter();
         if ('messages' in input) {
             return { count: await counter.countChatMessage(input.messages) };
+        }
+        if ('messagesEach' in input) {
+            return { counts: await Promise.all(input.messagesEach.map(message => counter.countChatMessage([message]))) };
         }
         const count = input.promptStart ? counter.countPromptText : counter.countText;
         const counts = await Promise.all(input.texts.map(async text => text.length > 0

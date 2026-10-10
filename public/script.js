@@ -217,7 +217,7 @@ import {
 } from './scripts/instruct-mode.js';
 import { initLocales, t } from './scripts/i18n.js';
 import { changeStreamRetryDelayMs } from './scripts/change-stream-backoff.js';
-import { getTokenCount, getTokenCountAsync, initTokenizers } from './scripts/tokenizers.js';
+import { getMessageTokenCounts, getTokenCount, initTokenizers } from './scripts/tokenizers.js';
 import {
     user_avatar,
     getUserAvatars,
@@ -299,7 +299,7 @@ import {
     updateMessage, updateIn, deepFreeze,
     ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpEndPath, chatOpEndPathAtAnchor, chatOpSelect, chatOpGraft, chatOpDegraft, chatOpSwapAdjacent, chatOpDeleteAlternative, chatOpDeleteAlternativeNode,
     _mergeCardGreetingsIntoOpening, _restoreContinuation, _isBlankSlot, _setCurrentTarget, setStoreRef, storeRefOf, adoptStored, chatOpAppendAfter, setSendStoredListener,
-    openingForRequest,
+    openingForRequest, setUnstoredExtra,
 } from './scripts/chat-store.js';
 export {
     updateMessage, updateIn, adoptStored, openingForRequest,
@@ -2864,6 +2864,53 @@ export function addOneMessage(mes, { type = undefined, insertAfter = null, scrol
     return messageElement;
 }
 
+/** Drawn messages whose token counters wait for their counts, by index. @type {Set<number>} */
+const uncountedShownMessages = new Set();
+/** @type {ReturnType<typeof setTimeout>|null} */
+let shownCountsTimer = null;
+/** How long drawn messages are gathered before their counts are asked for together. */
+const SHOWN_COUNTS_DELAY_MS = 30;
+
+/**
+ * Asks for a drawn message's token count, together with the others drawn around the same time (fillTokenCounters()).
+ * @param {number} mesId
+ */
+function countShownMessage(mesId) {
+    if (!power_user.message_token_count_enabled) return;
+    uncountedShownMessages.add(mesId);
+    shownCountsTimer ??= setTimeout(() => {
+        shownCountsTimer = null;
+        const mesIds = [...uncountedShownMessages];
+        uncountedShownMessages.clear();
+        fillTokenCounters(mesIds).catch(error => console.error('Could not count the shown messages:', error));
+    }, SHOWN_COUNTS_DELAY_MS);
+}
+
+/**
+ * Fills messages' token counters: their counts in one request (getMessageTokenCounts(), answered from the server's
+ * token-count store), set on each message's `extra.token_count` for display, never stored. A message whose text
+ * changed meanwhile is left for its next draw.
+ * @param {number[]} mesIds
+ * @param {{ recount?: boolean }} [options] `recount`: take the counts again, replacing the stored ones.
+ */
+async function fillTokenCounters(mesIds, { recount = false } = {}) {
+    const shown = mesIds
+        .map(mesId => ({ mesId, message: chat[mesId] }))
+        .filter(({ message }) => message && !message.is_system);
+    const texts = shown.map(({ message }) => (message.extra?.reasoning || '') + message.mes);
+    if (!texts.some(text => text.length > 0)) return;
+    const counts = await getMessageTokenCounts(texts, { recount });
+    shown.forEach(({ mesId }, k) => {
+        const current = chat[mesId];
+        if (!current || !counts[k] || (current.extra?.reasoning || '') + current.mes !== texts[k]) return;
+        setUnstoredExtra(mesId, { token_count: counts[k] });
+        const element = chatElement.find(`.mes[mesid="${mesId}"]`);
+        element.find('.tokenCounterDisplay').text(`${counts[k]}t`);
+        const { timerValue, timerTitle } = formatGenerationTimer(current.gen_started, current.gen_finished, counts[k], current.extra?.reasoning_duration, current.extra?.time_to_first_token);
+        if (timerValue) element.find('.mes_timer').attr('title', timerTitle).text(timerValue);
+    });
+}
+
 /**
  * Creates the element of a single message as if it were the last message or at forceMesId
  * @param {ChatMessage} mes Message object
@@ -2953,6 +3000,7 @@ export function updateMessageElement(mes, { messageId = chat.length - 1, message
 
     // User messages can carry alternatives too, so this isn't limited to non-user messages.
     updateSwipeCounter(messageId, { message: mes, messageElement });
+    countShownMessage(messageId);
 
     return messageElement;
 }
@@ -3824,7 +3872,6 @@ export class StreamingProcessor {
         /** @type {HTMLElement} */
         this.messageTimerDom = null;
         /** @type {HTMLElement} */
-        this.messageTokenCounterDom = null;
         /** @type {HTMLTextAreaElement} */
         this.sendTextarea = document.querySelector('#send_textarea');
         this.type = type;
@@ -3874,7 +3921,6 @@ export class StreamingProcessor {
             this.messageDom = document.querySelector(`#chat .mes[mesid="${messageId}"]`);
             this.messageTextDom = this.messageDom?.querySelector('.mes_text');
             this.messageTimerDom = this.messageDom?.querySelector('.mes_timer');
-            this.messageTokenCounterDom = this.messageDom?.querySelector('.tokenCounterDisplay');
         }
         if (continueOnReasoning) {
             await this.reasoningHandler.process(messageId, false, this.promptReasoning);
@@ -3972,17 +4018,7 @@ export class StreamingProcessor {
             await this.reasoningHandler.process(messageId, mesChanged, this.promptReasoning);
             processedText = chat[messageId].mes;
 
-            // Token count update.
-            const tokenCountText = this.reasoningHandler.reasoning + processedText;
-            const currentTokenCount = isFinal && power_user.message_token_count_enabled ? await getTokenCountAsync(tokenCountText, 0) : 0;
-            if (currentTokenCount) {
-                updateMessage(messageId, {
-                    extra: { ...chat[messageId].extra, token_count: currentTokenCount },
-                });
-                if (this.messageTokenCounterDom instanceof HTMLElement) {
-                    this.messageTokenCounterDom.textContent = `${currentTokenCount}t`;
-                }
-            }
+            if (isFinal) countShownMessage(messageId);
 
             if ((this.type == 'swipe' || this.type === 'continue') && Array.isArray(chat[messageId].swipes)) {
                 const newSwipes = [...chat[messageId].swipes];
@@ -4014,7 +4050,8 @@ export class StreamingProcessor {
                 }
             }
 
-            const timePassed = formatGenerationTimer(this.timeStarted, currentTime, currentTokenCount, this.reasoningHandler.getDuration(), this.timeToFirstToken);
+            // The count comes after the message is drawn (fillTokenCounters()), which then sets the timer's speed.
+            const timePassed = formatGenerationTimer(this.timeStarted, currentTime, 0, this.reasoningHandler.getDuration(), this.timeToFirstToken);
             if (this.messageTimerDom instanceof HTMLElement) {
                 this.messageTimerDom.textContent = timePassed.timerValue;
                 this.messageTimerDom.title = timePassed.timerTitle;
@@ -4945,10 +4982,6 @@ export async function sendMessageAsUser(messageText, messageBias, insertAt = nul
             isSmallSys: compact,
         },
     };
-
-    if (power_user.message_token_count_enabled) {
-        message.extra.token_count = await getTokenCountAsync(message.mes, 0);
-    }
 
     // Lock user avatar to a persona.
     if (personaStore.has(avatar)) {
@@ -6013,11 +6046,6 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
                 updateMessage(lastMesId, { extra: mutableMsg.extra });
                 lastMessage = chat[lastMesId];
             }
-            if (power_user.message_token_count_enabled) {
-                const tokenCountText = (reasoning || '') + chat[lastMesId].mes;
-                updateMessage(lastMesId, { extra: { ...chat[lastMesId].extra, token_count: await getTokenCountAsync(tokenCountText, 0) } });
-                lastMessage = chat[lastMesId];
-            }
             const chat_id = lastMesId;
             !fromStreaming && await eventSource.emit(event_types.MESSAGE_RECEIVED, chat_id, type);
             addOneMessage(chat[chat_id], { type: 'swipe' });
@@ -6046,11 +6074,6 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
             updateMessage(lastMesId, { extra: mutableMsg.extra });
             lastMessage = chat[lastMesId];
         }
-        if (power_user.message_token_count_enabled) {
-            const tokenCountText = (reasoning || '') + chat[lastMesId].mes;
-            updateMessage(lastMesId, { extra: { ...chat[lastMesId].extra, token_count: await getTokenCountAsync(tokenCountText, 0) } });
-            lastMessage = chat[lastMesId];
-        }
         const chat_id = lastMesId;
         !fromStreaming && await eventSource.emit(event_types.MESSAGE_RECEIVED, chat_id, type);
         addOneMessage(chat[chat_id], { type: 'swipe' });
@@ -6077,11 +6100,6 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
             lastMessage = chat[lastMesId];
         }
         // We don't know if the reasoning duration extended, so we don't update it here on purpose.
-        if (power_user.message_token_count_enabled) {
-            const tokenCountText = (reasoning || '') + chat[lastMesId].mes;
-            updateMessage(lastMesId, { extra: { ...chat[lastMesId].extra, token_count: await getTokenCountAsync(tokenCountText, 0) } });
-            lastMessage = chat[lastMesId];
-        }
         const chat_id = lastMesId;
         !fromStreaming && await eventSource.emit(event_types.MESSAGE_RECEIVED, chat_id, type);
         addOneMessage(chat[chat_id], { type: 'swipe' });
@@ -6106,11 +6124,6 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
         newMessage.title = title;
         newMessage.gen_started = generation_started;
         newMessage.gen_finished = generationFinished;
-
-        if (power_user.message_token_count_enabled) {
-            const tokenCountText = (reasoning || '') + newMessage.mes;
-            newMessage.extra.token_count = await getTokenCountAsync(tokenCountText, 0);
-        }
 
         if (selected_group) {
             console.debug('entering chat update for groups');
@@ -7178,9 +7191,6 @@ async function pushFirstMessageIntoEmptyChat({ openings = null } = {}) {
     let pushed = false;
     const message = await getFirstMessage({ openings });
     if (message.mes) {
-        if (power_user.message_token_count_enabled) {
-            message.extra.token_count = await getTokenCountAsync(message.mes, 0);
-        }
         chat.push(message);
         pushed = true;
     }
@@ -12321,13 +12331,6 @@ export async function swipe(event, direction, { source, repeated, message = chat
             //The swipe buttons will be refreshed in endSwipe(), refreshing them now will cause flickering.
             addOneMessage(chat[mesId], { type: 'swipe', forceId: mesId, scroll: false, showSwipes: false });
             await redrawSwipedContinuation();
-
-            if (power_user.message_token_count_enabled) {
-                const tokenCountText = (chat[mesId]?.extra?.reasoning || '') + chat[mesId].mes;
-                const tokenCount = await getTokenCountAsync(tokenCountText, 0);
-                updateMessage(mesId, { extra: { ...chat[mesId].extra, token_count: tokenCount } });
-                thisMesDiv.find('.tokenCounterDisplay').text(`${tokenCount}t`);
-            }
         }
 
         //Animate expanding to the new message height.
@@ -13243,35 +13246,7 @@ export async function doNavbarIconClick() {
 
 function addDebugFunctions() {
     const doBackfill = async () => {
-        const editedIds = [];
-        for (let i = 0; i < chat.length; i++) {
-            const message = chat[i];
-
-            // System messages are not counted
-            if (message.is_system) {
-                continue;
-            }
-
-            const tokenCountText = (message?.extra?.reasoning || '') + message.mes;
-            const tokenCount = await getTokenCountAsync(tokenCountText, 0);
-            updateMessage(i, { extra: { ...(chat[i].extra || {}), token_count: tokenCount } });
-            editedIds.push(i);
-        }
-
-        // One batch edit rather than something the fallback save has to work out from a diff.
-        // chatOpEditMany() already retries transient failures itself (chat-store.js's _chatOpPost).
-        // silent: true - this catch already reports failure with its own, more specific message, so the
-        // generic one _chatOpPost() would otherwise show for the same failure is suppressed instead of
-        // shown alongside it.
-        if (editedIds.length) {
-            try {
-                await chatOpEditMany(editedIds, true);
-            } catch (error) {
-                console.error('Could not save the token count backfill:', error);
-                toastr.error(t`Could not save the token count backfill. Check your connection and try again.`, t`Save failed`);
-            }
-        }
-        await reloadCurrentChat();
+        await fillTokenCounters(chat.map((_, mesId) => mesId), { recount: true });
     };
 
     registerDebugFunction('forceOnboarding', 'Force onboarding', 'Forces the onboarding process to restart.', async () => {
@@ -13281,9 +13256,8 @@ function addDebugFunctions() {
     });
 
     registerDebugFunction('backfillTokenCounts', 'Backfill token counters',
-        `Recalculates token counts of all messages in the current chat to refresh the counters.
-        Useful when you switch between models that have different tokenizers.
-        This is a visual change only. Your chat will be reloaded.`, doBackfill);
+        `Counts the messages of the current chat again with the current tokenizer, replacing the stored counts.
+        This is a visual change only.`, doBackfill);
 
     registerDebugFunction('generationTest', 'Send a generation request', 'Generates text using the currently selected API.', async () => {
         const text = prompt('Input text:', 'Hello');

@@ -217,3 +217,20 @@ test('the user message is stored as the page sent it, and the prompt has what th
     }
     assert.equal(storedUser.extra.bias, 'Calmly');
 });
+
+test('a message\'s token count is not stored, and one stored before is not read back', async () => {
+    const ownerId = `pw-count-${randomUUID()}`;
+    await saveChatToTree(directories, ownerId, 'chat', [
+        { chat_metadata: {} },
+        { name: 'Rex', is_user: false, mes: 'Counted.', send_date: 1, extra: { token_count: 3, keep: true } },
+    ]);
+    const message = (await loadBranch(directories, ownerId, 'chat')).messages[0];
+    assert.equal(message.extra.keep, true);
+    assert.equal('token_count' in message.extra, false);
+    const db = await getDbHandle(directories);
+    const row = db.get('SELECT content FROM messages WHERE id = @id', { id: message.node_id });
+    assert.equal('token_count' in JSON.parse(row.content).extra, false);
+
+    db.run('UPDATE messages SET content = @content WHERE id = @id', { id: message.node_id, content: JSON.stringify({ name: 'Rex', is_user: false, mes: 'Counted.', extra: { token_count: 3 } }) });
+    assert.equal('token_count' in (await loadBranch(directories, ownerId, 'chat')).messages[0].extra, false);
+});

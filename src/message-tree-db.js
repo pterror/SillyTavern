@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import { color } from './util.js';
 import { getSqliteEngine } from './endpoints/sqlite-engine.js';
 import { writeRowIfChanged } from './row-values.js';
+import { deleteItemizationsSync } from './itemization-rows.js';
 import {
     countMessageWriteSync, deleteMessagesCountedSync, fillMessageStatsBatchSync,
     messageStatsFilledSync, createMessageStatsTableSync, readMessageStatsSync, restartMessageStatsFillSync,
@@ -678,6 +679,8 @@ function sanitizeForStorage(msg) {
         // bookmark_link becomes the label column
         delete clone.extra.bookmark_link;
         delete clone.extra[ITEMIZED_PROMPT_FLAG];
+        // A token count is derived for display from the text and a tokenizer (the token-count store), not stored.
+        delete clone.extra.token_count;
     }
 
     return JSON.stringify(clone);
@@ -890,6 +893,19 @@ function alternativesFromMessage(msg) {
 }
 
 /**
+ * Drops an `extra.token_count` stored before counts stopped being stored, so a message never carries a count the page
+ * didn't ask the token-count store for.
+ * @template T
+ * @param {T} message Parsed stored content.
+ * @returns {T}
+ */
+function withoutStoredTokenCount(message) {
+    const extra = /** @type {any} */ (message)?.extra;
+    if (extra && typeof extra === 'object' && 'token_count' in extra) delete extra.token_count;
+    return message;
+}
+
+/**
  * Rebuilds the client-facing message object for a node, re-synthesizing swipe arrays from sibling rows.
  * @param {Pick<MessageRow, 'id' | 'content' | 'label'>} row
  * @param {Pick<MessageRow, 'id' | 'content'>[]} siblings
@@ -903,6 +919,7 @@ function rowToMessage(row, siblings, fullSwipes = false) {
     // rest of this function does field-by-field before returning it as one.
     const msg = JSON.parse(row.content);
     msg.node_id = row.id;
+    withoutStoredTokenCount(msg);
 
     if (siblings.length > 1) {
         // Sent at full length but with holes (only a window around selected carries text) so
@@ -922,7 +939,7 @@ function rowToMessage(row, siblings, fullSwipes = false) {
             try { o = JSON.parse(siblings[i].content); } catch { o = {}; }
             msg.swipes[i] = o?.mes ?? '';
             msg.swipe_info[i] = {
-                send_date: o?.send_date, extra: o?.extra ?? {},
+                send_date: o?.send_date, extra: withoutStoredTokenCount(o)?.extra ?? {},
                 name: o?.name, is_user: !!o?.is_user, node_id: siblings[i].id,
             };
         }
@@ -2025,7 +2042,7 @@ export async function getAlternatives(directories, nodeId, range = {}) {
             node_id: s.id,
             mes: o?.mes ?? '',
             send_date: o?.send_date,
-            extra: o?.extra ?? {},
+            extra: withoutStoredTokenCount(o)?.extra ?? {},
             name: o?.name,
             is_user: !!o?.is_user,
         };
@@ -3324,7 +3341,7 @@ function deleteNodesSync(db, ownerId, ids) {
     if (rows.length === 0) return 0;
     const deleted = deleteMessagesCountedSync(db, rows, () => db.run(`DELETE FROM messages WHERE ${where}`, { ownerId, ...params }).changes);
     db.run(`DELETE FROM send_keys WHERE node_id IN (${ids.map((_, i) => `@id${i}`).join(', ')})`, params);
-    db.run(`DELETE FROM itemizations WHERE node_id IN (${ids.map((_, i) => `@id${i}`).join(', ')})`, params);
+    deleteItemizationsSync(db, ids);
     return deleted;
 }
 

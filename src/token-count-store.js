@@ -99,7 +99,8 @@ export async function readIdsRow(directories, identity, hash) {
 
 /**
  * @typedef {object} PendingTokenRows
- * @property {{ identity: string, hash: string, count: number }[]} [counts]
+ * @property {{ identity: string, hash: string, count: number, replace?: boolean }[]} [counts] `replace`: a count
+ * taken again on purpose (a recount), written over the stored one.
  * @property {{ identity: string, hash: string, ids: ArrayLike<number>, chunks?: string[] | null }[]} [ids] `chunks`:
  * llama.cpp's pieces for the ids, when the encode asked for them.
  */
@@ -127,7 +128,15 @@ export async function writeBack(directories, { counts = [], ids = [] }, now = Da
     db.transaction(() => {
         // Reset here: a transaction that hits busy is rolled back and rerun.
         inserted.token_counts = inserted.token_ids = inserted.countsBehindFill = inserted.idsBehindFill = 0;
-        for (const { identity, hash, count } of counts) {
+        for (const { identity, hash, count, replace = false } of counts) {
+            if (replace) {
+                const replaced = /** @type {{ count: number, last_used: number } | undefined} */ (db.get(
+                    'SELECT count, last_used FROM token_counts WHERE identity = @identity AND text_hash = @hash', { identity, hash }));
+                if (replaced) {
+                    writeRowIfChanged(db, 'token_counts', { identity, text_hash: hash }, { count, last_used: now }, { current: replaced });
+                    continue;
+                }
+            }
             if (db.run(
                 'INSERT INTO token_counts (identity, text_hash, count, last_used) VALUES (@identity, @hash, @count, @now) ON CONFLICT DO NOTHING',
                 { identity, hash, count, now }).changes > 0) {
@@ -477,6 +486,8 @@ async function readOrMiss(read) {
  * Replaces encodeWithTokenizer() for `encodeText`, setting `answeredOut.tokenizer` as it does.
  * @param {(messages: object[], answeredOut: AnsweredOut) => Promise<number>} [args.countMessages] Replaces
  * countChatCompletionMessages() for `countChatMessage`, setting `answeredOut.tokenizer` as it does.
+ * @param {boolean} [args.recount] Counts are taken again, not read, and written over the stored ones (ids are read as
+ * usual).
  * @returns {StoredCounter}
  */
 export function createStoredCounter({
@@ -488,6 +499,7 @@ export function createStoredCounter({
     pending = { counts: [], ids: [] },
     encode = undefined,
     countMessages = undefined,
+    recount = false,
 }) {
     const compute = {
         [TOKEN_KEY_KINDS.TEXT]: (text, answeredOut) => countWithTokenizer(resolved, text, { ...encodeOptions, answeredOut }),
@@ -537,7 +549,7 @@ export function createStoredCounter({
         if (kind === TOKEN_KEY_KINDS.IDS) {
             pending.ids.push({ identity: rowIdentity, hash, ids: value });
         } else {
-            pending.counts.push({ identity: rowIdentity, hash, count: value });
+            pending.counts.push({ identity: rowIdentity, hash, count: value, ...(recount ? { replace: true } : {}) });
         }
         seen.set(`${rowIdentity}\n${hash}`, value);
     };
@@ -552,7 +564,7 @@ export function createStoredCounter({
         if (seen.has(readKey)) {
             return seen.get(readKey);
         }
-        const read = await readOrMiss(() => (kind === TOKEN_KEY_KINDS.IDS
+        const read = recount && kind !== TOKEN_KEY_KINDS.IDS ? null : await readOrMiss(() => (kind === TOKEN_KEY_KINDS.IDS
             ? readIds(directories, identity, readHash)
             : readCount(directories, identity, readHash)));
         if (read !== null) {
