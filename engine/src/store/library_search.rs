@@ -2,9 +2,9 @@
 //! under the list's filter, in relevance order or any of the list's orders, with the tags whose names match.
 //!
 //! In relevance order the search reads its postings, the list's filter checked per document. In a list order,
-//! a search with at most √(page · library) matches, counted exactly, is read whole and its matches placed in
-//! the order (as listed ids); otherwise the order is walked, each entity checked against the search, under the
-//! list's work cap. The total is the search's.
+//! a search whose matches all come within its best √(page · library) is read whole and its matches placed in the
+//! order (as listed ids); otherwise the order is walked, each entity checked against the search, under the list's
+//! work cap. The total is the search's (the listed ids' count when read whole).
 
 use super::StoreError;
 use super::derive::View;
@@ -141,25 +141,25 @@ fn by_list(
     clauses: &[Clause],
     cache: &StatsCache,
 ) -> Result<Searched, StoreError> {
-    let counted = query::run(view, &search_query(q, clauses, 1, None), cache)?;
     let page = (q.limit as u64).saturating_add(q.offset).max(1);
     let few = q
         .cap
         .min(page.saturating_mul(library_size(view, q)?).isqrt());
+    // The best `few` matches: every match when the search ends within them.
+    let found = query::run(view, &search_query(q, clauses, few as usize, None), cache)?;
     let mut out = Searched::default();
-    let (total, exact) = (counted.total, counted.total_exact);
-    found_into(counted, &mut out);
-    if exact && total <= few {
-        let all = query::run(view, &search_query(q, clauses, total as usize, None), cache)?;
-        if all.page_exact {
-            let mut listed = q.clone();
-            listed.filter.ids = Some(all.hits.iter().map(|h| h.doc).collect());
-            let p = library_read::page(view, &listed)?;
-            out.ids = p.ids;
-            out.more = p.more;
-            out.cursor = p.cursor;
-            return Ok(out);
-        }
+    let all = (found.page_exact && !found.more).then(|| found.hits.iter().map(|h| h.doc).collect());
+    found_into(found, &mut out);
+    if let Some(ids) = all {
+        let mut listed = q.clone();
+        listed.filter.ids = Some(ids);
+        let p = library_read::page(view, &listed)?;
+        out.ids = p.ids;
+        out.more = p.more;
+        out.cursor = p.cursor;
+        out.total = p.total.unwrap_or(out.total);
+        out.total_exact = true;
+        return Ok(out);
     }
     // The page checks the list's filter itself.
     let mut clauses_only = search_query(q, clauses, 0, None);
