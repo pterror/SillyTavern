@@ -94,8 +94,19 @@ pub fn update_fields(
     changes: &[FieldChange],
 ) -> Result<(), StoreError> {
     let mut seen = Seen::default();
+    let pairs = super::pairs::kept(view, scope, doc)?;
     for &(field, old, new) in changes {
         update_one(view, out, scope, doc, field, old, new, &mut seen)?;
+        if pairs {
+            super::pairs::update(
+                out,
+                scope,
+                doc,
+                field,
+                &super::pairs::of(old),
+                &super::pairs::of(new),
+            );
+        }
     }
     Ok(())
 }

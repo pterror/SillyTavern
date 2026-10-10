@@ -1147,3 +1147,122 @@ fn a_long_read_does_not_delay_writes() {
     });
     assert!(started.elapsed() < std::time::Duration::from_secs(20));
 }
+
+fn pairs_step(s: &Store) -> bool {
+    let (tx, rx) = std::sync::mpsc::channel();
+    s.pairs_step(Box::new(move |r| tx.send(r).unwrap()));
+    rx.recv().unwrap().unwrap()
+}
+
+fn pairs_on(s: &Store, on: bool) {
+    s.commit_wait(vec![rec("searchPairs", vec![Value::Bit(on)])])
+        .unwrap();
+}
+
+/// Every pair posting slot: (scope, term, document, field) → count.
+fn pair_slots(s: &Store) -> std::collections::BTreeMap<(u64, String, u64, u32), u64> {
+    let mut out = std::collections::BTreeMap::new();
+    for scope in [Scope::LIBRARY, Scope::TAGS] {
+        let mut p = key::of(key::SEARCH_POSTING);
+        crate::keyspace::val::put_u64(&mut p, scope.kind);
+        crate::keyspace::val::put_u64(&mut p, scope.owner);
+        for (k, v) in s.scan(&p, &key::prefix_end(&p), usize::MAX).unwrap() {
+            let mut at = p.len();
+            let term = crate::keyspace::val::get_bytes(&k, &mut at).unwrap();
+            let block = get_u64(&k, &mut at).unwrap();
+            let term = String::from_utf8(term).unwrap();
+            if !term.contains(super::pairs::SEPARATOR) {
+                continue;
+            }
+            for (slot, n) in crate::keyspace::val::map_pairs(&v).unwrap() {
+                if n != 0 {
+                    let (doc, field) = super::unslot(block, slot);
+                    let hit = super::unpack(scope.fields()[field as usize].prefix, n);
+                    out.insert((scope.kind, term.clone(), doc, field), hit.exact);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The pair slots the documents' values call for.
+fn pair_slots_of(w: &World) -> std::collections::BTreeMap<(u64, String, u64, u32), u64> {
+    let mut out = std::collections::BTreeMap::new();
+    for (scope, corpus) in [(Scope::LIBRARY, &w.library), (Scope::TAGS, &w.tags)] {
+        for (doc, fields) in &corpus.docs {
+            for (f, values) in fields.iter().enumerate() {
+                let items: Vec<&[u8]> = values.iter().map(Vec::as_slice).collect();
+                for (t, n) in super::pairs::of(&items) {
+                    out.insert((scope.kind, t, *doc, f as u32), n);
+                }
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn pair_postings_are_built_kept_and_deleted_while_writes_go_on() {
+    let _turn = turn();
+    let dir = temp_dir("pairs");
+    let mut lib = build(&dir, 9, 300);
+    let docs: Vec<u64> = lib.world.library.docs.keys().copied().collect();
+    let mut r = Rng(5);
+    assert!(pair_slots(&lib.store).is_empty());
+    pairs_on(&lib.store, true);
+    // Writes between the build's slices, before and after where it has reached.
+    let (mut i, mut slices) = (0, 0);
+    let swap = temp_dir("pairs-swap");
+    while pairs_step(&lib.store) {
+        slices += 1;
+        if slices == 5 {
+            // Stopped and opened again: the pass resumes from what was kept.
+            drop(std::mem::replace(&mut lib.store, open(&swap)));
+            lib.store = open(&dir);
+        }
+        for _ in 0..3 {
+            random_edit(&mut lib, &mut r, &docs, i);
+            i += 1;
+        }
+    }
+    assert!(slices > 10, "{slices}");
+    assert_eq!(lib.store.pairs_mode().unwrap(), super::pairs::ON);
+    assert_eq!(pair_slots(&lib.store), pair_slots_of(&lib.world));
+    for _ in 0..40 {
+        random_edit(&mut lib, &mut r, &docs, i);
+        i += 1;
+    }
+    assert_eq!(pair_slots(&lib.store), pair_slots_of(&lib.world));
+    // Phrases answer as a scan; two whole words are decided by their pair, with no text read.
+    let c = |t: &str| clause(t, None, false, false);
+    for clauses in [
+        vec![clause("dark knight", None, false, true)],
+        vec![clause("the dark knight", None, false, true), c("love")],
+        vec![c("foo-bar"), c("x9")],
+        vec![clause("knight the", None, false, true), c("dragon")],
+    ] {
+        check(&lib, &query(clauses, 6));
+    }
+    let f = lib
+        .store
+        .search(&query(vec![clause("dark knight", None, false, true)], 1000))
+        .unwrap();
+    assert!(!f.hits.is_empty());
+    assert_eq!(f.texts, 0);
+    // Off: deleted while writes go on.
+    pairs_on(&lib.store, false);
+    while pairs_step(&lib.store) {
+        random_edit(&mut lib, &mut r, &docs, i);
+        i += 1;
+    }
+    assert_eq!(lib.store.pairs_mode().unwrap(), 0);
+    assert!(pair_slots(&lib.store).is_empty());
+    check(
+        &lib,
+        &query(vec![clause("dark knight", None, false, true)], 6),
+    );
+    drop(lib);
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&swap);
+}

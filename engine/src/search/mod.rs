@@ -15,6 +15,7 @@
 #[cfg(any(test, feature = "measure"))]
 pub mod brute;
 pub mod index;
+pub mod pairs;
 pub mod query;
 #[cfg(test)]
 mod tests;

@@ -316,6 +316,8 @@ pub(crate) struct Ctx<'a> {
     refill: Option<Refill>,
     /// The query's `Filter::Check`s, begun.
     checks: Vec<CheckFn<'a>>,
+    /// Pair postings are on and built (read at first need).
+    pairs_built: Option<bool>,
 }
 
 impl<'a> Ctx<'a> {
@@ -339,6 +341,7 @@ impl<'a> Ctx<'a> {
             codes: None,
             refill: None,
             checks: Vec::new(),
+            pairs_built: None,
         }
     }
 
@@ -406,6 +409,14 @@ impl<'a> Ctx<'a> {
         }
         self.maps.insert(k, m.clone());
         Ok(m)
+    }
+
+    fn pairs_on(&mut self) -> StoreResult<bool> {
+        if self.pairs_built.is_none() {
+            self.work += SEEK;
+            self.pairs_built = Some(super::pairs::on(self.view)?);
+        }
+        Ok(self.pairs_built == Some(true))
     }
 
     fn texts(&mut self, scope: Scope, doc: u64, field: u32) -> StoreResult<Vec<Vec<u8>>> {
@@ -1402,11 +1413,35 @@ impl Matcher {
             for (t, _, p) in &data {
                 tok.insert(*t, p.clone());
             }
-            for f in fields_of(scope, common & self.mask) {
+            // With pair postings, each pair of whole tokens must be in the field; two whole tokens are decided by
+            // their pair.
+            let whole = if self.prefix { last } else { last + 1 };
+            let pairs: Vec<String> = if whole >= 2 && ctx.pairs_on()? {
+                (0..whole - 1)
+                    .map(|i| super::pairs::term(&self.tokens[i], &self.tokens[i + 1]))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let mut pair_fields = u64::MAX;
+            for p in &pairs {
+                pair_fields &= doc_hits(ctx, scope, p, doc)?
+                    .iter()
+                    .filter(|(_, h)| h.exact > 0)
+                    .fold(0u64, |m, (f, _)| m | 1 << f);
+            }
+            for f in fields_of(scope, common & self.mask & pair_fields) {
                 let prefix_field = scope.fields()[f as usize].prefix;
                 let mut last_tf = 0;
                 let mut found = false;
-                for t in ctx.texts(scope, doc, f)? {
+                if !pairs.is_empty() && whole == self.tokens.len() && whole == 2 {
+                    found = true;
+                }
+                for t in if found {
+                    Vec::new()
+                } else {
+                    ctx.texts(scope, doc, f)?
+                } {
                     // The prefix token scores as a prefix term in a prefix field, as a whole token elsewhere.
                     let (here, n) = phrase_in(&t, &self.tokens, self.prefix, prefix_field);
                     found |= here;

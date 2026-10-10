@@ -1798,8 +1798,8 @@ Left (handover, 10-11):
 **5d. search wired.**
 
 Status (10-11, handover): in progress. Built: the searched fields; the library's search with closed-quote phrases;
-chat search; world-info search; the exact session lookup (below). Left, in order: pair postings
-with their setting; the chip row (the client); `bench-search-synth.mjs`; measurements. The `/query` route reads
+chat search; world-info search; the exact session lookup; pair postings (below). Left, in order: the chip row
+and the pair postings' setting (the client); `bench-search-synth.mjs`; measurements. The `/query` route reads
 `lib.query({ search })` at the cut (5f).
 
 Built, the library's search (10-11; `engine/src/store/library_search.rs`, `library_read::page_with`,
@@ -1866,6 +1866,36 @@ a tree where the user already has a session of the same name makes two; the look
 | choice | picked | reason |
 |---|---|---|
 | exact names | their own entries, not the postings | exact bytes, and names with no words; one entry per named session |
+
+Built, pair postings (10-11; `engine/src/search/pairs.rs`, kind `searchPairs { on }` (base 232), binding
+`pairsStep`, `pairsMode`; JS `LibraryEngine.pairPostings`, `setPairPostings`, `runPairPostings`; tests
+`search::tests::pair_postings_are_built_kept_and_deleted_while_writes_go_on`, `tests/library-engine-search.test.js`):
+- A pair of adjacent tokens within one value of a field is a term `a\u0001b` in the same postings as words (the
+  tokenizer never yields `\u0001`), its slot the pair's count; no frequency counters, bounds or top lists (no
+  `SEARCH_TERM_DOCS` entry, so a bulk load builds no list for it).
+- `searchPairs` sets the mode: on starts a build, off a delete (each from the start; nothing when already so). A
+  pass runs in the commit queue a slice at a time (`step`: 256 length entries, 16 documents each), in the order of
+  the documents' length entries, keeping its cursor in the mode's entry; a write keeps the pairs of the documents the
+  pass has reached (building) or not yet reached (deleting). A slice lost in a crash is redone from the flushed
+  cursor; the test stops and reopens the store mid-build.
+- Reads use pairs only when the mode is on: a phrase's candidate field must hold every pair of its whole tokens
+  (its prefix token has none) before its text is read; a phrase of two whole tokens is decided by its pair, with no
+  text read.
+- `runPairPostings()` runs the pass a slice at a time with a 10 ms pause, one run at a time; `setPairPostings(on)`
+  records the change (nothing when already so) and runs it; `close()` stops it.
+- At the cut: the server calls `runPairPostings()` after listening (a stop may have left a pass); the setting, a
+  checkbox in a new "Search" section of the user settings (after Character Handling), labelled "Faster quoted
+  phrases (uses more disk)" with the tooltip "Keeps an index of adjacent word pairs so quoted phrases are found
+  faster. Uses more disk; turning it on builds the index for your existing text in the background.", sends
+  `POST /api/search/pair-postings { on }` (an action; the route calls `setPairPostings`) and shows the engine's
+  `pairPostings()` (from `POST /api/search/pair-postings/state`), "building…" while `pending`. Not built before
+  the cut: the server opens no engine store until then.
+
+| choice | picked | reason |
+|---|---|---|
+| a pair's entry | its posting slot only | presence and count are all a phrase check reads; counters and bounds would double the entries |
+| reads | a check before the text, candidates still from the words | the measured case (option 2) drove candidates by pairs; this keeps one walk and removes the text reads, the cost at scale |
+| pass order | the length entries' key order | every searched document has one per 16 ids, across every scope |
 
 
 Built, the searched fields (10-11; `engine/src/store/searched.rs`, `search/index.rs` `update_fields`; test

@@ -71,6 +71,9 @@ function parseRelevanceCursor(cursor) {
     return Number.isFinite(score) ? { score, doc: BigInt(m[2]) } : null;
 }
 
+/** The pair postings' modes (`search::pairs`; 0 is off). */
+const PAIRS = Object.freeze({ building: 1, on: 2, deleting: 3 });
+
 const SORT_KEYS = Object.freeze({ name: 0, create_date: 1, date_added: 2, date_last_chat: 3, chat_size: 4, data_size: 5 });
 
 const EXTENSION_PREFIX = 'ext:';
@@ -203,6 +206,10 @@ export class LibraryEngine {
         this.writing = new Map();
         this.tags = new LibraryTags(this);
         this.books = new WorldInfoEngine(this);
+        /** @type {Promise<void> | null} The pair postings' pass being run. */
+        this.pairsRun = null;
+        this.pairsAgain = false;
+        this.pairsStopped = false;
     }
 
     /**
@@ -214,8 +221,56 @@ export class LibraryEngine {
         return new LibraryEngine(store, await store.libraryNextId());
     }
 
-    close() {
+    async close() {
+        this.pairsStopped = true;
+        await this.pairsRun;
         return this.store.close();
+    }
+
+    /**
+     * The pair postings option (quoted phrases searched faster, more disk): whether it is on, and whether its
+     * build or delete is under way.
+     * @returns {Promise<{ on: boolean, pending: boolean }>}
+     */
+    async pairPostings() {
+        const mode = await this.store.pairsMode();
+        return { on: mode === PAIRS.building || mode === PAIRS.on, pending: mode === PAIRS.building || mode === PAIRS.deleting };
+    }
+
+    /**
+     * Turns pair postings on or off (nothing is written when it already is so), then runs the build or delete.
+     * @param {boolean} on
+     */
+    async setPairPostings(on) {
+        if ((await this.pairPostings()).on !== on) await this.store.commit([{ kind: 'searchPairs', on }]);
+        this.runPairPostings();
+    }
+
+    /**
+     * Runs the pair postings' build or delete under way, if any, a slice at a time with `pauseMs` between, until
+     * done or the store closes; one run at a time. Called after the server listens (a stop leaves one to resume)
+     * and after the option changes.
+     * @param {number} [pauseMs]
+     * @returns {Promise<void>}
+     */
+    runPairPostings(pauseMs = 10) {
+        if (this.pairsRun) {
+            this.pairsAgain = true;
+            return this.pairsRun;
+        }
+        this.pairsRun = (async () => {
+            try {
+                do {
+                    this.pairsAgain = false;
+                    while (!this.pairsStopped && await this.store.pairsStep()) {
+                        await new Promise(resolve => setTimeout(resolve, pauseMs));
+                    }
+                } while (this.pairsAgain && !this.pairsStopped);
+            } finally {
+                this.pairsRun = null;
+            }
+        })();
+        return this.pairsRun;
     }
 
     /**
