@@ -868,15 +868,14 @@ Done, in order (each section below has its details and choices):
 - ea27a5700 and the commit after it: `ChatEngine` (appends, edits, select, graft, degraft, swap, delete,
   bookmarks, metadata, load, session resolution), compared with the old store; tombstones; a position shows nothing
   below it.
+- Openings and alternatives (see "Built, openings" below).
 
 Left (in the order they build on each other):
-- Chat engine operations not built yet: openings (`addOpeningAlternatives`, the opening chosen with no row,
-  `chooseCardOpening` / `opening_choices`, `getOpeningAlternatives`, `findOpeningToLandOn`), `getAlternatives`
-  windows, `endPathAt` (with nothing shown below a position: the pointer moves up), the compat chat lists (sessions
-  per tree with meaningful activity, recent sessions), session naming and deletion, bookmark rename, mode and delete,
-  back and forward over history, send-key lookups for `/open` (`storedSendKeys`), the whole-array `saveChat` compat
-  diffed onto the engine, `renameGroupMemberInMessages` (a speaker change), metadata `integrity` (a value derived from
-  the state at the position, not yet picked), itemizations' JS (zstd, the `/api/itemized-prompts` routes' shapes).
+- Chat engine operations not built yet: `endPathAt` (with nothing shown below a position: the pointer moves up),
+  the compat chat lists (sessions per tree with meaningful activity, recent sessions), session naming and deletion,
+  bookmark rename, mode and delete, back and forward over history, send-key lookups for `/open` (`storedSendKeys`),
+  the whole-array `saveChat` compat diffed onto the engine, `renameGroupMemberInMessages` (a speaker change),
+  metadata `integrity` (answered below), itemizations' JS (zstd, the `/api/itemized-prompts` routes' shapes).
 - People: an adapter from `LibraryEngine` to `ChatEngine`'s speakers (characters by id and avatar; groups' trees).
 - Compat identifiers wired: `X-ST-Session` in `getRequestHeaders()` (`none` for a tab with no session), the
   answers' `characters[].chat`, `group.chat_id`, `getCurrentChatId()`, chat names in events, and the tab told
@@ -884,7 +883,7 @@ Left (in the order they build on each other):
 - State layer 1 steps 2–5, 7, 8 on these records (the state routes, the page's compat for variables and
   `chat_metadata`, a change made while producing a reply hanging on the reply, navigation replacing the state, other
   tabs).
-- The token-count cache's home: today it is in `message-tree.sqlite`, which 5f deletes.
+- The token-count cache in the engine (answered below).
 - Measured (the 5b rows of "Stage 5 measured against"): device bytes per append and per sync, a session list page,
   a bookmark list, opening a position at L messages, on the synthetic library.
 - For 5e: old ids as `keyMap` records (counter above any decimal one), labels as bookmarks with `positionCreate`
@@ -893,6 +892,12 @@ Left (in the order they build on each other):
 - Known: the old store's `swapAdjacent` doesn't recount its stats (it writes `parent_id` directly). One engine test
   fails on HEAD before this work too (`search::tests::a_field_edit_writes_only_its_changed_terms...`, 8 entries for
   6).
+
+Answered (coordinator, 10-10), the two items left undecided:
+- Metadata `integrity`: upstream sets it once per chat and checks it to refuse a save into a different chat. It is
+  derived as the session's UUID (stable per session), not stored.
+- The token-count cache moves into the engine's keyspace as derived data keyed by (tokenizer, text hash),
+  size-bounded, with least-recently-used eviction done in bounded slices; `message-tree.sqlite` can then go at 5f.
 
 Answered (coordinator, 10-03). {{user}}: chats "doesn't fucking exist. bookmarks are what replaced them but that
 doesn't make them the same". The model is trees, sessions and bookmarks (one structure, a pointer plus a movement
@@ -1273,6 +1278,25 @@ header's session, `none` and a tombstone the deterministic one with `gone`, no h
 tree else the deterministic one); `chatRead('keyStates')`; the session's key a tombstone (`KEY_MAP` entry `[id, 1]`),
 a `keyMap` allowed over it; the variables marker. The comparison test now compares the session's path after every
 step (the swap included) and `branches`; tests cover tombstones in Rust and through `resolveSession`.
+
+Built, openings and alternatives (10-10; `src/chat-engine.js`, test `src/chat-engine.test.js`), compared with the old
+store's answers, native and wasm:
+- `addOpenings` (`addOpeningAlternatives`): openings stored without a session, so nobody is shown them; one with the
+  same speaker and text as a stored opening is that one; blank text is left out (`null`); nothing written when
+  nothing is new.
+- `openingAlternatives` (`getOpeningAlternatives`): stored openings, then the card's greetings no stored opening is,
+  windowed as before. The default is the opening of where the actor's session lands in the tree (the opening on its
+  path), else the first. `has_saved_chats` is whether any session has meaningful activity in the tree (a chat is a
+  session now, not a label). `default_chosen` is always false: there is no card greeting chosen without a row.
+- Choosing a card greeting with no row (`chooseCardOpening`, `/openings/choose`) is `appendMessages` of that greeting
+  as an opening through the session: stored, chosen and shown, as 5e converts `opening_choices` rows and as
+  `/message/select` stores a greeting. There is no `opening_choices` record.
+- `openingToLandOn` (`findOpeningToLandOn`), `alternatives` (`getAlternatives`, an opening's alternatives being the
+  tree's openings), `storedForm` (today's `sanitizeForStorage()`, which the engine's callers apply).
+
+| choice | picked | reason |
+|---|---|---|
+| openings read | all of a tree's openings (children pages of 500) | as today; the list, its `total` and the merge with the card need every one; bounded by the tree |
 
 Where layer 1 goes: inside 5b, on the engine. Its own storage step (SQLite `state_changes`, saved states every 64th
 depth rebuilt lazily after an epoch bump) conflicts with the design: a structure caught up when read is what revision

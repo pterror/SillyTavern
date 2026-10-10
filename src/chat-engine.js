@@ -62,6 +62,35 @@ function identityOf(m) {
 }
 
 /**
+ * A message as it is stored: without what reads derive (ids, swipe arrays, `branches`, `bookmark_link`, the
+ * itemized flag, a token count).
+ * @param {Record<string, any>} msg
+ * @returns {Record<string, any>}
+ */
+export function storedForm(msg) {
+    const clone = { ...msg };
+    for (const k of ['node_id', 'swipes', 'swipe_id', 'swipe_info', 'swipe_speaker_default', '_unchanged']) delete clone[k];
+    if (clone.extra && typeof clone.extra === 'object') {
+        clone.extra = { ...clone.extra };
+        for (const k of ['branches', 'bookmark_link', ITEMIZED_PROMPT_FLAG, 'token_count']) delete clone.extra[k];
+    }
+    return JSON.parse(JSON.stringify(clone));
+}
+
+/**
+ * An alternative as the alternatives and openings lists show it.
+ * @param {string} nodeId
+ * @param {Record<string, any>} o The message.
+ * @param {boolean} itemized
+ */
+function alternativeEntry(nodeId, o, itemized) {
+    /** @type {Record<string, any>} */
+    const entry = { node_id: nodeId, mes: o?.mes ?? '', send_date: o?.send_date, extra: o?.extra ?? {}, name: o?.name, is_user: !!o?.is_user };
+    if (itemized) entry.extra = { ...(entry.extra && typeof entry.extra === 'object' ? entry.extra : {}), [ITEMIZED_PROMPT_FLAG]: true };
+    return entry;
+}
+
+/**
  * @typedef {import('./chat-codec.js').Speaker} Speaker
  * @typedef {object} People Who speaks: characters by entity id and by avatar.
  * @property {(ids: bigint[]) => Promise<Map<bigint, Speaker>>} speakers
@@ -270,7 +299,200 @@ export class ChatEngine {
         return treeSpeaker;
     }
 
+    /**
+     * The actor's ids where they have them (nothing is made).
+     * @param {Actor} actor
+     * @returns {Promise<{ user: bigint | null, session: bigint | null }>}
+     */
+    async knownActorIds(actor) {
+        const [user] = await this.store.chatRead('ids', { space: SPACE.user, keys: [actor.user] });
+        const [session] = actor.session ? await this.store.chatRead('ids', { space: SPACE.session, keys: [actor.session] }) : [null];
+        return { user, session };
+    }
+
+    // ---- alternatives and openings ----
+
+    /**
+     * The alternatives at a message: every reply sharing its parent (the tree's openings for an opening), in order,
+     * a window of them, and the message's index.
+     * @param {object} p
+     * @param {string} p.node_id
+     * @param {number} [p.offset]
+     * @param {number} [p.limit]
+     * @returns {Promise<{ selected: number, total: number, alternatives: Record<string, any>[] } | null>}
+     */
+    async alternatives({ node_id, offset, limit }) {
+        const [id] = await this.messageIds([node_id]);
+        const s = id === null ? undefined : (await this.stored([id])).get(id);
+        if (!s) return null;
+        const siblings = await this.children(s.owner, s.parent);
+        const selected = siblings.indexOf(/** @type {bigint} */ (id));
+        const from = Math.max(0, offset ?? 0);
+        const to = limit !== undefined ? from + limit : siblings.length;
+        const window = siblings.slice(from, to);
+        const stored = await this.stored(window);
+        const decoded = await this.decoded(window.map(x => stored.get(x)));
+        const alternatives = window.map((x, i) => alternativeEntry(this.externalId(stored.get(x)), decoded[i], !!stored.get(x).itemized));
+        return { selected: selected < 0 ? 0 : selected, total: siblings.length, alternatives };
+    }
+
+    /**
+     * The tree's openings in order, each stored and as upstream's object.
+     * @param {bigint} tree
+     */
+    async openings(tree) {
+        const ids = await this.children(tree, null);
+        const stored = await this.stored(ids);
+        const decoded = await this.decoded(ids.map(id => stored.get(id)));
+        return ids.map((id, i) => ({ id, stored: stored.get(id), message: decoded[i] }));
+    }
+
+    /**
+     * The card's greetings that no stored opening already is (same speaker and text), as stored.
+     * @param {{ message: Record<string, any> }[]} rows The stored openings.
+     * @param {Record<string, any>[]} cardGreetings
+     */
+    unstoredGreetings(rows, cardGreetings) {
+        const seen = new Set(rows.map(r => identityOf(r.message)));
+        const out = [];
+        for (const greeting of Array.isArray(cardGreetings) ? cardGreetings : []) {
+            const o = storedForm(greeting);
+            const key = identityOf(o);
+            if (seen.has(key)) continue;
+            seen.add(key);
+            out.push(o);
+        }
+        return out;
+    }
+
+    /**
+     * The openings a tree can start on: its stored openings, then the card's greetings no stored opening already is
+     * (`node_id` null), windowed around the default (or around `around`, a stored opening with that speaker and
+     * text). The default is the opening of where the actor's session lands in the tree, else the first.
+     * @param {object} p
+     * @param {bigint} p.tree
+     * @param {Actor} p.actor
+     * @param {{ offset?: number, limit?: number, around?: Record<string, any> }} [p.range]
+     * @param {Record<string, any>[]} [p.cardGreetings]
+     */
+    async openingAlternatives({ tree, actor, range = {}, cardGreetings = [] }) {
+        const hasSavedChats = (await this.store.chatRead('inTree', { tree, limit: 1 })).length > 0;
+        const rows = await this.openings(tree);
+        const virtual = this.unstoredGreetings(rows, cardGreetings);
+        const { user, session } = await this.knownActorIds(actor);
+        const lands = await this.store.chatRead('landing', { tree, ...(session === null ? {} : { session }), ...(user === null ? {} : { user }) });
+        const shown = lands === null ? null : (await this.store.chatRead('path', { tree, at: lands }))[0];
+        const defaultIndex = Math.max(0, rows.findIndex(r => r.id === shown));
+        const all = [
+            ...rows.map(r => ({ ...alternativeEntry(this.externalId(r.stored), r.message, false), is_system: !!r.message?.is_system })),
+            ...virtual.map(o => alternativeEntry(/** @type {any} */ (null), o, false)),
+        ];
+        const aroundKey = range.around ? identityOf(storedForm(range.around)) : null;
+        const aroundIndex = aroundKey === null ? -1 : rows.findIndex(r => identityOf(r.message) === aroundKey);
+        const center = aroundIndex >= 0 ? aroundIndex : defaultIndex;
+        const width = Number.isInteger(range.limit) ? /** @type {number} */ (range.limit) : 11;
+        const from = Number.isInteger(range.offset) ? Math.max(0, /** @type {number} */ (range.offset)) : Math.max(0, center - Math.floor(width / 2));
+        const to = Math.min(all.length, from + width);
+        const alternatives = all.slice(from, to).map((entry, i) => {
+            const row = rows[from + i];
+            return row?.stored.itemized ? { ...entry, extra: { ...(entry.extra && typeof entry.extra === 'object' ? entry.extra : {}), [ITEMIZED_PROMPT_FLAG]: true } } : entry;
+        });
+        return {
+            has_saved_chats: hasSavedChats,
+            total: all.length,
+            stored: rows.length,
+            default_index: defaultIndex,
+            default_node_id: rows.length ? this.externalId(rows[defaultIndex].stored) : null,
+            default_chosen: false,
+            offset: from,
+            alternatives,
+        };
+    }
+
+    /**
+     * Where a chat showing a card greeting lands among the tree's openings (stored first, then the card's
+     * greetings no stored opening already is), from the whole list:
+     * 1. the first opening with exactly the shown text (so a stored one before a card greeting);
+     * 2. else, when this page's own edit took the shown text elsewhere, the first opening with the edit's new text,
+     *    or with the text now at the edit's card position;
+     * 3. else the opening at the index the chat was on, clamped to the openings there are now.
+     * @param {object} p
+     * @param {bigint} p.tree
+     * @param {Record<string, any>[]} p.cardGreetings
+     * @param {string[]} p.cardTexts The card's greeting list, by card position.
+     * @param {{ shownText: string, index: number, edits: { from: string, to: string, index?: number }[] }} p.request
+     * @returns {Promise<{ index: number, opening: Record<string, any> | null }>}
+     */
+    async openingToLandOn({ tree, cardGreetings, cardTexts, request }) {
+        const rows = await this.openings(tree);
+        const virtual = this.unstoredGreetings(rows, cardGreetings);
+        const texts = [...rows.map(r => r.message?.mes ?? ''), ...virtual.map(o => o?.mes ?? '')];
+        const total = texts.length;
+        if (total === 0) return { index: -1, opening: null };
+        const edit = request.edits.findLast(e => e.from === request.shownText);
+        const editCardText = edit && Number.isInteger(edit.index) ? cardTexts[/** @type {number} */ (edit.index)] : undefined;
+        const first = (/** @type {unknown} */ text) => (typeof text === 'string' ? texts.indexOf(text) : -1);
+        let target = first(request.shownText);
+        if (target < 0 && edit) {
+            target = first(edit.to);
+            if (target < 0) target = first(editCardText);
+        }
+        if (target < 0) target = Math.min(Math.max(request.index, 0), total - 1);
+        if (target >= rows.length) return { index: target, opening: alternativeEntry(/** @type {any} */ (null), virtual[target - rows.length], false) };
+        const row = rows[target];
+        return { index: target, opening: alternativeEntry(this.externalId(row.stored), row.message, !!row.stored.itemized) };
+    }
+
     // ---- writes ----
+
+    /**
+     * Makes sure these openings exist in the tree, each as stored, without showing them to anyone: one with the
+     * same speaker and text as a stored opening is that opening; one with blank text is left out (`null`).
+     * @param {object} p
+     * @param {bigint} p.tree
+     * @param {Speaker | null} p.treeSpeaker
+     * @param {Record<string, any> | Record<string, any>[]} p.contents
+     * @param {Actor} p.actor
+     * @returns {Promise<{ ok: true, node_ids: (string | null)[], added: number, total: number }>}
+     */
+    addOpenings({ tree, treeSpeaker, contents, actor }) {
+        return this.serialized(tree, async () => {
+            const list = Array.isArray(contents) ? contents : [contents];
+            const records = [];
+            const user = await this.idOf(SPACE.user, actor.user, 'user', records);
+            const rows = await this.openings(tree);
+            /** @type {Map<string, bigint>} */
+            const byIdentity = new Map();
+            for (const r of rows) if (!byIdentity.has(identityOf(r.message))) byIdentity.set(identityOf(r.message), r.id);
+            /** @type {(bigint | null)[]} */
+            const ids = [];
+            const now = this.now();
+            let added = 0;
+            for (const content of list) {
+                if (!String(content?.mes ?? '').trim()) {
+                    ids.push(null);
+                    continue;
+                }
+                const key = identityOf(content);
+                const existing = byIdentity.get(key);
+                if (existing !== undefined) {
+                    ids.push(existing);
+                    continue;
+                }
+                const id = this.next.message++;
+                const time = now + added;
+                const speaker = await this.speakerFor(content, treeSpeaker);
+                records.push(...messageRecords(id, encodeMessage(content, time, speaker), { parent: null, owner: tree, time, session: null, user, sendKey: null }));
+                byIdentity.set(key, id);
+                ids.push(id);
+                added++;
+            }
+            if (added) await this.store.commit(records);
+            const external = await this.externalIds(ids.filter(id => id !== null));
+            let at = 0;
+            return { ok: true, node_ids: ids.map(id => (id === null ? null : external[at++])), added, total: rows.length + added };
+        });
+    }
 
     /**
      * Stores messages after a message (null: as the tree's openings), each after the one before. A message whose
