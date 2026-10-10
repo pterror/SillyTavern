@@ -1087,7 +1087,6 @@ router.post('/create', getFileNameValidationFunction('file_name'), async functio
         const char = JSON.stringify(charaData);
         const internalName = request.body.file_name || mintCharacterId(request.user.directories);
         const avatarName = `${internalName}.png`;
-        const chatsPath = path.join(request.user.directories.chats, internalName);
 
         if (!request.file) {
             await writeCharacterData(DEFAULT_AVATAR_PATH, char, internalName, request, undefined, null, null, true);
@@ -1101,8 +1100,6 @@ router.post('/create', getFileNameValidationFunction('file_name'), async functio
                 fs.unlinkSync(uploadPath);
             }
         }
-
-        if (!fs.existsSync(chatsPath)) fs.mkdirSync(chatsPath);
 
         if (initialFav) {
             await setCharacterFav(request.user.directories, avatarName, true);

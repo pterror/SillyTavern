@@ -598,6 +598,11 @@ test.describe('persona switch redraws message 0', () => {
         }, { avatar, name: `PersonaGroup-${s}` });
         expect(groupId).not.toBe('');
 
+        // A group chat's greetings are stored when a message first follows them; this stores them the same way.
+        await page.evaluate(async () => {
+            const { ensureOpeningRow } = await import('/scripts/chat-store.js');
+            await ensureOpeningRow(0);
+        });
         await expect.poll(async () => {
             const state = await openingState(page);
             return typeof state.node_id === 'string' && !state.node_id.startsWith('card:');

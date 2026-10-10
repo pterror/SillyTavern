@@ -934,14 +934,12 @@ export function initRossMods() {
         const characterId = $(this).attr('data-avatar');
         setActiveCharacter(characterId);
         setActiveGroup(null);
-        saveSettingsDebounced('active_character', 'active_group');
     });
 
     $(document).on('click', '.group_select', function () {
         const groupId = $(this).attr('data-grid');
         setActiveCharacter(null);
         setActiveGroup(groupId);
-        saveSettingsDebounced('active_character', 'active_group');
     });
 
     const cssAutofit = CSS.supports('field-sizing', 'content');

@@ -2863,6 +2863,25 @@ export async function getOrCreateAnchor(directories, ownerId, owner = undefined)
 }
 
 /**
+ * The owner's conversation along the choices last made at each fork, from its first message. Writes nothing.
+ * @param {Directories} directories
+ * @param {string} ownerId
+ * @returns {Promise<{ messages: TreeChatMessage[], metadata: ChatMetadata, node_id: string, label: string | null } | null>}
+ * null when the owner has no messages, or when the opening last chosen is a card greeting with no row (opening_choices).
+ */
+export async function loadDefaultChain(directories, ownerId) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+
+    if (entry.db.get('SELECT 1 FROM opening_choices WHERE owner_id = @ownerId', { ownerId })) return null;
+
+    const anchor = /** @type {Pick<MessageRow, 'id' | 'default_child_id'> | undefined} */ (entry.db.get(
+        'SELECT id, default_child_id FROM messages WHERE owner_id = @ownerId AND parent_id IS NULL LIMIT 1', { ownerId }));
+    if (anchor?.default_child_id == null) return null;
+    return loadAtNode(directories, ownerId, anchor.default_child_id);
+}
+
+/**
  * Reads the tree at a node: everything above it plus the continuation below it. Node-addressed since `label` isn't unique per owner.
  * @param {Directories} directories
  * @param {string} ownerId

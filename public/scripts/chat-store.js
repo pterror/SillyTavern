@@ -8,7 +8,7 @@ import { charactersStore } from './character-store.js';
 import { getMessageTimeStamp } from './RossAscends-mods.js';
 // A group has no avatar of its own - while one is open it, not getCurrentCharacter(), is the tree
 // owner for every chatOp*() below. See _currentOwner().
-import { selected_group, groupsStore } from './group-chats.js';
+import { selected_group, groupsStore, materializeGroupOpening } from './group-chats.js';
 import { t } from './i18n.js';
 import { setStoredAdopter } from './stored-report.js';
 
@@ -233,6 +233,13 @@ export async function ensureOpeningRow(mesId = 0) {
     // Not a tree-backed opening (JSONL chat, or never-saved message); nothing to mint.
     if (!isProvisionalNodeId(message.node_id)) return null;
 
+    // A group chat's unsaved greetings are its members' greetings in a row, stored together.
+    if (selected_group != null && selected_group !== '') {
+        if (!await materializeGroupOpening()) return null;
+        const stored = _chatAt(mesId)?.node_id;
+        return isStoredNodeId(stored) ? stored : null;
+    }
+
     const character = getCurrentCharacter();
     const text = typeof message.mes === 'string' ? message.mes : '';
     // No text means no greeting to store — the server refuses it, so skip the round trip.
@@ -347,8 +354,11 @@ const LANDING_EDITS = 64;
  * @param {object} [options]
  * @param {{from: string, to: string, index?: number}|null} [options.greetingEdit] The one card greeting whose text just changed, if that's what happened; `index` is its position in the card's greeting list.
  * @param {{from: string, to: string, index?: number}[]} [options.greetingEdits] Every card greeting whose text just changed, in the order the changes were made; when given, used instead of `greetingEdit`.
+ * @param {{ openings: OpeningsResponse|null, card_openings: OpeningsResponse|null }|null} [options.openings] The
+ * character's openings when already read: `openings` as /api/chats/openings answers an empty body, `card_openings`
+ * as it answers `{ offset: stored, limit: card-only count }`.
  */
-export async function _mergeCardGreetingsIntoOpening({ greetingEdit = null, greetingEdits } = {}) {
+export async function _mergeCardGreetingsIntoOpening({ greetingEdit = null, greetingEdits, openings = null } = {}) {
     const edits = Array.isArray(greetingEdits) ? greetingEdits : (greetingEdit ? [greetingEdit] : []);
     const opening = _chatAt(0);
     const character = getCurrentCharacter();
@@ -360,6 +370,7 @@ export async function _mergeCardGreetingsIntoOpening({ greetingEdit = null, gree
      * @returns {Promise<OpeningsResponse|null>}
      */
     const ask = async (body) => {
+        if (openings) return body.offset === undefined ? openings.openings : openings.card_openings;
         try {
             const response = await fetch('/api/chats/openings', {
                 method: 'POST',
@@ -864,9 +875,8 @@ export async function chatOpAppendAfter(after, fromIndex, toIndex = chat.length,
 // it's the shown one, otherwise -> chatOpEdit), plus a trailing run with no node_id at all -> one batched
 // chatOpAppend(). A snapshot already matching means nothing to do.
 //
-// A provisional (card-only) opening id is solo-only - ensureOpeningRow() needs a character to mint
-// against, and is a safe no-op here for anything that isn't provisional (a group's opening is already a
-// real row by the time this runs - see _bootstrapGroupChat(), group-chats.js).
+// A provisional opening id is a card greeting with no row (solo) or a group chat's unsaved member greetings;
+// ensureOpeningRow() gives either its rows.
 /**
  * @returns {Promise<boolean>} Whether anything in `chat[]` has a real, persisted node_id at all -
  * i.e. whether there's something for the caller to address a metadata write onto.

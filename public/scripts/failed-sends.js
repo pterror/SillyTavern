@@ -18,7 +18,7 @@ import { getRequestHeaders } from './request-headers.js';
  * @typedef {object} FailedSendsDeps
  * @property {typeof import('../script.js').addOneMessage} addOneMessage
  * @property {typeof import('../script.js').deleteMessage} deleteMessage
- * @property {typeof import('../script.js').getCurrentDraftContext} getCurrentDraftContext
+ * @property {typeof import('../script.js').getCurrentChatContext} getCurrentChatContext
  * @property {typeof import('../script.js').redisplayChat} redisplayChat
  * @property {typeof import('../script.js').reloadCurrentChat} reloadCurrentChat
  * @property {typeof import('../script.js').updateViewMessageIds} updateViewMessageIds
@@ -132,10 +132,10 @@ function shortText(text) {
  * @param {object} [params.message] The message, when it may no longer be on screen.
  */
 export function keepFailedSend({ key, kind, context = undefined, message = undefined }) {
-    context ??= deps.getCurrentDraftContext();
+    context ??= deps.getCurrentChatContext();
     if (typeof key !== 'string' || storedKeys.has(key) || !context) return;
 
-    const open = sameContext(context, deps.getCurrentDraftContext());
+    const open = sameContext(context, deps.getCurrentChatContext());
     const index = open ? indexOfKey(key) : -1;
     const shown = index >= 0 ? chat[index] : message;
     if (!shown) return;
@@ -164,7 +164,7 @@ export function keepFailedSend({ key, kind, context = undefined, message = undef
  */
 export function isFailedSend(message) {
     const key = deps.storeRefOf(message);
-    return typeof key === 'string' && readEntries(deps.getCurrentDraftContext()).some(entry => entry.key === key);
+    return typeof key === 'string' && readEntries(deps.getCurrentChatContext()).some(entry => entry.key === key);
 }
 
 /**
@@ -177,7 +177,7 @@ export function wasSendStored(key) {
 
 /** @param {string} key */
 function forget(key) {
-    const context = deps.getCurrentDraftContext();
+    const context = deps.getCurrentChatContext();
     if (context) {
         const entries = readEntries(context);
         if (entries.some(entry => entry.key === key)) {
@@ -198,14 +198,14 @@ function clearNotice(key) {
 
 /** Marks the failed sends on screen, and unmarks what no longer is one. */
 function markShown() {
-    const keys = new Set(readEntries(deps.getCurrentDraftContext()).map(entry => entry.key));
+    const keys = new Set(readEntries(deps.getCurrentChatContext()).map(entry => entry.key));
     $('#chat .mes.failed_send').each(function () {
         const index = Number($(this).attr('mesid'));
         if (!keys.has(deps.storeRefOf(chat[index]) ?? '')) {
             $(this).removeClass('failed_send').removeAttr('title').find('.failed_send_note').remove();
         }
     });
-    for (const entry of readEntries(deps.getCurrentDraftContext())) {
+    for (const entry of readEntries(deps.getCurrentChatContext())) {
         const index = indexOfKey(entry.key);
         if (index < 0) continue;
         const element = $(`#chat .mes[mesid="${index}"]`);
@@ -406,7 +406,7 @@ export function placeFailedSends() {
 }
 
 async function placeNow() {
-    const context = deps.getCurrentDraftContext();
+    const context = deps.getCurrentChatContext();
     const entries = readEntries(context);
     const keys = new Set(entries.map(entry => entry.key));
     for (const key of [...notices.keys()]) {
@@ -456,7 +456,7 @@ async function placeNow() {
 function onEdited(mesId) {
     const message = chat[Number(mesId)];
     const key = deps.storeRefOf(message);
-    const context = deps.getCurrentDraftContext();
+    const context = deps.getCurrentChatContext();
     if (!key || !context) return;
     const entries = readEntries(context);
     const entry = entries.find(e => e.key === key);
@@ -468,7 +468,7 @@ function onEdited(mesId) {
 
 /** A failed send the user deleted from the chat is discarded. */
 function onDeleted() {
-    for (const entry of readEntries(deps.getCurrentDraftContext())) {
+    for (const entry of readEntries(deps.getCurrentChatContext())) {
         const notice = notices.get(entry.key);
         if (notice && notice.mode !== 'elsewhere' && indexOfKey(entry.key) < 0) forget(entry.key);
     }
@@ -480,7 +480,7 @@ function onDeleted() {
  * @param {StorageEvent} event
  */
 async function onOtherTab(event) {
-    const context = deps.getCurrentDraftContext();
+    const context = deps.getCurrentChatContext();
     if (!context || event.key !== storageKey(context)) return;
     const keys = new Set(readEntries(context).map(entry => entry.key));
     const goneFromScreen = [...notices.entries()].some(([key, notice]) => notice.mode !== 'elsewhere' && !keys.has(key) && indexOfKey(key) >= 0);
@@ -496,7 +496,7 @@ export function initFailedSends(dependencies) {
     deps = dependencies;
     deps.setSendStoredListener((key) => {
         storedKeys.add(key);
-        if (notices.has(key) || readEntries(deps.getCurrentDraftContext()).some(entry => entry.key === key)) forget(key);
+        if (notices.has(key) || readEntries(deps.getCurrentChatContext()).some(entry => entry.key === key)) forget(key);
     });
     eventSource.on(event_types.CHAT_CHANGED, () => placeFailedSends());
     eventSource.on(event_types.MESSAGE_EDITED, onEdited);

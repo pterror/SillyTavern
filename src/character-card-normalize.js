@@ -52,7 +52,11 @@ export function convertToV2(char, directories) {
         depth_prompt_role: char.depth_prompt_role,
     }, directories);
 
-    result.chat = char.chat ?? `${char.name} - ${humanizedDateTime()}`;
+    if (char.chat != null) {
+        result.chat = char.chat;
+    } else {
+        _.unset(result, 'chat');
+    }
     result.create_date = char.create_date;
 
     return result;
@@ -194,8 +198,6 @@ export function readFromV2(char) {
         }
         char[charField] = v2Value;
     });
-
-    char.chat = char.chat ?? `${char.name} - ${humanizedDateTime()}`;
 
     return char;
 }
