@@ -4,7 +4,7 @@ import { AIHorde, ModelGenerationInputStableSamplers, ModelInterrogationFormType
 import { getVersion, delay, Cache } from '../util.js';
 import { readSecret, SECRET_KEYS } from './secrets.js';
 import { buildRawActionKoboldRequest } from './backends/kobold.js';
-import { sanitizeUserMessageExtra } from '../message-tree-db.js';
+import { generateTurnOf } from '../page-writes.js';
 import { storeUserMessage } from '../stored-messages.js';
 import { persistAssistantReply } from '../assistant-reply-persist.js';
 import { itemizationOf } from '../itemization-store.js';
@@ -300,12 +300,8 @@ router.post('/task-status', async (request, response) => {
 async function buildRawActionHordePayload(request, response) {
     const {
         character_avatar: characterAvatar, group_id: groupId, owner_id: ownerId,
-        node_id: nodeId, type = 'normal',
-        user_message: userMessageText, trusted_workers: trustedWorkers = false, models,
+        type = 'normal', trusted_workers: trustedWorkers = false, models,
     } = request.body;
-    // Server-validated (NOT trusted verbatim) - see `sanitizeUserMessageExtra()`'s own doc comment
-    // (message-tree-db.js) and text-completions.js's identical raw-action branch.
-    const userMessageExtra = sanitizeUserMessageExtra(request.body.user_message_extra);
     // is_impersonate/is_continue/is_swipe are NOT read from the wire - see kobold.js's own identical
     // derivation/comment.
     const isImpersonate = type === 'impersonate';
@@ -313,6 +309,9 @@ async function buildRawActionHordePayload(request, response) {
     const isSwipe = type === 'swipe' || type === 'regenerate';
 
     const directories = request.user.directories;
+    const turn = await generateTurnOf(response, directories, { ownerId, avatar: characterAvatar, groupId, body: request.body });
+    if (!turn) return null;
+    const { nodeId, userMessageText, userMessageExtra } = turn;
 
     const built = await buildRawActionKoboldRequest(directories, {
         request, characterAvatar, groupId, ownerId, nodeId,
@@ -327,9 +326,7 @@ async function buildRawActionHordePayload(request, response) {
     // resolveTextCompletionGenerationInput()/message-tree-db.js persistence primitives.
     const skipPersistence = isImpersonate || type === 'quiet';
     let replyAnchorNodeId = built.anchorNodeId;
-    const userMessage = typeof userMessageText === 'string'
-        ? { name: built.name1, is_user: true, mes: userMessageText, extra: userMessageExtra, send_date: Date.now() }
-        : null;
+    const userMessage = turn.userMessage;
     if (!skipPersistence && typeof userMessageText === 'string' && built.anchorNodeId) {
         const userNodeId = await storeUserMessage(response, {
             directories, ownerId, anchorNodeId: built.anchorNodeId, ref: request.body.user_message_ref,

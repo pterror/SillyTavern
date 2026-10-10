@@ -495,7 +495,7 @@ async function run() {
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-            type: 'normal', user_message: 'One more time, Rex?', stream: false,
+            type: 'normal', user_message: { is_user: true, name: 'User', mes: 'One more time, Rex?' }, stream: false,
         });
         fakeBackend.server.close();
 
@@ -528,7 +528,7 @@ async function run() {
         const app = buildTestApp();
         const { status } = await postGenerate(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-            type: 'normal', user_message: 'Are you there, Rex?', stream: false,
+            type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Are you there, Rex?' }, stream: false,
         });
         fakeBackend.server.close();
 
@@ -567,7 +567,7 @@ async function run() {
 
         const { status, data } = await postGenerate(buildTestApp(), {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-            type: 'normal', user_message: `Question for ${chatName}?`, stream: false,
+            type: 'normal', user_message: { is_user: true, name: 'User', mes: `Question for ${chatName}?` }, stream: false,
         });
 
         assert.equal(status, 200);
@@ -658,7 +658,7 @@ async function run() {
         try {
             answer = await postGenerate(buildTestApp(), {
                 owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                type: 'normal', user_message: `Question for ${chatName}?`, stream: false,
+                type: 'normal', user_message: { is_user: true, name: 'User', mes: `Question for ${chatName}?` }, stream: false,
             });
         } finally {
             console.warn = realWarn;
@@ -707,7 +707,7 @@ async function run() {
             const ref = `ref-${chatName}`;
             const body = {
                 owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                type: 'normal', user_message: `Question for ${chatName}?`, user_message_ref: ref, stream,
+                type: 'normal', user_message: { is_user: true, name: 'User', mes: `Question for ${chatName}?` }, user_message_ref: ref, stream,
             };
             let stored;
             if (stream) {
@@ -803,7 +803,7 @@ async function run() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                    type: 'normal', user_message: `Question for ${chatName}?`, user_message_ref: ref, stream,
+                    type: 'normal', user_message: { is_user: true, name: 'User', mes: `Question for ${chatName}?` }, user_message_ref: ref, stream,
                 }),
             });
             const answer = { status: res.status, headers: res.headers, text: await res.text() };
@@ -886,7 +886,7 @@ async function run() {
             type: 'impersonate', is_impersonate: true,
             // Deliberately included even though a real client never sends this for impersonate - the
             // route must defensively ignore it regardless.
-            user_message: 'This should never be persisted.',
+            user_message: { is_user: true, name: 'User', mes: 'This should never be persisted.' },
             stream: false,
         });
         fakeBackend.server.close();
@@ -918,7 +918,7 @@ async function run() {
             type: 'quiet',
             // Also deliberately included to verify the defensive skip - a real quiet call has no
             // fresh user text to send either.
-            user_message: 'This should never be persisted.',
+            user_message: { is_user: true, name: 'User', mes: 'This should never be persisted.' },
             stream: false,
         });
         fakeBackend.server.close();
@@ -1089,7 +1089,7 @@ async function run() {
         const { status, data: body } = await postGenerate(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: originalLeafId,
             type: 'continue', is_continue: true,
-            user_message: 'Wait, actually - tell me about dragons instead.',
+            user_message: { is_user: true, name: 'User', mes: 'Wait, actually - tell me about dragons instead.' },
             stream: false,
         });
         fakeBackend.server.close();
@@ -1210,7 +1210,7 @@ async function run() {
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
             owner_id: groupId, character_avatar: nova, group_id: groupId, node_id: branchBeforeGroup.branch.leaf_id,
-            type: 'normal', user_message: 'Nova, status report?', stream: false,
+            type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Nova, status report?' }, stream: false,
         });
         fakeBackend.server.close();
 
@@ -1258,7 +1258,7 @@ async function run() {
         const app = buildTestApp();
         const { status, headers, bytes } = await postGenerateStreamBytes(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-            type: 'normal', user_message: 'Say hi, streamed.', stream: true,
+            type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Say hi, streamed.' }, stream: true,
         });
         fakeBackend.server.close();
 
@@ -1409,7 +1409,7 @@ async function run() {
         const app = buildTestApp();
         const { status, headers, bytes } = await postGenerateStreamBytes(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-            type: 'normal', user_message: 'Say hi via Ollama.', stream: true,
+            type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Say hi via Ollama.' }, stream: true,
         });
         fakeBackend.server.close();
 
@@ -1458,7 +1458,7 @@ async function run() {
         const app = buildTestApp();
         const { status, bytes } = await postGenerateStreamBytes(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-            type: 'normal', user_message: 'Say hi via llama.cpp.', stream: true, itemization: { presetName: 'Page preset' },
+            type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Say hi via llama.cpp.' }, stream: true, itemization: { presetName: 'Page preset' },
         });
         fakeBackend.server.close();
 
@@ -1541,7 +1541,7 @@ async function run() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                    type: 'normal', user_message: 'Coalesce test.', stream: true,
+                    type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Coalesce test.' }, stream: true,
                 }),
             });
             status = res.status;
@@ -1635,7 +1635,7 @@ async function run() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                    type: 'normal', user_message: 'Disconnect me, Rex.', stream: true,
+                    type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Disconnect me, Rex.' }, stream: true,
                 }),
                 signal: controller.signal,
             });
@@ -1676,7 +1676,7 @@ async function run() {
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
             owner_id: ownerId, character_avatar: avatar,
-            type: 'normal', user_message: 'This should be rejected.', stream: false,
+            type: 'normal', user_message: { is_user: true, name: 'User', mes: 'This should be rejected.' }, stream: false,
         });
         assert.equal(status, 400, 'a request body with no node_id key at all is a real 400, not a silent guess');
         assert.match(data.message, /node_id is required/, 'the error names the real, specific problem');
@@ -1688,7 +1688,7 @@ async function run() {
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: null,
-            type: 'normal', user_message: 'This should also be rejected.', stream: false,
+            type: 'normal', user_message: { is_user: true, name: 'User', mes: 'This should also be rejected.' }, stream: false,
         });
         assert.equal(status, 400, 'node_id: null on an owner with real existing history is a real 400');
         assert.match(data.message, /already has an existing conversation/, 'the error explains why null was rejected here');
@@ -1714,8 +1714,8 @@ async function run() {
         const app = buildTestApp();
         const { status } = await postGenerate(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-            type: 'normal', user_message: 'Check the attached file.', stream: false,
-            user_message_extra: { files: [{ url: '/user/files/raw-action-attach.txt', size: 25, name: 'raw-action-attach.txt', created: 1700000000000 }] },
+            type: 'normal', stream: false,
+            user_message: { is_user: true, name: 'User', mes: 'Check the attached file.', extra: { files: [{ url: '/user/files/raw-action-attach.txt', size: 25, name: 'raw-action-attach.txt', created: 1700000000000 }] } },
         });
         fakeBackend.server.close();
 
@@ -1737,10 +1737,9 @@ async function run() {
         );
     }
 
-    // (i-10) ROUTE-LEVEL: a garbage-shaped `user_message_extra` (unexpected top-level field, a
-    // non-string url, an out-of-enum media type) is dropped/sanitized rather than stored verbatim or
-    // crashing the request - sanitizeUserMessageExtra()'s own allowlist (message-tree-db.js) is
-    // exercised through the real HTTP route, not called directly.
+    // (i-10) ROUTE-LEVEL: a garbage-shaped user message `extra` (unexpected top-level field, a
+    // non-string url, an out-of-enum media type) doesn't crash the request: the prompt reads it through
+    // sanitizeUserMessageExtra()'s allowlist (message-tree-db.js), and the message is stored as sent.
     {
         const fakeBackend = await startFakeBackend((_req, res) => {
             res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -1752,8 +1751,8 @@ async function run() {
         const app = buildTestApp();
         const { status } = await postGenerate(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-            type: 'normal', user_message: 'This has a garbage attachment payload.', stream: false,
-            user_message_extra: {
+            type: 'normal', stream: false,
+            user_message: { is_user: true, name: 'User', mes: 'This has a garbage attachment payload.', extra: {
                 // Not a real allowlisted field - must be dropped entirely, not stored.
                 evil_script: '<script>alert(1)</script>',
                 // A file entry missing `url` (wrong type) - the whole entry must be dropped, not
@@ -1763,15 +1762,15 @@ async function run() {
                 media: [{ url: '/user/files/whatever.png', type: 'application/x-not-a-real-media-type' }],
                 media_index: 'not-a-number',
                 inline_image: 'yes',
-            },
+            } },
         });
         fakeBackend.server.close();
-        assert.equal(status, 200, 'a garbage-shaped user_message_extra does not crash the request - it is sanitized, not rejected outright');
+        assert.equal(status, 200, 'a garbage-shaped extra does not crash the request');
 
         const branchAfter = await loadBranch(directories, ownerId, branchName);
         const persistedUserMsg = branchAfter.messages[branchAfter.messages.length - 2];
         assert.equal(persistedUserMsg.mes, 'This has a garbage attachment payload.');
-        assert.deepEqual(persistedUserMsg.extra, {}, 'every field of the garbage payload was dropped by the allowlist - nothing survived, not even partially');
+        assert.equal(persistedUserMsg.extra.evil_script, '<script>alert(1)</script>', 'the message is stored as the page sent it; only the prompt reads its attachments, through the allowlist');
     }
 
     // --- REGRESSION: the "double-append on raw-action sends" bug this session fixed (see
@@ -1785,7 +1784,7 @@ async function run() {
     // `message` inside sendMessageAsUser() itself). Separately, whenever the raw-action gate in
     // Generate() fires for that same send, this route's own handler (buildRawActionTextCompletion-
     // Request()'s caller) ALSO independently calls appendMessages() for the SAME logical message,
-    // built server-side as `{ name: built.name1, is_user: true, mes: userMessageText, ... }` -
+    // then built server-side (the request now carries the page's own message) as `{ name: built.name1, is_user: true, mes: userMessageText, ... }` -
     // built.name1 being a DISPLAY NAME (e.g. "Tester"), and crucially with NO `persona` field at
     // all. Both calls target the exact SAME anchor: Generate() captures `lastMessage`/its
     // `node_id` at the very top of the function, BEFORE sendMessageAsUser() ever runs, and passes
@@ -1991,7 +1990,7 @@ async function run() {
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
             owner_id: entryAvatar, character_avatar: entryAvatar, node_id: entryBranch.branch.leaf_id,
-            type: 'normal', user_message: 'Go on.', stream: false,
+            type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Go on.' }, stream: false,
         });
         fakeBackend.server.close();
         // The route sends a generic backend only OpenAI-compatible fields, so the bans are read off
@@ -2081,7 +2080,7 @@ async function run() {
         const gemmaBefore = sentencepieceEncodes.filter(file => /[\\/]gemma\.model$/.test(file ?? '')).length;
         const { status, bytes } = await postGenerateStreamBytes(buildTestApp(), {
             owner_id: failAvatar, character_avatar: failAvatar, node_id: failBranch.branch.leaf_id,
-            type: 'normal', user_message: 'Go on.', stream: true,
+            type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Go on.' }, stream: true,
         });
         backend.server.close();
         writeAllSettings(directories, buildSettingsFixture());
@@ -2119,7 +2118,7 @@ async function run() {
         const llamaBefore = llamaEncodes().length;
         const { status, bytes } = await postGenerateStreamBytes(buildTestApp(), {
             owner_id: trimAvatar, character_avatar: trimAvatar, node_id: trimBranch.branch.leaf_id,
-            type: 'normal', user_message: 'Go on.', stream: true,
+            type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Go on.' }, stream: true,
         });
         backend.server.close();
         writeAllSettings(directories, buildSettingsFixture());
@@ -2435,7 +2434,7 @@ async function run() {
         writeAllSettings(directories, settings);
         return {
             backend, urls, requests,
-            body: { owner_id: avatar, character_avatar: avatar, node_id: branch.branch.leaf_id, type: 'normal', user_message: 'Any tulips?' },
+            body: { owner_id: avatar, character_avatar: avatar, node_id: branch.branch.leaf_id, type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Any tulips?' } },
         };
     }
 
@@ -2557,7 +2556,7 @@ async function run() {
 
             const from = requests.length;
             // Same anchor as the first generation, so the history before the new user message is all stored.
-            const warm = await postGenerate(buildTestApp(), { ...body, user_message: 'Any daisies?' });
+            const warm = await postGenerate(buildTestApp(), { ...body, user_message: { is_user: true, name: 'User', mes: 'Any daisies?' } });
             assert.equal(warm.status, 200);
             const sent = requests.slice(from);
             assert.equal(sent.filter(r => r.url.startsWith('/props')).length, 1, 'one /props');

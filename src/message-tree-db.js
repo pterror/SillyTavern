@@ -2678,6 +2678,54 @@ export async function setChatMetadata(directories, ownerId, chatName, metadata, 
     return writeNodeMetadataSync(entry.db, node, metadata, expectedIntegrity);
 }
 
+/** Metadata keys the tree owns: never set or removed by a caller. */
+const TREE_METADATA_KEYS = new Set(['integrity', 'main_chat', 'fork_point', '_tree_stored']);
+
+/**
+ * Sets and removes some keys of a chat's metadata, leaving its other keys as they are. Writes (and rotates the
+ * integrity slug) only when a key's value actually changes.
+ * @param {Directories} directories
+ * @param {string} ownerId
+ * @param {string} chatName The node id or label the chat's metadata is on, as for {@link setChatMetadata}.
+ * @param {Record<string, unknown>} set
+ * @param {string[]} unset
+ * @returns {Promise<{ ok: boolean, reason?: string, node_id?: string, integrity?: string | null }>}
+ */
+export async function mergeChatMetadataKeys(directories, ownerId, chatName, set, unset) {
+    const entry = await getEntry(directories);
+    if (!entry) return { ok: false, reason: 'unavailable' };
+
+    const node = /** @type {Pick<MessageRow, 'id' | 'metadata'> | undefined} */ (entry.db.get(
+        'SELECT id, metadata FROM messages WHERE id = @id AND owner_id = @ownerId', { id: chatName, ownerId }))
+        ?? getLabeledNodeSync(entry.db, ownerId, chatName);
+    if (!node) return { ok: false, reason: 'unknown chat' };
+
+    /** @type {Record<string, unknown>} */
+    let current = {};
+    try {
+        const parsed = node.metadata == null ? null : JSON.parse(node.metadata);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) current = parsed;
+    } catch { /* unreadable metadata is replaced by the keys given */ }
+
+    const next = { ...current };
+    let changed = false;
+    for (const [key, value] of Object.entries(set)) {
+        if (TREE_METADATA_KEYS.has(key) || value === undefined) continue;
+        if (Object.hasOwn(next, key) && JSON.stringify(next[key]) === JSON.stringify(value)) continue;
+        next[key] = value;
+        changed = true;
+    }
+    for (const key of Array.isArray(unset) ? unset : []) {
+        if (typeof key !== 'string' || TREE_METADATA_KEYS.has(key) || !Object.hasOwn(next, key)) continue;
+        delete next[key];
+        changed = true;
+    }
+    if (!changed) return { ok: true, node_id: node.id, integrity: readIntegritySync(node) };
+
+    const written = writeNodeMetadataSync(entry.db, node, /** @type {ChatMetadata} */ (next));
+    return { ...written, node_id: node.id };
+}
+
 /**
  * @typedef {object} OpeningAlternativeEntry
  * @property {string | null} node_id Null for a card greeting that hasn't been opened into a row yet.

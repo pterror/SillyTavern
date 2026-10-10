@@ -30,7 +30,8 @@ import { fetchTextgenStatus, rememberRemoteTokenization } from '../../backend-st
 import { rememberOpenRouterModels } from '../../openrouter-models.js';
 import { resolveTextCompletionGenerationInput } from '../../text-completion-generation-input.js';
 import { assembleTextCompletionPrompt, buildItemizationBreakdown } from '../../text-completion-prompt-orchestrator.js';
-import { getAncestorPath, sanitizeUserMessageExtra } from '../../message-tree-db.js';
+import { getAncestorPath } from '../../message-tree-db.js';
+import { generateTurnOf } from '../../page-writes.js';
 import { storeUserMessage, withStoredMessages } from '../../stored-messages.js';
 import { readCardContent } from '../characters.js';
 import { getGroupsByIds } from '../groups.js';
@@ -810,39 +811,20 @@ router.post('/generate', withGenerationStop(async function (request, response) {
         // name1/name2 here) - this is the first real instance of this effort's target shape, so
         // names match what these fields literally are.
         } else if (request.body.owner_id && (request.body.character_avatar || request.body.group_id)) {
-            // `node_id` is destructured straight off the parsed JSON body (not defaulted) so its
-            // "absent key" vs "explicit null" distinction survives intact: real JSON has no
-            // `undefined` literal, so a request that never included `node_id` at all yields
-            // `undefined` here, while `"node_id": null` yields `null` - these two are NOT the same
-            // thing (see buildRawActionTextCompletionRequest()'s own ADDRESSING MODEL doc comment) and
-            // that function itself validates/rejects `undefined`, rather than this route handler
-            // pre-filtering it, so a caller that invokes it directly (e.g. tests) gets the same
-            // validation. There is no `branch_name` field anymore - see that same doc comment for why.
+            // `node_id` keeps the JSON body's "absent key" vs "explicit null" distinction (see
+            // buildRawActionTextCompletionRequest()'s ADDRESSING MODEL doc comment), unless the request
+            // stored messages from the page, which it then generates after.
             const {
-                character_avatar: characterAvatar, group_id: groupId, owner_id: ownerId,
-                node_id: nodeId, type = 'normal',
-                user_message: userMessageText,
+                character_avatar: characterAvatar, group_id: groupId, owner_id: ownerId, type = 'normal',
             } = request.body;
-            // Server-validated (NOT trusted verbatim) - see `sanitizeUserMessageExtra()`'s own doc
-            // comment (message-tree-db.js) for the exact allowlisted shape. The client only ever sends
-            // a REFERENCE to a file/media attachment it already uploaded via the existing
-            // `/api/files/upload`/`saveBase64AsFile()` flow (public/scripts/chats.js's
-            // `populateFileAttachment()`) - never file bytes - but that reference is still
-            // client-controlled input from here on, so it goes through the same allowlist regardless
-            // of what the client actually sent.
-            const userMessageExtra = sanitizeUserMessageExtra(request.body.user_message_extra);
-            // is_impersonate/is_continue/is_swipe are NOT read from the wire - each is 100% derivable
-            // from `type` alone (they used to be sent as separate, redundant boolean fields alongside
-            // it - the exact same "the client sends a derived classification instead of letting the
-            // server infer it from the one raw fact it already sent" anti-pattern this whole effort
-            // exists to eliminate). Derived here instead, matching the client's own real derivation
-            // (public/script.js): `isImpersonate = type == 'impersonate'`, `isContinue = type ==
-            // 'continue'`, `isSwipe = type == 'swipe' || type == 'regenerate'`.
             const isImpersonate = type === 'impersonate';
             const isContinue = type === 'continue';
             const isSwipe = type === 'swipe' || type === 'regenerate';
 
             const directories = request.user.directories;
+            const turn = await generateTurnOf(response, directories, { ownerId, avatar: characterAvatar, groupId, body: request.body });
+            if (!turn) return;
+            const { nodeId, userMessageText, userMessageExtra } = turn;
 
             /** @type {Awaited<ReturnType<typeof buildRawActionTextCompletionRequest>>} */
             let built;
@@ -884,9 +866,7 @@ router.post('/generate', withGenerationStop(async function (request, response) {
             // message - a swipe/regenerate REPLACES the anchor with a sibling instead, see below).
             const skipPersistence = isImpersonate || type === 'quiet';
             let replyAnchorNodeId = built.anchorNodeId;
-            const userMessage = typeof userMessageText === 'string'
-                ? { name: built.name1, is_user: true, mes: userMessageText, extra: userMessageExtra, send_date: Date.now() }
-                : null;
+            const userMessage = turn.userMessage;
             if (!skipPersistence && typeof userMessageText === 'string' && built.anchorNodeId) {
                 const userNodeId = await storeUserMessage(response, {
                     directories, ownerId, anchorNodeId: built.anchorNodeId, ref: request.body.user_message_ref,

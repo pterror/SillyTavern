@@ -2,7 +2,7 @@ import { getCurrentCharacter } from '../script.js';
 import { chat, chat_metadata } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { groupsStore, selected_group } from './group-chats.js';
-import { _setCurrentTarget } from './chat-store.js';
+import { _setCurrentTarget, setMetadataStoredListener } from './chat-store.js';
 import { delay } from './utils.js';
 import { t } from './i18n.js';
 import { isStoredNodeId } from './node-identity.js';
@@ -15,6 +15,65 @@ import { isStoredNodeId } from './node-identity.js';
 // so this can only ever cause an extra save, never a dropped one.
 /** @type {string|null} */
 let _lastSavedMetadataJSON = null;
+
+/**
+ * Each chat metadata key's value as JSON, as the page last had it from the server or last stored it.
+ * @type {Map<string, string>}
+ */
+let _metadataBaseline = new Map();
+
+/** Changes sent to the server under a ref, until it says it stored them. @type {Map<string, MetadataChanges>} */
+const _sentMetadataChanges = new Map();
+
+/** @typedef {{ set: Record<string, unknown>, unset: string[] }} MetadataChanges */
+
+/**
+ * @param {ChatMetadata|null|undefined} metadata
+ * @returns {Map<string, string>}
+ */
+function _baselineOf(metadata) {
+    const baseline = new Map();
+    for (const [key, value] of Object.entries(metadata ?? {})) {
+        if (key === 'integrity' || value === undefined) continue;
+        baseline.set(key, JSON.stringify(value));
+    }
+    return baseline;
+}
+
+/**
+ * The chat metadata keys the page changed since it last had them from the server or stored them.
+ * @returns {MetadataChanges|null} Null when nothing changed.
+ */
+export function changedMetadataKeys() {
+    /** @type {MetadataChanges} */
+    const changes = { set: {}, unset: [] };
+    const current = _baselineOf(chat_metadata);
+    for (const [key, json] of current) {
+        if (_metadataBaseline.get(key) !== json) changes.set[key] = chat_metadata[key];
+    }
+    for (const key of _metadataBaseline.keys()) {
+        if (!current.has(key)) changes.unset.push(key);
+    }
+    return Object.keys(changes.set).length || changes.unset.length ? changes : null;
+}
+
+/**
+ * Remembers changes sent under `ref`, so they count as stored once the server says so.
+ * @param {string} ref
+ * @param {MetadataChanges} changes
+ */
+export function noteMetadataSent(ref, changes) {
+    _sentMetadataChanges.set(ref, changes);
+}
+
+setMetadataStoredListener(({ ref, integrity }) => {
+    const changes = _sentMetadataChanges.get(ref);
+    if (!changes) return;
+    _sentMetadataChanges.delete(ref);
+    chat_metadata.integrity = integrity ?? undefined;
+    for (const [key, value] of Object.entries(changes.set)) _metadataBaseline.set(key, JSON.stringify(value));
+    for (const key of changes.unset) _metadataBaseline.delete(key);
+});
 
 /** @typedef {Error & {status: number}} HttpError */
 
@@ -43,6 +102,8 @@ function _metadataContentJSON(metadata) {
 // those cases the previous snapshot no longer describes what the server has, so treat it as unknown.
 export function _resetMetadataSaveSnapshot() {
     _lastSavedMetadataJSON = null;
+    _metadataBaseline = _baselineOf(chat_metadata);
+    _sentMetadataChanges.clear();
 }
 
 // Retries the SAME direct op on a transient failure (network error, 5xx) instead of falling through
@@ -140,6 +201,7 @@ export async function _postChatMetadata(owner, target, metadata) {
             }
             if (result) {
                 _lastSavedMetadataJSON = metadataContentJSON;
+                _metadataBaseline = _baselineOf(freshMetadata);
             }
         } catch (error) {
             console.error('[saveMetadata] Failed to save metadata after retrying:', error);

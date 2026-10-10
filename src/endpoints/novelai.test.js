@@ -515,7 +515,7 @@ async function run() {
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-            type: 'normal', user_message: 'One more time, Rex?', stream: false,
+            type: 'normal', user_message: { is_user: true, name: 'User', mes: 'One more time, Rex?' }, stream: false,
         });
         fakeBackend.server.close();
         pointNovelBackendAt(null);
@@ -567,7 +567,7 @@ async function run() {
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: streamNodeId,
-            type: 'normal', user_message: 'Try to stream, Rex.', stream: true,
+            type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Try to stream, Rex.' }, stream: true,
         });
         fakeBackend.server.close();
         pointNovelBackendAt(null);
@@ -650,7 +650,7 @@ async function run() {
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-            type: 'normal', user_message: 'Warn me, Rex.', stream: false,
+            type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Warn me, Rex.' }, stream: false,
         });
         fakeBackend.server.close();
         pointNovelBackendAt(null);
@@ -676,7 +676,7 @@ async function run() {
         const app = buildTestApp();
         const { status } = await postGenerate(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-            type: 'normal', user_message: 'Are you there, Rex?', stream: false,
+            type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Are you there, Rex?' }, stream: false,
         });
         fakeBackend.server.close();
         pointNovelBackendAt(null);
@@ -761,7 +761,7 @@ async function run() {
         assert.ok(identity, 'the bundled NerdStash tokenizer has an identity');
         return {
             backend, urls, identity,
-            body: { owner_id: writeBackAvatar, character_avatar: writeBackAvatar, node_id: leafId, type: 'normal', user_message: `Any apples, ${name}?`, stream: false },
+            body: { owner_id: writeBackAvatar, character_avatar: writeBackAvatar, node_id: leafId, type: 'normal', user_message: { is_user: true, name: 'User', mes: `Any apples, ${name}?` }, stream: false },
         };
     }
 
@@ -870,7 +870,7 @@ async function run() {
             const ref = `ref-${chatName}`;
             const { data } = await postGenerate(buildTestApp(), {
                 owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                type: 'normal', user_message: `Question for ${chatName}?`, user_message_ref: ref, stream: false,
+                type: 'normal', user_message: { is_user: true, name: 'User', mes: `Question for ${chatName}?` }, user_message_ref: ref, stream: false,
             });
             const branchAfter = await loadBranch(directories, ownerId, chatName);
             const userNode = branchAfter.messages[branchBefore.messages.length];
@@ -906,7 +906,7 @@ async function run() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                    type: 'normal', user_message: `Question for ${chatName}?`, user_message_ref: ref, stream: false,
+                    type: 'normal', user_message: { is_user: true, name: 'User', mes: `Question for ${chatName}?` }, user_message_ref: ref, stream: false,
                 }),
             });
             const text = await res.text();

@@ -11,7 +11,8 @@ import { createStoredCounter, writeBack } from '../../token-count-store.js';
 import { fetchKoboldStatus, koboldCanUseTokenization, rememberRemoteTokenization } from '../../backend-status.js';
 import { resolveTextCompletionGenerationInput } from '../../text-completion-generation-input.js';
 import { assembleTextCompletionPrompt, buildItemizationBreakdown } from '../../text-completion-prompt-orchestrator.js';
-import { getAncestorPath, sanitizeUserMessageExtra } from '../../message-tree-db.js';
+import { getAncestorPath } from '../../message-tree-db.js';
+import { generateTurnOf } from '../../page-writes.js';
 import { storeUserMessage, withStoredMessages } from '../../stored-messages.js';
 import { readCardContent } from '../characters.js';
 import { getGroupsByIds } from '../groups.js';
@@ -203,15 +204,9 @@ router.post('/generate', withGenerationStop(async function (request, response_ge
     if (request.body.owner_id && (request.body.character_avatar || request.body.group_id)) {
         const {
             character_avatar: characterAvatar, group_id: groupId, owner_id: ownerId,
-            node_id: nodeId, type = 'normal',
-            user_message: userMessageText, streaming: streamingRequested = false,
+            type = 'normal', streaming: streamingRequested = false,
             can_abort: canAbortRequested = false,
         } = request.body;
-        // Server-validated (NOT trusted verbatim) - see `sanitizeUserMessageExtra()`'s own doc
-        // comment (message-tree-db.js) and text-completions.js's identical raw-action branch. Only
-        // `.files` is meaningfully consumed downstream for Kobold (no media/image inlining here - see
-        // buildRawActionKoboldRequest()'s own doc comment on this param).
-        const userMessageExtra = sanitizeUserMessageExtra(request.body.user_message_extra);
         // is_impersonate/is_continue/is_swipe are NOT read from the wire - each is 100% derivable
         // from `type` alone - matching text-completions.js's/chat-completions.js's own identical
         // derivation (commit 4a79e197e), extended here to Kobold since the client-side cleanup
@@ -222,6 +217,9 @@ router.post('/generate', withGenerationStop(async function (request, response_ge
         const isSwipe = type === 'swipe' || type === 'regenerate';
 
         const directories = request.user.directories;
+        const turn = await generateTurnOf(response_generate, directories, { ownerId, avatar: characterAvatar, groupId, body: request.body });
+        if (!turn) return;
+        const { nodeId, userMessageText, userMessageExtra } = turn;
 
         let built;
         try {
@@ -243,9 +241,7 @@ router.post('/generate', withGenerationStop(async function (request, response_ge
         // same resolveTextCompletionGenerationInput()/message-tree-db.js persistence primitives.
         const skipPersistence = isImpersonate || type === 'quiet';
         let replyAnchorNodeId = built.anchorNodeId;
-        const userMessage = typeof userMessageText === 'string'
-            ? { name: built.name1, is_user: true, mes: userMessageText, extra: userMessageExtra, send_date: Date.now() }
-            : null;
+        const userMessage = turn.userMessage;
         if (!skipPersistence && typeof userMessageText === 'string' && built.anchorNodeId) {
             const userNodeId = await storeUserMessage(response_generate, {
                 directories, ownerId, anchorNodeId: built.anchorNodeId, ref: request.body.user_message_ref,

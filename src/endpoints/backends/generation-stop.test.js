@@ -185,7 +185,7 @@ async function stopMidStreamCase({ label, router, settings, format, avatar }) {
         const res = await fetch(`${base}/generate`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-Generation-Id': id },
-            body: JSON.stringify({ owner_id: avatar, character_avatar: avatar, node_id: branch.branch.leaf_id, type: 'normal', user_message: 'Go on.', stream: true }),
+            body: JSON.stringify({ owner_id: avatar, character_avatar: avatar, node_id: branch.branch.leaf_id, type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Go on.' }, stream: true }),
         });
         assert.equal(res.status, 200, `${label}: stream started`);
         assert.equal(res.headers.get('X-Generation-Id'), id, `${label}: the server used the page's generation id`);
@@ -261,7 +261,7 @@ async function run() {
             const pending = fetch(`${base}/generate`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-Generation-Id': id },
-                body: JSON.stringify({ owner_id: avatar, character_avatar: avatar, node_id: branch.branch.leaf_id, type: 'normal', user_message: 'Quick.', stream: false }),
+                body: JSON.stringify({ owner_id: avatar, character_avatar: avatar, node_id: branch.branch.leaf_id, type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Quick.' }, stream: false }),
                 signal: controller.signal,
             }).catch(() => null);
             await waitFor(() => backend.state.started);
@@ -292,7 +292,7 @@ async function run() {
             const res = await fetch(`${base}/generate`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ owner_id: avatar, character_avatar: avatar, node_id: branch.branch.leaf_id, type: 'normal', user_message: 'Keep going.', stream: true }),
+                body: JSON.stringify({ owner_id: avatar, character_avatar: avatar, node_id: branch.branch.leaf_id, type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Keep going.' }, stream: true }),
                 signal: controller.signal,
             });
             const reader = res.body.getReader();

@@ -411,7 +411,7 @@ async function run() {
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-            type: 'normal', user_message: 'One more time, Rex?',
+            type: 'normal', user_message: { is_user: true, name: 'User', mes: 'One more time, Rex?' },
         });
         fakeBackend.server.close();
 
@@ -487,7 +487,7 @@ async function run() {
         const app = buildTestApp();
         const { status, headers, bytes } = await postGenerateStreamBytes(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: streamNodeId,
-            type: 'normal', user_message: 'Try to stream, Rex.', streaming: true,
+            type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Try to stream, Rex.' }, streaming: true,
         });
         fakeBackend.server.close();
 
@@ -573,7 +573,7 @@ async function run() {
         const app = buildTestApp();
         const { status } = await postGenerate(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-            type: 'normal', user_message: 'Are you there, Rex?',
+            type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Are you there, Rex?' },
         });
         fakeBackend.server.close();
 
@@ -692,7 +692,7 @@ async function run() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     owner_id: ownerId, character_avatar: avatar, node_id: abortNodeId,
-                    type: 'normal', user_message: 'Abort me, Rex.',
+                    type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Abort me, Rex.' },
                     streaming: true, can_abort: true,
                 }),
                 signal: controller.signal,
@@ -883,7 +883,7 @@ async function run() {
         assert.ok(identity, 'the bundled LLaMA tokenizer has an identity');
         return {
             backend, urls, identity,
-            body: { owner_id: writeBackAvatar, character_avatar: writeBackAvatar, node_id: leafId, type: 'normal', user_message: `Any ships tonight, ${name}?` },
+            body: { owner_id: writeBackAvatar, character_avatar: writeBackAvatar, node_id: leafId, type: 'normal', user_message: { is_user: true, name: 'User', mes: `Any ships tonight, ${name}?` } },
         };
     }
 
@@ -1004,7 +1004,7 @@ async function run() {
             const ref = `ref-${chatName}`;
             const body = {
                 owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                type: 'normal', user_message: `Question for ${chatName}?`, user_message_ref: ref, streaming,
+                type: 'normal', user_message: { is_user: true, name: 'User', mes: `Question for ${chatName}?` }, user_message_ref: ref, streaming,
             };
             let stored;
             if (streaming) {
@@ -1061,7 +1061,7 @@ async function run() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                    type: 'normal', user_message: `Question for ${chatName}?`, user_message_ref: ref, streaming,
+                    type: 'normal', user_message: { is_user: true, name: 'User', mes: `Question for ${chatName}?` }, user_message_ref: ref, streaming,
                 }),
             });
             const text = await res.text();

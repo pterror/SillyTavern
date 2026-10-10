@@ -1,9 +1,37 @@
-import { appendMessages } from './message-tree-db.js';
+import { appendMessages, sanitizeUserMessageExtra } from './message-tree-db.js';
 
 /**
- * @typedef {{ ref: string, node_id: string }} StoredMessage A message the server stored for a generate
- * request, under the ref the page sent for it.
+ * @typedef {{ ref: string, node_id: string, integrity?: string | null }} StoredMessage Something the server stored
+ * for a request under the ref the page sent for it: a message at `node_id`, or (with `integrity`) chat metadata
+ * keys on the node `node_id`, whose integrity slug is then `integrity`.
  */
+
+/**
+ * The user message a raw-action generate request carries (`user_message`): the message as the page has it once
+ * sent, stored as it is.
+ * @param {any} body The request body.
+ * @returns {{ text: string, extra: object, content: Record<string, any> } | null} Its text and attachments (for the
+ * prompt) and the message to store; null when the request carries none.
+ */
+export function sentUserMessageOf(body) {
+    const message = body?.user_message;
+    if (!message || typeof message !== 'object' || Array.isArray(message) || typeof message.mes !== 'string') return null;
+    const content = { ...message };
+    delete content.node_id;
+    return { text: message.mes, extra: sanitizeUserMessageExtra(message.extra), content };
+}
+
+/**
+ * Records something this request stored under a page ref, for the request's answer (see storedMessagesOf()).
+ * @param {import('express').Response} response
+ * @param {StoredMessage} stored
+ */
+export function recordStored(response, stored) {
+    if (typeof stored.ref !== 'string' || stored.ref === '') return;
+    response.locals.storedMessages ??= [];
+    response.locals.storedMessages.push(stored);
+    reportStoredOnErrorAnswers(response);
+}
 
 /**
  * Stores the user message a raw-action generate request carries, as a child of `anchorNodeId`, and
@@ -30,11 +58,7 @@ export async function storeUserMessage(response, { directories, ownerId, anchorN
         response.status(500).send({ error: { message: `Your message couldn't be saved (${reason}), so nothing was generated.` }, user_message_not_saved: true });
         return null;
     }
-    if (nodeId && typeof ref === 'string' && ref !== '') {
-        response.locals.storedMessages ??= [];
-        response.locals.storedMessages.push({ ref, node_id: nodeId });
-        reportStoredOnErrorAnswers(response);
-    }
+    if (typeof ref === 'string') recordStored(response, { ref, node_id: nodeId });
     return nodeId;
 }
 

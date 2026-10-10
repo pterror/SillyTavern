@@ -11,7 +11,8 @@ import { createStoredCounter, writeBack } from '../token-count-store.js';
 import { tokenizers } from '../tokenizer-ids.js';
 import { resolveTextCompletionGenerationInput } from '../text-completion-generation-input.js';
 import { assembleTextCompletionPrompt } from '../text-completion-prompt-orchestrator.js';
-import { getAncestorPath, sanitizeUserMessageExtra } from '../message-tree-db.js';
+import { getAncestorPath } from '../message-tree-db.js';
+import { generateTurnOf } from '../page-writes.js';
 import { storeUserMessage, withStoredMessages } from '../stored-messages.js';
 import { readCardContent } from './characters.js';
 import { getGroupsByIds } from './groups.js';
@@ -325,12 +326,8 @@ router.post('/generate', withGenerationStop(async function (req, res) {
     if (req.body.owner_id && (req.body.character_avatar || req.body.group_id)) {
         const {
             character_avatar: characterAvatar, group_id: groupId, owner_id: ownerId,
-            node_id: nodeId, type = 'normal',
-            user_message: userMessageText,
+            type = 'normal',
         } = req.body;
-        // Server-validated (NOT trusted verbatim) - see `sanitizeUserMessageExtra()`'s own doc
-        // comment (message-tree-db.js) and text-completions.js's identical raw-action branch.
-        const userMessageExtra = sanitizeUserMessageExtra(req.body.user_message_extra);
         // is_impersonate/is_continue/is_swipe are NOT read from the wire - see kobold.js's own
         // identical derivation/comment (extended there from text-completions.js's/
         // chat-completions.js's original commit 4a79e197e).
@@ -339,6 +336,9 @@ router.post('/generate', withGenerationStop(async function (req, res) {
         const isSwipe = type === 'swipe' || type === 'regenerate';
 
         const directories = req.user.directories;
+        const turn = await generateTurnOf(res, directories, { ownerId, avatar: characterAvatar, groupId, body: req.body });
+        if (!turn) return;
+        const { nodeId, userMessageText, userMessageExtra } = turn;
 
         let built;
         try {
@@ -359,9 +359,7 @@ router.post('/generate', withGenerationStop(async function (req, res) {
         // tree-shape edge case. Not re-derived here; identical reasoning applies verbatim.
         const skipPersistence = isImpersonate || type === 'quiet';
         let replyAnchorNodeId = built.anchorNodeId;
-        const userMessage = typeof userMessageText === 'string'
-            ? { name: built.name1, is_user: true, mes: userMessageText, extra: userMessageExtra, send_date: Date.now() }
-            : null;
+        const userMessage = turn.userMessage;
         if (!skipPersistence && typeof userMessageText === 'string' && built.anchorNodeId) {
             const userNodeId = await storeUserMessage(res, {
                 directories, ownerId, anchorNodeId: built.anchorNodeId, ref: req.body.user_message_ref,

@@ -20,14 +20,14 @@ import { chat, chat_metadata } from './chat-state.js';
 import { amount_gen, main_api, max_context } from './generation-params.js';
 import { name1 } from './app-selection-state.js';
 import { charactersStore, setCharacterId } from './character-store.js';
-import { _postChatMetadata, deriveChatAddressNode, saveMetadata } from './metadata-store.js';
-import { isProvisionalNodeId, isStoredNodeId } from './node-identity.js';
+import { _postChatMetadata, changedMetadataKeys, deriveChatAddressNode, noteMetadataSent, saveMetadata } from './metadata-store.js';
+import { isProvisionalNodeId, isStoredNodeId, provisionalNodeId } from './node-identity.js';
 import { setFloatingPrompt } from './authors-note.js';
 import { getCfgPrompt, getGuidanceScale } from './cfg-scale.js';
 import { oai_settings, openai_messages_count, prepareOpenAIMessages, setOpenAIMessageExamples, setOpenAIMessages } from './chat-completion-settings.js';
 import { holdDraft, releaseDraft } from './chat-draft.js';
 import { isFailedSend, keepFailedSend, wasSendStored } from './failed-sends.js';
-import { ensureOpeningRow, healDirtyMessages, updateMessage, storeRefOf, adoptStored } from './chat-store.js';
+import { healDirtyMessages, updateMessage, setStoreRef, storeRefOf, adoptStored } from './chat-store.js';
 import { appendFileContent, hasPendingFileAttachment } from './chats.js';
 import { GENERATION_TYPE_TRIGGERS, inject_ids, SWIPE_DIRECTION, SWIPE_SOURCE } from './constants.js';
 import { collectMessageTitles, isSystemChatItem } from './core-chat-predicates.js';
@@ -50,7 +50,7 @@ import { getTextGenGenerationData, textgenerationwebui_settings as textgen_setti
 import { getFriendlyTokenizerName, getPromptTokenCountAsync, getTokenCountAsync, saveTokenCache, showTrimEstimateWarning } from './tokenizers.js';
 import { ToolManager } from './tool-calling.js';
 import { showTokenizerWarnings, REPLY_NOT_SAVED_EVENT, REPLY_STORED_EVENT } from './tokenizer-notices.js';
-import { shiftDownByOne, shiftUpByOne, waitUntilCondition } from './utils.js';
+import { shiftDownByOne, shiftUpByOne, uuidv4, waitUntilCondition } from './utils.js';
 import { stopServerGenerations, takeStreamStopResult } from './generation-stop.js';
 import { getWorldInfoPrompt, wi_anchor_position, world_info_include_names } from './world-info.js';
 
@@ -138,8 +138,8 @@ window.addEventListener(REPLY_NOT_SAVED_EVENT, (/** @type {any} */ event) => {
 });
 
 // Marks the reply that just arrived as not stored (`extra.reply_not_saved` = its generation id), when
-// the server said so. Nothing on the page writes it: healDirtyMessages() skips it, and a send after it
-// is refused until the server stores it (REPLY_STORED_EVENT below).
+// the server said so. Nothing on the page writes it (healDirtyMessages() and rawActionWritesFor() stop at it), and a
+// send after it is refused until the server stores it (REPLY_STORED_EVENT below).
 function _markReplyNotSaved() {
     const generationId = notSavedGenerationId;
     notSavedGenerationId = null;
@@ -282,6 +282,136 @@ function settlePendingSends(pendingSends) {
             keepFailedSend({ key: pending.key, kind: 'append', message: pending.message });
         }
     }
+}
+
+/**
+ * @typedef {object} RawActionWrites What a raw-action generate request generates from, and what it carries from the
+ * page for the server to store first (src/page-writes.js).
+ * @property {string|null} node_id
+ * @property {string} type
+ * @property {{ refs: string[], messages: object[] }} [opening] The chat's greetings, when none of the chat is stored.
+ * @property {{ refs: string[], messages: object[] }} [page_messages] Messages after the last stored one that no
+ * action stored: an extension can put a message on `chat` without storing it, and upstream's prompt has it.
+ * @property {{ ref: string, target: string|null, set: Record<string, unknown>, unset: string[] }} [page_metadata] The
+ * chat metadata keys changed since the page last had them from the server.
+ */
+
+/**
+ * @param {number} from
+ * @param {number} to Exclusive.
+ * @param {(message: ChatMessage) => object} contentOf
+ * @returns {{ refs: string[], messages: object[] }}
+ */
+function messagesWithRefs(from, to, contentOf) {
+    /** @type {string[]} */
+    const refs = [];
+    /** @type {object[]} */
+    const messages = [];
+    for (let i = from; i < to; i++) {
+        let ref = storeRefOf(chat[i]);
+        if (ref === undefined) {
+            ref = uuidv4();
+            setStoreRef(chat[i], ref);
+        }
+        refs.push(ref);
+        messages.push(contentOf(chat[i]));
+    }
+    return { refs, messages };
+}
+
+/**
+ * The user message a raw-action generate request carries: the one this generation sent, as it is on `chat` now
+ * (a `MESSAGE_SENT` handler may have replaced it), without the page's own fields.
+ * @param {ChatMessage|undefined} sent
+ * @returns {object|undefined}
+ */
+function sentUserMessageForRequest(sent) {
+    const key = storeRefOf(sent);
+    if (sent === undefined || key === undefined) return undefined;
+    let message = sent;
+    for (let i = chat.length - 1; i >= 0; i--) {
+        if (storeRefOf(chat[i]) === key) {
+            message = chat[i];
+            break;
+        }
+    }
+    const content = { ...message };
+    delete content.node_id;
+    delete content.swipes;
+    delete content.swipe_info;
+    delete content.swipe_id;
+    return content;
+}
+
+/**
+ * What a raw-action generate request generates from and carries from the page.
+ * @param {string} type The generation type.
+ * @param {ChatMessage|undefined} lastMessage The message the generation is for, as it was before this generation
+ * changed `chat` (a regenerate takes it off).
+ * @param {number} lastMessageIndex Its index then.
+ * @returns {RawActionWrites}
+ */
+function rawActionWritesFor(type, lastMessage, lastMessageIndex) {
+    const end = Math.min(lastMessageIndex + 1, chat.length);
+    /** @type {RawActionWrites} */
+    const writes = { node_id: null, type };
+    const inGroup = selected_group != null && selected_group !== '';
+
+    let lastStored = -1;
+    for (let i = end - 1; i >= 0; i--) {
+        if (isStoredNodeId(chat[i]?.node_id)) {
+            lastStored = i;
+            break;
+        }
+    }
+    let from = lastStored + 1;
+    if (lastStored >= 0) {
+        writes.node_id = chat[lastStored].node_id;
+    } else if (end > 0) {
+        if (chat[0].node_id == null || chat[0].node_id === '') {
+            updateMessage(0, { node_id: provisionalNodeId(chat[0].name, chat[0].mes) });
+        }
+        let openingEnd = 0;
+        while (openingEnd < end && isProvisionalNodeId(chat[openingEnd]?.node_id) && (inGroup || openingEnd === 0)) openingEnd++;
+        if (openingEnd > 0 && String(chat[0].mes ?? '').trim() !== '') {
+            const speaker = getCurrentCharacter()?.name;
+            writes.opening = messagesWithRefs(0, openingEnd, message => ({
+                name: message.name ?? speaker, is_user: message.is_user === true, is_system: message.is_system === true,
+                send_date: message.send_date ?? new Date().toISOString(), mes: message.mes, extra: message.extra ?? {},
+            }));
+            from = openingEnd;
+        }
+    }
+
+    let stop = from;
+    while (stop < end && typeof chat[stop]?.extra?.reply_not_saved !== 'string' && !isFailedSend(chat[stop])) stop++;
+    if (stop > from) writes.page_messages = messagesWithRefs(from, stop, message => message);
+    if (stop < end) {
+        toastr.warning(t`${end - stop} message(s) after an unsaved message weren't saved: save or discard that message first.`, t`Not saved`, { preventDuplicates: true });
+    }
+
+    if (isStoredNodeId(lastMessage?.node_id)) {
+        // What the generation is for is stored; nothing before it can be waiting to be.
+        writes.node_id = lastMessage.node_id;
+        delete writes.opening;
+        delete writes.page_messages;
+    } else if (type === 'regenerate' && lastMessage != null) {
+        // The reply being replaced was never stored, so there is nothing to add an alternative to: a new reply.
+        writes.type = 'normal';
+    }
+
+    const changes = changedMetadataKeys();
+    if (changes || writes.opening) {
+        const ref = uuidv4();
+        const sent = changes ?? { set: {}, unset: [] };
+        noteMetadataSent(ref, sent);
+        const groupChat = inGroup ? groupsStore.get(selected_group)?.chat_id : undefined;
+        const target = inGroup
+            ? (groupChat !== undefined && groupChat !== '' ? groupChat : null)
+            : (lastStored >= 0 ? deriveChatAddressNode(null) : null);
+        writes.page_metadata = { ref, target, set: sent.set, unset: sent.unset };
+    }
+    return writes;
 }
 
 /**
@@ -954,10 +1084,10 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
     // few hundred lines above, at this function's very start) is only ever read from the send textarea
     // when `type !== 'regenerate' && type !== 'swipe' && type !== 'quiet' && !isImpersonate && !dryRun
     // && !depth` - for every 'impersonate'/'quiet' call, that condition is false, so `textareaText` is
-    // unconditionally `''` for both. `userMessageText` below is therefore always `undefined` for these
+    // unconditionally `''` for both, so no user message is sent for these
     // two types - there is no new-user-text case to worry about for them. CORRECTION to an earlier
     // draft of this comment: 'continue' is NOT exempted by this same condition (only 'regenerate'/
-    // 'swipe'/'quiet' are named in it) - `textareaText`, and therefore `userMessageText`, CAN be
+    // 'swipe'/'quiet' are named in it) - `textareaText`, and therefore a sent user message, CAN be
     // non-empty for a continue call, if the user left text in the send box before clicking Continue.
     // This is real, not hypothetical - see JUDGMENT CALL #1 above for the full investigation and the
     // server-side `continueUserTextConflict` guard this required. Confirmed against the real call sites too: there is no dedicated
@@ -1072,8 +1202,8 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
     // runs. Verified (not assumed) that server-side `resolveTextCompletionGenerationInput()`'s already-
     // generic file-attachment inlining (`file-attachment-inline.js`, wired into
     // `text-completion-prompt-orchestrator.js`) reads `.extra` off whatever chat entry it's given,
-    // tree-loaded or freshly in-memory alike - so forwarding just the REFERENCE (`user_message_extra`
-    // below, sourced from `sentUserMessage.extra`) is sufficient; no re-upload, no client-side
+    // tree-loaded or freshly in-memory alike - so forwarding just the REFERENCE (the sent message's
+    // `extra`, in `user_message` below) is sufficient; no re-upload, no client-side
     // re-read of the file, needed. Media/image inlining is chat-completion-specific (no vision-style
     // inlining exists for these four backends), so `.media`/`.media_index`/`.inline_image` are
     // harmlessly forwarded-but-unused here - only `.files` is ever actually read for Kobold/NovelAI/
@@ -1106,90 +1236,25 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
         // card/prompt resolution. Falls back to the plain per-character ownerId when not in a group,
         // unchanged from before.
         const ownerId = groupId != null ? String(groupId) : (characterAvatar != null ? String(characterAvatar).replace('.png', '') : undefined);
-        // UPDATE (this task - node_id-only addressing cutover): `branch_name` is REMOVED from the wire
-        // payload entirely (see src/endpoints/backends/text-completions.js's own
-        // buildRawActionTextCompletionRequest() ADDRESSING MODEL doc comment) - the server now requires
-        // an explicit `node_id` instead: a real node id string addresses that specific node, or the
-        // literal `null` asserts "this is a genuinely new, empty conversation" (server-verified, not
-        // trusted blindly). The real node the client is generating from/replying to/replacing is
-        // `lastMessage` - captured near the top of this function, BEFORE the 'regenerate'-only "delete
-        // the last message from `chat`" branch a few hundred lines above (see that branch's own
-        // comment) - deliberately NOT re-read as `chat[chat.length - 1]` here, since for 'regenerate'
-        // specifically that array has already had its own last entry spliced out by then, which would
-        // resolve to the WRONG (parent) node instead of the one actually being regenerated. For every
-        // other type this gate covers (normal/continue/impersonate/quiet/swipe), `lastMessage` and
-        // `chat[chat.length - 1]` are identical anyway (nothing was deleted), so this is a strict
-        // generalization, not a behavior change for those types - matches `isSwipe`'s own established
-        // `type == 'swipe' || type == 'regenerate'` "same anchor either way" treatment (see the
-        // `isSwipe` local's own doc comment above). `isStoredNodeId()` (this file's own tree-row/
-        // provisional-greeting distinction) guards against sending a provisional (`card:`-prefixed) id
-        // for an unwritten opening greeting - the server would reject that as an unknown node. `null`
-        // only means "no real history yet" when this owner's anchor is actually empty - a provisional
-        // greeting can still coexist with real history elsewhere in the tree (other branches, a
-        // previously-used greeting), so send is exactly the "someone used this greeting" moment
-        // ensureOpeningRow() is meant to fire on - materialize it here (a no-op if not provisional) so
-        // the anchor is never falsely treated as "no history". A message that's neither provisional
-        // NOR stored (its node_id is missing/stale some other way - e.g. a prior write that never
-        // actually landed client-side) gets the same "don't trust it as empty" treatment, via the
-        // same generic reconciliation saveChatConditional({heal:true}) already uses elsewhere.
-        if (lastMessage != null && !isStoredNodeId(lastMessage.node_id)) {
-            if (isProvisionalNodeId(lastMessage.node_id)) {
-                await ensureOpeningRow(lastMessageIndex);
-            } else {
-                await healDirtyMessages();
-            }
-            lastMessage = /** @type {ChatMessage | undefined} */ (chat[lastMessageIndex]);
-        }
-        const anchorNodeId = isStoredNodeId(lastMessage?.node_id) ? lastMessage.node_id : null;
+        // The node to generate from is `lastMessage`, captured before a regenerate takes it off `chat`; the server
+        // stores what the page has that it doesn't first (rawActionWritesFor()).
+        const rawActionWrites = rawActionWritesFor(type, lastMessage, lastMessageIndex);
         // `characterAvatar` is required unconditionally, group turn or not: even with `groupId` set,
         // a responding member's own avatar must resolve for real (defensively falls through to the
         // legacy path instead of assuming this, for the unlikely case `getCurrentCharacter()` were
         // ever unresolved mid-group-turn) - see JUDGMENT CALL #1 above for why this is verified to
         // always be true in practice for every type this gate covers.
         if (ownerId != null && characterAvatar != null) {
-            // Omitted (undefined) for any type that doesn't add a new message - matches the server's
-            // own documented contract. In practice, given the scope above, this path is reached for
-            // type 'normal'/undefined (where textareaText is the just-sent text, or '' for a depth>0
-            // tool-call follow-up generation, which likewise adds no new user message), for
-            // 'impersonate'/'quiet' (where textareaText is unconditionally '' - see JUDGMENT CALL #3
-            // above), and for 'swipe'/'regenerate' (excluded from the same textareaText-read condition
-            // by name, so likewise unconditionally '' - see that condition a few hundred lines above:
-            // `type !== 'regenerate' && type !== 'swipe' && type !== 'quiet' && !isImpersonate &&
-            // !dryRun && !depth`), so userMessageText is always undefined for all four of these types.
-            // 'continue' is the ONE exception: it is NOT named in that same condition, so
-            // `userMessageText` CAN be a real, non-empty string for it (leftover send-box text at the
-            // moment Continue was clicked) - see JUDGMENT CALL #1/#3 above for the full investigation
-            // and the server-side `continueUserTextConflict` guard this required. Sent through unchanged
-            // either way (`user_message` below); the server decides what to do with it.
-            const userMessageText = textareaText !== '' ? textareaText : undefined;
-            // Only meaningful alongside a real `userMessageText` (the server ignores it otherwise -
-            // see buildRawActionTextCompletionRequest()'s own doc comment) - `sentUserMessage` (set a
-            // few hundred lines above, inside the SAME "for normal messages sent from user.." block
-            // whose `sendMessageAsUser()` call is the only thing that can populate a fresh
-            // `extra.files`/`extra.media` before this gate runs) is undefined whenever no message was
-            // actually appended this call (e.g. a plain continue/swipe/impersonate/quiet), in which
-            // case this is simply `undefined` too - a real, verified "nothing to forward" case, not a
-            // dropped value. The server re-validates this regardless of what's sent here (see
-            // `sanitizeUserMessageExtra()`, message-tree-db.js) - this is a REFERENCE to an attachment
-            // already uploaded by `populateFileAttachment()`, never the file itself.
-            const userMessageExtra = userMessageText !== undefined ? sentUserMessage?.extra : undefined;
+            const sentMessage = sentUserMessageForRequest(sentUserMessage);
             rawActionGenerateData = {
                 character_avatar: characterAvatar,
                 group_id: groupId,
                 owner_id: ownerId,
-                node_id: anchorNodeId,
-                type: type,
-                // is_impersonate/is_continue/is_swipe are NOT sent - the server derives all three from
-                // `type` alone (isImpersonate = type === 'impersonate', isContinue = type ===
-                // 'continue', isSwipe = type === 'swipe' || type === 'regenerate' - see
-                // src/endpoints/backends/text-completions.js's/kobold.js's own identical server-side
-                // derivation) - sending them too was sending the same fact twice in two encodings.
-                user_message: userMessageText,
-                // See JUDGMENT CALL above this gate (`!hasPendingFileAttachment()` removal) for the
-                // full rationale - a forwarded REFERENCE, not a re-upload.
-                user_message_extra: userMessageExtra,
+                ...rawActionWrites,
+                // The message as sent, once `MESSAGE_SENT`'s handlers have run; the server stores it as it is.
+                user_message: sentMessage,
                 // The server echoes this with the node it stores the user message at (`stored`).
-                user_message_ref: userMessageText !== undefined ? storeRefOf(sentUserMessage) : undefined,
+                user_message_ref: sentMessage !== undefined ? storeRefOf(sentUserMessage) : undefined,
                 // Kobold-only: mirrors the EXACT real condition getKoboldGenerationData() (public/
                 // scripts/kai-settings.js) and its server-side port createKoboldGenerationData()
                 // (src/kobold-generation-data.js) both use for their own `streaming` field -
@@ -1390,7 +1455,7 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
     // start and here exclude 'continue' by name (only 'regenerate'/'swipe'/'quiet'/dryRun/depth are named in
     // processCommands()'s own skip condition), so a plain continue reaches this gate exactly like a normal turn
     // does. Same real edge case applies too (see the text-completion cutover's own JUDGMENT CALL #1 above): a
-    // continue's `userMessageText` CAN be non-empty (leftover send-box text), handled by the identical
+    // continue CAN send a user message (leftover send-box text), handled by the identical
     // `continueUserTextConflict` guard in chat-completions.js's own route handler.
     // UPDATE (this task - file/media attachment cutover): `!hasPendingFileAttachment()` REMOVED -
     // identical rationale to the text-completion cutover's own removal above. Chat-completion is
@@ -1443,37 +1508,11 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
         // card/prompt resolution. Falls back to the plain per-character ownerId when not in a group,
         // unchanged from before.
         const ownerId = groupId != null ? String(groupId) : (characterAvatar != null ? String(characterAvatar).replace('.png', '') : undefined);
-        // Same node_id-only addressing as the text-completion cutover above (not assumed) - see that
-        // block's own UPDATE comment for the full rationale (`lastMessage`, captured before
-        // 'regenerate's own delete-last-message branch, not `chat[chat.length - 1]`), including why an
-        // unused greeting is materialized here rather than assumed to mean "no history", and why a
-        // present-but-not-stored node_id gets the same generic healing treatment.
-        if (lastMessage != null && !isStoredNodeId(lastMessage.node_id)) {
-            if (isProvisionalNodeId(lastMessage.node_id)) {
-                await ensureOpeningRow(lastMessageIndex);
-            } else {
-                await healDirtyMessages();
-            }
-            lastMessage = /** @type {ChatMessage | undefined} */ (chat[lastMessageIndex]);
-        }
-        const anchorNodeId = isStoredNodeId(lastMessage?.node_id) ? lastMessage.node_id : null;
+        const rawActionWrites = rawActionWritesFor(type, lastMessage, lastMessageIndex);
         // `characterAvatar` is required unconditionally, group turn or not - see the text-completion
         // cutover's own identical precondition/rationale above.
         if (ownerId != null && characterAvatar != null) {
-            // Same rationale as the text-completion cutover above: omitted (undefined) for any type that doesn't add
-            // a new message. Given the scope above, this path is reached for type 'normal'/undefined (where
-            // textareaText is the just-sent text, or '' for a depth>0 tool-call follow-up generation, which likewise
-            // adds no new user message), for 'impersonate'/'quiet' (where textareaText is unconditionally '' - see
-            // the text-completion cutover's own JUDGMENT CALL #3 above), and for 'swipe'/'regenerate' (excluded from
-            // that same textareaText-read condition by name - see the text-completion cutover's own JUDGMENT CALL
-            // #5 above), so userMessageText is always undefined for all four of these types. 'continue' is the one
-            // exception (same as the text-completion cutover above): it CAN be non-empty - sent through unchanged
-            // regardless, handled server-side by `continueUserTextConflict`.
-            const userMessageText = textareaText !== '' ? textareaText : undefined;
-            // Identical mechanism/rationale to the text-completion cutover's own `userMessageExtra`
-            // local above - `sentUserMessage` is the same single local, set at most once per
-            // `Generate()` call, shared by both raw-action gates.
-            const userMessageExtra = userMessageText !== undefined ? sentUserMessage?.extra : undefined;
+            const sentMessage = sentUserMessageForRequest(sentUserMessage);
             // Chunk (c): advertise the client's own ToolManager-registered tools (browser-extension
             // tools that genuinely can't execute server-side - DOM access, extension state, etc.) via
             // the NEW `client_tools` field, exactly `ToolManager.registerFunctionToolsOpenAI()`'s own
@@ -1517,18 +1556,11 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
                 character_avatar: characterAvatar,
                 group_id: groupId,
                 owner_id: ownerId,
-                node_id: anchorNodeId,
-                type: type,
-                // is_impersonate/is_continue/is_swipe are NOT sent - see the text-completion cutover's
-                // own identical UPDATE comment above (server derives all three from `type` alone).
-                user_message: userMessageText,
-                // See JUDGMENT CALL above this gate (`!hasPendingFileAttachment()` removal) for the
-                // full rationale - a forwarded REFERENCE, not a re-upload. Unlike the text-completion
-                // cutover, chat-completion's server-side pipeline actually inlines `.media` too, not
-                // just `.files`.
-                user_message_extra: userMessageExtra,
+                ...rawActionWrites,
+                // The message as sent, once `MESSAGE_SENT`'s handlers have run; the server stores it as it is.
+                user_message: sentMessage,
                 // The server echoes this with the node it stores the user message at (`stored`).
-                user_message_ref: userMessageText !== undefined ? storeRefOf(sentUserMessage) : undefined,
+                user_message_ref: sentMessage !== undefined ? storeRefOf(sentUserMessage) : undefined,
                 // Chunk (c) - see this block's own comment on `clientToolsPayload` immediately above.
                 client_tools: clientToolsPayload,
                 // THIS TASK - see this block's own comment on `stealthToolNamesPayload` immediately above.
@@ -2839,9 +2871,7 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
             return await swipe(/** @type {SwipeEvent} */ (/** @type {unknown} */ (null)), SWIPE_DIRECTION.RIGHT, { source: SWIPE_SOURCE.AUTO_SWIPE, repeated: true, forceMesId: chat.length - 1 });
         }
 
-        console.debug('/api/chats/save called by /Generate');
-        // eslint-disable-next-line no-restricted-syntax -- willUseRawAction is only ever false here for the neutral/no-character chat, and saveChat() already no-ops the tree/legacy write for that state; kept for its unconditional token-cache/itemized-prompts flush, unrelated to persistence.
-        await saveChatConditional();
+        saveTokenCache();
         unblockGeneration(type);
         streamingProcessor = null;
 
