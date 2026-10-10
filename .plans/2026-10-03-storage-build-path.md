@@ -997,6 +997,24 @@ the commit queue between commits, so a read between two slices sees the publishe
 messages at their new depth, the rest at their old one. The tag fold covers its gap with a pending-merge entry that
 readers fold in, and with counts marked as estimates. For depth, nothing names what the reads between slices answer
 (a count marked as an estimate, a pending offset folded in on read, or waiting), or what a snapshot is taken of.
+Answered (coordinator, 10-10): the rewrite runs as `Job::Derive` slices in the commit queue, as the tag fold does.
+While it is under way the tree carries a pending-rewrite marker, written with the move and cleared by the last slice.
+A message-count read for a session in a tree with that marker answers a count marked as an estimate, as tag counts
+are marked during a fold: no waiting, no per-read ancestor walk (moves are rare explicit acts, so the window is
+short). "The snapshot" meant only that each read sees one consistent state (the sequence-number snapshot); the marker
+covers the partial rewrite. A crash mid-rewrite resumes it from the marker.
+
+Stop (10-10), three questions sessions need (behaviour):
+- A message opening its tree (it has no parent) is deleted while a session's pointer, or a remembered (session, tree)
+  or (user, tree) position, names it: it has no surviving ancestor to move to. Today's `deleteAlternative` refuses
+  only the opening that is the anchor's default child; with several sessions, one session's shown opening can be
+  another's unshown one.
+- After a session is deleted, the (user, tree) entry can still name it as the user's last session in that tree, which
+  is what a request with no session header answers (`characters[].chat`, `getCurrentChatId()`).
+- Whether an append that moves its session's pointer (a sent message, a generated reply or swipe, a graft) also
+  records a fork selection by that session and user. Today the append sets the parent's `default_child_id`, so every
+  reader then follows the new reply; under the cascade, a reader with no choice of their own follows "the last choice
+  anyone made there", which only a selection record changes.
 
 Where layer 1 goes: inside 5b, on the engine. Its own storage step (SQLite `state_changes`, saved states every 64th
 depth rebuilt lazily after an epoch bump) conflicts with the design: a structure caught up when read is what revision
