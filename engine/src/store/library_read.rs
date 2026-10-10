@@ -1009,7 +1009,9 @@ pub fn entity(view: &View, e: u64) -> Result<Option<Entity>, StoreError> {
         && let Some((_, Some(b))) = books::link_of(view, e)?
     {
         let r = books::resolve(view, b)?;
-        let k = library::entity_info(view, r)?.map(|(_, k, _)| k).unwrap_or_default();
+        let k = library::entity_info(view, r)?
+            .map(|(_, k, _)| k)
+            .unwrap_or_default();
         let version = view
             .get(&key::id(key::VERSION, r))?
             .map(|b| super::kinds::parse_pos(&b))
