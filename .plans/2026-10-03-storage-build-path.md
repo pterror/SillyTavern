@@ -1152,6 +1152,32 @@ in `chat_tests.rs` and `engine/store.test.js`):
   `ids` (outside keys), `nextIds`, `bookmarks`, `treeBookmarks`, `bookmarksAt`, `state`, `stats`, `itemization`,
   `sent` (send keys). Each runs against one state of the keyspace, after replay.
 
+Built, the message codec (10-10; `src/chat-codec.js`, test `src/chat-codec.test.js`; flags and time codes in
+`engine/src/store/chat.rs`):
+- `encodeMessage(message, time, speaker)` turns a message as stored today (upstream's object after
+  `sanitizeForStorage()`) into the append's values and per-key values; `messageRecords()` makes its records;
+  `decodeMessage(stored, speakerOf)` gives back the JSON, byte for byte: every key in its order, every value as
+  `JSON.stringify` wrote it. Tested on the shapes the page, the server and upstream's page make, odd values (a
+  non-string `mes`, `extra` an array, keys starting with the writer's marks, a lone surrogate, an empty object), and
+  a speaker renamed since (the name, `original_avatar` and `force_avatar` follow it; a message with a name of its own
+  keeps it), native and wasm.
+- Flags (one byte for the usual messages): `is_user`, `send_date` (its own value, the receive time as a number or
+  as an ISO string, absent), the key order (three usual orders, or an order value), `is_system` (absent first, as
+  upstream's replies have none), then `mes`, `extra`, `name`, `is_name`, and a bit each for `original_avatar` and
+  `force_avatar` being the speaker's.
+- Codes: top-level keys 1–15 (`mes`, `is_user`, `is_system`, `is_name`, `name`, `send_date`, `extra`,
+  `gen_started`, `gen_finished`, `force_avatar`, `original_avatar`, `title`, `persona`), the writer's own values
+  (order 10, `extra` order 11, flags after a change 16, speaker after a change 18, read times 20–22, number times
+  23–25), `extra`'s known keys 64 on; an unknown top-level key is stored as `\u0001` + key, an `extra` key starting
+  with `\u0001` or `\u0002` after `\u0002`.
+
+| choice | picked | reason |
+|---|---|---|
+| key order | three usual orders in the flags (the page's message, the server's reply, upstream's reply), else an order value: each key's place in the usual order, one character each | the usual messages store no order; any other order round-trips |
+| `send_date` | the receive time as a number or ISO string: flags only; another ISO string or number: a delta; any other value: JSON (and the time the writer read from it) | the server's own replies cost nothing; the page's cost a small delta |
+| times as numbers | their own codes (`*_NUM`), a delta | upstream and the server write both forms |
+| later changes to fixed slots | values of their own (flags 16, speaker 18, a name as text 5) | the append is never rewritten; a change writes only itself |
+
 Where layer 1 goes: inside 5b, on the engine. Its own storage step (SQLite `state_changes`, saved states every 64th
 depth rebuilt lazily after an epoch bump) conflicts with the design: a structure caught up when read is what revision
 3 dropped (design Q-D7), and its migration step 6 is a background pass (CLAUDE.md: one-off scripts). The design and

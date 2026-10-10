@@ -17,11 +17,11 @@ use crate::search::{self, Scope};
 
 use super::sessions::{self, Fork};
 
-/// A message's known top-level keys as field codes (1–63; `extra`'s known keys take 64 on): its text (`mes`),
-/// the fixed booleans and `name` when they hold another value than the flags can say, `send_date`, `extra` when not
-/// an object, and the generation times. `SEND_AT`, `GEN_STARTED_AT` and `GEN_FINISHED_AT` hold, as `messageTime`,
-/// the time the writer read from a JSON `send_date` or generation time the engine can't read as `Date.parse()`
-/// does.
+/// A message's known top-level keys as field codes (1–63; `extra`'s known keys take 64 on; the JavaScript writer,
+/// `src/chat-codec.js`, holds the whole list). Codes the engine reads: the text (`mes`), the fixed booleans when they
+/// hold another value than the flags can say, `send_date` and the generation times. A time is a `messageTime` delta
+/// from the append's time: of `SEND_DATE`, `GEN_STARTED`, `GEN_FINISHED` for an ISO string, of the `_NUM` codes for a
+/// number; for another JSON value, the `_AT` codes hold the time the writer read from it (`parseTimestamp()`).
 pub const MES: u64 = 1;
 pub const IS_USER: u64 = 2;
 pub const IS_SYSTEM: u64 = 3;
@@ -34,6 +34,9 @@ pub const GEN_FINISHED: u64 = 9;
 pub const SEND_AT: u64 = 20;
 pub const GEN_STARTED_AT: u64 = 21;
 pub const GEN_FINISHED_AT: u64 = 22;
+pub const SEND_DATE_NUM: u64 = 23;
+pub const GEN_STARTED_NUM: u64 = 24;
+pub const GEN_FINISHED_NUM: u64 = 25;
 
 /// `messageAppend`'s slots.
 pub const APPEND_ID: usize = 0;
@@ -46,21 +49,32 @@ pub const APPEND_SESSION: usize = 8;
 pub const APPEND_USER: usize = 9;
 pub const APPEND_SEND_KEY: usize = 10;
 
-/// `messageAppend`'s `flags`: the shape of the message's fixed values, two bits each unless said:
-/// - bits 0–1 `is_user`, 2–3 `is_system`: 0 false, 1 true, 2 absent, 3 another value (a JSON value of its own);
-/// - bit 4 `send_date`: 0 present (its `messageTime` or JSON value, else the ISO string of the append's time),
-///   1 absent;
-/// - bits 5–6 `mes`: 0 the append's text (then edited as the text value `MES`), 1 absent, 2 another value;
-/// - bits 7–8 `extra`: 0 an object (its keys are values of their own), 1 absent, 2 another value;
-/// - bits 9–10 `name`: 0 a string (the append's `name`, else the speaker's), 1 absent, 2 another value;
-/// - bits 11–12 `is_name`: 0 absent, 1 true, 2 false, 3 another value;
-/// - bit 13: `original_avatar` is the speaker's key; bit 14: `force_avatar` is the speaker's thumbnail URL.
-pub const FLAG_SEND_DATE_SHIFT: u32 = 4;
-pub const FLAG_MES_SHIFT: u32 = 5;
+/// `messageAppend`'s `flags`: the shape of the message's fixed values, two bits each (lowest first), laid out so
+/// the usual messages (one the page sends, a reply the server stores, an upstream reply) take one byte:
+/// - `is_user`: 0 false, 1 true, 2 absent, 3 another value (a JSON value of its own);
+/// - `send_date`: 0 its own value (a `messageTime` or JSON value), 1 the append's time as a number, 2 the ISO
+///   string of the append's time, 3 absent;
+/// - key order: 0, 1, 2 one of the writer's three usual orders, 3 its own order value;
+/// - `is_system`: 0 absent, 1 false, 2 true, 3 another value;
+/// - `mes`: 0 the append's text (then edited as the text value `MES`), 1 absent, 2 another value;
+/// - `extra`: 0 an object (its keys are values of their own), 1 absent, 2 another value;
+/// - `name`: 0 a string (the append's `name`, else the speaker's), 1 absent, 2 another value;
+/// - `is_name`: 0 absent, 1 true, 2 false, 3 another value;
+/// - then one bit each: `original_avatar` is the speaker's key; `force_avatar` is the speaker's thumbnail URL.
+pub const FLAG_IS_USER: u32 = 0;
+pub const FLAG_SEND_DATE: u32 = 2;
+pub const FLAG_ORDER: u32 = 4;
+pub const FLAG_IS_SYSTEM: u32 = 6;
+pub const FLAG_MES: u32 = 8;
+pub const FLAG_EXTRA: u32 = 10;
+pub const FLAG_NAME: u32 = 12;
+pub const FLAG_IS_NAME: u32 = 14;
+pub const FLAG_ORIGINAL_AVATAR: u32 = 16;
+pub const FLAG_FORCE_AVATAR: u32 = 17;
 
 /// A message's text is the append's own (its `mes` is a string).
 pub fn text_in_append(flags: u64) -> bool {
-    (flags >> FLAG_MES_SHIFT) & 3 == 0
+    (flags >> FLAG_MES) & 3 == 0
 }
 
 /// A time as a key component that sorts as the time does (times are within ±(2^53 - 1)).
