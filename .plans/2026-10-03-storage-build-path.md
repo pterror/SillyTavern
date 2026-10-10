@@ -1804,8 +1804,17 @@ row; the benches. Nothing routes to it: at the cut (5f) `/query` reads `lib.quer
 new `/api/worldinfo/search` `books.search`, the pair postings' route and setting are added, and the server runs
 `runPairPostings()` after listening. Follow-ups (10-11, in progress): list rows read narrow (done, below); pair lists driving a phrase's candidates
 (done, "Pairs driving the walk" below); the 10^6 bulk load under 300 s (done, "Bulk load under 300 s" below);
-session names unique per user; a character book entry's `group` and
-`automationId` searched.
+session names unique per user (stopped, below); a character book entry's `group` and `automationId` searched; then
+chat search's substring scan on top of whole words (item 6, coordinator 10-11).
+
+Stop (10-11), session names unique per user (follow-up 4). Names are to be unique per user across trees, so a
+session moving into another tree never clashes. But a session has no one user: every move, append and choice
+carries the user who made it (design D8, D9), and nothing records a session's owner (its key record names no user).
+Today's exact lookup (`sessions::by_name`) keeps the sessions the asking user has moved in the tree. Not settled:
+whose names a session's name must differ from, and so which set the suffix scheme checks on a create or rename: the
+sessions of the user who first moved it (an owner, which would need recording), every user who has moved it (a
+rename then checks each of their sets, and a second user's first move could bring a clash), or the namer's (the
+user renaming it).
 
 Built, list rows read narrow (10-11, 5d follow-up 1; `library_read::entities_only`, `keys_many`, binding
 `libraryEntities(ids, only?)`; JS `listRowValues()`, `LibraryEngine.query`, `tagKeys`; tests
