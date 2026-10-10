@@ -1314,6 +1314,15 @@ Built, ending a path (10-10; `engine/src/log/format.rs`, `store/chat.rs`, `store
 | a move to a root | its own kind, `pointerRoot` | `pointerMove`'s target is a required message; an optional one would cost every move a header bit and a new base |
 | a history entry's target | the message's id × 2, or the tree's id × 2 + 1 | one value for both, a bit more than before; a root needs its tree to be landed on |
 
+Stop (10-10), back and forward over a session's history (behaviour). The design makes a back or forward step a pointer
+move like any other (design 4.1 and 5: "move a session's pointer (incl. entering a tree, back, forward)"), and every
+pointer move appends a history entry. Nothing names where in its history a session is. So, after going back once,
+what a second "back" does is not settled: with no place kept, it goes to the entry before the newest one, which is
+where the first step came from (the two steps alternate); going back step by step, as a browser's or Discord's arrows
+do, needs the session's place in its history kept somewhere (and says whether a step back appends an entry, and what
+happens to the entries after that place when the session then moves elsewhere: kept and still reachable by forward,
+or passed over). Not built until answered; the other pieces don't depend on it.
+
 Where layer 1 goes: inside 5b, on the engine. Its own storage step (SQLite `state_changes`, saved states every 64th
 depth rebuilt lazily after an epoch bump) conflicts with the design: a structure caught up when read is what revision
 3 dropped (design Q-D7), and its migration step 6 is a background pass (CLAUDE.md: one-off scripts). The design and
