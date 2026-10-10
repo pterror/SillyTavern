@@ -504,7 +504,7 @@ router.post('/generate', withGenerationStop(async function (req, res) {
             // forwardAndPersistCompactStream()'s own doc comment) - `data.logprobs` is carried through
             // as a `0x02` probabilities frame so per-token logprob display keeps working.
             // `pendingAssistantPersist` only gates whether the final text also gets persisted.
-            await forwardAndPersistCompactStream(response, res, pendingAssistantPersist, json => json?.token, json => json?.logprobs, null, warnings);
+            await forwardAndPersistCompactStream(response, res, pendingAssistantPersist, json => json?.token, json => json?.logprobs, warnings);
         } else {
             if (!response.ok) {
                 const text = await response.text();

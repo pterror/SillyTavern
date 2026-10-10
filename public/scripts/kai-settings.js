@@ -248,8 +248,6 @@ export async function generateKoboldWithStreaming(generate_data, signal) {
                     state.assistantNodeId = event.assistantNodeId;
                 } else if ('control' in event && event.control?.stored) {
                     state.stored = event.control.stored;
-                } else if ('control' in event && event.control?.itemization) {
-                    state.itemization = event.control.itemization;
                 } else if ('control' in event && event.control?.warnings) {
                     showTokenizerWarnings(event.control.warnings);
                 }

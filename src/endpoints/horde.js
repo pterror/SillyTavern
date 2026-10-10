@@ -368,9 +368,6 @@ async function buildRawActionHordePayload(request, response) {
     return {
         body: { prompt, params, trusted_workers: !!trustedWorkers, models: Array.isArray(models) ? models : [] },
         rawActionPersist,
-        // Same gating as `rawActionPersist` above - see text-completions.js's identical comment for
-        // why impersonate/quiet must still reach the client completely unmodified.
-        itemization: rawActionPersist ? built.itemization : null,
     };
 }
 
@@ -422,16 +419,12 @@ async function fetchHordeJobStatus(jobId, agent) {
  * @param {string} params.agent
  * @param {object|null} params.rawActionPersist Same shape `persistAssistantReply()` takes minus
  * `directories`/`ownerId` (already merged in by the caller) - or `null` to skip persistence.
- * @param {Record<string, *>} [params.itemization] Raw-action prompt-itemization breakdown
- * (buildRawActionHordePayload()'s own `itemization` field, itself buildRawActionKoboldRequest()'s) -
- * when set, written as a control-JSON frame, same as kobold.js/text-completions.js's own raw-action
- * streaming paths.
  * @param {Array<{kind: string, key: string, message: string, entries?: string[]}>|null} [params.warnings]
  * The `/generate-text` route's per-request warnings - when non-empty, written as their own control
- * frame (`{control: {warnings: ...}}`) right after the itemization frame, before any content.
+ * frame (`{control: {warnings: ...}}`) before any content.
  * @returns {Promise<void>}
  */
-async function streamHordeGeneration({ response, jobId, agent, rawActionPersist, itemization, warnings = null }) {
+async function streamHordeGeneration({ response, jobId, agent, rawActionPersist, warnings = null }) {
     response.setHeader('X-ST-Stream-Format', 'compact-v1');
     response.setHeader('X-Generation-Id', jobId);
 
@@ -439,9 +432,6 @@ async function streamHordeGeneration({ response, jobId, agent, rawActionPersist,
     const { writer: initialWriter, stopKeepalive } = createResumableWriter(createBackpressureWriter(response), generationRecord, HORDE_KEEPALIVE_INTERVAL_MS);
     let writer = initialWriter;
     writeStoredMessagesFrame(writer, response);
-    if (itemization) {
-        writer.write(encodeControlFrame({ itemization }));
-    }
     if (warnings?.length) {
         writer.write(encodeControlFrame({ warnings }));
     }
@@ -527,7 +517,6 @@ router.post('/generate-text', withGenerationStop(async (request, response) => {
     // character_avatar/group_id) - the existing dispatch code below (the actual POST to Horde's real
     // coordinator) is completely unaware of which branch produced `request.body`, same pattern.
     let rawActionPersist = null;
-    let rawActionItemization = null;
     // Per-request warnings for the screen - see text-completions.js's identical `warnings` for the
     // full rationale. Covers every branch, not gated on persistence; sent only when non-empty.
     /** @type {Array<{kind: string, key: string, message: string, entries?: string[]}>} */
@@ -540,7 +529,6 @@ router.post('/generate-text', withGenerationStop(async (request, response) => {
             rawActionPersist = built.rawActionPersist
                 ? { ...built.rawActionPersist, directories: request.user.directories, ownerId, warnings, generationStop: response.locals.generationStop }
                 : null;
-            rawActionItemization = built.itemization;
         } catch (error) {
             console.error('Failed to build raw-action Horde request:', error);
             return response.status(400).send({ error: true, message: error?.message ?? 'Could not resolve this generation request' });
@@ -580,7 +568,7 @@ router.post('/generate-text', withGenerationStop(async (request, response) => {
         return response.send({ error: { message: submitData?.message || 'Horde did not return a job id' } });
     }
 
-    return streamHordeGeneration({ response, jobId: submitData.id, agent, rawActionPersist, itemization: rawActionItemization, warnings });
+    return streamHordeGeneration({ response, jobId: submitData.id, agent, rawActionPersist, warnings });
 }));
 
 router.post('/sd-samplers', async (_, response) => {

@@ -63,6 +63,7 @@ const { importWorldInfoFromRaw } = await import('../worldinfo.js');
 const { writeSecret, deleteSecret, SECRET_KEYS } = await import('../secrets.js');
 const { saveChatToTree, loadBranch, appendMessages, editMessage, getAncestorPath, getAlternatives, disposeMessageTreeStores, getMessageTreeDb } = await import('../../message-tree-db.js');
 const { writeBack, tokenKeyHash } = await import('../../token-count-store.js');
+const { readItemization } = await import('../../itemization-store.js');
 // The client-side compact-stream decoder (public/scripts/llamacpp-compact-stream.js) has no browser-
 // only dependencies (just TextDecoder/Uint8Array, both real Node globals), so it's imported directly
 // here rather than re-implementing a second copy of the decode logic for this test file.
@@ -1432,10 +1433,8 @@ async function run() {
 
     // (i-5) STREAMING raw-action via LLAMACPP's own compact wire format: pipeLlamaCppCompactStream()
     // already fully JSON-parses every upstream SSE event (to re-encode it into the compact format) -
-    // this proves `data.content` is now also accumulated and persisted. Decoded (not a raw byte
-    // comparison - a leading control frame now always carries the itemization breakdown for a real,
-    // persisted raw-action stream like this one, so the wire bytes are no longer just the
-    // concatenated `content` strings the way they were before that was added).
+    // this proves `data.content` is now also accumulated and persisted, with the prompt's itemization
+    // stored at the reply's node instead of sent down the stream.
     {
         const llamaCppBranch = 'stream-llamacpp-chat';
         await saveChatToTree(directories, ownerId, llamaCppBranch, [
@@ -1459,14 +1458,14 @@ async function run() {
         const app = buildTestApp();
         const { status, bytes } = await postGenerateStreamBytes(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-            type: 'normal', user_message: 'Say hi via llama.cpp.', stream: true,
+            type: 'normal', user_message: 'Say hi via llama.cpp.', stream: true, itemization: { presetName: 'Page preset' },
         });
         fakeBackend.server.close();
 
         assert.equal(status, 200);
         const decoded = decodeCompactStream(bytes);
         assert.equal(decoded.text, llamaCppChunks.join(''), 'the decoded compact stream reconstructs the exact concatenated content, unaffected by the persistence addition');
-        assert.ok(decoded.itemization, 'the itemization breakdown was sent as a control frame for this real, persisted raw-action stream');
+        assert.equal(decoded.itemization, null, 'the itemization isn\'t sent down the stream');
 
         const branchAfter = await waitFor(async () => {
             const branch = await loadBranch(directories, ownerId, llamaCppBranch);
@@ -1476,6 +1475,9 @@ async function run() {
         assert.equal(userMsg.mes, 'Say hi via llama.cpp.');
         assert.equal(assistantMsg.mes, 'Hello from llama.cpp, streamed.', 'the full text, accumulated across every compact-stream event, was persisted');
         assert.equal(assistantMsg.name, 'Rex');
+        const stored = await readItemization(directories, assistantMsg.node_id);
+        assert.equal(stored?.entry.presetName, 'Page preset', 'the page\'s part of the itemization is stored with the reply');
+        assert.ok(String(stored?.entry.rawPrompt).includes('Say hi via llama.cpp.'), 'with the server\'s breakdown of the prompt it built');
     }
 
     // (i-6) A NON-raw-action streaming request (no owner_id/character_avatar, so neither raw-action
