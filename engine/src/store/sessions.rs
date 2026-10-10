@@ -63,6 +63,12 @@ pub const DEPTH_TREE: u64 = 142;
 pub const DEPTH_CURSOR: u64 = 143;
 /// Per (message, bookmark): a bookmark was created at the message.
 pub const BRANCH_FROM: u64 = 144;
+/// Per session: its place in its history, `[n, record position + 1 (0: a move's, not a `historyStep`), record
+/// length]`.
+pub const HISTORY_CUR: u64 = 145;
+/// Per (session, tree): the card greeting chosen there with no message stored, `[index, record position, record
+/// length]`.
+pub const OPENING_CHOICE: u64 = 146;
 
 /// Messages a depth slice recomputes.
 pub const DEPTH_SLICE: usize = 256;
@@ -480,8 +486,7 @@ pub fn moved(
     owned: bool,
     meaningful: bool,
 ) -> Result<(), StoreError> {
-    let entering = session_pointer(view, s)?.map(|(t, _)| t) != Some(tree);
-    set_pointer(view, out, s, tree, target)?;
+    pointer_moved(view, out, s, u, tree, target, at, meaningful)?;
     let n = get_vals::<1>(view, &key::id(HISTORY_N, s))?.map_or(1, |[n]| n + 1);
     out.put(key::id(HISTORY_N, s), varints(&[n]));
     let (rp, rl) = if owned { (at.pos + 1, at.len) } else { (0, 0) };
@@ -499,6 +504,50 @@ pub fn moved(
     if owned {
         out.put(key::id(HISTORY_AT, at.pos), varints(&[s, n]));
     }
+    set_cursor_entry(view, out, s, n, None)
+}
+
+/// The session's cursor is at its n-th history entry, through a `historyStep` at `step` (None: a move).
+fn set_cursor_entry(
+    view: &View,
+    out: &mut Out,
+    s: u64,
+    n: u64,
+    step: Option<Loc>,
+) -> Result<(), StoreError> {
+    let k = key::id(HISTORY_CUR, s);
+    if let Some([_, rp, rl]) = get_vals::<3>(view, &k)?
+        && rp > 0
+    {
+        dead(
+            out,
+            Loc {
+                pos: rp - 1,
+                len: rl,
+            },
+        );
+    }
+    let (rp, rl) = step.map_or((0, 0), |l| (l.pos + 1, l.len));
+    out.put(k, varints(&[n, rp, rl]));
+    Ok(())
+}
+
+/// What the session's pointer moving to `target` (in `tree`; None: its root) changes besides its history: the
+/// pointer, the orders, the remembered positions, and activity in the tree unless the move enters it (or always,
+/// when `meaningful`).
+#[allow(clippy::too_many_arguments)]
+fn pointer_moved(
+    view: &View,
+    out: &mut Out,
+    s: u64,
+    u: u64,
+    tree: u64,
+    target: Option<u64>,
+    at: Loc,
+    meaningful: bool,
+) -> Result<(), StoreError> {
+    let entering = session_pointer(view, s)?.map(|(t, _)| t) != Some(tree);
+    set_pointer(view, out, s, tree, target)?;
     if let Some([old]) = get_vals::<1>(view, &key::id(RECENT_AT, s))? {
         out.del(key::ids(RECENT, old, s));
     }
@@ -566,6 +615,160 @@ pub fn chosen(
         if !still_chosen(view, l, &keys)? {
             dead(out, l);
         }
+    }
+    if let Fork::Root(tree) = f {
+        clear_opening_choice(view, out, s, tree)?;
+    }
+    Ok(())
+}
+
+// ---- history steps and opening choices ----
+
+/// The session's place in its history (None: it has none).
+pub fn cursor(view: &View, s: u64) -> Result<Option<u64>, StoreError> {
+    Ok(get_vals::<3>(view, &key::id(HISTORY_CUR, s))?.map(|[n, _, _]| n))
+}
+
+/// The entry a step back (or forward) from the cursor reaches: the nearest one in that direction whose target is
+/// still there.
+pub fn step_target(view: &View, s: u64, back: bool) -> Result<Option<(u64, Target)>, StoreError> {
+    let Some(c) = cursor(view, s)? else {
+        return Ok(None);
+    };
+    const WINDOW: usize = 64;
+    let p = key::id(HISTORY, s);
+    let mut from = c;
+    loop {
+        let entries: Vec<(Vec<u8>, Vec<u8>)> = if back {
+            view.scan_vals_rev(&p, &key::ids(HISTORY, s, from), WINDOW)?
+                .into_iter()
+                .map(|(k, v)| (k, v.into_bytes()))
+                .collect()
+        } else {
+            view.scan(
+                &key::ids(HISTORY, s, from + 1),
+                &key::prefix_end(&p),
+                WINDOW,
+            )?
+        };
+        let full = entries.len() == WINDOW;
+        for (k, v) in entries {
+            let mut at = p.len();
+            let n = get_u64(&k, &mut at).ok_or_else(|| bad("a history key"))?;
+            let [t, gone, _, _] = parse_varints::<4>(&v)?;
+            if gone == 0 {
+                return Ok(Some((n, Target::of(t))));
+            }
+            from = n;
+        }
+        if !full {
+            return Ok(None);
+        }
+    }
+}
+
+/// `historyStep`: the session's cursor and pointer go to its n-th history entry's target.
+pub fn stepped(
+    view: &View,
+    out: &mut Out,
+    s: u64,
+    u: u64,
+    n: u64,
+    at: Loc,
+) -> Result<(), StoreError> {
+    let Some([t, gone, _, _]) = get_vals::<4>(view, &key::ids(HISTORY, s, n))? else {
+        return Err(StoreError::Refused(format!(
+            "session {s} has no history entry {n}"
+        )));
+    };
+    if gone == 1 {
+        return Err(StoreError::Refused(format!(
+            "history entry {n} of session {s} is gone"
+        )));
+    }
+    let (tree, target) = match Target::of(t) {
+        Target::Message(m) => (tree_of(view, m)?, Some(m)),
+        Target::Root(tree) => (tree, None),
+    };
+    pointer_moved(view, out, s, u, tree, target, at, false)?;
+    set_cursor_entry(view, out, s, n, Some(at))
+}
+
+/// Whether a `historyStep` at `pos` is the session's cursor.
+pub fn step_live(view: &View, s: u64, pos: u64) -> Result<bool, StoreError> {
+    Ok(get_vals::<3>(view, &key::id(HISTORY_CUR, s))?.is_some_and(|[_, rp, _]| rp == pos + 1))
+}
+
+/// Points the session's cursor at its `historyStep`'s copy.
+pub fn step_repoint(
+    view: &View,
+    out: &mut Out,
+    s: u64,
+    from: u64,
+    to: Loc,
+) -> Result<(), StoreError> {
+    let k = key::id(HISTORY_CUR, s);
+    if let Some([n, rp, _]) = get_vals::<3>(view, &k)?
+        && rp == from + 1
+    {
+        out.put(k, varints(&[n, to.pos + 1, to.len]));
+    }
+    Ok(())
+}
+
+/// The card greeting the session chose for the tree with no message stored, by its index in the card's list.
+pub fn opening_choice(view: &View, s: u64, tree: u64) -> Result<Option<u64>, StoreError> {
+    Ok(get_vals::<3>(view, &key::ids(OPENING_CHOICE, s, tree))?.map(|[i, _, _]| i))
+}
+
+/// `openingChoice`: the session chooses the card greeting at `index` for the tree, by the record at `at`.
+pub fn opening_chosen(
+    view: &View,
+    out: &mut Out,
+    s: u64,
+    tree: u64,
+    index: u64,
+    at: Loc,
+) -> Result<(), StoreError> {
+    clear_opening_choice(view, out, s, tree)?;
+    out.put(
+        key::ids(OPENING_CHOICE, s, tree),
+        varints(&[index, at.pos, at.len]),
+    );
+    activity(view, out, s, tree, at.pos)
+}
+
+fn clear_opening_choice(view: &View, out: &mut Out, s: u64, tree: u64) -> Result<(), StoreError> {
+    let k = key::ids(OPENING_CHOICE, s, tree);
+    if let Some([_, rp, rl]) = get_vals::<3>(view, &k)? {
+        dead(out, Loc { pos: rp, len: rl });
+        out.del(k);
+    }
+    Ok(())
+}
+
+/// Whether an `openingChoice` at `pos` is still the session's choice for the tree.
+pub fn opening_choice_live(view: &View, s: u64, tree: u64, pos: u64) -> Result<bool, StoreError> {
+    Ok(
+        get_vals::<3>(view, &key::ids(OPENING_CHOICE, s, tree))?
+            .is_some_and(|[_, rp, _]| rp == pos),
+    )
+}
+
+/// Points the session's opening choice at its record's copy.
+pub fn opening_choice_repoint(
+    view: &View,
+    out: &mut Out,
+    s: u64,
+    tree: u64,
+    from: u64,
+    to: Loc,
+) -> Result<(), StoreError> {
+    let k = key::ids(OPENING_CHOICE, s, tree);
+    if let Some([i, rp, _]) = get_vals::<3>(view, &k)?
+        && rp == from
+    {
+        out.put(k, varints(&[i, to.pos, to.len]));
     }
     Ok(())
 }
@@ -807,6 +1010,24 @@ pub fn session_gone(view: &View, out: &mut Out, s: u64) -> Result<(), StoreError
         out.del(k);
     }
     out.del(key::id(HISTORY_N, s));
+    if let Some([_, rp, rl]) = get_vals::<3>(view, &key::id(HISTORY_CUR, s))?
+        && rp > 0
+    {
+        dead(
+            out,
+            Loc {
+                pos: rp - 1,
+                len: rl,
+            },
+        );
+    }
+    out.del(key::id(HISTORY_CUR, s));
+    let op = key::id(OPENING_CHOICE, s);
+    for (k, v) in view.scan(&op, &key::prefix_end(&op), usize::MAX)? {
+        let [_, rp, rl] = parse_varints::<3>(&v)?;
+        dead(out, Loc { pos: rp, len: rl });
+        out.del(k);
+    }
     if let Some([pos]) = get_vals::<1>(view, &key::id(RECENT_AT, s))? {
         out.del(key::ids(RECENT, pos, s));
         out.del(key::id(RECENT_AT, s));

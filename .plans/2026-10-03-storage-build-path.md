@@ -1286,11 +1286,11 @@ store's answers, native and wasm:
   nothing is new.
 - `openingAlternatives` (`getOpeningAlternatives`): stored openings, then the card's greetings no stored opening is,
   windowed as before. The default is the opening of where the actor's session lands in the tree (the opening on its
-  path), else the first. `has_saved_chats` is whether any session has meaningful activity in the tree (a chat is a
-  session now, not a label). `default_chosen` is always false: there is no card greeting chosen without a row.
-- Choosing a card greeting with no row (`chooseCardOpening`, `/openings/choose`) is `appendMessages` of that greeting
-  as an opening through the session: stored, chosen and shown, as 5e converts `opening_choices` rows and as
-  `/message/select` stores a greeting. There is no `opening_choices` record.
+  path); at the tree's root, the card greeting the session chose there (`default_chosen`); else the first.
+  `has_saved_chats` is whether any session has meaningful activity in the tree (a chat is a session now, not a
+  label).
+- Choosing a card greeting with no row: see "Built, back and forward; card greetings chosen" below (the first build
+  stored the greeting, which the coordinator's answer below overrode).
 - `openingToLandOn` (`findOpeningToLandOn`), `alternatives` (`getAlternatives`, an opening's alternatives being the
   tree's openings), `storedForm` (today's `sanitizeForStorage()`, which the engine's callers apply).
 
@@ -1322,6 +1322,51 @@ where the first step came from (the two steps alternate); going back step by ste
 do, needs the session's place in its history kept somewhere (and says whether a step back appends an entry, and what
 happens to the entries after that place when the session then moves elsewhere: kept and still reachable by forward,
 or passed over). Not built until answered; the other pieces don't depend on it.
+
+Answered (coordinator, 10-10):
+- Back and forward: a browser's, with history still kept in full. Each session has a cursor into its history (a small
+  record per step). Back and forward move the cursor and the pointer to that entry's target and add no history
+  entry. A new move after stepping back appends at the end and puts the cursor there; the entries that were ahead
+  of the old cursor stay stored (a full history view can show them) but forward can't reach them. A step whose
+  target is gone skips to the next live entry in that direction.
+- Choosing a card greeting that has no row must not freeze its text (overriding the openings build above). The choice
+  is recorded by the greeting's position on the card, a small provisional choice record per session. Until the
+  conversation continues from it, the chat shows the card's current greeting text at that position, so editing the
+  card's greeting before anything is sent updates what is shown. Only when a reply is sent from it is the greeting
+  stored as an opening (with its text at that moment). 5e converts today's `opening_choices` rows into these
+  provisional choices, not stored openings. `default_chosen` keeps its meaning.
+- `has_saved_chats` meaning a session with activity in the tree, and ending a path hiding nothing from other
+  sessions: fine.
+
+Built, back and forward; card greetings chosen (10-10; `format.rs`, `store/chat.rs`, `store/sessions.rs`,
+`chat_read.rs`, `src/chat-engine.js`; tests `chat_tests.rs`, `src/chat-engine.test.js`):
+- Kind `historyStep { session, user, n }` (header 220): the session's cursor and pointer go to its n-th history
+  entry's target; no entry is added. Refused for an entry that doesn't exist or whose target is gone. Every move
+  (`pointerMove`, `pointerRoot`, an append through the session) appends an entry and puts the cursor on it
+  (`HISTORY_CUR`), so the entries ahead of a stepped-back cursor stay in the history but forward can't reach them. A
+  step moves the pointer as a move does (remembered positions, orders, activity inside the tree) without the entry.
+  `chatRead('historyStep', { session, back })` answers the entry a step reaches (the nearest in that direction
+  whose target is there, read in windows of 64), and `sessions` answers each session's `cursor`.
+  `ChatEngine.step({ back, actor })` steps, answering where the session is then.
+- Kind `openingChoice { session, user, tree, index }` (header 221): the session's provisional choice of the card
+  greeting at `index` for the tree (`OPENING_CHOICE`), counted as activity in the tree. It ends when the session
+  chooses an opening there (a `forkSelection` at the tree's root, or an append of an opening through it, as when a
+  reply is sent from the greeting and the page sends it to be stored) or goes.
+  `ChatEngine.chooseCardGreeting({ tree, index, actor })` moves the session to the tree's root (unless it is there)
+  and records the choice; nothing is written when it is already that. `openingAlternatives` shows, for a session at
+  the root with a choice, the card's text at that position now (the card's list of non-empty greetings, clamped as
+  today's stand-in), with `default_chosen`. The choice is the session's; others land as before.
+- Tests: the model workload steps back and forward and chooses card greetings (cursors, the step each direction
+  reaches, choices per session and tree, through a reopen, a crash and cleaning); a focused test steps back twice,
+  forward, over a gone entry, a refused step, a move after stepping back, and a choice ended by an opening appended
+  through the session; the JS test steps against the history and compares a chosen greeting with the old store before
+  and after the card's greeting is edited, and after a reply stores it.
+
+| choice | picked | reason |
+|---|---|---|
+| headers | 220 and 221 (two bytes) | no one-byte header value is left |
+| a step's record | the entry's number, `n` | what happened, exactly; the writer finds the entry, the deriver checks it is still there |
+| choices per session | one per (session, tree), the record it came from kept live | the answer's "per session"; a tree's root is where it shows |
 
 Where layer 1 goes: inside 5b, on the engine. Its own storage step (SQLite `state_changes`, saved states every 64th
 depth rebuilt lazily after an epoch bump) conflicts with the design: a structure caught up when read is what revision
@@ -1431,8 +1476,9 @@ What it reads, and what each becomes:
   - each owner's pointer (`characters.active_chat`, the group's) as a pointer move of the deterministic (user, tree)
     session, so a third-party caller and a sessionless tab land where today's server would open that character;
   - each `default_child_id` that isn't the newest reply as a fork selection by that same session (today's choice,
-    "the last choice anyone made there"); each `opening_choices` row by materialising that greeting's row and
-    selecting it, as the select action would (thin-client audit item 9);
+    "the last choice anyone made there"); each `opening_choices` row as an `openingChoice` of that same session, by
+    its `card_index` (coordinator, 10-10: a provisional choice by the greeting's card position, not a stored opening
+    as first planned);
   - token caches are a cache (Q-C6): not converted.
 - Chat metadata, on label rows today (answered, coordinator, 10-03, from Data safety): each label's `chat_metadata`
   is recorded as state changes (author kind `migration`) at the message the label is on today (its own node), not

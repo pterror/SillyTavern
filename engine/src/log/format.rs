@@ -349,6 +349,31 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
+    // A session steps back or forward to the `n`-th entry of its history: the cursor and the pointer go there, and
+    // no entry is added.
+    Kind {
+        name: "historyStep",
+        base: 220,
+        slots: &[
+            req("session", Ty::Id(Space::Position)),
+            req("user", Ty::Id(Space::User)),
+            req("n", Ty::UInt),
+        ],
+        internal: false,
+    },
+    // A session chooses, for `tree`, the card greeting at `index` in the card's greeting list, with no message
+    // stored: what it shows at the tree's root until it continues from there.
+    Kind {
+        name: "openingChoice",
+        base: 221,
+        slots: &[
+            req("session", Ty::Id(Space::Position)),
+            req("user", Ty::Id(Space::User)),
+            req("tree", Ty::Id(Space::Entity)),
+            req("index", Ty::UInt),
+        ],
+        internal: false,
+    },
     // At the fork `message` (absent: among the messages opening the reply's tree), `reply` is chosen, through
     // `session` by `user`.
     Kind {

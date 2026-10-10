@@ -368,7 +368,8 @@ export class ChatEngine {
     /**
      * The openings a tree can start on: its stored openings, then the card's greetings no stored opening already is
      * (`node_id` null), windowed around the default (or around `around`, a stored opening with that speaker and
-     * text). The default is the opening of where the actor's session lands in the tree, else the first.
+     * text). The default is the opening of where the actor's session lands in the tree; at the tree's root, the card
+     * greeting the session chose there (`default_chosen`), else the first.
      * @param {object} p
      * @param {bigint} p.tree
      * @param {Actor} p.actor
@@ -382,11 +383,25 @@ export class ChatEngine {
         const { user, session } = await this.knownActorIds(actor);
         const lands = await this.store.chatRead('landing', { tree, ...(session === null ? {} : { session }), ...(user === null ? {} : { user }) });
         const shown = lands === null ? null : (await this.store.chatRead('path', { tree, at: lands }))[0];
-        const defaultIndex = Math.max(0, rows.findIndex(r => r.id === shown));
+        let defaultIndex = Math.max(0, rows.findIndex(r => r.id === shown));
         const all = [
             ...rows.map(r => ({ ...alternativeEntry(this.externalId(r.stored), r.message, false), is_system: !!r.message?.is_system })),
             ...virtual.map(o => alternativeEntry(/** @type {any} */ (null), o, false)),
         ];
+        let defaultNodeId = rows.length ? this.externalId(rows[defaultIndex].stored) : null;
+        // At the root, a card greeting the session chose shows the text the card has at its position now.
+        const choice = lands === null && session !== null ? await this.store.chatRead('openingChoice', { session, tree }) : null;
+        let chosen = false;
+        const cardTexts = (Array.isArray(cardGreetings) ? cardGreetings : []).map(g => g?.mes).filter(t => typeof t === 'string');
+        if (choice !== null && cardTexts.length > 0) {
+            const text = cardTexts[Math.min(choice, cardTexts.length - 1)];
+            const at = all.findIndex(o => o.mes === text);
+            if (at >= 0) {
+                defaultIndex = at;
+                defaultNodeId = all[at].node_id;
+                chosen = true;
+            }
+        }
         const aroundKey = range.around ? identityOf(storedForm(range.around)) : null;
         const aroundIndex = aroundKey === null ? -1 : rows.findIndex(r => identityOf(r.message) === aroundKey);
         const center = aroundIndex >= 0 ? aroundIndex : defaultIndex;
@@ -402,8 +417,8 @@ export class ChatEngine {
             total: all.length,
             stored: rows.length,
             default_index: defaultIndex,
-            default_node_id: rows.length ? this.externalId(rows[defaultIndex].stored) : null,
-            default_chosen: false,
+            default_node_id: defaultNodeId,
+            default_chosen: chosen,
             offset: from,
             alternatives,
         };
@@ -740,6 +755,55 @@ export class ChatEngine {
             const [now] = await this.store.chatRead('sessions', { ids: [session] });
             if (now && now.tree === tree && now.at === id) return { ok: true };
             records.push(id === null ? { kind: 'pointerRoot', session, user, tree } : { kind: 'pointerMove', session, user, target: id });
+            await this.store.commit(records);
+            return { ok: true };
+        });
+    }
+
+    /**
+     * Steps a session back (or forward) in its history: its pointer goes to the nearest entry in that direction whose
+     * target is still there, and no entry is added.
+     * @param {object} p
+     * @param {boolean} p.back
+     * @param {Actor} p.actor
+     * @returns {Promise<{ ok: true, tree: bigint, at: string | null } | { ok: false, reason: string }>}
+     */
+    async step({ back, actor }) {
+        const { session } = await this.knownActorIds(actor);
+        const reached = session === null ? null : await this.store.chatRead('historyStep', { session, back });
+        if (reached === null) return { ok: false, reason: back ? 'nothing back' : 'nothing forward' };
+        const tree = reached.target === null ? reached.tree : (await this.stored([reached.target])).get(reached.target).owner;
+        return this.serialized(tree, async () => {
+            const now = await this.store.chatRead('historyStep', { session, back });
+            if (now?.n !== reached.n) return { ok: false, reason: 'moved meanwhile' };
+            const records = [];
+            const { user } = await this.actorIds(actor, records);
+            records.push({ kind: 'historyStep', session, user, n: reached.n });
+            await this.store.commit(records);
+            return { ok: true, tree, at: reached.target === null ? null : (await this.externalIds([reached.target]))[0] };
+        });
+    }
+
+    /**
+     * Chooses, for a session, the card greeting at `index` in the card's greeting list, with no message stored: the
+     * session goes to the tree's root and shows that greeting's text as the card has it, until a reply is sent from
+     * it (which stores it) or a stored opening is chosen.
+     * @param {object} p
+     * @param {bigint} p.tree
+     * @param {number} p.index
+     * @param {Actor} p.actor
+     */
+    chooseCardGreeting({ tree, index, actor }) {
+        return this.serialized(tree, async () => {
+            const records = [];
+            const { user, session } = await this.actorIds(actor, records);
+            if (session === null) throw new Error('A greeting is chosen through a session');
+            const [now] = await this.store.chatRead('sessions', { ids: [session] });
+            const atRoot = !!now && now.tree === tree && now.at === null;
+            const chosen = now ? await this.store.chatRead('openingChoice', { session, tree }) : null;
+            if (atRoot && chosen === index) return { ok: true };
+            if (!atRoot) records.push({ kind: 'pointerRoot', session, user, tree });
+            records.push({ kind: 'openingChoice', session, user, tree, index });
             await this.store.commit(records);
             return { ok: true };
         });

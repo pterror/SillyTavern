@@ -216,7 +216,7 @@ fn position_name(view: &View, p: u64) -> Result<Js, StoreError> {
     }
 }
 
-/// Each session's pointer, name and outside key, or null.
+/// Each session's pointer, name, outside key and place in its history (`cursor`), or null.
 pub fn sessions(view: &View, ids: &[u64]) -> Result<Js, StoreError> {
     let mut out = Vec::new();
     for &s in ids {
@@ -235,6 +235,10 @@ pub fn sessions(view: &View, ids: &[u64]) -> Result<Js, StoreError> {
             ("name", position_name(view, s)?),
             ("tree", tree),
             ("at", at),
+            (
+                "cursor",
+                sessions::cursor(view, s)?.map_or(Js::Null, |n| Js::Num(n as f64)),
+            ),
         ]))
     }
     Ok(Js::Arr(out))
@@ -276,6 +280,29 @@ pub fn history(view: &View, s: u64, from: u64, limit: usize) -> Result<Js, Store
             })
             .collect(),
     ))
+}
+
+/// The history entry a step back (or forward) reaches: `{ n, target, tree }` as `history` answers them, or null.
+pub fn history_step(view: &View, s: u64, back: bool) -> Result<Js, StoreError> {
+    Ok(match sessions::step_target(view, s, back)? {
+        Some((n, t)) => {
+            let (target, tree) = match t {
+                sessions::Target::Message(m) => (Js::Big(m), Js::Null),
+                sessions::Target::Root(t) => (Js::Null, Js::Big(t)),
+            };
+            Js::Obj(vec![
+                ("n", Js::Num(n as f64)),
+                ("target", target),
+                ("tree", tree),
+            ])
+        }
+        None => Js::Null,
+    })
+}
+
+/// The card greeting's index the session chose for the tree with no message stored, or null.
+pub fn opening_choice(view: &View, s: u64, tree: u64) -> Result<Js, StoreError> {
+    Ok(sessions::opening_choice(view, s, tree)?.map_or(Js::Null, |i| Js::Num(i as f64)))
 }
 
 fn order_page(list: Vec<(u64, u64)>) -> Js {

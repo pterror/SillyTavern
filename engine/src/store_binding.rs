@@ -1248,6 +1248,7 @@ impl Store {
     /// - `landing { tree, session?, user? }`, `followed { tree, at?, session?, user? }`: a message or null;
     /// - `sessions { ids }`, `sessionInTree { session, tree }`, `userInTree { user, tree }`;
     /// - `history { session, from, limit }`, `recent { before?, limit }`, `inTree { tree, before?, limit }`;
+    /// - `historyStep { session, back }`: the entry a step reaches, or null; `openingChoice { session, tree }`;
     /// - `messageCount { tree, at? }`: `{ count, estimate }`;
     /// - `ids { space: 0 message | 1 session | 2 user, keys }`, `keyStates { space, keys }` (`{ id }`, `'gone'` for a
     ///   deleted session's, or null), `nextIds {}`;
@@ -1324,6 +1325,18 @@ impl Store {
                 );
                 Box::new(move |s| {
                     s.chat_read(|v| cr::history(v, ses, from, limit))
+                        .map(JsTree)
+                })
+            }
+            "historyStep" => {
+                let ses = req_integer(a, "session")?;
+                let back: bool = a.get("back")?.unwrap_or(false);
+                Box::new(move |s| s.chat_read(|v| cr::history_step(v, ses, back)).map(JsTree))
+            }
+            "openingChoice" => {
+                let (ses, tree) = (req_integer(a, "session")?, req_integer(a, "tree")?);
+                Box::new(move |s| {
+                    s.chat_read(|v| cr::opening_choice(v, ses, tree))
                         .map(JsTree)
                 })
             }
