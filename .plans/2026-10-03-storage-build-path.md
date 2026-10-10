@@ -307,7 +307,7 @@ c9f7b4d0e; best first 9e80e4f81, 142f9f9ef, 5897fa9de, 72320bbaf, dd4adede1; one
 b61a67c17, a062db76b; id-ordered postings with block maxima and top lists d80e03d30, a96badf40; tag matches beside
 the page, top lists per entry in slices, multi-word walk, 10-10). Open: multi-word medians 10–20 ms at 10^6 against
 single-digit, accepted ("hard case is hard"; no length codes; see "Tags, top lists, multi-word, 10-10"); closed-quote
-phrases, optional pair postings and the crate swaps not started. Native (linux-x64-gnu) and wasm
+phrases and optional pair postings are decided and built at 5d (see there); the crate swaps not started. Native (linux-x64-gnu) and wasm
 built and tested locally. Card and tag-name field codes come with 5a; until then only test and measurement builds
 index library fields (`kinds::test_codes`); chat postings (`messageAppend`) and tag membership (`tagAssign`) are live.
 
@@ -429,8 +429,9 @@ computation", "who said we always need exact totals"; 9e80e4f81, 142f9f9ef, 5897
   `girl -tag:vampire` 4.6 → 1.0, `the [tag love]` 10 → 16 ms (now exact page); runs +6 MB; every page and total
   marked exact equals the scan.
 
-Phrase evaluation (coordinator, 10-04; measured and reported, awaiting {{user}}'s choice; pair postings and pair
-filters exist in measurement builds only, `phrase_mode`). Synth, warm, work cap 250k; (end) = the phrase ends the
+Phrase evaluation (coordinator, 10-04; measured and reported; decided at 5d: a closed-quote phrase is exact, an
+unclosed one ending the query has its last word a prefix; option 2, pair postings, is an engine option, off by
+default, turned on per user; see 5d. Pair filters (option 3) exist in measurement builds only, `phrase_mode`). Synth, warm, work cap 250k; (end) = the phrase ends the
 query, its last word a prefix; (inside) = more words follow. Option 1 none, 2 pair postings (exact pair counters),
 3 a 3-probe 8-bit-per-pair filter per field checked before the text.
 
@@ -1794,6 +1795,12 @@ Left (handover, 10-11):
   that name as an unresolved one.
 
 **5d. search wired.**
+
+Status (10-11, handover): in progress; nothing built yet. Pieces in order: the indexer's searched fields per
+entity type (cards, groups, tag names, entries per book); session-name postings; the query binding with sort keys
+and filters, and the library's `/query` search; chat search; world-info search; closed-quote phrases and pair
+postings with their setting; the chip row; `bench-search-synth.mjs`; measurements.
+
 - Derivers feeding P3 (stage 4): card fields (S1, with the design's weights and prefix fields), card tag names and
   resolved tag names joined through membership (Q-F12), groups (S2: name, member names, tags, id), session names (S6),
   messages per owner (S5), world-info entries (S7: answered at 5c, every book the world-info editor opens, characters'
@@ -1804,6 +1811,34 @@ Left (handover, 10-11):
   when every word matches a message on its path in that tree), and the world-info server search, all read P3.
 - Measured: as stage 4, now on the real derivers, plus freshness (a write is found by the next query after its
   acknowledgement).
+
+Answered (coordinator, 10-11):
+- Phrases: a closed-quote phrase (`"dark knight"`) is exact, its last word whole; an unclosed quote ending the query
+  (`"dark kni`) has its last word a prefix.
+- Pair postings: an engine option, off by default; a per-user setting in the Search section of the settings page,
+  its label saying it uses more disk and speeds up quoted phrases. Changing it runs a background build (or delete)
+  over existing text in small batches after the server is listening; phrases are checked against the text until
+  the build finishes; a crash resumes it (CLAUDE.md: derived data "kept up to date in whatever way is fastest"; the
+  "work over all data" line is about shipping features, not a user turning on an index).
+- A tag chip: shown in a row above the results. Clicking it adds the tag to the tag filter and removes from the
+  search text the words that matched the tag's name; other words stay ("dragon knight" with chip "dragon" →
+  filter tag dragon, search "knight").
+- Session names (for 5b's lookup by name): unique per (user, tree), as upstream's file names were per character;
+  creating or renaming to a taken name gets upstream's suffix scheme, so a name resolves to one session.
+
+Settled from the plans (recorded by the 5d builder, 10-11):
+- Chat search (S5) matches whole words, with no last-word prefix: design 7.3 ("words looked up in that owner's
+  message postings"), Q-F4 (no mid-word substrings) and Q-F1 (prefixes only in name-like fields). Upstream's
+  substring match (`"drag"` finding "dragon") is a visible change, reported to {{user}} by the coordinator.
+- Session names and group names are prefix fields (name-like, as Q-F1's name, creator and tags).
+- Groups are documents of the library scope beside characters (one ranking, as `/query` merges both): `name` 20,
+  `members` 15 (the members list's avatar keys, upstream's `fuzzySearchGroups` key, Q-F11), `id` 1. A group's tag
+  names are answered as chips, as a card's are (a per-group resolved-tags field would make a rename write every
+  carrier).
+- World-info search is per book (S7, Q-F10): a scope per book, documents its entries. No server world-info search
+  route exists today; 5d adds the engine read and its route shape.
+- The indexer reads the entity's type before indexing a text write: field codes are shared across entity types
+  (code 1 is a character's, a group's and a tag's name).
 
 **5e. the conversion one-off** (`src/migrations/convert-to-engine.js`, picked name; `--dry-run` | `--apply
 --server-stopped`, refusing while the server holds the files, as the existing one-offs do). It reads today's files as
