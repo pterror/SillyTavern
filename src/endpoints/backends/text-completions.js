@@ -346,7 +346,6 @@ export async function forwardAndPersistCompactStream(fetchResponse, response, pe
  */
 async function abortKoboldCppRequest(request, url) {
     try {
-        console.info('Aborting Kobold generation...');
         const args = {
             method: 'POST',
             headers: {},
@@ -421,7 +420,6 @@ router.post('/props', async function (request, response) {
         let propsUrl = baseUrl + '/props';
         if (apiType === TEXTGEN_TYPES.LLAMACPP && request.body.model) {
             propsUrl += `?model=${encodeURIComponent(request.body.model)}`;
-            console.debug(`Querying llama-server props with model parameter: ${request.body.model}`);
         }
         const propsReply = await fetch(propsUrl, args);
 

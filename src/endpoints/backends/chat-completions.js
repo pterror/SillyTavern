@@ -388,7 +388,6 @@ async function sendClaudeRequest(request, response, persist, warnings = null, on
             if (requestBody.max_tokens <= minThinkTokens) {
                 const newValue = requestBody.max_tokens + minThinkTokens;
                 console.warn(color.yellow(`Claude thinking requires a minimum of ${minThinkTokens} response tokens.`));
-                console.info(color.blue(`Increasing response length to ${newValue}.`));
                 requestBody.max_tokens = newValue;
             }
             requestBody.thinking = {
@@ -417,7 +416,6 @@ async function sendClaudeRequest(request, response, persist, warnings = null, on
             additionalHeaders['anthropic-beta'] = betaHeaders.join(',');
         }
 
-        console.debug('Claude request:', requestBody);
 
         const generateResponse = await fetch(apiUrl + '/messages', {
             method: 'POST',
@@ -457,7 +455,6 @@ async function sendClaudeRequest(request, response, persist, warnings = null, on
             /** @type {any} */
             const generateResponseJson = await generateResponse.json();
             const responseText = generateResponseJson?.content?.[0]?.text || '';
-            console.debug('Claude response:', generateResponseJson);
 
             // Wrap it back to OAI format + save the original content
             const reply = { choices: [{ 'message': { 'content': responseText } }], content: generateResponseJson.content };
@@ -520,7 +517,6 @@ async function sendMakerSuiteRequest(request, response, persist, warnings = null
             const auth = await getVertexAIAuth(request);
             authHeader = auth.authHeader;
             authType = auth.authType;
-            console.debug(`Using Vertex AI authentication type: ${authType}`);
         } catch (error) {
             console.warn(`${apiName} authentication failed: ${error.message}`);
             return response.status(400).send({ error: true, message: error.message });
@@ -667,7 +663,6 @@ async function sendMakerSuiteRequest(request, response, persist, warnings = null
 
             // Vertex doesn't allow mixing disabled thinking with includeThoughts
             if (useVertexAi && thinkingBudget === 0 && thinkingConfig.includeThoughts) {
-                console.info('Thinking budget is 0, but includeThoughts is true. Thoughts will not be included in the response.');
                 thinkingConfig.includeThoughts = false;
             }
 
@@ -720,7 +715,6 @@ async function sendMakerSuiteRequest(request, response, persist, warnings = null
     }
 
     const body = getGeminiBody();
-    console.debug(`${apiName} request:`, body);
 
     try {
         const controller = stoppableController(response);
@@ -842,7 +836,6 @@ async function sendMakerSuiteRequest(request, response, persist, warnings = null
             const inlineData = (candidates?.[0]?.content?.parts ?? []).some(part => part.inlineData);
             // Pass the object raw, not a pre-formatted util.inspect() dump - inspect() ran unconditionally
             // even when minLogLevel gates console.debug down to a no-op.
-            console.debug(`${apiName} response:`, generateResponseJson);
 
             const responseText = typeof responseContent === 'string' ? responseContent : responseContent?.parts?.filter(part => !part.thought)?.map(part => part.text)?.join('\n\n');
             if (!responseText && !functionCall && !inlineData) {
@@ -940,7 +933,6 @@ async function sendAI21Request(request, response, persist, warnings = null, onDi
         signal: controller.signal,
     };
 
-    console.debug('AI21 request:', body);
 
     try {
         const generateResponse = await fetch(API_AI21 + '/chat/completions', options);
@@ -960,7 +952,6 @@ async function sendAI21Request(request, response, persist, warnings = null, onDi
                 return response.status(500).send(errorJson);
             }
             const generateResponseJson = await generateResponse.json();
-            console.debug('AI21 response:', generateResponseJson);
 
             // Persist the ASSISTANT's real reply text for a raw-action request (`persist` truthy - a
             // no-op otherwise). Real, verified OpenAI-Chat-Completions-shaped body - see this
@@ -1060,7 +1051,6 @@ async function sendMistralAIRequest(request, response, persist, warnings = null,
             timeout: 0,
         };
 
-        console.debug('MisralAI request:', requestBody);
 
         const generateResponse = await fetch(apiUrl + '/chat/completions', config);
         onDispatched?.();
@@ -1080,7 +1070,6 @@ async function sendMistralAIRequest(request, response, persist, warnings = null,
                 return response.status(500).send(errorJson);
             }
             const generateResponseJson = await generateResponse.json();
-            console.debug('MistralAI response:', generateResponseJson);
 
             // Persist the ASSISTANT's real reply text for a raw-action request (`persist` truthy - a
             // no-op otherwise). Standard, verified OpenAI-Chat-Completions-shaped body - see this
@@ -1185,7 +1174,6 @@ async function sendCohereRequest(request, response, persist, warnings = null, on
             };
         }
 
-        console.debug('Cohere request:', requestBody);
 
         const config = {
             method: 'POST',
@@ -1226,7 +1214,6 @@ async function sendCohereRequest(request, response, persist, warnings = null, on
                 return response.status(500).send(errorJson);
             }
             const generateResponseJson = await generateResponse.json();
-            console.debug('Cohere response:', generateResponseJson);
 
             // Persist the ASSISTANT's real reply text for a raw-action request (`persist` truthy - a
             // no-op otherwise). See this function's own doc comment above for exactly where this shape
@@ -1356,7 +1343,6 @@ async function sendDeepSeekRequest(request, response, persist, warnings = null, 
             signal: controller.signal,
         };
 
-        console.debug('DeepSeek request:', requestBody);
 
         const generateResponse = await fetch(apiUrl + '/chat/completions', config);
         onDispatched?.();
@@ -1380,7 +1366,6 @@ async function sendDeepSeekRequest(request, response, persist, warnings = null, 
                 return response.status(500).send(errorJson);
             }
             const generateResponseJson = await generateResponse.json();
-            console.debug('DeepSeek response:', generateResponseJson);
 
             // Persist the ASSISTANT's real reply text for a raw-action request (`persist` truthy - a
             // no-op otherwise). Standard, verified OpenAI-Chat-Completions-shaped body - see this
@@ -1498,7 +1483,6 @@ async function sendXaiRequest(request, response, persist, warnings = null, onDis
             signal: controller.signal,
         };
 
-        console.debug('xAI request:', requestBody);
 
         const generateResponse = await fetch(apiUrl + '/chat/completions', config);
         onDispatched?.();
@@ -1519,7 +1503,6 @@ async function sendXaiRequest(request, response, persist, warnings = null, onDis
                 return response.status(500).send(errorJson);
             }
             const generateResponseJson = await generateResponse.json();
-            console.debug('xAI response:', generateResponseJson);
 
             // Persist the ASSISTANT's real reply text for a raw-action request (`persist` truthy - a
             // no-op otherwise). Standard, verified OpenAI-Chat-Completions-shaped body - see this
@@ -1634,7 +1617,6 @@ async function sendAimlapiRequest(request, response, persist, warnings = null, o
             signal: controller.signal,
         };
 
-        console.debug('AI/ML API request:', requestBody);
 
         const generateResponse = await fetch(apiUrl + '/chat/completions', config);
         onDispatched?.();
@@ -1654,7 +1636,6 @@ async function sendAimlapiRequest(request, response, persist, warnings = null, o
                 return response.status(500).send(errorJson);
             }
             const generateResponseJson = await generateResponse.json();
-            console.debug('AI/ML API response:', generateResponseJson);
 
             // Persist the ASSISTANT's real reply text for a raw-action request (`persist` truthy - a
             // no-op otherwise). Standard, verified OpenAI-Chat-Completions-shaped body - see this
@@ -1777,7 +1758,6 @@ async function sendElectronHubRequest(request, response, persist, warnings = nul
             signal: controller.signal,
         };
 
-        console.debug('Electron Hub request:', requestBody);
 
         const generateResponse = await fetch(apiUrl + '/chat/completions', config);
         onDispatched?.();
@@ -1797,7 +1777,6 @@ async function sendElectronHubRequest(request, response, persist, warnings = nul
                 return response.status(500).send(errorJson);
             }
             const generateResponseJson = await generateResponse.json();
-            console.debug('Electron Hub response:', generateResponseJson);
 
             // Persist the ASSISTANT's real reply text for a raw-action request (`persist` truthy - a
             // no-op otherwise). Standard, verified OpenAI-Chat-Completions-shaped body - see this
@@ -1911,7 +1890,6 @@ async function sendChutesRequest(request, response, persist, warnings = null, on
             signal: controller.signal,
         };
 
-        console.debug('Chutes request:', requestBody);
 
         const generateResponse = await fetch(apiUrl + '/chat/completions', config);
         onDispatched?.();
@@ -1931,7 +1909,6 @@ async function sendChutesRequest(request, response, persist, warnings = null, on
                 return response.status(500).send(errorJson);
             }
             const generateResponseJson = await generateResponse.json();
-            console.debug('Chutes response:', generateResponseJson);
 
             // Persist the ASSISTANT's real reply text for a raw-action request (`persist` truthy - a
             // no-op otherwise). Standard, verified OpenAI-Chat-Completions-shaped body - see this
@@ -2026,7 +2003,6 @@ async function sendMinimaxRequest(request, response, persist, warnings = null, o
             signal: controller.signal,
         };
 
-        console.debug('MiniMax request:', requestBody);
 
         const generateResponse = await fetch(apiUrl + '/chat/completions', config);
         onDispatched?.();
@@ -2046,7 +2022,6 @@ async function sendMinimaxRequest(request, response, persist, warnings = null, o
                 return response.status(500).send(errorJson);
             }
             const generateResponseJson = await generateResponse.json();
-            console.debug('MiniMax response:', generateResponseJson);
 
             // Persist the ASSISTANT's real reply text for a raw-action request (`persist` truthy - a
             // no-op otherwise). Standard, verified OpenAI-Chat-Completions-shaped body - see this
@@ -2152,7 +2127,6 @@ async function sendAzureOpenAIRequest(request, response, persist, warnings = nul
         signal: controller.signal,
     };
 
-    console.debug('Azure OpenAI Request Body:', apiRequestBody);
     try {
         const fetchResponse = await fetch(endpointUrl, config);
         onDispatched?.();
@@ -2169,7 +2143,6 @@ async function sendAzureOpenAIRequest(request, response, persist, warnings = nul
         if (fetchResponse.ok) {
             /** @type {any} */
             const json = await fetchResponse.json();
-            console.debug('Azure OpenAI response:', json);
 
             // Persist the ASSISTANT's real reply text for a raw-action request (`persist` truthy - a
             // no-op otherwise). Standard, verified OpenAI-Chat-Completions-shaped body - see this
@@ -4281,7 +4254,6 @@ router.post('/generate', withGenerationStop(async function (request, response) {
 
         const postProcessingType = request.body.custom_prompt_post_processing;
         if (Array.isArray(request.body.messages) && postProcessingType) {
-            console.info('Applying custom prompt post-processing of type', postProcessingType);
             request.body.messages = postProcessPrompt(
                 request.body.messages,
                 postProcessingType,
@@ -4722,7 +4694,6 @@ router.post('/generate', withGenerationStop(async function (request, response) {
             signal: controller.signal,
         };
 
-        console.debug('Chat Completion request:', requestBody);
 
         const fetchResponse = await fetch(endpointUrl, config);
         storeTokenCountRows();
@@ -4766,7 +4737,6 @@ router.post('/generate', withGenerationStop(async function (request, response) {
         if (fetchResponse.ok) {
             /** @type {any} */
             let json = await fetchResponse.json();
-            console.debug('Chat Completion response:', json);
 
             // Server-native (chunk (b)) AND client-proxy (chunk (c)) tool-calling loop - ONLY when
             // this raw-action request actually advertised at least one server tool OR client-advertised

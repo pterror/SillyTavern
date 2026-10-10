@@ -796,10 +796,7 @@ async function importFromCharX(uploadPath, { request, contentHash }, preservedFi
 
     if (auxiliaryAssets.length > 0) {
         try {
-            const summary = persistCharXAssets(auxiliaryAssets, extractedBuffers, request.user.directories, characterFolder);
-            if (summary.sprites || summary.backgrounds || summary.misc) {
-                console.log(`CharX: Imported ${summary.sprites} sprite(s), ${summary.backgrounds} background(s), ${summary.misc} misc asset(s) for ${characterFolder}`);
-            }
+            persistCharXAssets(auxiliaryAssets, extractedBuffers, request.user.directories, characterFolder);
         } catch (error) {
             console.warn(`CharX: Failed to persist auxiliary assets for ${characterFolder}`, error);
         }
@@ -852,7 +849,6 @@ async function importFromByaf(uploadPath, { request, contentHash }, preservedFil
                 const newFile = `${file}${extension}`;
                 writeFileAtomicSync(path.join(filePath, newFile), bg.data);
                 bg.name = clientRelativePath(request.user.directories.root, path.join(filePath, newFile)); // Update background name to the new file
-                console.log(`Created ${newFile} background from BYAF import`);
             }
         }
 
@@ -880,7 +876,6 @@ async function importFromByaf(uploadPath, { request, contentHash }, preservedFil
             const file = getUniqueName(`${sanitize(icon.label, { replacement: sanitizeSafeCharacterReplacements }) || 'alt'}`, (name) => fs.existsSync(path.join(altImagesFolder, `${name}${extension}`)));
             if (Buffer.isBuffer(icon.image)) {
                 writeFileAtomicSync(path.join(altImagesFolder, `${file}${extension}`), icon.image);
-                console.log(`Created ${file}${extension} alternate icon from BYAF import`);
             }
         }
     }

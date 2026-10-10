@@ -665,7 +665,6 @@ router.post('/delete', validateGroupIdBody, async (request, response) => {
 
             if (group && Array.isArray(group.chats)) {
                 for (const chat of group.chats) {
-                    console.info('Deleting group chat', chat);
                     const pathToFile = path.join(request.user.directories.groupChats, sanitize(`${chat}.jsonl`));
 
                     if (fs.existsSync(pathToFile)) {

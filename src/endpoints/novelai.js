@@ -477,7 +477,6 @@ router.post('/generate', withGenerationStop(async function (req, res) {
 
     // Pass the object raw, not a pre-formatted util.inspect() dump - see the same fix in chat-completions.js
     // and text-completions.js for why the eager inspect/stringify defeats minLogLevel's no-op gate.
-    console.debug('NAI request:', data);
 
     const args = {
         body: JSON.stringify(data),
@@ -521,7 +520,6 @@ router.post('/generate', withGenerationStop(async function (req, res) {
 
             /** @type {any} */
             const data = await response.json();
-            console.info('NovelAI Output', data?.output);
 
             // Persist the ASSISTANT's reply for the raw-action branch (see
             // `pendingAssistantPersist`'s declaration above) - only reached for a real, successful
