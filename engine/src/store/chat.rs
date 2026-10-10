@@ -574,7 +574,7 @@ pub fn key_by_id(view: &View, space: u8, i: u64) -> Result<Option<Vec<u8>>, Stor
 }
 
 /// Drops `i`'s outside key, if it has one.
-fn drop_key(view: &View, out: &mut Out, space: u8, i: u64) -> Result<(), StoreError> {
+pub(super) fn drop_key(view: &View, out: &mut Out, space: u8, i: u64) -> Result<(), StoreError> {
     let k = key_of_key(space, i);
     let Some(v) = view.get(&k)? else {
         return Ok(());

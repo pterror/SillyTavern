@@ -1071,9 +1071,18 @@ Built, sessions (10-10; `engine/src/store/sessions.rs`, tests in `chat_tests.rs`
 | an append's fork choice | derived from the append (session, user, parent), no `forkSelection` record | the append holds all three; a second record would be a second copy |
 | activity and recency positions | log positions | they sort as commit order does; the records carry no time of their own (design 4.1: seq is the position) |
 | a session's history entry | (session, n), the target in the entry | back and forward read targets in order; a `pointerMove` record is kept live through it (history is kept in full) |
-| a deleted session's key | kept | a later move with the same UUID starts it again with an empty history, without a new record |
-| a deleted session's fork choices | kept | the answer removes its pointer and history; its choices still answer "the last choice anyone made" |
 | depth slices | 256 messages, oldest move first | the tag fold's size; moves in one tree finish in order |
+
+Answered (coordinator, 10-10), two calls the first sessions build made on its own and were overridden:
+- A deleted session's UUID mapping goes with it. A request carrying a deleted session's UUID (a stale tab) is
+  treated like `X-ST-Session: none` (the cascade), and the tab is told its session is gone so it can land; its next
+  pointer move creates a new session with a new integer. If that UUID is the deterministic v5 (user, tree) one,
+  re-creating it is fine: a new integer, no history.
+- Of a deleted session's fork choices only the session tier goes. The user tier stays (that user made those
+  choices), and "the last choice anyone made" stays (it describes the tree, not the session); a later choice anywhere
+  replaces it as usual. A `forkSelection` no tier points at any more dies.
+Built (10-10): `sessions::session_gone` drops the session's key and its session-tier choices; tests check that the
+UUID names nothing, the session can't move until it has a key again, and the user's and anyone's choices stay.
 
 Where layer 1 goes: inside 5b, on the engine. Its own storage step (SQLite `state_changes`, saved states every 64th
 depth rebuilt lazily after an epoch bump) conflicts with the design: a structure caught up when read is what revision

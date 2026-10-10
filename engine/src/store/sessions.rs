@@ -724,9 +724,30 @@ pub fn message_gone(
 
 // ---- a session goes ----
 
-/// A session goes: its pointer, its history, its places in the orders and its remembered positions. A user whose
-/// last move in a tree was through it falls back to their most recent other session there, if any.
+/// A session goes: its pointer, its history, its places in the orders, its remembered positions, its own fork
+/// choices (the user's and anyone's stay) and its outside key (its UUID names nothing after). A user whose last move
+/// in a tree was through it falls back to their most recent other session there, if any.
 pub fn session_gone(view: &View, out: &mut Out, s: u64) -> Result<(), StoreError> {
+    chat::drop_key(view, out, chat::KEYED_SESSION, s)?;
+    let fp = key::id(FORK_SESSION, s);
+    let mut gone = Vec::new();
+    let mut owned = Vec::new();
+    for (k, v) in view.scan(&fp, &key::prefix_end(&fp), usize::MAX)? {
+        let [reply, p, l] = parse_varints::<3>(&v)?;
+        out.del(chosen_key(reply, &k));
+        if p > 0 {
+            owned.push(Loc { pos: p - 1, len: l });
+        }
+        out.del(k.clone());
+        gone.push(k);
+    }
+    owned.sort_by_key(|l| l.pos);
+    owned.dedup();
+    for l in owned {
+        if !still_chosen(view, l, &gone)? {
+            dead(out, l);
+        }
+    }
     if let Some((_, Some(m))) = session_pointer(view, s)? {
         out.del(key::ids(SESSIONS_AT, m, s));
     }
