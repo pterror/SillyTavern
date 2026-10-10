@@ -35,6 +35,10 @@ required-features = ["measure"]
 name = "library"
 required-features = ["measure"]
 
+[[example]]
+name = "chat"
+required-features = ["measure"]
+
 [build-dependencies]
 napi-build = "2.6.0"
 

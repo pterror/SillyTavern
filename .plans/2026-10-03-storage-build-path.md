@@ -871,7 +871,7 @@ Done, in order (each section below has its details and choices):
 - Openings and alternatives; `endPathAt` and the kind `pointerRoot`; back and forward and card greetings chosen
   provisionally (answered stop); session and bookmark lists, naming, modes, deletes, and `integrity` (see the "Built"
   sections below); send keys, itemizations' JS and a member's messages changing speaker; the whole-chat save; the
-  people adapter; the token-count cache.
+  people adapter; the token-count cache; measured.
 
 Left (in the order they build on each other):
 - Chat engine operations not built yet: finding a session by its name for routes taking a chat name (by its UUID
@@ -883,8 +883,8 @@ Left (in the order they build on each other):
   `chat_metadata`, a change made while producing a reply hanging on the reply, navigation replacing the state, other
   tabs).
 - The token-count cache's routes moved onto `TokenCache` at the cut (built, see "Built, the token-count cache").
-- Measured (the 5b rows of "Stage 5 measured against"): device bytes per append and per sync, a session list page,
-  a bookmark list, opening a position at L messages, on the synthetic library.
+- Measured (see "Measured, chats" below); left from it: opening a position at L = 10,000 takes 354 ms (35 µs a
+  message, about 10 point reads each); reading a message's values in fewer reads would cut it.
 - For 5e: old ids as `keyMap` records (counter above any decimal one), labels as bookmarks with `positionCreate`
   where they are, `default_child_id` and `characters.active_chat` as the deterministic session's choices and pointer
   moves, itemization rows and files, label metadata as `migration` state changes.
@@ -1456,6 +1456,35 @@ Built, the token-count cache (10-10; `engine/src/store/token_cache.rs`, binding 
 | a count | a varint | exact, 1–5 bytes against the old row's integer |
 | ids | a chunks flag, the count and each id as varints, then the chunks as JSON | exact (JSON keeps a lone surrogate as an escape), smallest for the ids |
 | ids filled with chunks | written as a replacement, so marked used then | the old row kept its last use within the day; it only orders eviction |
+
+Measured, chats (10-10; `engine/examples/chat.rs`, `cargo run --release --features measure --example chat -- <dir>
+2000`, NVMe btrfs scratchpad, removed after): 2,000 trees of 200 messages in a chain (every fifth with a second
+alternative, sent through 8 of 64 sessions, 3 bookmarks each) and one chain of 10,000: 490,000 messages, loaded through
+commits in 96 s, 19.6 derived entries a message, runs 76 MB. Isolated actions (one commit and one sync each):
+
+| action | record B | derived entries | entry B | device KB | ms |
+|---|---|---|---|---|---|
+| message append (600 B, through a session) | 615 | 93 | 1,292 | 140 | 2.95 |
+| pointer move | 5.0 | 19 | 227 | 139 | 2.64 |
+| fork choice | 6.0 | 11 | 177 | 148 | 2.61 |
+| history step back | 6.0 | 16 | 187 | 69 | 2.60 |
+| state change (a variable) | 16.7 | 3 | 27 | 77 | 2.52 |
+
+Today's append is 14.3 frames (≈ 58 KB) in 2 commits, unsynced (design §6); the engine's is the record (design: ~620 B)
+plus the sync floor (75–190 KB), its derived entries (stats, sessions, children, depth, postings) written again by
+flushes and merges. Reads on the reopened store (median of 31):
+
+| read | median ms |
+|---|---|
+| session list: every session, a page of 50 | 0.11 |
+| session list: a tree's, a page of 50 | 0.12 |
+| bookmark list: a tree's, a page of 50 | 0.07 |
+| open a position at L = 100 (path, messages, alternatives, state) | 3.5 |
+| open a position at L = 1,000 | 35 |
+| open a position at L = 10,000 | 354 |
+
+Lists are O(log N + P); opening is O(L), about 35 µs a message (the path, each message's values, texts and times, its
+alternatives, the state's fold).
 
 Where layer 1 goes: inside 5b, on the engine. Its own storage step (SQLite `state_changes`, saved states every 64th
 depth rebuilt lazily after an epoch bump) conflicts with the design: a structure caught up when read is what revision
