@@ -875,8 +875,9 @@ Done, in order (each section below has its details and choices):
   people adapter; the token-count cache; measured.
 
 Left (in the order they build on each other):
-- Chat engine operations not built yet: finding a session by its name for routes taking a chat name (by its UUID
-  works now; by name reads the session-name postings, 5d).
+- Chat engine operations not built yet: resolving a chat name for routes taking one (by its UUID works now; the
+  exact lookup `sessionsNamed` is built, 5d); names unique per (user, tree) with upstream's suffix scheme on create
+  and rename (answered 10-11, 5d), not built.
 - Compat identifiers wired at the cut (the header is sent, see "Built, the tab's session"): the answers'
   `characters[].chat`, `group.chat_id`, `getCurrentChatId()`, chat names in events (each `resolveSession`'s
   `identifier`), and the tab told its session is gone.
@@ -1797,7 +1798,7 @@ Left (handover, 10-11):
 **5d. search wired.**
 
 Status (10-11, handover): in progress. Built: the searched fields; the library's search with closed-quote phrases;
-chat search; world-info search (below). Left, in order: the exact session lookup by name for 5b; pair postings
+chat search; world-info search; the exact session lookup (below). Left, in order: pair postings
 with their setting; the chip row (the client); `bench-search-synth.mjs`; measurements. The `/query` route reads
 `lib.query({ search })` at the cut (5f).
 
@@ -1854,6 +1855,17 @@ a world book's or a character's own book's entries, best first, each by its key 
 uid), with `total`, `totalExact` and a `cursor` (`s<score>:<entry>`) when more follow; `'missing'` for no such book.
 The route (picked: `POST /api/worldinfo/search { name | avatar, search, limit, cursor }` with that answer) comes at
 the cut with the wiki's server-searched books (lorebook-wiki 4c). No labels: none was decided for entries.
+
+Built, sessions by exact name (10-11; `sessions::SESSION_NAMED`, `by_name`, chat read `sessionsNamed`,
+`ChatEngine.sessionsNamed({ tree, user, name })`; test in `src/chat-search.test.js`): one entry per named session,
+(name bytes, session), kept by `positionName` and a session's delete; the lookup reads the name's entries and keeps
+the sessions the user has moved in the tree (`USER_TREE_LAST`). The session-name postings fold case and accents and
+skip names without words (`!!!`), so the exact lookup has its own entries. Open for 5b's naming: a session moved into
+a tree where the user already has a session of the same name makes two; the lookup answers both.
+
+| choice | picked | reason |
+|---|---|---|
+| exact names | their own entries, not the postings | exact bytes, and names with no words; one entry per named session |
 
 
 Built, the searched fields (10-11; `engine/src/store/searched.rs`, `search/index.rs` `update_fields`; test

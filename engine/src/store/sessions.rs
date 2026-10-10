@@ -70,6 +70,34 @@ pub const HISTORY_CUR: u64 = 145;
 /// length]`.
 pub const OPENING_CHOICE: u64 = 146;
 
+/// Per (name, session): a named session, by its name's exact bytes.
+pub const SESSION_NAMED: u64 = 147;
+
+/// The key of a named session's `SESSION_NAMED` entry.
+pub fn named_key(name: &[u8], s: u64) -> Vec<u8> {
+    let mut k = key::of(SESSION_NAMED);
+    put_bytes(&mut k, name);
+    put_u64(&mut k, s);
+    k
+}
+
+/// The sessions named exactly `name` that `u` has moved in `tree`, in id order.
+pub fn by_name(view: &View, u: u64, tree: u64, name: &[u8]) -> Result<Vec<u64>, StoreError> {
+    let mut p = key::of(SESSION_NAMED);
+    put_bytes(&mut p, name);
+    let mut out = Vec::new();
+    for (k, _) in view.scan(&p, &key::prefix_end(&p), usize::MAX)? {
+        let mut at = p.len();
+        let s = get_u64(&k, &mut at).ok_or_else(|| bad("a session name key"))?;
+        let mut last = key::ids(USER_TREE_LAST, u, tree);
+        put_u64(&mut last, s);
+        if view.get(&last)?.is_some() {
+            out.push(s);
+        }
+    }
+    Ok(out)
+}
+
 /// Messages a depth slice recomputes.
 pub const DEPTH_SLICE: usize = 256;
 
