@@ -24,6 +24,8 @@ import { isReadOnlyMode } from './read-only-mode.js';
 import { legacySettingsPath, settingsDirPath } from './settings-store.js';
 import { normalizeGroupRecord, tagEntityTypeOf } from './group-id.js';
 import { expandTagFilter, resolveTagId, resolveTagIds, NO_TAG_DELETIONS } from './tag-deletions.js';
+import { tagDerivedColumns } from './tag-order.js';
+export { tagDerivedColumns };
 import { SEARCH_WORK_CAP, SEARCH_WALK_WINDOW } from './endpoints/search-walk.js';
 import { orderKey, permute, unpermute } from './random-order.js';
 import { characterAvatarsForOwnerId, characterOwnerIdOf, fillMessageStats, openOwnerStatsView } from './message-tree-db.js';
@@ -762,31 +764,6 @@ const TAG_ROW_VALUES_SQL = `(id, data, name_key, sort_order, folder_type, is_fol
  */
 function tagRowParams(tag) {
     return { id: tag.id, data: JSON.stringify(tag), nameKey: tagDefinitionNameKey(tag), ...tagDerivedColumns(tag) };
-}
-
-/**
- * The tags columns derived from a tag's data (a value as JSON.parse returns it), with upstream's coercion wherever
- * upstream defines it. sort_order: upstream orders by `a.sort_order - b.sort_order` among tags whose sort_order
- * isn't undefined, so null, booleans and numeric strings coerce as that subtraction does; a value it can't order
- * (NaN, a non-numeric string, an object) has no order. folder_type/is_folder follow isBogusFolder() (tags.js):
- * a folder is any present folder_type other than the string 'NONE'.
- * @param {unknown} tag
- * @returns {{ sortOrder: number | null, folderType: string, isFolder: 0 | 1 }}
- */
-export function tagDerivedColumns(tag) {
-    const fields = tag !== null && typeof tag === 'object' ? /** @type {Record<string, unknown>} */ (tag) : {};
-    const rawOrder = fields.sort_order;
-    /** @type {number | null} */
-    let sortOrder = null;
-    if (rawOrder === null) {
-        sortOrder = 0;
-    } else if (typeof rawOrder === 'number' || typeof rawOrder === 'boolean' || typeof rawOrder === 'string') {
-        const n = Number(rawOrder);
-        sortOrder = Number.isNaN(n) ? null : n;
-    }
-    const rawFolder = fields.folder_type;
-    const folderType = rawFolder === undefined ? 'NONE' : typeof rawFolder === 'string' ? rawFolder : String(JSON.stringify(rawFolder));
-    return { sortOrder, folderType, isFolder: folderType === 'NONE' ? 0 : 1 };
 }
 
 // Returns null if no SQLite engine is usable on this install - callers must no-op rather than throw. In read-only
