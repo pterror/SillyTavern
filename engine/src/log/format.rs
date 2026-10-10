@@ -739,6 +739,38 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
+    // A world-info entry's `displayIndex` as JavaScript's `Number(displayIndex ?? -1)` reads it (absent: the entry
+    // has none recorded); `book` is the book holding the entry.
+    Kind {
+        name: "entryIndex",
+        base: 222,
+        slots: &[
+            req("entry", Ty::Id(Space::Entity)),
+            req("book", Ty::Id(Space::Entity)),
+            opt("index", Ty::F64),
+        ],
+        internal: false,
+    },
+    // A character's lorebook link: the book entity it names (absent: none).
+    Kind {
+        name: "bookLink",
+        base: 224,
+        slots: &[
+            req("entity", Ty::Id(Space::Entity)),
+            opt("book", Ty::Id(Space::Entity)),
+        ],
+        internal: false,
+    },
+    // An unresolved book (no definition) is resolved as `into` from now on, for every link naming it.
+    Kind {
+        name: "bookForward",
+        base: 226,
+        slots: &[
+            req("from", Ty::Id(Space::Entity)),
+            req("into", Ty::Id(Space::Entity)),
+        ],
+        internal: false,
+    },
     // One of a message's times as the ISO string `new Date(time + delta).toISOString()`: which is its field.
     Kind {
         name: "messageTime",

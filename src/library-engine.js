@@ -7,6 +7,7 @@ import { tagDerivedColumns } from './tag-order.js';
 import { LibraryTags } from './library-engine-tags.js';
 import { textEdit, wtf8Length } from './text-edit.js';
 import { FIELD, TAG_KEY_PREFIX, TYPE } from './library-codes.js';
+import { bookKey } from './world-info-keys.js';
 import { groupDigestContentHash, groupDigestFavHash, groupDigestTagIdsHash, normalizeFav, normalizeTagIds } from '../public/scripts/hash-utils.js';
 
 /**
@@ -123,6 +124,9 @@ export function cardParts(entity) {
         if (name === 'tags') texts.forEach((text, position) => parts.tags.push({ position, name: text }));
         else if (name) texts.forEach((text, position) => parts.greetings.push({ list: name, position, text }));
     }
+    // A lorebook linked by id reads as the name of the book it resolves as; a card's own text is kept only where
+    // it differs from that name.
+    if (parts.columns.world === undefined && entity.link) parts.columns.world = entity.link.key;
     parts.columns.fav = entity.fav;
     return parts;
 }
@@ -190,6 +194,9 @@ export function groupObject(entity) {
  * @property {number} [createMs]
  * @property {{ which: number, hash: Buffer }[]} hashes
  * @property {number | null} [tagOrder] A tag's manual sort order as recorded; absent when none was.
+ * @property {{ book: bigint, key: string, version: bigint }} [link] A character's lorebook link: the book it names,
+ * and the key and version of the book that resolves as.
+ * @property {number} [entryIndex] An entry's recorded `displayIndex`.
  */
 
 /**
@@ -406,7 +413,11 @@ export class LibraryEngine {
                 const seeded = fav ?? !!(card?.fav ?? card?.data?.extensions?.fav);
                 if (seeded) records.push({ kind: 'fav', entity: id, fav: true });
             }
-            records.push(...valueRecords(id, stored, cardValues(splitCard(card))));
+            const next = cardValues(splitCard(card));
+            const world = next.values.get(FIELD.world)?.text;
+            const linkKey = world ? bookKey(world) : '';
+            if (linkKey && world === linkKey) next.values.delete(FIELD.world);
+            records.push(...valueRecords(id, stored, next));
             const normalized = getCharaCardV2(JSON.parse(cardJson), directories, false);
             const size = calculateDataSize(normalized.data ?? {});
             if (stored?.dataSize !== size) records.push({ kind: 'dataSize', entity: id, size });
@@ -422,9 +433,37 @@ export class LibraryEngine {
             }
             // A new entity's create comes after its values, so it enters the orders once, with its keys.
             if (!stored) records.push({ kind: 'entityCreate', entity: id, type: TYPE.character, key: avatar, added: dateAdded });
-            if (records.length > 0) await this.store.commit(records);
+            const commit = async () => {
+                records.push(...(await this.linkRecords(id, stored, linkKey)));
+                if (records.length > 0) await this.store.commit(records);
+            };
+            // A name no book has becomes an unresolved book, made once whichever card links it first.
+            if (linkKey) await this.serialized(TYPE.book, linkKey, commit);
+            else await commit();
             return { id, records: records.length };
         });
+    }
+
+    /**
+     * The records linking character `id` to the book keyed `key` (none: no link), the book made as an unresolved
+     * name when there is none. Runs in the key's lane.
+     * @param {bigint} id
+     * @param {StoredEntity | null} stored
+     * @param {string} key
+     * @returns {Promise<object[]>}
+     */
+    async linkRecords(id, stored, key) {
+        if (!key) return stored?.link ? [{ kind: 'bookLink', entity: id }] : [];
+        // A link already resolving as the book with that key names it, through whatever forwards.
+        if (stored?.link?.key === key) return [];
+        const records = [];
+        let [book] = await this.ids(TYPE.book, [key]);
+        if (book === null) {
+            book = this.nextId++;
+            records.push({ kind: 'entityCreate', entity: book, type: TYPE.book, key, added: Date.now() });
+        }
+        records.push({ kind: 'bookLink', entity: id, book });
+        return records;
     }
 
     /**
@@ -733,7 +772,7 @@ export class LibraryEngine {
             else q.allTags = found.length === include.length ? found : [0n];
         }
         if (exclude.length > 0) q.noTags = known(exclude);
-        if (typeof world === 'string' && world) q.world = world;
+        if (typeof world === 'string' && world) q.world = bookKey(world);
         const keyIds = async (/** @type {string[]} */ keys) => {
             const types = groupsOnly ? [TYPE.group] : includeGroups ? [TYPE.character, TYPE.group] : [TYPE.character];
             const out = [];
@@ -806,7 +845,8 @@ export class LibraryEngine {
             date_last_chat: 0,
             chat_size: 0,
             data_size: e.dataSize ?? 0,
-            version: e.type === TYPE.group ? null : Number(e.version),
+            // A renamed or deleted lorebook changes what the card reads as.
+            version: e.type === TYPE.group ? null : Number(e.link && e.link.version > e.version ? e.link.version : e.version),
             favHash: 0,
             tagIdsHash: 0,
             contentHash: 0,

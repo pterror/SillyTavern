@@ -96,7 +96,7 @@ function makeCard(r, i) {
         tags: r() < 0.5 ? ['card-tag', `t${i % 3}`] : [],
         creator: r() < 0.5 ? 'someone' : '',
         character_version: '1.0',
-        extensions: { talkativeness: '0.5', world: r() < 0.4 ? 'lore' : '', depth_prompt: { depth: 4, prompt: 'x' }, ...(r() < 0.3 ? { fav: false } : {}) },
+        extensions: { talkativeness: '0.5', world: r() < 0.4 ? 'lore' : r() < 0.15 ? 'a/b lore' : '', depth_prompt: { depth: 4, prompt: 'x' }, ...(r() < 0.3 ? { fav: false } : {}) },
         ...(r() < 0.2 ? { group_only_greetings: ['only'] } : {}),
         ...(r() < 0.2 ? { creation_date: 1700000000 + i } : {}),
     };

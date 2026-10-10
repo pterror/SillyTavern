@@ -1254,6 +1254,7 @@ pub fn deriver(kind: &str) -> Option<&'static dyn Deriver> {
         "testSet" => &TestSet,
         other => {
             return library::deriver(other)
+                .or_else(|| super::books::deriver(other))
                 .or_else(|| super::chat::deriver(other))
                 .or_else(|| super::state::deriver(other));
         }

@@ -2,7 +2,9 @@
  * The codes the library's records name entities and values by, shared by the library's modules.
  */
 
-export const TYPE = Object.freeze({ character: 0, group: 1, tag: 2 });
+/** Entity types: a world book (or a name a lorebook link holds that no book has), a book a character or a world
+ * book owns (a card's `character_book`, a book's `originalData`), and a book's entry. */
+export const TYPE = Object.freeze({ character: 0, group: 1, tag: 2, book: 3, ownedBook: 4, entry: 5 });
 
 /** Field codes; the engine reads NAME, WORLD, FOLDER_TYPE and DEFINED itself. */
 export const FIELD = Object.freeze({

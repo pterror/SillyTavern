@@ -373,6 +373,9 @@ where
     Ok(promise)
 }
 
+/// A read answering a `JsTree`, run on the store.
+type TreeRead = Box<dyn FnOnce(&Inner) -> StoreResult<JsTree> + Send>;
+
 /// A chat read's answer (`store::chat_read::Js`) as JavaScript.
 struct JsTree(crate::store::chat_read::Js);
 
@@ -923,6 +926,16 @@ impl ToNapiValue for LibraryEntities {
                     None => o.set("tagOrder", napi::bindgen_prelude::Null)?,
                 }
             }
+            if let Some((book, k, version)) = e.link {
+                let mut lo = Object::new(&env)?;
+                lo.set("book", book)?;
+                lo.set("key", text_to_js(k)?)?;
+                lo.set("version", version)?;
+                o.set("link", lo)?;
+            }
+            if let Some(x) = e.entry_index {
+                o.set("entryIndex", x)?;
+            }
             list.push(Some(o));
         }
         unsafe { Vec::<Option<Object>>::to_napi_value(raw_env, list) }
@@ -1345,7 +1358,7 @@ impl Store {
         use crate::store::chat_read as cr;
         let a = &args;
         let limit = |a: &Object| -> Result<usize> { Ok(req_integer(a, "limit")? as usize) };
-        let read: Box<dyn FnOnce(&Inner) -> StoreResult<JsTree> + Send> = match op.as_str() {
+        let read: TreeRead = match op.as_str() {
             "messages" => {
                 let ids = integers(a, "ids")?;
                 Box::new(move |s| s.chat_read(|v| cr::messages(v, &ids)).map(JsTree))
@@ -1528,6 +1541,66 @@ impl Store {
                 Box::new(move |s| s.chat_read(|v| cr::sent(v, owner, &keys)).map(JsTree))
             }
             other => return Err(invalid(format!("no chat read {other}"))),
+        };
+        derived(env, &self.store, read)
+    }
+
+    /// A world-info read (`store::books`), by `op` with its arguments in `args`:
+    /// - `books { after?, limit }`: `{ books: [{ id, key }], more }`, the defined world books in key order;
+    /// - `entries { book, after?, limit }`: `{ entries: [{ id, position }], more }`, a book's entries in place order;
+    /// - `resolved { ids }`: each book as its forwards resolve it, `{ id, key, defined }` or null;
+    /// - `links { ids }`: each character's linked book, or null;
+    /// - `numbers { book }`: `{ freeKey, maxIndex }`.
+    #[napi(
+        ts_args_type = "op: string, args: object",
+        ts_return_type = "Promise<any>"
+    )]
+    pub fn world_read<'env>(
+        &self,
+        env: &'env Env,
+        op: String,
+        args: Object,
+    ) -> Result<Object<'env>> {
+        use crate::store::books as b;
+        let a = &args;
+        let read: TreeRead = match op.as_str() {
+            "books" => {
+                let after = match a.get::<Unknown>("after")? {
+                    Some(v) if !matches!(v.get_type()?, ValueType::Null | ValueType::Undefined) => {
+                        Some(string("after", v)?)
+                    }
+                    _ => None,
+                };
+                let limit = req_integer(a, "limit")? as usize;
+                Box::new(move |s| {
+                    s.chat_read(|v| b::books_page(v, after.as_deref(), limit))
+                        .map(JsTree)
+                })
+            }
+            "entries" => {
+                let (book, after, limit) = (
+                    req_integer(a, "book")?,
+                    opt_integer(a, "after")?,
+                    req_integer(a, "limit")? as usize,
+                );
+                Box::new(move |s| {
+                    s.chat_read(|v| b::entries_page(v, book, after, limit))
+                        .map(JsTree)
+                })
+            }
+            "resolved" => {
+                let ids = integers(a, "ids")?;
+                Box::new(move |s| s.chat_read(|v| b::resolved(v, &ids)).map(JsTree))
+            }
+            "links" => {
+                let ids = integers(a, "ids")?;
+                Box::new(move |s| s.chat_read(|v| b::links(v, &ids)).map(JsTree))
+            }
+            "numbers" => {
+                let book = req_integer(a, "book")?;
+                Box::new(move |s| s.chat_read(|v| b::book_numbers(v, book)).map(JsTree))
+            }
+            other => return Err(invalid(format!("no world read {other}"))),
         };
         derived(env, &self.store, read)
     }
