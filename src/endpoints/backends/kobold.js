@@ -183,9 +183,6 @@ router.post('/generate', withGenerationStop(async function (request, response_ge
     // straight off the parsed body, not defaulted, so the "key absent" (`undefined`) vs. "explicit
     // null" distinction survives intact.
     let pendingAssistantPersist = null;
-    // Set only by the raw-action branch below (buildRawActionKoboldRequest()'s own `itemization`
-    // field) - see text-completions.js's identical `rawActionItemization` for the full rationale.
-    let rawActionItemization = null;
     // Per-request warnings for the screen - see text-completions.js's identical `warnings` for the
     // full rationale. Covers every branch, not gated on persistence; sent only when non-empty.
     /** @type {Array<{kind: string, key: string, message: string, entries?: string[]}>} */
@@ -267,9 +264,6 @@ router.post('/generate', withGenerationStop(async function (request, response_ge
                 warnings, generationStop: response_generate.locals.generationStop,
                 itemization: itemizationOf(request.body.itemization, built.itemization),
             };
-            // Same gating as `pendingAssistantPersist` above - see text-completions.js's identical
-            // comment for why impersonate/quiet must still reach the client completely unmodified.
-            rawActionItemization = built.itemization;
         }
 
         // Replace the body entirely - `built.params` already carries `api_server`
@@ -405,7 +399,7 @@ router.post('/generate', withGenerationStop(async function (request, response_ge
                 // compact binary wire format every streaming path uses, raw-action or not (see
                 // text-completions.js's forwardAndPersistCompactStream() doc comment) -
                 // `pendingAssistantPersist` only gates whether the final text also gets persisted.
-                await forwardAndPersistCompactStream(response, response_generate, pendingAssistantPersist, json => json?.token, null, rawActionItemization, warnings);
+                await forwardAndPersistCompactStream(response, response_generate, pendingAssistantPersist, json => json?.token, null, warnings);
                 return;
             } else {
                 if (!response.ok) {
@@ -434,11 +428,6 @@ router.post('/generate', withGenerationStop(async function (request, response_ge
                     if (persisted) data.assistant_node_id = persisted.node_id;
                 }
 
-                // Raw-action prompt-itemization breakdown - see text-completions.js's identical
-                // non-streaming attachment for the full rationale.
-                if (rawActionItemization) {
-                    data.itemization = rawActionItemization;
-                }
                 if (warnings.length) {
                     data.warnings = warnings;
                 }

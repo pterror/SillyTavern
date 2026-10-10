@@ -1298,9 +1298,6 @@ export async function generateTextGenWithStreaming(generate_data, signal) {
                     } else if ('control' in event && event.control?.stored) {
                         state.stored = event.control.stored;
                         yield { text, swipes, logprobs, toolCalls, state };
-                    } else if ('control' in event && event.control?.itemization) {
-                        state.itemization = event.control.itemization;
-                        yield { text, swipes, logprobs, toolCalls, state };
                     } else if ('control' in event && event.control?.warnings) {
                         showTokenizerWarnings(event.control.warnings);
                     }

@@ -545,7 +545,6 @@ function decodeWrites(res) {
 }
 
 describe('warnings control frame', () => {
-    const itemization = { total: 42 };
     const warnings = [{ kind: 'dropped', key: 'textgenerationwebui|llamacpp|http://x|m|none', message: 'Dropped 1 entry', entries: ['foo'] }];
     const llamaEvents = [
         { index: 0, content: 'Hello' },
@@ -560,39 +559,37 @@ describe('warnings control frame', () => {
         await forwardAndPersistCompactStream(fakeCompletionsUpstream(['Hello']), res, null, json => json?.choices?.[0]?.text, null, ...extraArgs);
     }
 
-    test('pipeLlamaCppCompactStream writes a {warnings} control frame right after the itemization frame', async () => {
+    test('pipeLlamaCppCompactStream writes a {warnings} control frame before any content', async () => {
         const res = new FakeResponse();
-        await pipeLlamaCppCompactStream(fakeUpstream(llamaEvents), res, null, itemization, warnings);
+        await pipeLlamaCppCompactStream(fakeUpstream(llamaEvents), res, null, warnings);
         const events = decodeWrites(res);
-        expect(events[0]).toEqual({ control: { itemization } });
-        expect(events[1]).toEqual({ control: { warnings } });
+        expect(events[0]).toEqual({ control: { warnings } });
         expect(replay(events).text).toBe('Hello');
     });
 
     test('pipeLlamaCppCompactStream writes no warnings frame for an empty or omitted array', async () => {
         for (const extra of [[[]], []]) {
             const res = new FakeResponse();
-            await pipeLlamaCppCompactStream(fakeUpstream(llamaEvents), res, null, itemization, ...extra);
+            await pipeLlamaCppCompactStream(fakeUpstream(llamaEvents), res, null, ...extra);
             const controls = decodeWrites(res).filter(e => 'control' in e);
-            expect(controls).toEqual([{ control: { itemization } }]);
+            expect(controls).toEqual([]);
         }
     });
 
-    test('text-completions forwardAndPersistCompactStream writes a {warnings} control frame right after the itemization frame', async () => {
+    test('text-completions forwardAndPersistCompactStream writes a {warnings} control frame before any content', async () => {
         const res = new FakeResponse();
-        await runForward(res, [itemization, warnings]);
+        await runForward(res, [warnings]);
         const events = decodeWrites(res);
-        expect(events[0]).toEqual({ control: { itemization } });
-        expect(events[1]).toEqual({ control: { warnings } });
+        expect(events[0]).toEqual({ control: { warnings } });
         expect(replay(events).text).toBe('Hello');
     });
 
     test('text-completions forwardAndPersistCompactStream writes no warnings frame for an empty or omitted array', async () => {
-        for (const extra of [[itemization, []], [itemization]]) {
+        for (const extra of [[[]], []]) {
             const res = new FakeResponse();
             await runForward(res, extra);
             const controls = decodeWrites(res).filter(e => 'control' in e);
-            expect(controls).toEqual([{ control: { itemization } }]);
+            expect(controls).toEqual([]);
         }
     });
 });
