@@ -871,7 +871,7 @@ Done, in order (each section below has its details and choices):
 - Openings and alternatives; `endPathAt` and the kind `pointerRoot`; back and forward and card greetings chosen
   provisionally (answered stop); session and bookmark lists, naming, modes, deletes, and `integrity` (see the "Built"
   sections below); send keys, itemizations' JS and a member's messages changing speaker; the whole-chat save; the
-  people adapter.
+  people adapter; the token-count cache.
 
 Left (in the order they build on each other):
 - Chat engine operations not built yet: finding a session by its name for routes taking a chat name (by its UUID
@@ -882,7 +882,7 @@ Left (in the order they build on each other):
 - State layer 1 steps 2–5, 7, 8 on these records (the state routes, the page's compat for variables and
   `chat_metadata`, a change made while producing a reply hanging on the reply, navigation replacing the state, other
   tabs).
-- The token-count cache in the engine (answered below).
+- The token-count cache's routes moved onto `TokenCache` at the cut (built, see "Built, the token-count cache").
 - Measured (the 5b rows of "Stage 5 measured against"): device bytes per append and per sync, a session list page,
   a bookmark list, opening a position at L messages, on the synthetic library.
 - For 5e: old ids as `keyMap` records (counter above any decimal one), labels as bookmarks with `positionCreate`
@@ -1434,6 +1434,28 @@ its speakers from `LibraryEngine` on the same store (characters by entity id and
 and `trees([{ avatar } | { group }])`, a character's or group's tree being its entity id. Tested: a character renamed
 in the library shows its new name in its own tree and in a group's, with nothing written to the messages. Left: a
 speaker read loads the whole entity (`libraryEntities`); reading only the name would cut it, as for list rows (5a).
+
+Built, the token-count cache (10-10; `engine/src/store/token_cache.rs`, binding `tokenCachePut`, `tokenCacheEvict`,
+`chatRead('tokenCache' | 'tokenCacheCount')`, `src/token-cache-engine.js`; tests `token_cache_tests.rs`,
+`src/token-cache-engine.test.js` against `token-count-store.js`), as answered:
+- Derived entries with no record, written in the commit queue (`Job::Derive`, published with no sync of their own):
+  per (table, tokenizer identity, text hash) `[last used, value]`, an order by last use, and a count per table. A
+  crash loses only results not yet flushed.
+- `TokenCache`: `readCount`, `readIdsRow`, `writeBack` with the old semantics (a stored key keeps its value; a
+  count's `replace` writes over it; stored ids without chunks take the chunks given; marked used once a day behind),
+  then, for a table over its cap, an eviction of the least recently used in batches with a pause between, one per
+  table at a time (`idle()` waits for them). Caps and batches are today's (1,000,000 entries a table, 5,000 a batch,
+  50 ms).
+- Nothing routes to it; `token-count-store.js`'s readers and writers move onto it at the cut, and its prune and
+  row-count jobs go.
+
+| choice | picked | reason |
+|---|---|---|
+| the bound | entries per table, today's cap | "size-bounded" kept as today's measure; both tables bounded |
+| key | the identity's bytes, the hash's 32 bytes (not its hex) | half the hash's bytes; exact |
+| a count | a varint | exact, 1–5 bytes against the old row's integer |
+| ids | a chunks flag, the count and each id as varints, then the chunks as JSON | exact (JSON keeps a lone surrogate as an escape), smallest for the ids |
+| ids filled with chunks | written as a replacement, so marked used then | the old row kept its last use within the day; it only orders eviction |
 
 Where layer 1 goes: inside 5b, on the engine. Its own storage step (SQLite `state_changes`, saved states every 64th
 depth rebuilt lazily after an epoch bump) conflicts with the design: a structure caught up when read is what revision

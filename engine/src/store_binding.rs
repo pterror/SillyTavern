@@ -437,6 +437,19 @@ fn byte_list(o: &Object, name: &str) -> Result<Vec<Vec<u8>>> {
         .collect()
 }
 
+/// A string (as WTF-8) or a Uint8Array's bytes.
+fn bytes_of(o: &Object, name: &str) -> Result<Vec<u8>> {
+    let v: Unknown = o
+        .get(name)?
+        .ok_or_else(|| invalid(format!("{name} is missing")))?;
+    match v.get_type()? {
+        ValueType::String => string(name, v),
+        _ => Ok(Uint8Array::from_unknown(v)
+            .map_err(|_| invalid(format!("{name} is a string or a Uint8Array")))?
+            .to_vec()),
+    }
+}
+
 fn field_arg(v: Unknown) -> Result<FieldRef> {
     match value_from_js(
         &Slot {
@@ -1194,6 +1207,68 @@ impl Store {
         Ok(promise)
     }
 
+    /// Keeps tokenizing results in the cache: `[{ table, identity, hash, value, replace? }]` (`identity` and `hash`
+    /// strings or bytes, `value` bytes) at `now` (ms); a stored one keeps its value unless `replace`, and is marked
+    /// used once `granularity` ms or more behind. Resolves once they are readable; a crash may lose them.
+    #[napi(
+        ts_args_type = "puts: object[], now: number, granularity: number",
+        ts_return_type = "Promise<void>"
+    )]
+    pub fn token_cache_put<'env>(
+        &self,
+        env: &'env Env,
+        puts: Vec<Object>,
+        now: f64,
+        granularity: f64,
+    ) -> Result<Object<'env>> {
+        let puts = puts
+            .iter()
+            .map(|o| {
+                Ok(crate::store::token_cache::Put {
+                    table: req_integer(o, "table")?,
+                    identity: bytes_of(o, "identity")?,
+                    hash: bytes_of(o, "hash")?,
+                    value: bytes_of(o, "value")?,
+                    replace: o.get::<bool>("replace")?.unwrap_or(false),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let (deferred, promise) = env.create_deferred()?;
+        self.store.token_cache_put(
+            puts,
+            now as u64,
+            granularity as u64,
+            Box::new(move |r| match r {
+                Ok(()) => deferred.resolve(|_| Ok(())),
+                Err(e) => deferred.reject(store_error(e)),
+            }),
+        );
+        Ok(promise)
+    }
+
+    /// Evicts up to `batch` of a cache table's least recently used entries while it holds more than `cap`; resolves
+    /// with whether it still does.
+    #[napi(ts_return_type = "Promise<boolean>")]
+    pub fn token_cache_evict<'env>(
+        &self,
+        env: &'env Env,
+        table: u32,
+        cap: f64,
+        batch: u32,
+    ) -> Result<Object<'env>> {
+        let (deferred, promise) = env.create_deferred()?;
+        self.store.token_cache_evict(
+            u64::from(table),
+            cap as u64,
+            batch as usize,
+            Box::new(move |r| match r {
+                Ok(more) => deferred.resolve(move |_| Ok(more)),
+                Err(e) => deferred.reject(store_error(e)),
+            }),
+        );
+        Ok(promise)
+    }
+
     /// The record at a durable record's position.
     #[napi(ts_return_type = "Promise<object>")]
     pub fn read(&self, position: BigInt) -> Result<AsyncTask<ReadTask>> {
@@ -1255,7 +1330,8 @@ impl Store {
     /// - `bookmarks { ids }`, `treeBookmarks { tree, after?, limit }`, `bookmarksAt { message }`;
     /// - `state { tree, at? }`: `[{ variable, field, json }]`;
     /// - `stats { owners }`: `{ owners, totals }`; `itemization { message }`; `sent { owner, keys }`;
-    /// - `itemized { after?, limit }`: `{ ids, more }`, messages with an itemization in id order.
+    /// - `itemized { after?, limit }`: `{ ids, more }`, messages with an itemization in id order;
+    /// - `tokenCache { table, identity, hash }`: `{ used, value }` or null; `tokenCacheCount { table }`.
     #[napi(
         ts_args_type = "op: string, args: object",
         ts_return_type = "Promise<any>"
@@ -1414,6 +1490,38 @@ impl Store {
             "itemized" => {
                 let (after, limit) = (opt_integer(a, "after")?, limit(a)?);
                 Box::new(move |s| s.chat_read(|v| cr::itemized(v, after, limit)).map(JsTree))
+            }
+            "tokenCache" => {
+                let (table, identity, hash) = (
+                    req_integer(a, "table")?,
+                    bytes_of(a, "identity")?,
+                    bytes_of(a, "hash")?,
+                );
+                Box::new(move |s| {
+                    s.chat_read(|v| {
+                        Ok(
+                            match crate::store::token_cache::get(v, table, &identity, &hash)? {
+                                Some((used, value)) => cr::Js::Obj(vec![
+                                    ("used", cr::Js::Num(used as f64)),
+                                    ("value", cr::Js::Bytes(value)),
+                                ]),
+                                None => cr::Js::Null,
+                            },
+                        )
+                    })
+                    .map(JsTree)
+                })
+            }
+            "tokenCacheCount" => {
+                let table = req_integer(a, "table")?;
+                Box::new(move |s| {
+                    s.chat_read(|v| {
+                        Ok(cr::Js::Num(
+                            crate::store::token_cache::count(v, table)? as f64
+                        ))
+                    })
+                    .map(JsTree)
+                })
             }
             "sent" => {
                 let (owner, keys) = (req_integer(a, "owner")?, byte_list(a, "keys")?);
