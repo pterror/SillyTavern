@@ -287,6 +287,58 @@ impl View<'_> {
         Ok(out)
     }
 
+    /// `get` for each of `keys`, reading the published entries' run blocks once for the keys they hold.
+    pub fn get_many(&self, keys: &[Vec<u8>]) -> Result<Vec<Option<Vec<u8>>>, StoreError> {
+        let mut vals: Vec<Vec<Val>> = Vec::with_capacity(keys.len());
+        let mut published: Vec<usize> = Vec::new();
+        for (i, k) in keys.iter().enumerate() {
+            let v = self.unpublished(k)?;
+            if v.iter().all(Val::is_partial) {
+                published.push(i);
+            }
+            vals.push(v);
+        }
+        published.sort_by(|a, b| keys[*a].cmp(&keys[*b]));
+        published.dedup_by(|a, b| keys[*a] == keys[*b]);
+        let sorted: Vec<&[u8]> = published.iter().map(|i| keys[*i].as_slice()).collect();
+        let found = match self.snap {
+            Some(s) => s.values_sorted(&sorted)?,
+            None => self.ks.values_sorted(&sorted)?,
+        };
+        let mut by_key: HashMap<&[u8], Vec<Val>> = HashMap::new();
+        for (n, v) in found.into_iter().enumerate() {
+            by_key.insert(sorted[n], v);
+        }
+        Ok(keys
+            .iter()
+            .zip(vals)
+            .map(|(k, mut v)| {
+                if v.iter().all(Val::is_partial)
+                    && let Some(p) = by_key.get(k.as_slice())
+                {
+                    v.extend(p.iter().cloned());
+                }
+                fold(v).and_then(Val::settled).map(Val::into_bytes)
+            })
+            .collect())
+    }
+
+    /// About how many keys `[start, end)` holds (`Keyspace::estimate`), the unpublished entries counted.
+    pub fn estimate(&self, start: &[u8], end: &[u8]) -> Result<f64, StoreError> {
+        let mut n = 0.0;
+        for layer in &self.layers {
+            n += layer
+                .range(start, end)
+                .into_iter()
+                .filter(|(_, v)| !matches!(v, Val::Del))
+                .count() as f64;
+        }
+        Ok(n + match self.snap {
+            Some(s) => s.estimate(start, end)?,
+            None => self.ks.estimate(start, end)?,
+        })
+    }
+
     /// `scan_vals` last first: up to `limit` keys in `[start, end)` from the last down.
     pub fn scan_vals_rev(
         &self,

@@ -135,6 +135,22 @@ impl Snapshot<'_> {
             .merge_scan(pages, &self.version.runs, start, end, limit)
     }
 
+    /// `Keyspace::values_sorted` in this state.
+    pub fn values_sorted(&self, keys: &[&[u8]]) -> KsResult<Vec<Vec<Val>>> {
+        let seq = self.seq;
+        self.ks
+            .values_sorted_in(&self.version, keys, |m, k| m.get_at(k, seq))
+    }
+
+    /// `Keyspace::estimate` in this state.
+    pub fn estimate(&self, start: &[u8], end: &[u8]) -> KsResult<f64> {
+        let mut n = 0.0;
+        for m in &self.version.mems {
+            n += m.read().unwrap().count(start, end, Some(self.seq)) as f64;
+        }
+        self.ks.runs_estimate(&self.version.runs, start, end, n)
+    }
+
     /// `Keyspace::scan_vals_rev` in this state.
     pub fn scan_vals_rev(
         &self,
@@ -409,6 +425,57 @@ impl Keyspace {
         self.run_values(&v.runs, key, out)
     }
 
+    /// `values` for each of `keys` (ascending, distinct), reading each run's blocks once for the keys they hold.
+    pub fn values_sorted(&self, keys: &[&[u8]]) -> KsResult<Vec<Vec<Val>>> {
+        let v = self.version();
+        self.values_sorted_in(&v, keys, |m, k| m.get(k))
+    }
+
+    /// `values_sorted` over a version's buffers and runs, reading a buffer's value with `get`.
+    fn values_sorted_in(
+        &self,
+        v: &Version,
+        keys: &[&[u8]],
+        get: impl Fn(&mem::Mem, &[u8]) -> Option<Val>,
+    ) -> KsResult<Vec<Vec<Val>>> {
+        let mut out: Vec<Vec<Val>> = vec![Vec::new(); keys.len()];
+        let mut done = vec![false; keys.len()];
+        for m in &v.mems {
+            let m = m.read().unwrap();
+            for (i, k) in keys.iter().enumerate() {
+                if done[i] {
+                    continue;
+                }
+                if let Some(val) = get(&m, k) {
+                    done[i] = !val.is_partial();
+                    out[i].push(val);
+                }
+            }
+        }
+        for r in &v.runs {
+            let open: Vec<usize> = (0..keys.len()).filter(|i| !done[*i]).collect();
+            if open.is_empty() {
+                break;
+            }
+            let wanted: Vec<&[u8]> = open.iter().map(|i| keys[*i]).collect();
+            for (n, val) in r
+                .get_sorted(&wanted, &self.pool.cache, &self.counts)?
+                .into_iter()
+                .enumerate()
+            {
+                if let Some(val) = val {
+                    let i = open[n];
+                    done[i] = !val.is_partial();
+                    out[i].push(val);
+                }
+            }
+        }
+        self.counters
+            .lookups
+            .fetch_add(keys.len() as u64, Ordering::Relaxed);
+        Ok(out)
+    }
+
     /// `values` past the buffers: `out` holds the buffers' values, all partial.
     fn run_values(&self, runs: &[Arc<Run>], key: &[u8], mut out: Vec<Val>) -> KsResult<Vec<Val>> {
         self.counters.lookups.fetch_add(1, Ordering::Relaxed);
@@ -422,6 +489,30 @@ impl Keyspace {
             }
         }
         Ok(out)
+    }
+
+    /// About how many keys `[start, end)` holds, reading a few blocks per run: the buffers' live entries, and
+    /// each run's estimate (`Run::estimate`). Older versions and deletions still in runs count too.
+    pub fn estimate(&self, start: &[u8], end: &[u8]) -> KsResult<f64> {
+        let v = self.version();
+        let mut n = 0.0;
+        for m in &v.mems {
+            n += m.read().unwrap().count(start, end, None) as f64;
+        }
+        self.runs_estimate(&v.runs, start, end, n)
+    }
+
+    fn runs_estimate(
+        &self,
+        runs: &[Arc<Run>],
+        start: &[u8],
+        end: &[u8],
+        mut n: f64,
+    ) -> KsResult<f64> {
+        for r in runs {
+            n += r.estimate(start, end, &self.pool.cache, &self.counts)?;
+        }
+        Ok(n)
     }
 
     /// The value of `key`.

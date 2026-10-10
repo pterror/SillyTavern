@@ -1187,6 +1187,9 @@ fn space_name(s: &Scope) -> Vec<u8> {
     }
 }
 
+/// An entity of a numbering: the entity, its type and its fav.
+type Numbered = (u64, u64, bool);
+
 /// A scope's numbering seen as one: its (type, fav) parts in order, each with its size.
 struct Numbering {
     scope: Scope,
@@ -1212,18 +1215,39 @@ impl Numbering {
         })
     }
 
-    /// The entity numbered `r`, with its type and fav.
-    fn at(&self, view: &View, mut r: u64) -> Result<Option<(u64, u64, bool)>, StoreError> {
-        for (k, fav, size) in &self.parts {
-            if r < *size {
-                return view
-                    .get(&rand_key(&self.scope, *k, *fav, r))?
-                    .map(|b| Ok((parse_uvarint(&b)?, *k, *fav)))
-                    .transpose();
+    /// The entity numbered at each of `ranks` (none past the end), with its type and fav, read together.
+    fn at_many(&self, view: &View, ranks: &[u64]) -> Result<Vec<Option<Numbered>>, StoreError> {
+        let mut keys = Vec::with_capacity(ranks.len());
+        let mut parts = Vec::with_capacity(ranks.len());
+        for &rank in ranks {
+            let mut r = rank;
+            let mut found = None;
+            for (k, fav, size) in &self.parts {
+                if r < *size {
+                    found = Some((*k, *fav, r));
+                    break;
+                }
+                r -= size;
             }
-            r -= size;
+            match found {
+                Some((k, fav, r)) => {
+                    keys.push(rand_key(&self.scope, k, fav, r));
+                    parts.push(Some((k, fav)));
+                }
+                None => {
+                    keys.push(Vec::new());
+                    parts.push(None);
+                }
+            }
         }
-        Ok(None)
+        let vals = view.get_many(&keys)?;
+        vals.into_iter()
+            .zip(parts)
+            .map(|(v, part)| match (v, part) {
+                (Some(b), Some((k, fav))) => Ok(Some((parse_uvarint(&b)?, k, fav))),
+                _ => Ok(None),
+            })
+            .collect()
     }
 
     /// The entities numbered `from..from + len` of the whole numbering, in order: (number, entity, type, fav).
@@ -1381,12 +1405,13 @@ fn random_page(
     if whole {
         let start = at.map_or(q.offset, |(p, _)| p);
         let end = n.min(start + q.limit as u64);
-        let mut ids = Vec::new();
-        for j in start..end {
-            if let Some((e, _, _)) = num.at(view, rank(j))? {
-                ids.push(e);
-            }
-        }
+        let ranks: Vec<u64> = (start..end).map(rank).collect();
+        let ids = num
+            .at_many(view, &ranks)?
+            .into_iter()
+            .flatten()
+            .map(|(e, _, _)| e)
+            .collect();
         let cursor = (end - start.min(end) == q.limit as u64).then(|| encode_position(end, 0));
         return Ok(((ids, false, cursor), None));
     }
@@ -1394,20 +1419,30 @@ fn random_page(
     let mut examined = 0;
     let mut passed = 0;
     let mut ids = Vec::new();
-    while ids.len() < q.limit && j < n && examined < q.cap + q.limit as u64 {
-        let at = num.at(view, rank(j))?;
-        j += 1;
-        examined += 1;
-        let Some((e, kind, fav)) = at else { continue };
-        if !chk.passes(e, kind, fav)? {
-            continue;
+    // The places are read in windows doubling up to WINDOW_MAX, each read together.
+    let mut window = WINDOW as u64;
+    let budget = q.cap + q.limit as u64;
+    'walk: while ids.len() < q.limit && j < n && examined < budget {
+        let w = window.min(n - j).min(budget - examined);
+        window = (window * 2).min(WINDOW_MAX as u64);
+        let ranks: Vec<u64> = (j..j + w).map(rank).collect();
+        for at in num.at_many(view, &ranks)? {
+            j += 1;
+            examined += 1;
+            let Some((e, kind, fav)) = at else { continue };
+            if !chk.passes(e, kind, fav)? {
+                continue;
+            }
+            passed += 1;
+            if skip > 0 {
+                skip -= 1;
+                continue;
+            }
+            ids.push(e);
+            if ids.len() == q.limit {
+                break 'walk;
+            }
         }
-        passed += 1;
-        if skip > 0 {
-            skip -= 1;
-            continue;
-        }
-        ids.push(e);
     }
     let more = ids.len() < q.limit && j < n;
     let full = ids.len() == q.limit && j < n;
@@ -1483,6 +1518,21 @@ fn total(
             }
         }
         return Ok((n.max(0) as u64, true));
+    }
+    // One range left on a sort key, over one scope's orders: its keys there, estimated from the runs' indexes.
+    if d.covers
+        && r.folders.is_empty()
+        && let [k] = r.keys[..]
+        && let [src] = &d.sources[..]
+    {
+        let mut n = 0.0;
+        for kind in kinds(&q.filter) {
+            for fav in favs(&q.filter) {
+                let (lo, hi) = k.span(&order_prefix(src, k.sort, kind, fav));
+                n += view.estimate(&lo, &hi)?;
+            }
+        }
+        return Ok((n.round() as u64, false));
     }
     // Estimated from runs of the driving scope's numbering at random places; exact when they cover it.
     let scope = if d.sources.len() == 1 {
