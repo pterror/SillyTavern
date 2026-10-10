@@ -1,6 +1,9 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
+/** A page's write of a whole book: the changes it made (or a new book). */
+const BOOK_WRITE = /\/api\/worldinfo\/(entries\/apply|create)$/;
+
 // deleteWorldInfo() unlinks only the open character, as upstream does. Every other character whose primary
 // lorebook is the deleted one keeps its link, and a warning names the first 20 of them and counts the rest.
 // A create or import that overwrites a book under a name differing from it (here, in case) deletes it too, but warns
@@ -261,11 +264,11 @@ test.describe('deleting a lorebook other characters still link to', () => {
         await createWorld(page, worldName);
         const avatars = await createCharacters(page, names, worldName);
         try {
-            await page.route('**/api/worldinfo/edit', route => route.fulfill({ status: 500, body: 'synthetic write failure' }));
+            await page.route(BOOK_WRITE, route => route.fulfill({ status: 500, body: 'synthetic write failure' }));
             try {
                 await overwriteWorld(page, 'create', newName);
             } finally {
-                await page.unroute('**/api/worldinfo/edit');
+                await page.unroute(BOOK_WRITE);
             }
 
             expect(await worldExists(page, worldName)).toBe(false);

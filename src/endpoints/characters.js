@@ -35,7 +35,7 @@ import { mergeSortedWindow } from './tantivy-search.js';
 import { searchGroups, searchGroupIds, searchGroupsSorted, getGroupIndexPosition } from './groups-search-index.js';
 import { getGroupsByIds } from './groups.js';
 import { CHARACTER_INDEX_FAILED_EVENT } from './search-index-coordinator.js';
-import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, findCharacterMatches, findGroupMatches, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, toggleCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, getCurrentSeqAndGroupsVersion, seedCardTagsForSingleCharacter, assignEntityTag, unassignEntityTag, streamCharacterIdsMatching, beginBulkSelection, bulkSelectionExists, addToBulkSelection, removeFromBulkSelection, describeBulkSelection, readBulkSelectionPage, streamBulkSelection, mutualTagIdsOfBulkSelection, dropBulkSelection, getCharacterCardJson, getCharacterChatStats, getCharacterIndexRowsByIds, streamCharacterCardJsonBatches, characterRowExists, characterRowOrPendingExistsSync, getEntityRowsByIds, hasClosedFolderTags, copyEntityTags, TAG_MOVE_FAILED_EVENT, TAG_ORDER_SETTLED_EVENT, TAG_CHANGES_EVENT, GROUP_CHANGES_EVENT, QUERY_RANGE_COLUMNS, isQueryRangeField, SAVED_VIEWS_EVENT, getTagChangesSeq, getActivitySeq, foldAllActivity, readDependsOnActivity } from '../character-metadata-db.js';
+import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, findCharacterMatches, findGroupMatches, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, toggleCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, characterIdsLinkedToWorld, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, getCurrentSeqAndGroupsVersion, seedCardTagsForSingleCharacter, assignEntityTag, unassignEntityTag, streamCharacterIdsMatching, beginBulkSelection, bulkSelectionExists, addToBulkSelection, removeFromBulkSelection, describeBulkSelection, readBulkSelectionPage, streamBulkSelection, mutualTagIdsOfBulkSelection, dropBulkSelection, getCharacterCardJson, getCharacterChatStats, getCharacterIndexRowsByIds, streamCharacterCardJsonBatches, characterRowExists, characterRowOrPendingExistsSync, getEntityRowsByIds, hasClosedFolderTags, copyEntityTags, TAG_MOVE_FAILED_EVENT, TAG_ORDER_SETTLED_EVENT, TAG_CHANGES_EVENT, GROUP_CHANGES_EVENT, QUERY_RANGE_COLUMNS, isQueryRangeField, SAVED_VIEWS_EVENT, getTagChangesSeq, getActivitySeq, foldAllActivity, readDependsOnActivity } from '../character-metadata-db.js';
 import { characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash, normalizeFav } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
 import { hashGreetingText, opAdd, opAppend, opEdit, opDelete, opMove, opSetDefault, opUnsetDefault, opUnsetDefaultByHash } from '../greeting-ops.js';
@@ -1349,6 +1349,33 @@ function processUnsetSentinels(target, source) {
  * @param {((data: any) => boolean) | null} [shouldSkip] Used for bulk merge filtering.
  * @returns {Promise<{ok: boolean, error?: string, skipped?: boolean, hashes?: Object<string, number>}>}
  */
+/**
+ * Points the primary lorebook link of every character linked to one book at another name.
+ * @param {import('express').Request} request
+ * @param {string} oldName
+ * @param {string} newName
+ * @returns {Promise<{ updated: string[], failed: string[] }>} Avatars.
+ */
+export async function relinkCharactersWorld(request, oldName, newName) {
+    /** @type {string[]} */
+    const linked = [];
+    for await (const avatar of characterIdsLinkedToWorld(request.user.directories, oldName)) linked.push(avatar);
+    const updated = [];
+    const failed = [];
+    for (const avatar of linked) {
+        try {
+            const result = await mergeCharacterUpdate(path.join(request.user.directories.characters, avatar), avatar,
+                { data: { extensions: { world: newName } } }, request, character => _.get(character, 'data.extensions.world') !== oldName);
+            if (result.ok) updated.push(avatar);
+            else if (!result.skipped) failed.push(avatar);
+        } catch (error) {
+            console.error('Could not move a character\'s lorebook link:', error);
+            failed.push(avatar);
+        }
+    }
+    return { updated, failed };
+}
+
 async function mergeCharacterUpdate(avatarPath, avatar, updateData, request, shouldSkip = null, avatarUpload = null) {
     const pngStringData = await readCardContent(request.user.directories, avatar);
     if (!pngStringData) {

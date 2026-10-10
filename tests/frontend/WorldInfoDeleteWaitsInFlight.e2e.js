@@ -1,6 +1,9 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
+/** A page's write of a whole book: the changes it made (or a new book). */
+const BOOK_WRITE = /\/api\/worldinfo\/(entries\/apply|create)$/;
+
 // A save of a book already sent when the book is deleted, or renamed (which deletes the old name), is never let
 // reach the server after the delete, where it would write the book back: the delete is sent only once that save has
 // landed.
@@ -95,12 +98,19 @@ async function holdNextWrite(page, name) {
         log.push('write');
         await route.continue();
     };
-    await page.route('**/api/worldinfo/edit', onWrite);
+    await page.route(BOOK_WRITE, onWrite);
     await page.route('**/api/worldinfo/entry/edit', onWrite);
     await page.route('**/api/worldinfo/delete', async (route) => {
         const body = JSON.parse(route.request().postData() ?? '{}');
         if (body.name === name) {
             log.push('delete');
+        }
+        await route.fallback();
+    });
+    await page.route('**/api/worldinfo/rename', async (route) => {
+        const body = JSON.parse(route.request().postData() ?? '{}');
+        if (body.name === name) {
+            log.push('rename');
         }
         await route.fallback();
     });
@@ -158,7 +168,7 @@ test.describe('World Info saves already sent when a book is deleted or renamed',
         });
     }
 
-    test('a rename deletes the old name only once a save of it already sent has landed', async ({ page }) => {
+    test('a rename moves the book only once a save of it already sent has landed', async ({ page }) => {
         const oldName = `WIInFlightRenameOld-${Date.now()}`;
         const newName = `WIInFlightRenameNew-${Date.now()}`;
         await createBook(page, oldName);
@@ -200,7 +210,7 @@ test.describe('World Info saves already sent when a book is deleted or renamed',
 
             release();
             await rename;
-            expect(log).toEqual(['write', 'delete']);
+            expect(log).toEqual(['write', 'rename']);
             expect(await savedBook(page, oldName)).toEqual({ exists: false, comment: '' });
             expect(await savedBook(page, newName)).toEqual({ exists: true, comment: 'in flight' });
         } finally {

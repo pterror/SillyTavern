@@ -1,6 +1,18 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
+/** A page's write of a whole book: the changes it made (or a new book). */
+const BOOK_WRITE = /\/api\/worldinfo\/(entries\/apply|create)$/;
+
+/**
+ * Whether a whole-book write's body leaves the book with entries in it: a change storing an entry, or a new book
+ * with entries.
+ * @param {any} body
+ */
+const writesEntries = body => Array.isArray(body?.entries)
+    ? body.entries.some(change => change.data != null)
+    : Object.keys(body?.data?.entries ?? {}).length > 0;
+
 // A create or import that overwrites a book never lets an older save of that book land after it. A debounced save
 // still pending when the overwrite starts is written before the deletion; one made while the deletion is under way
 // is dropped, with a warning.
@@ -114,10 +126,10 @@ function recordRequests(page, how, worldName, newName) {
             events.push('delete sent');
         } else if (pathname === '/api/worldinfo/import') {
             events.push('new book sent');
-        } else if (pathname === '/api/worldinfo/edit') {
+        } else if (BOOK_WRITE.test(pathname)) {
             const body = JSON.parse(request.postData() ?? '{}');
             if (body.name !== worldName && body.name !== newName) return;
-            const isOld = Object.keys(body.data?.entries ?? {}).length > 0;
+            const isOld = writesEntries(body);
             events.push(isOld ? 'old save sent' : (how === 'create' ? 'new book sent' : 'empty save sent'));
         }
     });

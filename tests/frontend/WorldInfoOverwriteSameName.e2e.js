@@ -1,6 +1,18 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
+/** A page's write of a whole book: the changes it made (or a new book). */
+const BOOK_WRITE = /\/api\/worldinfo\/(entries\/apply|create)$/;
+
+/**
+ * Whether a whole-book write's body leaves the book with entries in it: a change storing an entry, or a new book
+ * with entries.
+ * @param {any} body
+ */
+const writesEntries = body => Array.isArray(body?.entries)
+    ? body.entries.some(change => change.data != null)
+    : Object.keys(body?.data?.entries ?? {}).length > 0;
+
 // A create or import that overwrites a book under exactly its name writes over the book's own file without deleting
 // it first, so a write that fails leaves the old book as it was. The book's cached copy follows the file: the new book
 // after a write, the old one after a failed write. Every link to the name stays either way. As for an overwrite that
@@ -217,10 +229,10 @@ function recordRequests(page, how, worldName) {
             events.push('delete sent');
         } else if (pathname === '/api/worldinfo/import') {
             events.push('new book sent');
-        } else if (pathname === '/api/worldinfo/edit') {
+        } else if (BOOK_WRITE.test(pathname)) {
             const body = JSON.parse(request.postData() ?? '{}');
             if (body.name !== worldName) return;
-            const isOld = Object.keys(body.data?.entries ?? {}).length > 0;
+            const isOld = writesEntries(body);
             events.push(isOld ? 'old save sent' : (how === 'create' ? 'new book sent' : 'empty save sent'));
         }
     });
@@ -242,7 +254,7 @@ async function expectLinksKept(page, avatar, worldName) {
     await expect(page.locator('#toast-container .toast-warning .toast-message', { hasText: `Overwritten lorebook ${worldName} no longer exists` })).toHaveCount(0);
 }
 
-const WRITE_PATH = { create: '/api/worldinfo/edit', import: '/api/worldinfo/import' };
+const WRITE_PATH = { create: BOOK_WRITE, import: /\/api\/worldinfo\/import$/ };
 
 test.describe('overwriting a lorebook under exactly its name', () => {
     test.beforeEach(testSetup.awaitST);
@@ -290,15 +302,15 @@ test.describe('overwriting a lorebook under exactly its name', () => {
                 });
                 // A save pending when the overwrite starts is written first, so the failed write doesn't cost it.
                 await saveOldBookDebounced(page, worldName);
-                await page.route(`**${WRITE_PATH[how]}`, route => {
+                await page.route(WRITE_PATH[how], route => {
                     const body = how === 'create' ? JSON.parse(route.request().postData() ?? '{}') : null;
-                    if (body && Object.keys(body.data?.entries ?? {}).length > 0) return route.continue();
+                    if (body && writesEntries(body)) return route.continue();
                     return route.fulfill({ status: 500, body: 'synthetic write failure' });
                 });
                 try {
                     expect(await overwriteWorld(page, how, worldName)).toBeFalsy();
                 } finally {
-                    await page.unroute(`**${WRITE_PATH[how]}`);
+                    await page.unroute(WRITE_PATH[how]);
                 }
                 expect(deletes).toBe(0);
 
@@ -348,9 +360,9 @@ test.describe('overwriting a lorebook under exactly its name', () => {
                 const saveReleased = new Promise(resolve => { releaseSave = () => resolve(undefined); });
                 let saveSeen = () => {};
                 const saveArrived = new Promise(resolve => { saveSeen = () => resolve(undefined); });
-                await page.route('**/api/worldinfo/edit', async (route) => {
+                await page.route(BOOK_WRITE, async (route) => {
                     const body = JSON.parse(route.request().postData() ?? '{}');
-                    if (Object.keys(body.data?.entries ?? {}).length > 0) {
+                    if (writesEntries(body)) {
                         saveSeen();
                         await saveReleased;
                     }
@@ -365,7 +377,7 @@ test.describe('overwriting a lorebook under exactly its name', () => {
                     expect(await overwrite).toBeTruthy();
                 } finally {
                     releaseSave();
-                    await page.unroute('**/api/worldinfo/edit');
+                    await page.unroute(BOOK_WRITE);
                 }
                 // eslint-disable-next-line playwright/no-wait-for-timeout
                 await page.waitForTimeout(AFTER_DEBOUNCE_MS);
@@ -444,7 +456,7 @@ test.describe('overwriting a lorebook under exactly its name', () => {
                         importSent = true;
                         return;
                     }
-                    if (pathname !== '/api/worldinfo/edit' && pathname !== '/api/worldinfo/entry/edit') return;
+                    if (!BOOK_WRITE.test(pathname) && pathname !== '/api/worldinfo/entry/edit') return;
                     if (importSent && JSON.parse(request.postData() ?? '{}').name === worldName) savesAfterImport++;
                 });
                 // The import request is held until the book has been saved meanwhile, then goes through.

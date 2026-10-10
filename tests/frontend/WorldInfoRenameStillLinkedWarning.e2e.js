@@ -134,7 +134,7 @@ const warningsNaming = (page, worldName) => page.locator('#toast-container .toas
 test.describe('renaming a lorebook characters link to', () => {
     test.beforeEach(testSetup.awaitST);
 
-    // relinkFails: the relink request is answered with an error.
+    // relinkFails: the rename moves no character's link and answers that it failed for each.
     for (const { relink, relinkFails, title, left } of [
         { relink: true, relinkFails: false, title: 'no warning when the relink is accepted', left: false },
         { relink: false, relinkFails: false, title: 'lists the characters left on the old name after the relink is declined', left: true },
@@ -155,14 +155,19 @@ test.describe('renaming a lorebook characters link to', () => {
             const avatars = await createCharacters(page, names, oldName);
             try {
                 if (relinkFails) {
-                    await page.route('**/api/characters/merge-attributes', route => route.fulfill({ status: 500, body: 'synthetic relink failure' }));
+                    await page.route('**/api/worldinfo/rename', async (route) => {
+                        const body = JSON.parse(route.request().postData() ?? '{}');
+                        const response = await route.fetch({ postData: JSON.stringify({ ...body, relink_characters: false }) });
+                        const json = await response.json();
+                        await route.fulfill({ response, json: { ...json, characters_failed: avatars } });
+                    });
                 }
                 let result;
                 try {
                     result = await renameWorld(page, oldName, newName, relink);
                 } finally {
                     if (relinkFails) {
-                        await page.unroute('**/api/characters/merge-attributes');
+                        await page.unroute('**/api/worldinfo/rename');
                     }
                 }
                 expect(result.confirmAsked).toBe(true);

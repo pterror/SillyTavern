@@ -1,6 +1,6 @@
 import { Fuse } from '../lib.js';
 
-import { saveSettingsDebounced, substituteParams, getCurrentCharacter, saveCharacterField, saveCharacterFieldDebounced, characterFieldBaseline, menu_type, getExtensionPromptByName, saveMetadata, getCurrentChatId, extension_prompt_roles, create_save, select_selected_character } from '../script.js';
+import { takeServerSettings, saveSettingsDebounced, substituteParams, getCurrentCharacter, saveCharacterField, saveCharacterFieldDebounced, characterFieldBaseline, menu_type, getExtensionPromptByName, saveMetadata, getCurrentChatId, extension_prompt_roles, create_save, select_selected_character } from '../script.js';
 import { getOneCharacter } from './character-list.js';
 import { name1 } from './app-selection-state.js';
 import { chat_metadata } from './chat-state.js';
@@ -26,6 +26,7 @@ import { commonEnumProviders, enumIcons } from './slash-commands/SlashCommandCom
 import { SlashCommandClosure } from './slash-commands/SlashCommandClosure.js';
 import { callGenericPopup, Popup, POPUP_RESULT, POPUP_TYPE } from './popup.js';
 import { StructuredCloneMap } from './util/StructuredCloneMap.js';
+import { jsonHash } from './hash-utils.js';
 import { renderTemplateAsync } from './templates.js';
 import { t } from './i18n.js';
 import { accountStorage } from './util/AccountStorage.js';
@@ -986,7 +987,76 @@ export const wi_anchor_position = {
  *
  * @type {StructuredCloneMap<string,object>}
  * */
-export const worldInfoCache = new StructuredCloneMap({ cloneOnGet: true, cloneOnSet: false });
+/**
+ * The version of each book the page holds: per entry (by uid) and per book field, the jsonHash() of the value as the
+ * server last had it as far as the page knows. A save sends, for each entry or field it changes, the hash it had,
+ * so the server can refuse a change to something changed elsewhere since.
+ * @typedef {{ entries: Map<string, number>, fields: Map<string, number> }} BookVersion
+ * @type {Map<string, BookVersion>}
+ */
+const bookVersions = new Map();
+
+/** The page's books; forgetting one also forgets its version. */
+class WorldInfoCache extends StructuredCloneMap {
+    /** @param {string} key */
+    delete(key) {
+        bookVersions.delete(key);
+        return super.delete(key);
+    }
+
+    clear() {
+        bookVersions.clear();
+        super.clear();
+    }
+}
+
+export const worldInfoCache = new WorldInfoCache({ cloneOnGet: true, cloneOnSet: false });
+
+/**
+ * The version of a book as the server has it.
+ * @param {any} book
+ * @returns {BookVersion}
+ */
+function versionOf(book) {
+    /** @type {BookVersion} */
+    const version = { entries: new Map(), fields: new Map() };
+    for (const [uid, entry] of Object.entries(book?.entries ?? {})) {
+        version.entries.set(uid, jsonHash(entry));
+    }
+    for (const [key, value] of Object.entries(book ?? {})) {
+        if (key !== 'entries' && value !== undefined) version.fields.set(key, jsonHash(value));
+    }
+    return version;
+}
+
+/**
+ * Records an entry as the server now has it (null: it has none).
+ * @param {string} name
+ * @param {string|number} uid
+ * @param {any} entry
+ */
+function noteStoredEntry(name, uid, entry) {
+    const version = bookVersions.get(name);
+    if (!version) return;
+    if (entry == null) version.entries.delete(String(uid));
+    else version.entries.set(String(uid), jsonHash(entry));
+}
+
+/**
+ * Reads a book's version from the server, for a save of a copy the page didn't load.
+ * @param {string} name
+ * @returns {Promise<BookVersion>}
+ */
+async function fetchBookVersion(name) {
+    const response = await fetch('/api/worldinfo/get', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ name }),
+        cache: 'no-cache',
+    });
+    if (!response.ok) throw new Error(`/api/worldinfo/get responded ${response.status}`);
+    return versionOf(await response.json());
+}
 
 /**
  * Gets the world info based on chat messages.
@@ -2221,6 +2291,7 @@ export async function loadWorldInfo(name) {
     if (response.ok) {
         const data = await response.json();
         worldInfoCache.set(name, data);
+        bookVersions.set(name, versionOf(data));
         return data;
     }
 
@@ -2825,7 +2896,7 @@ async function displayWorldEntries(name, data, navigation = navigation_option.no
             if (refuseEmbeddedWorldName(finalName)) {
                 return;
             }
-            if (!await saveWorldInfo(finalName, data, true)) {
+            if (!await duplicateWorldInfo(name, finalName)) {
                 return;
             }
             await updateWorldInfoList();
@@ -4420,6 +4491,7 @@ export async function createWorldInfoEntry(name, data) {
         return;
     }
 
+    noteStoredEntry(name, newUid, result.entry);
     const newEntry = { uid: newUid, ...structuredClone(newWorldInfoEntryTemplate) };
     data.entries[newUid] = newEntry;
 
@@ -4464,23 +4536,50 @@ function refuseEmbeddedWorldName(name) {
 }
 
 /**
- * Writes a whole World Info book to its file.
+ * Stores the changes the page made to its copy of a book: each entry and book field that differs from the version
+ * the page holds, sent with that version, so the server applies it only if nobody changed it since. An entry missing
+ * from `data` that the version has is deleted; one another tab added since is kept. A change the server refuses
+ * (changed elsewhere since) is listed in a warning and not applied. A book the server doesn't have is created.
  * @param {string} name - The name of the world info
- * @param {any} data - The data to be saved
- * @returns {Promise<boolean>} Whether the file was written. A write the server refuses shows an error toast and
- * resolves false; a request that fails outright shows the same toast and rejects.
+ * @param {any} data - The page's copy of the book
+ * @returns {Promise<boolean>} Whether every change was stored. A request the server refuses shows an error toast
+ * and resolves false; a request that fails outright shows the same toast and rejects.
  */
 async function _save(name, data) {
     // This write carries the book's latest data, so a debounced save of the same book still pending is dropped.
     cancelWorldSaveDebounced(name);
 
-    let response;
-    try {
-        response = await trackWorldWrite(name, fetch('/api/worldinfo/edit', {
+    const create = () => trackWorldWrite(name, fetch('/api/worldinfo/create', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ name, unique: false, data }),
+    }));
+    const apply = (/** @type {BookVersion} */ version) => {
+        bookVersions.set(name, version);
+        return trackWorldWrite(name, fetch('/api/worldinfo/entries/apply', {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify({ name: name, data: data }),
+            body: JSON.stringify({ name, ...changesAgainst(version, data) }),
         }));
+    };
+
+    let response;
+    try {
+        // A book the server doesn't have is created with this content; one it has (another tab made it meanwhile)
+        // gets the changes against what it has.
+        const version = bookVersions.get(name)
+            ?? (world_names?.includes(name) ? await trackWorldWrite(name, fetchBookVersion(name)) : null);
+        response = version ? await apply(version) : await create();
+        if (response.status === 404 && version) {
+            response = await create();
+        } else if (response.status === 409 && !version) {
+            response = await apply(await trackWorldWrite(name, fetchBookVersion(name)));
+        }
+        if (response.ok && new URL(response.url).pathname.endsWith('/create')) {
+            bookVersions.set(name, versionOf(data));
+            await eventSource.emit(event_types.WORLDINFO_UPDATED, name, data);
+            return true;
+        }
     } catch (error) {
         dropUnwrittenBookFromCache(name);
         showWorldInfoSaveFailed(name, null, null, error);
@@ -4493,8 +4592,62 @@ async function _save(name, data) {
         return false;
     }
 
+    const result = await response.json().catch(() => ({}));
+    for (const [uid, entry] of Object.entries(result.entries ?? {})) noteStoredEntry(name, uid, entry);
+    for (const uid of result.deleted ?? []) noteStoredEntry(name, uid, null);
+    const version = bookVersions.get(name);
+    for (const [key, value] of Object.entries(result.fields ?? {})) {
+        if (value === null) version?.fields.delete(key); else version?.fields.set(key, jsonHash(value));
+    }
+    const conflicts = Array.isArray(result.conflicts) ? result.conflicts : [];
+    if (conflicts.length) showWorldInfoConflicts(name, data, conflicts);
+
     await eventSource.emit(event_types.WORLDINFO_UPDATED, name, data);
-    return true;
+    return conflicts.length === 0;
+}
+
+/**
+ * The changes in a copy of a book against a version of it, as /api/worldinfo/entries/apply takes them.
+ * @param {BookVersion} version
+ * @param {any} data
+ */
+function changesAgainst(version, data) {
+    const entries = [];
+    const present = data?.entries ?? {};
+    for (const [uid, entry] of Object.entries(present)) {
+        const base = version.entries.get(uid) ?? null;
+        if (jsonHash(entry) !== base) entries.push({ uid: entry?.uid ?? uid, base_hash: base, data: entry });
+    }
+    for (const [uid, base] of version.entries) {
+        if (!(uid in present)) entries.push({ uid, base_hash: base, data: null });
+    }
+    const fields = [];
+    const keys = new Set([...Object.keys(data ?? {}), ...version.fields.keys()]);
+    keys.delete('entries');
+    for (const key of keys) {
+        const value = data?.[key];
+        const base = version.fields.get(key) ?? null;
+        if ((value === undefined ? null : jsonHash(value)) !== base) fields.push({ key, base_hash: base, value: value ?? null });
+    }
+    return { entries, fields };
+}
+
+/**
+ * Warns which changes to a book weren't stored because they were changed elsewhere since this page had them.
+ * @param {string} name
+ * @param {any} data The page's copy, to name the entries by.
+ * @param {{ uid?: string, key?: string }[]} conflicts
+ */
+function showWorldInfoConflicts(name, data, conflicts) {
+    const names = conflicts.map(conflict => {
+        if (conflict.key !== undefined) return escapeHtml(t`the lorebook's ${conflict.key}`);
+        const entry = data?.entries?.[conflict.uid];
+        const title = entry?.comment || (Array.isArray(entry?.key) ? entry.key.join(', ') : '');
+        return escapeHtml(title ? `${title} (#${conflict.uid})` : `#${conflict.uid}`);
+    });
+    console.warn(`[WI] Changes to '${name}' not stored, changed elsewhere since:`, conflicts);
+    toastr.warning(`${t`These were changed elsewhere since you opened '${escapeHtml(name)}', so your changes to them were not saved. Reload the lorebook to see the current version:`}<br />${names.join('<br />')}`,
+        t`World Info not saved`, { escapeHtml: false, timeOut: 0, extendedTimeOut: 0 });
 }
 
 /**
@@ -4638,6 +4791,7 @@ async function _saveEntry(name, uid, entryData, data) {
         return false;
     }
 
+    noteStoredEntry(name, uid, (await response.json().catch(() => null))?.entry ?? null);
     await eventSource.emit(event_types.WORLDINFO_UPDATED, name, data);
     return true;
 }
@@ -4729,6 +4883,30 @@ export async function saveWorldInfo(name, data, immediately = false) {
     saveWorldDebounced(name, data);
 }
 
+/**
+ * Copies a book under a new name, on the server.
+ * @param {string} name
+ * @param {string} newName
+ * @returns {Promise<boolean>} Whether it was copied; a failure shows an error toast.
+ */
+async function duplicateWorldInfo(name, newName) {
+    await flushWorldSaves(name);
+    const response = await fetch('/api/worldinfo/duplicate', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ name, new_name: newName }),
+    });
+    if (response.status === 409) {
+        toastr.error(t`A lorebook named '${newName}' already exists. Choose another name.`, t`World Info not copied`);
+        return false;
+    }
+    if (!response.ok) {
+        toastr.error(t`'${name}' could not be copied. Check the server console for details.`, t`World Info not copied`);
+        return false;
+    }
+    return true;
+}
+
 async function renameWorldInfo(name, data) {
     const oldName = name;
     const newName = await Popup.show.input('Rename World Info', 'Enter a new name:', oldName);
@@ -4745,48 +4923,71 @@ async function renameWorldInfo(name, data) {
         return;
     }
 
-    const entryPreviouslySelected = selected_world_info.findIndex((e) => e === oldName);
-    const retargetPersonaLore = getPersonaDescriptionLorebook() === oldName;
-
-    // The old book's saves still waiting would write it back after its file is deleted, so they are held, and the
-    // new book is written from the cached copy, which holds the edits they carry. If the new book isn't written,
-    // the old one keeps its file and its saves go out as scheduled.
-    const held = holdWorldSaves(oldName);
-    const latest = worldInfoCache.has(oldName) ? worldInfoCache.get(oldName) : data;
-    let written = false;
+    // Asked before the rename, so the rename is one request that also moves these links when wanted.
+    let linkedTotal = 0;
     try {
-        // The old file is deleted only once the new one is written.
-        written = !!await saveWorldInfo(newName, latest, true);
-    } finally {
-        if (!written) {
-            resumeWorldSaves(oldName, held);
-        }
+        linkedTotal = Number((await characterRepository.query({ world: oldName }, undefined, 1, 1, ['total'])).total) || 0;
+    } catch (error) {
+        console.error('Could not count the characters linked to the lorebook', error);
     }
-    if (!written) {
+    const relinkCharacters = linkedTotal > 0 && await Popup.show.confirm(
+        t`Rename World/Lorebook`,
+        `<p>${t`${linkedTotal} character(s) have this lorebook as their primary lorebook. Move their links to the new name as well?`}</p>`,
+    ) == POPUP_RESULT.AFFIRMATIVE;
+
+    await flushWorldSaves(oldName);
+    const response = await fetch('/api/worldinfo/rename', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ name: oldName, new_name: newName, relink_characters: relinkCharacters }),
+    });
+    if (response.status === 409) {
+        toastr.error(t`A lorebook named '${newName}' already exists. Choose another name.`, t`World Info not renamed`);
         return;
     }
-    // Edits saved to the old book while the new one was being written go to the new book. The old file is deleted only
-    // once the old book's writes already sent have landed, so none of them can write it back after the delete.
-    if (await holdWorldSavesUntilSettled(oldName) && worldInfoCache.has(oldName)) {
-        await saveWorldInfo(newName, worldInfoCache.get(oldName));
+    if (!response.ok) {
+        toastr.error(t`'${oldName}' could not be renamed. Check the server console for details.`, t`World Info not renamed`);
+        return;
     }
-    // The open character keeps its link to the old name, like every other linked character, so the relink below
-    // can move it to the new name. Unlinking it here would clear the link once its delayed save lands.
-    const oldDeleted = await deleteWorldInfoFile(oldName);
-    if (oldDeleted) {
-        unlinkWorldInfo(oldName, { keepOpenCharacterLink: true });
+    /** @type {{ characters_updated: string[], characters_failed: string[], settings: Record<string, any>, settings_hash?: number }} */
+    const result = await response.json();
+
+    const cached = worldInfoCache.has(oldName) ? worldInfoCache.get(oldName) : data;
+    worldInfoCache.delete(oldName);
+    worldInfoCache.set(newName, cached);
+    bookVersions.set(newName, versionOf(cached));
+    takeRenamedBookLinks(oldName, newName, result);
+
+    // A chat's link to the book is in its metadata; only the open chat's moves.
+    if (chat_metadata[METADATA_KEY] === oldName) {
+        chat_metadata[METADATA_KEY] = newName;
+        await saveMetadata();
     }
 
-    const primaryLinksLeft = await updateWorldInfoLinks(oldName, newName, { retargetPersonaLore });
-    // Warned only after the relink prompt: before it, the list would be out of date as soon as the answer is yes.
-    if (oldDeleted && primaryLinksLeft) {
+    for (const avatar of result.characters_failed ?? []) {
+        toastr.error(`Failed to update link for ${escapeHtml(String(charactersStore.get(avatar)?.name ?? avatar))}.`, '', { escapeHtml: false });
+    }
+    if (result.characters_updated?.length) {
+        toastr.success(t`Updated primary lorebook links for ${result.characters_updated.length} character(s).`);
+        const editorAvatar = String($('#avatar_url_pole').val() ?? '');
+        if (menu_type != 'create' && result.characters_updated.includes(editorAvatar) && $('#character_world').val() === oldName) {
+            $('#character_world').val(newName);
+        }
+        let activeCharacterUpdated = false;
+        for (const avatar of result.characters_updated) {
+            await getOneCharacter(avatar);
+            if (avatar === getCurrentCharacter()?.avatar) activeCharacterUpdated = true;
+        }
+        if (activeCharacterUpdated) {
+            const avatar = getCurrentCharacter()?.avatar;
+            select_selected_character(avatar, { switchMenu: false });
+            setWorldInfoButtonClass(avatar, true);
+        }
+    }
+
+    await updateWorldInfoList();
+    if (linkedTotal > 0 && (!relinkCharacters || result.characters_failed?.length)) {
         await warnCharactersStillLinked(oldName, '', { renamedTo: newName });
-    }
-
-    if (entryPreviouslySelected !== -1) {
-        const wiElement = getWIElement(newName);
-        wiElement.prop('selected', true);
-        $('#world_info').trigger('change');
     }
 
     const selectedIndex = world_names.indexOf(newName);
@@ -4796,26 +4997,31 @@ async function renameWorldInfo(name, data) {
 }
 
 /**
- * Retargets all character lore links from an old world info name to a new one, with an optional confirmation for primary lorebook links
- * @param {string} oldName Previous WI file name
- * @param {string} newName New WI file name
- * @param {{ retargetPersonaLore?: boolean }} [options] Additional relink options
- * @returns {Promise<boolean>} Whether characters had the old name as their primary lorebook and not all of them
- * were moved to the new one (the prompt was declined, or the relink failed for some or all of them).
+ * Moves the page's own copies of the links a renamed book's server-side rename moved (the global selection, each
+ * character's auxiliary links, every persona's lorebook), including any not saved yet, and those only the page holds
+ * (the character being created).
+ * @param {string} oldName
+ * @param {string} newName
+ * @param {{ settings: Record<string, any>, settings_hash?: number }} result The rename's answer.
  */
-async function updateWorldInfoLinks(oldName, newName, { retargetPersonaLore } = {}) {
-    const existingCharLores = world_info.charLore?.filter((e) => e.extraBooks.includes(oldName));
-    if (existingCharLores && existingCharLores.length > 0) {
-        existingCharLores.forEach((charLore) => {
-            const tempCharLore = charLore.extraBooks.filter((e) => e !== oldName);
-            tempCharLore.push(newName);
-            charLore.extraBooks = tempCharLore;
-        });
-        saveSettingsDebounced('world_info_settings');
+function takeRenamedBookLinks(oldName, newName, result) {
+    const rename = (/** @type {string} */ value) => value === oldName ? newName : value;
+    if (selected_world_info.includes(oldName)) {
+        selected_world_info.splice(0, selected_world_info.length, ...normalizeArray(selected_world_info.map(rename)));
     }
+    for (const charLore of world_info.charLore ?? []) {
+        if (charLore.extraBooks?.includes(oldName)) charLore.extraBooks = normalizeArray(charLore.extraBooks.map(rename));
+    }
+    for (const [avatar, persona] of Object.entries(personaStore.getAll())) {
+        if (persona?.lorebook === oldName) personaStore.update(avatar, { lorebook: newName });
+    }
+    if (getPersonaDescriptionLorebook() === newName) {
+        getOrCreatePersonaDescriptor();
+        setPersonaDescription();
+    }
+    takeServerSettings(result.settings ?? {}, result.settings_hash);
 
-    // The character being created isn't stored yet, so the relink below can't reach it. Its links move with the
-    // book, like the auxiliary links above: it is created with them.
+    // The character being created isn't stored yet: its links move with the book.
     if (menu_type == 'create') {
         if (create_save.world === oldName) {
             create_save.world = newName;
@@ -4826,96 +5032,6 @@ async function updateWorldInfoLinks(oldName, newName, { retargetPersonaLore } = 
             create_save.extra_books = normalizeArray(create_save.extra_books.map((e) => e === oldName ? newName : e));
         }
     }
-
-    // Update link for active persona
-    if (retargetPersonaLore) {
-        getOrCreatePersonaDescriptor();
-        personaStore.update(user_avatar, { lorebook: newName });
-        setPersonaDescription();
-        saveSettingsDebounced('power_user.persona_data');
-    }
-
-    // Update links for other personas
-    Object.keys(personaStore.getAll()).forEach((persona) => {
-        if (user_avatar === persona) {
-            return;
-        }
-        const record = personaStore.get(persona);
-        if (record.lorebook === oldName) {
-            personaStore.update(persona, { lorebook: newName });
-            saveSettingsDebounced('power_user.persona_data');
-        }
-    });
-
-    // update the world info key to the new name if it's still set to the old one
-    if (chat_metadata[METADATA_KEY] === oldName) {
-        chat_metadata[METADATA_KEY] = newName;
-        await saveMetadata();
-    }
-
-    const linkedCharacters = await characterRepository.queryAll({ world: oldName });
-    const linkedAvatars = linkedCharacters.map(character => character.avatar);
-
-    if (!linkedAvatars.length) {
-        return false;
-    }
-
-    // Trigger the confirmation popup
-    const updatePastLinksConfirm = await Popup.show.confirm(
-        t`World/Lorebook renamed!`,
-        `<p>${t`Auxiliary Lorebook links have been updated. Would you like to update primary lorebook links for ${linkedAvatars.length} character(s) as well?`}</p>`,
-    ) == POPUP_RESULT.AFFIRMATIVE;
-
-    if (updatePastLinksConfirm) {
-        const response = await fetch('/api/characters/merge-attributes', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({
-                avatars: [],
-                filter: { path: 'data.extensions.world', equals: oldName },
-                data: { data: { extensions: { world: newName } } },
-            }),
-        });
-
-        if (!response.ok) {
-            toastr.error(t`Failed to update primary lorebook links.`);
-            return true;
-        }
-
-        const { updated, failed } = await response.json();
-
-        for (const avatar of failed) {
-            toastr.error(`Failed to update link for ${charactersStore.get(avatar)?.name ?? avatar}.`);
-        }
-
-        if (updated.length > 0) {
-            toastr.success(t`Updated primary lorebook links for ${updated.length} character(s).`);
-        }
-
-        // The character panel's link field, for a character open there that isn't the one selected below.
-        const editorAvatar = String($('#avatar_url_pole').val() ?? '');
-        if (menu_type != 'create' && updated.includes(editorAvatar) && $('#character_world').val() === oldName) {
-            $('#character_world').val(newName);
-        }
-
-        let activeCharacterUpdated = false;
-        for (const avatar of updated) {
-            await getOneCharacter(avatar);
-            if (avatar === getCurrentCharacter()?.avatar) {
-                activeCharacterUpdated = true;
-            }
-        }
-
-        // update the UI fields
-        // only required if the currently selected character was changed
-        if (activeCharacterUpdated) {
-            const avatar = getCurrentCharacter()?.avatar;
-            select_selected_character(avatar, { switchMenu: false });
-            setWorldInfoButtonClass(avatar, true);
-        }
-        return failed.length > 0;
-    }
-    return true;
 }
 
 /**

@@ -652,3 +652,96 @@ describe('worldinfo missing-book memory', () => {
         expect(droppedLookups()).toBe(1);
     });
 });
+
+describe('lorebook actions', () => {
+    /** @param {object} entries */
+    async function writeBook(name, entries, extra = {}) {
+        const res = await postJson('/api/worldinfo/create', { name, unique: false, data: { entries, ...extra } });
+        expect(res.status).toBe(200);
+    }
+
+    async function getBook(name) {
+        return (await postJson('/api/worldinfo/get', { name })).json();
+    }
+
+    /** @type {(value: unknown) => number} */
+    let jsonHash;
+    beforeAll(async () => {
+        ({ jsonHash } = await import('../public/scripts/hash-utils.js'));
+    });
+
+    test('apply stores only the changes made against the version the page had, and reports the rest', async () => {
+        await writeBook('Apply', { 0: makeEntry(0, 'zero'), 1: makeEntry(1, 'one'), 2: makeEntry(2, 'two') }, { name: 'Apply' });
+        const loaded = await getBook('Apply');
+        const loadedHash = uid => jsonHash(loaded.entries[uid]);
+
+        // Another tab changes entry 1 and adds entry 3 after this page loaded the book.
+        await postJson('/api/worldinfo/entry/edit', { name: 'Apply', uid: 1, data: makeEntry(1, 'one, elsewhere') });
+        await postJson('/api/worldinfo/entries/apply', { name: 'Apply', entries: [{ uid: 3, base_hash: null, data: makeEntry(3, 'three, elsewhere') }] });
+
+        const res = await postJson('/api/worldinfo/entries/apply', {
+            name: 'Apply',
+            entries: [
+                { uid: 0, base_hash: loadedHash(0), data: makeEntry(0, 'zero, here') },
+                { uid: 1, base_hash: loadedHash(1), data: makeEntry(1, 'one, here') },
+                { uid: 2, base_hash: loadedHash(2), data: null },
+            ],
+            fields: [{ key: 'name', base_hash: jsonHash('Apply'), value: 'Applied' }],
+        });
+        expect(res.status).toBe(200);
+        const result = await res.json();
+        expect(Object.keys(result.entries)).toEqual(['0']);
+        expect(result.deleted).toEqual(['2']);
+        expect(result.fields).toEqual({ name: 'Applied' });
+        expect(result.conflicts).toEqual([{ uid: '1', current: makeEntry(1, 'one, elsewhere') }]);
+
+        const after = await getBook('Apply');
+        expect(Object.fromEntries(Object.entries(after.entries).map(([uid, entry]) => [uid, entry.content]))).toEqual({
+            0: 'zero, here', 1: 'one, elsewhere', 3: 'three, elsewhere',
+        });
+        expect(after.name).toBe('Applied');
+    });
+
+    test('a new entry whose uid was taken since is a conflict, and an unchanged apply writes nothing', async () => {
+        await writeBook('Taken', { 0: makeEntry(0, 'zero') });
+        const conflict = await (await postJson('/api/worldinfo/entries/apply', { name: 'Taken', entries: [{ uid: 0, base_hash: null, data: makeEntry(0, 'mine') }] })).json();
+        expect(conflict.conflicts).toEqual([{ uid: '0', current: makeEntry(0, 'zero') }]);
+
+        const before = fs.statSync(path.join(worldsDir, 'Taken.json')).mtimeMs;
+        const same = await (await postJson('/api/worldinfo/entries/apply', { name: 'Taken', entries: [{ uid: 0, base_hash: jsonHash(makeEntry(0, 'zero')), data: makeEntry(0, 'zero') }] })).json();
+        expect(same).toEqual({ ok: true, entries: {}, deleted: [], fields: {}, conflicts: [] });
+        expect(fs.statSync(path.join(worldsDir, 'Taken.json')).mtimeMs).toBe(before);
+    });
+
+    test('duplicate copies on the server and refuses a taken name', async () => {
+        await writeBook('Original', { 0: makeEntry(0, 'zero') });
+        expect((await postJson('/api/worldinfo/duplicate', { name: 'Original', new_name: 'Copy' })).status).toBe(200);
+        expect((await getBook('Copy')).entries['0'].content).toBe('zero');
+        expect((await postJson('/api/worldinfo/duplicate', { name: 'Original', new_name: 'Copy' })).status).toBe(409);
+    });
+
+    test('rename moves the book and the links naming it in settings', async () => {
+        const { writeAllSettings, readSettingsAtPaths } = await import('../src/settings-store.js');
+        writeAllSettings(directories, {
+            world_info_settings: { world_info: { globalSelect: ['Old', 'Other'], charLore: [{ name: 'a.png', extraBooks: ['Old', 'Other'] }] } },
+            power_user: { persona_data: { 'p.png': { lorebook: 'Old' }, 'q.png': { lorebook: 'Other' } } },
+        });
+        await writeBook('Old', { 0: makeEntry(0, 'zero') });
+
+        const res = await postJson('/api/worldinfo/rename', { name: 'Old', new_name: 'New' });
+        expect(res.status).toBe(200);
+        const result = await res.json();
+        expect(result.characters_updated).toEqual([]);
+        expect(fs.existsSync(path.join(worldsDir, 'Old.json'))).toBe(false);
+        expect((await getBook('New')).entries['0'].content).toBe('zero');
+
+        const stored = readSettingsAtPaths(directories, ['world_info_settings', 'power_user.persona_data']);
+        expect(stored.world_info_settings.world_info).toEqual({ globalSelect: ['New', 'Other'], charLore: [{ name: 'a.png', extraBooks: ['New', 'Other'] }] });
+        expect(stored['power_user.persona_data']).toEqual({ 'p.png': { lorebook: 'New' }, 'q.png': { lorebook: 'Other' } });
+        expect(result.settings).toEqual(stored);
+        expect(typeof result.settings_hash).toBe('number');
+
+        await writeBook('Taken2', { 0: makeEntry(0, 'x') });
+        expect((await postJson('/api/worldinfo/rename', { name: 'New', new_name: 'Taken2' })).status).toBe(409);
+    });
+});
