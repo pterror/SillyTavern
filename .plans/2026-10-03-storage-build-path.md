@@ -870,12 +870,11 @@ Done, in order (each section below has its details and choices):
   below it.
 - Openings and alternatives; `endPathAt` and the kind `pointerRoot`; back and forward and card greetings chosen
   provisionally (answered stop); session and bookmark lists, naming, modes, deletes, and `integrity` (see the "Built"
-  sections below); send keys, itemizations' JS and a member's messages changing speaker.
+  sections below); send keys, itemizations' JS and a member's messages changing speaker; the whole-chat save.
 
 Left (in the order they build on each other):
-- Chat engine operations not built yet: the whole-array `saveChat` compat diffed onto the engine (refusing a header
-  whose `integrity` isn't the session's UUID), finding a session by its name for routes taking a chat name (by its
-  UUID works now; by name reads the session-name postings, 5d).
+- Chat engine operations not built yet: finding a session by its name for routes taking a chat name (by its UUID
+  works now; by name reads the session-name postings, 5d).
 - People: an adapter from `LibraryEngine` to `ChatEngine`'s speakers (characters by id and avatar; groups' trees).
 - Compat identifiers wired: `X-ST-Session` in `getRequestHeaders()` (`none` for a tab with no session), the
   answers' `characters[].chat`, `group.chat_id`, `getCurrentChatId()`, chat names in events, and the tab told
@@ -1406,6 +1405,29 @@ Built, send keys, itemizations and a member's messages (10-10; `src/chat-engine.
 |---|---|---|
 | itemization paths | a position's path (root to its message) | a position shows nothing below it; the old store's chat went on down its default replies |
 | clearing | id-ordered pages of the itemized messages, a batch per commit | it touches every itemization; Boot and batches |
+
+Built, the whole-chat save (10-10; `src/chat-engine.js`, test `src/chat-engine.test.js` against `saveChatToTree`):
+- `saveChat({ tree, treeSpeaker, chat, actor, force? })` (`/api/chats/save` and `/group/save`, the route resolving
+  the session): `saveChatToTree`'s matching, onto the engine. A message whose id still replies to the message
+  before it keeps its row: its alternatives matched by their claimed ids (`swipe_info[i].node_id`), a changed one
+  edited (only its changed values) unless that would blank stored text, or taken as the sibling it now matches;
+  unmatched alternatives stored (the shown one through the session, the others shown to no one). Anything else is
+  stored as new under the message before it, a sibling with the same speaker and text taken instead. At each
+  message the shown alternative becomes the session's choice (a `forkSelection` only where the session doesn't
+  follow it already); the session moves to the last message (no move when it is there); a message's
+  `extra.bookmark_link` is a following bookmark made there, unless the latest one made there has that name; the
+  header's `chat_metadata` becomes the state at the last message (keys it lacks removed; the derived keys
+  ignored). Answers `{ ok, integrity, assigned_node_ids }` as the route does (indexes of new messages in the array
+  after the header); `{ ok: false, reason: 'integrity' }` for a header whose `integrity` is a string other than the
+  session's UUID, unless `force`; `{ empty: true }` for an empty array.
+- Tests, against the old store: a new chat (swipes, metadata), the loaded chat changed (a swipe's text, a checkpoint
+  link, a message added, a metadata key removed), compared message by message and in metadata; saved again as
+  loaded writes nothing (ids, history); refused and forced headers; an empty array.
+
+| choice | picked | reason |
+|---|---|---|
+| a `bookmark_link` bookmark's mode | following | the engine's default for a new bookmark; 5e defaults labels to following when D24 doesn't say |
+| one commit per save | messages, choices, moves and bookmarks in one commit, the metadata after it | the state change hangs on the last message, which may be new in that commit; `mergeMetadata` reads the state there first |
 
 Where layer 1 goes: inside 5b, on the engine. Its own storage step (SQLite `state_changes`, saved states every 64th
 depth rebuilt lazily after an epoch bump) conflicts with the design: a structure caught up when read is what revision
