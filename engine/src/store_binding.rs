@@ -1345,6 +1345,24 @@ impl Store {
         Ok(promise)
     }
 
+    /// One slice of the pair postings' pass (the `searchPairs` record starts one); resolves with whether more
+    /// follow.
+    #[napi(ts_return_type = "Promise<boolean>")]
+    pub fn pairs_step<'env>(&self, env: &'env Env) -> Result<Object<'env>> {
+        let (deferred, promise) = env.create_deferred()?;
+        self.store.pairs_step(Box::new(move |r| match r {
+            Ok(more) => deferred.resolve(move |_| Ok(more)),
+            Err(e) => deferred.reject(store_error(e)),
+        }));
+        Ok(promise)
+    }
+
+    /// The pair postings' mode: 0 off, 1 building, 2 on, 3 deleting.
+    #[napi(ts_return_type = "Promise<number>")]
+    pub fn pairs_mode<'env>(&self, env: &'env Env) -> Result<Object<'env>> {
+        derived(env, &self.store, |s| s.pairs_mode().map(|m| m as u32))
+    }
+
     /// The record at a durable record's position.
     #[napi(ts_return_type = "Promise<object>")]
     pub fn read(&self, position: BigInt) -> Result<AsyncTask<ReadTask>> {

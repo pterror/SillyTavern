@@ -153,3 +153,20 @@ describe('library search on the engine', () => {
         expect(await find('castle')).toEqual([]);
     });
 });
+
+describe('pair postings on the engine', () => {
+    test('turned on, built in the background, used, and turned off', async () => {
+        await build(60);
+        const phrase = async () => (/** @type {any} */ (await library.query({ search: '"dark knight"', sortField: 'search', limit: 100, includeGroups: true }))).rows.map((/** @type {any} */ r) => r.id).sort();
+        const before = await phrase();
+        expect(await library.pairPostings()).toEqual({ on: false, pending: false });
+        await library.setPairPostings(true);
+        await library.runPairPostings(0);
+        expect(await library.pairPostings()).toEqual({ on: true, pending: false });
+        expect(await phrase()).toEqual(before);
+        await library.setPairPostings(false);
+        await library.runPairPostings(0);
+        expect(await library.pairPostings()).toEqual({ on: false, pending: false });
+        expect(await phrase()).toEqual(before);
+    });
+});

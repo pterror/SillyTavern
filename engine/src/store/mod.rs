@@ -737,6 +737,25 @@ impl Store {
         ));
     }
 
+    /// One slice of the pair postings' pass (`search::pairs::step`), in the commit queue; `done` with whether more
+    /// follow.
+    pub fn pairs_step(&self, done: Box<dyn FnOnce(StoreResult<bool>) + Send>) {
+        let more = Arc::new(AtomicBool::new(false));
+        let found = more.clone();
+        self.inner.submit(Job::Derive(
+            Box::new(move |view, out| {
+                found.store(crate::search::pairs::step(view, out)?, Ordering::Relaxed);
+                Ok(())
+            }),
+            Box::new(move |r| done(r.map(|()| more.load(Ordering::Relaxed)))),
+        ));
+    }
+
+    /// The pair postings' mode (`search::pairs`: 0 off, building, on, deleting).
+    pub fn pairs_mode(&self) -> StoreResult<u64> {
+        self.derived(|v| Ok(crate::search::pairs::state(v)?.0))
+    }
+
     /// The reorder pass's record and counts.
     pub fn tag_pass(&self) -> StoreResult<tags::PassStatus> {
         self.derived(tags::pass_status)

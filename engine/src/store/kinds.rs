@@ -159,6 +159,9 @@ pub mod key {
     pub const TAG_STAMPED: u64 = 80;
     /// Per name: its `metaValue` record.
     pub const META: u64 = 81;
+    /// The pair postings' option and pass (`search::pairs`); per state: its `searchPairs` record.
+    pub const SEARCH_PAIRS: u64 = 82;
+    pub const SEARCH_PAIRS_REC: u64 = 83;
     #[cfg(any(test, feature = "measure"))]
     pub const TEST_SET: u64 = 4096;
     #[cfg(any(test, feature = "measure"))]
@@ -337,6 +340,26 @@ impl<P: Pointer + Sync> Deriver for P {
             out.put(self.key(rec), loc_bytes(to));
         }
         Ok(())
+    }
+}
+
+/// `searchPairs`: the latest is the option's record.
+struct SearchPairs;
+
+impl Pointer for SearchPairs {
+    fn key(&self, _: &Record) -> Vec<u8> {
+        key::of(key::SEARCH_PAIRS_REC)
+    }
+
+    fn others(
+        &self,
+        rec: &Record,
+        _: Loc,
+        _: Option<Loc>,
+        view: &View,
+        out: &mut Out,
+    ) -> Result<(), StoreError> {
+        search::pairs::turned(view, out, rec.values[0] == Value::Bit(true))
     }
 }
 
@@ -1269,6 +1292,7 @@ pub fn deriver(kind: &str) -> Option<&'static dyn Deriver> {
         "tagQueuePop" => &tags::TagQueuePop,
         "tagPass" => &tags::TagPass,
         "metaValue" => &MetaValue,
+        "searchPairs" => &SearchPairs,
         #[cfg(any(test, feature = "measure"))]
         "testSet" => &TestSet,
         other => {

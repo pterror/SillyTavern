@@ -761,6 +761,13 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
+    // Pair postings on or off (`search::pairs`): a pass builds or deletes them.
+    Kind {
+        name: "searchPairs",
+        base: 232,
+        slots: &[req("on", Ty::Bit)],
+        internal: false,
+    },
     // An unresolved book (no definition) is resolved as `into` from now on, for every link naming it.
     Kind {
         name: "bookForward",
