@@ -29,6 +29,7 @@ pub mod books;
 pub mod bulk;
 pub mod chat;
 pub mod chat_read;
+pub mod chat_search;
 pub mod derive;
 pub mod kinds;
 pub mod library;
@@ -586,6 +587,19 @@ impl Store {
     /// A page of the library list.
     pub fn library_page(&self, q: &library_read::Query) -> StoreResult<library_read::Page> {
         self.derived(|v| library_read::page(v, q))
+    }
+
+    /// A page of a tree's sessions searched (`chat_search`).
+    pub fn chat_search(
+        &self,
+        tree: u64,
+        clauses: &[crate::search::query::Clause],
+        before: Option<u64>,
+        limit: usize,
+    ) -> StoreResult<chat_search::Page> {
+        self.derived(|v| {
+            chat_search::page(v, tree, clauses, before, limit, &self.inner.search_stats)
+        })
     }
 
     /// A page of the library list searched (`library_search`).
