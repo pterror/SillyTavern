@@ -38,9 +38,6 @@ use crate::store::derive::{Out, View};
 use crate::store::kinds::{key, search_texts};
 use crate::store::{StoreError, StoreResult};
 
-/// Times a query reads a top list that changed while it read it before the walk answers instead.
-const LIST_READS: usize = 3;
-
 /// Pairs of the block maps a query keeps read (about 8 bytes each).
 const MAPS_HELD: usize = 1 << 22;
 
@@ -215,6 +212,11 @@ pub fn run(view: &View, q: &Query, cache: &StatsCache) -> StoreResult<Found> {
         Order::Relevance => plan.by_relevance(&mut ctx, q)?,
         Order::Key(k) => plan.by_key(&mut ctx, q, k.as_ref())?,
     };
+    if !plan.complete {
+        found.page_exact = false;
+        found.total_exact = false;
+        found.more = true;
+    }
     (found.tags, found.tags_exact) = if q.scope == Scope::LIBRARY {
         tag_matches(&mut ctx, q)?
     } else {
@@ -1462,6 +1464,8 @@ struct Plan {
     shallow: Option<(u64, Option<f64>)>,
     /// The last block's documents that could beat the page (`next_match`).
     cands: Option<(u64, Vec<u64>)>,
+    /// Every tag a tag-restricted clause matches was found (else the work limit cut that short).
+    complete: bool,
 }
 
 /// What a walk in id order passed over: documents or blocks that couldn't beat the page, and how many
@@ -1483,8 +1487,28 @@ impl Plan {
         let stats = scope_stats(ctx, q.scope)?;
         let last = q.clauses.iter().rposition(|c| !tokens(&c.text).is_empty());
         let (mut pos, mut neg) = (Vec::new(), Vec::new());
+        let (mut include, mut exclude) = (Vec::new(), Vec::new());
+        let mut complete = true;
+        let tags_field = tags_field(q.scope);
         for (i, c) in q.clauses.iter().enumerate() {
             let toks = tokens(&c.text);
+            // A clause restricted to the tags field: the cards carrying a tag whose name it matches.
+            if let (Some(t), Some(fs)) = (tags_field, &c.fields)
+                && !fs.is_empty()
+                && fs.iter().all(|&f| f == t)
+                && !toks.is_empty()
+            {
+                let until = ctx.work.saturating_add(q.limits.tags);
+                let (tags, done) = named_tags(ctx, toks, Some(i) == last, until)?;
+                complete &= done;
+                let carriers = Filtered::Any(AnyOf(tags.into_iter().map(members).collect()));
+                if c.negate {
+                    exclude.push(carriers);
+                } else {
+                    include.push(carriers);
+                }
+                continue;
+            }
             if let Some(m) = Matcher::new(
                 ctx,
                 q.scope,
@@ -1500,7 +1524,6 @@ impl Plan {
                 }
             }
         }
-        let (mut include, mut exclude) = (Vec::new(), Vec::new());
         for f in &q.filters {
             match f {
                 Filter::AllTags(tags) => {
@@ -1532,6 +1555,7 @@ impl Plan {
             all,
             shallow: None,
             cands: None,
+            complete,
         })
     }
 
@@ -1923,23 +1947,10 @@ impl Plan {
                 None => (0.0, 0.0),
             })
             .collect();
-        // A list read while something was published may mix two states of it (its head and entries are separate
-        // reads): it is read again, a few times at most.
-        for _ in 0..LIST_READS {
-            let version = ctx.view.published_version();
-            if let Some(found) = self.listed_page(ctx, q, &term, n, filtered, &params, version)? {
-                return Ok(Some(found));
-            }
-            if ctx.view.published_version() == version {
-                return Ok(None);
-            }
-        }
-        Ok(None)
+        self.listed_page(ctx, q, &term, n, filtered, &params)
     }
 
-    /// The page from a word's top list (`top_first`); None when it can't prove the page, or something was
-    /// published since `version`.
-    #[allow(clippy::too_many_arguments)]
+    /// The page from a word's top list (`top_first`); None when it can't prove the page.
     fn listed_page(
         &mut self,
         ctx: &mut Ctx,
@@ -1948,7 +1959,6 @@ impl Plan {
         n: u64,
         filtered: bool,
         params: &[(f64, f64)],
-        version: u64,
     ) -> StoreResult<Option<Found>> {
         let scope = self.scope;
         let term = term.to_string();
@@ -1957,13 +1967,29 @@ impl Plan {
             Some(After::Score(s, d)) => Some(Ranked(*s, *d)),
             _ => None,
         };
-        let generation = ctx.counter(&top_generation(scope, &term))?;
-        let head = ctx
-            .get(&super::top(scope, &term))?
-            .and_then(|b| Head::decode(&b))
-            .filter(|h| h.generation == generation && h.passing.is_none());
-        let count = ctx.counter(&top_count(scope, &term))?;
-        let head = head.filter(|_| count >= top::MIN as u64);
+        // The head and every entry from one state of the keyspace: a page never mixes two versions of a list.
+        let (head, entries, read) = ctx.view.with_snapshot(|v| {
+            let mut sub = Ctx::new(v, None);
+            let generation = sub.counter(&top_generation(scope, &term))?;
+            let head = sub
+                .get(&super::top(scope, &term))?
+                .and_then(|b| Head::decode(&b));
+            let count = sub.counter(&top_count(scope, &term))?;
+            #[cfg(test)]
+            super::tests::after_list_head();
+            let head = head.filter(|h| {
+                h.generation == generation && h.passing.is_none() && count >= top::MIN as u64
+            });
+            let entries = match head {
+                Some(_) => list_entries(&mut sub, scope, &term)?,
+                None => Vec::new(),
+            };
+            StoreResult::Ok((head, entries, (sub.work, sub.gets, sub.scans, sub.entries)))
+        })?;
+        ctx.work += read.0;
+        ctx.gets += read.1;
+        ctx.scans += read.2;
+        ctx.entries += read.3;
         if head
             .as_ref()
             .is_none_or(|h| drift(&h.params, &params) > DRIFT)
@@ -1988,25 +2014,17 @@ impl Plan {
         // A document outside the list scores at most this; one tying it ranks by id only while scores haven't
         // drifted.
         let outside = Ranked(head.floor * up, if up > 1.0 { 0 } else { head.floor_doc });
-        let prefix = top_entries(scope, &term);
         // Entries scoring above `after` by more than the drift rank above it now: passed over.
-        let mut from = prefix.clone();
-        if let Some(a) = &after {
-            top::put_rank(&mut from, a.0 * down);
-        }
-        let mut cur = Cursor::new(&prefix);
-        cur.fill(ctx, &from, q.limit + 2)?;
-        while let Some((k, v)) = cur.get() {
-            let (listed_score, doc) = top::parse_rank(&k[prefix.len()..])
-                .ok_or_else(|| StoreError::Entry("a top list entry doesn't decode".into()))?;
+        let from = after.as_ref().map_or(f64::INFINITY, |a| a.0 * down);
+        for (listed_score, doc, fields) in entries {
+            if listed_score > from {
+                continue;
+            }
             // Every entry from here on scores at most this now.
             let bound = Ranked(listed_score * up, if up > 1.0 { 0 } else { doc });
             if best.worst().is_some_and(|w| bound >= *w) {
                 break;
             }
-            let fields = top::decode_fields(&v.clone().into_bytes())
-                .ok_or_else(|| StoreError::Entry("a top list entry doesn't decode".into()))?;
-            cur.advance(ctx)?;
             seen += 1;
             if !self.passes(ctx, doc)? {
                 continue;
@@ -2019,10 +2037,6 @@ impl Plan {
         }
         // Nothing outside the list can beat the page's last hit, nor any entry not read.
         if !best.worst().is_some_and(|w| outside > *w) {
-            return Ok(None);
-        }
-        // A list read while a write published is read again: its head and entries are separate reads.
-        if ctx.view.published_version() != version {
             return Ok(None);
         }
         let mut total = n;
@@ -2468,6 +2482,43 @@ pub fn parse_term_key(k: &[u8]) -> Option<(Scope, String)> {
 /// Whether a word of this term reads a top list: a query's last word of 2 to 20 characters.
 pub fn has_list(term: &str) -> bool {
     (GRAM_MIN..=GRAM_MAX).contains(&char_len(term))
+}
+
+/// The library field holding a card's own tags, which a clause restricts itself to for tag membership.
+fn tags_field(scope: Scope) -> Option<u32> {
+    (scope == Scope::LIBRARY)
+        .then(|| scope.fields().iter().position(|d| d.name == "tags"))
+        .flatten()
+        .map(|f| f as u32)
+}
+
+/// The tags whose names match a clause's tokens (`last`: the query's last clause, its last token a prefix),
+/// and whether every one was found before the work passed `until`.
+fn named_tags(
+    ctx: &mut Ctx,
+    toks: Vec<String>,
+    last: bool,
+    until: u64,
+) -> StoreResult<(Vec<u64>, bool)> {
+    let stats = scope_stats(ctx, Scope::TAGS)?;
+    let Some(mut m) = Matcher::new(ctx, Scope::TAGS, &stats, toks, None, last)? else {
+        return Ok((Vec::new(), true));
+    };
+    let mut out = Vec::new();
+    let mut d = 0;
+    loop {
+        if ctx.work > until {
+            return Ok((out, false));
+        }
+        m.align(ctx, d)?;
+        let Some(tag) = m.doc else {
+            return Ok((out, true));
+        };
+        if m.check(ctx, tag)?.is_some() {
+            out.push(tag);
+        }
+        d = tag + 1;
+    }
 }
 
 /// The tags whose names match the library query `q`: each positive clause that can apply to tags (any field,

@@ -241,6 +241,9 @@ fn queries() -> Vec<Vec<Clause>> {
         vec![clause("dra", Some(vec![0]), false, false)],
         vec![clause("dra", Some(vec![1]), false, false)],
         vec![clause("dra", Some(vec![8]), false, false)],
+        vec![clause("dragon", Some(vec![8]), false, false), c("the")],
+        vec![c("the"), clause("dark", Some(vec![8]), true, false)],
+        vec![clause("dark knight", Some(vec![8]), false, true)],
         vec![c("the"), clause("vampire", None, true, false)],
         vec![clause("dragon", None, true, false)],
         vec![c("strasse")],
@@ -394,6 +397,18 @@ fn check_lists(lib: &Lib, terms: &[&str]) {
             }
         }
         assert_eq!(got, want, "the list of {term}: {head:?}");
+    }
+}
+
+thread_local! {
+    /// Run once by a query between reading a top list's head and its entries.
+    static AFTER_LIST_HEAD: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+pub(super) fn after_list_head() {
+    if let Some(f) = AFTER_LIST_HEAD.with(|h| h.borrow_mut().take()) {
+        f();
     }
 }
 
@@ -945,4 +960,63 @@ fn tags_whose_names_match_are_answered_beside_the_page() {
     ] {
         check(&lib, &query(clauses, 5));
     }
+}
+
+#[test]
+fn a_page_reads_one_version_of_a_list_while_a_slice_rewrites_it() {
+    let _turn = turn();
+    let dir = temp_dir("snapshot");
+    let Lib { store, world } = build(&dir, 5, 500);
+    let store = Arc::new(store);
+    let q = query(vec![clause("the", None, false, false)], 6);
+    for _ in 0..100 {
+        if store.search(&q).unwrap().refill.is_none() {
+            break;
+        }
+        settle(&store);
+    }
+    let head_of = |s: &Store| {
+        s.get(&super::top(Scope::LIBRARY, "the"))
+            .unwrap()
+            .and_then(|b| super::top::Head::decode(&b))
+            .unwrap()
+    };
+    let head = head_of(&store);
+    assert!(head.passing.is_none());
+    let (want, _) = brute::search(&world, &q);
+    // Between the head and the entries: a slice that starts the list again at other parameters is derived in the
+    // commit queue; it can't be published until the query's read ends.
+    let doubled: Vec<(f64, f64)> = head.params.iter().map(|&(w, a)| (w * 2.0, a)).collect();
+    let (s, params) = (store.clone(), doubled.clone());
+    AFTER_LIST_HEAD.with(|h| {
+        *h.borrow_mut() = Some(Box::new(move || {
+            let (derived, published) = s.derived_jobs();
+            s.queue_refill(super::query::Refill {
+                scope: Scope::LIBRARY,
+                term: "the".into(),
+                params,
+            });
+            while s.derived_jobs().0 == derived {
+                std::thread::yield_now();
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            assert_eq!(s.derived_jobs().1, published, "published during the read");
+        }))
+    });
+    let f = store.search(&q).unwrap();
+    assert!(
+        AFTER_LIST_HEAD.with(|h| h.borrow().is_none()),
+        "the hook ran"
+    );
+    assert!(f.listed && f.page_exact);
+    let got: Vec<(u64, f64)> = f.hits.iter().map(|h| (h.doc, h.score)).collect();
+    assert_eq!(got, want[..6]);
+    // Published once the read ended: the list was started again at the other parameters.
+    settle(&store);
+    assert_eq!(head_of(&store).params, doubled);
+    let lib = Lib {
+        store: Arc::try_unwrap(store).ok().unwrap(),
+        world,
+    };
+    check(&lib, &q);
 }

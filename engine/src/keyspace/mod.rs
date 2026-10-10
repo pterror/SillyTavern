@@ -82,6 +82,46 @@ pub struct Version {
     pub runs: Vec<Arc<Run>>,
 }
 
+/// One state of the keyspace (`Keyspace::with_snapshot`).
+pub struct Snapshot<'a> {
+    ks: &'a Keyspace,
+    runs: &'a [Arc<Run>],
+    mems: Vec<std::sync::RwLockReadGuard<'a, Mem>>,
+}
+
+impl Snapshot<'_> {
+    /// `Keyspace::get_val` in this state.
+    pub fn get_val(&self, key: &[u8]) -> KsResult<Option<Val>> {
+        let mut out = Vec::new();
+        for m in &self.mems {
+            if let Some(val) = m.get(key) {
+                let done = !val.is_partial();
+                out.push(val);
+                if done {
+                    return Ok(val::fold(out).and_then(Val::settled));
+                }
+            }
+        }
+        let out = self.ks.run_values(self.runs, key, out)?;
+        Ok(val::fold(out).and_then(Val::settled))
+    }
+
+    /// `Keyspace::scan_vals` in this state.
+    pub fn scan_vals(
+        &self,
+        start: &[u8],
+        end: &[u8],
+        limit: usize,
+    ) -> KsResult<Vec<(Vec<u8>, Val)>> {
+        let pages = self
+            .mems
+            .iter()
+            .map(|m| m.page(start, end, limit))
+            .collect();
+        self.ks.merge_scan(pages, self.runs, start, end, limit)
+    }
+}
+
 /// Work the store does around flushes.
 pub trait Hooks: Send + Sync {
     /// Entries to write into the run flushed from `mem`, sorted; `older` are the runs before it.
@@ -309,7 +349,6 @@ impl Keyspace {
 
     /// Every value `key` has, newest first, down to the first that hides the older ones.
     pub fn values(&self, key: &[u8]) -> KsResult<Vec<Val>> {
-        self.counters.lookups.fetch_add(1, Ordering::Relaxed);
         let v = self.version();
         let mut out = Vec::new();
         for m in &v.mems {
@@ -317,11 +356,18 @@ impl Keyspace {
                 let done = !val.is_partial();
                 out.push(val);
                 if done {
+                    self.counters.lookups.fetch_add(1, Ordering::Relaxed);
                     return Ok(out);
                 }
             }
         }
-        for r in &v.runs {
+        self.run_values(&v.runs, key, out)
+    }
+
+    /// `values` past the buffers: `out` holds the buffers' values, all partial.
+    fn run_values(&self, runs: &[Arc<Run>], key: &[u8], mut out: Vec<Val>) -> KsResult<Vec<Val>> {
+        self.counters.lookups.fetch_add(1, Ordering::Relaxed);
+        for r in runs {
             if let Some(val) = r.get(key, &self.pool.cache, &self.counts)? {
                 let done = !val.is_partial();
                 out.push(val);
@@ -360,14 +406,29 @@ impl Keyspace {
         limit: usize,
     ) -> KsResult<Vec<(Vec<u8>, Val)>> {
         let v = self.version();
-        let mut sources: Vec<Box<dyn Source>> = Vec::new();
         // A buffer's first `limit` live entries bound where the page can end, so nothing past them is needed.
-        for m in &v.mems {
-            sources.push(Box::new(VecSource::new(
-                m.read().unwrap().page(start, end, limit),
-            )));
+        let pages = v
+            .mems
+            .iter()
+            .map(|m| m.read().unwrap().page(start, end, limit))
+            .collect();
+        self.merge_scan(pages, &v.runs, start, end, limit)
+    }
+
+    /// A scan's page from the buffers' pages and the runs.
+    fn merge_scan(
+        &self,
+        pages: Vec<Vec<(Vec<u8>, Val)>>,
+        runs: &[Arc<Run>],
+        start: &[u8],
+        end: &[u8],
+        limit: usize,
+    ) -> KsResult<Vec<(Vec<u8>, Val)>> {
+        let mut sources: Vec<Box<dyn Source>> = Vec::new();
+        for p in pages {
+            sources.push(Box::new(VecSource::new(p)));
         }
-        for r in &v.runs {
+        for r in runs {
             if start <= r.max_key.as_slice() {
                 sources.push(Box::new(RunIter::new(
                     r.clone(),
@@ -391,6 +452,19 @@ impl Keyspace {
             }
         }
         Ok(out)
+    }
+
+    /// Runs `f` with a snapshot of the keyspace: its buffers are held for reading meanwhile, so nothing is
+    /// inserted until `f` returns and every read through the snapshot sees one state. `f` must be short: inserts
+    /// wait for it.
+    pub fn with_snapshot<T>(&self, f: impl FnOnce(&Snapshot) -> T) -> T {
+        let v = self.version();
+        let mems = v.mems.iter().map(|m| m.read().unwrap()).collect();
+        f(&Snapshot {
+            ks: self,
+            runs: &v.runs,
+            mems,
+        })
     }
 
     // ---- writes ----

@@ -394,6 +394,7 @@ impl Loader<'_> {
             staged: Some(&staged),
             bulk: false,
             ks: &inner.ks,
+            snap: None,
             log: &inner.log,
         };
         // The terms with more documents than a list holds.
@@ -693,6 +694,7 @@ fn work(
                 staged: Some(if cur_again { &staged } else { &records_only }),
                 bulk: true,
                 ks: &inner.ks,
+                snap: None,
                 log: &inner.log,
             };
             let mut o = Out::default();

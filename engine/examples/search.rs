@@ -844,7 +844,10 @@ fn main() {
             .iter()
             .map(|(id, n)| (*id, n.as_bytes().to_vec()))
             .collect();
-        let mut checkers: Vec<Checker> = results.iter().map(|r| Checker::new(&r.2, 50)).collect();
+        let mut checkers: Vec<Checker> = results
+            .iter()
+            .map(|r| Checker::new(&r.2, &tag_names, 50))
+            .collect();
         for pass in 0..2 {
             let mut g = generator(kind, cards);
             for i in 0..cards {
