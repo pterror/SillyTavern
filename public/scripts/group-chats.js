@@ -86,8 +86,8 @@ import { getRequestHeaders } from './request-headers.js';
 import { charactersStore, exposedGroups, holdCharacter, setCharacterId, setExposedGroupId, resolveCharacterRef, resolveCharacterRefPair, CHARACTER_REF_MISMATCH } from './character-store.js';
 import { eventSource, event_types } from './events.js';
 import { printTagList, createTagMapFromList, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, printTagFilters, tag_filter_type, removeEntityTags, heldTagsForIds, compareTagsForSort } from './tags.js';
-import { _setCurrentTarget, updateMessage } from './chat-store.js';
-import { isProvisionalNodeId, provisionalNodeId } from './node-identity.js';
+import { _setCurrentTarget } from './chat-store.js';
+import { provisionalNodeId } from './node-identity.js';
 import { FILTER_TYPES, FILTER_STATES, FilterHelper, isFilterState } from './filters.js';
 import { isExternalMediaAllowed } from './chats.js';
 import { POPUP_TYPE, Popup, callGenericPopup } from './popup.js';
@@ -487,7 +487,7 @@ export async function getGroupChat(groupId, reload = false) {
 
 /**
  * Opens a group's conversation (POST /api/chats/open) and draws it. A chat with no messages yet shows each
- * member's greeting, unsaved: the greetings are stored when the first message is (see materializeGroupOpening()).
+ * member's greeting, unsaved: the greetings are stored when the first message is (chat-store.js ensureOpeningRow()).
  * @param {string} groupId
  * @param {{ chat?: string|null, makeCurrent?: boolean, reload?: boolean }} [options] `chat`: open this chat when the
  * group has it, else the group's current one; `makeCurrent`: and make it the group's current chat; `reload`: also
@@ -857,10 +857,7 @@ async function getFirstCharacterMessage(character) {
         character.avatar != 'none'
             ? getThumbnailUrl('avatar', character.avatar)
             : default_avatar;
-    // Same provisional-marker treatment the solo path gives a fresh greeting (script.js:8039's
-    // `chosenNodeId = chosen.node_id ?? provisionalNodeId(...)`), so _bootstrapGroupChat() failing
-    // anywhere in its chain leaves this healable (isProvisionalNodeId() true) rather than a plain
-    // `undefined` node_id, which healDirtyMessages()'s trailing-run logic can never recover.
+    // Unstored, as a solo chat's card greeting is: ensureOpeningRow() (chat-store.js) stores it when it's needed.
     mes.node_id = provisionalNodeId(mes.name, mes.mes);
     return mes;
 }
@@ -869,100 +866,6 @@ function resetSelectedGroup() {
     selected_group = null;
     setExposedGroupId(null);
     is_group_generating = false;
-}
-
-/** @type {Promise<boolean>|null} */
-let groupOpeningInFlight = null;
-
-/**
- * Stores the open group chat's member greetings, which a chat with no messages yet shows unsaved, so a message
- * can follow them. Called before the first message of such a chat is stored (chat-store.js ensureOpeningRow()).
- * @returns {Promise<boolean>} Whether they are stored.
- */
-export function materializeGroupOpening() {
-    if (selected_group == null) return Promise.resolve(false);
-    const group = groupsStore.get(selected_group);
-    if (!group) return Promise.resolve(false);
-    groupOpeningInFlight ??= _bootstrapGroupChat(group.id, group.chat_id).finally(() => { groupOpeningInFlight = null; });
-    return groupOpeningInFlight;
-}
-
-/**
- * Mints the tree rows for a group chat's unsaved member greetings (the leading run of `chat[]` with
- * provisional ids) directly. The shape is one linear chain (each member's greeting is the next turn), not
- * alternatives, so this is: mint the first turn via /openings/ensure (which also creates the group's anchor),
- * point the anchor at it, append the remaining greetings after it, then label the first turn with the group's
- * own pre-assigned chat_id (a group's chat_id is decided at group/chat creation, unlike a fresh solo chat's - it
- * can't become the new node's own id the way a character's `.chat` pointer does, since group.chats/branch-switching
- * already resolves other chats by that pre-assigned string).
- * The label is what makes the chat reachable, so it goes last: a failure before it leaves the chat
- * unreachable, and the next try mints it again from scratch.
- * @param {string} groupId
- * @param {string} chatName group.chat_id - the name this chat needs to be reachable under
- * @returns {Promise<boolean>} Whether every greeting now carries a real node_id.
- */
-async function _bootstrapGroupChat(groupId, chatName) {
-    let greetings = 0;
-    while (greetings < chat.length && isProvisionalNodeId(chat[greetings].node_id)) greetings++;
-    if (!greetings) return true;
-
-    const contentOf = (msg) => ({
-        name: msg.name, is_user: !!msg.is_user, is_system: !!msg.is_system,
-        send_date: msg.send_date, mes: msg.mes, extra: msg.extra ?? {},
-    });
-    const post = (path, body) => fetch(path, {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({ group_id: groupId, ...body }),
-    });
-
-    try {
-        const ensureResponse = await post('/api/chats/openings/ensure', { contents: [contentOf(chat[0])] });
-        if (!ensureResponse.ok) return false;
-        const firstId = (await ensureResponse.json().catch(() => null))?.node_ids?.[0];
-        if (!firstId) return false;
-        updateMessage(0, { node_id: firstId });
-
-        const selectResponse = await post('/api/chats/message/select', { node_id: firstId });
-        if (!selectResponse.ok) return false;
-
-        if (greetings > 1) {
-            const appendResponse = await post('/api/chats/message/append', { after_node_id: firstId, messages: chat.slice(1, greetings) });
-            if (!appendResponse.ok) return false;
-            const nodeIds = (await appendResponse.json().catch(() => null))?.node_ids ?? [];
-            nodeIds.forEach((node_id, offset) => {
-                if (chat[offset + 1]) updateMessage(offset + 1, { node_id });
-            });
-            if (nodeIds.length !== greetings - 1) return false;
-        }
-
-        // /label always answers 200 even on refusal (e.g. unknown node) - the real result is in the body.
-        const labelResponse = await fetch('/api/chats/label', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({ node_id: firstId, label: chatName }),
-        });
-        const labeled = labelResponse.ok && (await labelResponse.json().catch(() => null))?.ok;
-        if (!labeled) return false;
-
-        // The label carries this chat's identity; metadata (integrity, __is_group) is a separate write onto
-        // that same labeled node, same as every later metadata-only edit (saveMetadata()) makes.
-        const metaResponse = await post('/api/chats/metadata', {
-            file_name: chatName,
-            metadata: { ...chat_metadata, __is_group: true },
-        });
-        if (metaResponse.ok) {
-            const meta = await metaResponse.json().catch(() => ({}));
-            if (typeof meta.integrity === 'string') {
-                _setCurrentTarget(chatName, meta.integrity, { group_id: groupId });
-            }
-        }
-    } catch (error) {
-        console.error('Could not bootstrap the new group chat:', error);
-        return false;
-    }
-
-    return true;
 }
 
 /**

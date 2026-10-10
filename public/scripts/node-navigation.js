@@ -111,19 +111,29 @@ export async function switchToNode(targetNodeId) {
         return true;
     }
 
+    const avatar = getCurrentCharacter()?.avatar;
+    if (avatar == null || isProvisionalNodeId(targetNodeId)) {
+        return false;
+    }
+    /** @type {ChatMessage[]|undefined} */
     let ancestry;
+    /** @type {ChatMessage[]} */
+    let below = [];
     try {
-        const response = await fetch('/api/chats/ancestry', {
+        const response = await fetch('/api/chats/message/select', {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify({ node_id: targetNodeId, chat_name: getCurrentChatId() }),
+            body: JSON.stringify({ avatar_url: avatar, node_id: targetNodeId, activate: true, chat_name: getCurrentChatId(), with_ancestry: true }),
         });
         if (!response.ok) {
             return false;
         }
-        ancestry = (await response.json())?.messages;
+        const answer = await response.json();
+        ancestry = answer?.ancestry;
+        below = answer?.messages ?? [];
+        _setCurrentTarget(targetNodeId, null);
     } catch (error) {
-        console.warn('[switchToNode] Failed to fetch ancestry:', error);
+        console.warn('[switchToNode] Failed to go to the message:', error);
         return false;
     }
     if (!Array.isArray(ancestry) || ancestry.length === 0) {
@@ -147,25 +157,6 @@ export async function switchToNode(targetNodeId) {
     }
 
     const between = ancestry.slice(forkAncestryIdx + 1);
-
-    let below = [];
-    const avatar = getCurrentCharacter()?.avatar;
-    if (avatar != null && !isProvisionalNodeId(targetNodeId)) {
-        try {
-            const response = await fetch('/api/chats/message/select', {
-                method: 'POST',
-                headers: getRequestHeaders(),
-                body: JSON.stringify({ avatar_url: avatar, node_id: targetNodeId, activate: true, chat_name: getCurrentChatId() }),
-            });
-            if (response.ok) {
-                below = (await response.json())?.messages ?? [];
-                _setCurrentTarget(targetNodeId, null);
-            }
-        } catch (error) {
-            // Not fatal - the segment through the target is still correct, it just won't carry on past it.
-            console.warn('[switchToNode] Failed to select the target and fetch what follows it:', error);
-        }
-    }
 
     chat.splice(forkPos + 1, chat.length - (forkPos + 1), ...between, ...below);
 
