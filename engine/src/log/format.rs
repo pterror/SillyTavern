@@ -691,6 +691,18 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
+    // A reply's prompt itemization (D14): zstd-compressed JSON, and whether it holds the prompt as sent (absent:
+    // the message has none any more).
+    Kind {
+        name: "itemization",
+        base: 216,
+        slots: &[
+            req("message", Ty::Id(Space::Message)),
+            req("raw", Ty::Bit),
+            opt("data", Ty::Bytes),
+        ],
+        internal: false,
+    },
     // One of a message's times as the ISO string `new Date(time + delta).toISOString()`: which is its field.
     Kind {
         name: "messageTime",

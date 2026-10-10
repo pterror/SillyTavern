@@ -138,6 +138,7 @@ struct Model {
     user_order: BTreeMap<(u64, u64), BTreeMap<u64, u64>>,
     choices: BTreeMap<(u8, u64, Fork), u64>,
     branches: BTreeMap<u64, Vec<u64>>,
+    itemized: BTreeMap<u64, (bool, Vec<u8>)>,
     seq: u64,
 }
 
@@ -295,6 +296,7 @@ impl Model {
         }
         self.choices.retain(|_, r| *r != m);
         self.branches.remove(&m);
+        self.itemized.remove(&m);
         self.keys
             .retain(|(sp, _), v| !(*sp == chat::KEYED_MESSAGE && *v == m));
     }
@@ -530,6 +532,18 @@ impl Model {
             })
             .sum();
             assert_eq!(n, self.choices.len(), "choices");
+            for m in self.msgs.keys() {
+                assert_eq!(
+                    chat::itemization(v, *m)?,
+                    self.itemized.get(m).cloned(),
+                    "itemization of {m}"
+                );
+            }
+            let all = key::of(chat::ITEMIZED);
+            assert_eq!(
+                v.scan(&all, &key::prefix_end(&all), usize::MAX)?.len(),
+                self.itemized.len()
+            );
             // Stats: every message here is a character's, so the ones with a parent count.
             let mut total = [0i64; stats::COUNTERS];
             for o in &owners {
@@ -922,6 +936,24 @@ fn step(model: &mut Model, rng: &mut Rng, i: u64) -> Vec<Record> {
                     Value::Id(user),
                 ],
             )]
+        }
+        17 => {
+            let m = pick(rng);
+            if rng.below(4) == 0 {
+                model.itemized.remove(&m);
+                vec![rec(
+                    "itemization",
+                    vec![Value::Id(m), Value::Bit(false), Value::Absent],
+                )]
+            } else {
+                let data = format!("zstd bytes of {i}").into_bytes();
+                let raw = i.is_multiple_of(2);
+                model.itemized.insert(m, (raw, data.clone()));
+                vec![rec(
+                    "itemization",
+                    vec![Value::Id(m), Value::Bit(raw), Value::Bytes(data)],
+                )]
+            }
         }
         16 if i.is_multiple_of(5) && model.sessions.contains_key(&session) => {
             // The session goes, and the test's tab takes up a new session with the same number.

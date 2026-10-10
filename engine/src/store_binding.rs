@@ -373,6 +373,70 @@ where
     Ok(promise)
 }
 
+/// A chat read's answer (`store::chat_read::Js`) as JavaScript.
+struct JsTree(crate::store::chat_read::Js);
+
+impl ToNapiValue for JsTree {
+    unsafe fn to_napi_value(raw_env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
+        use crate::store::chat_read::Js;
+        let env = Env::from_raw(raw_env);
+        unsafe {
+            match val.0 {
+                Js::Null => <Option<bool>>::to_napi_value(raw_env, None),
+                Js::Bool(b) => bool::to_napi_value(raw_env, b),
+                Js::Num(n) => f64::to_napi_value(raw_env, n),
+                Js::Big(n) => u64::to_napi_value(raw_env, n),
+                Js::Text(t) => JsText::to_napi_value(raw_env, text_to_js(t)?),
+                Js::Bytes(b) => Buffer::to_napi_value(raw_env, Buffer::from(b)),
+                Js::Arr(list) => {
+                    <Vec<JsTree>>::to_napi_value(raw_env, list.into_iter().map(JsTree).collect())
+                }
+                Js::Obj(fields) => {
+                    let mut o = Object::new(&env)?;
+                    for (k, v) in fields {
+                        o.set(k, JsTree(v))?;
+                    }
+                    Object::to_napi_value(raw_env, o)
+                }
+            }
+        }
+    }
+}
+
+fn opt_integer(o: &Object, name: &str) -> Result<Option<u64>> {
+    match o.get::<Unknown>(name)? {
+        Some(v) if !matches!(v.get_type()?, ValueType::Null | ValueType::Undefined) => {
+            Ok(Some(integer(name, v)?))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn req_integer(o: &Object, name: &str) -> Result<u64> {
+    opt_integer(o, name)?.ok_or_else(|| invalid(format!("{name} is missing")))
+}
+
+fn integers(o: &Object, name: &str) -> Result<Vec<u64>> {
+    let list: Vec<Unknown> = o
+        .get(name)?
+        .ok_or_else(|| invalid(format!("{name} is missing")))?;
+    list.into_iter().map(|v| integer(name, v)).collect()
+}
+
+fn byte_list(o: &Object, name: &str) -> Result<Vec<Vec<u8>>> {
+    let list: Vec<Unknown> = o
+        .get(name)?
+        .ok_or_else(|| invalid(format!("{name} is missing")))?;
+    list.into_iter()
+        .map(|v| match v.get_type()? {
+            ValueType::String => string(name, v),
+            _ => Ok(Uint8Array::from_unknown(v)
+                .map_err(|_| invalid(format!("{name} holds strings or Uint8Arrays")))?
+                .to_vec()),
+        })
+        .collect()
+}
+
 fn field_arg(v: Unknown) -> Result<FieldRef> {
     match value_from_js(
         &Slot {
@@ -1175,6 +1239,159 @@ impl Store {
                 .map(|b| text_to_js(b).map_err(|e| StoreError::Entry(e.to_string())))
                 .transpose()
         })
+    }
+
+    /// A chat read (`store::chat_read`), by `op` with its arguments in `args`:
+    /// - `messages { ids }`: each message's values, or null;
+    /// - `children { parent?, tree, after?, limit }`: `{ ids, more }`, a message's replies or a tree's openings;
+    /// - `path { tree, at?, session?, user? }`: `{ above, below }`, root to `at` and the followed replies below;
+    /// - `landing { tree, session?, user? }`, `followed { tree, at?, session?, user? }`: a message or null;
+    /// - `sessions { ids }`, `sessionInTree { session, tree }`, `userInTree { user, tree }`;
+    /// - `history { session, from, limit }`, `recent { before?, limit }`, `inTree { tree, before?, limit }`;
+    /// - `messageCount { tree, at? }`: `{ count, estimate }`;
+    /// - `ids { space: 0 message | 1 session | 2 user, keys }`, `nextIds {}`;
+    /// - `bookmarks { ids }`, `treeBookmarks { tree, after?, limit }`, `bookmarksAt { message }`;
+    /// - `state { tree, at? }`: `[{ variable, field, json }]`;
+    /// - `stats { owners }`: `{ owners, totals }`; `itemization { message }`; `sent { owner, keys }`.
+    #[napi(
+        ts_args_type = "op: string, args: object",
+        ts_return_type = "Promise<any>"
+    )]
+    pub fn chat_read<'env>(
+        &self,
+        env: &'env Env,
+        op: String,
+        args: Object,
+    ) -> Result<Object<'env>> {
+        use crate::store::chat_read as cr;
+        let a = &args;
+        let limit = |a: &Object| -> Result<usize> { Ok(req_integer(a, "limit")? as usize) };
+        let read: Box<dyn FnOnce(&Inner) -> StoreResult<JsTree> + Send> = match op.as_str() {
+            "messages" => {
+                let ids = integers(a, "ids")?;
+                Box::new(move |s| s.chat_read(|v| cr::messages(v, &ids)).map(JsTree))
+            }
+            "children" => {
+                let (parent, tree, after, limit) = (
+                    opt_integer(a, "parent")?,
+                    req_integer(a, "tree")?,
+                    opt_integer(a, "after")?,
+                    limit(a)?,
+                );
+                Box::new(move |s| {
+                    s.chat_read(|v| cr::children(v, parent, tree, after, limit))
+                        .map(JsTree)
+                })
+            }
+            "path" | "followed" | "landing" => {
+                let (tree, at, ses, user) = (
+                    req_integer(a, "tree")?,
+                    opt_integer(a, "at")?,
+                    opt_integer(a, "session")?,
+                    opt_integer(a, "user")?,
+                );
+                let op = op.clone();
+                Box::new(move |s| {
+                    s.chat_read(|v| match op.as_str() {
+                        "path" => cr::path(v, tree, at, ses, user),
+                        "followed" => cr::followed(v, tree, at, ses, user),
+                        _ => cr::landing(v, tree, ses, user),
+                    })
+                    .map(JsTree)
+                })
+            }
+            "sessions" => {
+                let ids = integers(a, "ids")?;
+                Box::new(move |s| s.chat_read(|v| cr::sessions(v, &ids)).map(JsTree))
+            }
+            "sessionInTree" => {
+                let (ses, tree) = (req_integer(a, "session")?, req_integer(a, "tree")?);
+                Box::new(move |s| {
+                    s.chat_read(|v| cr::session_in_tree(v, ses, tree))
+                        .map(JsTree)
+                })
+            }
+            "userInTree" => {
+                let (user, tree) = (req_integer(a, "user")?, req_integer(a, "tree")?);
+                Box::new(move |s| s.chat_read(|v| cr::user_in_tree(v, user, tree)).map(JsTree))
+            }
+            "history" => {
+                let (ses, from, limit) = (
+                    req_integer(a, "session")?,
+                    opt_integer(a, "from")?.unwrap_or(0),
+                    limit(a)?,
+                );
+                Box::new(move |s| {
+                    s.chat_read(|v| cr::history(v, ses, from, limit))
+                        .map(JsTree)
+                })
+            }
+            "recent" => {
+                let (before, limit) = (opt_integer(a, "before")?, limit(a)?);
+                Box::new(move |s| s.chat_read(|v| cr::recent(v, before, limit)).map(JsTree))
+            }
+            "inTree" => {
+                let (tree, before, limit) = (
+                    req_integer(a, "tree")?,
+                    opt_integer(a, "before")?,
+                    limit(a)?,
+                );
+                Box::new(move |s| {
+                    s.chat_read(|v| cr::in_tree(v, tree, before, limit))
+                        .map(JsTree)
+                })
+            }
+            "messageCount" => {
+                let (tree, at) = (req_integer(a, "tree")?, opt_integer(a, "at")?);
+                Box::new(move |s| s.chat_read(|v| cr::message_count(v, tree, at)).map(JsTree))
+            }
+            "ids" => {
+                let space = req_integer(a, "space")?;
+                if space > 2 {
+                    return Err(invalid(format!("no key space {space}")));
+                }
+                let keys = byte_list(a, "keys")?;
+                Box::new(move |s| {
+                    s.chat_read(|v| cr::ids_by_keys(v, space as u8, &keys))
+                        .map(JsTree)
+                })
+            }
+            "nextIds" => Box::new(|s| s.chat_read(cr::next_ids).map(JsTree)),
+            "bookmarks" => {
+                let ids = integers(a, "ids")?;
+                Box::new(move |s| s.chat_read(|v| cr::bookmarks(v, &ids)).map(JsTree))
+            }
+            "treeBookmarks" => {
+                let (tree, after, limit) =
+                    (req_integer(a, "tree")?, opt_integer(a, "after")?, limit(a)?);
+                Box::new(move |s| {
+                    s.chat_read(|v| cr::tree_bookmarks(v, tree, after, limit))
+                        .map(JsTree)
+                })
+            }
+            "bookmarksAt" => {
+                let m = req_integer(a, "message")?;
+                Box::new(move |s| s.chat_read(|v| cr::bookmarks_at(v, m)).map(JsTree))
+            }
+            "state" => {
+                let (tree, at) = (req_integer(a, "tree")?, opt_integer(a, "at")?);
+                Box::new(move |s| s.chat_read(|v| cr::state_at(v, tree, at)).map(JsTree))
+            }
+            "stats" => {
+                let owners = integers(a, "owners")?;
+                Box::new(move |s| s.chat_read(|v| cr::chat_stats(v, &owners)).map(JsTree))
+            }
+            "itemization" => {
+                let m = req_integer(a, "message")?;
+                Box::new(move |s| s.chat_read(|v| cr::itemization(v, m)).map(JsTree))
+            }
+            "sent" => {
+                let (owner, keys) = (req_integer(a, "owner")?, byte_list(a, "keys")?);
+                Box::new(move |s| s.chat_read(|v| cr::sent(v, owner, &keys)).map(JsTree))
+            }
+            other => return Err(invalid(format!("no chat read {other}"))),
+        };
+        derived(env, &self.store, read)
     }
 
     /// The position of the entity's latest record, or null.
