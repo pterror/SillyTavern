@@ -1467,6 +1467,18 @@ author?, ref? })` records a revert (of a change or of a revert), `unknown change
 when the page's copy has that hash. Tests: changes at two places on a path, a key left as it is and a derived key
 recording nothing, a revert and its revert, the hash check, removals.
 
+Stop (10-10), a tab's session on the page (behaviour), before `X-ST-Session` is added to `getRequestHeaders()`. Given:
+which session a tab has open is browser state, per tab, with a per-device default (design N15, O-2); a new session is
+made by an explicit new-session action "or a device with no default session opening a tree" (design 4.1); "a tab with
+no session yet" sends `none` and acts through the deterministic (user, tree) session, made on its first pointer move
+(4c's answer above). Not settled:
+- A new tab: does it open the device's default session, or start with none?
+- A tab with no session opening a tree when the device has no default: does it make a new (v7) session, or send
+  `none` and act through the deterministic one? After that session's first move, does the tab hold it as its own
+  (sending its UUID from then on) and does it become the device's default?
+- When does the device's default change: whenever a tab opens or makes another session, or only while there is none?
+Not built until answered; the engine side (`resolveSession`) doesn't depend on it.
+
 Measured, chats (10-10; `engine/examples/chat.rs`, `cargo run --release --features measure --example chat -- <dir>
 2000`, NVMe btrfs scratchpad, removed after): 2,000 trees of 200 messages in a chain (every fifth with a second
 alternative, sent through 8 of 64 sessions, 3 bookmarks each) and one chain of 10,000: 490,000 messages, loaded through
