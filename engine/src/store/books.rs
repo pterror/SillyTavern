@@ -230,6 +230,43 @@ fn opt_id(rec: &Record, i: usize) -> Option<u64> {
     }
 }
 
+/// A record at `at` changed entity `e`: when it is an entry or an owned book, the book holding it, and that book's
+/// owner, changed too (their versions follow, so a page's copy of a book or card is known stale).
+pub fn touched(view: &View, out: &mut Out, e: u64, at: Loc) -> Result<(), StoreError> {
+    match entity_info(view, e)? {
+        Some((kind, k, _)) => container_touched(view, out, kind, &k, at),
+        None => Ok(()),
+    }
+}
+
+/// An entity of type `kind` and key `k` changed (or is being created) at `at`: `touched` for what holds it.
+pub fn container_touched(
+    view: &View,
+    out: &mut Out,
+    kind: u64,
+    k: &[u8],
+    at: Loc,
+) -> Result<(), StoreError> {
+    let up = match kind {
+        ENTRY => parse_entry_key(k)?.0,
+        OWNED => owner_of(k)?,
+        _ => return Ok(()),
+    };
+    version(out, up, at);
+    touched(view, out, up, at)
+}
+
+/// An owned book's owner, from its key `<owner id>:<slot>`.
+pub fn owner_of(k: &[u8]) -> Result<u64, StoreError> {
+    let colon = k.iter().position(|c| *c == b':');
+    colon
+        .and_then(|c| std::str::from_utf8(&k[..c]).ok())
+        .and_then(|d| d.parse::<u64>().ok())
+        .ok_or_else(|| {
+            StoreError::Refused("an owned book's key is its owner's id, `:`, then its slot".into())
+        })
+}
+
 // ---- free integer keys ----
 
 fn free_key(book: u64, start: u64) -> Vec<u8> {
@@ -398,6 +435,7 @@ impl Deriver for EntryIndex {
             dead(out, at);
         }
         version(out, entry, at);
+        touched(view, out, entry, at)?;
         Ok(())
     }
 
@@ -684,9 +722,25 @@ pub fn links(view: &View, ids: &[u64]) -> Result<Js, StoreError> {
     ))
 }
 
-/// A book's lowest free integer entry key and its highest `displayIndex` (null: no entry has one).
+/// A book's last entry place (null: none), its lowest free integer entry key and its highest `displayIndex` (null:
+/// no entry has one).
 pub fn book_numbers(view: &View, book: u64) -> Result<Js, StoreError> {
+    let prefix = key::ids(key::ITEM, book, ENTRIES);
+    let last = match view
+        .scan_vals_rev(&prefix, &key::prefix_end(&prefix), 1)?
+        .into_iter()
+        .next()
+    {
+        Some((k, _)) => {
+            let mut at = prefix.len();
+            Js::Num(
+                get_u64(&k, &mut at).ok_or_else(|| err("an entry place doesn't decode"))? as f64,
+            )
+        }
+        None => Js::Null,
+    };
     Ok(Js::Obj(vec![
+        ("lastPosition", last),
         ("freeKey", Js::Num(lowest_free(view, book)? as f64)),
         ("maxIndex", max_index(view, book)?.map_or(Js::Null, Js::Num)),
     ]))

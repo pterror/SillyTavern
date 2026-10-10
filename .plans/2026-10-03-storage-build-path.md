@@ -1705,6 +1705,51 @@ Built, books, entries and links on the engine (10-11; `engine/src/store/books.rs
 | a book renamed onto an unresolved name | `bookForward` from the name's entity, which then goes, and the rename | one record each, whatever the linkers; readers follow the forward |
 | bulk loads | a link's book isn't checked in a bulk load (another partition); entries aren't bulk loaded | partitions derive in parallel |
 
+Built, the world-info layer (10-11; `src/world-info-engine.js`, values code moved to `src/entity-values.js`; test
+`tests/world-info-engine.test.js`, native and wasm, against the old routes):
+- `WorldInfoEngine` (`lib.books`): `read` (`/get`), `list` (`/list`, its order), `exists`, `write` (`/edit`, `/import`,
+  `/create { data }`, `/duplicate` with what `read` gives), `apply` (`/entries/apply`, its answer), `createEntry`,
+  `editEntry`, `transplant` (both books in one commit; the old route wrote two), `delete`, `rename` (`'ok' | 'missing'
+  | 'taken'`), `owned` / `ownedRecords` (a character's or book's own book). Writes to one book run in its key's lane
+  (the lane card links take too).
+- A book's or entry's top-level keys are each a value (a string as text, so it is edited; anything else JSON); an
+  entry's key lists (`key`, `keysecondary`, `triggers`, `keys`, `secondary_keys`) as items when non-empty lists of
+  strings; upstream's entry keys by field code (100 on, in its template's order, then `character_book`'s), any other
+  key by name. A world book's `originalData` that holds a list of entries is its owned book (`<book id>:o`); a card's
+  `character_book` that does is the character's (`<character id>:c`), stored with the card's write and assembled into
+  `cards()`; anything else in either stays the JSON it came as. A character's delete takes its book.
+- A whole-book write records only what differs: a book written again as read records nothing; one entry's changed
+  content one `textEdit`. An owned book's entries are matched by position (equal ends kept, the middle edited in
+  place, the rest added or deleted).
+- The tests: 8 books of varied entries (integer and text keys, shuffled key orders, lists, unknown keys, odd
+  `displayIndex`, `uid` absent or not the key, `originalData`) read back equal to the old store's, key order within
+  every entry included; the books list equal; 120 random entry actions (create, edit, transplant, apply with stale
+  versions, deletes and field changes, whole-book `/edit`) answering as the old routes and reading back the same after
+  each; `originalData` following an apply's delete; duplicate and delete; a sanitized name; an embedded book round
+  trip with an entry edit writing 2 records; links through rename, a rename onto an unresolved name, delete and a book
+  taking the name again.
+
+| choice | picked | reason |
+|---|---|---|
+| key order | none stored when an object's keys are in the canonical order (entry: by code, then other keys by name; book: by name, `entries` last); else a text value (field 98) with each key's canonical place, one character each | the usual entries pay nothing; any order round-trips |
+| `uid` | a world book's entry whose `uid` is its key as a number stores none; no `uid` at all is a marker (field 97); an owned book's entries have none by default | the usual entry pays nothing for it |
+| a whole entry that isn't an object | its JSON (field 96) | kept as it came |
+| a new entry's place | after its neighbours in the written order; every entry placed again above every place held when out of order or no place is free | an insert writes one place |
+| versions | a record changing an entry or an owned book changes the version of the book holding it and of that book's owner (`books::touched`) | a page's copy of a book or card is known stale by its version |
+
+Left (handover, 10-11):
+- Not routed: `src/endpoints/worldinfo.js`'s routes, `readWorldInfoFile()`'s readers (generation's
+  `candidate-resolution.js`, `text-completion-generation-input.js`, `character-card-normalize.js`, `content-manager.js`,
+  `byaf.js`, `sprites.js`, `characters.js`, `settings.js`' `world_names`) and `/rename`'s settings links (still names
+  until stage 7) move at the cut.
+- The chat-bound link (`chat_metadata.world_info`, a 5b state key) still holds a name; making it a book id is left to
+  build on the state layer's keys.
+- Measure (one entry edit against today's manifest rewrite and directory listing).
+- A card write reads its stored embedded book whole to diff it (O(its entries)).
+- `apply` reads a book's `originalData` whole when a field changes or an entry is deleted.
+- A book rename doesn't rewrite its linkers' content identity hashes (the card reads the new name; the hash, made from
+  the old, is rewritten at the card's next write), as "rename writes only the book" answers.
+
 **5d. search wired.**
 - Derivers feeding P3 (stage 4): card fields (S1, with the design's weights and prefix fields), card tag names and
   resolved tag names joined through membership (Q-F12), groups (S2: name, member names, tags, id), session names (S6),

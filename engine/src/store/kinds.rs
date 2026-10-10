@@ -708,6 +708,7 @@ impl Deriver for TextValue {
         );
         if let Holder::Entity(entity) = h {
             version(out, entity, at);
+            super::books::touched(view, out, entity, at)?;
         }
         Ok(())
     }
@@ -834,6 +835,7 @@ impl Deriver for TextEdit {
         out.put(h.text_key(f), head.bytes());
         if let Holder::Entity(entity) = h {
             version(out, entity, at);
+            super::books::touched(view, out, entity, at)?;
         }
         Ok(())
     }

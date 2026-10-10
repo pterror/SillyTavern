@@ -476,3 +476,44 @@ fn links_name_books_by_id_and_resolve_unresolved_names() {
     drop(s);
     fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn a_change_to_an_entry_or_owned_book_changes_its_books_and_owners_versions() {
+    let dir = temp_dir("versions");
+    let s = Store::open_in(&dir, SMALL, pool()).unwrap();
+    let version = |e: u64| {
+        s.library_entities(&[e]).unwrap()[0]
+            .as_ref()
+            .unwrap()
+            .version
+    };
+    s.commit_wait(vec![
+        create(1, CHARACTER, "c.png"),
+        create(2, OWNED, "1:c"),
+        create(3, ENTRY, "2:0"),
+    ])
+    .unwrap();
+    let (c, b) = (version(1), version(2));
+    s.commit_wait(vec![rec(
+        "jsonValue",
+        vec![
+            Value::Sel(0, 3),
+            Value::Field(FieldRef::Key(b"content".to_vec())),
+            text("1"),
+            Value::Absent,
+            Value::Absent,
+        ],
+    )])
+    .unwrap();
+    assert!(version(2) > b && version(1) > c, "an entry's value");
+    let (c, b) = (version(1), version(2));
+    s.commit_wait(vec![delete(3)]).unwrap();
+    assert!(version(2) > b && version(1) > c, "an entry going");
+    let refused = |r: Vec<Record>| matches!(s.commit_wait(r), Err(StoreError::Refused(_)));
+    assert!(
+        refused(vec![create(4, OWNED, "x")]),
+        "an owned book's key names its owner"
+    );
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}
