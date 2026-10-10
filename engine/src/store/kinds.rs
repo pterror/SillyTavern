@@ -6,6 +6,7 @@
 use super::StoreError;
 use super::derive::{Deriver, Loc, Out, View};
 use super::library;
+use super::tags::{self, Written};
 use crate::log::FILE_SHIFT;
 use crate::log::format::{
     Ctx, FieldRef, Record, Value, encode, get_uvarint, kind_by_name, put_uvarint, wtf8_to_utf16,
@@ -99,6 +100,26 @@ pub mod key {
     pub const FOLD: u64 = 65;
     /// One more than the highest entity id ever created (a maximum).
     pub const NEXT_ENTITY: u64 = 66;
+    /// Tags (`store::tags`). Per (sort, folder bit, used bit, sort key, tag): the tag's place.
+    pub const TAG_ORDER: u64 = 67;
+    /// Per (folder bit, used bit): the live tags in that part (a counter).
+    pub const TAG_PART_COUNT: u64 = 68;
+    /// Per live tag: its place (folded name, folder type, manual order).
+    pub const TAG_PLACE: u64 = 69;
+    /// Per tag: its `tagOrder` record.
+    pub const TAG_ORDER_REC: u64 = 70;
+    /// Per (position, tag): the tag's definition last changed at that position.
+    pub const TAG_CHANGE: u64 = 71;
+    /// Per tag: the position of its `TAG_CHANGE` entry.
+    pub const TAG_CHANGED: u64 = 72;
+    /// Per (position, entity): the tags the entity carries last changed at that position.
+    pub const ENTITY_TAG_CHANGE: u64 = 73;
+    /// Per entity: the position of its `ENTITY_TAG_CHANGE` entry.
+    pub const ENTITY_TAGS_CHANGED: u64 = 74;
+    /// Per deleted tag's key: the tag.
+    pub const TAG_GONE_KEY: u64 = 75;
+    /// Per deleted tag: its key.
+    pub const TAG_GONE_ID: u64 = 76;
     #[cfg(any(test, feature = "measure"))]
     pub const TEST_SET: u64 = 4096;
     #[cfg(any(test, feature = "measure"))]
@@ -468,6 +489,7 @@ impl Deriver for TextValue {
         }
         library::drop_json(view, out, entity, f)?;
         library::text_changed(view, out, entity, f, Some(bytes(rec, 2)))?;
+        tags::field_written(view, out, entity, at, f, Written::Text(bytes(rec, 2)))?;
         if let Some(old) = Head::get(view, entity, f)? {
             dead(out, old.full);
             for (k, l) in edits(view, entity, f, &old)? {
@@ -549,7 +571,7 @@ impl Deriver for TextEdit {
             StoreError::Entry(format!("a textEdit of entity {entity} with no value"))
         })?;
         let sf = search_field(f);
-        if sf.is_some() || library::places(f) {
+        if sf.is_some() || library::places(f) || tags::tag_field(f) {
             let old = materialize(view, entity, f, &head)?;
             let new = apply_edit(&old, id(rec, 2), id(rec, 3), bytes(rec, 4)).ok_or_else(|| {
                 StoreError::Entry(format!("an edit of entity {entity}'s text is out of range"))
@@ -558,6 +580,7 @@ impl Deriver for TextEdit {
                 index_text(view, out, sf, entity, &old, &new)?;
             }
             library::text_changed(view, out, entity, f, Some(&new))?;
+            tags::field_written(view, out, entity, at, f, Written::Text(&new))?;
         }
         head.size = head.size.checked_sub(id(rec, 3)).ok_or_else(|| {
             StoreError::Entry(format!(
@@ -779,6 +802,8 @@ impl Deriver for TagAssign {
                     st.tags.push(tag);
                     st.tags.sort_unstable();
                 })?;
+                tags::carriers_changed(view, out, tag, 1)?;
+                tags::entity_touched(view, out, entity, at)?;
             }
             assign(out, entity, tag, at, old.is_some());
         } else {
@@ -786,6 +811,7 @@ impl Deriver for TagAssign {
             let mut gone = Vec::new();
             for t in [Some(raw), tag].into_iter().flatten() {
                 if !gone.contains(&t) && unassign(view, out, entity, t)? {
+                    tags::carriers_changed(view, out, t, -1)?;
                     gone.push(t);
                 }
             }
@@ -793,6 +819,7 @@ impl Deriver for TagAssign {
                 library::change(view, out, entity, |st| {
                     st.tags.retain(|t| !gone.contains(t))
                 })?;
+                tags::entity_touched(view, out, entity, at)?;
             }
         }
         Ok(())
@@ -955,6 +982,7 @@ pub fn deriver(kind: &str) -> Option<&'static dyn Deriver> {
         "tagAssign" => &TagAssign,
         "messageAppend" => &MessageAppend,
         "moved" => &Moved,
+        "tagOrder" => &tags::TagOrder,
         #[cfg(any(test, feature = "measure"))]
         "testSet" => &TestSet,
         other => return library::deriver(other),
