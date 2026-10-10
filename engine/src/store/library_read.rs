@@ -11,6 +11,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use super::StoreError;
+use super::books;
 use super::derive::View;
 use super::kinds::{key, text_value};
 use super::library::{
@@ -148,6 +149,8 @@ struct Resolved {
     folders: Vec<(Option<f64>, Option<f64>)>,
     /// Each tag's sources (itself and the tags merged into it whose carriers haven't moved).
     sources: HashMap<u64, Vec<u64>>,
+    /// The lorebook's scopes: the book and the unresolved books resolving as it.
+    worlds: Vec<Scope>,
     /// Nothing matches.
     empty: bool,
 }
@@ -166,8 +169,19 @@ fn resolve(view: &View, f: &Filter) -> Result<Resolved, StoreError> {
         keys: Vec::new(),
         folders: Vec::new(),
         sources: HashMap::new(),
+        worlds: Vec::new(),
         empty: false,
     };
+    if let Some(w) = &f.world {
+        match library::entity_by_key(view, books::BOOK, w)? {
+            Some(b) => {
+                for x in books::resolving_as(view, b)? {
+                    r.worlds.push(Scope::World(books::scope_bytes(x)));
+                }
+            }
+            None => r.empty = true,
+        }
+    }
     for t in &f.all_tags {
         match library::resolve_tag(view, *t)? {
             Some(t) => push_new(&mut r.all, t),
@@ -370,8 +384,10 @@ impl<'a> Checker<'a> {
             }
         }
         if kind == CHARACTER
-            && let Some(w) = &f.world
-            && text_value(self.view, e, &FieldRef::Code(library::WORLD))?.as_ref() != Some(w)
+            && f.world.is_some()
+            && !books::link_of(self.view, e)?
+                .and_then(|(_, b)| b)
+                .is_some_and(|b| self.r.worlds.contains(&Scope::World(books::scope_bytes(b))))
         {
             return Ok(false);
         }
@@ -487,14 +503,11 @@ fn driver(view: &View, f: &Filter, r: &Resolved, union: bool) -> Result<Driver, 
         };
         candidates.push((By::AnyOf, scope, sources));
     }
-    if let Some(w) = &f.world
+    if let [w, ..] = &r.worlds[..]
         && !f.groups
+        && (r.worlds.len() == 1 || union)
     {
-        candidates.push((
-            By::World,
-            Scope::World(w.clone()),
-            vec![Scope::World(w.clone())],
-        ));
+        candidates.push((By::World, w.clone(), r.worlds.clone()));
     }
     let mut best: Option<(By, Scope, Vec<Scope>, i64)> = None;
     for (by, scope, sources) in candidates {
@@ -947,6 +960,10 @@ pub struct Entity {
     pub hashes: Vec<(u64, Vec<u8>)>,
     /// A tag's `tagOrder`: None without one, Some(None) for one holding no order.
     pub tag_order: Option<Option<f64>>,
+    /// A character's lorebook link: the book it names, and the key and version of the book that resolves as.
+    pub link: Option<(u64, Vec<u8>, u64)>,
+    /// An entry's recorded `entryIndex`.
+    pub entry_index: Option<f64>,
 }
 
 /// The tags an entity carries as they are now (`Entity::tags`).
@@ -988,6 +1005,21 @@ pub fn entity(view: &View, e: u64) -> Result<Option<Entity>, StoreError> {
         });
     }
     out.tags = tags_now(view, e)?;
+    if kind == library::CHARACTER
+        && let Some((_, Some(b))) = books::link_of(view, e)?
+    {
+        let r = books::resolve(view, b)?;
+        let k = library::entity_info(view, r)?.map(|(_, k, _)| k).unwrap_or_default();
+        let version = view
+            .get(&key::id(key::VERSION, r))?
+            .map(|b| super::kinds::parse_pos(&b))
+            .transpose()?
+            .unwrap_or(0);
+        out.link = Some((b, k, version));
+    }
+    if kind == books::ENTRY {
+        out.entry_index = books::entry_index(view, e)?;
+    }
     let tp = key::id(key::TEXT, e);
     for (tk, _) in view.scan(&tp, &key::prefix_end(&tp), usize::MAX)? {
         let f = library::field_after(&tk, key::TEXT)?;
@@ -1003,7 +1035,13 @@ pub fn entity(view: &View, e: u64) -> Result<Option<Entity>, StoreError> {
             .push((f, Stored::Json(super::kinds::bytes(&rec, 2).to_vec())));
     }
     let ip = key::id(key::ITEM, e);
-    for (ik, v) in view.scan(&ip, &key::prefix_end(&ip), usize::MAX)? {
+    // A book's entries are read by place (`books::entries_page`), not with its values.
+    let from = if kind == super::books::BOOK || kind == super::books::OWNED {
+        key::ids(key::ITEM, e, super::books::ENTRIES + 1)
+    } else {
+        ip.clone()
+    };
+    for (ik, v) in view.scan(&from, &key::prefix_end(&ip), usize::MAX)? {
         let mut at = ip.len();
         let bad = || StoreError::Entry("an item key doesn't decode".into());
         let list = get_u64(&ik, &mut at).ok_or_else(bad)?;

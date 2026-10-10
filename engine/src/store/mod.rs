@@ -25,6 +25,7 @@
 //! removes the file once the runs cover the log past the copies, so replay never meets a record pointing into
 //! it.
 
+pub mod books;
 pub mod bulk;
 pub mod chat;
 pub mod chat_read;
@@ -1670,6 +1671,8 @@ impl Hooks for StoreHooks {
     }
 }
 
+#[cfg(test)]
+mod books_tests;
 #[cfg(test)]
 mod chat_tests;
 #[cfg(test)]

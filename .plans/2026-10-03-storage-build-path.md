@@ -1651,42 +1651,67 @@ Follows from those:
 - Measured: device and derived bytes of a one-entry edit, against today's (the book's manifest rewritten and its
   directory listed, O(E), `worldinfo.js:219-257`): O(changed bytes) + one sync, independent of E.
 
-Status (10-11, handover): stopped before building, on the three questions below. Landed: 1fa821e57, the stale
-search test (`a_field_edit_writes_only_its_changed_terms...` counted 6 entries for a tag assign plus a fav; since
-38e89f5df an assign also moves the entity in the assignment change feed, 2 entries; the test now counts them).
+Status (10-11, handover): in progress. Landed: 1fa821e57 (the stale search test: since 38e89f5df an assign also moves
+the entity in the assignment change feed, 2 entries; the test now counts them), the stop below (answered), and the
+pieces listed under "Built" as they land.
 
-Read from the plans and the code, to build on once answered (not built):
-- A book is found by today's key, the file stem `path.parse(sanitize(`${name}.json`)).name`, so every route's `name`
-  finds what it finds today; a rename changes the key (as `entityUpdate` does an avatar). An owned book (a card's
-  `character_book`) has no key and isn't in the books list.
-- `originalData` (a book's copy of the `character_book` it was imported from) is read into and changed by the page
-  (`setWIOriginalDataValue`, `deleteWIOriginalDataValue`) and by `/entries/apply`'s delete, so by Storage it is its own
-  values: a book owned by the book, in the same entry storage.
-- An entry's assembled JSON keeps its key order (`jsonHash()`, the versions `/entries/apply` checks, is key-order
-  sensitive), under the encoding rule.
+Answered (coordinator, 10-11; compat: upstream's meaning, behaviour: maximally intuitive, Data safety):
+- Entry search: 5d builds it with the other search wiring; 5c stores entries only. Fields and weights follow
+  upstream's `fuzzySearchWorldInfo`: `key` 20, `group` 15, `comment` 10, `keysecondary` 10, `content` 3; `uid` and
+  `automationId` match exactly only. Prefix fields: `key` and `comment`. "Every book" is every book the world-info
+  editor can open, characters' embedded books included; `originalData` (an import's source copy no editor searches)
+  gets no postings.
+- Links: 5c builds links by book id now (5e converts existing names). A link naming no book keeps the name as an
+  unresolved link and resolves to the book once one with that name appears (by import, create or rename), becoming an
+  id then. A linked book deleted turns its links back into unresolved links holding its last name: the card shows that
+  name with the book marked missing, as today; nothing about the card is lost.
+- Both orders: an entry's place in its book (needed for `character_book`'s array) is stored as its position;
+  `displayIndex` is one of the entry's values; the per-book highest `displayIndex` (`/entry/transplant`) is derived.
+- The three readings: a book is found by its file stem `path.parse(sanitize(`${name}.json`)).name` (every route's
+  `name` finds what it finds today; a rename changes the key); `originalData` is a book owned by its book, each value
+  its own; an entry's assembled JSON keeps its key order (`jsonHash()`, which `/entries/apply`'s versions use, is
+  key-order sensitive).
 
-Stop (10-11), three questions (behaviour):
-- Search over entries. 5c keeps "entry search postings for every book"; 5d lists "world-info entries (S7)" among the
-  derivers it wires, and 5a left card postings to 5d (`kinds::search_field` has codes only in test builds). Which
-  stage builds them? And which fields, weights and prefix fields: Q-F10 says "titles, names and content"; upstream's
-  `fuzzySearchWorldInfo` keys are `key` 20, `group` 15, `comment` 10, `keysecondary` 10, `content` 3, `uid` 1,
-  `automationId` 1 (the library took upstream's Fuse keys as its fields and weights; its prefix fields, Q-F1, were
-  name, creator and tags, with no counterpart named for entries). "Every book": owned books (`character_book`,
-  `originalData`) too, which no editor searches?
-- Links by id (5e converts names to ids; 5a: "links by id come with 5c/5e"). Does 5c change a card's
-  `data.extensions.world` from its text to a book id now? And what a link holds when it names no book: a card imported
-  with a `world` naming no book (kept as its text; and if a book with that name appears later, by import, create or
-  rename, does the card link to it, as today's lookup by name does?), and a book deleted while cards link to it (today
-  the card keeps the name and shows the book missing; with an id, what does the card assemble as its `world`?).
-- "An entry's order" (a record kind) and "each book's entry order" (derived): read as the entry's place in its book
-  (a `character_book`'s `entries` is an array, so its order must be stored; a world book's object order is upstream's
-  JS key order, integer uids first). The other reading is an order by `displayIndex` (the editor's custom sort,
-  and what `/entry/transplant` reads the maximum of), which is otherwise just an entry value. Which is meant, or both?
+Built, books, entries and links on the engine (10-11; `engine/src/store/books.rs`, tests `books_tests.rs`; JS
+`src/library-engine.js`, `src/world-info-keys.js`; test `tests/library-engine.test.js`):
+- Entity types 3 (a world book, keyed by its file stem; without its definition marker, field 41, an unresolved name a
+  link holds), 4 (a book a character or a book owns, keyed `<owner id>:c` for `character_book`, `<owner id>:o` for
+  `originalData`) and 5 (an entry, keyed `<book id>:<its key in the book>`). An entry's place is the item `<entry id>`
+  of its book's list 0 (`itemPlace`). Values on books and entries are the library's value kinds.
+- Kinds `entryIndex { entry, book, index? }` (222: `Number(displayIndex ?? -1)` as the writer reads it, NaN kept),
+  `bookLink { entity, book? }` (224: a character's lorebook link) and `bookForward { from, into }` (226: an unresolved
+  name resolves as another book from then on).
+- Derived: the defined world books by key (`BOOKS`); per book its entries by index (`ENTRY_INDEX`, the last its
+  highest) and its free integer keys as intervals (`FREE`: an entry create or delete changes at most two intervals,
+  so the lowest free key is one read); each character's link and each book's linkers (`LINK`, `LINKED`); forwards
+  both ways (`FORWARD`, `FORWARDED`). An entry going takes its place, index and key with it. A world book entity goes
+  (`entityDelete`) only once forwarded, so every link still resolves.
+- The library's lorebook scope is the linked book's id: a lorebook filter reads the book its key finds and every
+  unresolved name forwarded into it. `libraryEntities` answers a character's `link { book, key, version }` (the key and
+  version of the book it resolves as) and an entry's `entryIndex`; `Store.worldRead(op, args)`: `books`, `entries`,
+  `resolved`, `links`, `numbers`.
+- JS: a card's `world` is a `bookLink` to the book its key finds, the book made as an unresolved name when there is
+  none (in that key's lane, so two cards naming it make it once); the text is stored as the card's own value only when
+  it differs from the key (a name `sanitize` changes). A card reads its own text, else the key of the book its link
+  resolves as. A character's `/query` hash version is the later of its own and that book's, so a renamed or deleted
+  book refreshes the page's copy. `query({ world })` filters by the name's key.
+
+| choice | picked | reason |
+|---|---|---|
+| an entry's key | text `<book id>:<key>`; a canonical decimal up to 2^53 − 1 is an integer key | entity keys are text; the integer reading is JavaScript's `uid in entries` for a number uid |
+| free integer keys | intervals per book, the tail one open-ended; none means all free | the lowest free key in one read, a create or delete writing at most three entries; scanning from 0 read O(E) per create |
+| the highest `displayIndex` | an order per book keyed by the number as JavaScript reads it (`Number()`, NaN above every number) | `Math.max` over the entries is the order's last; a NaN wins in both |
+| unresolved names | a book entity without the marker; a book deleted keeps its entity and key that way | a link is an id from the start, resolving once a book takes the name, with no rewrite of its linkers |
+| a book renamed onto an unresolved name | `bookForward` from the name's entity, which then goes, and the rename | one record each, whatever the linkers; readers follow the forward |
+| bulk loads | a link's book isn't checked in a bulk load (another partition); entries aren't bulk loaded | partitions derive in parallel |
 
 **5d. search wired.**
 - Derivers feeding P3 (stage 4): card fields (S1, with the design's weights and prefix fields), card tag names and
   resolved tag names joined through membership (Q-F12), groups (S2: name, member names, tags, id), session names (S6),
-  messages per owner (S5), world-info entries (S7).
+  messages per owner (S5), world-info entries (S7: answered at 5c, every book the world-info editor opens, characters'
+  embedded books included, `originalData` not; fields and weights upstream's `fuzzySearchWorldInfo`, `key` 20,
+  `group` 15, `comment` 10, `keysecondary` 10, `content` 3, `uid` and `automationId` exact match only; prefix fields
+  `key` and `comment`).
 - `/api/characters/query` with `search`, the group search, `/api/chats/search` (upstream's shape; a session matches
   when every word matches a message on its path in that tree), and the world-info server search, all read P3.
 - Measured: as stage 4, now on the real derivers, plus freshness (a write is found by the next query after its

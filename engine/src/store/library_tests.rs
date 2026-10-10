@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::library::{
-    self, ADDED, BY_NAME, CHARACTER, CHAT_SIZE, CREATED, DATA, GROUP, LAST_CHAT, NAME, TAG, WORLD,
+    self, ADDED, BY_NAME, CHARACTER, CHAT_SIZE, CREATED, DATA, GROUP, LAST_CHAT, NAME, TAG,
 };
 use super::library_read::{Filter, Page, Query, RangeField, Sort, permute, unpermute};
 use super::*;
@@ -211,6 +211,15 @@ fn all_pages(s: &Store, mut q: Query) -> (Vec<u64>, Page) {
 }
 
 const TAGS: [u64; 3] = [900, 901, 902];
+/// The book every lorebook link names, keyed `lore`.
+const LORE: u64 = 950;
+
+fn link(e: u64, book: Option<u64>) -> Record {
+    rec(
+        "bookLink",
+        vec![Value::Id(e), book.map_or(Value::Absent, Value::Id)],
+    )
+}
 const SORTS: [Sort; 15] = [
     Sort::Key {
         sort: BY_NAME,
@@ -494,7 +503,7 @@ impl Lib {
             m.data = self.rand() % 400;
             recs.push(rec("dataSize", vec![Value::Id(e), Value::UInt(m.data)]));
             if self.rand().is_multiple_of(3) {
-                recs.push(set(e, WORLD, "lore"));
+                recs.push(link(e, Some(LORE)));
                 m.world = Some("lore".into());
             }
         }
@@ -569,19 +578,7 @@ impl Lib {
             5 if kind == CHARACTER => {
                 let w = self.m[&e].world.is_none();
                 self.m.get_mut(&e).unwrap().world = w.then(|| "lore".to_string());
-                if w {
-                    vec![set(e, WORLD, "lore")]
-                } else {
-                    vec![rec(
-                        "valueDelete",
-                        vec![
-                            Value::Sel(0, e),
-                            Value::Field(FieldRef::Code(WORLD)),
-                            Value::Absent,
-                            Value::Absent,
-                        ],
-                    )]
-                }
+                vec![link(e, w.then_some(LORE))]
             }
             6 if ids.len() > 30 => {
                 self.m.remove(&e);
@@ -595,6 +592,7 @@ impl Lib {
 fn tag_records() -> Vec<Record> {
     TAGS.iter()
         .map(|t| create(*t, TAG, &format!("tag-{t}"), 0))
+        .chain([create(LORE, books::BOOK, "lore", 0)])
         .collect()
 }
 

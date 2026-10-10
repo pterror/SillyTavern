@@ -13,6 +13,7 @@
 //! merged tags' orders too (`MERGED_INTO`), and `FOLD` lists the tags whose carriers wait to move.
 
 use super::StoreError;
+use super::books;
 use super::derive::{Deriver, Loc, Out, View};
 use super::kinds::{
     Holder, bytes, dead, drop_text, drop_text_of, field, id, key, loc_bytes, parse_loc, text_value,
@@ -311,7 +312,9 @@ fn state_of(
         return Ok(None);
     }
     let world = if kind == CHARACTER {
-        text_value(view, e, &FieldRef::Code(WORLD))?.filter(|w| !w.is_empty())
+        books::link_of(view, e)?
+            .and_then(|(_, b)| b)
+            .map(books::scope_bytes)
     } else {
         None
     };
@@ -510,10 +513,10 @@ pub fn change(
 
 /// Whether a text field's value places the entity in the orders.
 pub fn places(f: &FieldRef) -> bool {
-    matches!(f, FieldRef::Code(NAME | WORLD))
+    matches!(f, FieldRef::Code(NAME))
 }
 
-/// A change to a text field's value: the name and lorebook place the entity.
+/// A change to a text field's value: the name places the entity (its lorebook is its `bookLink`).
 pub fn text_changed(
     view: &View,
     out: &mut Out,
@@ -524,11 +527,6 @@ pub fn text_changed(
     match f {
         FieldRef::Code(NAME) => change(view, out, e, |st| {
             st.name = new.map(fold_name).unwrap_or_default();
-        }),
-        FieldRef::Code(WORLD) => change(view, out, e, |st| {
-            if st.kind == CHARACTER {
-                st.world = new.filter(|w| !w.is_empty()).map(<[u8]>::to_vec);
-            }
         }),
         _ => Ok(()),
     }
@@ -586,7 +584,7 @@ impl Deriver for EntityCreate {
             Value::Time(t) => t,
             _ => unreachable!("checked by Record::new"),
         };
-        if kind > TAG {
+        if kind > books::ENTRY {
             return Err(StoreError::Refused(format!("no entity type {kind}")));
         }
         if view.get(&key::id(key::ENTITY, e))?.is_some() {
@@ -601,8 +599,11 @@ impl Deriver for EntityCreate {
         if let Some(st) = state_of(view, e, kind, k.to_vec(), added)? {
             reposition(view, out, e, None, Some(&st))?;
         }
-        if kind == TAG {
-            tags::created(view, out, e, at)?;
+        match kind {
+            TAG => tags::created(view, out, e, at)?,
+            books::BOOK => books::created(view, out, e, k)?,
+            books::ENTRY => books::entry_created(view, out, k)?,
+            _ => {}
         }
         out.put(key::id(key::ENTITY, e), loc_bytes(at));
         out.put(kk, uvarint(e));
@@ -647,6 +648,14 @@ impl Deriver for EntityUpdate {
             )));
         }
         if k != old_k.as_slice() {
+            if kind == books::ENTRY || kind == books::OWNED {
+                return Err(StoreError::Refused(format!(
+                    "an entity of type {kind} keeps its key"
+                )));
+            }
+            if kind == books::BOOK {
+                books::rekeyed(view, out, e, &old_k, k)?;
+            }
             let kk = entity_key_key(kind, k);
             if view.get(&kk)?.is_some() {
                 return Err(StoreError::Refused(format!(
@@ -734,6 +743,11 @@ impl Deriver for EntityDelete {
                 "tag {e} goes with a tagMerge first"
             )));
         }
+        if kind == books::BOOK && !books::may_delete(view, e)? {
+            return Err(StoreError::Refused(format!(
+                "book {e} goes with a bookForward first"
+            )));
+        }
         dead(out, at);
         delete_entity(view, out, e, kind, &k, at)
     }
@@ -760,6 +774,17 @@ fn delete_entity(
         tags::deleted(view, out, e, k, at)?;
     }
     tags::entity_gone(view, out, e)?;
+    match kind {
+        CHARACTER => books::linker_gone(view, out, e)?,
+        books::ENTRY => books::entry_gone(view, out, e, k)?,
+        books::BOOK | books::OWNED => {
+            let fp = key::id(books::FREE, e);
+            for (fk, _) in view.scan(&fp, &key::prefix_end(&fp), usize::MAX)? {
+                out.del(fk);
+            }
+        }
+        _ => {}
+    }
     if let Some(st) = state(view, e)? {
         reposition(view, out, e, Some(&st), None)?;
         for tag in &st.tags {
@@ -881,6 +906,7 @@ impl Deriver for JsonValue {
         }
         out.put(k, loc_bytes(at));
         version(out, e, at);
+        books::field_written(view, out, e, f, true)?;
         tags::field_written(view, out, e, at, f, tags::Written::Json(bytes(rec, 2)))
     }
 
@@ -954,6 +980,7 @@ impl Deriver for ValueDelete {
         }
         drop_json(view, out, e, f)?;
         version(out, e, at);
+        books::field_written(view, out, e, f, false)?;
         tags::field_written(view, out, e, at, f, tags::Written::Gone)
     }
 
