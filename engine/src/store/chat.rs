@@ -374,6 +374,7 @@ impl Deriver for MessageDelete {
         }
         drop_key(view, out, KEYED_MESSAGE, m)?;
         sessions::message_gone(view, out, m, parent, owner)?;
+        super::state::message_gone(view, out, m)?;
         dead(out, l);
         out.del(key::id(key::MESSAGE, m));
         Ok(())

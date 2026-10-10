@@ -1209,6 +1209,10 @@ pub fn deriver(kind: &str) -> Option<&'static dyn Deriver> {
         "metaValue" => &MetaValue,
         #[cfg(any(test, feature = "measure"))]
         "testSet" => &TestSet,
-        other => return library::deriver(other).or_else(|| super::chat::deriver(other)),
+        other => {
+            return library::deriver(other)
+                .or_else(|| super::chat::deriver(other))
+                .or_else(|| super::state::deriver(other));
+        }
     })
 }
