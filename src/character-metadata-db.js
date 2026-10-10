@@ -1458,6 +1458,27 @@ export async function getCharacterTagIdsByIds(directories, ids) {
     return result;
 }
 
+/**
+ * The characters whose primary lorebook link names this book, read in id order a page at a time.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} world The book's name.
+ * @returns {AsyncGenerator<string>} Their avatars.
+ */
+export async function* characterIdsLinkedToWorld(directories, world) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+    const PAGE = 500;
+    let after = '';
+    for (;;) {
+        const rows = /** @type {{ id: string }[]} */ (entry.db.readBounded(
+            'SELECT id FROM characters WHERE world = @world AND id > @after ORDER BY id LIMIT @limit',
+            { world, after, limit: PAGE }, PAGE));
+        for (const row of rows) yield row.id;
+        if (rows.length < PAGE) return;
+        after = rows[rows.length - 1].id;
+    }
+}
+
 // Unlike getCharacterFavsByIds() (which reports every tracked id's real boolean), this omits a tracked-but-NULL
 // row from the result, not just an untracked one: "absent" uniformly means "no chat to stamp, leave it alone".
 /**

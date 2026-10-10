@@ -1,6 +1,9 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
+/** A page's write of a whole book: the changes it made (or a new book). */
+const BOOK_WRITE = /\/api\/worldinfo\/(entries\/apply|create)$/;
+
 // A World Info write the server refuses (or never receives) shows an error toast naming what wasn't saved,
 // and nothing that depends on the file - linking a card to it, deleting the old file on rename, reporting
 // success - goes ahead without it. The failures are injected with page.route(). A book can't be written under
@@ -156,7 +159,7 @@ test.describe('a failed World Info write', () => {
 
         try {
             await recordReports(page);
-            await page.route('**/api/worldinfo/edit', route => route.fulfill({ status: 500, body: 'Internal Server Error' }));
+            await page.route(BOOK_WRITE, route => route.fulfill({ status: 500, body: 'Internal Server Error' }));
 
             const failed = await page.evaluate(async ({ avatar, bookName }) => {
                 const { importEmbeddedWorldInfo, world_names, worldInfoCache } = await import('./scripts/world-info.js');
@@ -187,7 +190,7 @@ test.describe('a failed World Info write', () => {
             expect(await serverBookNames(page)).not.toContain(bookName);
 
             // Once the write goes through, the same import links the card and reports success.
-            await page.unroute('**/api/worldinfo/edit');
+            await page.unroute(BOOK_WRITE);
             const imported = await page.evaluate(async ({ avatar }) => {
                 const { importEmbeddedWorldInfo } = await import('./scripts/world-info.js');
                 const { flushCharacterFieldSaves } = await import('./script.js');
@@ -204,7 +207,7 @@ test.describe('a failed World Info write', () => {
             expect(imported.storedWorld).toBe(bookName);
             expect(await serverBookNames(page)).toContain(bookName);
         } finally {
-            await page.unroute('**/api/worldinfo/edit');
+            await page.unroute(BOOK_WRITE);
             await page.evaluate(async ({ bookName }) => {
                 const { deleteWorldInfo, world_names } = await import('./scripts/world-info.js');
                 if (world_names.includes(bookName)) {
@@ -215,7 +218,7 @@ test.describe('a failed World Info write', () => {
         }
     });
 
-    test('rename keeps the old book when the new one is not written', async ({ page }) => {
+    test('a rename the server refuses keeps the old book', async ({ page }) => {
         const oldName = `WISaveFailureRenameOld-${Date.now()}`;
         const newName = `WISaveFailureRenameNew-${Date.now()}`;
 
@@ -229,14 +232,14 @@ test.describe('a failed World Info write', () => {
         }, { oldName });
 
         await recordReports(page);
-        await page.route('**/api/worldinfo/edit', route => route.fulfill({ status: 500, body: 'Internal Server Error' }));
+        await page.route('**/api/worldinfo/rename', route => route.fulfill({ status: 500, body: 'Internal Server Error' }));
 
         try {
             await clickWithInput(page, '#world_popup_name_button', newName, 1);
 
             const reports = await readReports(page);
             expect(reports.error).toHaveLength(1);
-            expect(reports.error[0]).toContain(`'${newName}' was not saved.`);
+            expect(reports.error[0]).toContain(`'${oldName}' could not be renamed.`);
 
             const state = await page.evaluate(async ({ oldName, newName }) => {
                 const { world_names, worldInfoCache } = await import('./scripts/world-info.js');
@@ -252,7 +255,7 @@ test.describe('a failed World Info write', () => {
             expect(onServer).toContain(oldName);
             expect(onServer).not.toContain(newName);
         } finally {
-            await page.unroute('**/api/worldinfo/edit');
+            await page.unroute('**/api/worldinfo/rename');
             await page.evaluate(async ({ oldName }) => {
                 const { deleteWorldInfo } = await import('./scripts/world-info.js');
                 await deleteWorldInfo(oldName);
@@ -260,7 +263,7 @@ test.describe('a failed World Info write', () => {
         }
     });
 
-    test('duplicate does not open a copy that was not written', async ({ page }) => {
+    test('duplicate does not open a copy the server didn\'t make', async ({ page }) => {
         const sourceName = `WISaveFailureDuplicateSource-${Date.now()}`;
         const copyName = `WISaveFailureDuplicateCopy-${Date.now()}`;
 
@@ -274,14 +277,14 @@ test.describe('a failed World Info write', () => {
         }, { sourceName });
 
         await recordReports(page);
-        await page.route('**/api/worldinfo/edit', route => route.fulfill({ status: 500, body: 'Internal Server Error' }));
+        await page.route('**/api/worldinfo/duplicate', route => route.fulfill({ status: 500, body: 'Internal Server Error' }));
 
         try {
             await clickWithInput(page, '#world_duplicate', copyName, 1);
 
             const reports = await readReports(page);
             expect(reports.error).toHaveLength(1);
-            expect(reports.error[0]).toContain(`'${copyName}' was not saved.`);
+            expect(reports.error[0]).toContain(`'${sourceName}' could not be copied.`);
 
             const state = await page.evaluate(async ({ copyName }) => {
                 const { world_names, worldInfoCache } = await import('./scripts/world-info.js');
@@ -296,7 +299,7 @@ test.describe('a failed World Info write', () => {
             expect(state.editorBook).not.toBe(copyName);
             expect(await serverBookNames(page)).not.toContain(copyName);
         } finally {
-            await page.unroute('**/api/worldinfo/edit');
+            await page.unroute('**/api/worldinfo/duplicate');
             await page.evaluate(async ({ sourceName }) => {
                 const { deleteWorldInfo } = await import('./scripts/world-info.js');
                 await deleteWorldInfo(sourceName);
@@ -310,18 +313,18 @@ test.describe('a failed World Info write', () => {
 
         await recordReports(page);
 
-        await page.route('**/api/worldinfo/edit', route => route.fulfill({ status: 500, body: 'Internal Server Error' }));
+        await page.route(BOOK_WRITE, route => route.fulfill({ status: 500, body: 'Internal Server Error' }));
         const refused = await page.evaluate(async ({ refusedName }) => {
             const { createNewWorldInfo, world_names, worldInfoCache } = await import('./scripts/world-info.js');
             const created = await createNewWorldInfo(refusedName);
             return { created, listed: world_names.includes(refusedName), cached: worldInfoCache.has(refusedName) };
         }, { refusedName });
-        await page.unroute('**/api/worldinfo/edit');
+        await page.unroute(BOOK_WRITE);
 
         expect(refused).toEqual({ created: false, listed: false, cached: false });
 
         // A request that never reaches the server still rejects, and shows the same toast first.
-        await page.route('**/api/worldinfo/edit', route => route.abort('failed'));
+        await page.route(BOOK_WRITE, route => route.abort('failed'));
         const unreachable = await page.evaluate(async ({ unreachableName }) => {
             const { createNewWorldInfo, world_names, worldInfoCache } = await import('./scripts/world-info.js');
             let rejected = false;
@@ -332,7 +335,7 @@ test.describe('a failed World Info write', () => {
             }
             return { rejected, listed: world_names.includes(unreachableName), cached: worldInfoCache.has(unreachableName) };
         }, { unreachableName });
-        await page.unroute('**/api/worldinfo/edit');
+        await page.unroute(BOOK_WRITE);
 
         expect(unreachable).toEqual({ rejected: true, listed: false, cached: false });
 
@@ -358,7 +361,7 @@ test.describe('a failed World Info write', () => {
         }, { bookName });
 
         await recordReports(page);
-        await page.route('**/api/worldinfo/edit', route => route.fulfill({ status: 500, body: 'Internal Server Error' }));
+        await page.route(BOOK_WRITE, route => route.fulfill({ status: 500, body: 'Internal Server Error' }));
 
         try {
             await page.evaluate(async ({ bookName }) => {
@@ -373,7 +376,7 @@ test.describe('a failed World Info write', () => {
             expect(reports.error[0]).toContain(`'${bookName}' was not saved.`);
             expect(reports.updated).toEqual([]);
         } finally {
-            await page.unroute('**/api/worldinfo/edit');
+            await page.unroute(BOOK_WRITE);
             await page.evaluate(async ({ bookName }) => {
                 const { deleteWorldInfo } = await import('./scripts/world-info.js');
                 await deleteWorldInfo(bookName);
@@ -466,7 +469,7 @@ test.describe('a failed World Info write', () => {
             const writes = [];
             page.on('request', request => {
                 const url = request.url();
-                if (['/api/worldinfo/edit', '/api/worldinfo/delete', '/api/characters/merge-attributes'].some(path => url.endsWith(path))) {
+                if (BOOK_WRITE.test(url) || ['/api/worldinfo/delete', '/api/worldinfo/rename', '/api/worldinfo/duplicate', '/api/characters/merge-attributes'].some(path => url.endsWith(path))) {
                     writes.push(url);
                 }
             });

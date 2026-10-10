@@ -438,3 +438,12 @@ export function combineDigest(digest, id, contentHash) {
 export function digestsEqual(a, b) {
     return a.hi === b.hi && a.lo === b.lo;
 }
+
+/**
+ * The hash of a JSON value as it serializes, so the page and the server agree on a stored value's version.
+ * @param {unknown} value
+ * @returns {number}
+ */
+export function jsonHash(value) {
+    return getStringHash(JSON.stringify(value) ?? 'undefined');
+}

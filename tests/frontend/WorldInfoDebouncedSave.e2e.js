@@ -6,7 +6,7 @@ import { testSetup } from './frontent-test-utils.js';
 // book still replaces that same book's pending debounced save, so the book is written once, with its latest data.
 
 /**
- * Creates each book, and records every /api/worldinfo/edit request made from now on by the book name it writes.
+ * Creates each book, and records every write of a whole book the page makes from now on by the book name it writes.
  * @param {import('@playwright/test').Page} page
  * @param {string[]} names
  * @returns {Promise<string[]>} The live list of written book names, in request order
@@ -23,7 +23,7 @@ async function createBooksAndRecordWrites(page, names) {
 
     const writes = [];
     page.on('request', request => {
-        if (request.url().endsWith('/api/worldinfo/edit')) {
+        if (/\/api\/worldinfo\/(entries\/apply|create)$/.test(request.url())) {
             writes.push(JSON.parse(request.postData() ?? '{}').name);
         }
     });

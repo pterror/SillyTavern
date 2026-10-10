@@ -7,8 +7,9 @@ import sanitize from 'sanitize-filename';
 import _ from 'lodash';
 import { sync as writeFileAtomicSync } from 'write-file-atomic';
 import { tryParse } from '../util.js';
-import { readSettingsAtPaths, writeSettingsKeys } from '../settings-store.js';
+import { readAllSettingsAsJson, readSettingsAtPaths, writeSettingsKeys } from '../settings-store.js';
 import { resolveCharacterWorldLink } from '../../public/scripts/character-world-link.js';
+import { getStringHash, jsonHash } from '../../public/scripts/hash-utils.js';
 
 /**
  * The stored World Info format: the file is a manifest (every top-level field but `entries`, which lists each entry's
@@ -465,10 +466,18 @@ router.post('/import', (request, response) => {
  *   (e.g. a name a user typed with its own overwrite-confirmation UI) and wants an exact name or a
  *   clear error, not a silent rename - a taken name 409s instead.
  */
+/**
+ * Creates a book. Body: `name` (default "New World"); `unique` (default true: a taken name gets a number; false: a
+ * taken name is refused with 409, unless `replace`); `replace`: write over the book with that name (the user chose
+ * to); `data`: the book's content (a World Info JSON with `entries`), empty when left out.
+ */
 router.post('/create', (request, response) => {
-    const { name, unique = true } = request.body ?? {};
+    const { name, unique = true, replace = false, data } = request.body ?? {};
     if (name !== undefined && typeof name !== 'string') {
         return response.status(400).send({ error: 'name must be a string' });
+    }
+    if (data !== undefined && (!_.isPlainObject(data) || !_.isObjectLike(data.entries))) {
+        return response.status(400).send({ error: 'data must be a World Info object with entries' });
     }
 
     const baseName = (typeof name === 'string' && name.trim()) ? name.trim() : 'New World';
@@ -476,7 +485,7 @@ router.post('/create', (request, response) => {
 
     let finalName = baseName;
     if (unique === false) {
-        if (exists(finalName)) {
+        if (exists(finalName) && replace !== true) {
             return response.status(409).send({ error: `World Info file '${finalName}' already exists` });
         }
     } else {
@@ -489,9 +498,189 @@ router.post('/create', (request, response) => {
         }
     }
 
-    writeWorldInfoFile(request.user.directories, finalName, { entries: {} });
+    writeWorldInfoFile(request.user.directories, finalName, data ?? { entries: {} });
 
     return response.send({ ok: true, name: finalName });
+});
+
+/** Book fields an apply may set: everything but the entries and the storage format. */
+const isBookField = (/** @type {unknown} */ key) => typeof key === 'string' && key !== '' && key !== 'entries' && key !== 'format';
+
+/**
+ * Applies changes a page made to its copy of a book, each against the version it had (the hash of the entry or
+ * field as it loaded it, `jsonHash()`; null for one that didn't exist). A change whose entry or field has changed
+ * on the server since is not applied: it is answered in `conflicts` with what the server has now. Nothing else in
+ * the book is touched.
+ *
+ * Body: `name`; `entries: [{ uid, base_hash, data }]` (`data` null deletes the entry); `fields: [{ key, base_hash,
+ * value }]` (book fields other than `entries`; `value` null removes the field).
+ * Answers `{ ok, entries: { uid: stored entry }, deleted: uid[], fields: { key: value }, conflicts: [{ uid } |
+ * { key }, with `current`] }`.
+ */
+router.post('/entries/apply', (request, response) => {
+    const { name, entries: entryChanges = [], fields: fieldChanges = [] } = request.body ?? {};
+    if (typeof name !== 'string' || !name) {
+        return response.status(400).send({ error: 'name is required' });
+    }
+    if (!Array.isArray(entryChanges) || !Array.isArray(fieldChanges)) {
+        return response.status(400).send({ error: 'entries and fields must be arrays' });
+    }
+
+    const book = readWorldInfoFile(request.user.directories, name, false);
+    if (!book || !_.isObjectLike(book.entries)) {
+        return response.status(404).send({ error: `Lorebook '${name}' not found` });
+    }
+
+    /** @type {Record<string, object>} */
+    const stored = {};
+    /** @type {string[]} */
+    const deleted = [];
+    /** @type {Record<string, unknown>} */
+    const storedFields = {};
+    /** @type {object[]} */
+    const conflicts = [];
+    let changed = false;
+
+    for (const change of entryChanges) {
+        const uid = change?.uid;
+        if ((typeof uid !== 'number' && typeof uid !== 'string') || !sanitizeEntryUid(uid)) {
+            return response.status(400).send({ error: 'every entry change needs a uid' });
+        }
+        const key = String(uid);
+        const current = book.entries[key];
+        const next = _.isPlainObject(change.data) ? { ...change.data, uid: current?.uid ?? uid } : null;
+        if (change.data != null && !next) {
+            return response.status(400).send({ error: `entry ${key}: data must be an object or null` });
+        }
+        const currentHash = current === undefined ? null : jsonHash(current);
+        if (currentHash === (next ? jsonHash(next) : null)) continue;
+        if (currentHash !== (change.base_hash ?? null)) {
+            conflicts.push({ uid: key, current: current ?? null });
+            continue;
+        }
+        if (next) {
+            book.entries[key] = next;
+            stored[key] = next;
+        } else {
+            delete book.entries[key];
+            if (Array.isArray(book.originalData?.entries)) {
+                // Non-strict: uids arrive as numbers or strings.
+                // eslint-disable-next-line eqeqeq
+                book.originalData.entries = book.originalData.entries.filter(item => item?.uid != uid);
+            }
+            deleted.push(key);
+        }
+        changed = true;
+    }
+
+    for (const change of fieldChanges) {
+        if (!isBookField(change?.key)) {
+            return response.status(400).send({ error: 'every field change needs a key other than entries and format' });
+        }
+        const current = book[change.key];
+        const next = change.value ?? undefined;
+        const currentHash = current === undefined ? null : jsonHash(current);
+        if (currentHash === (next === undefined ? null : jsonHash(next))) continue;
+        if (currentHash !== (change.base_hash ?? null)) {
+            conflicts.push({ key: change.key, current: current ?? null });
+            continue;
+        }
+        if (next === undefined) delete book[change.key]; else book[change.key] = next;
+        storedFields[change.key] = next ?? null;
+        changed = true;
+    }
+
+    if (changed) writeWorldInfoFile(request.user.directories, name, book);
+    return response.send({ ok: true, entries: stored, deleted, fields: storedFields, conflicts });
+});
+
+/** Copies a book under a new name. 409 when the name is taken. */
+router.post('/duplicate', (request, response) => {
+    const { name, new_name: newName } = request.body ?? {};
+    if (typeof name !== 'string' || !name || typeof newName !== 'string' || !newName.trim()) {
+        return response.status(400).send({ error: 'name and new_name are required' });
+    }
+    const book = readWorldInfoFile(request.user.directories, name, false);
+    if (!book) {
+        return response.status(404).send({ error: `Lorebook '${name}' not found` });
+    }
+    if (fs.existsSync(getWorldInfoPaths(request.user.directories, newName).pathToWorldInfo)) {
+        return response.status(409).send({ error: `World Info file '${newName}' already exists` });
+    }
+    writeWorldInfoFile(request.user.directories, newName, book);
+    return response.send({ ok: true, name: newName });
+});
+
+/**
+ * Renames a book and moves the links that name it: each character's auxiliary links, the global selection, every
+ * persona's lorebook and, with `relink_characters`, each character's primary link. A chat's link (in its metadata)
+ * is not moved here. 409 when the new name is taken.
+ * Answers `{ ok, name, characters_updated, characters_failed, settings: { world_info_settings, 'power_user.persona_data' },
+ * settings_hash }`.
+ */
+router.post('/rename', async (request, response) => {
+    const { name, new_name: newName, relink_characters: relinkCharacters = false } = request.body ?? {};
+    if (typeof name !== 'string' || !name || typeof newName !== 'string' || !newName.trim() || name === newName) {
+        return response.status(400).send({ error: 'name and a different new_name are required' });
+    }
+    const directories = request.user.directories;
+    const book = readWorldInfoFile(directories, name, false);
+    if (!book) {
+        return response.status(404).send({ error: `Lorebook '${name}' not found` });
+    }
+    const target = getWorldInfoPaths(directories, newName);
+    if (fs.existsSync(target.pathToWorldInfo)) {
+        return response.status(409).send({ error: `World Info file '${newName}' already exists` });
+    }
+
+    // The new book is written before the old one goes, so a failure leaves at least one of them whole.
+    writeWorldInfoFile(directories, newName, book);
+    const old = getWorldInfoPaths(directories, name);
+    fs.unlinkSync(old.pathToWorldInfo);
+    fs.rmSync(old.entriesDir, { recursive: true, force: true });
+
+    const rename = (/** @type {unknown} */ value) => value === name ? newName : value;
+    const current = readSettingsAtPaths(directories, ['world_info_settings', 'power_user.persona_data']);
+    /** @type {Record<string, unknown>} */
+    const settings = {};
+    const worldInfoSettings = _.isPlainObject(current.world_info_settings) ? _.cloneDeep(current.world_info_settings) : null;
+    if (worldInfoSettings && _.isPlainObject(worldInfoSettings.world_info)) {
+        const worldInfo = worldInfoSettings.world_info;
+        const before = JSON.stringify(worldInfo);
+        if (Array.isArray(worldInfo.globalSelect)) worldInfo.globalSelect = _.uniq(worldInfo.globalSelect.map(rename));
+        if (Array.isArray(worldInfo.charLore)) {
+            worldInfo.charLore = worldInfo.charLore.map(item => Array.isArray(item?.extraBooks)
+                ? { ...item, extraBooks: _.uniq(item.extraBooks.map(rename)) }
+                : item);
+        }
+        if (JSON.stringify(worldInfo) !== before) settings.world_info_settings = worldInfoSettings;
+    }
+    const personaData = _.isPlainObject(current['power_user.persona_data']) ? _.cloneDeep(current['power_user.persona_data']) : null;
+    if (personaData) {
+        let personasChanged = false;
+        for (const persona of Object.values(personaData)) {
+            if (_.isPlainObject(persona) && persona.lorebook === name) {
+                persona.lorebook = newName;
+                personasChanged = true;
+            }
+        }
+        if (personasChanged) settings['power_user.persona_data'] = personaData;
+    }
+    if (Object.keys(settings).length) writeSettingsKeys(directories, settings);
+
+    // Loaded here: characters.js reaches this module through its own imports.
+    const relinked = relinkCharacters === true
+        ? await (await import('./characters.js')).relinkCharactersWorld(request, name, newName)
+        : { updated: [], failed: [] };
+
+    return response.send({
+        ok: true,
+        name: newName,
+        characters_updated: relinked.updated,
+        characters_failed: relinked.failed,
+        settings,
+        ...(Object.keys(settings).length ? { settings_hash: getStringHash(readAllSettingsAsJson(directories)) } : {}),
+    });
 });
 
 router.post('/edit', (request, response) => {

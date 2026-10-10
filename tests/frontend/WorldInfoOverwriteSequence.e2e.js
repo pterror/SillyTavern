@@ -1,6 +1,9 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
+/** A page's write of a whole book: the changes it made (or a new book). */
+const BOOK_WRITE = /\/api\/worldinfo\/(entries\/apply|create)$/;
+
 // A create or import that overwrites a book waits for the old book's deletion before it writes the new one, so the
 // deletion can never land after the write and remove the new book. The links to the name (the open character's
 // primary lorebook, the global selection, the persona's lorebook) stay while a book has that name after the write;
@@ -166,7 +169,7 @@ async function globallySelected(page, worldName) {
     }, worldName);
 }
 
-const WRITE_PATH = { create: '/api/worldinfo/edit', import: '/api/worldinfo/import' };
+const WRITE_PATH = { create: BOOK_WRITE, import: /\/api\/worldinfo\/import$/ };
 
 const removedToast = (page, worldName) => page.locator('#toast-container .toast-warning .toast-message', { hasText: `Overwritten lorebook ${worldName} no longer exists` });
 
@@ -192,7 +195,7 @@ test.describe('overwriting a lorebook', () => {
                     await route.fulfill({ response });
                 });
                 page.on('request', (request) => {
-                    if (new URL(request.url()).pathname === WRITE_PATH[how]) events.push('write sent');
+                    if (WRITE_PATH[how].test(new URL(request.url()).pathname)) events.push('write sent');
                 });
                 try {
                     expect(await overwriteWorld(page, how, newName)).toBeTruthy();
@@ -221,7 +224,7 @@ test.describe('overwriting a lorebook', () => {
             try {
                 let writes = 0;
                 page.on('request', (request) => {
-                    if (new URL(request.url()).pathname === WRITE_PATH[how]) writes++;
+                    if (WRITE_PATH[how].test(new URL(request.url()).pathname)) writes++;
                 });
                 await page.route('**/api/worldinfo/delete', route => route.abort('failed'));
                 try {
@@ -251,11 +254,11 @@ test.describe('overwriting a lorebook', () => {
         try {
             await linkOpenCharacterAndGlobal(page, avatar, worldName);
 
-            await page.route('**/api/worldinfo/edit', route => route.fulfill({ status: 500, body: 'synthetic write failure' }));
+            await page.route(BOOK_WRITE, route => route.fulfill({ status: 500, body: 'synthetic write failure' }));
             try {
                 expect(await overwriteWorld(page, 'create', worldName.toLowerCase())).toBe(false);
             } finally {
-                await page.unroute('**/api/worldinfo/edit');
+                await page.unroute(BOOK_WRITE);
             }
 
             expect(await serverWorld(page, worldName)).toBeNull();

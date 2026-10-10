@@ -7108,6 +7108,17 @@ export async function requestChatOpen(body) {
 }
 
 /**
+ * Takes on settings values the server wrote itself (as part of another action), so this page's own keyed saves of
+ * them aren't refused as conflicts.
+ * @param {Record<string, unknown>} values By settings key or dotted path, as the server stored them.
+ * @param {number} [settingsHash] The server's hash of all settings after the write.
+ */
+export function takeServerSettings(values, settingsHash) {
+    for (const [key, value] of Object.entries(values)) seedKeyHashes(serverKeyHashes, value, key);
+    if (settingsHash != null) knownServerSettingsHash = settingsHash;
+}
+
+/**
  * Opens the selected character's conversation and draws it.
  * @param {{ chat?: string|null, makeCurrent?: boolean, fresh?: boolean }} [options] See requestChatOpen(). Without
  * `chat`, the server opens the one the character is on.

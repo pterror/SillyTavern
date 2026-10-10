@@ -21,7 +21,7 @@ function recordWrites(page) {
     const writes = [];
     page.on('request', request => {
         const url = request.url();
-        if (url.endsWith('/api/worldinfo/edit') || url.endsWith('/api/worldinfo/entry/edit')) {
+        if (/\/api\/worldinfo\/(entries\/apply|create)$/.test(url) || url.endsWith('/api/worldinfo/entry/edit')) {
             writes.push(JSON.parse(request.postData() ?? '{}').name);
         }
     });
@@ -187,7 +187,7 @@ test.describe('World Info saves waiting when a book is deleted or renamed', () =
     });
 
     for (const pendingKind of /** @type {const} */ (['book', 'entry'])) {
-        test(`a rename carries the old book's waiting ${pendingKind} save to the new name and never writes the old name back`, async ({ page }) => {
+        test(`a rename takes the old book's waiting ${pendingKind} save with it and never writes the old name back`, async ({ page }) => {
             const oldName = `WIPendingRenameOld-${pendingKind}-${Date.now()}`;
             const newName = `WIPendingRenameNew-${pendingKind}-${Date.now()}`;
             await createBook(page, oldName);
@@ -199,7 +199,9 @@ test.describe('World Info saves waiting when a book is deleted or renamed', () =
 
                 expect(await savedBook(page, newName)).toEqual({ exists: true, comment: 'pending edit' });
                 expect(await savedBook(page, oldName)).toEqual({ exists: false, comment: '' });
-                expect(writes).toEqual([newName]);
+                // The waiting save is written to the old name first; the rename then moves the book, so nothing is
+                // written to either name after it.
+                expect(writes).toEqual([oldName]);
             } finally {
                 await deleteBooks(page, [oldName, newName]);
             }
