@@ -505,6 +505,8 @@ pub fn tag_sources(view: &View, tag: u64) -> Result<Vec<u64>, StoreError> {
 
 // ---- derivers ----
 
+/// Values committed for the entity before its create (in the same commit) place it in the orders once, with
+/// them; a create first places it with none, then moves it.
 pub struct EntityCreate;
 
 impl Deriver for EntityCreate {

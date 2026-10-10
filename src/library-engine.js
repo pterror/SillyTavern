@@ -386,7 +386,6 @@ export class LibraryEngine {
             const id = stored ? stored.id : this.nextId++;
             const records = [];
             if (!stored) {
-                records.push({ kind: 'entityCreate', entity: id, type: TYPE.character, key: avatar, added: dateAdded });
                 const seeded = fav ?? !!(card?.fav ?? card?.data?.extensions?.fav);
                 if (seeded) records.push({ kind: 'fav', entity: id, fav: true });
             }
@@ -404,6 +403,8 @@ export class LibraryEngine {
                 if (had && had.hash.toString('hex') === hex) continue;
                 records.push({ kind: 'cardHash', entity: id, which, hash: Buffer.from(hex, 'hex') });
             }
+            // A new entity's create comes after its values, so it enters the orders once, with its keys.
+            if (!stored) records.push({ kind: 'entityCreate', entity: id, type: TYPE.character, key: avatar, added: dateAdded });
             if (records.length > 0) await this.store.commit(records);
             return { id, records: records.length };
         });
@@ -434,7 +435,7 @@ export class LibraryEngine {
         return this.serialized(TYPE.tag, tag.id, async () => {
             const stored = await this.entity(TYPE.tag, tag.id);
             const id = stored ? stored.id : this.nextId++;
-            const records = stored ? [] : [{ kind: 'entityCreate', entity: id, type: TYPE.tag, key: tag.id, added: Date.now() }];
+            const records = [];
             /** @type {Map<number | string, { text?: string, json?: string }>} */
             const values = new Map();
             for (const [k, v] of Object.entries(tag)) {
@@ -443,6 +444,7 @@ export class LibraryEngine {
                 values.set(field, typeof v === 'string' && typeof field === 'number' ? { text: v } : { json: JSON.stringify(v) });
             }
             records.push(...valueRecords(id, stored, { values, lists: new Map() }));
+            if (!stored) records.push({ kind: 'entityCreate', entity: id, type: TYPE.tag, key: tag.id, added: Date.now() });
             if (records.length > 0) await this.store.commit(records);
             return id;
         });
