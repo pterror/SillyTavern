@@ -1808,7 +1808,6 @@ export async function showMoreMessages(messagesToLoad = null) {
         messageId = getLastMessageId() + 1;
     }
 
-    console.debug('Inserting messages before', messageId, 'count', count, 'chat length', chat.length);
     const prevHeight = chatElement.prop('scrollHeight');
     const showMoreButton = $('#show_more_messages');
     const isButtonInView = isElementInViewport(showMoreButton[0]);
@@ -1870,7 +1869,6 @@ export async function redisplayChat({ targetChat = chat, startIndex = 0, fade = 
     //Remove messages after index.
     messageElements.filter(`.mes[mesid="${startIndex}"]`).nextAll('.mes').addBack().remove();
 
-    const t1 = performance.now();
 
     const messages = targetChat.slice(startIndex);
 
@@ -1894,8 +1892,6 @@ export async function redisplayChat({ targetChat = chat, startIndex = 0, fade = 
     refreshSwipeButtons(false, fade);
     applyStylePins();
     updateEditArrowClasses();
-
-    console.info(`Rendered ${targetChat.length - startIndex} messages in ${((performance.now() - t1) / 1000).toFixed(3)} seconds.`);
 }
 
 export function scrollOnMediaLoad() {
@@ -1939,7 +1935,6 @@ export function scrollOnMediaLoad() {
  */
 export function cancelDebouncedChatSave() {
     if (chatSaveTimeout) {
-        console.debug('Debounced chat save cancelled');
         clearTimeout(chatSaveTimeout);
         chatSaveTimeout = null;
     }
@@ -1972,10 +1967,7 @@ export async function clearChat({ clearData = false } = {}) {
     }
     //This will also remove non '.mes' elements, e.g. '<div id="show_more_messages">Show more messages</div>'.
     chatElement.children().remove();
-    if ($('.zoomed_avatar[forChar]').length) {
-        console.debug('saw avatars to remove');
-        $('.zoomed_avatar[forChar]').remove();
-    } else { console.debug('saw no avatars'); }
+    $('.zoomed_avatar[forChar]').remove();
 
     itemizedPrompts.length = 0;
 
@@ -4824,37 +4816,30 @@ export function getNextMessageId(type) {
  */
 export function shouldAutoContinue(messageChunk, isImpersonate) {
     if (!power_user.auto_continue.enabled) {
-        console.debug('Auto-continue is disabled by user.');
         return false;
     }
 
     if (typeof messageChunk !== 'string') {
-        console.debug('Not triggering auto-continue because message chunk is not a string');
         return false;
     }
 
     if (isImpersonate) {
-        console.log('Continue for impersonation is not implemented yet');
         return false;
     }
 
     if (is_send_press) {
-        console.debug('Auto-continue is disabled because a message is currently being sent.');
         return false;
     }
 
     if (abortController && abortController.signal.aborted) {
-        console.debug('Auto-continue is not triggered because the generation was stopped.');
         return false;
     }
 
     if (power_user.auto_continue.target_length <= 0) {
-        console.log('Auto-continue target length is 0, not triggering auto-continue');
         return false;
     }
 
     if (main_api === 'openai' && !power_user.auto_continue.allow_chat_completions) {
-        console.log('Auto-continue for OpenAI is disabled by user.');
         return false;
     }
 
@@ -4862,7 +4847,6 @@ export function shouldAutoContinue(messageChunk, isImpersonate) {
     const USABLE_LENGTH = 5;
 
     if (textareaText.length > 0) {
-        console.log('Not triggering auto-continue because user input is not empty');
         return false;
     }
 
@@ -4872,14 +4856,11 @@ export function shouldAutoContinue(messageChunk, isImpersonate) {
         const shouldAutoContinue = messageLength < power_user.auto_continue.target_length;
 
         if (shouldAutoContinue) {
-            console.log(`Triggering auto-continue. Message tokens: ${messageLength}. Target tokens: ${power_user.auto_continue.target_length}. Message chunk: ${messageChunk}`);
             return true;
         } else {
-            console.log(`Not triggering auto-continue. Message tokens: ${messageLength}. Target tokens: ${power_user.auto_continue.target_length}`);
             return false;
         }
     } else {
-        console.log('Last generated chunk was empty, not triggering auto-continue');
         return false;
     }
 }
@@ -4891,7 +4872,6 @@ export function shouldAutoContinue(messageChunk, isImpersonate) {
  */
 export function triggerAutoContinue(messageChunk, isImpersonate) {
     if (selected_group) {
-        console.debug('Auto-continue is disabled for group chat');
         return;
     }
 
@@ -6073,7 +6053,6 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
             lastMessage = chat[lastMesId];
         }
     } else if (type === 'append' || type === 'continue') {
-        console.debug('Trying to append.');
         oldMessage = lastMessage.mes;
         const newExtra = {
             ...lastMessage.extra,
@@ -6098,7 +6077,6 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
         !fromStreaming && await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, chat_id, type);
     } else if (type === 'appendFinal') {
         oldMessage = lastMessage.mes;
-        console.debug('Trying to appendFinal.');
         const newExtra = {
             ...lastMessage.extra,
             api: getGeneratingApi(), model: getGeneratingModel(),
@@ -6123,7 +6101,6 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
         addOneMessage(chat[chat_id], { type: 'swipe' });
         !fromStreaming && await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, chat_id, type);
     } else {
-        console.debug('entering chat update routine for non-swipe post');
         const newMessage = {};
         chat.push(newMessage);
         newMessage.extra = {};
@@ -6144,7 +6121,6 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
         newMessage.gen_finished = generationFinished;
 
         if (selected_group) {
-            console.debug('entering chat update for groups');
             let avatarImg = 'img/ai4.png';
             if (getCurrentCharacter().avatar != 'none') {
                 avatarImg = getThumbnailUrl('avatar', getCurrentCharacter().avatar);
@@ -6881,10 +6857,8 @@ export function saveChatDebounced() {
             return;
         }
 
-        console.debug('Chat save timeout triggered');
         // eslint-disable-next-line no-restricted-syntax -- this IS saveChatDebounced()'s own definition.
         await saveChatConditional();
-        console.debug('Chat saved');
     }, DEFAULT_SAVE_EDIT_TIMEOUT);
 }
 
@@ -11980,9 +11954,8 @@ export async function swipe(event, direction, { source, repeated, message = chat
         messageIndex = mesId;
     }
 
-    if ([SWIPE_SOURCE.DELETE, SWIPE_SOURCE.BACK, SWIPE_SOURCE.AUTO_SWIPE, SWIPE_SOURCE.SLASH_COMMAND, SWIPE_SOURCE.SWIPE_PICKER].includes(source)) {
-        console.info(`The ${direction} swipe source on message #${mesId} is ${source}, Most checks have been bypassed. `);
-    } else {
+    // Most checks are bypassed for these sources.
+    if (![SWIPE_SOURCE.DELETE, SWIPE_SOURCE.BACK, SWIPE_SOURCE.AUTO_SWIPE, SWIPE_SOURCE.SLASH_COMMAND, SWIPE_SOURCE.SWIPE_PICKER].includes(source)) {
         //Only show an error if swipes are not hidden and a message is generating.
         if (isGenerating() && (swipes && !swipesHidden && (swipeState === SWIPE_STATE.NONE))) {
             toastr.warning(t`Cannot swipe while generating. Stop the request and try again.`, t`Swipe aborted`);
@@ -13582,7 +13555,6 @@ jQuery(async function () {
         // Prefer the node id - a name would only find whichever row sorted first.
         const deleteFileName = $(this).attr('node_id') || $(this).attr('file_name');
         const row = $(this).closest('.select_chat_block_wrapper');
-        console.debug('detected cross click for' + deleteFileName);
 
         // Skip confirmation if called from a slash command.
         if (fromSlashCommand) {
