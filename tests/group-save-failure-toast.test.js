@@ -106,6 +106,8 @@ jest.unstable_mockModule('../public/scripts/character-repository.js', () => ({
 
 jest.unstable_mockModule('../public/script.js', () => ({
     requestChatOpen: jest.fn(),
+    takeChatOpenAnswer: jest.fn((_owner, answer) => answer),
+    chatOpenSendKeys: jest.fn(() => []),
     sendSystemMessage: jest.fn(),
     printMessages: jest.fn(),
     substituteParams: jest.fn(),
@@ -332,9 +334,9 @@ describe('a failed group write shows an error toast', () => {
         expect(global.toastr.error).toHaveBeenCalledTimes(1);
     });
 
-    test('createNewGroupChat() (POST /api/groups/new-chat)', async () => {
+    test('createNewGroupChat() (POST /api/chats/new)', async () => {
         groupChats.groupsStore.create({ id: 'g-new-chat', members: [], chats: ['c1'], chat_id: 'c1' });
-        fakeFetch({ '/api/groups/new-chat': 500 });
+        fakeFetch({ '/api/chats/new': 500 });
 
         await groupChats.createNewGroupChat('g-new-chat');
 
@@ -342,9 +344,9 @@ describe('a failed group write shows an error toast', () => {
         expect(groupChats.groupsStore.get('g-new-chat').chats).toEqual(['c1']);
     });
 
-    test('deleteGroupChatByName() replacing the last chat (POST /api/groups/new-chat)', async () => {
+    test('deleteGroupChatByName() replacing the last chat (POST /api/chats/new)', async () => {
         groupChats.groupsStore.create({ id: 'g-delete', members: [], chats: ['c1'], chat_id: 'c1' });
-        fakeFetch({ '/api/groups/new-chat': 500 });
+        fakeFetch({ '/api/chats/new': 500 });
 
         await groupChats.deleteGroupChatByName('g-delete', 'c1');
 

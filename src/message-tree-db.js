@@ -1857,7 +1857,7 @@ export async function searchBranchesByContent(directories, ownerId, fragments) {
  * @param {Directories} directories
  * @param {string} ownerId
  * @param {string} branchName
- * @returns {Promise<boolean>}
+ * @returns {Promise<string | false>} The node the chat was named on; false when there is no such chat.
  */
 export async function deleteBranch(directories, ownerId, branchName) {
     const entry = await getEntry(directories);
@@ -1865,7 +1865,7 @@ export async function deleteBranch(directories, ownerId, branchName) {
     const node = resolveNodeOrName(entry.db, ownerId, branchName);
     if (!node) return false;
     labelMessageSync(entry.db, node.id, null);
-    return true;
+    return node.id;
 }
 
 /**

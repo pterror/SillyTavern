@@ -180,7 +180,7 @@ describe('/api/chats/group/delete removes the id from the group file', () => {
 
         const result = await deleteChat(group.id, emptyId);
         expect(result.status).toBe(200);
-        expect(result.body).toEqual({ ok: true });
+        expect(result.body).toEqual({ ok: true, chats: [group.chat_id], chat_id: group.chat_id });
         expect(readGroupFile(group.id).chats).toEqual([group.chat_id]);
 
         const newChat = await postOk('/api/groups/new-chat', { id: group.id });
