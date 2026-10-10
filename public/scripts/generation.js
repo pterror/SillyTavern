@@ -441,7 +441,6 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
  * @returns {Promise<any>}
  */
 async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, force_avatar, signal, quietImage, quietName, jsonSchema = null, depth = 0 } = {}, dryRun = false, pendingSends = []) {
-    console.log('Generate entered');
     setGenerationProgress(0);
     generation_started = new Date();
 
@@ -863,7 +862,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
     let this_max_context = getMaxPromptTokens();
 
     if (!dryRun) {
-        console.debug('Running extension interceptors');
         const aborted = await runGenerationInterceptors(coreChat, this_max_context, type);
 
         if (aborted) {
@@ -871,8 +869,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
             unblockGeneration(type);
             return Promise.resolve();
         }
-    } else {
-        console.debug('Skipping extension interceptors for dry run');
     }
 
     // === Raw-action text-completion cutover ===
@@ -1667,15 +1663,12 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
             const negativePrompt = getCfgPrompt(cfgGuidanceScale, true, true).value || '';
             const positivePrompt = getCfgPrompt(cfgGuidanceScale, false, true).value || '';
             if (negativePrompt || positivePrompt) {
-                const previousMaxContext = this_max_context;
                 const [negativePromptTokenCount, positivePromptTokenCount] = await Promise.all([getTokenCountAsync(negativePrompt), getTokenCountAsync(positivePrompt)]);
                 const decrement = Math.max(negativePromptTokenCount, positivePromptTokenCount);
                 this_max_context -= decrement;
-                console.log(`Max context reduced by ${decrement} tokens of CFG prompt (${previousMaxContext} -> ${this_max_context})`);
             }
         }
 
-        console.log(`Core/all messages: ${coreChat.length}/${chat.length}`);
 
         if ((promptBias && !isUserPromptBias) || power_user.always_force_name2 || main_api == 'novel') {
             force_name2 = true;
@@ -1735,7 +1728,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
         }
 
         if (skipWIAN !== true) {
-            console.log('skipWIAN not active, adding WIAN');
             // Add all depth WI entries to prompt
             flushWIInjections();
             if (Array.isArray(worldInfoDepth)) {
@@ -1749,8 +1741,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
                     setExtensionPrompt(inject_ids.CUSTOM_WI_OUTLET(key), value.join('\n'), extension_prompt_types.NONE, 0);
                 });
             }
-        } else {
-            console.log('skipping WIAN');
         }
 
         // Add persona description to prompt
@@ -2064,7 +2054,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
         }
 
         mesSend = [];
-        console.debug('calling runGenerate');
 
         if (isContinue) {
             // Coping mechanism for OAI spacing
@@ -2081,7 +2070,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
 
         generatedPromptCache = cyclePrompt || '';
         if (generatedPromptCache.length == 0 || type === 'continue') {
-            console.debug('generating prompt');
             chatString = '';
             // Past the unsparsing loop above, every slot is populated (holes were filtered out) -
             // cast back to plain `string[]` here so the rest of this function doesn't need to
@@ -2117,7 +2105,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
                 return;
             }
 
-            console.debug('--setting Prompt string');
             mesExmString = pinExmString ?? mesExamplesArray.slice(0, count_exm_add).join('');
 
             if (mesSend.length) {
@@ -2192,7 +2179,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
         }
 
         async function checkPromptSize() {
-            console.debug('---checking Prompt size');
             setPromptString();
             const jointMessages = mesSend.map((e) => `${e.extensionPrompts.join('')}${e.message}`).join('');
             const prompt = [
@@ -2216,16 +2202,13 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
                     await checkPromptSize();                            // and check size again..
                 } else {
                     //end
-                    console.debug(`---mesSend.length = ${mesSend.length}`);
                 }
             }
         }
 
         if (generatedPromptCache.length > 0 && main_api !== 'openai') {
-            console.debug('---Generated Prompt Cache length: ' + generatedPromptCache.length);
             await checkPromptSize();
         } else {
-            console.debug('---calling setPromptString ' + generatedPromptCache.length);
             setPromptString();
         }
 
@@ -2491,7 +2474,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
             console.log(generate_data.prompt);
         }
 
-        console.debug('rungenerate calling API');
 
         showStopButton();
 
@@ -3006,7 +2988,6 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
             _snapshotMessages();
         } else {
             // An opening with no node_id has never touched the tree - opening this chat is a selection, not a write.
-            console.debug('[saveChat] Tree chat has no persisted opening; nothing to save yet.');
         }
     } catch (error) {
         console.error(error);

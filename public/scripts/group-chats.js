@@ -648,7 +648,6 @@ export function findGroupMemberId(arg, full = false) {
             return;
         }
 
-        console.log(`Targeting group member ${avatar} (${arg}) from search result`, result[0]);
 
         return !full ? avatar : { ...{ id: avatar }, ...result[0].item };
     } else {
@@ -666,7 +665,6 @@ export function findGroupMemberId(arg, full = false) {
             return;
         }
 
-        console.log(`Targeting group member ${memberAvatar} at index ${index}`);
 
         return !full ? memberAvatar : {
             id: memberAvatar,
