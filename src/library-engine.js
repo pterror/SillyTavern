@@ -3,7 +3,7 @@ import { cardListValues } from './character-card-reader.js';
 import { getCharaCardV2, computeContentIdentityHash } from './character-card-normalize.js';
 import { calculateDataSize } from './character-shallow.js';
 import { parseCreateDateToEpochMs } from './util.js';
-import { normalizeTagIds } from '../public/scripts/hash-utils.js';
+import { groupDigestContentHash, groupDigestFavHash, groupDigestTagIdsHash, normalizeFav, normalizeTagIds } from '../public/scripts/hash-utils.js';
 
 /**
  * The library on the engine: characters, groups and tags as entities whose values are the engine's records.
@@ -41,6 +41,31 @@ export const FIELD = Object.freeze({
 
 /** List codes. */
 export const LIST = Object.freeze({ alternate_greetings: 0, group_only_greetings: 1, tags: 2 });
+
+/** A group's field codes; its other keys are stored by key, `group:<key>`. */
+export const GROUP_FIELD = Object.freeze({
+    name: 1,
+    avatar_url: 50,
+    allow_self_responses: 51,
+    activation_strategy: 52,
+    generation_mode: 53,
+    auto_mode_delay: 54,
+    generation_mode_join_prefix: 55,
+    generation_mode_join_suffix: 56,
+    hideMutedSprites: 57,
+});
+
+/** A group's lists: a non-empty list of strings is stored as items, any other value as JSON under its key. */
+export const GROUP_LIST = Object.freeze({ members: 3, disabled_members: 4 });
+
+const GROUP_KEY_PREFIX = 'group:';
+
+/**
+ * A group object's keys that aren't values of its own: the id is its key, `fav` its fav record and `tag_ids` its
+ * tag assignments; the dates and chat activity are the library's, and `chat_id` and `chats` are the sessions in its
+ * tree.
+ */
+const GROUP_READ_KEYS = new Set(['id', 'fav', 'tag_ids', 'date_added', 'create_date', 'date_last_chat', 'chat_size', 'chat_id', 'chats']);
 
 /** A list item's text is the text value of this field. */
 export function itemField(list, item) {
@@ -158,6 +183,54 @@ export function cardParts(entity) {
     }
     parts.columns.fav = entity.fav;
     return parts;
+}
+
+const GROUP_CODE_NAMES = new Map(Object.entries(GROUP_FIELD).map(([k, v]) => [v, k]));
+const GROUP_LIST_NAMES = new Map(Object.entries(GROUP_LIST).map(([k, v]) => [v, k]));
+
+/**
+ * A group object's own values and lists, as the engine stores them.
+ * @param {Record<string, unknown>} group
+ * @returns {{ values: Map<number | string, { text?: string, json?: string }>, lists: Map<number, string[]> }}
+ */
+export function groupValues(group) {
+    /** @type {Map<number | string, { text?: string, json?: string }>} */
+    const values = new Map();
+    /** @type {Map<number, string[]>} */
+    const lists = new Map();
+    for (const [key, value] of Object.entries(group)) {
+        if (value === undefined || GROUP_READ_KEYS.has(key)) continue;
+        const list = Object.hasOwn(GROUP_LIST, key) ? GROUP_LIST[/** @type {keyof typeof GROUP_LIST} */ (key)] : undefined;
+        if (list !== undefined && Array.isArray(value) && value.length > 0 && value.every(v => typeof v === 'string')) {
+            lists.set(list, value);
+            continue;
+        }
+        const field = Object.hasOwn(GROUP_FIELD, key) ? GROUP_FIELD[/** @type {keyof typeof GROUP_FIELD} */ (key)] : GROUP_KEY_PREFIX + key;
+        values.set(field, typeof value === 'string' ? { text: value } : { json: JSON.stringify(value) });
+    }
+    return { values, lists };
+}
+
+/**
+ * A stored group's object: its id and its own values, the inverse of groupValues().
+ * @param {StoredEntity} entity
+ * @returns {Record<string, unknown>}
+ */
+export function groupObject(entity) {
+    const { values, lists } = storedValues(entity);
+    /** @type {Record<string, unknown>} */
+    const group = { id: entity.key };
+    // A key such as `__proto__` is set as the group's own property, as JSON.parse() gave it.
+    const set = (/** @type {string} */ key, /** @type {unknown} */ value) => Object.defineProperty(group, key, { value, enumerable: true, writable: true, configurable: true });
+    for (const [field, v] of values) {
+        const key = typeof field === 'number' ? GROUP_CODE_NAMES.get(field) : field.startsWith(GROUP_KEY_PREFIX) ? field.slice(GROUP_KEY_PREFIX.length) : undefined;
+        if (key !== undefined) set(key, v.text !== undefined ? v.text : JSON.parse(/** @type {string} */ (v.json)));
+    }
+    for (const [list, texts] of lists) {
+        const key = GROUP_LIST_NAMES.get(list);
+        if (key !== undefined) set(key, texts);
+    }
+    return group;
 }
 
 /**
@@ -411,6 +484,100 @@ export class LibraryEngine {
     }
 
     /**
+     * Stores a group, writing only what differs from the stored one; its fav is the object's (normalizeFav()).
+     * @param {Record<string, unknown> & { id: string }} group
+     * @param {object} [options]
+     * @param {number} [options.dateAdded] For a new group.
+     * @returns {Promise<{ id: bigint, records: number }>}
+     */
+    writeGroup(group, { dateAdded = Date.now() } = {}) {
+        const key = String(group.id);
+        return this.serialized(TYPE.group, key, async () => {
+            const stored = await this.entity(TYPE.group, key);
+            const id = stored ? stored.id : this.nextId++;
+            const records = [];
+            const fav = normalizeFav(group.fav);
+            if (stored ? stored.fav !== fav : fav) records.push({ kind: 'fav', entity: id, fav });
+            records.push(...valueRecords(id, stored, groupValues(group)));
+            if (!stored) records.push({ kind: 'entityCreate', entity: id, type: TYPE.group, key, added: dateAdded });
+            if (records.length > 0) await this.store.commit(records);
+            return { id, records: records.length };
+        });
+    }
+
+    /**
+     * Each group as `/api/groups/batch` answers it (its own values, id, fav and tag ids), or null.
+     * @param {string[]} keys
+     * @returns {Promise<(Record<string, unknown> | null)[]>}
+     */
+    async groups(keys) {
+        const entities = await this.entities(await this.ids(TYPE.group, keys));
+        const present = /** @type {StoredEntity[]} */ (entities.filter(e => e !== null));
+        const tagKeys = new Map((await this.tagKeys(present)).map((t, i) => [present[i].id, t]));
+        return entities.map(e => (e ? { ...groupObject(e), id: e.key, fav: e.fav, tag_ids: tagKeys.get(e.id) ?? [] } : null));
+    }
+
+    /**
+     * @param {string} avatar
+     * @param {boolean} allowed
+     * @returns {Promise<boolean>} Whether there is such a character.
+     */
+    setAllowGlobalStyles(avatar, allowed) {
+        return this.serialized(TYPE.character, avatar, async () => {
+            const stored = await this.entity(TYPE.character, avatar);
+            if (!stored) return false;
+            const json = JSON.stringify(!!allowed);
+            if (stored.values.find(v => v.field === FIELD.allow_global_styles)?.json !== json) {
+                await this.store.commit([{ kind: 'jsonValue', entity: stored.id, field: FIELD.allow_global_styles, json }]);
+            }
+            return true;
+        });
+    }
+
+    /**
+     * Changes an entity's key (a character's avatar) or date added; the type stays.
+     * @param {number} type
+     * @param {string} key
+     * @param {{ key?: string, dateAdded?: number }} change
+     * @returns {Promise<boolean>} Whether there is such an entity; false also when the new key is taken.
+     */
+    updateEntity(type, key, change) {
+        return this.serialized(type, key, async () => {
+            const stored = await this.entity(type, key);
+            if (!stored) return false;
+            const next = { key: change.key ?? stored.key, added: change.dateAdded ?? stored.added };
+            if (next.key === stored.key && next.added === stored.added) return true;
+            if (next.key !== stored.key && (await this.ids(type, [next.key]))[0] !== null) return false;
+            await this.store.commit([{ kind: 'entityUpdate', entity: stored.id, type, key: next.key, added: next.added }]);
+            return true;
+        });
+    }
+
+    /**
+     * The first character a card hash finds (`HASH`), as import dedup looks one up.
+     * @param {number} which
+     * @param {string | null} hex
+     * @returns {Promise<string | null>}
+     */
+    async findByHash(which, hex) {
+        if (hex === null) return null;
+        const [id] = await this.store.libraryByHash(which, Buffer.from(hex, 'hex'), 1);
+        return id === undefined ? null : (await this.entities([id]))[0]?.key ?? null;
+    }
+
+    /**
+     * The first character both its content identity hash and its avatar identity hash find.
+     * @param {string | null} contentIdentityHash
+     * @param {string | null} avatarIdentityHash
+     * @returns {Promise<string | null>}
+     */
+    async findByIdentityHashes(contentIdentityHash, avatarIdentityHash) {
+        if (contentIdentityHash === null || avatarIdentityHash === null) return null;
+        const [id] = await this.store.libraryByHashes(HASH.identity, Buffer.from(contentIdentityHash, 'hex'), HASH.avatarIdentity, Buffer.from(avatarIdentityHash, 'hex'), 1);
+        return id === undefined ? null : (await this.entities([id]))[0]?.key ?? null;
+    }
+
+    /**
      * @param {number} type
      * @param {string} key
      * @param {boolean} fav
@@ -568,10 +735,18 @@ export class LibraryEngine {
      * @param {boolean} [params.groupsOnly]
      * @param {boolean} [params.includeGroups]
      * @param {boolean} [params.includeCreatorNotes]
+     * @param {boolean} [params.wantHidden] Also `hidden` and `approxHidden`, as `/query`'s `want: 'hidden'`.
      * @param {number} [params.cap]
      */
     async query(params) {
-        const { tags, fav, world, ranges, excludeIds, ids, sortField, sortOrder, seed, offset = 0, limit = 500, cursor, wantRows = true, wantTotal = true, wantHashes = false, groupsOnly = false, includeGroups = true, includeCreatorNotes = false, cap = 20_000 } = params;
+        const { tags, fav, world, ranges, excludeIds, ids, sortField, sortOrder, seed, offset = 0, limit = 500, cursor, wantRows = true, wantTotal = true, wantHashes = false, wantHidden = false, groupsOnly = false, includeGroups = true, includeCreatorNotes = false, cap = 20_000 } = params;
+        // Upstream's "N hidden": every entity of the kinds listed (every character, and every group with groups)
+        // less the rows on this page.
+        const hiddenOf = async (/** @type {number} */ shown) => {
+            if (!wantHidden) return {};
+            const all = await this.store.libraryPage({ characters: !groupsOnly, groups: groupsOnly || includeGroups, count: true, limit: 0, cap, sort: { key: SORT_KEYS.name, desc: false } });
+            return { hidden: Math.max(0, Number(all.total) - shown), approxHidden: !all.totalExact };
+        };
         const include = (tags?.include ?? []).filter(Boolean).map(String);
         const exclude = (tags?.exclude ?? []).filter(Boolean).map(String);
         const tagIds = new Map();
@@ -602,7 +777,7 @@ export class LibraryEngine {
             return out;
         };
         if (Array.isArray(ids)) {
-            if (ids.length === 0) return { rows: wantRows ? [] : undefined, hashRows: wantHashes ? [] : undefined, total: wantTotal ? 0 : undefined, approxTotal: false };
+            if (ids.length === 0) return { rows: wantRows ? [] : undefined, hashRows: wantHashes ? [] : undefined, total: wantTotal ? 0 : undefined, approxTotal: false, ...(await hiddenOf(0)) };
             q.ids = await keyIds(ids.map(String));
             if (q.ids.length === 0) q.ids = [0n];
         }
@@ -628,33 +803,37 @@ export class LibraryEngine {
             ...(page.cursor ? { cursor: `e${page.cursor.toString('base64url')}` } : {}),
             ...(page.more ? { more: true } : {}),
         };
+        const groups = entities.filter(e => e.type === TYPE.group);
+        const groupTags = new Map((await this.tagKeys(groups)).map((t, i) => [groups[i].id, t]));
         if (wantHashes) {
-            return { ...out, rows: undefined, hashRows: entities.map(e => this.hashRow(e)) };
+            const hashRows = entities.map(e => this.hashRow(e, groupTags.get(e.id) ?? []));
+            return { ...out, rows: undefined, hashRows, ...(await hiddenOf(hashRows.length)) };
         }
-        if (!wantRows) return { ...out, rows: undefined, hashRows: undefined };
+        if (!wantRows) return { ...out, rows: undefined, hashRows: undefined, ...(await hiddenOf(0)) };
         const characters = entities.filter(e => e.type === TYPE.character);
         const listRows = new Map((await this.listRows(characters, includeCreatorNotes)).map((r, i) => [characters[i].id, r]));
-        return {
-            ...out,
-            hashRows: undefined,
-            rows: entities.map(e => ({
-                type: e.type === TYPE.group ? 'group' : 'character',
-                id: e.key,
-                fav: e.fav,
-                date_added: e.added,
-                date_last_chat: 0,
-                chat_size: 0,
-                item: listRows.get(e.id) ?? null,
-            })),
-        };
+        const rows = entities.map(e => ({
+            type: e.type === TYPE.group ? 'group' : 'character',
+            id: e.key,
+            fav: e.fav,
+            date_added: e.added,
+            date_last_chat: 0,
+            chat_size: 0,
+            item: e.type === TYPE.group
+                ? { ...groupObject(e), fav: e.fav, date_added: e.added, date_last_chat: 0, chat_size: 0, tag_ids: groupTags.get(e.id) ?? [] }
+                : listRows.get(e.id) ?? null,
+        }));
+        return { ...out, hashRows: undefined, rows, ...(await hiddenOf(rows.length)) };
     }
 
     /**
-     * A hash-mode row: a character's cache key is its version, the position of its latest record.
+     * A hash-mode row: a character's cache key is its version, the position of its latest record; a group's are
+     * the digests of what `groups()` answers for it.
      * @param {StoredEntity} e
+     * @param {string[]} tagKeys A group's tag keys.
      */
-    hashRow(e) {
-        return {
+    hashRow(e, tagKeys) {
+        const row = {
             id: e.key,
             isGroup: e.type === TYPE.group,
             chat: null,
@@ -664,6 +843,16 @@ export class LibraryEngine {
             chat_size: 0,
             data_size: e.dataSize ?? 0,
             version: e.type === TYPE.group ? null : Number(e.version),
+            favHash: 0,
+            tagIdsHash: 0,
+            contentHash: 0,
         };
+        if (e.type === TYPE.group) {
+            const group = { ...groupObject(e), id: e.key, fav: e.fav, tag_ids: tagKeys };
+            row.favHash = groupDigestFavHash(group) >>> 0;
+            row.tagIdsHash = groupDigestTagIdsHash(group) >>> 0;
+            row.contentHash = groupDigestContentHash(group) >>> 0;
+        }
+        return row;
     }
 }
