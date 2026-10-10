@@ -15,6 +15,8 @@ use crate::keyspace::val::{get_u64, put_bytes, put_u64};
 use crate::log::format::{FieldRef, Record, Value};
 use crate::search::{self, Scope};
 
+use super::sessions::{self, Fork};
+
 /// The message's text, the field upstream calls `mes`.
 pub const MES: u64 = 1;
 
@@ -26,6 +28,7 @@ pub const APPEND_TIME: usize = 5;
 pub const APPEND_TEXT: usize = 6;
 pub const APPEND_FLAGS: usize = 7;
 pub const APPEND_SESSION: usize = 8;
+pub const APPEND_USER: usize = 9;
 pub const APPEND_SEND_KEY: usize = 10;
 
 /// `messageAppend`'s `flags`: the shape of the message's fixed values, two bits each unless said:
@@ -56,7 +59,7 @@ fn time_of(rec: &Record) -> i64 {
     }
 }
 
-fn opt_id(rec: &Record, i: usize) -> Option<u64> {
+pub fn opt_id(rec: &Record, i: usize) -> Option<u64> {
     match rec.values[i] {
         Value::Id(v) => Some(v),
         _ => None,
@@ -102,6 +105,24 @@ pub fn require_message(view: &View, m: u64) -> Result<(Loc, Record), StoreError>
         return Err(StoreError::Refused(format!("no message {m}")));
     };
     Ok((l, view.record(l.pos)?.0))
+}
+
+/// A change to message `m` made through session `s` by user `u` (each optional): it is meaningful activity in
+/// the message's tree. Refuses a missing message, or an actor that isn't one.
+pub fn edit_activity(
+    view: &View,
+    out: &mut Out,
+    m: u64,
+    s: Option<u64>,
+    u: Option<u64>,
+    at: Loc,
+) -> Result<(), StoreError> {
+    let (_, r) = require_message(view, m)?;
+    sessions::check_actor(view, s, u)?;
+    if let Some(s) = s {
+        sessions::activity(view, out, s, id(&r, APPEND_OWNER), at.pos)?;
+    }
+    Ok(())
 }
 
 /// The message's parent now: its last `messageParent`'s, else its append's.
@@ -242,8 +263,20 @@ impl Deriver for MessageAppend {
             }
             out.put(k, varints(&[m]));
         }
+        let (s, u) = (opt_id(rec, APPEND_SESSION), id(rec, APPEND_USER));
+        sessions::check_actor(view, s, Some(u))?;
         out.put(key::id(key::MESSAGE, m), loc_bytes(at));
         out.max(key::of(key::NEXT_MESSAGE), m + 1);
+        sessions::appended(view, out, m, parent)?;
+        // Shown through its session: the session moves to it, and continuing there is choosing it.
+        if let Some(s) = s {
+            sessions::moved(view, out, s, u, owner, m, at, false, true)?;
+            let f = match parent {
+                Some(p) => Fork::Message(p),
+                None => Fork::Root(owner),
+            };
+            sessions::chosen(view, out, s, u, f, m, at, false)?;
+        }
         out.put(child_key(parent, owner, time_of(rec), m), Vec::new());
         if text_in_append(id(rec, APPEND_FLAGS)) {
             let text = bytes(rec, APPEND_TEXT);
@@ -309,8 +342,13 @@ impl Deriver for MessageDelete {
         if !bookmarks_at(view, m)?.is_empty() {
             return Err(StoreError::Refused(format!("a bookmark is at message {m}")));
         }
+        let (s, u) = (opt_id(rec, 1), opt_id(rec, 2));
+        sessions::check_actor(view, s, u)?;
         dead(out, at);
         let owner = id(&append, APPEND_OWNER);
+        if let Some(s) = s {
+            sessions::activity(view, out, s, owner, at.pos)?;
+        }
         let h = Holder::Message(m);
         // Text values (the message's own included), then the rest of what it holds.
         let tp = key::id(key::MSG_TEXT, m);
@@ -335,6 +373,7 @@ impl Deriver for MessageDelete {
             out.del(send_key_key(owner, sk));
         }
         drop_key(view, out, KEYED_MESSAGE, m)?;
+        sessions::message_gone(view, out, m, parent, owner)?;
         dead(out, l);
         out.del(key::id(key::MESSAGE, m));
         Ok(())
@@ -376,6 +415,8 @@ impl Deriver for MessageParent {
     fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
         let m = id(rec, 0);
         let new = opt_id(rec, 1);
+        let (s, u) = (opt_id(rec, 2), opt_id(rec, 3));
+        sessions::check_actor(view, s, u)?;
         let (_, append) = require_message(view, m)?;
         let owner = id(&append, APPEND_OWNER);
         if let Some(p) = new {
@@ -400,6 +441,10 @@ impl Deriver for MessageParent {
         let t = time_of(&append);
         out.del(child_key(old, owner, t, m));
         out.put(child_key(new, owner, t, m), Vec::new());
+        sessions::reparented(view, out, m, owner, at.pos)?;
+        if let Some(s) = s {
+            sessions::activity(view, out, s, owner, at.pos)?;
+        }
         Ok(())
     }
 
@@ -451,7 +496,7 @@ pub struct MessageTime;
 impl Deriver for MessageTime {
     fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
         let (m, f) = (id(rec, 0), field(rec, 1));
-        require_message(view, m)?;
+        edit_activity(view, out, m, opt_id(rec, 3), opt_id(rec, 4), at)?;
         let h = Holder::Message(m);
         // A time takes the place of any other value of the field.
         drop_text_of(view, out, h, f)?;
@@ -624,10 +669,14 @@ impl Deriver for PositionCreate {
             return Err(StoreError::Refused(format!("position {b} exists")));
         }
         let (_, m) = require_message(view, ptr)?;
+        let (s, u) = (id(rec, 2), id(rec, 3));
+        sessions::check_actor(view, Some(s), Some(u))?;
+        let tree = id(&m, APPEND_OWNER);
         out.put(key::id(key::POSITION, b), loc_bytes(at));
         out.max(key::of(key::NEXT_POSITION), b + 1);
-        bookmark_entries(out, b, id(&m, APPEND_OWNER), ptr, true);
-        Ok(())
+        bookmark_entries(out, b, tree, ptr, true);
+        sessions::branch_created(out, ptr, b);
+        sessions::activity(view, out, s, tree, at.pos)
     }
 
     fn is_live(&self, rec: &Record, pos: u64, view: &View) -> Result<bool, StoreError> {
@@ -737,10 +786,21 @@ impl Deriver for PositionDelete {
     fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
         let b = id(rec, 0);
         let Some(v) = view.get(&key::id(key::POSITION, b))? else {
-            return Err(StoreError::Refused(format!("no bookmark {b}")));
+            if !is_session(view, b)? {
+                return Err(StoreError::Refused(format!("no position {b}")));
+            }
+            dead(out, at);
+            if let Some(n) = view.get(&key::id(key::POSITION_NAME, b))? {
+                dead(out, parse_loc(&n)?);
+                out.del(key::id(key::POSITION_NAME, b));
+            }
+            return sessions::session_gone(view, out, b);
         };
         dead(out, at);
-        dead(out, parse_loc(&v)?);
+        let cl = parse_loc(&v)?;
+        let (create, _) = view.record(cl.pos)?;
+        sessions::branch_gone(out, id(&create, 4), b);
+        dead(out, cl);
         out.del(key::id(key::POSITION, b));
         for s in [key::POSITION_NAME, key::POSITION_MODE] {
             if let Some(v) = view.get(&key::id(s, b))? {
@@ -764,8 +824,88 @@ impl Deriver for PositionDelete {
     }
 }
 
+/// `pointerMove`: a session's pointer moves; the record is its history entry's, kept while the session is.
+pub struct PointerMove;
+
+impl Deriver for PointerMove {
+    fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
+        let (s, u, target) = (id(rec, 0), id(rec, 1), id(rec, 2));
+        sessions::check_actor(view, Some(s), Some(u))?;
+        let (_, r) = require_message(view, target)?;
+        sessions::moved(
+            view,
+            out,
+            s,
+            u,
+            id(&r, APPEND_OWNER),
+            target,
+            at,
+            true,
+            false,
+        )
+    }
+
+    fn is_live(&self, _: &Record, pos: u64, view: &View) -> Result<bool, StoreError> {
+        Ok(sessions::history_entry(view, pos)?.is_some())
+    }
+
+    fn repoint(
+        &self,
+        _: &Record,
+        from: u64,
+        to: Loc,
+        view: &View,
+        out: &mut Out,
+    ) -> Result<(), StoreError> {
+        sessions::history_repoint(view, out, from, to)
+    }
+}
+
+/// `forkSelection`: a reply is chosen at its fork by a session and a user.
+pub struct ForkSelection;
+
+impl Deriver for ForkSelection {
+    fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
+        let (reply, s, u) = (id(rec, 1), id(rec, 2), id(rec, 3));
+        sessions::check_actor(view, Some(s), Some(u))?;
+        let (f, tree) = Fork::of(view, reply)?;
+        let named = match opt_id(rec, 0) {
+            Some(m) => Fork::Message(m),
+            None => Fork::Root(tree),
+        };
+        if named != f {
+            return Err(StoreError::Refused(format!(
+                "message {reply} isn't a reply at that fork"
+            )));
+        }
+        sessions::chosen(view, out, s, u, f, reply, at, true)?;
+        sessions::activity(view, out, s, tree, at.pos)
+    }
+
+    fn partition(&self, rec: &Record) -> u64 {
+        id(rec, 1)
+    }
+
+    fn is_live(&self, rec: &Record, pos: u64, view: &View) -> Result<bool, StoreError> {
+        sessions::selection_live(view, rec, pos)
+    }
+
+    fn repoint(
+        &self,
+        rec: &Record,
+        from: u64,
+        to: Loc,
+        view: &View,
+        out: &mut Out,
+    ) -> Result<(), StoreError> {
+        sessions::selection_repoint(view, out, rec, from, to)
+    }
+}
+
 pub fn deriver(kind: &str) -> Option<&'static dyn Deriver> {
     Some(match kind {
+        "pointerMove" => &PointerMove,
+        "forkSelection" => &ForkSelection,
         "messageAppend" => &MessageAppend,
         "messageDelete" => &MessageDelete,
         "messageParent" => &MessageParent,

@@ -55,6 +55,8 @@ fn set_text(e: u64, f: u64, s: &str) -> Record {
             Value::Sel(0, e),
             Value::Field(FieldRef::Code(f)),
             Value::Text(text(s)),
+            Value::Absent,
+            Value::Absent,
         ],
     )
 }
@@ -68,6 +70,8 @@ fn edit(e: u64, f: u64, offset: u64, removed: u64, s: &str) -> Record {
             Value::UInt(offset),
             Value::UInt(removed),
             Value::Text(text(s)),
+            Value::Absent,
+            Value::Absent,
         ],
     )
 }

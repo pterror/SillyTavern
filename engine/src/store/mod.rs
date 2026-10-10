@@ -31,6 +31,7 @@ pub mod derive;
 pub mod kinds;
 pub mod library;
 pub mod library_read;
+pub mod sessions;
 pub mod tags;
 
 use std::collections::{BTreeMap, HashSet, VecDeque};
@@ -353,6 +354,8 @@ struct Inner {
     refilling: Mutex<HashSet<(crate::search::Scope, String)>>,
     /// Tag folds (`library::fold_step`): one step queued at a time; `.1` asks for another pass once it ends.
     folding: Mutex<(bool, bool)>,
+    /// Depth rewrites after message moves (`sessions::depth_step`), queued as folds are.
+    depthing: Mutex<(bool, bool)>,
 }
 
 #[derive(Default)]
@@ -449,6 +452,7 @@ impl Store {
                 search_stats: Default::default(),
                 refilling: Default::default(),
                 folding: Default::default(),
+                depthing: Default::default(),
             }
         });
         ks.start(Box::new(StoreHooks(Arc::downgrade(&inner))))?;
@@ -468,13 +472,20 @@ impl Store {
                 r.kind.name
             ))));
         }
-        if records.iter().any(|r| r.kind.name == "tagMerge") {
+        let merges = records.iter().any(|r| r.kind.name == "tagMerge");
+        let moves = records.iter().any(|r| r.kind.name == "messageParent");
+        if merges || moves {
             let me = Arc::downgrade(&self.inner);
             let done: CommitDone = Box::new(move |r| {
-                let merged = r.is_ok();
+                let ok = r.is_ok();
                 done(r);
-                if merged && let Some(i) = me.upgrade() {
-                    i.kick_folds();
+                if ok && let Some(i) = me.upgrade() {
+                    if merges {
+                        i.kick_folds();
+                    }
+                    if moves {
+                        i.kick_depths();
+                    }
                 }
             });
             return self.inner.submit(Job::Commit(records, done));
@@ -1004,6 +1015,43 @@ impl Inner {
         ));
     }
 
+    /// Rewrites moved messages' depths, a bounded step at a time between commits, until none waits.
+    pub(crate) fn kick_depths(&self) {
+        {
+            let mut f = self.depthing.lock().unwrap();
+            if f.0 {
+                f.1 = true;
+                return;
+            }
+            *f = (true, false);
+        }
+        self.queue_depth();
+    }
+
+    fn queue_depth(&self) {
+        let more = Arc::new(AtomicBool::new(false));
+        let found = more.clone();
+        let me = self.me.clone();
+        self.submit(Job::Derive(
+            Box::new(move |view, out| {
+                found.store(sessions::depth_step(view, out)?, Ordering::Relaxed);
+                Ok(())
+            }),
+            Box::new(move |r| {
+                let Some(i) = me.upgrade() else { return };
+                let again = {
+                    let mut f = i.depthing.lock().unwrap();
+                    let again = r.is_ok() && (more.load(Ordering::Relaxed) || f.1);
+                    *f = (again, false);
+                    again
+                };
+                if again {
+                    i.queue_depth();
+                }
+            }),
+        ));
+    }
+
     // ---- replay ----
 
     /// Derives the records after `from` into the buffer, as at their commits.
@@ -1086,6 +1134,11 @@ impl Inner {
             // A failed read queues the step, which reports it.
             if !matches!(self.ks.scan(&fold, &key::prefix_end(&fold), 1), Ok(f) if f.is_empty()) {
                 self.kick_folds();
+            }
+            let pending = key::of(sessions::DEPTH_PENDING);
+            if !matches!(self.ks.scan(&pending, &key::prefix_end(&pending), 1), Ok(f) if f.is_empty())
+            {
+                self.kick_depths();
             }
             return true;
         }

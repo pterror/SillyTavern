@@ -654,7 +654,14 @@ impl Deriver for TextValue {
                 tags::field_written(view, out, entity, at, f, Written::Text(bytes(rec, 2)))?;
             }
             Holder::Message(m) => {
-                super::chat::require_message(view, m)?;
+                super::chat::edit_activity(
+                    view,
+                    out,
+                    m,
+                    super::chat::opt_id(rec, 3),
+                    super::chat::opt_id(rec, 4),
+                    at,
+                )?;
                 let old = text_value_of(view, h, f)?;
                 super::chat::text_changed(view, out, m, f, old.as_deref(), Some(bytes(rec, 2)))?;
                 library::drop_json_of(view, out, h, f)?;
@@ -736,7 +743,13 @@ impl Deriver for TextEdit {
         if head.is_none_or(|hd| hd.edit_bytes + encoded.len() as u64 >= new.len() as u64) {
             return Ok(Record::new(
                 kind_by_name("textValue").unwrap(),
-                vec![h.value(), Value::Field(f), Value::Text(new)],
+                vec![
+                    h.value(),
+                    Value::Field(f),
+                    Value::Text(new),
+                    rec.values[5].clone(),
+                    rec.values[6].clone(),
+                ],
             )
             .expect("a textValue of a textEdit's values"));
         }
@@ -749,6 +762,16 @@ impl Deriver for TextEdit {
 
     fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
         let (h, f) = (Holder::of(rec, 0), field(rec, 1));
+        if let Holder::Message(m) = h {
+            super::chat::edit_activity(
+                view,
+                out,
+                m,
+                super::chat::opt_id(rec, 5),
+                super::chat::opt_id(rec, 6),
+                at,
+            )?;
+        }
         let mut head = Head::get(view, h, f)?
             .ok_or_else(|| StoreError::Entry(format!("a textEdit of {h:?} with no value")))?;
         let wants_old = match h {

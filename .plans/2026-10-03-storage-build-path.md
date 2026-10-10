@@ -1016,6 +1016,65 @@ Stop (10-10), three questions sessions need (behaviour):
   reader then follows the new reply; under the cascade, a reader with no choice of their own follows "the last choice
   anyone made there", which only a selection record changes.
 
+Answered (coordinator, 10-10; behaviour "maximally intuitive", Data safety "nothing lost silently"):
+- Deleting an opening that a session's pointer or a remembered position names: they move to the tree's newest
+  surviving opening; if it was the last opening, they are at the tree's root (no message), and landing behaves as for
+  a new chat (the card's greeting shown provisionally, nothing written until used). Deleting an opening another
+  session is showing is allowed; that session moves as above.
+- After a session is deleted, the (user, tree) entry falls back to that user's most recent remaining session in the
+  tree, else the derived v5 (user, tree) id, as for a user with no session there.
+- An append that moves its session's pointer also records a fork selection by that session and user at the parent
+  (continuing on a branch is choosing it), so it updates all three cascade tiers, as today's `default_child_id` does.
+- The depth rewrite recomputes each message from its parent top-down, so a reply appended under the moved subtree
+  meanwhile comes out right; a second move in the same tree queues behind the first, the marker held until both end.
+- Session and user slots on the edit kinds, and two-byte headers for rare kinds: under the encoding rule.
+
+Built, sessions (10-10; `engine/src/store/sessions.rs`, tests in `chat_tests.rs`):
+- Kinds: `textEdit`, `textValue`, `jsonValue`, `valueDelete`, `messageDelete`, `messageParent` and `messageTime` take
+  an optional `session` and `user` (an edit through a session is activity in the message's tree);
+  `forkSelection`'s `message` is optional (absent: a choice among the tree's openings); `positionDelete` deletes a
+  session as well as a bookmark. `tagQueue` and `tagPass` have two-byte headers; 119–127 are free.
+- Derived at commit, from `pointerMove` and from an append through a session (which moves the session and chooses
+  the reply at its parent, both from the append itself): each session's pointer (`SESSION_PTR`, a message or a tree's
+  root) and the sessions at each message; its history (`HISTORY` (session, n) → target, gone flag, and for a
+  `pointerMove` its record, which stays live while the entry is kept); every session by its last move (`RECENT`);
+  (session, tree) and (user, tree) last positions, the latter with its session; each user's sessions per tree by
+  their last move there (for the fallback); sessions per tree by last meaningful activity (`TREE_ACTIVITY`: an append
+  through the session, a move inside the tree it is already in, a fork choice, a bookmark, an edit, a delete or a
+  move of a message made through it). Fork choices per (session, fork), (user, fork) and fork, each pointing at its
+  `forkSelection` (a replaced selection dies once no tier points at it). A message's depth at its append; bookmarks
+  created at each message (`BRANCH_FROM`, for `branches` and `bookmark_link`).
+- A move (`messageParent`) writes a pending rewrite (per move, with the tree's count) and the store runs
+  `sessions::depth_step` as `Job::Derive` slices of 256 messages (`DEPTH_SLICE`), queued after the move's commit and
+  at open while one is left, as the tag fold is. Each slice walks the moved subtree in order (a reply after its
+  parent), setting each depth from its parent's. A message the walk is at that goes, or moves, moves the walk past it.
+  `message_count` answers the depth and whether the tree has a rewrite under way (an estimate).
+- A message going: sessions and remembered positions at it move (its parent; an opening's to the newest other
+  opening, else the root); history entries naming it are marked gone; choices of it go; its depth and branches go.
+  A session going: its pointer, history (its `pointerMove` records die), orders, remembered positions and activity
+  go; a user whose last move in a tree was through it falls back as answered, else has no entry (the read derives
+  the v5 id).
+- Reads: `session_pointer`, `session_in_tree`, `user_in_tree`, `landing` (session's last position in the tree, else
+  the user's, else the end of the followed path from the root), `followed` (the fork cascade, each tier taken only if
+  its reply is still a reply there, else the newest reply), `path_below`, `history`, `recent`, `in_tree`,
+  `branches_from`, `message_count`.
+- A record naming a session needs the session's key (it exists), and one naming a user needs the user's key.
+- Tests: the model workload now has 4 sessions and 2 users moving, appending through sessions, choosing, editing,
+  deleting messages and sessions, and checks pointers, histories, both orders, remembered positions, landings for
+  every (session, user, tree), choices and depths after commits, a reopen, a crash and cleaning; a 768-message chain
+  moved, with a reply appended and a second move queued during its rewrite; a crash right after a move (the rewrite
+  resumes on open); deletes of a reply, of an opening another session shows, of the last opening (pointers at the
+  root), and of sessions with the user fallback.
+
+| choice | picked | reason |
+|---|---|---|
+| an append's fork choice | derived from the append (session, user, parent), no `forkSelection` record | the append holds all three; a second record would be a second copy |
+| activity and recency positions | log positions | they sort as commit order does; the records carry no time of their own (design 4.1: seq is the position) |
+| a session's history entry | (session, n), the target in the entry | back and forward read targets in order; a `pointerMove` record is kept live through it (history is kept in full) |
+| a deleted session's key | kept | a later move with the same UUID starts it again with an empty history, without a new record |
+| a deleted session's fork choices | kept | the answer removes its pointer and history; its choices still answer "the last choice anyone made" |
+| depth slices | 256 messages, oldest move first | the tag fold's size; moves in one tree finish in order |
+
 Where layer 1 goes: inside 5b, on the engine. Its own storage step (SQLite `state_changes`, saved states every 64th
 depth rebuilt lazily after an epoch bump) conflicts with the design: a structure caught up when read is what revision
 3 dropped (design Q-D7), and its migration step 6 is a background pass (CLAUDE.md: one-off scripts). The design and

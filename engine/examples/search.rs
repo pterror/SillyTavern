@@ -609,6 +609,8 @@ fn text_value(e: u64, code: u64, s: &str) -> Record {
             Value::Sel(0, e),
             Value::Field(FieldRef::Code(code)),
             Value::Text(s.as_bytes().to_vec()),
+            Value::Absent,
+            Value::Absent,
         ],
     )
 }
@@ -1188,6 +1190,8 @@ fn writes(s: &Store, cards: usize) {
                 Value::UInt(a as u64),
                 Value::UInt((b - a) as u64),
                 Value::Text(word.as_bytes().to_vec()),
+                Value::Absent,
+                Value::Absent,
             ],
         )])
         .unwrap();
