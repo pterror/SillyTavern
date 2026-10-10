@@ -244,6 +244,32 @@ fn check(s: &Store, m: &BTreeMap<u64, T>) {
                     }
                     let want = model_page(m, &q);
                     assert_eq!(read_all(s, &q), want, "{q:?}");
+                    // Last first, through cursors.
+                    let rq = Query {
+                        reverse: true,
+                        ..q.clone()
+                    };
+                    let rev: Vec<u64> = want.iter().rev().copied().collect();
+                    assert_eq!(read_all(s, &rq), rev, "reverse {q:?}");
+                    // Each tag's position is its place in the order.
+                    let items: Vec<(u64, Option<Option<f64>>)> =
+                        want.iter().map(|t| (*t, None)).collect();
+                    let pos = s.tag_positions(sort, &items).unwrap();
+                    assert!(pos.windows(2).all(|w| w[0] < w[1]), "positions {q:?}");
+                    if sort == MANUAL {
+                        for ordered in [true, false] {
+                            let oq = Query {
+                                ordered: Some(ordered),
+                                ..q.clone()
+                            };
+                            let ow: Vec<u64> = want
+                                .iter()
+                                .filter(|t| m[t].order.is_some() == ordered)
+                                .copied()
+                                .collect();
+                            assert_eq!(read_all(s, &oq), ow, "ordered {ordered} {q:?}");
+                        }
+                    }
                     // The same read through ids, from a cursor in the middle.
                     let all: Vec<u64> = m.keys().copied().collect();
                     let iq = Query {
@@ -252,6 +278,12 @@ fn check(s: &Store, m: &BTreeMap<u64, T>) {
                         ..q.clone()
                     };
                     assert_eq!(read_all(s, &iq), want, "ids {q:?}");
+                    let riq = Query {
+                        reverse: true,
+                        ..iq.clone()
+                    };
+                    let rev: Vec<u64> = want.iter().rev().copied().collect();
+                    assert_eq!(read_all(s, &riq), rev, "ids reverse {q:?}");
                 }
             }
         }
@@ -664,6 +696,164 @@ fn unassigning_a_merged_tag_keeps_its_target() {
         vec![vec![2], vec![2]]
     );
     assert_eq!(s.tag_counts(&[2]).unwrap(), vec![(2, false)]);
+    s.close();
+    let _ = fs::remove_dir_all(&dir);
+}
+
+fn pass(id: u64, mode: Option<u64>) -> Record {
+    rec(
+        "tagPass",
+        vec![
+            Value::UInt(id),
+            mode.map_or(Value::Absent, Value::UInt),
+            Value::UInt(0),
+            Value::UInt(0),
+            Value::Absent,
+        ],
+    )
+}
+
+fn pass_order(t: u64, v: f64, pass: u64) -> Record {
+    rec(
+        "tagPassOrder",
+        vec![Value::Id(t), Value::F64(v), Value::UInt(pass)],
+    )
+}
+
+fn queued(seq: u64, t: u64, anchor: Option<u64>, value: Option<&str>) -> Record {
+    rec(
+        "tagQueue",
+        vec![
+            Value::UInt(seq),
+            Value::Id(t),
+            Value::Bit(true),
+            anchor.map_or(Value::Absent, Value::Id),
+            value.map_or(Value::Absent, text),
+        ],
+    )
+}
+
+#[test]
+fn a_reorder_pass_counts_the_live_tags_it_wrote() {
+    let dir = temp_dir("pass");
+    let mut s = Store::open_in(&dir, SMALL, pool()).unwrap();
+    let mut r = Vec::new();
+    for t in 1..=5u64 {
+        r.extend([
+            set(t, NAME, &format!("t{t}")),
+            mark(t),
+            create(t, TAG, &format!("t{t}")),
+        ]);
+    }
+    s.commit_wait(r).unwrap();
+    let status = |s: &Store| {
+        let st = s.tag_pass().unwrap();
+        (st.pass, st.mode, st.stamped, st.live)
+    };
+    assert_eq!(status(&s), (0, None, 0, 5));
+    s.commit_wait(vec![pass(1, Some(0))]).unwrap();
+    s.commit_wait(vec![
+        pass_order(1, 0.0, 1),
+        pass_order(2, 1.0, 1),
+        pass_order(3, 2.0, 1),
+    ])
+    .unwrap();
+    assert_eq!(status(&s), (1, Some(0), 3, 5));
+    // Written again: counted once; the order is the later one.
+    s.commit_wait(vec![pass_order(1, 3.0, 1)]).unwrap();
+    assert_eq!(status(&s), (1, Some(0), 3, 5));
+    let q = Query {
+        sort: ALPHA,
+        limit: 10,
+        cap: tags::WORK_CAP,
+        unstamped: Some(1),
+        ..Query::default()
+    };
+    assert_eq!(read_all(&s, &q), vec![4, 5]);
+    assert_eq!(
+        read_all(
+            &s,
+            &Query {
+                sort: MANUAL,
+                limit: 10,
+                cap: tags::WORK_CAP,
+                ..Query::default()
+            }
+        ),
+        vec![2, 3, 1, 4, 5]
+    );
+    // A written tag that goes leaves the count; one that comes doesn't join it.
+    s.commit_wait(vec![rec("tagPrune", vec![Value::Id(2)])])
+        .unwrap();
+    s.commit_wait(vec![set(6, NAME, "t6"), mark(6), create(6, TAG, "t6")])
+        .unwrap();
+    assert_eq!(status(&s), (1, Some(0), 2, 5));
+    s.close();
+    drop(s);
+    s = Store::open_in(&dir, SMALL, pool()).unwrap();
+    assert_eq!(status(&s), (1, Some(0), 2, 5));
+    // A new pass counts from none; tags the old one wrote are unwritten for it.
+    s.commit_wait(vec![pass(2, Some(1))]).unwrap();
+    assert_eq!(status(&s), (2, Some(1), 0, 5));
+    assert_eq!(
+        read_all(
+            &s,
+            &Query {
+                unstamped: Some(2),
+                ..q.clone()
+            }
+        ),
+        vec![1, 3, 4, 5, 6]
+    );
+    s.commit_wait(vec![pass_order(1, 0.0, 2)]).unwrap();
+    assert_eq!(status(&s), (2, Some(1), 1, 5));
+    s.commit_wait(vec![pass(2, None)]).unwrap();
+    assert_eq!(status(&s), (2, None, 0, 5));
+    s.close();
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn queued_moves_read_in_order_until_popped() {
+    let dir = temp_dir("queue");
+    let mut s = Store::open_in(&dir, SMALL, pool()).unwrap();
+    s.commit_wait(vec![
+        queued(1, 5, Some(6), None),
+        queued(2, 7, None, Some("\"x\"")),
+        queued(3, 5, Some(7), None),
+    ])
+    .unwrap();
+    let seqs = |s: &Store, after: u64| -> Vec<u64> {
+        s.tag_queue(after, 10)
+            .unwrap()
+            .0
+            .iter()
+            .map(|q| q.seq)
+            .collect()
+    };
+    assert_eq!(seqs(&s, 0), vec![1, 2, 3]);
+    let (q, more) = s.tag_queue(0, 2).unwrap();
+    assert!(more);
+    assert_eq!((q[0].tag, q[0].anchor, q[0].after), (5, Some(6), true));
+    assert_eq!(
+        (q[1].anchor, q[1].value.as_deref()),
+        (None, Some(&b"\"x\""[..]))
+    );
+    s.commit_wait(vec![rec("tagQueuePop", vec![Value::UInt(2)])])
+        .unwrap();
+    assert_eq!(seqs(&s, 0), vec![1, 3]);
+    assert_eq!(seqs(&s, 1), vec![3]);
+    s.close();
+    drop(s);
+    s = Store::open_in(&dir, SMALL, pool()).unwrap();
+    assert_eq!(seqs(&s, 0), vec![1, 3]);
+    s.commit_wait(vec![
+        rec("tagQueuePop", vec![Value::UInt(1)]),
+        rec("tagQueuePop", vec![Value::UInt(3)]),
+    ])
+    .unwrap();
+    assert_eq!(seqs(&s, 0), Vec::<u64>::new());
+    assert_eq!(s.tag_unused(0).unwrap(), (0, vec![]));
     s.close();
     let _ = fs::remove_dir_all(&dir);
 }

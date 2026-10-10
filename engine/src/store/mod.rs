@@ -627,6 +627,25 @@ impl Store {
         self.derived(|v| names.iter().map(|n| tags::by_name(v, n)).collect())
     }
 
+    /// Each tag's cursor in a sort's order (`tags::positions`).
+    pub fn tag_positions(
+        &self,
+        sort: u64,
+        items: &[(u64, Option<Option<f64>>)],
+    ) -> StoreResult<Vec<Option<Vec<u8>>>> {
+        self.derived(|v| tags::positions(v, sort, items))
+    }
+
+    /// Queued moves of the manual order after `after`.
+    pub fn tag_queue(&self, after: u64, limit: usize) -> StoreResult<(Vec<tags::Queued>, bool)> {
+        self.derived(|v| tags::queue(v, after, limit))
+    }
+
+    /// The reorder pass's record and counts.
+    pub fn tag_pass(&self) -> StoreResult<tags::PassStatus> {
+        self.derived(tags::pass_status)
+    }
+
     /// The highest manual sort order of a live tag.
     pub fn tag_max_order(&self) -> StoreResult<Option<f64>> {
         self.derived(tags::max_order)
