@@ -8,7 +8,7 @@ import { after, test } from 'node:test';
 import { loadEngine } from '../engine/load.js';
 
 const tree = await import('./message-tree-db.js');
-const { ChatEngine, MODE } = await import('./chat-engine.js');
+const { AUTHOR, ChatEngine, MODE } = await import('./chat-engine.js');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'chat-engine-test-'));
 const directories = { root };
@@ -186,6 +186,24 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         // An empty `variables` object stays one.
         await chats.mergeMetadata({ tree: t, at: nb, set: { variables: {} }, unset: [], actor });
         assert.deepEqual(await chats.metadata(t, (await chats.messageIds([nb]))[0]), { variables: {} });
+
+        // State changes at two places on a path, a revert and a revert of it, read with the page's hash.
+        const atGreeting = await chats.changeState({ tree: t, at: ng, ops: [{ key: 'hp', variable: true, value: 10 }, { key: 'scene', value: 'inn' }], actor });
+        assert.equal(atGreeting.changes.length, 2);
+        const below = await chats.changeState({ tree: t, at: new1.node_ids[0], ops: [{ key: 'hp', variable: true, value: 9 }, { key: 'scene', value: 'inn' }, { key: 'integrity', value: 'x' }], actor, author: AUTHOR.script, ref: '/setvar' });
+        assert.equal(below.changes.length, 1, 'a key left as it is, and a derived key, record nothing');
+        const read = await chats.stateAt({ tree: t, at: new1.node_ids[0] });
+        assert.deepEqual(read.state, { variables: { hp: 9 }, scene: 'inn' });
+        assert.deepEqual(await chats.stateAt({ tree: t, at: new1.node_ids[0], ifHash: read.hash }), { unchanged: true });
+        const revert = await chats.revertChange({ change: below.changes[0], actor });
+        assert.deepEqual((await chats.stateAt({ tree: t, at: new1.node_ids[0] })).state, { variables: { hp: 10 }, scene: 'inn' });
+        await chats.revertChange({ change: revert.change, actor });
+        assert.deepEqual((await chats.stateAt({ tree: t, at: new1.node_ids[0] })).state, read.state);
+        assert.deepEqual((await chats.stateAt({ tree: t, at: ng })).state, { variables: { hp: 10 }, scene: 'inn' });
+        assert.deepEqual(await chats.revertChange({ change: '999999', actor }), { ok: false, reason: 'unknown change' });
+        assert.deepEqual(await chats.changeState({ tree: t, at: 'no such message', ops: [], actor }), { ok: false, reason: 'unknown node' });
+        await chats.changeState({ tree: t, at: ng, ops: [{ key: 'hp', variable: true }, { key: 'scene' }], actor });
+        await chats.changeState({ tree: t, at: new1.node_ids[0], ops: [{ key: 'hp', variable: true }], actor });
 
         // Read through the session, the metadata carries its UUID as `integrity`, which is never stored.
         assert.equal((await chats.load({ tree: t, at: nb, session: actor.session })).metadata.integrity, actor.session);
