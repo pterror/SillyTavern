@@ -69,7 +69,6 @@ import {
     regenerateGroup,
     group_generation_id,
     getGroupChat,
-    renameGroupMember,
     createNewGroupChat,
     getGroupAvatar,
     deleteGroupChat,
@@ -6741,7 +6740,18 @@ export async function renameCharacter(name = null, { silent = false, renameChats
         return false;
     }
 
-    const body = JSON.stringify({ avatar_url: oldAvatar, new_name: newValue });
+    // Asked first, so renaming is one request that also renames the past chats when wanted.
+    const renamePastChatsConfirm = renameChats !== null
+        ? renameChats
+        : silent
+            ? false
+            : await Popup.show.confirm(
+                t`Rename character`,
+                `<p>${t`Past chats contain the old character name. Would you like to update the character name in previous chats as well?`}</p>
+                <i><b>${t`Sprites folder (if any) should be renamed manually.`}</b></i>`,
+            ) == POPUP_RESULT.AFFIRMATIVE;
+
+    const body = JSON.stringify({ avatar_url: oldAvatar, new_name: newValue, rename_past_chats: renamePastChatsConfirm });
     const response = await fetch('/api/characters/rename', {
         method: 'POST',
         headers: getRequestHeaders(),
@@ -6808,20 +6818,7 @@ export async function renameCharacter(name = null, { silent = false, renameChats
                     throw new Error('New character not selected');
                 }
 
-                // Also rename as a group member
-                await renameGroupMember(oldAvatar, newAvatar, newValue.toString());
-                const renamePastChatsConfirm = renameChats !== null
-                    ? renameChats
-                    : silent
-                        ? false
-                        : await Popup.show.confirm(
-                            t`Character renamed!`,
-                            `<p>${t`Past chats will still contain the old character name. Would you like to update the character name in previous chats as well?`}</p>
-                            <i><b>${t`Sprites folder (if any) should be renamed manually.`}</b></i>`,
-                        ) == POPUP_RESULT.AFFIRMATIVE;
-
                 if (renamePastChatsConfirm) {
-                    await renamePastChats(oldAvatar, newAvatar, newValue);
                     await reloadCurrentChat();
                     toastr.success(t`Character renamed and past chats updated!`, t`Rename Character`);
                 } else {
@@ -6844,32 +6841,6 @@ export async function renameCharacter(name = null, { silent = false, renameChats
     }
 
     return true;
-}
-
-async function renamePastChats(oldAvatar, newAvatar, newName) {
-    // Single server-side UPDATE instead of fetching and re-saving every chat file
-    try {
-        const result = await fetch('/api/chats/tree/rename-in-content', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({ avatar_url: newAvatar, new_name: newName }),
-        });
-        if (!result.ok) {
-            throw new Error('Server-side rename failed');
-        }
-        const data = await result.json();
-        if (data.noSavedChats) {
-            // Nothing to rename - the character has no saved chats yet. Not a failure.
-            console.debug('[renamePastChats] Tree DB: no saved chats, nothing to rename');
-            return false;
-        }
-        console.debug(`[renamePastChats] Tree DB: renamed ${data.updated} messages`);
-        return true;
-    } catch (error) {
-        toastr.error(t`Past chats could not be renamed`);
-        console.error(error);
-        return false;
-    }
 }
 
 export function saveChatDebounced() {
