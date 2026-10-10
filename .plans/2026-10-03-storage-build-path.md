@@ -1802,7 +1802,8 @@ search with closed-quote phrases; chat search; world-info search; the exact sess
 row; the benches. Nothing routes to it: at the cut (5f) `/query` reads `lib.query({ search })` (passing
 `tagMatches` in its JSON and hash answers), `/api/chats/search` `searchSessions`, a chat name `sessionsNamed`, the
 new `/api/worldinfo/search` `books.search`, the pair postings' route and setting are added, and the server runs
-`runPairPostings()` after listening. Follow-ups (10-11, in progress): list rows read narrow (done, below); pair lists driving a phrase's candidates;
+`runPairPostings()` after listening. Follow-ups (10-11, in progress): list rows read narrow (done, below); pair lists driving a phrase's candidates
+(done, "Pairs driving the walk" below);
 the 10^6 bulk load under 300 s; session names unique per user; a character book entry's `group` and
 `automationId` searched.
 
@@ -1910,8 +1911,10 @@ Built, pair postings (10-11; `engine/src/search/pairs.rs`, kind `searchPairs { o
   the documents' length entries, keeping its cursor in the mode's entry; a write keeps the pairs of the documents the
   pass has reached (building) or not yet reached (deleting). A slice lost in a crash is redone from the flushed
   cursor; the test stops and reopens the store mid-build.
-- Reads use pairs only when the mode is on: a phrase's candidate field must hold every pair of its whole tokens
-  (its prefix token has none) before its text is read; a phrase of two whole tokens is decided by its pair, with no
+- Reads use pairs only when the mode is on. A phrase of two or more whole tokens (its prefix token has none) walks
+  its pairs' lists with its words' (5d follow-up 2, 10-11): its candidates are the documents holding every pair, a
+  pair's blocks found from its postings (it has no maxima, so it adds nothing to bounds or scores); a candidate's
+  field must hold every pair before its text is read; a phrase of two whole tokens is decided by its pair, with no
   text read.
 - `runPairPostings()` runs the pass a slice at a time with a 10 ms pause, one run at a time; `setPairPostings(on)`
   records the change (nothing when already so) and runs it; `close()` stops it.
@@ -1926,7 +1929,7 @@ Built, pair postings (10-11; `engine/src/search/pairs.rs`, kind `searchPairs { o
 | choice | picked | reason |
 |---|---|---|
 | a pair's entry | its posting slot only | presence and count are all a phrase check reads; counters and bounds would double the entries |
-| reads | a check before the text, candidates still from the words | the measured case (option 2) drove candidates by pairs; this keeps one walk and removes the text reads, the cost at scale |
+| reads | the pairs' lists walked beside the words' (candidates where all agree); the words' lists kept for scores and bounds | as the measured option 2, the pairs drive the walk; the words' maxima still bound blocks, and their postings give the tokens' counts |
 | pass order | the length entries' key order | every searched document has one per 16 ids, across every scope |
 
 Measured, 5d (10-11; `engine/examples/search.rs ... synth <cards> --real --bulk` on the app's records: tags and
@@ -1957,7 +1960,21 @@ its matches are under √(page · N / 512): reading a match whole (type, fav, fi
 
 Pair postings at 10^5 (`--pairs`): the build ran 173 s in slices with 10 ms between; runs 0.56 → 1.9 GB before
 merging (1.4 GB after). `"dark knight"` became exact (1 match, 12 ms; was 16 ms marked); `"the dragon"` stayed
-marked (22~ at 33 ms): candidates still come from both words' postings, so the walk's limit still cuts.
+marked (22~ at 33 ms): candidates still came from both words' postings, so the walk's limit still cut.
+
+Pairs driving the walk (follow-up 2; `librarySearch`, median ms, the same 10^5 store with pairs built, before → after;
+the page through `LibraryEngine.query` after it):
+
+| phrase | relevance | by name | page (relevance / by name) |
+|---|---|---|---|
+| `"dark knight"` | 15.6 → 0.29 (1, exact) | 31 → 1.0 | 0.8 / 1.4 |
+| `"the dragon"` | 18 (22~) → 1.25 (27, exact) | 105 (13~) → 13.6 (27, exact) | 7.5 / 20 |
+| `"the dark knight"` | 17 (0~) → 0.43 (0, exact) | 114 → 0.7 | 0.4 / 0.7 |
+| `"girl love"` | 21 (5~) → 1.16 (25, exact) | 99 (7~) → 12.4 (25, exact) | 7.1 / 18 |
+| `"dark kni` (unclosed) | 54~ → 54~ | 684~ → 665~ | unchanged: one whole token, no pair |
+
+By name, a phrase with few matches is counted, read in id order, then listed by `library_read::page` with those ids,
+each entity's state read (~0.4 ms a match here). An unclosed phrase with one whole word has no pair to drive it.
 
 Built, the chip row (10-11; `public/scripts/tag-match-chips.js`, `character-list.js` `showTagMatches`,
 `#character_tag_matches` above the list's pagination; the hash-mode answer's tag matches in
