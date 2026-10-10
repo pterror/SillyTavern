@@ -884,12 +884,15 @@ Left (in the order they build on each other):
   variables and `chat_metadata`, a change made while producing a reply recorded with the reply (the generate
   route), navigation replacing the state, other tabs.
 - The token-count cache's routes moved onto `TokenCache` at the cut (built, see "Built, the token-count cache").
-- Measured (see "Measured, chats" and "Built, opening a position faster" below). Not re-measured since the shape
-  counter: the isolated actions' device bytes (one sync each, as before).
-- Not settled, for the generate route: a change made while producing a reply hangs on the reply (layer 1 step 3),
-  but a regenerated reply identical to a stored one is that stored reply (`appendMessages`' twin rule); whether the
-  new generation's changes are recorded on it again is open (layer 1 says regenerating doesn't apply an increment
-  twice).
+- Measured (see "Measured, chats" and "Built, opening a position faster" below). To do: re-measure device bytes per
+  isolated action after the shape counter, and isolate how much of the synthetic load's 96 → 130 s is the counter
+  (5e's conversion load path cares).
+- For the generate route (answered, coordinator, 10-11): a reply's identity for dedup includes the state changes made
+  while producing it (layer 1 step 3). A regenerated reply whose text and changes equal a stored one's is that reply:
+  nothing new is recorded, so no change applies twice. The same text with different changes is a different reply,
+  stored as its own alternative with its own changes, so nothing is lost or merged silently. Not built:
+  `appendMessages`' twin rule compares speaker and text only today, and takes no changes.
+- Next: 5c is taken by a fresh builder; 5b's routes come back at the cut (5f).
 - At the cut, the answers that move a tab's session call `sessionMoved(uuid)` (the new v7 session's, on its first
   move), and an answer saying the session is gone calls `sessionGone()` (`public/scripts/tab-session.js`).
 - For 5e: old ids as `keyMap` records (counter above any decimal one), labels as bookmarks with `positionCreate`
