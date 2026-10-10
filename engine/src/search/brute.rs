@@ -113,6 +113,8 @@ struct Shape {
     prefix: bool,
     phrase: bool,
     negate: bool,
+    /// Restricted to the card tags field: the tags whose names it matches, carried.
+    carried: Option<BTreeSet<u64>>,
 }
 
 impl Shape {
@@ -130,6 +132,7 @@ impl Shape {
             toks,
             fields,
             negate,
+            carried: None,
         }
     }
 
@@ -249,24 +252,38 @@ pub struct Checker {
 }
 
 impl Checker {
-    /// Keeps the best `keep` matches.
-    pub fn new(q: &Query, keep: usize) -> Checker {
+    /// `tags`: every tag's name. Keeps the best `keep` matches.
+    pub fn new(q: &Query, tags: &BTreeMap<u64, Vec<u8>>, keep: usize) -> Checker {
         let scope = q.scope;
         let last = q.clauses.iter().rposition(|c| !tokens(&c.text).is_empty());
+        let tags_field = (scope == Scope::LIBRARY)
+            .then(|| scope.fields().iter().position(|d| d.name == "tags"))
+            .flatten()
+            .map(|f| f as u32);
         let mut shapes = Vec::new();
         for (i, c) in q.clauses.iter().enumerate() {
             let toks = tokens(&c.text);
             if !toks.is_empty() {
-                shapes.push(Shape::new(
-                    scope,
-                    toks,
-                    c.fields.clone(),
-                    Some(i) == last,
-                    c.negate,
-                ));
+                let mut s = Shape::new(scope, toks, c.fields.clone(), Some(i) == last, c.negate);
+                if let (Some(t), Some(fs)) = (tags_field, &c.fields)
+                    && !fs.is_empty()
+                    && fs.iter().all(|&f| f == t)
+                {
+                    s.carried = Some(
+                        tags.iter()
+                            .filter(|(_, name)| occurs(&tokens(name), &s.toks, s.prefix))
+                            .map(|(&t, _)| t)
+                            .collect(),
+                    );
+                }
+                shapes.push(s);
             }
         }
-        let mut keys: Vec<Key> = shapes.iter().flat_map(|s| s.keys(scope)).collect();
+        let mut keys: Vec<Key> = shapes
+            .iter()
+            .filter(|s| s.carried.is_none())
+            .flat_map(|s| s.keys(scope))
+            .collect();
         keys.sort();
         keys.dedup();
         Checker {
@@ -294,6 +311,13 @@ impl Checker {
         let mut score = 0.0;
         let mut positive = false;
         for s in &self.shapes {
+            if let Some(carried) = &s.carried {
+                if carried.iter().any(|t| tags.contains(t)) == s.negate {
+                    return;
+                }
+                positive |= !s.negate;
+                continue;
+            }
             let parts = s.parts(scope, doc);
             let hit = !parts.is_empty();
             if s.negate {
@@ -374,7 +398,21 @@ pub fn search(w: &World, q: &Query) -> (Vec<(u64, f64)>, u64) {
     }
     let empty: Fields = vec![Vec::new(); q.scope.fields().len()];
     let none = BTreeSet::new();
-    let mut c = Checker::new(q, usize::MAX);
+    let names: BTreeMap<u64, Vec<u8>> = w
+        .tags
+        .docs
+        .iter()
+        .map(|(&t, f)| {
+            (
+                t,
+                f.first()
+                    .and_then(|v| v.first())
+                    .cloned()
+                    .unwrap_or_default(),
+            )
+        })
+        .collect();
+    let mut c = Checker::new(q, &names, usize::MAX);
     for d in &ids {
         c.stats(
             &Doc::new(docs.get(d).unwrap_or(&empty), q.scope),

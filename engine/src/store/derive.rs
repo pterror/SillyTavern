@@ -9,7 +9,7 @@ use super::StoreError;
 use crate::keyspace::cache::Cache;
 use crate::keyspace::run::{ReadCounts, Run, RunIter, Source};
 use crate::keyspace::val::{Val, fold};
-use crate::keyspace::{Entries, Keyspace};
+use crate::keyspace::{Entries, Keyspace, Snapshot};
 use crate::log::Log;
 use crate::log::format::{Kind, Record, Value};
 
@@ -78,6 +78,8 @@ pub struct View<'a> {
     /// A bulk load's: entries shared across partitions that a write would read and rewrite are left alone.
     pub(super) bulk: bool,
     pub(super) ks: &'a Keyspace,
+    /// Reads of published entries go through this snapshot, when there is one (`View::with_snapshot`).
+    pub(super) snap: Option<&'a Snapshot<'a>>,
     pub(super) log: &'a Log,
 }
 
@@ -116,7 +118,11 @@ impl View<'_> {
     pub fn get_val(&self, key: &[u8]) -> Result<Option<Val>, StoreError> {
         let mut vals = self.unpublished(key)?;
         if vals.iter().all(Val::is_partial) {
-            match self.ks.get_val(key)? {
+            let published = match self.snap {
+                Some(s) => s.get_val(key)?,
+                None => self.ks.get_val(key)?,
+            };
+            match published {
                 Some(v) => vals.push(v),
                 None if vals.is_empty() => return Ok(None),
                 None => {}
@@ -190,6 +196,23 @@ impl View<'_> {
         Ok(acc)
     }
 
+    /// Runs `f` with this view reading published entries from one snapshot of the keyspace
+    /// (`Keyspace::with_snapshot`): every read in `f` sees one state of them. `f` must be short.
+    pub fn with_snapshot<T>(&self, f: impl FnOnce(&View) -> T) -> T {
+        self.ks.with_snapshot(|snap| {
+            let v = View {
+                layers: self.layers.clone(),
+                pending: self.pending.clone(),
+                staged: self.staged,
+                bulk: self.bulk,
+                ks: self.ks,
+                snap: Some(snap),
+                log: self.log,
+            };
+            f(&v)
+        })
+    }
+
     /// Whether a bulk load derives through this view (see `bulk`).
     pub fn is_bulk(&self) -> bool {
         self.bulk
@@ -249,9 +272,11 @@ impl View<'_> {
             }
         }
         // Each unpublished entry can hide at most one published one.
-        let published = self
-            .ks
-            .scan_vals(start, end, limit.saturating_add(unpublished.len()))?;
+        let limit_published = limit.saturating_add(unpublished.len());
+        let published = match self.snap {
+            Some(s) => s.scan_vals(start, end, limit_published)?,
+            None => self.ks.scan_vals(start, end, limit_published)?,
+        };
         let mut out = Vec::new();
         let mut published = published.into_iter().peekable();
         let mut unpublished = unpublished.into_iter().peekable();
