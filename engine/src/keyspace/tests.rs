@@ -319,3 +319,88 @@ fn keyspaces_sharing_a_pool_stay_within_its_budget_together() {
         fs::remove_dir_all(d).unwrap();
     }
 }
+
+#[test]
+fn a_range_estimate_reads_few_blocks_and_comes_near_the_count() {
+    let dir = temp_dir("estimate");
+    let ks = open_with(
+        &dir,
+        KsConfig {
+            block_size: 4096,
+            ..SMALL
+        },
+    );
+    let n = 40_000u64;
+    let mut end = 0;
+    // Keys in a scattered order, so runs of every flush overlap; a buffer left unflushed holds some too.
+    for i in 0..n {
+        end += 1;
+        wait_for_room(ks.pool());
+        ks.insert([(key(i * 7919 % n), Val::Put(vec![1; 9]))], Some((end, 1)));
+    }
+    ks.freeze_at(end);
+    ks.wait_flushed().unwrap();
+    for i in n..n + 500 {
+        end += 1;
+        ks.insert([(key(i), Val::Put(vec![1; 9]))], Some((end, 1)));
+    }
+    assert!(ks.stats().runs > 1);
+    for (a, b) in [
+        (0, n + 500),
+        (100, 101),
+        (1000, 1300),
+        (5000, 21_000),
+        (39_000, 40_200),
+        (n + 600, n + 700),
+    ] {
+        let exact = (b.min(n + 500) - a.min(n + 500)) as f64;
+        let blocks = ks.stats().blocks;
+        let est = ks.estimate(&key(a), &key(b)).unwrap();
+        let read = ks.stats().blocks - blocks;
+        assert!(
+            (est - exact).abs() <= exact * 0.05 + 10.0,
+            "[{a}, {b}): {est} for {exact}"
+        );
+        assert!(read <= 4 * 6 * ks.stats().runs, "[{a}, {b}): {read} blocks");
+        assert_eq!(ks.snapshot().estimate(&key(a), &key(b)).unwrap(), est);
+    }
+    ks.stop();
+    drop(ks);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn sorted_reads_give_each_key_what_a_read_of_it_gives() {
+    let dir = temp_dir("sorted");
+    let ks = open(&dir);
+    let mut model = BTreeMap::new();
+    let mut end = 0;
+    for round in 0..4 {
+        load(&ks, 3000, &mut model, &mut end);
+        if round == 2 {
+            ks.freeze_at(end);
+            ks.wait_flushed().unwrap();
+        }
+        let keys: Vec<Vec<u8>> = (0..2100).step_by(3).map(key).collect();
+        let refs: Vec<&[u8]> = keys.iter().map(Vec::as_slice).collect();
+        let together = ks.values_sorted(&refs).unwrap();
+        let snap = ks.snapshot().values_sorted(&refs).unwrap();
+        for (i, k) in keys.iter().enumerate() {
+            let one = val::fold(ks.values(k).unwrap()).and_then(Val::resolved);
+            assert_eq!(
+                val::fold(together[i].clone()).and_then(Val::resolved),
+                one,
+                "key {i}"
+            );
+            assert_eq!(
+                val::fold(snap[i].clone()).and_then(Val::resolved),
+                one,
+                "snapshot key {i}"
+            );
+            assert_eq!(one.as_ref(), model.get(k));
+        }
+    }
+    ks.stop();
+    drop(ks);
+    fs::remove_dir_all(&dir).unwrap();
+}

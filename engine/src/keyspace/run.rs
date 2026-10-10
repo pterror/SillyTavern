@@ -156,6 +156,16 @@ pub struct ReadCounts {
     pub file_reads: AtomicU64,
 }
 
+/// Data blocks a range estimate reads between its two ends, per run.
+const ESTIMATE_SAMPLES: u64 = 4;
+
+/// A data block's entries before a key, and in all.
+#[derive(Debug, Default, Clone, Copy)]
+struct Split {
+    before: f64,
+    entries: f64,
+}
+
 pub struct Run {
     pub uid: u64,
     pub path: PathBuf,
@@ -312,6 +322,181 @@ impl Run {
             level = below;
         }
         Ok(level)
+    }
+
+    /// The children of an index block: each one's last key and place.
+    fn children(&self, b: Arc<Block>) -> KsResult<Vec<(Vec<u8>, Handle)>> {
+        let mut out = Vec::new();
+        let mut c = Cursor::first(b).map_err(|e| self.corrupt(e))?;
+        while c.valid {
+            out.push((c.key.clone(), self.child(&c)?));
+            c.advance().map_err(|e| self.corrupt(e))?;
+        }
+        Ok(out)
+    }
+
+    /// The data block `key` falls in, or None for a key past the run's last: its place, and how many of its
+    /// entries lie before `key` and in all.
+    fn data_block_at(
+        &self,
+        key: &[u8],
+        cache: &Cache,
+        counts: &ReadCounts,
+    ) -> KsResult<Option<(Handle, Split)>> {
+        if key > self.max_key.as_slice() {
+            return Ok(None);
+        }
+        let mut block = self.top.clone();
+        for level in (0..self.levels).rev() {
+            let c = Cursor::seek(block, key).map_err(|e| self.corrupt(e))?;
+            if !c.valid {
+                return Ok(None);
+            }
+            let h = self.child(&c)?;
+            let kind = if level == 0 { KIND_DATA } else { KIND_INDEX };
+            block = self.read_block(h, kind, Some(cache), Some(counts))?;
+            if level == 0 {
+                let mut c = Cursor::first(block).map_err(|e| self.corrupt(e))?;
+                let mut s = Split::default();
+                while c.valid {
+                    s.entries += 1.0;
+                    if c.key.as_slice() < key {
+                        s.before += 1.0;
+                    }
+                    c.advance().map_err(|e| self.corrupt(e))?;
+                }
+                return Ok(Some((h, s)));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The data block holding byte `at` of the file, or the nearest one before it: its entries and its length.
+    fn data_block_holding(
+        &self,
+        at: u64,
+        cache: &Cache,
+        counts: &ReadCounts,
+    ) -> KsResult<(f64, f64)> {
+        let mut block = self.top.clone();
+        for level in (0..self.levels).rev() {
+            let ks = self.children(block)?;
+            // An index block follows its children's data in the file; a data block's place is its own.
+            let i = if level == 0 {
+                ks.partition_point(|(_, h)| h.offset <= at)
+                    .saturating_sub(1)
+            } else {
+                ks.partition_point(|(_, h)| h.offset < at)
+                    .min(ks.len().saturating_sub(1))
+            };
+            let Some(&(_, h)) = ks.get(i) else {
+                return Ok((0.0, 0.0));
+            };
+            let kind = if level == 0 { KIND_DATA } else { KIND_INDEX };
+            block = self.read_block(h, kind, Some(cache), Some(counts))?;
+            if level == 0 {
+                let mut c = Cursor::first(block).map_err(|e| self.corrupt(e))?;
+                let mut n = 0.0;
+                while c.valid {
+                    n += 1.0;
+                    c.advance().map_err(|e| self.corrupt(e))?;
+                }
+                return Ok((n, h.len as f64));
+            }
+        }
+        Ok((0.0, 0.0))
+    }
+
+    /// About how many entries the run holds in `[lo, hi)`, reading a few blocks: the data blocks the range starts
+    /// and ends in are counted, and the data blocks between them, which lie between those two in the file, by
+    /// their bytes, at the entries per byte of a few data blocks found at even steps through those bytes.
+    pub fn estimate(
+        &self,
+        lo: &[u8],
+        hi: &[u8],
+        cache: &Cache,
+        counts: &ReadCounts,
+    ) -> KsResult<f64> {
+        if lo >= hi || lo > self.max_key.as_slice() {
+            return Ok(0.0);
+        }
+        let Some((first, f)) = self.data_block_at(lo, cache, counts)? else {
+            return Ok(0.0);
+        };
+        let (last, l) = match self.data_block_at(hi, cache, counts)? {
+            Some(b) => b,
+            // Past the run's last key: through the end of its last data block.
+            None => {
+                let (h, mut s) = self
+                    .data_block_at(&self.max_key, cache, counts)?
+                    .ok_or_else(|| self.corrupt("its last key has no data block".into()))?;
+                s.before = s.entries;
+                (h, s)
+            }
+        };
+        if first == last {
+            return Ok(l.before - f.before);
+        }
+        let ends = f.entries - f.before + l.before;
+        let (from, to) = (first.offset + first.len, last.offset);
+        if to <= from {
+            return Ok(ends);
+        }
+        let (mut entries, mut len) = (0.0, 0.0);
+        for q in 0..ESTIMATE_SAMPLES {
+            let at = from + (to - from) * (2 * q + 1) / (2 * ESTIMATE_SAMPLES);
+            let (n, l) = self.data_block_holding(at, cache, counts)?;
+            entries += n;
+            len += l;
+        }
+        Ok(ends
+            + if len > 0.0 {
+                (to - from) as f64 * entries / len
+            } else {
+                0.0
+            })
+    }
+
+    /// The run's value for each of `keys`, in ascending order: a data block found for one key serves the keys
+    /// after it that it holds, without going down the index again.
+    pub fn get_sorted(
+        &self,
+        keys: &[&[u8]],
+        cache: &Cache,
+        counts: &ReadCounts,
+    ) -> KsResult<Vec<Option<Val>>> {
+        let mut out = vec![None; keys.len()];
+        // The data block read last, and its last key.
+        let mut held: Option<(Arc<Block>, Vec<u8>)> = None;
+        for (i, key) in keys.iter().enumerate() {
+            if *key > self.max_key.as_slice() {
+                break;
+            }
+            if held.as_ref().is_none_or(|(_, last)| *key > last.as_slice()) {
+                held = None;
+                let mut block = self.top.clone();
+                for level in (0..self.levels).rev() {
+                    let c = Cursor::seek(block, key).map_err(|e| self.corrupt(e))?;
+                    if !c.valid {
+                        break;
+                    }
+                    let kind = if level == 0 { KIND_DATA } else { KIND_INDEX };
+                    let child =
+                        self.read_block(self.child(&c)?, kind, Some(cache), Some(counts))?;
+                    if level == 0 {
+                        held = Some((child, c.key.clone()));
+                        break;
+                    }
+                    block = child;
+                }
+            }
+            let Some((block, _)) = &held else { continue };
+            let c = Cursor::seek(block.clone(), key).map_err(|e| self.corrupt(e))?;
+            if c.valid && c.key.as_slice() == *key {
+                out[i] = Some(c.val().map_err(|e| self.corrupt(e))?);
+            }
+        }
+        Ok(out)
     }
 
     /// The run's value for `key`.

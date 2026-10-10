@@ -373,6 +373,20 @@ impl Mem {
             .map(|(k, v)| (k.get(), v.val.val()))
     }
 
+    /// How many entries in `[start, end)` aren't deletions, as a snapshot at `seq` (None: now) reads them.
+    pub(super) fn count(&self, start: &[u8], end: &[u8], seq: Option<u64>) -> u64 {
+        self.map
+            .range::<[u8], _>((Bound::Included(start), Bound::Excluded(end)))
+            .filter(|(_, slot)| {
+                let v = match seq {
+                    Some(seq) => slot.at(seq),
+                    None => Some(&slot.val),
+                };
+                v.is_some_and(|v| v.val() != Val::Del)
+            })
+            .count() as u64
+    }
+
     /// Entries in `[start, end)` in order, until `live` of them aren't deletions.
     pub(super) fn page(&self, start: &[u8], end: &[u8], live: usize) -> Vec<(Vec<u8>, Val)> {
         let mut out = Vec::new();

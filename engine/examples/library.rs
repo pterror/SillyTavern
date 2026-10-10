@@ -4,7 +4,8 @@
 //!   cargo run --release --example library -- <dir> <cards> [actions|pages|bulk]
 //!
 //! `dir` is created and removed. Device bytes are `/proc/diskstats` sector deltas of the device holding `dir`
-//! (`ST_DISK`, e.g. nvme0n1p5), less an idle window of the same length taken just before.
+//! (`ST_DISK`, e.g. nvme0n1p5), less an idle window of the same length taken just before. With `ST_KEEP` set, `dir`
+//! is kept; with `ST_REUSE` set, a kept `dir` is measured again without loading.
 
 use std::path::Path;
 use std::sync::mpsc;
@@ -200,6 +201,23 @@ fn bulk_load(s: &Store, cards: u64) {
         st.numbers_micros as f64 / 1e6,
         st.number_entries,
     );
+}
+
+/// How many of the generator's cards have a data size in `[lo, hi]`.
+fn data_size_count(cards: u64, lo: u64, hi: u64) -> u64 {
+    let mut r = Rng(1);
+    let mut n = 0;
+    for e in FIRST_CARD..FIRST_CARD + cards {
+        for rec in card(&mut r, e) {
+            if rec.kind.name == "dataSize"
+                && let Value::UInt(v) = rec.values[1]
+                && (lo..=hi).contains(&v)
+            {
+                n += 1;
+            }
+        }
+    }
+    n
 }
 
 fn disk_sectors(dev: &str) -> u64 {
@@ -698,12 +716,15 @@ fn main() {
     let cards: u64 = args[2].parse().unwrap();
     let mode = args.get(3).map_or("actions", String::as_str);
     let dev = std::env::var("ST_DISK").unwrap_or_else(|_| "nvme0n1p5".into());
-    let _ = std::fs::remove_dir_all(dir);
+    let reuse = std::env::var_os("ST_REUSE").is_some();
+    if !reuse {
+        let _ = std::fs::remove_dir_all(dir);
+    }
     let s = Store::open(dir, StoreConfig::default()).unwrap();
     s.wait_ready().unwrap();
-    if mode == "bulk" {
+    if !reuse && mode == "bulk" {
         bulk_load(&s, cards);
-    } else {
+    } else if !reuse {
         load(&s, cards);
     }
     match mode {
@@ -712,6 +733,12 @@ fn main() {
             s.close();
         }
         "pages" => {
+            if std::env::var_os("ST_EXACT").is_some() {
+                eprintln!(
+                    "cards with a data size in [1025, 1100]: {}",
+                    data_size_count(cards, 1025, 1100)
+                );
+            }
             // Cold-ish: everything flushed, reopened.
             s.close();
             drop(s);
@@ -734,5 +761,7 @@ fn main() {
         _ => panic!("mode is actions, pages or bulk"),
     }
     std::thread::sleep(Duration::from_millis(10));
-    let _ = std::fs::remove_dir_all(dir);
+    if std::env::var_os("ST_KEEP").is_none() {
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
