@@ -929,11 +929,22 @@ fn ids_page(q: &Query, chk: &mut Checker) -> Result<Walked, StoreError> {
         if !seen.insert(*e) {
             continue;
         }
-        let Some(st) = chk.passes_any(*e)? else {
+        // Only what the filter and the sort read: not the entity's whole state.
+        let Some((kind, _, _)) = library::entity_info(chk.view, *e)? else {
             continue;
         };
-        let group = fav_first.map_or(0, |f| u8::from(st.fav != f));
-        rows.push(((group, st.sort_key(sort), st.kind, st.tie.clone()), *e));
+        if kind != CHARACTER && kind != GROUP {
+            continue;
+        }
+        let fav = library::fav_of(chk.view, *e)?;
+        if !chk.passes(*e, kind, fav)? {
+            continue;
+        }
+        let Some((_, sk, tie)) = library::sort_place(chk.view, *e, sort)? else {
+            continue;
+        };
+        let group = fav_first.map_or(0, |f| u8::from(fav != f));
+        rows.push(((group, sk, kind, tie), *e));
     }
     Ok(rows_page(q, rows))
 }
@@ -1689,12 +1700,38 @@ pub fn page_with<'a>(
     })
 }
 
-/// The library filter as a search filter: each document checked as a page checks it.
+/// The library filter as a search filter: each document checked as a page checks it, reading only what the
+/// filter needs (its type always; its fav for a fav filter).
 pub struct LibraryCheck(pub Filter);
+
+impl LibraryCheck {
+    /// Whether any document of the library scope could fail it.
+    pub fn needed(f: &Filter) -> bool {
+        !(f.characters && f.groups)
+            || f.fav.is_some()
+            || f.world.is_some()
+            || !f.ranges.is_empty()
+            || !f.all_tags.is_empty()
+            || !f.any_tags.is_empty()
+            || !f.no_tags.is_empty()
+            || f.ids.is_some()
+            || !f.not_ids.is_empty()
+    }
+}
 
 impl DocCheck for LibraryCheck {
     fn begin<'v>(&self, view: &'v View<'v>) -> Result<CheckFn<'v>, StoreError> {
         let mut chk = Checker::new(view, &self.0)?;
-        Ok(Box::new(move |e| Ok(chk.passes_any(e)?.is_some())))
+        let wants_fav = self.0.fav.is_some();
+        Ok(Box::new(move |e| {
+            let Some((kind, _, _)) = library::entity_info(view, e)? else {
+                return Ok(false);
+            };
+            if kind != CHARACTER && kind != GROUP {
+                return Ok(false);
+            }
+            let fav = wants_fav && library::fav_of(view, e)?;
+            chk.passes(e, kind, fav)
+        }))
     }
 }
