@@ -10,6 +10,7 @@ use super::library::{CHARACTER, FOLDER_TYPE, NAME, TAG};
 use super::tags::{self, ALPHA, ENTRIES, MANUAL, Query};
 use super::*;
 use crate::log::format::{FieldRef, Record, Value, kind_by_name};
+use crate::store::TagState;
 
 fn temp_dir(name: &str) -> PathBuf {
     static N: AtomicU64 = AtomicU64::new(0);
@@ -47,6 +48,10 @@ fn rec(kind: &str, values: Vec<Value>) -> Record {
 
 fn text(s: &str) -> Value {
     Value::Text(s.as_bytes().to_vec())
+}
+
+fn mark(t: u64) -> Record {
+    json(t, FieldRef::Code(tags::DEFINED), "")
 }
 
 fn create(e: u64, kind: u64, key: &str) -> Record {
@@ -328,6 +333,7 @@ fn tag_pages_counts_and_lookups_follow_every_change() {
                     r.push(order(t, o));
                 }
                 r.push(json(t, FieldRef::Key(b"tag:color".to_vec()), "\"#fff\""));
+                r.push(mark(t));
                 r.push(create(t, TAG, &format!("t{t}")));
                 s.commit_wait(r).unwrap();
                 m.insert(
@@ -435,7 +441,7 @@ fn tag_pages_counts_and_lookups_follow_every_change() {
             let keys: Vec<Vec<u8>> = gone.keys().map(|t| format!("t{t}").into_bytes()).collect();
             for (st, (t, _)) in s.tag_status(&keys).unwrap().iter().zip(&gone) {
                 let st = st.as_ref().unwrap();
-                assert_eq!((st.id, st.live), (*t, false));
+                assert_eq!((st.id, st.state), (*t, TagState::Gone));
             }
             if step % 100 == 99 {
                 s.close();
@@ -471,8 +477,10 @@ fn a_cursor_for_another_sort_is_refused() {
     let s = Store::open_in(&dir, SMALL, pool()).unwrap();
     s.commit_wait(vec![
         set(1, NAME, "a"),
+        mark(1),
         create(1, TAG, "a"),
         set(2, NAME, "b"),
+        mark(2),
         create(2, TAG, "b"),
     ])
     .unwrap();
@@ -503,6 +511,7 @@ fn tag_library() -> Vec<Vec<Record>> {
             r.push(set(t, FOLDER_TYPE, f));
         }
         r.push(order(t, ORDERS[rng.below(ORDERS.len() as u64) as usize]));
+        r.push(mark(t));
         r.push(create(t, TAG, &format!("t{t}")));
         out.push(r);
     }
@@ -581,4 +590,80 @@ fn a_bulk_load_places_every_tag_as_commits_do() {
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(&committed);
     }
+}
+
+#[test]
+fn a_tag_key_only_assignments_name_is_placed_once_defined() {
+    let dir = temp_dir("undefined");
+    let s = Store::open_in(&dir, SMALL, pool()).unwrap();
+    s.commit_wait(vec![set(1, NAME, "c"), create(1, CHARACTER, "c.png")])
+        .unwrap();
+    s.commit_wait(vec![create(2, TAG, "u"), assign(1, 2, true)])
+        .unwrap();
+    let q = Query {
+        sort: ENTRIES,
+        limit: 10,
+        cap: tags::WORK_CAP,
+        ..Query::default()
+    };
+    assert_eq!(read_all(&s, &q), Vec::<u64>::new());
+    let st = s.tag_status(&[b"u".to_vec()]).unwrap();
+    assert_eq!(
+        st[0].as_ref().map(|st| (st.id, st.state)),
+        Some((2, TagState::Undefined))
+    );
+    assert_eq!(s.tag_feed(key::TAG_CHANGE, 0, 10).unwrap().0, vec![]);
+    s.commit_wait(vec![set(2, NAME, "Undefined no more"), mark(2)])
+        .unwrap();
+    assert_eq!(read_all(&s, &q), vec![2]);
+    assert_eq!(s.tag_counts(&[2]).unwrap(), vec![(1, false)]);
+    assert_eq!(
+        s.tag_by_names(&[b"undefined NO more".to_vec()]).unwrap(),
+        vec![Some(2)]
+    );
+    let st = s.tag_status(&[b"u".to_vec()]).unwrap();
+    assert_eq!(st[0].as_ref().map(|st| st.state), Some(TagState::Live));
+    assert_eq!(s.tag_feed(key::TAG_CHANGE, 0, 10).unwrap().0.len(), 1);
+    s.close();
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn unassigning_a_merged_tag_keeps_its_target() {
+    let dir = temp_dir("merged-unassign");
+    let s = Store::open_in(&dir, SMALL, pool()).unwrap();
+    let mut r = vec![
+        set(1, NAME, "a"),
+        mark(1),
+        create(1, TAG, "a"),
+        set(2, NAME, "b"),
+        mark(2),
+        create(2, TAG, "b"),
+    ];
+    for e in [10, 11] {
+        r.push(set(e, NAME, "c"));
+        r.push(create(e, CHARACTER, &format!("c{e}.png")));
+    }
+    r.extend([
+        assign(10, 1, true),
+        assign(10, 2, true),
+        assign(11, 1, true),
+    ]);
+    s.commit_wait(r).unwrap();
+    s.commit_wait(vec![
+        rec("tagMerge", vec![Value::Id(1), Value::Id(2)]),
+        rec("entityDelete", vec![Value::Id(1)]),
+    ])
+    .unwrap();
+    // The client's delete-and-merge unassigns the merged tag from each entity that carried it.
+    s.commit_wait(vec![assign(10, 1, false)]).unwrap();
+    wait_folds(&s);
+    // 10 carried the target itself: it keeps it.
+    assert_eq!(
+        s.library_tag_ids(&[10, 11]).unwrap(),
+        vec![vec![2], vec![2]]
+    );
+    assert_eq!(s.tag_counts(&[2]).unwrap(), vec![(2, false)]);
+    s.close();
+    let _ = fs::remove_dir_all(&dir);
 }

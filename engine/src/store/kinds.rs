@@ -808,17 +808,11 @@ impl Deriver for TagAssign {
             assign(out, entity, tag, at, old.is_some());
         } else {
             dead(out, at);
-            let mut gone = Vec::new();
-            for t in [Some(raw), tag].into_iter().flatten() {
-                if !gone.contains(&t) && unassign(view, out, entity, t)? {
-                    tags::carriers_changed(view, out, t, -1)?;
-                    gone.push(t);
-                }
-            }
-            if !gone.is_empty() {
-                library::change(view, out, entity, |st| {
-                    st.tags.retain(|t| !gone.contains(t))
-                })?;
+            // A merged tag's own membership goes, never its target's: an entity that also carries the target
+            // keeps it.
+            if unassign(view, out, entity, raw)? {
+                tags::carriers_changed(view, out, raw, -1)?;
+                library::change(view, out, entity, |st| st.tags.retain(|t| *t != raw))?;
                 tags::entity_touched(view, out, entity, at)?;
             }
         }

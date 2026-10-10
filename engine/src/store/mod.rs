@@ -48,20 +48,44 @@ use crate::keyspace::{Hooks, Keyspace, KsConfig, KsError, Mem};
 use crate::log::format::{FieldRef, Record, Value, kind_by_name};
 use crate::log::{self, Cursor, Layout, Log, LogError, Opened, Start, TailFile, max_commit};
 
+/// An entity's type and key.
+pub type EntityKey = (u64, Vec<u8>);
+
+/// Entities with their tags, and the id to go on from.
+pub type AssignmentsPage = (Vec<(u64, Vec<u64>)>, Option<u64>);
+
+/// A tag's key and status.
+pub type KeyedStatus = (Vec<u8>, TagStatus);
+
 /// A tag's key as a reader names it: the live tag with that key, or the deleted one and where it leads.
 #[derive(Debug, Clone)]
 pub struct TagStatus {
     pub id: u64,
-    pub live: bool,
+    pub state: TagState,
     /// A deleted tag's: the key of the live tag its merges lead to.
     pub into: Option<Vec<u8>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TagState {
+    /// A defined tag.
+    Live,
+    /// A key only assignments name (`tags::DEFINED`).
+    Undefined,
+    /// Deleted.
+    Gone,
+}
+
 fn tag_status(v: &View, k: &[u8]) -> StoreResult<Option<TagStatus>> {
     if let Some(id) = library::entity_by_key(v, library::TAG, k)? {
+        let state = if tags::place(v, id)?.is_some() {
+            TagState::Live
+        } else {
+            TagState::Undefined
+        };
         return Ok(Some(TagStatus {
             id,
-            live: true,
+            state,
             into: None,
         }));
     }
@@ -74,7 +98,7 @@ fn tag_status(v: &View, k: &[u8]) -> StoreResult<Option<TagStatus>> {
     };
     Ok(Some(TagStatus {
         id,
-        live: false,
+        state: TagState::Gone,
         into,
     }))
 }
@@ -606,6 +630,56 @@ impl Store {
     /// The highest manual sort order of a live tag.
     pub fn tag_max_order(&self) -> StoreResult<Option<f64>> {
         self.derived(tags::max_order)
+    }
+
+    /// Each entity's type and key, or None.
+    pub fn library_keys(&self, ids: &[u64]) -> StoreResult<Vec<Option<EntityKey>>> {
+        self.derived(|v| {
+            ids.iter()
+                .map(|e| Ok(library::entity_info(v, *e)?.map(|(t, k, _)| (t, k))))
+                .collect()
+        })
+    }
+
+    /// The tags each entity carries as they are now (merged tags as their targets), in id order.
+    pub fn library_tag_ids(&self, ids: &[u64]) -> StoreResult<Vec<Vec<u64>>> {
+        self.derived(|v| ids.iter().map(|e| library_read::tags_now(v, *e)).collect())
+    }
+
+    /// Entities from id `from` on that carry tags, with their tags as they are now, up to `limit` entities;
+    /// and the id to go on from, None at the end.
+    pub fn tag_assignments(&self, from: u64, limit: usize) -> StoreResult<AssignmentsPage> {
+        self.derived(|v| {
+            let p = key::of(key::MEMBER_OF);
+            let mut at = key::id(key::MEMBER_OF, from);
+            let mut out: Vec<(u64, Vec<u64>)> = Vec::new();
+            loop {
+                let found = v.scan(&at, &key::prefix_end(&p), 1)?;
+                let Some((k, _)) = found.into_iter().next() else {
+                    return Ok((out, None));
+                };
+                let mut i = p.len();
+                let e = crate::keyspace::val::get_u64(&k, &mut i)
+                    .ok_or_else(|| StoreError::Entry("a membership key doesn't decode".into()))?;
+                if out.len() == limit {
+                    return Ok((out, Some(e)));
+                }
+                out.push((e, library_read::tags_now(v, e)?));
+                at = key::prefix_end(&key::id(key::MEMBER_OF, e));
+            }
+        })
+    }
+
+    /// For each tag id: its key and state, as `tag_status` gives them.
+    pub fn tag_keys(&self, ids: &[u64]) -> StoreResult<Vec<Option<KeyedStatus>>> {
+        self.derived(|v| {
+            ids.iter()
+                .map(|&t| match tags::key_of(v, t)? {
+                    Some(k) => Ok(tag_status(v, &k)?.filter(|st| st.id == t).map(|st| (k, st))),
+                    None => Ok(None),
+                })
+                .collect()
+        })
     }
 
     /// For each key: the live tag, or the deleted one and the key of the live tag its merges lead to.
