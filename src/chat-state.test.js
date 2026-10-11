@@ -9,6 +9,7 @@ import { after, test } from 'node:test';
 import { loadEngine } from '../engine/load.js';
 
 const { ChatEngine } = await import('./chat-engine.js');
+const { baselineAfter, baselineOf, metadataChanges, replaceInPlace } = await import('../public/scripts/state-sync.js');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'chat-state-test-'));
 after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -116,5 +117,36 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         assert.deepEqual(await stateAt(chain.node_ids[1]), { scene: 'road', variables: { gold: 1, took: true }, mood: 'glad' });
         assert.deepEqual(await chats.store.chatRead('produced', { messages: [(await chats.messageIds([chain.node_ids[1]]))[0]] }),
             [[{ key: 'took', variable: true, value: 'true' }]]);
+    });
+
+    test(`${kind}: two pages' per-variable changes merged by the engine leave each page's change`, async () => {
+        const { chats, t, at, state } = await open(engine);
+        const page = async () => {
+            const metadata = {};
+            replaceInPlace(metadata, await state());
+            return { metadata, baseline: baselineOf(metadata) };
+        };
+        const save = async (p, actor) => {
+            const changes = metadataChanges(p.metadata, p.baseline);
+            if (!changes) return;
+            await chats.mergeMetadata({ tree: t, at, set: changes.set, unset: changes.unset, variables: changes.variables, actor });
+            p.baseline = baselineAfter(p.baseline, changes);
+        };
+        await chats.mergeMetadata({ tree: t, at, set: { note: 'n', variables: { hp: 3, mp: 1 } }, unset: [], actor: tabA });
+        const a = await page();
+        const b = await page();
+        a.metadata.variables.hp = 4;
+        delete a.metadata.variables.mp;
+        // Page B replaces the object wholesale, as an extension might.
+        b.metadata.variables = { hp: 3, mp: 1, gold: 7 };
+        b.metadata.note = 'm';
+        await save(a, tabA);
+        await save(b, tabB);
+        assert.deepEqual(await state(), { note: 'm', variables: { hp: 4, gold: 7 } });
+        // Saved again unchanged, nothing is written.
+        const head = await chats.store.chatRead('nextIds', {});
+        await save(a, tabA);
+        await save(b, tabB);
+        assert.deepEqual(await chats.store.chatRead('nextIds', {}), head);
     });
 }

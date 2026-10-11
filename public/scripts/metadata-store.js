@@ -6,6 +6,7 @@ import { _setCurrentTarget, setMetadataStoredListener } from './chat-store.js';
 import { delay } from './utils.js';
 import { t } from './i18n.js';
 import { isStoredNodeId } from './node-identity.js';
+import { baselineAfter, baselineOf, changesStateHere, metadataChanges, replaceInPlace, unsavedVariables } from './state-sync.js';
 
 // Mirrors _messageSnapshots (generation.js), but for chat_metadata's own content (author's note, custom
 // extension keys, `tainted`, etc.) rather than message rows - so a tree op that only changed the message
@@ -27,18 +28,6 @@ const _sentMetadataChanges = new Map();
 
 /** @typedef {{ set: Record<string, unknown>, unset: string[] }} MetadataChanges */
 
-/**
- * @param {ChatMetadata|null|undefined} metadata
- * @returns {Map<string, string>}
- */
-function _baselineOf(metadata) {
-    const baseline = new Map();
-    for (const [key, value] of Object.entries(metadata ?? {})) {
-        if (key === 'integrity' || value === undefined) continue;
-        baseline.set(key, JSON.stringify(value));
-    }
-    return baseline;
-}
 
 /**
  * The chat metadata keys the page changed since it last had them from the server or stored them.
@@ -47,7 +36,7 @@ function _baselineOf(metadata) {
 export function changedMetadataKeys() {
     /** @type {MetadataChanges} */
     const changes = { set: {}, unset: [] };
-    const current = _baselineOf(chat_metadata);
+    const current = baselineOf(chat_metadata);
     for (const [key, json] of current) {
         if (_metadataBaseline.get(key) !== json) changes.set[key] = chat_metadata[key];
     }
@@ -57,13 +46,63 @@ export function changedMetadataKeys() {
     return Object.keys(changes.set).length || changes.unset.length ? changes : null;
 }
 
+// State layer 1 (`chat_metadata` as the state at the pointer, variables sent one by one): switched on at the
+// engine cut (build path 5f), which moves the senders and the answers moving the pointer onto these.
+
+/**
+ * What changed in `chat_metadata` since the page last had it from the server, per key and per variable.
+ * @returns {import('./state-sync.js').MetadataChanges|null} Null when nothing changed.
+ */
+export function changedMetadata() {
+    return metadataChanges(chat_metadata, _metadataBaseline);
+}
+
+/**
+ * Takes on changes the server stored.
+ * @param {import('./state-sync.js').MetadataChanges} changes
+ */
+export function noteMetadataChangesStored(changes) {
+    _metadataBaseline = baselineAfter(_metadataBaseline, changes);
+}
+
+/**
+ * Takes on the server's state at the pointer (the pointer moved, or another tab changed it), in place.
+ * @param {ChatMetadata} state
+ */
+export function takeServerState(state) {
+    replaceInPlace(chat_metadata, state);
+    _metadataBaseline = baselineOf(state);
+    _lastSavedMetadataJSON = _metadataContentJSON(state);
+}
+
+/**
+ * A save of `changes` the server refused or that failed: the page takes the server's state back, and an error names
+ * the variables not saved.
+ * @param {ChatMetadata} state The server's state at the pointer.
+ * @param {import('./state-sync.js').MetadataChanges} changes
+ */
+export function metadataChangesNotSaved(state, changes) {
+    takeServerState(state);
+    const names = unsavedVariables(changes);
+    toastr.error(names.length ? t`Chat variables not saved: ${names.join(', ')}` : t`Chat metadata not saved.`, t`Save failed`);
+}
+
+/**
+ * Whether a state change recorded at `at` (null: the tree's root) changes the state shown here, so the page reads
+ * it again.
+ * @param {string|null} at
+ */
+export function stateChangedHere(at) {
+    return changesStateHere(at, chat);
+}
+
 /**
  * Takes on chat metadata the server stored whole (a compat chat save), so it is what the page last had from the
  * server and isn't saved again unchanged.
  * @param {ChatMetadata} metadata What was sent.
  */
 export function noteMetadataStored(metadata) {
-    _metadataBaseline = _baselineOf(metadata);
+    _metadataBaseline = baselineOf(metadata);
     _lastSavedMetadataJSON = _metadataContentJSON(metadata);
 }
 
@@ -112,7 +151,7 @@ function _metadataContentJSON(metadata) {
 // those cases the previous snapshot no longer describes what the server has, so treat it as unknown.
 export function _resetMetadataSaveSnapshot() {
     _lastSavedMetadataJSON = null;
-    _metadataBaseline = _baselineOf(chat_metadata);
+    _metadataBaseline = baselineOf(chat_metadata);
     _sentMetadataChanges.clear();
 }
 
@@ -211,7 +250,7 @@ export async function _postChatMetadata(owner, target, metadata) {
             }
             if (result) {
                 _lastSavedMetadataJSON = metadataContentJSON;
-                _metadataBaseline = _baselineOf(freshMetadata);
+                _metadataBaseline = baselineOf(freshMetadata);
             }
         } catch (error) {
             console.error('[saveMetadata] Failed to save metadata after retrying:', error);

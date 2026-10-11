@@ -883,8 +883,8 @@ Left (in the order they build on each other):
   `identifier`), and the tab told its session is gone.
 - State layer 1 steps 2–5, 7, 8 on these records: the engine's operations are built (`changeState`, `revertChange`,
   `stateAt`, below; variables merged per variable, 10-11); left are the routes (`/api/state/change`, `/revert`,
-  `/at`, at the cut), the page's compat for variables and `chat_metadata` (built uncalled until 5f, answered
-  10-11), a change made while producing a reply recorded with the reply (the engine's append and twin rule built
+  `/at`, at the cut), the page's compat for variables and `chat_metadata` (built uncalled until 5f, 10-11: see
+  "Built, the page's compat for variables"), a change made while producing a reply recorded with the reply (the engine's append and twin rule built
   10-11; the generate route passes them at the cut), navigation replacing the state, other tabs.
 - The token-count cache's routes moved onto `TokenCache` at the cut (built, see "Built, the token-count cache").
 - Measured (see "Measured, chats" and "Built, opening a position faster" below). To do: re-measure device bytes per
@@ -1502,6 +1502,30 @@ Built, variables merged per variable (10-11; `src/chat-engine.js`, test `src/cha
   values the same way).
 - Tests (native and wasm): the two-tab loss reproduced first (failed before the fix), per-variable sets and unsets,
   nothing written when nothing differs, the object kept or removed, a whole save removing a variable it lacks.
+
+Built, the page's compat for variables, not called until 5f (10-11; `public/scripts/state-sync.js`, wrappers in
+`metadata-store.js`; tests `tests/state-sync.test.js`, `src/chat-state.test.js`), as answered:
+- `metadataChanges(metadata, baseline)`: per top-level key as `changedMetadataKeys()` (unchanged and still what the
+  senders use), and per variable in `variables: { set, unset }`, only those whose value differs from the baseline;
+  `variables` replaced wholesale goes through the same diff. The object made (empty or not) is `set: { variables: {}
+  }`; the object removed is `unset: ['variables']` (every variable goes, as the engine's merge does for it).
+  `baselineAfter` is the baseline once the server stored them; `baselineOf` replaced `metadata-store.js`' own copy
+  (same rule).
+- `replaceInPlace(target, state)`: the server's state at the pointer replaces `chat_metadata`'s contents in its key
+  order (so `jsonHash()` of the page's copy is the server's), the `variables` object kept, so references held to
+  either stay live.
+- `unsavedVariables(changes)` names a failed save's variables; `changesStateHere(at, path)`: a change at a message on
+  the page's path (or at the tree's root) changes what it shows.
+- `metadata-store.js`: `changedMetadata()`, `noteMetadataChangesStored()`, `takeServerState()`,
+  `metadataChangesNotSaved()` (takes the server's state, the error naming the variables) and `stateChangedHere()`,
+  called by nothing yet.
+- Tests: the diff, baseline and replacement rules (jest); two pages' changes, one replacing `variables` wholesale,
+  merged by the engine keeping both, saved again writing nothing (native and wasm).
+- At the cut: the generate request's `page_metadata` and the metadata save send `changedMetadata()` and take
+  `noteMetadataChangesStored()` on their answer; a failure calls `metadataChangesNotSaved()` with the state the
+  answer carries; the answers moving the pointer (open, swipe, branch, back and forward, a bookmark) carry the state
+  there and call `takeServerState()`; the changes stream tells tabs of state changes and reverts (where they hang),
+  and a tab for which `stateChangedHere()` holds reads the state again with its hash (`stateAt`'s `ifHash`).
 
 Built, a reply's state changes (10-11; `engine/src/store/state.rs`, `chat_read.rs`, binding `chatRead('produced')`,
 `src/chat-engine.js`; tests `state_tests.rs`, `src/chat-state.test.js`), as answered:
