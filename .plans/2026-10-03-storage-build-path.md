@@ -2260,11 +2260,16 @@ How it runs:
   stopped server leaves none) are removed on close, so the old folders end byte-identical (tested).
 - The group chat repair and the pass-less tag moves run on in-memory copies (the old scripts' own functions); the
   zztest cleanup's plans are read and applied to what is converted.
-- One bulk load into the empty store: tags (definitions, keys only assignments name, deleted tags), characters
+- A bulk load into the empty store: tags (definitions, keys only assignments name, deleted tags), characters
   (values, fav, sizes, hashes, assignments), groups, and with `--keep-orphans` the unowned trees. Then commits:
-  merges, the tag pass, marks, world books, lorebook links, characters' own books, then each owner's chats (messages
-  with keys, send keys and itemizations; state changes; the deterministic session's fork choices, pointer, opening
-  choice; bookmarks).
+  merges, the tag pass, marks, world books, lorebook links, characters' own books. Then a second bulk load of every
+  owner's messages (with their outside keys, send keys, values, times and itemizations) and state changes; then
+  commits of each tree's deterministic session: its fork choices, pointer, opening choice and bookmarks.
+- The loader partitions a record about a message it appends by that message's owner (`Loader::message_partition`;
+  a state change at a tree's root by the tree): the append and everything of the message and its tree derive in
+  order on one worker. Test `engine/store.test.js` "chats bulk loaded read as the same chats committed" (native and
+  wasm; owners and messages placed so a message's own id and its owner's fall to different workers; it fails
+  without the mapping: a value derived before its append is refused).
 - Apply builds `<user>/store.converting/` (deleted and built again if a run stopped), checks it (`verify.js`), then
   renames it to `<user>/store/` and syncs the folder. A problem stops it and deletes the new store.
 
@@ -2275,6 +2280,34 @@ How it runs:
 | bookmark order and suffixes | labels by (created_at, id), then the dropped chats; a repeated name `name (1)`... | the old chat list's order; names unique per tree |
 | what blocks the apply | an unreadable card or message, rows no anchor reaches, two metadata at one place that differ, an owner two entities read | anything else is converted or listed |
 | the check | a second read of everything after the writes | each value read back through the readers the server uses |
+| chats | a bulk load, partitioned by owner | through commits the 20k-card set's 168k messages took 92 s (1.8k a second, the commit path's derivation serial); the load 14 s, and fewer bytes written (one merge, no tiered merges) |
+
+Measured (10-11; scratchpad `5e/bench-build.mjs` builds the old stores through today's write paths: cards with a
+150-word description and four more fields, 1–3 of 50 tags, a third linking one of 25 lorebook names of which 20
+are books, chats of ~100-word messages with a checkpoint and a fork; `5e/bench-run.mjs` runs the conversion and
+counts device bytes on the scratchpad's NVMe btrfs less an idle window; native engine, 24 cores):
+
+| | 2,000 cards, 8.8k messages | 20,000 cards, 168k messages | 100,000 cards, 7,200 owners, 446k messages |
+|---|---|---|---|
+| old stores | 25 MB | 342 MB | 1.18 GB |
+| dry run | 0.3 s | 3.4 s | 11.2 s |
+| apply | 4.6 s | 37.8 s | 109 s |
+| of which: library read and load, books and links / chats / the check | | 3.4 / 14.3 / 20.0 s | 20.2 / 23.5 / 65.3 s |
+| store | 19 MB | 273 MB | 925 MB |
+| device bytes written | | 480 MB | 1.83 GB |
+| resident peak | 322 MB | 482 MB | 741 MB |
+
+Scaled to the user's library (381k cards, 7,200 chat owners; their messages aren't counted here: none of their data
+was read): the library's read, load and links grow with cards (~40 s per 100k), the chats with messages (~19k a
+second), the check with both (~65 s per 100k cards and 450k messages). At 381k cards and 2M messages: about 2.5 min
+library, 1.8 min chats, 5 min the check, ~10 min in all; a store of ~3.5 GB (~1.6 GB library, ~1 KB a message)
+written as ~7 GB of device bytes (staged logs, spills and the merged runs: about twice the store). Today's fields
+conversion wrote 16.3 GB for a 13.7 GB file (5f). The avatars are hard links: no image bytes.
+
+Found while building: a read-only open of a WAL database makes its `-wal` and `-shm` files (handled above); the
+bulk loader stops the store when a record is refused during derivation (the conversion then deletes the store).
+The chats' load spreads only over the workers the owners' id units reach (owners are `>> 10` units; 7,200 owners
+with consecutive ids are 8 units): its CPU time per message grew with the size, its wall time didn't.
 
 What it reads, and what each becomes:
 - `character-metadata.sqlite` in the blob layout and the old schema the user's file is at (remove-migrations: never

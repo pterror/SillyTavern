@@ -390,3 +390,80 @@ for (const [name, engine] of Object.entries(bindings)) {
         await reopened.close();
     });
 }
+
+const TREES = [3_000n, 700_000n, 9_000_000n];
+/** @param {number} o @param {number} i */
+const messageId = (o, i) => 50_000n + BigInt(i) * 4_096n + BigInt(o);
+
+/**
+ * A forest of messages over three trees with everything a conversion records about them: values, times, outside
+ * keys, itemizations, replaced texts, state changes at messages and at a root.
+ */
+function chatRecords() {
+    const words = ['dragon', 'knight', 'quiet', 'ember', 'river', 'storm'];
+    const records = [];
+    let change = 1n;
+    // Owners and messages far apart, so a message's own id and its owner's fall to different load workers.
+    for (const [o, owner] of TREES.entries()) {
+        const ids = [];
+        for (let i = 0; i < 60; i++) {
+            const m = messageId(o, i);
+            const parent = i === 0 ? undefined : ids[Math.floor((i - 1) / 2)];
+            records.push({ kind: 'messageAppend', id: m, ...(parent ? { parent } : {}), owner, time: 1_700_000_000_000 + (i % 7), text: `${words[i % 6]} ${words[(i * 5) % 6]} number ${i}`, flags: i % 2, user: 1n, ...(i % 9 === 0 ? { sendKey: Buffer.from(`key-${owner}-${i}`) } : {}) });
+            records.push({ kind: 'keyMap', message: m, key: Buffer.from(`old-${owner}-${i}`) });
+            if (i % 3 === 0) records.push({ kind: 'jsonValue', message: m, field: 'extra.api', json: '"openai"' });
+            if (i % 4 === 0) records.push({ kind: 'messageTime', message: m, field: 6, delta: -i });
+            if (i % 5 === 0) records.push({ kind: 'itemization', message: m, raw: i % 2 === 0, data: Buffer.from(`prompt ${i}`) });
+            if (i % 7 === 0) records.push({ kind: 'textValue', message: m, field: 1, text: `replaced ${words[i % 6]}` });
+            if (i % 8 === 0) records.push({ kind: 'stateChange', id: change++, message: m, time: 5, author: 4, key: 'note', value: `"n${i}"`, user: 1n });
+            ids.push(m);
+        }
+        records.push({ kind: 'stateChange', id: change++, tree: owner, time: 5, author: 4, key: 'root', value: '1', user: 1n });
+    }
+    return records;
+}
+
+/** @param {unknown} v A read with every record position taken out. */
+function withoutPositions(v) {
+    if (Array.isArray(v)) return v.map(withoutPositions);
+    if (v && typeof v === 'object' && !Buffer.isBuffer(v)) return Object.fromEntries(Object.entries(v).filter(([k]) => k !== 'position').map(([k, x]) => [k, withoutPositions(x)]));
+    return v;
+}
+
+for (const [name, engine] of Object.entries(bindings)) {
+    test(`${name}: chats bulk loaded read as the same chats committed`, async () => {
+        const committed = await engine.Store.open(path.join(tmp, `${name}-chats-committed`));
+        const loaded = await engine.Store.open(path.join(tmp, `${name}-chats-loaded`));
+        const user = [{ kind: 'keyMap', user: 1n, key: Buffer.from('u') }];
+        await committed.commit(user);
+        await loaded.commit(user);
+        const records = chatRecords();
+        for (let i = 0; i < records.length; i += 97) await committed.commit(records.slice(i, i + 97));
+        const load = loaded.load();
+        for (let i = 0; i < records.length; i += 97) await load.add(records.slice(i, i + 97));
+        await load.finish();
+        const ids = records.filter(r => r.kind === 'messageAppend').map(r => r.id);
+        const read = async (/** @type {any} */ s) => {
+            const keys = TREES.flatMap((owner, o) => Array.from({ length: 60 }, (_, i) => [`old-${owner}-${i}`, messageId(o, i)]));
+            const out = { messages: await s.chatRead('messages', { ids }), stats: await s.chatRead('stats', { owners: TREES }), keys: await s.chatRead('ids', { space: 0, keys: keys.map(k => k[0]) }) };
+            assert.deepEqual(out.keys, keys.map(k => k[1]));
+            for (const tree of TREES) {
+                out[`roots ${tree}`] = await s.chatRead('children', { tree, limit: 100 });
+                out[`search ${tree}`] = await s.search({ scope: { chat: tree }, clauses: [{ text: 'dragon' }], limit: 100 });
+                out[`state ${tree}`] = await s.chatRead('state', { tree });
+                out[`sent ${tree}`] = await s.chatRead('sent', { owner: tree, keys: [Buffer.from(`key-${tree}-9`), Buffer.from(`key-${tree}-18`)] });
+            }
+            for (const m of ids) {
+                const tree = TREES[Number((m - 50_000n) % 4_096n)];
+                out[`children ${m}`] = await s.chatRead('children', { tree, parent: m, limit: 100 });
+                out[`path ${m}`] = await s.chatRead('path', { tree, at: m });
+                out[`state at ${m}`] = await s.chatRead('state', { tree, at: m });
+                out[`count ${m}`] = await s.chatRead('messageCount', { tree, at: m });
+            }
+            return withoutPositions(out);
+        };
+        assert.deepEqual(await read(loaded), await read(committed));
+        await committed.close();
+        await loaded.close();
+    });
+}
