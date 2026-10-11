@@ -1542,6 +1542,18 @@ impl Store {
                 let (before, limit) = (opt_integer(a, "before")?, limit(a)?);
                 Box::new(move |s| s.chat_read(|v| cr::recent(v, before, limit)).map(JsTree))
             }
+            "libraryNamed" => {
+                let (kind, limit) = (req_integer(a, "type")?, limit(a)?);
+                let name = string(
+                    "name",
+                    a.get::<Unknown>("name")?
+                        .ok_or_else(|| invalid("libraryNamed needs a name".into()))?,
+                )?;
+                Box::new(move |s| {
+                    s.chat_read(|v| cr::library_named(v, kind, &name, limit))
+                        .map(JsTree)
+                })
+            }
             "entityChanges" => {
                 let (after, limit) = (opt_integer(a, "after")?.unwrap_or(0), limit(a)?);
                 Box::new(move |s| {

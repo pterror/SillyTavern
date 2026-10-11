@@ -808,3 +808,26 @@ pub fn entity_changes(view: &View, after: u64, limit: usize) -> Result<Js, Store
         ("end", Js::Big(end)),
     ]))
 }
+
+/// The entities of `kind` whose folded name (`library::fold_name`) is `name`'s, read from the name order of the
+/// whole library (favourites and the rest), at most `limit`: `[{ id, tie }]` in the order's tie order per part.
+/// What compares equal more strictly (exactly, or case- and accent-insensitively) is the caller's check.
+pub fn library_named(view: &View, kind: u64, name: &[u8], limit: usize) -> Result<Js, StoreError> {
+    use super::library::{BY_NAME, Scope, fold_name, order_prefix};
+    let folded = fold_name(name);
+    let mut out = Vec::new();
+    for fav in [false, true] {
+        let mut p = order_prefix(&Scope::All, BY_NAME, kind, fav);
+        crate::keyspace::val::put_bytes(&mut p, &folded);
+        for (k, v) in view.scan(&p, &key::prefix_end(&p), limit.saturating_sub(out.len()))? {
+            let mut at = p.len();
+            let tie = crate::keyspace::val::get_bytes(&k, &mut at)
+                .ok_or_else(|| StoreError::Entry("a name order key doesn't decode".into()))?;
+            let mut i = 0;
+            let id = crate::log::format::get_uvarint(&v, &mut i)
+                .map_err(|_| StoreError::Entry("a name order entry doesn't decode".into()))?;
+            out.push(Js::Obj(vec![("id", Js::Big(id)), ("tie", Js::Text(tie))]));
+        }
+    }
+    Ok(Js::Arr(out))
+}
