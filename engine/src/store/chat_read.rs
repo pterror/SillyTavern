@@ -657,6 +657,47 @@ pub fn subtree_drops(
     ]))
 }
 
+/// For each message, the state changes made while producing it (`state::PRODUCED`), reverted or not, in order:
+/// `{ key, variable, value }` (`value` null: the key was removed).
+pub fn produced(view: &View, ms: &[u64]) -> Result<Js, StoreError> {
+    let shapes = chat::shapes(view, ms)?;
+    let mut out = Vec::with_capacity(ms.len());
+    for (m, shape) in ms.iter().zip(shapes) {
+        let mut cs = Vec::new();
+        // Only a message whose shape counts something besides its append can hold a change.
+        if shape.extras > 0 {
+            for (c, _) in state::changes_at(view, state::Hang::Message(*m))? {
+                let l = state::change_loc(view, c)?
+                    .ok_or_else(|| StoreError::Entry(format!("change {c} has no record")))?;
+                let (r, _) = view.record(l.pos)?;
+                let author = super::kinds::id(&r, 3);
+                if author & state::PRODUCED == 0 {
+                    continue;
+                }
+                cs.push(Js::Obj(vec![
+                    (
+                        "key",
+                        match &r.values[6] {
+                            Value::Field(f) => field_js(f),
+                            _ => unreachable!("checked by Record::new"),
+                        },
+                    ),
+                    ("variable", Js::Bool(author & state::VARIABLE != 0)),
+                    (
+                        "value",
+                        match &r.values[7] {
+                            Value::Text(t) => Js::Text(t.clone()),
+                            _ => Js::Null,
+                        },
+                    ),
+                ]));
+            }
+        }
+        out.push(Js::Arr(cs));
+    }
+    Ok(Js::Arr(out))
+}
+
 fn change_key(view: &View, c: u64) -> Result<(Js, bool), StoreError> {
     let l = state::change_loc(view, c)?
         .ok_or_else(|| StoreError::Entry(format!("change {c} has no record")))?;

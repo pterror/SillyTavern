@@ -55,6 +55,8 @@ const DECIMAL = /^(0|[1-9][0-9]*)$/;
 /** State change author kinds (`state.rs`), and the bit naming a variable. */
 export const AUTHOR = Object.freeze({ user: 0, script: 1, model: 2, rule: 3, migration: 4 });
 const VARIABLE = 8;
+/** The author bit marking a change made while producing the message it hangs on (`state::PRODUCED`). */
+const PRODUCED = 16;
 
 /** `chat_metadata` keys the engine derives (`integrity` is the session's UUID): never stored, set or removed. */
 const DERIVED_METADATA = new Set(['integrity', 'main_chat', 'fork_point', '_tree_stored']);
@@ -101,6 +103,45 @@ export function uuidV5(namespace, name) {
  */
 export function defaultSessionKey(handle, tree) {
     return uuidV5(SESSION_NAMESPACE, `${handle}\0${tree}`);
+}
+
+/**
+ * @typedef {{ key: string, variable?: boolean, value?: unknown }} StateOp A key set to a value, or removed (no
+ * `value`); `variable`: the key is a chat variable's name.
+ * @typedef {{ key: string, variable: boolean, json: string | null }} ProducedChange A change as recorded: the value's
+ * JSON, null for a removal.
+ */
+
+/**
+ * A state key's place in a map of the state: a variable and a metadata key of the same name are different keys.
+ * @param {boolean} variable
+ * @param {string} key
+ */
+function stateKey(variable, key) {
+    return `${variable ? 'v' : 'k'}\u0000${key}`;
+}
+
+/**
+ * The changes `ops` record against `state` (updated with them): each that changes a key's value, in order. The keys
+ * the engine derives are never set.
+ * @param {StateOp[] | null | undefined} ops
+ * @param {Map<string, string>} state
+ * @returns {ProducedChange[]}
+ */
+function producedChanges(ops, state) {
+    /** @type {ProducedChange[]} */
+    const out = [];
+    for (const op of Array.isArray(ops) ? ops : []) {
+        if (typeof op?.key !== 'string' || (!op.variable && DERIVED_METADATA.has(op.key))) continue;
+        const variable = !!op.variable;
+        const json = op.value === undefined ? undefined : JSON.stringify(op.value);
+        const k = stateKey(variable, op.key);
+        if (state.get(k) === json) continue;
+        if (json === undefined) state.delete(k);
+        else state.set(k, json);
+        out.push({ key: op.key, variable, json: json ?? null });
+    }
+    return out;
 }
 
 /**
@@ -659,20 +700,27 @@ export class ChatEngine {
     }
 
     /**
-     * Stores messages after a message (null: as the tree's openings), each after the one before. A message whose
-     * send key the tree already stored is not stored again; a message matching a reply already there (same
-     * speaker and text) is that reply. Through a session, the session moves to each and chooses it.
+     * Stores messages after a message (null: as the tree's openings), each after the one before, each with the state
+     * changes made while producing it (hung on it, marked as its own). A message whose send key the tree already
+     * stored is not stored again. A message matching a reply already there (same speaker and text, and the same
+     * changes made while producing it) is that reply, so nothing is recorded twice; the same text with other changes
+     * is stored as an alternative of its own. Through a session, the session moves to each and chooses it.
      * @param {object} p
      * @param {bigint} p.tree
      * @param {Speaker | null} p.treeSpeaker The tree's character (null for a group).
      * @param {string | null} p.after The outside id of the message to reply to.
      * @param {Record<string, any>[]} p.contents Messages as stored today (after `sanitizeForStorage()`).
      * @param {(string | null)[]} [p.sendKeys]
+     * @param {(StateOp[] | null | undefined)[]} [p.changes] Per message, the state changes made while producing it,
+     * in order (as `changeState`'s ops: a key whose value is already that records nothing).
+     * @param {number} [p.author] The changes' author kind.
+     * @param {string | null} [p.ref] The changes' author reference.
      * @param {Actor} p.actor
      * @returns {Promise<{ ok: boolean, reason?: string, node_ids: string[], already_stored?: string[] }>}
      */
-    appendMessages({ tree, treeSpeaker, after, contents, sendKeys = [], actor }) {
-        return this.serialized(tree, async () => {
+    appendMessages({ tree, treeSpeaker, after, contents, sendKeys = [], changes = [], author = AUTHOR.user, ref = null, actor }) {
+        const lorebooks = changes.flatMap(ops => (Array.isArray(ops) ? ops : [])).filter(op => op?.key === WORLD_INFO && !op.variable).map(op => op.value);
+        return this.serialized(tree, () => this.withWorldLinks(lorebooks, async link => {
             /** @type {object[]} */
             const records = [];
             let cursor = null;
@@ -689,6 +737,9 @@ export class ChatEngine {
             const ids = [];
             const already = [];
             const now = this.now();
+            // The state at the cursor, while it is a message made in this write (null: read it from the store).
+            /** @type {Map<string, string> | null} */
+            let state = null;
             for (const [i, content] of contents.entries()) {
                 const key = keys[i];
                 const stored = key ? sentBy.get(key.toString('utf8')) ?? null : null;
@@ -696,19 +747,31 @@ export class ChatEngine {
                     ids.push(stored);
                     already.push(stored);
                     cursor = stored;
+                    state = null;
                     continue;
                 }
-                const twin = await this.twinOf(tree, cursor, content, ids);
+                state ??= await this.stateMap(tree, cursor);
+                const produced = producedChanges(changes[i], state);
+                const twin = await this.twinOf(tree, cursor, content, ids, produced);
                 if (twin !== null) {
                     if (session !== null) records.push(...this.moveTo(session, user, cursor, twin));
                     ids.push(twin);
                     cursor = twin;
+                    state = null;
                     continue;
                 }
                 const id = this.next.message++;
                 const time = now + i;
                 const speaker = await this.speakerFor(content, treeSpeaker);
                 records.push(...messageRecords(id, encodeMessage(content, time, speaker), { parent: cursor, owner: tree, time, session, user, sendKey: key }));
+                for (const c of produced) {
+                    /** @type {Record<string, unknown>} */
+                    const r = { kind: 'stateChange', id: this.next.change++, message: id, time, author: author | PRODUCED | (c.variable ? VARIABLE : 0), key: c.key, user };
+                    if (ref !== null) r.ref = ref;
+                    if (session !== null) r.session = session;
+                    if (c.json !== null) r.value = !c.variable && c.key === WORLD_INFO ? await link(c.json, records) : c.json;
+                    records.push(r);
+                }
                 ids.push(id);
                 cursor = id;
             }
@@ -717,7 +780,17 @@ export class ChatEngine {
             const answer = { ok: true, node_ids: external };
             if (already.length) answer.already_stored = already.map(id => external[ids.indexOf(id)]);
             return answer;
-        });
+        }));
+    }
+
+    /**
+     * The state at a message (null: the tree's root) as shown, each key (`stateKey()`) to its value's JSON.
+     * @param {bigint} tree
+     * @param {bigint | null} at
+     */
+    async stateMap(tree, at) {
+        const state = await this.shownState(await this.store.chatRead('state', { tree, ...(at === null ? {} : { at }) }));
+        return new Map(state.map(e => [stateKey(e.variable, e.field), e.json]));
     }
 
     /**
@@ -736,19 +809,30 @@ export class ChatEngine {
 
     /**
      * A reply of `parent` (null: an opening of the tree) with the same speaker and text as `content`, or null.
+     * With `produced`, the reply's own changes (those made while producing it) must be those too.
      * @param {bigint} tree
      * @param {bigint | null} parent
      * @param {Record<string, any>} content
      * @param {bigint[]} written Ids made earlier in this write (not stored yet: they can't be twins).
+     * @param {ProducedChange[]} [produced]
      */
-    async twinOf(tree, parent, content, written) {
+    async twinOf(tree, parent, content, written, produced) {
         if (parent !== null && written.includes(parent)) return null;
         const siblings = await this.children(tree, parent);
         if (!siblings.length) return null;
         const decoded = await this.decoded([...(await this.stored(siblings)).values()]);
         const want = identityOf(content);
-        const at = decoded.findIndex(d => identityOf(d) === want);
-        return at < 0 ? null : siblings[at];
+        const same = siblings.filter((_, i) => identityOf(decoded[i]) === want);
+        if (!same.length || produced === undefined) return same[0] ?? null;
+        const theirs = await this.store.chatRead('produced', { messages: same });
+        const wanted = JSON.stringify(produced);
+        for (const [i, list] of theirs.entries()) {
+            const shown = await this.shownState(list.filter(c => c.value !== null).map(c => ({ variable: c.variable, field: c.key, json: c.value })));
+            let k = 0;
+            const changes = list.map(c => ({ key: c.key, variable: c.variable, json: c.value === null ? null : shown[k++].json }));
+            if (JSON.stringify(changes) === wanted) return same[i];
+        }
+        return null;
     }
 
     /**

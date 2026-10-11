@@ -883,8 +883,9 @@ Left (in the order they build on each other):
   `identifier`), and the tab told its session is gone.
 - State layer 1 steps 2–5, 7, 8 on these records: the engine's operations are built (`changeState`, `revertChange`,
   `stateAt`, below; variables merged per variable, 10-11); left are the routes (`/api/state/change`, `/revert`,
-  `/at`, at the cut), the page's compat for variables and `chat_metadata` (built uncalled until 5f, answered 10-11), a change made while producing a reply recorded with the reply (the generate
-  route), navigation replacing the state, other tabs.
+  `/at`, at the cut), the page's compat for variables and `chat_metadata` (built uncalled until 5f, answered
+  10-11), a change made while producing a reply recorded with the reply (the engine's append and twin rule built
+  10-11; the generate route passes them at the cut), navigation replacing the state, other tabs.
 - The token-count cache's routes moved onto `TokenCache` at the cut (built, see "Built, the token-count cache").
 - Measured (see "Measured, chats" and "Built, opening a position faster" below). To do: re-measure device bytes per
   isolated action after the shape counter, and isolate how much of the synthetic load's 96 → 130 s is the counter
@@ -892,8 +893,8 @@ Left (in the order they build on each other):
 - For the generate route (answered, coordinator, 10-11): a reply's identity for dedup includes the state changes made
   while producing it (layer 1 step 3). A regenerated reply whose text and changes equal a stored one's is that reply:
   nothing new is recorded, so no change applies twice. The same text with different changes is a different reply,
-  stored as its own alternative with its own changes, so nothing is lost or merged silently. Not built:
-  `appendMessages`' twin rule compares speaker and text only today, and takes no changes.
+  stored as its own alternative with its own changes, so nothing is lost or merged silently. Built (10-11): see
+  "Built, a reply's state changes" below.
 - Next: 5c is taken by a fresh builder; 5b's routes come back at the cut (5f).
 - At the cut, the answers that move a tab's session call `sessionMoved(uuid)` (the new v7 session's, on its first
   move), and an answer saying the session is gone calls `sessionGone()` (`public/scripts/tab-session.js`).
@@ -1501,6 +1502,30 @@ Built, variables merged per variable (10-11; `src/chat-engine.js`, test `src/cha
   values the same way).
 - Tests (native and wasm): the two-tab loss reproduced first (failed before the fix), per-variable sets and unsets,
   nothing written when nothing differs, the object kept or removed, a whole save removing a variable it lacks.
+
+Built, a reply's state changes (10-11; `engine/src/store/state.rs`, `chat_read.rs`, binding `chatRead('produced')`,
+`src/chat-engine.js`; tests `state_tests.rs`, `src/chat-state.test.js`), as answered:
+- `stateChange`'s author bit 16 (`state::PRODUCED`): made while producing the message it hangs on, recorded in its
+  append's commit. Refused on a tree's root and on a revert. `chatRead('produced', { messages })`: per message, its
+  produced changes in order, reverted or not (`{ key, variable, value }`, value null for a removal).
+- `appendMessages({ ..., changes?: [ops per message], author?, ref? })`: each message's ops (as `changeState`'s) are
+  recorded on it with the bit, each only when it changes the key's value there (against the state at its parent,
+  or at the message before it in the same write). The twin rule: a reply of the same parent with the same speaker
+  and text whose produced changes are exactly these (key, variable or not, value, in order) is that reply; the same
+  text with other changes, or none against some, is stored as an alternative of its own. A message whose send key
+  is stored records nothing (as before).
+- Tests (native and wasm): changes hung on the reply, the parent's state untouched; regenerated with the same text
+  and changes, the stored reply, no record; other changes or none, alternatives of their own with their own state,
+  each matched again; a metadata key named like a variable not matching a variable; a later change on the reply
+  not part of its identity; a re-send recording nothing; a chain's second message filtered against the first's
+  state. Rust: the read, reverted changes still read, refusals.
+
+| choice | picked | reason |
+|---|---|---|
+| marking a reply's own changes | a bit in `author` (16) | the usual change stays one byte; a later change on the reply (the pointer's) isn't part of its identity |
+| comparing changes | key, variable bit and value, in order; reverted ones count | "the changes made while producing it": author and ref say who, not what; a revert doesn't unmake a change |
+| a change that alters nothing | not recorded (as `changeState`), so not compared | CLAUDE.md: nothing written unless something changed; if the parent's state moved since, the same generation may store an alternative of its own (nothing lost) |
+| where the rule applies | `appendMessages` (the generate route's path) | `saveChat` and `addOpenings` carry no changes and keep matching by speaker and text |
 
 Stop (10-10), a tab's session on the page (behaviour), before `X-ST-Session` is added to `getRequestHeaders()`. Given:
 which session a tab has open is browser state, per tab, with a per-device default (design N15, O-2); a new session is
