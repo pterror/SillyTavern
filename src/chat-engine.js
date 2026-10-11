@@ -263,8 +263,9 @@ function alternativeEntry(nodeId, o, itemized) {
  * @property {bigint} tree
  * @property {Actor} actor
  * @property {boolean} [preview] Answers what the edit would drop besides the messages, writing nothing.
- * @property {{ bookmarks?: string[], changes?: string[] }} [confirm] The ids of what it drops besides the messages,
- * as a preview named them: an edit dropping anything else is refused.
+ * @property {{ bookmarks?: string[], changes?: string[] } | 'any'} [confirm] The ids of what it drops besides the
+ * messages, as a preview named them: an edit dropping anything else is refused. `'any'`: a caller that can't confirm
+ * (upstream's compat paths) applies it whatever it drops, and the answer lists the drops.
  */
 
 /**
@@ -1227,13 +1228,14 @@ export class ChatEngine {
         if (preview) return { ok: true, preview: true, drops };
         const same = (/** @type {string[] | undefined} */ named, /** @type {{ id: string }[]} */ found) =>
             new Set(named ?? []).size === found.length && found.every(x => (named ?? []).includes(x.id));
-        if ((drops.bookmarks.length || drops.changes.length) && !(same(confirm?.bookmarks, drops.bookmarks) && same(confirm?.changes, drops.changes))) {
+        const any = confirm === 'any';
+        if (!any && (drops.bookmarks.length || drops.changes.length) && !(same(confirm?.bookmarks, drops.bookmarks) && same(confirm?.changes, drops.changes))) {
             return { ok: false, reason: 'confirm', drops };
         }
         const actorPart = { user: who.user, ...(who.session === null ? {} : { session: who.session }) };
         const records = [...keys, ...(plan.records ?? []), ...plan.roots.map(message => ({ kind: 'subtreeDelete', message, ...actorPart }))];
         if (records.length > keys.length) await this.store.commit(records);
-        return { ok: true };
+        return any ? { ok: true, drops } : { ok: true };
     }
 
     /**
@@ -1266,7 +1268,7 @@ export class ChatEngine {
      * @param {bigint} p.tree
      * @param {Actor} p.actor
      * @param {boolean} [p.preview]
-     * @param {{ bookmarks?: string[], changes?: string[] }} [p.confirm]
+     * @param {{ bookmarks?: string[], changes?: string[] } | 'any'} [p.confirm]
      * @param {(who: { user: bigint, session: bigint | null }) => Promise<{ roots: bigint[], keep?: bigint[], records?: object[] } | { ok: false, reason: string }>} plan
      * @returns {Promise<EditAnswer>}
      */
@@ -1300,6 +1302,26 @@ export class ChatEngine {
         return this.edit(p, async () => {
             const s = await this.messageOf(p.tree, p.node_id);
             return s ? { roots: await this.children(p.tree, s.parent) } : { ok: false, reason: 'unknown node' };
+        });
+    }
+
+    /**
+     * Deletes a whole tree (its character or group deleted with its chats): every opening and everything below, and
+     * the bookmarks at its root. Applied whatever it drops; the answer lists the drops.
+     * @param {{ tree: bigint, actor: Actor }} p
+     */
+    deleteTree({ tree, actor }) {
+        return this.edit({ tree, actor, confirm: 'any' }, async () => {
+            /** @type {object[]} */
+            const records = [];
+            let after;
+            for (;;) {
+                const page = await this.bookmarks({ tree, after, limit: 500 });
+                for (const b of page.rows) if (b.at === null) records.push({ kind: 'positionDelete', id: BigInt(b.id) });
+                if (!page.more) break;
+                after = page.rows[page.rows.length - 1].id;
+            }
+            return { roots: await this.children(tree, null), records };
         });
     }
 

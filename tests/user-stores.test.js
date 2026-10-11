@@ -140,6 +140,24 @@ describe('user stores', () => {
         expect(after.changes).toEqual([{ id: 'Bob.png', op: 'upsert', fields: null }, { id: 'Cara.png', op: 'delete' }]);
         expect(after.seq).toBeGreaterThan(all.seq);
         expect((await s.lib.changes(after.seq, 1000)).changes).toEqual([]);
+        // A character deleted without its chats leaves an unowned tree the same key adopts; with them, the tree goes.
+        const [alice] = await s.people.trees([{ avatar: 'Alice.png' }]);
+        const marks = async (/** @type {bigint} */ t) => (await s.chats.bookmarks({ tree: t, limit: 50 })).rows.length;
+        const aliceMarks = await marks(/** @type {bigint} */ (alice));
+        expect(aliceMarks).toBeGreaterThan(0);
+        await s.lib.deleteEntity(0, 'Alice.png', { keepChats: true });
+        expect((await s.lib.ids(6, ['Alice']))[0]).toBe(alice);
+        await s.lib.writeCard({ root }, 'Alice.png', JSON.stringify({ name: 'Alice', data: { name: 'Alice' } }));
+        expect((await s.lib.ids(0, ['Alice.png']))[0]).toBe(alice);
+        expect(await marks(/** @type {bigint} */ (alice))).toBe(aliceMarks);
+        const [bob] = await s.people.trees([{ avatar: 'Bob.png' }]);
+        const gone = await s.chats.deleteTree({ tree: /** @type {bigint} */ (bob), actor: { user: 'u' } });
+        expect(gone.ok).toBe(true);
+        expect(gone.drops?.bookmarks.length).toBe(1);
+        await s.lib.deleteEntity(0, 'Bob.png');
+        expect((await s.lib.ids(6, ['Bob']))[0]).toBeNull();
+        expect(await marks(/** @type {bigint} */ (bob))).toBe(0);
+        expect((await s.lib.store.chatRead('children', { tree: bob, limit: 5 })).ids).toEqual([]);
         await stores.resumeStoreWork([{ root }]);
     });
 });
