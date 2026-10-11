@@ -613,7 +613,7 @@ impl Deriver for EntityCreate {
         out.put(key::id(key::ENTITY, e), loc_bytes(at));
         out.put(kk, uvarint(e));
         out.max(key::of(key::NEXT_ENTITY), e + 1);
-        version(out, e, at);
+        version(view, out, e, at)?;
         books::container_touched(view, out, kind, k, at)?;
         Ok(())
     }
@@ -682,7 +682,7 @@ impl Deriver for EntityUpdate {
             dead(out, parse_loc(&b)?);
         }
         out.put(ek, loc_bytes(at));
-        version(out, e, at);
+        version(view, out, e, at)?;
         if kind == TAG {
             tags::touched(view, out, e, at)?;
         }
@@ -852,7 +852,7 @@ fn delete_entity(
     }
     drop_pointers(view, out, &key::id(key::ENTITY, e))?;
     out.del(entity_key_key(kind, k));
-    out.del(key::id(key::VERSION, e));
+    super::kinds::version_gone(view, out, e, kind, k, at)?;
     Ok(())
 }
 
@@ -915,7 +915,7 @@ impl Deriver for JsonValue {
             dead(out, parse_loc(&b)?);
         }
         out.put(k, loc_bytes(at));
-        version(out, e, at);
+        version(view, out, e, at)?;
         books::touched(view, out, e, at)?;
         books::field_written(view, out, e, f, true)?;
         tags::field_written(view, out, e, at, f, tags::Written::Json(bytes(rec, 2)))
@@ -991,7 +991,7 @@ impl Deriver for ValueDelete {
         }
         searched::json_written(view, out, e, f, None)?;
         drop_json(view, out, e, f)?;
-        version(out, e, at);
+        version(view, out, e, at)?;
         books::touched(view, out, e, at)?;
         books::field_written(view, out, e, f, false)?;
         tags::field_written(view, out, e, at, f, tags::Written::Gone)
@@ -1059,7 +1059,7 @@ impl Deriver for ItemPlace {
         }
         out.put(ik, uvarint(item));
         out.put(ak, place_bytes(position, at));
-        version(out, e, at);
+        version(view, out, e, at)?;
         books::touched(view, out, e, at)?;
         Ok(())
     }
@@ -1105,7 +1105,7 @@ impl Deriver for ItemDelete {
             out.del(ak);
         }
         drop_text(view, out, e, &item_field(list, item))?;
-        version(out, e, at);
+        version(view, out, e, at)?;
         books::touched(view, out, e, at)?;
         Ok(())
     }
@@ -1154,7 +1154,7 @@ impl Deriver for SortValue {
             dead(out, parse_loc(&b)?);
         }
         out.put(k, loc_bytes(at));
-        version(out, e, at);
+        version(view, out, e, at)?;
         Ok(())
     }
 
@@ -1201,7 +1201,7 @@ impl Deriver for CardHash {
             out.put(ik, Vec::new());
         }
         out.put(k, loc_bytes(at));
-        version(out, e, at);
+        version(view, out, e, at)?;
         Ok(())
     }
 

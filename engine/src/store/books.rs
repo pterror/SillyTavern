@@ -252,7 +252,7 @@ pub fn container_touched(
         OWNED => owner_of(k)?,
         _ => return Ok(()),
     };
-    version(out, up, at);
+    version(view, out, up, at)?;
     touched(view, out, up, at)
 }
 
@@ -434,7 +434,7 @@ impl Deriver for EntryIndex {
         } else {
             dead(out, at);
         }
-        version(out, entry, at);
+        version(view, out, entry, at)?;
         touched(view, out, entry, at)?;
         Ok(())
     }
@@ -510,7 +510,7 @@ impl Deriver for BookLink {
             }
         }
         library::change(view, out, e, |st| st.world = book.map(scope_bytes))?;
-        version(out, e, at);
+        version(view, out, e, at)?;
         Ok(())
     }
 

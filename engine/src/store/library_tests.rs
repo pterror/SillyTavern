@@ -1001,3 +1001,58 @@ fn a_bulk_load_into_an_empty_library_numbers_every_scope() {
         fs::remove_dir_all(&dir).unwrap();
     }
 }
+
+/// The entity change feed as (id, gone key).
+fn entity_feed(s: &Store, after: u64) -> Vec<(u64, Option<String>)> {
+    use super::chat_read::Js;
+    let js = s
+        .chat_read(|v| super::chat_read::entity_changes(v, after, 100))
+        .unwrap();
+    let Js::Obj(fields) = js else { panic!() };
+    let Js::Arr(entries) = &fields[0].1 else {
+        panic!()
+    };
+    entries
+        .iter()
+        .map(|e| {
+            let Js::Obj(f) = e else { panic!() };
+            let Js::Big(id) = f[1].1 else { panic!() };
+            let gone = match &f[2].1 {
+                Js::Obj(g) => match &g[1].1 {
+                    Js::Text(k) => Some(String::from_utf8(k.clone()).unwrap()),
+                    _ => panic!(),
+                },
+                _ => None,
+            };
+            (id, gone)
+        })
+        .collect()
+}
+
+#[test]
+fn the_entity_change_feed_holds_each_entity_once_at_its_last_change() {
+    let dir = temp_dir("feed");
+    let s = Store::open_in(&dir, SMALL, pool()).unwrap();
+    for e in 1..=3 {
+        s.commit_wait(vec![
+            set(e, NAME, "n"),
+            create(e, CHARACTER, &format!("c{e}"), 0),
+        ])
+        .unwrap();
+    }
+    assert_eq!(entity_feed(&s, 0), vec![(1, None), (2, None), (3, None)]);
+    let after = s.durable_end();
+    s.commit_wait(vec![set(1, NAME, "m")]).unwrap();
+    s.commit_wait(vec![rec("entityDelete", vec![Value::Id(2)])])
+        .unwrap();
+    let want = vec![(3, None), (1, None), (2, Some("c2".to_string()))];
+    assert_eq!(entity_feed(&s, 0), want);
+    assert_eq!(entity_feed(&s, after - 1).len(), 2);
+    s.close();
+    drop(s);
+    let s = Store::open_in(&dir, SMALL, pool()).unwrap();
+    assert_eq!(entity_feed(&s, 0), want);
+    s.close();
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}

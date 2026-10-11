@@ -486,6 +486,33 @@ export class LibraryEngine {
     }
 
     /**
+     * The characters changed after a change feed position, each once at its last change (`/api/characters/changes`'s
+     * answer): `seq` the position read up to, `changes` `{ id: avatar, op: 'upsert' | 'delete', fields: null }`.
+     * The feed holds one entry per entity, so it is never truncated.
+     * @param {number} sinceSeq
+     * @param {number} limit Feed entries read (other entities' included).
+     * @returns {Promise<{ seq: number, changes: { id: string, op: 'upsert' | 'delete', fields?: null }[], truncated: false, hasMore: boolean }>}
+     */
+    async changes(sinceSeq, limit) {
+        const page = await this.store.chatRead('entityChanges', { after: BigInt(Math.max(0, Math.trunc(sinceSeq))), limit });
+        const live = page.entries.filter((/** @type {any} */ e) => e.gone === null);
+        const keys = live.length ? await this.store.libraryKeys(live.map((/** @type {any} */ e) => e.id)) : [];
+        const keyOf = new Map(live.map((/** @type {any} */ e, /** @type {number} */ i) => [e.id, keys[i]]));
+        /** @type {{ id: string, op: 'upsert' | 'delete', fields?: null }[]} */
+        const changes = [];
+        for (const e of page.entries) {
+            if (e.gone !== null) {
+                if (e.gone.kind === TYPE.character) changes.push({ id: e.gone.key, op: 'delete' });
+                continue;
+            }
+            const k = keyOf.get(e.id);
+            if (k && k.type === TYPE.character) changes.push({ id: k.key, op: 'upsert', fields: null });
+        }
+        const last = page.entries.length ? Number(page.entries[page.entries.length - 1].pos) : null;
+        return { seq: last ?? Math.max(Math.trunc(sinceSeq), Number(page.end)), changes, truncated: false, hasMore: page.more };
+    }
+
+    /**
      * The chat stats list rows show of characters and groups (their trees are their ids): the newest message's time
      * and the chat size, 0 for a tree with none.
      * @param {bigint[]} ids

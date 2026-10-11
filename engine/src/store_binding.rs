@@ -1542,6 +1542,13 @@ impl Store {
                 let (before, limit) = (opt_integer(a, "before")?, limit(a)?);
                 Box::new(move |s| s.chat_read(|v| cr::recent(v, before, limit)).map(JsTree))
             }
+            "entityChanges" => {
+                let (after, limit) = (opt_integer(a, "after")?.unwrap_or(0), limit(a)?);
+                Box::new(move |s| {
+                    s.chat_read(|v| cr::entity_changes(v, after, limit))
+                        .map(JsTree)
+                })
+            }
             "inTree" => {
                 let (tree, before, limit) = (
                     req_integer(a, "tree")?,

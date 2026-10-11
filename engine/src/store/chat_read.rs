@@ -757,3 +757,54 @@ pub fn active_changes(view: &View, m: u64) -> Result<Js, StoreError> {
     }
     Ok(Js::Arr(out))
 }
+
+/// Up to `limit` entries of the entity change feed (`key::ENTITY_CHANGE`) after position `after`, each entity once at
+/// its last change: `{ pos, id, gone }` (`gone`: `{ kind, key }` for a deleted entity, else null), whether more
+/// follow, and the feed's last position (0 for none).
+pub fn entity_changes(view: &View, after: u64, limit: usize) -> Result<Js, StoreError> {
+    let p = key::of(key::ENTITY_CHANGE);
+    let found = view.scan(
+        &key::id(key::ENTITY_CHANGE, after.saturating_add(1)),
+        &key::prefix_end(&p),
+        limit + 1,
+    )?;
+    let more = found.len() > limit;
+    let bad = || StoreError::Entry("an entity change key doesn't decode".into());
+    let mut entries = Vec::new();
+    for (k, v) in found.into_iter().take(limit) {
+        let mut at = p.len();
+        let pos = get_u64(&k, &mut at).ok_or_else(bad)?;
+        let id = get_u64(&k, &mut at).ok_or_else(bad)?;
+        let gone = if v.is_empty() {
+            Js::Null
+        } else {
+            let mut i = 0;
+            let kind = crate::log::format::get_uvarint(&v, &mut i).map_err(|_| bad())?;
+            Js::Obj(vec![
+                ("kind", Js::Num(kind as f64)),
+                ("key", Js::Text(v[i..].to_vec())),
+            ])
+        };
+        entries.push(Js::Obj(vec![
+            ("pos", Js::Big(pos)),
+            ("id", Js::Big(id)),
+            ("gone", gone),
+        ]));
+    }
+    let end = match view
+        .scan_vals_rev(&p, &key::prefix_end(&p), 1)?
+        .into_iter()
+        .next()
+    {
+        Some((k, _)) => {
+            let mut at = p.len();
+            get_u64(&k, &mut at).ok_or_else(bad)?
+        }
+        None => 0,
+    };
+    Ok(Js::Obj(vec![
+        ("entries", Js::Arr(entries)),
+        ("more", Js::Bool(more)),
+        ("end", Js::Big(end)),
+    ]))
+}

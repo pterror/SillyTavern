@@ -522,7 +522,7 @@ impl super::derive::Deriver for TagOrder {
         if let Some(Value::UInt(pass)) = rec.values.get(2) {
             stamp(view, out, tag, *pass)?;
         }
-        super::kinds::version(out, tag, at);
+        super::kinds::version(view, out, tag, at)?;
         Ok(())
     }
 
