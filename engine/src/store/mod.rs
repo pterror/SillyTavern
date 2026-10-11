@@ -35,6 +35,7 @@ pub mod kinds;
 pub mod library;
 pub mod library_read;
 pub mod library_search;
+pub mod prune;
 pub mod searched;
 pub mod sessions;
 pub mod state;
@@ -364,6 +365,7 @@ struct Inner {
     folding: Mutex<(bool, bool)>,
     /// Depth rewrites after message moves (`sessions::depth_step`), queued as folds are.
     depthing: Mutex<(bool, bool)>,
+    pruning: Mutex<(bool, bool)>,
 }
 
 #[derive(Default)]
@@ -461,6 +463,7 @@ impl Store {
                 refilling: Default::default(),
                 folding: Default::default(),
                 depthing: Default::default(),
+                pruning: Default::default(),
             }
         });
         ks.start(Box::new(StoreHooks(Arc::downgrade(&inner))))?;
@@ -482,7 +485,8 @@ impl Store {
         }
         let merges = records.iter().any(|r| r.kind.name == "tagMerge");
         let moves = records.iter().any(|r| r.kind.name == "messageParent");
-        if merges || moves {
+        let prunes = records.iter().any(|r| r.kind.name == "subtreeDelete");
+        if merges || moves || prunes {
             let me = Arc::downgrade(&self.inner);
             let done: CommitDone = Box::new(move |r| {
                 let ok = r.is_ok();
@@ -493,6 +497,9 @@ impl Store {
                     }
                     if moves {
                         i.kick_depths();
+                    }
+                    if prunes {
+                        i.kick_prunes();
                     }
                 }
             });
@@ -1165,6 +1172,43 @@ impl Inner {
         self.queue_depth();
     }
 
+    /// Deletes pending subtrees' messages, a bounded step at a time between commits, until none waits.
+    pub(crate) fn kick_prunes(&self) {
+        {
+            let mut f = self.pruning.lock().unwrap();
+            if f.0 {
+                f.1 = true;
+                return;
+            }
+            *f = (true, false);
+        }
+        self.queue_prune();
+    }
+
+    fn queue_prune(&self) {
+        let more = Arc::new(AtomicBool::new(false));
+        let found = more.clone();
+        let me = self.me.clone();
+        self.submit(Job::Derive(
+            Box::new(move |view, out| {
+                found.store(prune::step(view, out)?, Ordering::Relaxed);
+                Ok(())
+            }),
+            Box::new(move |r| {
+                let Some(i) = me.upgrade() else { return };
+                let again = {
+                    let mut f = i.pruning.lock().unwrap();
+                    let again = r.is_ok() && (more.load(Ordering::Relaxed) || f.1);
+                    *f = (again, false);
+                    again
+                };
+                if again {
+                    i.queue_prune();
+                }
+            }),
+        ));
+    }
+
     fn queue_depth(&self) {
         let more = Arc::new(AtomicBool::new(false));
         let found = more.clone();
@@ -1276,6 +1320,11 @@ impl Inner {
             if !matches!(self.ks.scan(&pending, &key::prefix_end(&pending), 1), Ok(f) if f.is_empty())
             {
                 self.kick_depths();
+            }
+            let pending = key::of(prune::PRUNE);
+            if !matches!(self.ks.scan(&pending, &key::prefix_end(&pending), 1), Ok(f) if f.is_empty())
+            {
+                self.kick_prunes();
             }
             return true;
         }

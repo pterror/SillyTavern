@@ -73,6 +73,12 @@ pub const OPENING_CHOICE: u64 = 146;
 /// Per (name, session): a named session, by its name's exact bytes.
 pub const SESSION_NAMED: u64 = 147;
 
+/// Per (tree, session): the session's pointer is at a message of the tree. Per (tree, which, a): a remembered
+/// position (`REMEMBERED_AT`'s which and a) is at a message of the tree. What a subtree's delete moves is found
+/// through these, without reading the subtree.
+pub const PTR_IN_TREE: u64 = 149;
+pub const REMEMBERED_IN: u64 = 154;
+
 /// The key of a named session's `SESSION_NAMED` entry.
 pub fn named_key(name: &[u8], s: u64) -> Vec<u8> {
     let mut k = key::of(SESSION_NAMED);
@@ -238,6 +244,10 @@ fn is_reply_at(view: &View, reply: u64, f: Fork) -> Result<bool, StoreError> {
     let Some(l) = message_loc(view, reply)? else {
         return Ok(false);
     };
+    // A subtree being deleted is no reply of its parent's any more.
+    if super::prune::is_root(view, reply)? {
+        return Ok(false);
+    }
     let (r, _) = view.record(l.pos)?;
     Ok(match (f, parent_of(view, reply, &r)?) {
         (Fork::Message(m), Some(p)) => m == p,
@@ -403,7 +413,7 @@ pub fn branches_from(view: &View, m: u64) -> Result<Vec<u64>, StoreError> {
 // ---- writes ----
 
 /// A remembered (session, tree) position, with its index.
-fn set_session_tree(
+pub(super) fn set_session_tree(
     view: &View,
     out: &mut Out,
     s: u64,
@@ -417,10 +427,11 @@ fn set_session_tree(
     if let Some(m) = p {
         out.put(remembered_key(m, 0, s, tree), Vec::new());
     }
+    set_remembered_in(out, tree, 0, s, p.is_some());
     Ok(())
 }
 
-fn set_user_tree(
+pub(super) fn set_user_tree(
     view: &View,
     out: &mut Out,
     u: u64,
@@ -435,7 +446,51 @@ fn set_user_tree(
     if let Some(m) = p {
         out.put(remembered_key(m, 1, u, tree), Vec::new());
     }
+    set_remembered_in(out, tree, 1, u, p.is_some());
     Ok(())
+}
+
+fn remembered_in_key(tree: u64, which: u64, a: u64) -> Vec<u8> {
+    let mut k = key::ids(REMEMBERED_IN, tree, which);
+    put_u64(&mut k, a);
+    k
+}
+
+fn set_remembered_in(out: &mut Out, tree: u64, which: u64, a: u64, at_message: bool) {
+    let k = remembered_in_key(tree, which, a);
+    if at_message {
+        out.put(k, Vec::new());
+    } else {
+        out.del(k);
+    }
+}
+
+/// The sessions whose pointer is at a message of the tree.
+pub fn pointers_in(view: &View, tree: u64) -> Result<Vec<u64>, StoreError> {
+    let p = key::id(PTR_IN_TREE, tree);
+    view.scan(&p, &key::prefix_end(&p), usize::MAX)?
+        .into_iter()
+        .map(|(k, _)| {
+            let mut at = p.len();
+            get_u64(&k, &mut at).ok_or_else(|| bad("a pointer index key"))
+        })
+        .collect()
+}
+
+/// The remembered positions at messages of the tree: `(0, session)` and `(1, user)`.
+pub fn remembered_in(view: &View, tree: u64) -> Result<Vec<(u64, u64)>, StoreError> {
+    let p = key::id(REMEMBERED_IN, tree);
+    view.scan(&p, &key::prefix_end(&p), usize::MAX)?
+        .into_iter()
+        .map(|(k, _)| {
+            let mut at = p.len();
+            let which = get_u64(&k, &mut at).ok_or_else(|| bad("a remembered index key"))?;
+            Ok((
+                which,
+                get_u64(&k, &mut at).ok_or_else(|| bad("a remembered index key"))?,
+            ))
+        })
+        .collect()
 }
 
 fn remembered_key(m: u64, which: u64, a: u64, b: u64) -> Vec<u8> {
@@ -445,19 +500,21 @@ fn remembered_key(m: u64, which: u64, a: u64, b: u64) -> Vec<u8> {
     k
 }
 
-fn set_pointer(
+pub(super) fn set_pointer(
     view: &View,
     out: &mut Out,
     s: u64,
     tree: u64,
     p: Option<u64>,
 ) -> Result<(), StoreError> {
-    if let Some((_, Some(old))) = session_pointer(view, s)? {
+    if let Some((old_tree, Some(old))) = session_pointer(view, s)? {
         out.del(key::ids(SESSIONS_AT, old, s));
+        out.del(key::ids(PTR_IN_TREE, old_tree, s));
     }
     out.put(key::id(SESSION_PTR, s), varints(&[tree, ptr(p)]));
     if let Some(m) = p {
         out.put(key::ids(SESSIONS_AT, m, s), Vec::new());
+        out.put(key::ids(PTR_IN_TREE, tree, s), Vec::new());
     }
     Ok(())
 }
@@ -679,7 +736,7 @@ pub fn step_target(view: &View, s: u64, back: bool) -> Result<Option<(u64, Targe
             let mut at = p.len();
             let n = get_u64(&k, &mut at).ok_or_else(|| bad("a history key"))?;
             let [t, gone, _, _] = parse_varints::<4>(&v)?;
-            if gone == 0 {
+            if gone == 0 && !target_doomed(view, Target::of(t))? {
                 return Ok(Some((n, Target::of(t))));
             }
             from = n;
@@ -687,6 +744,14 @@ pub fn step_target(view: &View, s: u64, back: bool) -> Result<Option<(u64, Targe
         if !full {
             return Ok(None);
         }
+    }
+}
+
+/// Whether a history entry's target is a message being deleted.
+fn target_doomed(view: &View, t: Target) -> Result<bool, StoreError> {
+    match t {
+        Target::Message(m) => super::prune::doomed(view, tree_of(view, m)?, m),
+        Target::Root(_) => Ok(false),
     }
 }
 
@@ -713,6 +778,9 @@ pub fn stepped(
         Target::Message(m) => (tree_of(view, m)?, Some(m)),
         Target::Root(tree) => (tree, None),
     };
+    if let Some(m) = target {
+        super::prune::refuse_doomed(view, tree, m)?;
+    }
     pointer_moved(view, out, s, u, tree, target, at, false)?;
     set_cursor_entry(view, out, s, n, Some(at))
 }
@@ -1006,8 +1074,9 @@ pub fn session_gone(view: &View, out: &mut Out, s: u64) -> Result<(), StoreError
             dead(out, l);
         }
     }
-    if let Some((_, Some(m))) = session_pointer(view, s)? {
+    if let Some((t, Some(m))) = session_pointer(view, s)? {
         out.del(key::ids(SESSIONS_AT, m, s));
+        out.del(key::ids(PTR_IN_TREE, t, s));
     }
     out.del(key::id(SESSION_PTR, s));
     let hp = key::id(HISTORY, s);
@@ -1062,6 +1131,7 @@ pub fn session_gone(view: &View, out: &mut Out, s: u64) -> Result<(), StoreError
         let [p] = parse_varints::<1>(&v)?;
         if let Some(m) = unptr(p) {
             out.del(remembered_key(m, 0, s, t));
+            out.del(remembered_in_key(t, 0, s));
         }
         out.del(k);
     }
@@ -1105,6 +1175,7 @@ pub fn session_gone(view: &View, out: &mut Out, s: u64) -> Result<(), StoreError
                 None => {
                     if let Some((_, Some(m))) = user_in_tree(view, u, t)? {
                         out.del(remembered_key(m, 1, u, t));
+                        out.del(remembered_in_key(t, 1, u));
                     }
                     out.del(key::ids(USER_TREE, u, t));
                 }

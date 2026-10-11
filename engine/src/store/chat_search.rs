@@ -119,6 +119,8 @@ pub fn messages(
     let subs = substrings(clauses);
     let mut out = Messages::default();
     let mut work = 0u64;
+    // Messages of a subtree being deleted read as deleted.
+    let pending = super::prune::pending_in(view, tree)?;
     let below = match start {
         Start::Index { after } => {
             if !words.is_empty() {
@@ -132,6 +134,16 @@ pub fn messages(
                 out.total = f.total;
                 out.total_exact = f.total_exact;
                 out.hits = f.hits.iter().map(|h| (h.doc, h.score)).collect();
+                if pending {
+                    let mut kept = Vec::new();
+                    for h in out.hits {
+                        if !super::prune::doomed(view, tree, h.0)? {
+                            kept.push(h);
+                        }
+                    }
+                    out.hits = kept;
+                    out.total_exact = false;
+                }
             }
             if after.is_some() {
                 // Later index pages read no scan: the first page's cursor goes on with it.
@@ -194,7 +206,7 @@ pub fn messages(
                     .unwrap_or_default();
                 work += READ;
                 scanned += t.len() as u64 + SCAN_MESSAGE;
-                if !holds(&subs, &t) {
+                if !holds(&subs, &t) || (pending && super::prune::doomed(view, tree, m)?) {
                     continue;
                 }
                 // Whole words found it: the index answers it.

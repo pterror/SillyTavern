@@ -154,12 +154,26 @@ pub fn message_entries(view: &View, ids: &[u64]) -> Result<Vec<Option<MessageEnt
         .collect()
 }
 
-/// The messages from the tree's root down to `at`, through each message's entry.
+/// The messages from the tree's root down to `at`, through each message's entry; at a message being deleted,
+/// down to the parent of the pending root above it.
 pub fn path_to(view: &View, at: Option<u64>) -> Result<Vec<u64>, StoreError> {
     let mut above = Vec::new();
     let mut cur = at;
+    let pending = match at {
+        Some(m) => {
+            let Some((l, _)) = message_entry(view, m)? else {
+                return Err(StoreError::Refused(format!("no message {m}")));
+            };
+            super::prune::pending_in(view, id(&view.record(l.pos)?.0, APPEND_OWNER))?
+        }
+        None => false,
+    };
     while let Some(m) = cur {
-        above.push(m);
+        if pending && super::prune::is_root(view, m)? {
+            above.clear();
+        } else {
+            above.push(m);
+        }
         let Some((_, parent)) = message_entry(view, m)? else {
             return Err(StoreError::Refused(format!("no message {m}")));
         };
@@ -252,6 +266,7 @@ pub fn edit_activity(
 ) -> Result<(), StoreError> {
     let (_, r) = require_message(view, m)?;
     sessions::check_actor(view, s, u)?;
+    super::prune::refuse_doomed(view, id(&r, APPEND_OWNER), m)?;
     if let Some(s) = s {
         sessions::activity(view, out, s, id(&r, APPEND_OWNER), at.pos)?;
     }
@@ -313,7 +328,7 @@ pub fn send_key_key(owner: u64, sk: &[u8]) -> Vec<u8> {
     k
 }
 
-fn bookmark_entries(out: &mut Out, b: u64, owner: u64, at: u64, put: bool) {
+pub(super) fn bookmark_entries(out: &mut Out, b: u64, owner: u64, at: u64, put: bool) {
     let a = key::ids(key::BOOKMARKS_AT, at, b);
     let t = key::ids(key::TREE_BOOKMARK, owner, b);
     if put {
@@ -325,6 +340,30 @@ fn bookmark_entries(out: &mut Out, b: u64, owner: u64, at: u64, put: bool) {
         out.del(a);
         out.del(t);
     }
+}
+
+/// Per (tree, name, bookmark): a named bookmark, by its name's exact bytes.
+pub const BOOKMARK_NAMED: u64 = 148;
+
+pub fn bookmark_named_key(tree: u64, name: &[u8], b: u64) -> Vec<u8> {
+    let mut k = key::id(BOOKMARK_NAMED, tree);
+    put_bytes(&mut k, name);
+    put_u64(&mut k, b);
+    k
+}
+
+/// The bookmarks of the tree named exactly `name` (names are unique there: at most one).
+pub fn bookmarks_named(view: &View, tree: u64, name: &[u8]) -> Result<Vec<u64>, StoreError> {
+    let mut p = key::id(BOOKMARK_NAMED, tree);
+    put_bytes(&mut p, name);
+    view.scan(&p, &key::prefix_end(&p), 2)?
+        .into_iter()
+        .map(|(k, _)| {
+            let mut at = p.len();
+            get_u64(&k, &mut at)
+                .ok_or_else(|| StoreError::Entry("a bookmark name key doesn't decode".into()))
+        })
+        .collect()
 }
 
 /// The message a bookmark is at.
@@ -386,6 +425,7 @@ impl Deriver for MessageAppend {
                     "message {p} is in another tree than {owner}'s"
                 )));
             }
+            super::prune::refuse_doomed(view, owner, p)?;
         }
         if let Value::Bytes(sk) = &rec.values[APPEND_SEND_KEY] {
             let k = send_key_key(owner, sk);
@@ -483,44 +523,13 @@ impl Deriver for MessageDelete {
         }
         let (s, u) = (opt_id(rec, 1), opt_id(rec, 2));
         sessions::check_actor(view, s, u)?;
-        dead(out, at);
         let owner = id(&append, APPEND_OWNER);
+        super::prune::refuse_doomed(view, owner, m)?;
+        dead(out, at);
         if let Some(s) = s {
             sessions::activity(view, out, s, owner, at.pos)?;
         }
-        let h = Holder::Message(m);
-        // Text values (the message's own included), then the rest of what it holds.
-        let tp = key::id(key::MSG_TEXT, m);
-        for (tk, _) in view.scan(&tp, &key::prefix_end(&tp), usize::MAX)? {
-            let f = super::library::field_after(&tk, key::MSG_TEXT)?;
-            drop_text_of(view, out, h, &f)?;
-        }
-        for s in [key::MSG_VALUE, key::MSG_TIME, ITEMIZED] {
-            let p = key::id(s, m);
-            for (k, v) in view.scan(&p, &key::prefix_end(&p), usize::MAX)? {
-                dead(out, parse_loc(&v)?);
-                out.del(k);
-            }
-        }
-        let parent = parent_of(view, m, &append)?;
-        if let Some(v) = view.get(&key::id(key::MESSAGE_PARENT, m))? {
-            dead(out, parse_loc(&v)?);
-            out.del(key::id(key::MESSAGE_PARENT, m));
-        }
-        out.del(child_key(parent, owner, time_of(&append), m));
-        if let Value::Bytes(sk) = &append.values[APPEND_SEND_KEY] {
-            out.del(send_key_key(owner, sk));
-        }
-        drop_key(view, out, KEYED_MESSAGE, m)?;
-        sessions::message_gone(view, out, m, parent, owner)?;
-        super::state::message_gone(view, out, m)?;
-        dead(out, l);
-        out.del(key::id(key::MESSAGE, m));
-        if let Some(p) = parent {
-            shape_add(out, p, -1);
-        }
-        out.del(key::id(SHAPE, m));
-        Ok(())
+        delete_message(view, out, m, (l, append), false)
     }
 
     fn is_live(&self, _: &Record, _: u64, _: &View) -> Result<bool, StoreError> {
@@ -530,6 +539,53 @@ impl Deriver for MessageDelete {
     fn repoint(&self, _: &Record, _: u64, _: Loc, _: &View, _: &mut Out) -> Result<(), StoreError> {
         Ok(())
     }
+}
+
+/// Message `m` (its append at `l`) goes, with every value it holds and what names it. `detached`: it is a
+/// subtree delete's root, already taken from among its parent's replies.
+pub(super) fn delete_message(
+    view: &View,
+    out: &mut Out,
+    m: u64,
+    (l, append): (Loc, Record),
+    detached: bool,
+) -> Result<(), StoreError> {
+    let owner = id(&append, APPEND_OWNER);
+    let h = Holder::Message(m);
+    // Text values (the message's own included), then the rest of what it holds.
+    let tp = key::id(key::MSG_TEXT, m);
+    for (tk, _) in view.scan(&tp, &key::prefix_end(&tp), usize::MAX)? {
+        let f = super::library::field_after(&tk, key::MSG_TEXT)?;
+        drop_text_of(view, out, h, &f)?;
+    }
+    for s in [key::MSG_VALUE, key::MSG_TIME, ITEMIZED] {
+        let p = key::id(s, m);
+        for (k, v) in view.scan(&p, &key::prefix_end(&p), usize::MAX)? {
+            dead(out, parse_loc(&v)?);
+            out.del(k);
+        }
+    }
+    let parent = parent_of(view, m, &append)?;
+    if let Some(v) = view.get(&key::id(key::MESSAGE_PARENT, m))? {
+        dead(out, parse_loc(&v)?);
+        out.del(key::id(key::MESSAGE_PARENT, m));
+    }
+    out.del(child_key(parent, owner, time_of(&append), m));
+    if let Value::Bytes(sk) = &append.values[APPEND_SEND_KEY] {
+        out.del(send_key_key(owner, sk));
+    }
+    drop_key(view, out, KEYED_MESSAGE, m)?;
+    sessions::message_gone(view, out, m, parent, owner)?;
+    super::state::message_gone(view, out, m)?;
+    dead(out, l);
+    out.del(key::id(key::MESSAGE, m));
+    if let Some(p) = parent
+        && !detached
+    {
+        shape_add(out, p, -1);
+    }
+    out.del(key::id(SHAPE, m));
+    Ok(())
 }
 
 /// Whether `a` is `m` or one of its ancestors' (walking up from `a`).
@@ -563,7 +619,9 @@ impl Deriver for MessageParent {
         sessions::check_actor(view, s, u)?;
         let (_, append) = require_message(view, m)?;
         let owner = id(&append, APPEND_OWNER);
+        super::prune::refuse_doomed(view, owner, m)?;
         if let Some(p) = new {
+            super::prune::refuse_doomed(view, owner, p)?;
             let (_, pr) = require_message(view, p)?;
             if id(&pr, APPEND_OWNER) != owner {
                 return Err(StoreError::Refused(format!(
@@ -876,6 +934,7 @@ impl Deriver for PositionCreate {
         let (s, u) = (id(rec, 2), id(rec, 3));
         sessions::check_actor(view, Some(s), Some(u))?;
         let tree = id(&m, APPEND_OWNER);
+        super::prune::refuse_doomed(view, tree, ptr)?;
         out.put(key::id(key::POSITION, b), loc_bytes(at));
         out.max(key::of(key::NEXT_POSITION), b + 1);
         bookmark_entries(out, b, tree, ptr, true);
@@ -928,6 +987,24 @@ impl Deriver for PositionName {
             }
             if let Some(n) = name {
                 out.put(sessions::named_key(n, p), Vec::new());
+            }
+        } else if let Some(m) = bookmark_at(view, p)? {
+            // Bookmark names are unique in their tree, as upstream's chat names were per character.
+            let name = match &rec.values[1] {
+                Value::Text(t) => Some(t.as_slice()),
+                _ => None,
+            };
+            let tree = id(&require_message(view, m)?.1, APPEND_OWNER);
+            if let Some(n) = name
+                && bookmarks_named(view, tree, n)?.iter().any(|&b| b != p)
+            {
+                return Err(StoreError::Refused("the bookmark name is taken".into()));
+            }
+            if let Some(o) = super::searched::position_name(view, p)? {
+                out.del(bookmark_named_key(tree, &o, p));
+            }
+            if let Some(n) = name {
+                out.put(bookmark_named_key(tree, n, p), Vec::new());
             }
         }
         if let Some(v) = view.get(&k)? {
@@ -1027,26 +1104,7 @@ impl Deriver for PositionDelete {
             return sessions::session_gone(view, out, b);
         };
         dead(out, at);
-        let cl = parse_loc(&v)?;
-        let (create, _) = view.record(cl.pos)?;
-        // The message it was made at may have gone before it (a following bookmark moves on), taking its entries.
-        let made_at = id(&create, 4);
-        if message_loc(view, made_at)?.is_some() {
-            sessions::branch_gone(out, made_at, b);
-        }
-        dead(out, cl);
-        out.del(key::id(key::POSITION, b));
-        for s in [key::POSITION_NAME, key::POSITION_MODE] {
-            if let Some(v) = view.get(&key::id(s, b))? {
-                dead(out, parse_loc(&v)?);
-                out.del(key::id(s, b));
-            }
-        }
-        if let Some(m) = bookmark_at(view, b)? {
-            let (_, r) = require_message(view, m)?;
-            bookmark_entries(out, b, id(&r, APPEND_OWNER), m, false);
-        }
-        Ok(())
+        bookmark_gone(view, out, b, parse_loc(&v)?)
     }
 
     fn is_live(&self, _: &Record, _: u64, _: &View) -> Result<bool, StoreError> {
@@ -1058,6 +1116,33 @@ impl Deriver for PositionDelete {
     }
 }
 
+/// Bookmark `b` (its create at `cl`) goes, with its name, mode and place.
+pub(super) fn bookmark_gone(view: &View, out: &mut Out, b: u64, cl: Loc) -> Result<(), StoreError> {
+    let (create, _) = view.record(cl.pos)?;
+    // The message it was made at may have gone before it (a following bookmark moves on), taking its entries.
+    let made_at = id(&create, 4);
+    if message_loc(view, made_at)?.is_some() {
+        sessions::branch_gone(out, made_at, b);
+    }
+    dead(out, cl);
+    out.del(key::id(key::POSITION, b));
+    for s in [key::POSITION_NAME, key::POSITION_MODE] {
+        if let Some(v) = view.get(&key::id(s, b))? {
+            dead(out, parse_loc(&v)?);
+            out.del(key::id(s, b));
+        }
+    }
+    if let Some(m) = bookmark_at(view, b)? {
+        let (_, r) = require_message(view, m)?;
+        let tree = id(&r, APPEND_OWNER);
+        if let Some(n) = super::searched::position_name(view, b)? {
+            out.del(bookmark_named_key(tree, &n, b));
+        }
+        bookmark_entries(out, b, tree, m, false);
+    }
+    Ok(())
+}
+
 /// `pointerMove`: a session's pointer moves; the record is its history entry's, kept while the session is.
 pub struct PointerMove;
 
@@ -1066,6 +1151,7 @@ impl Deriver for PointerMove {
         let (s, u, target) = (id(rec, 0), id(rec, 1), id(rec, 2));
         sessions::check_actor(view, Some(s), Some(u))?;
         let (_, r) = require_message(view, target)?;
+        super::prune::refuse_doomed(view, id(&r, APPEND_OWNER), target)?;
         sessions::moved(
             view,
             out,
@@ -1181,6 +1267,7 @@ impl Deriver for ForkSelection {
         let (reply, s, u) = (id(rec, 1), id(rec, 2), id(rec, 3));
         sessions::check_actor(view, Some(s), Some(u))?;
         let (f, tree) = Fork::of(view, reply)?;
+        super::prune::refuse_doomed(view, tree, reply)?;
         let named = match opt_id(rec, 0) {
             Some(m) => Fork::Message(m),
             None => Fork::Root(tree),
@@ -1237,7 +1324,12 @@ pub struct Itemization;
 impl Deriver for Itemization {
     fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
         let m = id(rec, 0);
-        require_message(view, m)?;
+        let (_, r) = require_message(view, m)?;
+        let has = rec.values[2] != Value::Absent;
+        // Removing one is allowed: clearing every itemization reads them without regard to deletes under way.
+        if has {
+            super::prune::refuse_doomed(view, id(&r, APPEND_OWNER), m)?;
+        }
         let k = key::id(ITEMIZED, m);
         let had = match view.get(&k)? {
             Some(b) => {
@@ -1246,7 +1338,6 @@ impl Deriver for Itemization {
             }
             None => false,
         };
-        let has = rec.values[2] != Value::Absent;
         if has {
             out.put(k, loc_bytes(at));
         } else {
@@ -1290,6 +1381,7 @@ pub fn deriver(kind: &str) -> Option<&'static dyn Deriver> {
         "positionName" => &PositionName,
         "positionMode" => &PositionMode,
         "positionDelete" => &PositionDelete,
+        "subtreeDelete" => &super::prune::SubtreeDelete,
         _ => return None,
     })
 }

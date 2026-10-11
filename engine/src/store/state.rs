@@ -66,7 +66,7 @@ impl Hang {
     }
 }
 
-fn change_loc(view: &View, c: u64) -> Result<Option<Loc>, StoreError> {
+pub fn change_loc(view: &View, c: u64) -> Result<Option<Loc>, StoreError> {
     view.get(&key::id(CHANGE, c))?
         .map(|b| parse_loc(&b))
         .transpose()
@@ -113,7 +113,8 @@ impl Deriver for StateChange {
         check_author(id(rec, 3))?;
         let hang = Hang::of(rec);
         if let Hang::Message(m) = hang {
-            require_message(view, m)?;
+            let (_, r) = require_message(view, m)?;
+            super::prune::refuse_doomed(view, super::kinds::id(&r, super::chat::APPEND_OWNER), m)?;
             super::chat::shape_add(out, m, super::chat::SHAPE_EXTRA);
         }
         sessions::check_actor(view, opt_id(rec, 8), opt_id(rec, 9))?;
