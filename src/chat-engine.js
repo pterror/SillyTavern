@@ -1472,11 +1472,11 @@ export class ChatEngine {
     }
 
     /**
-     * Makes a bookmark at a message. Bookmark names are unique in a tree (as upstream's chat names were per
-     * character): a name another bookmark holds gets upstream's suffix.
+     * Makes a bookmark at a message, or at the tree's root (`node_id` null). Bookmark names are unique in a tree (as
+     * upstream's chat names were per character): a name another bookmark holds gets upstream's suffix.
      * @param {object} p
      * @param {bigint} p.tree
-     * @param {string} p.node_id
+     * @param {string | null} p.node_id
      * @param {string | null} p.name
      * @param {number} [p.mode]
      * @param {Actor} p.actor
@@ -1484,15 +1484,16 @@ export class ChatEngine {
      */
     createBookmark({ tree, node_id, name, mode = MODE.following, actor }) {
         return this.serialized(tree, async () => {
-            const s = await this.messageOf(tree, node_id);
-            if (!s) return { ok: false, reason: 'unknown node' };
+            const s = node_id === null ? null : await this.messageOf(tree, node_id);
+            if (node_id !== null && !s) return { ok: false, reason: 'unknown node' };
             const records = [];
             const actorIds = await this.actorIds(actor, records);
             if (actorIds.session === null) throw new Error('A bookmark is made through a session');
             const free = name === null ? null : await this.freeBookmarkName(tree, name, null);
             if (name !== null && free === null) return { ok: false, reason: 'no free name' };
             const b = this.next.position++;
-            records.push({ kind: 'positionCreate', id: b, mode, session: actorIds.session, user: actorIds.user, pointer: s.id });
+            const where = s === null ? { kind: 'positionRoot', tree } : { kind: 'positionCreate', pointer: s.id };
+            records.push({ id: b, mode, session: actorIds.session, user: actorIds.user, ...where });
             if (free !== null) records.push({ kind: 'positionName', id: b, name: free });
             await this.store.commit(records);
             return { ok: true, bookmark: b, name: free };
@@ -2467,13 +2468,16 @@ export class ChatEngine {
     async bookmarks({ tree, after, limit }) {
         const page = await this.store.chatRead('treeBookmarks', { tree, limit: limit + 1, ...(after === undefined ? {} : { after: BigInt(after) }) });
         const shown = page.slice(0, limit);
-        const external = await this.externalIds(shown.flatMap(b => [b.at, b.createdAt]));
-        const rows = shown.map((b, i) => ({
+        const external = await this.externalIds(shown.flatMap(b => [b.at, b.createdAt]).filter(id => id !== null));
+        let e = 0;
+        const next = (/** @type {bigint | null} */ id) => (id === null ? null : external[e++]);
+        // A bookmark at the tree's root is at no message, and was made at none.
+        const rows = shown.map(b => ({
             id: String(b.id),
             name: b.name,
             mode: b.mode === MODE.pinned ? 'pinned' : 'following',
-            at: external[2 * i],
-            made_at: external[2 * i + 1],
+            at: next(b.at),
+            made_at: next(b.createdAt),
         }));
         return { rows, more: page.length > limit };
     }
@@ -2486,7 +2490,8 @@ export class ChatEngine {
     async bookmarkOf(tree, bookmark) {
         if (!DECIMAL.test(bookmark)) return null;
         const [b] = await this.store.chatRead('bookmarks', { ids: [BigInt(bookmark)] });
-        if (!b || b.at === null) return null;
+        if (!b) return null;
+        if (b.at === null) return b.root === tree ? b : null;
         const s = (await this.stored([b.at])).get(b.at);
         return s && s.owner === tree ? b : null;
     }

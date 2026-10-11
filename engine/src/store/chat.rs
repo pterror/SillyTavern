@@ -356,6 +356,48 @@ pub(super) fn bookmark_entries(out: &mut Out, b: u64, owner: u64, at: u64, put: 
     }
 }
 
+pub(super) fn root_bookmark_entries(out: &mut Out, b: u64, tree: u64, put: bool) {
+    let r = key::ids(key::ROOT_BOOKMARKS, tree, b);
+    let t = key::ids(key::TREE_BOOKMARK, tree, b);
+    if put {
+        out.put(key::id(key::BOOKMARK_ROOT, b), varints(&[tree]));
+        out.put(r, Vec::new());
+        out.put(t, Vec::new());
+    } else {
+        out.del(key::id(key::BOOKMARK_ROOT, b));
+        out.del(r);
+        out.del(t);
+    }
+}
+
+/// The tree whose root a bookmark is at (None: it is at a message, or isn't).
+pub fn bookmark_root(view: &View, b: u64) -> Result<Option<u64>, StoreError> {
+    view.get(&key::id(key::BOOKMARK_ROOT, b))?
+        .map(|v| parse_varints::<1>(&v).map(|[t]| t))
+        .transpose()
+}
+
+/// The bookmarks at a tree's root.
+pub fn root_bookmarks(view: &View, tree: u64) -> Result<Vec<u64>, StoreError> {
+    let start = key::id(key::ROOT_BOOKMARKS, tree);
+    view.scan(&start, &key::prefix_end(&start), usize::MAX)?
+        .into_iter()
+        .map(|(k, _)| {
+            let mut at = start.len();
+            get_u64(&k, &mut at)
+                .ok_or_else(|| StoreError::Entry("a bookmark key doesn't decode".into()))
+        })
+        .collect()
+}
+
+/// The tree a bookmark is in, at a message or at the root.
+fn bookmark_tree(view: &View, b: u64) -> Result<Option<u64>, StoreError> {
+    if let Some(m) = bookmark_at(view, b)? {
+        return Ok(Some(id(&require_message(view, m)?.1, APPEND_OWNER)));
+    }
+    bookmark_root(view, b)
+}
+
 /// Per (tree, name, bookmark): a named bookmark, by its name's exact bytes.
 pub const BOOKMARK_NAMED: u64 = 148;
 
@@ -476,11 +518,18 @@ impl Deriver for MessageAppend {
             );
             search::index::update(view, out, Scope::chat(owner), m, 0, &[], &items(Some(text)))?;
         }
-        // A following bookmark at the parent moves to the reply.
+        // A following bookmark at the parent (an opening's: at the tree's root) moves to the reply.
         if let Some(p) = parent {
             for b in bookmarks_at(view, p)? {
                 if bookmark_mode(view, b)? == Some(FOLLOWING) {
                     bookmark_entries(out, b, owner, p, false);
+                    bookmark_entries(out, b, owner, m, true);
+                }
+            }
+        } else {
+            for b in root_bookmarks(view, owner)? {
+                if bookmark_mode(view, b)? == Some(FOLLOWING) {
+                    root_bookmark_entries(out, b, owner, false);
                     bookmark_entries(out, b, owner, m, true);
                 }
             }
@@ -974,6 +1023,40 @@ impl Deriver for PositionCreate {
     }
 }
 
+/// `positionRoot`: a bookmark at a tree's root.
+pub struct PositionRoot;
+
+impl Deriver for PositionRoot {
+    fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
+        let (b, mode, tree) = (id(rec, 0), id(rec, 1), id(rec, 4));
+        check_mode(mode)?;
+        if view.get(&key::id(key::POSITION, b))?.is_some() || is_session(view, b)? {
+            return Err(StoreError::Refused(format!("position {b} exists")));
+        }
+        let (s, u) = (id(rec, 2), id(rec, 3));
+        sessions::check_actor(view, Some(s), Some(u))?;
+        out.put(key::id(key::POSITION, b), loc_bytes(at));
+        out.max(key::of(key::NEXT_POSITION), b + 1);
+        root_bookmark_entries(out, b, tree, true);
+        sessions::activity(view, out, s, tree, at.pos)
+    }
+
+    fn is_live(&self, rec: &Record, pos: u64, view: &View) -> Result<bool, StoreError> {
+        live_at(view, &key::id(key::POSITION, id(rec, 0)), pos)
+    }
+
+    fn repoint(
+        &self,
+        rec: &Record,
+        from: u64,
+        to: Loc,
+        view: &View,
+        out: &mut Out,
+    ) -> Result<(), StoreError> {
+        repoint_at(view, out, &key::id(key::POSITION, id(rec, 0)), from, to)
+    }
+}
+
 /// `positionName`: a bookmark's or session's name.
 pub struct PositionName;
 
@@ -1004,13 +1087,12 @@ impl Deriver for PositionName {
             if let Some(n) = name {
                 out.put(sessions::named_key(n, p), Vec::new());
             }
-        } else if let Some(m) = bookmark_at(view, p)? {
+        } else if let Some(tree) = bookmark_tree(view, p)? {
             // Bookmark names are unique in their tree, as upstream's chat names were per character.
             let name = match &rec.values[1] {
                 Value::Text(t) => Some(t.as_slice()),
                 _ => None,
             };
-            let tree = id(&require_message(view, m)?.1, APPEND_OWNER);
             if let Some(n) = name
                 && bookmarks_named(view, tree, n)?.iter().any(|&b| b != p)
             {
@@ -1135,10 +1217,13 @@ impl Deriver for PositionDelete {
 /// Bookmark `b` (its create at `cl`) goes, with its name, mode and place.
 pub(super) fn bookmark_gone(view: &View, out: &mut Out, b: u64, cl: Loc) -> Result<(), StoreError> {
     let (create, _) = view.record(cl.pos)?;
-    // The message it was made at may have gone before it (a following bookmark moves on), taking its entries.
-    let made_at = id(&create, 4);
-    if message_loc(view, made_at)?.is_some() {
-        sessions::branch_gone(out, made_at, b);
+    // The message it was made at may have gone before it (a following bookmark moves on), taking its entries. One
+    // made at a tree's root was made at no message.
+    if create.kind.name == "positionCreate" {
+        let made_at = id(&create, 4);
+        if message_loc(view, made_at)?.is_some() {
+            sessions::branch_gone(out, made_at, b);
+        }
     }
     dead(out, cl);
     out.del(key::id(key::POSITION, b));
@@ -1155,6 +1240,11 @@ pub(super) fn bookmark_gone(view: &View, out: &mut Out, b: u64, cl: Loc) -> Resu
             out.del(bookmark_named_key(tree, &n, b));
         }
         bookmark_entries(out, b, tree, m, false);
+    } else if let Some(tree) = bookmark_root(view, b)? {
+        if let Some(n) = super::searched::position_name(view, b)? {
+            out.del(bookmark_named_key(tree, &n, b));
+        }
+        root_bookmark_entries(out, b, tree, false);
     }
     Ok(())
 }
@@ -1394,6 +1484,7 @@ pub fn deriver(kind: &str) -> Option<&'static dyn Deriver> {
         "messageTime" => &MessageTime,
         "keyMap" => &KeyMap,
         "positionCreate" => &PositionCreate,
+        "positionRoot" => &PositionRoot,
         "positionName" => &PositionName,
         "positionMode" => &PositionMode,
         "positionDelete" => &PositionDelete,

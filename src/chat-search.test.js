@@ -118,3 +118,24 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         await store.close();
     });
 }
+
+for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm: loadEngine({ platform: null }).binding })) {
+    test(`${kind}: a bookmark at the tree's root is listed, renamed, and follows the first opening stored`, async () => {
+        const store = await engine.Store.open(path.join(root, `${kind}-root`));
+        const chats = await ChatEngine.open(store, people);
+        const t = cara.id;
+        const empty = await chats.createBookmark({ tree: t, node_id: null, name: 'Empty chat', actor: one });
+        const pinned = await chats.createBookmark({ tree: t, node_id: null, name: 'Empty chat', mode: MODE.pinned, actor: one });
+        assert.deepEqual([empty.ok, empty.name, pinned.name], [true, 'Empty chat', 'Empty chat (1)']);
+        const rows = (await chats.bookmarks({ tree: t, limit: 10 })).rows;
+        assert.deepEqual(rows.map(r => [r.name, r.at, r.made_at]), [['Empty chat', null, null], ['Empty chat (1)', null, null]]);
+        const listed = (await chats.chatList({ tree: t, limit: 10 })).rows;
+        assert.deepEqual(listed.map(r => [r.name, r.at, r.message_count]), [['Empty chat', null, 0], ['Empty chat (1)', null, 0]]);
+        assert.deepEqual(await chats.changeBookmark({ tree: t, bookmark: String(pinned.ok && pinned.bookmark), change: { name: 'Kept' } }), { ok: true, name: 'Kept' });
+        assert.deepEqual((await chats.changeBookmark({ tree: 99n, bookmark: String(pinned.ok && pinned.bookmark), change: { name: 'x' } })).ok, false);
+        const [greeting] = (await chats.appendMessages({ tree: t, treeSpeaker: cara, after: null, contents: [msg(false, 'Hello!')], actor: { user: one.user } })).node_ids;
+        const after = (await chats.bookmarks({ tree: t, limit: 10 })).rows;
+        assert.deepEqual(after.map(r => [r.name, r.at]), [['Empty chat', greeting], ['Kept', null]]);
+        await store.close();
+    });
+}

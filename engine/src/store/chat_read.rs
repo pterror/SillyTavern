@@ -443,15 +443,18 @@ fn bookmark(view: &View, b: u64) -> Result<Js, StoreError> {
     };
     let (r, _) = view.record(parse_loc(&v)?.pos)?;
     let id = |i| super::kinds::id(&r, i);
+    // Made at a tree's root, it was made at no message.
+    let made_at = (r.kind.name == "positionCreate").then(|| id(4));
     Ok(Js::Obj(vec![
         ("id", Js::Big(b)),
         ("at", opt_big(chat::bookmark_at(view, b)?)),
+        ("root", opt_big(chat::bookmark_root(view, b)?)),
         (
             "mode",
             Js::Num(chat::bookmark_mode(view, b)?.unwrap_or(0) as f64),
         ),
         ("name", position_name(view, b)?),
-        ("createdAt", Js::Big(id(4))),
+        ("createdAt", opt_big(made_at)),
         ("session", Js::Big(id(2))),
         ("user", Js::Big(id(3))),
     ]))

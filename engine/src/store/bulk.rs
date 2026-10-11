@@ -104,8 +104,8 @@ struct Spilled {
 
 /// A bulk load in progress (`Store::loader`). Dropped without `finish`, it is abandoned and leaves the store as
 /// it was.
-pub struct Loader<'s> {
-    store: &'s Store,
+pub struct Loader {
+    inner: Arc<Inner>,
     dir: PathBuf,
     first_file: u64,
     layout: Layout,
@@ -131,7 +131,7 @@ pub struct Loader<'s> {
 
 impl Store {
     /// Starts a bulk load. Only one runs at a time; commits go on meanwhile.
-    pub fn loader(&self) -> StoreResult<Loader<'_>> {
+    pub fn loader(&self) -> StoreResult<Loader> {
         let inner = &self.inner;
         inner.wait_ready()?;
         let dir = inner.dir.join(LOAD_DIR);
@@ -184,7 +184,7 @@ impl Store {
             })
             .collect();
         Ok(Loader {
-            store: self,
+            inner: inner.clone(),
             dir,
             first_file,
             layout: Layout::start(&inner.cfg.log, Cursor::file_start(first_file), false),
@@ -235,7 +235,7 @@ pub(super) const LOAD_DIR: &str = "load";
 
 const MARKER: &str = "install";
 
-impl Loader<'_> {
+impl Loader {
     #[cfg(test)]
     pub(super) fn fail_at(&mut self, point: u8) {
         self.fail_at = point;
@@ -257,7 +257,7 @@ impl Loader<'_> {
     }
 
     fn add_inner(&mut self, records: impl IntoIterator<Item = Record>) -> StoreResult<()> {
-        let target = self.store.inner.cfg.log.file_target;
+        let target = self.inner.cfg.log.file_target;
         for rec in records {
             let d = deriver(rec.kind);
             if rec.kind.internal || d.prepares() {
@@ -273,7 +273,7 @@ impl Loader<'_> {
             if self.layout.offset() >= target {
                 self.close_file()?;
                 self.layout = Layout::start(
-                    &self.store.inner.cfg.log,
+                    &self.inner.cfg.log,
                     Cursor::file_start(self.layout.file + 1),
                     false,
                 );
@@ -286,7 +286,7 @@ impl Loader<'_> {
     /// workers.
     fn close_file(&mut self) -> StoreResult<()> {
         self.end = Some(self.layout.close());
-        let log = &self.store.inner.log;
+        let log = &self.inner.log;
         self.stats.log_bytes += log.write_staged(&self.dir, self.layout.file, &self.layout.runs)?;
         let mut per: Vec<Vec<Laid>> = (0..self.workers.len()).map(|_| Vec::new()).collect();
         for laid in self.batch.drain(..) {
@@ -365,7 +365,7 @@ impl Loader<'_> {
         runs.sort_by_key(|(seq, _)| std::cmp::Reverse(*seq));
         let runs: Vec<Arc<Run>> = runs.into_iter().map(|(_, r)| r).collect();
         let path = self.dir.join("load.run");
-        let block_size = self.store.inner.ks.config().block_size;
+        let block_size = self.inner.ks.config().block_size;
         let (entries, bytes) = merge_runs(&runs, &self.dir, &path, block_size, self.workers.len())?;
         for r in &runs {
             r.obsolete.store(true, Ordering::Release);
@@ -418,7 +418,7 @@ impl Loader<'_> {
 
     /// Nothing was committed or derived since the load started.
     fn alone(&self) -> bool {
-        let p = self.store.inner.pipe.lock().unwrap();
+        let p = self.inner.pipe.lock().unwrap();
         p.loading
             .as_ref()
             .is_none_or(|l| l.touched.is_empty() && !l.derived)
@@ -429,7 +429,7 @@ impl Loader<'_> {
     fn build_lists(&self, run: &Path, out: &Path, block_size: usize) -> StoreResult<u64> {
         use super::kinds::key;
         use crate::search::query::{build_list, has_list, list_entries_of, parse_term_key};
-        let inner = &self.store.inner;
+        let inner = &self.inner;
         // Everything committed before the load is published.
         loop {
             inner.sync_act.kick();
@@ -659,7 +659,7 @@ impl Loader<'_> {
         numbers: Option<&Path>,
         end: Cursor,
     ) -> StoreResult<()> {
-        let inner = self.store.inner.clone();
+        let inner = self.inner.clone();
         let last_file = end.file;
         // Hold commits, and let the ones prepared be written and published.
         inner
@@ -782,7 +782,7 @@ impl Loader<'_> {
     /// Refuses the load if a record committed meanwhile shares a partition with it.
     fn check_partitions(&self) -> StoreResult<()> {
         let touched = {
-            let p = self.store.inner.pipe.lock().unwrap();
+            let p = self.inner.pipe.lock().unwrap();
             p.loading
                 .as_ref()
                 .map(|l| l.touched.clone())
@@ -824,7 +824,7 @@ impl Loader<'_> {
                 let _ = h.join();
             }
         }
-        let inner = &self.store.inner;
+        let inner = &self.inner;
         let mut p = inner.pipe.lock().unwrap();
         if p.loading.is_some() {
             p.loading = None;
@@ -838,7 +838,7 @@ impl Loader<'_> {
     }
 }
 
-impl Drop for Loader<'_> {
+impl Drop for Loader {
     fn drop(&mut self) {
         if !self.finished {
             self.abandon();

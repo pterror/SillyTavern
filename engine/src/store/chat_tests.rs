@@ -2610,3 +2610,137 @@ fn a_send_key_of_a_message_being_deleted_stores_a_new_message() {
     drop(s);
     fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn a_bookmark_at_a_trees_root_is_named_moves_with_a_new_opening_and_goes() {
+    let dir = temp_dir("root-bookmark");
+    let (s, mut model) = open_with_actors(&dir);
+    let root = |b: u64, mode: u64, tree: u64| {
+        rec(
+            "positionRoot",
+            vec![
+                Value::Id(b),
+                Value::UInt(mode),
+                Value::Id(1),
+                Value::Id(1),
+                Value::Id(tree),
+            ],
+        )
+    };
+    let name = |b: u64, n: &str| rec("positionName", vec![Value::Id(b), Value::Text(text(n))]);
+    s.commit_wait(vec![
+        root(10, FOLLOWING, 7),
+        name(10, "empty"),
+        root(11, PINNED, 7),
+        name(11, "kept"),
+        root(12, FOLLOWING, 8),
+    ])
+    .unwrap();
+    // Names are unique in the tree, root bookmarks' as any other's.
+    assert!(s.commit_wait(vec![name(11, "empty")]).is_err());
+    s.derived(|v| {
+        assert_eq!(chat::bookmark_root(v, 10)?, Some(7));
+        assert_eq!(chat::bookmark_at(v, 10)?, None);
+        assert_eq!(chat::root_bookmarks(v, 7)?, vec![10, 11]);
+        assert_eq!(chat::bookmarks_named(v, 7, b"empty")?, vec![10]);
+        let Js::Arr(rows) = super::chat_read::tree_bookmarks(v, 7, None, 10)? else {
+            panic!("a list");
+        };
+        assert_eq!(rows.len(), 2);
+        Ok(())
+    })
+    .unwrap();
+    // An opening stored in tree 7 takes the following one along; the pinned one stays, and tree 8's is untouched.
+    let opening = append(&mut model, 7, None, 5, "hello", None, None, 1);
+    s.commit_wait(vec![opening]).unwrap();
+    s.derived(|v| {
+        assert_eq!(chat::bookmark_root(v, 10)?, None);
+        assert_eq!(chat::bookmark_at(v, 10)?, Some(0));
+        assert_eq!(chat::root_bookmarks(v, 7)?, vec![11]);
+        assert_eq!(chat::root_bookmarks(v, 8)?, vec![12]);
+        assert_eq!(chat::bookmarks_named(v, 7, b"empty")?, vec![10]);
+        Ok(())
+    })
+    .unwrap();
+    // Deleting it takes its name and places; its name is free again.
+    s.commit_wait(vec![rec("positionDelete", vec![Value::Id(11)])])
+        .unwrap();
+    s.commit_wait(vec![name(10, "kept")]).unwrap();
+    drop(s);
+    let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
+    s.derived(|v| {
+        assert!(chat::root_bookmarks(v, 7)?.is_empty());
+        assert_eq!(v.get(&key::id(key::BOOKMARK_ROOT, 11))?, None);
+        assert_eq!(chat::bookmarks_named(v, 7, b"kept")?, vec![10]);
+        let p = key::id(key::TREE_BOOKMARK, 7);
+        assert_eq!(v.scan(&p, &key::prefix_end(&p), usize::MAX)?.len(), 1);
+        Ok(())
+    })
+    .unwrap();
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn an_unowned_tree_keeps_its_messages_until_a_character_takes_its_id() {
+    use super::library::{self, CHARACTER, CHAT_SIZE, LAST_CHAT, TREE};
+    let dir = temp_dir("unowned");
+    let (s, mut model) = open_with_actors(&dir);
+    let create = |kind: u64, key: &str| {
+        rec(
+            "entityCreate",
+            vec![
+                Value::Id(30),
+                Value::UInt(kind),
+                Value::Text(text(key)),
+                Value::Time(1),
+            ],
+        )
+    };
+    let a = append(&mut model, 30, None, 5, "hi", None, None, 1);
+    let b = append(&mut model, 30, Some(0), 9, "there", None, None, 1);
+    s.commit_wait(vec![create(TREE, "gone"), a, b]).unwrap();
+    s.derived(|v| {
+        // Kept, found by its key, in no library order or count.
+        assert_eq!(library::entity_by_key(v, TREE, b"gone")?, Some(30));
+        assert_eq!(library::state(v, 30)?, None);
+        let counts = key::of(key::COUNT);
+        assert!(
+            v.scan(&counts, &key::prefix_end(&counts), usize::MAX)?
+                .is_empty()
+        );
+        Ok(())
+    })
+    .unwrap();
+    // A character created with the tree's id takes it over: its messages and their stats are the character's.
+    s.commit_wait(vec![
+        rec("entityDelete", vec![Value::Id(30)]),
+        rec(
+            "textValue",
+            vec![
+                Value::Sel(0, 30),
+                Value::Field(FieldRef::Code(library::NAME)),
+                Value::Text(text("Back")),
+                Value::Absent,
+                Value::Absent,
+            ],
+        ),
+        create(CHARACTER, "gone.png"),
+    ])
+    .unwrap();
+    s.derived(|v| {
+        assert_eq!(library::entity_by_key(v, TREE, b"gone")?, None);
+        assert_eq!(library::entity_by_key(v, CHARACTER, b"gone.png")?, Some(30));
+        assert!(library::state(v, 30)?.is_some());
+        assert_eq!(
+            library::sort_num(v, 30, CHARACTER, Some(1), LAST_CHAT)?,
+            Some(9.0)
+        );
+        assert!(library::sort_num(v, 30, CHARACTER, Some(1), CHAT_SIZE)?.unwrap_or(0.0) > 0.0);
+        assert_eq!(chat::path_to(v, Some(1))?, vec![0, 1]);
+        Ok(())
+    })
+    .unwrap();
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}

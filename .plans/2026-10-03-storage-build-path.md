@@ -2309,8 +2309,28 @@ What it reads, and what each becomes:
     row in `itemizations` (the table's is newer), every entry of a file whose chat can't be found or is named by more
     than one character or group, and a file that can't be read;
   - the files are left where they are, as the other old files are.
-- Avatars: each character's image file renamed to its content hash (4.6). A rename, not a copy: reflinks and the
-  image bytes are untouched. Identical images become one file. Routes taking the avatar id resolve it to the file.
+- Avatars (answered, coordinator, 10-11; replaces "renamed"): each character's image is hard-linked into the new store
+  as `store/avatars/<content hash>.<ext>` while the store is built (before verification), `characters/` untouched. A
+  hard link writes no image data and keeps btrfs reflink sharing; identical images become one hash-named file by
+  linking the first and skipping the rest. Where the filesystem refuses hard links (another device, unsupported), the
+  file is copied and the count and bytes reported. Verification includes every card's avatar present under its hash.
+  Serving avatars by hash from `store/avatars/` is 5f's wiring.
+- Send keys (answered, coordinator, 10-11): each `send_keys` row onto its message's append (`sendKey`), so a draft
+  re-sent after the conversion stores no duplicate; a key that isn't a UUID is left out, counted, and listed by the
+  dry run as a known duplicate risk for that message.
+- Owners with no character or group (answered, coordinator, 10-11; Data safety): the old code never deleted tree rows
+  (a character delete, even with `delete_chats`, removed only the old chats folder), so such owners are kept as
+  unowned trees, keyed by their old owner key (the avatar stem or group id): an entity of type 6 (`library::TREE`,
+  picked) whose id is the tree. A character or group later created with that key adopts the tree (upstream's file
+  layout): the create deletes the type 6 entity and creates the new one with its id, in one commit. The dry run and
+  the apply list them (owner key, message and label counts). A "delete orphaned chats" action is backlog, not 5e.
+- Labels on an anchor row (a chat with no messages yet; answered, coordinator, 10-11): a bookmark at the tree's root
+  (positions get root pointers as sessions have: kind `positionRoot`), the label's metadata as state at the root. No
+  label is dropped.
+- The three chats the file-to-tree migration dropped (shim plan step 16; answered, coordinator, 10-11): converted from
+  their `.pre-migration` files as the rest are read: a twin duplicate becomes a bookmark with its name (suffixed per
+  the tree's rule) at the message its file ends on; the header-only chat a bookmark at the group tree's root with its
+  metadata as state there. The dry run reports them.
 - Folded in, because running them as their own scripts after the conversion would write data the conversion had just
   written and then change it (CLAUDE.md Boot and batches: a cutover "writes only what changes"; {{user}}: "absolute
   minimum disk writes"):
@@ -2349,6 +2369,8 @@ old path:
   one-offs that read SQLite are deleted.
 - The server opening a user directory whose data isn't in the engine fails at startup with one line naming
   `convert-to-engine.js`.
+- Avatars served by content hash from `store/avatars/` (5a didn't build it; 5e links the files there): routes taking
+  the avatar id resolve it to the file through the card's `cardHash` avatar hash.
 - One-off scripts deleted unrun in this commit (folded into `convert-to-engine.js` or made pointless by it):
   `convert-character-store-to-fields.js`, `convert-world-info-to-sidecar.js`, `restore-group-chat-migration-losses.js`,
   `cleanup-zztest-leftovers.js`, `upgrade-message-stats.js` (the triggers it drops are in a file the converter only

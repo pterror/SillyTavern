@@ -33,6 +33,7 @@ const samples = [
     { kind: 'textValue', message: 10n, field: 1, text: 'edited' },
     { kind: 'jsonValue', message: 10n, field: 'extra.api', json: '"openai"' },
     { kind: 'positionCreate', id: 8n, mode: 1, session: 7n, user: 1n, pointer: 10n },
+    { kind: 'positionRoot', id: 12n, mode: 2, session: 7n, user: 1n, tree: 3n },
     { kind: 'textValue', entity: 5n, field: 2, text: 'a description '.repeat(20) },
     { kind: 'textEdit', entity: 5n, field: 2, offset: 10, removed: 4, text: 'word' },
     { kind: 'textValue', entity: 5n, field: 'my-extension/key', text: 'x'.repeat(40_000) },
@@ -330,7 +331,7 @@ for (const [name, engine] of Object.entries(bindings)) {
         assert.deepEqual(await store.chatRead('keyStates', { space: 1, keys: ['0190a1b2-0000-7000-8000-00000000000a', 'nope'] }), [{ id: 1n }, null]);
         assert.deepEqual(await store.chatRead('nextIds', {}), { message: 3n, position: 10n, user: 2n, change: 2n });
         const [b] = await store.chatRead('treeBookmarks', { tree: 3n, limit: 10 });
-        assert.deepEqual(b, { id: 9n, at: 1n, mode: 2, name: 'Checkpoint', createdAt: 1n, session: 1n, user: 1n });
+        assert.deepEqual(b, { id: 9n, at: 1n, root: null, mode: 2, name: 'Checkpoint', createdAt: 1n, session: 1n, user: 1n });
         assert.deepEqual(await store.chatRead('state', { tree: 3n, at: 1n }), [
             { variable: true, field: 'x', json: '1' },
             { variable: false, field: 'note', json: '"hi"' },
@@ -343,5 +344,49 @@ for (const [name, engine] of Object.entries(bindings)) {
         assert.deepEqual(await store.chatRead('sent', { owner: 3n, keys: [Buffer.alloc(16, 1), Buffer.alloc(16, 2)] }), [1n, null]);
         assert.throws(() => store.chatRead('nope', {}), /no chat read/);
         await store.close();
+    });
+}
+
+for (const [name, engine] of Object.entries(bindings)) {
+    test(`${name}: a bulk load installs its records at once, ordered, numbered and searched`, async () => {
+        const dir = path.join(tmp, `${name}-load`);
+        const store = await engine.Store.open(dir);
+        const load = store.load();
+        assert.throws(() => store.load(), /already running/);
+        const names = ['Zed', 'émile', 'Ana', 'bob'];
+        for (const [i, n] of names.entries()) {
+            const e = BigInt(i + 1);
+            await load.add([
+                { kind: 'textValue', entity: e, field: 1, text: n },
+                { kind: 'fav', entity: e, fav: i === 2 },
+                { kind: 'entityCreate', entity: e, type: 0, key: `${n}.png`, added: 1000 + i },
+            ]);
+        }
+        // Nothing shows until it is installed.
+        assert.deepEqual(await store.libraryIds([[0, 'Ana.png']]), [null]);
+        const stats = await load.finish();
+        assert.equal(stats.records, 12);
+        assert.ok(stats.numberEntries > 0);
+        await assert.rejects(load.finish(), /finished/);
+        assert.deepEqual(await store.libraryIds([[0, 'Ana.png']]), [3n]);
+        const page = await store.libraryPage({ characters: true, sort: { key: 0 }, limit: 10, count: true });
+        assert.deepEqual(page.ids, [3n, 4n, 2n, 1n]);
+        const random = await store.libraryPage({ characters: true, sort: { seed: 3 }, limit: 10 });
+        assert.deepEqual([...random.ids].sort(), [1n, 2n, 3n, 4n]);
+        const found = await store.librarySearch({ characters: true, clauses: [{ text: 'emile' }], relevance: true, limit: 5 });
+        assert.deepEqual(found.ids, [2n]);
+        // A second load of characters into a library that has some is refused, and leaves nothing.
+        const again = store.load();
+        await again.add([{ kind: 'entityCreate', entity: 9n, type: 0, key: 'late.png', added: 1 }]);
+        await assert.rejects(again.finish(), /only into a store with none/);
+        assert.deepEqual(await store.libraryIds([[0, 'late.png']]), [null]);
+        // An abandoned load leaves nothing either.
+        const dropped = store.load();
+        await dropped.add([{ kind: 'messageAppend', id: 1n, owner: 3n, time: 1, text: 'x', flags: 0, user: 1n }]);
+        dropped.abandon();
+        await store.close();
+        const reopened = await engine.Store.open(dir);
+        assert.deepEqual(await reopened.libraryIds([[0, 'Ana.png'], [0, 'late.png']]), [3n, null]);
+        await reopened.close();
     });
 }

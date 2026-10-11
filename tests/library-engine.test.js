@@ -365,6 +365,27 @@ describe('the library on the engine', () => {
         }
     });
 
+    test('a character or group created with an unowned tree\'s key takes its id, and its messages', async () => {
+        const [stem, gid] = [101n, 102n];
+        library.nextId = 200n;
+        await library.store.commit([
+            { kind: 'entityCreate', entity: stem, type: lib.TYPE.tree, key: 'Old Friend', added: 1 },
+            { kind: 'entityCreate', entity: gid, type: lib.TYPE.tree, key: '1700000000009', added: 1 },
+            { kind: 'keyMap', user: 1n, key: Buffer.from('u') },
+            { kind: 'messageAppend', id: 1n, owner: stem, time: 5, text: 'kept', flags: 0, user: 1n },
+        ]);
+        const { id } = await library.writeCard(directories, 'Old Friend.png', JSON.stringify({ name: 'Old Friend', data: { name: 'Old Friend' } }));
+        expect(id).toBe(stem);
+        const { id: g } = await library.writeGroup({ id: '1700000000009', name: 'G', members: [] });
+        expect(g).toBe(gid);
+        expect(await library.ids(lib.TYPE.tree, ['Old Friend', '1700000000009'])).toEqual([null, null]);
+        const [entity] = await library.entities([stem]);
+        expect([entity?.type, entity?.key]).toEqual([lib.TYPE.character, 'Old Friend.png']);
+        expect((await library.query({ sortField: 'name', limit: 10 })).rows.map(r => r.id).sort()).toEqual(['1700000000009', 'Old Friend.png']);
+        // Another new character gets a new id.
+        expect((await library.writeCard(directories, 'New.png', JSON.stringify({ name: 'New' }))).id).toBe(200n);
+    });
+
     test('a group\'s member changes write only the members that changed', async () => {
         const group = { id: '1700000000001', name: 'G', members: ['a.png', 'b.png', 'c.png'], disabled_members: [], avatar_url: '', allow_self_responses: false, chat_id: '1', chats: ['1'], unknown_key: { x: 1 } };
         await library.writeGroup(group);

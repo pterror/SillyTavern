@@ -453,6 +453,19 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
+    // A bookmark at the root of `tree` (no message), as `positionCreate` makes one at a message.
+    Kind {
+        name: "positionRoot",
+        base: 234,
+        slots: &[
+            req("id", Ty::Id(Space::Position)),
+            req("mode", Ty::UInt),
+            req("session", Ty::Id(Space::Position)),
+            req("user", Ty::Id(Space::User)),
+            req("tree", Ty::Id(Space::Entity)),
+        ],
+        internal: false,
+    },
     // A position's name (absent: it has none).
     Kind {
         name: "positionName",

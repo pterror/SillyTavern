@@ -2309,9 +2309,144 @@ impl Store {
         }
     }
 
+    /// Starts a bulk load (one at a time per store; commits go on meanwhile). Characters, groups, tags and their
+    /// assignments load only into a store with none; text edits and engine-only kinds don't load.
+    #[napi]
+    pub fn load(&self) -> Result<Load> {
+        let loader = self.store.loader().map_err(store_error)?;
+        Ok(Load {
+            loader: Arc::new(std::sync::Mutex::new(Some(loader))),
+        })
+    }
+
     /// Finishes queued commits, flushes, and stops; later commits reject.
     #[napi(ts_return_type = "Promise<void>")]
     pub fn close(&self) -> AsyncTask<CloseTask> {
         AsyncTask::new(CloseTask(self.store.clone()))
+    }
+}
+
+/// What a bulk load took and wrote (`store::bulk::LoadStats`), times in ms.
+#[napi(object)]
+pub struct LoadStats {
+    pub records: f64,
+    pub log_bytes: f64,
+    pub layout_ms: f64,
+    pub derive_wait_ms: f64,
+    pub derive_ms: f64,
+    pub spill_ms: f64,
+    pub spills: f64,
+    pub spill_bytes: f64,
+    pub merge_ms: f64,
+    pub run_bytes: f64,
+    pub run_entries: f64,
+    pub lists_ms: f64,
+    pub list_entries: f64,
+    pub numbers_ms: f64,
+    pub number_entries: f64,
+    pub install_ms: f64,
+    pub total_ms: f64,
+}
+
+impl From<crate::store::bulk::LoadStats> for LoadStats {
+    fn from(s: crate::store::bulk::LoadStats) -> LoadStats {
+        let ms = |us: u64| us as f64 / 1000.0;
+        LoadStats {
+            records: s.records as f64,
+            log_bytes: s.log_bytes as f64,
+            layout_ms: ms(s.layout_micros),
+            derive_wait_ms: ms(s.derive_wait_micros),
+            derive_ms: ms(s.derive_micros),
+            spill_ms: ms(s.spill_micros),
+            spills: s.spills as f64,
+            spill_bytes: s.spill_bytes as f64,
+            merge_ms: ms(s.merge_micros),
+            run_bytes: s.run_bytes as f64,
+            run_entries: s.run_entries as f64,
+            lists_ms: ms(s.lists_micros),
+            list_entries: s.list_entries as f64,
+            numbers_ms: ms(s.numbers_micros),
+            number_entries: s.number_entries as f64,
+            install_ms: ms(s.install_micros),
+            total_ms: ms(s.total_micros),
+        }
+    }
+}
+
+type HeldLoader = Arc<std::sync::Mutex<Option<crate::store::bulk::Loader>>>;
+
+/// A bulk load (`Store.load()`): records added in order, derived on worker threads, invisible until `finish`
+/// installs them all at once. Dropped or abandoned, it leaves the store as it was.
+#[napi]
+pub struct Load {
+    loader: HeldLoader,
+}
+
+pub struct LoadAddTask(HeldLoader, Option<Vec<Record>>);
+
+impl Task for LoadAddTask {
+    type Output = ();
+    type JsValue = ();
+
+    fn compute(&mut self) -> Result<()> {
+        let records = self.1.take().unwrap_or_default();
+        let mut held = self.0.lock().unwrap();
+        let loader = held
+            .as_mut()
+            .ok_or_else(|| invalid("the load is finished".into()))?;
+        loader.add(records).map_err(store_error)
+    }
+
+    fn resolve(&mut self, _env: Env, _: ()) -> Result<()> {
+        Ok(())
+    }
+}
+
+pub struct LoadFinishTask(HeldLoader);
+
+impl Task for LoadFinishTask {
+    type Output = crate::store::bulk::LoadStats;
+    type JsValue = LoadStats;
+
+    fn compute(&mut self) -> Result<crate::store::bulk::LoadStats> {
+        let loader = self
+            .0
+            .lock()
+            .unwrap()
+            .take()
+            .ok_or_else(|| invalid("the load is finished".into()))?;
+        loader.finish().map_err(store_error)
+    }
+
+    fn resolve(&mut self, _env: Env, s: crate::store::bulk::LoadStats) -> Result<LoadStats> {
+        Ok(s.into())
+    }
+}
+
+#[napi]
+impl Load {
+    /// Adds records to the load, in order. A refusal (a kind that can't be bulk loaded) fails the whole load.
+    #[napi(ts_args_type = "records: object[]", ts_return_type = "Promise<void>")]
+    pub fn add(&self, records: Vec<Object>) -> Result<AsyncTask<LoadAddTask>> {
+        let records = records
+            .iter()
+            .map(record_from_js)
+            .collect::<Result<Vec<_>>>()?;
+        Ok(AsyncTask::new(LoadAddTask(
+            self.loader.clone(),
+            Some(records),
+        )))
+    }
+
+    /// Derives, merges and installs the load; resolves with what it took and wrote.
+    #[napi(ts_return_type = "Promise<LoadStats>")]
+    pub fn finish(&self) -> AsyncTask<LoadFinishTask> {
+        AsyncTask::new(LoadFinishTask(self.loader.clone()))
+    }
+
+    /// Abandons the load: nothing of it is installed.
+    #[napi]
+    pub fn abandon(&self) {
+        drop(self.loader.lock().unwrap().take());
     }
 }
