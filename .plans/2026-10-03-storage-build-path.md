@@ -2762,6 +2762,17 @@ route, they are accepted by reading through). (7) `chat: ''` is `newChat`, a sto
 opening, `replace` deletes only the bookmark of that name; a group's `chat_id` is the session's identifier, `chats`
 `chatList`. The four foreign files: still waiting on {{user}}.
 
+Stop (10-11), fifth, world info (nothing of it built): a synchronous `readWorldInfoFile` and a store not open yet
+or still replaying. Stores open lazily (`userStore()` is a Promise, `Store.open` async, and after listening through
+`resumeStoreWork`), and derived reads wait for replay (`after_replay`: no thread waits for it). A sync call can come
+before that user's store is ready (a plugin, `convertToV2` or generation on a first request). (a) open synchronously
+and block until replay ends (a sync open too; holds every request on a long log); (b) throw "not ready" (upstream's
+meaning breaks for that call); (c) answer the book as missing (silently wrong); (d) boot opens every user's store and
+waits for replay before listening (boot waits on it); (e) other? Settled otherwise: one sync binding method reading a
+whole book by key from one snapshot, assembled by `WorldInfoEngine.assemble` under the same signature; the wasm
+build takes it on the main thread (`Atomics.wait`).
+Meanwhile the generate step runs (not touching world info).
+
 **Stage 5 measured against** (design §6 and §8, today = redesign 5f at 5bddd179b; harness `walrepro/measure5f.mjs`
 for today, the stage 2 harness for the engine):
 
