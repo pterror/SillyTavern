@@ -1541,7 +1541,11 @@ export class ChatEngine {
         const atExternal = written.at === null ? null : (await this.externalIds([written.at]))[0];
         const current = await this.metadata(tree, written.at);
         const unset = Object.keys(current).filter(k => !Object.hasOwn(metadata, k));
-        await this.mergeMetadata({ tree, at: atExternal, set: metadata, unset, actor });
+        // A whole chat's save replaces its metadata, as upstream's does: a variable it lacks is removed.
+        const had = current.variables && typeof current.variables === 'object' ? Object.keys(current.variables) : [];
+        const sent = metadata.variables && typeof metadata.variables === 'object' && !Array.isArray(metadata.variables) ? metadata.variables : null;
+        const variables = { unset: sent ? had.filter(name => !Object.hasOwn(sent, name)) : [] };
+        await this.mergeMetadata({ tree, at: atExternal, set: metadata, unset, variables, actor });
         const external = await this.externalIds(written.assigned.map(a => a.id));
         return { ok: true, integrity: actor.session, assigned_node_ids: written.assigned.map((a, i) => ({ index: a.index, node_id: external[i] })) };
     }
@@ -1727,16 +1731,19 @@ export class ChatEngine {
     }
 
     /**
-     * Sets and removes `chat_metadata` keys at a position, as state changes: only the keys whose value differs.
+     * Sets and removes `chat_metadata` keys at a position, as state changes: only the keys whose value differs. A
+     * chat variable is a key of its own: one is removed only when named, so tabs changing different variables keep
+     * each other's.
      * @param {object} p
      * @param {bigint} p.tree
      * @param {string | null} p.at The message (null: the tree's root).
-     * @param {Record<string, unknown>} p.set
-     * @param {string[]} p.unset
+     * @param {Record<string, unknown>} p.set A `variables` object here sets the variables it holds.
+     * @param {string[]} p.unset `variables` here removes the object and every variable.
+     * @param {{ set?: Record<string, unknown>, unset?: string[] }} [p.variables] Variables set and removed by name.
      * @param {Actor} p.actor
      * @param {number} [p.author]
      */
-    mergeMetadata({ tree, at, set, unset, actor, author = AUTHOR.user }) {
+    mergeMetadata({ tree, at, set, unset, variables, actor, author = AUTHOR.user }) {
         return this.serialized(tree, async () => {
             let message = null;
             if (at !== null) {
@@ -1746,34 +1753,44 @@ export class ChatEngine {
             const state = await this.shownState(await this.store.chatRead('state', { tree, ...(message === null ? {} : { at: message }) }));
             const now = new Map(state.filter(e => !e.variable).map(e => [e.field, e.json]));
             const vars = new Map(state.filter(e => e.variable).map(e => [e.field, e.json]));
-            /** @type {[string, string | undefined, boolean][]} */
-            const changes = [];
+            // Each key touched, in the order first touched, with the value it ends with.
+            /** @type {Map<string, [string, string | undefined, boolean]>} */
+            const touched = new Map();
             const change = (/** @type {string} */ key, /** @type {string | undefined} */ value, variable = false) => {
-                changes.push([key, value, variable]);
+                const held = variable ? vars : now;
+                if (value === undefined) held.delete(key);
+                else held.set(key, value);
+                touched.set(`${variable ? 'v' : 'k'}\u0000${key}`, [key, value, variable]);
+            };
+            const isObject = (/** @type {unknown} */ v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+            const setVariables = (/** @type {Record<string, unknown>} */ values) => {
+                // The object itself, empty or not, is a marker.
+                if (!now.has('variables')) change('variables', '{}');
+                for (const [name, v] of Object.entries(values)) {
+                    if (v !== undefined) change(name, JSON.stringify(v), true);
+                }
             };
             for (const [key, value] of Object.entries(set ?? {})) {
                 if (value === undefined || DERIVED_METADATA.has(key)) continue;
-                if (key === 'variables' && value !== null && typeof value === 'object' && !Array.isArray(value)) {
-                    // Each chat variable is a key of its own; the object itself, empty or not, a marker.
-                    if (!now.has('variables')) change('variables', '{}');
-                    for (const [name, v] of Object.entries(value)) {
-                        if (v === undefined) continue;
-                        const json = JSON.stringify(v);
-                        if (vars.get(name) !== json) change(name, json, true);
-                    }
-                    for (const name of vars.keys()) if (!Object.hasOwn(value, name)) change(name, undefined, true);
+                if (key === 'variables' && isObject(value)) {
+                    setVariables(/** @type {Record<string, unknown>} */ (value));
                     continue;
                 }
-                const json = JSON.stringify(value);
-                if (now.get(key) !== json) change(key, json);
+                change(key, JSON.stringify(value));
             }
             for (const key of Array.isArray(unset) ? unset : []) {
                 if (typeof key !== 'string' || DERIVED_METADATA.has(key)) continue;
                 if (key === 'variables') {
-                    for (const name of vars.keys()) change(name, undefined, true);
-                    if (now.has('variables')) change('variables', undefined);
-                } else if (now.has(key)) change(key, undefined);
+                    for (const name of [...vars.keys()]) change(name, undefined, true);
+                }
+                change(key, undefined);
             }
+            if (isObject(variables?.set)) setVariables(/** @type {Record<string, unknown>} */ (variables?.set));
+            for (const name of Array.isArray(variables?.unset) ? variables.unset : []) {
+                if (typeof name === 'string') change(name, undefined, true);
+            }
+            const before = new Map(state.map(e => [`${e.variable ? 'v' : 'k'}\u0000${e.field}`, e.json]));
+            const changes = [...touched].filter(([k, [, value]]) => before.get(k) !== value).map(([, c]) => c);
             if (changes.length === 0) return { ok: true };
             const lorebooks = changes.filter(([key, , variable]) => key === WORLD_INFO && !variable).map(([, value]) => (value === undefined ? undefined : JSON.parse(value)));
             await this.withWorldLinks(lorebooks, async link => {
