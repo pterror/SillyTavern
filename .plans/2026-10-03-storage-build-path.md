@@ -2309,6 +2309,15 @@ bulk loader stops the store when a record is refused during derivation (the conv
 The chats' load spreads only over the workers the owners' id units reach (owners are `>> 10` units; 7,200 owners
 with consecutive ids are 8 units): its CPU time per message grew with the size, its wall time didn't.
 
+Left (handover, 10-11):
+- Run order unchanged (section 6): `--dry-run`, then `--apply --server-stopped` (`--keep-orphans` to keep chats of
+  deleted characters). The script, its folder, the test and the fixture are deleted in their own commit once run.
+- A recorded tag reorder pass is converted as its mode and queue with the walk from the start (the engine's pass
+  rewrites every tag in that order, so where the old pass had got to doesn't change the result).
+- 5f: serving avatars from `store/avatars/` by the card's hash; the routes calling `writeCard`/`writeGroup` (which
+  adopt an unowned tree with the new key); `check-chat-metadata-cache.js` rewritten against the converted state.
+- The check is the longest step (about half the run); it reads every card whole.
+
 What it reads, and what each becomes:
 - `character-metadata.sqlite` in the blob layout and the old schema the user's file is at (remove-migrations: never
   opened by staging's current code). Cards are split with `splitCard()` / verified with `canonicalCardHash()` as the
