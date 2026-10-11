@@ -752,18 +752,36 @@ export class LibraryEngine {
     }
 
     /**
+     * Deletes an entity. A character's or group's chats stay with `keepChats` (upstream leaves chat files on disk): its
+     * tree becomes an unowned one under its owner key, which a character or group made with that key adopts.
      * @param {number} type
      * @param {string} key
+     * @param {{ keepChats?: boolean }} [options]
      */
-    deleteEntity(type, key) {
+    deleteEntity(type, key, { keepChats = false } = {}) {
         return this.serialized(type, key, async () => {
             const [id] = await this.ids(type, [key]);
             if (id === null) return false;
             // A character's own book goes with it.
             const book = type === TYPE.character ? await this.books.ownedRecords(id, SLOT.characterBook, undefined) : [];
-            await this.store.commit([...book, { kind: 'entityDelete', entity: id }]);
+            /** @type {object[]} */
+            const records = [...book, { kind: 'entityDelete', entity: id }];
+            if (keepChats && (type === TYPE.character || type === TYPE.group) && await this.holdsChats(id)) {
+                records.push({ kind: 'entityCreate', entity: id, type: TYPE.tree, key: type === TYPE.character ? ownerKeyOf(key) : key, added: Date.now() });
+            }
+            await this.store.commit(records);
             return true;
         });
+    }
+
+    /**
+     * Whether a tree holds a message or a bookmark.
+     * @param {bigint} tree
+     */
+    async holdsChats(tree) {
+        const children = await this.store.chatRead('children', { tree, limit: 1 });
+        if (children.ids.length > 0) return true;
+        return (await this.store.chatRead('treeBookmarks', { tree, limit: 1 })).length > 0;
     }
 
     /**
