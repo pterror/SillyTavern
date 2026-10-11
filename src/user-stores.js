@@ -5,6 +5,7 @@ import { LibraryEngine } from './library-engine.js';
 import { ChatEngine } from './chat-engine.js';
 import { libraryPeople } from './chat-people.js';
 import { TokenCache } from './token-cache-engine.js';
+import { getBetterSqlite3 } from './endpoints/native-sqlite.js';
 
 /**
  * Each user's engine store, `<user>/store/`: the library (characters, groups, tags, world info, search), the chats
@@ -12,8 +13,10 @@ import { TokenCache } from './token-cache-engine.js';
  */
 
 export const STORE_DIR = 'store';
-/** Files only a store in the format before the engine has; `convert-to-engine.js` reads them into `store/`. */
-const OLD_FORMAT_FILES = ['character-metadata.sqlite', 'message-tree.sqlite'];
+const OLD_LIBRARY = 'character-metadata.sqlite';
+const OLD_CHATS = 'message-tree.sqlite';
+/** The one table `character-metadata.sqlite` keeps after the conversion (until stage 6). */
+const KEPT_TABLES = new Set(['saved_views']);
 
 export class OldFormatError extends Error {}
 
@@ -41,14 +44,38 @@ export function setStoreEngine(getBinding) {
 }
 
 /**
- * The line a user directory in the format before the engine stops the server with, or null when it can be served:
- * its store exists, or it holds none of the old stores' files (a new store is made).
- * @param {{ root: string }} directories
- * @returns {string | null}
+ * The tables of an SQLite file other than SQLite's own, read without leaving anything behind: a read-only open of a
+ * WAL database makes its `-wal` and `-shm` files, which are removed when they weren't there before.
+ * @param {string} file
+ * @returns {Promise<string[]>}
  */
-export function oldFormatLine(directories) {
+async function tablesOf(file) {
+    const Database = await getBetterSqlite3();
+    const sidecars = ['-wal', '-shm'].map(x => file + x).filter(f => !fs.existsSync(f));
+    const db = new Database(file, { readonly: true, fileMustExist: true });
+    try {
+        const names = [];
+        for (const r of /** @type {Iterable<{ name: string }>} */ (db.prepare('SELECT name FROM sqlite_master WHERE type = \'table\' AND name NOT LIKE \'sqlite_%\' LIMIT 1000').iterate())) names.push(r.name);
+        return names;
+    } finally {
+        db.close();
+        for (const f of sidecars) fs.rmSync(f, { force: true });
+    }
+}
+
+/**
+ * The line a user directory still in the format before the engine stops the server with, or null when it can be
+ * served. Unconverted: the old library or chat store is there and `store/` isn't. A `character-metadata.sqlite` that
+ * holds only saved views is the stores' leftover (stage 6 moves them), not an old library.
+ * @param {{ root: string }} directories
+ * @returns {Promise<string | null>}
+ */
+export async function oldFormatLine(directories) {
     if (fs.existsSync(path.join(directories.root, STORE_DIR))) return null;
-    const old = OLD_FORMAT_FILES.filter(f => fs.existsSync(path.join(directories.root, f)));
+    const old = [];
+    const library = path.join(directories.root, OLD_LIBRARY);
+    if (fs.existsSync(library) && (await tablesOf(library)).some(t => !KEPT_TABLES.has(t))) old.push(OLD_LIBRARY);
+    if (fs.existsSync(path.join(directories.root, OLD_CHATS))) old.push(OLD_CHATS);
     if (!old.length) return null;
     return `${directories.root} holds data in the format before the engine (${old.join(', ')}) and no ${STORE_DIR}/: stop the server and run "node src/migrations/convert-to-engine.js --dry-run", then "--apply --server-stopped"`;
 }
@@ -57,9 +84,9 @@ export function oldFormatLine(directories) {
  * Refuses to go on when any user's data is in the format before the engine.
  * @param {{ root: string }[]} directoriesList
  */
-export function assertConverted(directoriesList) {
+export async function assertConverted(directoriesList) {
     for (const d of directoriesList) {
-        const line = oldFormatLine(d);
+        const line = await oldFormatLine(d);
         if (line) throw new OldFormatError(line);
     }
 }
@@ -90,7 +117,7 @@ export function userStore(directories, handle = path.basename(directories.root))
  * @returns {Promise<UserStore>}
  */
 async function openStore(root, handle) {
-    const line = oldFormatLine({ root });
+    const line = await oldFormatLine({ root });
     if (line) throw new OldFormatError(line);
     const dir = path.join(root, STORE_DIR);
     const made = !fs.existsSync(dir);
