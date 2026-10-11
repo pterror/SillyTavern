@@ -221,10 +221,10 @@ async function verifyOwner(v, chats, o, user) {
         const followed = await v.store.chatRead('followed', { tree, ...(at === null ? {} : { at }), session, user });
         if (followed !== newOf(f.reply)) bad.push(`the fork at ${f.at ?? 'the root'} follows another reply`);
     }
-    for (const s of plan.states) {
-        const at = s.at === null ? null : newOf(s.at);
+    for (const [place, target] of plan.placed) {
+        const at = place === null ? null : newOf(place);
         const got = stateOf(await chats.metadata(tree, at));
-        if (JSON.stringify([...got].sort()) !== JSON.stringify([...s.target].sort())) bad.push(`the state at ${s.at ?? 'the root'} reads back differently`);
+        if (JSON.stringify([...got].sort()) !== JSON.stringify([...target].sort())) bad.push(`the state at ${place ?? 'the root'} reads back differently`);
     }
     if (hasTable('send_keys')) {
         const keys = /** @type {{ send_key: string, node_id: string }[]} */ ([...input.db.iterate('SELECT k.send_key, k.node_id FROM send_keys k JOIN messages m ON m.id = k.node_id WHERE m.owner_id = ?', [input.ownerId])])

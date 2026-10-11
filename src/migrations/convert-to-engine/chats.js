@@ -101,15 +101,18 @@ export function uniqueNames(names) {
  * @property {{ at: string | null, label: string | null, name: string, mode: number, source: string }[]} bookmarks `at`:
  * the old message it is at (null: the root); `source`: the label's row, or the dropped chat's name.
  * @property {string[]} unsettled Label names nothing classified (made following).
- * @property {{ at: string | null, sources: string[], target: Map<string, string> }[]} states The state at each
- * message (null: the root) that held metadata, in the order they are recorded (an ancestor first).
+ * @property {{ at: string | null, sources: string[], base: Map<string, string>, target: Map<string, string> }[]} states
+ * The state each metadata sets at its message (null: the root), in the order they are recorded (an ancestor first;
+ * several at one place in label order), each recorded as the changes from `base`.
+ * @property {{ at: string | null, earlier: string, later: string, keys: string[] }[]} overrides Keys a later metadata at
+ * the same place changes or removes.
  * @property {{ at: string | null, reply: string }[]} forks Default children that aren't the newest reply.
  * @property {{ at: string | null } | null} pointer Where the session's pointer goes (`at` null: the root).
  * @property {string[]} strayDefaults Rows whose default child isn't one of their replies.
  * @property {{ at: string | null, sources: string[], key: string, upper: string, lower: string | undefined }[]} shadows
  * @property {string[]} problems What stops the conversion.
  * @property {boolean} activeUnresolved The active chat names nothing.
- * @property {Map<string | null, Map<string, string>>} [placed] `states` by place.
+ * @property {Map<string | null, Map<string, string>>} placed The state each place reads.
  */
 
 /**
@@ -122,7 +125,7 @@ export function planOwner(input) {
     const model = loadOwner(db, ownerId);
     const unreachable = new Set(model.unreachable);
     /** @type {OwnerPlan} */
-    const plan = { model, bookmarks: [], unsettled: [], states: [], forks: [], pointer: null, strayDefaults: [], shadows: [], problems: [], activeUnresolved: false };
+    const plan = { model, bookmarks: [], unsettled: [], states: [], overrides: [], forks: [], pointer: null, strayDefaults: [], shadows: [], problems: [], activeUnresolved: false, placed: new Map() };
     if (model.unreachable.length) plan.problems.push(`${model.unreachable.length} message(s) no anchor reaches (a missing parent, or a cycle): ${model.unreachable.slice(0, 20).join(', ')}`);
     const firstAnchor = model.anchors[0] ?? null;
     const isAnchor = (/** @type {string} */ id) => model.rows.get(id)?.parent === null;
@@ -140,19 +143,22 @@ export function planOwner(input) {
     const names = uniqueNames(sources.map(s => s.name));
     plan.bookmarks = sources.map((s, i) => ({ at: s.at, label: s.label, name: names[i], mode: modes.get(s.name) ?? MODE.following, source: s.label ?? s.name }));
 
-    // Metadata: each row's own, at that row; a dropped chat's at its place.
-    /** @type {Map<string | null, { sources: string[], json: string | null, value: unknown }>} */
+    // Metadata: each row's own, at that row; a dropped chat's at its place. Several at one place are each recorded
+    // there in label order (rows by (created_at, id), then the dropped chats), so the last one's values read.
+    /** @type {Map<string | null, { source: string, target: Map<string, string> }[]>} */
     const held = new Map();
     const metaRows = model.sorted.filter(r => r.meta);
     const metas = contentsOf(db, metaRows.map(r => r.id));
     const addMeta = (/** @type {string | null} */ where, /** @type {string} */ source, /** @type {unknown} */ value) => {
+        const target = stateOf(value);
         const had = held.get(where);
         if (!had) {
-            held.set(where, { sources: [source], json: JSON.stringify([...stateOf(value)]), value });
+            held.set(where, [{ source, target }]);
             return;
         }
-        had.sources.push(source);
-        if (had.json !== JSON.stringify([...stateOf(value)])) plan.problems.push(`chat metadata at ${where ?? 'the root'} differs between ${had.sources.join(' and ')}`);
+        const last = had[had.length - 1];
+        if (JSON.stringify([...last.target]) === JSON.stringify([...target])) return;
+        had.push({ source, target });
     };
     for (const r of metaRows) {
         if (unreachable.has(r.id)) continue;
@@ -167,22 +173,29 @@ export function planOwner(input) {
 
     // In the order recorded: the root, then down the tree (an ancestor first).
     const placeOrder = [null, ...model.order.filter(r => r.parent !== null).map(r => r.id)];
-    /** @type {Map<string | null, Map<string, string>>} */
-    const placed = new Map();
+    const placed = plan.placed;
     for (const where of placeOrder) {
         const h = held.get(where);
         if (!h) continue;
         const upperAt = placeAbove(model, placed, where);
         const inherited = upperAt === undefined ? new Map() : /** @type {Map<string, string>} */ (placed.get(upperAt));
-        const target = stateOf(h.value);
+        const target = h[h.length - 1].target;
         for (const [k, v] of inherited) {
             if (target.get(k) !== v) {
                 const upper = held.get(upperAt);
-                plan.shadows.push({ at: where, sources: [...(upper?.sources ?? []), ...h.sources], key: k, upper: shortHash(v), lower: target.has(k) ? shortHash(target.get(k)) : undefined });
+                plan.shadows.push({ at: where, sources: [...(upper?.map(e => e.source) ?? []), ...h.map(e => e.source)], key: k, upper: shortHash(v), lower: target.has(k) ? shortHash(target.get(k)) : undefined });
             }
         }
+        let base = inherited;
+        for (let i = 0; i < h.length; i++) {
+            if (i > 0) {
+                const keys = [...base.keys()].filter(k => base.get(k) !== h[i].target.get(k));
+                if (keys.length) plan.overrides.push({ at: where, earlier: h[i - 1].source, later: h[i].source, keys });
+            }
+            plan.states.push({ at: where, sources: [h[i].source], base, target: h[i].target });
+            base = h[i].target;
+        }
         placed.set(where, target);
-        plan.states.push({ at: where, sources: h.sources, target });
     }
 
     // Default children that aren't the newest reply: the first anchor's at the root, every message's at it.
@@ -317,10 +330,9 @@ export async function writeOwner(ctx, input, plan, tree, fileItemizations) {
     const records = [];
     for (const s of plan.states) {
         const where = s.at === null ? { tree: tree.id } : { message: idOf(s.at) };
-        const inherited = inheritedState(plan, s.at);
         const changes = [];
-        for (const [k, v] of s.target) if (inherited.get(k) !== v) changes.push([k, v]);
-        for (const k of inherited.keys()) if (!s.target.has(k)) changes.push([k, undefined]);
+        for (const [k, v] of s.target) if (s.base.get(k) !== v) changes.push([k, v]);
+        for (const k of s.base.keys()) if (!s.target.has(k)) changes.push([k, undefined]);
         for (const [k, v] of changes) {
             const variable = k.startsWith('v\0');
             const key = k.slice(2);
@@ -423,17 +435,6 @@ function placeAbove(model, placed, at) {
         up = row.parent;
     }
     return placed.has(null) ? null : undefined;
-}
-
-/**
- * The state planned at the nearest place above `at` with metadata (none: empty).
- * @param {OwnerPlan} plan
- * @param {string | null} at
- */
-export function inheritedState(plan, at) {
-    plan.placed ??= new Map(plan.states.map(x => [x.at, x.target]));
-    const above = placeAbove(plan.model, plan.placed, at);
-    return above === undefined ? new Map() : /** @type {Map<string, string>} */ (plan.placed.get(above));
 }
 
 /**
