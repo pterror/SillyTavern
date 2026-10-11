@@ -2246,6 +2246,36 @@ Settled from the plans (recorded by the 5d builder, 10-11):
 they are on the user's disk and writes the engine store once: each value as its own record, then every derived structure built from those records
 (5a correction). The server is stopped, so it runs in one pass, not in batches.
 
+Status (10-11, handover): **built**, tested on synthetic data; measurements below. `src/migrations/convert-to-engine.js`
+(CLI, orchestration, report) with `src/migrations/convert-to-engine/` (`old-library.js`, `old-chats.js`, `records.js`,
+`chats.js`, `labels.js`, `worlds.js`, `sink.js`, `verify.js`); test `tests/convert-to-engine.test.js` with its fixture
+`tests/convert-to-engine.fixture.js` (old stores written through today's own write paths). Engine side: 9fbfd566c
+(`positionRoot`, entity type 6, `Store.load()`). The brief's "token-count cache" in 5e's list was a slip (corrected by
+the coordinator, 10-11): it is a cache, not converted, as this section says.
+
+How it runs:
+- Reads: `character-metadata.sqlite` (blob or fields layout) and the group files; `message-tree.sqlite`; the worlds
+  folder; the old itemization files; the `.pre-migration` files and `backups/pre-sibling-swipes-*` (D24 evidence,
+  dropped group chats). Every SQLite file is opened read-only; the `-wal`/`-shm` files such an open makes (a cleanly
+  stopped server leaves none) are removed on close, so the old folders end byte-identical (tested).
+- The group chat repair and the pass-less tag moves run on in-memory copies (the old scripts' own functions); the
+  zztest cleanup's plans are read and applied to what is converted.
+- One bulk load into the empty store: tags (definitions, keys only assignments name, deleted tags), characters
+  (values, fav, sizes, hashes, assignments), groups, and with `--keep-orphans` the unowned trees. Then commits:
+  merges, the tag pass, marks, world books, lorebook links, characters' own books, then each owner's chats (messages
+  with keys, send keys and itemizations; state changes; the deterministic session's fork choices, pointer, opening
+  choice; bookmarks).
+- Apply builds `<user>/store.converting/` (deleted and built again if a run stopped), checks it (`verify.js`), then
+  renames it to `<user>/store/` and syncs the folder. A problem stops it and deletes the new store.
+
+| choice | picked | reason |
+|---|---|---|
+| a state change's time | the run's time | the author is `migration`; when the metadata was first set isn't stored |
+| message ids | per owner in (created_at, id) order, above any decimal old id | siblings keep their order; a new id never equals an old one |
+| bookmark order and suffixes | labels by (created_at, id), then the dropped chats; a repeated name `name (1)`... | the old chat list's order; names unique per tree |
+| what blocks the apply | an unreadable card or message, rows no anchor reaches, two metadata at one place that differ, an owner two entities read | anything else is converted or listed |
+| the check | a second read of everything after the writes | each value read back through the readers the server uses |
+
 What it reads, and what each becomes:
 - `character-metadata.sqlite` in the blob layout and the old schema the user's file is at (remove-migrations: never
   opened by staging's current code). Cards are split with `splitCard()` / verified with `canonicalCardHash()` as the
@@ -2272,6 +2302,9 @@ What it reads, and what each becomes:
     its `card_index` (coordinator, 10-10: a provisional choice by the greeting's card position, not a stored opening
     as first planned);
   - token caches are a cache (Q-C6): not converted.
+- Chat metadata on unlabeled rows (an unnamed chat's first message; any node opened by id reads its own): converted
+  by the same rules as a label's below, at its own message (answered, coordinator, 10-11). `__is_group` and
+  `integrity` are the tree's own keys, not converted.
 - Chat metadata, on label rows today (answered, coordinator, 10-03, from Data safety): each label's `chat_metadata`
   is recorded as state changes (author kind `migration`) at the message the label is on today (its own node), not
   where its bookmark ends up. Along a shared path the deeper label's values apply below it and the upper one's between
@@ -2289,9 +2322,11 @@ What it reads, and what each becomes:
   keeps it as the message's own name where it doesn't.
 - Lorebook links by id (answered, coordinator, 10-10, from Storage: a name is a value, not an identity): every link to a
   book is converted from its name to the book's id, so renaming a book writes only the book. That covers the chat-bound
-  link in chat metadata (`world_info`, becoming state), a character's primary link (`data.extensions.world`), the
-  auxiliary links (`world_info.charLore`), persona lorebooks and the global selection. A name that resolves to no book
-  is listed in a warning, each with where it was found. Until then, the thin-client audit's
+  link in chat metadata (`world_info`, becoming state) and a character's primary link (`data.extensions.world`). A
+  name that resolves to no book is listed in a warning, each with where it was found. The links in `settings.json`
+  (the auxiliary links `world_info.charLore`, persona lorebooks, the global selection) stay names until stage 7
+  (answered, coordinator, 10-11: 5e never modifies old stores); until then they resolve by name through the book-name
+  index, as 5c's `/rename` settings links do. Until then, the thin-client audit's
   `book/rename` retargets the open chat's link only, as today (a known gap this closes).
 - Prompt itemizations (thin-client audit step 5): the `itemizations` table of `message-tree.sqlite`, one per message
   node (zstd-compressed JSON, `has_raw_prompt`), each becoming that message's itemized prompt record (D14).
@@ -2322,8 +2357,11 @@ What it reads, and what each becomes:
   (a character delete, even with `delete_chats`, removed only the old chats folder), so such owners are kept as
   unowned trees, keyed by their old owner key (the avatar stem or group id): an entity of type 6 (`library::TREE`,
   picked) whose id is the tree. A character or group later created with that key adopts the tree (upstream's file
-  layout): the create deletes the type 6 entity and creates the new one with its id, in one commit. The dry run and
-  the apply list them (owner key, message and label counts). A "delete orphaned chats" action is backlog, not 5e.
+  layout): the create deletes the type 6 entity and creates the new one with its id, in one commit. Corrected
+  (coordinator, 10-11, {{user}}: "maybe delete them but with an option to keep them around (?)"): by default the
+  conversion leaves them out, listing each in the dry run and apply report (owner key, message and label counts; no
+  names or contents); the old stores keep them untouched until the user deletes those. `--keep-orphans` converts
+  them as unowned, adoptable trees as above. A "delete orphaned chats" action for trees kept that way is backlog.
 - Labels on an anchor row (a chat with no messages yet; answered, coordinator, 10-11): a bookmark at the tree's root
   (positions get root pointers as sessions have: kind `positionRoot`), the label's metadata as state at the root. No
   label is dropped.
@@ -2446,7 +2484,9 @@ Each moves one store onto the engine, adds its record kinds, derivers and routes
 - **7, settings**: today's worst remaining write. A setting change rewrites its whole top-level file and reads every
   settings file (`settings.js:267-301`, design §8). Each settings path becomes a value; upstream's `settings.json`
   stays an import; `/api/settings/get` is assembled on read and streamed. The persona paths inside `power_user` are
-  left to stage 8.
+  left to stage 8. Its conversion turns the lorebook links `settings.json` holds (`world_info.charLore`, the global
+  selection; persona lorebooks with stage 8's) from names into book ids, a name no book has listed in a warning (moved
+  here from 5e).
 - **8, personas**: each persona value (D11), taken out of `power_user`; persona avatar files are left as they are.
 - **9, presets; 10, themes; 11, quick replies**: the least frequent writes. Each preset, theme and quick-reply set is
   an item whose values are its own records, by path. CLAUDE.md Storage forbids storing it as an exchange-format blob,
