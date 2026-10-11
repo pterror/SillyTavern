@@ -1380,8 +1380,9 @@ Built, back and forward; card greetings chosen (10-10; `format.rs`, `store/chat.
 | choices per session | one per (session, tree), the record it came from kept live | the answer's "per session"; a tree's root is where it shows |
 
 Built, lists, names and `integrity` (10-10; `src/chat-engine.js`, test `src/chat-engine.test.js`):
-- `sessionsInTree({ tree, before?, limit, withMetadata? })` (the compat chat list of a character or group: sessions
-  with meaningful activity there, most recent first, each at its position in that tree) and `recentSessions({ before?,
+- `sessionsInTree({ tree, before?, limit, withMetadata? })` (the session list filtered by a character or group:
+  sessions with meaningful activity there, most recent first, each at its position in that tree; corrected 10-11: it
+  is not upstream's chat list, which is `chatList()`, below) and `recentSessions({ before?,
   limit, withMetadata? })` (`/api/chats/recent`: every session by its last move, where its pointer is). Rows:
   `session` (UUID), `name`, `position` (the cursor for the next page), `tree`, `at`, `message_count` (the
   position's depth) and `count_estimate`, `last_mes` and `last_activity` (the message's text and receive time; null
@@ -1633,10 +1634,21 @@ Follows from those:
 - Picked: session ids are UUIDs, a new session's a v7 (as character ids are), the deterministic one a v5 of (user
   handle, tree id) under a fixed namespace UUID kept in the code.
 - The compat chat list of a character or group (`/api/characters/chats`, `/api/chats/group/info` and the chat
-  pickers) lists the sessions with meaningful activity in that tree (the design's (tree, last meaningful activity)
-  order, N18's filter by character), most recent first, each named by its session name or id; message count is the
-  depth of the session's position in that tree. `/api/chats/recent` is the all-sessions order (design S6). Bookmarks
-  are not chats ({{user}}) and are listed per tree by our own routes.
+  pickers) is its bookmarks, plus the requesting tab's session when it is in that tree and no bookmark is at its
+  message, so `getCurrentChatId()`'s chat is listed (answered, coordinator, 10-11, {{user}}: sessions are only where
+  tabs are, few; bookmarks replaced chats; this replaces "the sessions with meaningful activity in that tree"). The
+  session list (sessions by recent activity, filtered by character: design N18, S6, `sessionsInTree`,
+  `recentSessions`) stays its own thing for tabs and devices; `/api/chats/recent` is its all-sessions order.
+- "Start new chat" moves the session to a fresh greeting (the card's first, a provisional choice, nothing stored
+  until a reply) and makes no bookmark (answered, coordinator, 10-11, {{user}}: "the latter").
+- Built (10-11; `ChatEngine.chatList`, `listRows`, `newChat`; test `src/chat-search.test.js`): `chatList({ tree,
+  session?, after?, limit, withMetadata? })` answers the tab's session row first (on the first page; `session` its
+  UUID, `bookmark` null) then the tree's bookmarks in the order they were made (`bookmark` the id, `position` the
+  `after` of the next page), each with `name`, `at`, `message_count`, `count_estimate`, `last_mes`,
+  `last_activity` and `chat_metadata` (with `integrity` on the session's row). `newChat({ tree, actor })` is
+  `chooseCardGreeting` with the first greeting. Open for the cut: which name a route taking a chat name resolves now
+  that a listed chat is a bookmark (bookmark names aren't unique) or the tab's session; and whether
+  `has_saved_chats` (today: a session with activity in the tree) follows the list.
 
 **5c. world info and embedded books.**
 - Record kinds (D10): a book (name, its book-level fields); each entry value (every field of upstream's entry shape
@@ -1805,16 +1817,16 @@ Left (handover, 10-11):
 Status (10-11, handover): **built behind the cut**, measured (below). Built: the searched fields; the library's
 search with closed-quote phrases; chat search; world-info search; the exact session lookup; pair postings; the chip
 row; the benches. Nothing routes to it: at the cut (5f) `/query` reads `lib.query({ search })` (passing
-`tagMatches` in its JSON and hash answers), `/api/chats/search` `searchSessions`, a chat name `sessionsNamed`, the
+`tagMatches` in its JSON and hash answers), `/api/chats/search` `searchChatList` (a new route `searchMessages`), the chat lists `chatList`, a chat name `sessionsNamed`, the
 new `/api/worldinfo/search` `books.search`, the pair postings' route and setting are added, and the server runs
 `runPairPostings()` after listening. Follow-ups (10-11, in progress): list rows read narrow (done, below); pair lists driving a phrase's candidates
 (done, "Pairs driving the walk" below); the 10^6 bulk load under 300 s (done, "Bulk load under 300 s" below);
 session names unique per store (done, below); a character book entry's `group` and `automationId` searched (done: its `extensions` stored per key, 5c's
 choices; searched as 5d's fields); then
-chat search's substring scan on top of whole words (item 6, coordinator 10-11): built in the working tree, not
-landed, stopped below.
+chat search's substring scan on top of whole words (item 6, coordinator 10-11): done as the two searches below
+("Built, chat search as two searches"), after this stop.
 
-Stop (10-11), chat search's ancestry (item 6). Measured on a 10^6-message character (one chain, 8 sessions on it,
+Stop (10-11, answered: jump pointers, and chat search as two searches), chat search's ancestry (item 6). Measured on a 10^6-message character (one chain, 8 sessions on it,
 ~600 B messages): every search took ~3.6 s, the substring scan's 4 MiB cap (6,301 messages) a small part of it:
 today's search reads each session's whole path (`chat::path_to`, a point read a message, not counted as work).
 Answered (coordinator): whole-word matching starts from the owner's message postings; a matching message maps to the
@@ -1893,23 +1905,58 @@ search })`; tests `store/library_search_tests.rs`, `tests/library-engine-search.
 | the list's filter in relevance | a per-document check after the search's own filters | the search leads with its postings; the check is the list page's, so both agree on what passes |
 | relevance cursor | the last hit's score and id | the engine's `After::Score`; no state kept between pages |
 
-Built, chat search (10-11; `engine/src/store/chat_search.rs`, binding `chatSearch`; JS `ChatEngine.searchSessions`;
-test `src/chat-search.test.js`, native and wasm):
-- `searchSessions({ tree, search, before?, limit, withMetadata? })`: the tree's sessions with meaningful activity
-  there, most recent first, rows as `sessionsInTree()`'s, that match: by name (every clause, in the session-name
-  postings; only with a word to find), or by path (every positive clause matches some message from the root to the
-  session's position, no negated one any). Upstream's route matched a chat's file name or its messages the same way,
-  by substrings. `next` is the `before` of the next page.
-- Each path message is matched once per page through the tree's chat postings (`Matching`, its block maps read once
-  a query), so sessions sharing a path pay for it once; a page stops at `chat_search::WORK` (2·10^6 units, about
-  0.3 s) and says `more`.
-- Not here: the route (`/api/chats/search` builds upstream's rows from these at the cut); an unnamed session isn't
-  matched by its UUID.
+Built, chat search as two searches (10-11, answered: {{user}} "why not both as different searches"; replaces the
+first build, which read every session's whole path; `engine/src/store/chat_search.rs`, bindings
+`chatSearchMessages`, `chatSearchList`; `search::query::matches_upto`; `sessions::jump_depth`, `climb`,
+`ancestor_or_self`; JS `ChatEngine.searchMessages`, `searchChatList`; tests `src/chat-search.test.js`, native and
+wasm, and the chat model workload in `chat_tests.rs`):
+- Jump pointers: a message's depth entry also holds its jump, the ancestor at `jump_depth(depth)` (Myers'
+  skew-binary scheme: the depth less the smallest term of its greedy sum of `2^k - 1`), from the parent's entry
+  (when the jump is the parent) or the parent's jump's (half of all depths). `climb` reaches an ancestor at any depth
+  in O(log depth) point reads (a jump that doesn't pass the depth, else a parent step), each counted. Moves rewrite
+  jumps with depths, in the same slices; while a tree has a rewrite under way, the chat list's search says it may be
+  inexact. The test checks every message's jump and ancestry against the model through moves, reopens and crashes.
+- Message search, `searchMessages({ tree, search, limit, after?, scanCursor?, scanBytes? })`: the index's page (whole
+  words, best first, `after` the page before's), then, on the first page, a substring scan (upstream's match: each
+  clause's text lower-cased inside a message's text) of the tree's messages newest first (the scope's length
+  entries, read last first), one message's text at a time, answering only the ones whole words don't match, under a
+  cap of text bytes (`SCAN_BYTES`, 3 MiB: ~47 ms measured, below) and `limit`; stopped, the answer is `partial` ("~") with a `scanCursor`
+  (the message to go on below), from which the scan goes on alone. Rows: `id`, `score` (null for scanned), `name`,
+  `is_user`, `time`, `depth` and `snippet` (80 characters before the first match, 160 after; picked: the message
+  as its context). Opening one moves the session there (`endPathAt`, at the cut).
+- Chat-list search, `searchChatList({ tree, search, session?, after?, limit, withMetadata? })` over `chatList()`'s
+  items: by name (every clause's text inside it, lower-cased, as upstream's file names), else by content: each
+  worded clause's matching messages read once a call from the postings (`matches_upto`) with their depths, and an
+  item matches when for every positive clause its ancestor at one of the clause's depths is a match (one climb per
+  clause per item, down the clause's depths deepest first) and for no negated one. Every read counts as work (a point
+  read 6 units); past `WORK` the page stops, `exact` false ("~"), `next` its first unread item.
+- The chat search has no negation of its own: without labels, `-word` is the word (`searchClauses()`).
 
 | choice | picked | reason |
 |---|---|---|
-| a session's path | read whole per session (`path_to`, a point read a message), matches memoized per message | O(L) per session like opening it; no ancestor index to keep at commit |
-| a match | name or path, each the whole query | upstream's `chatInfo.match || hasTextMatch([file_id])` |
+| ancestry | jump pointers in the depth entry (answered) | ~3 B per message and no entry of its own; a test O(log depth) reads |
+| a clause's matches against an item | the item's climb down the clause's distinct depths, deepest first | one climb per clause per item, O(k log(D/k)) reads for k depths, not a test per match |
+| scan order | newest message first, by id | a search's likeliest want; a cursor is one id |
+| the scan's cap | 3 MiB of text (and 64 B a message) | ~50 ms at 10^6 messages (measured below) |
+
+Measured (10-11; a character of 10^6 messages of ~600 B in one chain, 8 sessions on it, 50 pinned bookmarks every
+20,000 messages, "needle saxophonist" once at 900,000; written through `appendMessages` in commits of 1,000, 908 s;
+scratchpad `s5x/scan-gen.mjs`, `scan-measure2.mjs`, removed after; median of 5). Before, the first build's session
+search read every session's path: ~3.6 s a search whatever the query.
+
+| | ms | answer |
+|---|---|---|
+| message search, a rare word (`needle`), first page | 47 | 1 from the index; the scan covers ~4,700 messages and stops, partial |
+| the scan going on (`scanCursor`) | 63 a call | 212 calls cover the 10^6 messages |
+| message search, a common word (261,269 matches) | 6.3 | 50 from the index, 50 the scan adds (its `limit`), partial |
+| chat list, no search (50 bookmarks) | 5.2 | 50 |
+| chat list by content, rare words (`needle`, both words) | 1.7–2.7 | 5 bookmarks, exact |
+| chat list by name (`mark 4`) | 2.0 | 14, exact |
+| chat list by content, the common word | 290 | 1, inexact: reading its 261,269 matches and their depths takes the work limit |
+
+Per append, the jump costs the depth entry it already wrote 1–3 B more (a message at depth 10^6: 6 B for 3), no
+entry of its own, and for half of all depths one more point read (the parent's jump's entry).
+| a scan with the index's paging | the scan runs on the first index page only; its cursor goes on alone | index pages and scan reads each have one cursor |
 
 Built, world-info search (10-11; `WorldInfoEngine.search`, `Store.search` with `scope: { book }`; test
 `tests/world-info-search.test.js`): `search({ name } | { character }, search, limit, cursor? })` answers a page of
@@ -2419,3 +2466,17 @@ Deleted unrun at 5f: `convert-character-store-to-fields.js`, `convert-world-info
 8. Personas.
 9. Presets. 10. Themes. 11. Quick replies.
 
+
+### 5b addendum (10-11): tree edit operations and "new chat" ({{user}})
+
+Rule: an operation on a path removes only what belongs to it alone; anything another branch passes through stays. Deleting means deleting (no "ending a path" to hide messages). {{user}}: "this makes no sense ??????????????" (on hiding instead of deleting).
+
+- **delete this path**: from this message down to the end of the current branch, removing only the messages no other branch uses: walk up from the end and stop at the first message with another branch under it.
+- **delete all swipes from here and all descendants**: every alternative at this position and everything below them.
+- **delete this swipe and all descendants**: this message and its subtree.
+- **delete all descendants but keep swipe**: everything below this message, every branch; the message stays.
+- **cut from this path** (/cut equivalent 1): forks at the message before the cut; this path continues as a new branch (messages after the cut that other branches share get their own copy on the new branch; messages only this path uses are moved under them); other paths untouched; cut messages removed only if nothing else passes through them.
+- **cut everywhere** (/cut equivalent 2): the messages are removed from the tree; every path through them closes the gap. {{user}}: "the answer is both".
+- **new chat**: the session's pointer goes to the first greeting with nothing shown below it ({{user}}: "the latter", "'fresh greeting' should be 'first greeting'"); no bookmark is created. while there, swiping its alternatives stays at that level (doesn't descend into earlier branches). mid-chat, swiping a message selects that alternative and the view follows fork choices down to the end of its branch, so swiping back restores the conversation. no "conversations"/branch-count UI.
+- the session's pointer after any delete: nearest surviving ancestor (settled earlier).
+- the old "end path at" operation (hide by moving the path's end up) goes; deletes delete.

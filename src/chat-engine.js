@@ -31,6 +31,22 @@ export const SESSION_NAMESPACE = 'b3c3d5a0-6b5e-4f61-9d2e-5a0c1f7e9e21';
 /** Bookmark modes. */
 export const MODE = Object.freeze({ following: 1, pinned: 2 });
 
+/** Characters of context a message search's snippet shows on each side of the match. */
+const SNIPPET_CONTEXT = 80;
+
+/**
+ * A message's text around the first of `needles` it holds (lower-cased match), else its start.
+ * @param {string} text
+ * @param {string[]} needles Lower-cased.
+ */
+function snippetOf(text, needles) {
+    const low = text.toLowerCase();
+    const at = needles.map(n => low.indexOf(n)).filter(i => i >= 0).sort((a, b) => a - b)[0] ?? 0;
+    const from = Math.max(0, at - SNIPPET_CONTEXT);
+    const to = Math.min(text.length, at + SNIPPET_CONTEXT * 2);
+    return `${from > 0 ? '…' : ''}${text.slice(from, to)}${to < text.length ? '…' : ''}`;
+}
+
 /** Names `nameSession()` tries before giving up, as upstream's `getUniqueName()`'s `maxTries`. */
 const SESSION_NAME_TRIES = 1000;
 
@@ -1784,8 +1800,9 @@ export class ChatEngine {
     }
 
     /**
-     * A page of a tree's sessions with meaningful activity there, the most recent first, each at its position in the
-     * tree; `before` is the last row's `position` of the page before.
+     * The session list filtered by a tree: a page of the sessions with meaningful activity there, the most recent
+     * first, each at its position in the tree; `before` is the last row's `position` of the page before. (Upstream's
+     * chat list is `chatList()`.)
      * @param {object} p
      * @param {bigint} p.tree
      * @param {bigint} [p.before]
@@ -1803,21 +1820,162 @@ export class ChatEngine {
     }
 
     /**
-     * A page of a tree's sessions a search string matches (`/api/chats/search`): by its name, or by every word
-     * matching a message on its path in the tree (whole words; a closed-quote phrase as a phrase), most recent first,
-     * rows as `sessionsInTree()` gives them. `before` is the page before's `next`; `more` says one may follow.
+     * The id of a tab's session (its UUID), or null when it has none yet.
+     * @param {string | undefined} session
+     */
+    async sessionId(session) {
+        if (session === undefined) return null;
+        const [sid] = await this.store.chatRead('ids', { space: SPACE.session, keys: [session] });
+        return sid;
+    }
+
+    /**
+     * Rows of chat list items: a bookmark (`bookmark`, its id) or a tab's session (`session`, its UUID), its name,
+     * where it is, the message count there, the message's text and time; `position` is a bookmark's id (the `after`
+     * of the next page).
+     * @param {bigint} tree
+     * @param {{ bookmark: bigint | null, session: bigint | null, at: bigint | null }[]} items
+     * @param {boolean} withMetadata Adds each position's state as `chat_metadata`.
+     */
+    async listRows(tree, items, withMetadata) {
+        const bookmarks = items.filter(i => i.bookmark !== null).map(i => /** @type {bigint} */ (i.bookmark));
+        const marks = new Map((bookmarks.length ? await this.store.chatRead('bookmarks', { ids: bookmarks }) : []).filter(Boolean).map(b => [b.id, b]));
+        const sessionIds = items.filter(i => i.session !== null).map(i => /** @type {bigint} */ (i.session));
+        const sessionRows = sessionIds.length ? await this.store.chatRead('sessions', { ids: sessionIds }) : [];
+        const ats = items.map(i => i.at).filter(a => a !== null);
+        const stored = await this.stored(/** @type {bigint[]} */ (ats));
+        const ids = [...stored.keys()];
+        const decoded = new Map((await this.decoded(ids.map(id => stored.get(id)))).map((d, i) => [ids[i], d]));
+        const rows = [];
+        let si = 0;
+        for (const item of items) {
+            const m = item.at === null ? undefined : stored.get(item.at);
+            const count = await this.store.chatRead('messageCount', { tree, ...(item.at === null ? {} : { at: item.at }) });
+            /** @type {Record<string, any>} */
+            const row = {};
+            if (item.bookmark !== null) {
+                const b = marks.get(item.bookmark);
+                Object.assign(row, { bookmark: String(item.bookmark), session: null, name: b?.name ?? null, position: item.bookmark });
+            } else {
+                const s = sessionRows[si++];
+                Object.assign(row, { bookmark: null, session: s?.key ?? null, name: s?.name ?? null, position: null });
+            }
+            Object.assign(row, {
+                tree,
+                at: m ? this.externalId(m) : null,
+                message_count: count.count,
+                count_estimate: count.estimate,
+                last_mes: m ? decoded.get(item.at)?.mes || null : null,
+                last_activity: m ? m.time : null,
+            });
+            if (withMetadata) row.chat_metadata = await this.metadata(tree, item.at, row.session);
+            rows.push(row);
+        }
+        return rows;
+    }
+
+    /**
+     * Upstream's chat list of a character or group (`/api/characters/chats`, `/api/chats/group/info`, the chat
+     * pickers): the tree's bookmarks in the order they were made, and first the tab's session when it is in the tree
+     * and no bookmark is at its message (so `getCurrentChatId()`'s chat is listed). `after` is the last row's
+     * `position` of the page before.
      * @param {object} p
      * @param {bigint} p.tree
-     * @param {string} p.search
-     * @param {bigint} [p.before]
+     * @param {string} [p.session] The tab's session (its UUID).
+     * @param {bigint} [p.after]
      * @param {number} p.limit
      * @param {boolean} [p.withMetadata]
      */
-    async searchSessions({ tree, search, before, limit, withMetadata = false }) {
+    async chatList({ tree, session, after, limit, withMetadata = false }) {
+        return this.searchChatList({ tree, search: '', session, after, limit, withMetadata });
+    }
+
+    /**
+     * The chat list (`chatList()`) searched: an item matches by its name (every clause's text inside it,
+     * lower-cased, as upstream's file names) or by the path down to it holding every word (whole words; a
+     * closed-quote phrase as a phrase) in some message, none of a negated one. `exact` is false when the search's
+     * work limit cut it short (results "~"); `more` and `next` read on.
+     * @param {object} p
+     * @param {bigint} p.tree
+     * @param {string} p.search
+     * @param {string} [p.session] The tab's session (its UUID).
+     * @param {bigint} [p.after]
+     * @param {number} p.limit
+     * @param {boolean} [p.withMetadata]
+     */
+    async searchChatList({ tree, search, session, after, limit, withMetadata = false }) {
+        const sid = await this.sessionId(session);
+        const page = await this.store.chatSearchList({
+            tree, clauses: searchClauses(search), limit,
+            ...(sid === null ? {} : { session: sid }),
+            ...(after === undefined ? {} : { after }),
+        });
+        return {
+            rows: await this.listRows(tree, page.hits, withMetadata),
+            more: page.more,
+            exact: page.exact,
+            ...(page.next === undefined ? {} : { next: page.next }),
+        };
+    }
+
+    /**
+     * A tree's messages a search string matches: from the index, best first (whole words; a closed-quote phrase as
+     * a phrase), then what a substring scan of the messages' texts (newest first, each clause's text lower-cased
+     * inside the message's, as upstream matched) adds, under a cap of text bytes read (`scanBytes`). Each row is a
+     * message with its context: its id, speaker, time, depth and a snippet of its text around the first match;
+     * opening one moves the session there (`endPathAt`). Index pages read on with `after` (no scan); when the scan
+     * stops (cap or `limit`) the answer is `partial` ("~") with a `scanCursor`, and passing that back scans on from
+     * there alone.
+     * @param {object} p
+     * @param {bigint} p.tree
+     * @param {string} p.search
+     * @param {number} p.limit
+     * @param {string} [p.after] The `after` of the page before.
+     * @param {string} [p.scanCursor]
+     * @param {number} [p.scanBytes]
+     */
+    async searchMessages({ tree, search, limit, after, scanCursor, scanBytes }) {
         const clauses = searchClauses(search);
-        const page = await this.store.chatSearch({ tree, clauses, limit, ...(before === undefined ? {} : { before }) });
-        const entries = page.hits.map((/** @type {any} */ h) => ({ sid: h.session, position: h.position, tree, at: h.at }));
-        return { rows: await this.sessionRows(entries, withMetadata), more: page.more, ...(page.next === undefined ? {} : { next: page.next }) };
+        const afterAt = after === undefined ? null : /^s([^:]+):(\d+)$/.exec(after);
+        if (after !== undefined && !afterAt) throw new Error('invalid cursor');
+        if (scanCursor !== undefined && !/^m\d+$/.test(scanCursor)) throw new Error('invalid scan cursor');
+        const found = await this.store.chatSearchMessages({
+            tree, clauses, limit,
+            ...(afterAt ? { after: { score: Number(afterAt[1]), doc: BigInt(afterAt[2]) } } : {}),
+            ...(scanCursor === undefined ? {} : { scanBelow: BigInt(scanCursor.slice(1)) }),
+            ...(scanBytes === undefined ? {} : { scanBytes }),
+        });
+        const ids = [...found.hits.map(h => h.message), ...found.scanned];
+        const stored = await this.stored(ids);
+        const decoded = new Map((await this.decoded(ids.map(id => stored.get(id)).filter(Boolean))).map((d, i) => [ids.filter(id => stored.get(id))[i], d]));
+        const depths = new Map((ids.length ? await this.store.chatRead('messages', { ids }) : []).filter(Boolean).map(m => [m.id, m.depth]));
+        const needles = clauses.filter(c => !c.negate).map(c => c.text.toLowerCase()).filter(t => t.trim());
+        const row = (/** @type {bigint} */ id, /** @type {number | null} */ score) => {
+            const m = stored.get(id);
+            const d = decoded.get(id);
+            if (!m || !d) return null;
+            return { id: this.externalId(m), score, name: d.name ?? null, is_user: !!d.is_user, time: m.time, depth: depths.get(id) ?? null, snippet: snippetOf(String(d.mes ?? ''), needles) };
+        };
+        const last = found.hits[found.hits.length - 1];
+        return {
+            rows: [...found.hits.map(h => row(h.message, h.score)), ...found.scanned.map(id => row(id, null))].filter(Boolean),
+            more: found.more,
+            ...(found.more && last ? { after: `s${last.score}:${last.message}` } : {}),
+            total: found.total,
+            totalExact: found.totalExact,
+            ...(found.scan === undefined ? {} : { partial: true, scanCursor: `m${found.scan}` }),
+        };
+    }
+
+    /**
+     * Starts a new chat for a session: it goes to the tree's root with the card's first greeting chosen
+     * provisionally (`chooseCardGreeting()`), nothing stored until a reply is sent from it; no bookmark is made.
+     * @param {object} p
+     * @param {bigint} p.tree
+     * @param {Actor} p.actor
+     */
+    newChat({ tree, actor }) {
+        return this.chooseCardGreeting({ tree, index: 0, actor });
     }
 
     /**
