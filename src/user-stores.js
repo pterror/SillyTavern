@@ -137,3 +137,40 @@ export async function closeUserStores() {
         }
     }
 }
+
+/**
+ * The requesting user's store.
+ * @param {{ user: { directories: { root: string }, profile: { handle: string } } }} request
+ */
+export function requestStore(request) {
+    return userStore(request.user.directories, request.user.profile.handle);
+}
+
+/**
+ * The tree a request names by `avatar_url` (a character) or `group_id`, or null when it names none that exists.
+ * @param {UserStore} store
+ * @param {{ avatar_url?: unknown, group_id?: unknown }} body
+ * @returns {Promise<bigint | null>}
+ */
+export async function treeOf(store, body) {
+    const owner = typeof body?.avatar_url === 'string' ? { avatar: body.avatar_url } : typeof body?.group_id === 'string' ? { group: body.group_id } : null;
+    if (owner === null) return null;
+    const [tree] = await store.people.trees([owner]);
+    return tree ?? null;
+}
+
+/**
+ * An async route handler whose failure is logged and answered 500 (express 4 doesn't catch a rejected handler).
+ * @param {string} what What the route does, for the log.
+ * @param {(request: any, response: any) => Promise<unknown>} handler
+ */
+export function storeRoute(what, handler) {
+    return async (/** @type {any} */ request, /** @type {any} */ response) => {
+        try {
+            await handler(request, response);
+        } catch (error) {
+            console.error(`Error ${what}:`, error);
+            if (!response.headersSent) response.status(500).send({ error: true });
+        }
+    };
+}
