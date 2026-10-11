@@ -704,6 +704,13 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
+    // Every state change hanging at a tree's root when this commits goes (a tree deleted whole; `store::state`).
+    Kind {
+        name: "rootStateClear",
+        base: 248,
+        slots: &[req("tree", Ty::Id(Space::Entity))],
+        internal: false,
+    },
     // A message moves under another parent (absent: it opens its owner's tree).
     Kind {
         name: "messageParent",

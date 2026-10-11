@@ -269,7 +269,7 @@ function alternativeEntry(nodeId, o, itemized) {
  */
 
 /**
- * @typedef {{ bookmarks: { id: string, name: string | null, node_id: string }[], changes: { id: string, key: string | number, variable: boolean, node_id: string }[] }} Drops
+ * @typedef {{ bookmarks: { id: string, name: string | null, node_id: string }[], changes: { id: string, key: string | number, variable: boolean, node_id: string | null }[] }} Drops
  * @typedef {{ ok: true, preview?: true, drops?: Drops } | { ok: false, reason: string, drops?: Drops }} EditAnswer
  */
 
@@ -1194,29 +1194,32 @@ export class ChatEngine {
 
     /**
      * What deleting the subtrees of `roots` drops besides the messages (the subtrees of `keep` left out: they move
-     * away first): bookmarks (`id`, `name`, the message it is at) and state changes (`id`, `key`, whether a
-     * variable's, the message it hangs on).
+     * away first), and with `root` what clearing the tree's root state drops: bookmarks (`id`, `name`, the message
+     * it is at) and state changes (`id`, `key`, whether a variable's, the message it hangs on, null at the root).
      * @param {bigint} tree
      * @param {bigint[]} roots
      * @param {bigint[]} keep
+     * @param {boolean} [root]
      */
-    async dropsOf(tree, roots, keep) {
-        if (!roots.length) return { bookmarks: [], changes: [] };
-        const d = await this.store.chatRead('subtreeDrops', { tree, roots, keep });
+    async dropsOf(tree, roots, keep, root = false) {
+        if (!roots.length && !root) return { bookmarks: [], changes: [] };
+        const d = await this.store.chatRead('subtreeDrops', { tree, roots, keep, root });
         const marks = d.bookmarks.length ? await this.store.chatRead('bookmarks', { ids: d.bookmarks.map((/** @type {any} */ b) => b.id) }) : [];
-        const at = await this.externalIds([...d.bookmarks.map((/** @type {any} */ b) => b.at), ...d.changes.map((/** @type {any} */ c) => c.message)]);
+        const onMessages = d.changes.filter((/** @type {any} */ c) => c.message !== null);
+        const at = await this.externalIds([...d.bookmarks.map((/** @type {any} */ b) => b.at), ...onMessages.map((/** @type {any} */ c) => c.message)]);
+        const changeAt = new Map(onMessages.map((/** @type {any} */ c, /** @type {number} */ i) => [c, at[d.bookmarks.length + i]]));
         return {
             bookmarks: d.bookmarks.map((/** @type {any} */ b, /** @type {number} */ i) => ({ id: String(b.id), name: marks[i]?.name ?? null, node_id: at[i] })),
-            changes: d.changes.map((/** @type {any} */ c, /** @type {number} */ i) => ({ id: String(c.id), key: c.key, variable: c.variable, node_id: at[d.bookmarks.length + i] })),
+            changes: d.changes.map((/** @type {any} */ c) => ({ id: String(c.id), key: c.key, variable: c.variable, node_id: changeAt.get(c) ?? null })),
         };
     }
 
     /**
      * Previews or applies a planned edit: `records` first (copies, moves, choices, a pointer move), then a
-     * `subtreeDelete` of each root.
+     * `subtreeDelete` of each root, then with `root` a `rootStateClear` of the tree.
      * @param {object} p
      * @param {bigint} p.tree
-     * @param {{ roots: bigint[], keep?: bigint[], records?: object[] }} p.plan
+     * @param {{ roots: bigint[], keep?: bigint[], records?: object[], root?: boolean }} p.plan
      * @param {{ user: bigint, session: bigint | null }} p.who
      * @param {object[]} p.keys The actor's new outside keys.
      * @param {boolean} [p.preview]
@@ -1224,7 +1227,7 @@ export class ChatEngine {
      * @returns {Promise<EditAnswer>}
      */
     async applyEdit({ tree, plan, who, keys, preview, confirm }) {
-        const drops = await this.dropsOf(tree, plan.roots, plan.keep ?? []);
+        const drops = await this.dropsOf(tree, plan.roots, plan.keep ?? [], plan.root);
         if (preview) return { ok: true, preview: true, drops };
         const same = (/** @type {string[] | undefined} */ named, /** @type {{ id: string }[]} */ found) =>
             new Set(named ?? []).size === found.length && found.every(x => (named ?? []).includes(x.id));
@@ -1234,6 +1237,7 @@ export class ChatEngine {
         }
         const actorPart = { user: who.user, ...(who.session === null ? {} : { session: who.session }) };
         const records = [...keys, ...(plan.records ?? []), ...plan.roots.map(message => ({ kind: 'subtreeDelete', message, ...actorPart }))];
+        if (plan.root && drops.changes.some(c => c.node_id === null)) records.push({ kind: 'rootStateClear', tree });
         if (records.length > keys.length) await this.store.commit(records);
         return any ? { ok: true, drops } : { ok: true };
     }
@@ -1269,7 +1273,7 @@ export class ChatEngine {
      * @param {Actor} p.actor
      * @param {boolean} [p.preview]
      * @param {{ bookmarks?: string[], changes?: string[] } | 'any'} [p.confirm]
-     * @param {(who: { user: bigint, session: bigint | null }) => Promise<{ roots: bigint[], keep?: bigint[], records?: object[] } | { ok: false, reason: string }>} plan
+     * @param {(who: { user: bigint, session: bigint | null }) => Promise<{ roots: bigint[], keep?: bigint[], records?: object[], root?: boolean } | { ok: false, reason: string }>} plan
      * @returns {Promise<EditAnswer>}
      */
     edit({ tree, actor, preview, confirm }, plan) {
@@ -1306,8 +1310,9 @@ export class ChatEngine {
     }
 
     /**
-     * Deletes a whole tree (its character or group deleted with its chats): every opening and everything below, and
-     * the bookmarks at its root. Applied whatever it drops; the answer lists the drops.
+     * Deletes a whole tree (its character or group deleted with its chats): every opening and everything below, the
+     * bookmarks at its root and the state changes hanging there. Applied whatever it drops; the answer lists the
+     * drops.
      * @param {{ tree: bigint, actor: Actor }} p
      */
     deleteTree({ tree, actor }) {
@@ -1321,7 +1326,7 @@ export class ChatEngine {
                 if (!page.more) break;
                 after = page.rows[page.rows.length - 1].id;
             }
-            return { roots: await this.children(tree, null), records };
+            return { roots: await this.children(tree, null), records, root: true };
         });
     }
 

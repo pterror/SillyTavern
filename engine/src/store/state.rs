@@ -6,9 +6,9 @@
 use super::StoreError;
 use super::chat::{opt_id, require_message};
 use super::derive::{Deriver, Loc, Out, View};
-use super::kinds::{bytes, dead, field, id, key, loc_bytes, parse_loc};
+use super::kinds::{bytes, dead, field, id, key, loc_bytes, parse_loc, parse_varints, varints};
 use super::sessions;
-use crate::keyspace::val::{get_u64, put_u64};
+use crate::keyspace::val::{get_u64, max_value, put_u64};
 use crate::log::format::{FieldRef, Record, Value};
 
 pub const AUTHOR_USER: u64 = 0;
@@ -30,6 +30,12 @@ pub const STATE_AT: u64 = 151;
 pub const REVERTED_BY: u64 = 152;
 /// One more than the highest change id given (a maximum).
 pub const NEXT_CHANGE: u64 = 153;
+/// Per tree: a pending `rootStateClear`, `[upto, record position, record length]`: the changes at the tree's root
+/// with ids below `upto` go, a slice at a time, and read as gone meanwhile.
+pub const ROOT_CLEAR: u64 = 155;
+
+/// Changes a root clear's slice removes.
+pub const CLEAR_SLICE: usize = 256;
 
 /// Where a change hangs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -161,7 +167,7 @@ impl Deriver for StateRevert {
         let (c, target) = (id(rec, 0), id(rec, 1));
         new_id(view, c)?;
         check_author(id(rec, 3), VARIABLE)?;
-        if change_loc(view, target)?.is_none() {
+        if change_loc(view, target)?.is_none() || clearing(view, target)? {
             return Err(StoreError::Refused(format!("no change {target}")));
         }
         sessions::check_actor(view, opt_id(rec, 5), opt_id(rec, 6))?;
@@ -198,13 +204,133 @@ pub fn message_gone(view: &View, out: &mut Out, m: u64) -> Result<(), StoreError
         let mut at = p.len();
         let c = get_u64(&k, &mut at)
             .ok_or_else(|| StoreError::Entry("a state key doesn't decode".into()))?;
-        if let Some(l) = change_loc(view, c)? {
-            dead(out, l);
-        }
-        out.del(key::id(CHANGE, c));
+        change_gone(view, out, c)?;
         out.del(k);
     }
     Ok(())
+}
+
+/// Change (or revert) `c` goes, and every revert of it with it.
+fn change_gone(view: &View, out: &mut Out, c: u64) -> Result<(), StoreError> {
+    if let Some(l) = change_loc(view, c)? {
+        dead(out, l);
+    }
+    out.del(key::id(CHANGE, c));
+    let p = key::id(REVERTED_BY, c);
+    for (k, _) in view.scan(&p, &key::prefix_end(&p), usize::MAX)? {
+        let mut at = p.len();
+        let r = get_u64(&k, &mut at)
+            .ok_or_else(|| StoreError::Entry("a revert key doesn't decode".into()))?;
+        change_gone(view, out, r)?;
+        out.del(k);
+    }
+    Ok(())
+}
+
+/// The pending root clear of `tree`: `[upto, record position, record length]`.
+fn root_clear(view: &View, tree: u64) -> Result<Option<[u64; 3]>, StoreError> {
+    view.get(&key::id(ROOT_CLEAR, tree))?
+        .map(|b| parse_varints::<3>(&b))
+        .transpose()
+}
+
+/// Whether change `c` hangs at a tree's root that a pending clear is removing it from.
+fn clearing(view: &View, c: u64) -> Result<bool, StoreError> {
+    let Some(l) = change_loc(view, c)? else {
+        return Ok(false);
+    };
+    let (rec, _) = view.record(l.pos)?;
+    if rec.kind.name != "stateChange" {
+        return Ok(false);
+    }
+    match Hang::of(&rec) {
+        Hang::Tree(t) => Ok(root_clear(view, t)?.is_some_and(|[upto, _, _]| c < upto)),
+        Hang::Message(_) => Ok(false),
+    }
+}
+
+/// `rootStateClear`: every change hanging at the tree's root when it commits goes (a tree deleted whole), in
+/// slices (`clear_step`); they read as gone from the commit on.
+pub struct RootStateClear;
+
+impl Deriver for RootStateClear {
+    fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
+        let tree = id(rec, 0);
+        let upto = view
+            .get(&key::of(NEXT_CHANGE))?
+            .and_then(|b| max_value(&b))
+            .unwrap_or(0);
+        if let Some([_, pos, len]) = root_clear(view, tree)? {
+            dead(out, Loc { pos, len });
+        }
+        out.put(key::id(ROOT_CLEAR, tree), varints(&[upto, at.pos, at.len]));
+        Ok(())
+    }
+
+    fn is_live(&self, rec: &Record, pos: u64, view: &View) -> Result<bool, StoreError> {
+        Ok(root_clear(view, id(rec, 0))?.is_some_and(|[_, rp, _]| rp == pos))
+    }
+
+    fn repoint(
+        &self,
+        rec: &Record,
+        from: u64,
+        to: Loc,
+        view: &View,
+        out: &mut Out,
+    ) -> Result<(), StoreError> {
+        let tree = id(rec, 0);
+        if let Some([upto, rp, _]) = root_clear(view, tree)?
+            && rp == from
+        {
+            out.put(key::id(ROOT_CLEAR, tree), varints(&[upto, to.pos, to.len]));
+        }
+        Ok(())
+    }
+}
+
+/// Whether a root clear is pending anywhere (for a store opening with one left).
+pub fn any_clear_pending(view: &View) -> Result<bool, StoreError> {
+    let p = key::of(ROOT_CLEAR);
+    Ok(!view.scan(&p, &key::prefix_end(&p), 1)?.is_empty())
+}
+
+/// One slice of the first pending root clear: up to `CLEAR_SLICE` of its changes go; the clear ends when none
+/// below its bound is left. Returns whether one was found.
+pub fn clear_step(view: &View, out: &mut Out) -> Result<bool, StoreError> {
+    let cp = key::of(ROOT_CLEAR);
+    let Some((ck, v)) = view.scan(&cp, &key::prefix_end(&cp), 1)?.into_iter().next() else {
+        return Ok(false);
+    };
+    let mut at = cp.len();
+    let tree = get_u64(&ck, &mut at)
+        .ok_or_else(|| StoreError::Entry("a root clear key doesn't decode".into()))?;
+    let [upto, rp, rl] = parse_varints::<3>(&v)?;
+    let p = Hang::Tree(tree).prefix();
+    let mut left = false;
+    for (n, (k, _)) in view
+        .scan(&p, &key::prefix_end(&p), CLEAR_SLICE + 1)?
+        .into_iter()
+        .enumerate()
+    {
+        let mut at = p.len();
+        let c = get_u64(&k, &mut at)
+            .ok_or_else(|| StoreError::Entry("a state key doesn't decode".into()))?;
+        if c >= upto {
+            break;
+        }
+        if n == CLEAR_SLICE {
+            left = true;
+            break;
+        }
+        change_gone(view, out, c)?;
+        out.del(k);
+    }
+    if !left {
+        out.del(ck);
+        dead(out, Loc { pos: rp, len: rl });
+    }
+    Ok(true)
 }
 
 /// Whether change `c` counts: no revert of it counts (a revert of a revert restores what it reverted).
@@ -243,12 +369,16 @@ pub fn state_at(view: &View, tree: u64, at: Option<u64>) -> Result<Vec<Entry>, S
         .filter(|(_, s)| s.extras > 0)
         .map(|(m, _)| Hang::Message(*m));
     let hangs = std::iter::once(Hang::Tree(tree)).chain(held);
+    let cleared = root_clear(view, tree)?.map_or(0, |[upto, _, _]| upto);
     for hang in hangs {
         let p = hang.prefix();
         for (k, _) in view.scan(&p, &key::prefix_end(&p), usize::MAX)? {
             let mut at = p.len();
             let c = get_u64(&k, &mut at)
                 .ok_or_else(|| StoreError::Entry("a state key doesn't decode".into()))?;
+            if matches!(hang, Hang::Tree(_)) && c < cleared {
+                continue;
+            }
             let Some(l) = change_loc(view, c)? else {
                 continue;
             };
@@ -278,24 +408,32 @@ pub fn state_at(view: &View, tree: u64, at: Option<u64>) -> Result<Vec<Entry>, S
     Ok(out)
 }
 
-/// The changes hanging at one place, in order: (id, active).
+/// The changes hanging at one place, in order: (id, active). A tree root's changes a pending clear is removing are
+/// left out.
 pub fn changes_at(view: &View, hang: Hang) -> Result<Vec<(u64, bool)>, StoreError> {
+    let cleared = match hang {
+        Hang::Tree(t) => root_clear(view, t)?.map_or(0, |[upto, _, _]| upto),
+        Hang::Message(_) => 0,
+    };
     let p = hang.prefix();
-    view.scan(&p, &key::prefix_end(&p), usize::MAX)?
-        .into_iter()
-        .map(|(k, _)| {
-            let mut at = p.len();
-            let c = get_u64(&k, &mut at)
-                .ok_or_else(|| StoreError::Entry("a state key doesn't decode".into()))?;
-            Ok((c, active(view, c)?))
-        })
-        .collect()
+    let mut out = Vec::new();
+    for (k, _) in view.scan(&p, &key::prefix_end(&p), usize::MAX)? {
+        let mut at = p.len();
+        let c = get_u64(&k, &mut at)
+            .ok_or_else(|| StoreError::Entry("a state key doesn't decode".into()))?;
+        if c < cleared {
+            continue;
+        }
+        out.push((c, active(view, c)?));
+    }
+    Ok(out)
 }
 
 pub fn deriver(kind: &str) -> Option<&'static dyn Deriver> {
     Some(match kind {
         "stateChange" => &StateChange,
         "stateRevert" => &StateRevert,
+        "rootStateClear" => &RootStateClear,
         _ => return None,
     })
 }

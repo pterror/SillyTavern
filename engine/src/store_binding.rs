@@ -1429,8 +1429,8 @@ impl Store {
     /// - `tokenCache { table, identity, hash }`: `{ used, value }` or null; `tokenCacheCount { table }`;
     /// - `bookmarksNamed { tree, name }`: the tree's bookmark named exactly `name`, as a list;
     /// - `branchEnd { tree, at?, session?, user? }`: the end of the followed path below `at` (or `at`);
-    /// - `subtreeDrops { tree, roots, keep? }`: what deleting those subtrees (less those of `keep`) drops besides
-    ///   their messages;
+    /// - `subtreeDrops { tree, roots, keep?, root? }`: what deleting those subtrees (less those of `keep`), and with
+    ///   `root` the changes at the tree's root, drops besides their messages;
     /// - `activeChanges { message }`: the state changes in effect hanging on a message;
     /// - `produced { messages }`: per message, the state changes made while producing it;
     /// - `pendingDelete { tree }`: whether a subtree delete is under way in the tree.
@@ -1715,8 +1715,9 @@ impl Store {
                         .collect::<Result<Vec<_>>>()?,
                     None => Vec::new(),
                 };
+                let root = a.get::<bool>("root")?.unwrap_or(false);
                 Box::new(move |s| {
-                    s.chat_read(|v| cr::subtree_drops(v, tree, &roots, &keep))
+                    s.chat_read(|v| cr::subtree_drops(v, tree, &roots, &keep, root))
                         .map(JsTree)
                 })
             }
