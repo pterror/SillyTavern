@@ -75,8 +75,8 @@ describe('convert-to-engine', () => {
         expect(dry.code).toBe(0);
         expect(snapshot(root)).toEqual(before);
         expect(fs.existsSync(path.join(root, convert.BUILDING_DIR))).toBe(false);
-        for (const want of ['characters 3', 'groups 1', 'world books 3', 'bookmarks 8', 'bookmarks at a tree\'s root 1', 'send keys 1', 'fork choices 1', 'itemizations 2',
-            'owner Gone: 1 message(s), 1 label(s)', 'Broken.json', 'Odd name', 'leftover.jsonl', 'chat "Dropped empty" (header only)', 'chat "Dropped twin"', 'queued tag moves with no reorder pass, applied: 1']) {
+        for (const want of ['characters 3', 'groups 2', 'world books 3', 'bookmarks 9', 'bookmarks at a tree\'s root 1', 'send keys 1', 'fork choices 2', 'itemizations 2',
+            'owner Gone: 1 message(s), 1 label(s)', 'Broken.json', 'Odd name', 'leftover.jsonl', 'chat "Dropped empty" (header only)', 'chat "Dropped twin"', 'queued tag moves with no reorder pass, applied: 1', 'group chat repaired: group 1700000000002 chat "c1"']) {
             expect(dry.text).toContain(want);
         }
 
@@ -132,6 +132,11 @@ describe('convert-to-engine', () => {
             expect((await lib.tags.byIds(['tag-old'])).merged).toEqual({ 'tag-old': 'tag-red' });
             expect((await lib.books.list()).map(b => b.name)).toEqual(['Lore A', 'Lore V1', 'Lore V2']);
             expect(await chats.metadata(alice, null)).toEqual({});
+            // The damaged group chat, repaired: its first message back in front.
+            const [damaged] = await people.trees([{ group: '1700000000002' }]);
+            const [c1] = (await chats.bookmarks({ tree: damaged, limit: 5 })).rows;
+            expect(c1.name).toBe('c1');
+            expect((await chats.load({ tree: damaged, at: c1.at }))?.messages.map(m => m.mes)).toEqual(['m1b', 'm2a', 'm3']);
         } finally {
             await lib.close();
         }
