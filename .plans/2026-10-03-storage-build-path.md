@@ -2828,6 +2828,14 @@ reply" (a flag per call, per message, other); whether a swipe counts or only `ty
 `graftMessage`'s twin kept or dropped; the whole save's matching kept or dropped (dropped: an upstream array without
 ids is stored again on every save); the greeting dedupe part of it or not; a retried generate's `opening` without the
 rule (its `refs` as send keys, the duplicate allowed, other).
+Stop (10-11), tenth, bulk (characters step, nothing edited): a run walking the selection's description changes what it
+walks: ranges are list positions (a delete moves later rows into a range), a fav or tag action reorders or refilters
+a list sorted or filtered by it, and a duplicate under "select all" matches the filter and is reached again. (a) at
+the start of `/bulk/run` (and `/mutual-tags`) the description resolved to avatars held for that run only (on disk in
+the store or a temp file, removed when it ends); (b) resolved at `/prepare` into a stored job the page drops (the old
+design, against answer 13); (c) walked during the run with ranges and `all` resolved at the start into memory
+(O(selection): breaks the Scale rule for "select all"); (d) other (e.g. a run reading one fixed snapshot, a binding
+change)?
 
 **Stage 5 measured against** (design §6 and §8, today = redesign 5f at 5bddd179b; harness `walrepro/measure5f.mjs`
 for today, the stage 2 harness for the engine):
