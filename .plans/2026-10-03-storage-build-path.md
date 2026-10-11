@@ -2464,6 +2464,136 @@ old path:
 - Tests: suites of deleted modules go; each sub-step's tests cover its replacement (CLAUDE.md Tests: only those
   covering what changed).
 
+Status (10-11, handover): **in progress, stopped on the questions below.** Landed before the cut, each standing
+alone, nothing reachable until the cut mounts it (an engine store must not be made for a user whose data isn't
+converted yet, so nothing may call `userStore()` before the cut):
+- 506be7200 (5e fix): two different metadata at one message no longer stop the conversion: each is recorded there
+  in label order, the last one read, the earlier ones in the state history; the overridden keys listed (label ids,
+  keys). Tested.
+- `src/user-stores.js` (983e11bb6, helpers 744b0f67a): each user's `<user>/store/` (lib, chats, people, tokens) opened once on first use; a user
+  directory holding `character-metadata.sqlite` or `message-tree.sqlite` and no `store/` refused with one line naming
+  `convert-to-engine.js` (`assertConverted()` for the boot, `OldFormatError`); a store made here gets
+  `markSeedPending()`; `resumeStoreWork()` (after listening: tag pass, pair postings); `closeUserStores()` (the tag
+  pass now stops after its batch, `LibraryTags.stopPass()`); `requestStore()`, `treeOf()` (avatar_url | group_id),
+  `storeRoute()` (an async handler logged and answered 500). Test `tests/user-stores.test.js`.
+- `src/request-session.js` (fac904d1d): `requestSession(chats, req, tree)` → `RequestSession` with `actor()` (a write
+  from a tab with none, or a deleted session's, acts through a new v7), `reader()`, `identifier` (the UUID; the
+  compat value is its name when named) and `answer(res, { moved })`, which sets `X-ST-Session-Moved` (a session made
+  for the request, or the tab's when its write moved it) and `X-ST-Session-Gone`; a caller with no header is told
+  nothing. The page reads both headers from every `fetch` and jQuery answer (`observeSessionAnswers()`, called at
+  `firstLoadInit()`), so extensions' requests count. Tests `src/request-session.test.js` (native and wasm),
+  `tests/tab-session.test.js`.
+- `src/endpoints/state.js` (744b0f67a): `POST /api/state/change { avatar_url | group_id, at, ops, ref? }`, `/revert {
+  change, ref? }`, `/at { avatar_url | group_id, at, if_hash? }`; mounted at the cut. Test `tests/state-routes.test.js`
+  on a store converted from the synthetic old user.
+
+| choice | picked | reason |
+|---|---|---|
+| how an answer tells a tab its session | response headers `X-ST-Session-Moved` / `X-ST-Session-Gone`, read from every `fetch` and jQuery answer on the page | upstream code and extensions call routes through `getRequestHeaders()` and handle the answers themselves; a body field only our handlers would see, and a tab not told of its new session would make another on its next write |
+| state routes' bodies | the owner as the chat routes name it (`avatar_url` / `group_id`), `at` the message's id (null: the root) | the routes the page already calls name a tree that way |
+
+Inventory for the cut (10-11, read from the code; `CE` = `ChatEngine`, `lib` = `LibraryEngine`, `TC` = `TokenCache`):
+- Chats (`src/endpoints/chats.js`): `/save`, `/group/save` → `CE.saveChat` (moved); `/get`, `/group/get`, `/export`
+  → `resolveChatName` + `load`; `/open` → the request session's landing + `load`, `openingAlternatives`,
+  `storedSendKeys` (`make_current` + `chat` → `goTo`, moved); `/bookmark`, `/label` → `createBookmark` /
+  `changeBookmark` (the metadata copy goes, 5b); `/rename` → `changeBookmark` or `nameSession`; `/tree/branches`,
+  `/group/branches`, `/characters/chats`, `/group/info` → `chatList`; `/alternatives` → `alternatives`; `/ancestry`,
+  `/at` → `load`; `/message/edit(-batch)` → `editMessages`; `/message/append` → `appendMessages` (moved);
+  `/openings*` → `openingAlternatives`, `openingToLandOn`, `chooseCardGreeting` (moved), `addOpenings`;
+  `/message/alternative` → an unshown `appendMessages` under the sibling's parent (or `addOpenings`); `/message/graft`,
+  `/degraft`, `/swap-adjacent`, `/message/select` (moved; its `messages` below the message are now the cascade's
+  path) → the same-named operations; `/labels` → `bookmarks`; `/search` → `searchChatList`; `/recent` →
+  `recentSessions`; `/tree/rename-group-member` → `renameMemberInMessages`; `/tree/rename-in-content` has nothing
+  to do (speakers by id). `/metadata` takes the page's `changedMetadata()` (`{ set, unset, variables }`) →
+  `mergeMetadata` at the pointer. Itemized prompts → `readItemization`, `chatItemizations`, `recordItemization`,
+  `updateItemizationFields`, `deleteChatItemizations`, `clearItemizations` (`itemization-store.js` and
+  `itemization-rows.js` go; `itemizationOf()` stays).
+- Generate (`page-writes.js`, `stored-messages.js`, `assistant-reply-persist.js`, the backends,
+  `*-generation-input.js`): opening, page messages and the user message → `appendMessages` through the session
+  (moved; headers set before streaming); `page_metadata` → `mergeMetadata` with `variables`; a reply → `appendMessages`
+  (plain, swipe, regenerate; with the reply's state changes the page sends on the generate request, state layer 1
+  step 3) or `editMessages` (continue); the prompt's history → `load` (`getOrCreateAnchor`'s write on read goes);
+  tool turns → `appendMessages` / `editMessages`; token counts → `TC` (the `createStoredCounter` /
+  `createStoredEncoder` factories rebuilt over `TC`; `startTokenCountMaintenance` goes). "Reply not saved" lists the
+  reply's state changes by name (state layer 1 step 3).
+- Library (`characters.js`, `groups.js`, `tags.js`): cards, favs, global styles, greetings, duplicate, export →
+  `lib.cards` / `writeCard` / `setFav` / `setAllowGlobalStyles`; `/query`, `/all`, `/batch`, `/get` → `lib.query`
+  (with `tagMatches`), `cards`, `listRows`, `groups`, the compat `chat` / `chat_id` / `chats` from the request's
+  session and `chatList`; tags → `lib.tags` throughout; `/stats/*` → `chatRead('stats')`, `/recreate` answering as
+  upstream with nothing to recount; thumbnails and users' avatar fallback → `lib.ids` and the avatar hash;
+  `content-manager.js` seeding and imports, `sprites.js`' Chub lorebooks, `migrateUserData`'s old `public/worlds` →
+  `writeCard` / `books.write` (a fresh user's default content goes into the engine, not `worlds/`).
+- World info (`worldinfo.js`): every route → `lib.books` (`list`, `read`, `exists`, `delete`, `write`, `apply`,
+  `rename`, `transplant`, `createEntry`, `editEntry`); new `/api/worldinfo/search` → `books.search`; generation's
+  readers (`candidate-resolution.js`, `character-card-normalize.js`'s `convertToV2`) turn async; `world_names` →
+  `books.list()`.
+- Server: `assertConverted()` replaces `initializeMetadataStores`; gone: the search index workers and tantivy (and
+  `@oxdev03/node-tantivy-binding`), the metadata migration coordinator and worker, the chat stats hook and
+  reconcile, token count maintenance; `closeUserStores()` on exit; `resumeStoreWork()` after listening; mounts
+  `/api/state` and `/api/search/pair-postings` (+ `/state`; `/api/search` today is the web search router).
+- Page: generate's `page_metadata` and the metadata save switch to `changedMetadata()` /
+  `noteMetadataChangesStored()` / `metadataChangesNotSaved()`; answers that move the pointer carry the state and call
+  `takeServerState()`; the changes stream gains a state-change frame (`stateChangedHere()` → `/api/state/at` with
+  `if_hash`); the pair postings checkbox in a new "Search" section after "Character Handling"; `/query` passes
+  `tagMatches` (JSON and the hash header bit) so the chips show.
+- Engineering gaps to build (no question): list and hash rows' `date_last_chat` / `chat_size` read from 5b's stats
+  (they are 0 in `lib.listRows`, `query`, `hashRow`); the compat `chat` on hash rows; a character and group change
+  feed and emitter for `/changes`, `/changes/stream` and the stream's `{}` / `groups-changed` frames; exact and
+  accent-insensitive name lookups for `/find`, `/exists`; card tag names seeded as tags on import
+  (`seedCardTagsForSingleCharacter`); `/all` without search paging every card; the token-count factories over `TC`;
+  the page collecting changes made while producing a reply; the saved views functions moved out of
+  `character-metadata-db.js` (their file must not make a new user look unconverted: open the store first); e2e
+  global setup seeding a store converted from the synthetic old user.
+- Tests: suites of modules the cut deletes go (the character store's internals, the message tree's, tantivy and
+  the search index workers, the token count store, the one-offs deleted unrun); route and behaviour suites (about 30
+  characters, 10 groups, 22 tags, the `src/endpoints/chats-*`, backends, itemized prompts, stats, tokenizers, local
+  import) move onto converted fixtures; the engine-vs-old comparison suites lose their old side.
+
+Stop (10-11), questions the cut needs answered (behaviour, compat, data safety; the plans and CLAUDE.md don't say):
+1. `/api/chats/bookmark`'s `also_node_id` (a fork at an alternative names the shown message too): bookmark names
+   are unique per tree, so one name can't be on two messages. A second bookmark with the suffixed name, or none?
+2. Writing what upstream calls the current chat: `/api/characters/chat` (`chat` null or '' = "no active chat"), the
+   `chat` key in `/edit` and `/merge-attributes`, and a group's `chat_id` / `chats` in `/groups/create`, `/edit`,
+   `/save-partial`. Does a write move the requesting session to the chat it names (resolve the name, `goTo`), get
+   ignored, or get refused? What does null / '' do? And a group file's stored `chat_id` / `chats` sent back by an
+   upstream caller: kept as values of the group or dropped?
+3. `/api/chats/delete` (and `/group/delete`) naming a session rather than a bookmark: delete the session, or refuse?
+   And today's repoint after deleting the current chat ("the character moves to its most recently active remaining
+   chat"): does the requesting session go to the most recent remaining bookmark?
+4. "New chat" in a group tree (`/groups/new-chat`, `/api/chats/new` for a group): a group has no card greeting to
+   move to. Where does the session's pointer go (the root, the members' greetings shown provisionally?), and what do
+   the answers' `chat_id` / `chats` hold?
+5. `/api/chats/fork` (upstream) carries `metadata` for the branch: recorded as state changes at the fork's message, or
+   dropped as the bookmark copy was (5b)?
+6. Deletes through upstream's paths: `deleteMessage(i)`, `/del`, `/cut` and `deleteSwipe` splice the page's `chat[]`
+   and send the whole chat to `/api/chats/save`, which "never deletes messages it doesn't send". The 5b mapping
+   table maps them to `cutFromPath` / `deleteSubtree`, which take `preview` and `confirm`. How does a whole-chat save
+   express a cut (a shorter array than the stored path), and do these upstream callers (and our `/message/end-path`,
+   `/message/alternative/delete`) get the confirm step (refused with the drops until confirmed) or confirm by
+   themselves?
+7. `/api/chats/recent`'s pinned entries name chats by `file_name` and character or group; it now lists sessions. Do
+   pins resolve to bookmarks and show first, and what does a pin of a session name mean?
+8. Continuing a reply: state changes made while producing the continuation have no append to ride on (the produced
+   bit is refused outside an append's commit). Recorded on the reply as a later change, or with the bit some other
+   way?
+9. Deleting a character (with or without `delete_chats`) or a group: does its tree go (every message, bookmark and
+   session position in it), or stay as an unowned type-6 tree that a character later created with the key adopts,
+   as 5e's `--keep-orphans` keeps them?
+10. The routes with nothing behind them on the engine: `/api/characters/metadata/rescan`,
+    `/metadata/batch-import/begin|end`, `/search-index/rebuild`: kept answering as if done, or removed with the page's
+    callers? And PNGs dropped into `characters/`, which the old reconcile picked up: still picked up (from where), or
+    only through import and the local import scan?
+11. `/api/characters/manifest` reads `characters/*.png` (O(cards) per request, keyed by file mtime) while avatars
+    move to `store/avatars/<hash>`: what does it answer from?
+12. `/api/groups/batch` runs upstream's group chat metadata migration on read (`past_metadata` / `chat_metadata` in
+    the group file, written back): does it go, or convert into state changes?
+13. Data kept today in `character-metadata.sqlite` that no stage names: bulk selections (`/bulk/*`) and the local
+    import scan's bookkeeping (source mtimes, skip marks, batch imports). Where do they live after the cut (stay in
+    that file beside `saved_views` until stage 6, or move to the engine now)?
+14. A book rename with `relink_characters: false`: links are by id now, so every linked card follows the rename. Is
+    that the meaning, or does a card the user chose not to relink keep the old name (an unresolved link)?
+15. `src/tools/list-character-ids.js` and `scripts/bench-search.mjs` read the old stores: ported or deleted?
+
 **Stage 5 measured against** (design §6 and §8, today = redesign 5f at 5bddd179b; harness `walrepro/measure5f.mjs`
 for today, the stage 2 harness for the engine):
 
