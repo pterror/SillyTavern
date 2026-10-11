@@ -875,9 +875,7 @@ Done, in order (each section below has its details and choices):
   people adapter; the token-count cache; measured.
 
 Left (in the order they build on each other):
-- Chat engine operations not built yet: resolving a chat name for routes taking one (by its UUID works now; the
-  exact lookup `sessionNamed` is built, 5d). Names are unique per store with upstream's suffix scheme (built, 5d
-  follow-up 4).
+- Resolving a chat name for routes: built (`resolveChatName`, the 5b addendum's "Built, tree edits" below).
 - Compat identifiers wired at the cut (the header is sent, see "Built, the tab's session"): the answers'
   `characters[].chat`, `group.chat_id`, `getCurrentChatId()`, chat names in events (each `resolveSession`'s
   `identifier`), and the tab told its session is gone.
@@ -1299,7 +1297,7 @@ store's answers, native and wasm:
   windowed as before. The default is the opening of where the actor's session lands in the tree (the opening on its
   path); at the tree's root, the card greeting the session chose there (`default_chosen`); else the first.
   `has_saved_chats` is whether any session has meaningful activity in the tree (a chat is a session now, not a
-  label).
+  label); corrected 10-11: whether the tree stores a message (upstream's meaning, anything saved).
 - Choosing a card greeting with no row: see "Built, back and forward; card greetings chosen" below (the first build
   stored the greeting, which the coordinator's answer below overrode).
 - `openingToLandOn` (`findOpeningToLandOn`), `alternatives` (`getAlternatives`, an opening's alternatives being the
@@ -1310,7 +1308,8 @@ store's answers, native and wasm:
 | openings read | all of a tree's openings (children pages of 500) | as today; the list, its `total` and the merge with the card need every one; bounded by the tree |
 
 Built, ending a path (10-10; `engine/src/log/format.rs`, `store/chat.rs`, `store/sessions.rs`, `src/chat-engine.js`):
-- `ChatEngine.endPathAt({ tree, node_id, actor })` (`endPathAt`, and `endPathAtAnchor` with `node_id` null): the
+- (Replaced 10-11 by the 5b addendum: `endPathAt` is now `goTo`, a plain pointer move; deletes delete.)
+  `ChatEngine.endPathAt({ tree, node_id, actor })` (`endPathAt`, and `endPathAtAnchor` with `node_id` null): the
   session's pointer moves to the message, or to the tree's root (nothing shown yet, as a new chat). The replies below
   stay. Nothing is written when the pointer is already there. Only that session moves; others show what they showed.
 - Kind `pointerRoot { session, user, tree }` (header 127): a session's pointer moves to a tree's root. A history
@@ -1646,9 +1645,8 @@ Follows from those:
   UUID, `bookmark` null) then the tree's bookmarks in the order they were made (`bookmark` the id, `position` the
   `after` of the next page), each with `name`, `at`, `message_count`, `count_estimate`, `last_mes`,
   `last_activity` and `chat_metadata` (with `integrity` on the session's row). `newChat({ tree, actor })` is
-  `chooseCardGreeting` with the first greeting. Open for the cut: which name a route taking a chat name resolves now
-  that a listed chat is a bookmark (bookmark names aren't unique) or the tab's session; and whether
-  `has_saved_chats` (today: a session with activity in the tree) follows the list.
+  `chooseCardGreeting` with the first greeting. The two items left open here were settled (10-11) and built: see the
+  5b addendum's "Built, tree edits".
 
 **5c. world info and embedded books.**
 - Record kinds (D10): a book (name, its book-level fields); each entry value (every field of upstream's entry shape
@@ -1923,7 +1921,7 @@ wasm, and the chat model workload in `chat_tests.rs`):
   cap of text bytes (`SCAN_BYTES`, 3 MiB: ~47 ms measured, below) and `limit`; stopped, the answer is `partial` ("~") with a `scanCursor`
   (the message to go on below), from which the scan goes on alone. Rows: `id`, `score` (null for scanned), `name`,
   `is_user`, `time`, `depth` and `snippet` (80 characters before the first match, 160 after; picked: the message
-  as its context). Opening one moves the session there (`endPathAt`, at the cut).
+  as its context). Opening one moves the session there (`goTo`, at the cut).
 - Chat-list search, `searchChatList({ tree, search, session?, after?, limit, withMetadata? })` over `chatList()`'s
   items: by name (every clause's text inside it, lower-cased, as upstream's file names), else by content: each
   worded clause's matching messages read once a call from the postings (`matches_upto`) with their depths, and an
@@ -1976,7 +1974,8 @@ is in (a route acting in another tree moves the session there, as a tab does). `
 `getUniqueName()` scheme server-side: the name, then `name (1)`, `name (2)`, ... built on the name given (so
 `a (1)` taken gives `a (1) (1)`), up to 1000 tries (else `{ ok: false, reason: 'no free name' }`); it answers the
 name given, and checks and writes in one lane for the store. The engine refuses a session's `positionName` whose
-name another session holds, so no write path makes two. Bookmark names aren't session names and aren't checked.
+name another session holds, so no write path makes two. Bookmark names aren't session names; they are unique per
+tree (10-11, the 5b addendum).
 
 | choice | picked | reason |
 |---|---|---|
@@ -2480,3 +2479,105 @@ Rule: an operation on a path removes only what belongs to it alone; anything ano
 - **new chat**: the session's pointer goes to the first greeting with nothing shown below it ({{user}}: "the latter", "'fresh greeting' should be 'first greeting'"); no bookmark is created. while there, swiping its alternatives stays at that level (doesn't descend into earlier branches). mid-chat, swiping a message selects that alternative and the view follows fork choices down to the end of its branch, so swiping back restores the conversation. no "conversations"/branch-count UI.
 - the session's pointer after any delete: nearest surviving ancestor (settled earlier).
 - the old "end path at" operation (hide by moving the path's end up) goes; deletes delete.
+
+Settled (coordinator, 10-11):
+- Chat names on routes: bookmark names are unique per tree (upstream's chat names were per character), upstream's
+  `getUniqueName` suffix on a create or rename conflict; a route's chat name resolves to that bookmark, else to a
+  session's name in the store, else not found. `has_saved_chats`: the tree stores a message.
+- Big deletes: the delete is one durable record, carried out in bounded slices and resumed on open; in its first
+  commit the positions inside move or go and the root is recorded pending; while pending the subtree reads as
+  deleted (paths stop above it, search drops it, writes are refused, stats are estimates).
+- Swiping ({{user}}: "dropping choices means the user has to make up to O(total number of messages with swipes)
+  choices and O(total swipes) swipes"): one rule everywhere. A swipe records the fork choice and the session follows
+  the cascade (session, user, anyone's last, newest reply) down to the end of that branch, at the end of a chat and
+  on greetings after "new chat" alike. "New chat" is only the pointer moving to the first greeting.
+- Cut copies carry only the state changes in effect; the original keeps its revert history.
+- A pinned bookmark at a removed message goes, and the request names it (Data safety); a following one moves to the
+  nearest surviving ancestor, or goes (named) when there is none; an opening's sessions go to the newest other
+  opening, as before; the state changes on removed messages are named too (layer 1 step 7).
+
+Built, tree edits (10-11; 86615c6e0 engine, ba07593f9 JS, 00de7eff4 a fix; `engine/src/store/prune.rs`,
+`src/chat-engine.js`; tests `chat_tests.rs`, `src/chat-edits.test.js`):
+- Kind `subtreeDelete { message, session?, user? }` (header 228): message and everything below it go. Its own
+  derivation: the root leaves its parent's replies (and its parent's shape); sessions with pointers inside, remembered
+  (session, tree) and (user, tree) positions inside, and bookmarks inside are found through `PTR_IN_TREE` and
+  `REMEMBERED_IN` (new per-tree indexes, kept by every pointer and remembered-position change) and the tree's
+  bookmarks, each tested by jump-pointer ancestry; they move to the root's parent (an opening's sessions to the
+  newest other opening, else the root); pinned bookmarks, and following ones under an opening, go. The root is
+  recorded pending (`PRUNE`, `PRUNE_IN`, a per-tree count). Slices (`prune::step`, `Job::Derive`, 256 visits each)
+  walk down to a leaf, delete it (`chat::delete_message`, the same removal `messageDelete` does, stats through
+  `stats::removed`), and go on from its parent; the root last, which clears the pending entry. Queued after the
+  commit and at open while one is left.
+- While pending: `followed` and replies skip the root; `path_to` stops above it; `chatRead('messages')` answers null
+  for its messages; message search drops them (its total then inexact); history steps skip them; `stats` answers
+  `estimate`; appends under, moves of or into, pointer moves to, bookmarks at, choices of, edits, itemizations and
+  state changes of its messages, and deletes of them, are refused. Whether a message is under a pending root uses
+  jump pointers, or the parents while a depth rewrite is under way in the tree (its jumps can name former
+  ancestors then: a cut's moved tail): O(depth) for that window only.
+- Bookmark names: `BOOKMARK_NAMED (tree, name, bookmark)`; `positionName` refuses a name another bookmark of the tree
+  holds. Fixed: a bookmark outliving the message it was made at left a stray shape entry when it went.
+- Reads: `subtreeDrops { tree, roots, keep? }` (bookmarks that go, state changes on the removed messages; the
+  subtrees of `keep`, moving away first, left out), `branchEnd`, `activeChanges { message }`, `bookmarksNamed`,
+  `pendingDelete`.
+- JS: `deletePath` (from the message down the session's shown path, only the end no other branch uses: up from the
+  pointer while the message above has one reply; nothing when the pointer has replies), `deleteSubtree`,
+  `deleteAlternatives` (an opening's: every opening, the whole tree), `deleteBelow`, `cutFromPath` (shared messages
+  after the cut copied: append, values, texts, times, itemization and the state changes in effect, not send keys,
+  old ids or bookmarks; the path's own tail moved under the copies; the session's choice at the fork and its pointer
+  moved; the cut messages from the last up go when nothing else passes through), `cutEverywhere` (each reply of a cut
+  message that isn't the next one moves under the message before the cut; the cut chain goes). Each takes `preview`
+  (answers `drops`) and `confirm` (refused with `drops` unless it names exactly them). `select` follows the cascade
+  down; `goTo` replaces `endPathAt`; `deleteAlternative` is gone (the swipe delete is `deleteSubtree`);
+  `createBookmark` and `changeBookmark` take upstream's suffix; `resolveChatName`; a `bookmark_link` names the tree's
+  bookmark of that name when there is one, else makes it.
+- Tests: the chat model workload deletes subtrees (pointers, remembered positions, bookmarks, histories, choices,
+  depths, jumps, stats, the new indexes and names) through commits, a reopen, a crash and cleaning; a pending delete
+  read before its slices run, its refusals, and its resume after a crash; a delete committed with a move (depths
+  pending); JS, native and wasm: every operation, drops and confirm, cuts with shared and own tails and state,
+  swiping, names.
+
+| choice | picked | reason |
+|---|---|---|
+| finding what a delete moves | per-tree indexes of pointers and remembered positions, the tree's bookmarks, each tested by ancestry | bounded by the tree's positions, not the subtree |
+| delete order | leaves first from a cursor, each message visited going down once | every slice leaves a valid tree; O(1) amortized per message |
+| ancestry while depths are rewritten | the parents | the jumps of a moved subtree name its former ancestors until rewritten |
+| drops preview | a walk of the subtrees (state changes by each message's shape), bookmarks as the delete finds them | the same set the delete removes; O(subtree), as the delete |
+| cut copies | one commit with the cut | atomic; O(copies), bounded by the shown path |
+| the record | `subtreeDelete { message, session?, user? }`, header 228 | 10–11 bytes measured |
+
+Mapping (upstream, and our old routes, onto the operations; wired at the cut):
+| upstream / old route | meaning there | operation |
+|---|---|---|
+| `/cut` (one index or a range), `deleteMessage(i)`, `/del n`, `deleteLastMessage` | the messages leave this chat; other chat files untouched | `cutFromPath` (a tail cut is the path's own end deleted, other branches kept) |
+| `/delswipe`, `deleteSwipe` | that swipe goes | `deleteSubtree` (the swipe's branch with it, previewed) |
+| `/api/chats/delete`, `/group/delete` | the chat file goes | the bookmark goes; messages stay (unchanged) |
+| ours: `/message/end-path` | ended the chat at a message (hid the rest) | `deletePath` |
+| ours: `/message/alternative/delete` | a leaf alternative went | `deleteSubtree` |
+| ours: opening a search result | moved there | `goTo` |
+No upstream operation maps to `cutEverywhere`, `deleteAlternatives` or `deleteBelow` (new, our UI).
+
+Measured (`engine/examples/edits.rs`, `cargo run --release --features measure --example edits -- <dir>`, 600-byte
+messages; derived entries counted after the slices, keyspace inserts):
+
+| operation | removed / copied / moved | record B | derived entries | per message | appending them wrote |
+|---|---|---|---|---|---|
+| delete a path's own end | 1 / 0 / 0 | 10 | 74 | 74 | 85 |
+| the same | 10 / 0 / 0 | 10 | 228 | 22.8 | 299 |
+| the same | 100 / 0 / 0 | 11 | 1,661 | 16.6 | 2,298 |
+| the same | 1,000 / 0 / 0 | 11 | 15,777 | 15.8 | 21,307 |
+| every swipe here and below (3 roots) | 33 / 0 / 0 | 20 | 691 | 20.9 | 973 |
+| a delete with 2 sessions and a pinned bookmark inside | 10 / 0 / 0 | 10 | 242 | 24.2 | 295 |
+| cut 2 from a path, own tail | 2 / 0 / 10 | 20 | 112 | 9.3 | |
+| cut 2 from a path, shared tail with own below | 0 / 10 / 10 | 6,121 | 176 | 8.8 | 289 |
+| the same, all shared | 0 / 100 / 0 | 61,051 | 890 | 8.9 | 2,281 |
+| cut 2 everywhere, 20 below moving up | 2 / 0 / 20 | 20 | 127 | 5.8 | |
+
+A delete writes about three quarters of what appending the messages wrote (each derived entry removed once; a slice's
+counters and orders coalesce), and its record is 10–11 bytes whatever the subtree. A copy is its message's record
+again (~610 B) and fewer entries than an append through a session (no session or choice entries). Moves cost the
+depth rewrite of the moved messages (one entry each).
+
+Left (handover, 10-11): routes at the cut (5f) call these and map upstream's indices (`/cut 2-5`) onto the shown
+path's messages; the page shows the preview's warning and sends `confirm`. A send key of a message being deleted
+answers "already stored" until its slice runs. 5e: converted labels sharing a name in a tree need the suffix scheme
+(names are refused otherwise).
