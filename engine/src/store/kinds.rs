@@ -26,6 +26,9 @@ pub mod key {
     pub const GONE: u64 = 3;
     /// Per entity: the position of its latest record.
     pub const VERSION: u64 = 16;
+    /// Per (position, entity): the entity last changed at that position (its `VERSION`); a deleted entity's entry
+    /// holds its kind and key.
+    pub const ENTITY_CHANGE: u64 = 84;
     /// Per entity: the record holding its fav bit.
     pub const FAV: u64 = 17;
     /// Per (entity, field): the text's last full value, size, and the edits since.
@@ -262,8 +265,41 @@ pub(super) fn dead(out: &mut Out, l: Loc) {
     out.add(key::id(key::DEAD, file_of(l.pos)), l.len as i64);
 }
 
-pub(super) fn version(out: &mut Out, entity: u64, at: Loc) {
-    out.put(key::id(key::VERSION, entity), pos_bytes(at.pos));
+/// `entity` changed at `at`: its version, and its place at the end of the entity change feed (one entry per entity).
+pub(super) fn version(view: &View, out: &mut Out, entity: u64, at: Loc) -> Result<(), StoreError> {
+    let vk = key::id(key::VERSION, entity);
+    if let Some(b) = view.get(&vk)? {
+        let old = parse_pos(&b)?;
+        if old == at.pos {
+            return Ok(());
+        }
+        out.del(key::ids(key::ENTITY_CHANGE, old, entity));
+    }
+    out.put(key::ids(key::ENTITY_CHANGE, at.pos, entity), Vec::new());
+    out.put(vk, pos_bytes(at.pos));
+    Ok(())
+}
+
+/// `entity` (of `kind`, keyed `k`) is deleted at `at`: its feed entry moves to the end, holding its kind and key, and
+/// its version goes.
+pub(super) fn version_gone(
+    view: &View,
+    out: &mut Out,
+    entity: u64,
+    kind: u64,
+    k: &[u8],
+    at: Loc,
+) -> Result<(), StoreError> {
+    let vk = key::id(key::VERSION, entity);
+    if let Some(b) = view.get(&vk)? {
+        out.del(key::ids(key::ENTITY_CHANGE, parse_pos(&b)?, entity));
+    }
+    let mut gone = Vec::new();
+    put_uvarint(&mut gone, kind);
+    gone.extend_from_slice(k);
+    out.put(key::ids(key::ENTITY_CHANGE, at.pos, entity), gone);
+    out.del(vk);
+    Ok(())
 }
 
 pub fn pos_bytes(pos: u64) -> Vec<u8> {
@@ -383,7 +419,7 @@ impl Pointer for Fav {
     ) -> Result<(), StoreError> {
         let fav = rec.values[1] == Value::Bit(true);
         library::change(view, out, id(rec, 0), |st| st.fav = fav)?;
-        version(out, id(rec, 0), at);
+        version(view, out, id(rec, 0), at)?;
         Ok(())
     }
 }
@@ -760,7 +796,7 @@ impl Deriver for TextValue {
             Head::new(at, bytes(rec, 2).len() as u64).bytes(),
         );
         if let Holder::Entity(entity) = h {
-            version(out, entity, at);
+            version(view, out, entity, at)?;
             super::books::touched(view, out, entity, at)?;
         }
         Ok(())
@@ -885,7 +921,7 @@ impl Deriver for TextEdit {
         out.put(h.edit_key(f, head.edits), loc_bytes(at));
         out.put(h.text_key(f), head.bytes());
         if let Holder::Entity(entity) = h {
-            version(out, entity, at);
+            version(view, out, entity, at)?;
             super::books::touched(view, out, entity, at)?;
         }
         Ok(())

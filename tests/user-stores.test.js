@@ -114,6 +114,16 @@ describe('user stores', () => {
         const groupStats = (await s.lib.chatStats([/** @type {bigint} */ (groupId)])).get(/** @type {bigint} */ (groupId));
         expect(groupStats?.chat_size).toBeGreaterThan(0);
         expect(groupStats?.date_last_chat).toBeGreaterThan(0);
+        // The change feed: every character once; a change moves it to the end; a delete is answered as one.
+        const all = await s.lib.changes(0, 1000);
+        expect(all.changes.filter(c => c.op === 'upsert').map(c => c.id).sort()).toEqual(['Alice.png', 'Bob.png', 'Cara.png']);
+        expect(all).toMatchObject({ truncated: false, hasMore: false });
+        await s.lib.setFav(0, 'Bob.png', false);
+        await s.lib.deleteEntity(0, 'Cara.png');
+        const after = await s.lib.changes(all.seq, 1000);
+        expect(after.changes).toEqual([{ id: 'Bob.png', op: 'upsert', fields: null }, { id: 'Cara.png', op: 'delete' }]);
+        expect(after.seq).toBeGreaterThan(all.seq);
+        expect((await s.lib.changes(after.seq, 1000)).changes).toEqual([]);
         await stores.resumeStoreWork([{ root }]);
     });
 });
