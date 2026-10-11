@@ -1426,7 +1426,13 @@ impl Store {
     /// - `state { tree, at? }`: `[{ variable, field, json }]`;
     /// - `stats { owners }`: `{ owners, totals }`; `itemization { message }`; `sent { owner, keys }`;
     /// - `itemized { after?, limit }`: `{ ids, more }`, messages with an itemization in id order;
-    /// - `tokenCache { table, identity, hash }`: `{ used, value }` or null; `tokenCacheCount { table }`.
+    /// - `tokenCache { table, identity, hash }`: `{ used, value }` or null; `tokenCacheCount { table }`;
+    /// - `bookmarksNamed { tree, name }`: the tree's bookmark named exactly `name`, as a list;
+    /// - `branchEnd { tree, at?, session?, user? }`: the end of the followed path below `at` (or `at`);
+    /// - `subtreeDrops { tree, roots, keep? }`: what deleting those subtrees (less those of `keep`) drops besides
+    ///   their messages;
+    /// - `activeChanges { message }`: the state changes in effect hanging on a message;
+    /// - `pendingDelete { tree }`: whether a subtree delete is under way in the tree.
     #[napi(
         ts_args_type = "op: string, args: object",
         ts_return_type = "Promise<any>"
@@ -1457,7 +1463,7 @@ impl Store {
                         .map(JsTree)
                 })
             }
-            "path" | "followed" | "landing" => {
+            "path" | "followed" | "landing" | "branchEnd" => {
                 let (tree, at, ses, user) = (
                     req_integer(a, "tree")?,
                     opt_integer(a, "at")?,
@@ -1469,6 +1475,7 @@ impl Store {
                     s.chat_read(|v| match op.as_str() {
                         "path" => cr::path(v, at),
                         "followed" => cr::followed(v, tree, at, ses, user),
+                        "branchEnd" => cr::branch_end(v, tree, at, ses, user),
                         _ => cr::landing(v, tree, ses, user),
                     })
                     .map(JsTree)
@@ -1634,6 +1641,43 @@ impl Store {
                         ))
                     })
                     .map(JsTree)
+                })
+            }
+            "bookmarksNamed" => {
+                let tree = req_integer(a, "tree")?;
+                let name = string(
+                    "name",
+                    a.get::<Unknown>("name")?
+                        .ok_or_else(|| invalid("bookmarksNamed needs a name".into()))?,
+                )?;
+                Box::new(move |s| {
+                    s.chat_read(|v| cr::bookmarks_named(v, tree, &name))
+                        .map(JsTree)
+                })
+            }
+            "subtreeDrops" => {
+                let (tree, roots) = (req_integer(a, "tree")?, integers(a, "roots")?);
+                let keep = match a.get::<Vec<Unknown>>("keep")? {
+                    Some(list) => list
+                        .into_iter()
+                        .map(|v| integer("keep", v))
+                        .collect::<Result<Vec<_>>>()?,
+                    None => Vec::new(),
+                };
+                Box::new(move |s| {
+                    s.chat_read(|v| cr::subtree_drops(v, tree, &roots, &keep))
+                        .map(JsTree)
+                })
+            }
+            "activeChanges" => {
+                let m = req_integer(a, "message")?;
+                Box::new(move |s| s.chat_read(|v| cr::active_changes(v, m)).map(JsTree))
+            }
+            "pendingDelete" => {
+                let tree = req_integer(a, "tree")?;
+                Box::new(move |s| {
+                    s.chat_read(|v| Ok(cr::Js::Bool(crate::store::prune::pending_in(v, tree)?)))
+                        .map(JsTree)
                 })
             }
             "sent" => {

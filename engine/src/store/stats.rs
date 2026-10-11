@@ -417,6 +417,16 @@ fn message_of(rec: &Record) -> Option<u64> {
     }
 }
 
+/// Message `m` is about to go without a record of its own (a subtree delete's slice): its contribution leaves the
+/// stats.
+pub fn removed(view: &View, out: &mut Out, m: u64) -> Result<(), StoreError> {
+    let before = contrib(view, m)?;
+    if before.is_some() {
+        apply(view, out, m, &before, &None)?;
+    }
+    Ok(())
+}
+
 /// A deriver whose records change a message: it also keeps the stats of the message's owner.
 pub struct Counted(pub &'static dyn Deriver);
 

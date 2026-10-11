@@ -680,6 +680,17 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
+    // A message and everything below it go (`store::prune`), through `session` by `user`.
+    Kind {
+        name: "subtreeDelete",
+        base: 228,
+        slots: &[
+            req("message", Ty::Id(Space::Message)),
+            opt("session", Ty::Id(Space::Position)),
+            opt("user", Ty::Id(Space::User)),
+        ],
+        internal: false,
+    },
     // A message moves under another parent (absent: it opens its owner's tree).
     Kind {
         name: "messageParent",

@@ -6,7 +6,7 @@ use super::derive::{Loc, View};
 use super::kinds::{Holder, bytes, key, parse_loc, parse_varints, text_value_of};
 use super::library::field_after;
 use super::sessions::{self, Fork};
-use super::{StoreError, state, stats};
+use super::{StoreError, prune, state, stats};
 use crate::keyspace::val::{get_u64, max_value};
 use crate::log::format::{FieldRef, Value};
 
@@ -72,9 +72,23 @@ pub fn messages(view: &View, ids: &[u64]) -> Result<Js, StoreError> {
         old_keys[j] = Some(bytes(&key_records[n], 1).to_vec());
     }
     let mut out: Vec<Js> = vec![Js::Null; ids.len()];
+    // A message of a subtree being deleted reads as deleted.
+    let mut pending = std::collections::HashMap::new();
     for (j, &i) in found.iter().enumerate() {
         let m = fids[j];
         let r = &records[j];
+        let owner = super::kinds::id(r, APPEND_OWNER);
+        let p = match pending.get(&owner) {
+            Some(p) => *p,
+            None => {
+                let p = prune::pending_in(view, owner)?;
+                pending.insert(owner, p);
+                p
+            }
+        };
+        if p && prune::doomed(view, owner, m)? {
+            continue;
+        }
         let shape = shapes[j];
         let h = Holder::Message(m);
         let mut texts = Vec::new();
@@ -500,7 +514,8 @@ pub fn state_at(view: &View, tree: u64, at: Option<u64>) -> Result<Js, StoreErro
     ))
 }
 
-fn stats_js(s: stats::Stats) -> Js {
+/// `estimate`: a subtree delete is under way, its messages still counted.
+fn stats_js(s: stats::Stats, estimate: bool) -> Js {
     let c = |i: u64| Js::Num(s.counters[i as usize] as f64);
     Js::Obj(vec![
         ("userMsgs", c(stats::USER_MSGS)),
@@ -516,6 +531,7 @@ fn stats_js(s: stats::Stats) -> Js {
             s.first_user_at.map_or(Js::Null, |t| Js::Num(t as f64)),
         ),
         ("lastAt", s.last_at.map_or(Js::Null, |t| Js::Num(t as f64))),
+        ("estimate", Js::Bool(estimate)),
     ])
 }
 
@@ -523,11 +539,19 @@ fn stats_js(s: stats::Stats) -> Js {
 pub fn chat_stats(view: &View, owners: &[u64]) -> Result<Js, StoreError> {
     let list = owners
         .iter()
-        .map(|o| stats::owner_stats(view, *o).map(stats_js))
-        .collect::<Result<Vec<_>, _>>()?;
+        .map(|o| {
+            Ok(stats_js(
+                stats::owner_stats(view, *o)?,
+                prune::pending_in(view, *o)?,
+            ))
+        })
+        .collect::<Result<Vec<_>, StoreError>>()?;
     Ok(Js::Obj(vec![
         ("owners", Js::Arr(list)),
-        ("totals", stats_js(stats::total_stats(view)?)),
+        (
+            "totals",
+            stats_js(stats::total_stats(view)?, prune::any_pending(view)?),
+        ),
     ]))
 }
 
@@ -571,6 +595,124 @@ pub fn sent(view: &View, owner: u64, keys: &[Vec<u8>]) -> Result<Js, StoreError>
             Some(b) => Js::Big(parse_varints::<1>(&b)?[0]),
             None => Js::Null,
         });
+    }
+    Ok(Js::Arr(out))
+}
+
+/// The tree's bookmarks named exactly `name` (names are unique in a tree: at most one).
+pub fn bookmarks_named(view: &View, tree: u64, name: &[u8]) -> Result<Js, StoreError> {
+    Ok(Js::Arr(
+        chat::bookmarks_named(view, tree, name)?
+            .into_iter()
+            .map(Js::Big)
+            .collect(),
+    ))
+}
+
+/// The end of the followed path below `at` (the replies each fork follows for the session and user, down to a
+/// message with none), or `at` itself.
+pub fn branch_end(
+    view: &View,
+    tree: u64,
+    at: Option<u64>,
+    s: Option<u64>,
+    u: Option<u64>,
+) -> Result<Js, StoreError> {
+    Ok(opt_big(
+        sessions::path_below(view, s, u, tree, at)?
+            .last()
+            .copied()
+            .or(at),
+    ))
+}
+
+/// What deleting the subtrees of `roots` (those of `keep` left out: they move away first) drops besides their
+/// messages: `{ bookmarks: [{ id, at }], changes: [{
+/// id, message, key, variable }] }`.
+pub fn subtree_drops(
+    view: &View,
+    tree: u64,
+    roots: &[u64],
+    keep: &[u64],
+) -> Result<Js, StoreError> {
+    let (bookmarks, changes) = prune::drops(view, tree, roots, keep)?;
+    let mut cs = Vec::new();
+    for (c, m) in changes {
+        let (key, variable) = change_key(view, c)?;
+        cs.push(Js::Obj(vec![
+            ("id", Js::Big(c)),
+            ("message", Js::Big(m)),
+            ("key", key),
+            ("variable", Js::Bool(variable)),
+        ]));
+    }
+    Ok(Js::Obj(vec![
+        (
+            "bookmarks",
+            Js::Arr(
+                bookmarks
+                    .into_iter()
+                    .map(|(b, at)| Js::Obj(vec![("id", Js::Big(b)), ("at", Js::Big(at))]))
+                    .collect(),
+            ),
+        ),
+        ("changes", Js::Arr(cs)),
+    ]))
+}
+
+fn change_key(view: &View, c: u64) -> Result<(Js, bool), StoreError> {
+    let l = state::change_loc(view, c)?
+        .ok_or_else(|| StoreError::Entry(format!("change {c} has no record")))?;
+    let (r, _) = view.record(l.pos)?;
+    let key = match &r.values[6] {
+        Value::Field(f) => field_js(f),
+        _ => unreachable!("checked by Record::new"),
+    };
+    Ok((key, super::kinds::id(&r, 3) & state::VARIABLE != 0))
+}
+
+/// The changes in effect hanging on message `m`, in order, each as its record holds it: `{ id, time, author, ref,
+/// confidence, key, value, session, user }` (absent values null).
+pub fn active_changes(view: &View, m: u64) -> Result<Js, StoreError> {
+    let mut out = Vec::new();
+    for (c, active) in state::changes_at(view, state::Hang::Message(m))? {
+        if !active {
+            continue;
+        }
+        let l = state::change_loc(view, c)?
+            .ok_or_else(|| StoreError::Entry(format!("change {c} has no record")))?;
+        let (r, _) = view.record(l.pos)?;
+        let text = |i: usize| match &r.values[i] {
+            Value::Text(t) => Js::Text(t.clone()),
+            _ => Js::Null,
+        };
+        out.push(Js::Obj(vec![
+            ("id", Js::Big(c)),
+            (
+                "time",
+                match r.values[2] {
+                    Value::Time(t) => Js::Num(t as f64),
+                    _ => Js::Null,
+                },
+            ),
+            ("author", Js::Num(super::kinds::id(&r, 3) as f64)),
+            ("ref", text(4)),
+            (
+                "confidence",
+                match r.values[5] {
+                    Value::F64(f) => Js::Num(f),
+                    _ => Js::Null,
+                },
+            ),
+            (
+                "key",
+                match &r.values[6] {
+                    Value::Field(f) => field_js(f),
+                    _ => Js::Null,
+                },
+            ),
+            ("value", text(7)),
+        ]));
     }
     Ok(Js::Arr(out))
 }

@@ -7,8 +7,8 @@ use super::chat::{self, FOLLOWING, MES, PINNED};
 use super::chat_read::Js;
 use super::kinds::{Holder, key, parse_loc, text_value_of};
 use super::sessions::{self, Fork};
-use super::stats;
 use super::*;
+use super::{prune, stats};
 use crate::log::format::{Value, kind_by_name, wtf8_from_utf16};
 use crate::search::Scope;
 
@@ -343,6 +343,64 @@ impl Model {
             .retain(|(sp, _), v| !(*sp == chat::KEYED_MESSAGE && *v == m));
     }
 
+    /// Message `r` and everything below it go: what is at them moves to `r`'s parent (sessions at an opening's to
+    /// the newest other opening), pinned bookmarks and following ones with nowhere to move go.
+    fn subtree_gone(&mut self, r: u64) {
+        let (tree, parent) = (self.msgs[&r].owner, self.msgs[&r].parent);
+        let to = match parent {
+            Some(p) => Some(p),
+            None => self.children(None, tree).into_iter().rfind(|o| *o != r),
+        };
+        let doomed: BTreeSet<u64> = self
+            .msgs
+            .keys()
+            .copied()
+            .filter(|m| self.below(*m, r))
+            .collect();
+        for ses in self.sessions.values_mut() {
+            if let Some((t, Some(p))) = ses.pointer
+                && doomed.contains(&p)
+            {
+                ses.pointer = Some((t, to));
+            }
+            if let Some(Some(p)) = ses.trees.get(&tree)
+                && doomed.contains(p)
+            {
+                ses.trees.insert(tree, to);
+            }
+        }
+        for ((_, t), v) in self.user_tree.iter_mut() {
+            if *t == tree && v.1.is_some_and(|p| doomed.contains(&p)) {
+                v.1 = to;
+            }
+        }
+        let gone: Vec<u64> = self
+            .bookmarks
+            .iter()
+            .filter(|(_, b)| doomed.contains(&b.at))
+            .map(|(id, _)| *id)
+            .collect();
+        for b in gone {
+            let bm = self.bookmarks.get_mut(&b).unwrap();
+            if bm.mode == FOLLOWING
+                && let Some(p) = parent
+            {
+                bm.at = p;
+                continue;
+            }
+            let bm = self.bookmarks.remove(&b).unwrap();
+            if let Some(l) = self.branches.get_mut(&bm.created_at) {
+                l.retain(|x| *x != b);
+                if l.is_empty() {
+                    self.branches.remove(&bm.created_at);
+                }
+            }
+        }
+        for m in doomed {
+            self.message_gone(m);
+        }
+    }
+
     fn session_gone(&mut self, s: u64) {
         self.keys
             .retain(|(sp, _), v| !(*sp == chat::KEYED_SESSION && *v == s));
@@ -375,15 +433,65 @@ impl Model {
     }
 
     fn check(&self, s: &Store) {
-        // Depth rewrites run between commits: wait for them.
+        // Depth rewrites and subtree deletes run between commits: wait for them.
+        let busy = |v: &View| Ok(sessions::any_pending(v)? || prune::any_pending(v)?);
         for _ in 0..2000 {
-            if !s.derived(sessions::any_pending).unwrap() {
+            if !s.derived(busy).unwrap() {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         s.derived(|v| {
-            assert!(!sessions::any_pending(v)?);
+            assert!(!busy(v)?);
+            let count = |prefix: Vec<u8>| {
+                v.scan(&prefix, &key::prefix_end(&prefix), usize::MAX)
+                    .unwrap()
+                    .len()
+            };
+            // The indexes a subtree delete finds positions through, and bookmark names.
+            let pointers = self
+                .sessions
+                .values()
+                .filter(|x| matches!(x.pointer, Some((_, Some(_)))))
+                .count();
+            assert_eq!(
+                count(key::of(sessions::PTR_IN_TREE)),
+                pointers,
+                "pointers by tree"
+            );
+            for (id, x) in &self.sessions {
+                if let Some((t, Some(_))) = x.pointer {
+                    assert!(v.get(&key::ids(sessions::PTR_IN_TREE, t, *id))?.is_some());
+                }
+            }
+            let remembered = self
+                .sessions
+                .values()
+                .map(|x| x.trees.values().filter(|p| p.is_some()).count())
+                .sum::<usize>()
+                + self.user_tree.values().filter(|(_, p)| p.is_some()).count();
+            assert_eq!(
+                count(key::of(sessions::REMEMBERED_IN)),
+                remembered,
+                "remembered by tree"
+            );
+            let named: Vec<(&u64, &Bookmark)> = self
+                .bookmarks
+                .iter()
+                .filter(|(_, b)| b.name.is_some())
+                .collect();
+            assert_eq!(
+                count(key::of(chat::BOOKMARK_NAMED)),
+                named.len(),
+                "bookmark names"
+            );
+            for (b, bm) in named {
+                let tree = self.msgs[&bm.at].owner;
+                assert_eq!(
+                    chat::bookmarks_named(v, tree, &text(bm.name.as_deref().unwrap()))?,
+                    vec![*b]
+                );
+            }
             let scan_ids = |prefix: Vec<u8>| -> Vec<u64> {
                 v.scan(&prefix, &key::prefix_end(&prefix), usize::MAX)
                     .unwrap()
@@ -1098,6 +1206,16 @@ fn step(model: &mut Model, rng: &mut Rng, i: u64) -> Vec<Record> {
                     vec![Value::Id(m), Value::Bit(raw), Value::Bytes(data)],
                 )]
             }
+        }
+        16 if i.is_multiple_of(3) => {
+            let m = pick(rng);
+            let tree = model.msgs[&m].owner;
+            let (sv, uv) = actor(rng);
+            if let Value::Id(s) = sv {
+                model.act(s, tree);
+            }
+            model.subtree_gone(m);
+            vec![rec("subtreeDelete", vec![Value::Id(m), sv, uv])]
         }
         16 if i.is_multiple_of(5) && model.sessions.contains_key(&session) => {
             // The session goes, and the test's tab takes up a new session with the same number.
@@ -2108,4 +2226,329 @@ fn jump_depths_are_myers_skew_binary_and_reach_any_depth_in_log_steps() {
         }
     }
     assert!(most <= 3 * 17, "{most}");
+}
+
+/// Commits through the store's inner path, so no slice is queued: as a crash right after the commit would leave it.
+fn commit_without_slices(s: &Store, recs: Vec<Record>) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    s.inner.submit(Job::Commit(
+        recs,
+        Box::new(move |r| {
+            let _ = tx.send(r.map(|_| ()));
+        }),
+    ));
+    rx.recv().unwrap().unwrap();
+}
+
+#[test]
+fn a_subtree_being_deleted_reads_as_deleted_and_its_delete_resumes_after_a_crash() {
+    let dir = temp_dir("prune");
+    let (s, mut model) = open_with_actors(&dir);
+    // An opening, a reply, and below the reply a chain longer than a slice with a side branch.
+    let n = (prune::PRUNE_SLICE * 3) as u64;
+    let mut recs = vec![
+        append(&mut model, 1, None, 0, "root", None, None, 1),
+        append(&mut model, 1, Some(0), 1, "kept reply", None, None, 1),
+    ];
+    for i in 2..n {
+        recs.push(append(
+            &mut model,
+            1,
+            Some(i - 1),
+            i as i64,
+            &format!("chain saxophone {i}"),
+            None,
+            None,
+            1,
+        ));
+    }
+    let side = append(
+        &mut model,
+        1,
+        Some(5),
+        n as i64,
+        "side saxophone",
+        None,
+        None,
+        1,
+    );
+    recs.push(side);
+    s.commit_wait(recs).unwrap();
+    // Session 1 at the chain's end, session 2 on the side branch; a pinned bookmark in the chain, a following one
+    // at the chain's end, one at the kept reply.
+    let end = n - 1;
+    let side = n;
+    s.commit_wait(vec![
+        rec(
+            "pointerMove",
+            vec![Value::Id(1), Value::Id(1), Value::Id(end)],
+        ),
+        rec(
+            "pointerMove",
+            vec![Value::Id(2), Value::Id(2), Value::Id(side)],
+        ),
+        rec(
+            "positionCreate",
+            vec![
+                Value::Id(20),
+                Value::UInt(PINNED),
+                Value::Id(1),
+                Value::Id(1),
+                Value::Id(9),
+            ],
+        ),
+        rec(
+            "positionCreate",
+            vec![
+                Value::Id(21),
+                Value::UInt(FOLLOWING),
+                Value::Id(1),
+                Value::Id(1),
+                Value::Id(end),
+            ],
+        ),
+        rec(
+            "positionName",
+            vec![Value::Id(21), Value::Text(text("end"))],
+        ),
+        rec(
+            "positionCreate",
+            vec![
+                Value::Id(22),
+                Value::UInt(PINNED),
+                Value::Id(1),
+                Value::Id(1),
+                Value::Id(1),
+            ],
+        ),
+    ])
+    .unwrap();
+    model.moved(1, 1, 1, Some(end), false);
+    model.moved(2, 2, 1, Some(side), false);
+    for (b, mode, at) in [(20, PINNED, 9), (21, FOLLOWING, end), (22, PINNED, 1)] {
+        model.bookmarks.insert(
+            b,
+            Bookmark {
+                at,
+                created_at: at,
+                mode,
+                name: None,
+            },
+        );
+        model.branches.entry(at).or_default().push(b);
+        model.act(1, 1);
+    }
+    model.bookmarks.get_mut(&21).unwrap().name = Some("end".into());
+    model.check(&s);
+    // What the delete drops besides messages: the pinned bookmark in it.
+    let (bookmarks, _) = s.derived(|v| prune::drops(v, 1, &[2], &[])).unwrap();
+    assert_eq!(bookmarks, vec![(20, 9)]);
+    // Everything below the kept reply goes; no slice runs, as after a crash.
+    model.subtree_gone(2);
+    commit_without_slices(
+        &s,
+        vec![rec(
+            "subtreeDelete",
+            vec![Value::Id(2), Value::Id(1), Value::Id(1)],
+        )],
+    );
+    model.act(1, 1);
+    s.derived(|v| {
+        assert!(prune::any_pending(v)?);
+        // The positions inside moved at once: the sessions and the following bookmark to the kept reply.
+        assert_eq!(sessions::session_pointer(v, 1)?, Some((1, Some(1))));
+        assert_eq!(sessions::session_pointer(v, 2)?, Some((1, Some(1))));
+        assert_eq!(chat::bookmark_at(v, 21)?, Some(1));
+        assert_eq!(chat::bookmark_at(v, 20)?, None);
+        // The subtree reads as deleted: no reply of its parent, a path stops above it, messages read as none.
+        assert_eq!(
+            sessions::followed(v, None, None, Fork::Message(1), 1)?,
+            None
+        );
+        assert_eq!(chat::path_to(v, Some(end))?, vec![0, 1]);
+        assert_eq!(chat::shapes(v, &[1])?[0].replies, 0);
+        let Js::Arr(read) = super::chat_read::messages(v, &[1, 2, end, side])? else {
+            unreachable!()
+        };
+        assert!(read[0] != Js::Null && read[1..].iter().all(|m| *m == Js::Null));
+        // Search drops its messages; stats say they are estimates.
+        let clauses = [crate::search::query::Clause {
+            text: text("saxophone"),
+            fields: None,
+            negate: false,
+            quoted: false,
+        }];
+        let found = chat_search::messages(
+            v,
+            1,
+            &clauses,
+            chat_search::Start::Index { after: None },
+            50,
+            chat_search::SCAN_BYTES,
+            &Default::default(),
+        )?;
+        assert!(
+            found.hits.is_empty() && found.scanned.is_empty(),
+            "{found:?}"
+        );
+        let Js::Obj(st) = super::chat_read::chat_stats(v, &[1])? else {
+            unreachable!()
+        };
+        let Js::Arr(owners) = &st[0].1 else {
+            unreachable!()
+        };
+        let Js::Obj(o) = &owners[0] else {
+            unreachable!()
+        };
+        assert_eq!(
+            o.iter().find(|(k, _)| *k == "estimate").unwrap().1,
+            Js::Bool(true)
+        );
+        // A step back skips entries inside it.
+        assert_eq!(sessions::step_target(v, 1, true)?, None);
+        Ok(())
+    })
+    .unwrap();
+    // Writes naming its messages are refused.
+    for r in [
+        append(
+            &mut model.clone(),
+            1,
+            Some(end),
+            9_999,
+            "late",
+            None,
+            None,
+            1,
+        ),
+        rec(
+            "pointerMove",
+            vec![Value::Id(1), Value::Id(1), Value::Id(5)],
+        ),
+        rec(
+            "positionCreate",
+            vec![
+                Value::Id(30),
+                Value::UInt(PINNED),
+                Value::Id(1),
+                Value::Id(1),
+                Value::Id(5),
+            ],
+        ),
+        rec(
+            "forkSelection",
+            vec![Value::Id(1), Value::Id(2), Value::Id(1), Value::Id(1)],
+        ),
+        rec(
+            "subtreeDelete",
+            vec![Value::Id(7), Value::Absent, Value::Absent],
+        ),
+        rec(
+            "messageDelete",
+            vec![Value::Id(side), Value::Absent, Value::Absent],
+        ),
+        rec(
+            "textValue",
+            vec![
+                Value::Sel(1, 3),
+                Value::Field(MES_F),
+                Value::Text(text("x")),
+                Value::Absent,
+                Value::Absent,
+            ],
+        ),
+    ] {
+        assert!(matches!(
+            s.commit_wait(vec![r]),
+            Err(StoreError::Refused(_))
+        ));
+    }
+    // A crash: the delete resumes on open and finishes.
+    s.abandon();
+    std::mem::forget(s);
+    let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
+    model.check(&s);
+    s.derived(|v| {
+        let Js::Obj(st) = super::chat_read::chat_stats(v, &[1])? else {
+            unreachable!()
+        };
+        let Js::Arr(owners) = &st[0].1 else {
+            unreachable!()
+        };
+        let Js::Obj(o) = &owners[0] else {
+            unreachable!()
+        };
+        assert_eq!(
+            o.iter().find(|(k, _)| *k == "estimate").unwrap().1,
+            Js::Bool(false)
+        );
+        Ok(())
+    })
+    .unwrap();
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_delete_beside_a_move_dooms_only_its_subtree_while_depths_are_rewritten() {
+    let dir = temp_dir("prune-move");
+    let (s, mut model) = open_with_actors(&dir);
+    // A chain; its tail moves up above a two-message gap that then goes, as a cut closing a gap does.
+    let n = (sessions::DEPTH_SLICE * 3) as u64;
+    let mut recs = vec![append(&mut model, 1, None, 0, "root", None, None, 1)];
+    for i in 1..n {
+        recs.push(append(
+            &mut model,
+            1,
+            Some(i - 1),
+            i as i64,
+            "x",
+            None,
+            None,
+            1,
+        ));
+    }
+    s.commit_wait(recs).unwrap();
+    model.msgs.get_mut(&3).unwrap().parent = Some(0);
+    model.subtree_gone(1);
+    commit_without_slices(
+        &s,
+        vec![
+            rec(
+                "messageParent",
+                vec![Value::Id(3), Value::Id(0), Value::Absent, Value::Absent],
+            ),
+            rec(
+                "subtreeDelete",
+                vec![Value::Id(1), Value::Absent, Value::Absent],
+            ),
+        ],
+    );
+    s.derived(|v| {
+        assert!(sessions::depths_pending(v, 1)? && prune::pending_in(v, 1)?);
+        // The moved tail's jumps still name the gap; it isn't being deleted.
+        for m in [3, n / 2, n - 1] {
+            assert!(!prune::doomed(v, 1, m)?, "{m}");
+        }
+        assert!(prune::doomed(v, 1, 2)?);
+        Ok(())
+    })
+    .unwrap();
+    s.commit_wait(vec![append(
+        &mut model,
+        1,
+        Some(n - 1),
+        n as i64,
+        "after",
+        None,
+        None,
+        1,
+    )])
+    .unwrap();
+    s.abandon();
+    std::mem::forget(s);
+    let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
+    model.check(&s);
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
 }
