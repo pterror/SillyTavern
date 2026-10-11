@@ -2728,7 +2728,7 @@ The cut, in progress (10-11; uncommitted in the working tree until it lands as o
   `message-tree-db.js` (the file stays for the converter); `message-stats.js` and `upgrade-message-stats.js` aren't
   touched by the routes.
 
-Stop (10-11), fourth, the cut's routes (nothing of chats.js or worldinfo.js switched yet):
+Stop (10-11), fourth, the cut's routes, answered (coordinator, 10-11) below:
 - Compat: upstream exports `readWorldInfoFile(directories, worldInfoName, allowDummy)` from
   `src/endpoints/worldinfo.js`, synchronous (its own `characters.js` and server plugins call it so). Engine reads are
   async. (a) same name and arguments, answering a Promise of the same value (sync callers reading `.entries`
@@ -2749,6 +2749,18 @@ Stop (10-11), fourth, the cut's routes (nothing of chats.js or worldinfo.js swit
 - `/new` for a character: `chat` '' (a card greeting with no row) → `newChat`, a stored greeting's id → `goTo` that
   opening? `replace` deleting the replaced chat → deleting the bookmark of that name (answer 3: messages stay)? For a
   group, the answer's `chat_id` and `chats` → the session's compat identifier and `chatList`?
+
+Answered: (1) `readWorldInfoFile` stays synchronous through a sync read in the binding (one snapshot; same
+signature and meaning). (2) A save's name is resolved (a bookmark, else a session); none found: a bookmark of that
+name at the array's last message (upstream's suffix with `unique`); the answer's `file_name` / `chat_id` is the name
+used. (3) An import stores its messages from the tree's root as their own branch (twins matched as usual) and a
+bookmark named after it at its last message; no session moves. (4) Our routes nothing calls are deleted. (5)
+`/message/end-path` goes (the hide-by-ending hack); `chat-store.js`'s callers send the operation their act means (a
+new chat `newChat`, a delete the matching delete with its preview and confirm); a caller whose intent isn't clear from
+its code is a stop. (6) Cursor paging, our page's caller changed (if upstream defines `page` / `page_size` on the
+route, they are accepted by reading through). (7) `chat: ''` is `newChat`, a stored greeting's id a move to that
+opening, `replace` deletes only the bookmark of that name; a group's `chat_id` is the session's identifier, `chats`
+`chatList`. The four foreign files: still waiting on {{user}}.
 
 **Stage 5 measured against** (design §6 and §8, today = redesign 5f at 5bddd179b; harness `walrepro/measure5f.mjs`
 for today, the stage 2 harness for the engine):
