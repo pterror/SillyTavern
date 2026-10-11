@@ -321,6 +321,20 @@ fn items(t: Option<&[u8]>) -> Vec<&[u8]> {
     }
 }
 
+/// The message stored for a send key in the owner's tree. One being deleted doesn't count: the user deleted it on
+/// purpose, so sending its key again stores a new message.
+pub fn sent_message(view: &View, owner: u64, sk: &[u8]) -> Result<Option<u64>, StoreError> {
+    let Some(b) = view.get(&send_key_key(owner, sk))? else {
+        return Ok(None);
+    };
+    let [m] = parse_varints::<1>(&b)?;
+    Ok(if super::prune::doomed(view, owner, m)? {
+        None
+    } else {
+        Some(m)
+    })
+}
+
 /// The send key's entry: the message stored for it in the owner's tree.
 pub fn send_key_key(owner: u64, sk: &[u8]) -> Vec<u8> {
     let mut k = key::id(key::SEND_KEY, owner);
@@ -428,13 +442,12 @@ impl Deriver for MessageAppend {
             super::prune::refuse_doomed(view, owner, p)?;
         }
         if let Value::Bytes(sk) = &rec.values[APPEND_SEND_KEY] {
-            let k = send_key_key(owner, sk);
-            if view.get(&k)?.is_some() {
+            if sent_message(view, owner, sk)?.is_some() {
                 return Err(StoreError::Refused(format!(
                     "a message with that send key is stored in {owner}'s tree"
                 )));
             }
-            out.put(k, varints(&[m]));
+            out.put(send_key_key(owner, sk), varints(&[m]));
         }
         let (s, u) = (opt_id(rec, APPEND_SESSION), id(rec, APPEND_USER));
         sessions::check_actor(view, s, Some(u))?;
@@ -571,7 +584,10 @@ pub(super) fn delete_message(
         out.del(key::id(key::MESSAGE_PARENT, m));
     }
     out.del(child_key(parent, owner, time_of(&append), m));
-    if let Value::Bytes(sk) = &append.values[APPEND_SEND_KEY] {
+    // The key may name a message sent with it after this one began being deleted.
+    if let Value::Bytes(sk) = &append.values[APPEND_SEND_KEY]
+        && view.get(&send_key_key(owner, sk))?.as_deref() == Some(&varints(&[m])[..])
+    {
         out.del(send_key_key(owner, sk));
     }
     drop_key(view, out, KEYED_MESSAGE, m)?;

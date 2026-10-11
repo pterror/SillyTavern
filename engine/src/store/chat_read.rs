@@ -591,10 +591,7 @@ pub fn itemized(view: &View, after: Option<u64>, limit: usize) -> Result<Js, Sto
 pub fn sent(view: &View, owner: u64, keys: &[Vec<u8>]) -> Result<Js, StoreError> {
     let mut out = Vec::new();
     for k in keys {
-        out.push(match view.get(&chat::send_key_key(owner, k))? {
-            Some(b) => Js::Big(parse_varints::<1>(&b)?[0]),
-            None => Js::Null,
-        });
+        out.push(chat::sent_message(view, owner, k)?.map_or(Js::Null, Js::Big));
     }
     Ok(Js::Arr(out))
 }

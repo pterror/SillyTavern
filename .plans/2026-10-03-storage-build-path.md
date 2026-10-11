@@ -2192,7 +2192,8 @@ What it reads, and what each becomes:
     weren't UUIDs (a count only);
   - each label as a bookmark, at the latest message below it on the default chain (shim plan answer 10), pinned or
     following by the shim plan's D24 (its wording, then the old chat files, then the backup; otherwise following,
-    listed in a warning);
+    listed in a warning); labels sharing a name within a tree take upstream's `getUniqueName` suffix (bookmark names
+    are unique per tree, 5b addendum; recorded 10-11);
   - each owner's pointer (`characters.active_chat`, the group's) as a pointer move of the deterministic (user, tree)
     session, so a third-party caller and a sessionless tab land where today's server would open that character;
   - each `default_child_id` that isn't the newest reply as a fork selection by that same session (today's choice,
@@ -2580,6 +2581,12 @@ again (~610 B) and fewer entries than an append through a session (no session or
 depth rewrite of the moved messages (one entry each).
 
 Left (handover, 10-11): routes at the cut (5f) call these and map upstream's indices (`/cut 2-5`) onto the shown
-path's messages; the page shows the preview's warning and sends `confirm`. A send key of a message being deleted
-answers "already stored" until its slice runs. 5e: converted labels sharing a name in a tree need the suffix scheme
-(names are refused otherwise).
+path's messages; the page shows the preview's warning and sends `confirm`. 5e: converted labels sharing a name in a
+tree need the suffix scheme (names are refused otherwise).
+
+Settled while building (10-11): a re-send whose send key names a message being deleted (or deleted) is a new message,
+not "already stored": the user deleted it on purpose. Built: `chat::sent_message` (the `sent` read and the append's
+refusal) passes over a message under a pending delete, and a slice deleting a message removes its send key's entry
+only while the entry still names it (a new message may hold the key by then). Test
+`a_send_key_of_a_message_being_deleted_stores_a_new_message` (a re-send while the delete is pending, the delete
+finished after a crash, the new message keeping the key). A deleted message's entry already went with it.
