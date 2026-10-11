@@ -890,15 +890,19 @@ export class ChatEngine {
 
     /**
      * Replaces messages' contents, each its own outside id; refuses one that would blank stored text or match a
-     * sibling, and reports it.
+     * sibling, and reports it. An edit's `changes` are the state changes made while producing it (a reply
+     * continued), hung on the message as its own, as `appendMessages()` hangs a reply's, in the same commit.
      * @param {object} p
      * @param {bigint} p.tree
      * @param {Speaker | null} p.treeSpeaker
-     * @param {{ node_id: string, content: Record<string, any> }[]} p.edits
+     * @param {{ node_id: string, content: Record<string, any>, changes?: StateOp[] | null }[]} p.edits
+     * @param {number} [p.author] The changes' author kind.
+     * @param {string | null} [p.ref] The changes' author reference.
      * @param {Actor} p.actor
      */
-    editMessages({ tree, treeSpeaker, edits, actor }) {
-        return this.serialized(tree, async () => {
+    editMessages({ tree, treeSpeaker, edits, author = AUTHOR.user, ref = null, actor }) {
+        const lorebooks = edits.flatMap(e => (Array.isArray(e.changes) ? e.changes : [])).filter(op => op?.key === WORLD_INFO && !op.variable).map(op => op.value);
+        return this.serialized(tree, () => this.withWorldLinks(lorebooks, async link => {
             const records = [];
             const { user, session } = await this.actorIds(actor, records);
             const ids = await this.messageIds(edits.map(e => String(e.node_id ?? '')));
@@ -915,7 +919,18 @@ export class ChatEngine {
                 }
                 const next = JSON.parse(JSON.stringify(edit.content));
                 const now = /** @type {Record<string, any>} */ (decoded.get(id));
+                const recordProduced = async () => {
+                    for (const c of producedChanges(edit.changes, await this.stateMap(tree, id))) {
+                        /** @type {Record<string, unknown>} */
+                        const r = { kind: 'stateChange', id: this.next.change++, message: id, time: this.now(), author: author | PRODUCED | (c.variable ? VARIABLE : 0), key: c.key, user };
+                        if (ref !== null) r.ref = ref;
+                        if (session !== null) r.session = session;
+                        if (c.json !== null) r.value = !c.variable && c.key === WORLD_INFO ? await link(c.json, records) : c.json;
+                        records.push(r);
+                    }
+                };
                 if (JSON.stringify(now) === JSON.stringify(next)) {
+                    await recordProduced();
                     applied++;
                     continue;
                 }
@@ -930,6 +945,7 @@ export class ChatEngine {
                         continue;
                     }
                 }
+                await recordProduced();
                 const speaker = await this.speakerFor(next, treeSpeaker);
                 const changed = this.editRecords(s, next, speaker);
                 for (const r of changed) {
@@ -941,7 +957,7 @@ export class ChatEngine {
             }
             if (records.length) await this.store.commit(records);
             return { ok: true, applied, refused };
-        });
+        }));
     }
 
     /**
