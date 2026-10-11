@@ -113,6 +113,34 @@ export async function buildOldUser(root, { extraCharacters = 0 } = {}) {
     fs.writeFileSync(path.join(directories.groupChats, 'Dropped empty.jsonl.pre-migration'), JSON.stringify(header({ note_prompt: 'Empty one.' })) + '\n');
     fs.writeFileSync(path.join(directories.groupChats, 'Dropped twin.jsonl.pre-migration'), groupChat.map(x => JSON.stringify(x)).join('\n') + '\n');
 
+    // A group chat the old migration damaged (its headerless original's first line taken as a header): message 1
+    // missing from the tree, the rest under the anchor with the chat's label on the last. The repair restores it.
+    const damagedId = '1700000000002';
+    const damaged = { id: damagedId, name: 'Damaged', members: ['Alice.png'], chats: ['c1'], chat_id: 'c1' };
+    await meta.writeGroupFileAndRow(directories, damaged, () => fs.writeFileSync(path.join(directories.groups, `${damagedId}.json`), JSON.stringify(damaged)));
+    const original = [
+        { name: 'Alice', is_user: false, mes: 'm1b', send_date: 'd1', extra: {}, swipes: ['m1a', 'm1b'], swipe_id: 1 },
+        { name: 'Alice', is_user: false, mes: 'm2a', send_date: 'd2', extra: {}, swipes: ['m2a', 'm2b'], swipe_id: 0 },
+        { name: 'You', is_user: true, mes: 'm3', send_date: 'd3', extra: {}, swipes: ['m3'], swipe_id: 0 },
+    ];
+    const handle = await tree.getDbHandle(directories);
+    handle.transaction(() => {
+        let parent = tree.ensureAnchorSync(handle, damagedId, 1000).id;
+        for (const m of original.slice(1)) {
+            const alts = tree.alternativesFromMessage(m);
+            let chosen = '';
+            alts.contents.forEach((content, k) => {
+                const id = tree.newId();
+                tree.insertMessageSync(handle, { id, parentId: parent, ownerId: damagedId, content, createdAt: 1000 + k });
+                if (k === alts.selected) chosen = id;
+            });
+            tree.setDefaultChildSync(handle, parent, chosen);
+            parent = chosen;
+        }
+        tree.createBranchSync(handle, { leafId: parent, name: 'c1', isGroup: true, metadata: '{}' });
+    });
+    fs.writeFileSync(path.join(directories.groupChats, 'c1.jsonl.pre-migration'), original.map(m => JSON.stringify(m)).join('\n') + '\n');
+
     for (let i = 0; i < extraCharacters; i++) {
         await tree.saveChatToTree(directories, `extra-${i}`, `Extra ${i} - 2024-01-01@00h00m00s`, [header({}), msg(`Extra ${i}`, false, `Hi ${i}`), msg('You', true, `Hello ${i}`)]);
     }
@@ -129,5 +157,5 @@ export async function buildOldUser(root, { extraCharacters = 0 } = {}) {
     const db = new Database(path.join(root, 'character-metadata.sqlite'));
     db.prepare('INSERT INTO tag_pending_moves (tag_id, side, anchor_id, value) VALUES (?, NULL, NULL, ?)').run('tag-blue', '0.5');
     db.close();
-    return { directories, names: { groupId, aliceOwner } };
+    return { directories, names: { groupId, aliceOwner, damagedId } };
 }
