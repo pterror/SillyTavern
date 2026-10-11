@@ -1029,7 +1029,11 @@ impl Deriver for PositionDelete {
         dead(out, at);
         let cl = parse_loc(&v)?;
         let (create, _) = view.record(cl.pos)?;
-        sessions::branch_gone(out, id(&create, 4), b);
+        // The message it was made at may have gone before it (a following bookmark moves on), taking its entries.
+        let made_at = id(&create, 4);
+        if message_loc(view, made_at)?.is_some() {
+            sessions::branch_gone(out, made_at, b);
+        }
         dead(out, cl);
         out.del(key::id(key::POSITION, b));
         for s in [key::POSITION_NAME, key::POSITION_MODE] {
