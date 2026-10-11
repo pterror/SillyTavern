@@ -86,6 +86,18 @@ export function setAbortController(controller) {
 /** @type {Map<string, object>} */
 export const _messageSnapshots = new Map();
 
+/**
+ * The messages this page knew when it last loaded or saved the chat, as a whole save's `base`: each one's id and
+ * its alternatives' ids, in the chat's order. The server deletes only what this holds and the save leaves out.
+ * @returns {{ id: string, alternatives: string[] }[]}
+ */
+function savedBase() {
+    return [..._messageSnapshots.entries()].map(([id, msg]) => ({
+        id,
+        alternatives: (Array.isArray(msg.swipe_info) ? msg.swipe_info : []).map(info => info?.node_id).filter(isStoredNodeId),
+    }));
+}
+
 export function _snapshotMessages() {
     _messageSnapshots.clear();
     for (const msg of chat) {
@@ -2939,10 +2951,13 @@ async function postWholeChat(url, body, metadata, messages, isOpenChat) {
     const response = await fetch(url, {
         method: 'POST',
         headers: getRequestHeaders(),
-        body: JSON.stringify({ ...body, chat: [header, ...messages] }),
+        body: JSON.stringify({ ...body, chat: [header, ...messages], base: savedBase() }),
     });
     if (!response.ok) throw new Error(`${url} responded ${response.status}`);
     const answer = await response.json();
+    if (Array.isArray(answer.deletes_refused) && answer.deletes_refused.length > 0) {
+        toastr.warning(t`${answer.deletes_refused.length} message(s) or swipe(s) weren't deleted: they changed on the server since this page loaded them.`, t`Not deleted`, { preventDuplicates: true });
+    }
     if (isOpenChat) {
         const stored = (Array.isArray(answer.assigned_node_ids) ? answer.assigned_node_ids : [])
             .map((/** @type {{ index: number, node_id: string }} */ { index, node_id }) => ({ ref: storeRefOf(messages[index]), node_id }))
