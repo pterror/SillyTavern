@@ -1,6 +1,6 @@
-// The session this tab has open: a pointer into the chats, per tab, sent with every request as
-// `X-ST-Session` (`none` until the tab has one). A new tab opens the device's default session: the one most recently
-// moved by any tab on this device. A tab with none gets one when the server makes it, on its first move.
+// The session this tab has open: a pointer into the chats, per tab, sent with every request as `X-ST-Session`. A new
+// tab opens the device's default session: the one most recently moved by any tab on this device. A tab with none
+// makes its own UUID (v7) the first time it sends one; the server creates the session on its first move.
 
 const TAB_KEY = 'st:tab-session';
 const DEVICE_KEY = 'st:device-session';
@@ -52,9 +52,32 @@ export function tabSession() {
     return opened;
 }
 
-/** The `X-ST-Session` header's value. */
+/**
+ * A UUID v7: the time in ms, then random bits.
+ * @returns {string}
+ */
+export function newSessionId() {
+    const b = new Uint8Array(16);
+    globalThis.crypto.getRandomValues(b);
+    let ms = Date.now();
+    for (let i = 5; i >= 0; i--) {
+        b[i] = ms % 256;
+        ms = Math.floor(ms / 256);
+    }
+    b[6] = (b[6] & 0x0f) | 0x70;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    const h = Array.from(b, x => x.toString(16).padStart(2, '0')).join('');
+    return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+}
+
+/** The `X-ST-Session` header's value: the tab's session, made here when it has none. */
 export function sessionHeaderValue() {
-    return tabSession() ?? 'none';
+    const held = tabSession();
+    if (held !== null) return held;
+    const made = newSessionId();
+    inMemory = made;
+    write(globalThis.sessionStorage, TAB_KEY, made);
+    return made;
 }
 
 /**

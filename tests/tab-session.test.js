@@ -21,8 +21,12 @@ describe('the tab\'s session', () => {
         globalThis.sessionStorage = storage();
     };
 
-    test('a tab with none sends none, and keeps the session made on its first move, which becomes the device\'s', () => {
-        expect(sessionHeaderValue()).toBe('none');
+    test('a tab with none makes its own v7 and keeps sending it; the session moved becomes the device\'s', () => {
+        const made = sessionHeaderValue();
+        expect(made).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+        expect(sessionHeaderValue()).toBe(made);
+        newTab();
+        expect(tabSession()).toBeNull();
         sessionMoved('s1');
         expect(sessionHeaderValue()).toBe('s1');
         newTab();
@@ -47,7 +51,8 @@ describe('the tab\'s session', () => {
     test('a deleted session leaves the tab with none and stops being the device\'s default', () => {
         sessionMoved('s4');
         sessionGone();
-        expect(sessionHeaderValue()).toBe('none');
+        expect(tabSession()).toBeNull();
+        expect(sessionHeaderValue()).not.toBe('s4');
         newTab();
         expect(tabSession()).toBeNull();
     });
@@ -56,11 +61,13 @@ describe('the tab\'s session', () => {
         const broken = { getItem: () => { throw new Error('denied'); }, setItem: () => { throw new Error('denied'); }, removeItem: () => {} };
         globalThis.sessionStorage = broken;
         globalThis.localStorage = broken;
-        expect(sessionHeaderValue()).toBe('none');
+        const made = sessionHeaderValue();
+        expect(made).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+        expect(sessionHeaderValue()).toBe(made);
         sessionMoved('s5');
         expect(sessionHeaderValue()).toBe('s5');
         sessionGone();
-        expect(sessionHeaderValue()).toBe('none');
+        expect(tabSession()).toBeNull();
     });
 });
 
@@ -90,7 +97,7 @@ describe('answers about the tab\'s session', () => {
         expect(sessionHeaderValue()).toBe('s6');
         next = { [SESSION_GONE_HEADER]: '1' };
         await scope.fetch();
-        expect(sessionHeaderValue()).toBe('none');
+        expect(tabSession()).toBeNull();
         /** @type {any} */ (onAjax)(null, { getResponseHeader: (/** @type {string} */ n) => (n === SESSION_MOVED_HEADER ? 's7' : null) });
         expect(sessionHeaderValue()).toBe('s7');
     });
