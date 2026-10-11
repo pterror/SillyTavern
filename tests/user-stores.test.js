@@ -140,12 +140,26 @@ describe('user stores', () => {
         expect(after.changes).toEqual([{ id: 'Bob.png', op: 'upsert', fields: null }, { id: 'Cara.png', op: 'delete' }]);
         expect(after.seq).toBeGreaterThan(all.seq);
         expect((await s.lib.changes(after.seq, 1000)).changes).toEqual([]);
+        // The local import scan's bookkeeping: per path, written only when it changes; a duplicate's delete forgets it.
+        await s.lib.setLocalImportMtime('/in/a.png', 5.5, 'Alice.png');
+        await s.lib.setLocalImportMtime('/in/b.png', 6);
+        const end = s.lib.store.durableEnd();
+        await s.lib.setLocalImportMtime('/in/b.png', 6);
+        expect(s.lib.store.durableEnd()).toBe(end);
+        expect([...await s.lib.localImportMtimes(['/in/a.png', '/in/b.png', '/in/c.png'])]).toEqual([['/in/a.png', 5.5], ['/in/b.png', 6]]);
+        expect(await s.lib.localImportPathsAfter('/in/a.png', 10)).toEqual(['/in/b.png']);
+        await s.lib.setLocalImportSkip('/in/n.txt', 1, 'not a card');
+        expect(await s.lib.localImportSkip('/in/n.txt')).toEqual({ mtimeMs: 1, reason: 'not a card' });
+        await s.lib.clearLocalImportSkip('/in/n.txt');
+        expect(await s.lib.localImportSkip('/in/n.txt')).toBeNull();
+        await s.lib.clearLocalImportMtime('/in/b.png');
         // A character deleted without its chats leaves an unowned tree the same key adopts; with them, the tree goes.
         const [alice] = await s.people.trees([{ avatar: 'Alice.png' }]);
         const marks = async (/** @type {bigint} */ t) => (await s.chats.bookmarks({ tree: t, limit: 50 })).rows.length;
         const aliceMarks = await marks(/** @type {bigint} */ (alice));
         expect(aliceMarks).toBeGreaterThan(0);
         await s.lib.deleteEntity(0, 'Alice.png', { keepChats: true });
+        expect(await s.lib.localImportPathsAfter('', 10)).toEqual([]);
         expect((await s.lib.ids(6, ['Alice']))[0]).toBe(alice);
         await s.lib.writeCard({ root }, 'Alice.png', JSON.stringify({ name: 'Alice', data: { name: 'Alice' } }));
         expect((await s.lib.ids(0, ['Alice.png']))[0]).toBe(alice);

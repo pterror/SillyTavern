@@ -1056,3 +1056,70 @@ fn the_entity_change_feed_holds_each_entity_once_at_its_last_change() {
     drop(s);
     fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn the_local_import_records_follow_their_paths_and_a_duplicates_delete() {
+    use super::local_import;
+    let dir = temp_dir("local-import");
+    let s = Store::open_in(&dir, SMALL, pool()).unwrap();
+    s.commit_wait(vec![create(1, CHARACTER, "c1", 0)]).unwrap();
+    let mtime = |p: &str, m: Option<f64>, dup: Option<u64>| {
+        rec(
+            "localImportMtime",
+            vec![
+                text(p),
+                m.map_or(Value::Absent, Value::F64),
+                dup.map_or(Value::Absent, Value::Id),
+            ],
+        )
+    };
+    s.commit_wait(vec![
+        mtime("/a/x.png", Some(10.5), None),
+        mtime("/a/y.png", Some(11.0), Some(1)),
+        mtime("/b/z.png", Some(12.0), None),
+        rec(
+            "localImportSkip",
+            vec![
+                text("/a/n.txt"),
+                Value::F64(3.0),
+                text("not a card"),
+                Value::Time(5),
+            ],
+        ),
+    ])
+    .unwrap();
+    let paths = |after: Option<&str>| {
+        s.chat_read(|v| local_import::mtime_paths_after(v, after.map(str::as_bytes), 10))
+            .unwrap()
+            .into_iter()
+            .map(|p| String::from_utf8(p).unwrap())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(paths(None), ["/a/x.png", "/a/y.png", "/b/z.png"]);
+    assert_eq!(paths(Some("/a/x.png")), ["/a/y.png", "/b/z.png"]);
+    assert_eq!(
+        s.chat_read(|v| local_import::mtime(v, b"/a/y.png"))
+            .unwrap(),
+        Some((11.0, Some(1)))
+    );
+    assert_eq!(
+        s.chat_read(|v| local_import::skip(v, b"/a/n.txt")).unwrap(),
+        Some((3.0, b"not a card".to_vec()))
+    );
+    // Forgotten by a record with no mtime, and by its duplicate's delete.
+    s.commit_wait(vec![mtime("/a/x.png", None, None)]).unwrap();
+    s.commit_wait(vec![rec("entityDelete", vec![Value::Id(1)])])
+        .unwrap();
+    assert_eq!(paths(None), ["/b/z.png"]);
+    s.close();
+    drop(s);
+    let s = Store::open_in(&dir, SMALL, pool()).unwrap();
+    assert_eq!(
+        s.chat_read(|v| local_import::mtime_paths_after(v, None, 10))
+            .unwrap(),
+        vec![b"/b/z.png".to_vec()]
+    );
+    s.close();
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}

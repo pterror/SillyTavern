@@ -785,6 +785,31 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
+    // The local import scan's record of a source file (`localImport.directories`): processed at `mtime` (absent:
+    // forgotten), and the character it was found to duplicate, whose delete forgets it.
+    Kind {
+        name: "localImportMtime",
+        base: 235,
+        slots: &[
+            req("path", Ty::Text),
+            opt("mtime", Ty::F64),
+            opt("duplicateOf", Ty::Id(Space::Entity)),
+        ],
+        internal: false,
+    },
+    // The local import scan's skip of a source file that isn't a character: at `mtime` (absent: forgotten), why,
+    // and when it was checked.
+    Kind {
+        name: "localImportSkip",
+        base: 239,
+        slots: &[
+            req("path", Ty::Text),
+            opt("mtime", Ty::F64),
+            opt("reason", Ty::Text),
+            opt("checked", Ty::Time),
+        ],
+        internal: false,
+    },
     // Pair postings on or off (`search::pairs`): a pass builds or deletes them.
     Kind {
         name: "searchPairs",

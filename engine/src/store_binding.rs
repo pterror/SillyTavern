@@ -1554,6 +1554,37 @@ impl Store {
                         .map(JsTree)
                 })
             }
+            "localImportMtimes" => {
+                let paths = a
+                    .get::<Vec<Unknown>>("paths")?
+                    .ok_or_else(|| invalid("localImportMtimes needs paths".into()))?
+                    .into_iter()
+                    .map(|v| string("path", v))
+                    .collect::<Result<Vec<_>>>()?;
+                Box::new(move |s| {
+                    s.chat_read(|v| cr::local_import_mtimes(v, &paths))
+                        .map(JsTree)
+                })
+            }
+            "localImportSkip" => {
+                let path = string(
+                    "path",
+                    a.get::<Unknown>("path")?
+                        .ok_or_else(|| invalid("localImportSkip needs a path".into()))?,
+                )?;
+                Box::new(move |s| s.chat_read(|v| cr::local_import_skip(v, &path)).map(JsTree))
+            }
+            "localImportPaths" => {
+                let after = match a.get::<Unknown>("after")? {
+                    Some(v) => Some(string("after", v)?),
+                    None => None,
+                };
+                let limit = limit(a)?;
+                Box::new(move |s| {
+                    s.chat_read(|v| cr::local_import_paths(v, after.as_deref(), limit))
+                        .map(JsTree)
+                })
+            }
             "entityChanges" => {
                 let (after, limit) = (opt_integer(a, "after")?.unwrap_or(0), limit(a)?);
                 Box::new(move |s| {

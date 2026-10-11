@@ -831,3 +831,42 @@ pub fn library_named(view: &View, kind: u64, name: &[u8], limit: usize) -> Resul
     }
     Ok(Js::Arr(out))
 }
+
+/// The local import scan's records of `paths`: per path `{ mtime, duplicateOf }` or null.
+pub fn local_import_mtimes(view: &View, paths: &[Vec<u8>]) -> Result<Js, StoreError> {
+    Ok(Js::Arr(
+        paths
+            .iter()
+            .map(|p| {
+                Ok(match super::local_import::mtime(view, p)? {
+                    Some((m, d)) => {
+                        Js::Obj(vec![("mtime", Js::Num(m)), ("duplicateOf", opt_big(d))])
+                    }
+                    None => Js::Null,
+                })
+            })
+            .collect::<Result<Vec<_>, StoreError>>()?,
+    ))
+}
+
+/// The local import scan's skip of `path`: `{ mtime, reason }` or null.
+pub fn local_import_skip(view: &View, path: &[u8]) -> Result<Js, StoreError> {
+    Ok(match super::local_import::skip(view, path)? {
+        Some((m, r)) => Js::Obj(vec![("mtime", Js::Num(m)), ("reason", Js::Text(r))]),
+        None => Js::Null,
+    })
+}
+
+/// Up to `limit` paths with an mtime record after `after` (none: from the first), in path order.
+pub fn local_import_paths(
+    view: &View,
+    after: Option<&[u8]>,
+    limit: usize,
+) -> Result<Js, StoreError> {
+    Ok(Js::Arr(
+        super::local_import::mtime_paths_after(view, after, limit)?
+            .into_iter()
+            .map(Js::Text)
+            .collect(),
+    ))
+}
