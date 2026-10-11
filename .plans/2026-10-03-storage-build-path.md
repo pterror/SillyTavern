@@ -2819,6 +2819,15 @@ under the usual bounds; `/prepare` answers count, whether the open character is 
 `/drop` goes. Tool turns: never matched as duplicates (each tool call and result its own message); the twin rule
 applies only to a regenerated reply. A synchronous `readWorldInfoFile` before the user's store is open opens it
 synchronously (replay bounded by the buffer), then reads: no error, no empty answer.
+Stop (10-11), ninth, the twin rule's other users (nothing edited): today it runs in `appendMessages` (every append:
+openings, user and page messages, plain replies, swipes, tool turns), `editMessages`' refusal of a text a sibling
+has, `graftMessage` (takes an existing twin), the whole save's matching of id-less messages (`level().twin`), and the
+greeting dedupe (`addOpenings`, `unstoredGreetings`, `openingAlternatives`). Open: how a caller says "regenerated
+reply" (a flag per call, per message, other); whether a swipe counts or only `type: 'regenerate'`; whether
+`editMessages`' refusal is the twin rule (dropped for all, only for tool turns and then how one is recognised, kept);
+`graftMessage`'s twin kept or dropped; the whole save's matching kept or dropped (dropped: an upstream array without
+ids is stored again on every save); the greeting dedupe part of it or not; a retried generate's `opening` without the
+rule (its `refs` as send keys, the duplicate allowed, other).
 
 **Stage 5 measured against** (design §6 and §8, today = redesign 5f at 5bddd179b; harness `walrepro/measure5f.mjs`
 for today, the stage 2 harness for the engine):
