@@ -1332,6 +1332,8 @@ pub fn deriver(kind: &str) -> Option<&'static dyn Deriver> {
         "tagPass" => &tags::TagPass,
         "metaValue" => &MetaValue,
         "searchPairs" => &SearchPairs,
+        "localImportMtime" => &super::local_import::MTIME_VALUE,
+        "localImportSkip" => &super::local_import::SKIP_VALUE,
         #[cfg(any(test, feature = "measure"))]
         "testSet" => &TestSet,
         other => {

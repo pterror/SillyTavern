@@ -35,6 +35,7 @@ pub mod kinds;
 pub mod library;
 pub mod library_read;
 pub mod library_search;
+pub mod local_import;
 pub mod prune;
 pub mod searched;
 pub mod sessions;

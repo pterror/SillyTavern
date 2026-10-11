@@ -585,6 +585,80 @@ export class LibraryEngine {
         return groups.filter(g => g && tagNameKey(String(g.name)) === key).map(g => /** @type {any} */ (g).id).sort().slice(0, 2);
     }
 
+    // ---- the local import scan's bookkeeping (localImport.directories) ----
+
+    /**
+     * The mtime each source path was last processed at, for the paths that have one.
+     * @param {string[]} paths
+     * @returns {Promise<Map<string, number>>}
+     */
+    async localImportMtimes(paths) {
+        /** @type {Map<string, number>} */
+        const out = new Map();
+        if (paths.length === 0) return out;
+        const found = await this.store.chatRead('localImportMtimes', { paths });
+        paths.forEach((p, i) => {
+            if (found[i]) out.set(p, found[i].mtime);
+        });
+        return out;
+    }
+
+    /**
+     * Records that a source path was processed at `mtimeMs` (and the character it duplicates, whose delete forgets
+     * it); nothing is written when that is what is recorded.
+     * @param {string} path
+     * @param {number} mtimeMs
+     * @param {string | null} [duplicateOf] The character's avatar.
+     */
+    async setLocalImportMtime(path, mtimeMs, duplicateOf = null) {
+        const dup = duplicateOf === null ? null : (await this.ids(TYPE.character, [duplicateOf]))[0];
+        const [now] = await this.store.chatRead('localImportMtimes', { paths: [path] });
+        if (now && now.mtime === mtimeMs && (now.duplicateOf ?? null) === dup) return;
+        await this.store.commit([{ kind: 'localImportMtime', path, mtime: mtimeMs, ...(dup === null ? {} : { duplicateOf: dup }) }]);
+    }
+
+    /** @param {string} path */
+    async clearLocalImportMtime(path) {
+        const [now] = await this.store.chatRead('localImportMtimes', { paths: [path] });
+        if (now) await this.store.commit([{ kind: 'localImportMtime', path }]);
+    }
+
+    /**
+     * Up to `limit` paths with a recorded mtime after `after` ('' : from the first), in path order.
+     * @param {string} after
+     * @param {number} limit
+     * @returns {Promise<string[]>}
+     */
+    localImportPathsAfter(after, limit) {
+        return this.store.chatRead('localImportPaths', { ...(after === '' ? {} : { after }), limit });
+    }
+
+    /**
+     * @param {string} path
+     * @returns {Promise<{ mtimeMs: number, reason: string } | null>}
+     */
+    async localImportSkip(path) {
+        const found = await this.store.chatRead('localImportSkip', { path });
+        return found === null ? null : { mtimeMs: found.mtime, reason: found.reason };
+    }
+
+    /**
+     * Records a source path that isn't a character, at its mtime; nothing is written when that is recorded.
+     * @param {string} path
+     * @param {number} mtimeMs
+     * @param {string} reason
+     */
+    async setLocalImportSkip(path, mtimeMs, reason) {
+        const now = await this.localImportSkip(path);
+        if (now && now.mtimeMs === mtimeMs && now.reason === reason) return;
+        await this.store.commit([{ kind: 'localImportSkip', path, mtime: mtimeMs, reason, checked: Date.now() }]);
+    }
+
+    /** @param {string} path */
+    async clearLocalImportSkip(path) {
+        if (await this.localImportSkip(path)) await this.store.commit([{ kind: 'localImportSkip', path }]);
+    }
+
     /**
      * The chat stats list rows show of characters and groups (their trees are their ids): the newest message's time
      * and the chat size, 0 for a tree with none.

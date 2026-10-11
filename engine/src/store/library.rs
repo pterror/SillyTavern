@@ -782,6 +782,7 @@ fn delete_entity(
     }
     searched::gone(view, out, e, kind, k)?;
     tags::entity_gone(view, out, e)?;
+    super::local_import::entity_gone(view, out, e)?;
     books::touched(view, out, e, at)?;
     match kind {
         CHARACTER => books::linker_gone(view, out, e)?,
