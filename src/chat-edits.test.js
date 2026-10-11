@@ -214,6 +214,31 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         await store.close();
     });
 
+    test(`${kind}: a whole chat saved without some shown messages cuts them from this path, listing what that drops`, async () => {
+        const { store, chats, t, id, send, shown, replies } = await fresh(engine);
+        await send(null, ['g']);
+        await send('g', ['u1', 'b1', 'u2', 'b2']);
+        await chats.createBookmark({ tree: t, node_id: id.b2, name: 'end', mode: MODE.pinned, actor: a });
+        const loaded = async () => (await chats.load({ tree: t, at: (await chats.pointer(a.session))?.at ?? null })).messages;
+        // A middle message gone (upstream's deleteMessage(1)): cut from the path; the rest follows the message before.
+        const whole = await loaded();
+        const middle = await chats.saveChat({ tree: t, treeSpeaker: cara, chat: [{ chat_metadata: {} }, ...whole.filter(m => m.mes !== 'u1')], actor: a });
+        assert.equal(middle.ok, true);
+        assert.equal(middle.dropped, undefined);
+        assert.deepEqual(await shown(a), ['g', 'b1', 'u2', 'b2']);
+        assert.deepEqual(await replies('g'), ['b1']);
+        // The tail gone (`/del 2`): the pinned bookmark at b2 goes with it, and the answer names it.
+        const now = await loaded();
+        const tail = await chats.saveChat({ tree: t, treeSpeaker: cara, chat: [{ chat_metadata: {} }, ...now.slice(0, 2)], actor: a });
+        assert.deepEqual(tail.dropped?.bookmarks.map(x => x.name), ['end']);
+        assert.deepEqual(await shown(a), ['g', 'b1']);
+        assert.deepEqual(await replies('b1'), []);
+        // Another chat's array (not holding this path's opening) cuts nothing.
+        await chats.saveChat({ tree: t, treeSpeaker: cara, chat: [{ chat_metadata: {} }, msg('other')], actor: b });
+        assert.deepEqual(await shown(a), ['g', 'b1']);
+        await store.close();
+    });
+
     test(`${kind}: bookmark names are unique in a tree and a route's chat name finds them`, async () => {
         const { store, chats, t, id, send } = await fresh(engine);
         assert.equal((await chats.openingAlternatives({ tree: t, actor: a })).has_saved_chats, false);
