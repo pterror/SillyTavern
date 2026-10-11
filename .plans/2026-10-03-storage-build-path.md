@@ -2467,7 +2467,7 @@ old path:
 - Tests: suites of deleted modules go; each sub-step's tests cover its replacement (CLAUDE.md Tests: only those
   covering what changed).
 
-Status (10-11, handover): **in progress; the pre-cut pieces are landed; four fixes come before the cut ("Noticed" below), and three of them wait on a stop.** Landed before the cut, each standing
+Status (10-11, handover): **in progress; the pre-cut pieces and the four fixes ("Noticed" below) are landed; the cut itself is next.** Landed before the cut, each standing
 alone, nothing reachable until the cut mounts it (an engine store must not be made for a user whose data isn't
 converted yet, so nothing may call `userStore()` before the cut):
 - 506be7200 (5e fix): two different metadata at one message no longer stop the conversion: each is recorded there
@@ -2639,10 +2639,10 @@ Noticed (for the coordinator), answered (coordinator, 10-11) as four fixes befor
    the base it loaded (the path or version it diffed against, as world info's per-entry versions); the server diffs
    the save against that base: only messages the page knew and left out are deletes, messages appended since stay;
    a base unknown or too old to diff refuses the deleting part and says so (additions and edits kept). Tested with
-   two tabs. **Not built: stop below.**
+   two tabs. **Built** (as answered below): see "Built, fixes 1 and 2".
 2. `deleteSwipe` through a whole save (an alternative missing from `swipes`) isn't a cut and deletes nothing. Fix: an
    alternative the page knew, missing from a message's swipes, is "delete this swipe and below" for it, listed in
-   the answer as cuts are. **Not built: stop below.**
+   the answer as cuts are. **Built**: see "Built, fixes 1 and 2".
 3. A tree deleted whole (`deleteTree`) leaves state changes hanging at its root (no kind removes them). Fix: deleting
    a tree whole removes them too (the record or derivation needed added); nothing orphaned. **Built**: kind
    `rootStateClear { tree }` (base 248), written in `deleteTree`'s commit when the root holds changes. Its derivation
@@ -2664,22 +2664,32 @@ missing from the array, anything not in the base stays, a base is never too old,
 `deletes_refused` (ids with the reason) beside `dropped`, for base ids the server can't resolve; the page warns with
 the count and that nothing was deleted for those. Fix 3: a new kind, in slices (built above).
 
-Stop (10-11), second, fixes 1 and 2 (nothing of them built):
-- An alternative in the base and missing from the array whose subtree holds messages not in the base (another tab
-  or user replied below it since): "delete this swipe and below" deletes those too, which fix 1's "anything not in
-  the base stays" forbids. (a) delete the whole subtree anyway; (b) refuse that alternative's delete and list it in
-  `deletes_refused` (a reason such as `replied since`); (c) something else (e.g. delete only what the base holds,
-  the newer replies moved up). Which?
-- The session's shown path doesn't hold the base's last message (another tab on the same session moved it
-  elsewhere): which path the missing messages are cut from. (a) the base's: the session moved to the base's last
-  message first (the save then moves it to the array's end, as now), then cut; (b) cut only what is on the session's
-  path, the rest listed in `deletes_refused`.
-- A base message that resolves but is missing and not on the path cut from (moved by a graft since): listed in
-  `deletes_refused` with a reason such as `not on the path` (the answer said the field is for ids that don't
-  resolve)?
-- No base, fix 2: the alternatives "known" are every stored sibling of a shown path message the array holds (`/get`
-  shows every sibling as a swipe), so a sibling whose id the array lacks is deleted with its subtree?
-- The base's shape (proposed): `base: [{ id, alternatives }]` in the chat's order, `id` the shown message's id.
+Answered (coordinator, 10-11), the second stop; the rule: a save deletes only what the page saw and left out;
+anything someone did since that the page didn't see is never deleted by it. An alternative with a reply the page
+didn't know is refused (`replied since`); the save acts on the path the page knew (the session moved there as the
+save moves it, then the cut); a base message moved off that path is refused (`moved since`); `deletes_refused` holds
+every delete asked for and refused, with its reason; with no base every stored alternative of a message the chat
+holds counts as known; `base: [{ id, alternatives }]` in chat order.
+
+Built, fixes 1 and 2 (10-11; `ChatEngine.saveDeletes()`, `cutRuns()`, `unseenBelow()`; the page's `savedBase()` and
+warning in `generation.js`; tests in `src/chat-edits.test.js`, native and wasm):
+- `saveChat({ ..., base })`: a malformed base is `{ ok: false, reason: 'bad base' }`. With a base, an entry none of
+  whose ids the chat holds is cut from the path the page knew: the session first goes to the base's last message
+  that resolves when its shown path doesn't hold it (`goTo`), then each run is cut (`cutFromPath`, confirm `any`); an
+  entry with no resolving id is refused `unresolved`, one whose ids resolve but are off that path `moved since`. An
+  alternative id the chat lacks, of an entry it holds, goes with its subtree (`deleteSubtree` in one lane with the
+  check) unless it doesn't resolve (`unresolved`), has another parent now (`moved since`), or has below it a message
+  the base doesn't hold (`replied since`) or one the chat still holds (`kept below`, picked: the save left it in).
+  Alternatives go before cuts.
+- No base: the shown path's alternatives the chat lacks, of the shown messages it holds, go with their subtrees, then
+  the cuts as before; both only when the chat holds the path's opening.
+- The answer: `dropped` (bookmarks and state changes) and `deletes_refused: [{ node_id, reason }]`, each only when
+  non-empty. The page sends `base` from `_messageSnapshots` on every whole save (`postWholeChat`) and shows "N
+  message(s) or swipe(s) weren't deleted" when refused ones come back; the route logs both at the cut.
+- Tests: two tabs on one session (tab 1's delete of b1 cuts it, tab 2's later messages stay and follow), a base not
+  holding a shown message deleting nothing, an unresolved id, swipes (one deleted, one with a later reply refused),
+  the session moved off the page's path (the cut on the page's path), a malformed base; no base: a lacking
+  alternative deleted.
 
 **Stage 5 measured against** (design §6 and §8, today = redesign 5f at 5bddd179b; harness `walrepro/measure5f.mjs`
 for today, the stage 2 harness for the engine):

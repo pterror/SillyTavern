@@ -239,6 +239,77 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         await store.close();
     });
 
+    test(`${kind}: a save with the page's base deletes only what the page knew and left out`, async () => {
+        const { store, chats, t, id, send, shown, replies } = await fresh(engine);
+        await send(null, ['g']);
+        await send('g', ['u1', 'b1']);
+        const loaded = async () => (await chats.load({ tree: t, at: (await chats.pointer(a.session))?.at ?? null })).messages;
+        const baseOf = (/** @type {any[]} */ ms) => ms.map(m => ({ id: m.node_id, alternatives: (m.swipe_info ?? []).map((/** @type {any} */ i) => i.node_id) }));
+        const save = (/** @type {any[]} */ ms, /** @type {any} */ base, actor = a) => chats.saveChat({ tree: t, treeSpeaker: cara, chat: [{ chat_metadata: {} }, ...ms], actor, base });
+        // Tab 1 loads g u1 b1; tab 2, on the same session, sends u2 b2 below b1.
+        const tab1 = await loaded();
+        await send('b1', ['u2', 'b2']);
+        // Tab 1 deletes b1 (upstream's deleteMessage): b1 is cut, the messages tab 1 never saw stay.
+        const cut = await save(tab1.slice(0, 2), baseOf(tab1));
+        assert.equal(cut.ok, true);
+        assert.equal(cut.deletes_refused, undefined);
+        assert.deepEqual(await replies('u1'), ['u2']);
+        assert.deepEqual(await replies('u2'), ['b2']);
+        // A save whose base doesn't hold a shown message deletes nothing of it.
+        await chats.goTo({ tree: t, node_id: id.b2, actor: a });
+        const now = await loaded();
+        const unseen = await save(now.slice(0, 2), baseOf(now.slice(0, 2)));
+        assert.equal(unseen.ok, true);
+        assert.deepEqual(await replies('u2'), ['b2']);
+        // An id the base names that resolves to nothing is refused and said so.
+        const ghost = await save(now.slice(0, 2), [...baseOf(now.slice(0, 2)), { id: 'no-such-message' }]);
+        assert.deepEqual(ghost.ok && ghost.deletes_refused, [{ node_id: 'no-such-message', reason: 'unresolved' }]);
+
+        // Swipes: b3 with alternatives b3x (nothing below) and b3y (a reply tab 1 never saw).
+        await send('u2', ['b3']);
+        await send('u2', ['b3x'], b);
+        await send('u2', ['b3y', 'u9'], b);
+        await chats.goTo({ tree: t, node_id: id.b3, actor: a });
+        const swipes = await loaded();
+        const last = swipes[swipes.length - 1];
+        assert.deepEqual(last.swipe_info.map((/** @type {any} */ i) => i.node_id).sort(), [id.b2, id.b3, id.b3x, id.b3y].sort());
+        const keep = last.swipe_info.map((/** @type {any} */ i, /** @type {number} */ k) => k).filter((/** @type {number} */ k) => [id.b2, id.b3].includes(last.swipe_info[k].node_id));
+        const without = { ...last, swipes: keep.map((/** @type {number} */ k) => last.swipes[k]), swipe_info: keep.map((/** @type {number} */ k) => last.swipe_info[k]), swipe_id: keep.findIndex((/** @type {number} */ k) => last.swipe_info[k].node_id === id.b3) };
+        const swiped = await save([...swipes.slice(0, -1), without], baseOf(swipes));
+        assert.equal(swiped.ok, true);
+        assert.deepEqual(swiped.ok && swiped.deletes_refused, [{ node_id: id.b3y, reason: 'replied since' }]);
+        assert.deepEqual((await replies('u2')).sort(), ['b2', 'b3', 'b3y']);
+        assert.deepEqual(await replies('b3y'), ['u9']);
+
+        // The session moved off the page's path by another tab: the cut applies to the path the page knew.
+        const page = await loaded();
+        await chats.goTo({ tree: t, node_id: id.u9, actor: a });
+        const off = await save(page.slice(0, -1), baseOf(page));
+        assert.equal(off.ok, true);
+        assert.deepEqual((await replies('u2')).sort(), ['b2', 'b3y']);
+        assert.deepEqual(await shown(a), ['g', 'u1', 'u2']);
+
+        // A malformed base is refused whole.
+        assert.deepEqual(await save(page.slice(0, 2), [{ id: 1 }]), { ok: false, reason: 'bad base' });
+        await store.close();
+    });
+
+    test(`${kind}: a save with no base deletes the alternatives it lacks of the messages it holds (upstream's whole replace)`, async () => {
+        const { store, chats, t, id, send, replies } = await fresh(engine);
+        await send(null, ['g']);
+        await send('g', ['u1', 'b1']);
+        await send('u1', ['b1x', 'u5'], b);
+        await chats.goTo({ tree: t, node_id: id.b1, actor: a });
+        const loaded = (await chats.load({ tree: t, at: id.b1 })).messages;
+        const last = loaded[loaded.length - 1];
+        const kept = last.swipe_info.findIndex((/** @type {any} */ i) => i.node_id === id.b1);
+        const without = { ...last, swipes: [last.swipes[kept]], swipe_info: [last.swipe_info[kept]], swipe_id: 0 };
+        const saved = await chats.saveChat({ tree: t, treeSpeaker: cara, chat: [{ chat_metadata: {} }, ...loaded.slice(0, -1), without], actor: a });
+        assert.equal(saved.ok, true);
+        assert.deepEqual(await replies('u1'), ['b1']);
+        await store.close();
+    });
+
     test(`${kind}: bookmark names are unique in a tree and a route's chat name finds them`, async () => {
         const { store, chats, t, id, send } = await fresh(engine);
         assert.equal((await chats.openingAlternatives({ tree: t, actor: a })).has_saved_chats, false);

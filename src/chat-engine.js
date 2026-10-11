@@ -145,6 +145,16 @@ function producedChanges(ops, state) {
 }
 
 /**
+ * Whether `base` is a save's base: a list of `{ id, alternatives? }`, every id a string.
+ * @param {unknown} base
+ * @returns {base is SaveBase}
+ */
+function isSaveBase(base) {
+    return Array.isArray(base) && base.every(e => e && typeof e === 'object' && typeof e.id === 'string'
+        && (e.alternatives === undefined || (Array.isArray(e.alternatives) && e.alternatives.every((/** @type {unknown} */ a) => typeof a === 'string'))));
+}
+
+/**
  * A message's identity among its siblings: who said it and its text (a user's by persona, else by name).
  * @param {Record<string, any>} m
  */
@@ -271,6 +281,8 @@ function alternativeEntry(nodeId, o, itemized) {
 /**
  * @typedef {{ bookmarks: { id: string, name: string | null, node_id: string }[], changes: { id: string, key: string | number, variable: boolean, node_id: string | null }[] }} Drops
  * @typedef {{ ok: true, preview?: true, drops?: Drops } | { ok: false, reason: string, drops?: Drops }} EditAnswer
+ * @typedef {{ id: string, alternatives?: string[] }[]} SaveBase The messages a page knew, in its chat's order: each
+ * its shown message's id and its alternatives' ids.
  */
 
 export class ChatEngine {
@@ -1567,24 +1579,26 @@ export class ChatEngine {
      * speaker and text taken as that sibling), anything else stored as new; the shown alternative at each message
      * chosen; a message's `bookmark_link` a bookmark made there; the session moved to the last message; the header's
      * `chat_metadata` the state there (keys it lacks removed). A header whose `integrity` isn't the session's UUID
-     * is refused unless `force`. Shown messages the chat lacks are cut from this path first (`cutMissing()`); what that
-     * dropped is answered in `dropped`.
+     * is refused unless `force`. The deletes the chat asks for are applied first (`saveDeletes()`): what they dropped
+     * is answered in `dropped`, those refused in `deletes_refused`.
      * @param {object} p
      * @param {bigint} p.tree
      * @param {Speaker | null} p.treeSpeaker
      * @param {any[]} p.chat
      * @param {Actor} p.actor Through a session.
      * @param {boolean} [p.force]
-     * @returns {Promise<{ ok: true, integrity: string, assigned_node_ids: { index: number, node_id: string }[], dropped?: Drops } | { ok: false, reason: 'integrity' } | { empty: true }>}
+     * @param {SaveBase} [p.base] The messages the page knew; absent for a caller that isn't our page.
+     * @returns {Promise<{ ok: true, integrity: string, assigned_node_ids: { index: number, node_id: string }[], dropped?: Drops, deletes_refused?: { node_id: string, reason: string }[] } | { ok: false, reason: 'integrity' | 'bad base' } | { empty: true }>}
      */
-    async saveChat({ tree, treeSpeaker, chat, actor, force = false }) {
+    async saveChat({ tree, treeSpeaker, chat, actor, force = false, base }) {
         if (!actor.session) throw new Error('A chat is saved through a session');
         if (!Array.isArray(chat) || chat.length === 0) return { empty: true };
         const header = chat[0] ?? {};
         const incoming = header.chat_metadata?.integrity;
         if (!force && typeof incoming === 'string' && incoming !== actor.session) return { ok: false, reason: 'integrity' };
+        if (base !== undefined && !isSaveBase(base)) return { ok: false, reason: 'bad base' };
         const messages = chat.slice(1);
-        const dropped = await this.cutMissing(tree, messages, actor);
+        const { dropped, refused } = await this.saveDeletes(tree, messages, actor, base);
         const written = await this.serialized(tree, async () => {
             const records = [];
             const { user, session } = await this.actorIds(actor, records);
@@ -1680,47 +1694,165 @@ export class ChatEngine {
         return {
             ok: true, integrity: actor.session, assigned_node_ids: written.assigned.map((a, i) => ({ index: a.index, node_id: external[i] })),
             ...(dropped.bookmarks.length || dropped.changes.length ? { dropped } : {}),
+            ...(refused.length ? { deletes_refused: refused } : {}),
         };
     }
 
     /**
-     * Upstream deletes messages by saving the chat without them (`deleteMessage()`, `/del`, `/cut`): each run of the
-     * session's shown messages the saved chat lacks is cut from this path (upstream's chat files were separate, so
-     * other paths keep them), applied whatever it drops, as an upstream caller can't confirm. Only when the saved chat
-     * is this path's (it holds its opening).
+     * The deletes a whole chat's save asks for (upstream deletes by saving the chat without the messages or swipes:
+     * `deleteMessage()`, `/del`, `/cut`, `deleteSwipe()`), applied before the save stores the rest. With `base`, the
+     * messages the page knew (in its chat's order, each its shown id and its alternatives' ids), a save deletes only
+     * what the page knew and left out: a message none of whose ids the chat holds is cut from the path the page knew
+     * (`cutFromPath()`; the session first moved onto that path when it is elsewhere), and an alternative the chat
+     * lacks of a message it holds goes with what is below it (`deleteSubtree()`), unless something below it is
+     * something the page didn't know or still holds; what can't be done is refused and answered with its reason.
+     * With no base (a caller that isn't our page), upstream's whole replace: the session's shown messages the chat
+     * lacks are cut from its path, and the alternatives the chat lacks of a shown message it holds are deleted with
+     * what is below them, only when the chat is this path's (it holds its opening). Applied whatever they drop.
      * @param {bigint} tree
      * @param {any[]} messages
      * @param {Actor} actor
-     * @returns {Promise<Drops>} What the cuts dropped besides the messages.
+     * @param {SaveBase | undefined} base
+     * @returns {Promise<{ dropped: Drops, refused: { node_id: string, reason: string }[] }>}
      */
-    async cutMissing(tree, messages, actor) {
+    async saveDeletes(tree, messages, actor, base) {
         /** @type {Drops} */
         const dropped = { bookmarks: [], changes: [] };
-        const [sid] = await this.store.chatRead('ids', { space: SPACE.session, keys: [String(actor.session)] });
-        const path = sid === null ? null : await this.shownPath(tree, sid);
-        if (!path || path.length === 0) return dropped;
-        const shown = await this.externalIds(path);
+        /** @type {{ node_id: string, reason: string }[]} */
+        const refused = [];
+        const took = (/** @type {EditAnswer} */ answer, /** @type {string} */ nodeId) => {
+            if (!answer.ok) refused.push({ node_id: nodeId, reason: answer.reason });
+            else if (answer.drops) {
+                dropped.bookmarks.push(...answer.drops.bookmarks);
+                dropped.changes.push(...answer.drops.changes);
+            }
+        };
         const sent = new Set();
         for (const m of messages) {
             if (m?.node_id != null) sent.add(String(m.node_id));
             for (const info of Array.isArray(m?.swipe_info) ? m.swipe_info : []) if (info?.node_id != null) sent.add(String(info.node_id));
         }
-        if (!sent.has(shown[0])) return dropped;
+        if (base === undefined) {
+            const [sid] = await this.store.chatRead('ids', { space: SPACE.session, keys: [String(actor.session)] });
+            const path = sid === null ? null : await this.shownPath(tree, sid);
+            if (!path || path.length === 0) return { dropped, refused };
+            const shown = await this.externalIds(path);
+            if (!sent.has(shown[0])) return { dropped, refused };
+            for (const [i, id] of path.entries()) {
+                if (!sent.has(shown[i])) continue;
+                const level = await this.children(tree, i === 0 ? null : path[i - 1]);
+                const ext = await this.externalIds(level);
+                for (const [k, other] of level.entries()) {
+                    if (other === id || sent.has(ext[k])) continue;
+                    took(await this.deleteSubtree({ tree, actor, node_id: ext[k], confirm: 'any' }), ext[k]);
+                }
+            }
+            await this.cutRuns(tree, actor, shown.map(id => !sent.has(id)), took);
+            return { dropped, refused };
+        }
+        const entries = base.map(e => [...new Set([e.id, ...(e.alternatives ?? [])])]);
+        const known = new Set(entries.flat());
+        const ids = [...known];
+        const internal = await this.messageIds(ids);
+        const stored = await this.stored(internal.filter(id => id !== null));
+        /** @type {Map<string, any>} */
+        const resolved = new Map();
+        for (const [i, id] of internal.entries()) {
+            const row = id === null ? undefined : stored.get(id);
+            if (row && row.owner === tree) resolved.set(ids[i], row);
+        }
+        // Alternatives the chat lacks of the messages it holds.
+        for (const entry of entries) {
+            const held = entry.find(id => sent.has(id) && resolved.has(id));
+            if (held === undefined) continue;
+            const parent = resolved.get(held).parent;
+            for (const alt of entry) {
+                if (sent.has(alt)) continue;
+                if (!resolved.has(alt)) {
+                    refused.push({ node_id: alt, reason: 'unresolved' });
+                    continue;
+                }
+                took(await this.edit({ tree, actor, confirm: 'any' }, async () => {
+                    const s = await this.messageOf(tree, alt);
+                    if (!s) return { ok: false, reason: 'unresolved' };
+                    if (s.parent !== parent) return { ok: false, reason: 'moved since' };
+                    const below = await this.unseenBelow(tree, s.id, known, sent);
+                    return below === null ? { roots: [s.id] } : { ok: false, reason: below };
+                }), alt);
+            }
+        }
+        // Messages the chat lacks entirely: cut from the path the page knew.
+        const missing = entries.filter(entry => !entry.some(id => sent.has(id)));
+        if (missing.length === 0) return { dropped, refused };
+        const last = [...base].reverse().map(e => e.id).find(id => resolved.has(id));
+        if (last === undefined) {
+            for (const entry of missing) refused.push({ node_id: entry[0], reason: 'unresolved' });
+            return { dropped, refused };
+        }
+        const [sid] = await this.store.chatRead('ids', { space: SPACE.session, keys: [String(actor.session)] });
+        let path = sid === null ? null : await this.shownPath(tree, sid);
+        if (!path || !path.includes(resolved.get(last).id)) {
+            await this.goTo({ tree, node_id: last, actor });
+            const [moved] = await this.store.chatRead('ids', { space: SPACE.session, keys: [String(actor.session)] });
+            path = await this.shownPath(tree, moved);
+        }
+        const onPath = new Set(path ?? []);
+        /** @type {Set<bigint>} */
+        const cut = new Set();
+        for (const entry of missing) {
+            const there = entry.filter(id => resolved.has(id) && onPath.has(resolved.get(id).id));
+            if (there.length) for (const id of there) cut.add(resolved.get(id).id);
+            else refused.push({ node_id: entry[0], reason: entry.some(id => resolved.has(id)) ? 'moved since' : 'unresolved' });
+        }
+        await this.cutRuns(tree, actor, (path ?? []).map(id => cut.has(id)), took);
+        return { dropped, refused };
+    }
+
+    /**
+     * Cuts each run of the session's shown path marked in `marks` from it, the last run first.
+     * @param {bigint} tree
+     * @param {Actor} actor
+     * @param {boolean[]} marks Per message of the session's shown path, root first.
+     * @param {(answer: EditAnswer, nodeId: string) => void} took
+     */
+    async cutRuns(tree, actor, marks, took) {
+        const [sid] = await this.store.chatRead('ids', { space: SPACE.session, keys: [String(actor.session)] });
+        const path = sid === null ? null : await this.shownPath(tree, sid);
+        if (!path) return;
+        const shown = await this.externalIds(path);
         /** @type {[number, number][]} */
         const runs = [];
         for (let i = 0; i < shown.length; i++) {
-            if (sent.has(shown[i])) continue;
+            if (!marks[i]) continue;
             if (runs.length && runs[runs.length - 1][1] === i - 1) runs[runs.length - 1][1] = i;
             else runs.push([i, i]);
         }
         for (const [first, last] of runs.reverse()) {
-            const cut = await this.cutFromPath({ tree, actor, first: shown[first], last: shown[last], confirm: 'any' });
-            if (cut.ok && cut.drops) {
-                dropped.bookmarks.push(...cut.drops.bookmarks);
-                dropped.changes.push(...cut.drops.changes);
+            took(await this.cutFromPath({ tree, actor, first: shown[first], last: shown[last], confirm: 'any' }), shown[first]);
+        }
+    }
+
+    /**
+     * Why a save may not delete what is below message `m` (null: it may): a message the page didn't know (`replied
+     * since`), or one its chat still holds (`kept below`). Walks only messages the page knew.
+     * @param {bigint} tree
+     * @param {bigint} m
+     * @param {Set<string>} known
+     * @param {Set<string>} sent
+     * @returns {Promise<string | null>}
+     */
+    async unseenBelow(tree, m, known, sent) {
+        const stack = [m];
+        while (stack.length) {
+            const below = await this.children(tree, /** @type {bigint} */ (stack.pop()));
+            const ext = await this.externalIds(below);
+            for (const [i, c] of below.entries()) {
+                if (!known.has(ext[i])) return 'replied since';
+                if (sent.has(ext[i])) return 'kept below';
+                stack.push(c);
             }
         }
-        return dropped;
+        return null;
     }
 
     /**
