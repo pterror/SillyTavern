@@ -2771,7 +2771,20 @@ meaning breaks for that call); (c) answer the book as missing (silently wrong); 
 waits for replay before listening (boot waits on it); (e) other? Settled otherwise: one sync binding method reading a
 whole book by key from one snapshot, assembled by `WorldInfoEngine.assemble` under the same signature; the wasm
 build takes it on the main thread (`Atomics.wait`).
-Meanwhile the generate step runs (not touching world info).
+Generate step, part built in the tree (backends, token counts, itemized prompts, tokenizers and its tests not yet;
+the backends still call the old signatures, so generation doesn't run as the tree stands): `src/chat-request.js`
+(`chatContext`, `chatNamePosition`, `loadChatHistory`), `src/user-message-extra.js` (`sanitizeUserMessageExtra`
+moved out of `message-tree-db.js`), `page-writes.js` / `stored-messages.js` / `assistant-reply-persist.js` through
+the session, history in both generation inputs through `loadChatHistory`. Stopped on two (sixth stop):
+- A generation with a `node_id` builds its prompt with `chat_metadata = {}` today (the raw-action history from
+  `getAncestorPath()` carries none: no author's note, chat-bound lorebook, CFG keys or variables); the `branchName`
+  and empty-chat paths use the real metadata; `ChatEngine.load()` answers the state at the position. (a) the state at
+  the position (those keys start applying: the prompt changes visibly); (b) `{}` there as today?
+- A generate request with `node_id` null or absent in a tree that has messages is refused today
+  (`chatResolutionAmbiguous`, a tested guard against a stale caller picking a leaf). After "new chat" the session is
+  at the root, and a card with no greeting sends no `opening`, so a real first send comes with `node_id` null. (a)
+  null is the root (empty history); (b) keep the guard (a new chat without a greeting can't send); (c) null only when
+  the request's session is at the root, refused otherwise?
 
 **Stage 5 measured against** (design §6 and §8, today = redesign 5f at 5bddd179b; harness `walrepro/measure5f.mjs`
 for today, the stage 2 harness for the engine):
