@@ -2278,7 +2278,8 @@ How it runs:
 | a state change's time | the run's time | the author is `migration`; when the metadata was first set isn't stored |
 | message ids | per owner in (created_at, id) order, above any decimal old id | siblings keep their order; a new id never equals an old one |
 | bookmark order and suffixes | labels by (created_at, id), then the dropped chats; a repeated name `name (1)`... | the old chat list's order; names unique per tree |
-| what blocks the apply | an unreadable card or message, rows no anchor reaches, two metadata at one place that differ, an owner two entities read | anything else is converted or listed |
+| what blocks the apply | an unreadable card or message, rows no anchor reaches, an owner two entities read | anything else is converted or listed |
+| two metadata at one place that differ (corrected, coordinator, 10-11: they used to block) | each recorded there in label order (rows by (created_at, id), then the dropped chats), so the last one's values read and the earlier ones stay in the state history; the overridden keys listed (label ids, keys) | stopping would block the conversion; nothing is lost |
 | the check | a second read of everything after the writes | each value read back through the readers the server uses |
 | chats | a bulk load, partitioned by owner | through commits the 20k-card set's 168k messages took 92 s (1.8k a second, the commit path's derivation serial); the load 14 s, and fewer bytes written (one merge, no tiered merges) |
 

@@ -505,6 +505,7 @@ export async function convert(o) {
                 for (const name of plan.unsettled) warn(report, 'bookmark names nothing classified (made following)', `${t.kind} ${ownerId}: ${name}`);
                 if (plan.activeUnresolved) warn(report, 'active chats that name nothing in the tree (no pointer)', `${t.kind} ${ownerId}`);
                 if (plan.strayDefaults.length) warn(report, 'default children that aren\'t one of their message\'s replies (no fork choice)', `${t.kind} ${ownerId}: ${plan.strayDefaults.join(', ')}`);
+                for (const s of plan.overrides) warn(report, 'chat metadata a later chat at the same message overrides (both recorded there, the later one read)', `${t.kind} ${ownerId} at ${s.at ?? 'the root'} (${s.earlier} -> ${s.later}): keys ${s.keys.map(k => `${k.slice(2)}${k.startsWith('v') ? ' (variable)' : ''}`).join(', ')}`);
                 for (const s of plan.shadows) warn(report, 'chat metadata a deeper chat\'s shadows below it (each kept at its own message)', `${t.kind} ${ownerId} at ${s.at ?? 'the root'} (${s.sources.join(', ')}): key ${s.key.slice(2)}${s.key.startsWith('v') ? ' (variable)' : ''}, ${s.upper} -> ${s.lower ?? 'removed'}`);
                 const fileItemizations = new Map();
                 for (const fp of itemizedByOwner.get(ownerId) ?? []) for (const [node, entry] of itemizedEntries(itemizedDir, fp)) fileItemizations.set(node, entry);

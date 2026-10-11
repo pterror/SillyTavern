@@ -156,6 +156,50 @@ describe('convert-to-engine', () => {
         }
     });
 
+    test('two chats\' different metadata at one message are both recorded there, the later one read, the overridden keys listed', async () => {
+        const dataRoot = await oldUser();
+        const root = path.join(dataRoot, 'u');
+        // The duplicate group chat ends on the group chat's last message; give that message metadata of its own, other
+        // than the duplicate's. In label order the message's own comes first, the dropped chat's after it.
+        const db = new Database(path.join(root, 'message-tree.sqlite'));
+        const end = db.prepare('SELECT id FROM messages WHERE owner_id = ? AND json_extract(content, \'$.mes\') = ?').get('1700000000001', 'Hey all.');
+        db.prepare('UPDATE messages SET metadata = ? WHERE id = ?').run(JSON.stringify({ note_prompt: 'Row note.', variables: { y: 2 } }), end.id);
+        db.close();
+        const twin = path.join(root, 'group chats', 'Dropped twin.jsonl.pre-migration');
+        const lines = fs.readFileSync(twin, 'utf8').split('\n');
+        lines[0] = JSON.stringify({ ...JSON.parse(lines[0]), chat_metadata: { __is_group: true, note_prompt: 'Twin note.', variables: { x: 1 } } });
+        fs.writeFileSync(twin, lines.join('\n'));
+
+        const dry = await run(dataRoot, { apply: false, serverStopped: false });
+        expect(dry.code).toBe(0);
+        expect(dry.text).toContain('WARNING: chat metadata a later chat at the same message overrides (both recorded there, the later one read): 1');
+        expect(dry.text).toContain(`group 1700000000001 at ${end.id} (${end.id} -> Dropped twin): keys note_prompt, y (variable)`);
+        expect(dry.text).not.toContain('Twin note.');
+        expect(dry.text).not.toContain('Row note.');
+
+        const applied = await run(dataRoot, { apply: true, serverStopped: true });
+        expect(applied.text).not.toContain('PROBLEM');
+        expect(applied.code).toBe(0);
+        const { LibraryEngine } = await import('../src/library-engine.js');
+        const { ChatEngine } = await import('../src/chat-engine.js');
+        const { libraryPeople } = await import('../src/chat-people.js');
+        const lib = await LibraryEngine.open(engine, path.join(root, convert.STORE_DIR));
+        try {
+            const people = libraryPeople(lib);
+            const chats = await ChatEngine.open(lib.store, people);
+            const [group] = await people.trees([{ group: '1700000000001' }]);
+            const [at] = await lib.store.chatRead('ids', { space: 0, keys: [end.id] });
+            expect(await chats.metadata(group, at)).toEqual({ note_prompt: 'Twin note.', variables: { x: 1 } });
+            // The earlier chat's change stays in the history there: reverting the later ones reads it again.
+            const changes = await lib.store.chatRead('activeChanges', { message: at });
+            expect(changes.length).toBe(6);
+            for (const c of changes.slice(3)) expect((await chats.revertChange({ change: String(c.id), actor: { user: 'u' } })).ok).not.toBe(false);
+            expect(await chats.metadata(group, at)).toEqual({ note_prompt: 'Row note.', variables: { y: 2 } });
+        } finally {
+            await lib.close();
+        }
+    });
+
     test('a message that can\'t be read stops the apply, which leaves nothing', async () => {
         const dataRoot = await oldUser();
         const root = path.join(dataRoot, 'u');
