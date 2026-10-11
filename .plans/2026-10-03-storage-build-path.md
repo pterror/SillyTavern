@@ -2812,6 +2812,13 @@ Characters step (nothing of it edited yet), stopped on two (eighth stop):
   (filter, sort, all, ranges, include, exclude) and `/bulk/run`, `/ids`, `/mutual-tags` walk it on the server with no
   job table (`/prepare` answers only `count`, `containsCurrent`, `sample`, `missing`; `/drop` goes); (b) explicit ids
   only (breaks the Scale rule for large selections); (c) other?
+Answered (coordinator, 10-11): avatars (b): a file goes once no card's avatar hash names it, checked in the delete's
+or edit's serialized write (a hard-linked old PNG in `characters/` is untouched; only the store's link goes). Bulk
+(a): the selection is a description the page keeps; the server walks it for `/bulk/run`, `/ids`, `/mutual-tags`
+under the usual bounds; `/prepare` answers count, whether the open character is in it, a sample and missing ids;
+`/drop` goes. Tool turns: never matched as duplicates (each tool call and result its own message); the twin rule
+applies only to a regenerated reply. A synchronous `readWorldInfoFile` before the user's store is open opens it
+synchronously (replay bounded by the buffer), then reads: no error, no empty answer.
 
 **Stage 5 measured against** (design §6 and §8, today = redesign 5f at 5bddd179b; harness `walrepro/measure5f.mjs`
 for today, the stage 2 harness for the engine):
