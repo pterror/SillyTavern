@@ -114,6 +114,15 @@ describe('user stores', () => {
         const groupStats = (await s.lib.chatStats([/** @type {bigint} */ (groupId)])).get(/** @type {bigint} */ (groupId));
         expect(groupStats?.chat_size).toBeGreaterThan(0);
         expect(groupStats?.date_last_chat).toBeGreaterThan(0);
+        // findChar()'s library-wide half: an avatar wins, names compare as compareIgnoreCaseAndAccents() or exactly.
+        expect(await s.lib.findCharacters({ name: 'alice' })).toEqual({ ids: ['Alice.png'], capped: false });
+        expect(await s.lib.findCharacters({ name: 'alice', insensitive: false })).toEqual({ ids: [], capped: false });
+        expect(await s.lib.findCharacters({ name: 'Bob' })).toEqual({ ids: ['Bob.png'], capped: false });
+        expect(await s.lib.findCharacters({ name: 'Alice', tags: ['Blue'] })).toEqual({ ids: [], capped: false });
+        expect(await s.lib.findCharacters({ tags: ['Red'] })).toEqual({ ids: ['Alice.png', 'Bob.png'], capped: false });
+        expect(await s.lib.findCharacters({ tags: ['Nope'] })).toEqual({ ids: [], capped: false });
+        expect(await s.lib.findGroups('PARTY')).toEqual(['1700000000001']);
+        expect(await s.lib.findGroups('Nobody')).toEqual([]);
         // The change feed: every character once; a change moves it to the end; a delete is answered as one.
         const all = await s.lib.changes(0, 1000);
         expect(all.changes.filter(c => c.op === 'upsert').map(c => c.id).sort()).toEqual(['Alice.png', 'Bob.png', 'Cara.png']);

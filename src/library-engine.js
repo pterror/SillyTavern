@@ -11,7 +11,7 @@ import { FIELD, TAG_KEY_PREFIX, TYPE } from './library-codes.js';
 import { bookKey } from './world-info-keys.js';
 import { LIBRARY_LABELS, searchClauses } from './search-clauses.js';
 import { SLOT, WorldInfoEngine, isEntryList } from './world-info-engine.js';
-import { groupDigestContentHash, groupDigestFavHash, groupDigestTagIdsHash, normalizeFav, normalizeTagIds } from '../public/scripts/hash-utils.js';
+import { groupDigestContentHash, groupDigestFavHash, groupDigestTagIdsHash, normalizeFav, normalizeTagIds, tagNameKey } from '../public/scripts/hash-utils.js';
 
 /**
  * The library on the engine: characters, groups and tags as entities whose values are the engine's records.
@@ -220,6 +220,9 @@ export function groupObject(entity) {
     }
     return group;
 }
+
+/** Entities `findCharacters()` reads at most before it answers with what it found. */
+export const FIND_WORK_CAP = 20000;
 
 /**
  * The library of one user's store.
@@ -510,6 +513,76 @@ export class LibraryEngine {
         }
         const last = page.entries.length ? Number(page.entries[page.entries.length - 1].pos) : null;
         return { seq: last ?? Math.max(Math.trunc(sinceSeq), Number(page.end)), changes, truncated: false, hasMore: page.more };
+    }
+
+    /**
+     * The library-wide half of the page's `findChar()` (`/api/characters/find`): the characters it would match if
+     * every one were held. An avatar key (with or without `.png`) wins; else the name compares as
+     * `compareIgnoreCaseAndAccents()` (`insensitive`) or exactly; with `tags`, a character must carry a tag of each
+     * name, compared exactly. At most two avatars in avatar order, the first `findChar()`'s answer, a second meaning
+     * more than one matched; `capped` when `FIND_WORK_CAP` entities were read before two matched.
+     * @param {{ name?: string | null, allowAvatar?: boolean, insensitive?: boolean, tags?: string[] | null }} q
+     * @returns {Promise<{ ids: string[], capped: boolean }>}
+     */
+    async findCharacters({ name = null, allowAvatar = true, insensitive = true, tags = null }) {
+        const hasName = typeof name === 'string' && name !== '';
+        const tagNames = Array.isArray(tags) && tags.length > 0 ? tags.map(String) : null;
+        /** @type {string[]} The wanted tags' keys, a tag of each name. */
+        let tagKeys = [];
+        /** @type {(bigint | null)[]} */
+        let wanted = [];
+        if (tagNames) {
+            const byName = new Map((await this.tags.findByNames(tagNames)).map(f => [f.name, f.tag]));
+            const tags = tagNames.map(n => byName.get(n));
+            if (tags.some((t, i) => !t || t.name !== tagNames[i])) return { ids: [], capped: false };
+            tagKeys = tags.map(t => /** @type {{ id: string }} */ (t).id);
+            wanted = await this.ids(TYPE.tag, tagKeys);
+            if (wanted.some(t => t === null)) return { ids: [], capped: false };
+        }
+        /** @param {bigint[]} ids */
+        const withTags = async ids => {
+            if (!tagNames || ids.length === 0) return ids;
+            const carried = await this.store.libraryTagIds(ids);
+            return ids.filter((_, i) => wanted.every(t => (carried[i] ?? []).includes(t)));
+        };
+        if (allowAvatar && hasName) {
+            for (const avatar of name.endsWith('.png') ? [name] : [name, `${name}.png`]) {
+                const [id] = await this.ids(TYPE.character, [avatar]);
+                if (id !== null && (await withTags([id])).length > 0) return { ids: [avatar], capped: false };
+            }
+        }
+        if (hasName) {
+            const nameKey = tagNameKey(name);
+            const candidates = await this.store.chatRead('libraryNamed', { type: TYPE.character, name, limit: FIND_WORK_CAP + 1 });
+            const capped = candidates.length > FIND_WORK_CAP;
+            const read = candidates.slice(0, FIND_WORK_CAP);
+            const entities = await this.entities(read.map((/** @type {any} */ c) => c.id), { fields: [FIELD.name], lists: [] });
+            const named = entities.filter(e => {
+                if (!e) return false;
+                const v = e.values.find(x => x.field === FIELD.name);
+                const candidate = v === undefined ? '' : String(v.text !== undefined ? v.text : JSON.parse(/** @type {string} */ (v.json)));
+                return insensitive && candidate !== '' ? tagNameKey(candidate) === nameKey : candidate === name;
+            }).map(e => /** @type {StoredEntity} */ (e));
+            const kept = new Set(await withTags(named.map(e => e.id)));
+            const found = named.filter(e => kept.has(e.id)).map(e => e.key).sort();
+            return { ids: found.slice(0, 2), capped: capped && found.length < 2 };
+        }
+        const page = await this.query({ tags: tagNames ? { include: tagKeys } : undefined, sortField: 'name', sortOrder: 'asc', limit: FIND_WORK_CAP, wantRows: false, wantHashes: true, groupsOnly: false, includeGroups: false });
+        const found = /** @type {{ id: string }[]} */ (page.hashRows).map(r => r.id).sort();
+        return { ids: found.slice(0, 2), capped: Boolean(page.more) && found.length < 2 };
+    }
+
+    /**
+     * The groups whose name compares equal to `name` as `compareIgnoreCaseAndAccents()` does, at most two, in id
+     * order.
+     * @param {string} name
+     * @returns {Promise<string[]>}
+     */
+    async findGroups(name) {
+        const key = tagNameKey(String(name));
+        const candidates = await this.store.chatRead('libraryNamed', { type: TYPE.group, name: String(name), limit: FIND_WORK_CAP });
+        const groups = await this.groups((await this.store.libraryKeys(candidates.map((/** @type {any} */ c) => c.id))).filter(Boolean).map((/** @type {any} */ k) => k.key));
+        return groups.filter(g => g && tagNameKey(String(g.name)) === key).map(g => /** @type {any} */ (g).id).sort().slice(0, 2);
     }
 
     /**
