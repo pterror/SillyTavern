@@ -770,15 +770,15 @@ fn a_field_edit_writes_only_its_changed_terms_and_other_kinds_write_no_postings(
         ],
     )])
     .unwrap();
-    // Plus the text's head, its edit and the entity's version.
-    assert_eq!(inserted(&s) - before, 2 * 3 + 1 + 3);
+    // Plus the text's head, its edit and the entity's version, and its entry in the entity change feed moving.
+    assert_eq!(inserted(&s) - before, 2 * 3 + 1 + 3 + 2);
     let before = inserted(&s);
     s.commit_wait(vec![assign(7, 1, true)]).unwrap();
     s.commit_wait(vec![rec("fav", vec![Value::Id(7), Value::Bit(true)])])
         .unwrap();
     // Membership both ways, its block map and a count; the entity's place in the assignment change feed and
-    // the pointer to it; the fav and the version.
-    assert_eq!(inserted(&s) - before, 4 + 2 + 2);
+    // the pointer to it; the fav and the version, and the entity change feed's entry moving.
+    assert_eq!(inserted(&s) - before, 4 + 2 + 2 + 2);
     for e in 100..150 {
         s.commit_wait(vec![assign(e, 1, true)]).unwrap();
     }
@@ -790,8 +790,8 @@ fn a_field_edit_writes_only_its_changed_terms_and_other_kinds_write_no_postings(
     // A rename writes the tag's own name terms, whatever number of entities carry it: "re" and "red" go,
     // "bl", "blu" and "blue" come (posting slot, document counter and prefix frequency each, a block maximum
     // for the new ones, and a whole-token frequency for "red" and "blue"); plus the text's head, version, and
-    // the old value's dead bytes.
-    assert_eq!(inserted(&s) - before, 5 * 3 + 3 + 2 + 3);
+    // the old value's dead bytes, and the entity change feed's entry moving.
+    assert_eq!(inserted(&s) - before, 5 * 3 + 3 + 2 + 3 + 2);
 }
 
 #[test]
