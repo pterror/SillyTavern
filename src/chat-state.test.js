@@ -119,6 +119,24 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
             [[{ key: 'took', variable: true, value: 'true' }]]);
     });
 
+    test(`${kind}: a continue's state changes hang on the reply it continues, with the continue`, async () => {
+        const { chats, t, at } = await open(engine);
+        const reply = { name: 'Cara', is_user: false, mes: 'You find', extra: {} };
+        const [r] = (await chats.appendMessages({ tree: t, treeSpeaker: cara, after: at, contents: [reply], changes: [[{ key: 'gold', variable: true, value: 1 }]], actor: tabA })).node_ids;
+        const [id] = await chats.messageIds([r]);
+        const continued = { ...reply, mes: 'You find a coin.' };
+        const edited = await chats.editMessages({ tree: t, treeSpeaker: cara, edits: [{ node_id: r, content: continued, changes: [{ key: 'gold', variable: true, value: 2 }, { key: 'scene', value: 'road' }] }], actor: tabA });
+        assert.deepEqual(edited, { ok: true, applied: 1, refused: [] });
+        assert.deepEqual((await chats.stateAt({ tree: t, at: r })).state, { variables: { gold: 2 }, scene: 'road' });
+        assert.deepEqual(await chats.store.chatRead('produced', { messages: [id] }),
+            [[{ key: 'gold', variable: true, value: '1' }, { key: 'gold', variable: true, value: '2' }, { key: 'scene', variable: false, value: '"road"' }]]);
+        // A refused edit records none of its changes.
+        const head = await chats.store.chatRead('nextIds', {});
+        const refused = await chats.editMessages({ tree: t, treeSpeaker: cara, edits: [{ node_id: r, content: { ...reply, mes: '' }, changes: [{ key: 'gold', variable: true, value: 3 }] }], actor: tabA });
+        assert.equal(refused.refused.length, 1);
+        assert.equal((await chats.store.chatRead('nextIds', {})).change, head.change);
+    });
+
     test(`${kind}: two pages' per-variable changes merged by the engine leave each page's change`, async () => {
         const { chats, t, at, state } = await open(engine);
         const page = async () => {
