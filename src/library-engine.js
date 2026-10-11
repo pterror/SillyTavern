@@ -486,6 +486,21 @@ export class LibraryEngine {
     }
 
     /**
+     * The chat stats list rows show of characters and groups (their trees are their ids): the newest message's time
+     * and the chat size, 0 for a tree with none.
+     * @param {bigint[]} ids
+     * @returns {Promise<Map<bigint, { date_last_chat: number, chat_size: number }>>}
+     */
+    async chatStats(ids) {
+        /** @type {Map<bigint, { date_last_chat: number, chat_size: number }>} */
+        const out = new Map();
+        if (ids.length === 0) return out;
+        const { owners } = await this.store.chatRead('stats', { owners: ids });
+        ids.forEach((id, i) => out.set(id, { date_last_chat: owners[i]?.lastAt ?? 0, chat_size: owners[i]?.chatSize ?? 0 }));
+        return out;
+    }
+
+    /**
      * @param {string} avatar
      * @param {boolean} allowed
      * @returns {Promise<boolean>} Whether there is such a character.
@@ -714,6 +729,7 @@ export class LibraryEngine {
      */
     async listRows(entities, includeCreatorNotes) {
         const tagKeys = await this.tagKeys(entities);
+        const stats = await this.chatStats(entities.map(e => e.id));
         return entities.map((e, i) => {
             const card = assembleCard(cardParts(e));
             const values = cardListValues(card, includeCreatorNotes);
@@ -724,8 +740,8 @@ export class LibraryEngine {
             row.fav = e.fav;
             row.date_added = e.added;
             if (values.create_date !== undefined) row.create_date = values.create_date;
-            row.date_last_chat = 0;
-            row.chat_size = 0;
+            row.date_last_chat = stats.get(e.id)?.date_last_chat ?? 0;
+            row.chat_size = stats.get(e.id)?.chat_size ?? 0;
             row.data_size = e.dataSize ?? 0;
             if (values.tags !== undefined) row.tags = values.tags;
             row.tag_ids = tagKeys[i];
@@ -860,8 +876,10 @@ export class LibraryEngine {
         // A group deleted between the two reads is gone, as one deleted before the first.
         const entities = pageEntities.filter(e => e.type !== TYPE.group || groupOf.has(e.id));
         const groupTags = new Map((await this.tagKeys(groups)).map((t, i) => [groups[i].id, t]));
+        const stats = await this.chatStats(entities.map(e => e.id));
+        const statsOf = (/** @type {bigint} */ id) => stats.get(id) ?? { date_last_chat: 0, chat_size: 0 };
         if (wantHashes) {
-            const hashRows = entities.map(e => this.hashRow(groupOf.get(e.id) ?? e, groupTags.get(e.id) ?? []));
+            const hashRows = entities.map(e => this.hashRow(groupOf.get(e.id) ?? e, groupTags.get(e.id) ?? [], statsOf(e.id)));
             return { ...out, rows: undefined, hashRows, ...(await hiddenOf(hashRows.length)) };
         }
         if (!wantRows) return { ...out, rows: undefined, hashRows: undefined, ...(await hiddenOf(0)) };
@@ -872,10 +890,9 @@ export class LibraryEngine {
             id: e.key,
             fav: e.fav,
             date_added: e.added,
-            date_last_chat: 0,
-            chat_size: 0,
+            ...statsOf(e.id),
             item: e.type === TYPE.group
-                ? { ...groupObject(groupOf.get(e.id) ?? e), fav: e.fav, date_added: e.added, date_last_chat: 0, chat_size: 0, tag_ids: groupTags.get(e.id) ?? [] }
+                ? { ...groupObject(groupOf.get(e.id) ?? e), fav: e.fav, date_added: e.added, ...statsOf(e.id), tag_ids: groupTags.get(e.id) ?? [] }
                 : listRows.get(e.id) ?? null,
         }));
         return { ...out, hashRows: undefined, rows, ...(await hiddenOf(rows.length)) };
@@ -886,16 +903,17 @@ export class LibraryEngine {
      * the digests of what `groups()` answers for it.
      * @param {StoredEntity} e
      * @param {string[]} tagKeys A group's tag keys.
+     * @param {{ date_last_chat: number, chat_size: number }} stats
      */
-    hashRow(e, tagKeys) {
+    hashRow(e, tagKeys, stats) {
         const row = {
             id: e.key,
             isGroup: e.type === TYPE.group,
             chat: null,
             date_added: e.added,
             create_date: e.type === TYPE.group ? e.added : (e.createMs ?? null),
-            date_last_chat: 0,
-            chat_size: 0,
+            date_last_chat: stats.date_last_chat,
+            chat_size: stats.chat_size,
             data_size: e.dataSize ?? 0,
             // A renamed or deleted lorebook changes what the card reads as.
             version: e.type === TYPE.group ? null : Number(e.link && e.link.version > e.version ? e.link.version : e.version),
