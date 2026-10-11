@@ -218,13 +218,14 @@ export function planOwner(input) {
  * @property {Map<string, import('../../chat-codec.js').Speaker>} speakers Characters by avatar.
  * @property {(json: string, where: string, records: object[]) => string} link A `world_info` value's JSON as recorded (a
  * link to its book; `records` gets the create of an unresolved name made for it).
- * @property {(records: object[]) => Promise<void>} commit
+ * @property {(records: object[]) => Promise<void>} load Adds to the bulk load holding the messages.
  */
 
 /**
  * The counts of what an owner's conversion wrote.
- * @typedef {{ messages: number, bookmarks: number, rootBookmarks: number, changes: number, forks: number, itemizations: number, sendKeys: number, badSendKeys: string[], tokenCounts: number, sessions: number, unreadable: string[] }} OwnerCounts
- * `unreadable`: messages whose stored JSON can't be read (nothing of the owner is written past the first).
+ * @typedef {{ messages: number, bookmarks: number, rootBookmarks: number, changes: number, forks: number, itemizations: number, sendKeys: number, badSendKeys: string[], tokenCounts: number, sessions: number, unreadable: string[], later: object[] }} OwnerCounts
+ * `unreadable`: messages whose stored JSON can't be read (nothing of the owner is written past the first); `later`: the
+ * session's records, committed once the bulk load holding the messages is in place.
  */
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -244,7 +245,7 @@ export async function writeOwner(ctx, input, plan, tree, fileItemizations) {
     const { db, ownerId } = input;
     const { model } = plan;
     /** @type {OwnerCounts} */
-    const counts = { messages: 0, bookmarks: 0, rootBookmarks: 0, changes: 0, forks: 0, itemizations: 0, sendKeys: 0, badSendKeys: [], tokenCounts: 0, sessions: 0, unreadable: [] };
+    const counts = { messages: 0, bookmarks: 0, rootBookmarks: 0, changes: 0, forks: 0, itemizations: 0, sendKeys: 0, badSendKeys: [], tokenCounts: 0, sessions: 0, unreadable: [], later: [] };
     /** @type {Map<string, bigint>} */
     const ids = new Map();
     for (const r of model.sorted) {
@@ -275,7 +276,6 @@ export async function writeOwner(ctx, input, plan, tree, fileItemizations) {
         if (!itemized.has(node)) itemized.set(node, { data: zlib.zstdCompressSync(Buffer.from(JSON.stringify(entry))), raw: Boolean(entry.rawPrompt) });
     }
 
-    const commit = ctx.commit;
 
     // Messages, parents first, a batch at a time.
     const messages = model.order.filter(r => r.parent !== null);
@@ -309,10 +309,11 @@ export async function writeOwner(ctx, input, plan, tree, fileItemizations) {
             counts.messages++;
         }
         if (counts.unreadable.length) return counts;
-        await commit(records);
+        await ctx.load(records);
     }
 
     // State changes, an ancestor's first.
+    /** @type {object[]} */
     const records = [];
     for (const s of plan.states) {
         const where = s.at === null ? { tree: tree.id } : { message: idOf(s.at) };
@@ -330,33 +331,35 @@ export async function writeOwner(ctx, input, plan, tree, fileItemizations) {
             counts.changes++;
         }
     }
+    if (records.length) await ctx.load(records);
+    // The session's records come after the load, which they name messages of.
+    const later = counts.later;
 
     const needsSession = plan.bookmarks.length > 0 || plan.forks.length > 0 || plan.pointer !== null || input.openingChoice !== null;
     if (needsSession) {
         const session = ctx.ids.position++;
         counts.sessions++;
-        records.push({ kind: 'keyMap', session, key: Buffer.from(defaultSessionKey(ctx.handle, tree.id), 'utf8') });
+        later.push({ kind: 'keyMap', session, key: Buffer.from(defaultSessionKey(ctx.handle, tree.id), 'utf8') });
         for (const f of plan.forks) {
-            records.push({ kind: 'forkSelection', ...(f.at === null ? {} : { message: idOf(f.at) }), reply: idOf(f.reply), session, user });
+            later.push({ kind: 'forkSelection', ...(f.at === null ? {} : { message: idOf(f.at) }), reply: idOf(f.reply), session, user });
             counts.forks++;
         }
         if (plan.pointer !== null) {
-            records.push(plan.pointer.at === null
+            later.push(plan.pointer.at === null
                 ? { kind: 'pointerRoot', session, user, tree: tree.id }
                 : { kind: 'pointerMove', session, user, target: idOf(plan.pointer.at) });
         }
-        if (input.openingChoice !== null) records.push({ kind: 'openingChoice', session, user, tree: tree.id, index: input.openingChoice });
+        if (input.openingChoice !== null) later.push({ kind: 'openingChoice', session, user, tree: tree.id, index: input.openingChoice });
         for (const b of plan.bookmarks) {
             const id = ctx.ids.position++;
-            records.push(b.at === null
+            later.push(b.at === null
                 ? { kind: 'positionRoot', id, mode: b.mode, session, user, tree: tree.id }
                 : { kind: 'positionCreate', id, mode: b.mode, session, user, pointer: idOf(b.at) });
-            records.push({ kind: 'positionName', id, name: b.name });
+            later.push({ kind: 'positionName', id, name: b.name });
             counts.bookmarks++;
             if (b.at === null) counts.rootBookmarks++;
         }
     }
-    if (records.length) await commit(records);
     return counts;
 }
 

@@ -64,7 +64,11 @@ export class Sink {
         this.count(records);
         this.loaded += records.length;
         if (!this.store) return;
-        this.load ??= this.store.load();
+        if (!this.load) {
+            // A load refuses records sharing a partition with commits made while it runs: none are in flight.
+            await this.flush();
+            this.load = this.store.load();
+        }
         for (const r of records) this.loadBatch.push(r);
         if (this.loadBatch.length >= LOAD_RECORDS) await this.flushLoad();
     }

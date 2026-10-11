@@ -39,7 +39,7 @@ use super::{Inner, Loading, Store, StoreError, StoreResult};
 use crate::keyspace::cache::Cache;
 use crate::keyspace::run::{Merge, ReadCounts, Run, RunIter, RunWriter, Source};
 use crate::keyspace::val::Val;
-use crate::log::format::Record;
+use crate::log::format::{Record, Value};
 use crate::log::{self, Cursor, Layout, TailFile};
 
 /// Memory the workers' buffers take together before spilling.
@@ -123,6 +123,8 @@ pub struct Loader {
     lists: bool,
     /// The store had no characters or groups when the load started: a load of some numbers them.
     library_empty: bool,
+    /// Each message this load appends, and its owner (`message_partition`).
+    owners: HashMap<u64, u64>,
     /// Tests stop the install as a crash would: 1 after the marker, 2 after the files moved, 3 after the
     /// numberings' run.
     #[cfg(test)]
@@ -198,6 +200,7 @@ impl Store {
             keep_staging: false,
             lists,
             library_empty,
+            owners: HashMap::new(),
             #[cfg(test)]
             fail_at: 0,
         })
@@ -266,7 +269,10 @@ impl Loader {
                     rec.kind.name
                 )));
             }
-            let partition = d.partition(&rec);
+            let partition = match self.message_partition(&rec) {
+                Some(owner) => owner,
+                None => d.partition(&rec),
+            };
             let (pos, len) = self.layout.record(&rec);
             self.batch.push((rec, Loc { pos, len }, partition));
             self.stats.records += 1;
@@ -280,6 +286,34 @@ impl Loader {
             }
         }
         Ok(())
+    }
+
+    /// The partition of a record about a message this load appends: its owner's, where the append and everything
+    /// else of the message (its values, times, key, itemization, state changes) and of its tree is derived in order.
+    /// A record about a tree's root (a state change there) is the tree's. None: the kind's own partition.
+    fn message_partition(&mut self, rec: &Record) -> Option<u64> {
+        use crate::log::format::{Space, Ty};
+        if rec.kind.name == "messageAppend" {
+            let (m, owner) = (
+                super::kinds::id(rec, super::chat::APPEND_ID),
+                super::kinds::id(rec, super::chat::APPEND_OWNER),
+            );
+            self.owners.insert(m, owner);
+            return Some(owner);
+        }
+        for (slot, v) in rec.kind.slots.iter().zip(&rec.values) {
+            let message = match (slot.ty, v) {
+                (Ty::Id(Space::Message), Value::Id(m)) => *m,
+                (Ty::Sel(spaces), Value::Sel(i, id)) => match spaces.get(*i as usize) {
+                    Some((Space::Message, _)) => *id,
+                    Some((Space::Entity, _)) if rec.kind.name == "stateChange" => return Some(*id),
+                    _ => continue,
+                },
+                _ => continue,
+            };
+            return self.owners.get(&message).copied();
+        }
+        None
     }
 
     /// Ends the open file's group, writes and syncs it in the staging directory, and hands its records to the

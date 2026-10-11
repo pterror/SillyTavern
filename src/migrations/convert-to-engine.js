@@ -151,6 +151,14 @@ export async function convert(o) {
     const report = newReport();
     const progress = o.progress ?? (() => {});
     const now = o.now ?? Date.now();
+    let phaseStart = performance.now();
+    /** @type {string[]} */
+    const phases = [];
+    const phase = (/** @type {string} */ name) => {
+        const t = performance.now();
+        phases.push(`${name} ${((t - phaseStart) / 1000).toFixed(1)} s`);
+        phaseStart = t;
+    };
     const dirs = userDirectories(o.root);
     const metaPath = path.join(o.root, 'character-metadata.sqlite');
     const treePath = path.join(o.root, 'message-tree.sqlite');
@@ -314,10 +322,12 @@ export async function convert(o) {
         }
 
         if (report.problems.length && o.apply) throw new Stop(report);
+        phase('reading the library');
         progress('installing the bulk load');
         const loadStats = await sink.finishLoad();
         if (loadStats) report.lines.push(`bulk load: ${loadStats.records} records, ${loadStats.totalMs.toFixed(0)} ms (derive ${loadStats.deriveMs.toFixed(0)} ms of CPU, merge ${loadStats.mergeMs.toFixed(0)} ms, numberings ${loadStats.numbersMs.toFixed(0)} ms, top lists ${loadStats.listsMs.toFixed(0)} ms), ${loadStats.logBytes} log bytes, ${loadStats.runBytes} run bytes`);
 
+        phase('installing the bulk load');
         // ---- after the load: merges, the tag pass, marks ----
         if (tags) {
             for (const [key, into] of tags.deletions) {
@@ -414,6 +424,7 @@ export async function convert(o) {
             }
         }
 
+        phase('tags, world books, links and own books');
         // ---- chats ----
         if (tree) {
             const groupIdList = groupRead.groups.map(g => g.group.id);
@@ -463,12 +474,14 @@ export async function convert(o) {
                     const id = bookFor(key, `chat metadata at ${where}`, records);
                     return value === key ? `\u0001${id}` : `\u0001${id} ${json}`;
                 },
-                commit: (/** @type {object[]} */ records) => sink.commit(records),
+                load: (/** @type {object[]} */ records) => sink.toLoad(records),
             };
             const decimals = ctx.ids.message - 1n;
             report.lines.push(`message ids not UUIDs (kept as outside keys): ${countNonUuidIds(tree)}${decimals > 0n ? `; new message ids start above ${decimals}` : ''}`);
             await sink.commit([{ kind: 'keyMap', user: ctx.user, key: Buffer.from(o.handle, 'utf8') }]);
             let doneOwners = 0;
+            /** @type {object[]} */
+            const afterLoad = [];
             /** @type {Parameters<typeof verify>[0]['owners']} */
             const checks = [];
             for (const [ownerId, t] of trees) {
@@ -501,6 +514,7 @@ export async function convert(o) {
                     if (o.apply) throw new Stop(report);
                 }
                 checks.push({ input, tree: t.id, files: fileItemizations });
+                for (const r of counts.later) afterLoad.push(r);
                 for (const node of counts.badSendKeys) warn(report, 'send keys that aren\'t UUIDs (not converted: a draft re-sent with one may store the message again)', `${t.kind} ${ownerId} message ${node}`);
                 count(report, 'messages', counts.messages);
                 count(report, 'bookmarks', counts.bookmarks);
@@ -522,12 +536,17 @@ export async function convert(o) {
                 warn(report, 'owners with no character or group (left out; --keep-orphans keeps them as unowned trees)', `owner ${ownerId}: ${n.m} message(s), ${n.l} label(s)`);
             }
             if (zz?.stray.status === 'change') report.lines.push(`zztest leftovers: owner ${STRAY_OWNER} not converted`);
+            progress('installing the chats\' bulk load');
+            const chatLoad = await sink.finishLoad();
+            if (chatLoad) report.lines.push(`chats' bulk load: ${chatLoad.records} records, ${chatLoad.totalMs.toFixed(0)} ms (derive ${chatLoad.deriveMs.toFixed(0)} ms of CPU, merge ${chatLoad.mergeMs.toFixed(0)} ms), ${chatLoad.logBytes} log bytes, ${chatLoad.runBytes} run bytes`);
+            for (let i = 0; i < afterLoad.length; i += 2000) await sink.commit(afterLoad.slice(i, i + 2000));
             chatChecks = checks;
         }
         for (const dir of [dirs.chats, dirs.groupChats]) {
             for (const f of jsonlLeftovers(dir)) warn(report, 'chat files today\'s server doesn\'t read (left where they are; import them through the chat import)', f);
         }
         await sink.flush();
+        phase('chats');
         if (o.apply) {
             progress('checking the store against the old files');
             const differs = await verify({
@@ -535,7 +554,9 @@ export async function convert(o) {
                 books: () => worldBooks(dirs.worlds), bookNames, owners: chatChecks, handle: o.handle, counts: report.counts, progress,
             });
             report.problems.push(...differs);
+            phase('the check');
         }
+        report.lines.push(`time: ${phases.join(', ')}`);
         return { report, sink, stats: store?.stats() ?? null };
     } finally {
         await store?.close();
