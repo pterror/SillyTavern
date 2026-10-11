@@ -2862,7 +2862,11 @@ tool-call turns are never twins; the text-and-state rule applies only to a regen
 (whole save, imports, openings) matches by speaker and text as before. The cut is built by one builder alone, one
 step at a time, in this working tree (the parallel steps above are folded in as they stand). Bulk: the answer
 re-sent ("the server walks the description") doesn't say what the tenth stop asks (a run's own changes moving what
-it walks); asked again.
+it walks); asked again. Answered: (a): at the start of `/bulk/run` / `/bulk/mutual-tags` the description becomes a
+run list of entity ids written in the store (bulk-path writes, proportional to the selection), walked in order,
+removed when the run ends; after a crash mid-run it resumes from the list on open or is dropped with how far it got
+reported (whichever the store makes simpler, recorded). Not a snapshot: one held for a long run pins buffers while
+writes go on.
 
 **Stage 5 measured against** (design §6 and §8, today = redesign 5f at 5bddd179b; harness `walrepro/measure5f.mjs`
 for today, the stage 2 harness for the engine):
