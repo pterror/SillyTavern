@@ -1645,35 +1645,102 @@ impl Store {
         derived(env, &self.store, read)
     }
 
-    /// A page of a tree's sessions searched (`store::chat_search`): `{ tree, clauses, before?, limit }`, `clauses`
-    /// as `search` takes them (their fields ignored). Resolves with `{ hits: [{ position, session, at }], more,
-    /// next? }`: most recent first; `next` is the `before` to read on from.
+    /// A tree's messages searched (`store::chat_search::messages`): `{ tree, clauses, limit, after?: { score,
+    /// doc }, scanBelow?, scanBytes? }`: an index page (best first, after `after`) with the substring scan from the
+    /// newest message, or with `scanBelow` (a `scan` cursor) the scan alone from there. Resolves with `{ hits:
+    /// [{ message, score }], scanned: bigint[], more, total, totalExact, scan? }`.
     #[napi(
         ts_args_type = "query: object",
-        ts_return_type = "Promise<{ hits: { position: bigint, session: bigint, at: bigint | null }[], more: boolean, next?: bigint }>"
+        ts_return_type = "Promise<{ hits: { message: bigint, score: number }[], scanned: bigint[], more: boolean, total: number, totalExact: boolean, scan?: bigint }>"
     )]
-    pub fn chat_search<'env>(&self, env: &'env Env, query: Object) -> Result<Object<'env>> {
+    pub fn chat_search_messages<'env>(
+        &self,
+        env: &'env Env,
+        query: Object,
+    ) -> Result<Object<'env>> {
+        use crate::store::chat_read::Js;
+        use crate::store::chat_search::{SCAN_BYTES, Start};
+        let tree = req_integer(&query, "tree")?;
+        let limit = req_integer(&query, "limit")? as usize;
+        let clauses = clauses_from_js(&query, Scope::LIBRARY)?;
+        let scan_bytes = opt_integer(&query, "scanBytes")?.unwrap_or(SCAN_BYTES);
+        let start = match opt_integer(&query, "scanBelow")? {
+            Some(m) => Start::ScanBelow(m),
+            None => Start::Index {
+                after: match query.get::<Object>("after")? {
+                    None => None,
+                    Some(a) => {
+                        let score: f64 = a
+                            .get("score")?
+                            .ok_or_else(|| invalid("after needs a score".into()))?;
+                        Some((score, req_integer(&a, "doc")?))
+                    }
+                },
+            },
+        };
+        derived(env, &self.store, move |s| {
+            let m = s.chat_search_messages(tree, &clauses, start, limit, scan_bytes)?;
+            let hits = m
+                .hits
+                .into_iter()
+                .map(|(message, score)| {
+                    Js::Obj(vec![
+                        ("message", Js::Big(message)),
+                        ("score", Js::Num(score)),
+                    ])
+                })
+                .collect();
+            let mut o = vec![
+                ("hits", Js::Arr(hits)),
+                (
+                    "scanned",
+                    Js::Arr(m.scanned.into_iter().map(Js::Big).collect()),
+                ),
+                ("more", Js::Bool(m.more)),
+                ("total", Js::Num(m.total as f64)),
+                ("totalExact", Js::Bool(m.total_exact)),
+            ];
+            if let Some(c) = m.scan {
+                o.push(("scan", Js::Big(c)));
+            }
+            Ok(JsTree(Js::Obj(o)))
+        })
+    }
+
+    /// A tree's chat list searched (`store::chat_search::chat_list`): `{ tree, clauses, session?, after?, limit }`
+    /// (`session` the tab's, by id; `after` a bookmark). Resolves with `{ hits: [{ bookmark, session, at }], more,
+    /// next?, exact }`.
+    #[napi(
+        ts_args_type = "query: object",
+        ts_return_type = "Promise<{ hits: { bookmark: bigint | null, session: bigint | null, at: bigint | null }[], more: boolean, next?: bigint, exact: boolean }>"
+    )]
+    pub fn chat_search_list<'env>(&self, env: &'env Env, query: Object) -> Result<Object<'env>> {
         use crate::store::chat_read::Js;
         let tree = req_integer(&query, "tree")?;
-        let (before, limit) = (
-            opt_integer(&query, "before")?,
-            req_integer(&query, "limit")? as usize,
+        let limit = req_integer(&query, "limit")? as usize;
+        let (session, after) = (
+            opt_integer(&query, "session")?,
+            opt_integer(&query, "after")?,
         );
         let clauses = clauses_from_js(&query, Scope::LIBRARY)?;
         derived(env, &self.store, move |s| {
-            let p = s.chat_search(tree, &clauses, before, limit)?;
+            let p = s.chat_search_list(tree, &clauses, session, after, limit)?;
             let hits = p
                 .hits
                 .into_iter()
                 .map(|h| {
                     Js::Obj(vec![
-                        ("position", Js::Big(h.position)),
-                        ("session", Js::Big(h.session)),
+                        ("bookmark", h.bookmark.map_or(Js::Null, Js::Big)),
+                        ("session", h.session.map_or(Js::Null, Js::Big)),
                         ("at", h.at.map_or(Js::Null, Js::Big)),
                     ])
                 })
                 .collect();
-            let mut o = vec![("hits", Js::Arr(hits)), ("more", Js::Bool(p.more))];
+            let mut o = vec![
+                ("hits", Js::Arr(hits)),
+                ("more", Js::Bool(p.more)),
+                ("exact", Js::Bool(p.exact)),
+            ];
             if let Some(n) = p.next {
                 o.push(("next", Js::Big(n)));
             }

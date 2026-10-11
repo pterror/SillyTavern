@@ -286,6 +286,31 @@ pub fn matches_whole(
     }
 }
 
+/// Every document matching `q`, in id order, until the walk's work passes `budget`: the documents, whether the
+/// walk finished, and the work it did.
+pub fn matches_upto(
+    view: &View,
+    q: &Query,
+    cache: &StatsCache,
+    budget: u64,
+) -> StoreResult<(Vec<u64>, bool, u64)> {
+    let mut ctx = Ctx::new(view, Some(cache));
+    let mut plan = Plan::new(&mut ctx, q)?;
+    let complete = plan.complete;
+    let mut out = Vec::new();
+    let mut d = 0;
+    loop {
+        match plan.next_match(&mut ctx, d, u64::MAX, budget, None, &mut Walk::default())? {
+            Step::Match(doc, _) => {
+                out.push(doc);
+                d = doc + 1;
+            }
+            Step::End => return Ok((out, complete, ctx.work)),
+            Step::Stopped(_) => return Ok((out, false, ctx.work)),
+        }
+    }
+}
+
 /// Whether documents match a query's clauses and filters, one document at a time in any order: for walking
 /// another structure's order and checking each document.
 pub struct Matching<'a> {

@@ -1,6 +1,7 @@
-// A tree's sessions searched on the engine (`ChatEngine.searchSessions`, `/api/chats/search`): by name, or by every
-// word matching a message on the session's path, and a write found by the next search; and found by exact name
-// (`sessionsNamed`).
+// A tree's chats on the engine: upstream's chat list (`ChatEngine.chatList`: its bookmarks, and the tab's session
+// when no bookmark is at its message), that list searched (`searchChatList`: by name, or by the path down to an item
+// holding the words), the tree's messages searched (`searchMessages`: the index, then the capped substring scan), a
+// new chat, and sessions found by exact name (`sessionNamed`).
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -9,7 +10,7 @@ import { after, test } from 'node:test';
 
 import { loadEngine } from '../engine/load.js';
 
-const { ChatEngine } = await import('./chat-engine.js');
+const { ChatEngine, MODE } = await import('./chat-engine.js');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'chat-search-test-'));
 after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -21,10 +22,11 @@ const people = {
 };
 const one = { user: 'tester', session: '0190a1b2-0000-7000-8000-0000000000a1' };
 const two = { user: 'tester', session: '0190a1b2-0000-7000-8000-0000000000a2' };
+const three = { user: 'tester', session: '0190a1b2-0000-7000-8000-0000000000a3' };
 const msg = (/** @type {boolean} */ isUser, /** @type {string} */ mes) => ({ name: isUser ? 'You' : 'Cara', is_user: isUser, is_system: false, mes, extra: {} });
 
 for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm: loadEngine({ platform: null }).binding })) {
-    test(`${kind}: sessions are found by their paths' words and by name`, async () => {
+    test(`${kind}: the chat list, its search, message search and names`, async () => {
         const store = await engine.Store.open(path.join(root, kind));
         const chats = await ChatEngine.open(store, people);
         const t = cara.id;
@@ -35,20 +37,68 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         await chats.select({ tree: t, node_id: b1b, actor: one });
         const [u2] = (await chats.appendMessages({ tree: t, treeSpeaker: cara, after: b1b, contents: [msg(true, 'Just visiting.')], actor: one })).node_ids;
         await chats.select({ tree: t, node_id: b1, actor: two });
-        await chats.nameSession({ session: two.session, name: 'Evening walk', actor: two });
+        await chats.endPathAt({ tree: t, node_id: u1, actor: three });
+        await chats.createBookmark({ tree: t, node_id: u2, name: 'Morning visit', mode: MODE.pinned, actor: one });
+        await chats.createBookmark({ tree: t, node_id: b1, name: 'Evening walk', mode: MODE.pinned, actor: two });
 
-        const found = async (/** @type {string} */ search) => (await chats.searchSessions({ tree: t, search, limit: 10 })).rows.map(r => r.session).sort();
-        assert.deepEqual(await found(''), [one.session, two.session]);
-        assert.deepEqual(await found('hello'), [one.session, two.session]);
-        assert.deepEqual(await found('brings visiting'), [one.session]);
-        assert.deepEqual(await found('how'), [two.session]);
-        assert.deepEqual(await found('"how are"'), [two.session]);
+        // The chat list: bookmarks, and the tab's session first when no bookmark is at its message.
+        const names = async (/** @type {any} */ p) => (await chats.searchChatList({ tree: t, limit: 10, search: '', ...p })).rows.map(r => r.name ?? r.session);
+        assert.deepEqual((await chats.chatList({ tree: t, session: one.session, limit: 10 })).rows.map(r => r.name), ['Morning visit', 'Evening walk']);
+        const withThree = (await chats.chatList({ tree: t, session: three.session, limit: 10 })).rows;
+        assert.deepEqual(withThree.map(r => [r.session, r.name]), [[three.session, null], [null, 'Morning visit'], [null, 'Evening walk']]);
+        assert.equal(withThree[1].last_mes, 'Just visiting.');
+
+        // Searched: by name (a part of it, lower-cased), or by the path down to an item holding the words.
+        const found = (/** @type {string} */ search, session = one.session) => names({ search, session });
+        assert.deepEqual(await found('visiting'), ['Morning visit']);
+        assert.deepEqual(await found('how'), ['Evening walk']);
+        assert.deepEqual(await found('hello'), ['Morning visit', 'Evening walk']);
+        assert.deepEqual(await found('hello', three.session), [three.session, 'Morning visit', 'Evening walk']);
+        assert.deepEqual(await found('ORNING'), ['Morning visit'], 'a name holds a part of a word');
+        assert.deepEqual(await found('"how are"'), ['Evening walk']);
         assert.deepEqual(await found('"are how"'), []);
-        assert.deepEqual(await found('visit'), [], 'a word is matched whole');
-        assert.deepEqual(await found('even'), [two.session], 'a name is a prefix field');
-        assert.deepEqual(await found('evening hello'), [], 'the name and the path each match the whole query or not at all');
+        assert.deepEqual(await found('brings how'), [], 'every word on one path');
+        const first = await chats.searchChatList({ tree: t, search: 'hello', session: one.session, limit: 1 });
+        assert.equal(first.more, true);
+        assert.equal(first.exact, true);
+        const rest = await chats.searchChatList({ tree: t, search: 'hello', session: one.session, limit: 1, after: first.next });
+        assert.deepEqual([...first.rows, ...rest.rows].map(r => r.name), ['Morning visit', 'Evening walk']);
+
+        // Messages: the index's whole words best first, then what the substring scan adds.
+        const messages = async (/** @type {string} */ search, p = {}) => (await chats.searchMessages({ tree: t, search, limit: 10, ...p }));
+        const hello = await messages('hello');
+        assert.deepEqual(hello.rows.map(r => [r.id, r.snippet, r.depth]), [[greeting, 'Hello there!', 1n]]);
+        assert.equal(hello.partial, undefined);
+        assert.deepEqual((await messages('visit')).rows.map(r => [r.id, r.score]), [[u2, null]], 'a part of a word, by the scan');
+        assert.deepEqual((await messages('VISIT')).rows.map(r => r.id), [u2]);
+        assert.deepEqual((await messages('visiting')).rows.map(r => [r.id, r.score === null]), [[u2, false]], 'whole words aren\'t scanned twice');
+        assert.deepEqual((await messages('hello visit')).rows, []);
+        // A scan stopped by its cap is marked and goes on from its cursor.
+        const capped = await messages('visit', { scanBytes: 0 });
+        assert.equal(capped.partial, true);
+        const all = capped.rows.map(r => r.id);
+        let cursor = capped.scanCursor;
+        for (let i = 0; cursor && i < 20; i++) {
+            const next = await messages('visit', { scanBytes: 0, scanCursor: cursor });
+            all.push(...next.rows.map(r => r.id));
+            cursor = next.scanCursor;
+        }
+        assert.equal(cursor, undefined);
+        assert.deepEqual(all, [u2]);
+
+        // An edit is found by the next searches, and the old word no longer is.
+        await chats.editMessages({ tree: t, treeSpeaker: cara, edits: [{ node_id: u2, content: msg(true, 'Just wandering.') }], actor: one });
+        assert.deepEqual(await found('wandering'), ['Morning visit']);
+        assert.deepEqual(await found('visiting'), []);
+        assert.deepEqual((await messages('wander')).rows.map(r => r.id), [u2]);
+
+        // A new chat: the session goes to a fresh greeting; no bookmark is made.
+        await chats.newChat({ tree: t, actor: one });
+        const fresh = (await chats.chatList({ tree: t, session: one.session, limit: 10 })).rows;
+        assert.deepEqual(fresh.map(r => [r.session, r.name, r.at]), [[one.session, null, null], [null, 'Morning visit', u2], [null, 'Evening walk', b1]]);
 
         // A name finds its session exactly; names are the store's, whoever asks.
+        await chats.nameSession({ session: two.session, name: 'Evening walk', actor: two });
         const named = (/** @type {string} */ name) => chats.sessionNamed(name);
         assert.equal(await named('Evening walk'), two.session);
         assert.equal(await named('evening walk'), null);
@@ -65,21 +115,6 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         // The engine refuses a name another session holds.
         const [sid] = await store.chatRead('ids', { space: 1, keys: [two.session] });
         await assert.rejects(store.commit([{ kind: 'positionName', id: sid, name: 'Evening walk' }]));
-        await chats.nameSession({ session: one.session, name: null, actor: one });
-        assert.equal(await named('Evening walk'), null);
-        await chats.nameSession({ session: two.session, name: 'Evening walk', actor: one });
-
-        // Pages of one, read on through `next`.
-        const first = await chats.searchSessions({ tree: t, search: 'hello', limit: 1 });
-        assert.equal(first.rows.length, 1);
-        assert.equal(first.more, true);
-        const rest = await chats.searchSessions({ tree: t, search: 'hello', limit: 1, before: first.next });
-        assert.deepEqual([...first.rows, ...rest.rows].map(r => r.session).sort(), [one.session, two.session]);
-
-        // An edit is found by the next search, and the old word no longer is.
-        await chats.editMessages({ tree: t, treeSpeaker: cara, edits: [{ node_id: u2, content: msg(true, 'Just wandering.') }], actor: one });
-        assert.deepEqual(await found('wandering'), [one.session]);
-        assert.deepEqual(await found('visiting'), []);
         await store.close();
     });
 }

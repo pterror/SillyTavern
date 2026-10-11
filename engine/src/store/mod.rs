@@ -589,16 +589,47 @@ impl Store {
         self.derived(|v| library_read::page(v, q))
     }
 
-    /// A page of a tree's sessions searched (`chat_search`).
-    pub fn chat_search(
+    /// A tree's messages searched (`chat_search::messages`).
+    pub fn chat_search_messages(
         &self,
         tree: u64,
         clauses: &[crate::search::query::Clause],
-        before: Option<u64>,
+        start: chat_search::Start,
         limit: usize,
-    ) -> StoreResult<chat_search::Page> {
+        scan_bytes: u64,
+    ) -> StoreResult<chat_search::Messages> {
         self.derived(|v| {
-            chat_search::page(v, tree, clauses, before, limit, &self.inner.search_stats)
+            chat_search::messages(
+                v,
+                tree,
+                clauses,
+                start,
+                limit,
+                scan_bytes,
+                &self.inner.search_stats,
+            )
+        })
+    }
+
+    /// A tree's chat list searched (`chat_search::chat_list`).
+    pub fn chat_search_list(
+        &self,
+        tree: u64,
+        clauses: &[crate::search::query::Clause],
+        session: Option<u64>,
+        after: Option<u64>,
+        limit: usize,
+    ) -> StoreResult<chat_search::ListPage> {
+        self.derived(|v| {
+            chat_search::chat_list(
+                v,
+                tree,
+                clauses,
+                session,
+                after,
+                limit,
+                &self.inner.search_stats,
+            )
         })
     }
 
