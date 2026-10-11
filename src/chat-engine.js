@@ -1375,9 +1375,9 @@ export class ChatEngine {
             const end = path.length - 1;
             const stored = await this.stored(path);
             const replies = (/** @type {number} */ i) => stored.get(path[i]).replies;
-            // Messages from `k` to the end are this path's alone.
+            // Messages from `k` to the end are this path's alone (none after a cut that reaches the end).
             let k = end + 1;
-            if (replies(end) === 0) {
+            if (li < end && replies(end) === 0) {
                 k = end;
                 while (k - 1 > li && replies(k - 1) === 1) k--;
             }
@@ -1562,14 +1562,15 @@ export class ChatEngine {
      * speaker and text taken as that sibling), anything else stored as new; the shown alternative at each message
      * chosen; a message's `bookmark_link` a bookmark made there; the session moved to the last message; the header's
      * `chat_metadata` the state there (keys it lacks removed). A header whose `integrity` isn't the session's UUID
-     * is refused unless `force`.
+     * is refused unless `force`. Shown messages the chat lacks are cut from this path first (`cutMissing()`); what that
+     * dropped is answered in `dropped`.
      * @param {object} p
      * @param {bigint} p.tree
      * @param {Speaker | null} p.treeSpeaker
      * @param {any[]} p.chat
      * @param {Actor} p.actor Through a session.
      * @param {boolean} [p.force]
-     * @returns {Promise<{ ok: true, integrity: string, assigned_node_ids: { index: number, node_id: string }[] } | { ok: false, reason: 'integrity' } | { empty: true }>}
+     * @returns {Promise<{ ok: true, integrity: string, assigned_node_ids: { index: number, node_id: string }[], dropped?: Drops } | { ok: false, reason: 'integrity' } | { empty: true }>}
      */
     async saveChat({ tree, treeSpeaker, chat, actor, force = false }) {
         if (!actor.session) throw new Error('A chat is saved through a session');
@@ -1578,6 +1579,7 @@ export class ChatEngine {
         const incoming = header.chat_metadata?.integrity;
         if (!force && typeof incoming === 'string' && incoming !== actor.session) return { ok: false, reason: 'integrity' };
         const messages = chat.slice(1);
+        const dropped = await this.cutMissing(tree, messages, actor);
         const written = await this.serialized(tree, async () => {
             const records = [];
             const { user, session } = await this.actorIds(actor, records);
@@ -1670,7 +1672,50 @@ export class ChatEngine {
         const variables = { unset: sent ? had.filter(name => !Object.hasOwn(sent, name)) : [] };
         await this.mergeMetadata({ tree, at: atExternal, set: metadata, unset, variables, actor });
         const external = await this.externalIds(written.assigned.map(a => a.id));
-        return { ok: true, integrity: actor.session, assigned_node_ids: written.assigned.map((a, i) => ({ index: a.index, node_id: external[i] })) };
+        return {
+            ok: true, integrity: actor.session, assigned_node_ids: written.assigned.map((a, i) => ({ index: a.index, node_id: external[i] })),
+            ...(dropped.bookmarks.length || dropped.changes.length ? { dropped } : {}),
+        };
+    }
+
+    /**
+     * Upstream deletes messages by saving the chat without them (`deleteMessage()`, `/del`, `/cut`): each run of the
+     * session's shown messages the saved chat lacks is cut from this path (upstream's chat files were separate, so
+     * other paths keep them), applied whatever it drops, as an upstream caller can't confirm. Only when the saved chat
+     * is this path's (it holds its opening).
+     * @param {bigint} tree
+     * @param {any[]} messages
+     * @param {Actor} actor
+     * @returns {Promise<Drops>} What the cuts dropped besides the messages.
+     */
+    async cutMissing(tree, messages, actor) {
+        /** @type {Drops} */
+        const dropped = { bookmarks: [], changes: [] };
+        const [sid] = await this.store.chatRead('ids', { space: SPACE.session, keys: [String(actor.session)] });
+        const path = sid === null ? null : await this.shownPath(tree, sid);
+        if (!path || path.length === 0) return dropped;
+        const shown = await this.externalIds(path);
+        const sent = new Set();
+        for (const m of messages) {
+            if (m?.node_id != null) sent.add(String(m.node_id));
+            for (const info of Array.isArray(m?.swipe_info) ? m.swipe_info : []) if (info?.node_id != null) sent.add(String(info.node_id));
+        }
+        if (!sent.has(shown[0])) return dropped;
+        /** @type {[number, number][]} */
+        const runs = [];
+        for (let i = 0; i < shown.length; i++) {
+            if (sent.has(shown[i])) continue;
+            if (runs.length && runs[runs.length - 1][1] === i - 1) runs[runs.length - 1][1] = i;
+            else runs.push([i, i]);
+        }
+        for (const [first, last] of runs.reverse()) {
+            const cut = await this.cutFromPath({ tree, actor, first: shown[first], last: shown[last], confirm: 'any' });
+            if (cut.ok && cut.drops) {
+                dropped.bookmarks.push(...cut.drops.bookmarks);
+                dropped.changes.push(...cut.drops.changes);
+            }
+        }
+        return dropped;
     }
 
     /**
