@@ -37,18 +37,39 @@ describe('user stores', () => {
         const root = path.join(tempRoot(), 'u');
         fs.mkdirSync(root);
         fs.writeFileSync(path.join(root, 'message-tree.sqlite'), '');
-        const line = stores.oldFormatLine({ root });
+        const line = await stores.oldFormatLine({ root });
         expect(line).toContain('convert-to-engine.js');
         expect(line?.includes('\n')).toBe(false);
-        expect(() => stores.assertConverted([{ root }])).toThrow(stores.OldFormatError);
+        await expect(stores.assertConverted([{ root }])).rejects.toThrow(stores.OldFormatError);
         await expect(stores.userStore({ root })).rejects.toThrow('convert-to-engine.js');
         expect(fs.existsSync(path.join(root, stores.STORE_DIR))).toBe(false);
+    });
+
+    test('a character-metadata.sqlite holding only saved views isn\'t an old library; one holding more is, and nothing is left beside it', async () => {
+        const root = path.join(tempRoot(), 'u');
+        fs.mkdirSync(root);
+        const { getBetterSqlite3 } = await import('../src/endpoints/native-sqlite.js');
+        const Database = await getBetterSqlite3();
+        const file = path.join(root, 'character-metadata.sqlite');
+        const db = new Database(file);
+        db.pragma('journal_mode = WAL');
+        db.exec('CREATE TABLE saved_views (id TEXT PRIMARY KEY)');
+        db.close();
+        const files = () => fs.readdirSync(root).sort();
+        const before = files();
+        expect(await stores.oldFormatLine({ root })).toBeNull();
+        expect(files()).toEqual(before);
+        const db2 = new Database(file);
+        db2.exec('CREATE TABLE characters (id TEXT PRIMARY KEY)');
+        db2.close();
+        expect(await stores.oldFormatLine({ root })).toContain('(character-metadata.sqlite)');
+        expect(files()).toEqual(before);
     });
 
     test('a new user gets a store marked for the default tags; opened once, read again after a reopen', async () => {
         const root = path.join(tempRoot(), 'u');
         fs.mkdirSync(root);
-        expect(stores.oldFormatLine({ root })).toBeNull();
+        expect(await stores.oldFormatLine({ root })).toBeNull();
         const first = stores.userStore({ root });
         expect(stores.userStore({ root })).toBe(first);
         const s = await first;
@@ -68,7 +89,7 @@ describe('user stores', () => {
         await fixture.buildOldUser(root);
         (await import('../src/character-metadata-db.js')).disposeMetadataStores();
         (await import('../src/message-tree-db.js')).disposeMessageTreeStores();
-        expect(stores.oldFormatLine({ root })).not.toBeNull();
+        expect(await stores.oldFormatLine({ root })).toContain('character-metadata.sqlite, message-tree.sqlite');
         const { getBetterSqlite3 } = await import('../src/endpoints/native-sqlite.js');
         const convert = await import('../src/migrations/convert-to-engine.js');
         const code = await convert.runConversion({
@@ -76,7 +97,7 @@ describe('user stores', () => {
             probeServer: async () => ({ running: false, lines: [] }), log: () => {}, warn: () => {},
         });
         expect(code).toBe(0);
-        expect(stores.oldFormatLine({ root })).toBeNull();
+        expect(await stores.oldFormatLine({ root })).toBeNull();
         const s = await stores.userStore({ root });
         const [card] = /** @type {any[]} */ (await s.lib.cards(['Alice.png']));
         expect(card.data.name).toBe('Alice');
