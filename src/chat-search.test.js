@@ -37,7 +37,7 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         await chats.select({ tree: t, node_id: b1b, actor: one });
         const [u2] = (await chats.appendMessages({ tree: t, treeSpeaker: cara, after: b1b, contents: [msg(true, 'Just visiting.')], actor: one })).node_ids;
         await chats.select({ tree: t, node_id: b1, actor: two });
-        await chats.endPathAt({ tree: t, node_id: u1, actor: three });
+        await chats.goTo({ tree: t, node_id: u1, actor: three });
         await chats.createBookmark({ tree: t, node_id: u2, name: 'Morning visit', mode: MODE.pinned, actor: one });
         await chats.createBookmark({ tree: t, node_id: b1, name: 'Evening walk', mode: MODE.pinned, actor: two });
 

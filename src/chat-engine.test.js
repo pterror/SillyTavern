@@ -172,10 +172,6 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         });
         assert.deepEqual(withoutLast(normalized(atFirst.messages, newNames)), withoutLast(normalized(withBranchesOfLabels(oldAtFirst.messages), oldNames)));
 
-        // An alternative nothing continues goes; the one shown, or one with replies, doesn't.
-        assert.deepEqual(await chats.deleteAlternative({ tree: t, node_id: nb, actor }), { ok: false, reason: 'is default' });
-        assert.deepEqual(await chats.deleteAlternative({ tree: t, node_id: new1.node_ids[1], actor }), { ok: false, reason: 'labeled' });
-
         // Metadata keys set and removed at a position, variables each their own.
         await chats.mergeMetadata({ tree: t, at: new1.node_ids[1], set: { note_prompt: 'A', variables: { hp: 3 } }, unset: [], actor });
         await chats.mergeMetadata({ tree: t, at: nb, set: { note_prompt: 'B', variables: { hp: 2, mp: 1 } }, unset: [], actor });
@@ -249,19 +245,19 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         assert.deepEqual((await chats.bookmarks({ tree: t, limit: 10 })).rows.map(b => b.name), ['Renamed']);
         assert.deepEqual(await chats.changeBookmark({ tree: t + 1n, bookmark: marks[1].id, change: { name: 'x' } }), { ok: false, reason: 'unknown bookmark' });
 
-        // The path ended at the first message, then at the root.
+        // The session moved to the first message, then to the root (as the old store's ended path shows it).
         await tree.endPathAt(directories, owner, old1.node_ids[0]);
-        assert.deepEqual(await chats.endPathAt({ tree: t, node_id: new1.node_ids[0], actor }), { ok: true });
+        assert.deepEqual(await chats.goTo({ tree: t, node_id: new1.node_ids[0], actor }), { ok: true });
         await compare('after ending the path');
         const ends = (await store.chatRead('history', { session: (await store.chatRead('ids', { space: 1, keys: [actor.session] }))[0], limit: 1000 })).length;
-        assert.deepEqual(await chats.endPathAt({ tree: t, node_id: new1.node_ids[0], actor }), { ok: true });
+        assert.deepEqual(await chats.goTo({ tree: t, node_id: new1.node_ids[0], actor }), { ok: true });
         assert.equal((await store.chatRead('history', { session: (await store.chatRead('ids', { space: 1, keys: [actor.session] }))[0], limit: 1000 })).length, ends, 'nothing written when nothing moves');
         await tree.endPathAtAnchor(directories, owner);
-        assert.deepEqual(await chats.endPathAt({ tree: t, node_id: null, actor }), { ok: true });
+        assert.deepEqual(await chats.goTo({ tree: t, node_id: null, actor }), { ok: true });
         assert.equal(await tree.loadDefaultChain(directories, owner), null);
         assert.deepEqual(await chats.pointer(actor.session), { tree: t, at: null });
         assert.deepEqual((await chats.load({ tree: t, at: null })).messages, []);
-        assert.deepEqual(await chats.endPathAt({ tree: t, node_id: 'no such message', actor }), { ok: false, reason: 'unknown node' });
+        assert.deepEqual(await chats.goTo({ tree: t, node_id: 'no such message', actor }), { ok: false, reason: 'unknown node' });
 
         // Back goes step by step through where the session was, adding nothing; forward returns; a move after
         // stepping back leaves nothing forward.
@@ -274,7 +270,7 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         assert.deepEqual(await chats.pointer(actor.session), { tree: t, at: back2.at });
         assert.deepEqual(await chats.step({ back: false, actor }), back1);
         assert.equal((await store.chatRead('history', { session: sid, limit: 1000 })).length, entries.length);
-        await chats.endPathAt({ tree: t, node_id: ng, actor });
+        await chats.goTo({ tree: t, node_id: ng, actor });
         assert.deepEqual(await chats.step({ back: false, actor }), { ok: false, reason: 'nothing forward' });
         assert.deepEqual(await chats.step({ back: true, actor: { user: actor.user, session: '0190a1b2-0000-7000-8000-0000000000cc' } }), { ok: false, reason: 'nothing back' });
 

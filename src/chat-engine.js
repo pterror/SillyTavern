@@ -217,6 +217,20 @@ function alternativeEntry(nodeId, o, itemized) {
  * @property {string | null} [session] The session's UUID.
  */
 
+/**
+ * @typedef {object} EditRequest A deleting edit of a tree.
+ * @property {bigint} tree
+ * @property {Actor} actor
+ * @property {boolean} [preview] Answers what the edit would drop besides the messages, writing nothing.
+ * @property {{ bookmarks?: string[], changes?: string[] }} [confirm] The ids of what it drops besides the messages,
+ * as a preview named them: an edit dropping anything else is refused.
+ */
+
+/**
+ * @typedef {{ bookmarks: { id: string, name: string | null, node_id: string }[], changes: { id: string, key: string | number, variable: boolean, node_id: string }[] }} Drops
+ * @typedef {{ ok: true, preview?: true, drops?: Drops } | { ok: false, reason: string, drops?: Drops }} EditAnswer
+ */
+
 export class ChatEngine {
     /**
      * @param {any} store The engine's `Store`.
@@ -511,7 +525,8 @@ export class ChatEngine {
      * @param {Record<string, any>[]} [p.cardGreetings]
      */
     async openingAlternatives({ tree, actor, range = {}, cardGreetings = [] }) {
-        const hasSavedChats = (await this.store.chatRead('inTree', { tree, limit: 1 })).length > 0;
+        // Anything saved: the tree stores a message (upstream's meaning: a chat file exists).
+        const hasSavedChats = (await this.store.chatRead('children', { tree, limit: 1 })).ids.length > 0;
         const rows = await this.openings(tree);
         const virtual = this.unstoredGreetings(rows, cardGreetings);
         const { user, session } = await this.knownActorIds(actor);
@@ -846,7 +861,9 @@ export class ChatEngine {
     }
 
     /**
-     * Chooses a reply at its fork through a session (the route resolves which), which moves to it.
+     * Chooses a reply at its fork through a session (the route resolves which): swiping. The choice is recorded, and
+     * the session goes down that branch along the fork choices (its own, else its user's, else anyone's last, else the
+     * newest reply) to its end, so swiping back restores the conversation: no choice made below is dropped.
      * @param {object} p
      * @param {bigint} p.tree
      * @param {string} p.node_id
@@ -854,38 +871,38 @@ export class ChatEngine {
      */
     select({ tree, node_id, actor }) {
         return this.serialized(tree, async () => {
-            const [id] = await this.messageIds([node_id]);
-            const s = id === null ? undefined : (await this.stored([id])).get(id);
-            if (!s || s.owner !== tree) return false;
+            const s = await this.messageOf(tree, node_id);
+            if (!s) return false;
             const records = [];
             const { user, session } = await this.actorIds(actor, records);
             if (session === null) throw new Error('A choice is made through a session');
-            records.push(...this.moveTo(session, user, s.parent, id));
+            const end = await this.store.chatRead('branchEnd', { tree, at: s.id, session, user });
+            records.push(this.moveTo(session, user, s.parent, s.id)[0], { kind: 'pointerMove', session, user, target: end });
             await this.store.commit(records);
             return true;
         });
     }
 
     /**
-     * Ends what a session shows at a message (null: at the tree's root, showing nothing yet): its pointer moves
-     * there. The replies below it stay, reachable as alternatives.
+     * Moves a session to a message of the tree (null: its root, nothing shown yet), as opening a search result
+     * does. Nothing is written when it is there already.
      * @param {object} p
      * @param {bigint} p.tree
      * @param {string | null} p.node_id
      * @param {Actor} p.actor
      * @returns {Promise<{ ok: boolean, reason?: string }>}
      */
-    endPathAt({ tree, node_id, actor }) {
+    goTo({ tree, node_id, actor }) {
         return this.serialized(tree, async () => {
             let id = null;
             if (node_id !== null) {
-                [id] = await this.messageIds([node_id]);
-                const s = id === null ? undefined : (await this.stored([id])).get(id);
-                if (!s || s.owner !== tree) return { ok: false, reason: 'unknown node' };
+                const s = await this.messageOf(tree, node_id);
+                if (!s) return { ok: false, reason: 'unknown node' };
+                id = s.id;
             }
             const records = [];
             const { user, session } = await this.actorIds(actor, records);
-            if (session === null) throw new Error('A path is ended through a session');
+            if (session === null) throw new Error('A session moves through itself');
             const [now] = await this.store.chatRead('sessions', { ids: [session] });
             if (now && now.tree === tree && now.at === id) return { ok: true };
             records.push(id === null ? { kind: 'pointerRoot', session, user, tree } : { kind: 'pointerMove', session, user, target: id });
@@ -1065,56 +1082,352 @@ export class ChatEngine {
         });
     }
 
+    // ---- deletes and cuts ----
+    //
+    // An operation on a path removes only what belongs to it alone; a message another branch passes through stays.
+    // Deleting a subtree is one `subtreeDelete` record per root, carried out in slices by the engine; what is at its
+    // messages moves to the root's parent, except pinned bookmarks (and following ones with nowhere to move), which
+    // go. Whatever goes besides the messages (those bookmarks, the state changes on the messages) is the answer of a
+    // `preview`, and a delete that drops any of it is refused unless `confirm` names exactly those, so the warning
+    // the page shows lists exactly what goes even when someone else changed the tree meanwhile.
+
     /**
-     * Deletes a reply no message continues and no bookmark is at, unless the session shows it.
+     * What deleting the subtrees of `roots` drops besides the messages (the subtrees of `keep` left out: they move
+     * away first): bookmarks (`id`, `name`, the message it is at) and state changes (`id`, `key`, whether a
+     * variable's, the message it hangs on).
+     * @param {bigint} tree
+     * @param {bigint[]} roots
+     * @param {bigint[]} keep
+     */
+    async dropsOf(tree, roots, keep) {
+        if (!roots.length) return { bookmarks: [], changes: [] };
+        const d = await this.store.chatRead('subtreeDrops', { tree, roots, keep });
+        const marks = d.bookmarks.length ? await this.store.chatRead('bookmarks', { ids: d.bookmarks.map((/** @type {any} */ b) => b.id) }) : [];
+        const at = await this.externalIds([...d.bookmarks.map((/** @type {any} */ b) => b.at), ...d.changes.map((/** @type {any} */ c) => c.message)]);
+        return {
+            bookmarks: d.bookmarks.map((/** @type {any} */ b, /** @type {number} */ i) => ({ id: String(b.id), name: marks[i]?.name ?? null, node_id: at[i] })),
+            changes: d.changes.map((/** @type {any} */ c, /** @type {number} */ i) => ({ id: String(c.id), key: c.key, variable: c.variable, node_id: at[d.bookmarks.length + i] })),
+        };
+    }
+
+    /**
+     * Previews or applies a planned edit: `records` first (copies, moves, choices, a pointer move), then a
+     * `subtreeDelete` of each root.
      * @param {object} p
      * @param {bigint} p.tree
-     * @param {string} p.node_id
-     * @param {Actor} p.actor
+     * @param {{ roots: bigint[], keep?: bigint[], records?: object[] }} p.plan
+     * @param {{ user: bigint, session: bigint | null }} p.who
+     * @param {object[]} p.keys The actor's new outside keys.
+     * @param {boolean} [p.preview]
+     * @param {{ bookmarks?: string[], changes?: string[] }} [p.confirm]
+     * @returns {Promise<EditAnswer>}
      */
-    deleteAlternative({ tree, node_id, actor }) {
+    async applyEdit({ tree, plan, who, keys, preview, confirm }) {
+        const drops = await this.dropsOf(tree, plan.roots, plan.keep ?? []);
+        if (preview) return { ok: true, preview: true, drops };
+        const same = (/** @type {string[] | undefined} */ named, /** @type {{ id: string }[]} */ found) =>
+            new Set(named ?? []).size === found.length && found.every(x => (named ?? []).includes(x.id));
+        if ((drops.bookmarks.length || drops.changes.length) && !(same(confirm?.bookmarks, drops.bookmarks) && same(confirm?.changes, drops.changes))) {
+            return { ok: false, reason: 'confirm', drops };
+        }
+        const actorPart = { user: who.user, ...(who.session === null ? {} : { session: who.session }) };
+        const records = [...keys, ...(plan.records ?? []), ...plan.roots.map(message => ({ kind: 'subtreeDelete', message, ...actorPart }))];
+        if (records.length > keys.length) await this.store.commit(records);
+        return { ok: true };
+    }
+
+    /**
+     * A message of the tree, stored, or null.
+     * @param {bigint} tree
+     * @param {string} nodeId
+     */
+    async messageOf(tree, nodeId) {
+        const [id] = await this.messageIds([nodeId]);
+        const s = id === null ? undefined : (await this.stored([id])).get(id);
+        return s && s.owner === tree ? s : null;
+    }
+
+    /**
+     * The path a session shows in the tree (root to its pointer), or null when it isn't in the tree.
+     * @param {bigint} tree
+     * @param {bigint | null} session
+     * @returns {Promise<bigint[] | null>}
+     */
+    async shownPath(tree, session) {
+        if (session === null) return null;
+        const [now] = await this.store.chatRead('sessions', { ids: [session] });
+        if (!now || now.tree !== tree) return null;
+        return now.at === null ? [] : this.store.chatRead('path', { tree, at: now.at });
+    }
+
+    /**
+     * Runs an edit of the tree: `plan` gets the actor's ids and answers the edit, or a refusal.
+     * @param {object} p
+     * @param {bigint} p.tree
+     * @param {Actor} p.actor
+     * @param {boolean} [p.preview]
+     * @param {{ bookmarks?: string[], changes?: string[] }} [p.confirm]
+     * @param {(who: { user: bigint, session: bigint | null }) => Promise<{ roots: bigint[], keep?: bigint[], records?: object[] } | { ok: false, reason: string }>} plan
+     * @returns {Promise<EditAnswer>}
+     */
+    edit({ tree, actor, preview, confirm }, plan) {
         return this.serialized(tree, async () => {
-            const records = [];
-            const { user, session } = await this.actorIds(actor, records);
-            const [id] = await this.messageIds([node_id]);
-            const s = id === null ? undefined : (await this.stored([id])).get(id);
-            if (!s || s.owner !== tree) return { ok: false, reason: 'unknown node' };
-            // What this actor is shown at the fork can't go.
-            const shown = await this.store.chatRead('followed', { tree, ...(s.parent === null ? {} : { at: s.parent }), ...(session === null ? {} : { session }), user });
-            if (shown === id) return { ok: false, reason: 'is default' };
-            if ((await this.store.chatRead('bookmarksAt', { message: id })).length) return { ok: false, reason: 'labeled' };
-            if ((await this.children(tree, id)).length) return { ok: false, reason: 'has descendants' };
-            records.push({ kind: 'messageDelete', message: id, user, ...(session === null ? {} : { session }) });
-            await this.store.commit(records);
-            return { ok: true };
+            const keys = [];
+            const who = await this.actorIds(actor, keys);
+            const planned = await plan(who);
+            if ('ok' in planned) return planned;
+            return this.applyEdit({ tree, plan: planned, who, keys, preview, confirm });
         });
+    }
+
+    /**
+     * Deletes this message and everything below it ("delete this swipe and all descendants").
+     * @param {EditRequest & { node_id: string }} p
+     */
+    deleteSubtree(p) {
+        return this.edit(p, async () => {
+            const s = await this.messageOf(p.tree, p.node_id);
+            return s ? { roots: [s.id] } : { ok: false, reason: 'unknown node' };
+        });
+    }
+
+    /**
+     * Deletes every alternative at this message's position and everything below them ("delete all swipes from
+     * here and all descendants"); at an opening, every opening: the whole tree.
+     * @param {EditRequest & { node_id: string }} p
+     */
+    deleteAlternatives(p) {
+        return this.edit(p, async () => {
+            const s = await this.messageOf(p.tree, p.node_id);
+            return s ? { roots: await this.children(p.tree, s.parent) } : { ok: false, reason: 'unknown node' };
+        });
+    }
+
+    /**
+     * Deletes everything below this message, every branch; the message stays ("delete all descendants but keep
+     * swipe").
+     * @param {EditRequest & { node_id: string }} p
+     */
+    deleteBelow(p) {
+        return this.edit(p, async () => {
+            const s = await this.messageOf(p.tree, p.node_id);
+            return s ? { roots: await this.children(p.tree, s.id) } : { ok: false, reason: 'unknown node' };
+        });
+    }
+
+    /**
+     * Deletes the session's path from this message down to its end, only the messages no other branch uses: from
+     * the end up to the first message with another branch under it ("delete this path"). The path is what the
+     * session shows (root to its pointer); replies below the pointer are other branches.
+     * @param {EditRequest & { node_id: string }} p
+     */
+    deletePath(p) {
+        return this.edit(p, async ({ session }) => {
+            const s = await this.messageOf(p.tree, p.node_id);
+            if (!s) return { ok: false, reason: 'unknown node' };
+            const path = await this.shownPath(p.tree, session);
+            const from = path ? path.indexOf(s.id) : -1;
+            if (!path || from < 0) return { ok: false, reason: 'not on the path' };
+            const stored = await this.stored(path);
+            const replies = (/** @type {number} */ i) => stored.get(path[i]).replies;
+            let t = path.length - 1;
+            if (replies(t) > 0) return { roots: [] };
+            while (t - 1 >= from && replies(t - 1) === 1) t--;
+            return { roots: [path[t]] };
+        });
+    }
+
+    /**
+     * Cuts `first` .. `last` out of the session's path ("cut from this path", upstream's `/cut`): the path forks at
+     * the message before the cut and goes on as a new branch without it; messages after the cut that other branches
+     * share get their own copies on the new branch (with the state changes in effect on them), and those only this
+     * path uses move under them; other paths are untouched; the cut messages go only where nothing else passes
+     * through them.
+     * @param {EditRequest & { first: string, last: string }} p
+     */
+    cutFromPath(p) {
+        return this.edit(p, async ({ user, session }) => {
+            const range = await this.cutRange(p, session);
+            if ('ok' in range) return range;
+            const { path, fi, li } = range;
+            const end = path.length - 1;
+            const stored = await this.stored(path);
+            const replies = (/** @type {number} */ i) => stored.get(path[i]).replies;
+            // Messages from `k` to the end are this path's alone.
+            let k = end + 1;
+            if (replies(end) === 0) {
+                k = end;
+                while (k - 1 > li && replies(k - 1) === 1) k--;
+            }
+            const before = fi > 0 ? path[fi - 1] : null;
+            const records = [];
+            /** @type {bigint | null} */
+            let parent = before;
+            /** @type {bigint | null} */
+            let first = null;
+            for (let i = li + 1; i < k; i++) {
+                const id = this.next.message++;
+                records.push(...await this.copyRecords(stored.get(path[i]), id, parent, user));
+                first ??= id;
+                parent = id;
+            }
+            if (k <= end) {
+                records.push({ kind: 'messageParent', message: path[k], user, ...(parent === null ? {} : { parent }), ...(session === null ? {} : { session }) });
+                first ??= path[k];
+            }
+            if (first !== null) records.push(this.moveTo(/** @type {bigint} */ (session), user, before, first)[0]);
+            const newEnd = k <= end ? path[end] : parent;
+            if (newEnd !== path[end]) {
+                records.push(newEnd === null ? { kind: 'pointerRoot', session, user, tree: p.tree } : { kind: 'pointerMove', session, user, target: newEnd });
+            }
+            // The cut messages nothing else passes through once the tail moved away: from the cut's last up.
+            const moved = k === li + 1 && k <= end;
+            if (replies(li) - (moved ? 1 : 0) > 0) return { roots: [], records };
+            let t = li;
+            while (t - 1 >= fi && replies(t - 1) === 1) t--;
+            return { roots: [path[t]], keep: moved ? [path[k]] : [], records };
+        });
+    }
+
+    /**
+     * Cuts `first` .. `last` out of the tree ("cut everywhere"): every path through them closes the gap, each reply
+     * of theirs that isn't the next of them moving under the message before the cut, and they go.
+     * @param {EditRequest & { first: string, last: string }} p
+     */
+    cutEverywhere(p) {
+        return this.edit(p, async ({ user, session }) => {
+            const range = await this.cutRange(p, session);
+            if ('ok' in range) return range;
+            const { path, fi, li } = range;
+            const before = fi > 0 ? path[fi - 1] : null;
+            const actorPart = { user, ...(session === null ? {} : { session }) };
+            const records = [];
+            const keep = [];
+            for (let i = fi; i <= li; i++) {
+                for (const c of await this.children(p.tree, path[i])) {
+                    if (i < li && c === path[i + 1]) continue;
+                    records.push({ kind: 'messageParent', message: c, ...(before === null ? {} : { parent: before }), ...actorPart });
+                    keep.push(c);
+                }
+            }
+            if (li < path.length - 1) records.push(this.moveTo(/** @type {bigint} */ (session), user, before, path[li + 1])[0]);
+            return { roots: [path[fi]], keep, records };
+        });
+    }
+
+    /**
+     * The session's path and the places of `first` and `last` on it, or a refusal.
+     * @param {EditRequest & { first: string, last: string }} p
+     * @param {bigint | null} session
+     * @returns {Promise<{ path: bigint[], fi: number, li: number } | { ok: false, reason: string }>}
+     */
+    async cutRange(p, session) {
+        if (session === null) throw new Error('A path is cut through a session');
+        const [a, b] = await Promise.all([this.messageOf(p.tree, p.first), this.messageOf(p.tree, p.last)]);
+        if (!a || !b) return { ok: false, reason: 'unknown node' };
+        const path = await this.shownPath(p.tree, session);
+        const fi = path ? path.indexOf(a.id) : -1;
+        const li = path ? path.indexOf(b.id) : -1;
+        if (!path || fi < 0 || li < fi) return { ok: false, reason: 'not on the path' };
+        return { path, fi, li };
+    }
+
+    /**
+     * The records of a copy of a stored message under `parent` (null: an opening), made by `user`: its append, every
+     * value, text and time it holds, its itemization and the state changes in effect on it. Nothing is shown by it.
+     * @param {any} s
+     * @param {bigint} id
+     * @param {bigint | null} parent
+     * @param {bigint} user
+     */
+    async copyRecords(s, id, parent, user) {
+        const inAppend = ((s.flags >>> 8) & 3) === 0;
+        /** @type {Record<string, unknown>} */
+        const append = { kind: 'messageAppend', id, owner: s.owner, time: s.time, flags: s.flags, user, text: '' };
+        if (parent !== null) append.parent = parent;
+        if (s.speaker !== null) append.speaker = s.speaker;
+        if (s.name !== null) append.name = s.name;
+        const records = [append];
+        for (const t of s.texts) {
+            if (inAppend && t.field === TOP.mes) append.text = t.text;
+            else records.push({ kind: 'textValue', message: id, field: t.field, text: t.text });
+        }
+        for (const v of s.values) records.push({ kind: 'jsonValue', message: id, field: v.field, json: v.json });
+        for (const t of s.times) records.push({ kind: 'messageTime', message: id, field: t.field, delta: t.delta });
+        if (s.itemized) {
+            const it = await this.store.chatRead('itemization', { message: s.id });
+            if (it) records.push({ kind: 'itemization', message: id, raw: it.raw, data: it.data });
+        }
+        for (const c of await this.store.chatRead('activeChanges', { message: s.id })) {
+            /** @type {Record<string, unknown>} */
+            const r = { kind: 'stateChange', id: this.next.change++, message: id, time: c.time, author: c.author, key: c.key, user };
+            if (c.ref !== null) r.ref = c.ref;
+            if (c.confidence !== null) r.confidence = c.confidence;
+            if (c.value !== null) r.value = c.value;
+            records.push(r);
+        }
+        return records;
     }
 
     // ---- bookmarks ----
 
     /**
-     * Makes a bookmark at a message.
+     * The name a bookmark of the tree can take: `name`, or with upstream's suffix (`getUniqueName()`: `name (1)`,
+     * `name (2)`, ... up to 1000 tries) when another bookmark of the tree holds it; null when none is free.
+     * @param {bigint} tree
+     * @param {string} name
+     * @param {bigint | null} self The bookmark being named (it may keep its own name).
+     */
+    async freeBookmarkName(tree, name, self) {
+        for (let i = 0; i < SESSION_NAME_TRIES; i++) {
+            const candidate = i === 0 ? name : `${name} (${i})`;
+            const held = await this.store.chatRead('bookmarksNamed', { tree, name: candidate });
+            if (held.every((/** @type {bigint} */ b) => b === self)) return candidate;
+        }
+        return null;
+    }
+
+    /**
+     * Makes a bookmark at a message. Bookmark names are unique in a tree (as upstream's chat names were per
+     * character): a name another bookmark holds gets upstream's suffix.
      * @param {object} p
      * @param {bigint} p.tree
      * @param {string} p.node_id
      * @param {string | null} p.name
      * @param {number} [p.mode]
      * @param {Actor} p.actor
+     * @returns {Promise<{ ok: true, bookmark: bigint, name: string | null } | { ok: false, reason: 'unknown node' | 'no free name' }>}
      */
     createBookmark({ tree, node_id, name, mode = MODE.following, actor }) {
         return this.serialized(tree, async () => {
-            const [id] = await this.messageIds([node_id]);
-            const s = id === null ? undefined : (await this.stored([id])).get(id);
-            if (!s || s.owner !== tree) return null;
+            const s = await this.messageOf(tree, node_id);
+            if (!s) return { ok: false, reason: 'unknown node' };
             const records = [];
             const actorIds = await this.actorIds(actor, records);
             if (actorIds.session === null) throw new Error('A bookmark is made through a session');
+            const free = name === null ? null : await this.freeBookmarkName(tree, name, null);
+            if (name !== null && free === null) return { ok: false, reason: 'no free name' };
             const b = this.next.position++;
-            records.push({ kind: 'positionCreate', id: b, mode, session: actorIds.session, user: actorIds.user, pointer: id });
-            if (name !== null) records.push({ kind: 'positionName', id: b, name });
+            records.push({ kind: 'positionCreate', id: b, mode, session: actorIds.session, user: actorIds.user, pointer: s.id });
+            if (free !== null) records.push({ kind: 'positionName', id: b, name: free });
             await this.store.commit(records);
-            return b;
+            return { ok: true, bookmark: b, name: free };
         });
+    }
+
+    /**
+     * What a route's chat name names in the tree: the bookmark with that name, else the session with that name in
+     * the store, else nothing (upstream's "not found").
+     * @param {object} p
+     * @param {bigint} p.tree
+     * @param {string} p.name
+     * @returns {Promise<{ bookmark: bigint } | { session: string } | null>}
+     */
+    async resolveChatName({ tree, name }) {
+        const [b] = await this.store.chatRead('bookmarksNamed', { tree, name });
+        if (b !== undefined) return { bookmark: b };
+        const session = await this.sessionNamed(name);
+        return session === null ? null : { session };
     }
 
     // ---- a whole chat saved (upstream's `saveChat`) ----
@@ -1190,7 +1503,7 @@ export class ChatEngine {
                             }
                             if (k === selected) chosen = sid;
                         }
-                        await this.bookmarkLinkRecords(msg, chosen, sessionId, user, records);
+                        await this.bookmarkLinkRecords(tree, msg, chosen, sessionId, user, records);
                     }
                     movedByAppend = await this.chooseIn(records, tree, parent, chosen, sessionId, user);
                     parent = chosen;
@@ -1213,7 +1526,7 @@ export class ChatEngine {
                 const chosenId = /** @type {bigint} */ (chosen);
                 assigned.push({ index: i, id: chosenId });
                 movedByAppend = await this.chooseIn(records, tree, parent, chosenId, sessionId, user);
-                await this.bookmarkLinkRecords(msg, chosenId, sessionId, user, records);
+                await this.bookmarkLinkRecords(tree, msg, chosenId, sessionId, user, records);
                 parent = chosenId;
             }
             if (!movedByAppend) {
@@ -1290,22 +1603,21 @@ export class ChatEngine {
     }
 
     /**
-     * A bookmark named by the message's `extra.bookmark_link`, made at `at`, when the latest one made there isn't
-     * named that already.
+     * A bookmark named by the message's `extra.bookmark_link`, made at `at`, when no bookmark of the tree is named
+     * that already.
+     * @param {bigint} tree
      * @param {Record<string, any>} msg
      * @param {bigint} at
      * @param {bigint} session
      * @param {bigint} user
      * @param {object[]} records
      */
-    async bookmarkLinkRecords(msg, at, session, user, records) {
+    async bookmarkLinkRecords(tree, msg, at, session, user, records) {
         const link = msg?.extra?.bookmark_link;
         if (typeof link !== 'string' || link === '') return;
-        const s = (await this.stored([at])).get(at);
-        if (s) {
-            const made = s.branches.length ? await this.store.chatRead('bookmarks', { ids: [s.branches[s.branches.length - 1]] }) : [];
-            if (made[0]?.name === link) return;
-        }
+        // Names are unique in the tree: a bookmark with that name, wherever it is, is the one the link names.
+        if ((await this.store.chatRead('bookmarksNamed', { tree, name: link })).length) return;
+        if (records.some(r => r.kind === 'positionName' && r.name === link)) return;
         const b = this.next.position++;
         records.push({ kind: 'positionCreate', id: b, mode: MODE.following, session, user, pointer: at }, { kind: 'positionName', id: b, name: link });
     }
@@ -1923,7 +2235,7 @@ export class ChatEngine {
      * a phrase), then what a substring scan of the messages' texts (newest first, each clause's text lower-cased
      * inside the message's, as upstream matched) adds, under a cap of text bytes read (`scanBytes`). Each row is a
      * message with its context: its id, speaker, time, depth and a snippet of its text around the first match;
-     * opening one moves the session there (`endPathAt`). Index pages read on with `after` (no scan); when the scan
+     * opening one moves the session there (`goTo`). Index pages read on with `after` (no scan); when the scan
      * stops (cap or `limit`) the answer is `partial` ("~") with a `scanCursor`, and passing that back scans on from
      * there alone.
      * @param {object} p
@@ -2079,8 +2391,9 @@ export class ChatEngine {
     }
 
     /**
-     * Renames a bookmark (null: no name), makes it following or pinned, or deletes it; nothing is written when
-     * nothing changes.
+     * Renames a bookmark (null: no name; a name another bookmark of the tree holds gets upstream's suffix, and the
+     * answer says the name it took), makes it following or pinned, or deletes it; nothing is written when nothing
+     * changes.
      * @param {object} p
      * @param {bigint} p.tree
      * @param {string} p.bookmark
@@ -2091,13 +2404,18 @@ export class ChatEngine {
             const b = await this.bookmarkOf(tree, bookmark);
             if (!b) return { ok: false, reason: 'unknown bookmark' };
             const records = [];
+            let name = b.name;
             if (change.delete) records.push({ kind: 'positionDelete', id: b.id });
             else {
-                if (change.name !== undefined && change.name !== b.name) records.push({ kind: 'positionName', id: b.id, ...(change.name === null ? {} : { name: change.name }) });
+                if (change.name !== undefined && change.name !== b.name) {
+                    name = change.name === null ? null : await this.freeBookmarkName(tree, change.name, b.id);
+                    if (change.name !== null && name === null) return { ok: false, reason: 'no free name' };
+                    if (name !== b.name) records.push({ kind: 'positionName', id: b.id, ...(name === null ? {} : { name }) });
+                }
                 if (change.mode !== undefined && change.mode !== b.mode) records.push({ kind: 'positionMode', id: b.id, mode: change.mode });
             }
             if (records.length) await this.store.commit(records);
-            return { ok: true };
+            return change.delete ? { ok: true } : { ok: true, name };
         });
     }
 
