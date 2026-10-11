@@ -123,9 +123,16 @@ describe('user stores', () => {
         expect(await s.lib.findCharacters({ tags: ['Nope'] })).toEqual({ ids: [], capped: false });
         expect(await s.lib.findGroups('PARTY')).toEqual(['1700000000001']);
         expect(await s.lib.findGroups('Nobody')).toEqual([]);
+        // Card tags as tags: a name folds to a live tag, one with none is made; ROOT is never one.
+        await s.lib.writeCard({ root }, 'Dee.png', JSON.stringify({ name: 'Dee', data: { name: 'Dee', tags: [' red ', 'ROOT', 'Fresh', 'fresh'] } }));
+        const seeded = await s.lib.tags.seedCardTags('Dee.png');
+        expect(seeded.tagDefinitions.map(t => t.name)).toEqual(['Red', 'Fresh']);
+        expect(seeded.tagIds[0]).toBe('tag-red');
+        expect((await s.lib.tags.tagIdsFor(['Dee.png']))['Dee.png'].sort()).toEqual([...seeded.tagIds].sort());
+        expect((await s.lib.tags.seedCardTags('Dee.png', { onlyExisting: true })).tagIds).toEqual(seeded.tagIds);
         // The change feed: every character once; a change moves it to the end; a delete is answered as one.
         const all = await s.lib.changes(0, 1000);
-        expect(all.changes.filter(c => c.op === 'upsert').map(c => c.id).sort()).toEqual(['Alice.png', 'Bob.png', 'Cara.png']);
+        expect(all.changes.filter(c => c.op === 'upsert').map(c => c.id).sort()).toEqual(['Alice.png', 'Bob.png', 'Cara.png', 'Dee.png']);
         expect(all).toMatchObject({ truncated: false, hasMore: false });
         await s.lib.setFav(0, 'Bob.png', false);
         await s.lib.deleteEntity(0, 'Cara.png');

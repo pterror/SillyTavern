@@ -33,6 +33,10 @@ const PASS_BATCH = 1000;
 const PASS_PAUSE_MS = 10;
 /** A reorder pass's phases (`tagPass`). */
 const PHASE = Object.freeze({ walk: 0, sweep: 1, drain: 2 });
+/** Card tag names that never become tags, and the most a card's tags make (seedCardTags()). */
+const CARD_TAGS_EXCLUDED = new Set(['ROOT', 'TAVERN']);
+const CARD_TAGS_MAX = 50;
+
 /** Tags or tag_map keys a restore or an import writes per commit, and the pause between its commits. */
 const IMPORT_BATCH = 500;
 const IMPORT_PAUSE_MS = 10;
@@ -322,6 +326,42 @@ export class LibraryTags extends EventEmitter {
             await this.lib.writeTag(/** @type {any} */ (tag), seq === null ? {} : { extra: id => [queueRecord(seq, id, { value: tag.sort_order })] });
             return { refused: [], tag };
         });
+    }
+
+    /**
+     * seedCardTagsForSingleCharacter(): a character's card tags (`data.tags`, else `tags`: trimmed strings, not
+     * `ROOT` or `TAVERN`, the first 50) as tags it carries: each name stands for the live tag it folds to (the first
+     * created), and one with none is made (unless `onlyExisting`), with the next order as upstream's
+     * `createNewTag()` gives it.
+     * @param {string} avatar
+     * @param {{ onlyExisting?: boolean }} [options]
+     * @returns {Promise<{ tagIds: string[], tagDefinitions: Record<string, unknown>[] }>} The definitions beside the ids,
+     *   since the page can't resolve an id to a tag it has never seen.
+     */
+    async seedCardTags(avatar, { onlyExisting = false } = {}) {
+        const [card] = /** @type {any[]} */ (await this.lib.cards([avatar]));
+        if (!card) return { tagIds: [], tagDefinitions: [] };
+        const raw = Array.isArray(card.data?.tags) ? card.data.tags : Array.isArray(card.tags) ? card.tags : [];
+        const names = raw.filter((/** @type {unknown} */ t) => typeof t === 'string').map((/** @type {string} */ t) => t.trim())
+            .filter((/** @type {string} */ t) => t.length > 0 && !CARD_TAGS_EXCLUDED.has(t)).slice(0, CARD_TAGS_MAX);
+        /** @type {Map<string, string>} */
+        const byKey = new Map();
+        for (const name of names) if (!byKey.has(tagNameKey(name))) byKey.set(tagNameKey(name), name);
+        if (byKey.size === 0) return { tagIds: [], tagDefinitions: [] };
+        /** @type {Record<string, unknown>[]} */
+        const definitions = [];
+        for (const name of byKey.values()) {
+            const [found] = await this.findByNames([name]);
+            if (found.tag) {
+                definitions.push(found.tag);
+                continue;
+            }
+            if (onlyExisting) continue;
+            const made = await this.create({ id: crypto.randomUUID(), name, create_date: Date.now() });
+            if (made?.tag) definitions.push(made.tag);
+        }
+        for (const t of definitions) await this.assign(avatar, /** @type {string} */ (t.id));
+        return { tagIds: definitions.map(t => /** @type {string} */ (t.id)), tagDefinitions: definitions };
     }
 
     /**
