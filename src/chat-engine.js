@@ -2421,13 +2421,16 @@ export class ChatEngine {
 
     /**
      * Starts a new chat for a session: it goes to the tree's root with the card's first greeting chosen
-     * provisionally (`chooseCardGreeting()`), nothing stored until a reply is sent from it; no bookmark is made.
+     * provisionally (`chooseCardGreeting()`), nothing stored until a reply is sent from it; no bookmark is made. A
+     * group's tree has no card: the session goes to its root, where the page shows the members' greetings
+     * provisionally, in upstream's order, stored only when the conversation continues.
      * @param {object} p
      * @param {bigint} p.tree
      * @param {Actor} p.actor
+     * @param {boolean} [p.group] The tree is a group's.
      */
-    newChat({ tree, actor }) {
-        return this.chooseCardGreeting({ tree, index: 0, actor });
+    newChat({ tree, actor, group = false }) {
+        return group ? this.goTo({ tree, node_id: null, actor }) : this.chooseCardGreeting({ tree, index: 0, actor });
     }
 
     /**
