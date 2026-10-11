@@ -542,3 +542,109 @@ fn a_replys_produced_changes_read_back_reverted_or_not() {
     drop(s);
     fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn a_root_clear_removes_the_roots_changes_and_their_reverts_in_slices_and_resumes_after_a_crash() {
+    let dir = temp_dir("root-clear");
+    let s = open(&dir);
+    let set = |c: u64, at: Hang, k: &str| {
+        rec(
+            "stateChange",
+            vec![
+                Value::Id(c),
+                hang_value(at),
+                Value::Time(0),
+                Value::UInt(state::AUTHOR_USER),
+                Value::Absent,
+                Value::Absent,
+                Value::Field(FieldRef::Key(k.as_bytes().to_vec())),
+                Value::Text(b"1".to_vec()),
+                Value::Absent,
+                Value::Absent,
+            ],
+        )
+    };
+    let revert = |c: u64, of: u64| {
+        rec(
+            "stateRevert",
+            vec![
+                Value::Id(c),
+                Value::Id(of),
+                Value::Time(0),
+                Value::UInt(0),
+                Value::Absent,
+                Value::Absent,
+                Value::Absent,
+            ],
+        )
+    };
+    // More changes at tree 1's root than a slice takes, a revert of one and a revert of that revert; one at tree
+    // 2's root and one on a message of tree 1, which stay.
+    let n = (state::CLEAR_SLICE * 2 + 3) as u64;
+    let mut recs = vec![append(0, None, 1, 0)];
+    for c in 0..n {
+        recs.push(set(c, Hang::Tree(1), &format!("k{c}")));
+    }
+    recs.push(revert(n, 0));
+    recs.push(revert(n + 1, n));
+    recs.push(set(n + 2, Hang::Tree(2), "other"));
+    recs.push(set(n + 3, Hang::Message(0), "on message"));
+    s.commit_wait(recs).unwrap();
+    // The clear commits without its slices, as after a crash.
+    let (tx, rx) = std::sync::mpsc::channel();
+    s.inner.submit(Job::Commit(
+        vec![rec("rootStateClear", vec![Value::Id(1)])],
+        Box::new(move |r| {
+            let _ = tx.send(r.map(|_| ()));
+        }),
+    ));
+    rx.recv().unwrap().unwrap();
+    // A change made after it stays; the cleared ones read as gone at once, and can't be reverted.
+    s.commit_wait(vec![set(n + 4, Hang::Tree(1), "after")])
+        .unwrap();
+    let keys = |s: &Store, tree: u64, at: Option<u64>| {
+        s.derived(|v| state::state_at(v, tree, at))
+            .unwrap()
+            .into_iter()
+            .map(|e| match e.key {
+                FieldRef::Key(k) => String::from_utf8(k).unwrap(),
+                FieldRef::Code(c) => c.to_string(),
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(keys(&s, 1, Some(0)), vec!["after", "on message"]);
+    assert_eq!(
+        s.derived(|v| state::changes_at(v, Hang::Tree(1))).unwrap(),
+        vec![(n + 4, true)]
+    );
+    assert!(matches!(
+        s.commit_wait(vec![revert(n + 5, 1)]),
+        Err(StoreError::Refused(_))
+    ));
+    // A crash: the clear resumes on open and finishes, leaving no entry of the cleared changes or their reverts.
+    s.abandon();
+    std::mem::forget(s);
+    let s = open(&dir);
+    for _ in 0..1000 {
+        if !s.derived(state::any_clear_pending).unwrap() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    s.derived(|v| {
+        assert!(!state::any_clear_pending(v)?);
+        for c in 0..n + 2 {
+            assert_eq!(state::change_loc(v, c)?, None, "{c}");
+            let p = key::id(state::REVERTED_BY, c);
+            assert!(v.scan(&p, &key::prefix_end(&p), 1)?.is_empty(), "{c}");
+        }
+        let p = key::of(state::ROOT_CLEAR);
+        assert!(v.scan(&p, &key::prefix_end(&p), 1)?.is_empty());
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(keys(&s, 1, Some(0)), vec!["after", "on message"]);
+    assert_eq!(keys(&s, 2, None), vec!["other"]);
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}

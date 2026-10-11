@@ -626,22 +626,32 @@ pub fn branch_end(
     ))
 }
 
-/// What deleting the subtrees of `roots` (those of `keep` left out: they move away first) drops besides their
-/// messages: `{ bookmarks: [{ id, at }], changes: [{
-/// id, message, key, variable }] }`.
+/// What deleting the subtrees of `roots` (those of `keep` left out: they move away first), and with `root` the
+/// changes at the tree's root, drops besides their messages: `{ bookmarks: [{ id, at }], changes: [{ id, message,
+/// key, variable }] }` (`message` null: at the root).
 pub fn subtree_drops(
     view: &View,
     tree: u64,
     roots: &[u64],
     keep: &[u64],
+    root: bool,
 ) -> Result<Js, StoreError> {
     let (bookmarks, changes) = prune::drops(view, tree, roots, keep)?;
+    let at_root = if root {
+        state::changes_at(view, state::Hang::Tree(tree))?
+    } else {
+        Vec::new()
+    };
     let mut cs = Vec::new();
-    for (c, m) in changes {
+    for (c, m) in at_root
+        .into_iter()
+        .map(|(c, _)| (c, None))
+        .chain(changes.into_iter().map(|(c, m)| (c, Some(m))))
+    {
         let (key, variable) = change_key(view, c)?;
         cs.push(Js::Obj(vec![
             ("id", Js::Big(c)),
-            ("message", Js::Big(m)),
+            ("message", m.map_or(Js::Null, Js::Big)),
             ("key", key),
             ("variable", Js::Bool(variable)),
         ]));

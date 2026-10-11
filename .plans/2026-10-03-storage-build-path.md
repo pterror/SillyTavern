@@ -2644,8 +2644,15 @@ Noticed (for the coordinator), answered (coordinator, 10-11) as four fixes befor
    alternative the page knew, missing from a message's swipes, is "delete this swipe and below" for it, listed in
    the answer as cuts are. **Not built: stop below.**
 3. A tree deleted whole (`deleteTree`) leaves state changes hanging at its root (no kind removes them). Fix: deleting
-   a tree whole removes them too (the record or derivation needed added); nothing orphaned. **Not built: stop
-   below.**
+   a tree whole removes them too (the record or derivation needed added); nothing orphaned. **Built**: kind
+   `rootStateClear { tree }` (base 248), written in `deleteTree`'s commit when the root holds changes. Its derivation
+   records `ROOT_CLEAR (tree) → [upto, record]` (`upto` = `NEXT_CHANGE` then); from the commit on, the root's changes
+   below `upto` read as gone (`state_at`, `changes_at`) and can't be reverted; slices of 256 (`state::clear_step`,
+   run by the prune job after the pending subtree deletes, and at open while one is left) remove them; a change made
+   at the root after the clear stays. A change going (on a message too) now takes its reverts with it (they were
+   left behind). `chatRead('subtreeDrops', { root: true })` lists the root's changes (`message` null); `deleteTree`'s
+   drops carry them with `node_id` null. Tests: `state_tests::a_root_clear_...` (more than a slice, reverts, a
+   later change, a refused revert, a crash before the slices), `tests/user-stores.test.js`.
 4. The local import scan's old tables aren't converted by 5e: after the conversion the scan reads and hashes every
    source file once more (deduplication finds them, nothing is imported twice). Accepted, no change (recorded in 5e's
    "Left").

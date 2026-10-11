@@ -486,7 +486,9 @@ impl Store {
         }
         let merges = records.iter().any(|r| r.kind.name == "tagMerge");
         let moves = records.iter().any(|r| r.kind.name == "messageParent");
-        let prunes = records.iter().any(|r| r.kind.name == "subtreeDelete");
+        let prunes = records
+            .iter()
+            .any(|r| r.kind.name == "subtreeDelete" || r.kind.name == "rootStateClear");
         if merges || moves || prunes {
             let me = Arc::downgrade(&self.inner);
             let done: CommitDone = Box::new(move |r| {
@@ -1173,7 +1175,8 @@ impl Inner {
         self.queue_depth();
     }
 
-    /// Deletes pending subtrees' messages, a bounded step at a time between commits, until none waits.
+    /// Deletes pending subtrees' messages, then pending root clears' changes, a bounded step at a time between
+    /// commits, until none waits.
     pub(crate) fn kick_prunes(&self) {
         {
             let mut f = self.pruning.lock().unwrap();
@@ -1192,7 +1195,8 @@ impl Inner {
         let me = self.me.clone();
         self.submit(Job::Derive(
             Box::new(move |view, out| {
-                found.store(prune::step(view, out)?, Ordering::Relaxed);
+                let found_one = prune::step(view, out)? || state::clear_step(view, out)?;
+                found.store(found_one, Ordering::Relaxed);
                 Ok(())
             }),
             Box::new(move |r| {
@@ -1323,7 +1327,9 @@ impl Inner {
                 self.kick_depths();
             }
             let pending = key::of(prune::PRUNE);
+            let clears = key::of(state::ROOT_CLEAR);
             if !matches!(self.ks.scan(&pending, &key::prefix_end(&pending), 1), Ok(f) if f.is_empty())
+                || !matches!(self.ks.scan(&clears, &key::prefix_end(&clears), 1), Ok(f) if f.is_empty())
             {
                 self.kick_prunes();
             }
