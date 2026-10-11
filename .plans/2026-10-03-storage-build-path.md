@@ -2657,27 +2657,29 @@ Noticed (for the coordinator), answered (coordinator, 10-11) as four fixes befor
    source file once more (deduplication finds them, nothing is imported twice). Accepted, no change (recorded in 5e's
    "Left").
 
-Stop (10-11), the fixes' open choices (nothing built for 1–3; the cut waits behind them):
-- Fix 1, what the base is. Read from the code: the page already keeps the ids it loaded or last saved
-  (`_messageSnapshots` in `generation.js`, node id → message, swipe ids in `swipe_info`); the engine has no per-path
-  or per-tree version, and a message's log position moves when cleaning relocates it. Two shapes:
-  (a) the ids the page knew (its snapshot's message ids and alternative ids), sent with the save: a delete is a
-  message on the session's path that is in the base and not in the array; a base is then never "too old", only
-  absent; or (b) a version token from the load or last save's answer (for example the log position then), messages
-  appended after it staying; "too old" then needs a defined bound (for example cleaning since, or a delete or move in
-  the tree since). Which one (or another)?
-- Fix 1, a save with no base. Upstream's page code in our page always goes through `postWholeChat()`, which would
-  send it; a third-party caller posting `/api/chats/save` or `/group/save` itself sends none. Is that "base unknown"
-  (no deletes, refused and said so, overriding answer 6 for those callers), or does answer 6 still apply to them
-  (cut directly, drops listed)?
-- Fix 1, how "said so" is answered: a field of the save's answer beside `dropped` (picked name needed, e.g.
-  `deletes_refused` with the ids), and whether our page shows it (a warning toast naming the count).
-- Fix 2, for a save with no base, the same question as fix 1's (does a missing alternative delete, or is it refused).
-- Fix 3, which record: (a) a new kind (e.g. `rootStateClear { tree }`) in `deleteTree`'s commit, its derivation
-  removing every change hanging at the root (in one commit, or in slices as `subtreeDelete` when many); or (b)
-  `entityDelete` of a character, group or unowned tree removing the changes at the root of its tree (tree id =
-  entity id), so `deleteTree` alone (without the entity's delete) would still leave them. Either way the drops answer
-  lists the root's changes, as `subtreeDrops` lists those on removed messages (Data safety).
+Stop (10-11), the fixes' open choices. Answered (coordinator, 10-11): the base is the ids the page knew (message
+and alternative ids, from `_messageSnapshots` / `swipe_info`); a delete is a message or alternative in the base and
+missing from the array, anything not in the base stays, a base is never too old, only missing. A save with no base
+(a third-party caller) keeps answer 6 (cut and delete directly, every drop listed in the answer and the server log).
+`deletes_refused` (ids with the reason) beside `dropped`, for base ids the server can't resolve; the page warns with
+the count and that nothing was deleted for those. Fix 3: a new kind, in slices (built above).
+
+Stop (10-11), second, fixes 1 and 2 (nothing of them built):
+- An alternative in the base and missing from the array whose subtree holds messages not in the base (another tab
+  or user replied below it since): "delete this swipe and below" deletes those too, which fix 1's "anything not in
+  the base stays" forbids. (a) delete the whole subtree anyway; (b) refuse that alternative's delete and list it in
+  `deletes_refused` (a reason such as `replied since`); (c) something else (e.g. delete only what the base holds,
+  the newer replies moved up). Which?
+- The session's shown path doesn't hold the base's last message (another tab on the same session moved it
+  elsewhere): which path the missing messages are cut from. (a) the base's: the session moved to the base's last
+  message first (the save then moves it to the array's end, as now), then cut; (b) cut only what is on the session's
+  path, the rest listed in `deletes_refused`.
+- A base message that resolves but is missing and not on the path cut from (moved by a graft since): listed in
+  `deletes_refused` with a reason such as `not on the path` (the answer said the field is for ids that don't
+  resolve)?
+- No base, fix 2: the alternatives "known" are every stored sibling of a shown path message the array holds (`/get`
+  shows every sibling as a swipe), so a sibling whose id the array lacks is deleted with its subtree?
+- The base's shape (proposed): `base: [{ id, alternatives }]` in the chat's order, `id` the shown message's id.
 
 **Stage 5 measured against** (design §6 and §8, today = redesign 5f at 5bddd179b; harness `walrepro/measure5f.mjs`
 for today, the stage 2 harness for the engine):
