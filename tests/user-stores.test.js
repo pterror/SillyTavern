@@ -1,0 +1,85 @@
+import { describe, test, expect, beforeAll, afterEach } from '@jest/globals';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+import { setConfigFilePath } from '../src/util.js';
+
+/** @type {any} */
+let engine;
+/** @type {typeof import('../src/user-stores.js')} */
+let stores;
+/** @type {string[]} */
+const dirs = [];
+
+beforeAll(async () => {
+    setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
+    engine = (await import('../engine/load.js')).loadEngine().binding;
+    stores = await import('../src/user-stores.js');
+    stores.setStoreEngine(() => engine);
+});
+
+afterEach(async () => {
+    await stores.closeUserStores();
+    (await import('../src/character-metadata-db.js')).disposeMetadataStores();
+    (await import('../src/message-tree-db.js')).disposeMessageTreeStores();
+    for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+});
+
+function tempRoot() {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'user-stores-'));
+    dirs.push(dir);
+    return dir;
+}
+
+describe('user stores', () => {
+    test('a user directory in the old format is refused with one line naming the conversion; nothing is made', async () => {
+        const root = path.join(tempRoot(), 'u');
+        fs.mkdirSync(root);
+        fs.writeFileSync(path.join(root, 'message-tree.sqlite'), '');
+        const line = stores.oldFormatLine({ root });
+        expect(line).toContain('convert-to-engine.js');
+        expect(line?.includes('\n')).toBe(false);
+        expect(() => stores.assertConverted([{ root }])).toThrow(stores.OldFormatError);
+        await expect(stores.userStore({ root })).rejects.toThrow('convert-to-engine.js');
+        expect(fs.existsSync(path.join(root, stores.STORE_DIR))).toBe(false);
+    });
+
+    test('a new user gets a store marked for the default tags; opened once, read again after a reopen', async () => {
+        const root = path.join(tempRoot(), 'u');
+        fs.mkdirSync(root);
+        expect(stores.oldFormatLine({ root })).toBeNull();
+        const first = stores.userStore({ root });
+        expect(stores.userStore({ root })).toBe(first);
+        const s = await first;
+        expect(s.handle).toBe('u');
+        expect(await s.lib.store.meta(['tags_seed_pending'])).toEqual(['true']);
+        await s.lib.tags.create({ id: 't1', name: 'One' });
+        await stores.closeUserStores();
+        const again = await stores.userStore({ root });
+        expect(again).not.toBe(s);
+        expect((await again.lib.tags.byIds(['t1'])).tags.map((/** @type {any} */ t) => t.name)).toEqual(['One']);
+    });
+
+    test('a converted user is served, its old files left beside the store', async () => {
+        const dataRoot = tempRoot();
+        const root = path.join(dataRoot, 'u');
+        const fixture = await import('./convert-to-engine.fixture.js');
+        await fixture.buildOldUser(root);
+        (await import('../src/character-metadata-db.js')).disposeMetadataStores();
+        (await import('../src/message-tree-db.js')).disposeMessageTreeStores();
+        expect(stores.oldFormatLine({ root })).not.toBeNull();
+        const { getBetterSqlite3 } = await import('../src/endpoints/native-sqlite.js');
+        const convert = await import('../src/migrations/convert-to-engine.js');
+        const code = await convert.runConversion({
+            dataRoot, handle: 'u', Database: await getBetterSqlite3(), engine: () => engine, apply: true, serverStopped: true,
+            probeServer: async () => ({ running: false, lines: [] }), log: () => {}, warn: () => {},
+        });
+        expect(code).toBe(0);
+        expect(stores.oldFormatLine({ root })).toBeNull();
+        const s = await stores.userStore({ root });
+        const [card] = /** @type {any[]} */ (await s.lib.cards(['Alice.png']));
+        expect(card.data.name).toBe('Alice');
+        await stores.resumeStoreWork([{ root }]);
+    });
+});
