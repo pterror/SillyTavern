@@ -2855,6 +2855,14 @@ its old side (inventory, Tests); `convert-world-info-to-sidecar.js`, its test an
   `charaFormatData`'s embedded-link check compares a Promise (`getCharacterWorldLink` is async now): the card is
   stored as sent, but "doesn't exist" is printed for a link naming its own embedded book.
 - `POST /api/worldinfo/search` with `limit` absent or not a positive integer: 400, a default (which), or passed on?
+Answered (coordinator, 10-11): (1) (b): `convertToV2`, `charaFormatData`, `getCharaCardV2` stay synchronous (server
+plugins import them), reading through the synchronous book read and a synchronous link check. (2) `limit` absent:
+the default page size our other searches use; invalid (not an integer, < 1, above the maximum): 400. The twin rule:
+tool-call turns are never twins; the text-and-state rule applies only to a regenerated reply; every other append
+(whole save, imports, openings) matches by speaker and text as before. The cut is built by one builder alone, one
+step at a time, in this working tree (the parallel steps above are folded in as they stand). Bulk: the answer
+re-sent ("the server walks the description") doesn't say what the tenth stop asks (a run's own changes moving what
+it walks); asked again.
 
 **Stage 5 measured against** (design §6 and §8, today = redesign 5f at 5bddd179b; harness `walrepro/measure5f.mjs`
 for today, the stage 2 harness for the engine):
