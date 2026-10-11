@@ -1448,6 +1448,53 @@ fn deleting_messages_and_sessions_moves_what_named_them() {
 }
 
 #[test]
+fn a_bookmark_outliving_the_message_it_was_made_at_leaves_nothing_when_it_goes() {
+    let dir = temp_dir("stray");
+    let (s, mut model) = open_with_actors(&dir);
+    // A following bookmark made at 0 moves to the reply 1; 1 moves under the other opening 2, so 0 can go while
+    // the bookmark lives on.
+    let recs = vec![
+        append(&mut model, 1, None, 1, "a", None, None, 1),
+        append(&mut model, 1, None, 2, "b", None, None, 1),
+    ];
+    s.commit_wait(recs).unwrap();
+    s.commit_wait(vec![rec(
+        "positionCreate",
+        vec![
+            Value::Id(9),
+            Value::UInt(FOLLOWING),
+            Value::Id(1),
+            Value::Id(1),
+            Value::Id(0),
+        ],
+    )])
+    .unwrap();
+    let reply = append(&mut model, 1, Some(0), 3, "a1", None, None, 1);
+    s.commit_wait(vec![reply]).unwrap();
+    s.commit_wait(vec![rec(
+        "messageParent",
+        vec![Value::Id(2), Value::Id(1), Value::Absent, Value::Absent],
+    )])
+    .unwrap();
+    s.commit_wait(vec![rec(
+        "messageDelete",
+        vec![Value::Id(0), Value::Absent, Value::Absent],
+    )])
+    .unwrap();
+    s.commit_wait(vec![rec("positionDelete", vec![Value::Id(9)])])
+        .unwrap();
+    s.derived(|v| {
+        assert_eq!(v.get(&key::id(chat::SHAPE, 0))?, None, "a stray shape of 0");
+        let p = key::id(sessions::BRANCH_FROM, 0);
+        assert!(v.scan(&p, &key::prefix_end(&p), usize::MAX)?.is_empty());
+        Ok(())
+    })
+    .unwrap();
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn chat_writes_that_cant_apply_are_refused_and_write_nothing() {
     let dir = temp_dir("refuse");
     let (s, mut model) = open_with_actors(&dir);
