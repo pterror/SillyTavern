@@ -2318,6 +2318,9 @@ Left (handover, 10-11):
 - 5f: serving avatars from `store/avatars/` by the card's hash; the routes calling `writeCard`/`writeGroup` (which
   adopt an unowned tree with the new key); `check-chat-metadata-cache.js` rewritten against the converted state.
 - The check is the longest step (about half the run); it reads every card whole.
+- The local import scan's old tables (`local_import_mtimes`, its skips) aren't converted: after the conversion the
+  scan reads and hashes every source file once more (deduplication finds them, nothing is imported twice). Accepted
+  (coordinator, 10-11): no change.
 
 What it reads, and what each becomes:
 - `character-metadata.sqlite` in the blob layout and the old schema the user's file is at (remove-migrations: never
@@ -2464,7 +2467,7 @@ old path:
 - Tests: suites of deleted modules go; each sub-step's tests cover its replacement (CLAUDE.md Tests: only those
   covering what changed).
 
-Status (10-11, handover): **in progress; the questions below are answered; the pre-cut pieces are landed; the cut itself is next.** Landed before the cut, each standing
+Status (10-11, handover): **in progress; the pre-cut pieces are landed; four fixes come before the cut ("Noticed" below), and three of them wait on a stop.** Landed before the cut, each standing
 alone, nothing reachable until the cut mounts it (an engine store must not be made for a user whose data isn't
 converted yet, so nothing may call `userStore()` before the cut):
 - 506be7200 (5e fix): two different metadata at one message no longer stop the conversion: each is recorded there
@@ -2630,16 +2633,44 @@ Left for the cut, in order (the cut commit switches everything at once; nothing 
 5. e2e global setup seeds a store converted from the synthetic old user; the route suites move onto converted
    fixtures; browser tests covering what changed run against it.
 
-Noticed (for the coordinator):
-- Two tabs of one device share the device's default session. A stale tab's whole-chat save then lacks the other
-  tab's newer messages, and answer 6 cuts them from the path (listed in `dropped`, but cut). A save can't tell that
-  from upstream's `/del n`.
-- The local import scan's old tables aren't converted by 5e: after the conversion the scan reads and hashes every
-  source file once more (deduplication finds them, nothing is imported twice).
-- A tree deleted whole (`deleteTree`) leaves state changes hanging at its root (no kind removes them); nothing reads
-  them once the character is gone.
-- `deleteSwipe` through a whole save (an alternative missing from `swipes`) isn't a cut and deletes nothing (answer
-  6 covers missing messages).
+Noticed (for the coordinator), answered (coordinator, 10-11) as four fixes before the cut:
+1. Two tabs of one device share the device's default session. A stale tab's whole-chat save then lacks the other
+   tab's newer messages, and answer 6 cuts them from the path (listed in `dropped`, but cut). Fix: the page sends
+   the base it loaded (the path or version it diffed against, as world info's per-entry versions); the server diffs
+   the save against that base: only messages the page knew and left out are deletes, messages appended since stay;
+   a base unknown or too old to diff refuses the deleting part and says so (additions and edits kept). Tested with
+   two tabs. **Not built: stop below.**
+2. `deleteSwipe` through a whole save (an alternative missing from `swipes`) isn't a cut and deletes nothing. Fix: an
+   alternative the page knew, missing from a message's swipes, is "delete this swipe and below" for it, listed in
+   the answer as cuts are. **Not built: stop below.**
+3. A tree deleted whole (`deleteTree`) leaves state changes hanging at its root (no kind removes them). Fix: deleting
+   a tree whole removes them too (the record or derivation needed added); nothing orphaned. **Not built: stop
+   below.**
+4. The local import scan's old tables aren't converted by 5e: after the conversion the scan reads and hashes every
+   source file once more (deduplication finds them, nothing is imported twice). Accepted, no change (recorded in 5e's
+   "Left").
+
+Stop (10-11), the fixes' open choices (nothing built for 1–3; the cut waits behind them):
+- Fix 1, what the base is. Read from the code: the page already keeps the ids it loaded or last saved
+  (`_messageSnapshots` in `generation.js`, node id → message, swipe ids in `swipe_info`); the engine has no per-path
+  or per-tree version, and a message's log position moves when cleaning relocates it. Two shapes:
+  (a) the ids the page knew (its snapshot's message ids and alternative ids), sent with the save: a delete is a
+  message on the session's path that is in the base and not in the array; a base is then never "too old", only
+  absent; or (b) a version token from the load or last save's answer (for example the log position then), messages
+  appended after it staying; "too old" then needs a defined bound (for example cleaning since, or a delete or move in
+  the tree since). Which one (or another)?
+- Fix 1, a save with no base. Upstream's page code in our page always goes through `postWholeChat()`, which would
+  send it; a third-party caller posting `/api/chats/save` or `/group/save` itself sends none. Is that "base unknown"
+  (no deletes, refused and said so, overriding answer 6 for those callers), or does answer 6 still apply to them
+  (cut directly, drops listed)?
+- Fix 1, how "said so" is answered: a field of the save's answer beside `dropped` (picked name needed, e.g.
+  `deletes_refused` with the ids), and whether our page shows it (a warning toast naming the count).
+- Fix 2, for a save with no base, the same question as fix 1's (does a missing alternative delete, or is it refused).
+- Fix 3, which record: (a) a new kind (e.g. `rootStateClear { tree }`) in `deleteTree`'s commit, its derivation
+  removing every change hanging at the root (in one commit, or in slices as `subtreeDelete` when many); or (b)
+  `entityDelete` of a character, group or unowned tree removing the changes at the root of its tree (tree id =
+  entity id), so `deleteTree` alone (without the entity's delete) would still leave them. Either way the drops answer
+  lists the root's changes, as `subtreeDrops` lists those on removed messages (Data safety).
 
 **Stage 5 measured against** (design §6 and §8, today = redesign 5f at 5bddd179b; harness `walrepro/measure5f.mjs`
 for today, the stage 2 harness for the engine):
