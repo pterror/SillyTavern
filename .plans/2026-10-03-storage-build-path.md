@@ -2868,6 +2868,46 @@ removed when the run ends; after a crash mid-run it resumes from the list on ope
 reported (whichever the store makes simpler, recorded). Not a snapshot: one held for a long run pins buffers while
 writes go on.
 
+Cut handover (10-11, end of this builder's context). The four foreign files are clean at HEAD now ({{user}}
+discarded their changes) and are ordinary files for the cut (old modules kept for the converter;
+`tests/chats-openings-land.test.js` moved or replaced like the other route suites). The cut's work so far is
+uncommitted in the working tree; a copy is in the session scratchpad (`cut/tree-2.patch`, `cut/untracked-2.tar`).
+The next builder continues alone, one step at a time, in this tree (coordinator: no parallel builders).
+- Done in the tree: step 1 (server, above); world info (the routes, `readWorldInfoFile` synchronous over
+  `Store.openSync` / `worldBookSync`, `getCharacterWorldLink` synchronous over `worldBookExistsSync` (binding,
+  `Store::world_book_exists`, `books::world_book_exists`, tested in `books_tests`), so `convertToV2` /
+  `charaFormatData` / `getCharaCardV2` stay synchronous as answered; `candidate-resolution.js` and `sprites.js`;
+  tests: worldinfo endpoint, character world link, user stores 50/50, `engine/store.test.js` 29/29, books 6/6); the
+  generate path's server side (above; its backend suites wait for card reads).
+- World info left: the `/api/worldinfo/search` route (open: "the default page size our other searches use": the
+  library's `/query` uses 500 (max 2000), the tags query 50 (max 500); which?); the engine-vs-old block of
+  `tests/world-info-engine.test.js` loses its old side; the world-info lines of files the characters step holds:
+  `content-manager.js` (207 and 1194: `await importWorldInfoFromRaw(...)`; a WORLD item's skip check becomes
+  `books.exists(path.parse(basePath).name)` on the user's store and no `fs.mkdirSync(contentTarget)` for worlds),
+  `users.js` (419: `await importWorldInfoFromRaw(...)`), `settings.js` (`/get` async; `world_names` from
+  `lib.books.list()` `.map(b => b.file_id)`, the `worlds` readdir gone), `characters.js` (`relinkCharactersWorld`
+  and `characterIdsLinkedToWorld` unused: remove). Callers of `importWorldInfoFromRaw` in
+  `src/text-completion-generation-input.test.js`, `src/chat-completion-generation-input.test.js` and
+  `src/endpoints/backends/text-completions.test.js` need `await` and a converted user's root.
+- Generate left: the twin rule as answered in `chat-engine.js` (tool-call turns and tool results never twins, by
+  `extra.tool_invocations` / the tool result's shape; the text-and-state rule only for a regenerated reply, a swipe
+  being one; every other append, graft and whole save matching by speaker and text as before; `editMessages` not
+  refusing a tool turn's text), with `src/chat-*.test.js`; then the backend suites on converted users
+  (`chat-completions`, `text-completions`, `kobold`, `novelai`, `horde`, `generation-stop`, `reply-not-saved`,
+  `resume-stream*`, `tokenizers`, both generation inputs) once card reads work; `src/token-cache-engine.test.js`
+  loses its old side; `owner-chat-stats.js` and its suites go in step 4; `horde.js` read `.body` off null when page
+  writes failed (fix with the step).
+- Next steps in order: characters (`characters.js` and what serves it, as the characters fork's report settled:
+  avatars served from `store/avatars/<sha256>.png` by the card's avatar hash, card data stripped, export building the
+  PNG fresh, a file removed once no card's avatar hash names it in the delete's or edit's write; `readCardContent` →
+  `lib.cards`; `/chat` answer 2, `/chats` `chatList`, `/delete` answer 9, `/metadata/rescan` answer 10,
+  `/search-index/rebuild` upstream's shape, `/manifest` hash rows, `/query`'s `seq` the entity feed's end; bulk as
+  answered: a run list of entity ids written in the store at the start of `/bulk/run` / `/mutual-tags`, walked in
+  order, removed at the end, and after a crash resumed or dropped with how far it got (whichever is simpler,
+  recorded); `restCount` belongs to the tags route); groups, tags, views (saved views out of
+  `character-metadata-db.js`), stats; chats.js (with the fourth round's answers); step 3 page; step 4 deletions;
+  step 5 tests and e2e.
+
 **Stage 5 measured against** (design §6 and §8, today = redesign 5f at 5bddd179b; harness `walrepro/measure5f.mjs`
 for today, the stage 2 harness for the engine):
 
