@@ -882,8 +882,8 @@ Left (in the order they build on each other):
   `characters[].chat`, `group.chat_id`, `getCurrentChatId()`, chat names in events (each `resolveSession`'s
   `identifier`), and the tab told its session is gone.
 - State layer 1 steps 2–5, 7, 8 on these records: the engine's operations are built (`changeState`, `revertChange`,
-  `stateAt`, below); left are the routes (`/api/state/change`, `/revert`, `/at`, at the cut), the page's compat for
-  variables and `chat_metadata`, a change made while producing a reply recorded with the reply (the generate
+  `stateAt`, below; variables merged per variable, 10-11); left are the routes (`/api/state/change`, `/revert`,
+  `/at`, at the cut), the page's compat for variables and `chat_metadata` (built uncalled until 5f, answered 10-11), a change made while producing a reply recorded with the reply (the generate
   route), navigation replacing the state, other tabs.
 - The token-count cache's routes moved onto `TokenCache` at the cut (built, see "Built, the token-count cache").
 - Measured (see "Measured, chats" and "Built, opening a position faster" below). To do: re-measure device bytes per
@@ -1479,6 +1479,28 @@ author?, ref? })` records a revert (of a change or of a revert), `unknown change
 `stateAt({ tree, at, session?, ifHash? })` answers the state as `chat_metadata` with its `jsonHash()`, or `unchanged`
 when the page's copy has that hash. Tests: changes at two places on a path, a key left as it is and a derived key
 recording nothing, a revert and its revert, the hash check, removals.
+
+Answered (coordinator, 10-11), the page's variables: the page's compat for variables is built now, tested, and not
+called until 5f (the cut commit switches it on); nothing changes what the page sends to the old routes before the
+cut. Variables travel per variable, as top-level keys do: in `page_metadata` and in a metadata save,
+`variables: { set: { <name>: <value> }, unset: [<name>] }` beside `set` and `unset`, holding only the variables whose
+value differs from what the page last had from the server (diffed per variable, as `changedMetadataKeys()` diffs
+per top-level key); an extension replacing `chat_metadata.variables` wholesale goes through the same diff.
+`mergeMetadata` never removes a variable for being absent from what was sent, only by an explicit unset (it did: two
+tabs or users changing different variables lost one's change). The append takes the state changes made while
+producing a reply, and the twin rule compares them (below).
+
+Built, variables merged per variable (10-11; `src/chat-engine.js`, test `src/chat-state.test.js`):
+- `mergeMetadata({ ..., variables?: { set?, unset? } })`: a `variables` object in `set` sets the variables it holds
+  (and the marker) and removes none; `variables.set` and `variables.unset` set and remove by name; `unset:
+  ['variables']` removes the object and every variable (an explicit unset of the whole key). The merge writes each
+  touched key whose final value differs from the state there, so a key set and removed in one merge writes only
+  what changed.
+- `saveChat` (upstream's whole-chat save, which replaces the chat's metadata) names as unset each variable the
+  stored state has and the header's `variables` object lacks (Compat: upstream's `/api/chats/save` handles the same
+  values the same way).
+- Tests (native and wasm): the two-tab loss reproduced first (failed before the fix), per-variable sets and unsets,
+  nothing written when nothing differs, the object kept or removed, a whole save removing a variable it lacks.
 
 Stop (10-10), a tab's session on the page (behaviour), before `X-ST-Session` is added to `getRequestHeaders()`. Given:
 which session a tab has open is browser state, per tab, with a per-device default (design N15, O-2); a new session is
