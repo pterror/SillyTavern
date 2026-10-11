@@ -76,3 +76,45 @@ export function sessionGone() {
     write(globalThis.sessionStorage, TAB_KEY, '');
     if (gone !== null && read(globalThis.localStorage, DEVICE_KEY) === gone) write(globalThis.localStorage, DEVICE_KEY, null);
 }
+
+/** Response headers the server answers a request's session with: the session it moved (made on a tab's first
+ * move), and that the session the request named was deleted. */
+export const SESSION_MOVED_HEADER = 'X-ST-Session-Moved';
+export const SESSION_GONE_HEADER = 'X-ST-Session-Gone';
+
+/**
+ * Takes what an answer says of the tab's session.
+ * @param {(name: string) => string | null | undefined} header Reads a response header.
+ */
+export function takeSessionAnswer(header) {
+    if (header(SESSION_GONE_HEADER)) sessionGone();
+    const moved = header(SESSION_MOVED_HEADER);
+    if (moved) sessionMoved(moved);
+}
+
+let observing = false;
+
+/**
+ * Reads every answer's session headers, whoever made the request (extensions and upstream code send the tab's
+ * session through `getRequestHeaders()` too): `fetch` answers, and jQuery's when it is there.
+ * @param {any} [scope]
+ */
+export function observeSessionAnswers(scope = globalThis) {
+    if (observing) return;
+    observing = true;
+    const fetch = scope.fetch;
+    if (typeof fetch === 'function') {
+        scope.fetch = async function (...args) {
+            const response = await fetch.apply(this, args);
+            try {
+                takeSessionAnswer(name => response.headers?.get(name));
+            } catch (err) {
+                console.error('Reading the session headers failed:', err);
+            }
+            return response;
+        };
+    }
+    scope.jQuery?.(scope.document).ajaxComplete((/** @type {unknown} */ _event, /** @type {any} */ xhr) => {
+        takeSessionAnswer(name => xhr?.getResponseHeader?.(name));
+    });
+}
