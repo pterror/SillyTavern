@@ -2790,6 +2790,18 @@ the session, history in both generation inputs through `loadChatHistory`. Stoppe
   Answered (coordinator, 10-11): (a) the state at the position (the empty `chat_metadata` there was a bug: author's
   note, chat lorebook, CFG and variables silently missing; fixed by the cut); (c) no `node_id` is accepted only when
   the request's session is at the root (a new chat with no greeting, or an empty tree), refused otherwise.
+Generate step, server side built in the tree with those answers (backends, tool turns, `resolvePendingToolResults`,
+session headers when the headers go out, `token-count-store.js` over `TokenCache` without prune or row counts,
+`itemized-prompts.js`, `itemizationOf` and `ITEMIZED_PROMPT_FLAG` in `src/itemization-of.js` (nothing the engine
+loads imports `message-tree-db.js` for it any more), `tests/converted-user.fixture.js`); `owner-chat-stats.js` no
+longer loaded (it and its suites go in step 4). Waiting: card reads (`readCardContent`, `getGroupsByIds`) are the
+characters step's (running), and a stop (seventh):
+- The twin rule and tool turns: a tool-call turn is stored as `{ name: 'System', mes: 'Tool calls: <names>',
+  extra.tool_invocations }`; `appendMessages` takes a sibling with the same speaker and text as the same message, so
+  a swipe or a reply calling the same tools again is taken as the old turn and its new invocations and results are
+  dropped silently; `editMessages` refuses a `tool_result` edit when a sibling has the same text. (a) the twin rule
+  as it is; (b) `extra.tool_invocations` part of a message's identity; (c) tool turns not matched as twins at all;
+  (d) other?
 
 **Stage 5 measured against** (design §6 and §8, today = redesign 5f at 5bddd179b; harness `walrepro/measure5f.mjs`
 for today, the stage 2 harness for the engine):
