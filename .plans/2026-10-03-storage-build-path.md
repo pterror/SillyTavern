@@ -2802,6 +2802,16 @@ characters step's (running), and a stop (seventh):
   dropped silently; `editMessages` refuses a `tool_result` edit when a sibling has the same text. (a) the twin rule
   as it is; (b) `extra.tool_invocations` part of a message's identity; (c) tool turns not matched as twins at all;
   (d) other?
+Characters step (nothing of it edited yet), stopped on two (eighth stop):
+- An avatar file in `store/avatars/<hash>.<ext>` that no card names any more (after a delete or an avatar change;
+  identical images share one file): (a) never removed; (b) removed when no card's avatar hash names it (a lookup
+  through `libraryByHash` on the avatar hash, checked in the delete's or edit's lane); (c) other (e.g. a cleanup
+  action)?
+- `/bulk/*` once the selection is per-tab browser state (answer 13): "select all" over a filtered list can be the
+  whole library, so explicit ids on the page would be O(cards). (a) the page keeps the selection's description
+  (filter, sort, all, ranges, include, exclude) and `/bulk/run`, `/ids`, `/mutual-tags` walk it on the server with no
+  job table (`/prepare` answers only `count`, `containsCurrent`, `sample`, `missing`; `/drop` goes); (b) explicit ids
+  only (breaks the Scale rule for large selections); (c) other?
 
 **Stage 5 measured against** (design §6 and §8, today = redesign 5f at 5bddd179b; harness `walrepro/measure5f.mjs`
 for today, the stage 2 harness for the engine):
