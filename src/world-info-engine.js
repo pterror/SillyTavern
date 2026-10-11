@@ -584,12 +584,15 @@ export class WorldInfoEngine {
 
     /**
      * Renames a world book: its key changes, and every link follows it. A new name that is an unresolved name
-     * resolves to this book from now on.
+     * resolves to this book from now on. With `relink` false (upstream's `relink_characters: false`), the
+     * characters whose link resolves as the book keep the name they read as now: their links become an unresolved
+     * link holding the old name.
      * @param {string} name
      * @param {string} newName
+     * @param {{ relink?: boolean }} [options]
      * @returns {Promise<'ok' | 'missing' | 'taken'>}
      */
-    rename(name, newName) {
+    rename(name, newName, { relink = true } = {}) {
         const [from, to] = [bookKey(name), bookKey(newName)];
         return this.lane([from, to], async () => {
             const found = await this.find(name);
@@ -602,8 +605,14 @@ export class WorldInfoEngine {
             const records = there
                 ? [{ kind: 'bookForward', from: there.id, into: found.id }, { kind: 'entityDelete', entity: there.id }, update]
                 : [update];
-            // The cards linking either now read as the new name: their identity hashes follow, in the same commit.
-            const linkers = [...await this.linkers(found.id), ...(there ? await this.linkers(there.id) : [])];
+            const own = await this.linkers(found.id);
+            if (!relink && own.length) {
+                const kept = this.lib.nextId++;
+                records.push({ kind: 'entityCreate', entity: kept, type: TYPE.book, key: from, added: Date.now() });
+                for (const id of own) records.push({ kind: 'bookLink', entity: id, book: kept });
+            }
+            // The cards linking the book now read as the new name: their identity hashes follow, in the same commit.
+            const linkers = [...(relink ? own : []), ...(there ? await this.linkers(there.id) : [])];
             pushAll(records, await this.lib.identityRecords(linkers, to));
             await this.store.commit(records);
             return 'ok';

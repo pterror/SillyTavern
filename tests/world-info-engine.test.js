@@ -413,6 +413,17 @@ describe.each(['native', 'wasm'])('%s', (kind) => {
             expect(await books.rename('Found', 'Found')).toBe('ok');
             await books.write('Other', { entries: {} });
             expect(await books.rename('Other', 'Found')).toBe('taken');
+            // Renamed without relinking (upstream's relink_characters: false): the cards keep the old name, now an
+            // unresolved link; a book taking the old name again resolves them.
+            expect(await books.rename('Found', 'Moved', { relink: false })).toBe('ok');
+            expect(await worldOf('a.png')).toBe('Found');
+            expect(await worldOf('b.png')).toBe('Found');
+            expect(await linked('Moved')).toEqual([]);
+            expect(await linked('Found')).toEqual(['a.png', 'b.png']);
+            expect(await books.exists('Found')).toBe(false);
+            await hashesCurrent();
+            await books.write('Found', { entries: {} });
+            expect(await linked('Found')).toEqual(['a.png', 'b.png']);
         }, 120_000);
     });
 });
