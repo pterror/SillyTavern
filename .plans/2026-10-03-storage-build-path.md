@@ -873,6 +873,8 @@ Done, in order (each section below has its details and choices):
   provisionally (answered stop); session and bookmark lists, naming, modes, deletes, and `integrity` (see the "Built"
   sections below); send keys, itemizations' JS and a member's messages changing speaker; the whole-chat save; the
   people adapter; the token-count cache; measured.
+- 00de7eff4, 86615c6e0, ba07593f9 (10-11): tree edits (the deletes, both cuts, swiping down the fork choices),
+  bookmark names unique per tree, a route's chat name, `has_saved_chats`; see the 5b addendum at the end.
 
 Left (in the order they build on each other):
 - Resolving a chat name for routes: built (`resolveChatName`, the 5b addendum's "Built, tree edits" below).
