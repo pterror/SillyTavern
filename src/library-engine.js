@@ -254,6 +254,7 @@ export class LibraryEngine {
     async close() {
         this.pairsStopped = true;
         await this.pairsRun;
+        await this.tags.stopPass();
         return this.store.close();
     }
 

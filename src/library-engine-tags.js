@@ -241,6 +241,7 @@ export class LibraryTags extends EventEmitter {
         /** @type {Promise<void> | null} */
         this.passRun = null;
         this.passWanted = false;
+        this.passStopped = false;
         /** Tags a reorder pass writes per commit. */
         this.passBatch = PASS_BATCH;
     }
@@ -1063,6 +1064,12 @@ export class LibraryTags extends EventEmitter {
         });
     }
 
+    /** Stops a running reorder pass after its current batch (the store is closing); a later open resumes it. */
+    async stopPass() {
+        this.passStopped = true;
+        await this.passRun;
+    }
+
     /**
      * Runs the recorded reorder pass to its end, in batches with pauses between them, unless it already runs; a
      * pass recorded meanwhile is run too. Started by a reorder, and after the server is listening for one a stop
@@ -1074,9 +1081,9 @@ export class LibraryTags extends EventEmitter {
         if (this.passRun) return this.passRun;
         this.passRun = (async () => {
             try {
-                while (this.passWanted) {
+                while (this.passWanted && !this.passStopped) {
                     this.passWanted = false;
-                    while (await this.lane(() => this.passStep())) await delay(PASS_PAUSE_MS);
+                    while (!this.passStopped && await this.lane(() => this.passStep())) await delay(PASS_PAUSE_MS);
                 }
             } catch (err) {
                 console.error('[library-engine-tags] The tag reorder pass stopped:', err);
