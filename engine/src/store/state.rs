@@ -18,6 +18,9 @@ pub const AUTHOR_RULE: u64 = 3;
 pub const AUTHOR_MIGRATION: u64 = 4;
 /// `stateChange`'s `author` bit: the key is a variable's name.
 pub const VARIABLE: u64 = 8;
+/// `stateChange`'s `author` bit: made while producing the message it hangs on (recorded with its append), so part
+/// of that reply's identity when a regenerated reply is matched against the stored ones.
+pub const PRODUCED: u64 = 16;
 
 /// Per change id: its `stateChange` or `stateRevert` record.
 pub const CHANGE: u64 = 150;
@@ -89,8 +92,8 @@ fn repoint_change(
     Ok(())
 }
 
-fn check_author(author: u64) -> Result<(), StoreError> {
-    if author & !VARIABLE > AUTHOR_MIGRATION {
+fn check_author(author: u64, bits: u64) -> Result<(), StoreError> {
+    if author & !bits > AUTHOR_MIGRATION {
         return Err(StoreError::Refused(format!("no author kind {author}")));
     }
     Ok(())
@@ -110,8 +113,14 @@ impl Deriver for StateChange {
     fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
         let c = id(rec, 0);
         new_id(view, c)?;
-        check_author(id(rec, 3))?;
+        let author = id(rec, 3);
+        check_author(author, VARIABLE | PRODUCED)?;
         let hang = Hang::of(rec);
+        if author & PRODUCED != 0 && matches!(hang, Hang::Tree(_)) {
+            return Err(StoreError::Refused(
+                "a change on a tree's root can't be a reply's".into(),
+            ));
+        }
         if let Hang::Message(m) = hang {
             let (_, r) = require_message(view, m)?;
             super::prune::refuse_doomed(view, super::kinds::id(&r, super::chat::APPEND_OWNER), m)?;
@@ -151,7 +160,7 @@ impl Deriver for StateRevert {
     fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
         let (c, target) = (id(rec, 0), id(rec, 1));
         new_id(view, c)?;
-        check_author(id(rec, 3))?;
+        check_author(id(rec, 3), VARIABLE)?;
         if change_loc(view, target)?.is_none() {
             return Err(StoreError::Refused(format!("no change {target}")));
         }

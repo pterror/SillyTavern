@@ -1432,6 +1432,7 @@ impl Store {
     /// - `subtreeDrops { tree, roots, keep? }`: what deleting those subtrees (less those of `keep`) drops besides
     ///   their messages;
     /// - `activeChanges { message }`: the state changes in effect hanging on a message;
+    /// - `produced { messages }`: per message, the state changes made while producing it;
     /// - `pendingDelete { tree }`: whether a subtree delete is under way in the tree.
     #[napi(
         ts_args_type = "op: string, args: object",
@@ -1668,6 +1669,10 @@ impl Store {
                     s.chat_read(|v| cr::subtree_drops(v, tree, &roots, &keep))
                         .map(JsTree)
                 })
+            }
+            "produced" => {
+                let ms = integers(a, "messages")?;
+                Box::new(move |s| s.chat_read(|v| cr::produced(v, &ms)).map(JsTree))
             }
             "activeChanges" => {
                 let m = req_integer(a, "message")?;

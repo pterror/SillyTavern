@@ -66,4 +66,55 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         await chats.saveChat({ tree: t, treeSpeaker: cara, chat: [header, ...loaded.messages], actor: tabA });
         assert.deepEqual(await state(), { variables: { hp: 4 } });
     });
+
+    test(`${kind}: a reply's state changes are part of it when it is generated again`, async () => {
+        const { chats, t, at } = await open(engine);
+        const reply = { name: 'Cara', is_user: false, mes: 'You find a coin.', extra: {} };
+        const gain = [{ key: 'gold', variable: true, value: 1 }, { key: 'scene', value: 'road' }];
+        const append = (changes, actor = tabA, sendKeys = []) => chats.appendMessages({ tree: t, treeSpeaker: cara, after: at, contents: [reply], changes: [changes], sendKeys, actor });
+        const stateAt = async id => (await chats.stateAt({ tree: t, at: id })).state;
+        await chats.changeState({ tree: t, at, ops: [{ key: 'scene', value: 'road' }], actor: tabA });
+
+        const first = await append(gain, tabA, ['k1']);
+        const [r1] = first.node_ids;
+        // The scene was already the road: only the gold is the reply's change.
+        assert.deepEqual(await stateAt(r1), { scene: 'road', variables: { gold: 1 } });
+        assert.deepEqual(await stateAt(at), { scene: 'road' });
+
+        // Generated again with the same text and changes: that reply, nothing recorded.
+        await chats.changeState({ tree: t, at: r1, ops: [{ key: 'mood', value: 'glad' }], actor: tabA });
+        const head = await chats.store.chatRead('nextIds', {});
+        assert.deepEqual((await append(gain, tabB)).node_ids, [r1]);
+        assert.equal((await chats.store.chatRead('nextIds', {})).change, head.change);
+        assert.equal((await chats.store.chatRead('nextIds', {})).message, head.message);
+
+        // The same text with other changes, or none, is an alternative of its own with its own state.
+        const [r2] = (await append([{ key: 'gold', variable: true, value: 2 }])).node_ids;
+        const [r3] = (await append([])).node_ids;
+        assert.equal(new Set([r1, r2, r3]).size, 3);
+        assert.deepEqual(await stateAt(r2), { scene: 'road', variables: { gold: 2 } });
+        assert.deepEqual(await stateAt(r3), { scene: 'road' });
+        assert.deepEqual((await append([])).node_ids, [r3]);
+        assert.deepEqual((await append([{ key: 'gold', variable: true, value: 2 }])).node_ids, [r2]);
+
+        // A metadata key named like a variable is a change of its own.
+        const [r4] = (await append([{ key: 'gold', value: 1 }])).node_ids;
+        assert.notEqual(r4, r1);
+
+        // A re-sent message records nothing again; one sent after a stored one is filtered against its state.
+        const head2 = await chats.store.chatRead('nextIds', {});
+        const again = await append([{ key: 'gold', variable: true, value: 9 }], tabA, ['k1']);
+        assert.deepEqual(again.already_stored, [r1]);
+        assert.deepEqual(await chats.store.chatRead('nextIds', {}), head2);
+        const user = { name: 'You', is_user: true, mes: 'I take it.', extra: {} };
+        const chain = await chats.appendMessages({
+            tree: t, treeSpeaker: cara, after: at, contents: [reply, user],
+            changes: [gain, [{ key: 'gold', variable: true, value: 1 }, { key: 'took', variable: true, value: true }]], actor: tabA,
+        });
+        assert.equal(chain.node_ids[0], r1);
+        // The gold was already 1 there (with the mood set on the reply since): only `took` is the message's change.
+        assert.deepEqual(await stateAt(chain.node_ids[1]), { scene: 'road', variables: { gold: 1, took: true }, mood: 'glad' });
+        assert.deepEqual(await chats.store.chatRead('produced', { messages: [(await chats.messageIds([chain.node_ids[1]]))[0]] }),
+            [[{ key: 'took', variable: true, value: 'true' }]]);
+    });
 }

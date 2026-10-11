@@ -3,6 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 
+use super::chat_read::Js;
 use super::state::{self, Entry, Hang, VARIABLE};
 use super::*;
 use crate::log::format::{Value, kind_by_name};
@@ -446,6 +447,95 @@ fn a_change_moves_with_its_message_and_goes_with_it() {
     ] {
         assert!(matches!(
             s.commit_wait(vec![bad]),
+            Err(StoreError::Refused(_))
+        ));
+    }
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_replys_produced_changes_read_back_reverted_or_not() {
+    let dir = temp_dir("produced");
+    let s = open(&dir);
+    let change = |c: u64, at: Hang, author: u64, key: &str, v: Option<&str>| {
+        rec(
+            "stateChange",
+            vec![
+                Value::Id(c),
+                hang_value(at),
+                Value::Time(c as i64),
+                Value::UInt(author),
+                Value::Absent,
+                Value::Absent,
+                Value::Field(FieldRef::Key(key.as_bytes().to_vec())),
+                v.map_or(Value::Absent, |v| Value::Text(v.as_bytes().to_vec())),
+                Value::Absent,
+                Value::Absent,
+            ],
+        )
+    };
+    let produced = state::PRODUCED | state::AUTHOR_SCRIPT;
+    s.commit_wait(vec![
+        append(0, None, 1, 0),
+        append(1, Some(0), 1, 1),
+        change(0, Hang::Message(1), produced | VARIABLE, "hp", Some("3")),
+        change(1, Hang::Message(1), produced, "scene", None),
+        // A later change on the reply isn't one made while producing it.
+        change(2, Hang::Message(1), state::AUTHOR_USER, "note", Some("1")),
+    ])
+    .unwrap();
+    s.commit_wait(vec![rec(
+        "stateRevert",
+        vec![
+            Value::Id(3),
+            Value::Id(0),
+            Value::Time(0),
+            Value::UInt(0),
+            Value::Absent,
+            Value::Absent,
+            Value::Absent,
+        ],
+    )])
+    .unwrap();
+    let read = s
+        .derived(|v| super::chat_read::produced(v, &[0, 1]))
+        .unwrap();
+    let c = |key: &str, variable: bool, value: Option<&str>| {
+        Js::Obj(vec![
+            ("key", Js::Text(key.as_bytes().to_vec())),
+            ("variable", Js::Bool(variable)),
+            (
+                "value",
+                value.map_or(Js::Null, |v| Js::Text(v.as_bytes().to_vec())),
+            ),
+        ])
+    };
+    assert_eq!(
+        read,
+        Js::Arr(vec![
+            Js::Arr(vec![]),
+            Js::Arr(vec![c("hp", true, Some("3")), c("scene", false, None)]),
+        ])
+    );
+    // Refused: a reply's change on a tree's root; a revert marked as one.
+    for r in [
+        change(4, Hang::Tree(1), produced, "x", Some("1")),
+        rec(
+            "stateRevert",
+            vec![
+                Value::Id(4),
+                Value::Id(2),
+                Value::Time(0),
+                Value::UInt(state::PRODUCED),
+                Value::Absent,
+                Value::Absent,
+                Value::Absent,
+            ],
+        ),
+    ] {
+        assert!(matches!(
+            s.commit_wait(vec![r]),
             Err(StoreError::Refused(_))
         ));
     }
