@@ -2714,6 +2714,42 @@ reached by nothing the server loads, and go in the commit that deletes the conve
 data (section 6). (2) The four files with someone else's changes: the coordinator is asking {{user}} whose they are;
 until then the cut neither deletes nor moves them, and its notes list where it would have touched them.
 
+The cut, in progress (10-11; uncommitted in the working tree until it lands as one commit):
+- Step 1, server (done in the tree): `loadStoreEngine()` in the boot chain before `migrateUserData` (the engine
+  loaded, `setStoreEngine(getEngine)`, `assertConverted()` exiting with the line), so the old public folders' import
+  can write the engine; `initializeMetadataStores`, the search index workers, the metadata migration coordinator and
+  worker, the chat stats hook and reconcile, token count maintenance and `verifySqliteBackend` gone from
+  `server-main.js`; `closeUserStores()` on exit; `resumeStoreWork()` after listening; `/api/state` and
+  `/api/search/pair-postings` (+ `/state`, `src/endpoints/pair-postings.js`, picked file name) mounted.
+- Order found: `page-writes.js` (with `stored-messages.js`) writes the old store and is shared by `/bookmark`,
+  `/message/select` and generate (`generateTurnOf()`), so the generate step goes before those two routes.
+- Where the cut would touch the four foreign files: `tests/chats-openings-land.test.js` covers `/openings/land`
+  (its suite would move onto a converted fixture; a separate suite takes that instead); chats.js stops importing
+  `message-tree-db.js` (the file stays for the converter); `message-stats.js` and `upgrade-message-stats.js` aren't
+  touched by the routes.
+
+Stop (10-11), fourth, the cut's routes (nothing of chats.js or worldinfo.js switched yet):
+- Compat: upstream exports `readWorldInfoFile(directories, worldInfoName, allowDummy)` from
+  `src/endpoints/worldinfo.js`, synchronous (its own `characters.js` and server plugins call it so). Engine reads are
+  async. (a) same name and arguments, answering a Promise of the same value (sync callers reading `.entries`
+  break); (b) kept synchronous over the engine (a sync read in the binding, a Rust change); (c) other?
+- `/save`, `/group/save` with a `file_name` / `id` (and `unique`) other than the current chat (upstream's
+  `saveChat({ chatName, mesId })` for a branch or checkpoint): (a) the name ignored, saved onto the session's
+  conversation; (b) the name resolved (a bookmark or session found acts there; none found: a bookmark of that name,
+  upstream's suffix with `unique`, at the array's last message). And the answer's `file_name` / `chat_id`: the
+  session's compat identifier or the name sent?
+- `/import`, `/group/import`: how an imported chat is stored (e.g. its messages appended from the tree's root with no
+  session, twins matched, and a bookmark named after the import at its last message), or otherwise?
+- Our routes no page code calls: `/node/metadata` (replaces a node's metadata with an `expected_integrity` check; no
+  engine counterpart), `/tree/branches`, `/labels`, `/at`, `/openings/ensure`: deleted, or mapped (to what)?
+- `/message/end-path` with `end_at_anchor` (sent by `chat-store.js`): (a) `deletePath` from the first message; (b)
+  `deleteAlternatives` of the openings (the whole tree); (c) `goTo` the root (a new chat, nothing deleted)?
+- `/search` takes `page` / `page_size` (offset paging); `searchChatList` pages by cursor: (a) read through to the
+  offset (O(page × size) a request); (b) cursor paging, our page's caller changed in the page step?
+- `/new` for a character: `chat` '' (a card greeting with no row) → `newChat`, a stored greeting's id → `goTo` that
+  opening? `replace` deleting the replaced chat → deleting the bookmark of that name (answer 3: messages stay)? For a
+  group, the answer's `chat_id` and `chats` → the session's compat identifier and `chatList`?
+
 **Stage 5 measured against** (design §6 and §8, today = redesign 5f at 5bddd179b; harness `walrepro/measure5f.mjs`
 for today, the stage 2 harness for the engine):
 
