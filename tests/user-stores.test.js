@@ -101,6 +101,19 @@ describe('user stores', () => {
         const s = await stores.userStore({ root });
         const [card] = /** @type {any[]} */ (await s.lib.cards(['Alice.png']));
         expect(card.data.name).toBe('Alice');
+        // Rows show the chats' stats: the newest message's time and the chat size; a tree with none, 0.
+        const rows = (await s.lib.query({ sortField: 'name', sortOrder: 'asc', limit: 50 })).rows;
+        const row = (/** @type {string} */ id) => rows.find((/** @type {any} */ r) => r.id === id);
+        expect(row('Alice.png').date_last_chat).toBeGreaterThan(0);
+        expect(row('Alice.png').chat_size).toBeGreaterThan(0);
+        expect(row('Alice.png').item.chat_size).toBe(row('Alice.png').chat_size);
+        expect(row('Cara.png')).toMatchObject({ date_last_chat: 0, chat_size: 0 });
+        const hashes = (await s.lib.query({ sortField: 'name', sortOrder: 'asc', limit: 50, wantHashes: true })).hashRows;
+        expect(hashes.find((/** @type {any} */ r) => r.id === 'Alice.png').chat_size).toBe(row('Alice.png').chat_size);
+        const [groupId] = await s.lib.ids(1, ['1700000000001']);
+        const groupStats = (await s.lib.chatStats([/** @type {bigint} */ (groupId)])).get(/** @type {bigint} */ (groupId));
+        expect(groupStats?.chat_size).toBeGreaterThan(0);
+        expect(groupStats?.date_last_chat).toBeGreaterThan(0);
         await stores.resumeStoreWork([{ root }]);
     });
 });
