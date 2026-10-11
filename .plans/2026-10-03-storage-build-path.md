@@ -2691,7 +2691,7 @@ warning in `generation.js`; tests in `src/chat-edits.test.js`, native and wasm):
   the session moved off the page's path (the cut on the page's path), a malformed base; no base: a lacking
   alternative deleted.
 
-Stop (10-11), third, before the cut (nothing of it started):
+Stop (10-11), third, before the cut, answered (coordinator, 10-11) below:
 - `convert-to-engine.js` has to run at the end of the backlog, and the cut's tests and e2e setup run it on the
   synthetic old user, but it and its fixture import what the cut deletes: `old-chats.js` / `chats.js` take
   `descendDefaultSync`, `getPathSync`, `resolveNodeOrName` (`message-tree-db.js`), `createMessageStatsTableSync`
@@ -2708,6 +2708,11 @@ Stop (10-11), third, before the cut (nothing of it started):
   and moves or deletes the chat route suites (`tests/chats-openings-land.test.js` among them): all four carry
   someone else's uncommitted changes, which I was told to leave. Deleted in the cut commit (`land.sh` leaves a
   modified file on disk, then untracked), or kept until their owner lands or drops those changes?
+
+Answered: `kept below` stands as its own reason. (1) (a): the modules the converter and its fixture need stay,
+reached by nothing the server loads, and go in the commit that deletes the converter after it has run on the user's
+data (section 6). (2) The four files with someone else's changes: the coordinator is asking {{user}} whose they are;
+until then the cut neither deletes nor moves them, and its notes list where it would have touched them.
 
 **Stage 5 measured against** (design §6 and §8, today = redesign 5f at 5bddd179b; harness `walrepro/measure5f.mjs`
 for today, the stage 2 harness for the engine):
@@ -2862,7 +2867,11 @@ Run once, after the whole backlog, with the server stopped ({{user}}: "no reason
 queue is done"), each deleted in its own commit once run. The old prompt itemization files have no script of their
 own: `convert-to-engine.js` converts them (5e).
 1. `check-tags-json-migrated.js`: reads only the old `character-metadata.sqlite`.
-2. `convert-to-engine.js` (stage 5): `--dry-run`, then `--apply --server-stopped`.
+2. `convert-to-engine.js` (stage 5): `--dry-run`, then `--apply --server-stopped`. Deleted after its run together
+   with the old-format modules it and its fixture read, which the cut kept for it unreached by the server
+   (`character-metadata-db.js`, `message-tree-db.js`, `message-stats.js`, `character-card-reader.js`,
+   `character-store-schema.js`, `sqlite-engine.js`, `itemization-store.js`, `restore-group-chat-migration-losses.js`,
+   `cleanup-zztest-leftovers.js` and what they import), and `tests/convert-to-engine.*`.
 3. `check-chat-metadata-cache.js` (rewritten at 5f): reads the engine; `--apply` deletes `chat-metadata.sqlite` only
    when nothing is found only there.
 4. `convert-saved-views-to-engine.js` (6).
