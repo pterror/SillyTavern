@@ -156,7 +156,7 @@ pub fn messages(view: &View, ids: &[u64]) -> Result<Js, StoreError> {
             _ => unreachable!("checked by Record::new"),
         };
         let depth = match &depths[j] {
-            Some(b) => Js::Big(parse_varints::<1>(b)?[0]),
+            Some(b) => Js::Big(parse_varints::<2>(b)?[0]),
             None => Js::Null,
         };
         out[i] = Js::Obj(vec![

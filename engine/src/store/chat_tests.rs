@@ -428,6 +428,26 @@ impl Model {
                     Some(self.depth(*id)),
                     "depth of {id}"
                 );
+                // Its jump is its ancestor at the jump depth, and ancestry through jumps is the model's.
+                let d = self.depth(*id);
+                let jd = sessions::jump_depth(d);
+                let mut want = Some(*id);
+                for _ in 0..d - jd {
+                    want = want.and_then(|c| self.msgs[&c].parent);
+                }
+                assert_eq!(
+                    sessions::depth_jump(v, *id)?,
+                    Some((d, if jd == 0 { None } else { want })),
+                    "jump of {id}"
+                );
+                for other in self.msgs.keys().copied().filter(|o| o % 7 == id % 7) {
+                    let mut reads = 0;
+                    assert_eq!(
+                        sessions::ancestor_or_self(v, other, *id, &mut reads)?,
+                        Some(self.below(*id, other)),
+                        "{other} above {id}"
+                    );
+                }
                 assert_eq!(
                     sessions::branches_from(v, *id)?,
                     self.branches.get(id).cloned().unwrap_or_default(),
@@ -2014,4 +2034,31 @@ fn history_steps_move_a_cursor_and_opening_choices_last_until_an_opening_is_chos
     drop(s);
     let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
     model.check(&s);
+}
+
+#[test]
+fn jump_depths_are_myers_skew_binary_and_reach_any_depth_in_log_steps() {
+    // The definition: a message jumps to its parent's jump's jump when the parent's two jumps are equally long,
+    // else to its parent.
+    let mut j = vec![0u64];
+    for n in 1..100_000u64 {
+        let p = n - 1;
+        let (jp, jjp) = (j[p as usize], j[j[p as usize] as usize]);
+        j.push(if p - jp == jp - jjp { jjp } else { p });
+        assert_eq!(sessions::jump_depth(n), j[n as usize], "{n}");
+    }
+    // Reaching depth `d` from depth `v`: jumps that don't pass it, else parent steps.
+    let mut most = 0;
+    for v in (1..100_000u64).step_by(997) {
+        for d in (0..v).step_by(331) {
+            let (mut at, mut steps) = (v, 0);
+            while at > d {
+                steps += 1;
+                let jd = sessions::jump_depth(at);
+                at = if jd >= d { jd } else { at - 1 };
+            }
+            most = most.max(steps);
+        }
+    }
+    assert!(most <= 3 * 17, "{most}");
 }

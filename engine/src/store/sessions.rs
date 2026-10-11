@@ -215,7 +215,7 @@ pub fn user_in_tree(
 
 /// A message's depth (an opening is 1).
 pub fn depth(view: &View, m: u64) -> Result<Option<u64>, StoreError> {
-    Ok(get_vals::<1>(view, &key::id(DEPTH, m))?.map(|[d]| d))
+    Ok(get_vals::<2>(view, &key::id(DEPTH, m))?.map(|[d, _]| d))
 }
 
 /// Whether a depth rewrite is under way in the tree (its depths are estimates meanwhile).
@@ -1114,16 +1114,105 @@ pub fn session_gone(view: &View, out: &mut Out, s: u64) -> Result<(), StoreError
     Ok(())
 }
 
-// ---- depths ----
+// ---- depths and jump pointers ----
 
-/// A new message's depth: its parent's plus one.
-pub fn appended(view: &View, out: &mut Out, m: u64, parent: Option<u64>) -> Result<(), StoreError> {
-    let d = match parent {
-        Some(p) => depth(view, p)?.unwrap_or(0) + 1,
-        None => 1,
+/// The depth a message at depth `d` jumps to (Myers' skew-binary jump pointers, depth 0 the tree's root): `d` less
+/// the smallest term of its greedy skew-binary sum (terms `2^k - 1`). An ancestor at any depth is reached in
+/// O(log d) jumps and parent steps.
+pub fn jump_depth(d: u64) -> u64 {
+    let mut m = d;
+    let mut last = 0;
+    while m > 0 {
+        // The largest 2^k - 1 at most m.
+        let k = 64 - (m + 1).leading_zeros() - 1;
+        last = (1u64 << k) - 1;
+        m -= last;
+    }
+    d - last
+}
+
+/// A message's depth and its jump (the ancestor at `jump_depth(depth)`; None: the tree's root).
+pub fn depth_jump(view: &View, m: u64) -> Result<Option<(u64, Option<u64>)>, StoreError> {
+    Ok(get_vals::<2>(view, &key::id(DEPTH, m))?.map(|[d, j]| (d, unptr(j))))
+}
+
+/// A message's depth entry under `parent`: its depth and its jump, from the parent's (and the parent's jump's).
+fn depth_entry(view: &View, parent: Option<u64>) -> Result<Vec<u8>, StoreError> {
+    let Some(p) = parent else {
+        return Ok(varints(&[1, 0]));
     };
-    out.put(key::id(DEPTH, m), varints(&[d]));
+    let (dp, jp) = depth_jump(view, p)?.unwrap_or((0, None));
+    let d = dp + 1;
+    let jd = jump_depth(d);
+    let jump = if jd == 0 {
+        None
+    } else if jd == dp {
+        Some(p)
+    } else {
+        // jump_depth(d) is the parent's jump's jump.
+        let jp = jp.ok_or_else(|| bad("a jump pointer"))?;
+        depth_jump(view, jp)?.and_then(|(_, j)| j)
+    };
+    Ok(varints(&[d, ptr(jump)]))
+}
+
+/// A new message's depth and jump: from its parent's.
+pub fn appended(view: &View, out: &mut Out, m: u64, parent: Option<u64>) -> Result<(), StoreError> {
+    out.put(key::id(DEPTH, m), depth_entry(view, parent)?);
     Ok(())
+}
+
+/// From message `v` (at depth `dv`, jumping to `jv`) up to its ancestor at depth `to` (at most `dv`): that
+/// ancestor and its jump, through jumps that don't pass `to` and parent steps otherwise (O(log(dv - to)) point
+/// reads, each counted in `reads`). None when a message on the way is gone.
+pub fn climb(
+    view: &View,
+    mut v: u64,
+    mut dv: u64,
+    mut jv: Option<u64>,
+    to: u64,
+    reads: &mut u64,
+) -> Result<Option<(u64, Option<u64>)>, StoreError> {
+    while dv > to {
+        let jd = jump_depth(dv);
+        v = match jv {
+            Some(j) if jd >= to => {
+                dv = jd;
+                j
+            }
+            _ => {
+                *reads += 1;
+                let Some((_, Some(parent))) = chat::message_entry(view, v)? else {
+                    return Ok(None);
+                };
+                dv -= 1;
+                parent
+            }
+        };
+        *reads += 1;
+        jv = match depth_jump(view, v)? {
+            Some((_, j)) => j,
+            None => return Ok(None),
+        };
+    }
+    Ok(Some((v, jv)))
+}
+
+/// Whether `m` is `p` or one of its ancestors, through jump pointers (`climb`). None when either is gone.
+pub fn ancestor_or_self(
+    view: &View,
+    m: u64,
+    p: u64,
+    reads: &mut u64,
+) -> Result<Option<bool>, StoreError> {
+    *reads += 2;
+    let (Some((dm, _)), Some((dv, jv))) = (depth_jump(view, m)?, depth_jump(view, p)?) else {
+        return Ok(None);
+    };
+    if dm > dv {
+        return Ok(Some(false));
+    }
+    Ok(climb(view, p, dv, jv, dm, reads)?.map(|(v, _)| v == m))
 }
 
 fn set_cursor(out: &mut Out, mv: u64, tree: u64, root: u64, next: Option<u64>) {
@@ -1248,12 +1337,9 @@ pub fn depth_step(view: &View, out: &mut Out) -> Result<bool, StoreError> {
             next = None;
         } else {
             let (_, r) = require_message(&lv, n)?;
-            let d = match parent_of(&lv, n, &r)? {
-                Some(p) => depth(&lv, p)?.unwrap_or(0) + 1,
-                None => 1,
-            };
-            if depth(&lv, n)? != Some(d) {
-                o.put(key::id(DEPTH, n), varints(&[d]));
+            let entry = depth_entry(&lv, parent_of(&lv, n, &r)?)?;
+            if lv.get(&key::id(DEPTH, n))?.as_deref() != Some(entry.as_slice()) {
+                o.put(key::id(DEPTH, n), entry);
             }
             next = walk_next(&lv, n, root, tree)?;
         }
