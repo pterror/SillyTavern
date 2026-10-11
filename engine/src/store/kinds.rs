@@ -95,6 +95,9 @@ pub mod key {
     pub const BOOKMARK_AT: u64 = 106;
     pub const BOOKMARKS_AT: u64 = 107;
     pub const TREE_BOOKMARK: u64 = 108;
+    /// Per bookmark at a tree's root: the tree. Per (tree, bookmark): a bookmark at its root.
+    pub const BOOKMARK_ROOT: u64 = 109;
+    pub const ROOT_BOOKMARKS: u64 = 110;
     /// The library (`store::library`).
     /// Per entity: its `entityCreate` record.
     pub const ENTITY: u64 = 50;

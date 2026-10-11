@@ -29,6 +29,9 @@ use unicode_normalization::UnicodeNormalization;
 pub const CHARACTER: u64 = 0;
 pub const GROUP: u64 = 1;
 pub const TAG: u64 = 2;
+/// An unowned tree: messages whose character or group is gone, kept under their old owner key until a character or
+/// group created with that key takes the id (a create in its place, in one commit with this entity's delete).
+pub const TREE: u64 = 6;
 
 /// Field codes the derivers read: an entity's name, a character's lorebook, a tag's folder type.
 pub const NAME: u64 = 1;
@@ -585,7 +588,7 @@ impl Deriver for EntityCreate {
             Value::Time(t) => t,
             _ => unreachable!("checked by Record::new"),
         };
-        if kind > books::ENTRY {
+        if kind > TREE {
             return Err(StoreError::Refused(format!("no entity type {kind}")));
         }
         if view.get(&key::id(key::ENTITY, e))?.is_some() {

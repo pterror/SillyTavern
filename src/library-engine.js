@@ -55,6 +55,15 @@ const GROUP_KEY_PREFIX = 'group:';
  */
 const GROUP_READ_KEYS = new Set(['id', 'fav', 'tag_ids', 'date_added', 'create_date', 'date_last_chat', 'chat_size', 'chat_id', 'chats']);
 
+/**
+ * The owner key a character's chats were kept under before the engine (upstream's chats folder name): an unowned
+ * tree with this key is the character's once it is created.
+ * @param {string} avatar
+ */
+export function ownerKeyOf(avatar) {
+    return String(avatar).replace('.png', '');
+}
+
 /** `cardHash` kinds. */
 export const HASH = Object.freeze({ identity: 0, content: 1, avatar: 2, avatarIdentity: 3 });
 
@@ -362,8 +371,8 @@ export class LibraryEngine {
         return this.serialized(TYPE.character, avatar, async () => {
             const card = JSON.parse(cardJson);
             const stored = await this.entity(TYPE.character, avatar);
-            const id = stored ? stored.id : this.nextId++;
             const records = [];
+            const id = stored ? stored.id : await this.newId(ownerKeyOf(avatar), records);
             if (!stored) {
                 const seeded = fav ?? !!(card?.fav ?? card?.data?.extensions?.fav);
                 if (seeded) records.push({ kind: 'fav', entity: id, fav: true });
@@ -438,8 +447,8 @@ export class LibraryEngine {
         const key = String(group.id);
         return this.serialized(TYPE.group, key, async () => {
             const stored = await this.entity(TYPE.group, key);
-            const id = stored ? stored.id : this.nextId++;
             const records = [];
+            const id = stored ? stored.id : await this.newId(key, records);
             const fav = normalizeFav(group.fav);
             if (stored ? stored.fav !== fav : fav) records.push({ kind: 'fav', entity: id, fav });
             records.push(...valueRecords(id, stored, groupValues(group)));
@@ -447,6 +456,20 @@ export class LibraryEngine {
             if (records.length > 0) await this.store.commit(records);
             return { id, records: records.length };
         });
+    }
+
+    /**
+     * A new character's or group's id: the id of the unowned tree kept under its owner key (its messages become
+     * its own; `records` gets that entity's delete first), else a new one.
+     * @param {string} ownerKey
+     * @param {object[]} records
+     * @returns {Promise<bigint>}
+     */
+    async newId(ownerKey, records) {
+        const [tree] = await this.ids(TYPE.tree, [ownerKey]);
+        if (tree === null) return this.nextId++;
+        records.push({ kind: 'entityDelete', entity: tree });
+        return tree;
     }
 
     /**
