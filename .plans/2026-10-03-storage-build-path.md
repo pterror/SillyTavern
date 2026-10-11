@@ -2836,6 +2836,25 @@ the store or a temp file, removed when it ends); (b) resolved at `/prepare` into
 design, against answer 13); (c) walked during the run with ranges and `all` resolved at the start into memory
 (O(selection): breaks the Scale rule for "select all"); (d) other (e.g. a run reading one fixed snapshot, a binding
 change)?
+World info step, built in the tree: `books::world_book` (one view, entries in place order, `originalData`),
+`Store::world_book`, binding `Store.openSync(dir)` / `store.worldBookSync(key)` and a per-directory registry so `open`
+and `openSync` share one store; `engineStoreHere(directories)` in `user-stores.js` (the same store `userStore()`
+hands out); `readWorldInfoFile` synchronous, upstream's signature, through it; `readWorldInfo` its async twin; every
+route onto `lib.books`; `candidate-resolution.js` async; `sprites.js` awaits; ours removed (`forgetWorldInfoMiss`,
+`isSidecarWorldInfo`, `getFreeWorldEntryUid`). Tests: worldinfo endpoint 32/32, user stores 5/5, `engine/store.test.js`
+29/29, `books_tests` 6/6. From the plan, no question: the engine-vs-old block of `world-info-engine.test.js` loses
+its old side (inventory, Tests); `convert-world-info-to-sidecar.js`, its test and
+`worldinfo-import-write-failure.test.js` go in step 4 (deleted unrun). Still to apply in files other steps hold:
+`content-manager.js`, `users.js`, `settings.js` (`world_names` from `books.list()`), `characters.js`. Stopped on two
+(eleventh stop):
+- `convertToV2` reads the world book, so `charaFormatData` and `getCharaCardV2` would turn async too (callers in
+  `characters.js`, `local-import-classify.js`, `library-engine.js`' `writeCard`, the converter's `records.js` and the
+  kept `character-metadata-db.js`). (a) all async, every caller (the converter's too) updated; (b) kept synchronous,
+  `charaFormatData` reading through the synchronous book read and a synchronous link check (one more binding
+  method); (c) an async one for the server, the synchronous one kept for the converter? Until then
+  `charaFormatData`'s embedded-link check compares a Promise (`getCharacterWorldLink` is async now): the card is
+  stored as sent, but "doesn't exist" is printed for a link naming its own embedded book.
+- `POST /api/worldinfo/search` with `limit` absent or not a positive integer: 400, a default (which), or passed on?
 
 **Stage 5 measured against** (design §6 and §8, today = redesign 5f at 5bddd179b; harness `walrepro/measure5f.mjs`
 for today, the stage 2 harness for the engine):
