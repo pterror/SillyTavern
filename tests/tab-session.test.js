@@ -63,3 +63,35 @@ describe('the tab\'s session', () => {
         expect(sessionHeaderValue()).toBe('none');
     });
 });
+
+describe('answers about the tab\'s session', () => {
+    beforeEach(() => {
+        globalThis.localStorage = storage();
+        globalThis.sessionStorage = storage();
+    });
+
+    test('a moved session becomes the tab\'s; a gone one leaves it with none; both read from fetch and jQuery answers', async () => {
+        const { observeSessionAnswers, SESSION_MOVED_HEADER, SESSION_GONE_HEADER } = await import('../public/scripts/tab-session.js');
+        /** @type {Record<string, string>} */
+        let next = {};
+        /** @type {Function | null} */
+        let onAjax = null;
+        const scope = {
+            fetch: async () => ({ headers: new Map(Object.entries(next)) }),
+            document: {},
+            jQuery: () => ({ ajaxComplete: (/** @type {Function} */ f) => { onAjax = f; } }),
+        };
+        observeSessionAnswers(scope);
+        next = { [SESSION_MOVED_HEADER]: 's6' };
+        await scope.fetch();
+        expect(sessionHeaderValue()).toBe('s6');
+        next = {};
+        await scope.fetch();
+        expect(sessionHeaderValue()).toBe('s6');
+        next = { [SESSION_GONE_HEADER]: '1' };
+        await scope.fetch();
+        expect(sessionHeaderValue()).toBe('none');
+        /** @type {any} */ (onAjax)(null, { getResponseHeader: (/** @type {string} */ n) => (n === SESSION_MOVED_HEADER ? 's7' : null) });
+        expect(sessionHeaderValue()).toBe('s7');
+    });
+});
