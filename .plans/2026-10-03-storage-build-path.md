@@ -2691,6 +2691,24 @@ warning in `generation.js`; tests in `src/chat-edits.test.js`, native and wasm):
   the session moved off the page's path (the cut on the page's path), a malformed base; no base: a lacking
   alternative deleted.
 
+Stop (10-11), third, before the cut (nothing of it started):
+- `convert-to-engine.js` has to run at the end of the backlog, and the cut's tests and e2e setup run it on the
+  synthetic old user, but it and its fixture import what the cut deletes: `old-chats.js` / `chats.js` take
+  `descendDefaultSync`, `getPathSync`, `resolveNodeOrName` (`message-tree-db.js`), `createMessageStatsTableSync`
+  (`message-stats.js`), `restoreGroupChatLosses` (`restore-group-chat-migration-losses.js`), `planRepoint` and the
+  zztest constants (`cleanup-zztest-leftovers.js`); `old-library.js` takes `assembleCardsSync`, `cardLayoutOf`
+  (`character-card-reader.js`), `defineCharacterStoreFunctions` (`character-store-schema.js`), `openNativeDatabase`
+  (`sqlite-engine.js`) and imports `character-metadata-db.js`; the CLI takes `alternativesFromMessage`,
+  `identityHashOf` (`message-tree-db.js`); `tests/convert-to-engine.fixture.js` builds the old stores through
+  `character-metadata-db.js`, `message-tree-db.js` and `itemization-store.js`. Which: (a) those modules stay,
+  reached by nothing in the server, and go with the converter's own deletion commit; (b) what the converter reads
+  with moves into `src/migrations/convert-to-engine/` and the rest goes, the fixture's old-store builder then kept as
+  test-only code (or replaced by something else, e.g. a committed synthetic old user directory)?
+- The cut deletes `src/message-tree-db.js`, `src/message-stats.js` and `src/migrations/upgrade-message-stats.js`,
+  and moves or deletes the chat route suites (`tests/chats-openings-land.test.js` among them): all four carry
+  someone else's uncommitted changes, which I was told to leave. Deleted in the cut commit (`land.sh` leaves a
+  modified file on disk, then untracked), or kept until their owner lands or drops those changes?
+
 **Stage 5 measured against** (design §6 and §8, today = redesign 5f at 5bddd179b; harness `walrepro/measure5f.mjs`
 for today, the stage 2 harness for the engine):
 
