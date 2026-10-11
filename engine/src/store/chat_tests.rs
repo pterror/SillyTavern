@@ -2552,3 +2552,61 @@ fn a_delete_beside_a_move_dooms_only_its_subtree_while_depths_are_rewritten() {
     drop(s);
     fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn a_send_key_of_a_message_being_deleted_stores_a_new_message() {
+    let dir = temp_dir("prune-send-key");
+    let (s, mut model) = open_with_actors(&dir);
+    // A chain longer than a slice, its last message sent with a key.
+    let n = (prune::PRUNE_SLICE * 2) as u64;
+    let key = b"send-key".to_vec();
+    let mut recs = vec![append(&mut model, 1, None, 0, "root", None, None, 1)];
+    for i in 1..n {
+        let sk = (i == n - 1).then(|| key.clone());
+        recs.push(append(
+            &mut model,
+            1,
+            Some(i - 1),
+            i as i64,
+            "x",
+            sk,
+            None,
+            1,
+        ));
+    }
+    s.commit_wait(recs).unwrap();
+    let sent = |s: &Store| {
+        s.derived(|v| super::chat_read::sent(v, 1, std::slice::from_ref(&key)))
+            .unwrap()
+    };
+    assert_eq!(sent(&s), Js::Arr(vec![Js::Big(n - 1)]));
+    model.subtree_gone(1);
+    commit_without_slices(
+        &s,
+        vec![rec(
+            "subtreeDelete",
+            vec![Value::Id(1), Value::Absent, Value::Absent],
+        )],
+    );
+    // While the delete is pending the key names nothing, and sending it again stores a new message.
+    assert_eq!(sent(&s), Js::Arr(vec![Js::Null]));
+    s.commit_wait(vec![append(
+        &mut model,
+        1,
+        Some(0),
+        n as i64,
+        "again",
+        Some(key.clone()),
+        None,
+        1,
+    )])
+    .unwrap();
+    // The delete finishes (on open, as after a crash) and leaves the new message's key.
+    s.abandon();
+    std::mem::forget(s);
+    let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
+    model.check(&s);
+    assert_eq!(sent(&s), Js::Arr(vec![Js::Big(n)]));
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}
