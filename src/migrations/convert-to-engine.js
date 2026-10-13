@@ -547,7 +547,7 @@ export async function convert(o) {
                     report.problems.push(`owner ${ownerId}: message(s) whose stored JSON can't be read: ${counts.unreadable.join(', ')}`);
                     if (o.apply) throw new Stop(report);
                 }
-                checks.push({ input, tree: t.id, files: fileItemizations });
+                checks.push({ input, tree: t.id, itemized: new Set(fileItemizations.keys()) });
                 for (const r of counts.later) afterLoad.push(r);
                 for (const a of counts.active) conversations.push(a);
                 for (const node of counts.badSendKeys) warn(report, 'send keys that aren\'t UUIDs (not converted: a draft re-sent with one may store the message again)', `${t.kind} ${ownerId} message ${node}`);
