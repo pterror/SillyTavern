@@ -209,6 +209,39 @@ describe('convert-to-engine', () => {
         }
     });
 
+    test('an active chat naming a chat converted from its file points there', async () => {
+        const dataRoot = await oldUser();
+        const root = path.join(dataRoot, 'u');
+        // Cara has no rows in the tree; her active chat is a file holding only its header.
+        fs.mkdirSync(path.join(root, 'chats', 'Cara'), { recursive: true });
+        fs.writeFileSync(path.join(root, 'chats', 'Cara', 'Cara empty.jsonl.pre-migration'), JSON.stringify({ user_name: 'You', character_name: 'x', chat_metadata: {} }) + '\n');
+        const { USER_DIRECTORY_TEMPLATE } = await import('../src/constants.js');
+        /** @type {any} */
+        const directories = { root };
+        for (const [k, v] of Object.entries(USER_DIRECTORY_TEMPLATE)) directories[k] = path.join(root, /** @type {string} */ (v));
+        const meta = await import('../src/character-metadata-db.js');
+        await meta.setCharacterActiveChat(directories, 'Cara.png', 'Cara empty');
+        meta.disposeMetadataStores();
+
+        const applied = await run(dataRoot, { apply: true, serverStopped: true });
+        expect(applied.text).not.toContain('PROBLEM');
+        expect(applied.code).toBe(0);
+        expect(applied.text).not.toMatch(/active chats that name nothing in the tree[^\n]*\n(\[convert-to-engine\] {3}[^\n]*\n)*\[convert-to-engine\] {3}character Cara/);
+        const { LibraryEngine } = await import('../src/library-engine.js');
+        const { ChatEngine } = await import('../src/chat-engine.js');
+        const { libraryPeople } = await import('../src/chat-people.js');
+        const lib = await LibraryEngine.open(engine, path.join(root, convert.STORE_DIR));
+        try {
+            const people = libraryPeople(lib);
+            const chats = await ChatEngine.open(lib.store, people);
+            const [cara] = await people.trees([{ avatar: 'Cara.png' }]);
+            const landed = await chats.resolveSession({ tree: cara, user: 'u', header: undefined });
+            expect(await chats.pointer(/** @type {string} */ (landed.session))).toEqual({ tree: cara, at: null });
+        } finally {
+            await lib.close();
+        }
+    });
+
     test('owners with no character or group are left out unless kept', async () => {
         const dataRoot = await oldUser();
         const applied = await run(dataRoot, { apply: true, serverStopped: true, keepOrphans: true });
