@@ -8,6 +8,7 @@ use std::sync::atomic::AtomicU64;
 
 use super::books::{BOOK, ENTRY, OWNED};
 use super::chat;
+use super::tags;
 use super::library::{CHARACTER, GROUP, TAG, item_field};
 use super::*;
 use crate::keyspace::val::{counter_value, map_pairs};
@@ -188,6 +189,10 @@ impl Model {
             let u = format!("\"{}\"", self.words());
             out.push(json(e, 100, &u));
             ent.jsons.insert(100, u);
+        }
+        if kind == TAG {
+            out.push(json(e, tags::DEFINED, ""));
+            ent.jsons.insert(tags::DEFINED, String::new());
         }
         let k = ent.key.clone();
         self.ents.insert(e, ent);
@@ -429,10 +434,8 @@ fn search_entries(s: &Store) -> Vec<(Vec<u8>, String)> {
     let mut out = Vec::new();
     for st in [
         key::SEARCH_POSTING,
-        key::SEARCH_DOC_FREQ,
         key::SEARCH_LENGTH,
-        key::SEARCH_TERM_DOCS,
-        key::SEARCH_FIELD_TOKENS,
+        key::SEARCH_TERM_COUNTS.id(),
         key::SEARCH_DOCS,
     ] {
         let p = key::of(st);
@@ -447,6 +450,8 @@ fn search_entries(s: &Store) -> Vec<(Vec<u8>, String)> {
                     continue;
                 }
                 format!("{pairs:?}")
+            } else if st == key::SEARCH_TERM_COUNTS.id() {
+                format!("{:?}", crate::keyspace::val::map_counts(&v).unwrap())
             } else {
                 let n = counter_value(&v).unwrap();
                 if n == 0 {
@@ -473,6 +478,7 @@ fn query(scope: Scope, word: &str, fields: Option<Vec<u32>>) -> Query {
         order: Order::Relevance,
         limit: 1000,
         after: None,
+        weights: None,
         limits: Limits::default(),
     }
 }
@@ -585,6 +591,35 @@ fn found(s: &Store, q: &Query) -> BTreeSet<u64> {
     let f = s.search(q).unwrap();
     assert!(f.page_exact && f.total_exact, "{:?}", q.clauses);
     f.hits.iter().map(|h| h.doc).collect()
+}
+
+#[test]
+fn a_tags_name_is_searched_only_while_it_has_its_definition_marker() {
+    let d = temp_dir("marker");
+    let s = Store::open_in(&d, SMALL, pool()).unwrap();
+    let name = super::library::NAME;
+    let mark = |e| json(e, tags::DEFINED, "");
+    let tag = |w: &str| found(&s, &query(Scope::TAGS, w, None));
+    let none = BTreeSet::new();
+    s.commit_wait(vec![set(1, name, "quokka"), create(1, TAG, "k1")])
+        .unwrap();
+    assert_eq!(tag("quokka"), none);
+    assert!(search_entries(&s).is_empty());
+    s.commit_wait(vec![mark(1)]).unwrap();
+    assert_eq!(tag("quokka"), BTreeSet::from([1]));
+    s.commit_wait(vec![unset(1, tags::DEFINED)]).unwrap();
+    assert_eq!(tag("quokka"), none);
+    assert!(search_entries(&s).is_empty());
+    s.commit_wait(vec![set(1, name, "dragon")]).unwrap();
+    assert_eq!(tag("dragon"), none);
+    s.commit_wait(vec![mark(1)]).unwrap();
+    assert_eq!(tag("dragon"), BTreeSet::from([1]));
+    assert_eq!(tag("quokka"), none);
+    s.commit_wait(vec![set(2, name, "knight"), mark(2), create(2, TAG, "k2")])
+        .unwrap();
+    assert_eq!(tag("knight"), BTreeSet::from([2]));
+    drop(s);
+    fs::remove_dir_all(&d).unwrap();
 }
 
 #[test]

@@ -1,14 +1,15 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach, jest } from '@jest/globals';
-import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 
+import { setConfigFilePath } from '../src/util.js';
 import { character_world_link, resolveCharacterWorldLink } from '../public/scripts/character-world-link.js';
 
+setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
+
 // A card exported from upstream carries both a link name (data.extensions.world) and the embedded book
-// (character_book) under that name. Importing it here never makes a World file from the embedded book, so
-// the link names a file that doesn't exist; prompts use the embedded book instead. Such a link counts as a
-// link to the embedded book: nothing looks the name up as a file or prints "doesn't exist" for it.
+// (character_book) under that name. Importing it here never makes a book from the embedded book, so
+// the link names a book that doesn't exist; prompts use the embedded book instead. Such a link counts as a
+// link to the embedded book: nothing reads the name as a book or prints "doesn't exist" for it.
 
 /** @type {typeof import('../src/endpoints/worldinfo.js')} */
 let worldinfo;
@@ -16,66 +17,45 @@ let worldinfo;
 let candidates;
 /** @type {typeof import('../src/character-card-normalize.js')} */
 let normalize;
-let tempDir;
-let worldsDir;
-/** @type {import('../src/users.js').UserDirectoryList} */
+/** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').convertedUser>>} */
+let user;
+/** @type {any} */
 let directories;
 
-const OLD_MTIME = new Date('2020-01-01T00:00:00Z');
-
 beforeAll(async () => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-character-world-link-'));
-    worldsDir = path.join(tempDir, 'worlds');
-    fs.mkdirSync(worldsDir, { recursive: true });
-    directories = /** @type {any} */ ({ worlds: worldsDir, root: tempDir });
-
+    user = await (await import('./converted-user.fixture.js')).convertedUser('st-character-world-link-');
+    directories = user.directories;
     worldinfo = await import('../src/endpoints/worldinfo.js');
     candidates = await import('../src/world-info/candidate-resolution.js');
     normalize = await import('../src/character-card-normalize.js');
 });
 
-afterAll(() => {
-    fs.rmSync(tempDir, { recursive: true, force: true });
+afterAll(async () => {
+    await user.close();
 });
 
-beforeEach(() => {
-    for (const entry of fs.readdirSync(worldsDir)) {
-        fs.rmSync(path.join(worldsDir, entry), { recursive: true, force: true });
-    }
+/** Each test starts with no books. */
+beforeEach(async () => {
+    const { lib } = user.store;
+    for (const book of await lib.books.list()) await lib.books.delete(book.file_id);
 });
 
 afterEach(() => {
     jest.restoreAllMocks();
 });
 
-/** Backdates the worlds directory, so a miss seen now is trusted until the directory changes. */
-function settleWorldsDir() {
-    fs.utimesSync(worldsDir, OLD_MTIME, OLD_MTIME);
-}
-
-let worldsWritten = 0;
-
 /**
- * Writes a World file by hand, in the stored format (a manifest naming one file per entry), and gives the directory an
- * old mtime of its own, so no remembered miss outlives the write.
+ * @param {string} name
+ * @param {object} entries
  */
-function writeWorld(name, entries) {
-    const entriesDir = path.join(worldsDir, `${name}.entries`);
-    fs.mkdirSync(entriesDir);
-    const named = Object.entries(entries).map(([uid, entry]) => {
-        fs.writeFileSync(path.join(entriesDir, `${uid}.json`), JSON.stringify(entry));
-        return { uid, file: `${uid}.json` };
-    });
-    fs.writeFileSync(path.join(worldsDir, `${name}.json`), JSON.stringify({ format: 'sidecar-v2', entries: named }));
-    const mtime = new Date(OLD_MTIME.getTime() + (++worldsWritten) * 60_000);
-    fs.utimesSync(worldsDir, mtime, mtime);
+async function writeWorld(name, entries) {
+    await user.store.lib.books.write(name, { entries });
 }
 
-/** Counts filesystem lookups of one book's file from now on. */
-function countLookups(name) {
-    const target = path.join(worldsDir, `${name}.json`);
-    const spy = jest.spyOn(fs, 'existsSync');
-    return () => spy.mock.calls.filter(([p]) => p === target).length;
+/** Counts the book reads of one name from now on. */
+function countReads(name) {
+    const spy = jest.spyOn(user.store.lib.books, 'read');
+    return () => spy.mock.calls.filter(([n]) => n === name).length;
 }
 
 function captureErrors() {
@@ -137,25 +117,23 @@ describe('resolveCharacterWorldLink', () => {
 });
 
 describe('getCharacterWorldLink (server)', () => {
-    test('answers from the worlds directory and never prints', () => {
-        settleWorldsDir();
-        writeWorld('On Disk', {});
+    test('answers from the stored books and never prints', async () => {
+        await writeWorld('Stored', {});
         const errors = captureErrors();
 
-        expect(worldinfo.getCharacterWorldLink(directories, card('On Disk', embeddedBook('On Disk')))).toBe(character_world_link.FILE);
-        expect(worldinfo.getCharacterWorldLink(directories, card('Link Embedded', embeddedBook('Link Embedded')))).toBe(character_world_link.EMBEDDED);
-        expect(worldinfo.getCharacterWorldLink(directories, card('Link Missing'))).toBe(character_world_link.MISSING);
-        expect(worldinfo.getCharacterWorldLink(directories, card(''))).toBe(character_world_link.NONE);
+        expect(await worldinfo.getCharacterWorldLink(directories, card('Stored', embeddedBook('Stored')))).toBe(character_world_link.FILE);
+        expect(await worldinfo.getCharacterWorldLink(directories, card('Link Embedded', embeddedBook('Link Embedded')))).toBe(character_world_link.EMBEDDED);
+        expect(await worldinfo.getCharacterWorldLink(directories, card('Link Missing'))).toBe(character_world_link.MISSING);
+        expect(await worldinfo.getCharacterWorldLink(directories, card(''))).toBe(character_world_link.NONE);
         expect(errors).not.toHaveBeenCalled();
     });
 });
 
 describe('generation (resolveWorldInfoCandidates) with a link to the embedded book', () => {
-    test('uses the embedded book, prints nothing and looks the name up once across repeated generations', async () => {
-        settleWorldsDir();
+    test('uses the embedded book, prints nothing and never reads the name as a book', async () => {
         const character = card('Harbor Lore', embeddedBook('Harbor Lore', 'The lighthouse keeper is named Ida.'));
         const errors = captureErrors();
-        const lookups = countLookups('Harbor Lore');
+        const reads = countReads('Harbor Lore');
 
         for (let i = 0; i < 3; i++) {
             const entries = await candidates.resolveWorldInfoCandidates({ directories, character });
@@ -165,11 +143,10 @@ describe('generation (resolveWorldInfoCandidates) with a link to the embedded bo
         }
 
         expect(printsFor(errors, 'Harbor Lore')).toBe(0);
-        expect(lookups()).toBe(1);
+        expect(reads()).toBe(0);
     });
 
-    test('the same name as an additional lorebook is not looked up as a file either', async () => {
-        settleWorldsDir();
+    test('the same name as an additional lorebook is not read as a book either', async () => {
         const character = card('Pier Lore', embeddedBook('Pier Lore'));
         const errors = captureErrors();
 
@@ -179,8 +156,8 @@ describe('generation (resolveWorldInfoCandidates) with a link to the embedded bo
         expect(printsFor(errors, 'Pier Lore')).toBe(0);
     });
 
-    test('a World file under the linked name wins over the embedded book', async () => {
-        writeWorld('Harbor File', { 0: { uid: 0, key: ['pier'], content: 'From the file', order: 5 } });
+    test('a book under the linked name wins over the embedded book', async () => {
+        await writeWorld('Harbor File', { 0: { uid: 0, key: ['pier'], content: 'From the file', order: 5 } });
         const character = card('Harbor File', embeddedBook('Harbor File', 'From the card'));
 
         const entries = await candidates.resolveWorldInfoCandidates({ directories, character });
@@ -188,8 +165,7 @@ describe('generation (resolveWorldInfoCandidates) with a link to the embedded bo
         expect(entries.map(e => [e.world, e.content])).toEqual([['Harbor File', 'From the file']]);
     });
 
-    test('a link with no file and no embedded book still reads the name, printing once, as before', async () => {
-        settleWorldsDir();
+    test('a link with no book and no embedded book still reads the name, printing once, as before', async () => {
         const character = card('Nowhere Lore');
         const errors = captureErrors();
 
@@ -206,11 +182,17 @@ describe('card save (charaFormatData) with a link to the embedded book', () => {
         return { ch_name: 'Keeper', world, json_data: JSON.stringify(cardJson) };
     }
 
-    test('keeps the card\'s embedded book as sent and prints nothing', () => {
-        settleWorldsDir();
+    /** Counts the synchronous whole-book reads from now on. */
+    async function countBookReads() {
+        const { engineStoreHere } = await import('../src/user-stores.js');
+        const spy = jest.spyOn(engineStoreHere(directories), 'worldBookSync');
+        return () => spy.mock.calls.length;
+    }
+
+    test('keeps the card\'s embedded book as sent, reads no book and prints nothing', async () => {
         const book = embeddedBook('Keeper Lore', 'Kept as sent');
         const errors = captureErrors();
-        const lookups = countLookups('Keeper Lore');
+        const reads = await countBookReads();
 
         for (let i = 0; i < 2; i++) {
             const saved = normalize.charaFormatData(saveBody('Keeper Lore', card('Keeper Lore', book)), directories);
@@ -219,11 +201,11 @@ describe('card save (charaFormatData) with a link to the embedded book', () => {
         }
 
         expect(printsFor(errors, 'Keeper Lore')).toBe(0);
-        expect(lookups()).toBe(1);
+        expect(reads()).toBe(0);
     });
 
-    test('a World file under the linked name still replaces the card\'s book, as upstream', () => {
-        writeWorld('Keeper File', { 0: { uid: 0, key: ['pier'], content: 'From the file', order: 5 } });
+    test('a World file under the linked name still replaces the card\'s book, as upstream', async () => {
+        await writeWorld('Keeper File', { 0: { uid: 0, key: ['pier'], content: 'From the file', order: 5 } });
 
         const saved = normalize.charaFormatData(saveBody('Keeper File', card('Keeper File', embeddedBook('Keeper File', 'From the card'))), directories);
 
@@ -232,7 +214,6 @@ describe('card save (charaFormatData) with a link to the embedded book', () => {
     });
 
     test('a link with no file and no embedded book still reads the name, printing once, as before', () => {
-        settleWorldsDir();
         const errors = captureErrors();
 
         const saved = normalize.charaFormatData(saveBody('Nowhere Saved', card('Nowhere Saved')), directories);

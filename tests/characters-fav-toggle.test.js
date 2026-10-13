@@ -1,32 +1,31 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals';
-import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 
 // /api/characters/fav with `toggle: true`: the server flips what it has stored, so the page needs no copy of the
 // character (bulk fav on characters the page doesn't hold).
 
-/** @type {typeof import('../src/character-metadata-db.js')} */
-let metadataDb;
+/** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
+let user;
 /** @type {import('node:http').Server} */
 let server;
 let baseUrl;
 
 /** @type {import('../src/users.js').UserDirectoryList} */
 let directories;
+let TYPE;
 
 beforeAll(async () => {
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
 
-    metadataDb = await import('../src/character-metadata-db.js');
+    ({ TYPE } = await import('../src/library-codes.js'));
     const { router } = await import('../src/endpoints/characters.js');
 
     const express = (await import('express')).default;
     const app = express();
     app.use(express.json());
     app.use((req, res, next) => {
-        req.user = { directories, profile: { handle: `test-user-${path.basename(directories.root)}` } };
+        req.user = user.user;
         next();
     });
     app.use('/api/characters', router);
@@ -37,24 +36,13 @@ beforeAll(async () => {
 
 afterAll(() => new Promise(resolve => server.close(resolve)));
 
-beforeEach(() => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-characters-fav-toggle-test-'));
-    directories = /** @type {any} */ ({
-        root: tempDir,
-        characters: path.join(tempDir, 'characters'),
-        chats: path.join(tempDir, 'chats'),
-        groups: path.join(tempDir, 'groups'),
-        groupChats: path.join(tempDir, 'groupChats'),
-    });
-    for (const dir of [directories.characters, directories.chats, directories.groups, directories.groupChats]) {
-        fs.mkdirSync(dir, { recursive: true });
-    }
+beforeEach(async () => {
+    user = await (await import('./converted-user.fixture.js')).emptyUser('st-characters-fav-toggle-test-');
+    ({ directories } = user);
+    globalThis.DATA_ROOT = user.dataRoot;
 });
 
-afterEach(() => {
-    metadataDb.disposeMetadataStores();
-    fs.rmSync(directories.root, { recursive: true, force: true });
-});
+afterEach(() => user.close());
 
 /** @returns {Promise<{ status: number, body: any }>} */
 async function fav(body) {
@@ -77,12 +65,12 @@ async function seedCharacter(avatar, isFav) {
         fav: isFav,
         data: { name, tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: isFav, world: '' } },
     });
-    await metadataDb.upsertCharacterFromWrite(directories, avatar, cardJson);
+    await user.store.lib.writeCard(directories, avatar, cardJson);
 }
 
 /** @param {string} avatar */
 async function storedFav(avatar) {
-    return (await metadataDb.getCharacterFavsByIds(directories, [avatar]))[avatar];
+    return (await user.store.lib.entity(TYPE.character, avatar))?.fav;
 }
 
 describe('POST /api/characters/fav toggle', () => {

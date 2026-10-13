@@ -1,6 +1,6 @@
 import { readSettingsAtPaths } from './settings-store.js';
 import { resolveTextGenBackend } from './textgen-backend-resolve.js';
-import { loadBranch, getAncestorPath, getOrCreateAnchor, loadAtNode, ownerDescriptorOf } from './message-tree-db.js';
+import { loadChatHistory } from './chat-request.js';
 import { readCardContent } from './endpoints/characters.js';
 import { getGroupsByIds } from './endpoints/groups.js';
 import { extension_prompt_types, extension_prompt_roles } from './extension-prompt-table.js';
@@ -204,7 +204,7 @@ import { resolveWorldInfoCandidates, world_info_insertion_strategy } from './wor
  * `text-completion-prompt-orchestrator.js`) that already reads `.extra` off whatever chat entry it's
  * given, tree-loaded or freshly in-memory alike - no change needed there. The caller (this module's
  * own consumer, `buildRawActionTextCompletionRequest()`) is responsible for having already run any
- * client-supplied value through `sanitizeUserMessageExtra()` (message-tree-db.js) - this resolver
+ * client-supplied value through `sanitizeUserMessageExtra()` (user-message-extra.js) - this resolver
  * does not itself re-validate `userMessageExtra`'s shape.
  */
 
@@ -393,7 +393,7 @@ async function resolveName2AndGroupMemberNames(directories, { avatar, groupId })
     }
 
     if (groupId != null) {
-        const group = /** @type {GroupLike | undefined} */ (getGroupsByIds(directories, [groupId])[groupId]);
+        const group = /** @type {GroupLike | undefined} */ ((await getGroupsByIds(directories, [groupId]))[groupId]);
         if (group) {
             if (avatar == null && group.name != null && group.name !== '') {
                 name2 = group.name;
@@ -415,82 +415,18 @@ async function resolveName2AndGroupMemberNames(directories, { avatar, groupId })
 }
 
 /**
- * Resolves the real chat history for `assembleTextCompletionPrompt`'s `chat` input.
- *
- * message-tree-db.js's `loadBranch()`/`getAncestorPath()` already return messages shaped as
- * `{name, mes, is_user, extra, send_date, node_id, swipes?, swipe_id?, swipe_info?}` - i.e. the
- * EXACT `{name, mes, is_user, extra}` shape src/core-chat-build.js's `CoreChatMessage` typedef (and
- * src/text-completion-prompt-orchestrator.js's `chat` input) expects, field-for-field, with no
- * renaming needed (verified by reading message-tree-db.js's `rowToMessage()`/`buildPathMessages()`
- * - there is no `content`-vs-`mes` mismatch to bridge; the tree DB's own on-disk column is called
- * `content` but the JSON *inside* that column - what callers actually get back - already uses
- * `mes`, matching the client's own chat-message shape, since `sanitizeForStorage()` stores the
- * message object mostly as-is).
- *
- * `ownerId`+`branchName` (a labeled chat) is resolved via `loadBranch()`. When `branchName` is
- * omitted but a `nodeId` is given instead, `getAncestorPath()` is used (root-to-node order,
- * matching `loadBranch()`'s message order) - this is this resolver's own judgment call on "the
- * exact identity shape needed" the task left open, covering the common case of generating from an
- * arbitrary tree node (e.g. mid-branch) without a saved chat label.
- *
- * When NEITHER `branchName` nor `nodeId` is given (and `ownerId` is), this does NOT silently guess
- * "whatever the tree's current default leaf happens to be" once real messages already exist -
- * `node_id` is a genuine, non-fabricated fact the client already has for any turn that isn't the
- * very first ("the node I was actually looking at/replying to"), and resolving to a stale leaf
- * behind the caller's back would risk a real lost-update race if the tree moved since the caller
- * last loaded it (another tab, another concurrent request). The ONLY identifier-free case that is
- * genuinely safe is a brand-new owner with NO prior real messages at all - there is no "point the
- * caller meant" to disagree about when no real point has ever existed - so this resolves via the
- * owner's anchor (`getOrCreateAnchor()`/`loadAtNode()`, no name required, auto-created on first
- * touch) ONLY when that anchor's own default-child chain is genuinely empty. When the anchor
- * already has a real default-child chain (i.e. this owner DOES have prior messages) but neither
- * identifier was given, `ambiguous: true` is returned instead of a resolved history/node - the
- * caller (`buildRawActionTextCompletionRequest()`) turns that into a real, reportable error rather
- * than ever picking a leaf the caller didn't ask for.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {object} params
- * @param {string} [params.ownerId]
- * @param {string} [params.branchName]
- * @param {string|null} [params.nodeId] `null` is a real, distinct input (see the outer resolver's own
- * doc comment on this same param) - both flow here as "falsy, fall through to the next resolution
- * strategy", so this function makes no distinction between `null` and omitted.
- * @param {import('./message-tree-db.js').OwnerDescriptor} [params.owner] Recorded as the owner's kind if its anchor is created here.
- * @returns {Promise<{ chat: import('./message-tree-db.js').TreeChatMessage[], metadata: ChatMetadata, resolvedNodeId: string|null, ambiguous?: boolean }>}
+ * The chat history a generation is built from (`loadChatHistory()`): the messages from the tree's root down to the
+ * position it goes on from, in upstream's message shape, and the state there as `chat_metadata`.
+ * @param {import('./chat-request.js').ChatContext | undefined} chat
+ * @param {{ branchName?: string, nodeId?: string | null }} at
  */
-async function resolveChatHistory(directories, { ownerId, branchName, nodeId, owner }) {
-    if (ownerId != null && branchName != null) {
-        const result = await loadBranch(directories, ownerId, branchName);
-        if (result) {
-            return { chat: result.messages, metadata: result.metadata, resolvedNodeId: result.branch.leaf_id };
-        }
-    }
-    if (nodeId != null) {
-        const messages = await getAncestorPath(directories, nodeId);
-        if (messages) {
-            return { chat: messages, metadata: {}, resolvedNodeId: nodeId };
-        }
-    }
-    if (ownerId != null && branchName == null && nodeId == null) {
-        const anchorId = await getOrCreateAnchor(directories, ownerId, owner);
-        if (anchorId != null) {
-            const result = await loadAtNode(directories, ownerId, anchorId);
-            // A non-empty result means this owner already has a real, established conversation -
-            // neither identifier was given, so which point the caller meant is genuinely ambiguous;
-            // do not silently pick "the current leaf" for a caller that never said that's what it wanted.
-            if (result && result.messages.length > 0) {
-                return { chat: [], metadata: {}, resolvedNodeId: null, ambiguous: true };
-            }
-            if (result) {
-                return { chat: result.messages, metadata: result.metadata, resolvedNodeId: result.node_id };
-            }
-        }
-    }
-    return { chat: [], metadata: {}, resolvedNodeId: null };
+async function resolveChatHistory(chat, { branchName, nodeId }) {
+    return loadChatHistory(chat, { branchName, nodeId });
 }
 
 /**
  * Resolves the real `assembleTextCompletionPrompt(input)` input object from on-disk settings.json
- * (via src/settings-store.js) and the real message-tree chat DB (via src/message-tree-db.js).
+ * (via src/settings-store.js) and the chat (via the chat engine, src/chat-request.js).
  *
  * See this module's doc comment above for the full list of field-mapping decisions and documented
  * gaps. `countTokens`/`encodeTokens` are still caller-supplied passthrough params (see doc comment
@@ -507,15 +443,9 @@ async function resolveChatHistory(directories, { ownerId, branchName, nodeId, ow
  * @param {string} [params.mainApi] One of 'textgenerationwebui' (default) / 'kobold' / 'novel'. See
  * module doc comment's FIELD-MAPPING NOTES for the exact per-value settings-namespace mapping.
  * 'koboldhorde' is NOT accepted (throws) - see module doc comment for why.
- * @param {string} [params.ownerId] message-tree-db.js owner id for chat resolution.
- * @param {string} [params.branchName] message-tree-db.js labeled chat name. LEGACY input, kept only
- * for callers outside this task's scope (src/endpoints/backends/kobold.js, src/endpoints/novelai.js)
- * that still address chats by label - NOT part of the raw-action addressing model this task
- * corrected (see `resolveChatHistory()`'s own doc comment); a new caller should use `nodeId` instead.
- * @param {string|null} [params.nodeId] Resolve history up to this tree node. `null` (as opposed to
- * omitted) resolves via the owner's anchor - see `resolveChatHistory()`'s own doc comment for the
- * "only safe when genuinely empty" rule and how a non-empty case is signalled back
- * (`resolvedNodeId`/`chatResolutionAmbiguous` on this function's own return object).
+ * @param {import('./chat-request.js').ChatContext} [params.chatContext] The chat the history is read from.
+ * @param {string} [params.branchName] A chat name (a bookmark's, or a session's name or UUID) to read history at.
+ * @param {string|null} [params.nodeId] Read history up to this message; null or omitted: the tree's root (a new chat).
  * @param {string} [params.type] Generation type ('normal'/'impersonate'/'continue'/'swipe'/...).
  * @param {boolean} [params.isImpersonate]
  * @param {boolean} [params.isContinue]
@@ -527,7 +457,7 @@ async function resolveChatHistory(directories, { ownerId, branchName, nodeId, ow
  * UPDATE section for the exact shape). Omit for generation types that don't add a new message
  * (e.g. 'continue'/'swipe').
  * @param {object} [params.userMessageExtra] Already-SERVER-VALIDATED `extra` for the newly-appended
- * user message (see `sanitizeUserMessageExtra()` in message-tree-db.js - the caller is responsible
+ * user message (see `sanitizeUserMessageExtra()` in user-message-extra.js - the caller is responsible
  * for having already run any client-supplied value through that allowlist; this resolver trusts it
  * verbatim). Carries a forwarded file/media attachment REFERENCE (`.files`/`.media`/`.media_index`/
  * `.inline_image`) - the bytes were already uploaded by the client before this generation call (see
@@ -549,7 +479,7 @@ async function resolveChatHistory(directories, { ownerId, branchName, nodeId, ow
  * @returns {Promise<import('./text-completion-prompt-orchestrator.js').AssembleTextCompletionPromptInput>}
  */
 export async function resolveTextCompletionGenerationInput(directories, {
-    avatar, groupId, mainApi = 'textgenerationwebui', ownerId, branchName, nodeId,
+    avatar, groupId, mainApi = 'textgenerationwebui', chatContext, branchName, nodeId,
     type, isImpersonate = false, isContinue = false, isSwipe = false,
     textareaText = '', chatMetadata: chatMetadataOverride, userMessageText, userMessageExtra,
     worldInfoCandidates: worldInfoCandidatesOverride, countTokens, encodeTokens, countPromptTokens, amountGen, macroExtras = {},
@@ -607,7 +537,7 @@ export async function resolveTextCompletionGenerationInput(directories, {
     const hasCharacterOrGroup = Boolean(avatar) || Boolean(groupId);
 
     const { chat: loadedChat, metadata: loadedChatMetadata, resolvedNodeId, ambiguous: chatResolutionAmbiguous } =
-        await resolveChatHistory(directories, { ownerId, branchName, nodeId, owner: ownerDescriptorOf({ groupId, avatar }) });
+        await resolveChatHistory(chatContext, { branchName, nodeId });
     const chatMetadata = chatMetadataOverride ?? loadedChatMetadata;
 
     const { name2, groupMemberNames, character } = await resolveName2AndGroupMemberNames(directories, { avatar, groupId });
@@ -668,15 +598,9 @@ export async function resolveTextCompletionGenerationInput(directories, {
 
         // --- Character/persona/chat resolution ---
         directories, avatar, groupId,
-        // Exposed so a caller (buildRawActionTextCompletionRequest()) that resolved `chat` via this
-        // SAME call can read back which real tree node it resolved to, instead of re-deriving
-        // "the current leaf" independently and risking the two disagreeing. `null` when nothing
-        // could be safely resolved - see `chatResolutionAmbiguous` below for why.
+        // The message the history ends at (null: the tree's root), for the caller to generate from.
         resolvedNodeId,
-        // True only for the "neither branchName nor nodeId given, but this owner already has a real,
-        // established conversation" case - see resolveChatHistory()'s own doc comment. The caller
-        // must treat this as a real error (an explicit branch_name/node_id was required), not silently
-        // pick a leaf.
+        // No message was named and the root isn't current (loadChatHistory()): the caller refuses, not guesses.
         chatResolutionAmbiguous: Boolean(chatResolutionAmbiguous),
         personaDescription: activePersona.description,
         chatMetadata, chat, textareaText,

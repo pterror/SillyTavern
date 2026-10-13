@@ -16,32 +16,33 @@ import storage from 'node-persist';
 
 import { AVATAR_WIDTH, AVATAR_HEIGHT, DEFAULT_AVATAR_PATH } from '../constants.js';
 import { default as validateAvatarUrlMiddleware, getFileNameValidationFunction, forbiddenRegExp } from '../middleware/validateFileName.js';
-import { deepMerge, humanizedDateTime, tryParse, getConfigValue, mutateJsonString, clientRelativePath, getUniqueName, sanitizeSafeCharacterReplacements, getArrayBufferSlice, uuidv7, mapWithConcurrency, writeBackpressured } from '../util.js';
+import { deepMerge, humanizedDateTime, tryParse, getConfigValue, mutateJsonString, clientRelativePath, getUniqueName, sanitizeSafeCharacterReplacements, getArrayBufferSlice, uuidv7, writeBackpressured } from '../util.js';
 import { TavernCardValidator } from '../validator/TavernCardValidator.js';
 import { importFailure, NO_CARD_DATA } from '../character-import-error.js';
-import { parse, write, writeCardToFile, stripCardData, computeAvatarIdentityHashFromImageBuffer, reclaimReflinkPrefix } from '../character-card-parser.js';
-import { getCharaCardV2, convertToV2, readFromV2, charaFormatData, unsetPrivateFields, omitInstallLocalFields, omitFavField, omitChatField, computeContentIdentityHash, V1_V2_FIELD_MAPPINGS } from '../character-card-normalize.js';
-import { calculateDataSize, toShallow } from '../character-shallow.js';
+import { parse, write } from '../character-card-parser.js';
+import { getCharaCardV2, convertToV2, readFromV2, charaFormatData, unsetPrivateFields, omitInstallLocalFields, omitFavField, omitChatField, V1_V2_FIELD_MAPPINGS } from '../character-card-normalize.js';
+import { calculateDataSize, toShallow, shallowCharactersIncludeCreatorNotes } from '../character-shallow.js';
 import { touchBrowserPresence, PRESENCE_PING_INTERVAL_MS } from '../browser-presence.js';
+import { claimTabSession } from '../session-presence.js';
 import { invalidateThumbnail, getThumbnailVersion } from './thumbnails.js';
 import { importRisuSprites, importChubExpressions, importChubRelatedLorebooks } from './sprites.js';
-import { hasSavedChats, listBranches as listTreeBranches, ownerDescriptorOf, renameCharacterInMessages, saveChatToTree } from '../message-tree-db.js';
 import { ByafParser } from '../byaf.js';
 import { CharXParser, persistCharXAssets } from '../charx.js';
 import cacheBuster from '../middleware/cacheBuster.js';
-import { searchCharacters, searchCharacterIds, searchCharacterIdsSorted, searchCharacterIdsWindow, searchTagsLeftToSql, rebuildCharacterSearchIndex, indexCanSort, getCharacterIndexPosition } from './characters-search-index.js';
-import { walkKey, encodeWalkCursor, decodeWalkCursor, walkRanking, walkSorted, walkTotal, SEARCH_WORK_CAP } from './search-walk.js';
-import { mergeSortedWindow } from './tantivy-search.js';
-import { searchGroups, searchGroupIds, searchGroupsSorted, getGroupIndexPosition } from './groups-search-index.js';
-import { getGroupsByIds } from './groups.js';
-import { CHARACTER_INDEX_FAILED_EVENT } from './search-index-coordinator.js';
-import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, findCharacterMatches, findGroupMatches, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, toggleCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, characterIdsLinkedToWorld, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, getCurrentSeqAndGroupsVersion, seedCardTagsForSingleCharacter, assignEntityTag, unassignEntityTag, streamCharacterIdsMatching, beginBulkSelection, bulkSelectionExists, addToBulkSelection, removeFromBulkSelection, describeBulkSelection, readBulkSelectionPage, streamBulkSelection, mutualTagIdsOfBulkSelection, dropBulkSelection, getCharacterCardJson, getCharacterChatStats, getCharacterIndexRowsByIds, streamCharacterCardJsonBatches, characterRowExists, characterRowOrPendingExistsSync, getEntityRowsByIds, hasClosedFolderTags, copyEntityTags, TAG_MOVE_FAILED_EVENT, TAG_ORDER_SETTLED_EVENT, TAG_CHANGES_EVENT, GROUP_CHANGES_EVENT, QUERY_RANGE_COLUMNS, isQueryRangeField, SAVED_VIEWS_EVENT, getTagChangesSeq, getActivitySeq, foldAllActivity, readDependsOnActivity } from '../character-metadata-db.js';
-import { characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash, normalizeFav } from '../../public/scripts/hash-utils.js';
+import { savedViewsEvents } from '../saved-views.js';
+import { characterDigestFieldsHash, characterDigestCardBodyHash, characterRowFieldHashes, characterRowFields, getStringHash, normalizeFav } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
 import { hashGreetingText, opAdd, opAppend, opEdit, opDelete, opMove, opSetDefault, opUnsetDefault, opUnsetDefaultByHash } from '../greeting-ops.js';
-import { copyCharacterFile } from '../local-import-copy.js';
-import { withSearchTiming, timePhase, markSinceStart } from '../search-timing.js';
+import { withSearchTiming } from '../search-timing.js';
+import { requestStore, userStore } from '../user-stores.js';
+import { FIELD, HASH, TYPE } from '../library-engine.js';
+import { convertedFileKey } from '../library-codes.js';
+import { avatarFile, avatarImage, avatarPathOf, inAvatarLane, writeWithAvatar } from '../character-avatars.js';
+import { chatNamesOf, compatChatIdOf, compatChatIds, droppedOf, labelBaseOf, moveToChatNamed } from '../chat-request.js';
+import { requestSession } from '../request-session.js';
+import { bookmarkCompatId, sessionCompatId, storedForm } from '../chat-engine.js';
 
+import { groupDigests, groupObjects } from './groups.js';
 // Use shallow character data for the character list
 const useShallowCharacters = !!getConfigValue('performance.lazyLoadCharacters', false, 'boolean');
 // Whole cards are heavy; a full /batch reads the characters a page holds (one character or a group's members).
@@ -204,316 +205,114 @@ export async function readCharacterData(inputFile, inputFormat = 'png', precompu
 }
 
 /**
- * Reads a character already in the library. The card store is the sole data source (the PNG is never read for an
- * already-imported character) - use readCharacterData() directly for arbitrary PNGs not yet in the library.
+ * A character's card as stored, as JSON (use readCharacterData() for a file not yet in the library).
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {string} avatar Avatar filename, e.g. `Alice.png`
- * @returns {Promise<string|undefined>} The card JSON, or `undefined` if this avatar has no row.
+ * @returns {Promise<string|undefined>} undefined when there is no such character.
  */
 export async function readCardContent(directories, avatar) {
-    const raw = await getCharacterCardJson(directories, avatar) ?? undefined;
-    return await correctV1FieldDriftOnRead(directories, avatar, raw);
+    const [card] = await (await userStore(directories)).lib.cards([avatar]);
+    return card === null || card === undefined ? undefined : JSON.stringify(withV2FieldsOnTop(card));
 }
 
 /**
- * Corrects every V1_V2_FIELD_MAPPINGS field (character-card-normalize.js) vs. its `data.*` v2 counterpart
- * when they disagree, persisting the fix to the metadata store (never the PNG). readCardContent() is the
- * only read seam that returns a card's raw top-level fields as-is (every other reader goes through
- * getCharaCardV2()/readFromV2(), which already resolves this drift in memory on every call) - so a caller
- * reading straight off readCardContent(), such as character-card-fields.js's prompt-field resolution, would
- * otherwise see a stale v1 mirror.
- * @param {import('../users.js').UserDirectoryList} directories
- * @param {string} avatar
- * @param {string|undefined} raw readCardContent()'s own read result
- * @returns {Promise<string|undefined>} `raw`, or the corrected JSON string if a fix was applied
+ * A V2 card with each V1_V2_FIELD_MAPPINGS field at the top level taken from its `data.*` value where that is set and
+ * differs: readCardContent() returns the card's raw top-level fields, which its readers (the prompt's card fields)
+ * use, and every other reader resolves the same drift through readFromV2(). In memory only: nothing is stored.
+ * @param {any} card
+ * @returns {any}
  */
-async function correctV1FieldDriftOnRead(directories, avatar, raw) {
-    if (raw === undefined) return raw;
-
-    let card;
-    try {
-        card = JSON.parse(raw);
-    } catch {
-        return raw;
-    }
-
-    if (card.spec === undefined || _.isUndefined(card.data)) return raw;
-
-    let changed = false;
+function withV2FieldsOnTop(card) {
+    if (card.spec === undefined || _.isUndefined(card.data)) return card;
     _.forEach(V1_V2_FIELD_MAPPINGS, (v2Path, charField) => {
         const v2Value = _.get(card.data, v2Path);
-        if (_.isUndefined(v2Value)) return;
-        if (!_.isUndefined(card[charField]) && JSON.stringify(card[charField]) === JSON.stringify(v2Value)) return;
-        card[charField] = v2Value;
-        changed = true;
+        if (!_.isUndefined(v2Value)) card[charField] = v2Value;
     });
-    if (!changed) return raw;
-
-    const corrected = JSON.stringify(card);
-
-    try {
-        await upsertCharacterFromWrite(directories, avatar, corrected);
-    } catch (err) {
-        console.debug(`[v1-field-drift-repair] Could not persist the fix for "${avatar}" (will just retry on its next read):`, err.message);
-    }
-
-    return corrected;
+    return card;
 }
 
 /**
- * Builds a shareable PNG with a CURRENT tEXt chunk, even when the stored file's chunk is stale. In-memory only - never writes the character's own file.
+ * A shareable PNG of a character: its image with its current card in it. Built in memory; nothing is written.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {string} avatar Avatar filename, e.g. `Alice.png`
- * @param {string} [filePath] The card's path, when the caller already built it.
- * @returns {Promise<{ buffer: Buffer, cardJson: string }|null>} `null` when the card can't be read at all.
+ * @returns {Promise<{ buffer: Buffer, cardJson: string }|null>} `null` when there is no such character.
  */
-export async function materializeCardPng(directories, avatar, filePath = undefined) {
-    const imagePath = filePath ?? path.join(directories.characters, avatar);
-    let rawBuffer;
-    try {
-        rawBuffer = await fsPromises.readFile(imagePath);
-    } catch (err) {
-        if (err.code !== 'ENOENT') throw err;
-        rawBuffer = await fsPromises.readFile(DEFAULT_AVATAR_PATH);
-    }
-    const cardJson = await getCharacterCardJson(directories, avatar);
-    if (cardJson === null) return null;
-    return { buffer: write(rawBuffer, cardJson), cardJson };
+export async function materializeCardPng(directories, avatar) {
+    const { lib } = await userStore(directories);
+    const file = await avatarPathOf(lib, directories, avatar);
+    const cardJson = await readCardContent(directories, avatar);
+    if (file === null || cardJson === undefined) return null;
+    return { buffer: write(await fsPromises.readFile(file), cardJson), cardJson };
 }
 
 /**
- * Never lets a metadata-store failure fail the character save itself.
+ * A card about to be written with no greetings, when the stored one has some and the writer didn't confirm it saw
+ * them (`freshFieldPaths` holding `data.alternate_greetings`), keeps the stored ones: a stale empty list never wipes
+ * them.
  * @param {import('../users.js').UserDirectoryList} directories
- * @param {string} avatar Filename (with .png) that was just written
- * @param {string} data The Spec-V2 JSON string that was just written
- * @param {string|null} [contentHash]
- * @param {string|null} [avatarIdentityHash] `null` means "don't touch whatever is already stored", not "clear it".
- * @param {{ fromImport?: boolean }} [options] As for upsertCharacterFromWrite().
- * @returns {Promise<void>}
+ * @param {string} avatar
+ * @param {string} data
+ * @param {Set<string>|null} freshFieldPaths
+ * @returns {Promise<string>}
  */
-export async function fireMetadataUpsertHook(directories, avatar, data, contentHash = null, avatarIdentityHash = null, options = {}) {
+async function keepStoredGreetings(directories, avatar, data, freshFieldPaths) {
     try {
-        await upsertCharacterFromWrite(directories, avatar, data, contentHash, avatarIdentityHash, options);
-    } catch (err) {
-        console.error(`[character-metadata] "${avatar}" was not saved to the character store:`, err);
-        throw err;
-    }
-}
-
-/**
- * Finds a DIFFERENT on-disk character with a matching `content_identity_hash`, as a reflink candidate for writeCharacterData(). Only a candidate PATH - byte-level verification still happens in writeCardFromChunks().
- * @param {import('../users.js').UserDirectoryList} directories
- * @param {string} selfAvatar This write's own avatar filename - excluded from the match.
- * @param {string} data The Spec-V2 JSON string about to be written.
- * @returns {Promise<string | null>} Absolute path to a different character's current file, or `null`.
- */
-async function findCrossCharacterReflinkCandidate(directories, selfAvatar, data) {
-    let character;
-    try {
-        character = JSON.parse(data);
-    } catch (error) {
-        return null;
-    }
-
-    const hash = computeContentIdentityHash(character);
-    const matchedId = await findCharacterIdByContentIdentityHash(directories, hash);
-    if (!matchedId || matchedId === selfAvatar) {
-        return null;
-    }
-
-    const candidatePath = path.join(directories.characters, matchedId);
-    try {
-        await fsPromises.access(candidatePath, fs.constants.R_OK);
-    } catch (error) {
-        return null;
-    }
-    return candidatePath;
-}
-
-/**
- * Finds a DIFFERENT on-disk character with a matching `avatar_identity_hash` (image bytes, independent of card
- * content), as a reflink candidate for a brand-new import/create write. Only a candidate PATH - byte-level
- * verification still happens in reclaimReflinkPrefix().
- * @param {import('../users.js').UserDirectoryList} directories
- * @param {string} selfAvatar This write's own avatar filename - excluded from the match.
- * @param {string} avatarIdentityHash Hash of the image bytes just written.
- * @returns {Promise<string | null>} Absolute path to a different character's current file, or `null`.
- */
-async function findCrossCharacterAvatarReflinkCandidate(directories, selfAvatar, avatarIdentityHash) {
-    const matchedId = await findCharacterIdByAvatarIdentityHash(directories, avatarIdentityHash);
-    if (!matchedId || matchedId === selfAvatar) {
-        return null;
-    }
-
-    const candidatePath = path.join(directories.characters, matchedId);
-    try {
-        await fsPromises.access(candidatePath, fs.constants.R_OK);
-    } catch (error) {
-        return null;
-    }
-    return candidatePath;
-}
-
-/**
- * Converts a just-written, independently-stored import/create PNG into a reflink of a matching existing
- * character's file when one exists, so a fresh import never leaves its own independent copy of bytes another
- * character already holds on disk. Tries the avatar-bytes match first (catches same-portrait-different-card
- * cases content_identity_hash would miss), then the card-content match. Best-effort: any failure just leaves
- * the file as the independent copy writeCharacterData() already wrote.
- * @param {import('../users.js').UserDirectoryList} directories
- * @param {string} selfAvatar This write's own avatar filename.
- * @param {string} filePath This write's own file, already on disk.
- * @param {string} data The Spec-V2 JSON string just written to the metadata store.
- * @param {string} avatarIdentityHash Hash of the image bytes just written.
- * @returns {Promise<void>}
- */
-export async function reflinkAgainstExistingDuplicate(directories, selfAvatar, filePath, data, avatarIdentityHash) {
-    const candidatePath = await findCrossCharacterAvatarReflinkCandidate(directories, selfAvatar, avatarIdentityHash)
-        ?? await findCrossCharacterReflinkCandidate(directories, selfAvatar, data);
-    if (!candidatePath) return;
-
-    try {
-        await reclaimReflinkPrefix(filePath, candidatePath, { expectedAvatarHash: avatarIdentityHash });
-    } catch (error) {
-        console.debug(`[character-import-dedup] reflink attempt failed for "${selfAvatar}" against "${path.basename(candidatePath)}", leaving it as an independent copy:`, /** @type {any} */ (error)?.message ?? error);
-    }
-}
-
-/**
- * @param {string} filePath
- * @returns {Promise<boolean>} Whether the file begins with the 8-byte PNG signature.
- */
-async function startsWithPngSignature(filePath) {
-    let handle;
-    try {
-        handle = await fs.promises.open(filePath, 'r');
-        const head = Buffer.alloc(PNG_SIGNATURE.length);
-        const { bytesRead } = await handle.read(head, 0, head.length, 0);
-        return bytesRead === head.length && head.equals(PNG_SIGNATURE);
+        const incomingCard = JSON.parse(data);
+        const incomingGreetings = incomingCard?.data?.alternate_greetings;
+        const greetingsVerifiedFresh = freshFieldPaths instanceof Set && freshFieldPaths.has('data.alternate_greetings');
+        if (!greetingsVerifiedFresh && Array.isArray(incomingGreetings) && incomingGreetings.length === 0) {
+            const existingRaw = await readCardContent(directories, avatar);
+            const existingGreetings = existingRaw === undefined ? undefined : JSON.parse(existingRaw)?.data?.alternate_greetings;
+            if (Array.isArray(existingGreetings) && existingGreetings.length > 0) {
+                console.warn(`[writeCharacter] Refusing to overwrite non-empty alternate_greetings with an empty array for "${avatar}" - kept ${existingGreetings.length} existing greeting(s) (no verified-fresh signal was passed for this write).`);
+                incomingCard.data.alternate_greetings = existingGreetings;
+                return JSON.stringify(incomingCard);
+            }
+        }
     } catch {
-        return false;
-    } finally {
-        await handle?.close();
+        // Can't compare - don't block the write on the guard itself.
     }
+    return data;
 }
 
 /**
- * Writes the character card to the specified image file.
- * @param {string|Buffer} inputFile - Path to the image file or image buffer
- * @param {string} data - Character card data
- * @param {string} outputFile - Target image file name
- * @param {import('express').Request} request - Express request obejct
- * @param {Crop|undefined} crop - Crop parameters
- * @param {string|null} [contentHash] - sha256 hex digest of the raw uploaded source-file bytes, when this write came from `/import`.
- * @param {Set<string>|null} [freshFieldPaths] - V2 dot-paths the caller has already confirmed match current on-disk state.
- * @param {boolean} [imageOnly] - true for a brand-new import/create write: the PNG gets image bytes only (any
- * embedded chara/ccv3 chunk stripped), `data` goes to the metadata db exclusively, and reflinkAgainstExistingDuplicate()
- * looks for a byte-identical existing character to share extents with after writing.
- * @param {boolean} [fromImport] - true only on the import path: the metadata row may wait in an open batch import's
- * buffer (upsertCharacterFromWrite()'s `fromImport`).
- * @returns {Promise<true>} Always resolves to `true` on success - a failed write rejects instead.
+ * Stores a character's card and, with `image`, its image (card chunk stripped, as `characters/<avatar>`); a new avatar
+ * is a new character.
+ * @param {import('express').Request} request
+ * @param {string} avatar Avatar filename, e.g. `Alice.png`
+ * @param {string} data The card's JSON.
+ * @param {object} [o]
+ * @param {string|Buffer} [o.image] An image file or its bytes; absent: the card's image stays.
+ * @param {Crop} [o.crop]
+ * @param {string|null} [o.contentHash] sha256 hex of the uploaded file's bytes, for an import.
+ * @param {Set<string>|null} [o.freshFieldPaths] V2 dot-paths the caller confirmed match what is stored.
+ * @param {boolean} [o.fav] A new character's favourite flag.
+ * @param {number} [o.dateAdded] A new character's date added.
+ * @param {{ from: string, pastChats: boolean }} [o.renamed] The card is the stored one renamed (LibraryEngine.writeCard()).
+ * @returns {Promise<void>}
+ * @throws {ImageReadError} when the image can't be read; nothing is written then.
  */
-async function writeCharacterData(inputFile, data, outputFile, request, crop = undefined, contentHash = null, freshFieldPaths = null, imageOnly = false, fromImport = false) {
-    try {
-        const oldDiskCacheKey = (useDiskCache && !Buffer.isBuffer(inputFile)) ? getCacheKey(inputFile) : null;
-        /**
-         * Read the image, resize, and save it as a PNG into the buffer.
-         * @returns {Promise<Buffer>} Image buffer
-         */
-        async function getInputImage() {
-            try {
-                const image = Buffer.isBuffer(inputFile)
-                    ? await parseImageBuffer(inputFile, crop)
-                    : await tryReadImage(inputFile, crop);
-                // A file that only starts like a PNG fails here, before anything is written.
-                extractPngChunks(new Uint8Array(image));
-                return image;
-            } catch (error) {
-                throw new ImageReadError(imageDisplayName(inputFile, request), error);
-            }
-        }
-
-        const outputImagePath = path.join(request.user.directories.characters, `${outputFile}.png`);
-
-        // Guards against a stale in-memory empty alternate_greetings clobbering a non-empty one on disk.
-        try {
-            const incomingCard = JSON.parse(data);
-            const incomingGreetings = incomingCard?.data?.alternate_greetings;
-            const greetingsVerifiedFresh = freshFieldPaths instanceof Set && freshFieldPaths.has('data.alternate_greetings');
-            if (!greetingsVerifiedFresh && Array.isArray(incomingGreetings) && incomingGreetings.length === 0) {
-                const existingRaw = await readCardContent(request.user.directories, `${outputFile}.png`);
-                const existingCard = JSON.parse(existingRaw);
-                const existingGreetings = existingCard?.data?.alternate_greetings;
-                if (Array.isArray(existingGreetings) && existingGreetings.length > 0) {
-                    console.warn(`[writeCharacterData] Refusing to overwrite non-empty alternate_greetings with an empty array for "${outputFile}.png" - kept ${existingGreetings.length} existing greeting(s) (safety guard against an in-memory-empty read bug; no verified-fresh signal was passed for this write).`);
-                    incomingCard.data.alternate_greetings = existingGreetings;
-                    data = JSON.stringify(incomingCard);
-                }
-            }
-        } catch (guardError) {
-            // Can't compare - don't block the write on the guard itself.
-        }
-
-        // The DB is authoritative, so a metadata edit never rewrites the PNG.
-        const isMetadataOnlyWrite = !Buffer.isBuffer(inputFile)
-            && crop === undefined
-            && path.resolve(inputFile) === path.resolve(outputImagePath);
-
-        if (isMetadataOnlyWrite) {
-            await upsertCharacterFromWrite(request.user.directories, `${outputFile}.png`, data, contentHash, null, { fromImport });
-            if (oldDiskCacheKey) await diskCache.invalidateKey(oldDiskCacheKey);
-            return true;
-        }
-
-        if (imageOnly) {
-            const outputImage = stripCardData(await getInputImage());
-            const avatarIdentityHash = computeAvatarIdentityHashFromImageBuffer(outputImage);
-            const isNewFile = !fs.existsSync(outputImagePath);
-            writeFileAtomicSync(outputImagePath, outputImage);
-            try {
-                await fireMetadataUpsertHook(request.user.directories, `${outputFile}.png`, data, contentHash, avatarIdentityHash, { fromImport });
-            } catch (err) {
-                // The image holds no card data, so without its row it is a character with no content: take it back.
-                if (isNewFile) fs.rmSync(outputImagePath, { force: true });
-                throw err;
-            }
-            await reflinkAgainstExistingDuplicate(request.user.directories, `${outputFile}.png`, outputImagePath, data, avatarIdentityHash);
-            if (oldDiskCacheKey) await diskCache.invalidateKey(oldDiskCacheKey);
-            return true;
-        }
-
-        // Fast path: unchanged image bytes reflink straight from inputFile instead of a full rewrite. Only a PNG
-        // has chunks to splice into; any other upload (jpg, webp, ...) goes straight to the re-encode below,
-        // which converts it to PNG. A file that starts like a PNG but fails here is broken, and that is logged.
-        if (!Buffer.isBuffer(inputFile) && crop === undefined && await startsWithPngSignature(inputFile)) {
-            try {
-                const crossReflinkCandidatePath = await findCrossCharacterReflinkCandidate(request.user.directories, `${outputFile}.png`, data);
-                const { avatarIdentityHash } = await writeCardToFile(inputFile, outputImagePath, data, crossReflinkCandidatePath);
-                await fireMetadataUpsertHook(request.user.directories, `${outputFile}.png`, data, contentHash, avatarIdentityHash, { fromImport });
-                if (oldDiskCacheKey) await diskCache.invalidateKey(oldDiskCacheKey);
-                return true;
-            } catch (error) {
-                console.warn(`writeCardToFile failed for ${inputFile}, falling back to the full read/re-encode path.`, error);
-            }
-        }
-
-        const inputImage = await getInputImage();
-
-        // Get the chunks
-        const outputImage = write(inputImage, data);
-        // Slow path (buffer upload, or a real crop) - no on-disk chunk list to reuse, so hash the built buffer.
-        const avatarIdentityHash = computeAvatarIdentityHashFromImageBuffer(outputImage);
-
-        writeFileAtomicSync(outputImagePath, outputImage);
-
-        await fireMetadataUpsertHook(request.user.directories, `${outputFile}.png`, data, contentHash, avatarIdentityHash, { fromImport });
-        if (oldDiskCacheKey) await diskCache.invalidateKey(oldDiskCacheKey);
-
-        return true;
-    } catch (err) {
-        console.error(err);
-        throw err;
+async function writeCharacter(request, avatar, data, { image, crop, contentHash = null, freshFieldPaths = null, fav, dateAdded, renamed } = {}) {
+    const directories = request.user.directories;
+    const { lib } = await userStore(directories);
+    const card = await keepStoredGreetings(directories, avatar, data, freshFieldPaths);
+    const options = { contentHash, ...(fav === undefined ? {} : { fav }), ...(dateAdded === undefined ? {} : { dateAdded }), ...(renamed === undefined ? {} : { renamed }) };
+    if (image === undefined) {
+        await lib.writeCard(directories, avatar, card, options);
+        return;
     }
+    let bytes;
+    try {
+        bytes = Buffer.isBuffer(image) ? await parseImageBuffer(image, crop) : await tryReadImage(image, crop);
+        // A file that only starts like a PNG fails here, before anything is written.
+        extractPngChunks(new Uint8Array(bytes));
+    } catch (error) {
+        throw new ImageReadError(imageDisplayName(image, request), error);
+    }
+    const stored = avatarImage(bytes);
+    await writeWithAvatar(lib, directories, avatar, stored, () => lib.writeCard(directories, avatar, card, {
+        ...options, avatarIdentityHash: stored.avatarIdentityHash,
+    }));
 }
 
 /**
@@ -651,84 +450,45 @@ function sendWriteFailure(response, err) {
     return response.sendStatus(500);
 }
 
-/**
- * processCharacter - Process a given character, read its data and calculate its statistics.
- *
- * @param  {string} item The name of the character.
- * @param  {import('../users.js').UserDirectoryList} directories User directories
- * @param  {object} options Options for the character processing
- * @param  {boolean} options.shallow If true, only return the core character's metadata
- * @param  {string|null} [options.cardJson] The card JSON when the caller already read it; otherwise it is read here
- * @param  {{ chatSize: number, dateLastChat: number }} [options.chatStats] The row's chat_size and date_last_chat when
- *   the caller already read them; otherwise they are read from the row here
- * @return {Promise<object>}     A Promise that resolves when the character processing is done.
- * @throws When the character can't be read or processed.
- */
-export const processCharacter = async (item, directories, { shallow, cardJson = undefined, chatStats = undefined }) => {
-    const imgFile = path.join(directories.characters, item);
-    // Reused for both the cache key and date_added.
-    let charStat;
-    try {
-        charStat = fs.statSync(imgFile);
-    } catch (err) {
-        if (err.code !== 'ENOENT') throw err;
-        charStat = fs.statSync(DEFAULT_AVATAR_PATH);
-    }
-    // The card store is the only source of card content - the PNG is never read for it.
-    const imgData = cardJson ?? await readCardContent(directories, item);
-    if (imgData === undefined) throw new Error('Failed to read character file');
-
-    let jsonObject = getCharaCardV2(JSON.parse(imgData), directories, false);
-    jsonObject.avatar = item;
-    const character = jsonObject;
-    character.json_data = imgData;
-    character.date_added = charStat.ctimeMs;
-    character.create_date = jsonObject.create_date || new Date(Math.round(charStat.ctimeMs)).toISOString();
-
-    // The row is the one source of both: every message write keeps them there (applyCharacterChatStats()).
-    const rowChatStats = chatStats ?? await getCharacterChatStats(directories, item);
-    if (!rowChatStats) throw new Error('Failed to read character row');
-    const { chatSize, dateLastChat } = rowChatStats;
-    character.chat_size = chatSize;
-    character.date_last_chat = dateLastChat;
-    character.data_size = calculateDataSize(jsonObject?.data);
-    return shallow ? toShallow(character) : character;
-};
 
 /**
- * @param {string} item
- * @param {unknown} err
+ * Characters as upstream's routes answer them (`/get`, `/all`, `/batch`, `/import`): each card normalized, with what
+ * the store keeps beside it (favourite flag, tags, global styles, dates, chat stats, data size) and the compat
+ * `chat`; null for an avatar no character has.
+ * @param {import('express').Request} request
+ * @param {string[]} avatars
+ * @param {{ shallow: boolean }} o `shallow`: list rows (`toShallow()`) instead of whole characters.
+ * @returns {Promise<(Record<string, any> | null)[]>}
  */
-export function logProcessCharacterFailure(item, err) {
-    console.error(`Could not process character: ${item}`);
-
-    if (err instanceof SyntaxError) {
-        console.error(`${item} does not contain a valid JSON object.`);
-    } else {
-        console.error('An unexpected error occurred: ', err);
-    }
+export async function characterObjects(request, avatars, { shallow }) {
+    const store = await requestStore(request);
+    const { lib } = store;
+    const entities = await lib.entities(await lib.ids(TYPE.character, avatars));
+    const present = /** @type {import('../library-engine.js').StoredEntity[]} */ (entities.filter(e => e !== null));
+    const tagKeys = new Map((await lib.tagKeys(present)).map((k, i) => [present[i].id, k]));
+    const stats = await lib.chatStats(present.map(e => e.id));
+    const chats = await compatChatIds(store, request, present.map(e => e.id));
+    return Promise.all(entities.map(async e => {
+        if (!e) return null;
+        const card = await lib.assembled(e);
+        const json = JSON.stringify(card);
+        const character = getCharaCardV2(JSON.parse(json), request.user.directories, false);
+        character.avatar = e.key;
+        character.json_data = json;
+        character.date_added = e.added;
+        character.create_date = character.create_date || new Date(e.added).toISOString();
+        character.chat_size = stats.get(e.id)?.chat_size ?? 0;
+        character.date_last_chat = stats.get(e.id)?.date_last_chat ?? 0;
+        character.data_size = e.dataSize ?? calculateDataSize(character.data);
+        character.fav = e.fav;
+        _.set(character, 'data.extensions.fav', e.fav);
+        character.chat = chats.get(e.id);
+        character.tag_ids = tagKeys.get(e.id) ?? [];
+        const allow = e.values.find(v => v.field === FIELD.allow_global_styles);
+        if (allow?.json !== undefined) character.allow_global_styles = !!JSON.parse(allow.json);
+        return shallow ? toShallow(character) : character;
+    }));
 }
-
-/**
- * processCharacter() for the upstream routes: a character that fails is logged and comes back as the nameless
- * placeholder those routes have always returned.
- * @param {string} item
- * @param {import('../users.js').UserDirectoryList} directories
- * @param {Parameters<typeof processCharacter>[2]} options
- * @return {Promise<object>}
- */
-export const processCharacterOrPlaceholder = async (item, directories, options) => {
-    try {
-        return await processCharacter(item, directories, options);
-    } catch (err) {
-        logProcessCharacterFailure(item, err);
-        return {
-            date_added: 0,
-            date_last_chat: 0,
-            chat_size: 0,
-        };
-    }
-};
 
 /**
  * Import a character from a YAML file.
@@ -742,7 +502,7 @@ async function importFromYaml(uploadPath, context, preservedFileName) {
     fs.unlinkSync(uploadPath);
     const yamlData = yaml.parse(fileText);
     yamlData.name = sanitize(yamlData.name);
-    const fileName = preservedFileName || mintCharacterId(context.request.user.directories);
+    const fileName = preservedFileName || await mintCharacterId(context.request.user.directories);
     let char = convertToV2({
         'name': yamlData.name,
         'description': yamlData.context ?? '',
@@ -758,7 +518,7 @@ async function importFromYaml(uploadPath, context, preservedFileName) {
         'tags': '',
     }, context.request.user.directories);
     omitInstallLocalFields(char);
-    await writeCharacterData(DEFAULT_AVATAR_PATH, JSON.stringify(char), fileName, context.request, undefined, context.contentHash, null, true, true);
+    await writeCharacter(context.request, `${fileName}.png`, JSON.stringify(char), { image: DEFAULT_AVATAR_PATH, contentHash: context.contentHash ?? null });
     return fileName;
 }
 
@@ -789,7 +549,7 @@ async function importFromCharX(uploadPath, { request, contentHash }, preservedFi
     omitInstallLocalFields(processedCard);
     processedCard.create_date = new Date().toISOString();
 
-    const fileName = preservedFileName || mintCharacterId(request.user.directories);
+    const fileName = preservedFileName || await mintCharacterId(request.user.directories);
     // Use the actual character name for asset folders, not the unique filename
     // ST's sprite system looks up by character name, not PNG filename
     const characterFolder = processedCard.name;
@@ -802,7 +562,7 @@ async function importFromCharX(uploadPath, { request, contentHash }, preservedFi
         }
     }
 
-    await writeCharacterData(avatar, JSON.stringify(processedCard), fileName, request, undefined, contentHash, null, true, true);
+    await writeCharacter(request, `${fileName}.png`, JSON.stringify(processedCard), { image: avatar, contentHash: contentHash ?? null });
     return fileName;
 }
 
@@ -821,23 +581,12 @@ async function importFromByaf(uploadPath, { request, contentHash }, preservedFil
     const byafData = await new ByafParser(data).parse();
     const card = readFromV2(byafData.card);
     omitInstallLocalFields(card);
-    const fileName = preservedFileName || mintCharacterId(request.user.directories);
+    const fileName = preservedFileName || await mintCharacterId(request.user.directories);
 
-    // Don't import chats and images if the character is being replaced or updated, instead of newly imported.
+    await writeCharacter(request, `${fileName}.png`, JSON.stringify(card), { image: byafData.images[0].image, contentHash: contentHash ?? null });
+
+    // Chats and images come only with a character newly imported, not one replaced or updated.
     if (!preservedFileName) {
-        /**
-         * @param {Partial<ByafScenario>} scenario
-        */
-        const createChatAsCurrentPersona = async (scenario) => {
-            const chatName = sanitize(`${scenario.title || card.name} - ${humanizedDateTime()} imported`, { replacement: sanitizeSafeCharacterReplacements });
-            const chatText = ByafParser.getChatFromScenario(scenario, request.body.user_name, card.name, byafData.chatBackgrounds);
-            const chatData = chatText.split('\n').map(line => tryParse(line)).filter(x => x);
-            const ownerId = path.basename(fileName);
-            const saved = await saveChatToTree(request.user.directories, ownerId, chatName, chatData, false, ownerDescriptorOf({ avatar: `${ownerId}.png` }));
-            if (!saved || !('integrity' in saved)) throw new Error(`The chat "${chatName}" in the BYAF file could not be stored.`);
-            return chatName;
-        };
-
         // Upload backgrounds
         for (const bg of byafData.chatBackgrounds) {
             const extension = path.extname(bg.paths?.[0]) || '.png';
@@ -852,17 +601,28 @@ async function importFromByaf(uploadPath, { request, contentHash }, preservedFil
             }
         }
 
-        const chats = [];
-        // Create chats for each scenario
-        if (Array.isArray(byafData.scenarios)) {
+        // Each scenario a chat of its own, from the character's root.
+        if (Array.isArray(byafData.scenarios) && byafData.scenarios.length > 0) {
+            const store = await requestStore(request);
+            const avatar = `${fileName}.png`;
+            const [tree] = await store.people.trees([{ avatar }]);
+            const treeSpeaker = (await store.people.byAvatar([avatar])).get(avatar) ?? null;
+            const actor = (await requestSession(store.chats, request, /** @type {bigint} */ (tree))).actor();
+            /** @type {string | null | undefined} The first chat's last message: where the character opens for the importing user. */
+            let firstChatEnd;
             for (const scenario of byafData.scenarios) {
-                chats.push(await createChatAsCurrentPersona(scenario));
+                const chatName = sanitize(`${scenario.title || card.name} - ${humanizedDateTime()} imported`, { replacement: sanitizeSafeCharacterReplacements });
+                const chatText = ByafParser.getChatFromScenario(scenario, request.body.user_name, card.name, byafData.chatBackgrounds);
+                const [header, ...messages] = chatText.split('\n').map(line => tryParse(line)).filter(x => x);
+                const saved = await store.chats.importChat({
+                    tree: /** @type {bigint} */ (tree), treeSpeaker, name: chatName, messages: messages.map(storedForm), metadata: header?.chat_metadata, actor,
+                });
+                if (!saved.ok) throw new Error(`The chat "${chatName}" in the BYAF file could not be stored.`);
+                if (firstChatEnd === undefined) firstChatEnd = saved.node_ids.length ? saved.node_ids[saved.node_ids.length - 1] : null;
             }
-        }
-
-        // Update the default chat if there are any so we open to an existing chat instead of creating a new one and opening that.
-        if (chats.length > 0) {
-            card.chat = chats[0];
+            if (firstChatEnd !== undefined) {
+                await store.chats.rememberUserPosition({ tree: /** @type {bigint} */ (tree), at: firstChatEnd, user: actor.user });
+            }
         }
 
         // Save alternate icons for the character.
@@ -880,8 +640,6 @@ async function importFromByaf(uploadPath, { request, contentHash }, preservedFil
         }
     }
 
-    await writeCharacterData(byafData.images[0].image, JSON.stringify(card), fileName, request, undefined, contentHash, null, true, true);
-
     return fileName;
 }
 
@@ -896,11 +654,11 @@ async function importFromJson(uploadPath, { request, contentHash }, preservedFil
     const rawText = fs.readFileSync(uploadPath, 'utf8');
     fs.unlinkSync(uploadPath);
 
-    const pngName = preservedFileName || mintCharacterId(request.user.directories);
+    const pngName = preservedFileName || await mintCharacterId(request.user.directories);
     const data = buildJsonImportData(rawText, request.user.directories, pngName);
     if (data === null) return '';
 
-    await writeCharacterData(DEFAULT_AVATAR_PATH, data, pngName, request, undefined, contentHash, null, true, true);
+    await writeCharacter(request, `${pngName}.png`, data, { image: DEFAULT_AVATAR_PATH, contentHash: contentHash ?? null });
     return pngName;
 }
 
@@ -990,13 +748,13 @@ async function importFromPng(uploadPath, { request, contentHash }, preservedFile
     const imgData = await readCharacterData(uploadPath);
     if (imgData === undefined) throw new Error('Failed to read character data');
 
-    const pngName = preservedFileName || mintCharacterId(request.user.directories);
+    const pngName = preservedFileName || await mintCharacterId(request.user.directories);
     const data = buildPngImportData(imgData, request.user.directories, pngName);
     if (data === null) return '';
 
     // Temp upload gets cleaned up whether the write succeeds or throws.
     try {
-        await writeCharacterData(uploadPath, data, pngName, request, undefined, contentHash, null, true, true);
+        await writeCharacter(request, `${pngName}.png`, data, { image: uploadPath, contentHash: contentHash ?? null });
     } finally {
         fs.unlinkSync(uploadPath);
     }
@@ -1065,7 +823,7 @@ router.post('/create', getFileNameValidationFunction('file_name'), async functio
 
         request.body.ch_name = sanitize(request.body.ch_name);
 
-        // Favorite status is db-authoritative once a row exists; the card written below never carries `fav`.
+        // The favourite flag is the store's, never the card's.
         const initialFav = normalizeFav(request.body.fav);
         const charaData = charaFormatData(request.body, request.user.directories);
         // A lorebook embedded in json_data is kept as-is, as on an imported card, not replaced by the linked World's.
@@ -1076,24 +834,20 @@ router.post('/create', getFileNameValidationFunction('file_name'), async functio
         charaData.create_date = new Date().toISOString();
         omitFavField(charaData);
         const char = JSON.stringify(charaData);
-        const internalName = request.body.file_name || mintCharacterId(request.user.directories);
+        const internalName = request.body.file_name || await mintCharacterId(request.user.directories);
         const avatarName = `${internalName}.png`;
 
         if (!request.file) {
-            await writeCharacterData(DEFAULT_AVATAR_PATH, char, internalName, request, undefined, null, null, true);
+            await writeCharacter(request, avatarName, char, { image: DEFAULT_AVATAR_PATH, fav: initialFav });
         } else {
             const crop = tryParse(request.query.crop);
             const uploadPath = path.join(request.file.destination, request.file.filename);
             // Temp upload gets cleaned up whether the write succeeds or throws.
             try {
-                await writeCharacterData(uploadPath, char, internalName, request, crop, null, null, true);
+                await writeCharacter(request, avatarName, char, { image: uploadPath, crop, fav: initialFav });
             } finally {
                 fs.unlinkSync(uploadPath);
             }
-        }
-
-        if (initialFav) {
-            await setCharacterFav(request.user.directories, avatarName, true);
         }
         return response.send(avatarName);
     } catch (err) {
@@ -1103,15 +857,10 @@ router.post('/create', getFileNameValidationFunction('file_name'), async functio
 });
 
 /**
- * "Rename" a character. The avatar filename is the immutable id, so this is a pure card-data edit - no file move, no chats-directory copy.
- * @param  {import("express").Request} request The HTTP request object.
- * @param  {import("express").Response} response The HTTP response object.
- * @return {Promise<void>}
- */
-/**
- * Renames a character. The avatar (its id) stays. With `rename_past_chats`, the character's name in its own chats'
- * messages changes too; group chats keep the name their messages carry (they name speakers by id from storage stage 5).
- * Answers `{ avatar, past_chats_renamed? }` (the number of messages renamed).
+ * Renames a character: a card edit, its avatar (its id) staying. Its messages name it by id, so every chat shows the
+ * new name. With `rename_past_chats`, past messages show the new name; without, a message sent before the rename keeps
+ * the name the character had then (the character's rename history, read when messages are). No chat is rewritten
+ * either way, so `past_chats_renamed`, the chats rewritten, is 0. Answers `{ avatar, past_chats_renamed? }`.
  */
 router.post('/rename', validateAvatarUrlMiddleware, async function (request, response) {
     if (!request.body.avatar_url || !request.body.new_name) {
@@ -1120,23 +869,22 @@ router.post('/rename', validateAvatarUrlMiddleware, async function (request, res
 
     const avatarName = request.body.avatar_url;
     const newName = sanitize(request.body.new_name);
-    const avatarPath = path.join(request.user.directories.characters, avatarName);
 
     try {
         const rawData = await readCardContent(request.user.directories, avatarName);
         if (rawData === undefined) throw new Error('Failed to read character file');
 
         const data = getCharaCardV2(JSON.parse(rawData), request.user.directories);
+        const oldName = data.data?.name ?? data.name;
         _.set(data, 'data.name', newName);
         _.set(data, 'name', newName);
-        const newData = JSON.stringify(data);
-
-        // Leaves date_added frozen.
-        await writeCharacterData(avatarPath, newData, path.parse(avatarName).name, request);
+        const renamed = typeof oldName === 'string' && oldName !== newName
+            ? { from: oldName, pastChats: request.body.rename_past_chats === true }
+            : undefined;
+        await writeCharacter(request, avatarName, JSON.stringify(data), { renamed });
 
         if (request.body.rename_past_chats === true) {
-            const renamed = await renameCharacterInMessages(request.user.directories, path.parse(avatarName).name, newName);
-            return response.send({ avatar: avatarName, past_chats_renamed: renamed });
+            return response.send({ avatar: avatarName, past_chats_renamed: 0 });
         }
         return response.send({ avatar: avatarName });
     } catch (err) {
@@ -1190,25 +938,24 @@ router.post('/edit', validateAvatarUrlMiddleware, async function (request, respo
     }
 
     let char = charaFormatData(request.body, request.user.directories);
-    // fav/chat are db-authoritative once a row exists; kept out of the card.
+    // The favourite flag and the current chat are the store's, never the card's.
     const requestedChat = request.body.chat;
     char.create_date = request.body.create_date;
     omitFavField(char);
     omitChatField(char);
     char = JSON.stringify(char);
-    let targetFile = (request.body.avatar_url).replace('.png', '');
+    const avatar = request.body.avatar_url;
 
     try {
         if (!request.file) {
-            const avatarPath = path.join(request.user.directories.characters, request.body.avatar_url);
-            await writeCharacterData(avatarPath, char, targetFile, request, undefined, null, freshFieldPaths);
+            await writeCharacter(request, avatar, char, { freshFieldPaths });
         } else {
             const crop = tryParse(request.query.crop);
             const newAvatarPath = path.join(request.file.destination, request.file.filename);
-            invalidateThumbnail(request.user.directories, 'avatar', request.body.avatar_url);
+            invalidateThumbnail(request.user.directories, 'avatar', avatar);
             // Temp upload gets cleaned up whether the write succeeds or throws.
             try {
-                await writeCharacterData(newAvatarPath, char, targetFile, request, crop, null, freshFieldPaths);
+                await writeCharacter(request, avatar, char, { image: newAvatarPath, crop, freshFieldPaths });
             } finally {
                 fs.unlinkSync(newAvatarPath);
             }
@@ -1218,7 +965,7 @@ router.post('/edit', validateAvatarUrlMiddleware, async function (request, respo
         }
 
         if (typeof requestedChat === 'string' && requestedChat !== '') {
-            await setCharacterActiveChat(request.user.directories, request.body.avatar_url, requestedChat);
+            await moveToChatNamed(request, response, { avatar }, requestedChat);
         }
 
         return response.sendStatus(200);
@@ -1242,19 +989,16 @@ router.post('/edit-avatar', validateAvatarUrlMiddleware, async function (request
         if (!fs.existsSync(uploadPath)) {
             return response.status(400).send('Error: uploaded file does not exist');
         }
-        if (!await characterRowExists(request.user.directories, request.body.avatar_url)) {
-            return response.status(400).send('Error: character does not exist');
-        }
         const data = await readCardContent(request.user.directories, request.body.avatar_url);
-        if (!data) {
-            return response.status(400).send('Error: failed to read character data');
+        if (data === undefined) {
+            fs.unlinkSync(uploadPath);
+            return response.status(400).send('Error: character does not exist');
         }
 
         const crop = tryParse(request.query.crop);
-        const fileName = request.body.avatar_url.replace('.png', '');
         // Temp upload gets cleaned up whether the write succeeds or throws.
         try {
-            await writeCharacterData(uploadPath, data, fileName, request, crop);
+            await writeCharacter(request, request.body.avatar_url, data, { image: uploadPath, crop });
         } finally {
             fs.unlinkSync(uploadPath);
         }
@@ -1297,7 +1041,6 @@ router.post('/edit-attribute', validateAvatarUrlMiddleware, async function (requ
     }
 
     try {
-        const avatarPath = path.join(request.user.directories.characters, request.body.avatar_url);
         const charJSON = await readCardContent(request.user.directories, request.body.avatar_url);
         if (typeof charJSON !== 'string') throw new Error('Failed to read character file');
 
@@ -1310,9 +1053,7 @@ router.post('/edit-attribute', validateAvatarUrlMiddleware, async function (requ
         }
         char[request.body.field] = request.body.value;
         char.data[request.body.field] = request.body.value;
-        let newCharJSON = JSON.stringify(char);
-        const targetFile = (request.body.avatar_url).replace('.png', '');
-        await writeCharacterData(avatarPath, newCharJSON, targetFile, request);
+        await writeCharacter(request, request.body.avatar_url, JSON.stringify(char));
         return response.sendStatus(200);
     } catch (err) {
         console.error('An error occurred, character edit invalidated.', err);
@@ -1342,41 +1083,15 @@ function processUnsetSentinels(target, source) {
 }
 
 /**
- * @param {string} avatarPath Full path to the character PNG
  * @param {string} avatar     Avatar filename (e.g. "char.png")
  * @param {object} updateData The merge payload to apply
  * @param {import("express").Request} request Express request object
  * @param {((data: any) => boolean) | null} [shouldSkip] Used for bulk merge filtering.
+ * @param {{ destination: string, filename: string } | null} [avatarUpload] A new image, uploaded.
+ * @param {import("express").Response | null} [response] Told of the tab's session when `chat` moves it.
  * @returns {Promise<{ok: boolean, error?: string, skipped?: boolean, hashes?: Object<string, number>}>}
  */
-/**
- * Points the primary lorebook link of every character linked to one book at another name.
- * @param {import('express').Request} request
- * @param {string} oldName
- * @param {string} newName
- * @returns {Promise<{ updated: string[], failed: string[] }>} Avatars.
- */
-export async function relinkCharactersWorld(request, oldName, newName) {
-    /** @type {string[]} */
-    const linked = [];
-    for await (const avatar of characterIdsLinkedToWorld(request.user.directories, oldName)) linked.push(avatar);
-    const updated = [];
-    const failed = [];
-    for (const avatar of linked) {
-        try {
-            const result = await mergeCharacterUpdate(path.join(request.user.directories.characters, avatar), avatar,
-                { data: { extensions: { world: newName } } }, request, character => _.get(character, 'data.extensions.world') !== oldName);
-            if (result.ok) updated.push(avatar);
-            else if (!result.skipped) failed.push(avatar);
-        } catch (error) {
-            console.error('Could not move a character\'s lorebook link:', error);
-            failed.push(avatar);
-        }
-    }
-    return { updated, failed };
-}
-
-async function mergeCharacterUpdate(avatarPath, avatar, updateData, request, shouldSkip = null, avatarUpload = null) {
+async function mergeCharacterUpdate(avatar, updateData, request, shouldSkip = null, avatarUpload = null, response = null) {
     const pngStringData = await readCardContent(request.user.directories, avatar);
     if (!pngStringData) {
         return { ok: false, error: 'Invalid character file' };
@@ -1422,7 +1137,7 @@ async function mergeCharacterUpdate(avatarPath, avatar, updateData, request, sho
         }
     }
 
-    // fav/chat are db-authoritative once a row exists; kept out of the card file and applied after the write below.
+    // The favourite flag and the current chat are the store's, never the card's: applied after the write below.
     const favRequested = _.has(update, 'fav') || _.has(update, 'data.extensions.fav');
     const chatRequested = _.has(update, 'chat');
 
@@ -1439,15 +1154,14 @@ async function mergeCharacterUpdate(avatarPath, avatar, updateData, request, sho
         return { ok: false, error: validator.lastValidationError ?? 'Validation failed' };
     }
 
-    const targetImg = avatar.replace('.png', '');
-    const inputFile = avatarUpload ? path.join(avatarUpload.destination, avatarUpload.filename) : avatarPath;
+    const image = avatarUpload ? path.join(avatarUpload.destination, avatarUpload.filename) : undefined;
     const crop = avatarUpload ? tryParse(request.query.crop) : undefined;
-    await writeCharacterData(inputFile, JSON.stringify(character), targetImg, request, crop, null, freshFieldPaths);
+    await writeCharacter(request, avatar, JSON.stringify(character), { image, crop, freshFieldPaths });
     if (favRequested) {
-        await setCharacterFav(request.user.directories, avatar, requestedFav);
+        await (await requestStore(request)).lib.setFav(TYPE.character, avatar, requestedFav);
     }
-    if (chatRequested && typeof requestedChat === 'string' && requestedChat !== '') {
-        await setCharacterActiveChat(request.user.directories, avatar, requestedChat);
+    if (chatRequested && response && typeof requestedChat === 'string' && requestedChat !== '') {
+        await moveToChatNamed(request, response, { avatar }, requestedChat);
     }
 
     // Server is the sole source of the conflict-detection hash: for every field the caller echoed a loaded hash
@@ -1506,8 +1220,7 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
                 }
                 targetAvatars = avatars;
             } else {
-                const files = fs.readdirSync(request.user.directories.characters);
-                targetAvatars = files.filter(file => path.extname(file).toLowerCase() === '.png');
+                targetAvatars = everyCharacter(request);
             }
 
             const updated = [];
@@ -1515,8 +1228,6 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
             const failed = [];
 
             const processOne = async (avatar) => {
-                const avatarPath = path.join(request.user.directories.characters, avatar);
-
                 try {
                     /** @type {(character: object) => boolean} */
                     let shouldSkip = () => false;
@@ -1530,7 +1241,7 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
                         };
                     }
 
-                    const result = await mergeCharacterUpdate(avatarPath, avatar, data, request, shouldSkip);
+                    const result = await mergeCharacterUpdate(avatar, data, request, shouldSkip);
                     if (result.ok) {
                         updated.push(avatar);
                     } else if (result.skipped) {
@@ -1545,23 +1256,26 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
                 }
             };
 
-            for (let i = 0; i < targetAvatars.length; i += BULK_MERGE_CONCURRENCY) {
-                const batch = targetAvatars.slice(i, i + BULK_MERGE_CONCURRENCY);
+            let batch = [];
+            for await (const avatar of targetAvatars) {
+                batch.push(avatar);
+                if (batch.length < BULK_MERGE_CONCURRENCY) continue;
                 await Promise.allSettled(batch.map(processOne));
+                batch = [];
             }
+            await Promise.allSettled(batch.map(processOne));
 
             return response.send({ updated, skipped, failed });
         }
 
         // ── Single mode (default behavior) ───────────────────────
         const update = request.body;
-        const avatarPath = path.join(request.user.directories.characters, update.avatar);
 
         let result;
         if (request.file) {
             const uploadPath = path.join(request.file.destination, request.file.filename);
             try {
-                result = await mergeCharacterUpdate(avatarPath, update.avatar, update, request, null, request.file);
+                result = await mergeCharacterUpdate(update.avatar, update, request, null, request.file, response);
                 if (result.ok) {
                     invalidateThumbnail(request.user.directories, 'avatar', update.avatar);
                     cacheBuster.bust(request, response);
@@ -1570,7 +1284,7 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
                 if (fs.existsSync(uploadPath)) fs.unlinkSync(uploadPath);
             }
         } else {
-            result = await mergeCharacterUpdate(avatarPath, update.avatar, update, request);
+            result = await mergeCharacterUpdate(update.avatar, update, request, null, null, response);
         }
 
         if (result.ok) {
@@ -1609,7 +1323,6 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
  * @returns {Promise<{ok: boolean, reason?: string, status?: number, greetings?: string[], hashes?: number[], defaultPosition?: number|null, position?: number, sourcePosition?: number, targetPosition?: number}>}
  */
 async function applyGreetingOperation(request, avatar, op) {
-    const avatarPath = path.join(request.user.directories.characters, avatar);
     const pngStringData = await readCardContent(request.user.directories, avatar);
     if (!pngStringData) {
         return { ok: false, reason: 'character not found', status: 404 };
@@ -1644,8 +1357,7 @@ async function applyGreetingOperation(request, avatar, op) {
         return { ok: false, reason: validator.lastValidationError ?? 'validation failed', status: 500 };
     }
 
-    const targetImg = avatar.replace('.png', '');
-    await writeCharacterData(avatarPath, JSON.stringify(character), targetImg, request, undefined, null, new Set(['data.alternate_greetings']));
+    await writeCharacter(request, avatar, JSON.stringify(character), { freshFieldPaths: new Set(['data.alternate_greetings']) });
 
     return {
         ok: true,
@@ -1846,17 +1558,39 @@ router.post('/greetings/default/unset', validateAvatarUrlMiddleware, async funct
 });
 
 /**
- * Touches only the `fav` column, no card read/write. 404s (not 400) when the avatar isn't tracked yet.
- * @param  {import("express").Request} request The HTTP request object.
- * @param  {import("express").Response} response The HTTP response object.
- * @return {void}
+ * Every character's avatar, in name order, read a page at a time.
+ * @param {import('express').Request} request
+ * @returns {AsyncGenerator<string, void, undefined>}
  */
+async function* everyCharacter(request) {
+    const { lib } = await requestStore(request);
+    /** @type {string | undefined} */
+    let cursor;
+    for (;;) {
+        const page = await lib.query({ sortField: 'name', limit: EVERY_PAGE, cursor, wantRows: false, wantTotal: false, wantHashes: true, includeGroups: false });
+        const rows = /** @type {{ id: string }[]} */ (page.hashRows);
+        for (const row of rows) yield row.id;
+        if (typeof page.cursor !== 'string' || rows.length === 0) return;
+        cursor = page.cursor;
+    }
+}
+
+/** Characters read a page at a time by a walk over all of them. */
+const EVERY_PAGE = 500;
+
 /** Sets favorite status. Accepts `{ avatar, fav }` for one character or `{ bulk: [{ avatar, fav }, ...] }` for a batch. */
 router.post('/fav', getFileNameValidationFunction('avatar'), async function (request, response) {
     try {
         const { avatar, fav, bulk, toggle } = request.body ?? {};
+        const { lib } = await requestStore(request);
+        /** `toggle: true` flips the stored value and answers it, so the page needs no copy of the character. */
+        const flip = async (/** @type {string} */ key) => {
+            const e = await lib.entity(TYPE.character, key);
+            if (!e) return null;
+            await lib.setFav(TYPE.character, key, !e.fav);
+            return !e.fav;
+        };
 
-        // `toggle: true` flips the stored value and answers it, so the page needs no copy of the character.
         if (Array.isArray(bulk)) {
             const results = [];
             for (const entry of bulk) {
@@ -1865,12 +1599,12 @@ router.post('/fav', getFileNameValidationFunction('avatar'), async function (req
                     continue;
                 }
                 if (entry.toggle === true) {
-                    const next = await toggleCharacterFav(request.user.directories, entry.avatar);
+                    const next = await flip(entry.avatar);
                     results.push(next === null ? { avatar: entry.avatar, ok: false } : { avatar: entry.avatar, ok: true, fav: next });
                     continue;
                 }
-                const updated = await setCharacterFav(request.user.directories, entry.avatar, normalizeFav(entry.fav));
-                results.push({ avatar: entry.avatar, ok: updated });
+                const updated = await lib.setFav(TYPE.character, entry.avatar, normalizeFav(entry.fav));
+                results.push({ avatar: entry.avatar, ok: updated !== null });
             }
             return response.send({ results });
         }
@@ -1879,14 +1613,14 @@ router.post('/fav', getFileNameValidationFunction('avatar'), async function (req
             return response.status(400).send({ error: true, reason: 'avatar-required' });
         }
         if (toggle === true) {
-            const next = await toggleCharacterFav(request.user.directories, avatar);
+            const next = await flip(avatar);
             if (next === null) {
                 return response.status(404).send({ error: true, reason: 'not-tracked' });
             }
             return response.send({ fav: next });
         }
-        const updated = await setCharacterFav(request.user.directories, avatar, normalizeFav(fav));
-        if (!updated) {
+        const updated = await lib.setFav(TYPE.character, avatar, normalizeFav(fav));
+        if (updated === null) {
             return response.status(404).send({ error: true, reason: 'not-tracked' });
         }
         return response.sendStatus(204);
@@ -1897,10 +1631,9 @@ router.post('/fav', getFileNameValidationFunction('avatar'), async function (req
 });
 
 /**
- * Dedicated chat-pointer write path, mirroring POST /fav: touches only the `active_chat` column.
- * @param  {import("express").Request} request The HTTP request object.
- * @param  {import("express").Response} response The HTTP response object.
- * @return {void}
+ * A write of a character's current chat: the requesting tab switches to the chat `chat` names (`moveToChatNamed()`);
+ * '' or null is a new chat. Answers `{ chat, label_base }`: the tab's compat chat id there after, and what its
+ * suggested names start from.
  */
 router.post('/chat', getFileNameValidationFunction('avatar'), async function (request, response) {
     try {
@@ -1908,21 +1641,14 @@ router.post('/chat', getFileNameValidationFunction('avatar'), async function (re
         if (typeof avatar !== 'string' || !avatar) {
             return response.status(400).send({ error: true, reason: 'avatar-required' });
         }
-        // An empty string (or explicit null) is a real, valid pointer value now: "this character has
-        // no active chat right now" - not an error. A character's conversation needs no name/id
-        // until the user labels a point in it (Workstream 6), so callers must be able to persist
-        // "no active chat" the same way they persist a real one. Only a missing/wrong-typed `chat`
-        // (the field absent from the body entirely, or not a string) is a malformed request.
         if (chat !== null && typeof chat !== 'string') {
             return response.status(400).send({ error: true, reason: 'chat-required' });
         }
-        const updated = await setCharacterActiveChat(request.user.directories, avatar, chat || null);
-        if (!updated) {
-            return response.status(404).send({ error: true, reason: 'not-tracked' });
-        }
-        return response.sendStatus(204);
+        const opened = await moveToChatNamed(request, response, { avatar }, chat);
+        if (!opened) return response.status(404).send({ error: true, reason: 'not-tracked' });
+        return response.send({ chat: await compatChatIdOf(opened), label_base: await labelBaseOf(opened) });
     } catch (err) {
-        console.error('[characters/chat] Failed to update active chat pointer:', err);
+        console.error('[characters/chat] Failed to move to the chat:', err);
         return response.status(500).send({ error: true });
     }
 });
@@ -1931,11 +1657,12 @@ router.post('/chat', getFileNameValidationFunction('avatar'), async function (re
 router.post('/allow-global-styles', async function (request, response) {
     try {
         const { avatar, allowed, bulk } = request.body ?? {};
+        const { lib } = await requestStore(request);
 
         if (Array.isArray(bulk)) {
             for (const entry of bulk) {
                 if (typeof entry.avatar === 'string' && entry.avatar) {
-                    await setCharacterAllowGlobalStyles(request.user.directories, entry.avatar, entry.allowed === true || entry.allowed === 'true');
+                    await lib.setAllowGlobalStyles(entry.avatar, entry.allowed === true || entry.allowed === 'true');
                 }
             }
             return response.sendStatus(204);
@@ -1944,7 +1671,7 @@ router.post('/allow-global-styles', async function (request, response) {
         if (typeof avatar !== 'string' || !avatar) {
             return response.status(400).send({ error: true, reason: 'avatar-required' });
         }
-        const updated = await setCharacterAllowGlobalStyles(request.user.directories, avatar, allowed === true || allowed === 'true');
+        const updated = await lib.setAllowGlobalStyles(avatar, allowed === true || allowed === 'true');
         if (!updated) {
             return response.status(404).send({ error: true, reason: 'not-tracked' });
         }
@@ -1956,10 +1683,11 @@ router.post('/allow-global-styles', async function (request, response) {
 });
 
 /**
- * Deletes a single character avatar (and optionally its chats directory) from disk.
- * @param {import('express').Request} request The HTTP request object (used for `request.user.directories`).
+ * Deletes a character. With `deleteChats` its whole tree goes too; without, its chats are kept as an unowned tree a
+ * character made with its avatar again takes back.
+ * @param {import('express').Request} request
  * @param {string} avatarUrl Avatar filename of the character to delete.
- * @param {boolean} deleteChats Whether to also remove the character's chats directory.
+ * @param {boolean} deleteChats
  * @returns {Promise<{ok: true, chats: string[]}|{ok: false, status: number}>} `chats`: with `deleteChats`, the names of
  * the character's chats (each a `CHAT_DELETED` on the page).
  */
@@ -1968,35 +1696,28 @@ async function deleteOneCharacter(request, avatarUrl, deleteChats) {
         console.error('Malicious filename prevented');
         return { ok: false, status: 403 };
     }
+    const store = await requestStore(request);
+    const e = await store.lib.entity(TYPE.character, avatarUrl);
+    if (!e) return { ok: false, status: 400 };
 
-    const avatarPath = path.join(request.user.directories.characters, avatarUrl);
-    const fileExists = fs.existsSync(avatarPath);
-    if (!fileExists && !await characterRowExists(request.user.directories, avatarUrl)) {
-        return { ok: false, status: 400 };
-    }
-
-    const dir_name = avatarUrl.replace('.png', '');
-    const chats = deleteChats && dir_name ? (await listTreeBranches(request.user.directories, dir_name)).map(branch => branch.name) : [];
-
-    if (fileExists) fs.unlinkSync(avatarPath);
-    invalidateThumbnail(request.user.directories, 'avatar', avatarUrl);
+    const chats = deleteChats ? await chatNamesOf(store, e.id) : [];
+    /** @type {any} */
+    let dropped = null;
     try {
-        await deleteCharacterRow(request.user.directories, avatarUrl);
+        if (deleteChats) {
+            const session = await requestSession(store.chats, request, e.id);
+            const deleted = await store.chats.deleteTree({ tree: e.id, actor: session.actor() });
+            dropped = droppedOf(deleted);
+            if (dropped) console.warn(`[characters/delete] Deleting ${avatarUrl} with its chats dropped:`, JSON.stringify(dropped));
+        }
+        await store.lib.deleteEntity(TYPE.character, avatarUrl, { keepChats: !deleteChats });
     } catch (err) {
-        console.error('[character-metadata] Failed to delete the character row:', err);
+        console.error('[characters/delete] Failed to delete the character:', err);
         return { ok: false, status: 500 };
     }
-
-    if (deleteChats && dir_name) {
-        try {
-            await fs.promises.rm(path.join(request.user.directories.chats, sanitize(dir_name)), { recursive: true, force: true });
-        } catch (err) {
-            console.error(err);
-            return { ok: false, status: 500 };
-        }
-    }
-
-    return { ok: true, chats };
+    invalidateThumbnail(request.user.directories, 'avatar', avatarUrl);
+    await inAvatarLane(store.lib, avatarUrl, async () => fs.rmSync(avatarFile(request.user.directories, avatarUrl), { force: true }));
+    return { ok: true, chats, dropped };
 }
 
 router.post('/delete', validateAvatarUrlMiddleware, async function (request, response) {
@@ -2015,7 +1736,7 @@ router.post('/delete', validateAvatarUrlMiddleware, async function (request, res
                 continue;
             }
             const result = await deleteOneCharacter(request, avatarUrl, deleteChats);
-            results.push(result.ok ? { avatar_url: avatarUrl, ok: true, chats: result.chats } : { avatar_url: avatarUrl, ok: false });
+            results.push(result.ok ? { avatar_url: avatarUrl, ok: true, chats: result.chats, ...(result.dropped ? { dropped: result.dropped } : {}) } : { avatar_url: avatarUrl, ok: false });
         }
         return response.send({ results });
     }
@@ -2029,154 +1750,41 @@ router.post('/delete', validateAvatarUrlMiddleware, async function (request, res
         return response.sendStatus(result.status);
     }
 
-    return response.sendStatus(200);
+    return result.dropped ? response.send({ dropped: result.dropped }) : response.sendStatus(200);
 });
 
-/**
- * Merges pre-scored character/group Fuse search results (best-first, ascending score) into one paginated,
- * still best-first result.
- * @param {import('fuse.js').FuseResult<object>[]} characterResults
- * @param {import('fuse.js').FuseResult<object>[]} groupResults
- * @param {object} params
- * @param {number} [params.offset]
- * @param {number} [params.limit]
- * @param {number} [params.trueTotal] Real total match count - `combined.length` underreports since the inputs are already capped to the sliced page. Falls back to `combined.length` if omitted.
- * @returns {{ items: {type: 'character'|'group', item: object}[], total: number }}
- */
-function paginateSearchResults(characterResults, groupResults, { offset, limit, trueTotal } = {}) {
-    const combined = [
-        ...characterResults.map(r => ({ type: 'character', item: r.item, score: r.score })),
-        ...groupResults.map(r => ({ type: 'group', item: r.item, score: r.score })),
-    ].sort((a, b) => a.score - b.score);
-
-    const total = Number.isFinite(trueTotal) ? trueTotal : combined.length;
-    const start = Number.isFinite(offset) && offset > 0 ? offset : 0;
-    const end = Number.isFinite(limit) && limit >= 0 ? start + limit : undefined;
-    const sliced = (start > 0 || end !== undefined) ? combined.slice(start, end) : combined;
-    return { items: sliced.map(({ type, item }) => ({ type, item })), total };
-}
-
-/**
- * Accepts an optional `search`/`includeGroups`/`fav` in the body for a searched page; no `search` returns every
- * character in on-disk order (streamed, not materialized). `fav` with `search` is applied inside the search
- * query itself, not as a post-fetch filter, so it can't miss a favorite ranked outside the fetched page.
- * Non-search pagination (`sortField`/`sortOrder`/`offset`/`limit`) lives at `POST /api/characters/query` instead.
- * @param  {import("express").Request} request The HTTP request object.
- * @param  {import("express").Response} response The HTTP response object.
- * @return {void}
- */
-// Requests that omit `limit` still need a bound - unbounded search/includeGroups on a large library can OOM.
+// Requests that omit `limit` still need a bound.
 const DEFAULT_PAGE_LIMIT = 500;
 
-const STREAM_ALL_READ_CONCURRENCY = getConfigValue('performance.characterStreamAllReadConcurrency', 64, 'number');
-
 /**
- * Overwrites each character's `.fav` and `data.extensions.fav` with the metadata store's own value, in place. A
- * character not yet tracked is left untouched.
- * @param {import('../users.js').UserDirectoryList} directories
- * @param {object[]} characters Already-processed character objects (each with `.avatar` set) - mutated in place.
- * @returns {Promise<void>}
+ * Upstream's character list. No `search`: every character (a bare array, streamed a page at a time; O(cards) by
+ * nature, kept for upstream's callers). With `search` (and `includeGroups`, `fav`, `offset`, `limit`): a page of
+ * the matches, best first.
  */
-async function stampDbFav(directories, characters) {
-    const ids = characters.map(c => c.avatar).filter(Boolean);
-    if (ids.length === 0) return;
-    const favById = await getCharacterFavsByIds(directories, ids);
-    for (const character of characters) {
-        if (Object.prototype.hasOwnProperty.call(favById, character.avatar)) {
-            character.fav = favById[character.avatar];
-            _.set(character, 'data.extensions.fav', favById[character.avatar]);
-        }
-    }
-}
-
-/**
- * Overwrites each character's `.chat` with the metadata store's own value, in place. Untracked or NULL `active_chat` is left untouched.
- * @param {import('../users.js').UserDirectoryList} directories
- * @param {object[]} characters Already-processed character objects (each with `.avatar` set) - mutated in place.
- * @returns {Promise<void>}
- */
-async function stampDbActiveChat(directories, characters) {
-    const ids = characters.map(c => c.avatar).filter(Boolean);
-    if (ids.length === 0) return;
-    const chatById = await getCharacterActiveChatsByIds(directories, ids);
-    for (const character of characters) {
-        if (Object.prototype.hasOwnProperty.call(chatById, character.avatar)) {
-            character.chat = chatById[character.avatar];
-        }
-    }
-}
-
-/**
- * Overwrites each character's `.tag_ids` with the metadata store's own value, in place - the PNG carries no tag assignments.
- * @param {import('../users.js').UserDirectoryList} directories
- * @param {object[]} characters Already-processed character objects (each with `.avatar` set) - mutated in place.
- * @returns {Promise<void>}
- */
-async function stampDbTagIds(directories, characters) {
-    const ids = characters.map(c => c.avatar).filter(Boolean);
-    if (ids.length === 0) return;
-    const tagIdsById = await getCharacterTagIdsByIds(directories, ids);
-    for (const character of characters) {
-        if (Object.prototype.hasOwnProperty.call(tagIdsById, character.avatar)) {
-            character.tag_ids = tagIdsById[character.avatar];
-        }
-    }
-}
-
-/**
- * Stamps each character's `allow_global_styles` from the DB, same pattern as stampDbFav().
- * @param {import('../users.js').UserDirectoryList} directories
- * @param {object[]} characters Already-processed character objects - mutated in place.
- * @returns {Promise<void>}
- */
-async function stampDbAllowGlobalStyles(directories, characters) {
-    const ids = characters.map(c => c.avatar).filter(Boolean);
-    if (ids.length === 0) return;
-    const allowedById = await getCharacterAllowGlobalStylesByIds(directories, ids);
-    for (const character of characters) {
-        if (Object.prototype.hasOwnProperty.call(allowedById, character.avatar)) {
-            character.allow_global_styles = allowedById[character.avatar];
-        }
-    }
-}
-
 router.post('/all', async function (request, response) {
     try {
         const { offset, limit, search, includeGroups, fav } = request.body ?? {};
-        const favOnly = fav === true;
 
         if (!search) {
-            // No `search`: respond with the bare-array shape, streamed from the characters rows one streamRows()
-            // batch at a time - a real library can't be held in memory as one array nor buffered whole before
-            // response.send(). The request is still O(cards) in total work by nature; it's kept for upstream
-            // compat. A failure after the first write can't un-send the 200 and partial body already on the wire,
-            // so it just ends the connection and logs server-side.
-            if (await getCurrentSeq(request.user.directories) === null) {
-                return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
-            }
-
             response.set('Content-Type', 'application/json');
             response.status(200);
             let wroteAny = false;
             try {
                 await writeBackpressured(response, '[');
-                for await (const rows of streamCharacterCardJsonBatches(request.user.directories)) {
-                    const processed = await mapWithConcurrency(rows, STREAM_ALL_READ_CONCURRENCY, row =>
-                        processCharacterOrPlaceholder(row.id, request.user.directories, {
-                            shallow: useShallowCharacters,
-                            cardJson: row.card_json,
-                            chatStats: { chatSize: row.chat_size, dateLastChat: row.date_last_chat },
-                        }));
-                    const batch = processed.filter(c => 'name' in c);
-                    await stampDbFav(request.user.directories, batch);
-                    await stampDbActiveChat(request.user.directories, batch);
-                    await stampDbTagIds(request.user.directories, batch);
-                    await stampDbAllowGlobalStyles(request.user.directories, batch);
-                    for (const character of batch) {
+                let batch = [];
+                const flush = async () => {
+                    for (const character of await characterObjects(request, batch, { shallow: useShallowCharacters })) {
+                        if (!character) continue;
                         await writeBackpressured(response, (wroteAny ? ',' : '') + JSON.stringify(character));
                         wroteAny = true;
                     }
+                    batch = [];
+                };
+                for await (const avatar of everyCharacter(request)) {
+                    batch.push(avatar);
+                    if (batch.length >= EVERY_PAGE) await flush();
                 }
+                await flush();
                 await writeBackpressured(response, ']');
             } catch (streamErr) {
                 console.error('[characters/all] Streaming response failed mid-flight; ending the connection:', streamErr);
@@ -2186,39 +1794,19 @@ router.post('/all', async function (request, response) {
 
         const numericOffset = Number.isFinite(Number(offset)) ? Number(offset) : 0;
         const numericLimit = Number.isFinite(Number(limit)) ? Number(limit) : DEFAULT_PAGE_LIMIT;
-
-        const handle = request.user.profile.handle;
-        // 'tantivy', not 'native': placeholder for "not searched" that never wins BACKEND_SEVERITY's worse-of comparison.
-        const emptySearch = { results: [], total: 0, backend: 'tantivy' };
-        // Each source fetches only its own top (offset + limit) rows, plus a margin for hits whose row is gone
-        // (dropped, since the index can lag a delete); paginateSearchResults() below does the real merge.
-        const searchFetchLimit = numericOffset + numericLimit + pageOverFetch(numericLimit);
-        // favOnly is applied inside the query itself so it can't drop a match ranked outside searchFetchLimit.
-        const [characterSearch, groupSearch] = await Promise.all([
-            searchCharacters(handle, request.user.directories, search, searchFetchLimit, favOnly),
-            includeGroups ? searchGroups(handle, request.user.directories, search, searchFetchLimit, favOnly) : emptySearch,
-        ]);
-        // The search index is built from full character data - trim to shallow fields to match this server's normal response shape.
-        const finalCharacterResults = useShallowCharacters
-            ? characterSearch.results.map(r => ({ ...r, item: toShallow(r.item) }))
-            : characterSearch.results;
-        // The search index's own `fav` copy can lag a db-only fav toggle (which never touches the card file).
-        await stampDbFav(request.user.directories, finalCharacterResults.map(r => r.item));
-        await stampDbActiveChat(request.user.directories, finalCharacterResults.map(r => r.item));
-        await stampDbTagIds(request.user.directories, finalCharacterResults.map(r => r.item));
-        await stampDbAllowGlobalStyles(request.user.directories, finalCharacterResults.map(r => r.item));
-
-        const { items, total } = paginateSearchResults(finalCharacterResults, groupSearch.results, {
-            offset: numericOffset, limit: numericLimit,
-            trueTotal: characterSearch.total + groupSearch.total,
+        const store = await requestStore(request);
+        const page = await store.lib.query({
+            search: String(search), sortField: 'search', offset: numericOffset, limit: numericLimit,
+            includeGroups: includeGroups === true, ...(fav === true ? { fav: true } : {}),
+            wantRows: false, wantHashes: true, wantTotal: true,
         });
-        // Lets the client show an indicator when search runs on anything other than the fastest engine tier.
-        const BACKEND_SEVERITY = { tantivy: 0, unavailable: 1 };
-        const searchBackend = BACKEND_SEVERITY[groupSearch.backend] > BACKEND_SEVERITY[characterSearch.backend]
-            ? groupSearch.backend
-            : characterSearch.backend;
+        const rows = /** @type {{ id: string, isGroup: boolean }[]} */ (page.hashRows);
+        const characters = await characterObjects(request, rows.filter(r => !r.isGroup).map(r => r.id), { shallow: useShallowCharacters });
+        const byAvatar = new Map(characters.filter(Boolean).map(c => [(c).avatar, c]));
+        const groups = new Map((await groupObjects(request, rows.filter(r => r.isGroup).map(r => r.id))).filter(Boolean).map(g => [(g).id, g]));
+        const items = rows.map(r => (r.isGroup ? { type: 'group', item: groups.get(r.id) } : { type: 'character', item: byAvatar.get(r.id) })).filter(x => x.item);
+        const total = Number(page.total ?? items.length);
         const payload = includeGroups ? { items, total } : { items: items.map(x => x.item), total };
-        payload.searchBackend = searchBackend;
         return response.send(payload);
     } catch (err) {
         console.error(err);
@@ -2227,83 +1815,246 @@ router.post('/all', async function (request, response) {
     }
 });
 
+/** PNGs read from `characters/` per batch by a rescan, with a pause between batches. */
+const RESCAN_BATCH = 100;
+
 /**
- * Forces an out-of-cycle pass of the metadata store's background reconciler for the calling user.
- * Not called by any client UI yet.
- * @param  {import("express").Request} request The HTTP request object.
- * @param  {import("express").Response} response The HTTP response object.
- * @return {void}
+ * Imports those of the PNGs `avatars` (names in `characters/`) that the library doesn't have (by avatar). A file the
+ * conversion converted, unchanged since (name, size, mtime), isn't imported: the conversion left the old store's
+ * PNGs there, those of characters deleted since included.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {string[]} avatars
+ * @returns {Promise<{ imported: number, skipped: number, failed: string[] }>}
+ */
+async function importDropped(directories, avatars) {
+    const { lib } = await userStore(directories);
+    const request = /** @type {import('express').Request} */ (/** @type {unknown} */ ({ user: { directories } }));
+    let imported = 0;
+    let skipped = 0;
+    /** @type {string[]} */
+    const failed = [];
+    const known = await lib.ids(TYPE.character, avatars);
+    const fresh = avatars.filter((_, i) => known[i] === null);
+    const converted = fresh.length ? await lib.store.meta(fresh.map(convertedFileKey)) : [];
+    for (const [i, avatar] of fresh.entries()) {
+        const file = path.join(directories.characters, avatar);
+        try {
+            if (converted[i] !== null) {
+                const st = await fsPromises.stat(file);
+                if (converted[i] === JSON.stringify([st.size, st.mtimeMs])) {
+                    skipped++;
+                    continue;
+                }
+            }
+            const raw = await readCharacterData(file);
+            const data = raw === undefined ? null : buildPngImportData(raw, directories, path.parse(avatar).name);
+            if (data === null) {
+                failed.push(avatar);
+                continue;
+            }
+            const contentHash = await hashFileContents(file);
+            await writeCharacter(request, avatar, data, { image: file, contentHash });
+            imported++;
+        } catch (err) {
+            console.warn(`[characters/rescan] ${avatar} could not be imported:`, err);
+            failed.push(avatar);
+        }
+    }
+    return { imported, skipped, failed };
+}
+
+/**
+ * Imports the character PNGs in `characters/` that the library doesn't have, a batch at a time with a pause between.
+ * Answers `{ imported, skipped, failed }`: counts of files imported and of converted files left, and the files that
+ * couldn't be imported.
+ * @param {import('../users.js').UserDirectoryList} directories
+ */
+async function rescanCharacters(directories) {
+    const dir = await fsPromises.opendir(directories.characters);
+    const total = { imported: 0, skipped: 0, /** @type {string[]} */ failed: [] };
+    let batch = [];
+    const importBatch = async () => {
+        const done = await importDropped(directories, batch);
+        total.imported += done.imported;
+        total.skipped += done.skipped;
+        total.failed.push(...done.failed);
+        batch = [];
+        await new Promise(resolve => setTimeout(resolve, 10));
+    };
+    for await (const entry of dir) {
+        if (!entry.isFile() || path.extname(entry.name).toLowerCase() !== '.png') continue;
+        batch.push(entry.name);
+        if (batch.length >= RESCAN_BATCH) await importBatch();
+    }
+    await importBatch();
+    const { imported, skipped, failed } = total;
+    console.info(`[characters/rescan] ${imported} imported, ${skipped} converted file(s) left as converted, ${failed.length} not importable${failed.length ? `: ${failed.join(', ')}` : ''}`);
+    return total;
+}
+
+/** How long a dropped file must stay quiet before it is read: a copy in progress keeps changing it. */
+const DROP_QUIET_MS = 500;
+
+/**
+ * Picks up PNGs dropped into a user's `characters/`, as upstream did: once now (`rescanCharacters()`, in batches),
+ * then each file a filesystem watch reports, once it has been quiet for a moment. Files the app writes itself are
+ * written aside and renamed after their card is stored, so they are known by then. A watch can miss what a
+ * filesystem doesn't report (a network share); a file dropped while the server was stopped is found by the first pass.
+ * Imports run one at a time. Call `close()` to stop.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {number} [quietMs]
+ * @returns {{ first: Promise<void>, idle: () => Promise<void>, close: () => Promise<void> }} `first` settles once the first
+ * pass is done; `idle` once every import started so far is; `close` stops the watch, then settles like `idle` without
+ * importing what it still held back.
+ */
+export function watchDroppedCharacters(directories, quietMs = DROP_QUIET_MS) {
+    let tail = Promise.resolve();
+    /** @param {() => Promise<unknown>} work */
+    const queue = work => {
+        tail = tail.then(work).then(() => {}, err => console.error('[characters/watch] Importing dropped files failed:', err));
+        return tail;
+    };
+    const first = queue(() => rescanCharacters(directories));
+    /** @type {Set<string>} */
+    const pending = new Set();
+    /** @type {NodeJS.Timeout | undefined} */
+    let timer;
+    let closed = false;
+    const flush = () => queue(async () => {
+        const names = [...pending].filter(name => fs.existsSync(path.join(directories.characters, name)));
+        pending.clear();
+        for (let i = 0; i < names.length; i += RESCAN_BATCH) {
+            const { failed } = await importDropped(directories, names.slice(i, i + RESCAN_BATCH));
+            if (failed.length) console.warn(`[characters/watch] ${failed.length} dropped file(s) not importable: ${failed.join(', ')}`);
+            await new Promise(resolve => setTimeout(resolve, 10));
+        }
+    });
+    /** @type {fs.FSWatcher | undefined} */
+    let watcher;
+    try {
+        watcher = fs.watch(directories.characters, (_event, name) => {
+            if (closed || !name || path.extname(name).toLowerCase() !== '.png') return;
+            pending.add(name);
+            clearTimeout(timer);
+            timer = setTimeout(flush, quietMs);
+        });
+        watcher.on('error', err => console.error('[characters/watch] The watch on characters/ failed:', err));
+    } catch (err) {
+        console.error(`[characters/watch] Can't watch ${directories.characters}; files dropped there are found at the next start or by a rescan:`, err);
+    }
+    return {
+        first,
+        idle: async () => {
+            clearTimeout(timer);
+            if (pending.size) await flush();
+            await tail;
+        },
+        close: () => {
+            closed = true;
+            clearTimeout(timer);
+            watcher?.close();
+            return tail;
+        },
+    };
+}
+
+/** @type {Map<string, ReturnType<typeof watchDroppedCharacters>>} A watch for each user directory, by its root. */
+const droppedWatches = new Map();
+
+/**
+ * Starts `watchDroppedCharacters()` for a user (the one it already has, if started before), to be stopped with
+ * `stopDroppedWatch()` when the user is deleted, or `stopDroppedWatches()`.
+ * @param {import('../users.js').UserDirectoryList} directories
+ */
+export function startDroppedWatch(directories) {
+    const root = path.resolve(directories.root);
+    const had = droppedWatches.get(root);
+    if (had) return had;
+    const watch = watchDroppedCharacters(directories);
+    droppedWatches.set(root, watch);
+    return watch;
+}
+
+/**
+ * Stops the user's watch `startDroppedWatch()` started, once the imports under way are done.
+ * @param {import('../users.js').UserDirectoryList} directories
+ */
+export async function stopDroppedWatch(directories) {
+    const root = path.resolve(directories.root);
+    const watch = droppedWatches.get(root);
+    droppedWatches.delete(root);
+    await watch?.close();
+}
+
+/** Stops every watch `startDroppedWatch()` started, once the imports under way are done. */
+export async function stopDroppedWatches() {
+    const all = [...droppedWatches.values()];
+    droppedWatches.clear();
+    await Promise.all(all.map(watch => watch.close()));
+}
+
+/**
+ * Upstream's rescan: imports the character PNGs dropped into `characters/` that the library doesn't have, and
+ * answers `{ imported, skipped, failed }` (see rescanCharacters()).
  */
 router.post('/metadata/rescan', async function (request, response) {
     try {
-        await reconcileMetadataStore(request.user.directories);
-        return response.sendStatus(204);
+        return response.send(await rescanCharacters(request.user.directories));
     } catch (err) {
-        console.error('[character-metadata] Explicit rescan failed:', err);
+        console.error('[characters/metadata/rescan] Rescan failed:', err);
         return response.status(500).send({ error: true });
     }
 });
 
 /**
- * Wrap a scripted bulk import in `begin`/`end` to avoid one SQLite transaction per file.
- * @param  {import("express").Request} request The HTTP request object.
- * @param  {import("express").Response} response The HTTP response object.
- * @return {void}
+ * A batch import's bracket: between them, the imports arriving together are committed together (each still answered
+ * once it is durable).
  */
 router.post('/metadata/batch-import/begin', async function (request, response) {
     try {
-        await beginBatchImport(request.user.directories);
+        (await requestStore(request)).lib.beginBatch();
         return response.sendStatus(204);
     } catch (err) {
-        console.error('[character-metadata] Failed to begin batch-import mode:', err);
+        console.error('[characters/metadata/batch-import] Failed to begin:', err);
         return response.status(500).send({ error: true });
     }
 });
 
 router.post('/metadata/batch-import/end', async function (request, response) {
     try {
-        await endBatchImport(request.user.directories);
+        (await requestStore(request)).lib.endBatch();
         return response.sendStatus(204);
     } catch (err) {
-        console.error('[character-metadata] Failed to end batch-import mode:', err);
+        console.error('[characters/metadata/batch-import] Failed to end:', err);
         return response.status(500).send({ error: true });
     }
 });
 
+/** The `/query` range fields (`filter.ranges`), besides `tag:<id>`. */
+const QUERY_RANGE_FIELDS = new Set(['create_date', 'date_last_chat', 'chat_size', 'data_size', 'closed_folders']);
+const QUERY_RANGE_TAG_PREFIX = 'tag:';
+
 /**
- * Turns `filter.folder` into the filter it means, in place. "none": rows carrying no closed folder tag, and no filter
- * at all while no tag is a closed folder (so the list keeps its counted totals). A tag id: rows carrying that folder's
- * tag, as a tag include when the tag filter is 'and' (its index drives the walk), else as a `tag:<id>` range, since an
- * 'or' tag filter can't also require one tag.
- * @param {import('../users.js').UserDirectoryList} directories
- * @param {{ folder?: string, tags?: { include?: string[], exclude?: string[], mode?: string }, ranges?: import('../character-metadata-db.js').QueryRanges }} filter
+ * Whether `field` is a `/query` range field.
+ * @param {string} field
  */
-async function applyFolderCase(directories, filter) {
-    const folder = /** @type {string} */ (filter.folder);
-    delete filter.folder;
-    if (folder === 'none') {
-        if (await hasClosedFolderTags(directories) === false) return;
-        filter.ranges = { ...filter.ranges, closed_folders: { max: 0 } };
-        return;
-    }
-    const include = Array.isArray(filter.tags?.include) ? filter.tags.include : [];
-    if (filter.tags?.mode === 'or' && include.length > 0) {
-        filter.ranges = { ...filter.ranges, [`tag:${folder}`]: { min: 1 } };
-        return;
-    }
-    filter.tags = { ...filter.tags, include: [...new Set([...include, folder])], mode: 'and' };
+function isQueryRangeField(field) {
+    return QUERY_RANGE_FIELDS.has(field) || (field.startsWith(QUERY_RANGE_TAG_PREFIX) && field.length > QUERY_RANGE_TAG_PREFIX.length);
 }
 
-// Sortable fields this HTTP layer accepts. 'random' and 'search' don't map to a plain SQL column sort.
+/**
+ * @typedef {Record<string, { min?: number, max?: number }>} QueryRanges
+ */
+
 /**
  * A /query `filter.ranges`, checked: each key an isQueryRangeField() field, each bound a finite number. Empty bounds
  * are dropped, and no bounds at all is `undefined`.
  * @param {unknown} raw
- * @returns {import('../character-metadata-db.js').QueryRanges | undefined | null} null when it isn't valid.
+ * @returns {QueryRanges | undefined | null} null when it isn't valid.
  */
 export function parseQueryRanges(raw) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-    /** @type {import('../character-metadata-db.js').QueryRanges} */
+    /** @type {QueryRanges} */
     const ranges = {};
     for (const [field, bound] of Object.entries(raw)) {
         if (!isQueryRangeField(field)) return null;
@@ -2321,41 +2072,297 @@ export function parseQueryRanges(raw) {
     return Object.keys(ranges).length > 0 ? ranges : undefined;
 }
 
+/**
+ * Turns `filter.folder` into the filter it means, in place. "none": rows carrying no closed folder tag, and no filter
+ * at all while no tag is a closed folder (so the list keeps its counted totals). A tag id: rows carrying that folder's
+ * tag, as a tag include when the tag filter is 'and', else as a `tag:<id>` range, since an 'or' tag filter can't also
+ * require one tag.
+ * @param {import('../library-engine.js').LibraryEngine} lib
+ * @param {{ folder?: string, tags?: { include?: string[], exclude?: string[], mode?: string }, ranges?: QueryRanges }} filter
+ */
+async function applyFolderCase(lib, filter) {
+    const folder = /** @type {string} */ (filter.folder);
+    delete filter.folder;
+    if (folder === 'none') {
+        const closed = await lib.store.tagPage({ sort: 0, folders: true, folderType: 'CLOSED', limit: 1 });
+        if (closed.ids.length === 0) return;
+        filter.ranges = { ...filter.ranges, closed_folders: { max: 0 } };
+        return;
+    }
+    const include = Array.isArray(filter.tags?.include) ? filter.tags.include : [];
+    if (filter.tags?.mode === 'or' && include.length > 0) {
+        filter.ranges = { ...filter.ranges, [`tag:${folder}`]: { min: 1 } };
+        return;
+    }
+    filter.tags = { ...filter.tags, include: [...new Set([...include, folder])], mode: 'and' };
+}
+
 const QUERY_SORT_FIELDS = new Set(['name', 'date_added', 'date_last_chat', 'chat_size', 'fav', 'create_date', 'data_size', 'random', 'search']);
 
 const DEFAULT_QUERY_PAGE_SIZE = 500;
 const MAX_QUERY_PAGE_SIZE = 2000;
 
 /**
- * SQLite-backed replacement for `/all`; never touches the filesystem or parses a PNG. `sort.field: 'random'` requires a client-minted `sort.seed` (400s otherwise, since the seed must stay client-owned for stable pagination). `filter.includeGroups: true` merges groups into the same sorted, paginated result.
- * @param  {import("express").Request} request The HTTP request object.
- * @param  {import("express").Response} response The HTTP response object.
- * @return {void}
+ * @typedef {{ status: number, body: object } | { hashes: Parameters<typeof serializeQueryHashesBinary>[0] }} QueryReply
+ * What runQuery() answers: a JSON body with its status, or hash mode's binary body.
  */
-/**
- * Turns queryEntities()'s raw UNION ALL rows into the `/query` route's wire shape - a group row only carries its SQL-side columns and needs its JSON hydrated separately.
- * @param {import('../users.js').UserDirectoryList} directories
- * @param {{type: 'character'|'group', id: string, fav: boolean, date_added: number, date_last_chat: number, chat_size: number, item: object|null}[]} rows
- * @returns {Promise<{type: 'character'|'group', item: object}[]>}
- */
-async function hydrateEntityRows(directories, rows) {
-    const groupIds = rows.filter(r => r.type === 'group').map(r => r.id);
-    const [groupsById, groupTagIdsById] = await Promise.all([
-        groupIds.length > 0 ? getGroupsByIds(directories, groupIds) : {},
-        groupIds.length > 0 ? getEntityTagIdsForMany(directories, groupIds, { type: 'group' }) : {},
-    ]);
-    return rows.map(r => {
-        if (r.type === 'character') {
-            return { type: 'character', item: r.item };
-        }
-        const group = groupsById[r.id];
-        if (!group) {
-            // Metadata row exists but the group's JSON file doesn't.
-            return null;
-        }
-        return { type: 'group', item: { ...group, fav: r.fav, date_added: r.date_added, date_last_chat: r.date_last_chat, chat_size: r.chat_size, tag_ids: groupTagIdsById?.[r.id] ?? [] } };
-    }).filter(Boolean);
+
+/** @param {number} status @param {object} body @returns {QueryReply} */
+function queryReply(status, body) {
+    return { status, body };
 }
+
+/**
+ * The change feed's end (the characters' `/changes` cursor) and the answer's freshness token: the store's log end,
+ * read before the rows, so a write after it makes the token stale, never the rows.
+ * @param {import('../library-engine.js').LibraryEngine} lib
+ */
+async function queryVersion(lib) {
+    const token = `l${lib.store.durableEnd()}`;
+    const seq = await lib.changesEnd();
+    return { seq, token };
+}
+
+/**
+ * `/query`'s answer to one request body: a page of characters (and with `filter.includeGroups` groups) under the
+ * filter, sort and search, as list rows, or (`want: ['hashes']`) as hash rows in the binary form.
+ *
+ * `want: 'hidden'` adds `hidden`, upstream's "N hidden" count: every character (and, with `filter.includeGroups`, every
+ * group) less the rows on this page; `~`-prefixed (in hash mode, flagged) when estimated.
+ *
+ * `filter.group` is the Groups filter: `true` keeps only groups and needs `filter.includeGroups`, `false` keeps only
+ * characters. Rows keep the shape `filter.includeGroups` asks for.
+ * @param {import('express').Request} request
+ * @param {object} body The request body: filter, sort, want, page, pageSize, cursor, ifToken.
+ * @param {{ compat?: boolean }} [o] `compat: false` leaves the rows' compat `chat` out (null).
+ * @returns {Promise<QueryReply>}
+ */
+async function runQuery(request, body, { compat = true } = {}) {
+    // A copy: ranges and the folder case are rewritten below, and a caller may reuse its body for the next page.
+    const filter = { ...(body.filter ?? {}) };
+    const sort = body.sort ?? {};
+    const want = Array.isArray(body.want) ? body.want : ['rows', 'total'];
+    const includeGroups = filter.includeGroups === true;
+    const group = typeof filter.group === 'boolean' ? filter.group : undefined;
+    if (group === true && !includeGroups) {
+        return queryReply(400, { error: true, reason: 'group-requires-include-groups', message: 'filter.group true requires filter.includeGroups.' });
+    }
+    const searchTerm = typeof filter.search === 'string' ? filter.search.trim() : '';
+    if (sort.field === 'search' && !searchTerm) {
+        return queryReply(400, { error: true, reason: 'search-sort-requires-search', message: 'sort.field "search" requires a non-empty filter.search.' });
+    }
+    if (sort.field !== undefined && !QUERY_SORT_FIELDS.has(sort.field)) {
+        return queryReply(400, { error: true, reason: 'invalid-sort-field' });
+    }
+    if (filter.ranges !== undefined) {
+        const ranges = parseQueryRanges(filter.ranges);
+        if (ranges === null) {
+            return queryReply(400, { error: true, reason: 'invalid-ranges', message: `filter.ranges takes { field: { min?, max? } } with numbers, for: ${[...QUERY_RANGE_FIELDS].join(', ')}.` });
+        }
+        filter.ranges = ranges;
+    }
+    const seed = Number(sort.seed);
+    if (sort.field === 'random' && !Number.isFinite(seed)) {
+        return queryReply(400, { error: true, reason: 'random-seed-required', message: 'sort.field "random" requires a finite sort.seed - design doc §5.3 decision 10, the client mints and persists this (public/scripts/random-sort.js).' });
+    }
+    // In relevance order, `sort.tie` orders the matches only tag names match (all scoring alike): the list's sort.
+    const tie = sort.field === 'search' && sort.tie && typeof sort.tie === 'object' ? sort.tie : undefined;
+    if (tie !== undefined && (!QUERY_SORT_FIELDS.has(tie.field) || tie.field === 'search')) {
+        return queryReply(400, { error: true, reason: 'invalid-sort-field', message: 'sort.tie.field takes a list sort field.' });
+    }
+    const tieSeed = Number(tie?.seed);
+    if (tie?.field === 'random' && !Number.isFinite(tieSeed)) {
+        return queryReply(400, { error: true, reason: 'random-seed-required', message: 'sort.tie.field "random" requires a finite sort.tie.seed.' });
+    }
+    for (const w of want) {
+        if (w !== 'rows' && w !== 'total' && w !== 'hashes' && w !== 'hidden') {
+            return queryReply(400, { error: true, reason: 'want-not-supported', message: `want: "${w}" is not implemented yet.` });
+        }
+    }
+    const wantHidden = want.includes('hidden');
+    const wantRows = want.includes('rows');
+    const wantTotal = want.includes('total') || wantHidden;
+    // Hash-only mode is mutually exclusive with `rows` - one shape or the other per request.
+    const wantHashes = want.includes('hashes');
+    if (wantHashes && wantRows) {
+        return queryReply(400, { error: true, reason: 'hashes-and-rows-exclusive', message: 'want cannot include both "rows" and "hashes" in the same request.' });
+    }
+
+    const store = await requestStore(request);
+    const { lib } = store;
+    if (filter.folder !== undefined) {
+        if (typeof filter.folder !== 'string' || filter.folder === '') {
+            return queryReply(400, { error: true, reason: 'invalid-folder', message: 'filter.folder takes "none" or a closed folder\'s tag id.' });
+        }
+        await applyFolderCase(lib, filter);
+    }
+
+    const page = Number.isFinite(Number(body.page)) && Number(body.page) >= 1 ? Math.trunc(Number(body.page)) : 1;
+    const pageSize = Number.isFinite(Number(body.pageSize)) && Number(body.pageSize) > 0
+        ? Math.min(Math.trunc(Number(body.pageSize)), MAX_QUERY_PAGE_SIZE)
+        : DEFAULT_QUERY_PAGE_SIZE;
+
+    const { seq, token } = await queryVersion(lib);
+    if (typeof body.ifToken === 'string' && body.ifToken.length > 0 && body.ifToken === token) {
+        return queryReply(200, { seq, token, unchanged: true });
+    }
+
+    const result = await lib.query({
+        tags: filter.tags,
+        fav: typeof filter.fav === 'boolean' ? filter.fav : undefined,
+        world: filter.world,
+        ranges: filter.ranges,
+        excludeIds: filter.excludeIds,
+        ids: filter.ids,
+        sortField: sort.field,
+        sortOrder: sort.order,
+        seed,
+        ...(tie ? { tieSortField: tie.field, tieSortOrder: tie.order, tieSeed } : {}),
+        offset: typeof body.cursor === 'string' ? 0 : (page - 1) * pageSize,
+        limit: pageSize,
+        cursor: body.cursor,
+        wantRows,
+        wantTotal,
+        wantHashes,
+        wantHidden,
+        groupsOnly: includeGroups && group === true,
+        includeGroups: includeGroups && group !== false,
+        // Upstream's "N hidden": every character, and every group when the list holds groups, whichever the filter keeps.
+        hiddenKinds: { characters: true, groups: includeGroups },
+        includeCreatorNotes: shallowCharactersIncludeCreatorNotes,
+        ...(searchTerm ? { search: searchTerm } : {}),
+    });
+    if (result === 'invalid-cursor') {
+        return queryReply(400, { error: true, reason: 'invalid-cursor', message: 'The cursor was made for another sort: ask again without it.' });
+    }
+
+    const listed = /** @type {{ id: string, isGroup?: boolean, type?: string }[]} */ (wantHashes ? result.hashRows : (result.rows ?? []));
+    const keys = listed.map(r => ({ key: r.id, group: wantHashes ? !!r.isGroup : r.type === 'group' }));
+    const ids = compat ? await Promise.all(keys.map(async k => (await lib.ids(k.group ? TYPE.group : TYPE.character, [k.key]))[0])) : keys.map(() => null);
+    const chats = await compatChatIds(store, request, /** @type {bigint[]} */ (ids.filter(id => id !== null)));
+    const chatOf = (/** @type {number} */ i) => (ids[i] === null ? null : chats.get(/** @type {bigint} */ (ids[i])) ?? null);
+    const extra = {
+        ...(result.more ? { more: true } : {}),
+        ...(typeof result.cursor === 'string' ? { cursor: result.cursor } : {}),
+    };
+
+    // A group's compat chat values are part of its object, so its digests are taken over the object /batch answers.
+    const groupKeys = keys.filter(k => k.group).map(k => k.key);
+    const groups = new Map((compat && groupKeys.length ? await groupObjects(request, groupKeys) : []).filter(g => g !== null).map(g => [(g).id, g]));
+
+    if (wantHashes) {
+        const hashRows = /** @type {any[]} */ (result.hashRows).map((r, i) => {
+            const group = r.isGroup ? groups.get(r.id) : undefined;
+            return { ...r, chat: chatOf(i), ...(group ? groupDigests(group) : {}) };
+        });
+        return {
+            hashes: {
+                seq, token, total: wantTotal ? Number(result.total) : undefined, approxTotal: !!result.approxTotal, hashRows,
+                ...extra,
+                ...(wantHidden ? { hidden: Number(result.hidden), approxHidden: !!result.approxHidden } : {}),
+            },
+        };
+    }
+    /** @type {Record<string, unknown>} */
+    const payload = { seq, token, ...extra };
+    if (wantRows) {
+        const rows = /** @type {any[]} */ (result.rows).map((r, i) => {
+            const group = r.type === 'group' ? groups.get(r.id) : undefined;
+            const item = r.type === 'group' ? { ...r.item, chat_id: group?.chat_id ?? chatOf(i), chats: group?.chats ?? [] } : { ...r.item, chat: chatOf(i) };
+            return { type: r.type, item };
+        });
+        payload.rows = includeGroups ? rows : rows.map(r => r.item);
+    }
+    if (wantTotal && want.includes('total')) payload.total = result.approxTotal ? `~${result.total}` : result.total;
+    if (wantHidden) payload.hidden = result.approxHidden ? `~${result.hidden}` : result.hidden;
+    return queryReply(200, payload);
+}
+
+async function handleQuery(request, response) {
+    try {
+        const reply = await runQuery(request, request.body ?? {});
+        if ('hashes' in reply) return sendHashQueryResponse(response, reply.hashes);
+        return response.status(reply.status).send(reply.body);
+    } catch (err) {
+        console.error('[characters/query] Query failed:', err);
+        return response.status(500).send({ error: true });
+    }
+}
+
+router.post('/query', (request, response) => withSearchTiming(response, () => handleQuery(request, response)));
+
+/** Upstream's search index rebuild: the library's search is kept at every write, so there is nothing to rebuild. */
+router.post('/search-index/rebuild', function (_request, response) {
+    return response.send({ ok: true });
+});
+
+/** Which avatars name a character: `{ ids }` → `{ [avatar]: boolean }`. */
+router.post('/exists', async function (request, response) {
+    try {
+        const ids = Array.isArray(request.body?.ids) ? request.body.ids : null;
+        if (!ids || ids.some(id => typeof id !== 'string')) {
+            return response.sendStatus(400);
+        }
+        const { lib } = await requestStore(request);
+        const found = await lib.ids(TYPE.character, ids);
+        /** @type {Record<string, boolean>} */
+        const result = {};
+        ids.forEach((id, i) => { result[id] = found[i] !== null; });
+        return response.send(result);
+    } catch (err) {
+        console.error('[characters/exists] Existence check failed:', err);
+        return response.status(500).send({ error: true });
+    }
+});
+
+/**
+ * findChar()'s library-wide lookup: `{ name?, allowAvatar?, insensitive?, tags? }` answers `{ ids, capped }`;
+ * `{ type: 'group', name }` answers `{ ids }`.
+ */
+router.post('/find', async function (request, response) {
+    try {
+        const body = request.body ?? {};
+        const name = body.name ?? null;
+        if (name !== null && typeof name !== 'string') return response.sendStatus(400);
+        const { lib } = await requestStore(request);
+        if (body.type === 'group') {
+            if (!name) return response.sendStatus(400);
+            return response.send({ ids: await lib.findGroups(name) });
+        }
+        if (body.type !== undefined && body.type !== 'character') return response.sendStatus(400);
+        const tags = body.tags ?? null;
+        if (tags !== null && (!Array.isArray(tags) || tags.some(tag => typeof tag !== 'string'))) return response.sendStatus(400);
+        return response.send(await lib.findCharacters({
+            name,
+            allowAvatar: body.allowAvatar !== false,
+            insensitive: body.insensitive !== false,
+            tags,
+        }));
+    } catch (err) {
+        console.error('[characters/find] Lookup failed:', err);
+        return response.status(500).send({ error: true });
+    }
+});
+
+// Fixed page size for /changes: the server always pages, and the client loops on `hasMore`.
+const CHANGES_PAGE_SIZE = 500;
+
+/**
+ * The characters changed after `sinceSeq`, each once at its last change; paged (`hasMore`), never truncated.
+ */
+router.post('/changes', async function (request, response) {
+    try {
+        const sinceSeq = Number(request.body?.sinceSeq);
+        if (!Number.isFinite(sinceSeq) || sinceSeq < 0) {
+            return response.sendStatus(400);
+        }
+        const { lib } = await requestStore(request);
+        return response.send(await lib.changes(sinceSeq, CHANGES_PAGE_SIZE));
+    } catch (err) {
+        console.error('[characters/changes] Change-feed query failed:', err);
+        return response.status(500).send({ error: true });
+    }
+});
 
 /** Search-backend enum codes for the binary hash-mode `/query` response. 0 means "absent". */
 const HASH_QUERY_SEARCH_BACKEND_CODES = { tantivy: 1, native: 2, wasm: 3, unavailable: 4 };
@@ -2380,12 +2387,10 @@ const HASH_QUERY_SEARCH_BACKEND_CODES = { tantivy: 1, native: 2, wasm: 3, unavai
  * @param {{seq:number, token:string|null, total:number|undefined, approxTotal:boolean, hashRows:object[], searchBackend?:string, hidden?:number, approxHidden?:boolean, more?:boolean, cursor?:string}} params
  * @returns {Buffer}
  */
-export function serializeQueryHashesBinary({ seq, token, total, approxTotal, hashRows, searchBackend, hidden, approxHidden = false, more = false, cursor, tagMatches, tagMatchesExact = true }) {
+export function serializeQueryHashesBinary({ seq, token, total, approxTotal, hashRows, searchBackend, hidden, approxHidden = false, more = false, cursor }) {
     const hasTotal = typeof total === 'number';
     const hasCursor = typeof cursor === 'string' && cursor.length > 0;
     const cursorBytes = hasCursor ? Buffer.byteLength(cursor, 'utf8') : 0;
-    const hasTagMatches = Array.isArray(tagMatches);
-    const tags = hasTagMatches ? tagMatches.slice(0, 255) : [];
     const hasHidden = typeof hidden === 'number';
     const searchBackendCode = HASH_QUERY_SEARCH_BACKEND_CODES[searchBackend] ?? 0;
 
@@ -2398,16 +2403,12 @@ export function serializeQueryHashesBinary({ seq, token, total, approxTotal, has
     }
     totalSize += 2 + tokenBytes; // trailer
     if (hasCursor) totalSize += 2 + cursorBytes;
-    if (hasTagMatches) {
-        totalSize += 1 + 1;
-        for (const tag of tags) totalSize += 2 + Buffer.byteLength(tag.id, 'utf8') + 2 + Buffer.byteLength(tag.name, 'utf8') + 8;
-    }
     if (hasHidden) totalSize += 1 + 8;
 
     const buf = Buffer.allocUnsafe(totalSize);
     let offset = 0;
 
-    const headerFlags = (hasTotal ? 0b01 : 0) | (hasTotal && approxTotal ? 0b10 : 0) | (more ? 0b100 : 0) | (hasCursor ? 0b1000 : 0) | (hasTagMatches ? 0b10000 : 0);
+    const headerFlags = (hasTotal ? 0b01 : 0) | (hasTotal && approxTotal ? 0b10 : 0) | (more ? 0b100 : 0) | (hasCursor ? 0b1000 : 0);
     buf.writeUInt8(headerFlags, offset); offset += 1;
     buf.writeUInt8(searchBackendCode, offset); offset += 1;
     buf.writeDoubleLE(seq ?? 0, offset); offset += 8;
@@ -2452,18 +2453,6 @@ export function serializeQueryHashesBinary({ seq, token, total, approxTotal, has
         buf.writeUInt16LE(cursorBytes, offset); offset += 2;
         buf.write(cursor, offset, cursorBytes, 'utf8'); offset += cursorBytes;
     }
-    if (hasTagMatches) {
-        buf.writeUInt8(tagMatchesExact ? 1 : 0, offset); offset += 1;
-        buf.writeUInt8(tags.length, offset); offset += 1;
-        for (const tag of tags) {
-            for (const text of [tag.id, tag.name]) {
-                const n = Buffer.byteLength(text, 'utf8');
-                buf.writeUInt16LE(n, offset); offset += 2;
-                buf.write(text, offset, n, 'utf8'); offset += n;
-            }
-            buf.writeDoubleLE(tag.carriers, offset); offset += 8;
-        }
-    }
     if (hasHidden) {
         buf.writeUInt8(approxHidden ? 0b1 : 0, offset); offset += 1;
         buf.writeDoubleLE(hidden, offset); offset += 8;
@@ -2479,878 +2468,28 @@ export function serializeQueryHashesBinary({ seq, token, total, approxTotal, has
  */
 function sendHashQueryResponse(response, params) {
     response.set('Content-Type', 'application/octet-stream');
-    return response.send(timePhase('serialize', () => serializeQueryHashesBinary(params)));
+    return response.send(serializeQueryHashesBinary(params));
 }
 
 /**
- * `/query`'s freshness token: an opaque hash of exactly the components a response was built from. A request's
- * `ifToken` is answered `unchanged` only when the token rebuilt from those components now is equal.
- *   - no search: the change log's seq (MAX(changes.seq)); with groups, plus the groups version (the groups
- *     version log's latest value).
- *   - search: the same, plus the characters index's position (its change-log and tag-rename-log cursors and its
- *     retry counter) as of the search read; with groups, plus the groups index's position (the groups version and
- *     tag-rename-log seq it covers) as of its search read.
- * null when a component can't be read.
- * @param {{ seq: number | null | undefined, groupsVersion?: number | null, search: boolean, includeGroups: boolean, position?: import('./search-index-coordinator.js').SearchIndexPosition | null, groupsPosition?: import('./search-index-coordinator.js').GroupsIndexPosition | null }} components
- * @returns {string | null}
+ * SSE stream of what changed for this user, so a page asks instead of polling: `{}` when characters changed (the page
+ * asks `/changes`), `{ type: 'groups-changed' }` when groups or what characters and groups carry changed (it asks
+ * `/api/tags/assignment-changes`), `{ type: 'tags-changed' }` for tag definitions (it asks `/api/tags/changes`),
+ * `{ type: 'tag-order-settled' }`, `{ type: 'tag-move-failed', ... }`, `{ type: 'views-changed' }`, and
+ * `{ type: 'state-changed', tree, at }` when a chat's state changed at a message (`at`, null: the tree's root; `tree`
+ * the character's avatar or the group's id), which a page showing that message reads again; with `tree` null (a
+ * change reverted) every page reads its state again. Also carries the browser
+ * presence heartbeat: one permanent connection per tab, as the browser's per-origin connection pool is small.
  */
-function queryToken({ seq, groupsVersion, search, includeGroups, position, groupsPosition, tagSeq = null, activitySeq = null }) {
-    if (!Number.isFinite(seq)) return null;
-    const components = [seq];
-    // Queued chat stats (message writes not yet written into the rows) change the rows' chat_size and date_last_chat.
-    if (activitySeq !== null) components.push('activity', activitySeq);
-    // A "no folder" filter reads tag definitions: a tag turned into a closed folder changes its rows.
-    if (tagSeq !== null) components.push('tags', tagSeq);
-    if (includeGroups) {
-        if (!Number.isFinite(groupsVersion)) return null;
-        components.push(groupsVersion);
-    }
-    if (search) {
-        if (!position) return null;
-        components.push(position.seq, position.tagNameSeq, position.retrySeq, position.nameOrderSeq ?? null);
-        if (includeGroups) {
-            if (!Number.isFinite(groupsPosition?.version) || !Number.isFinite(groupsPosition?.tagNameSeq)) return null;
-            components.push(groupsPosition.version, groupsPosition.tagNameSeq);
-        }
-    }
-    return crypto.createHash('sha256').update(JSON.stringify(components)).digest('base64url').slice(0, 22);
-}
-
-/**
- * Extra matches fetched past a page, so a page whose index hits include rows that no longer exist (dropped
- * during hydration) still fills.
- * @param {number} pageSize
- */
-function pageOverFetch(pageSize) {
-    return Math.max(5, Math.ceil(pageSize * 0.1));
-}
-
-/**
- * The entities at merged ranks [offset, offset + count) of a search sorted by a tantivy fast field: characters
- * sorted by tantivy, groups merged in by the same key. Only index data is read, never metadata rows.
- * @param {string} handle
- * @param {import('../users.js').UserDirectoryList} directories
- * @param {{ searchTerm: string, sortField: string, sortOrder: string, filter: object, includeGroups: boolean, groupsOnly?: boolean, offset: number, count: number }} params
- *   groupsOnly: no characters, and the characters index isn't searched.
- * @returns {Promise<{ entities: { type: 'character'|'group', id: string }[], total: number, backend: string, position: import('./search-index-coordinator.js').SearchIndexPosition | null, groupsPosition: import('./search-index-coordinator.js').GroupsIndexPosition | null } | null>}
- * null when the sort field has no fast field. `position` is the characters index's as of its search, null when
- * unknown or when two searches read different ones. `groupsPosition` is the groups index's as of its search, null
- * when unknown or groups weren't searched.
- */
-async function searchSortedPage(handle, directories, { searchTerm, sortField, sortOrder, filter, includeGroups, groupsOnly = false, offset, count }) {
-    const filterOptions = {
-        fav: typeof filter.fav === 'boolean' ? filter.fav : undefined,
-        tags: filter.tags,
-        excludeIds: filter.excludeIds,
-        ids: Array.isArray(filter.ids) ? filter.ids : undefined,
-    };
-    const groupsSorted = includeGroups
-        ? await searchGroupsSorted(handle, directories, searchTerm, sortField, sortOrder, filterOptions)
-        : { groups: [], backend: 'tantivy', position: null };
-    if (groupsSorted === null) return null;
-    const { groups, backend: groupsBackend, position: groupsPosition } = groupsSorted;
-    if (groupsOnly) {
-        const entities = groups.slice(offset, offset + count).map(group => ({ type: /** @type {'group'} */ ('group'), id: group.id }));
-        return { entities, total: groups.length, backend: groupsBackend, position: null, groupsPosition };
-    }
-
-    // Each group can push the page's first character back by one rank, so the character window starts that far
-    // earlier; mergeSortedWindow() then places it exactly.
-    const charStart = Math.max(0, offset - groups.length);
-    const charLimit = offset + count - charStart;
-    const chars = await searchCharacterIdsSorted(handle, directories, searchTerm, sortField, sortOrder, charStart, charLimit, filterOptions);
-    if (chars === null) return null;
-
-    let window = { chars: chars.hits, charStart, charsExhausted: chars.hits.length < charLimit };
-    let position = chars.position;
-    if (chars.hits.length === 0 && charStart > 0) {
-        // The page lies past the last character, among trailing groups: anchor the merge on that last character.
-        const last = chars.total > 0
-            ? await searchCharacterIdsSorted(handle, directories, searchTerm, sortField, sortOrder, chars.total - 1, 1, filterOptions)
-            : null;
-        if (last && last.position !== position) position = null;
-        window = last && last.hits.length > 0
-            ? { chars: last.hits, charStart: chars.total - 1, charsExhausted: true }
-            : { chars: [], charStart: 0, charsExhausted: true };
-    }
-
-    const entities = timePhase('merge_ids', () => mergeSortedWindow({ ...window, groups, offset, count }));
-    const backend = chars.backend === 'unavailable' || groupsBackend === 'unavailable' ? 'unavailable' : chars.backend;
-    return { entities, total: chars.total + groups.length, backend, position, groupsPosition };
-}
-
-/**
- * A search the index can't answer whole (searchTagsLeftToSql(), a world filter, or a sort the index has no field for),
- * walked and checked under SEARCH_WORK_CAP (search plan step 1b, T2) instead of reading every match.
- *
- * `rank` walks the index's relevance ranking (groups merged in by score) and checks each window's rows in SQL against
- * the filter. `sorted` walks the filtered rows in SQL in the sort's order and checks each window against the search.
- * Past the cap the reply has the rows found so far, `more`, and a `cursor`; sending the cursor back carries on from
- * the last row examined. A reply that stops short of the end has a cursor too, for the page after it. A cursor made
- * for another search, filter or sort is ignored.
- * @param {{ directories: import('../users.js').UserDirectoryList, profile: { handle: string } }} user
- * @param {object} params
- * @returns {Promise<QueryReply>}
- */
-async function runSearchWalk(user, { mode, searchTerm, filter, sort, seed, includeGroups, groupsOnly, tagsLeftToSql, indexComplete = false, offset, pageSize, wantRows, wantTotal, wantHashes, cursor, tagSeq = null, activitySeq = null }) {
-    const { directories } = user;
-    const handle = user.profile.handle;
-    const unavailable = () => queryReply(503, { error: true, reason: 'metadata-store-unavailable' });
-    const key = walkKey({ mode, searchTerm, filter, sort, includeGroups, groupsOnly });
-    const start = decodeWalkCursor(cursor, key) ?? { c: 0, g: 0, n: 0, e: 0, s: offset };
-    const explicitIds = Array.isArray(filter.ids) ? new Set(filter.ids) : null;
-    const fav = typeof filter.fav === 'boolean' ? filter.fav : undefined;
-    const entityKey = (type, id) => `${type}:${id}`;
-
-    let backend;
-    let position = null;
-    let groupsPosition = null;
-    let base = 0;
-    let walked;
-
-    if (mode === 'rank') {
-        const indexTags = tagsLeftToSql ? undefined : filter.tags;
-        let groups = [];
-        if (includeGroups) {
-            // A user's groups are few: read every match, ranked, as searchGroupIds() does for the bounded path.
-            const groupResult = await searchGroupIds(handle, directories, searchTerm, Number.MAX_SAFE_INTEGER, { fav, tags: indexTags });
-            groupsPosition = groupResult.position;
-            backend = groupResult.backend;
-            groups = groupResult.ids.map(id => ({ id, score: groupResult.scoresById.get(id) }));
-            base += groupResult.total;
-        }
-        let charactersTotal = 0;
-        walked = await walkRanking({
-            groups,
-            need: pageSize,
-            // When the index applies every filter, its counts are the total and the walk's check only drops rows
-            // the index still has after they changed or went (it lags the db by about a second): the page and a
-            // margin for those is all it reads.
-            count: wantTotal && !indexComplete,
-            ...(indexComplete ? { window: pageSize + pageOverFetch(pageSize) } : {}),
-            start,
-            fetchCharacters: async (windowOffset, count) => {
-                if (groupsOnly) return [];
-                const window = await searchCharacterIdsWindow(handle, directories, searchTerm, windowOffset, count, {
-                    fav, tags: indexTags, excludeIds: filter.excludeIds, ids: explicitIds ? filter.ids : undefined,
-                });
-                position ??= window.position;
-                if (backend !== 'unavailable') backend = window.backend;
-                charactersTotal = window.total;
-                return window.hits;
-            },
-            check: async batch => {
-                const ids = batch.map(entity => entity.id);
-                const result = includeGroups
-                    ? await queryEntities(directories, { tags: filter.tags, fav: filter.fav, world: filter.world, ranges: filter.ranges, excludeIds: filter.excludeIds, ids, groupsOnly, offset: 0, limit: ids.length, wantRows: false, wantHashes: true, wantTotal: false })
-                    : await queryCharacters(directories, { tags: filter.tags, fav: filter.fav, world: filter.world, ranges: filter.ranges, excludeIds: filter.excludeIds, ids, offset: 0, limit: ids.length, wantRows: false, wantHashes: true, wantTotal: false });
-                if (result === null) return null;
-                const kept = new Set();
-                for (const row of result.hashRows ?? []) {
-                    if (explicitIds && !explicitIds.has(row.id)) continue;
-                    kept.add(entityKey(row.isGroup ? 'group' : 'character', row.id));
-                }
-                return kept;
-            },
-        });
-        base += charactersTotal;
-    } else {
-        /** @type {Set<string> | null} */
-        let groupMatches = null;
-        const sqlParams = {
-            tags: filter.tags, fav: filter.fav, world: filter.world, ranges: filter.ranges, excludeIds: filter.excludeIds, ids: filter.ids,
-            sortField: sort.field, sortOrder: sort.order, seed, handle,
-        };
-        walked = await walkSorted({
-            need: pageSize,
-            count: wantTotal,
-            start,
-            fetchWindow: async (windowOffset, count) => {
-                const params = { ...sqlParams, offset: windowOffset, limit: count, wantRows: false, wantHashes: true, wantTotal: false };
-                if (!includeGroups) {
-                    const result = await queryCharacters(directories, params);
-                    if (result === null) return null;
-                    return (result.hashRows ?? []).map(row => ({ type: row.isGroup ? 'group' : 'character', id: row.id }));
-                }
-                // A sorted page past its own work cap answers what it has with `more`; carry on from its cursor until
-                // the window is full, so a short window still means the end.
-                const window = [];
-                let cursor;
-                for (;;) {
-                    const result = await queryEntities(directories, { ...params, groupsOnly, limit: count - window.length, cursor });
-                    if (result === null) return null;
-                    window.push(...(result.hashRows ?? []).map(row => ({ type: row.isGroup ? 'group' : 'character', id: row.id })));
-                    if (result.more !== true || window.length >= count || typeof result.cursor !== 'string') break;
-                    cursor = result.cursor;
-                }
-                return window;
-            },
-            check: async batch => {
-                const kept = new Set();
-                const characterIds = batch.filter(entity => entity.type === 'character').map(entity => entity.id);
-                if (characterIds.length > 0) {
-                    const matched = await searchCharacterIds(handle, directories, searchTerm, characterIds.length, { ids: characterIds });
-                    position ??= matched.position;
-                    if (backend !== 'unavailable') backend = matched.backend;
-                    for (const id of matched.ids) kept.add(entityKey('character', id));
-                }
-                if (batch.some(entity => entity.type === 'group')) {
-                    if (groupMatches === null) {
-                        // A user's groups are few: every group the search matches, read once.
-                        const groupResult = await searchGroupIds(handle, directories, searchTerm, Number.MAX_SAFE_INTEGER, {});
-                        groupsPosition = groupResult.position;
-                        if (groupResult.backend === 'unavailable') backend = 'unavailable';
-                        groupMatches = new Set(groupResult.ids);
-                    }
-                    for (const entity of batch) {
-                        if (entity.type === 'group' && groupMatches.has(entity.id)) kept.add(entityKey('group', entity.id));
-                    }
-                }
-                return kept;
-            },
-        });
-        if (wantTotal && walked !== null && !walked.seen.ended) {
-            const counted = includeGroups
-                ? await queryEntities(directories, { ...sqlParams, groupsOnly, wantRows: false, wantTotal: true })
-                : await queryCharacters(directories, { ...sqlParams, wantRows: false, wantTotal: true });
-            if (counted === null) return unavailable();
-            base = Number(counted.total ?? 0);
-        }
-    }
-    if (walked === null) return unavailable();
-
-    const { entities, exhausted, capped } = walked;
-    const extra = {};
-    if (capped && entities.length < pageSize) extra.more = true;
-    if (!exhausted) extra.cursor = encodeWalkCursor(key, walked.position);
-    /** @type {{ total: number, approx: boolean } | null} */
-    let counted = null;
-    if (wantTotal && indexComplete && !walked.seen.ended) {
-        // The index's count, less the rows the check dropped; a dropped row means others may be gone too.
-        const dropped = walked.seen.e - walked.seen.n;
-        counted = { total: Math.max(walked.seen.n, base - dropped), approx: dropped > 0 };
-    } else if (wantTotal) {
-        counted = walkTotal(walked.seen, base);
-    }
-
-    const read = includeGroups
-        ? await timePhase('page_rows', () => getEntityRowsByIds(directories, entities, { wantRows, wantHashes }))
-        : await timePhase('page_rows', () => queryCharacters(directories, { ids: entities.map(entity => entity.id), wantRows, wantHashes, wantTotal: false }));
-    if (read === null) return unavailable();
-    const token = queryToken({ seq: read.seq, groupsVersion: read.groupsVersion, search: true, includeGroups, position, groupsPosition, tagSeq, activitySeq });
-
-    if (wantHashes) {
-        let hashRows = read.hashRows;
-        if (!includeGroups) {
-            const byId = new Map(read.hashRows.map(row => [row.id, row]));
-            hashRows = entities.map(entity => byId.get(entity.id)).filter(Boolean);
-        }
-        return queryHashesReply({ seq: read.seq, token, total: counted?.total, approxTotal: counted?.approx ?? false, hashRows, searchBackend: backend, ...extra });
-    }
-    const payload = { seq: read.seq, token, searchBackend: backend, ...extra };
-    if (wantRows) {
-        if (includeGroups) {
-            payload.rows = await timePhase('hydrate', () => hydrateEntityRows(directories, read.rows));
-        } else {
-            // Rows here are plain toShallow() projections, so the id lives at `.avatar`.
-            const byId = new Map(read.rows.map(row => [row.avatar, row]));
-            payload.rows = entities.map(entity => byId.get(entity.id)).filter(Boolean);
-        }
-    }
-    if (counted) payload.total = counted.approx ? `~${counted.total}` : counted.total;
-    return queryReply(200, payload);
-}
-
-/**
- * @typedef {{ status: number, body: object } | { hashes: Parameters<typeof serializeQueryHashesBinary>[0] }} QueryReply
- * What runQuery() answers: a JSON body with its status, or hash mode's binary body.
- */
-
-/** @param {number} status @param {object} body @returns {QueryReply} */
-function queryReply(status, body) {
-    return { status, body };
-}
-
-/** @param {Parameters<typeof serializeQueryHashesBinary>[0]} hashes @returns {QueryReply} */
-function queryHashesReply(hashes) {
-    return { hashes };
-}
-
-/**
- * `/query`'s answer to one request body.
- *
- * `want: 'hidden'` adds `hidden`, upstream's "N hidden" count: every character (and, with `filter.includeGroups`, every
- * group) less the rows on this page. It implies `total`, and is `~`-prefixed (in hash mode, flagged) when the count of
- * every entity is estimated.
- *
- * `filter.group` is the Groups filter: `true` keeps only groups and needs `filter.includeGroups`, `false` keeps only
- * characters. Rows keep the shape `filter.includeGroups` asks for, and `hidden` still counts every entity, as
- * upstream's does.
- * @param {{ directories: import('../users.js').UserDirectoryList, profile: { handle: string } }} user
- * @param {object} body The request body: filter, sort, want, page, pageSize, ifToken.
- * @param {{ groupsOnly?: boolean }} [options] groupsOnly, with `filter.includeGroups`: leave characters out, and out of
- *   `hidden`'s count of every entity too. Its token is null on the search path, as the characters index's position
- *   isn't read.
- * @returns {Promise<QueryReply>}
- */
-async function runQuery(user, body, options = {}) {
-    const includeGroups = body.filter?.includeGroups === true;
-    const group = typeof body.filter?.group === 'boolean' ? body.filter.group : undefined;
-    if (group === true && !includeGroups) {
-        return queryReply(400, { error: true, reason: 'group-requires-include-groups', message: 'filter.group true requires filter.includeGroups.' });
-    }
-    // Only characters: the characters-only query, its bare rows put back in the includeGroups shape.
-    const charactersOnly = group === false && includeGroups;
-    const pageBody = charactersOnly ? { ...body, filter: { ...body.filter, includeGroups: false } } : body;
-    const pageOptions = group === true ? { ...options, groupsOnly: true } : options;
-    /** @param {QueryReply} reply */
-    const shaped = reply => {
-        if (!charactersOnly || 'hashes' in reply || !Array.isArray(reply.body.rows)) return reply;
-        return queryReply(reply.status, { ...reply.body, rows: reply.body.rows.map(item => ({ type: 'character', item })) });
-    };
-
-    const want = Array.isArray(body.want) ? body.want : undefined;
-    if (!want?.includes('hidden')) return shaped(await runQueryPage(user, pageBody, pageOptions));
-
-    const reply = shaped(await runQueryPage(user, { ...pageBody, want: [...new Set([...want.filter(w => w !== 'hidden'), 'total'])] }, pageOptions));
-    if (!('hashes' in reply) && (reply.status !== 200 || reply.body.unchanged === true)) return reply;
-
-    const groupsOnly = includeGroups && options.groupsOnly === true;
-    const all = includeGroups
-        ? await queryEntities(user.directories, { wantRows: false, wantTotal: true, groupsOnly })
-        : await queryCharacters(user.directories, { wantRows: false, wantTotal: true });
-    if (all === null) {
-        return queryReply(503, { error: true, reason: 'metadata-store-unavailable' });
-    }
-
-    if ('hashes' in reply) {
-        const hashes = reply.hashes;
-        return queryHashesReply({
-            ...hashes,
-            hidden: Math.max(0, Number(all.total ?? 0) - (hashes.hashRows?.length ?? 0)),
-            approxHidden: Boolean(all.approxTotal),
-        });
-    }
-    const shown = Array.isArray(reply.body.rows) ? reply.body.rows.length : 0;
-    const hidden = Math.max(0, Number(all.total ?? 0) - shown);
-    return queryReply(reply.status, { ...reply.body, hidden: all.approxTotal ? `~${hidden}` : hidden });
-}
-
-/**
- * runQuery() without `want: 'hidden'`.
- * @param {{ directories: import('../users.js').UserDirectoryList, profile: { handle: string } }} user
- * @param {object} body
- * @param {{ groupsOnly?: boolean }} [options]
- * @returns {Promise<QueryReply>}
- */
-async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {}) {
-    // A copy: ranges and the folder case are rewritten below, and a caller may reuse its body for the next page.
-    const filter = { ...(body.filter ?? {}) };
-    const sort = body.sort ?? {};
-    const want = Array.isArray(body.want) ? body.want : ['rows', 'total'];
-    const includeGroups = filter.includeGroups === true;
-    const groupsOnly = includeGroups && onlyGroups;
-
-    const searchTerm = typeof filter.search === 'string' ? filter.search.trim() : '';
-    const hasSearch = searchTerm.length > 0;
-
-    if (sort.field === 'search' && !hasSearch) {
-        return queryReply(400, { error: true, reason: 'search-sort-requires-search', message: 'sort.field "search" requires a non-empty filter.search.' });
-    }
-    if (sort.field !== undefined && !QUERY_SORT_FIELDS.has(sort.field)) {
-        return queryReply(400, { error: true, reason: 'invalid-sort-field' });
-    }
-    if (filter.ranges !== undefined) {
-        const ranges = parseQueryRanges(filter.ranges);
-        if (ranges === null) {
-            return queryReply(400, { error: true, reason: 'invalid-ranges', message: `filter.ranges takes { field: { min?, max? } } with numbers, for: ${Object.keys(QUERY_RANGE_COLUMNS).join(', ')}.` });
-        }
-        filter.ranges = ranges;
-    }
-    const folderNone = filter.folder === 'none';
-    if (filter.folder !== undefined) {
-        if (typeof filter.folder !== 'string' || filter.folder === '') {
-            return queryReply(400, { error: true, reason: 'invalid-folder', message: 'filter.folder takes "none" or a closed folder\'s tag id.' });
-        }
-        await applyFolderCase(user.directories, filter);
-    }
-    const tagSeq = folderNone ? await getTagChangesSeq(user.directories) : null;
-    // A read sorted or filtered by chat_size or date_last_chat writes the queued chat stats into the rows first. The
-    // search index sees those writes only once it catches up, so such a search is walked in SQL this time.
-    const activityFolded = readDependsOnActivity(sort.field, filter.ranges) ? await foldAllActivity(user.directories) : 0;
-    // Read before the rows, like the seq: a queued write after it makes the token stale, never the rows.
-    const activitySeq = await getActivitySeq(user.directories);
-    const seed = Number(sort.seed);
-    if (sort.field === 'random' && !Number.isFinite(seed)) {
-        return queryReply(400, { error: true, reason: 'random-seed-required', message: 'sort.field "random" requires a finite sort.seed - design doc §5.3 decision 10, the client mints and persists this (public/scripts/random-sort.js).' });
-    }
-    for (const w of want) {
-        if (w !== 'rows' && w !== 'total' && w !== 'hashes') {
-            return queryReply(400, { error: true, reason: 'want-not-supported', message: `want: "${w}" is not implemented yet.` });
-        }
-    }
-
-    const page = Number.isFinite(Number(body.page)) && Number(body.page) >= 1 ? Math.trunc(Number(body.page)) : 1;
-    const pageSize = Number.isFinite(Number(body.pageSize)) && Number(body.pageSize) > 0
-        ? Math.min(Math.trunc(Number(body.pageSize)), MAX_QUERY_PAGE_SIZE)
-        : DEFAULT_QUERY_PAGE_SIZE;
-    const offset = (page - 1) * pageSize;
-    const wantRows = want.includes('rows');
-    const wantTotal = want.includes('total');
-    // Hash-only mode is mutually exclusive with `rows` - one shape or the other per request.
-    const wantHashes = want.includes('hashes');
-    if (wantHashes && wantRows) {
-        return queryReply(400, { error: true, reason: 'hashes-and-rows-exclusive', message: 'want cannot include both "rows" and "hashes" in the same request.' });
-    }
-
-    // Cheap re-fetch guard: skip the search and row reads when the token rebuilt from the components this
-    // request's response would be built from (queryToken()) equals `ifToken`. Coarser than per-bucket digests.
-    // The position is read first, as the search reads the index before the rows.
-    if (typeof body.ifToken === 'string' && body.ifToken.length > 0) {
-        const handle = user.profile.handle;
-        const position = hasSearch ? await getCharacterIndexPosition(handle, user.directories) : null;
-        const groupsPosition = hasSearch && includeGroups ? await getGroupIndexPosition(handle, user.directories) : null;
-        const current = includeGroups
-            ? await getCurrentSeqAndGroupsVersion(user.directories)
-            : { seq: await getCurrentSeq(user.directories), groupsVersion: null };
-        const token = queryToken({ seq: current?.seq, groupsVersion: current?.groupsVersion, search: hasSearch, includeGroups, position, groupsPosition, tagSeq, activitySeq });
-        if (token !== null && token === body.ifToken) {
-            return queryReply(200, { seq: current.seq, token, unchanged: true });
-        }
-    }
-
-    let searchBackend;
-    let queryParams = {
-        tags: filter.tags,
-        fav: filter.fav,
-        world: filter.world,
-        ranges: filter.ranges,
-        excludeIds: filter.excludeIds,
-        ids: filter.ids,
-        sortField: sort.field,
-        sortOrder: sort.order,
-        seed,
-        offset,
-        limit: pageSize,
-        handle: user.profile.handle,
-        wantRows,
-        wantTotal,
-        wantHashes,
-        groupsOnly,
-    };
-    // Whether a total computed against a search-narrowed candidate set is exact or approximate
-    // (wire convention: a `~` prefix, never a silently-truncated number).
-    let approxTotal = false;
-    /**
-     * The total from the rows found among the listed ids, and how many were listed; a search past its id cap
-     * replaces this with the index's count.
-     * @type {(rowsFound: number, listed: number) => { total: number, approx: boolean }}
-     */
-    let totalFromRows = rowsFound => ({ total: rowsFound, approx: false });
-
-    // The indexes' positions as of the search reads, for the token.
-    let searchPosition = null;
-    let groupsSearchPosition = null;
-    /** @param {{ seq: number, groupsVersion?: number | null }} read The rows' read: its seq and groups version. */
-    const tokenFor = ({ seq, groupsVersion }) => queryToken({ seq, groupsVersion, search: hasSearch, includeGroups, position: searchPosition, groupsPosition: groupsSearchPosition, tagSeq, activitySeq });
-
-    markSinceStart('prologue');
-    if (hasSearch) {
-        const handle = user.profile.handle;
-
-        const tagsLeftToSql = await searchTagsLeftToSql(user.directories, filter.tags);
-        // The index has no world or range fields: a filter on either is checked in SQL.
-        const sqlOnlyFilter = !!filter.world || filter.ranges !== undefined;
-        const indexSorts = sort.field !== undefined && !sqlOnlyFilter && !tagsLeftToSql && activityFolded === 0
-            && await indexCanSort(user.directories, await getCharacterIndexPosition(handle, user.directories), sort.field);
-        // A match the index can't fully filter (tags left to SQL, or a world, which it has no field for) or can't
-        // order (any sort but relevance and its fast fields) is walked and checked under the work cap.
-        // Relevance is always walked: the page and its margin are read from the index's ranking, and only the
-        // page's rows are read (search plan step 1). When the index applies every filter it is complete.
-        let walkMode = sort.field === 'search' ? 'rank' : (indexSorts ? null : 'sorted');
-        // Random with a term: when the matches fit in the work cap, list them all by id and let the random order place
-        // them, one request. The walk over positions would examine up to the cap per request to find a few sparse
-        // matches. Both order by the same space, so which one answers doesn't change the order.
-        if (walkMode === 'sorted' && sort.field === 'random') {
-            const fav = typeof filter.fav === 'boolean' ? filter.fav : undefined;
-            const indexTags = tagsLeftToSql ? undefined : filter.tags;
-            const charactersCounted = groupsOnly ? { total: 0 } : await searchCharacterIdsWindow(handle, user.directories, searchTerm, 0, 1, {
-                fav, tags: indexTags, excludeIds: filter.excludeIds, ids: Array.isArray(filter.ids) ? filter.ids : undefined,
-            });
-            const groupsCounted = includeGroups ? await searchGroupIds(handle, user.directories, searchTerm, Number.MAX_SAFE_INTEGER, { fav, tags: indexTags }) : { total: 0 };
-            if (charactersCounted.total + groupsCounted.total <= SEARCH_WORK_CAP) walkMode = null;
-        }
-        if (walkMode) {
-            return runSearchWalk(user, {
-                mode: walkMode, searchTerm, filter, sort, seed, includeGroups, groupsOnly, tagsLeftToSql,
-                indexComplete: walkMode === 'rank' && !tagsLeftToSql && !sqlOnlyFilter,
-                offset, pageSize, wantRows, wantTotal, wantHashes, cursor: body.cursor, tagSeq, activitySeq,
-            });
-        }
-
-        // tantivy sorts natively when the sort field has a fast field, and only the page is hydrated. The index
-        // has no world field, so a world-filtered search takes the SQL path below.
-        if (indexSorts) {
-            const sortedPage = await searchSortedPage(handle, user.directories, {
-                searchTerm, sortField: sort.field, sortOrder: sort.order, filter, includeGroups, groupsOnly,
-                offset, count: pageSize + pageOverFetch(pageSize),
-            });
-            if (sortedPage !== null) {
-                searchBackend = sortedPage.backend;
-                searchPosition = sortedPage.position;
-                groupsSearchPosition = sortedPage.groupsPosition;
-                const total = wantTotal ? sortedPage.total : undefined;
-                if (includeGroups) {
-                    const result = await timePhase('page_rows', () => getEntityRowsByIds(user.directories, sortedPage.entities, { wantRows, wantHashes }));
-                    if (result === null) {
-                        return queryReply(503, { error: true, reason: 'metadata-store-unavailable' });
-                    }
-                    if (wantHashes) {
-                        return queryHashesReply({ seq: result.seq, token: tokenFor(result), total, approxTotal: false, hashRows: result.hashRows.slice(0, pageSize), searchBackend });
-                    }
-                    const payload = { seq: result.seq, token: tokenFor(result), searchBackend };
-                    if (wantRows) payload.rows = await timePhase('hydrate', () => hydrateEntityRows(user.directories, result.rows.slice(0, pageSize)));
-                    if (wantTotal) payload.total = total;
-                    return queryReply(200, payload);
-                }
-                const ids = sortedPage.entities.map(e => e.id);
-                const result = await timePhase('page_rows', () => queryCharacters(user.directories, { ids, wantRows, wantHashes, wantTotal: false }));
-                if (result === null) {
-                    return queryReply(503, { error: true, reason: 'metadata-store-unavailable' });
-                }
-                if (wantHashes) {
-                    // queryCharacters returns hashRows in id order; re-order to match tantivy's sort.
-                    const idToHashRow = new Map(result.hashRows.map(r => [r.id, r]));
-                    const orderedHashRows = ids.map(id => idToHashRow.get(id)).filter(Boolean).slice(0, pageSize);
-                    return queryHashesReply({ seq: result.seq, token: tokenFor(result), total, approxTotal: false, hashRows: orderedHashRows, searchBackend });
-                }
-                const payload = { seq: result.seq, token: tokenFor(result), searchBackend };
-                if (wantTotal) payload.total = total;
-                if (wantRows) {
-                    // Rows here are always plain toShallow() projections, so the id lives at `.avatar`.
-                    const idToRow = new Map(result.rows.map(r => [r.avatar, r]));
-                    payload.rows = ids.map(id => idToRow.get(id)).filter(Boolean).slice(0, pageSize);
-                }
-                return queryReply(200, payload);
-            }
-            // The index refused the sort after all (a tag became left to SQL between the check above and the
-            // search): walk it under the work cap like any search the index can't answer whole.
-            return runSearchWalk(user, {
-                mode: 'sorted', searchTerm, filter, sort, seed, includeGroups, groupsOnly, tagsLeftToSql: true,
-                offset, pageSize, wantRows, wantTotal, wantHashes, cursor: body.cursor, tagSeq, activitySeq,
-            });
-        }
-
-        // Relevance and every index-sorted search returned above. Only a random sort whose matches fit in the work cap
-        // gets here, so listing its matches is bounded by the cap.
-        const idFetchCap = SEARCH_WORK_CAP;
-        // fav, tags, ids and excludeIds (for groups: fav and tags) are applied inside the search engine itself
-        // (runIdSearch/runGroupSearch), before idFetchCap, so a hit they rule out never takes a place in the
-        // capped list and leaves the page short. world isn't: the search engine has no world field. The SQL
-        // below still checks fav, tags and excludeIds, and explicitIds still intersects, because the index can
-        // lag the db by about a second.
-        const searchResult = groupsOnly
-            ? { ids: [], scoresById: new Map(), total: 0, backend: undefined, position: null }
-            : await searchCharacterIds(handle, user.directories, searchTerm, idFetchCap, { fav: typeof filter.fav === 'boolean' ? filter.fav : undefined, tags: filter.tags, ids: Array.isArray(filter.ids) ? filter.ids : undefined, excludeIds: filter.excludeIds });
-        searchPosition = searchResult.position;
-
-        // filter.ids and filter.search both restrict the candidate set - when both are present they
-        // intersect, not override each other, for both types when includeGroups is active.
-        const explicitIds = Array.isArray(filter.ids) ? new Set(filter.ids) : null;
-        const effectiveIds = timePhase('merge_ids', () => explicitIds ? searchResult.ids.filter(id => explicitIds.has(id)) : searchResult.ids);
-
-        let groupSearchResult = { ids: [], scoresById: new Map(), total: 0, backend: 'tantivy', position: null };
-        let effectiveGroupIds = [];
-        if (includeGroups) {
-            groupSearchResult = await searchGroupIds(handle, user.directories, searchTerm, idFetchCap, { fav: typeof filter.fav === 'boolean' ? filter.fav : undefined, tags: filter.tags });
-            groupsSearchPosition = groupSearchResult.position;
-            effectiveGroupIds = timePhase('merge_ids', () => explicitIds ? groupSearchResult.ids.filter(id => explicitIds.has(id)) : groupSearchResult.ids);
-        }
-
-        // Character and group search resolve their engine tier independently but always agree in practice
-        // (both go through the same process-wide resolveSearchEngine() cache) - report whichever is worse,
-        // matching the `/all` route's identical BACKEND_SEVERITY comparison, in case they ever don't.
-        const BACKEND_SEVERITY = { tantivy: 0, unavailable: 1 };
-        searchBackend = groupsOnly || (includeGroups && BACKEND_SEVERITY[groupSearchResult.backend] > BACKEND_SEVERITY[searchResult.backend])
-            ? groupSearchResult.backend
-            : searchResult.backend;
-
-        approxTotal = Number.isFinite(idFetchCap) && (searchResult.total > idFetchCap
-            || (includeGroups && groupSearchResult.total > idFetchCap));
-        // The index counts every match with fav, tags and the id lists applied, so past the cap the total is its
-        // count less the listed hits whose row is gone; those mark it approximate, since unlisted hits may be gone
-        // too. The groups index isn't handed filter.ids, so with groups and an id list only the listed rows count.
-        const indexTotal = searchResult.total + (includeGroups ? groupSearchResult.total : 0);
-        const indexCountsEveryMatch = !(includeGroups && explicitIds);
-        totalFromRows = (rowsFound, listed) => {
-            if (!approxTotal) return { total: rowsFound, approx: false };
-            if (!indexCountsEveryMatch) return { total: rowsFound, approx: true };
-            const gone = listed - rowsFound;
-            return { total: indexTotal - gone, approx: gone > 0 };
-        };
-
-        if (effectiveIds.length === 0 && effectiveGroupIds.length === 0) {
-            const current = includeGroups
-                ? await timePhase('query_characters', () => getCurrentSeqAndGroupsVersion(user.directories))
-                : { seq: (await timePhase('query_characters', () => queryCharacters(user.directories, { ids: [], wantRows: false, wantTotal: false })))?.seq ?? null, groupsVersion: null };
-            const seq = current?.seq ?? 0;
-            const token = current ? tokenFor(current) : null;
-            if (wantHashes) {
-                return queryHashesReply({ seq, token, total: wantTotal ? 0 : undefined, approxTotal: false, hashRows: [], searchBackend });
-            }
-            const payload = { seq, token, searchBackend };
-            if (wantRows) payload.rows = [];
-            if (wantTotal) payload.total = 0;
-            return queryReply(200, payload);
-        }
-
-        if (includeGroups) {
-            // Groups have their own full-text index - resolve both id sets, then answer from
-            // queryEntities()'s UNION ALL restricted to their union.
-            const combinedIds = timePhase('merge_ids', () => [...effectiveIds, ...effectiveGroupIds]);
-            const entityParams = {
-                tags: filter.tags, fav: filter.fav, excludeIds: filter.excludeIds,
-                ids: combinedIds, handle, wantRows, wantTotal, wantHashes, groupsOnly,
-            };
-            // A field sort composes with search narrowing: SQL does the ORDER BY and paging.
-            entityParams.sortField = sort.field;
-            entityParams.sortOrder = sort.order;
-            entityParams.seed = seed;
-            entityParams.offset = offset;
-            entityParams.limit = pageSize;
-            const result = await timePhase('query_entities', () => queryEntities(user.directories, entityParams));
-            if (result === null) {
-                return queryReply(503, { error: true, reason: 'metadata-store-unavailable' });
-            }
-
-            const rows = result.rows;
-            const hashRows = result.hashRows;
-
-            const counted = totalFromRows(result.total, combinedIds.length);
-            const totalApprox = counted.approx || result.approxTotal;
-            if (wantHashes) {
-                return queryHashesReply({
-                    seq: result.seq,
-                    token: tokenFor(result),
-                    total: wantTotal ? counted.total : undefined,
-                    approxTotal: totalApprox,
-                    hashRows,
-                    searchBackend,
-                });
-            }
-            const payload = { seq: result.seq, token: tokenFor(result) };
-            if (wantTotal) payload.total = totalApprox ? `~${counted.total}` : counted.total;
-            if (wantRows) payload.rows = await timePhase('hydrate', () => hydrateEntityRows(user.directories, rows));
-            if (searchBackend !== undefined) payload.searchBackend = searchBackend;
-            return queryReply(200, payload);
-        }
-
-        queryParams = { ...queryParams, ids: effectiveIds, idOrder: searchResult.ids };
-    }
-
-    // A non-search request with includeGroups reaches queryEntities()'s UNION ALL path directly.
-    if (!hasSearch && includeGroups) {
-        // A sorted page's cursor (the page end it was read to) lets the next page seek there instead of skipping.
-        const result = await timePhase('query_entities', () => queryEntities(user.directories, { ...queryParams, cursor: body.cursor }));
-        if (result === null) {
-            return queryReply(503, { error: true, reason: 'metadata-store-unavailable' });
-        }
-
-        if (wantHashes) {
-            return queryHashesReply({
-                seq: result.seq,
-                token: tokenFor(result),
-                total: wantTotal ? result.total : undefined,
-                approxTotal: result.approxTotal,
-                hashRows: result.hashRows,
-                searchBackend: undefined,
-                more: result.more === true,
-                cursor: result.cursor,
-            });
-        }
-        const payload = { seq: result.seq, token: tokenFor(result) };
-        if (wantTotal) payload.total = result.approxTotal ? `~${result.total}` : result.total;
-        if (wantRows) payload.rows = await timePhase('hydrate', () => hydrateEntityRows(user.directories, result.rows));
-        // Past the work cap: the rows read so far, and the cursor to carry on from (search plan step 1b).
-        if (result.more === true) payload.more = true;
-        if (result.cursor !== undefined) payload.cursor = result.cursor;
-        return queryReply(200, payload);
-    }
-
-    // A sorted page's cursor lets the next page seek there instead of skipping (search plan step 6).
-    const result = await timePhase('query_characters', () => queryCharacters(user.directories, hasSearch ? queryParams : { ...queryParams, cursor: body.cursor }));
-
-    if (result === null) {
-        return queryReply(503, { error: true, reason: 'metadata-store-unavailable' });
-    }
-
-    // includeGroups is always false here - both includeGroups branches already returned above.
-    const counted = hasSearch ? totalFromRows(result.total, queryParams.ids.length) : { total: result.total, approx: false };
-    const totalApprox = counted.approx || result.approxTotal;
-    if (wantHashes) {
-        return queryHashesReply({
-            seq: result.seq,
-            token: tokenFor(result),
-            total: wantTotal ? counted.total : undefined,
-            approxTotal: totalApprox,
-            hashRows: result.hashRows,
-            searchBackend,
-            more: result.more === true,
-            cursor: result.cursor,
-        });
-    }
-    const payload = { seq: result.seq, token: tokenFor(result) };
-    if (wantRows) payload.rows = result.rows;
-    if (wantTotal) payload.total = totalApprox ? `~${counted.total}` : counted.total;
-    if (searchBackend !== undefined) payload.searchBackend = searchBackend;
-    // Past the work cap: the rows read so far, and the cursor to carry on from (search plan step 1b).
-    if (result.more === true) payload.more = true;
-    if (result.cursor !== undefined) payload.cursor = result.cursor;
-    return queryReply(200, payload);
-}
-
-async function handleQuery(request, response) {
+router.get('/changes/stream', async function (request, response) {
+    let store;
     try {
-        const reply = await runQuery(request.user, request.body ?? {});
-        if ('hashes' in reply) return sendHashQueryResponse(response, reply.hashes);
-        return response.status(reply.status).send(reply.body);
+        store = await requestStore(request);
     } catch (err) {
-        console.error('[characters/query] Query failed:', err);
-        return response.status(500).send({ error: true });
+        console.error('[characters/changes/stream] The store could not be opened:', err);
+        return response.sendStatus(500);
     }
-}
-
-
-router.post('/query', (request, response) => withSearchTiming(response, () => handleQuery(request, response)));
-
-/**
- * Explicit repair path for a user's character search index. Forces an immediate full rebuild regardless of the current freshness signature.
- * @param  {import("express").Request} request The HTTP request object.
- * @param  {import("express").Response} response The HTTP response object.
- * @return {void}
- */
-router.post('/search-index/rebuild', async function (request, response) {
-    try {
-        const handle = request.user.profile.handle;
-        const result = await rebuildCharacterSearchIndex(handle, request.user.directories);
-        if (!result.ok) {
-            return response.status(503).send({ error: true, reason: 'search-unavailable', backend: result.backend });
-        }
-        return response.send({ ok: true, backend: result.backend });
-    } catch (err) {
-        console.error('[characters/search-index/rebuild] Rebuild failed:', err);
-        return response.status(500).send({ error: true });
-    }
-});
-
-/**
- * Chunked existence-by-id, answered from the metadata table's primary key rather than the filesystem.
- * @param  {import("express").Request} request The HTTP request object.
- * @param  {import("express").Response} response The HTTP response object.
- * @return {void}
- */
-router.post('/exists', async function (request, response) {
-    try {
-        const ids = Array.isArray(request.body?.ids) ? request.body.ids : null;
-        if (!ids || ids.some(id => typeof id !== 'string')) {
-            return response.sendStatus(400);
-        }
-
-        const result = await checkCharactersExist(request.user.directories, ids);
-        if (result === null) {
-            return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
-        }
-        return response.send(result);
-    } catch (err) {
-        console.error('[characters/exists] Existence check failed:', err);
-        return response.status(500).send({ error: true });
-    }
-});
-
-/**
- * findChar()'s library-wide lookup: `{ name?, allowAvatar?, insensitive?, tags? }` answers `{ ids, capped }` from
- * findCharacterMatches(); `{ type: 'group', name }` answers `{ ids }` from findGroupMatches().
- */
-router.post('/find', async function (request, response) {
-    try {
-        const body = request.body ?? {};
-        const name = body.name ?? null;
-        if (name !== null && typeof name !== 'string') return response.sendStatus(400);
-        if (body.type === 'group') {
-            if (!name) return response.sendStatus(400);
-            const ids = await findGroupMatches(request.user.directories, name);
-            if (ids === null) return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
-            return response.send({ ids });
-        }
-        if (body.type !== undefined && body.type !== 'character') return response.sendStatus(400);
-        const tags = body.tags ?? null;
-        if (tags !== null && (!Array.isArray(tags) || tags.some(tag => typeof tag !== 'string'))) return response.sendStatus(400);
-        const result = await findCharacterMatches(request.user.directories, {
-            name,
-            allowAvatar: body.allowAvatar !== false,
-            insensitive: body.insensitive !== false,
-            tags,
-        });
-        if (result === null) return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
-        return response.send(result);
-    } catch (err) {
-        console.error('[characters/find] Lookup failed:', err);
-        return response.status(500).send({ error: true });
-    }
-});
-
-// Fixed page size for /changes: the server always pages, and the client loops on `hasMore`.
-const CHANGES_PAGE_SIZE = 500;
-
-/**
- * Change feed over the metadata store's change log, replacing `/api/characters/manifest`'s readdir+stat-everything boot scan.
- * Always paged: at most CHANGES_PAGE_SIZE log rows per response, with `hasMore` saying whether rows remain past `seq`.
- * @param  {import("express").Request} request The HTTP request object.
- * @param  {import("express").Response} response The HTTP response object.
- * @return {void}
- */
-router.post('/changes', async function (request, response) {
-    try {
-        const sinceSeq = Number(request.body?.sinceSeq);
-        if (!Number.isFinite(sinceSeq) || sinceSeq < 0) {
-            return response.sendStatus(400);
-        }
-
-        const result = await getChangesSince(request.user.directories, sinceSeq, { limit: CHANGES_PAGE_SIZE });
-        if (result === null) {
-            return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
-        }
-        return response.send(result);
-    } catch (err) {
-        console.error('[characters/changes] Change-feed query failed:', err);
-        return response.status(500).send({ error: true });
-    }
-});
-
-/**
- * SSE endpoint that pushes an empty "something changed, go ask" notification whenever the metadata store's
- * `changes` table gets a new row, so a client can call `/changes` instead of polling, and a
- * `{ type: 'search-index-updated', seq, groupsVersion }` message when a commit or a rebuild-and-swap changed this
- * user's characters or groups search index (seq: the change-log seq the characters index now covers; groupsVersion:
- * the groups version the groups index now covers; each null
- * when that index's position isn't known), and a `{ type: 'tag-move-failed', tagId, tagName,
- * anchorId, anchorName, refusedId, reason }` message when a tag move queued for this user couldn't be applied
- * (reportTagMoveFailed(); the client shows it as a warning), and a `{ type: 'tag-order-settled' }` message when this
- * user's queued tag moves have all been applied (reportTagOrderSettled(); the client asks for the tag changes), and
- * a `{ type: 'tags-changed' }` message when this user's tag definitions changed (reportTagChanges(); the client asks
- * /api/tags/changes for what changed since its cursor), and a `{ type: 'groups-changed' }` message when a groups
- * version row was added (the client asks /api/tags/assignment-changes which groups' tags may have changed), and a
- * `{ type: 'character-index-failed', id, name,
- * error, retryInMs, keptEntry }` message when one of this user's cards couldn't be put in their characters search
- * index (a CharacterIndexFailure; the client shows it as a warning). Also carries the former
- * `/api/browser-heartbeat` job (touches browser-presence on connect/ping) - merged in because the browser's
- * per-origin connection pool is shared across tabs, and two permanent per-tab SSE connections each was enough
- * to exhaust it at only ~3 tabs open and stall every other request.
- * @param  {import("express").Request} request The HTTP request object.
- * @param  {import("express").Response} response The HTTP response object.
- * @return {void}
- */
-router.get('/changes/stream', function (request, response) {
+    const { lib, chats } = store;
     response.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
@@ -3360,102 +2499,182 @@ router.get('/changes/stream', function (request, response) {
     response.write(':ok\n\n');
     touchBrowserPresence();
 
+    const send = (/** @type {object} */ frame) => response.write(`data: ${JSON.stringify(frame)}\n\n`);
+    const tab = await tabStreamSession(request, store, send);
+
     const presenceInterval = setInterval(() => {
         response.write(':ping\n\n');
         touchBrowserPresence();
     }, PRESENCE_PING_INTERVAL_MS);
 
-    // Debounced (trailing, 500ms) so a bulk write emitting 'change' hundreds of times in one synchronous burst
-    // doesn't do an un-debounced response.write() per emission - but capped with maxWait: a sustained stream of
-    // changes closer together than 500ms apart (e.g. a large ongoing local-import batch, one flushBatch() every
-    // few hundred ms) would otherwise keep deferring forever and never actually notify until the whole stream
-    // goes quiet, silencing every connected client for the run's entire duration.
-    const onChange = _.debounce(() => response.write('data: {}\n\n'), 500, { maxWait: 2000 });
+    // Debounced so a burst of commits is one frame, with maxWait so a steady stream of them still tells the page.
+    const writeChanged = _.debounce(() => response.write('data: {}\n\n'), 500, { maxWait: 2000 });
+    const writeGroupsChanged = _.debounce(() => send({ type: 'groups-changed' }), 500, { maxWait: 2000 });
+    const writeTagsChanged = _.debounce(() => send({ type: 'tags-changed' }), 500, { maxWait: 2000 });
+    const writeViewsChanged = _.debounce(() => send({ type: 'views-changed' }), 200, { maxWait: 1000 });
 
-    characterChangeEmitter.on('change', onChange);
-
-    // Already at most once a second per handle (search-index-coordinator.js).
-    const handle = request.user.profile.handle;
-    const onSearchIndexUpdated = (updatedHandle, seq, groupsVersion) => {
-        if (updatedHandle !== handle) return;
-        response.write(`data: ${JSON.stringify({ type: 'search-index-updated', seq: seq ?? null, groupsVersion: groupsVersion ?? null })}\n\n`);
+    let entityEnd = await lib.changesEnd();
+    let assignmentEnd = (await lib.tags.entityChangesEnd()).seq;
+    let tagEnd = await lib.tags.changesSeq();
+    const onCommit = async (/** @type {object[]} */ records) => {
+        try {
+            const nextEntity = await lib.changesEnd();
+            const nextAssignment = (await lib.tags.entityChangesEnd()).seq;
+            const nextTag = await lib.tags.changesSeq();
+            if (nextEntity !== entityEnd) writeChanged();
+            if (nextAssignment !== assignmentEnd || records.some(r => /** @type {any} */ (r).kind === 'entityCreate' && /** @type {any} */ (r).type === TYPE.group)) writeGroupsChanged();
+            if (nextTag !== tagEnd) writeTagsChanged();
+            entityEnd = nextEntity;
+            assignmentEnd = nextAssignment;
+            tagEnd = nextTag;
+            await tab?.told(records);
+            const told = new Set();
+            for (const r of /** @type {any[]} */ (records)) {
+                if (r.kind !== 'stateChange' && r.kind !== 'stateRevert') continue;
+                const where = await chats.stateChangePlace(r);
+                if (where === null) continue;
+                const [key] = where.tree === null ? [null] : await lib.store.libraryKeys([where.tree]);
+                const frame = { type: 'state-changed', tree: key?.key ?? null, at: where.at };
+                const id = JSON.stringify(frame);
+                if (told.has(id)) continue;
+                told.add(id);
+                send(frame);
+            }
+        } catch (err) {
+            console.error('[characters/changes/stream] A change could not be told:', err);
+        }
     };
-    characterChangeEmitter.on('search-index-updated', onSearchIndexUpdated);
-
+    const onTagChanges = () => writeTagsChanged();
+    const onTagOrderSettled = () => send({ type: 'tag-order-settled' });
+    const onTagMoveFailed = (/** @type {object} */ payload, /** @type {{ delivered?: boolean }} */ ack) => {
+        send({ type: 'tag-move-failed', ...payload });
+        if (ack) ack.delivered = true;
+    };
     const root = request.user.directories.root;
-    const onTagMoveFailed = (failedRoot, payload, ack) => {
-        if (failedRoot !== root) return;
-        response.write(`data: ${JSON.stringify({ type: 'tag-move-failed', ...payload })}\n\n`);
-        ack.delivered = true;
+    const onViewsChanged = (/** @type {string} */ changedRoot) => {
+        if (changedRoot === root) writeViewsChanged();
     };
-    characterChangeEmitter.on(TAG_MOVE_FAILED_EVENT, onTagMoveFailed);
 
-    const onTagOrderSettled = (settledRoot) => {
-        if (settledRoot !== root) return;
-        response.write(`data: ${JSON.stringify({ type: 'tag-order-settled' })}\n\n`);
-    };
-    characterChangeEmitter.on(TAG_ORDER_SETTLED_EVENT, onTagOrderSettled);
-
-    // Debounced like onChange: a restore or a prune logs hundreds of rows in a burst, and one ask covers them all.
-    const writeTagsChanged = _.debounce(() => response.write(`data: ${JSON.stringify({ type: 'tags-changed' })}\n\n`), 500, { maxWait: 2000 });
-    const onTagChanges = (changedRoot) => {
-        if (changedRoot !== root) return;
-        writeTagsChanged();
-    };
-    characterChangeEmitter.on(TAG_CHANGES_EVENT, onTagChanges);
-
-    const onGroupChanges = _.debounce(() => response.write(`data: ${JSON.stringify({ type: 'groups-changed' })}\n\n`), 500, { maxWait: 2000 });
-    characterChangeEmitter.on(GROUP_CHANGES_EVENT, onGroupChanges);
-
-    const writeViewsChanged = _.debounce(() => response.write(`data: ${JSON.stringify({ type: 'views-changed' })}\n\n`), 200, { maxWait: 1000 });
-    const onViewsChanged = (changedRoot) => {
-        if (changedRoot !== root) return;
-        writeViewsChanged();
-    };
-    characterChangeEmitter.on(SAVED_VIEWS_EVENT, onViewsChanged);
-
-    const onCharacterIndexFailed = (failedHandle, warning) => {
-        if (failedHandle !== handle) return;
-        response.write(`data: ${JSON.stringify({ type: 'character-index-failed', ...warning })}\n\n`);
-    };
-    characterChangeEmitter.on(CHARACTER_INDEX_FAILED_EVENT, onCharacterIndexFailed);
+    store.events.on('commit', onCommit);
+    lib.tags.on('tag-changes', onTagChanges);
+    lib.tags.on('tag-order-settled', onTagOrderSettled);
+    lib.tags.on('tag-move-failed', onTagMoveFailed);
+    savedViewsEvents.on('changed', onViewsChanged);
 
     request.on('close', () => {
-        characterChangeEmitter.off('change', onChange);
-        characterChangeEmitter.off('search-index-updated', onSearchIndexUpdated);
-        characterChangeEmitter.off(TAG_MOVE_FAILED_EVENT, onTagMoveFailed);
-        characterChangeEmitter.off(TAG_ORDER_SETTLED_EVENT, onTagOrderSettled);
-        characterChangeEmitter.off(TAG_CHANGES_EVENT, onTagChanges);
-        writeTagsChanged.cancel();
-        characterChangeEmitter.off(GROUP_CHANGES_EVENT, onGroupChanges);
-        characterChangeEmitter.off(SAVED_VIEWS_EVENT, onViewsChanged);
-        writeViewsChanged.cancel();
-        onGroupChanges.cancel();
-        characterChangeEmitter.off(CHARACTER_INDEX_FAILED_EVENT, onCharacterIndexFailed);
-        onChange.cancel();
+        store.events.off('commit', onCommit);
+        lib.tags.off('tag-changes', onTagChanges);
+        lib.tags.off('tag-order-settled', onTagOrderSettled);
+        lib.tags.off('tag-move-failed', onTagMoveFailed);
+        savedViewsEvents.off('changed', onViewsChanged);
+        for (const f of [writeChanged, writeGroupsChanged, writeTagsChanged, writeViewsChanged]) f.cancel();
         clearInterval(presenceInterval);
+        tab?.release();
     });
 });
 
+const SESSION_KEY = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const TAB_TOKEN = /^[0-9A-Za-z_-]{8,64}$/;
+/** Records that move a session, or switch its current chat. */
+const SESSION_KINDS = new Set(['pointerMove', 'pointerRoot', 'historyStep', 'sessionFork', 'messageAppend', 'currentChat']);
+
 /**
- * Lightweight companion to `/all`: returns just `[{ avatar, mtime, thumbnailVersion }, ...]` with no PNG chunk
- * read, JSON parse, or chat-size calc, so the client can diff against its cache and fetch only what changed.
- * `mtime` is mtimeMs (content change), not ctimeMs. `thumbnailVersion` is the cached thumbnail's own mtime
- * (null if none cached yet), not the source PNG's - the thumbnail is only regenerated lazily on first request.
- * @param  {import("express").Request} request The HTTP request object.
- * @param  {import("express").Response} response The HTTP response object.
- * @return {void}
+ * The session a tab's changes stream holds (`?session=<UUID>&token=<tab token>`; `claim=1` instead of a session: the
+ * server picks one), told to the tab as the stream's first frame, `{ type: 'session', session, held, place }`.
+ * `held`: another tab holds the one it asked for, and this stream holds none (the tab forks it). A session picked for the tab is followed
+ * by its current chats, `{ type: 'session-chats', chats: [{ tree, bookmark }] }` (tree `{ avatar }` or
+ * `{ group }`). From then on, `{ type: 'session-place', place }` when the session moves and
+ * `{ type: 'current-chat', tree, bookmark }` when its current chat switches.
+ * @param {import('express').Request} request
+ * @param {import('../user-stores.js').UserStore} store
+ * @param {(frame: object) => void} send
+ * @returns {Promise<{ told(records: object[]): Promise<void>, release(): void } | null>} null: a stream with no tab.
  */
-router.post('/manifest', function (request, response) {
+async function tabStreamSession(request, store, send) {
+    const token = typeof request.query.token === 'string' && TAB_TOKEN.test(request.query.token) ? request.query.token : null;
+    if (token === null) return null;
+    const asked = typeof request.query.session === 'string' && SESSION_KEY.test(request.query.session) ? request.query.session : null;
+    if (asked === null && request.query.claim !== '1') return null;
+    const { chats } = store;
+    let closed = false;
+    request.once('close', () => closed = true);
+    const claim = await claimTabSession({ root: request.user.directories.root, user: request.user.profile.handle, chats, asked, token });
+    if (closed) {
+        claim.release();
+        return null;
+    }
+    const { session } = claim;
+    const ownerOf = async (/** @type {bigint} */ tree) => {
+        const [key] = await store.lib.store.libraryKeys([tree]);
+        if (!key) return null;
+        return key.type === TYPE.group ? { group: key.key } : { avatar: key.key };
+    };
+    send({ type: 'session', session, held: claim.held, place: claim.held ? null : await chats.sessionPlace(session) });
+    if (claim.held) return null;
+    if (claim.reused) {
+        for await (const page of chats.currentChats(session)) {
+            const rows = [];
+            for (const c of page) {
+                const tree = await ownerOf(c.tree);
+                if (tree) rows.push({ tree, bookmark: c.bookmark });
+            }
+            if (rows.length) send({ type: 'session-chats', chats: rows });
+        }
+    }
+    /** @type {bigint | null} */
+    let sid = await chats.sessionId(session);
+    return {
+        async told(records) {
+            const ours = /** @type {any[]} */ (records).filter(r => SESSION_KINDS.has(r.kind) && r.session !== undefined);
+            if (!ours.length) return;
+            sid ??= await chats.sessionId(session);
+            if (sid === null) return;
+            let moved = false;
+            for (const r of ours) {
+                if (r.session !== sid) continue;
+                if (r.kind !== 'currentChat') {
+                    moved = true;
+                    continue;
+                }
+                const tree = await ownerOf(r.tree);
+                if (tree) send({ type: 'current-chat', tree, bookmark: r.bookmark === undefined ? null : String(r.bookmark) });
+            }
+            if (moved) send({ type: 'session-place', place: await chats.sessionPlace(session) });
+        },
+        release: claim.release,
+    };
+}
+
+/**
+ * Upstream's manifest: every character as `{ avatar, mtime, thumbnailVersion }` (a bare array, streamed a page at a
+ * time; O(cards) by nature, kept for upstream's callers). `mtime` changes whenever the character does (its version).
+ */
+router.post('/manifest', async function (request, response) {
     try {
-        const files = fs.readdirSync(request.user.directories.characters);
-        const pngFiles = files.filter(file => file.endsWith('.png'));
-        const manifest = pngFiles.map(file => {
-            const stat = fs.statSync(path.join(request.user.directories.characters, file));
-            const thumbnailVersion = getThumbnailVersion(request.user.directories, 'avatar', file);
-            return { avatar: file, mtime: stat.mtimeMs, thumbnailVersion };
-        });
-        return response.send(manifest);
+        const { lib } = await requestStore(request);
+        response.set('Content-Type', 'application/json');
+        response.status(200);
+        let wroteAny = false;
+        try {
+            await writeBackpressured(response, '[');
+            /** @type {string | undefined} */
+            let cursor;
+            for (;;) {
+                const page = await lib.query({ sortField: 'name', limit: EVERY_PAGE, cursor, wantRows: false, wantTotal: false, wantHashes: true, includeGroups: false });
+                const rows = /** @type {{ id: string, version: number }[]} */ (page.hashRows);
+                for (const row of rows) {
+                    const thumbnailVersion = getThumbnailVersion(request.user.directories, 'avatar', row.id);
+                    await writeBackpressured(response, (wroteAny ? ',' : '') + JSON.stringify({ avatar: row.id, mtime: row.version, thumbnailVersion }));
+                    wroteAny = true;
+                }
+                if (typeof page.cursor !== 'string' || rows.length === 0) break;
+                cursor = page.cursor;
+            }
+            await writeBackpressured(response, ']');
+        } catch (streamErr) {
+            console.error('[characters/manifest] Streaming response failed mid-flight; ending the connection:', streamErr);
+        }
+        return response.end();
     } catch (err) {
         console.error(err);
         response.status(500).send({ error: true });
@@ -3463,12 +2682,8 @@ router.post('/manifest', function (request, response) {
 });
 
 /**
- * Other half of the `/manifest` delta-caching flow: fetches full (or shallow) character data for a specific
- * list of avatars, so the client only re-fetches what `/manifest` showed as new or changed. An optional
- * `fields` array switches to a field-filtered mode reading only those fields (plus `avatar`) from the list rows.
- * @param  {import("express").Request} request The HTTP request object.
- * @param  {import("express").Response} response The HTTP response object.
- * @return {void}
+ * The characters a list of avatars names, whole (`full: true`, at most FULL_BATCH_MAX, with the edit-conflict
+ * hashes) or as `lazyLoadCharacters` says; `fields` answers only those fields of each list row (plus `avatar`).
  */
 router.post('/batch', async function (request, response) {
     try {
@@ -3481,50 +2696,42 @@ router.post('/batch', async function (request, response) {
             }
         }
 
-        // Field-filtered mode: list rows already carry db-authoritative fav/active_chat/tag_ids, so no extra
-        // stamping step is needed here, unlike the full-record path below.
-        if (fields) {
-            const shallowById = await getShallowByIds(request.user.directories, avatars);
-            const data = avatars
-                .filter(avatar => shallowById[avatar])
-                .map(avatar => {
-                    const shallow = shallowById[avatar];
-                    /** @type {Record<string, any>} */
-                    const filtered = { avatar };
-                    for (const field of fields) {
-                        if (field in shallow) {
-                            filtered[field] = shallow[field];
-                        }
-                    }
-                    return filtered;
-                });
-            return response.send(data);
+        // The page's copies, as each field's hash (`characterRowFieldHashes()`): answered with only the fields that differ,
+        // `[{ avatar, set: { path: value }, unset: [path] }]`, a character with no copy given every field.
+        const hashes = request.body?.hashes;
+        if (hashes !== undefined) {
+            if (!hashes || typeof hashes !== 'object' || Array.isArray(hashes)) return response.sendStatus(400);
+            const rows = /** @type {Record<string, any>[]} */ ((await characterObjects(request, avatars, { shallow: useShallowCharacters })).filter(Boolean));
+            return response.send(rows.map(row => {
+                const held = hashes[row.avatar] && typeof hashes[row.avatar] === 'object' ? hashes[row.avatar] : {};
+                const now = characterRowFieldHashes(row);
+                /** @type {Record<string, unknown>} */
+                const set = {};
+                for (const [path, value] of characterRowFields(row)) {
+                    if (held[path] !== now[path]) set[path] = value;
+                }
+                const unset = Object.keys(held).filter(path => !(path in now));
+                return { avatar: row.avatar, set, unset };
+            }));
         }
 
-        // `full: true` answers what /get answers, for each id: the whole card whatever lazyLoadCharacters says, with
-        // the edit-conflict hashes. The page holds only full characters, and reads the ones it holds this way.
+        if (fields) {
+            const rows = (await characterObjects(request, avatars, { shallow: true })).filter(Boolean);
+            return response.send(rows.map(row => {
+                /** @type {Record<string, any>} */
+                const filtered = { avatar: /** @type {any} */ (row).avatar };
+                for (const field of fields) {
+                    if (field in /** @type {any} */ (row)) filtered[field] = /** @type {any} */ (row)[field];
+                }
+                return filtered;
+            }));
+        }
+
         const full = request.body?.full === true;
         if (full && avatars.length > FULL_BATCH_MAX) {
             return response.status(400).send({ error: `at most ${FULL_BATCH_MAX} avatars with full` });
         }
-
-        // Scoped to just the requested ids - unlike /all and /query, this endpoint never wants the whole table.
-        const rowById = await getCharacterIndexRowsByIds(request.user.directories, avatars);
-        const processingPromises = avatars.map(avatar => {
-            const row = rowById.get(avatar);
-            return processCharacterOrPlaceholder(avatar, request.user.directories, {
-                shallow: full ? false : useShallowCharacters,
-                cardJson: row?.card_json ?? null,
-                chatStats: row ? { chatSize: row.chat_size, dateLastChat: row.date_last_chat } : undefined,
-            });
-        });
-        const data = (await Promise.all(processingPromises)).filter(c => 'name' in c);
-        // fav/active_chat are db-authoritative once a row exists; without this stamp, a toggle made purely
-        // through /fav or /chat would come back here still carrying the stale PNG-embedded value.
-        await stampDbFav(request.user.directories, data);
-        await stampDbActiveChat(request.user.directories, data);
-        await stampDbTagIds(request.user.directories, data);
-        await stampDbAllowGlobalStyles(request.user.directories, data);
+        const data = /** @type {Record<string, any>[]} */ ((await characterObjects(request, avatars, { shallow: full ? false : useShallowCharacters })).filter(Boolean));
         if (full) {
             for (const character of data) {
                 character._fieldsHash = characterDigestFieldsHash(character);
@@ -3541,17 +2748,8 @@ router.post('/batch', async function (request, response) {
 router.post('/get', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         if (!request.body) return response.sendStatus(400);
-        const item = request.body.avatar_url;
-
-        if (!await characterRowExists(request.user.directories, item)) {
-            return response.sendStatus(404);
-        }
-
-        const data = await processCharacterOrPlaceholder(item, request.user.directories, { shallow: false });
-        await stampDbFav(request.user.directories, [data]);
-        await stampDbActiveChat(request.user.directories, [data]);
-        await stampDbTagIds(request.user.directories, [data]);
-        await stampDbAllowGlobalStyles(request.user.directories, [data]);
+        const [data] = await characterObjects(request, [request.body.avatar_url], { shallow: false });
+        if (!data) return response.sendStatus(404);
 
         // Per-field content hashes for edit conflict detection: sent back on save so the server can detect
         // if another session changed the card in between. Fields hash covers metadata, body hash the editable body.
@@ -3565,40 +2763,44 @@ router.post('/get', validateAvatarUrlMiddleware, async function (request, respon
     }
 });
 
+/** Chats a page of `/chats` lists at most. */
+const CHATS_PAGE = 500;
+
+/**
+ * Upstream's chat list of a character: its bookmarks, and first the requesting tab's session when it is in the tree
+ * and no bookmark is at its message. Each by its compat chat id (`file_name`: a bookmark's id, a session's UUID) and
+ * its `label`. `simple` answers those only; `metadata` adds each one's `chat_metadata`.
+ */
 router.post('/chats', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         if (!request.body) return response.sendStatus(400);
-
-        const characterDirectory = (request.body.avatar_url).replace('.png', '');
-        if (!characterDirectory) {
-            return response.send([]);
+        const store = await requestStore(request);
+        const [tree] = await store.people.trees([{ avatar: request.body.avatar_url }]);
+        if (tree === null || tree === undefined) return response.send([]);
+        const session = await requestSession(store.chats, request, tree);
+        const rows = [];
+        /** @type {string | undefined} */
+        let after;
+        for (;;) {
+            const page = await store.chats.chatList({ tree, session: session.reader().session ?? undefined, after, limit: CHATS_PAGE, withMetadata: request.body.metadata === true });
+            rows.push(...page.rows);
+            if (!page.more || page.rows.length === 0) break;
+            after = page.rows[page.rows.length - 1].position;
         }
-
-        if (!await hasSavedChats(request.user.directories, characterDirectory)) {
-            return response.send([]);
-        }
-
-        const branches = await listTreeBranches(request.user.directories, characterDirectory);
-
+        const named = rows.map(r => ({ ...r, file_id: r.bookmark != null ? bookmarkCompatId(r.bookmark) : sessionCompatId(String(r.session), tree) }));
         if (request.body.simple) {
-            return response.send(branches.map(b => ({ file_name: b.name + '.jsonl', file_id: b.name })));
+            return response.send(named.map(r => ({ file_name: `${r.file_id}.jsonl`, file_id: r.file_id, label: r.name ?? null })));
         }
-
-        const chatData = branches.map(b => {
-            const meta = b.metadata ? JSON.parse(b.metadata) : {};
-            return {
-                node_id: b.id,
-                file_name: b.name + '.jsonl',
-                file_size: 0,
-                chat_items: b.message_count,
-                mes: b.last_mes || '[No messages]',
-                // The branch's leaf, not its label's birthday - see branchViewSync().
-                last_mes: b.last_activity ?? b.created_at,
-                chat_metadata: request.body.metadata ? meta : undefined,
-            };
-        });
-
-        return response.send(chatData);
+        return response.send(named.map(r => ({
+            node_id: r.at,
+            file_name: `${r.file_id}.jsonl`,
+            label: r.name ?? null,
+            file_size: 0,
+            chat_items: r.message_count,
+            mes: r.last_mes || '[No messages]',
+            last_mes: r.last_activity,
+            chat_metadata: request.body.metadata ? r.chat_metadata : undefined,
+        })));
     } catch (error) {
         console.error(error);
         // Deliberately `{ error: true }`, not `[]` - callers must not treat this as "zero chats".
@@ -3607,17 +2809,16 @@ router.post('/chats', validateAvatarUrlMiddleware, async function (request, resp
 });
 
 /**
- * Mints the immutable id a new character is created/imported under: a UUIDv7, unrelated to the display name. Naming the PNG after this id (rather than a sanitized display name) is what makes `/rename` a pure card-data edit. Throws rather than silently overwriting if collisions persist.
+ * Mints the immutable id a new character is created/imported under: a UUIDv7, unrelated to the display name.
+ * Throws rather than overwriting a character if it keeps colliding.
  * @param {import('../users.js').UserDirectoryList} directories User directories
- * @returns {string} A UUIDv7 string with no existing `<id>.png` in `directories.characters` and no row for `<id>.png`
+ * @returns {Promise<string>} A UUIDv7 no character's avatar (`<id>.png`) has.
  */
-export function mintCharacterId(directories) {
+export async function mintCharacterId(directories) {
+    const { lib } = await userStore(directories);
     for (let i = 0; i < 5; i++) {
         const id = uuidv7();
-        const avatar = `${id}.png`;
-        if (!fs.existsSync(path.join(directories.characters, avatar)) && !characterRowOrPendingExistsSync(directories, avatar)) {
-            return id;
-        }
+        if ((await lib.ids(TYPE.character, [`${id}.png`]))[0] === null) return id;
     }
     throw new Error('Failed to mint a unique character id after 5 attempts');
 }
@@ -3672,7 +2873,7 @@ export async function importCharacterFileHeadless(filePath, format, directories,
     const importFunction = formatImportFunctions[format];
     if (!importFunction) return null;
 
-    const duplicateOf = await findCharacterIdByContentHash(directories, contentHash);
+    const duplicateOf = await (await userStore(directories)).lib.findByHash(HASH.content, contentHash);
     if (duplicateOf) return { duplicateOf };
 
     /** @type {import('express').Request} */
@@ -3705,15 +2906,19 @@ router.post('/import', async function (request, response) {
         // character" action must not silently no-op just because its bytes match some other character). The
         // hash itself is always computed and recorded regardless, so content_hash doesn't go stale on a replace.
         const contentHash = await hashFileContents(uploadPath);
-        if (!preservedFileName) {
-            const duplicateOf = await findCharacterIdByContentHash(request.user.directories, contentHash);
-            if (duplicateOf) {
-                await fsPromises.unlink(uploadPath).catch(() => {});
-                return response.send({ duplicate: true, duplicate_of: duplicateOf });
+        const { lib } = await requestStore(request);
+        const imported = await lib.importLane(contentHash, async () => {
+            if (!preservedFileName) {
+                const duplicateOf = await lib.findByHash(HASH.content, contentHash);
+                if (duplicateOf) {
+                    await fsPromises.unlink(uploadPath).catch(() => {});
+                    return { duplicateOf };
+                }
             }
-        }
-
-        const fileName = await importFunction(uploadPath, { request, response, contentHash }, preservedFileName);
+            return { fileName: await importFunction(uploadPath, { request, response, contentHash }, preservedFileName) };
+        });
+        if ('duplicateOf' in imported) return response.send({ duplicate: true, duplicate_of: imported.duplicateOf });
+        const fileName = imported.fileName;
 
         if (!fileName) {
             const error = importFailure(importName, 'not a recognized character card format');
@@ -3732,7 +2937,7 @@ router.post('/import', async function (request, response) {
         let tagDefinitions = [];
         if (tagImportMode === 'all' || tagImportMode === 'existing') {
             try {
-                ({ tagDefinitions } = await seedCardTagsForSingleCharacter(request.user.directories, `${fileName}.png`, { onlyExisting: tagImportMode === 'existing' }));
+                ({ tagDefinitions } = await (await requestStore(request)).lib.tags.seedCardTags(`${fileName}.png`, { onlyExisting: tagImportMode === 'existing' }));
             } catch (err) {
                 // Card-tag seeding failing must not fail the import itself - the character row already exists.
                 console.error(`Failed to seed card tags for ${fileName}.png:`, err);
@@ -3741,9 +2946,7 @@ router.post('/import', async function (request, response) {
 
         // Hands the client the freshly-imported character's whole card in the same response, so the page can hold it
         // (it holds only full cards) without reading it back.
-        const character = await processCharacterOrPlaceholder(`${fileName}.png`, request.user.directories, { shallow: false });
-        await stampDbFav(request.user.directories, [character]);
-        await stampDbTagIds(request.user.directories, [character]);
+        const [character] = await characterObjects(request, [`${fileName}.png`], { shallow: false });
 
         response.send({ file_name: fileName, character, tagDefinitions });
     } catch (err) {
@@ -3754,79 +2957,60 @@ router.post('/import', async function (request, response) {
 });
 
 /**
- * Duplicates a single character avatar on disk, re-stamping metadata as needed.
- * @param {import('express').Request} request The HTTP request object (used for `request.user.directories`).
+ * Duplicates a character under the next free `<name>_<n>.png`: its card, its image (the same file) and its tags.
+ * @param {import('express').Request} request
  * @param {string} avatarUrl Avatar filename of the character to duplicate.
  * @returns {Promise<{ok: true, newAvatar: string}|{ok: false, status: number, error: string}>}
  */
 async function duplicateOneCharacter(request, avatarUrl) {
-    let filename = path.join(request.user.directories.characters, sanitize(avatarUrl));
-    if (!await characterRowExists(request.user.directories, path.basename(filename))) {
-        console.error('character for dupe not found', filename);
+    const avatar = sanitize(avatarUrl);
+    const { lib } = await requestStore(request);
+    const source = await lib.entity(TYPE.character, avatar);
+    if (!source) {
+        console.error('character for dupe not found', avatar);
         return { ok: false, status: 404, error: 'not found' };
     }
 
-    // If filename ends with a _number, increment the number. The suffix regex is capped to safe-integer
-    // length so `suffix++` always advances (an uncapped/loose parse could produce a non-advancing suffix,
-    // e.g. NaN or a float-precision-stuck value, and wedge the loop below in a synchronous existsSync spin).
-    const nameParts = path.basename(filename, path.extname(filename)).split('_');
+    // A name ending in _<number> counts on from it. The suffix is at most 15 digits, so `suffix++` always advances.
+    const nameParts = path.basename(avatar, path.extname(avatar)).split('_');
     const lastPart = nameParts[nameParts.length - 1];
-    // 15 digits is comfortably inside Number.MAX_SAFE_INTEGER (16 digits) even after +1.
     const isStrictInteger = /^\d{1,15}$/.test(lastPart);
+    let suffix = isStrictInteger && nameParts.length > 1 ? parseInt(lastPart, 10) + 1 : 1;
+    const baseName = isStrictInteger && nameParts.length > 1 ? nameParts.slice(0, -1).join('_') : nameParts.join('_');
 
-    let suffix = 1;
-    let baseName;
-
-    if (isStrictInteger && nameParts.length > 1) {
-        suffix = parseInt(lastPart, 10) + 1;
-        baseName = nameParts.slice(0, -1).join('_'); // construct baseName without suffix
-    } else {
-        baseName = nameParts.join('_'); // original filename is completely the baseName
-    }
-
-    let newFilename = path.join(request.user.directories.characters, `${baseName}_${suffix}${path.extname(filename)}`);
-
-    // No legitimate library needs more than this many same-named duplicates in one chain; this also
-    // bounds the loop by iteration count rather than by the value of `suffix`, so it can't spin forever
-    // even if `suffix` were somehow to stop advancing.
     const MAX_DUPLICATE_ATTEMPTS = 10000;
-    let attempts = 0;
-    while (fs.existsSync(newFilename) || await characterRowExists(request.user.directories, path.basename(newFilename))) {
-        suffix++;
-        attempts++;
-        if (attempts > MAX_DUPLICATE_ATTEMPTS) {
+    let newAvatar = `${baseName}_${suffix}${path.extname(avatar)}`;
+    for (let attempts = 0; (await lib.ids(TYPE.character, [newAvatar]))[0] !== null; attempts++) {
+        if (attempts >= MAX_DUPLICATE_ATTEMPTS) {
             console.error(`Too many duplicate suffixes for ${baseName}, giving up after ${MAX_DUPLICATE_ATTEMPTS} attempts`);
             return { ok: false, status: 500, error: 'Too many duplicates with this name' };
         }
-        newFilename = path.join(request.user.directories.characters, `${baseName}_${suffix}${path.extname(filename)}`);
+        suffix++;
+        newAvatar = `${baseName}_${suffix}${path.extname(avatar)}`;
     }
 
-    const sourceImage = fs.existsSync(filename) ? filename : DEFAULT_AVATAR_PATH;
-    await copyCharacterFile(sourceImage, newFilename);
-    console.info(`${sourceImage} was copied to ${newFilename}`);
-
-    // /duplicate is a raw file copy, not a re-encode, so it doesn't go through writeCharacterData() and
-    // needs its own metadata-store upsert here. The card is written only to the new row, never into the
-    // copied file's bytes: canonical PNGs are never written to after creation.
-    const newAvatar = path.parse(newFilename).base;
-    const rawData = await readCardContent(request.user.directories, path.basename(filename));
-    if (rawData === undefined) {
-        fs.rmSync(newFilename, { force: true });
-        return { ok: false, status: 500, error: `Could not read "${path.basename(filename)}", so it was not duplicated` };
-    }
+    const [card] = await lib.cards([avatar]);
+    if (!card) return { ok: false, status: 404, error: 'not found' };
+    const [tags] = await lib.store.libraryTagIds([source.id]);
+    const hashOf = (/** @type {number} */ which) => source.hashes.find(h => h.which === which)?.hash.toString('hex') ?? null;
     try {
-        await fireMetadataUpsertHook(request.user.directories, newAvatar, rawData);
+        // The duplicate's image is a copy of the source's, sharing its bytes where the filesystem can (a reflink).
+        await inAvatarLane(lib, newAvatar, async () => {
+            const from = avatarFile(request.user.directories, avatar);
+            const to = avatarFile(request.user.directories, newAvatar);
+            const copied = fs.existsSync(from);
+            if (copied) fs.copyFileSync(from, to, fs.constants.COPYFILE_FICLONE);
+            try {
+                await lib.writeCard(request.user.directories, newAvatar, JSON.stringify(card), { avatarIdentityHash: hashOf(HASH.avatarIdentity), fav: source.fav, tags });
+            } catch (err) {
+                if (copied) fs.rmSync(to, { force: true });
+                throw err;
+            }
+        });
     } catch (err) {
-        fs.rmSync(newFilename, { force: true });
-        return { ok: false, status: 500, error: `The duplicate of "${path.basename(filename)}" could not be saved` };
+        console.error(`The duplicate of "${avatar}" could not be saved`, err);
+        return { ok: false, status: 500, error: `The duplicate of "${avatar}" could not be saved` };
     }
-    try {
-        await copyEntityTags(request.user.directories, path.basename(filename), newAvatar);
-    } catch (err) {
-        // The duplicate stands; the page's own copy request for it reports the failure.
-        console.error(`Could not copy tags from ${path.basename(filename)} to ${newAvatar}`, err);
-    }
-
     return { ok: true, newAvatar };
 }
 
@@ -3876,6 +3060,10 @@ const BULK_MAX_NAMED = 10000;
 const BULK_MAX_RANGES = 1000;
 /** Avatars a prepared selection answers by name, for the page to show who is in it. */
 const BULK_SAMPLE_SIZE = 30;
+/** Avatars a `/bulk/ids` page holds. */
+const BULK_IDS_PAGE = 500;
+/** Entity ids per record of a run list. */
+const RUN_LIST_CHUNK = 1000;
 /** The actions `/bulk/run` carries out on each selected character. */
 const BULK_ACTIONS = new Set(['delete', 'fav', 'duplicate', 'tag-add', 'tag-remove', 'tag-reset', 'tag-import']);
 
@@ -3883,52 +3071,20 @@ const BULK_ACTIONS = new Set(['delete', 'fav', 'duplicate', 'tag-add', 'tag-remo
 const bulkPause = () => new Promise(resolve => setImmediate(resolve));
 
 /**
- * The avatars of the rows at positions `start` (inclusive) to `end` (exclusive) of a `/query` list, in batches, as
- * the list shows them: same filter, same sort, groups counted in the positions and left out of the batches.
- * @param {{ directories: import('../users.js').UserDirectoryList, profile: { handle: string } }} user
- * @param {{ filter?: object, sort?: object }} query
- * @param {number} start
- * @param {number} end
- * @returns {AsyncGenerator<string[], void, undefined>}
+ * @typedef {object} BulkSelection What the page keeps of a selection: every character a list shows (`all`), or the
+ * ones at `ranges` of it (positions, both ends included, groups counted), less those at `excludeRanges`, plus the
+ * avatars `include` names, less those `exclude` names. `query` is the list's `{ filter, sort }`.
+ * @property {{ filter: object, sort?: object } | null} query
+ * @property {boolean} all
+ * @property {[number, number][]} ranges Sorted, apart.
+ * @property {[number, number][]} excludeRanges Sorted, apart.
+ * @property {string[]} include
+ * @property {Set<string>} exclude
  */
-async function* walkQueryAvatars(user, query, start, end) {
-    let page = Math.floor(start / BULK_QUERY_PAGE_SIZE) + 1;
-    let position = (page - 1) * BULK_QUERY_PAGE_SIZE;
-    /** @type {string|undefined} */
-    let cursor;
-    while (position < end) {
-        const ask = async (/** @type {number} */ pageSize, /** @type {string|undefined} */ from) => {
-            const reply = await runQuery(user, { filter: query.filter ?? {}, sort: query.sort, page, pageSize, want: ['rows'], cursor: from });
-            if ('hashes' in reply || reply.status !== 200) {
-                throw new Error(`The list could not be read: ${'hashes' in reply ? 'hashes' : reply.status}`);
-            }
-            return reply.body;
-        };
-        let body = await ask(BULK_QUERY_PAGE_SIZE, cursor);
-        const rows = [...(body.rows ?? [])];
-        // A walked search stops at its work cap before the page is full; carry on from its cursor, as the page does.
-        while (body.more === true && typeof body.cursor === 'string' && rows.length < BULK_QUERY_PAGE_SIZE) {
-            body = await ask(BULK_QUERY_PAGE_SIZE - rows.length, body.cursor);
-            rows.push(...(body.rows ?? []));
-        }
-        cursor = typeof body.cursor === 'string' ? body.cursor : undefined;
-
-        const from = Math.max(0, start - position);
-        const to = Math.min(rows.length, end - position);
-        const avatars = rows.slice(from, to)
-            .map(row => row?.type ? (row.type === 'character' ? row.item?.avatar : undefined) : row?.avatar)
-            .filter(avatar => typeof avatar === 'string' && avatar);
-        if (avatars.length > 0) yield avatars;
-        if (rows.length < BULK_QUERY_PAGE_SIZE) return;
-        position += BULK_QUERY_PAGE_SIZE;
-        page++;
-        await bulkPause();
-    }
-}
 
 /**
  * @param {unknown} value
- * @returns {[number, number][] | null} Ranges of positions, both ends included, or `null` when malformed.
+ * @returns {[number, number][] | null} Ranges of positions, both ends included, sorted and merged; `null` when malformed.
  */
 function parseBulkRanges(value) {
     if (value === undefined) return [];
@@ -3941,7 +3097,15 @@ function parseBulkRanges(value) {
         if (!Number.isInteger(a) || !Number.isInteger(b) || a < 0 || b < 0) return null;
         ranges.push([Math.min(a, b), Math.max(a, b)]);
     }
-    return ranges;
+    ranges.sort((x, y) => x[0] - y[0]);
+    /** @type {[number, number][]} */
+    const merged = [];
+    for (const r of ranges) {
+        const last = merged[merged.length - 1];
+        if (last && r[0] <= last[1] + 1) last[1] = Math.max(last[1], r[1]);
+        else merged.push([r[0], r[1]]);
+    }
+    return merged;
 }
 
 /**
@@ -3956,131 +3120,278 @@ function parseBulkAvatars(value) {
 }
 
 /**
- * Fills a bulk job with a selection: every character matching `query` (`all`), or the characters at `ranges` of the
- * list `query` gives; then less those at `excludeRanges`, plus `include`, less `exclude`. The client keeps `include`
- * outside what `all` and `ranges` already hold, and `exclude` inside it.
- * @param {{ directories: import('../users.js').UserDirectoryList, profile: { handle: string } }} user
- * @param {string} job
- * @param {{ query: { filter?: object, sort?: object } | null, all: boolean, ranges: [number, number][], excludeRanges: [number, number][], include: string[], exclude: string[] }} selection
- * @returns {Promise<{ missing: string[] }>} `missing`: the avatars `include` named that no character has.
+ * A request's selection, checked.
+ * @param {unknown} raw
+ * @returns {BulkSelection | string} The reason when it isn't one.
  */
-async function fillBulkSelection(user, job, selection) {
-    const directories = user.directories;
-    const { query } = selection;
-
-    if (selection.all && query) {
-        const filter = /** @type {Record<string, any>} */ (query.filter ?? {});
-        const search = typeof filter.search === 'string' ? filter.search.trim() : '';
-        // Groups aren't characters, so a groups-only list selects none.
-        if (filter.group !== true) {
-            if (search) {
-                const charactersOnly = { filter: { ...filter, includeGroups: false, group: undefined }, sort: query.sort };
-                for await (const avatars of walkQueryAvatars(user, charactersOnly, 0, Infinity)) {
-                    await addToBulkSelection(directories, job, avatars);
-                }
-            } else {
-                const stream = await streamCharacterIdsMatching(directories, filter);
-                if (stream === null) throw new Error('The metadata store is unavailable');
-                for await (const avatars of stream) {
-                    await addToBulkSelection(directories, job, avatars);
-                    await bulkPause();
-                }
-            }
-        }
-    }
-    if (query) {
-        for (const [a, b] of selection.ranges) {
-            for await (const avatars of walkQueryAvatars(user, query, a, b + 1)) {
-                await addToBulkSelection(directories, job, avatars);
-            }
-        }
-        for (const [a, b] of selection.excludeRanges) {
-            for await (const avatars of walkQueryAvatars(user, query, a, b + 1)) {
-                await removeFromBulkSelection(directories, job, avatars);
-            }
-        }
-    }
-    await addToBulkSelection(directories, job, selection.include);
-    await removeFromBulkSelection(directories, job, selection.exclude);
-
-    const exists = selection.include.length > 0 ? await checkCharactersExist(directories, selection.include) : {};
-    return { missing: selection.include.filter(avatar => exists?.[avatar] === false) };
+function parseBulkSelection(raw) {
+    if (!raw || typeof raw !== 'object') return 'selection-required';
+    const r = /** @type {Record<string, any>} */ (raw);
+    const query = r.query && typeof r.query === 'object' ? { filter: r.query.filter ?? {}, sort: r.query.sort } : null;
+    const ranges = parseBulkRanges(r.ranges);
+    const excludeRanges = parseBulkRanges(r.excludeRanges);
+    const include = parseBulkAvatars(r.include);
+    const exclude = parseBulkAvatars(r.exclude);
+    if (ranges === null || excludeRanges === null || include === null || exclude === null) return 'invalid-selection';
+    const all = r.all === true;
+    if ((all || ranges.length > 0 || excludeRanges.length > 0) && !query) return 'query-required';
+    return { query, all, ranges, excludeRanges, include, exclude: new Set(exclude) };
 }
 
 /**
- * Fixes a selection in the store and says how many characters it holds. Body: `{ selection: { query?, all?,
- * ranges?, excludeRanges?, include?, exclude? }, current? }`; `query` is the list's `{ filter, sort }` and is needed
- * by `all` and the ranges; `current` is an avatar the answer says whether the selection holds. Answers `{ job, count,
- * containsCurrent, sample, missing }`, `sample` being the first avatars of it and `missing` the avatars `include` named
- * that no character has. The job is kept until `/bulk/drop`.
+ * The list a selection's positions are of, a page at a time from `start`: each row's avatar, or null for a group.
+ * @param {import('express').Request} request
+ * @param {{ filter: object, sort?: object }} query
+ * @param {number} start
+ * @returns {AsyncGenerator<{ position: number, avatar: string | null }, void, undefined>}
+ */
+async function* listRows(request, query, start) {
+    const filter = /** @type {Record<string, any>} */ (query.filter ?? {});
+    // Groups aren't characters, so a groups-only list holds none.
+    if (filter.group === true) return;
+    let page = Math.floor(start / BULK_QUERY_PAGE_SIZE) + 1;
+    let position = (page - 1) * BULK_QUERY_PAGE_SIZE;
+    /** @type {string | undefined} */
+    let cursor;
+    for (;;) {
+        const reply = await runQuery(request, { filter, sort: query.sort, page, pageSize: BULK_QUERY_PAGE_SIZE, want: ['hashes'], cursor }, { compat: false });
+        if (!('hashes' in reply)) throw new Error(`The list could not be read: ${reply.status}`);
+        const rows = reply.hashes.hashRows;
+        for (const row of rows) {
+            if (position >= start) yield { position, avatar: row.isGroup ? null : row.id };
+            position++;
+        }
+        if (typeof reply.hashes.cursor !== 'string' || rows.length === 0) return;
+        cursor = reply.hashes.cursor;
+        page++;
+        await bulkPause();
+    }
+}
+
+/**
+ * The avatars a selection holds, in its order (the list's rows in it, then `include`), from a place `/bulk/ids`
+ * answered (`p<position>` or `i<index>`).
+ * @param {import('express').Request} request
+ * @param {BulkSelection} selection
+ * @param {string} [from]
+ * @param {{ missing?: boolean }} [o] `missing`: also the avatars `include` names that no character has, flagged.
+ * @returns {AsyncGenerator<{ avatar: string, next: string, missing?: true }, void, undefined>} `next`: the place after it.
+ */
+async function* selectedAvatars(request, selection, from, { missing = false } = {}) {
+    const at = typeof from === 'string' ? /^([pi])(\d+)$/.exec(from) : null;
+    if (at === null || at[1] === 'p') {
+        const start = at === null ? 0 : Number(at[2]);
+        const spans = selection.all ? [[0, Infinity]] : selection.ranges;
+        const excluded = (/** @type {number} */ p) => selection.excludeRanges.some(([a, b]) => p >= a && p <= b);
+        for (const [a, b] of spans) {
+            if (b < start || !selection.query) continue;
+            for await (const row of listRows(request, selection.query, Math.max(a, start))) {
+                if (row.position > b) break;
+                if (row.avatar === null || excluded(row.position) || selection.exclude.has(row.avatar)) continue;
+                yield { avatar: row.avatar, next: `p${row.position + 1}` };
+            }
+        }
+    }
+    const first = at?.[1] === 'i' ? Number(at[2]) : 0;
+    const { lib } = await requestStore(request);
+    for (let i = first; i < selection.include.length; i += BULK_IDS_PAGE) {
+        const slice = selection.include.slice(i, i + BULK_IDS_PAGE);
+        const found = await lib.ids(TYPE.character, slice);
+        for (const [j, avatar] of slice.entries()) {
+            if (selection.exclude.has(avatar)) continue;
+            if (found[j] !== null) yield { avatar, next: `i${i + j + 1}` };
+            else if (missing) yield { avatar, next: `i${i + j + 1}`, missing: true };
+        }
+    }
+}
+
+/**
+ * How many characters a selection holds, whether it holds `current`, the first of them, and the avatars `include`
+ * names that no character has. Body: `{ selection, current? }`; answers `{ count, containsCurrent, sample, missing }`.
  */
 router.post('/bulk/prepare', async function (request, response) {
     const body = request.body ?? {};
-    const raw = body.selection;
-    if (!raw || typeof raw !== 'object') {
-        return response.status(400).send({ error: true, reason: 'selection-required' });
-    }
-    const query = raw.query && typeof raw.query === 'object' ? { filter: raw.query.filter ?? {}, sort: raw.query.sort } : null;
-    const ranges = parseBulkRanges(raw.ranges);
-    const excludeRanges = parseBulkRanges(raw.excludeRanges);
-    const include = parseBulkAvatars(raw.include);
-    const exclude = parseBulkAvatars(raw.exclude);
-    if (ranges === null || excludeRanges === null || include === null || exclude === null) {
-        return response.status(400).send({ error: true, reason: 'invalid-selection' });
-    }
-    const all = raw.all === true;
-    if ((all || ranges.length > 0 || excludeRanges.length > 0) && !query) {
-        return response.status(400).send({ error: true, reason: 'query-required' });
-    }
-
-    const job = await beginBulkSelection(request.user.directories);
-    if (job === null) {
-        return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
-    }
+    const selection = parseBulkSelection(body.selection);
+    if (typeof selection === 'string') return response.status(400).send({ error: true, reason: selection });
     try {
-        const { missing } = await fillBulkSelection(request.user, job, { query, all, ranges, excludeRanges, include, exclude });
         const current = typeof body.current === 'string' ? body.current : undefined;
-        const { count, contains } = await describeBulkSelection(request.user.directories, job, current);
-        const sample = await readBulkSelectionPage(request.user.directories, job, { limit: BULK_SAMPLE_SIZE });
-        return response.send({ job, count, containsCurrent: contains, sample, missing });
+        let count = 0;
+        let containsCurrent = false;
+        const sample = [];
+        for await (const { avatar } of selectedAvatars(request, selection)) {
+            count++;
+            if (avatar === current) containsCurrent = true;
+            if (sample.length < BULK_SAMPLE_SIZE) sample.push(avatar);
+        }
+        const { lib } = await requestStore(request);
+        const found = selection.include.length > 0 ? await lib.ids(TYPE.character, selection.include) : [];
+        const missing = selection.include.filter((_, i) => found[i] === null);
+        return response.send({ count, containsCurrent, sample, missing });
     } catch (err) {
         console.error('[characters/bulk/prepare] The selection could not be read:', err);
-        await dropBulkSelection(request.user.directories, job);
         return response.status(500).send({ error: true, reason: 'selection-failed' });
     }
 });
 
-/**
- * One page of a prepared selection, in avatar order. Body: `{ job, after? }`. Answers `{ avatars, more }`.
- */
+/** A page of a selection's avatars, in its order. Body: `{ selection, after? }`. Answers `{ avatars, more, after? }`. */
 router.post('/bulk/ids', async function (request, response) {
-    const { job, after } = request.body ?? {};
-    if (typeof job !== 'string' || !await bulkSelectionExists(request.user.directories, job)) {
-        return response.status(404).send({ error: true, reason: 'job-not-found' });
+    const body = request.body ?? {};
+    const selection = parseBulkSelection(body.selection);
+    if (typeof selection === 'string') return response.status(400).send({ error: true, reason: selection });
+    try {
+        const avatars = [];
+        let after;
+        let more = false;
+        for await (const { avatar, next } of selectedAvatars(request, selection, typeof body.after === 'string' ? body.after : undefined)) {
+            if (avatars.length === BULK_IDS_PAGE) {
+                more = true;
+                break;
+            }
+            avatars.push(avatar);
+            after = next;
+        }
+        return response.send({ avatars, more, ...(more ? { after } : {}) });
+    } catch (err) {
+        console.error('[characters/bulk/ids] The selection could not be read:', err);
+        return response.status(500).send({ error: true, reason: 'selection-failed' });
     }
-    const limit = 500;
-    const avatars = await readBulkSelectionPage(request.user.directories, job, { after: typeof after === 'string' ? after : '', limit });
-    return response.send({ avatars, more: avatars.length === limit });
 });
 
-/** The tags every character of a prepared selection carries. Body: `{ job }`. Answers `{ tagIds }`. */
+/** The `metaValue` names of a run list: its state, and its chunks of entity ids. */
+const RUNS_KEY = 'bulk.runs';
+const runKey = (/** @type {string} */ run) => `bulk.run.${run}`;
+const chunkKey = (/** @type {string} */ run, /** @type {number} */ n) => `bulk.run.${run}.${n}`;
+
+/**
+ * Changes the list of run lists, one change at a time.
+ * @param {import('../library-engine.js').LibraryEngine} lib
+ * @param {(runs: string[]) => string[]} change
+ * @param {object[]} [records] Committed with it.
+ */
+function changeRuns(lib, change, records = []) {
+    return lib.serialized(RUNS_LANE, RUNS_KEY, async () => {
+        const [runs] = await lib.store.meta([RUNS_KEY]);
+        const next = change(runs ? JSON.parse(runs) : []);
+        await lib.store.commit([...records, next.length ? { kind: 'metaValue', key: RUNS_KEY, json: JSON.stringify(next) } : { kind: 'metaValue', key: RUNS_KEY }]);
+    });
+}
+
+/** The lane changes of the list of run lists take. */
+const RUNS_LANE = -2;
+
+/**
+ * Writes a selection as a run list in the store: its characters' entity ids in its order, in chunks, so a run acting
+ * on them walks what it was given whatever its own changes do to the list. Each entry is `[id, avatar]`, `id` null
+ * for an avatar the selection names that no character has, so the run can name it. Removed by `endRunList()`.
+ * @param {import('express').Request} request
+ * @param {BulkSelection} selection
+ * @param {string} action
+ * @returns {Promise<{ run: string, chunks: number, total: number }>}
+ */
+async function writeRunList(request, selection, action) {
+    const { lib } = await requestStore(request);
+    const run = crypto.randomUUID();
+    await changeRuns(lib, runs => [...runs, run]);
+    let chunks = 0;
+    let total = 0;
+    /** @type {string[]} */
+    let chunk = [];
+    const flush = async () => {
+        if (chunk.length === 0) return;
+        const ids = await lib.ids(TYPE.character, chunk);
+        const entries = chunk.map((avatar, i) => [ids[i] === null ? null : String(ids[i]), avatar]);
+        await lib.store.commit([{ kind: 'metaValue', key: chunkKey(run, chunks++), json: JSON.stringify(entries) }]);
+        chunk = [];
+    };
+    for await (const { avatar } of selectedAvatars(request, selection, undefined, { missing: true })) {
+        chunk.push(avatar);
+        total++;
+        if (chunk.length >= RUN_LIST_CHUNK) await flush();
+    }
+    await flush();
+    await lib.store.commit([{ kind: 'metaValue', key: runKey(run), json: JSON.stringify({ action, total, done: 0, chunks }) }]);
+    return { run, chunks, total };
+}
+
+/**
+ * The characters of a run list's chunk, each by its avatar now; `gone` for one no character is any more (or never
+ * was), by the avatar the selection named.
+ * @param {import('../library-engine.js').LibraryEngine} lib
+ * @param {string} run
+ * @param {number} n
+ * @returns {Promise<{ avatar: string, gone: boolean }[]>}
+ */
+async function runListChunk(lib, run, n) {
+    const [json] = await lib.store.meta([chunkKey(run, n)]);
+    /** @type {[string | null, string][]} */
+    const entries = json ? JSON.parse(json) : [];
+    const ids = entries.flatMap(([id]) => (id === null ? [] : [BigInt(id)]));
+    const keys = ids.length > 0 ? await lib.store.libraryKeys(ids) : [];
+    let k = 0;
+    return entries.map(([id, avatar]) => {
+        const key = id === null ? null : keys[k++];
+        return key && key.type === TYPE.character ? { avatar: key.key, gone: false } : { avatar, gone: true };
+    });
+}
+
+/**
+ * Removes a run list.
+ * @param {import('../library-engine.js').LibraryEngine} lib
+ * @param {string} run
+ * @param {number} chunks
+ */
+async function endRunList(lib, run, chunks) {
+    const records = [];
+    for (let n = 0; n < chunks; n++) records.push({ kind: 'metaValue', key: chunkKey(run, n) });
+    records.push({ kind: 'metaValue', key: runKey(run) });
+    await changeRuns(lib, runs => runs.filter(r => r !== run), records);
+}
+
+/**
+ * The run lists a stop left (a run doesn't go on after a restart): each reported, with how far it got, and removed.
+ * Called after the server listens.
+ * @param {import('../library-engine.js').LibraryEngine} lib
+ */
+export async function dropStoppedRuns(lib) {
+    const [runs] = await lib.store.meta([RUNS_KEY]);
+    for (const run of runs ? JSON.parse(runs) : []) {
+        const [state] = await lib.store.meta([runKey(run)]);
+        const s = state ? JSON.parse(state) : null;
+        console.warn(s
+            ? `[characters/bulk] A bulk "${s.action}" was stopped by the server stopping, after ${s.done} of ${s.total} characters; the rest weren't changed.`
+            : '[characters/bulk] A bulk action was stopped by the server stopping before it began; nothing was changed.');
+        let chunks = s?.chunks ?? 0;
+        // A list stopped while it was written has chunks its state doesn't count yet.
+        while ((await lib.store.meta([chunkKey(run, chunks)]))[0] !== null) chunks++;
+        await endRunList(lib, run, chunks);
+    }
+}
+
+/** The tags every character of a selection carries. Body: `{ selection }`. Answers `{ tagIds }`. */
 router.post('/bulk/mutual-tags', async function (request, response) {
-    const { job } = request.body ?? {};
-    if (typeof job !== 'string' || !await bulkSelectionExists(request.user.directories, job)) {
-        return response.status(404).send({ error: true, reason: 'job-not-found' });
+    const selection = parseBulkSelection(request.body?.selection);
+    if (typeof selection === 'string') return response.status(400).send({ error: true, reason: selection });
+    const { lib } = await requestStore(request);
+    let list;
+    try {
+        list = await writeRunList(request, selection, 'mutual-tags');
+        /** @type {Set<string> | null} */
+        let mutual = null;
+        for (let n = 0; n < list.chunks && (mutual === null || mutual.size > 0); n++) {
+            const avatars = (await runListChunk(lib, list.run, n)).filter(e => !e.gone).map(e => e.avatar);
+            const carried = await lib.tags.tagIdsFor(avatars);
+            for (const avatar of avatars) {
+                const tags = new Set(carried[avatar] ?? []);
+                mutual = mutual === null ? tags : new Set([...mutual].filter(t => tags.has(t)));
+            }
+        }
+        return response.send({ tagIds: [...(mutual ?? [])] });
+    } catch (err) {
+        console.error('[characters/bulk/mutual-tags] The selection could not be read:', err);
+        return response.status(500).send({ error: true, reason: 'selection-failed' });
+    } finally {
+        if (list) await endRunList(lib, list.run, list.chunks);
     }
-    const tagIds = await mutualTagIdsOfBulkSelection(request.user.directories, job);
-    if (tagIds === null) {
-        return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
-    }
-    return response.send({ tagIds });
-});
-
-/** Drops a prepared selection. Body: `{ job }`. */
-router.post('/bulk/drop', async function (request, response) {
-    const { job } = request.body ?? {};
-    if (typeof job === 'string') await dropBulkSelection(request.user.directories, job);
-    return response.sendStatus(204);
 });
 
 /**
@@ -4092,7 +3403,7 @@ router.post('/bulk/drop', async function (request, response) {
  * @returns {Promise<{ ok: boolean, error?: string, extra?: object }>}
  */
 async function applyBulkAction(request, action, avatar, options) {
-    const directories = request.user.directories;
+    const { lib } = await requestStore(request);
     const tagIds = Array.isArray(options.tagIds) ? options.tagIds.filter(id => typeof id === 'string' && id) : [];
     switch (action) {
         case 'delete': {
@@ -4100,8 +3411,10 @@ async function applyBulkAction(request, action, avatar, options) {
             return result.ok ? { ok: true } : { ok: false, error: `status ${result.status}` };
         }
         case 'fav': {
-            const fav = await toggleCharacterFav(directories, avatar);
-            return fav === null ? { ok: false, error: 'not found' } : { ok: true, extra: { fav } };
+            const e = await lib.entity(TYPE.character, avatar);
+            if (!e) return { ok: false, error: 'not found' };
+            await lib.setFav(TYPE.character, avatar, !e.fav);
+            return { ok: true, extra: { fav: !e.fav } };
         }
         case 'duplicate': {
             const result = await duplicateOneCharacter(request, avatar);
@@ -4109,27 +3422,22 @@ async function applyBulkAction(request, action, avatar, options) {
         }
         case 'tag-add': {
             for (const tagId of tagIds) {
-                const result = await assignEntityTag(directories, avatar, tagId);
-                if (result !== 'ok') return { ok: false, error: result === null ? 'store unavailable' : 'not found' };
+                const result = await lib.tags.assign(avatar, tagId);
+                if (result.result !== 'ok') return { ok: false, error: 'not found' };
             }
             return { ok: true };
         }
         case 'tag-remove': {
-            for (const tagId of tagIds) {
-                if (await unassignEntityTag(directories, avatar, tagId) !== 'ok') return { ok: false, error: 'store unavailable' };
-            }
+            for (const tagId of tagIds) await lib.tags.unassign(avatar, tagId);
             return { ok: true };
         }
         case 'tag-reset': {
-            const carried = await getEntityTagIdsForMany(directories, [avatar], { type: 'character' });
-            if (carried === null) return { ok: false, error: 'store unavailable' };
-            for (const tagId of carried[avatar] ?? []) {
-                if (await unassignEntityTag(directories, avatar, tagId) !== 'ok') return { ok: false, error: 'store unavailable' };
-            }
+            const carried = await lib.tags.tagIdsFor([avatar]);
+            for (const tagId of carried[avatar] ?? []) await lib.tags.unassign(avatar, tagId);
             return { ok: true };
         }
         case 'tag-import': {
-            await seedCardTagsForSingleCharacter(directories, avatar, { onlyExisting: options.onlyExisting === true });
+            await lib.tags.seedCardTags(avatar, { onlyExisting: options.onlyExisting === true });
             return { ok: true };
         }
     }
@@ -4137,24 +3445,24 @@ async function applyBulkAction(request, action, avatar, options) {
 }
 
 /**
- * Carries out an action on every character of a prepared selection, a batch at a time with a pause between batches.
- * Body: `{ job, action, options?, watch? }`: `action` one of BULK_ACTIONS; `options` `deleteChats` (delete),
- * `tagIds` (tag-add, tag-remove), `onlyExisting` (tag-import); `watch` the avatars the page shows or holds, whose
- * results it is sent. Answers newline-separated JSON as it goes: `{ type: 'item', avatar, ... }` for a watched
- * character done, `{ type: 'failed', avatar, error }` for each one that failed, `{ type: 'progress', done, failed }`
- * after each batch, and last `{ type: 'done', done, failed }` (or `{ type: 'error', done, failed }` when it had to
- * stop). The job stays, so the page can drop it or read it again.
+ * Carries out an action on every character of a selection, a batch at a time with a pause between batches, walking
+ * a run list written at its start (so its own changes don't move what it walks). Body: `{ selection, action,
+ * options?, watch? }`: `action` one of BULK_ACTIONS; `options` `deleteChats` (delete), `tagIds` (tag-add,
+ * tag-remove), `onlyExisting` (tag-import); `watch` the avatars the page shows or holds, whose results it is sent.
+ * Answers newline-separated JSON as it goes: `{ type: 'item', avatar, ... }` for a watched character done,
+ * `{ type: 'failed', avatar, error }` for each one that failed, `{ type: 'progress', done, failed }` after each batch,
+ * and last `{ type: 'done', done, failed }` (or `{ type: 'error', done, failed }` when it had to stop).
  */
 router.post('/bulk/run', async function (request, response) {
-    const { job, action, options, watch } = request.body ?? {};
+    const { action, options, watch } = request.body ?? {};
     if (typeof action !== 'string' || !BULK_ACTIONS.has(action)) {
         return response.status(400).send({ error: true, reason: 'invalid-action' });
     }
-    if (typeof job !== 'string' || !await bulkSelectionExists(request.user.directories, job)) {
-        return response.status(404).send({ error: true, reason: 'job-not-found' });
-    }
+    const selection = parseBulkSelection(request.body?.selection);
+    if (typeof selection === 'string') return response.status(400).send({ error: true, reason: selection });
     const watched = new Set(Array.isArray(watch) ? watch.filter(avatar => typeof avatar === 'string').slice(0, BULK_MAX_NAMED) : []);
     const actionOptions = options && typeof options === 'object' ? options : {};
+    const { lib } = await requestStore(request);
 
     response.status(200);
     response.set('Content-Type', 'application/x-ndjson');
@@ -4166,13 +3474,15 @@ router.post('/bulk/run', async function (request, response) {
 
     let done = 0;
     let failed = 0;
+    let list;
     try {
-        for await (const batch of streamBulkSelection(request.user.directories, job)) {
-            for (const avatar of batch) {
+        list = await writeRunList(request, selection, action);
+        for (let n = 0; n < list.chunks; n++) {
+            for (const { avatar, gone } of await runListChunk(lib, list.run, n)) {
                 /** @type {{ ok: boolean, error?: string, extra?: object }} */
                 let outcome;
                 try {
-                    outcome = await applyBulkAction(request, action, avatar, actionOptions);
+                    outcome = gone ? { ok: false, error: 'not found' } : await applyBulkAction(request, action, avatar, actionOptions);
                 } catch (err) {
                     // One character going wrong is named, and the rest are still done.
                     console.error(`[characters/bulk/run] ${action} failed for ${avatar}:`, err);
@@ -4186,6 +3496,7 @@ router.post('/bulk/run', async function (request, response) {
                     await send({ type: 'failed', avatar, error: outcome.error ?? 'failed' });
                 }
             }
+            await lib.store.commit([{ kind: 'metaValue', key: runKey(list.run), json: JSON.stringify({ action, total: list.total, done: done + failed, chunks: list.chunks }) }]);
             await send({ type: 'progress', done, failed });
             await bulkPause();
         }
@@ -4198,6 +3509,7 @@ router.post('/bulk/run', async function (request, response) {
             // The connection is gone; nothing left to tell.
         }
     } finally {
+        if (list) await endRunList(lib, list.run, list.chunks).catch(err => console.error('[characters/bulk/run] Its run list could not be removed:', err));
         response.end();
     }
 });
@@ -4207,31 +3519,23 @@ router.post('/export', validateAvatarUrlMiddleware, async function (request, res
         if (!request.body.format || !request.body.avatar_url) {
             return response.sendStatus(400);
         }
-
-        let filename = path.join(request.user.directories.characters, sanitize(request.body.avatar_url));
-
-        if (!await characterRowExists(request.user.directories, path.basename(filename))) {
-            return response.sendStatus(404);
-        }
+        const avatar = sanitize(request.body.avatar_url);
 
         switch (request.body.format) {
             case 'png': {
-                // Materialized, not streamed: the stored PNG's chunk may be stale, and an exported file must
-                // carry a current one since other tools read it by that chunk alone.
-                const materialized = await materializeCardPng(request.user.directories, path.basename(filename), filename);
-                if (!materialized) return response.sendStatus(400);
-                const rawBuffer = materialized.buffer;
+                // Built here: an exported file carries the current card, as other tools read it by that chunk alone.
+                const materialized = await materializeCardPng(request.user.directories, avatar);
+                if (!materialized) return response.sendStatus(404);
                 const mutatedData = mutateJsonString(materialized.cardJson, unsetPrivateFields);
-                const mutatedBuffer = write(rawBuffer, mutatedData);
-                const contentType = mime.lookup(filename) || 'image/png';
-                response.setHeader('Content-Type', contentType);
-                response.setHeader('Content-Disposition', `attachment; filename="${encodeURI(path.basename(filename))}"`);
+                const mutatedBuffer = write(materialized.buffer, mutatedData);
+                response.setHeader('Content-Type', mime.lookup(avatar) || 'image/png');
+                response.setHeader('Content-Disposition', `attachment; filename="${encodeURI(avatar)}"`);
                 return response.send(mutatedBuffer);
             }
             case 'json': {
+                const json = await readCardContent(request.user.directories, avatar);
+                if (json === undefined) return response.sendStatus(404);
                 try {
-                    const json = await readCardContent(request.user.directories, path.basename(filename));
-                    if (json === undefined) return response.sendStatus(400);
                     const jsonObject = getCharaCardV2(JSON.parse(json), request.user.directories);
                     unsetPrivateFields(jsonObject);
                     return response.type('json').send(JSON.stringify(jsonObject, null, 4));

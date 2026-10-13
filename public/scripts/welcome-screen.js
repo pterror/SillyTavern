@@ -33,7 +33,7 @@ import { callGenericPopup, POPUP_TYPE } from './popup.js';
 import { getMessageTimeStamp } from './RossAscends-mods.js';
 import { renderTemplateAsync } from './templates.js';
 import { accountStorage } from './util/AccountStorage.js';
-import { clamp, flashHighlight, isElementInViewport, sortMoments, timestampToMoment } from './utils.js';
+import { clamp, flashHighlight, isElementInViewport, timestampToMoment } from './utils.js';
 
 const assistantAvatarKey = 'assistant';
 const pinnedChatsKey = 'pinnedChats';
@@ -748,7 +748,9 @@ async function openRecentChatsSettingsPopup() {
  *
  * @typedef {object} RecentChat
  * @property {string} file_name Name of the chat file
- * @property {string} chat_name Name of the chat (without extension)
+ * @property {string} chat_name The chat's compat id (`file_name` without extension)
+ * @property {string|null} [label] The name the chat was given
+ * @property {string} display_name The label, else the character or group name
  * @property {string} file_size Size of the chat file
  * @property {number} chat_items Number of items in the chat
  * @property {string} mes Last message content
@@ -799,7 +801,6 @@ async function getRecentChats() {
         .sort((a, b) => {
             const isAPinned = PinnedChatsManager.isPinned(a.chat);
             const isBPinned = PinnedChatsManager.isPinned(b.chat);
-            const momentComparison = sortMoments(timestampToMoment(a.chat.last_mes), timestampToMoment(b.chat.last_mes));
 
             if (isAPinned && !isBPinned) {
                 return -1;
@@ -808,7 +809,8 @@ async function getRecentChats() {
                 return 1;
             }
 
-            return momentComparison;
+            // The server's order (by last activity) stands.
+            return 0;
         });
 
     dataWithEntities.forEach(({ chat, character, group }, index) => {
@@ -817,6 +819,7 @@ async function getRecentChats() {
         chat.date_short = chatTimestamp.format('l');
         chat.date_long = chatTimestamp.format('LL LT');
         chat.chat_name = chat.file_name.replace('.jsonl', '');
+        chat.display_name = chat.label ?? chat.char_name;
         chat.char_thumbnail = character ? getThumbnailUrl('avatar', character.avatar) : system_avatar;
         chat.is_group = !!group;
         chat.hidden = index >= settings.collapsedDisplayed;

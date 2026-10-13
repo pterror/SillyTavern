@@ -1,9 +1,15 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import { resolveWorldInfoCandidates, world_info_insertion_strategy, EMBEDDED_WORLD_NAME } from './candidate-resolution.js';
-import { importWorldInfoFromRaw } from '../endpoints/worldinfo.js';
+import { fileURLToPath } from 'node:url';
+
+import { setConfigFilePath } from '../util.js';
+
+setConfigFilePath(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'default', 'config.yaml'));
+
+const { resolveWorldInfoCandidates, world_info_insertion_strategy, EMBEDDED_WORLD_NAME } = await import('./candidate-resolution.js');
+const { importWorldInfoFromRaw } = await import('../endpoints/worldinfo.js');
+const user = await (await import('../../tests/converted-user.fixture.js')).convertedUser('wi-candidate-resolution-');
+const directories = user.directories;
 
 /** Minimal real on-disk lorebook shape, matching default/content/Eldoria.json's entries format. */
 function makeEntry(uid, order, content = `content-${uid}`) {
@@ -21,22 +27,19 @@ function makeEntry(uid, order, content = `content-${uid}`) {
     };
 }
 
-function writeLorebook(dir, name, entries) {
+async function writeLorebook(name, entries) {
     const entriesObj = {};
     for (const entry of entries) {
         entriesObj[String(entry.uid)] = entry;
     }
-    importWorldInfoFromRaw({ worlds: dir }, name, JSON.stringify({ entries: entriesObj }));
+    await importWorldInfoFromRaw(directories, name, JSON.stringify({ entries: entriesObj }));
 }
 
-const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'wi-candidate-resolution-'));
-const directories = { worlds: tmpRoot };
-
-writeLorebook(tmpRoot, 'Global', [makeEntry('g1', 10), makeEntry('g2', 20)]);
-writeLorebook(tmpRoot, 'CharBase', [makeEntry('c1', 15)]);
-writeLorebook(tmpRoot, 'CharExtra', [makeEntry('c2', 5)]);
-writeLorebook(tmpRoot, 'ChatWorld', [makeEntry('ch1', 1)]);
-writeLorebook(tmpRoot, 'PersonaWorld', [makeEntry('p1', 1)]);
+await writeLorebook('Global', [makeEntry('g1', 10), makeEntry('g2', 20)]);
+await writeLorebook('CharBase', [makeEntry('c1', 15)]);
+await writeLorebook('CharExtra', [makeEntry('c2', 5)]);
+await writeLorebook('ChatWorld', [makeEntry('ch1', 1)]);
+await writeLorebook('PersonaWorld', [makeEntry('p1', 1)]);
 
 const character = { data: { extensions: { world: 'CharBase' } } };
 
@@ -130,7 +133,7 @@ const character = { data: { extensions: { world: 'CharBase' } } };
 
 // (d) each returned entry has decorators/content/hash/world fields; content has decorators stripped.
 {
-    writeLorebook(tmpRoot, 'Decorated', [makeEntry('d1', 1, '@@activate\nThe rest of the content.')]);
+    await writeLorebook('Decorated', [makeEntry('d1', 1, '@@activate\nThe rest of the content.')]);
     const entries = await resolveWorldInfoCandidates({
         directories,
         selectedWorldInfo: ['Decorated'],
@@ -208,6 +211,6 @@ const character = { data: { extensions: { world: 'CharBase' } } };
     assert.equal(entries[0].world, EMBEDDED_WORLD_NAME);
 }
 
-fs.rmSync(tmpRoot, { recursive: true, force: true });
+await user.close();
 
 console.log('candidate-resolution.test.js passed');

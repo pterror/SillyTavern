@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import http from 'node:http';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -36,24 +35,27 @@ setConfigFilePath(path.join(__dirname, '..', '..', '..', 'config.yaml'));
 // verifies for the default path.
 const { router } = await import('./chat-completions.js');
 const { writeAllSettings } = await import('../../settings-store.js');
-const { saveChatToTree, loadBranch, disposeMessageTreeStores } = await import('../../message-tree-db.js');
 const { CompactStreamDecoder } = await import('../../../public/scripts/llamacpp-compact-stream.js');
-const { upsertCharacterFromWrite } = await import('../../character-metadata-db.js');
+const { newSessionKey } = await import('../../chat-engine.js');
+const { SESSION_HEADER } = await import('../../request-session.js');
+const { convertedUser, writeLibraryCard, seedMessages, sessionPath } = await import('../../../tests/converted-user.fixture.js');
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-resume-stream-chat-completions-test-'));
-const charactersDir = path.join(root, 'characters');
-const groupsDir = path.join(root, 'groups');
-const worldsDir = path.join(root, 'worlds');
-const filesDir = path.join(root, 'files');
-const chatsDir = path.join(root, 'chats');
-fs.mkdirSync(charactersDir, { recursive: true });
-fs.mkdirSync(groupsDir, { recursive: true });
-fs.mkdirSync(worldsDir, { recursive: true });
-fs.mkdirSync(filesDir, { recursive: true });
-fs.mkdirSync(chatsDir, { recursive: true });
+const user = await convertedUser('st-resume-stream-chat-completions-test-');
+const { directories } = user;
+globalThis.DATA_ROOT = user.dataRoot;
 
-const directories = { root, characters: charactersDir, groups: groupsDir, worlds: worldsDir, files: filesDir, chats: chatsDir };
-globalThis.DATA_ROOT = root;
+let branches = 0;
+
+/**
+ * A new conversation of `avatar`'s, its greeting stored through a session of its own (a greeting of its own: one
+ * with the same text would be the stored one).
+ * @param {string} avatar
+ */
+async function newBranch(avatar) {
+    const session = newSessionKey();
+    const [greeting] = await seedMessages(user.store, { avatar }, null, [{ name: 'Rex', is_user: false, mes: `Hello there, traveler. (${++branches})`, send_date: 1, extra: {} }], { session });
+    return { session, leaf: greeting, messages: await sessionPath(user.store, { avatar }, session) };
+}
 
 const baseImage = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'public', 'img', 'ai4.png'));
 
@@ -78,8 +80,7 @@ async function writeCharacter(avatar, overrides = {}) {
     };
     const cardJson = JSON.stringify(card);
     const buffer = writeCard(baseImage, cardJson);
-    fs.writeFileSync(path.join(charactersDir, avatar), buffer);
-    await upsertCharacterFromWrite(directories, avatar, cardJson);
+    await writeLibraryCard(user, avatar, cardJson, buffer);
     return avatar;
 }
 
@@ -188,7 +189,7 @@ function buildTestApp() {
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
-        req.user = { directories };
+        req.user = { directories, profile: { handle: 'u' } };
         next();
     });
     app.use('/', router);
@@ -211,18 +212,13 @@ async function waitFor(check, { timeoutMs = 3000, intervalMs = 10 } = {}) {
  * the real persisted tree message matches exactly. Shared across all three provider cases below - only
  * the fake backend's own wire shape and the settings-pointing function differ between them.
  * @param {object} options
- * @param {string} options.branchName
  * @param {string} options.userMessage
  * @param {string} options.expectedText
  * @param {() => Promise<{server: import('http').Server, url: string, done: Promise<void>}>} options.startBackend
  * @param {(url: string) => void} options.pointBackendAt
  */
-async function runResumeCase({ avatar, ownerId, branchName, userMessage, expectedText, startBackend, pointBackendAt }) {
-    await saveChatToTree(directories, ownerId, branchName, [
-        { chat_metadata: {} },
-        { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
-    ]);
-    const branchBefore = await loadBranch(directories, ownerId, branchName);
+async function runResumeCase({ avatar, ownerId, userMessage, expectedText, startBackend, pointBackendAt }) {
+    const branchBefore = await newBranch(avatar);
 
     const fakeBackend = await startBackend();
     pointBackendAt(fakeBackend.url);
@@ -249,9 +245,9 @@ async function runResumeCase({ avatar, ownerId, branchName, userMessage, expecte
     try {
         const res = await fetch(`http://127.0.0.1:${port}/generate`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', [SESSION_HEADER]: branchBefore.session },
             body: JSON.stringify({
-                owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
+                owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.leaf,
                 type: 'normal', user_message: { is_user: true, name: 'User', mes: userMessage }, stream: true,
             }),
             signal: controller.signal,
@@ -300,10 +296,10 @@ async function runResumeCase({ avatar, ownerId, branchName, userMessage, expecte
     assert.ok(assistantNodeId, 'the assistant_node_id frame was received via the resume response - the generation completed and persisted for real');
 
     const branchAfter = await waitFor(async () => {
-        const branch = await loadBranch(directories, ownerId, branchName);
-        return branch.messages.length === branchBefore.messages.length + 2 ? branch : null;
+        const shown = await sessionPath(user.store, { avatar }, branchBefore.session);
+        return shown.length === branchBefore.messages.length + 2 ? shown : null;
     });
-    const assistantMsg = branchAfter.messages[branchAfter.messages.length - 1];
+    const assistantMsg = branchAfter[branchAfter.length - 1];
     assert.equal(assistantMsg.mes, expectedText, 'the real persisted tree message matches the resumed text exactly');
     assert.equal(assistantMsg.node_id, assistantNodeId, 'the node id learned via resume is the exact node the reply actually landed on');
 }
@@ -382,7 +378,4 @@ run()
         console.error(error);
         process.exitCode = 1;
     })
-    .finally(() => {
-        disposeMessageTreeStores();
-        fs.rmSync(root, { recursive: true, force: true });
-    });
+    .finally(() => user.close());

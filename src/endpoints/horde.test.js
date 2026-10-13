@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import http from 'node:http';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mock } from 'node:test';
@@ -48,27 +47,31 @@ if (canMockHordeBackend) {
 const { router: hordeRouter, _setHordePollingConfigForTests } = await import('./horde.js');
 const { buildRawActionKoboldRequest } = await import('./backends/kobold.js');
 const { writeAllSettings } = await import('../settings-store.js');
-const { saveChatToTree, loadBranch, getAlternatives, disposeMessageTreeStores } = await import('../message-tree-db.js');
 const { CompactStreamDecoder } = await import('../../public/scripts/llamacpp-compact-stream.js');
-const { upsertCharacterFromWrite } = await import('../character-metadata-db.js');
 
 // Real polling/keepalive timing sped way up for the test - see streamHordeGeneration()'s own
 // `_setHordePollingConfigForTests()` doc comment. Small enough that a real "still processing" reply
 // or two, plus at least one real keepalive frame, land well within a normal test timeout.
 _setHordePollingConfigForTests({ pollIntervalMs: 30, maxRetries: 50, keepaliveIntervalMs: 25 });
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-horde-raw-action-test-'));
-const charactersDir = path.join(root, 'characters');
-const groupsDir = path.join(root, 'groups');
-const worldsDir = path.join(root, 'worlds');
-const chatsDir = path.join(root, 'chats');
-fs.mkdirSync(charactersDir, { recursive: true });
-fs.mkdirSync(groupsDir, { recursive: true });
-fs.mkdirSync(worldsDir, { recursive: true });
-fs.mkdirSync(chatsDir, { recursive: true });
+const { SESSION_HEADER } = await import('../request-session.js');
+const { convertedUser, writeLibraryCard, saveBranch, loadBranch, sessionAt, chatContextOf } = await import('../../tests/converted-user.fixture.js');
 
-const directories = { root, characters: charactersDir, groups: groupsDir, worlds: worldsDir, chats: chatsDir };
-globalThis.DATA_ROOT = root;
+const user = await convertedUser('st-horde-raw-action-test-');
+const { directories } = user;
+globalThis.DATA_ROOT = user.dataRoot;
+
+const { newSessionKey } = await import('../chat-engine.js');
+
+/**
+ * The chat context a request naming `nodeId` acts in: the session of the branch holding it, else a new one.
+ * @param {string} avatar
+ * @param {unknown} nodeId
+ */
+async function chatOf(avatar, nodeId) {
+    return chatContextOf(user.store, { avatar }, (await sessionAt(user.store, nodeId)) ?? newSessionKey());
+}
+
 
 const baseImage = fs.readFileSync(path.join(__dirname, '..', '..', 'public', 'img', 'ai4.png'));
 
@@ -102,8 +105,7 @@ async function writeCharacter(avatar, overrides = {}) {
     };
     const cardJson = JSON.stringify(card);
     const buffer = writeCard(baseImage, cardJson);
-    fs.writeFileSync(path.join(charactersDir, avatar), buffer);
-    await upsertCharacterFromWrite(directories, avatar, cardJson);
+    await writeLibraryCard(user, avatar, cardJson, buffer);
     return avatar;
 }
 
@@ -195,8 +197,12 @@ function buildTestApp() {
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
-        req.user = { directories, profile: { handle: 'tester' } };
-        next();
+        req.user = { directories, profile: { handle: 'u' } };
+        if (req.get(SESSION_HEADER)) return next();
+        sessionAt(user.store, req.body?.node_id).then(session => {
+            if (session) req.headers[SESSION_HEADER.toLowerCase()] = session;
+            next();
+        }, next);
     });
     app.use('/api/horde', hordeRouter);
     return app;
@@ -224,7 +230,7 @@ async function run() {
     // construction) always strips the `.png` extension before sending `owner_id`.
     const ownerId = avatar.replace(/\.png$/, '');
     const branchName = 'main-chat';
-    await saveChatToTree(directories, ownerId, branchName, [
+    await saveBranch(user.store, { avatar }, branchName, [
         { chat_metadata: {} },
         { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
         { name: 'Tester', is_user: true, mes: 'Hi Rex, nice to meet you.', send_date: 2, extra: {} },
@@ -233,7 +239,7 @@ async function run() {
 
     // --- tokenizer: the Horde send resolves its tokenizer from the saved Horde model selection ---
     {
-        const { leaf_id: leafId } = (await loadBranch(directories, ownerId, branchName)).branch;
+        const { leaf_id: leafId } = (await loadBranch(user.store, { avatar }, branchName)).branch;
 
         /**
          * Builds the Horde send with the given saved model selection, recording which local
@@ -249,7 +255,7 @@ async function run() {
             const keys = [];
             try {
                 await buildRawActionKoboldRequest(directories, {
-                    characterAvatar: avatar, ownerId, nodeId: leafId,
+                    characterAvatar: avatar, chat: await chatOf(avatar, leafId), nodeId: leafId,
                     type: 'normal', userMessageText: 'Which tokenizer, Rex?',
                     macroExtras: { isHorde: true },
                     tokenizerOptions: {
@@ -297,7 +303,7 @@ async function run() {
         });
         hordeFakeBackendUrl = fakeCoordinator.url;
 
-        const branchBefore = await loadBranch(directories, ownerId, branchName);
+        const branchBefore = await loadBranch(user.store, { avatar }, branchName);
         const messageCountBefore = branchBefore.messages.length;
 
         const app = buildTestApp();
@@ -346,14 +352,14 @@ async function run() {
             assert.ok(assistantNodeId, 'an assistant_node_id frame was received - real server-side persistence happened');
             assert.ok(fakeCoordinator.calls.status >= 4, 'the server polled Horde\'s own status endpoint internally, not the client');
 
-            const branchAfter = await loadBranch(directories, ownerId, branchName);
+            const branchAfter = await loadBranch(user.store, { avatar }, branchName);
             assert.equal(branchAfter.messages.length, messageCountBefore + 2, 'both the user message and the assistant reply are now persisted');
             const [userMsg, assistantMsg] = branchAfter.messages.slice(-2);
             assert.equal(userMsg.mes, 'One more time, Rex?');
             assert.equal(assistantMsg.mes, 'Rex says hello back.');
             assert.equal(assistantMsg.node_id, assistantNodeId, 'the node id received via the stream is exactly where the reply landed');
 
-            const userAlternatives = await getAlternatives(directories, userMsg.node_id);
+            const userAlternatives = await user.store.chats.alternatives({ node_id: userMsg.node_id });
             assert.equal(userAlternatives.total, 1, 'the persisted user message is a genuine new child, not a swipe alternative');
         } finally {
             fakeCoordinator.server.close();
@@ -400,7 +406,7 @@ async function run() {
         });
         hordeFakeBackendUrl = fakeCoordinator.url;
 
-        const branchBefore = await loadBranch(directories, ownerId, branchName);
+        const branchBefore = await loadBranch(user.store, { avatar }, branchName);
         const messageCountBefore = branchBefore.messages.length;
 
         const app = buildTestApp();
@@ -437,7 +443,7 @@ async function run() {
             assert.equal(text, 'Legacy generated text.');
             assert.equal(assistantNodeId, null, 'no persistence happens for a non-raw-action request');
 
-            const branchAfter = await loadBranch(directories, ownerId, branchName);
+            const branchAfter = await loadBranch(user.store, { avatar }, branchName);
             assert.equal(branchAfter.messages.length, messageCountBefore, 'no persistence was attempted for a non-raw-action request');
         } finally {
             fakeCoordinator.server.close();
@@ -517,7 +523,7 @@ async function run() {
         });
         hordeFakeBackendUrl = fakeCoordinator.url;
 
-        const branchBefore = await loadBranch(directories, ownerId, branchName);
+        const branchBefore = await loadBranch(user.store, { avatar }, branchName);
         const messageCountBefore = branchBefore.messages.length;
 
         const app = buildTestApp();
@@ -545,7 +551,7 @@ async function run() {
             await assert.rejects(() => reader.read());
 
             const branchAfter = await waitFor(async () => {
-                const branch = await loadBranch(directories, ownerId, branchName);
+                const branch = await loadBranch(user.store, { avatar }, branchName);
                 return branch.messages.length === messageCountBefore + 2 ? branch : null;
             });
             const [, assistantMsg] = branchAfter.messages.slice(-2);
@@ -585,11 +591,11 @@ async function run() {
         const server = app.listen(0, '127.0.0.1');
         await new Promise(resolve => server.once('listening', resolve));
         try {
-            await saveChatToTree(directories, ownerId, chatName, [
+            await saveBranch(user.store, { avatar }, chatName, [
                 { chat_metadata: {} },
                 { name: 'Rex', is_user: false, mes: `Hello there, ${chatName}.`, send_date: 1, extra: {} },
             ]);
-            const branchBefore = await loadBranch(directories, ownerId, chatName);
+            const branchBefore = await loadBranch(user.store, { avatar }, chatName);
             const ref = `ref-${chatName}`;
             const res = await fetch(`http://127.0.0.1:${server.address().port}/api/horde/generate-text`, {
                 method: 'POST',
@@ -603,7 +609,7 @@ async function run() {
             const decoder = new CompactStreamDecoder();
             const events = [...decoder.push(new Uint8Array(await res.arrayBuffer())), ...decoder.flush()];
             assert.ok('control' in events[0] && events[0].control.stored, `the first frame is the stored control frame: ${JSON.stringify(events[0])}`);
-            const branchAfter = await loadBranch(directories, ownerId, chatName);
+            const branchAfter = await loadBranch(user.store, { avatar }, chatName);
             const userNode = branchAfter.messages[branchBefore.messages.length];
             assert.equal(userNode?.mes, `Question for ${chatName}?`);
             assert.deepEqual(events[0].control.stored, [{ ref, node_id: userNode.node_id }], 'the user message\'s ref is echoed with the node it was stored at');
@@ -632,11 +638,11 @@ async function run() {
         const server = app.listen(0, '127.0.0.1');
         await new Promise(resolve => server.once('listening', resolve));
         try {
-            await saveChatToTree(directories, ownerId, chatName, [
+            await saveBranch(user.store, { avatar }, chatName, [
                 { chat_metadata: {} },
                 { name: 'Rex', is_user: false, mes: `Hello there, ${chatName}.`, send_date: 1, extra: {} },
             ]);
-            const branchBefore = await loadBranch(directories, ownerId, chatName);
+            const branchBefore = await loadBranch(user.store, { avatar }, chatName);
             const ref = `ref-${chatName}`;
             const res = await fetch(`http://127.0.0.1:${server.address().port}/api/horde/generate-text`, {
                 method: 'POST',
@@ -648,7 +654,7 @@ async function run() {
                 }),
             });
             const text = await res.text();
-            const branchAfter = await loadBranch(directories, ownerId, chatName);
+            const branchAfter = await loadBranch(user.store, { avatar }, chatName);
             const added = branchAfter.messages.slice(branchBefore.messages.length);
             assert.deepEqual(added.map(m => m.mes), [`Question for ${chatName}?`], 'only the user message was stored');
             const stored = [{ ref, node_id: added[0].node_id }];
@@ -670,7 +676,4 @@ run()
         console.error(error);
         process.exitCode = 1;
     })
-    .finally(() => {
-        disposeMessageTreeStores();
-        fs.rmSync(root, { recursive: true, force: true });
-    });
+    .finally(() => user.close());

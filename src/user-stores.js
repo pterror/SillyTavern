@@ -1,4 +1,6 @@
+import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 
 import { LibraryEngine } from './library-engine.js';
@@ -27,10 +29,19 @@ export class OldFormatError extends Error {}
  * @property {ReturnType<typeof libraryPeople>} people
  * @property {TokenCache} tokens
  * @property {string} handle
+ * @property {EventEmitter} events `commit` (records) after each commit to the store.
  */
 
 /** @type {Map<string, Promise<UserStore>>} By the user's root directory. */
 const open = new Map();
+/**
+ * By the user's root directory: the engine store a read on this thread opened (`openSync`: the same store `open`
+ * gives for the directory, one per user).
+ * @type {Map<string, any>}
+ */
+const openedHere = new Map();
+/** The roots whose store a read on this thread made (`store/` wasn't there), until `userStore()` opens it. */
+const madeHere = new Set();
 /** @type {() => any} */
 let engineOf = () => {
     throw new Error('user-stores: no engine set');
@@ -50,7 +61,16 @@ export function setStoreEngine(getBinding) {
  * @returns {Promise<string[]>}
  */
 async function tablesOf(file) {
-    const Database = await getBetterSqlite3();
+    return tablesWith(await getBetterSqlite3(), file);
+}
+
+/**
+ * `tablesOf()` on this thread.
+ * @param {any} Database better-sqlite3's constructor
+ * @param {string} file
+ * @returns {string[]}
+ */
+function tablesWith(Database, file) {
     const sidecars = ['-wal', '-shm'].map(x => file + x).filter(f => !fs.existsSync(f));
     const db = new Database(file, { readonly: true, fileMustExist: true });
     try {
@@ -72,12 +92,33 @@ async function tablesOf(file) {
  */
 export async function oldFormatLine(directories) {
     if (fs.existsSync(path.join(directories.root, STORE_DIR))) return null;
-    const old = [];
     const library = path.join(directories.root, OLD_LIBRARY);
-    if (fs.existsSync(library) && (await tablesOf(library)).some(t => !KEPT_TABLES.has(t))) old.push(OLD_LIBRARY);
-    if (fs.existsSync(path.join(directories.root, OLD_CHATS))) old.push(OLD_CHATS);
+    return formatLine(directories.root, fs.existsSync(library) && (await tablesOf(library)).some(t => !KEPT_TABLES.has(t)));
+}
+
+/**
+ * `oldFormatLine()` on this thread.
+ * @param {{ root: string }} directories
+ * @returns {string | null}
+ */
+function oldFormatLineHere(directories) {
+    if (fs.existsSync(path.join(directories.root, STORE_DIR))) return null;
+    const library = path.join(directories.root, OLD_LIBRARY);
+    return formatLine(directories.root, fs.existsSync(library)
+        && tablesWith(createRequire(import.meta.url)('better-sqlite3'), library).some(t => !KEPT_TABLES.has(t)));
+}
+
+/**
+ * @param {string} root
+ * @param {boolean} oldLibrary Whether the old library is there.
+ * @returns {string | null}
+ */
+function formatLine(root, oldLibrary) {
+    const old = [];
+    if (oldLibrary) old.push(OLD_LIBRARY);
+    if (fs.existsSync(path.join(root, OLD_CHATS))) old.push(OLD_CHATS);
     if (!old.length) return null;
-    return `${directories.root} holds data in the format before the engine (${old.join(', ')}) and no ${STORE_DIR}/: stop the server and run "node src/migrations/convert-to-engine.js --dry-run", then "--apply --server-stopped"`;
+    return `${root} holds data in the format before the engine (${old.join(', ')}) and no ${STORE_DIR}/: stop the server and run "node src/migrations/convert-to-engine.js --dry-run", then "--apply --server-stopped"`;
 }
 
 /**
@@ -120,13 +161,21 @@ async function openStore(root, handle) {
     const line = await oldFormatLine({ root });
     if (line) throw new OldFormatError(line);
     const dir = path.join(root, STORE_DIR);
-    const made = !fs.existsSync(dir);
+    const made = madeHere.delete(root) || !fs.existsSync(dir);
     const lib = await LibraryEngine.open(engineOf(), dir);
     try {
         if (made) await lib.tags.markSeedPending();
+        const events = new EventEmitter();
+        events.setMaxListeners(0);
+        const commit = lib.store.commit.bind(lib.store);
+        lib.store.commit = async (/** @type {object[]} */ records) => {
+            const done = await commit(records);
+            events.emit('commit', records);
+            return done;
+        };
         const people = libraryPeople(lib);
         const chats = await ChatEngine.open(lib.store, people);
-        return { lib, chats, people, tokens: new TokenCache(lib.store), handle };
+        return { lib, chats, people, tokens: new TokenCache(lib.store), handle, events };
     } catch (err) {
         await lib.close();
         throw err;
@@ -134,24 +183,54 @@ async function openStore(root, handle) {
 }
 
 /**
- * After the server listens: each user's store opened, and the work a stop may have left resumed (a tag reorder
- * pass, the pair postings' build or delete). Not awaited by the caller; each runs in small batches.
+ * After the server listens: each user's store opened, the work a stop may have left resumed (a tag reorder pass, the
+ * pair postings' build or delete), the settings tags imported while any source is left, and `also` run on it. Not
+ * awaited by the caller; each runs in small batches.
  * @param {{ root: string }[]} directoriesList
+ * @param {(store: UserStore, directories: { root: string }) => Promise<void>} [also]
  */
-export async function resumeStoreWork(directoriesList) {
+export async function resumeStoreWork(directoriesList, also) {
     for (const d of directoriesList) {
         try {
-            const { lib } = await userStore(d);
+            const store = await userStore(d);
+            const { lib } = store;
             lib.tags.startPass();
             lib.runPairPostings();
+            await lib.tags.importSettingsTags(d);
+            if (also) await also(store, d);
         } catch (err) {
             console.error(`[user-stores] Resuming the store work of ${d.root} failed:`, err);
         }
     }
 }
 
+/**
+ * The user's engine store, on this thread: the one open for the user, else opened now (`openSync`, the same store
+ * `userStore()` gives). For a read that can't wait (`readWorldInfoFile()`, upstream's synchronous export); a read
+ * of derived data on it waits for replay on this thread.
+ * @param {{ root: string }} directories
+ * @returns {any} The binding's `Store`
+ */
+export function engineStoreHere(directories) {
+    const key = path.resolve(directories.root);
+    const found = openedHere.get(key);
+    if (found) return found;
+    const dir = path.join(key, STORE_DIR);
+    if (!open.has(key)) {
+        const line = oldFormatLineHere({ root: key });
+        if (line) throw new OldFormatError(line);
+        if (!fs.existsSync(dir)) madeHere.add(key);
+    }
+    const store = engineOf().Store.openSync(dir);
+    openedHere.set(key, store);
+    return store;
+}
+
 /** Closes every open store. */
 export async function closeUserStores() {
+    const here = [...openedHere.values()];
+    openedHere.clear();
+    madeHere.clear();
     const all = [...open.values()];
     open.clear();
     for (const p of all) {
@@ -163,6 +242,8 @@ export async function closeUserStores() {
             // A store that failed to open has nothing to close.
         }
     }
+    // The same stores as `open`'s, or ones only a read on this thread opened: closing one closed is nothing.
+    for (const store of here) await store.close();
 }
 
 /**

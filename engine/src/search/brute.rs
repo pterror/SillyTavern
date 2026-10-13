@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use super::query::{Clause, Filter, Query};
 use super::text::{GRAM_MAX, GRAM_MIN, char_len, first_chars, tokens};
-use super::{Scope, idf, tf_norm};
+use super::{Scope, clause_score, idf, long_prefix, word_text};
 
 /// A document: per field, its values' tokens.
 pub type Fields = Vec<Vec<Vec<String>>>;
@@ -82,6 +82,15 @@ impl<'a> Doc<'a> {
             .filter(|t| t.starts_with(term))
             .count() as u64
     }
+
+    /// Whether some field holds `term` as a whole token, or a prefix field as a prefix term: the documents a
+    /// term's document count counts (`DOCS_SLOT`).
+    pub fn holds(&self, term: &str) -> bool {
+        self.exact
+            .iter()
+            .chain(&self.grams)
+            .any(|m| m.contains_key(term))
+    }
 }
 
 fn occurs(toks: &[String], phrase: &[String], prefix: bool) -> bool {
@@ -103,11 +112,8 @@ fn quantized(len: usize) -> f64 {
     super::code_length(super::length_code(len as u64))
 }
 
-/// A statistics key: (field, term, whether a prefix term).
-type Key = (usize, String, bool);
-
-/// Per field where a clause holds: the field and its terms' (key, frequency), in token order.
-type Parts = Vec<(usize, Vec<(Key, u64)>)>;
+/// Per field where a clause holds: the field and its tokens' (token, frequency), in token order.
+type Parts = Vec<(usize, Vec<(usize, u64)>)>;
 
 /// A clause's tokens and how it matches.
 struct Shape {
@@ -118,6 +124,10 @@ struct Shape {
     negate: bool,
     /// Restricted to the card tags field: the tags whose names it matches, carried.
     carried: Option<BTreeSet<u64>>,
+    /// Over every library field: the tags whose names it matches, whose carriers it matches too.
+    tagged: BTreeSet<u64>,
+    /// Its tokens' idfs as the query gives them (`Query::weights`); else from the counts.
+    weights: Option<Vec<f64>>,
 }
 
 impl Shape {
@@ -136,6 +146,8 @@ impl Shape {
             fields,
             negate,
             carried: None,
+            tagged: BTreeSet::new(),
+            weights: None,
         }
     }
 
@@ -145,12 +157,17 @@ impl Shape {
             .is_none_or(|fs| fs.contains(&(f as u32)))
     }
 
-    /// The term token `i` is looked up as in field `f`, and whether as a prefix term.
-    fn term(&self, scope: Scope, i: usize, f: usize) -> Key {
-        if i == self.toks.len() - 1 && self.prefix && scope.fields()[f].prefix {
-            (f, first_chars(&self.toks[i], GRAM_MAX).to_string(), true)
+    /// Whether token `i` is read as a prefix.
+    fn is_prefix(&self, i: usize) -> bool {
+        i == self.toks.len() - 1 && self.prefix
+    }
+
+    /// The term whose document count is token `i`'s: a prefix's first `GRAM_MAX` characters.
+    fn df_term(&self, i: usize) -> String {
+        if self.is_prefix(i) {
+            first_chars(&self.toks[i], GRAM_MAX).to_string()
         } else {
-            (f, self.toks[i].clone(), false)
+            self.toks[i].clone()
         }
     }
 
@@ -168,11 +185,10 @@ impl Shape {
             }
             let mut ps = Vec::new();
             for (i, tok) in self.toks.iter().enumerate() {
-                let k = self.term(scope, i, f);
                 // A prefix longer than the prefix terms is counted on the whole prefix.
-                let tf = doc.count(f, tok, k.2);
+                let tf = doc.count(f, tok, self.is_prefix(i) && scope.fields()[f].prefix);
                 if tf > 0 {
-                    ps.push((k, tf));
+                    ps.push((i, tf));
                 }
             }
             if self.phrase || !ps.is_empty() {
@@ -182,63 +198,57 @@ impl Shape {
         out
     }
 
-    fn keys(&self, scope: Scope) -> Vec<Key> {
-        (0..scope.fields().len())
-            .filter(|&f| self.allowed(f))
-            .flat_map(|f| (0..self.toks.len()).map(move |i| self.term(scope, i, f)))
+    /// Each token's idf.
+    fn idfs(&self, stats: &Stats) -> Vec<f64> {
+        if let Some(w) = &self.weights {
+            return w.clone();
+        }
+        (0..self.toks.len())
+            .map(|i| idf(stats.df[&self.df_term(i)] as f64, stats.n))
             .collect()
+    }
+
+    /// The clause's score, `tagged` when the document carries a tag whose name holds it.
+    fn score(&self, scope: Scope, stats: &Stats, parts: &Parts, doc: &Doc, tagged: bool) -> f64 {
+        let texts: Vec<f64> = (0..self.toks.len())
+            .map(|i| {
+                word_text(
+                    scope,
+                    parts.iter().filter_map(|(f, ps)| {
+                        let &(_, tf) = ps.iter().find(|p| p.0 == i)?;
+                        let len = quantized(doc.fields[*f].iter().map(Vec::len).sum::<usize>());
+                        Some((*f as u32, tf, len))
+                    }),
+                    long_prefix(self.phrase, self.is_prefix(i), &self.toks[i]),
+                )
+            })
+            .collect();
+        clause_score(&self.idfs(stats), &texts, tagged)
     }
 }
 
+/// The documents with text, and each word's document count.
 struct Stats {
     n: f64,
-    tokens: Vec<u64>,
-    df: HashMap<Key, u64>,
+    df: HashMap<String, u64>,
 }
 
 impl Stats {
-    fn new(fields: usize, keys: &[Key]) -> Stats {
+    fn new(terms: &[String]) -> Stats {
         Stats {
             n: 0.0,
-            tokens: vec![0; fields],
-            df: keys.iter().map(|k| (k.clone(), 0)).collect(),
+            df: terms.iter().map(|t| (t.clone(), 0)).collect(),
         }
     }
 
     fn add(&mut self, doc: &Doc) {
-        let mut any = false;
-        for (f, vals) in doc.fields.iter().enumerate() {
-            let n: usize = vals.iter().map(Vec::len).sum();
-            self.tokens[f] += n as u64;
-            any |= n > 0;
-        }
+        let any = doc.fields.iter().flatten().any(|v| !v.is_empty());
         self.n += f64::from(u8::from(any));
-        for (k, df) in &mut self.df {
-            if doc.count(k.0, &k.1, k.2) > 0 {
+        for (t, df) in &mut self.df {
+            if doc.holds(t) {
                 *df += 1;
             }
         }
-    }
-
-    fn avg(&self, f: usize) -> f64 {
-        if self.n > 0.0 {
-            self.tokens[f] as f64 / self.n
-        } else {
-            0.0
-        }
-    }
-
-    fn score(&self, scope: Scope, parts: &Parts, doc: &Doc) -> f64 {
-        let mut s = 0.0;
-        for (f, ps) in parts {
-            let len = quantized(doc.fields[*f].iter().map(Vec::len).sum::<usize>());
-            for (k, tf) in ps {
-                s += scope.fields()[*f].weight
-                    * idf(self.df[k] as f64, self.n)
-                    * tf_norm(*tf as f64, len, self.avg(*f));
-            }
-        }
-        s
     }
 }
 
@@ -252,6 +262,10 @@ pub struct Checker {
     best: Vec<(u64, f64)>,
     keep: usize,
     total: u64,
+    /// The matches every positive clause matches by a tag name alone.
+    pub tied: BTreeSet<u64>,
+    /// Their score, when every positive clause matches tag names.
+    pub tie: Option<f64>,
 }
 
 impl Checker {
@@ -272,35 +286,48 @@ impl Checker {
             let toks = tokens(&c.text);
             if !toks.is_empty() {
                 let mut s = Shape::new(scope, toks, c.fields.clone(), Some(i) == last, c.negate);
+                let named: BTreeSet<u64> = tags
+                    .iter()
+                    .filter(|(_, name)| occurs(&tokens(name), &s.toks, s.prefix))
+                    .map(|(&t, _)| t)
+                    .collect();
                 if let (Some(t), Some(fs)) = (tags_field, &c.fields)
                     && !fs.is_empty()
                     && fs.iter().all(|&f| f == t)
                 {
-                    s.carried = Some(
-                        tags.iter()
-                            .filter(|(_, name)| occurs(&tokens(name), &s.toks, s.prefix))
-                            .map(|(&t, _)| t)
-                            .collect(),
-                    );
+                    s.carried = Some(named);
+                } else if scope == Scope::LIBRARY && c.fields.is_none() {
+                    s.tagged = named;
                 }
                 shapes.push(s);
             }
         }
-        let mut keys: Vec<Key> = shapes
+        // The query's idfs, to each positive clause that scores in order.
+        if let Some(w) = q.weights.as_ref().filter(|w| !w.is_empty()) {
+            let mut at = 0;
+            for s in shapes.iter_mut().filter(|s| !s.negate && s.carried.is_none()) {
+                s.weights = Some(w[at..at + s.toks.len()].to_vec());
+                at += s.toks.len();
+            }
+            assert_eq!(at, w.len(), "a weight per scoring token");
+        }
+        let mut terms: Vec<String> = shapes
             .iter()
             .filter(|s| s.carried.is_none())
-            .flat_map(|s| s.keys(scope))
+            .flat_map(|s| (0..s.toks.len()).map(|i| s.df_term(i)))
             .collect();
-        keys.sort();
-        keys.dedup();
+        terms.sort();
+        terms.dedup();
         Checker {
             q: q.clone(),
-            stats: Stats::new(scope.fields().len(), &keys),
+            stats: Stats::new(&terms),
             shapes,
             carriers: HashMap::new(),
             best: Vec::new(),
             keep,
             total: 0,
+            tied: BTreeSet::new(),
+            tie: None,
         }
     }
 
@@ -312,11 +339,31 @@ impl Checker {
         }
     }
 
+    /// What a carrier of a clause's tags scores by them alone (0 when they have none).
+    fn boost(&self, s: &Shape) -> f64 {
+        if !s
+            .tagged
+            .iter()
+            .any(|t| self.carriers.get(t).is_some_and(|&c| c > 0))
+        {
+            return 0.0;
+        }
+        clause_score(&s.idfs(&self.stats), &vec![0.0; s.toks.len()], true)
+    }
+
     /// Second pass: document `id` with its tags.
     pub fn matches(&mut self, id: u64, doc: &Doc, tags: &BTreeSet<u64>) {
         let scope = self.q.scope;
         let mut score = 0.0;
         let mut positive = false;
+        // Every positive clause matches tag names, and the document by them alone.
+        let positives = self
+            .shapes
+            .iter()
+            .filter(|s| !s.negate && s.carried.is_none());
+        let ties = positives.clone().count() > 0 && positives.clone().all(|s| self.boost(s) > 0.0);
+        let mut tie = 0.0;
+        let mut tied = ties;
         for s in &self.shapes {
             if let Some(carried) = &s.carried {
                 if carried.iter().any(|t| tags.contains(t)) == s.negate {
@@ -325,8 +372,10 @@ impl Checker {
                 positive |= !s.negate;
                 continue;
             }
+            let boost = self.boost(s);
+            let carrier = boost > 0.0 && s.tagged.iter().any(|t| tags.contains(t));
             let parts = s.parts(scope, doc);
-            let hit = !parts.is_empty();
+            let hit = !parts.is_empty() || carrier;
             if s.negate {
                 if hit {
                     return;
@@ -337,7 +386,12 @@ impl Checker {
                 return;
             }
             positive = true;
-            score += self.stats.score(scope, &parts, doc);
+            tied &= parts.is_empty();
+            score += s.score(scope, &self.stats, &parts, doc, carrier);
+            tie += boost;
+        }
+        if ties {
+            self.tie = Some(tie);
         }
         let mut included = false;
         for f in &self.q.filters {
@@ -367,6 +421,9 @@ impl Checker {
             return;
         }
         self.total += 1;
+        if tied {
+            self.tied.insert(id);
+        }
         self.best.push((id, score));
         if self.best.len() >= self.keep.saturating_mul(2).max(1024) {
             self.trim();
@@ -398,7 +455,11 @@ pub fn search(w: &World, q: &Query) -> (Vec<(u64, f64)>, u64) {
         .iter()
         .map(|(&d, f)| (d, tokenize_fields(q.scope, f)))
         .collect();
+    // Documents without text match by the tags they carry.
     let mut ids: BTreeSet<u64> = docs.keys().copied().collect();
+    if q.scope == Scope::LIBRARY {
+        ids.extend(w.members.keys());
+    }
     for f in &q.filters {
         if let Filter::Ids(x) = f {
             ids.extend(x);
@@ -435,75 +496,6 @@ pub fn search(w: &World, q: &Query) -> (Vec<(u64, f64)>, u64) {
         );
     }
     c.result()
-}
-
-/// The tags whose names match a library query (`query::Found::tags`), best first: by reading every name.
-pub fn tag_matches(
-    q: &Query,
-    names: &BTreeMap<u64, Vec<u8>>,
-    carriers: &HashMap<u64, u64>,
-) -> Vec<u64> {
-    let tags_field = Scope::LIBRARY
-        .fields()
-        .iter()
-        .position(|d| d.name == "tags")
-        .unwrap() as u32;
-    let mut clauses = Vec::new();
-    for c in &q.clauses {
-        if tokens(&c.text).is_empty() {
-            continue;
-        }
-        if c.fields
-            .as_ref()
-            .is_some_and(|fs| !fs.contains(&tags_field))
-        {
-            return Vec::new();
-        }
-        clauses.push(c.clone());
-    }
-    if !clauses.iter().any(|c| !c.negate) {
-        return Vec::new();
-    }
-    let last = clauses.len() - 1;
-    let words: Vec<Vec<String>> = clauses
-        .iter()
-        .filter(|c| !c.negate)
-        .map(|c| tokens(&c.text))
-        .collect();
-    let all: Vec<String> = words.iter().flatten().cloned().collect();
-    let mut found = Vec::new();
-    for (&tag, name) in names {
-        let toks = tokens(name);
-        let holds = |c: &Clause, i: usize| {
-            let t = tokens(&c.text);
-            occurs(
-                &toks,
-                &t,
-                i == last && !c.quoted && char_len(t.last().unwrap()) >= GRAM_MIN,
-            )
-        };
-        if !clauses
-            .iter()
-            .enumerate()
-            .all(|(i, c)| holds(c, i) != c.negate)
-        {
-            continue;
-        }
-        let quality = if toks == all {
-            0
-        } else if words.iter().all(|w| occurs(&toks, w, false)) {
-            1
-        } else {
-            2
-        };
-        found.push((
-            quality,
-            std::cmp::Reverse(carriers.get(&tag).copied().unwrap_or(0)),
-            tag,
-        ));
-    }
-    found.sort();
-    found.into_iter().take(5).map(|x| x.2).collect()
 }
 
 /// A clause from text.

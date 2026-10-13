@@ -1,49 +1,29 @@
-import { describe, test, expect, beforeAll, afterAll, afterEach } from '@jest/globals';
+import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals';
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 
-/** @type {import('express').Router} */
-let router;
+// `/manifest` and `/batch` on a user's engine store: the library is the characters the store holds (not the files in
+// `characters/`), each listed by its avatar with its version as `mtime`.
+
+/** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
+let user;
+/** @type {typeof import('./converted-user.fixture.js')} */
+let fixture;
 /** @type {import('node:http').Server} */
 let server;
 let baseUrl;
-let tempDir;
-let charactersDir;
-let chatsDir;
-let thumbnailsAvatarDir;
 
-/**
- * Mounts the real characters.js router behind a fake auth middleware that stamps a per-user
- * `directories` object pointing at a throwaway temp directory, mirroring how the real app's user
- * middleware populates `request.user` - the new `/manifest` and `/batch` endpoints (see
- * src/endpoints/characters.js) only need `directories.characters`/`directories.chats` and
- * `profile.handle` to run.
- */
 beforeAll(async () => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-characters-manifest-test-'));
-    charactersDir = path.join(tempDir, 'characters');
-    chatsDir = path.join(tempDir, 'chats');
-    thumbnailsAvatarDir = path.join(tempDir, 'thumbnails', 'avatar');
-    fs.mkdirSync(charactersDir, { recursive: true });
-    fs.mkdirSync(chatsDir, { recursive: true });
-    fs.mkdirSync(thumbnailsAvatarDir, { recursive: true });
-
-    // characters.js transitively imports modules (e.g. image-metadata.js) that read config.yaml at import time
-    // via getConfigValue() - point that at the repo's default config so the import doesn't hard process.exit(1)
-    // for lacking a configured path. Doesn't touch the real user's config.yaml.
+    // characters.js transitively imports modules that read config.yaml at import time.
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
-
-    ({ router } = await import('../src/endpoints/characters.js'));
+    fixture = await import('./converted-user.fixture.js');
+    const { router } = await import('../src/endpoints/characters.js');
     const express = (await import('express')).default;
     const app = express();
     app.use(express.json());
     app.use((req, res, next) => {
-        req.user = {
-            directories: { characters: charactersDir, chats: chatsDir, root: tempDir, thumbnailsAvatar: thumbnailsAvatarDir },
-            profile: { handle: 'test-user' },
-        };
+        req.user = user.user;
         next();
     });
     app.use('/api/characters', router);
@@ -54,28 +34,39 @@ beforeAll(async () => {
 
 afterAll(() => new Promise(resolve => server.close(resolve)));
 
+beforeEach(async () => {
+    user = await fixture.emptyUser('st-characters-manifest-test-');
+    globalThis.DATA_ROOT = user.dataRoot;
+});
+
+afterEach(() => user.close());
+
 async function postJson(urlPath, body) {
-    const response = await fetch(`${baseUrl}${urlPath}`, {
+    return fetch(`${baseUrl}${urlPath}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
     });
-    return response;
+}
+
+/** Stores a character. @param {string} avatar @param {string} [description] */
+async function seedCharacter(avatar, description = 'd') {
+    const name = avatar.replace(/\.png$/, '');
+    await user.store.lib.writeCard(user.directories, avatar, JSON.stringify({ name, data: { name, description, extensions: {} } }));
 }
 
 describe('POST /api/characters/manifest', () => {
-    afterEachClearCharactersDir();
-
     test('returns an empty array when the library is empty', async () => {
         const response = await postJson('/api/characters/manifest', {});
         expect(response.status).toBe(200);
         expect(await response.json()).toEqual([]);
     });
 
-    test('returns one { avatar, mtime } entry per .png file, ignoring non-png files', async () => {
-        fs.writeFileSync(path.join(charactersDir, 'Alice.png'), 'not a real png, just needs to exist');
-        fs.writeFileSync(path.join(charactersDir, 'Bob.png'), 'not a real png, just needs to exist');
-        fs.writeFileSync(path.join(charactersDir, 'notes.txt'), 'should be ignored');
+    test('returns one { avatar, mtime } entry per stored character, whatever files characters/ holds', async () => {
+        await seedCharacter('Alice.png');
+        await seedCharacter('Bob.png');
+        fs.writeFileSync(path.join(user.directories.characters, 'Stray.png'), 'a file the store has no character for');
+        fs.writeFileSync(path.join(user.directories.characters, 'notes.txt'), 'should be ignored');
 
         const response = await postJson('/api/characters/manifest', {});
         expect(response.status).toBe(200);
@@ -88,58 +79,46 @@ describe('POST /api/characters/manifest', () => {
         }
     });
 
-    test('mtime changes when a file is rewritten, so a client can detect the edit', async () => {
-        const filePath = path.join(charactersDir, 'Alice.png');
-        fs.writeFileSync(filePath, 'version 1');
+    test('mtime changes when the character is written again, so a client can detect the edit', async () => {
+        await seedCharacter('Alice.png', 'version 1');
         const before = (await (await postJson('/api/characters/manifest', {})).json())[0];
 
-        // Ensure the filesystem's mtime resolution can't make this a false negative.
-        const bumpedTime = new Date(before.mtime + 2000);
-        fs.writeFileSync(filePath, 'version 2');
-        fs.utimesSync(filePath, bumpedTime, bumpedTime);
+        await seedCharacter('Alice.png', 'version 2');
 
         const after = (await (await postJson('/api/characters/manifest', {})).json())[0];
         expect(after.mtime).not.toBe(before.mtime);
     });
 
     test('thumbnailVersion is null when no cached thumbnail exists yet', async () => {
-        fs.writeFileSync(path.join(charactersDir, 'Alice.png'), 'not a real png, just needs to exist');
+        await seedCharacter('Alice.png');
 
         const manifest = await (await postJson('/api/characters/manifest', {})).json();
         expect(manifest[0].thumbnailVersion).toBeNull();
     });
 
-    test('thumbnailVersion reflects the cached thumbnail\'s own mtime, not the source PNG\'s', async () => {
-        const originalPath = path.join(charactersDir, 'Alice.png');
-        const cachedThumbPath = path.join(thumbnailsAvatarDir, 'Alice.png');
-        fs.writeFileSync(originalPath, 'source bytes');
+    test('thumbnailVersion is the cached thumbnail\'s own mtime', async () => {
+        await seedCharacter('Alice.png');
+        const cachedThumbPath = path.join(user.directories.thumbnailsAvatar, 'Alice.png');
+        fs.mkdirSync(path.dirname(cachedThumbPath), { recursive: true });
         fs.writeFileSync(cachedThumbPath, 'cached thumbnail bytes');
-        // Force the two mtimes apart - a thumbnail is only generated lazily, well after the source file was
-        // written, and on a fast filesystem both writes above can otherwise land in the same mtime tick.
-        const originalMtime = fs.statSync(originalPath).mtimeMs;
-        fs.utimesSync(cachedThumbPath, new Date(originalMtime + 5000), new Date(originalMtime + 5000));
+        const when = new Date(Date.now() + 5000);
+        fs.utimesSync(cachedThumbPath, when, when);
 
         const manifest = await (await postJson('/api/characters/manifest', {})).json();
         const entry = manifest.find(e => e.avatar === 'Alice.png');
-        const expectedVersion = String(Math.round(fs.statSync(cachedThumbPath).mtimeMs));
-
-        expect(entry.thumbnailVersion).toBe(expectedVersion);
+        expect(entry.thumbnailVersion).toBe(String(Math.round(fs.statSync(cachedThumbPath).mtimeMs)));
         expect(entry.thumbnailVersion).not.toBe(String(Math.round(entry.mtime)));
-
-        fs.rmSync(cachedThumbPath);
     });
 });
 
 describe('POST /api/characters/batch', () => {
-    afterEachClearCharactersDir();
-
     test('with no avatars, returns an empty array', async () => {
         const response = await postJson('/api/characters/batch', { avatars: [] });
         expect(response.status).toBe(200);
         expect(await response.json()).toEqual([]);
     });
 
-    test('rejects a path-traversal avatar with 400 before touching the filesystem', async () => {
+    test('rejects a path-traversal avatar with 400 before touching the store', async () => {
         const response = await postJson('/api/characters/batch', { avatars: ['../../etc/passwd'] });
         expect(response.status).toBe(400);
     });
@@ -149,22 +128,12 @@ describe('POST /api/characters/batch', () => {
         expect(response.status).toBe(400);
     });
 
-    test('silently drops avatars that fail to parse as character cards, matching /all\'s behavior', async () => {
-        // A .png that isn't a real character card - processCharacter() should catch the parse failure and
-        // return a nameless placeholder, which both /all and /batch filter out rather than erroring the whole
-        // request over one bad file.
-        fs.writeFileSync(path.join(charactersDir, 'Broken.png'), 'not a real character card');
+    test('leaves out an avatar no character has (a file in characters/ is not a character), as /all does', async () => {
+        await seedCharacter('Alice.png');
+        fs.writeFileSync(path.join(user.directories.characters, 'Broken.png'), 'not a real character card');
 
-        const response = await postJson('/api/characters/batch', { avatars: ['Broken.png'] });
+        const response = await postJson('/api/characters/batch', { avatars: ['Broken.png', 'Alice.png'] });
         expect(response.status).toBe(200);
-        expect(await response.json()).toEqual([]);
+        expect((await response.json()).map(c => c.avatar)).toEqual(['Alice.png']);
     });
 });
-
-function afterEachClearCharactersDir() {
-    afterEach(() => {
-        for (const file of fs.readdirSync(charactersDir)) {
-            fs.rmSync(path.join(charactersDir, file));
-        }
-    });
-}

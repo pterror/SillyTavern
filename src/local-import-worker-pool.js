@@ -2,7 +2,7 @@ import os from 'node:os';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
 
-import { getConfigValue } from './util.js';
+import { getConfigFilePath, getConfigValue } from './util.js';
 
 const WORKER_MODULE_PATH = fileURLToPath(new URL('./local-import-worker.js', import.meta.url));
 
@@ -34,20 +34,17 @@ export class LocalImportWorkerPool {
         this.slots = [];
         /** @type {WorkerPoolTask[]} */
         this.pending = [];
-        /** @type {Map<number, { id: number, sourcePath: string, format: string, directories: object, allowIdentityFallback: boolean, allowCrossDeviceCopyFallback: boolean }>} */
+        /** @type {Map<number, { id: number, sourcePath: string, format: string, directories: object, allowIdentityFallback: boolean }>} */
         this.taskArgsById = new Map();
         this.nextId = 0;
         this.disposed = false;
-        // Resolved once here (main thread) rather than in the worker: getConfigValue() reads main-thread-only
-        // state and would throw if a worker tried to call it directly (see local-import-copy.js's copyCharacterFile()).
-        this.allowCrossDeviceCopyFallback = getConfigValue('localImport.allowCrossDeviceCopyFallback', true, 'boolean');
         for (let i = 0; i < size; i++) {
             this.slots.push(this._spawnSlot());
         }
     }
 
     _spawnSlot() {
-        const worker = new Worker(WORKER_MODULE_PATH);
+        const worker = new Worker(WORKER_MODULE_PATH, { workerData: { configFilePath: getConfigFilePath() } });
         const slot = { worker, currentTask: null };
 
         worker.on('message', (result) => {
@@ -109,12 +106,12 @@ export class LocalImportWorkerPool {
      * @returns {Promise<
      *   { contentHash: string, jsonClassification: string | null, identityHash: string | null, avatarIdentityHash: string | null, needsWrite: false } |
      *   { contentHash: string, jsonClassification: null, identityHash: string | null, avatarIdentityHash: string | null, needsWrite: true, rawText: string,
-     *     finish: (outcome: { type: 'no-write' } | { type: 'write', destPath: string, data: string }) => Promise<{ outcome: string, reflinked?: boolean }> }
+     *     finish: (outcome: { type: 'no-write' } | { type: 'write' }) => Promise<{ outcome: string, image?: { image: Buffer, avatarHash: string, avatarIdentityHash: string } }> }
      * >}
      */
     runPipeline(sourcePath, format, directories, allowIdentityFallback) {
         const id = this.nextId++;
-        this.taskArgsById.set(id, { id, sourcePath, format, directories, allowIdentityFallback, allowCrossDeviceCopyFallback: this.allowCrossDeviceCopyFallback });
+        this.taskArgsById.set(id, { id, sourcePath, format, directories, allowIdentityFallback });
         return new Promise((resolve, reject) => {
             /** @type {WorkerPoolTask} */
             const task = {
@@ -153,8 +150,9 @@ export class LocalImportWorkerPool {
 
     /**
      * @param {number} id
-     * @param {{ type: 'no-write' } | { type: 'write', destPath: string, data: string }} outcome
-     * @returns {Promise<{ outcome: string, reflinked?: boolean }>}
+     * @param {{ type: 'no-write' } | { type: 'write' }} outcome `write`: the worker answers the card's image (the
+     *   PNG's own, else the default avatar), its card data stripped, with its hashes.
+     * @returns {Promise<{ outcome: string, image?: { image: Buffer, avatarHash: string, avatarIdentityHash: string } }>}
      */
     _finish(id, outcome) {
         const slot = this.slots.find(s => s.currentTask?.id === id);
@@ -163,11 +161,12 @@ export class LocalImportWorkerPool {
                 reject(new Error(`local-import worker pool: no in-flight task for id ${id} (worker crashed or pool disposed between phases)`));
                 return;
             }
-            slot.currentTask.onDone = (result) => resolve({ outcome: result.outcome, reflinked: result.reflinked });
+            slot.currentTask.onDone = (result) => resolve({
+                outcome: result.outcome,
+                ...(result.image ? { image: { image: Buffer.from(result.image), avatarHash: result.avatarHash, avatarIdentityHash: result.avatarIdentityHash } } : {}),
+            });
             slot.currentTask.reject = reject;
-            slot.worker.postMessage(outcome.type === 'write'
-                ? { id, type: 'continue', outcome: 'write', destPath: outcome.destPath, data: outcome.data }
-                : { id, type: 'continue', outcome: 'no-write' });
+            slot.worker.postMessage({ id, type: 'continue', outcome: outcome.type === 'write' ? 'write' : 'no-write' });
         });
     }
 

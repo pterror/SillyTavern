@@ -1,15 +1,13 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach, jest } from '@jest/globals';
-import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { Buffer } from 'node:buffer';
 
 // Copying tags: the server adds what one character or group has to what another has, from its own rows.
 
-/** @type {typeof import('../src/character-metadata-db.js')} */
-let metadataDb;
-/** @type {typeof import('../src/endpoints/search-index-coordinator.js')} */
-let searchCoordinator;
+/** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
+let user;
+/** @type {typeof import('./converted-user.fixture.js')} */
+let fixture;
 /** @type {import('../src/character-card-parser.js').write} */
 let writeCard;
 /** @type {import('node:http').Server} */
@@ -29,8 +27,7 @@ beforeAll(async () => {
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
 
-    metadataDb = await import('../src/character-metadata-db.js');
-    searchCoordinator = await import('../src/endpoints/search-index-coordinator.js');
+    fixture = await import('./converted-user.fixture.js');
     ({ write: writeCard } = await import('../src/character-card-parser.js'));
     const { router: tagsRouter } = await import('../src/endpoints/tags.js');
     const { router: charactersRouter } = await import('../src/endpoints/characters.js');
@@ -52,25 +49,12 @@ beforeAll(async () => {
 afterAll(() => new Promise(resolve => server.close(resolve)));
 
 beforeEach(async () => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-tags-copy-test-'));
-    directories = {
-        root: tempDir,
-        characters: path.join(tempDir, 'characters'),
-        chats: path.join(tempDir, 'chats'),
-        groups: path.join(tempDir, 'groups'),
-        groupChats: path.join(tempDir, 'groupChats'),
-    };
-    for (const dir of [directories.characters, directories.chats, directories.groups, directories.groupChats]) {
-        fs.mkdirSync(dir, { recursive: true });
-    }
+    user = await fixture.emptyUser('st-tags-copy-test-');
+    directories = user.directories;
+    globalThis.DATA_ROOT = user.dataRoot;
 });
 
-afterEach(async () => {
-    jest.restoreAllMocks();
-    await searchCoordinator.disposeSearchWorkers();
-    metadataDb.disposeMetadataStores();
-    fs.rmSync(directories.root, { recursive: true, force: true });
-});
+afterEach(() => user.close());
 
 /** @returns {Promise<{ status: number, body: any }>} */
 async function post(urlPath, body) {
@@ -96,20 +80,17 @@ function cardJson(avatar) {
 
 /** @param {string} avatar Written as a card file and a row, as a created character is. */
 async function seedCharacter(avatar) {
-    fs.writeFileSync(path.join(directories.characters, avatar), writeCard(BLANK_PNG, cardJson(avatar)));
-    await metadataDb.upsertCharacterFromWrite(directories, avatar, cardJson(avatar));
+    await fixture.writeCardWithImage(user, avatar, cardJson(avatar), writeCard(BLANK_PNG, cardJson(avatar)));
 }
 
 /** @param {string} id */
 async function seedGroup(id) {
-    const group = { id, name: `Group ${id}`, members: [], chats: [], fav: false };
-    fs.writeFileSync(path.join(directories.groups, `${id}.json`), JSON.stringify(group));
-    await metadataDb.upsertGroupRow(directories, id, group.name, { fav: false, group });
+    await user.store.lib.writeGroup({ id, name: `Group ${id}`, members: [], fav: false });
 }
 
 /** @param {string} id @param {string[]} tagIds */
 async function assign(id, tagIds) {
-    for (const tagId of tagIds) expect(await metadataDb.assignEntityTag(directories, id, tagId)).toBe('ok');
+    for (const tagId of tagIds) expect((await user.store.lib.tags.assign(id, tagId)).result).toBe('ok');
 }
 
 /** @param {string[]} ids */
@@ -119,7 +100,7 @@ async function tagsFor(ids) {
 
 /** @returns {Promise<number>} */
 async function currentSeq() {
-    return metadataDb.getCurrentSeq(directories);
+    return user.store.lib.changesEnd();
 }
 
 describe('POST /api/tags/copy', () => {
@@ -171,13 +152,13 @@ describe('POST /api/tags/copy', () => {
     test('a tag deleted with a merge target is copied as that target; one with none is not copied', async () => {
         jest.spyOn(console, 'warn').mockImplementation(() => {});
         for (const id of ['x', 'y', 'd']) {
-            expect((await metadataDb.createTagDefinition(directories, { id, name: id })).refused).toEqual([]);
+            expect((await user.store.lib.tags.create({ id, name: id })).refused).toEqual([]);
         }
         await seedCharacter('Alice.png');
         await seedCharacter('Bob.png');
         await assign('Alice.png', ['x', 'd']);
-        expect((await metadataDb.deleteTagDefinition(directories, 'x', 'y')).refused).toEqual([]);
-        expect((await metadataDb.deleteTagDefinition(directories, 'd')).refused).toEqual([]);
+        expect((await user.store.lib.tags.delete('x', 'y')).refused).toEqual([]);
+        expect((await user.store.lib.tags.delete('d')).refused).toEqual([]);
 
         expect((await post('/api/tags/copy', { from: 'Alice.png', to: 'Bob.png' })).status).toBe(200);
         expect(await tagsFor(['Bob.png'])).toEqual({ 'Bob.png': ['y'] });

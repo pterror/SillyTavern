@@ -1,11 +1,9 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import http from 'node:http';
-import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { mock } from 'node:test';
 
 import express from 'express';
 
@@ -20,42 +18,35 @@ setConfigFilePath(path.join(__dirname, '..', '..', '..', 'config.yaml'));
 // (a `reply-not-saved` warning naming the generation) instead of being left to write the reply itself,
 // and `POST /api/generation/store/:id` stores it from the text the server kept.
 
-const realTree = await import('../../message-tree-db.js');
-// `reply`: fail the next reply store (an append of a non-user message); the user's own message still stores.
-// `user`: fail the next store of the user's message.
-const failures = { reply: 0, user: 0 };
-mock.module('../../message-tree-db.js', {
-    namedExports: {
-        ...realTree,
-        appendMessages: async (directories, ownerId, anchorNodeId, messages, ...rest) => {
-            if (failures.reply > 0 && Array.isArray(messages) && messages.some(m => m?.is_user === false)) {
-                failures.reply--;
-                return { ok: false, reason: 'disk is full' };
-            }
-            if (failures.user > 0 && Array.isArray(messages) && messages.some(m => m?.is_user === true)) {
-                failures.user--;
-                return { ok: false, reason: 'disk is full', node_ids: [] };
-            }
-            return realTree.appendMessages(directories, ownerId, anchorNodeId, messages, ...rest);
-        },
-    },
-});
-
 const { router: textRouter } = await import('./text-completions.js');
 const { router: chatRouter } = await import('./chat-completions.js');
 const { router: generationRouter } = await import('../generation.js');
 const { writeAllSettings } = await import('../../settings-store.js');
-const { saveChatToTree, loadBranch } = realTree;
 const { CompactStreamDecoder } = await import('../../../public/scripts/llamacpp-compact-stream.js');
-const { upsertCharacterFromWrite } = await import('../../character-metadata-db.js');
+const { newSessionKey } = await import('../../chat-engine.js');
+const { SESSION_HEADER } = await import('../../request-session.js');
+const { convertedUser, writeLibraryCard, seedMessages, sessionPath, repliesOf } = await import('../../../tests/converted-user.fixture.js');
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-reply-not-saved-test-'));
-const directories = { root };
-for (const dir of ['characters', 'groups', 'worlds', 'files', 'chats']) {
-    directories[dir] = path.join(root, dir);
-    fs.mkdirSync(directories[dir], { recursive: true });
-}
-globalThis.DATA_ROOT = root;
+const user = await convertedUser('st-reply-not-saved-test-');
+const { directories } = user;
+globalThis.DATA_ROOT = user.dataRoot;
+
+// `reply`: fail the next reply store (an append of a non-user message); the user's own message still stores.
+// `user`: fail the next store of the user's message.
+const failures = { reply: 0, user: 0 };
+const append = user.store.chats.appendMessages.bind(user.store.chats);
+user.store.chats.appendMessages = async (/** @type {any} */ p) => {
+    const contents = Array.isArray(p?.contents) ? p.contents : [];
+    if (failures.reply > 0 && contents.some(m => m?.is_user === false)) {
+        failures.reply--;
+        return { ok: false, reason: 'disk is full' };
+    }
+    if (failures.user > 0 && contents.some(m => m?.is_user === true)) {
+        failures.user--;
+        return { ok: false, reason: 'disk is full', node_ids: [] };
+    }
+    return append(p);
+};
 
 const baseImage = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'public', 'img', 'ai4.png'));
 
@@ -70,8 +61,7 @@ async function writeCharacter(avatar, name) {
         },
     };
     const cardJson = JSON.stringify(card);
-    fs.writeFileSync(path.join(directories.characters, avatar), writeCard(baseImage, cardJson));
-    await upsertCharacterFromWrite(directories, avatar, cardJson);
+    await writeLibraryCard(user, avatar, cardJson, writeCard(baseImage, cardJson));
 }
 
 function textSettings(type, url) {
@@ -139,7 +129,7 @@ async function startApp(router) {
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
-        req.user = { directories, profile: { handle: req.get('X-Test-User') ?? 'alice' } };
+        req.user = { directories, profile: { handle: req.get('X-Test-User') ?? 'u' } };
         next();
     });
     app.use('/api/generation', generationRouter);
@@ -154,12 +144,17 @@ async function closeApp(server) {
     await new Promise(resolve => server.close(resolve));
 }
 
-async function newBranch(ownerId, name) {
-    await saveChatToTree(directories, ownerId, name, [
-        { chat_metadata: {} },
-        { name: 'Rex', is_user: false, mes: 'Hello there.', send_date: 1, extra: {} },
-    ]);
-    return loadBranch(directories, ownerId, name);
+let branches = 0;
+
+/**
+ * A new conversation of `avatar`'s, its greeting stored through a session of its own.
+ * @param {string} avatar
+ */
+async function newBranch(avatar) {
+    const session = newSessionKey();
+    // A greeting of its own: one with the same text would be the stored one, and so would the messages after it.
+    const [greeting] = await seedMessages(user.store, { avatar }, null, [{ name: 'Rex', is_user: false, mes: `Hello there. (${++branches})`, send_date: 1, extra: {} }], { session });
+    return { session, leaf: greeting, messages: await sessionPath(user.store, { avatar }, session) };
 }
 
 /**
@@ -173,16 +168,20 @@ async function storeCase({ label, router, settings, format, json, stream, avatar
     writeAllSettings(directories, settings(backend.url));
     const { server, base } = await startApp(router);
 
-    async function post(branch, { id = randomUUID(), ref = randomUUID(), nodeId = branch.branch.leaf_id } = {}) {
+    async function post(branch, { id = randomUUID(), ref = randomUUID(), nodeId = branch.leaf } = {}) {
         return fetch(`${base}/generate`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-Generation-Id': id },
+            headers: { 'Content-Type': 'application/json', 'X-Generation-Id': id, [SESSION_HEADER]: branch.session },
             body: JSON.stringify({ owner_id: avatar, character_avatar: avatar, node_id: nodeId, type: 'normal', user_message: { is_user: true, name: 'User', mes: 'When do we leave?' }, user_message_ref: ref, stream }),
         });
     }
 
-    async function generate(branchName) {
-        const branch = await newBranch(avatar, branchName);
+    const shown = (/** @type {{ session: string }} */ branch) => sessionPath(user.store, { avatar }, branch.session);
+
+    /** @param {{ failReply?: boolean }} [o] `failReply`: the reply's store fails (the branch is made first). */
+    async function generate({ failReply = false } = {}) {
+        const branch = await newBranch(avatar);
+        if (failReply) failures.reply = 1;
         const id = randomUUID();
         const res = await post(branch, { id });
         assert.equal(res.status, 200, `${label}: generation answered`);
@@ -211,7 +210,7 @@ async function storeCase({ label, router, settings, format, json, stream, avatar
             nodeId = data.assistant_node_id ?? null;
             warnings.push(...(data.warnings ?? []));
         }
-        return { branch, id, text, nodeId, warnings, branchName };
+        return { branch, id, text, nodeId, warnings };
     }
 
     /** The stored reply carries when it was generated, as ISO strings, started no later than it finished. */
@@ -220,18 +219,18 @@ async function storeCase({ label, router, settings, format, json, stream, avatar
         assert.equal(typeof message.gen_finished, 'string', `${label}: the reply's gen_finished is stored`);
         const started = Date.parse(message.gen_started);
         const finished = Date.parse(message.gen_finished);
-        assert.ok(started >= before && started <= finished && finished <= after, `${label}: ${message.gen_started} .. ${message.gen_finished} lies within the request`);
+        assert.ok(started >= before && started <= finished && finished <= after, `${label}: ${message.gen_started} .. ${message.gen_finished} lies within the request (${new Date(before).toISOString()} .. ${new Date(after).toISOString()})`);
     }
 
     try {
         // Stored normally: exactly one reply, and the page is told where.
         {
             const before = Date.now();
-            const result = await generate(`ok-${label}`);
+            const result = await generate();
             const afterTime = Date.now();
-            const after = await loadBranch(directories, avatar, result.branchName);
-            assert.equal(after.messages.length, result.branch.messages.length + 2, `${label}: one user message and one reply`);
-            const last = after.messages[after.messages.length - 1];
+            const after = await shown(result.branch);
+            assert.equal(after.length, result.branch.messages.length + 2, `${label}: one user message and one reply`);
+            const last = after[after.length - 1];
             assert.equal(last.mes, reply, `${label}: the stored reply is the generated text`);
             assert.equal(result.nodeId, last.node_id, `${label}: the page is told the stored reply's node`);
             assert.ok(!result.warnings.some(w => w.kind === 'reply-not-saved'), `${label}: no not-saved warning when it was stored`);
@@ -240,20 +239,18 @@ async function storeCase({ label, router, settings, format, json, stream, avatar
 
         // The store fails: nothing is stored, the page is told, and the retry stores it once.
         {
-            const branchName = `fail-${label}`;
-            failures.reply = 1;
             const before = Date.now();
-            const result = await generate(branchName);
+            const result = await generate({ failReply: true });
             const generatedBy = Date.now();
             failures.reply = 0;
-            const after = await loadBranch(directories, avatar, branchName);
+            const after = await shown(result.branch);
             const notSaved = result.warnings.find(w => w.kind === 'reply-not-saved');
             assert.ok(notSaved, `${label}: the page is told the reply wasn't saved`);
             assert.equal(notSaved.generation_id, result.id, `${label}: the warning names the generation`);
             assert.match(notSaved.message, /disk is full/, `${label}: the warning says why`);
             assert.equal(result.nodeId, null, `${label}: no node id is given for a reply that wasn't stored`);
             assert.equal(result.text, reply, `${label}: the page still got the reply's text`);
-            assert.equal(after.messages.length, result.branch.messages.length + 1, `${label}: only the user message is stored`);
+            assert.equal(after.length, result.branch.messages.length + 1, `${label}: only the user message is stored`);
 
             const wrongUser = await fetch(`${base}/api/generation/store/${result.id}`, { method: 'POST', headers: { 'X-Test-User': 'mallory' } });
             assert.equal(wrongUser.status, 404, `${label}: another user can't store it`);
@@ -265,9 +262,9 @@ async function storeCase({ label, router, settings, format, json, stream, avatar
             const again = await (await fetch(`${base}/api/generation/store/${result.id}`, { method: 'POST' })).json();
             assert.equal(again.node_id, stored.node_id, `${label}: a second retry answers the same node, nothing new`);
 
-            const final = await loadBranch(directories, avatar, branchName);
-            assert.equal(final.messages.length, result.branch.messages.length + 2, `${label}: the reply is stored exactly once`);
-            const last = final.messages[final.messages.length - 1];
+            const final = await shown(result.branch);
+            assert.equal(final.length, result.branch.messages.length + 2, `${label}: the reply is stored exactly once`);
+            const last = final[final.length - 1];
             assert.equal(last.mes, reply);
             assert.equal(last.node_id, stored.node_id);
             // A retry keeps the times of the generation, not of the retry.
@@ -276,7 +273,7 @@ async function storeCase({ label, router, settings, format, json, stream, avatar
 
         // The user's message can't be stored: the request says so and generates nothing.
         {
-            const branch = await newBranch(avatar, `user-fail-${label}`);
+            const branch = await newBranch(avatar);
             const generationsBefore = backend.hits.generations;
             failures.user = 1;
             const res = await post(branch);
@@ -287,26 +284,24 @@ async function storeCase({ label, router, settings, format, json, stream, avatar
             assert.match(body.error.message, /couldn't be saved \(disk is full\)/, `${label}: and why`);
             assert.equal(body.stored, undefined, `${label}: nothing is reported stored`);
             assert.equal(backend.hits.generations, generationsBefore, `${label}: nothing was generated`);
-            const after = await loadBranch(directories, avatar, `user-fail-${label}`);
-            assert.equal(after.messages.length, branch.messages.length, `${label}: nothing was stored`);
+            const after = await shown(branch);
+            assert.equal(after.length, branch.messages.length, `${label}: nothing was stored`);
         }
 
         // A send repeated with its key is stored once, even when the repeat names another place: it lands
         // on the stored message.
         {
-            const branch = await newBranch(avatar, `repeat-${label}`);
+            const branch = await newBranch(avatar);
             const ref = randomUUID();
             const first = await post(branch, { ref });
             await first.arrayBuffer();
-            const afterFirst = await loadBranch(directories, avatar, `repeat-${label}`);
-            const userNode = afterFirst.messages[branch.messages.length].node_id;
-            const replyNode = afterFirst.messages[afterFirst.messages.length - 1].node_id;
+            const afterFirst = await shown(branch);
+            const userNode = afterFirst[branch.messages.length].node_id;
+            const replyNode = afterFirst[afterFirst.length - 1].node_id;
             const second = await post(branch, { ref, nodeId: replyNode });
             await second.arrayBuffer();
-            const db = await realTree.getDbHandle(directories);
-            assert.equal(db.get('SELECT parent_id FROM messages WHERE id = @id', { id: userNode }).parent_id, branch.branch.leaf_id, `${label}: the stored message stays where it was`);
-            const underReply = db.get('SELECT COUNT(*) AS n FROM messages WHERE parent_id = @id AND content LIKE @text', { id: replyNode, text: '%When do we leave?%' });
-            assert.equal(underReply.n, 0, `${label}: the repeat stored nothing new`);
+            assert.deepEqual((await repliesOf(user.store, { avatar }, branch.leaf)).map(r => r.node_id), [userNode], `${label}: the stored message stays where it was`);
+            assert.equal((await repliesOf(user.store, { avatar }, replyNode)).filter(r => r.mes === 'When do we leave?').length, 0, `${label}: the repeat stored nothing new`);
         }
     } finally {
         backend.server.close();
@@ -327,4 +322,8 @@ async function run() {
     console.log('reply-not-saved.test.js: all assertions passed');
 }
 
-await run();
+try {
+    await run();
+} finally {
+    await user.close();
+}

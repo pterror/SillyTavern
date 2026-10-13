@@ -4,6 +4,7 @@ import storage from 'node-persist';
 import express from 'express';
 import lodash from 'lodash';
 import { checkForNewContent, CONTENT_TYPES } from './content-manager.js';
+import { startDroppedWatch, stopDroppedWatch } from './characters.js';
 import {
     KEY_PREFIX,
     toKey,
@@ -209,6 +210,8 @@ router.post('/create', requireAdminMiddleware, async (request, response) => {
         await ensurePublicDirectoriesExist();
         const directories = getUserDirectories(newUser.handle);
         await checkForNewContent([directories], [CONTENT_TYPES.SETTINGS]);
+        // PNGs dropped into the new user's characters/ are imported without a restart.
+        startDroppedWatch(directories);
         return response.json({ handle: newUser.handle });
     } catch (error) {
         console.error('User create failed:', error);
@@ -234,6 +237,7 @@ router.post('/delete', requireAdminMiddleware, async (request, response) => {
         }
 
         await storage.removeItem(toKey(request.body.handle));
+        await stopDroppedWatch(getUserDirectories(request.body.handle));
 
         if (request.body.purge) {
             const directories = getUserDirectories(request.body.handle);

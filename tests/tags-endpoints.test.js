@@ -1,48 +1,34 @@
-import { describe, test, expect, beforeAll, afterAll, afterEach } from '@jest/globals';
+import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals';
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { storedTagUsageRows } from './tag-store-reads.js';
 
 /** @type {import('express').Router} */
 let router;
-/** @type {typeof import('../src/character-metadata-db.js')} */
-let metadataDb;
+/** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
+let user;
+/** @type {typeof import('./converted-user.fixture.js')} */
+let fixture;
 /** @type {import('node:http').Server} */
 let server;
 let baseUrl;
-let tempDir;
-let charactersDir;
-let chatsDir;
-let groupsDir;
 /** @type {import('../src/users.js').UserDirectoryList} */
 let directories;
 
 /**
- * Mounts the real tags.js router behind a fake auth middleware, same shape as characters-manifest.test.js -
- * the phase 3 endpoints (see src/endpoints/tags.js) only need `request.user.directories` and
- * `request.user.directories.root` (the `/save`/`/get`/`/manifest` routes) to run.
+ * Mounts the real tags.js router behind a fake auth middleware, same shape as characters-manifest.test.js.
  */
 beforeAll(async () => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-tags-endpoints-test-'));
-    charactersDir = path.join(tempDir, 'characters');
-    chatsDir = path.join(tempDir, 'chats');
-    groupsDir = path.join(tempDir, 'groups');
-    fs.mkdirSync(charactersDir, { recursive: true });
-    fs.mkdirSync(chatsDir, { recursive: true });
-    fs.mkdirSync(groupsDir, { recursive: true });
-    directories = { root: tempDir, characters: charactersDir, chats: chatsDir, groups: groupsDir };
-
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
 
-    metadataDb = await import('../src/character-metadata-db.js');
+    fixture = await import('./converted-user.fixture.js');
     ({ router } = await import('../src/endpoints/tags.js'));
     const express = (await import('express')).default;
     const app = express();
     app.use(express.json());
     app.use((req, res, next) => {
-        req.user = { directories };
+        req.user = user.user;
         next();
     });
     app.use('/api/tags', router);
@@ -53,16 +39,19 @@ beforeAll(async () => {
 
 afterAll(() => new Promise(resolve => server.close(resolve)));
 
-afterEach(() => {
-    // Each test wants a clean metadata store: disposeMetadataStores() only clears the in-memory entry cache, so
-    // the on-disk sqlite file (same tempDir/root across every test in this file) also needs deleting, or the
-    // next test would inherit the previous test's rows.
-    metadataDb.disposeMetadataStores();
-    const dbPath = path.join(tempDir, 'character-metadata.sqlite');
-    if (fs.existsSync(dbPath)) {
-        fs.rmSync(dbPath);
-    }
+// Each test wants a clean store.
+beforeEach(async () => {
+    user = await fixture.emptyUser('st-tags-endpoints-test-');
+    directories = user.directories;
+    globalThis.DATA_ROOT = user.dataRoot;
 });
+
+afterEach(() => user.close());
+
+/** Stores tag definitions. @param {{ id: string, name: string }[]} tags */
+async function saveTags(tags) {
+    for (const tag of tags) await user.store.lib.tags.create(tag);
+}
 
 async function postJson(urlPath, body) {
     return fetch(`${baseUrl}${urlPath}`, {
@@ -82,12 +71,12 @@ async function seedCharacter(avatar) {
         name: avatar.replace(/\.png$/, ''),
         data: { name: avatar.replace(/\.png$/, ''), tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } },
     });
-    await metadataDb.upsertCharacterFromWrite(directories, avatar, cardJson);
+    await user.store.lib.writeCard(directories, avatar, cardJson);
 }
 
 /** Seeds a bare-minimum `groups` row directly, without needing a real group JSON file on disk. */
 async function seedGroup(id, name = id) {
-    await metadataDb.upsertGroupRow(directories, id, name);
+    await user.store.lib.writeGroup({ id, name, members: [] });
 }
 
 describe('POST /api/tags/for', () => {
@@ -129,7 +118,7 @@ describe('POST /api/tags/by-ids', () => {
     const idsOf = count => Array.from({ length: count }, (_, i) => `tag${i}`);
 
     test('answers 500 distinct ids', async () => {
-        await metadataDb.saveTagDefinitions(directories, [{ id: 'tag0', name: 'Funny' }, { id: 'tag499', name: 'Serious' }]);
+        await saveTags([{ id: 'tag0', name: 'Funny' }, { id: 'tag499', name: 'Serious' }]);
         const response = await postJson('/api/tags/by-ids', { ids: idsOf(500) });
         expect(response.status).toBe(200);
         const { tags } = await response.json();
@@ -148,8 +137,8 @@ describe('POST /api/tags/by-ids', () => {
     });
 
     test('gone lists the ids no tag has: never stored, or deleted', async () => {
-        await metadataDb.saveTagDefinitions(directories, [{ id: 'kept', name: 'Kept' }, { id: 'deleted', name: 'Deleted' }]);
-        await metadataDb.deleteTagDefinition(directories, 'deleted', null);
+        await saveTags([{ id: 'kept', name: 'Kept' }, { id: 'deleted', name: 'Deleted' }]);
+        await user.store.lib.tags.delete('deleted', null);
 
         const body = await (await postJson('/api/tags/by-ids', { ids: ['kept', 'deleted', 'never'] })).json();
         expect(body.tags.map(tag => tag.id)).toEqual(['kept']);
@@ -158,11 +147,13 @@ describe('POST /api/tags/by-ids', () => {
 
     test('known leaves out a definition the caller already has, and lists it as unchanged', async () => {
         const { contentHashOf } = await import('../public/scripts/hash-utils.js');
-        await metadataDb.saveTagDefinitions(directories, [{ id: 'same', name: 'Same' }, { id: 'edited', name: 'Edited' }]);
-        const known = { same: contentHashOf({ id: 'same', name: 'Same' }), edited: contentHashOf({ id: 'edited', name: 'Old name' }) };
+        await saveTags([{ id: 'same', name: 'Same' }, { id: 'edited', name: 'Edited' }]);
+        const stored = (await user.store.lib.tags.byIds(['same', 'edited'])).tags;
+        const [same, edited] = ['same', 'edited'].map(id => stored.find(tag => tag.id === id));
+        const known = { same: contentHashOf(same), edited: contentHashOf({ ...edited, name: 'Old name' }) };
 
         const body = await (await postJson('/api/tags/by-ids', { ids: ['same', 'edited', 'never'], known })).json();
-        expect(body.tags).toEqual([{ id: 'edited', name: 'Edited' }]);
+        expect(body.tags).toEqual([edited]);
         expect(body.unchanged).toEqual(['same']);
         expect(body.gone).toEqual(['never']);
     });
@@ -170,21 +161,6 @@ describe('POST /api/tags/by-ids', () => {
     test('400s when known is not an object', async () => {
         expect((await postJson('/api/tags/by-ids', { ids: ['a'], known: ['a'] })).status).toBe(400);
         expect((await postJson('/api/tags/by-ids', { ids: ['a'], known: null })).status).toBe(400);
-    });
-
-    test('a tag whose stored definition cannot be read is in neither tags nor gone', async () => {
-        await metadataDb.saveTagDefinitions(directories, [{ id: 'broken', name: 'Broken' }]);
-        const Database = (await import('better-sqlite3')).default;
-        const db = new Database(path.join(directories.root, 'character-metadata.sqlite'));
-        try {
-            db.prepare('UPDATE tags SET data = ? WHERE id = ?').run('{not json', 'broken');
-        } finally {
-            db.close();
-        }
-        metadataDb.disposeMetadataStores();
-
-        const body = await (await postJson('/api/tags/by-ids', { ids: ['broken'] })).json();
-        expect(body).toEqual({ tags: [], gone: [], merged: {} });
     });
 });
 
@@ -207,11 +183,12 @@ describe('POST /api/tags/assign and /api/tags/unassign', () => {
     });
 
     test('assign is idempotent (no duplicate/second usage-count bump) when called twice', async () => {
+        await saveTags([{ id: 'tag1', name: 'One' }]);
         await seedCharacter('Alice.png');
         await postJson('/api/tags/assign', { id: 'Alice.png', tagId: 'tag1' });
         await postJson('/api/tags/assign', { id: 'Alice.png', tagId: 'tag1' });
 
-        expect((await storedTagUsageRows(directories)).tag1).toBe(1);
+        expect((await storedTagUsageRows(user.store.lib)).tag1).toBe(1);
     });
 
     test('assign 404s for an id that is neither a known character nor a known group', async () => {
@@ -242,9 +219,10 @@ describe('tag usage counts', () => {
     test('reflect assign/unassign as a live {tagId: count} aggregate', async () => {
         await seedCharacter('Alice.png');
         await seedCharacter('Bob.png');
-        const counts = () => storedTagUsageRows(directories);
+        await saveTags([{ id: 'tag1', name: 'One' }, { id: 'tag2', name: 'Two' }]);
+        const counts = () => storedTagUsageRows(user.store.lib);
 
-        expect(await counts()).toEqual({});
+        expect(await counts()).toEqual({ tag1: 0, tag2: 0 });
 
         await postJson('/api/tags/assign', { id: 'Alice.png', tagId: 'tag1' });
         await postJson('/api/tags/assign', { id: 'Bob.png', tagId: 'tag1' });
@@ -263,9 +241,9 @@ describe('tag usage counts', () => {
 
 describe('POST /api/tags/get, /digest, /bucket', () => {
     test('there are no routes that read every tag definition', async () => {
-        await metadataDb.saveTagDefinitions(directories, [{ id: 'tag1', name: 'Funny' }]);
+        await saveTags([{ id: 'tag1', name: 'Funny' }]);
 
-        expect(fs.existsSync(path.join(tempDir, 'tags.json'))).toBe(false);
+        expect(fs.existsSync(path.join(directories.root, 'tags.json'))).toBe(false);
         for (const route of ['/api/tags/get', '/api/tags/digest', '/api/tags/bucket']) {
             expect((await postJson(route, {})).status).toBe(404);
         }
@@ -274,11 +252,11 @@ describe('POST /api/tags/get, /digest, /bucket', () => {
 
 describe('POST /api/tags/save', () => {
     test('there is no route that replaces the stored tags with a posted list', async () => {
-        await metadataDb.saveTagDefinitions(directories, [{ id: 'tag1', name: 'Funny' }]);
+        await saveTags([{ id: 'tag1', name: 'Funny' }]);
 
         expect((await postJson('/api/tags/save', { tags: [{ id: 'tag2', name: 'Serious' }] })).status).toBe(404);
 
-        expect(await metadataDb.getTagDefinitionsByIds(directories, ['tag1', 'tag2'])).toEqual([{ id: 'tag1', name: 'Funny' }]);
+        expect((await user.store.lib.tags.byIds(['tag1', 'tag2'])).tags.map(({ id, name }) => ({ id, name }))).toEqual([{ id: 'tag1', name: 'Funny' }]);
     });
 });
 
@@ -286,7 +264,7 @@ describe('POST /api/tags/manifest', () => {
     test('changesSeq advances after a definitions write, but not on assign/unassign', async () => {
         const before = (await (await postJson('/api/tags/manifest', {})).json()).changesSeq;
 
-        await metadataDb.createTagDefinition(directories, { id: 'tag1', name: 'Funny' });
+        await user.store.lib.tags.create({ id: 'tag1', name: 'Funny' });
         const afterSave = (await (await postJson('/api/tags/manifest', {})).json()).changesSeq;
         expect(afterSave).toBeGreaterThan(before);
 

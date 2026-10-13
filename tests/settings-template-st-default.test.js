@@ -1,58 +1,47 @@
 import { describe, test, expect, beforeAll, beforeEach, afterEach, jest } from '@jest/globals';
-import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { storedTagDefinitions } from './tag-store-reads.js';
 
-/** @type {typeof import('../src/character-metadata-db.js')} */
-let metadataDb;
+/** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
+let user;
+/** @type {typeof import('./converted-user.fixture.js')} */
+let fixture;
 /** @type {typeof import('../src/endpoints/content-manager.js')} */
 let contentManager;
-/** @type {typeof import('../src/users.js')} */
-let users;
-/** @type {typeof import('../src/metadata-migration-coordinator.js').MIGRATION_PASSES} */
-let MIGRATION_PASSES;
-/** @type {string} */
-let dataRoot;
 
 const ST_DEFAULT_ID = '1345561466591';
 
 beforeAll(async () => {
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
-    metadataDb = await import('../src/character-metadata-db.js');
+    fixture = await import('./converted-user.fixture.js');
     contentManager = await import('../src/endpoints/content-manager.js');
-    users = await import('../src/users.js');
-    ({ MIGRATION_PASSES } = await import('../src/metadata-migration-coordinator.js'));
 });
 
-beforeEach(() => {
-    dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'st-settings-template-test-'));
-    globalThis.DATA_ROOT = dataRoot;
+beforeEach(async () => {
+    user = await fixture.emptyUser('st-settings-template-test-');
+    globalThis.DATA_ROOT = user.dataRoot;
 });
 
-afterEach(() => {
+afterEach(async () => {
     jest.restoreAllMocks();
-    metadataDb.disposeMetadataStores();
-    fs.rmSync(dataRoot, { recursive: true, force: true });
+    await user.close();
 });
 
 describe('the default settings template on a fresh install', () => {
     test('shows "ST Default" on Seraphina, as upstream does, and seeds none of the six default tags', async () => {
         jest.spyOn(console, 'info').mockImplementation(() => {});
         jest.spyOn(console, 'log').mockImplementation(() => {});
-        const directories = users.getUserDirectories(`fresh-${path.basename(dataRoot)}`);
+        const { directories } = user;
 
-        // Server startup order: content seeding, the boot chain, then the migration worker's passes.
+        // Server startup order: content seeding, then the store's resumed work (the settings tags import).
         await contentManager.checkForNewContent([directories]);
-        await Promise.all(await metadataDb.initializeMetadataStores([directories]));
-        for (const name of MIGRATION_PASSES) {
-            await /** @type {any} */ (metadataDb)[name](directories);
-        }
+        const { resumeStoreWork } = await import('../src/user-stores.js');
+        await resumeStoreWork([directories]);
 
-        const definitions = await storedTagDefinitions(metadataDb, directories);
+        const definitions = await storedTagDefinitions(user.store.lib);
         expect(definitions.map(tag => tag.id)).toEqual([ST_DEFAULT_ID]);
         expect(definitions[0]).toMatchObject({ id: ST_DEFAULT_ID, name: 'ST Default', color: 'rgba(108, 32, 32, 1)' });
-        expect(await metadataDb.getCharacterTagIds(directories, 'default_Seraphina.png')).toEqual([ST_DEFAULT_ID]);
+        expect((await user.store.lib.tags.tagIdsFor(['default_Seraphina.png']))['default_Seraphina.png']).toEqual([ST_DEFAULT_ID]);
     });
 });

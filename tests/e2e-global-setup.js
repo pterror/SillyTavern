@@ -1,9 +1,11 @@
-// Builds the seed data root once per run: a server on it compiles the frontend webpack build, and a
-// browser goes through the first-run dialog with the default name. Workers copy the seed into their own
-// data roots (see frontend/fixtures.js), so their servers boot into a warm webpack cache and an account
-// that has already been through the dialog.
+// Builds the seed data root once per run: the default user's store converted from the synthetic old user
+// (e2e-seed-store.js), then a server on it compiles the frontend webpack build, and a browser goes through the
+// first-run dialog with the default name. Workers copy the seed into their own data roots (see frontend/fixtures.js),
+// so their servers boot into a warm webpack cache and an account that has already been through the dialog.
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { chromium } from '@playwright/test';
 import { startServer } from './e2e-st-server.js';
 import { SEED_DONE_MARKER } from './e2e-run-root.js';
@@ -11,6 +13,11 @@ import { SEED_DONE_MARKER } from './e2e-run-root.js';
 export default async function globalSetup() {
     const seedRoot = path.join(/** @type {string} */ (process.env.ST_E2E_RUN_ROOT), 'seed');
     fs.mkdirSync(seedRoot);
+    const testsDir = path.dirname(fileURLToPath(import.meta.url));
+    const seeded = spawnSync(process.execPath, [path.join(testsDir, 'e2e-seed-store.js'), seedRoot], { cwd: testsDir, stdio: 'inherit' });
+    if (seeded.status !== 0) {
+        throw new Error(`seeding the converted store failed (code ${seeded.status}, signal ${seeded.signal})`);
+    }
     const server = await startServer(seedRoot);
     try {
         const browser = await chromium.launch();

@@ -145,7 +145,6 @@ import {
     trimToEndSentence,
     countOccurrences,
     isOdd,
-    sortMoments,
     timestampToMoment,
     download,
     isDataURL,
@@ -215,7 +214,6 @@ import {
     getInstructStoppingSequences,
 } from './scripts/instruct-mode.js';
 import { initLocales, t } from './scripts/i18n.js';
-import { changeStreamRetryDelayMs } from './scripts/change-stream-backoff.js';
 import { getMessageTokenCounts, getTokenCount, initTokenizers } from './scripts/tokenizers.js';
 import {
     user_avatar,
@@ -277,7 +275,8 @@ import { clearItemizedPrompts, deleteItemizedPrompts, findItemizedPromptSet, ini
 import { getSystemMessageByType, initSystemMessages, SAFETY_CHAT, sendSystemMessage, system_message_types, system_messages } from './scripts/system-messages.js';
 import { event_types, eventSource } from './scripts/events.js';
 import { token, setToken, getRequestHeaders } from './scripts/request-headers.js';
-import { observeSessionAnswers } from './scripts/tab-session.js';
+import { observeSessionAnswers, onChangeStream, prepareTabSession } from './scripts/tab-session.js';
+import { initPairPostings } from './scripts/pair-postings.js';
 import { beginServerGeneration, endServerGeneration, takeStopResult } from './scripts/generation-stop.js';
 import { chat, chat_metadata, setChatMetadata } from './scripts/chat-state.js';
 import { active_character, active_group, name1, default_user_name, setActiveCharacter, setActiveGroup, setActiveCharacterAndGroupFromSettings, setName1Raw } from './scripts/app-selection-state.js';
@@ -297,20 +296,20 @@ export { messageFormatting };
 // Lives in chat-store.js, the only module allowed to write messages; re-exported for existing importers.
 import {
     updateMessage, updateIn, deepFreeze,
-    ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpEndPath, chatOpEndPathAtAnchor, chatOpSelect, chatOpGraft, chatOpDegraft, chatOpSwapAdjacent, chatOpDeleteAlternative, chatOpDeleteAlternativeNode,
+    ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpCut, chatOpSelect, chatOpGraft, chatOpSwapAdjacent, chatOpReadyAlternativeDelete, chatOpDeleteAlternativeNode,
     _mergeCardGreetingsIntoOpening, _restoreContinuation, _isBlankSlot, _setCurrentTarget, setStoreRef, storeRefOf, adoptStored, chatOpAppendAfter, setSendStoredListener,
     openingForRequest, setUnstoredExtra,
 } from './scripts/chat-store.js';
 export {
     updateMessage, updateIn, adoptStored, openingForRequest,
-    ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpEndPath, chatOpEndPathAtAnchor, chatOpSelect, chatOpGraft, chatOpDegraft, chatOpSwapAdjacent, chatOpDeleteAlternative, chatOpDeleteAlternativeNode,
+    ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpCut, chatOpSelect, chatOpGraft, chatOpSwapAdjacent, chatOpReadyAlternativeDelete, chatOpDeleteAlternativeNode,
 };
 // Lives in node-identity.js, a standalone module with no dependency on anything else in this cluster; re-exported for existing importers.
 import { isStoredNodeId, isProvisionalNodeId, provisionalNodeId } from './scripts/node-identity.js';
 export { isStoredNodeId, isProvisionalNodeId, provisionalNodeId };
 // Lives in metadata-store.js, isolated so it can be typechecked under strict null checks; re-exported for existing importers.
-import { saveMetadata, _resetMetadataSaveSnapshot, deriveChatAddressNode } from './scripts/metadata-store.js';
-export { saveMetadata, deriveChatAddressNode };
+import { saveMetadata, _resetMetadataSaveSnapshot, onStateChanged } from './scripts/metadata-store.js';
+export { saveMetadata };
 // Lives in node-navigation.js, isolated so it can be typechecked under strict null checks; re-exported for existing importers.
 import { switchToNode, switchToAlternativePath } from './scripts/node-navigation.js';
 export { switchToNode };
@@ -994,7 +993,6 @@ function setupCharacterChangeStream() {
     if (typeof EventSource === 'undefined') return;
     // Messages sent while the stream was down are lost, so an open that follows an error counts as both kinds of message.
     let hadError = false;
-    let failedTries = 0;
     let notice = null;
     let noticeTimer = null;
     const startNoticeTimer = () => {
@@ -1005,16 +1003,9 @@ function setupCharacterChangeStream() {
         }, CHANGE_STREAM_NOTICE_AFTER_MS);
     };
 
-    const connect = (isRebuild) => {
-        const source = new EventSource('/api/characters/changes/stream');
-        let opened = false;
-        source.onmessage = (event) => {
-            let message;
-            try {
-                message = JSON.parse(event.data);
-            } catch {
-                message = null;
-            }
+    startNoticeTimer();
+    onChangeStream({
+        message: (message) => {
             if (message?.type === 'search-index-updated') {
                 onSearchIndexUpdated();
                 return;
@@ -1035,15 +1026,17 @@ function setupCharacterChangeStream() {
                 void onSavedViewsChanged();
                 return;
             }
+            if (message?.type === 'state-changed') {
+                void onStateChanged({ tree: message.tree ?? null, at: message.at ?? null });
+                return;
+            }
             if (message?.type === 'character-index-failed') {
                 toastr.warning(characterIndexFailedText(message));
                 return;
             }
             onCharacterChangeMessage();
-        };
-        source.onopen = () => {
-            opened = true;
-            failedTries = 0;
+        },
+        open: () => {
             clearTimeout(noticeTimer);
             noticeTimer = null;
             if (notice) {
@@ -1055,18 +1048,12 @@ function setupCharacterChangeStream() {
             onCharacterChangeMessage();
             onSearchIndexUpdated();
             onTagsChanged();
-        };
-        source.onerror = () => {
+        },
+        error: () => {
             hadError = true;
             startNoticeTimer();
-            // Any other state is the browser reconnecting on its own. It never reconnects a CLOSED one, so that's rebuilt.
-            if (source.readyState !== EventSource.CLOSED) return;
-            if (isRebuild && !opened) failedTries++;
-            setTimeout(() => connect(true), changeStreamRetryDelayMs(failedTries));
-        };
-    };
-    startNoticeTimer();
-    connect(false);
+        },
+    });
 }
 
 /**
@@ -1334,6 +1321,13 @@ async function firstLoadInit() {
         toastr.error(t`Couldn't get CSRF token. Please refresh the page.`, t`Error`, { timeOut: 0, extendedTimeOut: 0, preventDuplicates: true });
         throw new Error('Initialization failed');
     }
+    try {
+        await prepareTabSession(getRequestHeaders);
+    } catch {
+        toastr.error(t`Couldn't open this tab's session. Please refresh the page.`, t`Error`, { timeOut: 0, extendedTimeOut: 0, preventDuplicates: true });
+        throw new Error('Initialization failed');
+    }
+    initPairPostings(t);
 
     const initLoaderOverlay = loader.createOverlay();
     initLoaderOverlay.classList.add('splash-screen');
@@ -1770,24 +1764,28 @@ async function pointToFreshChat(replace = null) {
     setFormBaseline('#selected_chat_pole', String($('#selected_chat_pole').val()));
     await openCharacterConversation({ fresh: true });
     const openingNodeId = chat[0]?.node_id;
-    const pointer = isStoredNodeId(openingNodeId) ? openingNodeId : '';
-    _setCurrentTarget(pointer, chat_metadata.integrity ?? null);
-    $('#selected_chat_pole').val(pointer);
-    setFormBaseline('#selected_chat_pole', String($('#selected_chat_pole').val()));
+    // The new chat is the tab's session, moved to the stored opening (none stored: the tree's root).
+    const opening = isStoredNodeId(openingNodeId) ? openingNodeId : '';
     // One request: the character's chat moves to the new one, and the chat it replaces (if any) is deleted.
+    let current = getCurrentChatId() ?? '';
     try {
         const response = await fetch('/api/chats/new', {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify({ avatar_url: getCurrentCharacter().avatar, chat: pointer, ...(replace ? { replace } : {}) }),
+            body: JSON.stringify({ avatar_url: getCurrentCharacter().avatar, chat: opening, ...(replace ? { replace } : {}) }),
         });
         if (!response.ok) throw new Error(String(response.status));
         const answer = await response.json();
+        takeChatLabelBase(answer);
+        if (typeof answer.chat === 'string') current = answer.chat;
         for (const name of answer.deleted ?? []) await eventSource.emit(event_types.CHAT_DELETED, name);
     } catch (error) {
         console.error('Failed to start the new chat', error);
         toastr.error(t`Failed to save active chat.`);
     }
+    _setCurrentTarget(current, chat_metadata.integrity ?? null);
+    $('#selected_chat_pole').val(current);
+    setFormBaseline('#selected_chat_pole', String($('#selected_chat_pole').val()));
 }
 
 /**
@@ -2021,7 +2019,7 @@ export function getMessageDeletionStartId(id, deleteToolCalls = true) {
  * @param {number} [swipeDeletionIndex] Deletes the swipe with that index.
  * @param {boolean} [askConfirmation=false] Whether to ask for confirmation before deleting.
  * @param {boolean} [deleteToolCalls=true] Whether to delete preceding tool-call messages.
- * @param {boolean} [persist=true] Whether to persist this deletion to the tree (chatOpDegraft/chatOpEndPath).
+ * @param {boolean} [persist=true] Whether to persist this deletion to the tree (chatOpCut).
  * Pass false when a caller is deleting several messages in one user action and will persist the
  * whole range itself in a single call - this still performs every local effect (splice, DOM removal,
  * tainting, view update, event emission), it just skips the per-call network round trip.
@@ -2060,29 +2058,26 @@ export async function deleteMessage(id, swipeDeletionIndex = undefined, askConfi
     }
 
     if (deleteOnlySwipe) {
-        await deleteSwipe(swipeDeletionIndex, id);
+        await deleteSwipe(swipeDeletionIndex, id, { ask: askConfirmation });
         return;
     }
 
     const firstMessageId = getMessageDeletionStartId(id, deleteToolCalls);
     const messageIds = Array.from({ length: id - firstMessageId + 1 }, (_, index) => id - index);
 
+    // The messages leave the chat on the server first, while `chat[]` still names them; a delete the user asked for
+    // here can still be called off there (what else it drops is asked about first).
+    if (persist) {
+        const cut = await chatOpCut(firstMessageId, id, { ask: askConfirmation }).catch(error => {
+            console.error('Could not remove the deleted message(s) from the tree:', error);
+            return null;
+        });
+        if (cut === false) return;
+    }
+
     // Close the editor first, before its DOM element and chat entry are removed.
     if (this_edit_mes_id !== undefined && messageIds.includes(Number(this_edit_mes_id))) {
         closeMessageEditor();
-    }
-
-    // Nothing follows this range once it's gone — the existing tail-delete path (chatOpEndPath),
-    // which is already correct. Otherwise it's a mid-chain delete: every SURVIVING message keeps its
-    // own unchanged node_id, so the diff engine would see no change at all and persist nothing — this
-    // must be told to the tree explicitly, and before splicing, since chatOpDegraft reads the range's
-    // (and its neighbors') node ids off `chat[]` by index.
-    const preSpliceLength = chat.length;
-    const postSpliceLength = preSpliceLength - messageIds.length;
-    const isTailDeletion = postSpliceLength > 0 && firstMessageId === postSpliceLength;
-    if (persist && !isTailDeletion) {
-        await chatOpDegraft(firstMessageId, id).catch(error =>
-            console.error('Could not remove the deleted message(s) from the tree:', error));
     }
 
     // Delete from the end so earlier indices remain stable.
@@ -2092,12 +2087,6 @@ export async function deleteMessage(id, swipeDeletionIndex = undefined, askConfi
     }
 
     chat_metadata.tainted = true;
-
-    // Only meaningful for a removal reaching the end - the tree-backed store otherwise has no way to learn where the conversation now ends.
-    if (persist && isTailDeletion) {
-        await chatOpEndPath(chat.length - 1).catch(error =>
-            console.error('Could not end the conversation at the last remaining message:', error));
-    }
 
     const startIndex = firstMessageId <= minId ? firstMessageId : null;
     updateViewMessageIds(startIndex);
@@ -2116,7 +2105,7 @@ export const userInputGenerateMutex = new SimpleMutex(sendTextareaMessage);
 // finishing (the lock is held until Generate() returns) would otherwise be dropped by the lock. It is kept
 // instead, one at a time, and runs once the page is idle; the input is read then, so the latest text goes.
 const QUEUED_SEND_POLL_MS = 50;
-/** @type {{ chatId: string|undefined, timer: ReturnType<typeof setInterval> } | null} */
+/** @type {{ chat: string, timer: ReturnType<typeof setInterval> } | null} */
 let queuedSend = null;
 
 /**
@@ -2138,7 +2127,8 @@ export async function requestTextareaSend(source) {
     // Keeps the text in this chat's draft, in case a chat change cancels the send.
     flushDraftSave();
     queuedSend = {
-        chatId: getCurrentChatId(),
+        // A tab's chat id is its session, the same for every character or group it opens: the owner tells them apart.
+        chat: JSON.stringify(getCurrentDraftContext()),
         timer: setInterval(() => {
             const idle = !userInputGenerateMutex.isBusy && !isGenerating() && swipeState === SWIPE_STATE.NONE && !isExecutingCommandsFromChatInput;
             if (!idle) return;
@@ -7033,7 +7023,8 @@ export async function unshallowCharacter(characterId) {
 /**
  * The answer to POST /api/chats/open (see src/endpoints/chats.js).
  * @typedef {object} ChatOpenAnswer
- * @property {string} chat Upstream's identifier for the open chat; '' when there is no conversation yet.
+ * @property {string} chat Upstream's identifier for the open chat (its current chat's `b<id>`, else `s<session>.<tree>`).
+ * @property {string} [label_base] What the open chat's suggested bookmark and branch names start from.
  * @property {ChatMetadata} chat_metadata
  * @property {ChatMessage[]} messages
  * @property {import('./scripts/chat-store.js').OpeningsResponse|null} openings
@@ -7045,6 +7036,26 @@ export async function unshallowCharacter(characterId) {
  * @property {number} [settings_hash]
  * @property {string[]} [stored_sends] Of the send keys the request named, those the server has stored.
  */
+
+/** What the open chat's suggested bookmark and branch names start from, as the server last answered it. */
+let chatLabelBase = '';
+
+/**
+ * What the open chat's suggested bookmark names start from (the server's `label_base`: the current chat's label, else
+ * the session's, else the character's or group's name); never an id.
+ * @returns {string}
+ */
+export function getChatLabelBase() {
+    return chatLabelBase;
+}
+
+/**
+ * Takes on the `label_base` an answer that switched the current chat carries.
+ * @param {{ label_base?: unknown } | null | undefined} answer
+ */
+export function takeChatLabelBase(answer) {
+    if (typeof answer?.label_base === 'string') chatLabelBase = answer.label_base;
+}
 
 /**
  * Opens a character's or group's conversation on the server, which resolves which one, records what was
@@ -7092,6 +7103,7 @@ export function chatOpenSendKeys(body) {
  * @returns {ChatOpenAnswer}
  */
 export function takeChatOpenAnswer(body, answer) {
+    takeChatLabelBase(answer);
     forgetStoredSends(chatOpenOwner(body), Array.isArray(answer.stored_sends) ? answer.stored_sends : []);
     setActiveCharacter(answer.active_character);
     setActiveGroup(answer.active_group);
@@ -7337,10 +7349,11 @@ async function _openingFromTree(cardGreetings, preferredIndex, prefetched = null
 }
 
 /**
- * A targeted metadata-only write, instead of rewriting the whole character card - doesn't defeat reflink sharing on its PNG.
+ * Switches the tab to a character's chat by name ('' a new chat; POST /api/characters/chat).
  * @param {string} avatar
  * @param {string} chat
- * @returns {Promise<boolean>} Whether it was saved.
+ * @returns {Promise<{ chat: string, label_base: string } | false>} The tab's compat chat id there and its label base;
+ * false when it wasn't saved.
  */
 export async function saveActiveChat(avatar, chat) {
     try {
@@ -7350,7 +7363,10 @@ export async function saveActiveChat(avatar, chat) {
             body: JSON.stringify({ avatar, chat }),
         });
         if (!response.ok) throw new Error(String(response.status));
-        return true;
+        /** @type {{ chat: string, label_base: string }} */
+        const answer = await response.json();
+        if (avatar === getCurrentCharacter()?.avatar) takeChatLabelBase(answer);
+        return answer;
     } catch (error) {
         console.error('Failed to save active chat', error);
         toastr.error(t`Failed to save active chat.`);
@@ -8440,7 +8456,7 @@ export async function getChatsFromFiles(data, isGroupChat) {
             try {
                 const endpoint = isGroupChat ? '/api/chats/group/get' : '/api/chats/get';
                 const requestBody = isGroupChat
-                    ? JSON.stringify({ id: file_name })
+                    ? JSON.stringify({ id: file_name, ...(selected_group ? { group_id: selected_group } : {}) })
                     : JSON.stringify({
                         ch_name: getCurrentCharacter().name,
                         file_name: file_name.replace('.jsonl', ''),
@@ -8565,66 +8581,105 @@ export async function displayPastChats(hightlightNames = []) {
     addChatBackupsBrowser();
 }
 
+/** Rows of the chat picker read per request. */
+const CHAT_PICKER_PAGE = 50;
+/** Counts the chat picker's lists, so a page arriving for a list already replaced is dropped. */
+let chatPickerList = 0;
+
+/**
+ * Shows a character's or group's chats in the picker, newest first, a page at a time: the next page is read when the
+ * list is scrolled near its end.
+ */
 async function displayChats(searchQuery, currentChat, displayName, avatarImg, selected_group, highlightNames) {
-    try {
-        const response = await fetch('/api/chats/search', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({
-                query: searchQuery,
-                avatar_url: selected_group ? null : getCurrentCharacter().avatar,
-                group_id: selected_group || null,
-            }),
-        });
+    const list = ++chatPickerList;
+    const $chatDiv = $('#select_chat_div');
+    const $chatTemplate = $('#past_chat_template .select_chat_block_wrapper');
+    $chatDiv.empty().off('scroll.chatPicker');
+    /** @type {string|null} */
+    let cursor = null;
+    /** Where the search of the chats' texts goes on, once the chats are read. @type {string|null} */
+    let scanCursor = null;
+    /** An item whose path holds matches in two reads of the scan is shown once. */
+    const shown = new Set();
+    let reading = false;
+    let ended = false;
 
-        if (!response.ok) {
-            throw new Error('Search failed');
+    const readPage = async () => {
+        if (reading || ended) return;
+        reading = true;
+        const readingChats = cursor !== null;
+        try {
+            const response = await fetch('/api/chats/search', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({
+                    query: searchQuery,
+                    avatar_url: selected_group ? null : getCurrentCharacter().avatar,
+                    group_id: selected_group || null,
+                    limit: CHAT_PICKER_PAGE,
+                    ...(cursor ? { cursor } : scanCursor ? { scan_cursor: scanCursor } : {}),
+                }),
+            });
+            if (!response.ok) {
+                throw new Error('Search failed');
+            }
+            const page = await response.json();
+            if (list !== chatPickerList) return;
+            for (const chat of page.results) {
+                if (shown.has(chat.file_name)) continue;
+                shown.add(chat.file_name);
+                // `file_name` is the chat's compat id (a bookmark's `b<id>`, a session's UUID), `label` the name it was given.
+                const isSelected = currentChat === chat.file_name;
+                const template = $chatTemplate.clone();
+                template.find('.select_chat_block').attr('file_name', chat.file_name).attr('chat_label', chat.label ?? '');
+                if (chat.node_id) {
+                    template.find('.select_chat_block').attr('node_id', chat.node_id);
+                }
+                template.find('.avatar img').attr('src', avatarImg);
+                template.find('.select_chat_block_filename').text(chat.label ?? chat.file_name);
+                template.find('.chat_file_size').text(chat.file_size ? `(${chat.file_size},` : '(');
+                template.find('.chat_messages_num').text(`${chat.message_count} 💬)`);
+                template.find('.select_chat_block_mes').text(chat.preview_message);
+                template.find('.PastChat_cross').attr('file_name', chat.file_name);
+                template.find('.chat_messages_date').text(chat.last_mes ? timestampToMoment(chat.last_mes).format('lll') : '');
+
+                if (isSelected) {
+                    template.find('.select_chat_block').attr('highlight', String(true));
+                }
+
+                $chatDiv.append(template);
+
+                if (Array.isArray(highlightNames) && highlightNames.includes(chat.file_name)) {
+                    const templateOffset = template.offset().top - template.parent().offset().top;
+                    $chatDiv.scrollTop(templateOffset);
+                    flashHighlight(template, debounce_timeout.extended);
+                }
+            }
+            cursor = page.cursor;
+            // The first read searches the chats' texts and gives where it stopped; the reads of later pages of chats
+            // search none, and the ones that go on from that cursor give the next.
+            if (!readingChats) scanCursor = page.scan_cursor ?? null;
+            ended = !cursor && !scanCursor;
+            if (ended && page.exact === false) {
+                $chatDiv.append($('<div class="select_chat_incomplete"></div>').text(t`The search stopped before reading every chat; some matches may be missing.`));
+            }
+        } catch (error) {
+            console.error('Error loading chats:', error);
+            toastr.error('Could not load chat data. Try reloading the page.');
+            ended = true;
+        } finally {
+            reading = false;
         }
+        // A page that doesn't fill the list can't be scrolled to the next one.
+        const div = $chatDiv[0];
+        if (!ended && list === chatPickerList && div && div.scrollHeight <= div.clientHeight) await readPage();
+    };
 
-        const filteredData = await response.json();
-        // Resolved once and reused for every clone/append/scroll below, instead of re-running the selectors per iteration.
-        const $chatDiv = $('#select_chat_div');
-        const $chatTemplate = $('#past_chat_template .select_chat_block_wrapper');
-        $chatDiv.empty();
-
-        filteredData.sort((a, b) => sortMoments(timestampToMoment(a.last_mes), timestampToMoment(b.last_mes)));
-
-        for (const chat of filteredData) {
-            // The node_id identifies a chat uniquely; the name is only for display and the file-backed path.
-            const isSelected = currentChat === chat.file_name || (!!chat.node_id && currentChat === chat.node_id);
-            const template = $chatTemplate.clone();
-            template.find('.select_chat_block').attr('file_name', chat.file_name);
-            if (chat.node_id) {
-                template.find('.select_chat_block').attr('node_id', chat.node_id);
-            }
-            template.find('.avatar img').attr('src', avatarImg);
-            template.find('.select_chat_block_filename').text(chat.file_name);
-            template.find('.chat_file_size').text(chat.file_size ? `(${chat.file_size},` : '(');
-            template.find('.chat_messages_num').text(`${chat.message_count} 💬)`);
-            template.find('.select_chat_block_mes').text(chat.preview_message);
-            template.find('.PastChat_cross').attr('file_name', chat.file_name);
-            if (chat.node_id) {
-                template.find('.PastChat_cross').attr('node_id', chat.node_id);
-                template.find('.renameChatButton').attr('node_id', chat.node_id);
-            }
-            template.find('.chat_messages_date').text(timestampToMoment(chat.last_mes).format('lll'));
-
-            if (isSelected) {
-                template.find('.select_chat_block').attr('highlight', String(true));
-            }
-
-            $chatDiv.append(template);
-
-            if (Array.isArray(highlightNames) && highlightNames.includes(chat.file_name)) {
-                const templateOffset = template.offset().top - template.parent().offset().top;
-                $chatDiv.scrollTop(templateOffset);
-                flashHighlight(template, debounce_timeout.extended);
-            }
-        }
-    } catch (error) {
-        console.error('Error loading chats:', error);
-        toastr.error('Could not load chat data. Try reloading the page.');
-    }
+    $chatDiv.on('scroll.chatPicker', () => {
+        const div = $chatDiv[0];
+        if (div.scrollTop + div.clientHeight >= div.scrollHeight - div.clientHeight) void readPage();
+    });
+    await readPage();
 }
 
 // Only pinnable drawers can stay open behind another drawer: opening or bringing forward a drawer closes every
@@ -9553,9 +9608,12 @@ export function hideSwipeButtons({ hideCounters = false } = {}) {
  *
  * @param {number?} [swipeId = null] - The ID of the swipe to delete. If not provided, the current swipe will be deleted.
  * @param {number?} [messageId = chat.length - 1] - The ID of the message to delete from. If not provided, the last message will be targeted.
+ * @param {object} [options]
+ * @param {boolean} [options.ask=false] A delete the user asked for here: what else it drops (bookmarks, state changes
+ * below the swipe) is asked about first, and saying no calls it off. Otherwise that is applied and shown as a warning.
  * @returns {Promise<number>|undefined} - The ID of the new swipe after deletion.
  */
-export async function deleteSwipe(swipeId = null, messageId = chat.length - 1) {
+export async function deleteSwipe(swipeId = null, messageId = chat.length - 1, { ask = false } = {}) {
     if (swipeId != null) {
         swipeId = Number(swipeId);
         if (!Number.isInteger(swipeId) || swipeId < 0) {
@@ -9602,26 +9660,32 @@ export async function deleteSwipe(swipeId = null, messageId = chat.length - 1) {
         newSwipeId = Math.min(swipeId, newSwipes.length - 1);
     }
 
-    chat_metadata.tainted = true;
-
     messageId = Number(messageId);
     swipeId = Number(swipeId);
 
-    // The shown-swipe branch below already persists the SELECTION change correctly via swipe() -> the
-    // selection-change path — but until now it never deleted the old node's row afterward, leaving it
-    // orphaned (deselected but still in the DB). Both branches need the deleted alternative's own
-    // node_id read off `chat[]` BEFORE updateMessage() below replaces its swipe_info with the
-    // already-spliced copy. For the shown case this is `message.node_id` itself (swipeId ===
-    // currentSwipeId here, so it names the same node as `message.swipe_info[swipeId].node_id`) —
-    // captured now because chatOpDeleteAlternativeNode() can only run AFTER swipe() moves the
-    // selection off of it (deleteAlternative()'s own "is default" refusal, src/message-tree-db.js,
-    // otherwise applies), by which point chat[messageId].node_id has already been overwritten.
+    // The deleted alternative goes on the server with everything below it; what else that drops is asked about
+    // before anything changes here. A shown swipe is deleted once swipe() has moved the selection off it.
     const isShownSwipe = swipeId === currentSwipeId;
-    const deletedNodeId = isShownSwipe ? message.node_id : undefined;
-    if (!isShownSwipe) {
-        await chatOpDeleteAlternative(messageId, swipeId).catch(error =>
-            console.error('Could not remove the deleted alternative from the tree:', error));
+    const deletedNodeId = isShownSwipe ? message.node_id : message.swipe_info?.[swipeId]?.node_id;
+    let ticket = null;
+    if (isStoredNodeId(deletedNodeId)) {
+        ticket = await chatOpReadyAlternativeDelete(deletedNodeId, { ask }).catch(error => {
+            console.error('Could not ask the tree about the deleted alternative:', error);
+            return undefined;
+        });
+        if (ticket === null) return;
     }
+
+    if (!isShownSwipe && ticket) {
+        // A failed request was reported to the user; the swipe still goes here.
+        const deleted = await chatOpDeleteAlternativeNode(deletedNodeId, message.node_id, ticket, { ask }).catch(error => {
+            console.error('Could not remove the deleted alternative from the tree:', error);
+            return true;
+        });
+        // Asked again (someone else changed what it drops meanwhile) and the user said no.
+        if (!deleted) return;
+    }
+    chat_metadata.tainted = true;
 
     updateMessage(messageId, { swipe_id: newSwipeId, swipes: newSwipes, swipe_info: newSwipeInfo });
     await eventSource.emit(event_types.MESSAGE_SWIPE_DELETED, { messageId, swipeId, newSwipeId });
@@ -9630,12 +9694,12 @@ export async function deleteSwipe(swipeId = null, messageId = chat.length - 1) {
         const direction = (swipeId <= newSwipeId) ? SWIPE_DIRECTION.RIGHT : SWIPE_DIRECTION.LEFT;
         // Animate swipe and swap displayed message when the currently visible swipe was deleted.
         await swipe(null, direction, { source: SWIPE_SOURCE.DELETE, repeated: false, forceMesId: messageId, forceSwipeId: newSwipeId });
-        // Only now — after swipe() has (attempted to) move the selection to newSwipeId's node — is the
-        // old node no longer the current default child. If swipe() bailed out early for any reason
-        // (chat[messageId] is still on deletedNodeId), chatOpDeleteAlternativeNode() refuses locally
-        // without a server round-trip, same as chatOpDeleteAlternative() does for the non-shown case.
-        await chatOpDeleteAlternativeNode(deletedNodeId, chat[messageId]?.node_id).catch(error =>
-            console.error('Could not remove the deleted alternative from the tree:', error));
+        // If swipe() bailed out early (chat[messageId] is still on deletedNodeId), this refuses without asking the
+        // server.
+        if (ticket) {
+            await chatOpDeleteAlternativeNode(deletedNodeId, chat[messageId]?.node_id, ticket, { ask }).catch(error =>
+                console.error('Could not remove the deleted alternative from the tree:', error));
+        }
     } else {
         await updateSwipeCounter(messageId);
         if (messageId !== chat.length - 1) {
@@ -12507,6 +12571,9 @@ export async function swipe_right(event = null, { source, repeated, message } = 
     await swipe.call(this, event, SWIPE_DIRECTION.RIGHT, { source: source, repeated: repeated, message: message });
 }
 
+/** Imports a batch import keeps in flight at once. */
+const IMPORTS_IN_FLIGHT = 4;
+
 /**
  * Imports supported files dropped into the app window. Each file is imported, applied to charactersStore, and (per `power_user.tag_import_setting`) has its tags imported before moving to the next file.
  * @param {File[]} files Array of files to process
@@ -12543,7 +12610,7 @@ export async function processDroppedFiles(files, data = new Map(), { sourceUrls 
         return;
     }
 
-    // Batch mode buffers metadata-store writes and suspends the directory watcher - gated on more than one file, since a single-file drop's own unbuffered write is already cheap.
+    // A batch: more than one file.
     const useBatchImportMode = importable.length > 1;
     if (useBatchImportMode) {
         await beginMetadataBatchImport();
@@ -12552,10 +12619,25 @@ export async function processDroppedFiles(files, data = new Map(), { sourceUrls 
     const avatarFileNames = [];
     let duplicateCount = 0;
 
+    // In a batch, several imports are in flight at once (the server commits the ones arriving together in one
+    // commit); their results are handled one by one in file order.
+    const ahead = useBatchImportMode ? IMPORTS_IN_FLIGHT : 1;
+    /** @type {ReturnType<typeof importCharacter>[]} */
+    const started = [];
+    const start = (/** @type {number} */ i) => {
+        if (i >= importable.length) return;
+        const file = importable[i];
+        const preservedName = data instanceof Map && data.get(file);
+        started[i] = importCharacter(file, { preserveFileName: preservedName, sourceUrl: sourceUrls.get(file) });
+        // Awaited in order below; one failing while it waits its turn isn't unhandled meanwhile.
+        started[i].catch(() => {});
+    };
+
     try {
-        for (const file of importable) {
-            const preservedName = data instanceof Map && data.get(file);
-            const result = await importCharacter(file, { preserveFileName: preservedName, sourceUrl: sourceUrls.get(file) });
+        for (let i = 0; i < ahead; i++) start(i);
+        for (let i = 0; i < importable.length; i++) {
+            const result = await started[i];
+            start(i + ahead);
 
             if (!result) {
                 continue;
@@ -12605,7 +12687,7 @@ export async function processDroppedFiles(files, data = new Map(), { sourceUrls 
     return avatarFileNames;
 }
 
-// Never throws - a failure here just means writes for this batch go through the normal unbuffered path instead.
+// Never throws: a failure here only means this batch's imports are committed one by one.
 async function beginMetadataBatchImport() {
     try {
         const result = await fetch('/api/characters/metadata/batch-import/begin', {
@@ -12817,7 +12899,7 @@ export async function doNewChat({ deleteCurrentChat = false } = {}) {
  * @param {string} param.newFileName New name for the chat (no JSONL extension)
  * @param {boolean} [param.loader=true] Whether to show loader during the operation
  */
-export async function renameGroupOrCharacterChat({ characterId, characterAvatar, groupId, oldFileName, newFileName, loader: showLoader, byNode = false }) {
+export async function renameGroupOrCharacterChat({ characterId, characterAvatar, groupId, oldFileName, newFileName, loader: showLoader }) {
     const currentChatId = getCurrentChatId();
     let avatarUrl;
     if (characterId == null) {
@@ -12830,9 +12912,9 @@ export async function renameGroupOrCharacterChat({ characterId, characterAvatar,
     }
     const body = {
         is_group: !!groupId,
+        ...(groupId ? { group_id: groupId } : {}),
         avatar_url: avatarUrl,
-        // A node id isn't a file, so no .jsonl extension gets glued on.
-        original_file: byNode ? oldFileName : `${oldFileName}.jsonl`,
+        original_file: `${oldFileName}.jsonl`,
         renamed_file: `${newFileName.trim()}.jsonl`,
     };
 
@@ -12873,10 +12955,11 @@ export async function renameGroupOrCharacterChat({ characterId, characterAvatar,
             newFileName = data.sanitizedFileName;
         }
 
-        if (groupId) {
+        // A rename relabels the chat and keeps its id: a pointer follows only when the id answered differs.
+        const idChanged = newFileName !== oldFileName;
+        if (idChanged && groupId) {
             await renameGroupChat(groupId, oldFileName, newFileName);
-        // Only a name-addressed pointer has to follow the rename - a node-addressed one already names that node.
-        } else if (!byNode && avatarUrl !== undefined && avatarUrl === this_avatar && charactersStore.get(avatarUrl)?.chat === oldFileName) {
+        } else if (idChanged && avatarUrl !== undefined && avatarUrl === this_avatar && charactersStore.get(avatarUrl)?.chat === oldFileName) {
             // Same node under a new label, not a different node - carry the current integrity forward
             // rather than clearing to unknown (see _setCurrentTarget()'s own doc comment).
             _setCurrentTarget(newFileName, chat_metadata.integrity);
@@ -12908,14 +12991,13 @@ export async function renameGroupOrCharacterChat({ characterId, characterAvatar,
  * @param {string} oldFileName Old name of the chat (no JSONL extension)
  * @param {string} newName New name for the chat (no JSONL extension)
  */
-export async function renameChat(oldFileName, newName, { byNode = false } = {}) {
+export async function renameChat(oldFileName, newName) {
     return await renameGroupOrCharacterChat({
         characterAvatar: this_avatar,
         groupId: selected_group,
         oldFileName: oldFileName,
         newFileName: newName,
         loader: true,
-        byNode,
     });
 }
 
@@ -12964,8 +13046,9 @@ export async function updateRemoteChatName(characterId, newName) {
         console.warn(`Character not found: ${characterId}`);
         return;
     }
-    character.chat = newName;
-    await saveActiveChat(character.avatar, newName);
+    // The name switches the tab to the chat it names; the answer is its compat chat id there.
+    const answer = await saveActiveChat(character.avatar, newName);
+    if (answer) charactersStore.update(character.avatar, { chat: answer.chat });
 }
 
 
@@ -13306,7 +13389,7 @@ jQuery(async function () {
 
     // Restores the draft for whatever chat just became current; no-op when none exists for this exact context.
     eventSource.on(event_types.CHAT_CHANGED, () => {
-        if (queuedSend && queuedSend.chatId !== getCurrentChatId()) {
+        if (queuedSend && queuedSend.chat !== JSON.stringify(getCurrentDraftContext())) {
             cancelQueuedSend(t`The queued send was cancelled because the chat changed. Your text is kept as that chat's draft.`);
         }
         const context = getCurrentDraftContext();
@@ -13554,8 +13637,7 @@ jQuery(async function () {
 
     $(document).on('click', '.PastChat_cross', async function (e, { fromSlashCommand = false } = {}) {
         e.stopPropagation();
-        // Prefer the node id - a name would only find whichever row sorted first.
-        const deleteFileName = $(this).attr('node_id') || $(this).attr('file_name');
+        const deleteFileName = $(this).attr('file_name');
         const row = $(this).closest('.select_chat_block_wrapper');
 
         // Skip confirmation if called from a slash command.
@@ -13812,19 +13894,20 @@ jQuery(async function () {
 
     $(document).on('click', '.renameChatButton', async function (e) {
         e.stopPropagation();
-        const oldFileName = $(this).closest('.select_chat_block_wrapper').find('.select_chat_block_filename').text();
-        const nodeId = $(this).attr('node_id');
+        const block = $(this).closest('.select_chat_block_wrapper').find('.select_chat_block');
+        const chatId = block.attr('file_name');
+        const oldLabel = block.attr('chat_label') ?? '';
 
         const popupText = await renderTemplateAsync('chatRename');
-        const newName = await callGenericPopup(popupText, POPUP_TYPE.INPUT, oldFileName);
+        const newName = await callGenericPopup(popupText, POPUP_TYPE.INPUT, oldLabel);
 
-        if (!newName || typeof newName !== 'string' || newName == oldFileName) {
+        if (!newName || typeof newName !== 'string' || newName == oldLabel) {
             console.log('no new name found, aborting');
             return;
         }
 
-        // Rename the bookmark on its node. The displayed name is only what the box starts with.
-        await renameChat(nodeId || oldFileName, newName, { byNode: !!nodeId });
+        // The chat is named by its compat id; the new name is its label (the id stays).
+        await renameChat(chatId, newName);
 
         await delay(250);
         $('#option_select_chat').trigger('click');
@@ -13840,13 +13923,16 @@ jQuery(async function () {
             // eslint-disable-next-line no-restricted-syntax -- flushes whatever a debounced generic save already had pending; not a new op.
             await saveChatConditional();
         }
-        const filename = $(this).closest('.select_chat_block_wrapper').find('.select_chat_block_filename').text();
+        const block = $(this).closest('.select_chat_block_wrapper').find('.select_chat_block');
+        const chatId = block.attr('file_name');
+        const filename = block.attr('chat_label') || chatId;
         console.log(`exporting ${filename} in ${format} format`);
 
         const body = {
             is_group: !!selected_group,
+            ...(selected_group ? { group_id: selected_group } : {}),
             avatar_url: getCurrentCharacter()?.avatar,
-            file: `${filename}.jsonl`,
+            file: `${chatId}.jsonl`,
             exportfilename: `${filename}.${format}`,
             format: format,
         };
@@ -14049,24 +14135,24 @@ jQuery(async function () {
             $(this).prop('checked', false);
         });
 
-        if (this_del_mes >= 0) {
+        // The messages from the chosen one to the end leave the chat on the server first; what else that drops is
+        // asked about there, and saying no keeps everything.
+        const cut = this_del_mes >= 0
+            ? await chatOpCut(this_del_mes, chat.length - 1, { ask: true }).catch(error => {
+                console.error('Could not cut the conversation back:', error);
+                return null;
+            })
+            : null;
+        if (this_del_mes >= 0 && cut !== false) {
             chatElement.find(`.mes[mesid="${this_del_mes}"]`).nextAll('div').remove();
             chatElement.find(`.mes[mesid="${this_del_mes}"]`).remove();
             chat.length = this_del_mes;
             chat_metadata.tainted = true;
-            // Removed messages keep their rows and continuations; selecting one again brings the whole thing back.
-            if (chat.length > 0) {
-                await chatOpEndPath(chat.length - 1).catch(error =>
-                    console.error('Could not cut the conversation back:', error));
-            } else {
-                await chatOpEndPathAtAnchor().catch(error =>
-                    console.error('Could not cut the conversation back:', error));
-            }
             chatElement.scrollTop(chatElement[0].scrollHeight);
             await eventSource.emit(event_types.MESSAGE_DELETED, chat.length);
             chatElement.find('.mes').removeClass('last_mes');
             chatElement.find('.mes').last().addClass('last_mes');
-        } else {
+        } else if (this_del_mes < 0) {
             console.log('this_del_mes is not >= 0, not deleting');
         }
 

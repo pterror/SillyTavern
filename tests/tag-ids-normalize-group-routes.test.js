@@ -1,7 +1,5 @@
 import { test, expect, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals';
-import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 
 // SQLite's ORDER BY compares UTF-8 bytes and JS sort UTF-16 code units; these two ids order differently under
 // each (SQLite: HIGH_BMP first, JS: ASTRAL first), so they tell a JS-sorted list from a SQL-ordered one.
@@ -9,10 +7,10 @@ const HIGH_BMP = 'tag\uE000';
 const ASTRAL = 'tag\u{10000}';
 const JS_SORTED = [ASTRAL, HIGH_BMP];
 
-/** @type {typeof import('../src/character-metadata-db.js')} */
-let metadataDb;
-/** @type {typeof import('../src/endpoints/search-index-coordinator.js')} */
-let searchCoordinator;
+/** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
+let user;
+/** @type {typeof import('./converted-user.fixture.js')} */
+let fixture;
 /** @type {import('node:http').Server} */
 let server;
 let baseUrl;
@@ -24,8 +22,7 @@ beforeAll(async () => {
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
 
-    metadataDb = await import('../src/character-metadata-db.js');
-    searchCoordinator = await import('../src/endpoints/search-index-coordinator.js');
+    fixture = await import('./converted-user.fixture.js');
     const { router: groupsRouter } = await import('../src/endpoints/groups.js');
 
     const express = (await import('express')).default;
@@ -43,25 +40,13 @@ beforeAll(async () => {
 
 afterAll(() => new Promise(resolve => server.close(resolve)));
 
-beforeEach(() => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-tag-ids-normalize-group-routes-test-'));
-    directories = {
-        root: tempDir,
-        characters: path.join(tempDir, 'characters'),
-        chats: path.join(tempDir, 'chats'),
-        groups: path.join(tempDir, 'groups'),
-        groupChats: path.join(tempDir, 'groupChats'),
-    };
-    for (const dir of [directories.characters, directories.chats, directories.groups, directories.groupChats]) {
-        fs.mkdirSync(dir, { recursive: true });
-    }
+beforeEach(async () => {
+    user = await fixture.emptyUser('st-tag-ids-normalize-group-routes-test-');
+    directories = user.directories;
+    globalThis.DATA_ROOT = user.dataRoot;
 });
 
-afterEach(async () => {
-    await searchCoordinator.disposeSearchWorkers();
-    metadataDb.disposeMetadataStores();
-    fs.rmSync(directories.root, { recursive: true, force: true });
-});
+afterEach(() => user.close());
 
 async function postJson(urlPath, body) {
     const response = await fetch(`${baseUrl}${urlPath}`, {
@@ -74,10 +59,8 @@ async function postJson(urlPath, body) {
 }
 
 test('/api/groups/batch and /api/groups/all send tag_ids in JS sort order', async () => {
-    const group = { id: '1001', name: 'Group 1001', members: [], chats: [], fav: false };
-    fs.writeFileSync(path.join(directories.groups, '1001.json'), JSON.stringify(group));
-    await metadataDb.upsertGroupRow(directories, '1001', group.name, { fav: false, group });
-    for (const tagId of [HIGH_BMP, ASTRAL]) expect(await metadataDb.assignEntityTag(directories, '1001', tagId)).toBe('ok');
+    await user.store.lib.writeGroup({ id: '1001', name: 'Group 1001', members: [], fav: false });
+    for (const tagId of [HIGH_BMP, ASTRAL]) expect((await user.store.lib.tags.assign('1001', tagId)).result).toBe('ok');
 
     const [batched] = await postJson('/api/groups/batch', { ids: ['1001'] });
     expect(batched.tag_ids).toEqual(JS_SORTED);

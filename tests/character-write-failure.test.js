@@ -7,10 +7,9 @@ import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach, jes
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import Database from 'better-sqlite3';
 
-/** @type {typeof import('../src/character-metadata-db.js')} */
-let metadataDb;
+/** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
+let user;
 /** @type {typeof import('../src/endpoints/characters.js')} */
 let characters;
 /** @type {import('node:http').Server} */
@@ -28,7 +27,6 @@ beforeAll(async () => {
     await import('../src/fetch-patch.js');
 
     characters = await import('../src/endpoints/characters.js');
-    metadataDb = await import('../src/character-metadata-db.js');
 
     process.chdir(path.resolve(originalCwd, '..'));
 
@@ -39,7 +37,7 @@ beforeAll(async () => {
     app.use(multer({ dest: uploadsDir }).single('avatar'));
     app.use(express.json());
     app.use((req, res, next) => {
-        req.user = { directories, profile: { handle: 'test-user' } };
+        req.user = user.user;
         next();
     });
     app.use('/api/characters', characters.router);
@@ -55,24 +53,18 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-write-failure-test-'));
-    directories = {
-        characters: path.join(tempDir, 'characters'),
-        chats: path.join(tempDir, 'chats'),
-        root: tempDir,
-        thumbnailsAvatar: path.join(tempDir, 'thumbnails', 'avatar'),
-    };
-    for (const dir of [directories.characters, directories.chats, directories.thumbnailsAvatar]) fs.mkdirSync(dir, { recursive: true });
+    user = await (await import('./converted-user.fixture.js')).emptyUser('st-write-failure-test-');
+    ({ directories } = user);
+    globalThis.DATA_ROOT = user.dataRoot;
     jest.spyOn(console, 'error').mockImplementation(() => {});
     jest.spyOn(console, 'warn').mockImplementation(() => {});
     const res = await post('create', { ch_name: 'Alice', description: 'stored', file_name: 'Alice' });
     if (res.status !== 200) throw new Error(`create failed: ${res.status}`);
 });
 
-afterEach(() => {
+afterEach(async () => {
     jest.restoreAllMocks();
-    metadataDb.disposeMetadataStores();
-    fs.rmSync(directories.root, { recursive: true, force: true });
+    await user.close();
 });
 
 const post = (route, body) => fetch(`${baseUrl}/api/characters/${route}`, {
@@ -82,19 +74,22 @@ const post = (route, body) => fetch(`${baseUrl}/api/characters/${route}`, {
 });
 
 /** Makes every write to the characters table fail, as a full disk or a broken store would. */
+let commit = null;
 function breakCharacterWrites() {
-    const db = new Database(path.join(directories.root, 'character-metadata.sqlite'));
-    db.exec(`
-        CREATE TRIGGER inject_fail_insert BEFORE INSERT ON characters BEGIN SELECT RAISE(ABORT, 'injected write failure'); END;
-        CREATE TRIGGER inject_fail_update BEFORE UPDATE ON characters BEGIN SELECT RAISE(ABORT, 'injected write failure'); END;
-    `);
-    db.close();
+    const store = user.store.lib.store;
+    commit = store.commit;
+    store.commit = async () => { throw new Error('injected write failure'); };
 }
 
 function repairCharacterWrites() {
-    const db = new Database(path.join(directories.root, 'character-metadata.sqlite'));
-    db.exec('DROP TRIGGER inject_fail_insert; DROP TRIGGER inject_fail_update;');
-    db.close();
+    if (commit !== null) user.store.lib.store.commit = commit;
+    commit = null;
+}
+
+/** What the user's image folder holds. */
+function imageFiles() {
+    const dir = directories.characters;
+    return fs.existsSync(dir) ? fs.readdirSync(dir).sort() : [];
 }
 
 async function storedCard() {
@@ -140,20 +135,22 @@ describe('a card write the store refuses fails its request', () => {
     });
 
     test('/create leaves no image behind', async () => {
+        const before = imageFiles();
         breakCharacterWrites();
         const res = await post('create', { ch_name: 'Carol', description: 'new', file_name: 'Carol' });
         expect(res.ok).toBe(false);
-        expect(fs.existsSync(path.join(directories.characters, 'Carol.png'))).toBe(false);
+        expect(imageFiles()).toEqual(before);
     });
 
     test('/duplicate leaves no copy behind', async () => {
+        const before = imageFiles();
         breakCharacterWrites();
         const res = await post('duplicate', { avatar_url: 'Alice.png' });
         expect(res.ok).toBe(false);
-        expect(fs.readdirSync(directories.characters)).toEqual(['Alice.png']);
+        expect(imageFiles()).toEqual(before);
     });
 
     test('the store being unavailable is a failure, not a silent no-op', async () => {
-        await expect(metadataDb.upsertCharacterFromWrite(directories, 'Alice.png', 'not json')).rejects.toThrow();
+        await expect(user.store.lib.writeCard(directories, 'Alice.png', 'not json')).rejects.toThrow();
     });
 });

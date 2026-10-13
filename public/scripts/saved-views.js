@@ -66,6 +66,12 @@ let filterText = '';
 let picker = null;
 /** @type {HTMLElement|null} */
 let popover = null;
+/**
+ * The row being renamed or confirmed for deletion, and its place: a redraw keeps it as it is (the typed text with it)
+ * and draws the rest around it.
+ * @type {{ id: string, row: HTMLElement, index: number } | null}
+ */
+let editing = null;
 
 /**
  * @param {string} route
@@ -302,6 +308,7 @@ async function readViews(more) {
 function closePopover() {
     popover?.remove();
     popover = null;
+    editing = null;
     pendingSwitch = null;
 }
 
@@ -345,8 +352,8 @@ function makeRow(saved, index) {
     const following = loaded[index + 1];
     if (previous) row.append(button('fa-arrow-up', t`Move up`, 'up', () => void moveView(saved, previous, 'before')));
     if (following) row.append(button('fa-arrow-down', t`Move down`, 'down', () => void moveView(saved, following, 'after')));
-    row.append(button('fa-pencil', t`Rename`, 'rename', () => startRename(row, saved)));
-    row.append(button('fa-trash-can', t`Delete`, 'delete', () => confirmDelete(row, saved)));
+    row.append(button('fa-pencil', t`Rename`, 'rename', () => startRename(row, saved, index)));
+    row.append(button('fa-trash-can', t`Delete`, 'delete', () => confirmDelete(row, saved, index)));
     return row;
 }
 
@@ -357,8 +364,9 @@ async function moveView(saved, anchor, side) {
     await refreshPopover();
 }
 
-/** @param {HTMLElement} row @param {SavedView} saved */
-function startRename(row, saved) {
+/** @param {HTMLElement} row @param {SavedView} saved @param {number} index */
+function startRename(row, saved, index) {
+    editing = { id: saved.id, row, index };
     row.replaceChildren();
     const input = document.createElement('input');
     input.className = 'text_pole textarea_compact view_picker_rename';
@@ -370,6 +378,7 @@ function startRename(row, saved) {
             if (!answer || answer.notFound) toastr.error(t`The view could not be renamed.`);
             else if (saved.id === currentId) setCurrent(saved.id, answer.name);
         }
+        editing = null;
         await refreshPopover();
     };
     input.addEventListener('keydown', event => {
@@ -386,8 +395,9 @@ function startRename(row, saved) {
     input.select();
 }
 
-/** @param {HTMLElement} row @param {SavedView} saved */
-function confirmDelete(row, saved) {
+/** @param {HTMLElement} row @param {SavedView} saved @param {number} index */
+function confirmDelete(row, saved, index) {
+    editing = { id: saved.id, row, index };
     row.replaceChildren();
     const text = document.createElement('span');
     text.textContent = t`Delete "${saved.name}"?`;
@@ -404,9 +414,13 @@ function confirmDelete(row, saved) {
             deps.pinView(saved.id, null);
             if (saved.id === currentId) setCurrent(null, t`All characters`);
         }
+        editing = null;
         await refreshPopover();
     });
-    no.addEventListener('click', () => void refreshPopover());
+    no.addEventListener('click', () => {
+        editing = null;
+        void refreshPopover();
+    });
     row.append(text, yes, no);
 }
 
@@ -459,9 +473,14 @@ function makeSaveRow() {
 function drawPopover() {
     if (!popover) return;
     const list = popover.querySelector('.view_picker_list');
+    const focused = editing && editing.row.contains(document.activeElement) ? /** @type {HTMLElement} */ (document.activeElement) : null;
     list.replaceChildren();
     if (!filterText) list.append(makeRow(null, -1));
-    loaded.forEach((view, index) => list.append(makeRow(view, index)));
+    const rows = loaded.map((view, index) => (editing?.id === view.id ? editing.row : makeRow(view, index)));
+    // A view being edited that the list no longer holds keeps its place, so what was typed isn't lost.
+    if (editing && !loaded.some(view => view.id === editing.id)) rows.splice(Math.min(editing.index, rows.length), 0, editing.row);
+    list.append(...rows);
+    focused?.focus();
     if (loaded.length === 0 && filterText) {
         const empty = document.createElement('div');
         empty.className = 'view_picker_empty';

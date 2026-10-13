@@ -108,14 +108,6 @@ impl M {
             _ => unreachable!(),
         }
     }
-
-    fn tie(&self) -> Vec<u8> {
-        let mut t = self.key.as_bytes().to_vec();
-        if self.kind == GROUP {
-            t.extend_from_slice(b".json");
-        }
-        t
-    }
 }
 
 fn cmp_num(a: Option<f64>, b: Option<f64>) -> std::cmp::Ordering {
@@ -127,29 +119,31 @@ fn cmp_num(a: Option<f64>, b: Option<f64>) -> std::cmp::Ordering {
     }
 }
 
-/// The order upstream sorts by: the key, then characters before groups, then the tie; descending reverses it.
+/// The list's order: the key, then characters before groups, then the entity id, so equal keys list in creation
+/// order (the orders' tie is the id, not upstream's avatar); descending reverses it.
 fn model_order(m: &BTreeMap<u64, M>, ids: &mut [u64], sort: &Sort) {
-    let asc = |a: &M, b: &M, s: u64| {
+    let asc = |x: u64, y: u64, s: u64| {
+        let (a, b) = (&m[&x], &m[&y]);
         let k = if s == BY_NAME {
             library::fold_name(a.name.as_bytes()).cmp(&library::fold_name(b.name.as_bytes()))
         } else {
             cmp_num(a.num(s), b.num(s))
         };
-        k.then(a.kind.cmp(&b.kind)).then(a.tie().cmp(&b.tie()))
+        k.then(a.kind.cmp(&b.kind)).then(x.cmp(&y))
     };
-    ids.sort_by(|x, y| {
-        let (a, b) = (&m[x], &m[y]);
+    ids.sort_by(|&x, &y| {
+        let (a, b) = (&m[&x], &m[&y]);
         match *sort {
             Sort::Key { sort, desc } => {
                 if desc {
-                    asc(b, a, sort)
+                    asc(y, x, sort)
                 } else {
-                    asc(a, b, sort)
+                    asc(x, y, sort)
                 }
             }
             Sort::Fav { desc } => {
                 let g = |v: &M| u8::from(v.fav != desc);
-                g(a).cmp(&g(b)).then(asc(a, b, BY_NAME))
+                g(a).cmp(&g(b)).then(asc(x, y, BY_NAME))
             }
             Sort::Random { .. } => unreachable!(),
         }
@@ -518,8 +512,12 @@ fn check(s: &Store, m: &BTreeMap<u64, M>) {
             assert_eq!(again, got);
         }
     }
-    // Each numbering is dense and maps back.
-    for scope in [library::Scope::All, library::Scope::Tag(TAGS[0])] {
+    // Each numbering is dense and maps back: the entity at each number keeps that number in its host entry.
+    for scope in [
+        library::Scope::All,
+        library::Scope::Tag(TAGS[0]),
+        library::Scope::World(books::scope_bytes(LORE)),
+    ] {
         for kind in [CHARACTER, GROUP] {
             for fav in [false, true] {
                 s.derived(|v| {
@@ -527,15 +525,26 @@ fn check(s: &Store, m: &BTreeMap<u64, M>) {
                     let want = m
                         .values()
                         .filter(|x| x.kind == kind && x.fav == fav)
-                        .filter(|x| match scope {
-                            library::Scope::Tag(t) => x.tags.contains(&t),
-                            _ => true,
+                        .filter(|x| match &scope {
+                            library::Scope::Tag(t) => x.tags.contains(t),
+                            library::Scope::World(_) => x.kind == CHARACTER && x.world.is_some(),
+                            library::Scope::All => true,
                         })
                         .count();
                     assert_eq!(n as usize, want);
                     let p = library::rand_prefix(&scope, kind, fav);
                     let all = v.scan(&p, &key::prefix_end(&p), usize::MAX)?;
                     assert_eq!(all.len(), want);
+                    for (i, (k, e)) in all.iter().enumerate() {
+                        let mut at = p.len();
+                        assert_eq!(crate::keyspace::val::get_u64(k, &mut at), Some(i as u64));
+                        let e = library::parse_uvarint(e)?;
+                        assert_eq!(
+                            library::rank(v, &scope, e)?,
+                            Some(i as u64),
+                            "{scope:?} {e}"
+                        );
+                    }
                     Ok(())
                 })
                 .unwrap();
@@ -906,7 +915,7 @@ fn an_entity_key_is_taken_once_and_deleting_frees_everything_it_held() {
                 let p = key::id(st, 1);
                 n += v.scan(&p, &key::prefix_end(&p), usize::MAX)?.len();
             }
-            for st in [key::ORDER, key::RAND, key::RAND_AT, key::HASH_INDEX] {
+            for st in [key::ORDER, key::RAND, key::HASH_INDEX] {
                 let p = key::of(st);
                 n += v.scan(&p, &key::prefix_end(&p), usize::MAX)?.len();
             }
@@ -953,7 +962,7 @@ fn permute_is_a_bijection_and_unpermute_its_inverse() {
 
 #[test]
 fn a_bulk_load_into_an_empty_library_numbers_every_scope() {
-    for failpoint in [0u8, 3] {
+    for failpoint in [0u8, 2] {
         let dir = temp_dir("bulk-numbers");
         let mut lib = Lib {
             m: BTreeMap::new(),
@@ -971,7 +980,7 @@ fn a_bulk_load_into_an_empty_library_numbers_every_scope() {
             assert!(done.unwrap().number_entries > 0);
             s
         } else {
-            // Stopped between the numberings and the load's run: replay numbers the load again over them.
+            // Stopped before the load's run: replay numbers the load as commits do.
             assert!(done.is_err());
             drop(s);
             Store::open_in(&dir, SMALL, pool()).unwrap()

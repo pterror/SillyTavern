@@ -38,10 +38,10 @@ const HIGH_BMP = 'tag\uE000';
 const ASTRAL = 'tag\u{10000}';
 const JS_SORTED = [ASTRAL, HIGH_BMP];
 
-/** @type {typeof import('../src/character-metadata-db.js')} */
-let metadataDb;
-/** @type {typeof import('../src/endpoints/search-index-coordinator.js')} */
-let searchCoordinator;
+/** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
+let user;
+/** @type {typeof import('./converted-user.fixture.js')} */
+let fixture;
 /** @type {typeof import('../public/scripts/character-cache.js')} */
 let characterCache;
 /** @type {import('node:http').Server} */
@@ -56,8 +56,7 @@ beforeAll(async () => {
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(originalCwd, '..', 'default', 'config.yaml'));
 
-    metadataDb = await import('../src/character-metadata-db.js');
-    searchCoordinator = await import('../src/endpoints/search-index-coordinator.js');
+    fixture = await import('./converted-user.fixture.js');
     characterCache = await import('../public/scripts/character-cache.js');
     const { router: charactersRouter } = await import('../src/endpoints/characters.js');
 
@@ -84,28 +83,15 @@ afterAll(async () => {
     process.chdir(originalCwd);
 });
 
-beforeEach(() => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-tag-ids-normalize-test-'));
-    directories = {
-        root: tempDir,
-        characters: path.join(tempDir, 'characters'),
-        chats: path.join(tempDir, 'chats'),
-        groups: path.join(tempDir, 'groups'),
-        groupChats: path.join(tempDir, 'groupChats'),
-        thumbnailsAvatar: path.join(tempDir, 'thumbnails', 'avatar'),
-    };
-    for (const dir of [directories.characters, directories.chats, directories.groups, directories.groupChats, directories.thumbnailsAvatar]) {
-        fs.mkdirSync(dir, { recursive: true });
-    }
+beforeEach(async () => {
+    user = await fixture.emptyUser('st-tag-ids-normalize-test-');
+    directories = user.directories;
+    globalThis.DATA_ROOT = user.dataRoot;
     // character-cache.js keeps its store instances, so each one's records are emptied rather than dropped.
     for (const records of localforageStores.values()) records.clear();
 });
 
-afterEach(async () => {
-    await searchCoordinator.disposeSearchWorkers();
-    metadataDb.disposeMetadataStores();
-    fs.rmSync(directories.root, { recursive: true, force: true });
-});
+afterEach(() => user.close());
 
 async function postJson(urlPath, body) {
     const response = await fetch(`${baseUrl}${urlPath}`, {
@@ -124,17 +110,18 @@ function card(name) {
 
 /** The character's list row, as the store reads it. @param {string} id */
 async function readListRow(id) {
-    return /** @type {any} */ (await metadataDb.getShallowByIds(directories, [id]))[id];
+    const page = await user.store.lib.query({ ids: [id], wantRows: true, limit: 1 });
+    return /** @type {any} */ (page.rows)[0].item;
 }
 
 /** @param {string} id @param {string[]} tagIds */
 async function assignTags(id, tagIds) {
-    for (const tagId of tagIds) expect(await metadataDb.assignEntityTag(directories, id, tagId)).toBe('ok');
+    for (const tagId of tagIds) expect((await user.store.lib.tags.assign(id, tagId)).result).toBe('ok');
 }
 
 describe('server: list rows\' tag_ids are read sorted', () => {
     test('tags assigned in any order', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', card('Bob'));
+        await user.store.lib.writeCard(directories, 'Bob.png', card('Bob'));
         await assignTags('Bob.png', ['tb', 'ta', 'tc']);
         expect((await readListRow('Bob.png')).tag_ids).toEqual(['ta', 'tb', 'tc']);
 
@@ -142,16 +129,19 @@ describe('server: list rows\' tag_ids are read sorted', () => {
         expect(fields.tag_ids).toEqual(['ta', 'tb', 'tc']);
     });
 
-    test('a batch-import row tagged while still buffered', async () => {
-        await metadataDb.beginBatchImport(directories);
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', card('Bob'), null, null, { fromImport: true });
-        await assignTags('Bob.png', ['tb', 'ta']);
-        await metadataDb.endBatchImport(directories);
+    test('a character written in a batch of imports, tagged', async () => {
+        user.store.lib.beginBatch();
+        try {
+            await user.store.lib.writeCard(directories, 'Bob.png', card('Bob'));
+            await assignTags('Bob.png', ['tb', 'ta']);
+        } finally {
+            user.store.lib.endBatch();
+        }
         expect((await readListRow('Bob.png')).tag_ids).toEqual(['ta', 'tb']);
     });
 
     test('ids SQLite and JS order differently are stored in JS order', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', card('Bob'));
+        await user.store.lib.writeCard(directories, 'Bob.png', card('Bob'));
         await assignTags('Bob.png', [HIGH_BMP, ASTRAL]);
         expect((await readListRow('Bob.png')).tag_ids).toEqual(JS_SORTED);
     });

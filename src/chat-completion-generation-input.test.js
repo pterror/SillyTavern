@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import http from 'node:http';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -21,11 +20,9 @@ setConfigFilePath(path.join(__dirname, '..', 'config.yaml'));
 const { resolveChatCompletionGenerationInput } = await import('./chat-completion-generation-input.js');
 const { importWorldInfoFromRaw } = await import('./endpoints/worldinfo.js');
 const { writeAllSettings } = await import('./settings-store.js');
-const { saveChatToTree, disposeMessageTreeStores } = await import('./message-tree-db.js');
 const { prepareOpenAIMessages } = await import('./chat-completion-prepare-messages.js');
 const { world_info_position } = await import('./world-info/result-bucketing.js');
 const { extension_prompt_types, extension_prompt_roles } = await import('./extension-prompt-table.js');
-const { upsertCharacterFromWrite } = await import('./character-metadata-db.js');
 const { encodeTextByLocalTokenizerType, getTiktokenTokenizer } = await import('./endpoints/tokenizers.js');
 // OpenRouter models resolve as if OpenRouter's model list named no hugging_face_id for them, and the
 // list is not fetched.
@@ -34,28 +31,30 @@ rememberOpenRouterModels([]);
 const { createLlamaCppPropsCheck } = await import('./llamacpp-props.js');
 const { writeBack } = await import('./token-count-store.js');
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-chat-completion-generation-input-test-'));
-const charactersDir = path.join(root, 'characters');
-const groupsDir = path.join(root, 'groups');
-const worldsDir = path.join(root, 'worlds');
-const filesDir = path.join(root, 'files');
-const chatsDir = path.join(root, 'chats');
-fs.mkdirSync(charactersDir, { recursive: true });
-fs.mkdirSync(groupsDir, { recursive: true });
-fs.mkdirSync(worldsDir, { recursive: true });
-fs.mkdirSync(filesDir, { recursive: true });
-fs.mkdirSync(chatsDir, { recursive: true });
+const { convertedUser, writeLibraryCard, saveBranch, loadBranch, chatContextOf } = await import('../tests/converted-user.fixture.js');
 
-const directories = { root, characters: charactersDir, groups: groupsDir, worlds: worldsDir, files: filesDir, chats: chatsDir };
-globalThis.DATA_ROOT = root;
+const user = await convertedUser('st-chat-completion-generation-input-test-');
+const { directories } = user;
+globalThis.DATA_ROOT = user.dataRoot;
+const { newSessionKey } = await import('./chat-engine.js');
+
+/**
+ * The chat context of `owner`'s tree through the session of its branch `name` (a new session without one).
+ * @param {{ avatar?: string, group?: string }} owner
+ * @param {string} [name]
+ */
+async function ctxOf(owner, name) {
+    const session = name === undefined ? newSessionKey() : (await loadBranch(user.store, owner, name)).branch.session;
+    return chatContextOf(user.store, owner, session);
+}
 
 /** Minimal real on-disk lorebook, matching src/world-info/candidate-resolution.test.js's own fixture shape. */
-function writeLorebook(name, entries) {
+async function writeLorebook(name, entries) {
     const entriesObj = {};
     for (const entry of entries) {
         entriesObj[String(entry.uid)] = entry;
     }
-    importWorldInfoFromRaw(directories, name, JSON.stringify({ entries: entriesObj }));
+    await importWorldInfoFromRaw(directories, name, JSON.stringify({ entries: entriesObj }));
 }
 
 const baseImage = fs.readFileSync(path.join(__dirname, '..', 'public', 'img', 'ai4.png'));
@@ -90,8 +89,7 @@ async function writeCharacter(avatar, overrides = {}) {
     };
     const cardJson = JSON.stringify(card);
     const buffer = writeCard(baseImage, cardJson);
-    fs.writeFileSync(path.join(charactersDir, avatar), buffer);
-    await upsertCharacterFromWrite(directories, avatar, cardJson);
+    await writeLibraryCard(user, avatar, cardJson, buffer);
     return avatar;
 }
 
@@ -174,12 +172,12 @@ async function gemmaModelCountsWithGemma() {
     settings.oai_settings.openrouter_model = 'google/gemma-2-9b-it';
     writeAllSettings(directories, settings);
     const avatar = await writeCharacter('Gem.png', { name: 'Gem', data: { name: 'Gem', first_mes: 'Hi.' } });
-    await saveChatToTree(directories, avatar, 'gem-chat', [
+    await saveBranch(user.store, { avatar: avatar }, 'gem-chat', [
         { chat_metadata: {} },
         { name: 'Gem', is_user: false, mes: 'Hi.', send_date: 1, extra: {} },
     ]);
 
-    const input = await resolveChatCompletionGenerationInput(directories, { avatar, ownerId: avatar, branchName: 'gem-chat' });
+    const input = await resolveChatCompletionGenerationInput(directories, { avatar, chatContext: await ctxOf({ avatar }, 'gem-chat'), branchName: 'gem-chat' });
 
     const message = { role: 'user', content: 'Antidisestablishmentarianism, naïveté and 東京 split differently.' };
     const gemmaCount = (await encodeTextByLocalTokenizerType('gemma', `${message.role}\n\n${message.content}`)).length;
@@ -227,7 +225,7 @@ async function storedCountsSkipTextOnlyMessages() {
         settings.world_info_settings.world_info.globalSelect = [];
         writeAllSettings(directories, settings);
         const avatar = await writeCharacter('Stow.png', { name: 'Stow', data: { name: 'Stow', first_mes: 'Hi.' } });
-        await saveChatToTree(directories, avatar, 'stow-chat', [
+        await saveBranch(user.store, { avatar: avatar }, 'stow-chat', [
             { chat_metadata: {} },
             { name: 'Stow', is_user: false, mes: 'Hello there.', send_date: 1, extra: {} },
             { name: 'Tester', is_user: true, mes: 'What time is it?', send_date: 2, extra: {} },
@@ -241,7 +239,7 @@ async function storedCountsSkipTextOnlyMessages() {
         const generate = async () => {
             stub.tokenizeBodies.length = 0;
             const input = await resolveChatCompletionGenerationInput(directories, {
-                avatar, ownerId: avatar, branchName: 'stow-chat', type: 'normal',
+                avatar, chatContext: await ctxOf({ avatar }, 'stow-chat'), branchName: 'stow-chat', type: 'normal',
                 llamaCppProps: createLlamaCppPropsCheck({ reuse: false }),
             });
             const prepared = await prepareOpenAIMessages({ ...input, canUseToolsOverride: true });
@@ -287,7 +285,7 @@ async function run() {
     const WI_DEPTH_TEST_DEPTH = 3;
     const WI_DEPTH_TEST_ROLE = extension_prompt_roles.SYSTEM;
     const WI_DEPTH_TEST_CONTENT = 'A secret passed down at this exact depth.';
-    writeLorebook('TestLore', [
+    await writeLorebook('TestLore', [
         { uid: 'wi1', key: ['traveler'], keysecondary: [], comment: '', content: 'The ancient tower looms over the village.', constant: false, selective: false, order: 10, position: 0, disable: false },
         {
             uid: 'wi2', key: ['nice to meet'], keysecondary: [], comment: '', content: WI_DEPTH_TEST_CONTENT,
@@ -303,7 +301,7 @@ async function run() {
 
     const ownerId = avatar;
     const branchName = 'main-chat';
-    await saveChatToTree(directories, ownerId, branchName, [
+    await saveBranch(user.store, { avatar: ownerId }, branchName, [
         { chat_metadata: {} },
         { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
         { name: 'Tester', is_user: true, mes: 'Hi Rex, nice to meet you.', send_date: 2, extra: {} },
@@ -311,7 +309,7 @@ async function run() {
     ]);
 
     const input = await resolveChatCompletionGenerationInput(directories, {
-        avatar, ownerId, branchName,
+        avatar, chatContext: await ctxOf({ avatar }, branchName), branchName,
         type: 'normal',
     });
 
@@ -369,7 +367,7 @@ async function run() {
 
     // An explicit override (including []) always wins over auto-resolution.
     const overriddenWI = await resolveChatCompletionGenerationInput(directories, {
-        avatar, ownerId, branchName, worldInfoCandidates: [],
+        avatar, chatContext: await ctxOf({ avatar }, branchName), branchName, worldInfoCandidates: [],
     });
     assert.deepEqual(overriddenWI.worldInfoCandidates, [], 'an explicit worldInfoCandidates override bypasses auto-resolution');
 
@@ -379,7 +377,7 @@ async function run() {
     // OUTPUT is newest-first (index 0 = most recent turn), matching what
     // populateChatHistory()/chat-completion-history.js's own `[...messages].reverse()` internally
     // expects to receive. Verified directly by reading both functions, not assumed. ---
-    assert.equal(input.messages.length, 3, 'messages resolves via a real loadBranch() round trip through message-tree-db.js, converted to chat-completion shape');
+    assert.equal(input.messages.length, 3, 'messages resolves from the stored chat, converted to chat-completion shape');
     assert.equal(input.messages[0].content, 'Likewise!', 'messages[0] is the NEWEST turn - buildChatCompletionMessages() output is newest-first');
     assert.equal(input.messages[0].role, 'assistant');
     assert.equal(input.messages[1].role, 'user');
@@ -389,7 +387,7 @@ async function run() {
 
     // --- userMessageText: appends the pending user action onto the loaded chat history, pre-conversion ---
     const withUserMessage = await resolveChatCompletionGenerationInput(directories, {
-        avatar, ownerId, branchName,
+        avatar, chatContext: await ctxOf({ avatar }, branchName), branchName,
         userMessageText: 'What happens next, Rex?',
     });
     assert.equal(withUserMessage.messages.length, 4, 'userMessageText appends one new message onto the real loaded history');
@@ -410,7 +408,7 @@ async function run() {
     })();
     const dataUrl = `data:image/jpeg;base64,${jpegBuffer.toString('base64')}`;
     const withUserMessageExtra = await resolveChatCompletionGenerationInput(directories, {
-        avatar, ownerId, branchName,
+        avatar, chatContext: await ctxOf({ avatar }, branchName), branchName,
         userMessageText: 'Look at this.',
         userMessageExtra: { media: [{ url: dataUrl, type: 'image', source: 'upload' }], media_index: 0 },
         macroExtras: { imageInlining: true },
@@ -429,9 +427,9 @@ async function run() {
     // `appendFileAttachments()` (src/file-attachment-inline.js) text-completion-prompt-orchestrator.js
     // already reuses. Covers both resolution paths: a real on-disk file read via `.url`, and an
     // already-resolved `.text` entry that skips the disk read entirely. ---
-    fs.writeFileSync(path.join(filesDir, 'notes.txt'), 'The tower key is hidden under the loose stone.');
+    fs.writeFileSync(path.join(directories.files, 'notes.txt'), 'The tower key is hidden under the loose stone.');
     const withFileExtra = await resolveChatCompletionGenerationInput(directories, {
-        avatar, ownerId, branchName,
+        avatar, chatContext: await ctxOf({ avatar }, branchName), branchName,
         userMessageText: 'Check my notes.',
         userMessageExtra: {
             files: [
@@ -468,7 +466,7 @@ async function run() {
 
     // --- macroExtras override ---
     const overridden = await resolveChatCompletionGenerationInput(directories, {
-        avatar, ownerId, branchName,
+        avatar, chatContext: await ctxOf({ avatar }, branchName), branchName,
         macroExtras: { quietPrompt: 'Summarize the scene.', bias: '+happy' },
     });
     assert.equal(overridden.quietPrompt, 'Summarize the scene.', 'macroExtras is shallow-merged over the resolved object');
@@ -514,7 +512,7 @@ async function run() {
     biasFixture.power_user.user_prompt_bias = 'always speak in riddles';
     writeAllSettings(directories, biasFixture);
     const withBias = await resolveChatCompletionGenerationInput(directories, {
-        avatar, ownerId, branchName,
+        avatar, chatContext: await ctxOf({ avatar }, branchName), branchName,
         type: 'normal',
     });
     assert.equal(
@@ -526,7 +524,7 @@ async function run() {
     // unstubbed behavior (verified directly in src/prompt-line-formatting.js) - proves this resolver
     // genuinely reaches the real function rather than always returning the configured bias.
     const withBiasContinue = await resolveChatCompletionGenerationInput(directories, {
-        avatar, ownerId, branchName,
+        avatar, chatContext: await ctxOf({ avatar }, branchName), branchName,
         type: 'continue',
     });
     assert.equal(withBiasContinue.bias, '', 'type: \'continue\' short-circuits getBiasStrings() to an empty bias, per its own real behavior');
@@ -578,18 +576,18 @@ async function run() {
             generation_mode_join_prefix: '',
             generation_mode_join_suffix: '',
         };
-        fs.writeFileSync(path.join(groupsDir, `${groupId}.json`), JSON.stringify(groupMetadata, null, 4));
+        await user.store.lib.writeGroup(groupMetadata);
 
         // A chat branch owned by the GROUP's own id - not either member's avatar - with one message
         // from each member already in history, matching a real multi-member group conversation.
-        await saveChatToTree(directories, groupId, groupChatId, [
+        await saveBranch(user.store, { group: groupId }, groupChatId, [
             { chat_metadata: {} },
             { name: 'Tester', is_user: true, mes: 'Hello, party!', send_date: 1, extra: {} },
             { name: 'Zephyr', is_user: false, mes: 'Winds are shifting!', send_date: 2, extra: {} },
         ]);
 
         const groupInput = await resolveChatCompletionGenerationInput(directories, {
-            avatar: nova, groupId, ownerId: groupId, branchName: groupChatId,
+            avatar: nova, groupId, chatContext: await ctxOf({ group: groupId }, groupChatId), branchName: groupChatId,
             type: 'normal',
         });
 
@@ -636,7 +634,7 @@ async function run() {
         // (a) explicit nodeId resolves identically to the equivalent explicit branchName.
         const mainLeafId = input.macroContext.chat[input.macroContext.chat.length - 1].node_id;
         const viaNodeId = await resolveChatCompletionGenerationInput(directories, {
-            avatar, ownerId, nodeId: mainLeafId,
+            avatar, chatContext: await ctxOf({ avatar }, branchName), nodeId: mainLeafId,
         });
         // Only a load by chat name hides that chat's own label; a node id names no chat.
         const withoutBookmarkLink = chat => chat.map(m => {
@@ -648,24 +646,24 @@ async function run() {
         assert.equal(viaNodeId.resolvedNodeId, mainLeafId, 'resolvedNodeId echoes back the given node_id');
         assert.equal(viaNodeId.chatResolutionAmbiguous, false);
 
-        // (b) neither branchName nor nodeId given, on an owner that ALREADY has real history -
-        // ambiguous: true, empty chat - never a silent guess at "the current leaf".
+        // (b) neither branchName nor nodeId given, through a session that isn't at the tree's root (a new
+        // one lands in the existing history) - ambiguous: true, empty chat - never a silent guess at "the
+        // current leaf".
         const ambiguous = await resolveChatCompletionGenerationInput(directories, {
-            avatar, ownerId,
+            avatar, chatContext: await ctxOf({ avatar }),
         });
         assert.equal(ambiguous.chatResolutionAmbiguous, true, 'an owner with real existing history and no given identifier is reported as ambiguous, not silently resolved');
         assert.equal(ambiguous.resolvedNodeId, null);
         assert.equal(ambiguous.rawChatLength, 0, 'the ambiguous case resolves to an empty chat rather than guessing the current leaf');
 
-        // (c) neither branchName nor nodeId given, on a GENUINELY BRAND-NEW owner with zero prior
-        // messages - the only safe identifier-free case: resolves via the owner's own anchor to a
-        // real node id and an empty chat.
-        const freshOwnerId = 'fresh-owner-with-no-history';
+        // (c) neither branchName nor nodeId given, on a character with no messages at all - the only safe
+        // identifier-free case: the chat is at the tree's root, empty.
+        const freshAvatar = await writeCharacter('FreshOwner.png', { name: 'FreshOwner', data: { name: 'FreshOwner', first_mes: 'Hi.' } });
         const fresh = await resolveChatCompletionGenerationInput(directories, {
-            avatar, ownerId: freshOwnerId,
+            avatar: freshAvatar, chatContext: await ctxOf({ avatar: freshAvatar }),
         });
         assert.equal(fresh.chatResolutionAmbiguous, false, 'a genuinely empty owner is not ambiguous');
-        assert.ok(fresh.resolvedNodeId, 'a genuinely empty owner still resolves to a real anchor node id');
+        assert.equal(fresh.resolvedNodeId, null, 'a genuinely empty owner\'s chat is at the tree\'s root');
         assert.equal(fresh.rawChatLength, 0, 'a genuinely new owner correctly resolves to an empty chat, not an error');
     }
 
@@ -677,7 +675,4 @@ run()
         console.error(error);
         process.exitCode = 1;
     })
-    .finally(() => {
-        disposeMessageTreeStores();
-        fs.rmSync(root, { recursive: true, force: true });
-    });
+    .finally(() => user.close());

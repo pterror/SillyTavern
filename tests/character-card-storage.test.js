@@ -1,6 +1,12 @@
 /* eslint jest/expect-expect: ["warn", { "assertFunctionNames": ["expect", "expectLossless"] }] */
 import { describe, test, expect, jest } from '@jest/globals';
-import { getCharaCardV2 } from '../src/character-card-normalize.js';
+import path from 'node:path';
+import { setConfigFilePath } from '../src/util.js';
+
+// character-card-normalize.js reaches modules that read config at load (through endpoints/worldinfo.js and the engine
+// store), so the config path is set before it is imported.
+setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
+const { getCharaCardV2 } = await import('../src/character-card-normalize.js');
 import { splitCard, assembleCard, canonicalCardHash, canonicalJson, cardWithStoredFav } from '../src/character-card-storage.js';
 
 /** Splits `card` and assembles it back with `fav` as the stored favourite flag. */

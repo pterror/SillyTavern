@@ -74,9 +74,11 @@ test('opening a character is one request and writes nothing but what was opened'
         const context = SillyTavern.getContext();
         const settings = await (await fetch('/api/settings/get', { method: 'POST', headers: context.getRequestHeaders(), body: '{}' })).json();
         const parsed = typeof settings.settings === 'string' ? JSON.parse(settings.settings) : settings.settings;
-        return { chat: context.characters.find(c => c.avatar === avatar)?.chat ?? null, active: parsed.active_character };
+        const { tabSession } = await import('/scripts/tab-session.js');
+        return { chat: context.characters.find(c => c.avatar === avatar)?.chat ?? null, session: tabSession(), active: parsed.active_character };
     }, avatar);
-    expect(state).toEqual({ chat: '', active: avatar });
+    // No current chat: the tab's own conversation with this character, `s<session>.<tree>`.
+    expect(state).toEqual({ chat: expect.stringMatching(new RegExp(`^s${state.session}\\.\\d+$`)), session: expect.stringMatching(/^[0-9a-f-]{36}$/), active: avatar });
 });
 
 test('a group chat with no messages shows its greetings unsaved, and stores them before the first message', async ({ page }) => {
@@ -115,7 +117,7 @@ test('a group chat with no messages shows its greetings unsaved, and stores them
         return SillyTavern.getContext().chat.map(m => ({ mes: m.mes, node_id: m.node_id }));
     });
     expect(stored.map(m => m.mes)).toEqual(['A says hi.', 'B says hi.', 'Hello both.']);
-    for (const message of stored) expect(message.node_id).toMatch(/^[0-9a-f-]{36}$/);
+    for (const message of stored) expect(message.node_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
 
     await page.reload();
     await testSetup.awaitST({ page });

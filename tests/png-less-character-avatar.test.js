@@ -1,10 +1,9 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals';
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 
-/** @type {typeof import('../src/character-metadata-db.js')} */
-let metadataDb;
+/** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
+let user;
 /** @type {import('node:http').Server} */
 let server;
 let baseUrl;
@@ -21,7 +20,6 @@ beforeAll(async () => {
     setConfigFilePath(path.join(originalCwd, '..', 'default', 'config.yaml'));
     process.chdir(path.resolve(originalCwd, '..'));
 
-    metadataDb = await import('../src/character-metadata-db.js');
     const { router: userFilesRouter } = await import('../src/users.js');
     const { router: thumbnailRouter } = await import('../src/endpoints/thumbnails.js');
     const { DEFAULT_AVATAR_PATH } = await import('../src/constants.js');
@@ -30,7 +28,7 @@ beforeAll(async () => {
     const express = (await import('express')).default;
     const app = express();
     app.use((req, res, next) => {
-        req.user = { directories, profile: { handle: `test-user-${path.basename(directories.root)}` } };
+        req.user = user.user;
         next();
     });
     app.use('/thumbnail', thumbnailRouter);
@@ -45,28 +43,19 @@ afterAll(async () => {
     process.chdir(originalCwd);
 });
 
-beforeEach(() => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-png-less-avatar-test-'));
-    directories = {
-        root: tempDir,
-        characters: path.join(tempDir, 'characters'),
-        chats: path.join(tempDir, 'chats'),
-        thumbnailsAvatar: path.join(tempDir, 'thumbnails', 'avatar'),
-    };
-    fs.mkdirSync(directories.characters, { recursive: true });
-    fs.mkdirSync(directories.chats, { recursive: true });
-    fs.mkdirSync(directories.thumbnailsAvatar, { recursive: true });
+beforeEach(async () => {
+    user = await (await import('./converted-user.fixture.js')).emptyUser('st-png-less-avatar-test-');
+    ({ directories } = user);
+    globalThis.DATA_ROOT = user.dataRoot;
 });
 
-afterEach(() => {
-    metadataDb.disposeMetadataStores();
-});
+afterEach(() => user.close());
 
 /** Seeds a row with no PNG on disk. */
 async function seedPngLessCharacter(avatar) {
     const name = avatar.replace(/\.png$/, '');
     const card = { name, spec: 'chara_card_v2', spec_version: '2.0', data: { name, extensions: {} } };
-    await metadataDb.upsertCharacterFromWrite(directories, avatar, JSON.stringify(card));
+    await user.store.lib.writeCard(directories, avatar, JSON.stringify(card));
 }
 
 async function getBytes(urlPath) {

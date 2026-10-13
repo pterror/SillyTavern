@@ -176,7 +176,13 @@ impl Deriver for SubtreeDelete {
                 if let Some(Some(p)) = sessions::session_in_tree(view, a, tree)?
                     && under(view, tree, r, p)?
                 {
-                    sessions::set_session_tree(view, out, a, tree, to)?;
+                    sessions::set_session_tree(
+                        view,
+                        out,
+                        a,
+                        tree,
+                        sessions::Spot::of(to, chat::time_at(rec, 3)),
+                    )?;
                 }
             } else if let Some((us, Some(p))) = sessions::user_in_tree(view, a, tree)?
                 && under(view, tree, r, p)?
@@ -193,6 +199,8 @@ impl Deriver for SubtreeDelete {
             } else if let Some(p) = parent {
                 chat::bookmark_entries(out, b, tree, m, false);
                 chat::bookmark_entries(out, b, tree, p, true);
+                chat::bookmark_time_del(view, out, b, tree)?;
+                chat::bookmark_time_put(out, b, tree, chat::message_time(view, p)?);
             }
         }
         let time = match append.values[chat::APPEND_TIME] {
@@ -258,6 +266,7 @@ pub fn step(view: &View, out: &mut Out) -> Result<bool, StoreError> {
     let mut at = pp.len();
     let r = get_u64(&pk, &mut at).ok_or_else(|| bad("a pending root key"))?;
     let [tree, cur, rp, rl] = parse_varints::<4>(&v)?;
+    let time = chat::time_at(&view.record(rp)?.0, 3);
     let mut local: BTreeMap<Vec<u8>, Val> = BTreeMap::new();
     let mut c = cur.checked_sub(1).ok_or_else(|| bad("a pending delete"))?;
     let mut done = false;
@@ -280,7 +289,7 @@ pub fn step(view: &View, out: &mut Out) -> Result<bool, StoreError> {
                 let (l, rec) = require_message(&lv, c)?;
                 let parent = parent_of(&lv, c, &rec)?;
                 super::stats::removed(&lv, &mut o, c)?;
-                chat::delete_message(&lv, &mut o, c, (l, rec), c == r)?;
+                chat::delete_message(&lv, &mut o, c, (l, rec), c == r, time)?;
                 if c == r {
                     done = true;
                 } else {

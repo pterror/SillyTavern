@@ -6,7 +6,7 @@ import path from 'node:path';
 import { test, after } from 'node:test';
 
 import { loadEngine } from '../engine/load.js';
-import { decodeMessage, encodeMessage, messageRecords } from './chat-codec.js';
+import { decodeMessage, encodeMessage, messageRecords, speakerNameAt } from './chat-codec.js';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'chat-codec-test-'));
 after(() => fs.rmSync(tmp, { recursive: true, force: true }));
@@ -62,3 +62,20 @@ for (const [name, engine] of Object.entries({ native: loadEngine().binding, wasm
         await store.close();
     });
 }
+
+test('a speaker\'s name at a time is what it was called then; a message stores no name where that is the speaker\'s', () => {
+    const renamed = { id: 7n, name: 'Third', avatar: 'a.png', renames: [{ until: 100, name: 'First' }, { until: 200, name: 'Second' }] };
+    assert.deepEqual([50, 99, 100, 150, 200, 900].map(time => speakerNameAt(renamed, time)), ['First', 'First', 'Second', 'Second', 'Third', 'Third']);
+    assert.equal(speakerNameAt(alice, 5), 'Alice');
+    const message = { name: 'First', is_user: false, is_system: false, mes: 'hi', original_avatar: 'a.png' };
+    assert.equal(encodeMessage(message, 50, renamed).name, null);
+    assert.equal(encodeMessage(message, 150, renamed).name, 'First');
+    const stored = (/** @type {number} */ time, /** @type {string} */ name = 'First') => {
+        const enc = encodeMessage({ ...message, name }, time, renamed);
+        return { id: 1n, time, flags: enc.flags, speaker: 7n, name: enc.name, texts: [], values: [...enc.values].map(([field, json]) => ({ field, json })), times: [] };
+    };
+    assert.equal(JSON.parse(decodeMessage(stored(50), () => renamed)).name, 'First');
+    assert.equal(JSON.parse(decodeMessage(stored(150), () => renamed)).name, 'First');
+    assert.equal(JSON.parse(decodeMessage(stored(150, 'Second'), () => renamed)).name, 'Second');
+    assert.equal(JSON.parse(decodeMessage(stored(250, 'Third'), () => renamed)).name, 'Third');
+});

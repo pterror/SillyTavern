@@ -5,11 +5,11 @@ import os from 'node:os';
 import process from 'node:process';
 import lodash from 'lodash';
 
-import { characterContentFieldsFingerprint, normalizeFav, normalizeTagIds, shallowCharacterData } from '../public/scripts/hash-utils.js';
+import { characterContentFieldsFingerprint, characterRowFields, normalizeFav, normalizeTagIds, shallowCharacterData } from '../public/scripts/hash-utils.js';
 
 // The real delta-sync client (character-list.js getCharacters() -> fetchCharactersDelta() -> character-cache.js)
-// against the real server routes: after POST /fav, delta-sync merges only the changed field into the cached
-// record, which must then be the list row the server shows for it, compared by fav, tag_ids and the content fields. Only modules that can't load in node are replaced: IndexedDB
+// against the real server routes: after POST /fav, delta-sync sends its cached record's field hashes and merges only
+// the changed fields into it, which must then be the list row the server shows for it, compared by fav, tag_ids and the content fields. Only modules that can't load in node are replaced: IndexedDB
 // (localforage) by an in-memory store that structured-clones like IndexedDB does, and character-list.js's DOM-bound
 // UI imports.
 
@@ -125,8 +125,8 @@ globalThis.toastr = { error: toastrError, warning: noop, info: noop, success: no
 
 const realFetch = globalThis.fetch;
 
-/** @type {import('../src/users.js').UserDirectoryList} */
-let directories;
+/** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
+let user;
 
 const FULL_CARD = {
     spec: 'chara_card_v2', spec_version: '2.0', name: 'Full', tags: ['t1'],
@@ -188,9 +188,8 @@ function cachedListFacts(record, includeCreatorNotes) {
 
 /**
  * @typedef {object} Mode
- * @property {typeof import('../src/character-metadata-db.js')} metadataDb
- * @property {typeof import('../src/endpoints/search-index-coordinator.js')} searchCoordinator
- * @property {typeof import('better-sqlite3')} Database
+ * @property {typeof import('./converted-user.fixture.js')} fixture
+ * @property {typeof import('../src/library-codes.js').TYPE} TYPE
  * @property {typeof import('../public/scripts/character-list.js')} characterList
  * @property {import('node:http').Server} server
  * @property {string} baseUrl
@@ -216,9 +215,8 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
         const { setConfigFilePath } = await import('../src/util.js');
         setConfigFilePath(path.join(originalCwd, '..', 'default', 'config.yaml'));
 
-        const metadataDb = await import('../src/character-metadata-db.js');
-        const searchCoordinator = await import('../src/endpoints/search-index-coordinator.js');
-        const Database = (await import('better-sqlite3')).default;
+        const fixture = await import('./converted-user.fixture.js');
+        const { TYPE } = await import('../src/library-codes.js');
         const { router } = await import('../src/endpoints/characters.js');
         const characterList = await import('../public/scripts/character-list.js');
 
@@ -231,7 +229,7 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
         app.use(multer({ dest: uploadsDir }).single('avatar'));
         app.use(express.json());
         app.use((req, res, next) => {
-            req.user = { directories, profile: { handle: `test-user-${path.basename(directories.root)}` } };
+            req.user = user.user;
             next();
         });
         app.use('/api/characters', router);
@@ -239,7 +237,7 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
         await new Promise(resolve => server.once('listening', resolve));
         const baseUrl = `http://127.0.0.1:${server.address().port}`;
 
-        mode = { metadataDb, searchCoordinator, Database, characterList, server, baseUrl };
+        mode = { fixture, TYPE, characterList, server, baseUrl };
     });
 
     afterAll(async () => {
@@ -249,21 +247,9 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
         delete process.env.SILLYTAVERN_PERFORMANCE_LAZYLOADCHARACTERS;
     });
 
-    beforeEach(() => {
-        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-delta-sync-fav-merge-test-'));
-        directories = {
-            root: tempDir,
-            characters: path.join(tempDir, 'characters'),
-            chats: path.join(tempDir, 'chats'),
-            groups: path.join(tempDir, 'groups'),
-            groupChats: path.join(tempDir, 'groupChats'),
-            backups: path.join(tempDir, 'backups'),
-            thumbnailsAvatar: path.join(tempDir, 'thumbnails', 'avatar'),
-            worlds: path.join(tempDir, 'worlds'),
-        };
-        for (const dir of Object.values(directories)) {
-            fs.mkdirSync(dir, { recursive: true });
-        }
+    beforeEach(async () => {
+        user = await mode.fixture.emptyUser('st-delta-sync-fav-merge-test-');
+        globalThis.DATA_ROOT = user.dataRoot;
         for (const records of localforageStores.values()) records.clear();
         residentCharacters.length = 0;
         toastrError.mockClear();
@@ -273,9 +259,7 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
 
     afterEach(async () => {
         globalThis.fetch = realFetch;
-        await mode.searchCoordinator.disposeSearchWorkers();
-        mode.metadataDb.disposeMetadataStores();
-        fs.rmSync(directories.root, { recursive: true, force: true });
+        await user.close();
     });
 
     async function postJson(urlPath, body) {
@@ -294,38 +278,32 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
     }
 
     /**
-     * The list facts of each character's list row (getShallowByIds()), as the client projects its cached records.
+     * The list facts of each character's list row (the store's list rows), as the client projects its cached records.
      * @param {number} expectedRows how many character rows the calling test has written
      * @returns {Promise<Map<string, ReturnType<typeof listFactsOf>>>}
      */
     async function serverListFacts(expectedRows) {
-        const db = new mode.Database(path.join(directories.root, 'character-metadata.sqlite'), { readonly: true });
-        /** @type {string[]} */
-        let ids;
-        try {
-            ids = [...db.prepare('SELECT id FROM characters ORDER BY id LIMIT ?').iterate(expectedRows + 1)].map(r => r.id);
-        } finally {
-            db.close();
-        }
-        expect(ids.length).toBe(expectedRows);
-        const listRows = await mode.metadataDb.getShallowByIds(directories, ids);
-        return new Map(ids.map(id => [id, listFactsOf(listRows[id])]));
+        const page = await user.store.lib.query({ sortField: 'name', limit: expectedRows + 1, wantRows: true, includeCreatorNotes: creatorNotes });
+        const rows = /** @type {any[]} */ (page.rows).map(row => row.item);
+        expect(rows.length).toBe(expectedRows);
+        return new Map(rows.map(row => [row.avatar, listFactsOf(row)]));
     }
 
     /**
-     * Delta-syncs on top of whatever the cache already holds, recording each field-filtered /batch request.
+     * Delta-syncs on top of whatever the cache already holds, recording the fields each /batch answer carried for a
+     * character (the paths it set or unset, sorted).
      * @returns {Promise<{cached: Map<string, any>, fieldRequests: string[][]}>}
      */
     async function incrementalSync() {
         /** @type {string[][]} */
         const fieldRequests = [];
         const routed = globalThis.fetch;
-        globalThis.fetch = (url, init) => {
-            if (String(url) === '/api/characters/batch') {
-                const { fields } = JSON.parse(String(init?.body));
-                if (fields) fieldRequests.push(fields);
+        globalThis.fetch = async (url, init) => {
+            const response = await routed(url, init);
+            if (String(url) === '/api/characters/batch' && JSON.parse(String(init?.body)).hashes) {
+                for (const { set, unset } of await response.clone().json()) fieldRequests.push([...Object.keys(set), ...unset].sort());
             }
-            return routed(url, init);
+            return response;
         };
         try {
             await mode.characterList.getCharacters({ silent: true, silentGroups: true, skipPrint: true });
@@ -337,14 +315,9 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
         return { cached: new Map([...cache].filter(([key]) => key.endsWith('.png'))), fieldRequests };
     }
 
-    /** @param {string} avatar @returns {boolean} the fav the server stores for this character */
-    function storedFav(avatar) {
-        const db = new mode.Database(path.join(directories.root, 'character-metadata.sqlite'), { readonly: true });
-        try {
-            return db.prepare('SELECT fav FROM characters WHERE id = ?').get(avatar).fav === 1;
-        } finally {
-            db.close();
-        }
+    /** @param {string} avatar @returns {Promise<boolean>} the fav the server stores for this character */
+    async function storedFav(avatar) {
+        return (await user.store.lib.entity(mode.TYPE.character, avatar))?.fav === true;
     }
 
     /** Syncs the written character into the cache, then toggles fav through /fav and syncs only that change. */
@@ -358,13 +331,29 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
             expected.push({ step, fieldRequests: expectedFieldRequests, serverHasRows: true, hashes: Object.fromEntries(server) });
         };
 
-        await recordStep('warm', await incrementalSync(), []);
+        // The cache has no copy yet: every field of the row comes back.
+        const warm = await incrementalSync();
+        const record = warm.cached.get(avatar);
+        const row = { ...record.character };
+        for (const field of record.dedup ?? []) row[field] = row.data[field];
+        await recordStep('warm', warm, [[...characterRowFields(row).keys()].sort()]);
+        /** The server's whole row, as `/batch` answers it with no hashes. */
+        const rowOf = async () => (await (await postJson('/api/characters/batch', { avatars: [avatar] })).json())[0];
+        /** The fields whose values differ between two rows. */
+        const changed = (a, b) => {
+            const [fa, fb] = [characterRowFields(a), characterRowFields(b)];
+            return [...new Set([...fa.keys(), ...fb.keys()])].filter(k => JSON.stringify(fa.get(k)) !== JSON.stringify(fb.get(k))).sort();
+        };
         for (const [index, fav] of favSequence.entries()) {
-            const before = storedFav(avatar);
+            const before = await storedFav(avatar);
+            const rowBefore = await rowOf();
             await postJson('/api/characters/fav', { avatar, fav });
-            // The /fav change arrives as a field-level change, so this exercises the merge, not a whole-record fetch.
-            // Setting the fav already stored changes nothing, so there is nothing to sync.
-            await recordStep(`fav #${index} ${fav}`, await incrementalSync(), before === fav ? [] : [['fav']]);
+            const fields = changed(rowBefore, await rowOf());
+            expect(fields).toEqual(before === fav ? [] : expect.arrayContaining(FAV_FIELDS));
+            // The page sends its copy's field hashes, so only the fields the flip changed come back: fav, its
+            // data.extensions mirror, and a full row's card JSON when the card holds fav. Setting the fav already
+            // stored changes nothing, so there is nothing to sync.
+            await recordStep(`fav #${index} ${fav}`, await incrementalSync(), before === fav ? [] : [fields]);
         }
         return { actual, expected };
     }
@@ -372,15 +361,18 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
     // A card carrying both fav mirrors, as an older client or an imported card wrote it.
     const FAV_CARD = { ...FULL_CARD, fav: true, data: { ...FULL_CARD.data, extensions: { ...FULL_CARD.data.extensions, fav: true } } };
 
+    /** The fields a fav flip changes in a row. */
+    const FAV_FIELDS = ['["data","extensions","fav"]', '["fav"]'];
+
     describe('field-level merge after POST /fav', () => {
         test.each([...CARDS, ['fav-carrying', FAV_CARD]])('written %s card', async (_label, card) => {
-            await mode.metadataDb.upsertCharacterFromWrite(directories, 'Char.png', JSON.stringify(card));
+            await user.store.lib.writeCard(user.directories, 'Char.png', JSON.stringify(card));
             const { actual, expected } = await favMergeAgainstServer('Char.png', [true, false, true]);
             expect(actual).toEqual(expected);
         });
 
         test('fav-carrying card unfavorited first', async () => {
-            await mode.metadataDb.upsertCharacterFromWrite(directories, 'Char.png', JSON.stringify(FAV_CARD));
+            await user.store.lib.writeCard(user.directories, 'Char.png', JSON.stringify(FAV_CARD));
             const { actual, expected } = await favMergeAgainstServer('Char.png', [false, true]);
             expect(actual).toEqual(expected);
         });

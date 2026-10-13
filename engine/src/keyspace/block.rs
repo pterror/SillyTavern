@@ -218,6 +218,12 @@ impl Cursor {
         Ok(c)
     }
 
+    /// `seek` again, in the same block.
+    pub fn reseek(&mut self, target: &[u8]) -> Result<(), String> {
+        *self = Cursor::seek(self.block.clone(), target)?;
+        Ok(())
+    }
+
     pub fn advance(&mut self) -> Result<(), String> {
         if self.next >= self.block.entries_end {
             self.valid = false;

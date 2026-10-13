@@ -1,4 +1,4 @@
-import { parseTimestamp } from './message-stats.js';
+import { parseTimestamp } from './timestamps.js';
 
 /**
  * A message as the engine stores it (build path 5b), and back: exactly what upstream's message object holds, so it
@@ -166,8 +166,18 @@ function applyOrder(keys, base, order) {
  * @typedef {object} Speaker
  * @property {bigint} id The character's entity id.
  * @property {string} name Its name now.
+ * @property {{ until: number, name: string }[]} [renames] Names it had before, oldest first: a message sent before `until` (ms) shows the first such entry's `name`.
  * @property {string} avatar Its avatar (the entity's key).
  */
+
+/**
+ * The name a speaker's message sent at `time` shows: what it was called then.
+ * @param {Speaker} speaker
+ * @param {number} time
+ */
+export function speakerNameAt(speaker, time) {
+    return speaker.renames?.find(r => time < r.until)?.name ?? speaker.name;
+}
 
 /**
  * @typedef {object} Encoded A message as the engine's values.
@@ -259,7 +269,7 @@ export function encodeMessage(message, time, speaker) {
     else if (typeof message.name !== 'string') {
         flags |= 2 << F.name;
         json(TOP.name, message.name);
-    } else if (!speaker || speaker.name !== message.name) name = message.name;
+    } else if (!speaker || speakerNameAt(speaker, time) !== message.name) name = message.name;
 
     if (speaker && message.original_avatar === speaker.avatar) flags |= 1 << F.originalAvatar;
     if (speaker && message.force_avatar === `/thumbnail?type=avatar&file=${encodeURIComponent(speaker.avatar)}`) flags |= 1 << F.forceAvatar;
@@ -365,7 +375,7 @@ export function decodeMessage(stored, speakerOf) {
 
     const nameState = state(F.name);
     const storedName = values.has(META.nameFromSpeaker) ? null : stored.texts.find(t => t.field === TOP.name)?.text ?? stored.name;
-    if (nameState === 0) top.set('name', JSON.stringify(storedName ?? speaker?.name ?? ''));
+    if (nameState === 0) top.set('name', JSON.stringify(storedName ?? (speaker ? speakerNameAt(speaker, stored.time) : '')));
     else if (nameState === 2) top.set('name', /** @type {string} */ (values.get(TOP.name)));
 
     if (bit(F.originalAvatar) && speaker) top.set('original_avatar', JSON.stringify(speaker.avatar));

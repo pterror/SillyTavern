@@ -19,6 +19,8 @@ fn temp_dir(name: &str) -> PathBuf {
     dir
 }
 
+const NOW: i64 = 1_700_000_000_000;
+
 const SMALL: StoreConfig = StoreConfig {
     log: log::Config {
         block_size: 256,
@@ -408,7 +410,7 @@ fn a_change_moves_with_its_message_and_goes_with_it() {
     // The message goes, and its changes with it.
     s.commit_wait(vec![rec(
         "messageDelete",
-        vec![Value::Id(1), Value::Absent, Value::Absent],
+        vec![Value::Id(1), Value::Absent, Value::Absent, Value::Time(NOW)],
     )])
     .unwrap();
     assert_eq!(

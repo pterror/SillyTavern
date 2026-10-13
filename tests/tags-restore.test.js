@@ -1,15 +1,14 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals';
-import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
+import { storedTagDefinitions } from './tag-store-reads.js';
 
 // Restoring a tag backup: the server creates or updates the backup's tag definitions, then adds its assignments to
 // what each character or group already has.
 
-/** @type {typeof import('../src/character-metadata-db.js')} */
-let metadataDb;
-/** @type {typeof import('../src/endpoints/search-index-coordinator.js')} */
-let searchCoordinator;
+/** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
+let user;
+/** @type {typeof import('./converted-user.fixture.js')} */
+let fixture;
 /** @type {import('node:http').Server} */
 let server;
 let baseUrl;
@@ -21,8 +20,7 @@ beforeAll(async () => {
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
 
-    metadataDb = await import('../src/character-metadata-db.js');
-    searchCoordinator = await import('../src/endpoints/search-index-coordinator.js');
+    fixture = await import('./converted-user.fixture.js');
     const { router: tagsRouter } = await import('../src/endpoints/tags.js');
 
     const express = (await import('express')).default;
@@ -41,24 +39,12 @@ beforeAll(async () => {
 afterAll(() => new Promise(resolve => server.close(resolve)));
 
 beforeEach(async () => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-tags-restore-test-'));
-    directories = {
-        root: tempDir,
-        characters: path.join(tempDir, 'characters'),
-        chats: path.join(tempDir, 'chats'),
-        groups: path.join(tempDir, 'groups'),
-        groupChats: path.join(tempDir, 'groupChats'),
-    };
-    for (const dir of [directories.characters, directories.chats, directories.groups, directories.groupChats]) {
-        fs.mkdirSync(dir, { recursive: true });
-    }
+    user = await fixture.emptyUser('st-tags-restore-test-');
+    directories = user.directories;
+    globalThis.DATA_ROOT = user.dataRoot;
 });
 
-afterEach(async () => {
-    await searchCoordinator.disposeSearchWorkers();
-    metadataDb.disposeMetadataStores();
-    fs.rmSync(directories.root, { recursive: true, force: true });
-});
+afterEach(() => user.close());
 
 /** @returns {Promise<{ status: number, body: any }>} */
 async function post(urlPath, body) {
@@ -84,20 +70,18 @@ function cardJson(avatar) {
 
 /** @param {string} avatar */
 async function seedCharacter(avatar) {
-    await metadataDb.upsertCharacterFromWrite(directories, avatar, cardJson(avatar));
+    await user.store.lib.writeCard(directories, avatar, cardJson(avatar));
 }
 
 /** @param {string} id */
 async function seedGroup(id) {
-    const group = { id, name: `Group ${id}`, members: [], chats: [], fav: false };
-    fs.writeFileSync(path.join(directories.groups, `${id}.json`), JSON.stringify(group));
-    await metadataDb.upsertGroupRow(directories, id, group.name, { fav: false, group });
+    await user.store.lib.writeGroup({ id, name: `Group ${id}`, members: [], fav: false });
 }
 
 /** @param {object[]} tags Stored as they are. */
 async function seedTags(tags) {
     for (const tag of tags) {
-        expect((await metadataDb.createTagDefinition(directories, { ...tag })).refused).toEqual([]);
+        expect((await user.store.lib.tags.create({ ...tag })).refused).toEqual([]);
     }
 }
 
@@ -122,11 +106,7 @@ async function storedTag(id) {
 
 /** @returns {Promise<string[]>} Every stored tag's id. */
 async function storedTagIds() {
-    const ids = [];
-    for await (const batch of await metadataDb.streamTagDefinitionBatches(directories)) {
-        for (const tag of batch) ids.push(tag.id);
-    }
-    return ids.sort();
+    return (await storedTagDefinitions(user.store.lib)).map(tag => tag.id).sort();
 }
 
 const NOTHING_LEFT_OUT = {
@@ -141,18 +121,18 @@ describe('/api/tags/restore: assignments', () => {
 
     test('a character keeps the tags it has and gains the backup\'s', async () => {
         await seedCharacter('Bob.png');
-        await metadataDb.assignEntityTag(directories, 'Bob.png', 'a');
+        await user.store.lib.tags.assign('Bob.png', 'a');
 
         expect(await restore({ tag_map: { 'Bob.png': ['b'] } })).toEqual(NOTHING_LEFT_OUT);
 
         expect(await tagsFor(['Bob.png'])).toEqual({ 'Bob.png': ['a', 'b'] });
-        const listRows = /** @type {any} */ (await metadataDb.getShallowByIds(directories, ['Bob.png']));
-        expect(listRows['Bob.png'].tag_ids).toEqual(['a', 'b']);
+        const page = await user.store.lib.query({ ids: ['Bob.png'], wantRows: true, limit: 1 });
+        expect(/** @type {any} */ (page.rows)[0].item.tag_ids).toEqual(['a', 'b']);
     });
 
     test('a group keeps the tags it has and gains the backup\'s', async () => {
         await seedGroup('1001');
-        await metadataDb.assignEntityTag(directories, '1001', 'a');
+        await user.store.lib.tags.assign('1001', 'a');
 
         expect(await restore({ tag_map: { 1001: ['b'] } })).toEqual(NOTHING_LEFT_OUT);
 
@@ -162,7 +142,7 @@ describe('/api/tags/restore: assignments', () => {
     test('an entity the backup does not name is left as it is', async () => {
         await seedCharacter('Bob.png');
         await seedCharacter('Carol.png');
-        await metadataDb.assignEntityTag(directories, 'Carol.png', 'a');
+        await user.store.lib.tags.assign('Carol.png', 'a');
 
         await restore({ tag_map: { 'Bob.png': ['b'] } });
 
@@ -171,13 +151,12 @@ describe('/api/tags/restore: assignments', () => {
 
     test('a character that already has every tag listed is not written', async () => {
         await seedCharacter('Bob.png');
-        await metadataDb.assignEntityTag(directories, 'Bob.png', 'a');
-        const before = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+        await user.store.lib.tags.assign('Bob.png', 'a');
+        const before = await user.store.lib.changesEnd();
 
         expect(await restore({ tag_map: { 'Bob.png': ['a'] } })).toEqual(NOTHING_LEFT_OUT);
 
-        const after = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
-        expect(after.version).toBe(before.version);
+        expect(await user.store.lib.changesEnd()).toBe(before);
     });
 
     test('keys that are neither a character nor a group are listed, and the rest is written', async () => {
@@ -205,8 +184,8 @@ describe('/api/tags/restore: assignments', () => {
 
     test('a deleted tag the backup has no definition for goes to its merge target, or is listed when it has none', async () => {
         await seedTags([{ id: 'merged', name: 'Merged' }, { id: 'gone', name: 'Gone' }]);
-        await metadataDb.deleteTagDefinition(directories, 'merged', 'a');
-        await metadataDb.deleteTagDefinition(directories, 'gone');
+        await user.store.lib.tags.delete('merged', 'a');
+        await user.store.lib.tags.delete('gone');
         await seedCharacter('Bob.png');
 
         const result = await restore({ tag_map: { 'Bob.png': ['merged', 'gone'] } });
@@ -215,15 +194,17 @@ describe('/api/tags/restore: assignments', () => {
         expect(await tagsFor(['Bob.png'])).toEqual({ 'Bob.png': ['a'] });
     });
 
-    test('a character still in the batch-import buffer is found and written', async () => {
-        await metadataDb.beginBatchImport(directories);
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson('Bob.png'), null, null, { fromImport: true });
-        expect(await metadataDb.getCharacterMetadataRow(directories, 'Bob.png')).toBeUndefined();
+    test('a character written in a batch of imports is found and written', async () => {
+        user.store.lib.beginBatch();
+        try {
+            await user.store.lib.writeCard(directories, 'Bob.png', cardJson('Bob.png'));
 
-        expect(await restore({ tag_map: { 'Bob.png': ['a'] } })).toEqual(NOTHING_LEFT_OUT);
+            expect(await restore({ tag_map: { 'Bob.png': ['a'] } })).toEqual(NOTHING_LEFT_OUT);
 
-        expect(await tagsFor(['Bob.png'])).toEqual({ 'Bob.png': ['a'] });
-        await metadataDb.endBatchImport(directories);
+            expect(await tagsFor(['Bob.png'])).toEqual({ 'Bob.png': ['a'] });
+        } finally {
+            user.store.lib.endBatch();
+        }
         expect(await tagsFor(['Bob.png'])).toEqual({ 'Bob.png': ['a'] });
     });
 });
@@ -283,7 +264,7 @@ describe('/api/tags/restore: definitions', () => {
         await seedTags([{ id: 'a', name: 'Fantasy', color: 'red', sort_order: 1 }]);
         await seedCharacter('Bob.png');
         await seedCharacter('Carol.png');
-        await metadataDb.assignEntityTag(directories, 'Carol.png', 'a');
+        await user.store.lib.tags.assign('Carol.png', 'a');
 
         const result = await restore({
             tags: [{ id: 'other', name: 'FANTASY', color: 'blue', sort_order: 1 }],
@@ -309,17 +290,17 @@ describe('/api/tags/restore: definitions', () => {
     test('Overwrite: a tag the backup holds unchanged is not written', async () => {
         const tag = { id: 'a', name: 'Alpha', color: 'red', sort_order: 1 };
         await seedTags([tag]);
-        const before = await metadataDb.getTagChangesSeq(directories);
+        const before = await user.store.lib.tags.changesSeq();
 
         expect(await restore({ tags: [tag], overwrite: true })).toEqual(NOTHING_LEFT_OUT);
 
-        expect(await metadataDb.getTagChangesSeq(directories)).toBe(before);
+        expect(await user.store.lib.tags.changesSeq()).toBe(before);
     });
 
     test('a tag being deleted is created again under a new id, with the backup\'s assignments', async () => {
         await seedTags([{ id: 'target', name: 'Target', sort_order: 1 }, { id: 'gone', name: 'Gone', sort_order: 2 }, { id: 'merged', name: 'Merged', sort_order: 3 }]);
-        await metadataDb.deleteTagDefinition(directories, 'gone');
-        await metadataDb.deleteTagDefinition(directories, 'merged', 'target');
+        await user.store.lib.tags.delete('gone');
+        await user.store.lib.tags.delete('merged', 'target');
         await seedCharacter('Bob.png');
 
         const result = await restore({

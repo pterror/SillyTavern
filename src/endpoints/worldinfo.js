@@ -1,173 +1,90 @@
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
 import express from 'express';
 import sanitize from 'sanitize-filename';
 import _ from 'lodash';
-import { sync as writeFileAtomicSync } from 'write-file-atomic';
-import { tryParse } from '../util.js';
 import { readAllSettingsAsJson, readSettingsAtPaths, writeSettingsKeys } from '../settings-store.js';
 import { resolveCharacterWorldLink } from '../../public/scripts/character-world-link.js';
-import { getStringHash, jsonHash } from '../../public/scripts/hash-utils.js';
+import { getStringHash } from '../../public/scripts/hash-utils.js';
+import { engineStoreHere, requestStore, storeRoute, userStore } from '../user-stores.js';
+import { bookExistsHere, readBookHere } from '../world-info-engine.js';
+import { bookKey } from '../world-info-keys.js';
+import { TYPE } from '../library-codes.js';
 
 /**
- * The stored World Info format: the file is a manifest (every top-level field but `entries`, which lists each entry's
- * uid and the file in `<name>.entries/` it is stored in). Upstream's format (entries inline) comes in only through
- * importWorldInfoFromRaw().
+ * World info is stored in the user's engine store (`lib.books`, `src/world-info-engine.js`); a book is found by the
+ * stem of the file its name would have had (`bookKey()`). Upstream's format comes in through importWorldInfoFromRaw().
  */
-const WORLD_INFO_SIDECAR_FORMAT = 'sidecar-v2';
 
-function getWorldInfoPaths(directories, worldInfoName) {
-    const filename = sanitize(`${worldInfoName}.json`);
-    const pathToWorldInfo = path.join(directories.worlds, filename);
-    const entriesDir = path.join(directories.worlds, `${path.parse(filename).name}.entries`);
-    return { filename, pathToWorldInfo, entriesDir };
+/**
+ * The missing books already reported, so a link to a book that isn't there prints once, not on every generation,
+ * /get and card save, until a read finds the book. One LRU for every user, by root and book key; when full, the least
+ * recently reported is dropped (and reported again next time).
+ * @type {Set<string>}
+ */
+const reportedMisses = new Set();
+const REPORTED_MISS_LIMIT = 10_000;
+
+/**
+ * Prints that a book is missing, once while it stays missing.
+ * @param {{ root: string }} directories
+ * @param {string} worldInfoName
+ */
+function reportMissing(directories, worldInfoName) {
+    const at = `${path.resolve(directories.root)}\0${bookKey(worldInfoName)}`;
+    if (reportedMisses.has(at)) {
+        reportedMisses.delete(at);
+        reportedMisses.add(at);
+        return;
+    }
+    reportedMisses.add(at);
+    if (reportedMisses.size > REPORTED_MISS_LIMIT) reportedMisses.delete(reportedMisses.values().next().value);
+    console.error(`World info file ${sanitize(`${worldInfoName}.json`)} doesn't exist.`);
 }
 
 /**
- * World Info files found missing, so a link to a book that isn't there doesn't cost a file lookup and
- * a log line on every generation, /get and card save. One LRU for every user, keyed by the file's full
- * path, so each data directory has its own entries; when full, the least recently used name is dropped
- * and is simply looked up again next time.
- *
- * A miss is dropped when this server writes that file ({@link forgetWorldInfoMiss}). A file that
- * appears any other way (copied in by hand) changes the worlds directory's mtime, so a miss is trusted
- * only while the directory's mtime is still the one seen before the file was found missing.
- * @type {Map<string, { dirMtimeNs: bigint|null, logged: boolean }>}
+ * @param {{ root: string }} directories
+ * @param {string} worldInfoName
  */
-const worldInfoMisses = new Map();
-const WORLD_INFO_MISS_LIMIT = 10_000;
-/** A directory mtime younger than this may still be shared by a later change (FAT stores mtimes in 2 s steps). */
-const DIR_MTIME_SETTLE_NS = 2_000_000_000n;
-
-/**
- * @param {string} dir
- * @returns {bigint|null} The directory's mtime, or null when it's unreadable or too recent to tell a later change apart
- */
-function getSettledDirMtimeNs(dir) {
-    try {
-        const mtimeNs = fs.statSync(dir, { bigint: true }).mtimeNs;
-        return BigInt(Date.now()) * 1_000_000n - mtimeNs >= DIR_MTIME_SETTLE_NS ? mtimeNs : null;
-    } catch {
-        return null;
-    }
+function foundAgain(directories, worldInfoName) {
+    reportedMisses.delete(`${path.resolve(directories.root)}\0${bookKey(worldInfoName)}`);
 }
 
 /**
- * Looks a World Info file up, answering from the remembered misses when the worlds directory hasn't
- * changed since the miss was seen.
- * @param {string} worldsDir
- * @param {string} pathToWorldInfo
- * @returns {{ dirMtimeNs: bigint|null, logged: boolean }|null} The miss, or null when the file exists
- */
-function findWorldInfoMiss(worldsDir, pathToWorldInfo) {
-    // Read before the file lookup, so a file created after the lookup always shows as a newer mtime.
-    const dirMtimeNs = getSettledDirMtimeNs(worldsDir);
-    const known = worldInfoMisses.get(pathToWorldInfo);
-    if (known) {
-        worldInfoMisses.delete(pathToWorldInfo);
-        if (known.dirMtimeNs !== null && known.dirMtimeNs === dirMtimeNs) {
-            worldInfoMisses.set(pathToWorldInfo, known);
-            return known;
-        }
-    }
-
-    if (fs.existsSync(pathToWorldInfo)) {
-        return null;
-    }
-
-    const miss = { dirMtimeNs, logged: known?.logged ?? false };
-    worldInfoMisses.set(pathToWorldInfo, miss);
-    if (worldInfoMisses.size > WORLD_INFO_MISS_LIMIT) {
-        worldInfoMisses.delete(worldInfoMisses.keys().next().value);
-    }
-    return miss;
-}
-
-/**
- * Drops a remembered miss for a World Info file this server has just written, so the next lookup finds it.
- * @param {string} pathToWorldInfo Full path of the written file
- */
-export function forgetWorldInfoMiss(pathToWorldInfo) {
-    worldInfoMisses.delete(pathToWorldInfo);
-}
-
-/**
- * Whether a World Info file exists under this name. Never logs. A name found missing is remembered, so
- * asking again doesn't look the file up until a book with that name is written or the worlds directory changes.
+ * Whether a book exists under this name. Never logs.
  * @param {import('../users.js').UserDirectoryList} directories User directories
  * @param {string} worldInfoName Name of the World Info file
- * @returns {boolean}
+ * @returns {Promise<boolean>}
  */
-export function worldInfoFileExists(directories, worldInfoName) {
+export async function worldInfoFileExists(directories, worldInfoName) {
     if (!worldInfoName) {
         return false;
     }
-    return findWorldInfoMiss(directories.worlds, getWorldInfoPaths(directories, worldInfoName).pathToWorldInfo) === null;
+    return (await userStore(directories)).lib.books.exists(worldInfoName);
 }
 
 /**
- * What a character's primary lorebook link points at: no link, a World file, the card's own embedded
- * lorebook (no file has the linked name, the card has a `character_book`), or nothing. Never logs; the
- * file check goes through {@link worldInfoFileExists}.
+ * What a character's primary lorebook link points at: no link, a book, the card's own embedded lorebook (no book has
+ * the linked name, the card has a `character_book`), or nothing. Never logs. Read on this thread (the user's store
+ * opened here when nothing has opened it yet), so the card normalizers that call it stay synchronous.
  * @param {import('../users.js').UserDirectoryList} directories User directories
  * @param {{data?: {extensions?: {world?: string}, character_book?: object}}|null|undefined} character The character card
  * @returns {string} One of `character_world_link` (public/scripts/character-world-link.js)
  */
 export function getCharacterWorldLink(directories, character) {
-    return resolveCharacterWorldLink(character, (name) => worldInfoFileExists(directories, name));
+    return resolveCharacterWorldLink(character, (name) => !!name && bookExistsHere(engineStoreHere(directories), name));
 }
 
-/** Guards against a crafted uid (e.g. containing path separators) escaping the sidecar directory. */
+/** Guards against a crafted uid (e.g. containing path separators). */
 function sanitizeEntryUid(uid) {
     const safe = sanitize(String(uid));
     return safe ? safe : null;
 }
 
 /**
- * The file an entry is stored in: its uid and the hash of its content, so a changed entry goes to a new file and
- * the one the manifest names stays as it was until the new manifest lands.
- * @param {string} safeUid
- * @param {string} content The entry's stored JSON.
- */
-function entryFileName(safeUid, content) {
-    return `${safeUid}.${crypto.createHash('sha256').update(content).digest('hex').slice(0, 16)}.json`;
-}
-
-/**
- * Whether `file` can be an entry file name in the entries directory (no path separators).
- * @param {unknown} file
- * @returns {file is string}
- */
-function isEntryFileName(file) {
-    return typeof file === 'string' && file.endsWith('.json') && sanitize(file) === file;
-}
-
-/** Reassembles a manifest plus the entry files it names into upstream's inline-entries shape. */
-function inflateSidecarWorldInfo(manifest, entriesDir) {
-    const rest = _.omit(manifest, ['format', 'entries']);
-    const entries = {};
-
-    for (const item of manifest.entries) {
-        const uid = item?.uid;
-        const file = item?.file;
-        if (!isEntryFileName(file)) {
-            console.warn(`World info entry ${uid} in ${entriesDir} names no usable file: ${JSON.stringify(file)}`);
-            continue;
-        }
-        try {
-            entries[uid] = JSON.parse(fs.readFileSync(path.join(entriesDir, file), 'utf8'));
-        } catch (err) {
-            console.warn(`World info entry ${uid} could not be read from ${entriesDir}:`, err);
-        }
-    }
-
-    return { ...rest, entries };
-}
-
-/**
- * Reads a World Info file and returns its contents
+ * Reads a World Info file and returns its contents (upstream's export, on this thread: the book is read from one
+ * state of the user's store, opened here when no read has opened it yet).
  * @param {import('../users.js').UserDirectoryList} directories User directories
  * @param {string} worldInfoName Name of the World Info file
  * @param {boolean} allowDummy If true, returns an empty object if the file doesn't exist
@@ -181,150 +98,55 @@ export function readWorldInfoFile(directories, worldInfoName, allowDummy, { logM
         return dummyObject;
     }
 
-    const { filename, pathToWorldInfo, entriesDir } = getWorldInfoPaths(directories, worldInfoName);
+    const book = readBookHere(engineStoreHere(directories), worldInfoName);
+    if (!book) {
+        if (logMissing) reportMissing(directories, worldInfoName);
+        return dummyObject;
+    }
+    foundAgain(directories, worldInfoName);
+    return book;
+}
 
-    const miss = findWorldInfoMiss(directories.worlds, pathToWorldInfo);
-    if (miss) {
-        // Once per miss: repeated reads of a book that stays missing don't print again.
-        if (logMissing && !miss.logged) {
-            miss.logged = true;
-            console.error(`World info file ${filename} doesn't exist.`);
-        }
+/**
+ * {@link readWorldInfoFile} without holding this thread: for a caller that can wait.
+ * @param {import('../users.js').UserDirectoryList} directories User directories
+ * @param {string} worldInfoName Name of the World Info file
+ * @param {boolean} allowDummy If true, answers an empty object if the file doesn't exist
+ * @param {{ logMissing?: boolean }} [options]
+ * @returns {Promise<object>} World Info file contents
+ */
+export async function readWorldInfo(directories, worldInfoName, allowDummy, { logMissing = true } = {}) {
+    const dummyObject = allowDummy ? { entries: {} } : null;
+
+    if (!worldInfoName) {
         return dummyObject;
     }
 
-    const worldInfoText = fs.readFileSync(pathToWorldInfo, 'utf8');
-    const worldInfo = JSON.parse(worldInfoText);
-
-    if (!isSidecarWorldInfo(worldInfo)) {
-        throw new Error(`World info file ${filename} is not in the stored format. Stop the server and run: node src/migrations/convert-world-info-to-sidecar.js --apply --server-stopped`);
+    const book = await (await userStore(directories)).lib.books.read(worldInfoName);
+    if (!book) {
+        if (logMissing) reportMissing(directories, worldInfoName);
+        return dummyObject;
     }
-    return inflateSidecarWorldInfo(worldInfo, entriesDir);
-}
-
-/**
- * @param {unknown} worldInfo A World Info file, parsed.
- * @returns {boolean} Whether it is in the stored (sidecar) format.
- */
-export function isSidecarWorldInfo(worldInfo) {
-    return !!worldInfo && typeof worldInfo === 'object' && /** @type {any} */ (worldInfo).format === WORLD_INFO_SIDECAR_FORMAT
-        && Array.isArray(/** @type {any} */ (worldInfo).entries);
-}
-
-/**
- * Writes a World Info file in the stored format so that a write that fails partway leaves the book as it was: each
- * changed entry is written to a new file (entryFileName()), an unchanged one keeps its file, the manifest naming
- * every entry's file is written last and atomically, and only then are the files it no longer names deleted
- * (including any a failed write left). Writes nothing when nothing changed.
- */
-function writeWorldInfoFile(directories, worldInfoName, data) {
-    const { pathToWorldInfo, entriesDir } = getWorldInfoPaths(directories, worldInfoName);
-    const { entries: incomingEntries, ...rest } = data;
-    const entries = _.isObjectLike(incomingEntries) ? incomingEntries : {};
-
-    fs.mkdirSync(entriesDir, { recursive: true });
-    const present = new Set(fs.readdirSync(entriesDir));
-
-    /** @type {{ uid: string, file: string }[]} */
-    const named = [];
-    for (const uid of Object.keys(entries)) {
-        const safeUid = sanitizeEntryUid(uid);
-        if (!safeUid) {
-            console.warn(`Skipping world info entry with unusable uid: ${uid}`);
-            continue;
-        }
-        const content = JSON.stringify(entries[uid], null, 4);
-        const file = entryFileName(safeUid, content);
-        if (!present.has(file)) writeFileAtomicSync(path.join(entriesDir, file), content);
-        named.push({ uid, file });
-    }
-
-    const manifestText = JSON.stringify({ ...rest, format: WORLD_INFO_SIDECAR_FORMAT, entries: named }, null, 4);
-    let currentText = null;
-    try {
-        currentText = fs.readFileSync(pathToWorldInfo, 'utf8');
-    } catch {
-        // No book yet.
-    }
-    if (currentText !== manifestText) {
-        writeFileAtomicSync(pathToWorldInfo, manifestText);
-        forgetWorldInfoMiss(pathToWorldInfo);
-    }
-
-    const kept = new Set(named.map(item => item.file));
-    for (const file of present) {
-        if (!kept.has(file)) fs.rmSync(path.join(entriesDir, file), { recursive: true, force: true });
-    }
-}
-
-/**
- * Finds the lowest non-negative integer uid not already used by an entry in `data`. This is the one
- * server-side uid-minting primitive for World Info entries; both `/entry/transplant` (move/copy) and
- * `/entry/create` (brand-new entry) call it against the book they're writing into, immediately before
- * that write, so uid allocation always reflects the book's current on-disk state rather than a
- * possibly-stale client-side copy.
- * @param {object} data World Info file contents (as read by {@link readWorldInfoFile})
- * @returns {number|null} A free uid, or null if none could be found (should not happen in practice)
- */
-export function getFreeWorldEntryUid(data) {
-    if (!data || typeof data.entries !== 'object' || data.entries === null) {
-        return null;
-    }
-
-    const MAX_UID = 1_000_000; // <- should be safe enough :)
-    for (let uid = 0; uid < MAX_UID; uid++) {
-        if (uid in data.entries) {
-            continue;
-        }
-        return uid;
-    }
-
-    return null;
+    foundAgain(directories, worldInfoName);
+    return book;
 }
 
 export const router = express.Router();
 
-router.post('/list', async (request, response) => {
-    try {
-        const data = [];
-        const jsonFiles = (await fs.promises.readdir(request.user.directories.worlds, { withFileTypes: true }))
-            .filter((file) => file.isFile() && path.extname(file.name).toLowerCase() === '.json')
-            .sort((a, b) => a.name.localeCompare(b.name));
+router.post('/list', storeRoute('reading the World Info list', async (request, response) => {
+    const { lib } = await requestStore(request);
+    return response.send(await lib.books.list());
+}));
 
-        for (const file of jsonFiles) {
-            try {
-                const filePath = path.join(request.user.directories.worlds, file.name);
-                const fileContents = await fs.promises.readFile(filePath, 'utf8');
-                const fileContentsParsed = tryParse(fileContents) || {};
-                const fileExtensions = fileContentsParsed?.extensions || {};
-                const fileNameWithoutExt = path.parse(file.name).name;
-                const fileData = {
-                    file_id: fileNameWithoutExt,
-                    name: fileContentsParsed?.name || fileNameWithoutExt,
-                    extensions: _.isObjectLike(fileExtensions) ? fileExtensions : {},
-                };
-                data.push(fileData);
-            } catch (err) {
-                console.warn(`Error reading or parsing World Info file ${file.name}:`, err);
-            }
-        }
-
-        return response.send(data);
-    } catch (err) {
-        console.error('Error reading World Info directory:', err);
-        return response.sendStatus(500);
-    }
-});
-
-router.post('/get', (request, response) => {
+router.post('/get', storeRoute('reading a World Info book', async (request, response) => {
     if (!request.body?.name) {
         return response.sendStatus(400);
     }
 
-    const file = readWorldInfoFile(request.user.directories, request.body.name, true);
+    const file = await readWorldInfo(request.user.directories, request.body.name, true);
 
     return response.send(file);
-});
+}));
 
 /**
  * Adds, removes, or replaces a character's additional (auxiliary) World Info bindings, in one
@@ -333,7 +155,7 @@ router.post('/get', (request, response) => {
  * write scope is limited to exactly that one sub-path - not the whole settings key, let alone
  * the whole settings store.
  */
-router.post('/additional-books', (request, response) => {
+router.post('/additional-books', storeRoute('changing a character\'s additional World Info', async (request, response) => {
     const { characterAvatar, op, books } = request.body ?? {};
     if (typeof characterAvatar !== 'string' || !characterAvatar) {
         return response.status(400).send({ result: 'error', error: 'characterAvatar is required' });
@@ -346,9 +168,13 @@ router.post('/additional-books', (request, response) => {
         return response.status(400).send({ result: 'error', error: 'books must be a non-empty string or array of strings' });
     }
 
-    // Reject names that don't correspond to a real World file - the whole point of a dedicated
+    // Reject names that don't correspond to a real World - the whole point of a dedicated
     // endpoint is that the server decides what's a legal binding, not whatever the client asserts.
-    const unknownBooks = requested.filter(name => !fs.existsSync(getWorldInfoPaths(request.user.directories, name).pathToWorldInfo));
+    const { lib } = await requestStore(request);
+    const unknownBooks = [];
+    for (const name of requested) {
+        if (!(await lib.books.exists(name))) unknownBooks.push(name);
+    }
     if (unknownBooks.length > 0) {
         return response.status(404).send({ result: 'error', error: 'Unknown World(s)', unknownBooks });
     }
@@ -375,40 +201,32 @@ router.post('/additional-books', (request, response) => {
 
     writeSettingsKeys(request.user.directories, { [path_]: nextCharLore });
     return response.send({ result: 'ok', extraBooks: nextBooks });
-});
+}));
 
-router.post('/delete', (request, response) => {
+router.post('/delete', storeRoute('deleting a World Info book', async (request, response) => {
     if (!request.body?.name) {
         return response.sendStatus(400);
     }
 
     const worldInfoName = request.body.name;
-    const { filename, pathToWorldInfo, entriesDir } = getWorldInfoPaths(request.user.directories, worldInfoName);
-
-    if (!fs.existsSync(pathToWorldInfo)) {
-        throw new Error(`World info file ${filename} doesn't exist.`);
-    }
-
-    fs.unlinkSync(pathToWorldInfo);
-
-    if (fs.existsSync(entriesDir)) {
-        fs.rmSync(entriesDir, { recursive: true, force: true });
+    const { lib } = await requestStore(request);
+    if (!(await lib.books.delete(worldInfoName))) {
+        throw new Error(`World info file ${sanitize(`${worldInfoName}.json`)} doesn't exist.`);
     }
 
     return response.sendStatus(200);
-});
+}));
 
 /**
- * Writes a raw World Info JSON blob to disk under the given user's worlds directory, deriving
- * the World's name from desiredName the same way the /import route does. Shared so other
- * endpoints (e.g. content-manager's Chub linked-lorebook import) can persist a World server-side
- * without a client round-trip through /import for bytes the server already fetched itself.
+ * Stores a raw World Info JSON blob as a book of the given user, deriving the World's name from desiredName the same
+ * way the /import route does. Shared so other endpoints (e.g. content-manager's Chub linked-lorebook import) can store
+ * a World server-side without a client round-trip through /import for bytes the server already fetched itself.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {string} desiredName Filename (with or without extension) to derive the World's name from
  * @param {string} fileContents Raw World Info JSON text; must contain an `entries` key
- * @returns {string} The written World's name
+ * @returns {Promise<string>} The written World's name
  */
-export function importWorldInfoFromRaw(directories, desiredName, fileContents) {
+export async function importWorldInfoFromRaw(directories, desiredName, fileContents) {
     const filename = `${path.parse(sanitize(desiredName)).name}.json`;
 
     const worldContent = JSON.parse(fileContents);
@@ -416,18 +234,17 @@ export function importWorldInfoFromRaw(directories, desiredName, fileContents) {
         throw new Error('File must contain a world info entries list');
     }
 
-    const pathToNewFile = path.join(directories.worlds, filename);
-    const worldName = path.parse(pathToNewFile).name;
+    const worldName = path.parse(filename).name;
 
     if (!worldName) {
         throw new Error('World file must have a name');
     }
 
-    writeWorldInfoFile(directories, worldName, worldContent);
+    await (await userStore(directories)).lib.books.write(worldName, worldContent);
     return worldName;
 }
 
-router.post('/import', (request, response) => {
+router.post('/import', storeRoute('importing a World Info book', async (request, response) => {
     if (!request.file) return response.sendStatus(400);
 
     const filename = `${path.parse(sanitize(request.file.originalname)).name}.json`;
@@ -443,35 +260,20 @@ router.post('/import', (request, response) => {
     }
 
     try {
-        const worldName = importWorldInfoFromRaw(request.user.directories, filename, fileContents);
+        const worldName = await importWorldInfoFromRaw(request.user.directories, filename, fileContents);
         return response.send({ name: worldName });
     } catch (err) {
         return response.status(400).send(err instanceof Error ? err.message : 'Is not a valid world info file');
     }
-});
+}));
 
 /**
- * Creates a brand-new, empty World Info file, minting the real unique name server-side against
- * on-disk state instead of trusting a client-computed one against a possibly-stale cached copy of
- * `world_names` - the same "server owns identity" principle as /entry/create's uid minting above.
- * Mirrors this codebase's existing "<name> (<N>)" numbered-suffix convention for World Info names
- * (see the client's own getUniqueName()/getFreeWorldName() helpers), not the unrelated
- * "<name> - Branch #<N>" scheme used for chat branches.
- *
- * - `name` omitted or blank: defaults to "New World", then uniquified as below.
- * - `name` given and `unique` is not explicitly `false` (the default): uniquified against real
- *   on-disk names by appending " (<N>)" - the right behavior whenever the client is generating a
- *   name behind the scenes with no user-visible collision prompt of its own.
- * - `name` given and `unique === false`: the caller already has its own explicit-name semantics
- *   (e.g. a name a user typed with its own overwrite-confirmation UI) and wants an exact name or a
- *   clear error, not a silent rename - a taken name 409s instead.
+ * Creates a book. Body: `name` (default "New World"); `unique` (default true: a taken name gets a number, " (<N>)";
+ * false: a taken name is refused with 409, unless `replace`); `replace`: write over the book with that name (the user
+ * chose to); `data`: the book's content (a World Info JSON with `entries`), empty when left out. The name is minted
+ * here against the stored books, not a client's possibly stale `world_names`.
  */
-/**
- * Creates a book. Body: `name` (default "New World"); `unique` (default true: a taken name gets a number; false: a
- * taken name is refused with 409, unless `replace`); `replace`: write over the book with that name (the user chose
- * to); `data`: the book's content (a World Info JSON with `entries`), empty when left out.
- */
-router.post('/create', (request, response) => {
+router.post('/create', storeRoute('creating a World Info book', async (request, response) => {
     const { name, unique = true, replace = false, data } = request.body ?? {};
     if (name !== undefined && typeof name !== 'string') {
         return response.status(400).send({ error: 'name must be a string' });
@@ -480,17 +282,18 @@ router.post('/create', (request, response) => {
         return response.status(400).send({ error: 'data must be a World Info object with entries' });
     }
 
+    const { lib } = await requestStore(request);
     const baseName = (typeof name === 'string' && name.trim()) ? name.trim() : 'New World';
-    const exists = (candidate) => fs.existsSync(getWorldInfoPaths(request.user.directories, candidate).pathToWorldInfo);
+    const exists = (/** @type {string} */ candidate) => lib.books.exists(candidate);
 
     let finalName = baseName;
     if (unique === false) {
-        if (exists(finalName) && replace !== true) {
+        if (await exists(finalName) && replace !== true) {
             return response.status(409).send({ error: `World Info file '${finalName}' already exists` });
         }
     } else {
         const MAX_TRIES = 100_000;
-        for (let i = 1; exists(finalName); i++) {
+        for (let i = 1; await exists(finalName); i++) {
             if (i > MAX_TRIES) {
                 return response.status(500).send({ error: 'Could not allocate a unique World Info name' });
             }
@@ -498,10 +301,10 @@ router.post('/create', (request, response) => {
         }
     }
 
-    writeWorldInfoFile(request.user.directories, finalName, data ?? { entries: {} });
+    await lib.books.write(finalName, data ?? { entries: {} });
 
     return response.send({ ok: true, name: finalName });
-});
+}));
 
 /** Book fields an apply may set: everything but the entries and the storage format. */
 const isBookField = (/** @type {unknown} */ key) => typeof key === 'string' && key !== '' && key !== 'entries' && key !== 'format';
@@ -517,7 +320,7 @@ const isBookField = (/** @type {unknown} */ key) => typeof key === 'string' && k
  * Answers `{ ok, entries: { uid: stored entry }, deleted: uid[], fields: { key: value }, conflicts: [{ uid } |
  * { key }, with `current`] }`.
  */
-router.post('/entries/apply', (request, response) => {
+router.post('/entries/apply', storeRoute('applying World Info changes', async (request, response) => {
     const { name, entries: entryChanges = [], fields: fieldChanges = [] } = request.body ?? {};
     if (typeof name !== 'string' || !name) {
         return response.status(400).send({ error: 'name is required' });
@@ -526,118 +329,74 @@ router.post('/entries/apply', (request, response) => {
         return response.status(400).send({ error: 'entries and fields must be arrays' });
     }
 
-    const book = readWorldInfoFile(request.user.directories, name, false);
-    if (!book || !_.isObjectLike(book.entries)) {
+    const { lib } = await requestStore(request);
+    if (!(await lib.books.exists(name))) {
         return response.status(404).send({ error: `Lorebook '${name}' not found` });
     }
-
-    /** @type {Record<string, object>} */
-    const stored = {};
-    /** @type {string[]} */
-    const deleted = [];
-    /** @type {Record<string, unknown>} */
-    const storedFields = {};
-    /** @type {object[]} */
-    const conflicts = [];
-    let changed = false;
-
     for (const change of entryChanges) {
         const uid = change?.uid;
         if ((typeof uid !== 'number' && typeof uid !== 'string') || !sanitizeEntryUid(uid)) {
             return response.status(400).send({ error: 'every entry change needs a uid' });
         }
-        const key = String(uid);
-        const current = book.entries[key];
-        const next = _.isPlainObject(change.data) ? { ...change.data, uid: current?.uid ?? uid } : null;
-        if (change.data != null && !next) {
-            return response.status(400).send({ error: `entry ${key}: data must be an object or null` });
+        if (change.data != null && !_.isPlainObject(change.data)) {
+            return response.status(400).send({ error: `entry ${String(uid)}: data must be an object or null` });
         }
-        const currentHash = current === undefined ? null : jsonHash(current);
-        if (currentHash === (next ? jsonHash(next) : null)) continue;
-        if (currentHash !== (change.base_hash ?? null)) {
-            conflicts.push({ uid: key, current: current ?? null });
-            continue;
-        }
-        if (next) {
-            book.entries[key] = next;
-            stored[key] = next;
-        } else {
-            delete book.entries[key];
-            if (Array.isArray(book.originalData?.entries)) {
-                // Non-strict: uids arrive as numbers or strings.
-                // eslint-disable-next-line eqeqeq
-                book.originalData.entries = book.originalData.entries.filter(item => item?.uid != uid);
-            }
-            deleted.push(key);
-        }
-        changed = true;
     }
-
     for (const change of fieldChanges) {
         if (!isBookField(change?.key)) {
             return response.status(400).send({ error: 'every field change needs a key other than entries and format' });
         }
-        const current = book[change.key];
-        const next = change.value ?? undefined;
-        const currentHash = current === undefined ? null : jsonHash(current);
-        if (currentHash === (next === undefined ? null : jsonHash(next))) continue;
-        if (currentHash !== (change.base_hash ?? null)) {
-            conflicts.push({ key: change.key, current: current ?? null });
-            continue;
-        }
-        if (next === undefined) delete book[change.key]; else book[change.key] = next;
-        storedFields[change.key] = next ?? null;
-        changed = true;
     }
 
-    if (changed) writeWorldInfoFile(request.user.directories, name, book);
-    return response.send({ ok: true, entries: stored, deleted, fields: storedFields, conflicts });
-});
+    const result = await lib.books.apply(name, entryChanges, fieldChanges);
+    if (!result) {
+        return response.status(404).send({ error: `Lorebook '${name}' not found` });
+    }
+    return response.send(result);
+}));
 
 /** Copies a book under a new name. 409 when the name is taken. */
-router.post('/duplicate', (request, response) => {
+router.post('/duplicate', storeRoute('duplicating a World Info book', async (request, response) => {
     const { name, new_name: newName } = request.body ?? {};
     if (typeof name !== 'string' || !name || typeof newName !== 'string' || !newName.trim()) {
         return response.status(400).send({ error: 'name and new_name are required' });
     }
-    const book = readWorldInfoFile(request.user.directories, name, false);
+    const { lib } = await requestStore(request);
+    const book = await lib.books.read(name);
     if (!book) {
         return response.status(404).send({ error: `Lorebook '${name}' not found` });
     }
-    if (fs.existsSync(getWorldInfoPaths(request.user.directories, newName).pathToWorldInfo)) {
+    if (await lib.books.exists(newName)) {
         return response.status(409).send({ error: `World Info file '${newName}' already exists` });
     }
-    writeWorldInfoFile(request.user.directories, newName, book);
+    await lib.books.write(newName, book);
     return response.send({ ok: true, name: newName });
-});
+}));
 
 /**
  * Renames a book and moves the links that name it: each character's auxiliary links, the global selection, every
- * persona's lorebook and, with `relink_characters`, each character's primary link. A chat's link (in its metadata)
- * is not moved here. 409 when the new name is taken.
+ * persona's lorebook and, with `relink_characters`, each character's primary link (in the same commit as the rename;
+ * without, those characters keep linking the old name). A chat's link (in its metadata) is not moved here. 409 when
+ * the new name is taken.
  * Answers `{ ok, name, characters_updated, characters_failed, settings: { world_info_settings, 'power_user.persona_data' },
  * settings_hash }`.
  */
-router.post('/rename', async (request, response) => {
+router.post('/rename', storeRoute('renaming a World Info book', async (request, response) => {
     const { name, new_name: newName, relink_characters: relinkCharacters = false } = request.body ?? {};
     if (typeof name !== 'string' || !name || typeof newName !== 'string' || !newName.trim() || name === newName) {
         return response.status(400).send({ error: 'name and a different new_name are required' });
     }
     const directories = request.user.directories;
-    const book = readWorldInfoFile(directories, name, false);
-    if (!book) {
+    const { lib } = await requestStore(request);
+    /** @type {bigint[]} */
+    const moved = [];
+    const renamed = await lib.books.rename(name, newName, { relink: relinkCharacters === true, moved });
+    if (renamed === 'missing') {
         return response.status(404).send({ error: `Lorebook '${name}' not found` });
     }
-    const target = getWorldInfoPaths(directories, newName);
-    if (fs.existsSync(target.pathToWorldInfo)) {
+    if (renamed === 'taken') {
         return response.status(409).send({ error: `World Info file '${newName}' already exists` });
     }
-
-    // The new book is written before the old one goes, so a failure leaves at least one of them whole.
-    writeWorldInfoFile(directories, newName, book);
-    const old = getWorldInfoPaths(directories, name);
-    fs.unlinkSync(old.pathToWorldInfo);
-    fs.rmSync(old.entriesDir, { recursive: true, force: true });
 
     const rename = (/** @type {unknown} */ value) => value === name ? newName : value;
     const current = readSettingsAtPaths(directories, ['world_info_settings', 'power_user.persona_data']);
@@ -668,22 +427,18 @@ router.post('/rename', async (request, response) => {
     }
     if (Object.keys(settings).length) writeSettingsKeys(directories, settings);
 
-    // Loaded here: characters.js reaches this module through its own imports.
-    const relinked = relinkCharacters === true
-        ? await (await import('./characters.js')).relinkCharactersWorld(request, name, newName)
-        : { updated: [], failed: [] };
-
+    const keys = moved.length ? await lib.store.libraryKeys(moved) : [];
     return response.send({
         ok: true,
         name: newName,
-        characters_updated: relinked.updated,
-        characters_failed: relinked.failed,
+        characters_updated: keys.filter(Boolean).map((/** @type {any} */ k) => k.key),
+        characters_failed: [],
         settings,
         ...(Object.keys(settings).length ? { settings_hash: getStringHash(readAllSettingsAsJson(directories)) } : {}),
     });
-});
+}));
 
-router.post('/edit', (request, response) => {
+router.post('/edit', storeRoute('saving a World Info book', async (request, response) => {
     if (!request.body) {
         return response.sendStatus(400);
     }
@@ -700,37 +455,17 @@ router.post('/edit', (request, response) => {
         return response.status(400).send('Is not a valid world info file');
     }
 
-    writeWorldInfoFile(request.user.directories, request.body.name, request.body.data);
+    const { lib } = await requestStore(request);
+    await lib.books.write(request.body.name, request.body.data);
 
     return response.send({ ok: true });
-});
+}));
 
 /**
- * Moves (or copies) a single World Info entry from one lorebook to another, server-side, in one
- * request. Replaces the former client-side flow of loading both whole books, minting a new uid by
- * scanning the target book's entries in local memory, splicing the entry between the two in-memory
- * copies, and issuing two separate whole-book /edit POSTs - which left a client-visible race window
- * between the two saves (a crash/reload between them could leave the entry duplicated in both books,
- * or missing from both).
- *
- * Atomicity: this is sequential-but-server-side, NOT a single filesystem transaction. Both books are
- * written (via the same writeWorldInfoFile() used by /edit, itself a series of per-entry
- * write-file-atomic calls plus a manifest write) inside one synchronous handler, so no client-visible
- * intermediate state exists - the client only ever sees "not yet requested" or "done" - and the whole
- * network-round-trip-sized race window from the old two-request flow is eliminated. It does NOT
- * protect against the server process crashing mid-handler between the target write and the source
- * write (when delete_original is set): in that narrow in-process window the entry could still end up
- * in both books or - if the crash lands before the target write completes - the source deletion simply
- * never happens (delete_original writes source only after target succeeds), so at worst the operation
- * is left un-applied, never half-applied with the entry missing from both.
- *
- * Note on inter-entry linkage: World Info entries have no uid-based reference to other entries. The
- * `group` field is a plain string label matched at runtime among currently-activated entries (from any
- * book), not an identifier of a specific entry; `automationId` refers to an external Quick Reply
- * automation, not another WI entry. So transplanting one entry cannot orphan a reference from another
- * entry in either book - there is nothing that structurally requires two entries to travel together.
+ * Moves (or copies) a single World Info entry from one lorebook to another, server-side, in one request: under the
+ * target's lowest free integer uid, after its highest `displayIndex`, at its end; both books in one commit.
  */
-router.post('/entry/transplant', (request, response) => {
+router.post('/entry/transplant', storeRoute('moving a World Info entry', async (request, response) => {
     const { source_name, target_name, uid, delete_original } = request.body ?? {};
 
     if (typeof source_name !== 'string' || !source_name) {
@@ -746,106 +481,50 @@ router.post('/entry/transplant', (request, response) => {
         return response.status(400).send({ error: 'source_name and target_name must differ' });
     }
 
-    const deleteOriginal = delete_original !== false;
-    const sourceUid = String(uid);
-
-    const sourceData = readWorldInfoFile(request.user.directories, source_name, false);
-    if (!sourceData || typeof sourceData.entries !== 'object' || sourceData.entries === null) {
+    const { lib } = await requestStore(request);
+    const result = await lib.books.transplant({ source: source_name, target: target_name, uid, deleteOriginal: delete_original !== false });
+    if (result === 'no source') {
         return response.status(404).send({ error: `Source lorebook '${source_name}' not found` });
     }
-
-    const targetData = readWorldInfoFile(request.user.directories, target_name, false);
-    if (!targetData || typeof targetData.entries !== 'object' || targetData.entries === null) {
+    if (result === 'no target') {
         return response.status(404).send({ error: `Target lorebook '${target_name}' not found` });
     }
-
-    if (!(sourceUid in sourceData.entries)) {
-        return response.status(404).send({ error: `Entry uid '${sourceUid}' not found in source lorebook '${source_name}'` });
+    if (result === 'no entry') {
+        return response.status(404).send({ error: `Entry uid '${String(uid)}' not found in source lorebook '${source_name}'` });
     }
-
-    const newUid = getFreeWorldEntryUid(targetData);
-    if (newUid === null) {
+    if (result === 'full') {
         return response.status(500).send({ error: `Could not allocate a free uid in target lorebook '${target_name}'` });
     }
-
-    const transplantedEntry = _.cloneDeep(sourceData.entries[sourceUid]);
-    transplantedEntry.uid = newUid;
-
-    // Place the entry at the end of the target lorebook, mirroring the client's prior placement decision.
-    const maxDisplayIndex = Object.values(targetData.entries).reduce((max, entry) => Math.max(max, entry?.displayIndex ?? -1), -1);
-    transplantedEntry.displayIndex = maxDisplayIndex + 1;
-
-    targetData.entries[newUid] = transplantedEntry;
-
-    // Target write happens first: if the process dies before this completes, nothing has changed in
-    // either book, so the operation is un-applied rather than half-applied.
-    writeWorldInfoFile(request.user.directories, target_name, targetData);
-
-    if (deleteOriginal) {
-        delete sourceData.entries[sourceUid];
-        writeWorldInfoFile(request.user.directories, source_name, sourceData);
-    }
-
-    return response.send({ ok: true, entry: transplantedEntry });
-});
+    return response.send({ ok: true, entry: result.entry });
+}));
 
 /**
- * Mints a uid for a brand-new World Info entry and reserves it in the given lorebook, server-side, in
- * one request. Replaces the former client-side flow of scanning the client's own cached copy of
- * `data.entries` for the lowest free integer and asserting it as the new entry's uid - a fabricated
- * identifier that could collide if the client's cache were stale (e.g. another tab, or a concurrent
- * move/copy into the same book, had already taken that uid on disk).
- *
- * This is structurally the same case `/entry/transplant` already solves (mint a free uid in a target
- * book via {@link getFreeWorldEntryUid}, immediately before writing), just without a source book to
- * pull from. Only a bare `{ uid }` placeholder is written here - the caller is expected to fill in the
- * entry's real fields (key, content, comment, ...) locally and persist them via the existing whole-book
- * `/edit` save shortly after, the same way a freshly-created entry's fields have always been populated.
- * Reserving the uid on disk immediately (rather than merely computing and returning one) is what
- * prevents two concurrent "create new entry" calls against the same book from ever being handed the
- * same uid.
+ * Mints a uid for a brand-new World Info entry and reserves it in the given lorebook, server-side, in one request:
+ * the lowest free integer uid, a bare `{ uid }` entry at the book's end. The caller fills in the entry's fields after.
  */
-router.post('/entry/create', (request, response) => {
+router.post('/entry/create', storeRoute('creating a World Info entry', async (request, response) => {
     const { name } = request.body ?? {};
 
     if (typeof name !== 'string' || !name) {
         return response.status(400).send({ error: 'name is required' });
     }
 
-    const data = readWorldInfoFile(request.user.directories, name, false);
-    if (!data || typeof data.entries !== 'object' || data.entries === null) {
+    const { lib } = await requestStore(request);
+    const result = await lib.books.createEntry(name);
+    if (result === 'missing') {
         return response.status(404).send({ error: `Lorebook '${name}' not found` });
     }
-
-    const newUid = getFreeWorldEntryUid(data);
-    if (newUid === null) {
+    if (result === 'full') {
         return response.status(500).send({ error: `Could not allocate a free uid in lorebook '${name}'` });
     }
-
-    const newEntry = { uid: newUid };
-    data.entries[newUid] = newEntry;
-    writeWorldInfoFile(request.user.directories, name, data);
-
-    return response.send({ ok: true, entry: newEntry });
-});
+    return response.send({ ok: true, entry: result.entry });
+}));
 
 /**
- * Writes one World Info entry's full field set, server-side, in one request - the single-entry
- * analogue of `/edit`'s whole-book write. Replaces the former client flow (shared by every checkbox,
- * text field, dropdown, etc. in the entry editor) of mutating one field on the client's in-memory copy
- * of the *entire* lorebook and POSTing the whole `data.entries` object - every other entry included -
- * through `/edit` on a debounce, just to persist that one field on one entry.
- *
- * The client still sends the entry's full field set (not a sparse per-field patch): the entry editor
- * always has the complete, current entry in memory (it's what renders the form), so sending it whole
- * costs nothing extra over a patch, while sidestepping any patch/merge-semantics question (e.g. how to
- * express "delete this field") entirely. What's eliminated is every *other* entry in the book.
- *
- * `uid` cannot be reassigned through this endpoint - the written entry's `uid` is forced back to the
- * one already on disk, the same "server owns identity" principle as the uid minted by /entry/create and
- * /entry/transplant.
+ * Writes one World Info entry's full field set, server-side, in one request. `uid` cannot be reassigned through this
+ * endpoint: the written entry's `uid` stays the stored one.
  */
-router.post('/entry/edit', (request, response) => {
+router.post('/entry/edit', storeRoute('saving a World Info entry', async (request, response) => {
     const { name, uid, data: entryData } = request.body ?? {};
 
     if (typeof name !== 'string' || !name) {
@@ -858,20 +537,54 @@ router.post('/entry/edit', (request, response) => {
         return response.status(400).send({ error: 'data must be an object' });
     }
 
-    const data = readWorldInfoFile(request.user.directories, name, false);
-    if (!data || typeof data.entries !== 'object' || data.entries === null) {
+    const { lib } = await requestStore(request);
+    const result = await lib.books.editEntry(name, uid, entryData);
+    if (result === 'missing') {
         return response.status(404).send({ error: `Lorebook '${name}' not found` });
     }
-
-    const entryUid = String(uid);
-    const existingEntry = data.entries[entryUid];
-    if (!existingEntry) {
-        return response.status(404).send({ error: `Entry uid '${entryUid}' not found in lorebook '${name}'` });
+    if (result === 'no entry') {
+        return response.status(404).send({ error: `Entry uid '${String(uid)}' not found in lorebook '${name}'` });
     }
+    return response.send({ ok: true, entry: result.entry });
+}));
 
-    const nextEntry = { ...entryData, uid: existingEntry.uid };
-    data.entries[entryUid] = nextEntry;
-    writeWorldInfoFile(request.user.directories, name, data);
+/** A search answers this many entries when the request names no `limit` (the tags query's page size). */
+const DEFAULT_SEARCH_PAGE_SIZE = 50;
+const MAX_SEARCH_PAGE_SIZE = 500;
 
-    return response.send({ ok: true, entry: nextEntry });
-});
+/**
+ * A page of one book's entries a search string matches, best first: `{ name | avatar, search, limit?, cursor? }` →
+ * `{ entries: [{ uid, score }], total, totalExact, cursor? }`. `name` is a world book; `avatar` a character's own
+ * embedded book. `limit` is 1 to 500 (50 when absent); `cursor` the one the page before answered.
+ */
+router.post('/search', storeRoute('searching a World Info book', async (request, response) => {
+    const { name, avatar, search, limit, cursor } = request.body ?? {};
+    if ((typeof name === 'string') === (typeof avatar === 'string') || (name ?? avatar) === '') {
+        return response.status(400).send({ error: 'one of name or avatar is required' });
+    }
+    if (typeof search !== 'string') {
+        return response.status(400).send({ error: 'search must be a string' });
+    }
+    if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > MAX_SEARCH_PAGE_SIZE)) {
+        return response.status(400).send({ error: `limit must be an integer from 1 to ${MAX_SEARCH_PAGE_SIZE}` });
+    }
+    if (cursor !== undefined && cursor !== null && typeof cursor !== 'string') {
+        return response.status(400).send({ error: 'cursor must be a string' });
+    }
+    const { lib } = await requestStore(request);
+    let character;
+    if (typeof avatar === 'string') {
+        [character] = await lib.ids(TYPE.character, [avatar]);
+        if (character === null) return response.status(404).send({ error: `Character '${avatar}' not found` });
+    }
+    const found = await lib.books.search({
+        ...(character !== undefined ? { character } : { name }),
+        search,
+        limit: limit ?? DEFAULT_SEARCH_PAGE_SIZE,
+        ...(typeof cursor === 'string' ? { cursor } : {}),
+    });
+    if (found === 'missing') {
+        return response.status(404).send({ error: `Lorebook '${name ?? avatar}' not found` });
+    }
+    return response.send(found);
+}));

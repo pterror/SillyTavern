@@ -3,22 +3,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-// chats.js reads these config values at module load. Environment variables take
-// precedence over config.yaml, so the module imports without a config file.
-process.env.SILLYTAVERN_BACKUPS_CHAT_ENABLED = 'false';
-process.env.SILLYTAVERN_BACKUPS_CHAT_MAXTOTALBACKUPS = '-1';
-process.env.SILLYTAVERN_BACKUPS_CHAT_THROTTLEINTERVAL = '0';
-process.env.SILLYTAVERN_BACKUPS_CHAT_CHECKINTEGRITY = 'true';
-// chats.js now also imports character-metadata-db.js (bumpGroupChatStats() - the groups-schema extension's
-// write-path hook for /group/save), which reads these three config values at module load too (directly, plus
-// character-shallow.js's own), so they need the same env-var treatment as the keys above.
-process.env.SILLYTAVERN_PERFORMANCE_SHALLOWCHARACTERSINCLUDECREATORNOTES = 'false';
-process.env.SILLYTAVERN_PERFORMANCE_CHARACTERINDEXBUILDCONCURRENCY = '4';
-process.env.SILLYTAVERN_PERFORMANCE_CHARACTERMETADATARECONCILEINTERVALMS = '300000';
-// Groundwork for a not-yet-built duplicate scan (see character-metadata-db.js's own comment on this constant) -
-// also read at module load, so it needs the same env-var treatment as the three keys above.
-process.env.SILLYTAVERN_PERFORMANCE_ALLOWEXPENSIVEDUPLICATEFALLBACK = 'true';
-
 // chats.js's direct import characters.js pulls in modules that read config.yaml at load (and exit the process when
 // it is missing). getChatInfo() doesn't use it, so mock it at chats.js's boundary.
 jest.unstable_mockModule('../src/endpoints/characters.js', () => ({
@@ -29,6 +13,9 @@ jest.unstable_mockModule('../src/endpoints/characters.js', () => ({
 let chats;
 
 beforeAll(async () => {
+    // chats.js and what it imports read config values at module load.
+    const { setConfigFilePath } = await import('../src/util.js');
+    setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
     chats = await import('../src/endpoints/chats.js');
 });
 

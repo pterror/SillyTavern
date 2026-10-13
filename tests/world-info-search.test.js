@@ -120,4 +120,26 @@ describe('world-info search on the engine', () => {
         expect(await uids({ name: 'Big', search: 'castle' })).toEqual([]);
         expect(await uids({ name: 'Other', search: 'castle' })).toEqual(['0']);
     });
+
+    test('several words\' cursors carry the idfs page 1 ranked by; weights that don\'t fit the words are no cursor', async () => {
+        const entries = Object.fromEntries(Array.from({ length: 30 }, (_, i) => [i, entry(i, { content: `the ${i % 2 ? 'tall ' : ''}tower ${i}` })]));
+        await books.write('Weighted', { entries });
+        const first = /** @type {any} */ (await books.search({ name: 'Weighted', search: 'tall tower', limit: 4 }));
+        expect(first.cursor).toMatch(/^s[^:]+:\d+:[^:,]+,[^:,]+$/);
+        const seen = [];
+        let page = first;
+        for (let i = 0; i < 10; i++) {
+            seen.push(...page.entries.map((/** @type {any} */ e) => e.uid));
+            if (!page.cursor) break;
+            expect(page.cursor.split(':')[2]).toBe(first.cursor.split(':')[2]);
+            page = /** @type {any} */ (await books.search({ name: 'Weighted', search: 'tall tower', limit: 4, cursor: page.cursor }));
+        }
+        expect(new Set(seen).size).toBe(seen.length);
+        expect(seen.length).toBe(first.total);
+        // One word takes no weights: a weighted cursor is no cursor, the first page again.
+        const one = /** @type {any} */ (await books.search({ name: 'Weighted', search: 'tower', limit: 4 }));
+        expect(one.cursor).toMatch(/^s[^:]+:\d+$/);
+        const reread = /** @type {any} */ (await books.search({ name: 'Weighted', search: 'tower', limit: 4, cursor: first.cursor }));
+        expect(reread.entries).toEqual(one.entries);
+    });
 });

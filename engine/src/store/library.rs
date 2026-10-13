@@ -3,11 +3,13 @@
 //! Every character and group is in the orders of each scope it belongs to: the whole library, each tag it
 //! carries, and (a character) the lorebook its card names. Within a scope, each order is split by the entity's
 //! type and fav bit, so a filter on either, or sorting favourites first, reads at most four orders and merges
-//! them. An order's key is the sort key, then the tie upstream breaks it with (a character's avatar, a group's
-//! `<id>.json`); characters sort before groups on equal keys, which the reader does when merging.
+//! them. An order's key is the sort key, then the entity's id, which breaks ties (so equal keys list in creation
+//! order); the entry holds nothing. Characters sort before groups on equal keys, which the reader does when
+//! merging.
 //!
 //! Each (scope, type, fav) also numbers its entities densely from 0 (a removal moves the last number into the
-//! hole), so a random order is a permutation of the numbers and needs no per-seed data.
+//! hole), so a random order is a permutation of the numbers and needs no per-seed data. An entity's number in a
+//! scope is kept in the entry that already stands for the pair (`rank_host`), after the record place it holds.
 //!
 //! A tag merged into another stays in the orders until its carriers are moved: readers of the target take the
 //! merged tags' orders too (`MERGED_INTO`), and `FOLD` lists the tags whose carriers wait to move.
@@ -21,7 +23,7 @@ use super::kinds::{
 };
 use super::searched;
 use super::tags;
-use crate::keyspace::val::{counter_value, get_bytes, get_u64, put_bytes, put_u64};
+use crate::keyspace::val::{Val, counter_value, get_bytes, get_u64, put_bytes, put_u64};
 use crate::log::format::{FieldRef, Record, Value, get_uvarint, put_uvarint};
 use unicode_normalization::UnicodeNormalization;
 
@@ -99,7 +101,6 @@ impl Scope {
 #[derive(Debug, Clone, PartialEq)]
 pub struct State {
     pub kind: u64,
-    pub tie: Vec<u8>,
     pub fav: bool,
     /// The folded name.
     pub name: Vec<u8>,
@@ -163,15 +164,15 @@ pub fn order_prefix(scope: &Scope, sort: u64, kind: u64, fav: bool) -> Vec<u8> {
     k
 }
 
-fn order_key(scope: &Scope, sort: u64, st: &State) -> Vec<u8> {
+fn order_key(scope: &Scope, sort: u64, st: &State, e: u64) -> Vec<u8> {
     let mut k = order_prefix(scope, sort, st.kind, st.fav);
     k.extend_from_slice(&st.sort_key(sort));
-    put_bytes(&mut k, &st.tie);
+    put_u64(&mut k, e);
     k
 }
 
-/// An order key's sort key and tie, after its prefix.
-pub fn split_order_key(rest: &[u8], sort: u64) -> Option<(Vec<u8>, Vec<u8>)> {
+/// An order key's sort key and entity, after its prefix.
+pub fn split_order_key(rest: &[u8], sort: u64) -> Option<(Vec<u8>, u64)> {
     let mut at = 0;
     if sort == BY_NAME {
         get_bytes(rest, &mut at)?;
@@ -182,8 +183,8 @@ pub fn split_order_key(rest: &[u8], sort: u64) -> Option<(Vec<u8>, Vec<u8>)> {
         };
     }
     let sk = rest.get(..at)?.to_vec();
-    let tie = get_bytes(rest, &mut at)?;
-    (at == rest.len()).then_some((sk, tie))
+    let e = get_u64(rest, &mut at)?;
+    (at == rest.len()).then_some((sk, e))
 }
 
 pub fn rand_prefix(scope: &Scope, kind: u64, fav: bool) -> Vec<u8> {
@@ -200,11 +201,86 @@ pub fn rand_key(scope: &Scope, kind: u64, fav: bool, n: u64) -> Vec<u8> {
     k
 }
 
-pub fn rand_at_key(scope: &Scope, e: u64) -> Vec<u8> {
-    let mut k = key::of(key::RAND_AT);
-    scope.put(&mut k);
-    put_u64(&mut k, e);
-    k
+/// The entry keeping `e`'s number in `scope`'s numbering, keyed by the pair already: the entity's own (`ENTITY`)
+/// for the whole library, its membership (`MEMBER`) for a tag, its lorebook link (`books::LINK`) for a lorebook.
+/// A character links one lorebook, so its link stands for the one lorebook scope it is in.
+pub fn rank_host(scope: &Scope, e: u64) -> Vec<u8> {
+    match scope {
+        Scope::All => key::id(key::ENTITY, e),
+        Scope::Tag(t) => key::ids(key::MEMBER, *t, e),
+        Scope::World(_) => key::id(books::LINK, e),
+    }
+}
+
+/// A host entry's value (`rank_host`): its record's place, then the entity's number when it is numbered there.
+pub fn host_bytes(l: Loc, n: Option<u64>) -> Vec<u8> {
+    let mut b = loc_bytes(l);
+    if let Some(n) = n {
+        put_uvarint(&mut b, n);
+    }
+    b
+}
+
+/// A host entry's record place and number (`host_bytes`).
+pub fn parse_host(b: &[u8]) -> Result<(Loc, Option<u64>), StoreError> {
+    let bad = || entry_err("a host entry doesn't decode");
+    let mut at = 0;
+    let pos = get_uvarint(b, &mut at).map_err(|_| bad())?;
+    let len = get_uvarint(b, &mut at).map_err(|_| bad())?;
+    let n = if at < b.len() {
+        Some(get_uvarint(b, &mut at).map_err(|_| bad())?)
+    } else {
+        None
+    };
+    if at != b.len() {
+        return Err(bad());
+    }
+    Ok((Loc { pos, len }, n))
+}
+
+/// `e`'s number in `scope`'s numbering, as `view` has it.
+pub fn rank(view: &View, scope: &Scope, e: u64) -> Result<Option<u64>, StoreError> {
+    Ok(match view.get(&rank_host(scope, e))? {
+        Some(b) => parse_host(&b)?.1,
+        None => None,
+    })
+}
+
+/// The value of `k` with `out`'s entries over `view`'s: the latest put or delete of it in `out`, else `view`'s.
+pub(super) fn current(view: &View, out: &Out, k: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
+    for (ek, v) in out.entries.iter().rev() {
+        if ek.as_slice() == k {
+            return match v {
+                Val::Put(b) => Ok(Some(b.clone())),
+                Val::Del => Ok(None),
+                _ => Err(entry_err("a host entry is written as a number")),
+            };
+        }
+    }
+    view.get(k)
+}
+
+/// Sets `e`'s number in `scope` (None: takes it out) in its host entry, keeping the record place there. The host
+/// goes first: a number for a pair without one is an error, and taking it out of a gone one does nothing.
+fn set_rank(
+    view: &View,
+    out: &mut Out,
+    scope: &Scope,
+    e: u64,
+    n: Option<u64>,
+) -> Result<(), StoreError> {
+    let hk = rank_host(scope, e);
+    match current(view, out, &hk)? {
+        Some(b) => {
+            let (l, old) = parse_host(&b)?;
+            if old != n {
+                out.put(hk, host_bytes(l, n));
+            }
+            Ok(())
+        }
+        None if n.is_none() => Ok(()),
+        None => Err(entry_err("a numbered entity has no entry for its scope")),
+    }
 }
 
 pub fn count_key(scope: &Scope, kind: u64, fav: bool) -> Vec<u8> {
@@ -265,13 +341,15 @@ fn pointed(view: &View, k: &[u8]) -> Result<Option<(Loc, Record)>, StoreError> {
 
 /// An entity's type, key and date added.
 pub fn entity_info(view: &View, e: u64) -> Result<Option<(u64, Vec<u8>, i64)>, StoreError> {
-    Ok(pointed(view, &key::id(key::ENTITY, e))?.map(|(_, rec)| {
-        let added = match rec.values[3] {
-            Value::Time(t) => t,
-            _ => unreachable!("checked by Record::new"),
-        };
-        (id(&rec, 1), bytes(&rec, 2).to_vec(), added)
-    }))
+    let Some(b) = view.get(&key::id(key::ENTITY, e))? else {
+        return Ok(None);
+    };
+    let (rec, _) = view.record(parse_host(&b)?.0.pos)?;
+    let added = match rec.values[3] {
+        Value::Time(t) => t,
+        _ => unreachable!("checked by Record::new"),
+    };
+    Ok(Some((id(&rec, 1), bytes(&rec, 2).to_vec(), added)))
 }
 
 pub fn entity_by_key(view: &View, kind: u64, k: &[u8]) -> Result<Option<u64>, StoreError> {
@@ -299,19 +377,13 @@ pub fn fav_of(view: &View, e: u64) -> Result<bool, StoreError> {
 
 /// The state a character or group is placed by, as it is in `view`; None for anything else.
 pub fn state(view: &View, e: u64) -> Result<Option<State>, StoreError> {
-    let Some((kind, k, added)) = entity_info(view, e)? else {
+    let Some((kind, _, added)) = entity_info(view, e)? else {
         return Ok(None);
     };
-    state_of(view, e, kind, k, added)
+    state_of(view, e, kind, added)
 }
 
-fn state_of(
-    view: &View,
-    e: u64,
-    kind: u64,
-    k: Vec<u8>,
-    added: i64,
-) -> Result<Option<State>, StoreError> {
+fn state_of(view: &View, e: u64, kind: u64, added: i64) -> Result<Option<State>, StoreError> {
     if kind != CHARACTER && kind != GROUP {
         return Ok(None);
     }
@@ -328,21 +400,12 @@ fn state_of(
     }
     Ok(Some(State {
         kind,
-        tie: tie(kind, k),
         fav: fav_of(view, e)?,
         name: folded_name(view, e)?,
         nums,
         tags: tags_of(view, e)?,
         world,
     }))
-}
-
-/// What breaks ties in a character's or group's orders: a character's avatar, a group's `<id>.json`.
-fn tie(kind: u64, mut k: Vec<u8>) -> Vec<u8> {
-    if kind == GROUP {
-        k.extend_from_slice(b".json");
-    }
-    k
 }
 
 fn folded_name(view: &View, e: u64) -> Result<Vec<u8>, StoreError> {
@@ -387,13 +450,13 @@ pub fn sort_num(
     })
 }
 
-/// A character's or group's type, sort key and tie.
-pub type Placement = (u64, Vec<u8>, Vec<u8>);
+/// A character's or group's type and sort key (its id breaks ties).
+pub type Placement = (u64, Vec<u8>);
 
-/// Where a character or group sits in the orders of `sort`: its type, sort key and tie, reading only what that
-/// order needs. None for anything else.
+/// Where a character or group sits in the orders of `sort`: its type and sort key, reading only what that order
+/// needs. None for anything else.
 pub fn sort_place(view: &View, e: u64, sort: u64) -> Result<Option<Placement>, StoreError> {
-    let Some((kind, k, added)) = entity_info(view, e)? else {
+    let Some((kind, _, added)) = entity_info(view, e)? else {
         return Ok(None);
     };
     if kind != CHARACTER && kind != GROUP {
@@ -405,7 +468,7 @@ pub fn sort_place(view: &View, e: u64, sort: u64) -> Result<Option<Placement>, S
     } else {
         num_key(&mut sk, sort_num(view, e, kind, Some(added), sort)?);
     }
-    Ok(Some((kind, sk, tie(kind, k))))
+    Ok(Some((kind, sk)))
 }
 
 /// Moves the entity's entries in every order, numbering and count from `old` to `new`.
@@ -429,8 +492,8 @@ pub fn reposition(
         let o = old.filter(|st| st.scopes().contains(s));
         let n = new.filter(|st| st.scopes().contains(s));
         for sort in 0..SORTS {
-            let ok = o.map(|st| order_key(s, sort, st));
-            let nk = n.map(|st| order_key(s, sort, st));
+            let ok = o.map(|st| order_key(s, sort, st, e));
+            let nk = n.map(|st| order_key(s, sort, st, e));
             if ok == nk {
                 continue;
             }
@@ -438,7 +501,7 @@ pub fn reposition(
                 out.del(ok);
             }
             if let Some(nk) = nk {
-                out.put(nk, ev.clone());
+                out.put(nk, Vec::new());
             }
         }
         let op = o.map(|st| (st.kind, st.fav));
@@ -457,7 +520,7 @@ pub fn reposition(
             if !view.is_bulk() {
                 let n = counter(view, &ck)?;
                 out.put(rand_key(s, kind, fav, n as u64), ev.clone());
-                out.put(rand_at_key(s, e), uvarint(n as u64));
+                set_rank(view, out, s, e, Some(n as u64))?;
             }
             out.add(ck, 1);
         }
@@ -474,12 +537,7 @@ fn unnumber(
     fav: bool,
     e: u64,
 ) -> Result<(), StoreError> {
-    let at = rand_at_key(s, e);
-    let n = parse_uvarint(
-        &view
-            .get(&at)?
-            .ok_or_else(|| entry_err("an ordered entity has no number"))?,
-    )?;
+    let n = rank(view, s, e)?.ok_or_else(|| entry_err("an ordered entity has no number"))?;
     let size = counter(view, &count_key(s, kind, fav))?;
     let last = u64::try_from(size - 1).map_err(|_| entry_err("a numbering is empty"))?;
     if n != last {
@@ -490,11 +548,10 @@ fn unnumber(
                 .ok_or_else(|| entry_err("a numbering has a hole"))?,
         )?;
         out.put(rand_key(s, kind, fav, n), uvarint(moved));
-        out.put(rand_at_key(s, moved), uvarint(n));
+        set_rank(view, out, s, moved, Some(n))?;
     }
     out.del(rand_key(s, kind, fav, last));
-    out.del(at);
-    Ok(())
+    set_rank(view, out, s, e, None)
 }
 
 /// Repositions `e` (if it is a character or group) for a change `f` makes to its state.
@@ -600,7 +657,9 @@ impl Deriver for EntityCreate {
                 "an entity of type {kind} has that key already"
             )));
         }
-        if let Some(st) = state_of(view, e, kind, k.to_vec(), added)? {
+        // The entity's entry first: the whole library's numbering keeps its number there.
+        out.put(key::id(key::ENTITY, e), host_bytes(at, None));
+        if let Some(st) = state_of(view, e, kind, added)? {
             reposition(view, out, e, None, Some(&st))?;
         }
         match kind {
@@ -609,8 +668,7 @@ impl Deriver for EntityCreate {
             books::ENTRY => books::entry_created(view, out, k)?,
             _ => {}
         }
-        searched::created(view, out, e, kind, k)?;
-        out.put(key::id(key::ENTITY, e), loc_bytes(at));
+        searched::created(view, out, e, kind, k, searched::marked(view, kind, e)?)?;
         out.put(kk, uvarint(e));
         out.max(key::of(key::NEXT_ENTITY), e + 1);
         version(view, out, e, at)?;
@@ -619,7 +677,7 @@ impl Deriver for EntityCreate {
     }
 
     fn is_live(&self, rec: &Record, pos: u64, view: &View) -> Result<bool, StoreError> {
-        live_at(view, &key::id(key::ENTITY, id(rec, 0)), pos)
+        live_host(view, &key::id(key::ENTITY, id(rec, 0)), pos)
     }
 
     fn repoint(
@@ -630,7 +688,7 @@ impl Deriver for EntityCreate {
         view: &View,
         out: &mut Out,
     ) -> Result<(), StoreError> {
-        repoint_at(view, out, &key::id(key::ENTITY, id(rec, 0)), from, to)
+        repoint_host(view, out, &key::id(key::ENTITY, id(rec, 0)), from, to)
     }
 }
 
@@ -672,16 +730,21 @@ impl Deriver for EntityUpdate {
             out.put(kk, uvarint(e));
             searched::rekeyed(view, out, e, kind, &old_k, k)?;
         }
-        let old = state_of(view, e, kind, old_k, old_added)?;
-        let new = state_of(view, e, kind, k.to_vec(), added)?;
+        let old = state_of(view, e, kind, old_added)?;
+        let new = state_of(view, e, kind, added)?;
         if old != new {
             reposition(view, out, e, old.as_ref(), new.as_ref())?;
         }
         let ek = key::id(key::ENTITY, e);
         if let Some(b) = view.get(&ek)? {
-            dead(out, parse_loc(&b)?);
+            dead(out, parse_host(&b)?.0);
         }
-        out.put(ek, loc_bytes(at));
+        // The entry keeps the entity's number in the whole library's numbering.
+        let n = match current(view, out, &ek)? {
+            Some(b) => parse_host(&b)?.1,
+            None => None,
+        };
+        out.put(ek, host_bytes(at, n));
         version(view, out, e, at)?;
         if kind == TAG {
             tags::touched(view, out, e, at)?;
@@ -690,7 +753,7 @@ impl Deriver for EntityUpdate {
     }
 
     fn is_live(&self, rec: &Record, pos: u64, view: &View) -> Result<bool, StoreError> {
-        live_at(view, &key::id(key::ENTITY, id(rec, 0)), pos)
+        live_host(view, &key::id(key::ENTITY, id(rec, 0)), pos)
     }
 
     fn repoint(
@@ -701,7 +764,7 @@ impl Deriver for EntityUpdate {
         view: &View,
         out: &mut Out,
     ) -> Result<(), StoreError> {
-        repoint_at(view, out, &key::id(key::ENTITY, id(rec, 0)), from, to)
+        repoint_host(view, out, &key::id(key::ENTITY, id(rec, 0)), from, to)
     }
 }
 
@@ -716,6 +779,31 @@ fn live_at(view: &View, k: &[u8], pos: u64) -> Result<bool, StoreError> {
 fn repoint_at(view: &View, out: &mut Out, k: &[u8], from: u64, to: Loc) -> Result<(), StoreError> {
     if live_at(view, k, from)? {
         out.put(k.to_vec(), loc_bytes(to));
+    }
+    Ok(())
+}
+
+/// `live_at` for a host entry (`rank_host`).
+pub(super) fn live_host(view: &View, k: &[u8], pos: u64) -> Result<bool, StoreError> {
+    Ok(match view.get(k)? {
+        Some(b) => parse_host(&b)?.0.pos == pos,
+        None => false,
+    })
+}
+
+/// `repoint_at` for a host entry, its number kept.
+pub(super) fn repoint_host(
+    view: &View,
+    out: &mut Out,
+    k: &[u8],
+    from: u64,
+    to: Loc,
+) -> Result<(), StoreError> {
+    if let Some(b) = view.get(k)? {
+        let (l, n) = parse_host(&b)?;
+        if l.pos == from {
+            out.put(k.to_vec(), host_bytes(to, n));
+        }
     }
     Ok(())
 }
@@ -797,11 +885,17 @@ fn delete_entity(
     }
     if let Some(st) = state(view, e)? {
         reposition(view, out, e, Some(&st), None)?;
+        // Each tag's carrier upkeep sees the ones before it.
+        let mut local = std::collections::BTreeMap::new();
         for tag in &st.tags {
+            let mut o = Out::default();
+            super::carriers::changed(&view.with_layer(&local), &mut o, *tag, e, -1)?;
+            out.entries.extend(o.entries.iter().cloned());
+            o.apply(&mut local);
             tags::carriers_changed(view, out, *tag, -1)?;
             let mk = key::ids(key::MEMBER, *tag, e);
             if let Some(b) = view.get(&mk)? {
-                dead(out, parse_loc(&b)?);
+                dead(out, parse_host(&b)?.0);
             }
             out.del(mk);
             out.del(key::ids(key::MEMBER_OF, e, *tag));
@@ -851,7 +945,11 @@ fn delete_entity(
         dead(out, l);
         out.del(hk);
     }
-    drop_pointers(view, out, &key::id(key::ENTITY, e))?;
+    let ek = key::id(key::ENTITY, e);
+    if let Some(b) = view.get(&ek)? {
+        dead(out, parse_host(&b)?.0);
+        out.del(ek);
+    }
     out.del(entity_key_key(kind, k));
     super::kinds::version_gone(view, out, e, kind, k, at)?;
     Ok(())
@@ -1247,6 +1345,17 @@ impl Deriver for TagMerge {
             )));
         }
         out.put(mk, loc_bytes(at));
+        // The tag stops existing: its name leaves the index, and its fold is its carriers' move off that name.
+        if let Some((TAG, k, _)) = entity_info(view, tag)? {
+            let mut moving = Out::default();
+            super::carriers::merging(view, &mut moving, tag)?;
+            let mut layer = std::collections::BTreeMap::new();
+            for (mk, v) in &moving.entries {
+                super::derive::apply(&mut layer, mk.clone(), v.clone());
+            }
+            out.entries.extend(moving.entries);
+            searched::gone(&view.with_layer(&layer), out, tag, TAG, &k)?;
+        }
         if counter(view, &key::id(key::MEMBER_COUNT, tag))? > 0 {
             out.put(key::id(key::FOLD, tag), Vec::new());
             if let Some(t) = target {
@@ -1303,7 +1412,7 @@ pub fn fold_step(view: &View, out: &mut Out) -> Result<bool, StoreError> {
     for (mk, v) in &carriers {
         let mut at = start.len();
         let e = get_u64(mk, &mut at).ok_or_else(|| entry_err("a membership key doesn't decode"))?;
-        let l = parse_loc(v)?;
+        let l = parse_host(v)?.0;
         let mut layers = vec![super::derive::Layer::Sorted(&local)];
         layers.extend(view.layers.iter().copied());
         let lv = View {
@@ -1316,6 +1425,14 @@ pub fn fold_step(view: &View, out: &mut Out) -> Result<bool, StoreError> {
             log: view.log,
         };
         let mut o = Out::default();
+        // The carrier upkeep for the target sees the one for the tag.
+        let mut leaving = Out::default();
+        super::carriers::changed(&lv, &mut leaving, tag, e, -1)?;
+        let mut left = std::collections::BTreeMap::new();
+        for (k, v) in &leaving.entries {
+            super::derive::apply(&mut left, k.clone(), v.clone());
+        }
+        o.entries.extend(leaving.entries);
         let old = state(&lv, e)?;
         tags::carriers_changed(&lv, &mut o, tag, -1)?;
         o.del(mk.clone());
@@ -1326,7 +1443,8 @@ pub fn fold_step(view: &View, out: &mut Out) -> Result<bool, StoreError> {
         match target {
             Some(t) if lv.get(&key::ids(key::MEMBER, t, e))?.is_none() => {
                 tags::carriers_changed(&lv, &mut o, t, 1)?;
-                super::kinds::assign(&mut o, e, t, l, false);
+                super::carriers::changed(&lv.with_layer(&left), &mut o, t, e, 1)?;
+                super::kinds::assign(&mut o, e, t, l, false, None);
                 added = Some(t);
             }
             _ => dead(&mut o, l),
@@ -1344,6 +1462,9 @@ pub fn fold_step(view: &View, out: &mut Out) -> Result<bool, StoreError> {
         o.apply(&mut local);
     }
     if carriers.len() < FOLD_SLICE {
+        let mut ended = Out::default();
+        super::carriers::folded(view, &mut ended, tag)?;
+        ended.apply(&mut local);
         local.insert(fk, crate::keyspace::val::Val::Del);
         if let Some(t) = target {
             local.insert(

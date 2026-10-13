@@ -32,8 +32,8 @@ export class RequestSession {
         this.made = null;
     }
 
-    /** The UUID of the session upstream's compat identifiers name (`getCurrentChatId()`, `characters[].chat`,
-     * `group.chat_id`: its name when it has one, else this). */
+    /** The UUID the request's conversations are named by: the session's (made or named), else the caller's
+     * deterministic one in the tree. Upstream's compat chat id is `s<this>.<tree>` when it has no current chat there. */
     get identifier() {
         return this.made ?? this.resolved.identifier;
     }

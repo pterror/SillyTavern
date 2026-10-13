@@ -1,12 +1,15 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals';
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 
 /** @type {import('express').Router} */
 let router;
-/** @type {typeof import('../src/character-metadata-db.js')} */
-let metadataDb;
+/** @type {typeof import('../src/library-codes.js').TYPE} */
+let TYPE;
+/** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
+let user;
+/** @type {typeof import('./converted-user.fixture.js')} */
+let fixture;
 /** @type {typeof import('../src/character-card-parser.js')} */
 let cardParser;
 /** @type {import('node:http').Server} */
@@ -26,7 +29,8 @@ beforeAll(async () => {
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
 
     ({ router } = await import('../src/endpoints/characters.js'));
-    metadataDb = await import('../src/character-metadata-db.js');
+    fixture = await import('./converted-user.fixture.js');
+    ({ TYPE } = await import('../src/library-codes.js'));
     cardParser = await import('../src/character-card-parser.js');
 
     const express = (await import('express')).default;
@@ -44,18 +48,13 @@ beforeAll(async () => {
 
 afterAll(() => new Promise(resolve => server.close(resolve)));
 
-beforeEach(() => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-characters-changes-test-'));
-    const charactersDir = path.join(tempDir, 'characters');
-    const chatsDir = path.join(tempDir, 'chats');
-    fs.mkdirSync(charactersDir, { recursive: true });
-    fs.mkdirSync(chatsDir, { recursive: true });
-    directories = { root: tempDir, characters: charactersDir, chats: chatsDir };
+beforeEach(async () => {
+    user = await fixture.emptyUser('st-characters-changes-test-');
+    directories = user.directories;
+    globalThis.DATA_ROOT = user.dataRoot;
 });
 
-afterEach(() => {
-    metadataDb.disposeMetadataStores();
-});
+afterEach(() => user.close());
 
 async function postJson(urlPath, body) {
     const response = await fetch(`${baseUrl}${urlPath}`, {
@@ -88,7 +87,7 @@ async function seedCharacter(avatar, overrides = {}) {
         },
         ...overrides,
     };
-    await metadataDb.upsertCharacterFromWrite(directories, avatar, JSON.stringify(card));
+    await user.store.lib.writeCard(directories, avatar, JSON.stringify(card));
 }
 
 describe('POST /api/characters/changes', () => {
@@ -117,7 +116,8 @@ describe('POST /api/characters/changes', () => {
         /** @type {{seq: number, changes: {id: string, op: string}[], truncated: boolean}} */
         const body = await response.json();
         expect(body.truncated).toBe(false);
-        expect(body.seq).toBe(3);
+        // A position in the store's change feed, read to its end.
+        expect(body.seq).toBe(await user.store.lib.changesEnd());
         expect(body.changes.map(c => c.id).sort()).toEqual(['Alice.png', 'Bob.png', 'Carol.png']);
         expect(body.changes.every(c => c.op === 'upsert')).toBe(true);
     });
@@ -148,7 +148,7 @@ describe('POST /api/characters/changes', () => {
         await seedCharacter('Alice.png');
         const afterCreate = await (await postJson('/api/characters/changes', { sinceSeq: 0 })).json();
 
-        await metadataDb.deleteCharacterRow(directories, 'Alice.png');
+        await user.store.lib.deleteEntity(TYPE.character, 'Alice.png');
 
         const response = await postJson('/api/characters/changes', { sinceSeq: afterCreate.seq });
         const body = await response.json();
@@ -160,19 +160,16 @@ describe('POST /api/characters/changes', () => {
         const afterCreate = await (await postJson('/api/characters/changes', { sinceSeq: 0 })).json();
 
         await seedCharacter('Alice.png', { data: { name: 'Alice', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
-        await metadataDb.deleteCharacterRow(directories, 'Alice.png');
+        await user.store.lib.deleteEntity(TYPE.character, 'Alice.png');
 
         const response = await postJson('/api/characters/changes', { sinceSeq: afterCreate.seq });
         const body = await response.json();
         expect(body.changes).toEqual([{ id: 'Alice.png', op: 'delete' }]);
     });
 
-    test('the one-time bootstrap backfill also logs real changes rows - verifying bootstrapIfNeeded()\'s write ' +
-        'path (writeRowSync(), called directly rather than through applyOrBuffer()) is not a bypass around the ' +
-        'change log, since writeRowSync() itself unconditionally inserts the changes row regardless of which ' +
-        'caller reaches it', async () => {
-        // A real parseable card, not just a file that ends in .png - bootstrapIfNeeded() skips (and only logs a
-        // warning for) anything parseCharacterCard() can't read, same as /batch does for a broken file.
+    test('a card imported by the rescan of the characters folder also logs a real change', async () => {
+        // A real parseable card, not just a file that ends in .png - the rescan skips (and only logs a warning for)
+        // anything it can't read.
         const baseImage = await fs.promises.readFile(path.join(process.cwd(), '..', 'public', 'img', 'ai4.png'));
         const card = {
             name: 'Legacy', fav: false, spec: 'chara_card_v2', spec_version: '2.0',
@@ -185,7 +182,7 @@ describe('POST /api/characters/changes', () => {
         const buffer = cardParser.write(baseImage, JSON.stringify(card));
         await fs.promises.writeFile(path.join(directories.characters, 'Legacy.png'), buffer);
 
-        await metadataDb.bootstrapIfNeeded(directories);
+        expect((await postJson('/api/characters/metadata/rescan', {})).status).toBe(200);
 
         const response = await postJson('/api/characters/changes', { sinceSeq: 0 });
         const body = await response.json();

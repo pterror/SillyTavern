@@ -1,33 +1,15 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals';
-import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
-import { defineCharacterStoreFunctions } from '../src/character-store-schema.js';
-
-/**
- * better-sqlite3 with the store's SQL functions registered on every connection, as the store's own connections have
- * them (character-store-schema.js).
- * @param {typeof import('better-sqlite3')} Base
- * @returns {typeof import('better-sqlite3')}
- */
-function withStoreFunctions(Base) {
-    return /** @type {any} */ (class extends /** @type {any} */ (Base) {
-        constructor(/** @type {any[]} */ ...args) {
-            super(...args);
-            defineCharacterStoreFunctions({ defineFunction: (name, fn) => this.function(name, { deterministic: true }, fn) });
-        }
-    });
-}
 
 // A tag assignment's entity type follows from its id: ending in `.png` is a character, anything else a group.
-// A group row whose id ends in `.png` can only be legacy data; its group_tags rows are never read as a group's.
+// A group whose id ends in `.png` can only be legacy data; its tag assignments are never read as a group's.
 
-/** @type {typeof import('../src/character-metadata-db.js')} */
-let metadataDb;
-/** @type {typeof import('../src/endpoints/search-index-coordinator.js')} */
-let searchCoordinator;
-/** @type {typeof import('better-sqlite3')} */
-let Database;
+/** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
+let user;
+/** @type {typeof import('./converted-user.fixture.js')} */
+let fixture;
+/** @type {typeof import('../src/library-codes.js').TYPE} */
+let TYPE;
 /** @type {import('node:http').Server} */
 let server;
 let baseUrl;
@@ -39,9 +21,8 @@ beforeAll(async () => {
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
 
-    metadataDb = await import('../src/character-metadata-db.js');
-    searchCoordinator = await import('../src/endpoints/search-index-coordinator.js');
-    Database = withStoreFunctions((await import('better-sqlite3')).default);
+    fixture = await import('./converted-user.fixture.js');
+    ({ TYPE } = await import('../src/library-codes.js'));
     const { router: tagsRouter } = await import('../src/endpoints/tags.js');
     const { router: groupsRouter } = await import('../src/endpoints/groups.js');
 
@@ -49,7 +30,7 @@ beforeAll(async () => {
     const app = express();
     app.use(express.json({ limit: '10mb' }));
     app.use((req, res, next) => {
-        req.user = { directories, profile: { handle: `test-user-${path.basename(directories.root)}` } };
+        req.user = user.user;
         next();
     });
     app.use('/api/tags', tagsRouter);
@@ -61,25 +42,13 @@ beforeAll(async () => {
 
 afterAll(() => new Promise(resolve => server.close(resolve)));
 
-beforeEach(() => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-tag-entity-typing-test-'));
-    directories = {
-        root: tempDir,
-        characters: path.join(tempDir, 'characters'),
-        chats: path.join(tempDir, 'chats'),
-        groups: path.join(tempDir, 'groups'),
-        groupChats: path.join(tempDir, 'groupChats'),
-    };
-    for (const dir of [directories.characters, directories.chats, directories.groups, directories.groupChats]) {
-        fs.mkdirSync(dir, { recursive: true });
-    }
+beforeEach(async () => {
+    user = await fixture.emptyUser('st-tag-entity-typing-test-');
+    directories = user.directories;
+    globalThis.DATA_ROOT = user.dataRoot;
 });
 
-afterEach(async () => {
-    await searchCoordinator.disposeSearchWorkers();
-    metadataDb.disposeMetadataStores();
-    fs.rmSync(directories.root, { recursive: true, force: true });
-});
+afterEach(() => user.close());
 
 /** @returns {Promise<{ status: number, body: any }>} */
 async function post(urlPath, body) {
@@ -101,48 +70,34 @@ async function seedCharacter(avatar) {
         name,
         data: { name, tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } },
     });
-    await metadataDb.upsertCharacterFromWrite(directories, avatar, cardJson);
+    await user.store.lib.writeCard(directories, avatar, cardJson);
 }
 
-/** A group's file and row. @param {string} id */
+/** A group. @param {string} id */
 async function seedGroup(id) {
-    const group = { id, name: `Group ${id}`, members: [], chats: [], fav: false };
-    fs.writeFileSync(path.join(directories.groups, `${id}.json`), JSON.stringify(group));
-    await metadataDb.upsertGroupRow(directories, id, group.name, { fav: false, group });
+    await user.store.lib.writeGroup({ id, name: `Group ${id}`, members: [], fav: false });
 }
 
-/** @param {string} sql @param {unknown[]} [params] */
-function runSql(sql, params = []) {
-    const db = new Database(path.join(directories.root, 'character-metadata.sqlite'));
-    try {
-        return db.prepare(sql).run(...params);
-    } finally {
-        db.close();
-    }
-}
-
-/** @param {string} sql @param {unknown[]} [params] */
-function allSql(sql, params = []) {
-    const db = new Database(path.join(directories.root, 'character-metadata.sqlite'), { readonly: true });
-    try {
-        return Array.from(db.prepare(sql).iterate(...params));
-    } finally {
-        db.close();
-    }
+/** The tags the store holds for a group, whatever its id. @param {string} id */
+async function groupTagIds(id) {
+    return /** @type {any} */ ((await user.store.lib.groups([id]))[0])?.tag_ids ?? [];
 }
 
 /**
- * Legacy data where a group row and a character share the id `Alice.png`: the character has tag `char-tag`, and
- * group_tags holds `group-tag` for the group row.
+ * Legacy data where a group and a character share the id `Alice.png`: the character has tag `char-tag`, and the
+ * group holds `group-tag`.
  */
 async function seedCollision() {
     await seedCharacter('Alice.png');
     await seedGroup('Alice.png');
     expect((await post('/api/tags/assign', { id: 'Alice.png', tagId: 'char-tag' })).status).toBe(200);
-    runSql('INSERT INTO group_tags (group_id, tag_id) VALUES (?, ?)', ['Alice.png', 'group-tag']);
+    await user.store.lib.writeTag({ id: 'group-tag', name: 'group-tag' });
+    await user.store.lib.assignTag(TYPE.group, 'Alice.png', 'group-tag', true);
 }
 
-describe('a group row whose id ends in .png is never read as a group', () => {
+// Groups and characters are different entities, so a group whose id ends in `.png` has its own tags; the tag routes
+// still read a `.png` id as a character's avatar (upstream's keys).
+describe('a group whose id ends in .png keeps its own tags', () => {
     test('/api/tags/for reads only the character\'s tags', async () => {
         await seedCollision();
         const { status, body } = await post('/api/tags/for', { ids: ['Alice.png'] });
@@ -150,39 +105,39 @@ describe('a group row whose id ends in .png is never read as a group', () => {
         expect(body).toEqual({ 'Alice.png': ['char-tag'] });
     });
 
-    test('/api/groups/batch serves the .png group with no tags', async () => {
+    test('/api/groups/batch serves the .png group with its own tags', async () => {
         await seedCollision();
         const { status, body } = await post('/api/groups/batch', { ids: ['Alice.png'] });
         expect(status).toBe(200);
-        expect(body.map(g => [g.id, g.tag_ids])).toEqual([['Alice.png', []]]);
+        expect(body.map(g => [g.id, g.tag_ids])).toEqual([['Alice.png', ['group-tag']]]);
     });
 
-    test('a group tag filter never matches the .png group', async () => {
+    test('a tag filter matches the .png group by its own tag, and the character by its own', async () => {
         await seedCollision();
-        const result = await metadataDb.queryEntities(directories, { tags: { include: ['group-tag'] }, wantTotal: true });
-        expect(result.total).toBe(0);
+        const ids = async (tag) => (await user.store.lib.query({ tags: { include: [tag] }, wantTotal: true })).rows.map(r => `${r.type}:${r.id}`);
+        expect(await ids('group-tag')).toEqual(['group:Alice.png']);
+        expect(await ids('char-tag')).toEqual(['character:Alice.png']);
     });
 
-    test('hash mode gives the .png group the tag hash of no tags, matching what /api/groups/batch serves', async () => {
+    test('hash mode gives the .png group the tag hash of its own tags, matching what /api/groups/batch serves', async () => {
         await seedCollision();
         const { groupDigestTagIdsHash } = await import('../public/scripts/hash-utils.js');
-        runSql('UPDATE groups SET digest_tag_ids = ? WHERE id = ?', [groupDigestTagIdsHash({ tag_ids: ['group-tag'] }), 'Alice.png']);
-        const result = await metadataDb.queryEntities(directories, { wantRows: false, wantTotal: false, wantHashes: true });
+        const result = await user.store.lib.query({ wantRows: false, wantTotal: false, wantHashes: true });
         const groupRow = result.hashRows.find(r => r.isGroup && r.id === 'Alice.png');
-        expect(groupRow.tagIdsHash).toBe(groupDigestTagIdsHash({ tag_ids: [] }) >>> 0);
+        expect(groupRow.tagIdsHash).toBe(groupDigestTagIdsHash({ tag_ids: ['group-tag'] }) >>> 0);
     });
 
     test('/api/tags/unassign on the id leaves the group row\'s assignment in place', async () => {
         await seedCollision();
         expect((await post('/api/tags/unassign', { id: 'Alice.png', tagId: 'group-tag' })).status).toBe(200);
-        expect(allSql('SELECT tag_id FROM group_tags WHERE group_id = ?', ['Alice.png'])).toEqual([{ tag_id: 'group-tag' }]);
+        expect(await groupTagIds('Alice.png')).toEqual(['group-tag']);
     });
 
     test('/api/tags/assign on a .png id with only a group row is a 404, and writes nothing', async () => {
         await seedGroup('Bob.png');
         const { status } = await post('/api/tags/assign', { id: 'Bob.png', tagId: 'tag1' });
         expect(status).toBe(404);
-        expect(allSql('SELECT group_id FROM group_tags')).toEqual([]);
+        expect(await groupTagIds('Bob.png')).toEqual([]);
     });
 
     test('/api/tags/copy to a .png id with only a group row is a 404, and writes nothing', async () => {
@@ -190,7 +145,7 @@ describe('a group row whose id ends in .png is never read as a group', () => {
         await seedGroup('Bob.png');
         expect((await post('/api/tags/assign', { id: 'Alice.png', tagId: 'tag1' })).status).toBe(200);
         expect((await post('/api/tags/copy', { from: 'Alice.png', to: 'Bob.png' })).status).toBe(404);
-        expect(allSql('SELECT group_id FROM group_tags')).toEqual([]);
+        expect(await groupTagIds('Bob.png')).toEqual([]);
     });
 });
 
@@ -215,7 +170,7 @@ describe('an id not ending in .png is always a group', () => {
     test('a character row whose id doesn\'t end in .png is not assignable or readable as a character', async () => {
         await seedCharacter('NoExtension');
         expect((await post('/api/tags/assign', { id: 'NoExtension', tagId: 'tag1' })).status).toBe(404);
-        runSql('INSERT INTO character_tags (character_id, tag_id) VALUES (?, ?)', ['NoExtension', 'tag1']);
+        await user.store.lib.assignTag(TYPE.character, 'NoExtension', 'tag1', true);
         expect((await post('/api/tags/for', { ids: ['NoExtension'] })).body).toEqual({ NoExtension: [] });
     });
 });
@@ -286,11 +241,11 @@ describe('/api/groups/batch dedups ids and caps them at 500 distinct', () => {
     });
 });
 
-describe('getEntityTagIdsForMany()', () => {
+describe('the tags of many ids', () => {
     test('a repeated id across more than one lookup chunk gets its tags once', async () => {
         await seedGroup('1001');
         await post('/api/tags/assign', { id: '1001', tagId: 'tag1' });
-        const result = await metadataDb.getEntityTagIdsForMany(directories, Array(1200).fill('1001'));
+        const result = await user.store.lib.tags.tagIdsFor(Array(1200).fill('1001'));
         expect(result).toEqual({ 1001: ['tag1'] });
     });
 });

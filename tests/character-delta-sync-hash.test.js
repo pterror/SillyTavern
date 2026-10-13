@@ -124,6 +124,8 @@ globalThis.toastr = { error: toastrError, warning: noop, info: noop, success: no
 
 const realFetch = globalThis.fetch;
 
+/** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
+let user;
 /** @type {import('../src/users.js').UserDirectoryList} */
 let directories;
 
@@ -187,10 +189,8 @@ function cachedListFacts(record, includeCreatorNotes) {
 
 /**
  * @typedef {object} Mode
- * @property {typeof import('../src/character-metadata-db.js')} metadataDb
- * @property {typeof import('../src/endpoints/search-index-coordinator.js')} searchCoordinator
+ * @property {typeof import('./converted-user.fixture.js')} fixture
  * @property {typeof import('../src/character-card-parser.js')} cardParser
- * @property {typeof import('better-sqlite3')} Database
  * @property {typeof import('../public/scripts/character-list.js')} characterList
  * @property {import('node:http').Server} server
  * @property {string} baseUrl
@@ -216,10 +216,8 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
         const { setConfigFilePath } = await import('../src/util.js');
         setConfigFilePath(path.join(originalCwd, '..', 'default', 'config.yaml'));
 
-        const metadataDb = await import('../src/character-metadata-db.js');
-        const searchCoordinator = await import('../src/endpoints/search-index-coordinator.js');
+        const fixture = await import('./converted-user.fixture.js');
         const cardParser = await import('../src/character-card-parser.js');
-        const Database = (await import('better-sqlite3')).default;
         const { router } = await import('../src/endpoints/characters.js');
         const characterList = await import('../public/scripts/character-list.js');
 
@@ -232,7 +230,7 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
         app.use(multer({ dest: uploadsDir }).single('avatar'));
         app.use(express.json());
         app.use((req, res, next) => {
-            req.user = { directories, profile: { handle: `test-user-${path.basename(directories.root)}` } };
+            req.user = user.user;
             next();
         });
         app.use('/api/characters', router);
@@ -240,7 +238,7 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
         await new Promise(resolve => server.once('listening', resolve));
         const baseUrl = `http://127.0.0.1:${server.address().port}`;
 
-        mode = { metadataDb, searchCoordinator, cardParser, Database, characterList, server, baseUrl };
+        mode = { fixture, cardParser, characterList, server, baseUrl };
     });
 
     afterAll(async () => {
@@ -250,21 +248,10 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
         delete process.env.SILLYTAVERN_PERFORMANCE_LAZYLOADCHARACTERS;
     });
 
-    beforeEach(() => {
-        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-delta-sync-hash-test-'));
-        directories = {
-            root: tempDir,
-            characters: path.join(tempDir, 'characters'),
-            chats: path.join(tempDir, 'chats'),
-            groups: path.join(tempDir, 'groups'),
-            groupChats: path.join(tempDir, 'groupChats'),
-            backups: path.join(tempDir, 'backups'),
-            thumbnailsAvatar: path.join(tempDir, 'thumbnails', 'avatar'),
-            worlds: path.join(tempDir, 'worlds'),
-        };
-        for (const dir of Object.values(directories)) {
-            fs.mkdirSync(dir, { recursive: true });
-        }
+    beforeEach(async () => {
+        user = await mode.fixture.emptyUser('st-delta-sync-hash-test-');
+        ({ directories } = user);
+        globalThis.DATA_ROOT = user.dataRoot;
         for (const records of localforageStores.values()) records.clear();
         residentCharacters.length = 0;
         toastrError.mockClear();
@@ -274,9 +261,7 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
 
     afterEach(async () => {
         globalThis.fetch = realFetch;
-        await mode.searchCoordinator.disposeSearchWorkers();
-        mode.metadataDb.disposeMetadataStores();
-        fs.rmSync(directories.root, { recursive: true, force: true });
+        await user.close();
     });
 
     async function postJson(urlPath, body) {
@@ -308,22 +293,15 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
     }
 
     /**
-     * The list facts of each character's list row (getShallowByIds()), as the client projects its cached records.
+     * The list facts of each character's list row (the store's list rows), as the client projects its cached records.
      * @param {number} expectedRows how many character rows the calling test has written
      * @returns {Promise<Map<string, ReturnType<typeof listFactsOf>>>}
      */
     async function serverListFacts(expectedRows) {
-        const db = new mode.Database(path.join(directories.root, 'character-metadata.sqlite'), { readonly: true });
-        /** @type {string[]} */
-        let ids;
-        try {
-            ids = [...db.prepare('SELECT id FROM characters ORDER BY id LIMIT ?').iterate(expectedRows + 1)].map(r => r.id);
-        } finally {
-            db.close();
-        }
-        expect(ids.length).toBe(expectedRows);
-        const listRows = await mode.metadataDb.getShallowByIds(directories, ids);
-        return new Map(ids.map(id => [id, listFactsOf(listRows[id])]));
+        const page = await user.store.lib.query({ sortField: 'name', limit: expectedRows + 1, wantRows: true, includeCreatorNotes: creatorNotes });
+        const rows = /** @type {any[]} */ (page.rows).map(row => row.item);
+        expect(rows.length).toBe(expectedRows);
+        return new Map(rows.map(row => [row.avatar, listFactsOf(row)]));
     }
 
     /** A fresh client's delta-sync from an empty cache, so every character comes back as a whole-record fetch. */
@@ -361,18 +339,9 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
         };
     }
 
-    describe('upsertCharacterFromWrite', () => {
+    describe('writeCard', () => {
         test.each(CARDS)('%s card', async (_label, card) => {
-            await mode.metadataDb.upsertCharacterFromWrite(directories, 'Char.png', JSON.stringify(card));
-            const { actual, expected } = await cachedAgainstServer(1);
-            expect(actual).toEqual(expected);
-        });
-    });
-
-    describe('bootstrap', () => {
-        test.each(CARDS)('%s card', async (_label, card) => {
-            await writePng('Char.png', card);
-            await mode.metadataDb.bootstrapIfNeeded(directories);
+            await user.store.lib.writeCard(directories, 'Char.png', JSON.stringify(card));
             const { actual, expected } = await cachedAgainstServer(1);
             expect(actual).toEqual(expected);
         });
@@ -460,7 +429,7 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
         });
 
         test.each(CARDS)('POST /fav on a written %s card', async (_label, card) => {
-            await mode.metadataDb.upsertCharacterFromWrite(directories, 'Char.png', JSON.stringify(card));
+            await user.store.lib.writeCard(directories, 'Char.png', JSON.stringify(card));
             await postJson('/api/characters/fav', { avatar: 'Char.png', fav: true });
             const { actual, expected } = await cachedAgainstServer(1);
             expect(actual).toEqual(expected);

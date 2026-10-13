@@ -8,45 +8,54 @@
 //! a phrase in every field. A phrase is found through its
 //! exact tokens' postings, then checked on the candidates' text.
 //!
-//! One word in relevance order reads its term's top list (`top`) when the term has more documents than a list
-//! holds, and all its postings otherwise; the list's page stands when no document outside the list could beat
-//! it, and the next pages read on down the list while that holds. A list that is missing, being built or due to
-//! be built again asks for the next slice of its pass (`Found::refill`, `refill`). Anything else walks the
-//! clauses' postings in id order, passing over blocks whose bound (each field's highest count at the block's
-//! shortest length) can't beat the page. In sort-key order a word with few documents is read whole and sorted by
+//! Scoring: a clause scores its tokens' idfs (one per token, from the documents holding its term) times the
+//! document's own text score (`super::local`, `super::clause_score`), each field's count weighed against the
+//! field's reference length.
+//!
+//! In relevance order the clauses' postings are walked in id order, passing over blocks whose bound (the most a
+//! document there scores for each term, its block maxima) can't beat the page; from such a block, on past each
+//! node of blocks above it that can't either, by the nodes' maxima. One word with more documents than are read
+//! whole is read best first instead (`Plan::descend`): from its maxima's top, the node or block bounded highest
+//! next, until none can beat the page. In sort-key order a word with few documents is read whole and sorted by
 //! key; otherwise the order is walked and each document checked, whichever the counts say is cheaper.
 //!
-//! In the library, the tags whose names match the query are answered beside the page (`Found::tags`).
+//! In the library, a clause over every field also matches the carriers of the tags whose names it matches
+//! (`super::TAG_WEIGHT`): their members are one more list of the clause, each scoring the same. A word's are read
+//! by its term from the carrier maps (`crate::store::carriers`); a prefix past the prefix terms' length, or a
+//! phrase, finds its tags by name and reads each one's members. Documents every positive clause matches by a
+//! tag name alone all score alike (`Found::tied`): in relevance order they are read apart (`Take`), after the
+//! matches scoring above them, in id order here and in the list's order in the library list.
 //!
 //! Work is counted in entries read (a scan's start counts `SEEK` entries, a decoded pair 1 / `PAIRS`, a text
 //! read `TEXT` plus its bytes / 32), each about 0.16 µs at 10^6 documents. Past a limit the page is marked
 //! inexact; totals are exact where the counts give them or the walk finished, estimates otherwise.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeSet, HashMap};
+use std::cmp::Reverse;
+use std::collections::{BTreeSet, BinaryHeap, HashMap};
 use std::sync::Arc;
 
 use super::text::{GRAM_MAX, GRAM_MIN, char_len, first_chars, phrase_in, tokens};
-use super::top::{self, Fields, Head};
 use super::{
-    BLOCK_BITS, CHUNK_BITS, FIELD_BITS, FieldHit, LENGTH_BITS, SHORTEST_BASE, Scope, TermKind,
-    block_maxima, bound_slot, code_length, doc_count, doc_freq, doc_freqs, field_tokens, idf,
-    length_block, length_code, lengths, max_doc, parse_varint, posting_block, postings, shortest,
-    slot_in, term_docs, tf_norm, top_count, top_entries, top_entry, top_generation, unpack, unslot,
+    BLOCK_BITS, DOCS_SLOT, FIELD_BITS, FieldHit, GROUP_BITS, LENGTH_BITS, LEVELS, SHORTEST_BASE,
+    Scope, TermKind, block_maxima, block_maxima_at, bound_slot, code_length, doc_count,
+    field_max_slot, field_score, idf, length_block, length_code, lengths, max_doc, max_slot,
+    max_value, node_of, parse_varint, posting_block, postings, shortest, slot_in, term_counts_of,
+    top_level, unmax_slot, unpack, unslot,
 };
-use crate::keyspace::val::{Val, counter_bytes, counter_value, get_bytes, get_u64, put_u64};
-use crate::store::derive::{Out, View};
+use crate::keyspace::val::{Val, counter_value, get_u64, put_u64};
+use crate::store::carriers::{self, TagMap};
+use crate::store::derive::View;
 use crate::store::kinds::{key, search_texts};
 use crate::store::{StoreError, StoreResult};
 
 /// Pairs of the block maps a query keeps read (about 8 bytes each).
 const MAPS_HELD: usize = 1 << 22;
 
-/// Tags a query's tag matches hold at most.
-pub const TAG_MATCHES: usize = 5;
-
-/// Work a slice of a top list's pass does at most.
-pub const SLICE: u64 = 16_384;
+/// Carriers of a clause's tags under which the tied documents are counted one by one; above, estimated.
+const TIED_COUNTED: u64 = 128;
+/// Work counting the tied documents one by one does at most; past it they are estimated.
+const TIED_COUNT_WORK: u64 = 16_384;
 
 /// Work a scan's start costs, in entries.
 pub const SEEK: u64 = 96;
@@ -54,6 +63,15 @@ pub const SEEK: u64 = 96;
 pub const PAIRS: u64 = 8;
 /// Work a text read costs besides its bytes / 32.
 pub const TEXT: u64 = 128;
+/// Work a tag's member block decoded costs besides its entry, and per place in it, in thousandths of an entry:
+/// measured at 10^5 synthetic cards over every tag's blocks, grouped by places per block and fitted, as
+/// 1.694 entries per block and 0.131 per place (one entry read ~93 ns).
+pub const MEMBER_BLOCK_MILLI: u64 = 694;
+pub const MEMBER_PLACE_MILLI: u64 = 131;
+/// The same for a term's map block (`key::TAG_CARRIERS`): measured at 10^5 synthetic cards over every term's
+/// blocks the same way, as 1.522 entries per block and 0.1435 per place (the median of 9 rounds).
+pub const TERM_MAP_BLOCK_MILLI: u64 = 522;
+pub const TERM_MAP_PLACE_MILLI: u64 = 144;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Limits {
@@ -63,7 +81,7 @@ pub struct Limits {
     pub ranked: u64,
     /// Walking a sort order checking documents.
     pub walked: u64,
-    /// Finding the tags whose names match.
+    /// Finding the tags whose names a clause matches.
     pub tags: u64,
 }
 
@@ -139,6 +157,7 @@ pub enum Order {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum After {
+    /// A hit's `rank`, and its document.
     Score(f64, u64),
     Key(Vec<u8>, u64),
 }
@@ -152,6 +171,9 @@ pub struct Query {
     pub limit: usize,
     /// The last hit of the page before.
     pub after: Option<After>,
+    /// The idfs the query ranks by, as the first page's `Found::weights` gave them, so every page ranks alike
+    /// whatever changed in the scope since; None reads them.
+    pub weights: Option<Vec<f64>>,
     pub limits: Limits,
 }
 
@@ -160,6 +182,9 @@ pub struct Hit {
     pub doc: u64,
     /// 0 in sort-key order.
     pub score: f64,
+    /// Where the hit ranks, as a later page's `After::Score` takes it: with one positive word, its score before
+    /// the idf, which documents added or removed elsewhere in the scope don't move; else its score.
+    pub rank: f64,
     /// The sort key in sort-key order.
     pub key: Option<Vec<u8>>,
 }
@@ -186,47 +211,84 @@ pub struct Found {
     /// Steps of the walk in id order, and documents it checked.
     pub steps: u64,
     pub checked: u64,
+    /// Posting blocks decoded, maxima maps read (point reads and the scans that find a list's next block), and
+    /// lookups of a list's next block.
+    pub posting_blocks: u64,
+    pub max_reads: u64,
+    pub next_blocks: u64,
+    /// Blocks (level 0) and nodes (levels above) the walk passed over by their maxima, by level.
+    pub nodes_passed: [u64; LEVELS],
     /// Time reading statistics before matching.
     pub plan_micros: u64,
-    /// A top list the query would have read is missing, being built or due to be built again: the next slice of
-    /// its pass (`refill`).
-    pub refill: Option<Refill>,
-    /// The page came from a word's top list.
-    pub listed: bool,
-    /// In the library: the tags whose names match the query, best first (`TAG_MATCHES` at most).
-    pub tags: Vec<TagMatch>,
-    /// Every tag was weighed for `tags` (else the work limit cut the search short).
-    pub tags_exact: bool,
+    /// When every positive clause matches tag names: the rank (`Hit::rank`) of the documents they match by tag names
+    /// alone, and their score.
+    pub tied: Option<f64>,
+    pub tied_score: Option<f64>,
+    /// The idfs the page ranked by, for later pages' `Query::weights`: one per token of each positive clause that
+    /// scores, in clause and token order; None for one word (`Hit::rank`) or none.
+    pub weights: Option<Vec<f64>>,
+    /// Blocks the query opened whose maxima are above what every document there can score, for the commit
+    /// queue to lower (`super::index::tighten`).
+    pub tighten: Vec<Tighten>,
 }
 
-/// A top list's pass to continue: its term and the field parameters to build it at.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Refill {
+/// A term's block whose maxima a query found too high (`Found::tighten`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Tighten {
     pub scope: Scope,
     pub term: String,
-    pub params: Vec<(f64, f64)>,
+    pub block: u64,
 }
 
-/// A tag whose name matches a query.
-#[derive(Debug, Clone, PartialEq)]
-pub struct TagMatch {
-    pub tag: u64,
-    /// WTF-8.
-    pub name: Vec<u8>,
-    pub carriers: u64,
+/// Which matches a walk takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Take {
+    All,
+    /// All but the tied ones (`Found::tied`).
+    Untied,
+    /// The tied ones only.
+    Tied,
+}
+
+/// Where the carriers of the tags whose names each clause of a request's query matches are read from, and their
+/// carriers summed: found by the request's first plan and reused by its later passes over the same clauses.
+#[derive(Default)]
+pub struct TagNames(std::cell::OnceCell<Vec<Option<Named>>>);
+
+/// Where a clause's tag carriers are read from (`named`), whether every tag was found, and their carriers summed
+/// (a clause over every field only).
+#[derive(Clone)]
+struct Named {
+    source: Source,
+    done: bool,
+    count: u64,
 }
 
 /// Scopes' statistics, by scope, with the published version they were read at.
 #[derive(Default)]
 pub struct StatsCache(std::sync::Mutex<HashMap<Scope, (u64, Arc<Stats>)>>);
 
-pub fn run(view: &View, q: &Query, cache: &StatsCache) -> StoreResult<Found> {
+pub fn run(view: &View, q: &Query, cache: &StatsCache, names: &TagNames) -> StoreResult<Found> {
+    match &q.order {
+        Order::Relevance => ranked(view, q, cache, names),
+        Order::Key(_) => run_taking(view, q, cache, Take::All, names),
+    }
+}
+
+/// One walk of the query, taking `take`'s matches.
+pub fn run_taking(
+    view: &View,
+    q: &Query,
+    cache: &StatsCache,
+    take: Take,
+    names: &TagNames,
+) -> StoreResult<Found> {
     let mut ctx = Ctx::new(view, Some(cache));
     let started = std::time::Instant::now();
-    let mut plan = Plan::new(&mut ctx, q)?;
+    let mut plan = Plan::new(&mut ctx, q, take, names)?;
     let plan_micros = started.elapsed().as_micros() as u64;
     let mut found = match &q.order {
-        Order::Relevance => plan.by_relevance(&mut ctx, q)?,
+        Order::Relevance => plan.by_relevance(&mut ctx, q, Read::Chosen)?,
         Order::Key(k) => plan.by_key(&mut ctx, q, k.as_ref())?,
     };
     if !plan.complete {
@@ -234,13 +296,9 @@ pub fn run(view: &View, q: &Query, cache: &StatsCache) -> StoreResult<Found> {
         found.total_exact = false;
         found.more = true;
     }
-    // The page's document checks don't apply to tags.
-    ctx.checks.clear();
-    (found.tags, found.tags_exact) = if q.scope == Scope::LIBRARY {
-        tag_matches(&mut ctx, q)?
-    } else {
-        (Vec::new(), true)
-    };
+    found.tied = plan.tied();
+    found.tied_score = plan.tied().map(|t| t * plan.scale);
+    found.weights = plan.weights();
     found.work = ctx.work;
     found.scans = ctx.scans;
     found.entries = ctx.entries;
@@ -250,21 +308,173 @@ pub fn run(view: &View, q: &Query, cache: &StatsCache) -> StoreResult<Found> {
     found.length_reads = ctx.length_reads;
     found.steps = ctx.steps;
     found.checked = ctx.checked;
+    found.posting_blocks = ctx.posting_blocks;
+    found.max_reads = ctx.max_reads;
+    found.next_blocks = ctx.next_blocks;
+    found.nodes_passed = ctx.nodes_passed;
     found.plan_micros = plan_micros;
-    found.refill = ctx.refill.take();
+    found.tighten = ctx.tighten;
     Ok(found)
 }
 
-/// Up to `most` documents matching the query, in id order, unscored; None when more match or the work limit cut
-/// the walk short.
+/// Tests: a relevance page of the matches that aren't tied, read by the walk in id order counting every match
+/// (`Walk::counting`).
+#[cfg(test)]
+pub(super) fn run_counting(view: &View, q: &Query, cache: &StatsCache) -> StoreResult<Found> {
+    run_read(view, q, cache, Read::Counting)
+}
+
+/// Tests: a relevance page of the matches that aren't tied, a single word read best first however much that
+/// costs (under `Limits::ranked`).
+#[cfg(test)]
+pub(super) fn run_ranked(view: &View, q: &Query, cache: &StatsCache) -> StoreResult<Found> {
+    run_read(view, q, cache, Read::Ranked)
+}
+
+/// Tests: a relevance page of the matches that aren't tied, read as `run` reads it.
+#[cfg(test)]
+pub(super) fn run_chosen(view: &View, q: &Query, cache: &StatsCache) -> StoreResult<Found> {
+    run_read(view, q, cache, Read::Chosen)
+}
+
+#[cfg(test)]
+fn run_read(view: &View, q: &Query, cache: &StatsCache, read: Read) -> StoreResult<Found> {
+    let mut ctx = Ctx::new(view, Some(cache));
+    let mut plan = Plan::new(&mut ctx, q, Take::Untied, &TagNames::default())?;
+    let found = plan.by_relevance(&mut ctx, q, read)?;
+    Ok(Found {
+        work: ctx.work,
+        gets: ctx.gets,
+        steps: ctx.steps,
+        checked: ctx.checked,
+        ..found
+    })
+}
+
+/// Relevance order, the tied documents in id order after every match scoring at least theirs. A page's `after`
+/// at their score is a tied document.
+fn ranked(view: &View, q: &Query, cache: &StatsCache, names: &TagNames) -> StoreResult<Found> {
+    let mut f = run_taking(view, q, cache, Take::Untied, names)?;
+    let Some(tie) = f.tied else {
+        return Ok(f);
+    };
+    let (tied_total, tied_exact) = tied_count(view, q, cache, names)?;
+    f.total += tied_total;
+    f.total_exact &= tied_exact;
+    let from = match &q.after {
+        Some(After::Score(s, _)) if *s < tie => return Ok(f),
+        Some(After::Score(s, d)) if *s == tie => Some(d.saturating_add(1)),
+        _ => None,
+    };
+    let hits = std::mem::take(&mut f.hits);
+    let (above, below): (Vec<Hit>, Vec<Hit>) = match from {
+        Some(_) => (
+            Vec::new(),
+            hits.into_iter().filter(|h| h.rank < tie).collect(),
+        ),
+        None => hits.into_iter().partition(|h| h.rank >= tie),
+    };
+    let more_below = f.more;
+    f.hits = above;
+    if f.hits.len() >= q.limit {
+        f.more = more_below || !below.is_empty() || tied_total > 0;
+        return Ok(f);
+    }
+    let room = q.limit - f.hits.len();
+    let (tied, done) = tied_ids(view, q, cache, from.unwrap_or(0), room + 1, names)?;
+    f.page_exact &= done || tied.len() > room;
+    let tied_more = tied.len() > room;
+    let score = f.tied_score.unwrap_or(tie);
+    f.hits.extend(tied.into_iter().take(room).map(|doc| Hit {
+        doc,
+        score,
+        rank: tie,
+        key: None,
+    }));
+    if tied_more || !done {
+        f.more = true;
+        return Ok(f);
+    }
+    let room = q.limit - f.hits.len();
+    f.more = more_below || below.len() > room;
+    f.hits.extend(below.into_iter().take(room));
+    Ok(f)
+}
+
+/// Up to `most` tied documents (`Found::tied`) from `from` on, in id order, and whether that is every one.
+pub fn tied_ids(
+    view: &View,
+    q: &Query,
+    cache: &StatsCache,
+    from: u64,
+    most: usize,
+    names: &TagNames,
+) -> StoreResult<(Vec<u64>, bool)> {
+    let mut ctx = Ctx::new(view, Some(cache));
+    let mut plan = Plan::new(&mut ctx, q, Take::Tied, names)?;
+    let budget = ctx.work.saturating_add(q.limits.enumerate);
+    let mut out = Vec::new();
+    let mut d = from;
+    loop {
+        match plan.next_match(&mut ctx, d, u64::MAX, budget, None, &mut Walk::default())? {
+            Step::Match(doc, _) => {
+                if out.len() == most {
+                    return Ok((out, plan.complete));
+                }
+                out.push(doc);
+                d = doc + 1;
+            }
+            Step::End => return Ok((out, plan.complete)),
+            Step::Stopped(_) => return Ok((out, false)),
+        }
+    }
+}
+
+/// The tied documents (`Found::tied`), and whether that is exact: counted when their clauses' tags have few
+/// carriers or filters narrow them (an estimate past `TIED_COUNT_WORK`), else estimated from the counts.
+pub fn tied_count(
+    view: &View,
+    q: &Query,
+    cache: &StatsCache,
+    names: &TagNames,
+) -> StoreResult<(u64, bool)> {
+    let mut ctx = Ctx::new(view, Some(cache));
+    let mut plan = Plan::new(&mut ctx, q, Take::Tied, names)?;
+    if plan.tied().is_none() {
+        return Ok((0, true));
+    }
+    if let Some(n) = plan.tied_estimate(&mut ctx)? {
+        return Ok((n, false));
+    }
+    let budget = ctx
+        .work
+        .saturating_add(TIED_COUNT_WORK.min(q.limits.enumerate));
+    let mut n = 0;
+    let mut d = 0;
+    loop {
+        match plan.next_match(&mut ctx, d, u64::MAX, budget, None, &mut Walk::default())? {
+            Step::Match(doc, _) => {
+                n += 1;
+                d = doc + 1;
+            }
+            Step::End => return Ok((n, plan.complete)),
+            Step::Stopped(at) => return Ok((plan.estimate(&mut ctx, n, at)?, false)),
+        }
+    }
+}
+
+/// Up to `most` documents matching the query (those `take` takes), in id order, unscored; None when more match or
+/// the work limit cut the walk short.
 pub fn matches_whole(
     view: &View,
     q: &Query,
     cache: &StatsCache,
     most: usize,
+    take: Take,
+    names: &TagNames,
 ) -> StoreResult<Option<Vec<u64>>> {
     let mut ctx = Ctx::new(view, Some(cache));
-    let mut plan = Plan::new(&mut ctx, q)?;
+    let mut plan = Plan::new(&mut ctx, q, take, names)?;
     if !plan.complete {
         return Ok(None);
     }
@@ -295,7 +505,7 @@ pub fn matches_upto(
     budget: u64,
 ) -> StoreResult<(Vec<u64>, bool, u64)> {
     let mut ctx = Ctx::new(view, Some(cache));
-    let mut plan = Plan::new(&mut ctx, q)?;
+    let mut plan = Plan::new(&mut ctx, q, Take::All, &TagNames::default())?;
     let complete = plan.complete;
     let mut out = Vec::new();
     let mut d = 0;
@@ -311,32 +521,41 @@ pub fn matches_upto(
     }
 }
 
-/// Whether documents match a query's clauses and filters, one document at a time in any order: for walking
-/// another structure's order and checking each document.
+/// Whether documents match a query's clauses and filters (those `take` takes), one document at a time in any
+/// order: for walking another structure's order and checking each document.
 pub struct Matching<'a> {
     ctx: Ctx<'a>,
     plan: Plan,
 }
 
 impl<'a> Matching<'a> {
-    pub fn new(view: &'a View<'a>, q: &Query, cache: &'a StatsCache) -> StoreResult<Matching<'a>> {
+    pub fn new(
+        view: &'a View<'a>,
+        q: &Query,
+        cache: &'a StatsCache,
+        take: Take,
+        names: &TagNames,
+    ) -> StoreResult<Matching<'a>> {
         let mut ctx = Ctx::new(view, Some(cache));
-        let plan = Plan::new(&mut ctx, q)?;
+        let plan = Plan::new(&mut ctx, q, take, names)?;
         Ok(Matching { ctx, plan })
     }
 
-    /// Every tag a tag-restricted clause matches was found (else its matches are some of them).
+    /// Every tag a tag-restricted clause or a clause's tag names match was found (else its matches are some of
+    /// them).
     pub fn complete(&self) -> bool {
         self.plan.complete
     }
 
     pub fn matches(&mut self, d: u64) -> StoreResult<bool> {
+        let mut matched = Vec::with_capacity(self.plan.pos.len());
         for m in &mut self.plan.pos {
-            if m.check(&mut self.ctx, d)?.is_none() {
-                return Ok(false);
+            match m.check(&mut self.ctx, d)? {
+                Some(x) => matched.push(x),
+                None => return Ok(false),
             }
         }
-        self.plan.passes(&mut self.ctx, d)
+        Ok(self.plan.takes(&matched) && self.plan.passes(&mut self.ctx, d)?)
     }
 
     /// Work done so far, in `Ctx` units.
@@ -360,6 +579,10 @@ pub(crate) struct Ctx<'a> {
     length_reads: u64,
     steps: u64,
     checked: u64,
+    posting_blocks: u64,
+    max_reads: u64,
+    next_blocks: u64,
+    nodes_passed: [u64; LEVELS],
     /// Fields' shortest lengths per block, as read.
     shortest: HashMap<(Scope, u32, u64), Option<u64>>,
     /// Scopes' highest documents, as read.
@@ -367,13 +590,18 @@ pub(crate) struct Ctx<'a> {
     /// Block maps read by point reads in this query, and their pairs together.
     maps: HashMap<Vec<u8>, Arc<Vec<(u32, u32)>>>,
     map_pairs: usize,
+    /// Terms' counts (`term_counts`) read in this query.
+    term_counts: HashMap<Vec<u8>, Vec<(u32, u64)>>,
     /// The last document's length codes read.
     codes: Option<(Scope, u64, [u8; 1 << FIELD_BITS])>,
-    refill: Option<Refill>,
     /// The query's `Filter::Check`s, begun.
     checks: Vec<CheckFn<'a>>,
     /// Pair postings are on and built (read at first need).
     pairs_built: Option<bool>,
+    /// Work under one entry not yet counted in `work`, in thousandths.
+    milli: u64,
+    /// Blocks found with maxima too high (`Found::tighten`).
+    tighten: Vec<Tighten>,
 }
 
 impl<'a> Ctx<'a> {
@@ -389,15 +617,21 @@ impl<'a> Ctx<'a> {
             texts: 0,
             length_reads: 0,
             steps: 0,
+            posting_blocks: 0,
+            max_reads: 0,
+            next_blocks: 0,
+            nodes_passed: [0; LEVELS],
             checked: 0,
             shortest: HashMap::new(),
             max_docs: HashMap::new(),
             maps: HashMap::new(),
+            term_counts: HashMap::new(),
             map_pairs: 0,
             codes: None,
-            refill: None,
             checks: Vec::new(),
             pairs_built: None,
+            milli: 0,
+            tighten: Vec::new(),
         }
     }
 
@@ -409,38 +643,84 @@ impl<'a> Ctx<'a> {
         Ok(page)
     }
 
+    /// `scan` from the last key down.
+    fn scan_rev(
+        &mut self,
+        start: &[u8],
+        end: &[u8],
+        limit: usize,
+    ) -> StoreResult<Vec<(Vec<u8>, Val)>> {
+        let page = self.view.scan_vals_rev(start, end, limit)?;
+        self.work += SEEK + page.len() as u64;
+        self.scans += 1;
+        self.entries += page.len() as u64;
+        Ok(page)
+    }
+
+    /// The last block map under `prefix`: its block and pairs.
+    fn last_map(&mut self, prefix: &[u8]) -> StoreResult<Option<BlockMap>> {
+        let Some((k, v)) = self.scan_rev(prefix, &key::prefix_end(prefix), 1)?.pop() else {
+            return Ok(None);
+        };
+        let mut at = prefix.len();
+        let block = u64_at(&k, &mut at)?;
+        Ok(Some((block, self.pairs(&k, v)?)))
+    }
+
+    /// Counts `m` thousandths of an entry of work.
+    fn charge_milli(&mut self, m: u64) {
+        self.milli += m;
+        self.work += self.milli / 1000;
+        self.milli %= 1000;
+    }
+
     fn get(&mut self, k: &[u8]) -> StoreResult<Option<Vec<u8>>> {
         self.work += SEEK;
         self.gets += 1;
         self.view.get(k)
     }
 
-    /// A counter (0 when it has none).
+    /// A counter (0 when it has none; a value that doesn't decode is an error).
     fn counter(&mut self, k: &[u8]) -> StoreResult<u64> {
-        Ok(self
-            .get(k)?
-            .and_then(|b| counter_value(&b))
-            .unwrap_or(0)
-            .max(0) as u64)
+        match self.get(k)? {
+            Some(b) => Ok(counter_value(&b)
+                .ok_or_else(|| StoreError::Entry("a search counter doesn't decode".into()))?
+                .max(0) as u64),
+            None => Ok(0),
+        }
     }
 
-    /// The counters under `prefix`, by the key's next component.
-    fn counters_under(&mut self, prefix: &[u8]) -> StoreResult<HashMap<u64, u64>> {
-        let mut out = HashMap::new();
-        for (k, v) in self.scan(prefix, &key::prefix_end(prefix), 64)? {
-            let mut at = prefix.len();
-            out.insert(
-                u64_at(&k, &mut at)?,
-                counter_value(&v.into_bytes()).unwrap_or(0).max(0) as u64,
-            );
+    /// A term's counts (`term_counts`), read once per query.
+    fn term_counts(&mut self, scope: Scope, term: &str) -> StoreResult<&[(u32, u64)]> {
+        let k = term_counts_of(scope, term);
+        if !self.term_counts.contains_key(&k) {
+            self.work += SEEK;
+            self.gets += 1;
+            let counts = match self.view.get_val(&k)? {
+                Some(v) => v
+                    .into_counts(&k)
+                    .ok_or_else(|| StoreError::Entry("a search block doesn't decode".into()))?,
+                None => Vec::new(),
+            };
+            self.term_counts.insert(k.clone(), counts);
         }
-        Ok(out)
+        Ok(&self.term_counts[&k])
+    }
+
+    /// One of a term's counts (0 when it has none).
+    fn term_count(&mut self, scope: Scope, term: &str, slot: u32) -> StoreResult<u64> {
+        Ok(count_at(self.term_counts(scope, term)?, slot))
+    }
+
+    /// Documents holding the term in any field.
+    fn term_docs(&mut self, scope: Scope, term: &str) -> StoreResult<u64> {
+        self.term_count(scope, term, DOCS_SLOT)
     }
 
     /// A block map's pairs, from its settled value (decoded unless the read kept them).
-    fn pairs(&mut self, v: Val) -> StoreResult<Vec<(u32, u32)>> {
+    fn pairs(&mut self, key: &[u8], v: Val) -> StoreResult<Vec<(u32, u32)>> {
         let p = v
-            .into_pairs()
+            .into_pairs(key)
             .ok_or_else(|| StoreError::Entry("a search block doesn't decode".into()))?;
         self.pairs += p.len() as u64;
         self.work += p.len() as u64 / PAIRS;
@@ -454,17 +734,31 @@ impl<'a> Ctx<'a> {
         }
         self.work += SEEK;
         self.gets += 1;
-        let m = Arc::new(match self.view.get_val(&k)? {
-            Some(v) => self.pairs(v)?,
+        let m = match self.view.get_val(&k)? {
+            Some(v) => self.pairs(&k, v)?,
             None => Vec::new(),
-        });
+        };
+        Ok(self.keep(k, m))
+    }
+
+    /// `map` for a maxima map, counted in `max_reads` when read.
+    fn max_map(&mut self, k: Vec<u8>) -> StoreResult<Arc<Vec<(u32, u32)>>> {
+        if !self.maps.contains_key(&k) {
+            self.max_reads += 1;
+        }
+        self.map(k)
+    }
+
+    /// Keeps a block map read for the rest of the query.
+    fn keep(&mut self, k: Vec<u8>, m: Vec<(u32, u32)>) -> Arc<Vec<(u32, u32)>> {
+        let m = Arc::new(m);
         self.map_pairs += m.len();
         if self.map_pairs > MAPS_HELD {
             self.maps.clear();
             self.map_pairs = m.len();
         }
         self.maps.insert(k, m.clone());
-        Ok(m)
+        m
     }
 
     fn pairs_on(&mut self) -> StoreResult<bool> {
@@ -482,6 +776,9 @@ impl<'a> Ctx<'a> {
         Ok(t)
     }
 }
+
+/// A block map's block and pairs.
+type BlockMap = (u64, Vec<(u32, u32)>);
 
 fn successor(k: &[u8]) -> Vec<u8> {
     let mut s = k.to_vec();
@@ -631,6 +928,34 @@ impl BlockDocs {
         BlockDocs::new(postings(scope, term), BLOCK_BITS)
     }
 
+    /// The list's first and last documents, read afresh (None when it has none): its first from the start, and the
+    /// highest live posting of its last block, or that block's last id when none there is live.
+    fn ends(&self, ctx: &mut Ctx) -> StoreResult<Option<(u64, u64)>> {
+        let mut b = BlockDocs::new(self.prefix.clone(), self.bits);
+        b.seek(ctx, 0)?;
+        let Some(first) = b.doc else {
+            return Ok(None);
+        };
+        let Some((block, pairs)) = ctx.last_map(&self.prefix)? else {
+            return Ok(None);
+        };
+        let last = pairs
+            .iter()
+            .filter(|p| p.1 != 0)
+            .map(|&(s, _)| self.doc_of(block, s))
+            .max()
+            .unwrap_or(((block + 1) << self.bits) - 1);
+        Ok(Some((first, last.max(first))))
+    }
+
+    /// Stands past every document, so `has` looks each one up in its block (for reading out of id order).
+    fn park(&mut self) {
+        self.block = None;
+        self.pairs.clear();
+        self.doc = None;
+        self.sought = Some(u64::MAX);
+    }
+
     fn doc_of(&self, block: u64, slot: u32) -> u64 {
         block << self.bits | u64::from(slot >> FIELD_BITS)
     }
@@ -661,6 +986,9 @@ impl BlockDocs {
         // Each entry's value is taken out of the page when read; a seek back reads it again.
         if self.block != Some(block) {
             self.block = Some(block);
+            if self.bits == BLOCK_BITS {
+                ctx.posting_blocks += 1;
+            }
             let v = match self.cur.take() {
                 Val::Del => {
                     ctx.work += SEEK;
@@ -669,7 +997,7 @@ impl BlockDocs {
                 }
                 v => v,
             };
-            self.pairs = ctx.pairs(v)?;
+            self.pairs = ctx.pairs(&key, v)?;
         }
         Ok(())
     }
@@ -717,24 +1045,146 @@ impl Docs for BlockDocs {
     }
 }
 
-/// The distinct document ids under a prefix (each the key's next component).
-struct Ids {
+/// A tag's carriers in id order, read a member block (`key::MEMBER_BLOCK`) at a time from the blocks it has
+/// carriers in; or a term's map (`key::TAG_CARRIERS`, the same encoding), each carrier with its count.
+struct Members {
     prefix: Vec<u8>,
     cur: Cursor,
+    /// Work a block decoded costs besides its entry, and per place in it, in thousandths of an entry.
+    milli: (u64, u64),
+    block: Option<u64>,
+    /// The carriers' places in `block`, ascending, and their counts.
+    places: Vec<(u32, u32)>,
+    at: usize,
     doc: Option<u64>,
 }
 
-impl Ids {
-    fn new(prefix: Vec<u8>) -> Ids {
-        Ids {
+impl Members {
+    fn new(tag: u64) -> Members {
+        Members::under(
+            key::id(key::MEMBER_BLOCK, tag),
+            (MEMBER_BLOCK_MILLI, MEMBER_PLACE_MILLI),
+        )
+    }
+
+    /// The carriers of the tags whose light-mapped names hold a term (`store::carriers`), with how many of them
+    /// each carries.
+    fn term_map(kind: TermKind, term: &str) -> Members {
+        Members::under(
+            key::tag_carriers_of(kind, term),
+            (TERM_MAP_BLOCK_MILLI, TERM_MAP_PLACE_MILLI),
+        )
+    }
+
+    fn under(prefix: Vec<u8>, milli: (u64, u64)) -> Members {
+        Members {
             cur: Cursor::new(&prefix),
             prefix,
+            milli,
+            block: None,
+            places: Vec::new(),
+            at: 0,
             doc: None,
         }
     }
+
+    fn read_block(&mut self, ctx: &mut Ctx) -> StoreResult<()> {
+        let Some((k, _)) = self.cur.get() else {
+            self.block = None;
+            self.places.clear();
+            return Ok(());
+        };
+        let mut at = self.prefix.len();
+        let block = u64_at(k, &mut at)?;
+        if self.block == Some(block) {
+            return Ok(());
+        }
+        self.block = Some(block);
+        // Read in place: a seek back to the block reads it from the page again.
+        let decoded;
+        let pairs: &[(u32, u32)] = match self.cur.get().map(|e| &e.1) {
+            Some(Val::Map(p)) => p,
+            Some(Val::Put(b)) => {
+                decoded = crate::keyspace::val::map_pairs(b)
+                    .ok_or_else(|| StoreError::Entry("a member block doesn't decode".into()))?;
+                &decoded
+            }
+            // A term map's count is how many of the carrier's tags hold the term: past 32 bits it's a fault.
+            Some(Val::Counts(p)) => {
+                decoded = p
+                    .iter()
+                    .map(|&(s, n)| u32::try_from(n).map(|n| (s, n)))
+                    .collect::<Result<_, _>>()
+                    .map_err(|_| StoreError::Entry("a member block doesn't decode".into()))?;
+                &decoded
+            }
+            _ => return Err(StoreError::Entry("a member block doesn't decode".into())),
+        };
+        self.places = block_places(pairs);
+        ctx.pairs += pairs.len() as u64;
+        ctx.charge_milli(self.milli.0 + pairs.len() as u64 * self.milli.1);
+        Ok(())
+    }
+
+    /// From place `at` on: the first carrier.
+    fn load(&mut self, ctx: &mut Ctx) -> StoreResult<()> {
+        loop {
+            let Some(block) = self.block else {
+                self.doc = None;
+                return Ok(());
+            };
+            if let Some(&(p, _)) = self.places.get(self.at) {
+                self.doc = Some(block << key::MEMBER_BITS | u64::from(p));
+                return Ok(());
+            }
+            self.cur.advance(ctx)?;
+            self.read_block(ctx)?;
+            self.at = 0;
+        }
+    }
+
+    /// To the next carrier.
+    fn step(&mut self, ctx: &mut Ctx) -> StoreResult<()> {
+        self.at += 1;
+        self.load(ctx)
+    }
+
+    /// The list's first and last carriers, read afresh (None when it has none): its first from the start, and the
+    /// last carrier of its last block, or that block's last id when none is left there.
+    fn ends(&self, ctx: &mut Ctx) -> StoreResult<Option<(u64, u64)>> {
+        let mut m = Members::under(self.prefix.clone(), self.milli);
+        m.seek(ctx, 0)?;
+        let Some(first) = m.doc else {
+            return Ok(None);
+        };
+        let Some((block, pairs)) = ctx.last_map(&self.prefix)? else {
+            return Ok(None);
+        };
+        ctx.charge_milli(self.milli.0 + pairs.len() as u64 * self.milli.1);
+        let last = block_places(&pairs)
+            .last()
+            .map_or(((block + 1) << key::MEMBER_BITS) - 1, |&(p, _)| {
+                block << key::MEMBER_BITS | u64::from(p)
+            });
+        Ok(Some((first, last.max(first))))
+    }
+
+    /// The current carrier's count (1 for a tag's).
+    fn count(&self) -> u32 {
+        self.doc.map_or(0, |_| self.places[self.at].1)
+    }
 }
 
-impl Docs for Ids {
+/// A member block's or a term map's carriers: places holding 0 (a carrier removed) left out.
+fn block_places(pairs: &[(u32, u32)]) -> Vec<(u32, u32)> {
+    pairs
+        .iter()
+        .filter(|&&(p, v)| v != 0 && p < 1 << key::MEMBER_BITS)
+        .copied()
+        .collect()
+}
+
+impl Docs for Members {
     fn doc(&self) -> Option<u64> {
         self.doc
     }
@@ -743,17 +1193,19 @@ impl Docs for Ids {
         if self.doc == Some(d) {
             return Ok(());
         }
-        let mut k = self.prefix.clone();
-        put_u64(&mut k, d);
-        self.cur.seek(ctx, &k)?;
-        self.doc = match self.cur.get() {
-            Some((k, _)) => {
-                let mut at = self.prefix.len();
-                Some(u64_at(k, &mut at)?)
-            }
-            None => None,
-        };
-        Ok(())
+        let block = d >> key::MEMBER_BITS;
+        if self.block != Some(block) {
+            let mut k = self.prefix.clone();
+            put_u64(&mut k, block);
+            self.cur.seek(ctx, &k)?;
+            self.read_block(ctx)?;
+        }
+        self.at = 0;
+        if self.block == Some(block) {
+            let place = key::member_slot(d);
+            self.at = self.places.partition_point(|&(p, _)| p < place);
+        }
+        self.load(ctx)
     }
 }
 
@@ -782,11 +1234,27 @@ impl<T> Docs for Listed<T> {
 }
 
 /// Members of any of several tags.
-struct AnyOf(Vec<Ids>);
+struct AnyOf(Vec<Members>);
+
+impl AnyOf {
+    /// Marks in `bits` the members in `[first, end)` (`first` the start of a run of `bits`' length), and leaves
+    /// each tag at its first member at or after `end`.
+    fn mark(&mut self, ctx: &mut Ctx, first: u64, end: u64, bits: &mut [u64]) -> StoreResult<()> {
+        for m in &mut self.0 {
+            m.seek(ctx, first)?;
+            while let Some(c) = m.doc().filter(|&c| c < end) {
+                let place = (c - first) as usize;
+                bits[place >> 6] |= 1 << (place & 63);
+                m.step(ctx)?;
+            }
+        }
+        Ok(())
+    }
+}
 
 impl Docs for AnyOf {
     fn doc(&self) -> Option<u64> {
-        self.0.iter().filter_map(Ids::doc).min()
+        self.0.iter().filter_map(Members::doc).min()
     }
 
     fn seek(&mut self, ctx: &mut Ctx, d: u64) -> StoreResult<()> {
@@ -797,8 +1265,259 @@ impl Docs for AnyOf {
     }
 }
 
-fn members(tag: u64) -> Ids {
-    Ids::new(key::id(key::MEMBER, tag))
+/// A moving tag as a term's carriers read it (`store::carriers::Flight`).
+#[derive(Clone)]
+struct Mover {
+    tag: u64,
+    cursor: u64,
+    /// The term's map counts the tag at its carriers below `cursor`; at or above it.
+    below: bool,
+    above: bool,
+    /// The tag's indexed name holds the term.
+    named: bool,
+    /// Its target and mapped names hold the term: its carriers below the cursor, and at or above it, have their
+    /// block maxima raised for the term.
+    target_has: bool,
+    mapped_has: bool,
+}
+
+impl Mover {
+    /// Whether the term's map counts the tag at its carrier `d`.
+    fn counted(&self, d: u64) -> bool {
+        if d < self.cursor {
+            self.below
+        } else {
+            self.above
+        }
+    }
+}
+
+/// The tags a term's carriers are read from besides its map: its settled heavy tags and its moving ones, each in
+/// order.
+#[derive(Clone)]
+struct TermTags {
+    kind: TermKind,
+    term: String,
+    heavy: Vec<u64>,
+    moving: Vec<Mover>,
+}
+
+impl TermTags {
+    /// Whether document `d`, which the term's map counts `counted` of its tags at and which carries `tags`, is
+    /// a carrier of the term.
+    fn carried(&self, d: u64, counted: u32, tags: &[u64]) -> bool {
+        let mut n = i64::from(counted);
+        for t in tags {
+            if self.heavy.binary_search(t).is_ok() {
+                return true;
+            }
+            if let Ok(i) = self.moving.binary_search_by_key(t, |m| m.tag) {
+                let m = &self.moving[i];
+                if m.named {
+                    return true;
+                }
+                n -= i64::from(m.counted(d));
+            }
+        }
+        n > 0
+    }
+}
+
+/// Where a clause's tag carriers are read from.
+#[derive(Clone)]
+enum Source {
+    /// The carriers of these tags, in order.
+    Tags(Vec<u64>),
+    /// The carriers of the tags whose indexed names hold a term (`store::carriers`).
+    Term(TermTags),
+}
+
+impl Source {
+    /// The cursors a walk over the carriers reads.
+    fn cursors(&self) -> usize {
+        match self {
+            Source::Tags(t) => t.len(),
+            Source::Term(t) => 1 + t.heavy.len() + t.moving.len(),
+        }
+    }
+}
+
+/// A term's carriers in id order: a document carries the term when the term's map counts more of its tags than
+/// the moving tags counted there, or it carries a heavy tag, or a moving tag whose indexed name holds the term.
+struct TermCarriers {
+    map: Members,
+    heavy: Vec<Members>,
+    moving: Vec<(Mover, Members)>,
+    doc: Option<u64>,
+}
+
+impl TermCarriers {
+    fn new(t: &TermTags) -> TermCarriers {
+        TermCarriers {
+            map: Members::term_map(t.kind, &t.term),
+            heavy: t.heavy.iter().map(|&h| members(h)).collect(),
+            moving: t
+                .moving
+                .iter()
+                .map(|m| (m.clone(), members(m.tag)))
+                .collect(),
+            doc: None,
+        }
+    }
+
+    /// Whether `d`, where every cursor stands at or past it, is a carrier.
+    fn holds(&self, d: u64) -> bool {
+        if self.heavy.iter().any(|m| m.doc == Some(d)) {
+            return true;
+        }
+        let mut n = if self.map.doc == Some(d) {
+            i64::from(self.map.count())
+        } else {
+            0
+        };
+        for (mv, m) in &self.moving {
+            if m.doc == Some(d) {
+                if mv.named {
+                    return true;
+                }
+                n -= i64::from(mv.counted(d));
+            }
+        }
+        n > 0
+    }
+}
+
+impl TermCarriers {
+    /// `Carriers::mark`: each cursor walked through the range once, the map's counts less the moving tags
+    /// counted there summed per place.
+    fn mark(&mut self, ctx: &mut Ctx, first: u64, end: u64, bits: &mut [u64]) -> StoreResult<()> {
+        let mut set = |c: u64| {
+            let place = (c - first) as usize;
+            bits[place >> 6] |= 1 << (place & 63);
+        };
+        for m in &mut self.heavy {
+            m.seek(ctx, first)?;
+            while let Some(c) = m.doc.filter(|&c| c < end) {
+                set(c);
+                m.step(ctx)?;
+            }
+        }
+        // The map's places in the range, and their counts less the moving tags counted there.
+        let mut counted: Vec<(u64, i64)> = Vec::new();
+        self.map.seek(ctx, first)?;
+        while let Some(c) = self.map.doc.filter(|&c| c < end) {
+            counted.push((c, i64::from(self.map.count())));
+            self.map.step(ctx)?;
+        }
+        for (mv, m) in &mut self.moving {
+            m.seek(ctx, first)?;
+            while let Some(c) = m.doc.filter(|&c| c < end) {
+                if mv.named {
+                    set(c);
+                } else if mv.counted(c)
+                    && let Ok(i) = counted.binary_search_by_key(&c, |x| x.0)
+                {
+                    counted[i].1 -= 1;
+                }
+                m.step(ctx)?;
+            }
+        }
+        for (c, n) in counted {
+            if n > 0 {
+                set(c);
+            }
+        }
+        // Every cursor stands at or past `end`: the first carrier from there on.
+        self.doc = None;
+        self.seek(ctx, end)
+    }
+}
+
+impl Docs for TermCarriers {
+    fn doc(&self) -> Option<u64> {
+        self.doc
+    }
+
+    fn seek(&mut self, ctx: &mut Ctx, mut d: u64) -> StoreResult<()> {
+        if self.doc == Some(d) {
+            return Ok(());
+        }
+        loop {
+            self.map.seek(ctx, d)?;
+            for m in &mut self.heavy {
+                m.seek(ctx, d)?;
+            }
+            for (_, m) in &mut self.moving {
+                m.seek(ctx, d)?;
+            }
+            let next = std::iter::once(self.map.doc)
+                .chain(self.heavy.iter().map(|m| m.doc))
+                .chain(self.moving.iter().map(|(_, m)| m.doc))
+                .flatten()
+                .min();
+            match next {
+                Some(c) if !self.holds(c) => d = c + 1,
+                _ => {
+                    self.doc = next;
+                    return Ok(());
+                }
+            }
+        }
+    }
+}
+
+/// A clause's tag carriers, as its source gives them.
+enum Carriers {
+    Tags(AnyOf),
+    Term(TermCarriers),
+}
+
+impl Carriers {
+    fn of(source: &Source) -> Carriers {
+        match source {
+            Source::Tags(tags) => Carriers::Tags(AnyOf(tags.iter().map(|&t| members(t)).collect())),
+            Source::Term(t) => Carriers::Term(TermCarriers::new(t)),
+        }
+    }
+
+    /// Marks in `bits` the carriers in `[first, end)` (`first` the start of a run of `bits`' length), and leaves
+    /// the cursors at or after `end`.
+    fn mark(&mut self, ctx: &mut Ctx, first: u64, end: u64, bits: &mut [u64]) -> StoreResult<()> {
+        match self {
+            Carriers::Tags(a) => a.mark(ctx, first, end, bits),
+            Carriers::Term(t) => t.mark(ctx, first, end, bits),
+        }
+    }
+}
+
+impl Docs for Carriers {
+    fn doc(&self) -> Option<u64> {
+        match self {
+            Carriers::Tags(a) => a.doc(),
+            Carriers::Term(t) => t.doc(),
+        }
+    }
+
+    fn seek(&mut self, ctx: &mut Ctx, d: u64) -> StoreResult<()> {
+        match self {
+            Carriers::Tags(a) => a.seek(ctx, d),
+            Carriers::Term(t) => t.seek(ctx, d),
+        }
+    }
+}
+
+fn members(tag: u64) -> Members {
+    Members::new(tag)
+}
+
+/// Marks in `held` the documents of a postings block holding the term in a field of `mask`.
+fn mark_held(mask: u64, pairs: &[(u32, u32)], held: &mut BlockBits) {
+    for &(sl, _) in pairs {
+        if mask >> (sl & ((1 << FIELD_BITS) - 1)) & 1 == 1 {
+            let place = (sl >> FIELD_BITS) as usize;
+            held[place >> 6] |= 1 << (place & 63);
+        }
+    }
 }
 
 /// A document's posting for a term, by field (looked up in its block).
@@ -848,6 +1567,9 @@ fn doc_codes(ctx: &mut Ctx, scope: Scope, doc: u64) -> StoreResult<[u8; 1 << FIE
 /// (field, tf, length code) by field.
 type Tfs = Vec<(u32, u64, u8)>;
 
+/// A bit per document of a postings block.
+type BlockBits = [u64; 1 << (BLOCK_BITS - 6)];
+
 /// A document's counts for a term in the fields of `mask` (as a prefix when `as_prefix`), with their length codes.
 fn tfs_of(
     ctx: &mut Ctx,
@@ -890,16 +1612,9 @@ fn shortest_in(ctx: &mut Ctx, scope: Scope, field: u32, block: u64) -> StoreResu
     Ok(x)
 }
 
-/// The first block from `block` on where the term has a block maximum in a field of `mask`; None past the
-/// scope's highest document.
-fn list_next_block(
-    ctx: &mut Ctx,
-    scope: Scope,
-    term: &str,
-    mask: u64,
-    block: u64,
-) -> StoreResult<Option<u64>> {
-    let last = match ctx.max_docs.get(&scope) {
+/// The block of the scope's highest document, read once per query.
+fn last_block(ctx: &mut Ctx, scope: Scope) -> StoreResult<u64> {
+    let m = match ctx.max_docs.get(&scope) {
         Some(&m) => m,
         None => {
             let m = ctx
@@ -909,37 +1624,73 @@ fn list_next_block(
             ctx.max_docs.insert(scope, m);
             m
         }
-    } >> BLOCK_BITS;
-    let mut b = block;
-    while b <= last {
-        let (chunk, first) = bound_slot(b, 0);
-        let m = ctx.map(block_maxima(scope, term, chunk))?;
-        let at = m.partition_point(|p| p.0 < first);
-        if let Some(&(sl, _)) = m[at..]
-            .iter()
-            .find(|p| mask >> (p.0 & ((1 << FIELD_BITS) - 1)) & 1 == 1)
-        {
-            return Ok(Some((chunk << CHUNK_BITS) | u64::from(sl >> FIELD_BITS)));
-        }
-        b = (chunk + 1) << CHUNK_BITS;
-    }
-    Ok(None)
+    };
+    Ok(m >> BLOCK_BITS)
 }
 
-/// A term's highest count in a field in a block.
-fn most_in(ctx: &mut Ctx, scope: Scope, term: &str, field: u32, block: u64) -> StoreResult<u64> {
-    let (chunk, sl) = bound_slot(block, field);
-    let m = ctx.map(block_maxima(scope, term, chunk))?;
-    Ok(m.binary_search_by_key(&sl, |p| p.0)
-        .ok()
-        .map_or(0, |i| u64::from(m[i].1)))
+/// The shortest length in block `block` of each field of `mask`, as scoring takes it (0 where none has text).
+fn shortest_lens(
+    ctx: &mut Ctx,
+    scope: Scope,
+    mask: u64,
+    block: u64,
+) -> StoreResult<[f64; 1 << FIELD_BITS]> {
+    let mut lens = [0.0; 1 << FIELD_BITS];
+    for f in fields_of(scope, mask) {
+        let len = shortest_in(ctx, scope, f, block)?.unwrap_or(0);
+        lens[f as usize] = code_length(length_code(len));
+    }
+    Ok(lens)
+}
+
+/// The first block from `block` on where the term has a block maximum in its reading (`as_prefix`): the first
+/// where a document holds it in that reading. None past the scope's highest document.
+fn list_next_block(
+    ctx: &mut Ctx,
+    scope: Scope,
+    term: &str,
+    as_prefix: bool,
+    block: u64,
+) -> StoreResult<Option<u64>> {
+    let last = last_block(ctx, scope)?;
+    ctx.next_blocks += 1;
+    let level = block_maxima_at(scope, term, 0);
+    let end = key::prefix_end(&level);
+    let mut b = block;
+    while b <= last {
+        let (group, first) = max_slot(b, as_prefix);
+        let k = block_maxima(scope, term, 0, group);
+        // The group's map, or the next group's the term has.
+        let (g, m) = match ctx.maps.get(&k) {
+            Some(m) => (group, m.clone()),
+            None => {
+                ctx.max_reads += 1;
+                let Some((found, v)) = ctx.scan(&k, &end, 1)?.into_iter().next() else {
+                    return Ok(None);
+                };
+                let g = get_u64(&found, &mut { level.len() })
+                    .ok_or_else(|| StoreError::Entry("a block maxima key doesn't decode".into()))?;
+                let m = ctx.pairs(&found, v)?;
+                (g, ctx.keep(found, m))
+            }
+        };
+        let from = if g == group { first } else { 0 };
+        let at = m.partition_point(|p| p.0 < from);
+        if let Some(&(sl, _)) = m[at..].iter().find(|p| {
+            let (_, field, prefix) = unmax_slot(g, p.0);
+            field.is_none() && prefix == as_prefix
+        }) {
+            return Ok(Some(unmax_slot(g, sl).0));
+        }
+        b = (g + 1) << GROUP_BITS;
+    }
+    Ok(None)
 }
 
 // ---- statistics ----
 
 pub struct Stats {
     n: f64,
-    avg: Vec<f64>,
 }
 
 fn scope_stats(ctx: &mut Ctx, scope: Scope) -> StoreResult<Arc<Stats>> {
@@ -959,16 +1710,7 @@ fn scope_stats(ctx: &mut Ctx, scope: Scope) -> StoreResult<Arc<Stats>> {
 
 fn read_stats(ctx: &mut Ctx, scope: Scope) -> StoreResult<Stats> {
     let n = ctx.counter(&doc_count(scope))? as f64;
-    let mut prefix = field_tokens(scope, 0);
-    prefix.truncate(prefix.len() - 1);
-    let tokens = ctx.counters_under(&prefix)?;
-    let avg = (0..scope.fields().len() as u64)
-        .map(|f| {
-            let t = tokens.get(&f).copied().unwrap_or(0) as f64;
-            if n > 0.0 { t / n } else { 0.0 }
-        })
-        .collect();
-    Ok(Stats { n, avg })
+    Ok(Stats { n })
 }
 
 // ---- clauses ----
@@ -979,10 +1721,21 @@ struct Matched {
     parts: Vec<(u32, usize, u64, u8)>,
 }
 
-/// A term in one field: its weight times idf.
+/// A token in one field, or (`token` = `TAG_PART`) the clause's tag names.
 #[derive(Clone)]
 struct Part {
-    weight_idf: f64,
+    token: usize,
+}
+
+const TAG_PART: usize = usize::MAX;
+
+/// Per token, per field, a part of a clause's text score (`field_score`), or a bound on it.
+type Texts = Vec<[f64; 1 << FIELD_BITS]>;
+
+/// Adds a list's block bound, over every field, to its token's bounds. A word's two lists (a prefix longer than
+/// the prefix terms) score in different fields, so the token's bound is their sum.
+fn add_bound(texts: &mut Texts, token: usize, b: f64) {
+    texts[token][0] += b;
 }
 
 /// A list a clause reads: a term's postings, in the fields `mask`, standing for token `token`; counted as a
@@ -995,10 +1748,8 @@ struct List {
     token: usize,
     as_prefix: bool,
     dir: BlockDocs,
-    /// The last block's bound (`Matcher::block_bound`).
-    bound: Option<(u64, f64)>,
-    /// Per field, the weight times idf its counts score at (0 outside `mask`).
-    weights: [f64; 1 << FIELD_BITS],
+    /// The last node's bound (`Matcher::node_bound`): level, node, bound.
+    bound: Option<(u64, u64, f64)>,
     /// The last block's shortest length per field, as scoring takes it (`Matcher::doc_ceiling`).
     shortest: Option<(u64, [f64; 1 << FIELD_BITS])>,
     /// The last `list_next_block` asked and answered: every block from the one asked to the answer has it.
@@ -1007,6 +1758,173 @@ struct List {
 
 fn fields_of(scope: Scope, m: u64) -> impl Iterator<Item = u32> {
     (0..scope.fields().len() as u32).filter(move |f| m >> f & 1 == 1)
+}
+
+/// Where a walk finds a tagged clause's documents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lead {
+    /// In its text and among its tags' carriers.
+    Both,
+    Text,
+    Carriers,
+}
+
+/// The carriers of a moving tag whose indexed name a clause matches that its move hasn't raised the clause's
+/// block maxima for yet: below its cursor when its target name lacks the clause, at or above it when its mapped
+/// name does (`store::carriers::move_step` raises a carrier for the target name as its cursor passes it).
+struct Unraised {
+    cursor: u64,
+    below: bool,
+    above: bool,
+    members: Members,
+}
+
+impl Unraised {
+    /// Whether one of these carriers is in `[lo, hi)`.
+    fn any_in(&mut self, ctx: &mut Ctx, lo: u64, hi: u64) -> StoreResult<bool> {
+        for (on, a, b) in [
+            (self.below, lo, hi.min(self.cursor)),
+            (self.above, lo.max(self.cursor), hi),
+        ] {
+            if on && a < b {
+                self.members.seek(ctx, a)?;
+                if self.members.doc().is_some_and(|d| d < b) {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+}
+
+/// A library clause's tag names: the carriers of the tags whose names it matches, each scoring `boost` once (its
+/// part `part`).
+struct Tagged {
+    boost: f64,
+    part: usize,
+    /// The block maxima of the clause's lists cover its tag part at the carriers with text (`super::local_r`),
+    /// except at those in `unraised`. Not for a prefix past the prefix terms, whose carriers may hold it only in a
+    /// field its prefix-term list doesn't count, nor for a phrase ending in a prefix, whose tag part may take the
+    /// idf of that prefix, which has no list.
+    covered: bool,
+    unraised: Vec<Unraised>,
+    source: Source,
+    carriers: Carriers,
+    /// The tags' carriers summed.
+    count: u64,
+    lead: Lead,
+    /// A term's map block read last by `carries` when not walking: its member block and its carriers.
+    map_block: Option<(u64, Vec<(u32, u32)>)>,
+}
+
+/// Cursors over a clause's carriers past which a walk that only scores carriers (`Lead::Text`) tells one by the
+/// document's own tags, and takes every block to hold some, rather than walking them.
+pub(crate) const TAGS_WALKED: usize = 8;
+
+impl Tagged {
+    /// Whether the walk reads the carriers in id order.
+    fn walks(&self) -> bool {
+        self.lead != Lead::Text || self.source.cursors() <= TAGS_WALKED
+    }
+
+    fn carries(&mut self, ctx: &mut Ctx, d: u64) -> StoreResult<bool> {
+        if self.walks() {
+            self.carriers.seek(ctx, d)?;
+            return Ok(self.carriers.doc() == Some(d));
+        }
+        let Tagged {
+            source, map_block, ..
+        } = self;
+        match source {
+            Source::Tags(tags) => own_tag(ctx, d, |t| tags.binary_search(&t).is_ok()),
+            Source::Term(t) => {
+                let block = d >> key::MEMBER_BITS;
+                if map_block.as_ref().is_none_or(|(b, _)| *b != block) {
+                    let mut k = key::tag_carriers_of(t.kind, &t.term);
+                    put_u64(&mut k, block);
+                    ctx.work += SEEK;
+                    ctx.gets += 1;
+                    let pairs = match ctx.view.get_val(&k)? {
+                        Some(v) => v.into_pairs(&k).ok_or_else(|| {
+                            StoreError::Entry("a term's carrier map doesn't decode".into())
+                        })?,
+                        None => Vec::new(),
+                    };
+                    ctx.pairs += pairs.len() as u64;
+                    ctx.charge_milli(
+                        TERM_MAP_BLOCK_MILLI + pairs.len() as u64 * TERM_MAP_PLACE_MILLI,
+                    );
+                    *map_block = Some((block, block_places(&pairs)));
+                }
+                let places = &map_block.as_ref().unwrap().1;
+                let slot = key::member_slot(d);
+                let counted = places
+                    .binary_search_by_key(&slot, |p| p.0)
+                    .map_or(0, |i| places[i].1);
+                // Only a moving tag can take back what the map counts.
+                if counted > 0 && t.moving.is_empty() {
+                    return Ok(true);
+                }
+                if t.heavy.is_empty() && t.moving.is_empty() {
+                    return Ok(false);
+                }
+                let mut tags = Vec::new();
+                own_tag(ctx, d, |x| {
+                    if t.heavy.binary_search(&x).is_ok()
+                        || t.moving.binary_search_by_key(&x, |m| m.tag).is_ok()
+                    {
+                        tags.push(x);
+                    }
+                    false
+                })?;
+                Ok(t.carried(d, counted, &tags))
+            }
+        }
+    }
+
+    /// The first carrier at or after `d`.
+    fn next(&mut self, ctx: &mut Ctx, d: u64) -> StoreResult<Option<u64>> {
+        self.carriers.seek(ctx, d)?;
+        Ok(self.carriers.doc())
+    }
+
+    /// Whether a carrier may be in `[lo, hi)`.
+    fn any_in(&mut self, ctx: &mut Ctx, lo: u64, hi: u64) -> StoreResult<bool> {
+        if !self.walks() {
+            return Ok(true);
+        }
+        Ok(self.next(ctx, lo)?.is_some_and(|d| d < hi))
+    }
+
+    /// Whether a carrier whose block maxima lack the clause's tag part may be in `[lo, hi)`.
+    fn unraised_in(&mut self, ctx: &mut Ctx, lo: u64, hi: u64) -> StoreResult<bool> {
+        for u in &mut self.unraised {
+            if u.any_in(ctx, lo, hi)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+}
+
+/// Whether document `d` carries a tag `f` takes, reading its tags (`key::MEMBER_OF`) until one is.
+fn own_tag(ctx: &mut Ctx, d: u64, mut f: impl FnMut(u64) -> bool) -> StoreResult<bool> {
+    let prefix = key::id(key::MEMBER_OF, d);
+    let end = key::prefix_end(&prefix);
+    let mut from = prefix.clone();
+    loop {
+        let page = ctx.scan(&from, &end, 64)?;
+        for (k, _) in &page {
+            let mut at = prefix.len();
+            if f(u64_at(k, &mut at)?) {
+                return Ok(true);
+            }
+        }
+        match page.last() {
+            Some((k, _)) if page.len() == 64 => from = successor(k),
+            _ => return Ok(false),
+        }
+    }
 }
 
 /// One clause over one scope.
@@ -1024,13 +1942,16 @@ struct Matcher {
     /// Parts by (token, field).
     parts: HashMap<(usize, u32), usize>,
     part: Vec<Part>,
-    /// The scope's average field lengths.
-    avg: Vec<f64>,
+    /// Per token, its idf.
+    idf: Vec<f64>,
     doc: Option<u64>,
+    /// Where the text lists stand together after `align` (None: past the end, or not aligned).
+    text_doc: Option<u64>,
+    tagged: Option<Tagged>,
 }
 
 impl Matcher {
-    /// None when the clause has no tokens.
+    /// None when the clause has no tokens. `idfs`: its tokens' idfs, else read from their counts.
     fn new(
         ctx: &mut Ctx,
         scope: Scope,
@@ -1038,6 +1959,7 @@ impl Matcher {
         toks: Vec<String>,
         fields: Option<&[u32]>,
         last: bool,
+        idfs: Option<&[f64]>,
     ) -> StoreResult<Option<Matcher>> {
         if toks.is_empty() {
             return Ok(None);
@@ -1065,32 +1987,26 @@ impl Matcher {
             lists: Vec::new(),
             parts: HashMap::new(),
             part: Vec::new(),
-            avg: stats.avg.clone(),
+            idf: Vec::new(),
             doc: None,
+            text_doc: None,
+            tagged: None,
         };
         for (i, tok) in toks.iter().enumerate() {
             let is_prefix = prefix && i == last_i;
             let long = is_prefix && char_len(tok) > GRAM_MAX;
-            // Per field, the kind whose document frequency scores it.
-            let gram_df = |f: u32| is_prefix && prefix_mask >> f & 1 == 1;
-            let exact_dfs = ctx.counters_under(&doc_freqs(scope, TermKind::Exact, tok))?;
             let gram_term = first_chars(tok, GRAM_MAX).to_string();
-            let gram_dfs = if is_prefix {
-                ctx.counters_under(&doc_freqs(scope, TermKind::Gram, &gram_term))?
-            } else {
-                HashMap::new()
-            };
-            for f in fields_of(scope, mask) {
-                let df = if gram_df(f) {
-                    gram_dfs.get(&u64::from(f))
-                } else {
-                    exact_dfs.get(&u64::from(f))
+            match idfs {
+                Some(w) => m.idf.push(w[i]),
+                None => {
+                    // A prefix is counted by the term its prefix fields are read through.
+                    let df = ctx.term_docs(scope, if is_prefix { &gram_term } else { tok })?;
+                    m.idf.push(idf(df as f64, stats.n));
                 }
-                .copied()
-                .unwrap_or(0) as f64;
-                let w = defs[f as usize].weight * idf(df, stats.n);
+            }
+            for f in fields_of(scope, mask) {
                 m.parts.insert((i, f), m.part.len());
-                m.part.push(Part { weight_idf: w });
+                m.part.push(Part { token: i });
             }
             if phrase && is_prefix {
                 // Checked on the text.
@@ -1104,7 +2020,6 @@ impl Matcher {
                 as_prefix,
                 dir: BlockDocs::postings(scope, term),
                 bound: None,
-                weights: [0.0; 1 << FIELD_BITS],
                 shortest: None,
                 next: None,
             };
@@ -1136,88 +2051,307 @@ impl Matcher {
                     token: usize::MAX,
                     as_prefix: false,
                     bound: None,
-                    weights: [0.0; 1 << FIELD_BITS],
                     shortest: None,
                     next: None,
                 });
             }
         }
-        for l in &mut m.lists {
-            for f in fields_of(scope, l.mask) {
-                if let Some(&p) = m.parts.get(&(l.token, f)) {
-                    l.weights[f as usize] = m.part[p].weight_idf;
-                }
-            }
-        }
         Ok(Some(m))
     }
 
-    /// Whether the clause is one list (a word).
+    /// Whether the clause is one list (a word) and its documents are those with the word.
     fn single(&self) -> Option<usize> {
-        (!self.phrase && self.lists.len() == 1).then_some(0)
+        (self.word() && self.tagged.as_ref().is_none_or(|t| t.lead == Lead::Text)).then_some(0)
     }
 
-    /// The most a document in list `li`'s block `block` scores for its term: each field's highest count there at
-    /// the block's shortest length.
+    /// Whether the clause is a word whose prefix is longer than the prefix terms (`super::word_text`).
+    fn long_prefix(&self) -> bool {
+        super::long_prefix(
+            self.phrase,
+            self.prefix,
+            &self.tokens[self.tokens.len() - 1],
+        )
+    }
+
+    /// Whether the clause's text is one list (a word).
+    fn word(&self) -> bool {
+        !self.phrase && self.lists.len() == 1
+    }
+
+    fn lead(&self) -> Lead {
+        self.tagged.as_ref().map_or(Lead::Text, |t| t.lead)
+    }
+
+    /// Makes the clause match the tag carriers `source` gives too, `count` of them summed.
+    fn tag(&mut self, ctx: &mut Ctx, source: Source, count: u64) -> StoreResult<()> {
+        let part = self.part.len();
+        self.part.push(Part { token: TAG_PART });
+        if let Some(f) = super::tag_field(self.scope) {
+            self.parts.insert((0, f), part);
+        }
+        let covered = !self.long_prefix() && !(self.phrase && self.prefix);
+        let mut unraised = Vec::new();
+        if covered {
+            let unraised_of = |m: &Mover| Unraised {
+                cursor: m.cursor,
+                below: !m.target_has,
+                above: !m.mapped_has,
+                members: members(m.tag),
+            };
+            match &source {
+                Source::Term(t) => {
+                    for m in t.moving.iter().filter(|m| m.named) {
+                        if !m.target_has || !m.mapped_has {
+                            unraised.push(unraised_of(m));
+                        }
+                    }
+                }
+                // A phrase's tags, found by their indexed names: a moving one's carriers are raised where the name
+                // its move holds them by holds every token whole.
+                Source::Tags(tags) => {
+                    let want: Vec<(TermKind, String)> = self
+                        .tokens
+                        .iter()
+                        .map(|t| (TermKind::Exact, t.clone()))
+                        .collect();
+                    for &tag in tags {
+                        let Some(TagMap {
+                            flight: Some(f), ..
+                        }) = ctx
+                            .get(&key::id(key::TAG_MAP, tag))?
+                            .map(|b| TagMap::parse(&b))
+                            .transpose()?
+                        else {
+                            continue;
+                        };
+                        let holds = |name: &[u8]| {
+                            let n = carriers::name_terms(name);
+                            want.iter().all(|w| n.contains(w))
+                        };
+                        let m = Mover {
+                            tag,
+                            cursor: f.cursor,
+                            below: false,
+                            above: false,
+                            named: true,
+                            target_has: holds(&f.target_name),
+                            mapped_has: holds(&f.mapped_name),
+                        };
+                        if !m.target_has || !m.mapped_has {
+                            unraised.push(unraised_of(&m));
+                        }
+                    }
+                }
+            }
+        }
+        self.tagged = Some(Tagged {
+            boost: self.combine(&self.no_text(), true),
+            part,
+            covered,
+            unraised,
+            carriers: Carriers::of(&source),
+            source,
+            count,
+            lead: Lead::Both,
+            map_block: None,
+        });
+        Ok(())
+    }
+
+    /// Scores from here on before the idf, a word's score being its idf times that: returns the idf.
+    fn local_units(&mut self) -> f64 {
+        let idf = std::mem::replace(&mut self.idf, vec![1.0]);
+        let boost = self.combine(&self.no_text(), true);
+        if let Some(t) = &mut self.tagged {
+            t.boost = boost;
+        }
+        idf[0]
+    }
+
+    /// No text in any field.
+    fn no_text(&self) -> Texts {
+        vec![[0.0; 1 << FIELD_BITS]; self.tokens.len()]
+    }
+
+    /// The clause's score from its text's parts (`Texts`): each token's summed in field order, as `local` sums
+    /// them; `tagged` when the document carries a tag whose name holds the clause. Higher parts give a score at
+    /// least as high, so it bounds as it scores.
+    fn combine(&self, texts: &Texts, tagged: bool) -> f64 {
+        let long = self.long_prefix();
+        let sums: Vec<f64> = texts
+            .iter()
+            .map(|fs| super::sum_parts(self.scope, (0..).zip(fs.iter().copied()), long))
+            .collect();
+        super::clause_score(&self.idf, &sums, tagged)
+    }
+
+    /// A phrase's last token, a prefix, has no list: in each field it scores below its weight times `K1 + 1`.
+    fn prefix_bound(&self, texts: &mut Texts) {
+        if self.phrase && self.prefix {
+            let last = self.tokens.len() - 1;
+            for f in fields_of(self.scope, self.mask) {
+                texts[last][f as usize] =
+                    self.scope.fields()[f as usize].weight * (super::K1 + 1.0);
+            }
+        }
+    }
+
+    /// The most a document in list `li`'s block `block` scores for its term in the list's reading, before the
+    /// idf: the reading's block maximum (0 when there is none); for a clause in some fields, its maxima in the
+    /// list's fields, summed as `sum_parts` sums them, and for several fields at most the maximum over every field.
     fn block_bound(&mut self, ctx: &mut Ctx, li: usize, block: u64) -> StoreResult<f64> {
+        self.node_bound(ctx, li, 0, block)
+    }
+
+    /// `block_bound` for every block under node `node` of level `level`: the node's maximum in the list's
+    /// reading. Not for node 0 of a level above 0, which holds no maximum.
+    fn node_bound(&mut self, ctx: &mut Ctx, li: usize, level: u64, node: u64) -> StoreResult<f64> {
+        debug_assert!(level == 0 || node != 0);
         if self.lists[li].pair {
             return Ok(0.0);
         }
-        if let Some((b, s)) = self.lists[li].bound
-            && b == block
+        if let Some((l, n, s)) = self.lists[li].bound
+            && (l, n) == (level, node)
         {
             return Ok(s);
         }
         let l = &self.lists[li];
-        let mut s = 0.0;
-        for f in fields_of(self.scope, l.mask) {
-            let most = most_in(ctx, self.scope, &l.term, f, block)?;
-            if most == 0 {
-                continue;
+        let (group, sl) = max_slot(node, l.as_prefix);
+        let m = ctx.max_map(block_maxima(self.scope, &l.term, level, group))?;
+        let at = |sl: u32| {
+            m.binary_search_by_key(&sl, |p| p.0)
+                .ok()
+                .map_or(0.0, |i| max_value(m[i].1))
+        };
+        let s = if self.mask == self.mask_all() {
+            at(sl)
+        } else {
+            let summed = super::sum_parts(
+                self.scope,
+                fields_of(self.scope, l.mask)
+                    .map(|f| (f, at(field_max_slot(node, f, l.as_prefix).1))),
+                false,
+            );
+            // Several fields' maxima may be different documents': the maximum over every field bounds their
+            // sum too, as a sum over fewer non-negative parts in the same order is no higher.
+            if self.mask.count_ones() > 1 {
+                summed.min(at(sl))
+            } else {
+                summed
             }
-            let len = shortest_in(ctx, self.scope, f, block)?.unwrap_or(0);
-            let Some(&p) = self.parts.get(&(l.token, f)) else {
-                continue;
-            };
-            s += self.part[p].weight_idf
-                * tf_norm(
-                    most as f64,
-                    code_length(length_code(len)),
-                    self.avg[f as usize],
-                );
-        }
-        self.lists[li].bound = Some((block, s));
+        };
+        self.lists[li].bound = Some((level, node, s));
         Ok(s)
     }
 
     /// The most a document in block `block` can score for the clause, without reading postings; None when no
-    /// document there can match it (a word's terms, or one of a phrase's, have never been in the block).
+    /// document there can match it (where the walk looks for it).
     fn bound_at(&mut self, ctx: &mut Ctx, block: u64) -> StoreResult<Option<f64>> {
-        let mut s = 0.0;
+        self.node_bound_at(ctx, 0, block, block)
+    }
+
+    /// `bound_at` for the blocks from `from` to the end of node `node` of level `level`, from the node's maxima.
+    /// Not for node 0 of a level above 0.
+    fn node_bound_at(
+        &mut self,
+        ctx: &mut Ctx,
+        level: u64,
+        node: u64,
+        from: u64,
+    ) -> StoreResult<Option<f64>> {
+        let lead = self.lead();
+        let text = if lead == Lead::Carriers {
+            None
+        } else {
+            self.text_bound_at(ctx, level, node)?
+        };
+        let end = (node + 1) << (GROUP_BITS * level as u32);
+        let carried = match &mut self.tagged {
+            Some(t) => t.any_in(ctx, from << BLOCK_BITS, end << BLOCK_BITS)?,
+            None => false,
+        };
+        if !carried {
+            return Ok(text.map(|x| self.combine(&x, false)));
+        }
+        if self.tagged.as_ref().is_some_and(|t| t.covered) {
+            let unraised = self.tagged.as_mut().unwrap().unraised_in(
+                ctx,
+                from << BLOCK_BITS,
+                end << BLOCK_BITS,
+            )?;
+            return Ok(self.covered_bound(lead, text.map(|x| self.combine(&x, unraised))));
+        }
+        Ok(match (lead, text) {
+            (Lead::Text, None) => None,
+            (_, text) => Some(self.combine(&text.unwrap_or_else(|| self.no_text()), true)),
+        })
+    }
+
+    /// A covered clause's bound where its carriers may be (`Tagged::covered`): `text`, its text's bound, which holds
+    /// the tag part already, or for a clause matching carriers without text (`Lead::Both`, `Lead::Carriers`) at least
+    /// the tag part alone.
+    fn covered_bound(&self, lead: Lead, text: Option<f64>) -> Option<f64> {
+        let alone = (lead != Lead::Text).then(|| self.combine(&self.no_text(), true));
+        match (text, alone) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    /// `node_bound_at` for the clause's text alone, per token and field: None when a word's terms, or one of a
+    /// phrase's, have never been under the node.
+    fn text_bound_at(
+        &mut self,
+        ctx: &mut Ctx,
+        level: u64,
+        node: u64,
+    ) -> StoreResult<Option<Texts>> {
+        let mut texts = self.no_text();
         let mut any = false;
         for li in 0..self.lists.len() {
             // A pair has no maxima; `next_block` found it in the block.
             if self.lists[li].pair {
                 continue;
             }
-            let b = self.block_bound(ctx, li, block)?;
+            let b = self.node_bound(ctx, li, level, node)?;
             if b > 0.0 {
                 any = true;
             } else if self.phrase {
                 return Ok(None);
             }
-            s += b;
+            add_bound(&mut texts, self.lists[li].token, b);
         }
         if self.phrase && self.prefix {
-            s += self.part.iter().map(|p| p.weight_idf).fold(0.0, f64::max) * (super::K1 + 1.0);
+            self.prefix_bound(&mut texts);
             any |= self.lists.is_empty();
         }
-        Ok(any.then_some(s))
+        Ok(any.then_some(texts))
+    }
+
+    /// The first block from `block` on where the walk may find the clause's documents; None past the last.
+    fn next_block(&mut self, ctx: &mut Ctx, block: u64) -> StoreResult<Option<u64>> {
+        let lead = self.lead();
+        let text = if lead == Lead::Carriers {
+            None
+        } else {
+            self.text_next_block(ctx, block)?
+        };
+        let Some(t) = &mut self.tagged else {
+            return Ok(text);
+        };
+        if lead == Lead::Text {
+            return Ok(text);
+        }
+        let c = t.next(ctx, block << BLOCK_BITS)?.map(|d| d >> BLOCK_BITS);
+        Ok(match (text, c) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        })
     }
 
     /// The first block from `block` on where the clause's terms have been (a word's in any of its lists, a
     /// phrase's in all), from the terms' block maxima; None past the last.
-    fn next_block(&mut self, ctx: &mut Ctx, block: u64) -> StoreResult<Option<u64>> {
+    fn text_next_block(&mut self, ctx: &mut Ctx, block: u64) -> StoreResult<Option<u64>> {
         let mut b = block;
         loop {
             let mut found: Option<u64> = None;
@@ -1232,7 +2366,7 @@ impl Matcher {
                             l.dir.seek(ctx, b << BLOCK_BITS)?;
                             l.dir.block
                         } else {
-                            list_next_block(ctx, self.scope, &l.term, l.mask, b)?
+                            list_next_block(ctx, self.scope, &l.term, l.as_prefix, b)?
                         };
                         self.lists[li].next = Some((b, x));
                         x
@@ -1257,11 +2391,33 @@ impl Matcher {
         }
     }
 
-    /// To the first document at or after `d` the clause may match: in any of a word's lists, in all of a
+    /// To the first document at or after `d` the clause may match where the walk looks for it.
+    fn align(&mut self, ctx: &mut Ctx, d: u64) -> StoreResult<()> {
+        let lead = self.lead();
+        self.text_doc = if lead == Lead::Carriers {
+            None
+        } else {
+            self.text_align(ctx, d)?
+        };
+        self.doc = match &mut self.tagged {
+            None => self.text_doc,
+            Some(t) => match lead {
+                Lead::Text => self.text_doc,
+                Lead::Carriers => t.next(ctx, d)?,
+                Lead::Both => match (self.text_doc, t.next(ctx, d)?) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (a, b) => a.or(b),
+                },
+            },
+        };
+        Ok(())
+    }
+
+    /// The first document at or after `d` the clause's text may match: in any of a word's lists, in all of a
     /// phrase's.
-    fn align(&mut self, ctx: &mut Ctx, start: u64) -> StoreResult<()> {
+    fn text_align(&mut self, ctx: &mut Ctx, start: u64) -> StoreResult<Option<u64>> {
         let mut d = start;
-        self.doc = if self.phrase {
+        Ok(if self.phrase {
             loop {
                 if self.lists.is_empty() {
                     break None;
@@ -1291,64 +2447,74 @@ impl Matcher {
                 l.dir.seek(ctx, d)?;
             }
             self.lists.iter().filter_map(|l| l.dir.doc()).min()
-        };
-        Ok(())
+        })
     }
 
-    /// The most any document in the current blocks of the lists can score.
-    fn block_ceiling(&mut self, ctx: &mut Ctx) -> StoreResult<f64> {
-        let mut s = 0.0;
+    /// The most any document from `d` to `block_end` can score.
+    fn block_ceiling(&mut self, ctx: &mut Ctx, d: u64) -> StoreResult<f64> {
+        let end = self.block_end();
+        let mut carried = false;
+        if let Some(t) = &mut self.tagged {
+            carried = t.any_in(ctx, d, end)?;
+        }
+        let mut texts = self.no_text();
         for li in 0..self.lists.len() {
-            if let Some(b) = self.lists[li].dir.block {
-                s += self.block_bound(ctx, li, b)?;
+            if let Some(b) = self.lists[li].dir.block
+                && !self.lists[li].pair
+            {
+                let b = self.block_bound(ctx, li, b)?;
+                add_bound(&mut texts, self.lists[li].token, b);
             }
         }
-        if self.phrase && self.prefix {
-            s += self.part.iter().map(|p| p.weight_idf).fold(0.0, f64::max) * (super::K1 + 1.0);
+        self.prefix_bound(&mut texts);
+        if carried && let Some(t) = self.tagged.as_mut().filter(|t| t.covered) {
+            let unraised = t.unraised_in(ctx, d, end)?;
+            let text = self.combine(&texts, unraised);
+            return Ok(self.covered_bound(self.lead(), Some(text)).unwrap_or(text));
         }
-        Ok(s)
+        Ok(self.combine(&texts, carried))
     }
 
     /// The most document `d` can score, from the counts of the lists standing at it, at their blocks' shortest
     /// lengths.
     fn doc_ceiling(&mut self, ctx: &mut Ctx, d: u64) -> StoreResult<f64> {
-        let mut s = 0.0;
+        let mut carried = false;
+        if let Some(t) = &mut self.tagged {
+            carried = t.carries(ctx, d)?;
+        }
         let defs = self.scope.fields();
         let block = d >> BLOCK_BITS;
+        let mut texts = self.no_text();
         for li in 0..self.lists.len() {
-            if self.lists[li].dir.doc() != Some(d) {
+            if self.lists[li].dir.doc() != Some(d) || self.lists[li].pair {
                 continue;
             }
             if self.lists[li].shortest.is_none_or(|(b, _)| b != block) {
-                let mut lens = [0.0; 1 << FIELD_BITS];
-                for f in fields_of(self.scope, self.lists[li].mask) {
-                    let len = shortest_in(ctx, self.scope, f, block)?.unwrap_or(0);
-                    lens[f as usize] = code_length(length_code(len));
-                }
+                let lens = shortest_lens(ctx, self.scope, self.lists[li].mask, block)?;
                 self.lists[li].shortest = Some((block, lens));
             }
             let l = &self.lists[li];
             let lens = l.shortest.unwrap().1;
             for (f, v) in l.dir.doc_pairs() {
-                let w = l.weights[f as usize];
-                if w > 0.0 {
+                if l.mask >> f & 1 == 1 {
                     let tf = unpack(defs[f as usize].prefix, v).most();
-                    s += w * tf_norm(tf as f64, lens[f as usize], self.avg[f as usize]);
+                    let x = field_score(self.scope, f, tf as f64, lens[f as usize]);
+                    let t = &mut texts[l.token][f as usize];
+                    *t = t.max(x);
                 }
             }
         }
-        if self.phrase && self.prefix {
-            s += self.part.iter().map(|p| p.weight_idf).fold(0.0, f64::max) * (super::K1 + 1.0);
-        }
-        Ok(s)
+        self.prefix_bound(&mut texts);
+        Ok(self.combine(&texts, carried))
     }
 
-    /// For a word: the documents of block `block` that hold it, as bits; its lists stand at the block.
-    fn block_held(
-        &mut self,
-        ctx: &mut Ctx,
-        block: u64,
-    ) -> StoreResult<[u64; 1 << (BLOCK_BITS - 6)]> {
+    /// For a word: the documents of block `block` that hold it, and its tags' carriers there, as bits; its lists
+    /// stand at the block.
+    fn block_held(&mut self, ctx: &mut Ctx, block: u64) -> StoreResult<(BlockBits, BlockBits)> {
+        let carried = self.carried_in(ctx, block)?;
+        if self.lead() == Lead::Carriers {
+            return Ok(([0; 1 << (BLOCK_BITS - 6)], carried));
+        }
         let mut held = [0u64; 1 << (BLOCK_BITS - 6)];
         for li in 0..self.lists.len() {
             self.lists[li].dir.seek(ctx, block << BLOCK_BITS)?;
@@ -1356,78 +2522,210 @@ impl Matcher {
                 continue;
             }
             if self.lists[li].shortest.is_none_or(|(b, _)| b != block) {
-                let mut lens = [0.0; 1 << FIELD_BITS];
-                for f in fields_of(self.scope, self.lists[li].mask) {
-                    let len = shortest_in(ctx, self.scope, f, block)?.unwrap_or(0);
-                    lens[f as usize] = code_length(length_code(len));
-                }
+                let lens = shortest_lens(ctx, self.scope, self.lists[li].mask, block)?;
                 self.lists[li].shortest = Some((block, lens));
             }
             let l = &self.lists[li];
-            for &(sl, _) in &l.dir.pairs {
-                if l.mask >> (sl & ((1 << FIELD_BITS) - 1)) & 1 == 1 {
-                    let place = (sl >> FIELD_BITS) as usize;
-                    held[place >> 6] |= 1 << (place & 63);
-                }
-            }
+            mark_held(l.mask, &l.dir.pairs, &mut held);
         }
-        Ok(held)
+        Ok((held, carried))
+    }
+
+    /// The clause's tags' carriers in block `block`, as bits (every document when it tells them by their own tags).
+    fn carried_in(&mut self, ctx: &mut Ctx, block: u64) -> StoreResult<BlockBits> {
+        let mut carried = [0u64; 1 << (BLOCK_BITS - 6)];
+        if let Some(t) = &self.tagged
+            && !t.walks()
+        {
+            carried = [u64::MAX; 1 << (BLOCK_BITS - 6)];
+        } else if let Some(t) = &mut self.tagged {
+            let (first, end) = (block << BLOCK_BITS, (block + 1) << BLOCK_BITS);
+            t.carriers.mark(ctx, first, end, &mut carried)?;
+        }
+        Ok(carried)
     }
 
     /// For a word, after `block_held`: adds to `total` the most each document in `only` can score for it at
-    /// the block's shortest lengths.
-    fn block_bounds(&self, only: &[u64], total: &mut [f64]) {
+    /// the block's shortest lengths, with its tags to those in `carried`.
+    fn block_bounds(&self, only: &[u64], carried: &BlockBits, total: &mut [f64]) {
+        let lists: Vec<(u64, &[(u32, u32)], [f64; 1 << FIELD_BITS])> =
+            if self.lead() == Lead::Carriers {
+                Vec::new()
+            } else {
+                self.lists
+                    .iter()
+                    .filter(|l| l.dir.block.is_some())
+                    .filter_map(|l| {
+                        l.shortest
+                            .map(|(_, lens)| (l.mask, l.dir.pairs.as_slice(), lens))
+                    })
+                    .collect()
+            };
+        self.bounds_of(&lists, only, carried, total);
+    }
+
+    /// `block_bounds` from each list's (mask, postings block, shortest lengths).
+    fn bounds_of(
+        &self,
+        lists: &[(u64, &[(u32, u32)], [f64; 1 << FIELD_BITS])],
+        only: &[u64],
+        carried: &BlockBits,
+        total: &mut [f64],
+    ) {
         const TABLE: usize = 16;
         let defs = self.scope.fields();
-        let mut best = [0.0f64; 1 << BLOCK_BITS];
-        for l in &self.lists {
-            let Some((_, lens)) = l.shortest.filter(|_| l.dir.block.is_some()) else {
-                continue;
-            };
+        // Each field's part per document, by its slot: in field order per document, as `local` sums them.
+        let mut parts: Vec<(u32, f64)> = Vec::new();
+        for &(mask, pairs, lens) in lists {
             // Each field's score for the small counts, at the block's shortest length.
             let mut table = [[0.0f64; TABLE]; 1 << FIELD_BITS];
-            for f in fields_of(self.scope, l.mask) {
-                let f = f as usize;
-                for (tf, x) in table[f].iter_mut().enumerate() {
-                    *x = l.weights[f] * tf_norm(tf as f64, lens[f], self.avg[f]);
+            for f in fields_of(self.scope, mask) {
+                for (tf, x) in table[f as usize].iter_mut().enumerate() {
+                    *x = field_score(self.scope, f, tf as f64, lens[f as usize]);
                 }
             }
-            let mut i = 0;
-            let mut place = usize::MAX;
-            let mut s = 0.0;
-            while i <= l.dir.pairs.len() {
-                let next = l
-                    .dir
-                    .pairs
-                    .get(i)
-                    .map(|&(sl, _)| (sl >> FIELD_BITS) as usize);
-                if next != Some(place) {
-                    if place != usize::MAX {
-                        best[place] = best[place].max(0.0) + s;
-                    }
-                    s = 0.0;
-                    place = next.unwrap_or(usize::MAX);
-                }
-                let Some(&(sl, v)) = l.dir.pairs.get(i) else {
-                    break;
-                };
-                i += 1;
-                if only[place >> 6] >> (place & 63) & 1 == 0 {
+            for &(sl, v) in pairs {
+                let place = (sl >> FIELD_BITS) as usize;
+                let f = sl & ((1 << FIELD_BITS) - 1);
+                if only[place >> 6] >> (place & 63) & 1 == 0 || mask >> f & 1 == 0 {
                     continue;
                 }
-                let f = (sl & ((1 << FIELD_BITS) - 1)) as usize;
-                if l.mask >> f & 1 == 1 {
-                    let tf = unpack(defs[f].prefix, v).most() as usize;
-                    s += match table[f].get(tf) {
-                        Some(&x) => x,
-                        None => l.weights[f] * tf_norm(tf as f64, lens[f], self.avg[f]),
-                    };
+                let tf = unpack(defs[f as usize].prefix, v).most() as usize;
+                let x = match table[f as usize].get(tf) {
+                    Some(&x) => x,
+                    None => field_score(self.scope, f, tf as f64, lens[f as usize]),
+                };
+                parts.push((sl, x));
+            }
+        }
+        if lists.len() > 1 {
+            parts.sort_unstable_by_key(|p| p.0);
+        }
+        // Each document's parts summed as `super::sum_parts` sums them.
+        let long = self.long_prefix();
+        let mut texts = [0.0f64; 1 << BLOCK_BITS];
+        let mut prefixed = [0.0f64; 1 << BLOCK_BITS];
+        for (sl, x) in parts {
+            let i = (sl >> FIELD_BITS) as usize;
+            if long && defs[(sl & ((1 << FIELD_BITS) - 1)) as usize].prefix {
+                prefixed[i] += x;
+            } else {
+                texts[i] += x;
+            }
+        }
+        if long {
+            for (t, p) in texts.iter_mut().zip(prefixed) {
+                *t += p;
+            }
+        }
+        let tagged = self.tagged.is_some();
+        for (w, (&o, &c)) in only.iter().zip(carried).enumerate() {
+            let mut b = o;
+            while b != 0 {
+                let place = b.trailing_zeros() as usize;
+                b &= b - 1;
+                let i = w * 64 + place;
+                let carries = tagged && c >> place & 1 == 1;
+                total[i] += super::clause_score(&self.idf, &[texts[i]], carries);
+            }
+        }
+    }
+
+    /// Reports list `li`'s block `block` (`Found::tighten`) when a maximum there that the list read is above
+    /// every document's value: its postings there (`pairs`, every document holding its term), with its clause's
+    /// tag carriers there (`carried`) for its maximum over every field. A document's value is its exact score when
+    /// `scored` holds its length codes (the query scored it), else its bound at the block's shortest lengths
+    /// (`shortest`), which stay as short as a gone document left them. That maximum covers every field, so only a
+    /// list over every field checks it.
+    /// Compared as stored (`max_bits`): a maximum the job set from a document's own lengths isn't reported again.
+    #[allow(clippy::too_many_arguments)]
+    fn report_loose(
+        &self,
+        ctx: &mut Ctx,
+        li: usize,
+        block: u64,
+        pairs: &[(u32, u32)],
+        shortest: &[f64; 1 << FIELD_BITS],
+        scored: Option<&HashMap<u64, [u8; 1 << FIELD_BITS]>>,
+        carried: &BlockBits,
+    ) -> StoreResult<()> {
+        let l = &self.lists[li];
+        if l.pair {
+            return Ok(());
+        }
+        let (scope, r) = (self.scope, l.as_prefix);
+        let defs = scope.fields();
+        let all = l.mask == self.mask_all();
+        let first = block << BLOCK_BITS;
+        let holds = |&&(sl, v): &&(u32, u32)| {
+            let f = sl & ((1 << FIELD_BITS) - 1);
+            v != 0 && l.mask >> f & 1 == 1 && unpack(defs[f as usize].prefix, v).tf(r) > 0
+        };
+        // Per document, its value over every field (in field order, as `super::local` sums), and per field the
+        // highest part.
+        let mut highest: Option<f64> = None;
+        let mut fields = [None::<f64>; 1 << FIELD_BITS];
+        let mut doc: Option<(u32, f64)> = None;
+        let tagged = self.tagged.is_some();
+        let close = |doc: Option<(u32, f64)>, highest: &mut Option<f64>| {
+            if let Some((place, text)) = doc {
+                let p = place as usize;
+                let carries = tagged && carried[p >> 6] >> (p & 63) & 1 == 1;
+                let v = if carries { text + super::TAG_WEIGHT } else { text };
+                *highest = Some(highest.map_or(v, |h| h.max(v)));
+            }
+        };
+        for &(sl, v) in pairs {
+            let (place, f) = (sl >> FIELD_BITS, sl & ((1 << FIELD_BITS) - 1));
+            if !holds(&&(sl, v)) {
+                continue;
+            }
+            let tf = unpack(defs[f as usize].prefix, v).tf(r);
+            let len = match scored.and_then(|m| m.get(&(first | u64::from(place)))) {
+                Some(codes) => code_length(codes[f as usize]),
+                None => shortest[f as usize],
+            };
+            let x = field_score(scope, f, tf as f64, len);
+            let one = &mut fields[f as usize];
+            *one = Some(one.map_or(x, |o| o.max(x)));
+            match &mut doc {
+                Some((p, text)) if *p == place => *text += x,
+                _ => {
+                    close(doc, &mut highest);
+                    doc = Some((place, x));
                 }
             }
         }
-        for (t, b) in total.iter_mut().zip(best) {
-            *t += b;
+        close(doc, &mut highest);
+        // Only from a map the query read already.
+        let Some(m) = ctx
+            .maps
+            .get(&block_maxima(scope, &l.term, 0, max_slot(block, r).0))
+            .cloned()
+        else {
+            return Ok(());
+        };
+        let stored = |sl: u32| {
+            m.binary_search_by_key(&sl, |p| p.0)
+                .ok()
+                .map(|i| m[i].1)
+        };
+        let above = |sl: u32, bound: Option<f64>| {
+            stored(sl).is_some_and(|s| bound.is_none_or(|b| super::max_bits(b) < s))
+        };
+        let loose = (all && above(max_slot(block, r).1, highest))
+            || fields_of(scope, l.mask).any(|f| above(field_max_slot(block, f, r).1, fields[f as usize]));
+        if loose {
+            let t = Tighten {
+                scope,
+                term: l.term.clone(),
+                block,
+            };
+            if !ctx.tighten.contains(&t) {
+                ctx.tighten.push(t);
+            }
         }
+        Ok(())
     }
 
     /// The first id past the current blocks of the lists.
@@ -1438,6 +2736,37 @@ impl Matcher {
             .map(|b| (b + 1) << BLOCK_BITS)
             .min()
             .unwrap_or(u64::MAX)
+    }
+
+    /// Whether the clause matches `doc`, and whether by text (else by tag names alone), as `check` decides: a word
+    /// from its list's counts where the list stands at `doc`, no lengths read; anything else by `check`.
+    fn present(&mut self, ctx: &mut Ctx, doc: u64) -> StoreResult<Option<bool>> {
+        if !self.word() || self.long_prefix() {
+            return Ok(self
+                .check(ctx, doc)?
+                .map(|x| x.parts.iter().any(|p| p.0 != super::TAG_FIELD)));
+        }
+        let defs = self.scope.fields();
+        let l = &mut self.lists[0];
+        let text = match l.dir.has(ctx, doc)? {
+            Some(true) => l.dir.doc_pairs().any(|(f, v)| {
+                l.mask >> f & 1 == 1 && unpack(defs[f as usize].prefix, v).tf(l.as_prefix) > 0
+            }),
+            Some(false) => false,
+            None => {
+                return Ok(self
+                    .check(ctx, doc)?
+                    .map(|x| x.parts.iter().any(|p| p.0 != super::TAG_FIELD)));
+            }
+        };
+        if text {
+            return Ok(Some(true));
+        }
+        let carried = match &mut self.tagged {
+            Some(t) => t.carries(ctx, doc)?,
+            None => false,
+        };
+        Ok(carried.then_some(false))
     }
 
     /// What the clause matched at `doc` (reading postings, and text where it must), or None.
@@ -1472,7 +2801,7 @@ impl Matcher {
             data.push((token, li, p));
         }
         let last = self.tokens.len() - 1;
-        let long = !self.phrase && self.prefix && char_len(&self.tokens[last]) > GRAM_MAX;
+        let long = self.long_prefix();
         if !self.phrase {
             for (_, li, p) in &data {
                 let is_gram_long = long && self.lists[*li].as_prefix;
@@ -1549,24 +2878,37 @@ impl Matcher {
                 }
             }
         }
+        if let Some(t) = &mut self.tagged
+            && t.carries(ctx, doc)?
+        {
+            hit = true;
+            out.parts.push((super::TAG_FIELD, t.part, 1, 0));
+        }
         Ok(hit.then_some(out))
     }
 
-    fn score(&self, m: &Matched, stats: &Stats) -> f64 {
-        let mut s = 0.0;
-        for &(f, p, tf, code) in &m.parts {
-            s += self.part[p].weight_idf
-                * tf_norm(tf as f64, code_length(code), stats.avg[f as usize]);
-        }
-        s
+    fn score(&self, m: &Matched) -> f64 {
+        let texts: Vec<f64> = (0..self.tokens.len())
+            .map(|i| {
+                let fields = m
+                    .parts
+                    .iter()
+                    .filter(|x| self.part[x.1].token == i)
+                    .map(|&(f, _, tf, code)| (f, tf, code_length(code)));
+                super::word_text(self.scope, fields, self.long_prefix())
+            })
+            .collect();
+        let tagged = m.parts.iter().any(|x| self.part[x.1].token == TAG_PART);
+        super::clause_score(&self.idf, &texts, tagged)
     }
 }
 
 // ---- the query ----
 
 enum Filtered {
-    Tags(Ids),
+    Tags(Members),
     Any(AnyOf),
+    Carriers(Carriers),
     Ids(Listed<()>),
 }
 
@@ -1575,6 +2917,7 @@ impl Filtered {
         match self {
             Filtered::Tags(x) => x,
             Filtered::Any(x) => x,
+            Filtered::Carriers(x) => x,
             Filtered::Ids(x) => x,
         }
     }
@@ -1618,21 +2961,50 @@ impl Best {
     }
 }
 
+/// (clause, list, its postings in the block, the block's shortest lengths in the list's fields).
+type OpenedList = (usize, usize, Vec<(u32, u32)>, [f64; 1 << FIELD_BITS]);
+
+/// A block the walk opened (`Plan::next_match`): each positive word's lists there (clause, list, postings, the
+/// block's shortest lengths in the list's fields), each clause's tag carriers there, and the length codes of the
+/// documents it scored there.
+struct Opened {
+    block: u64,
+    lists: Vec<OpenedList>,
+    carried: Vec<BlockBits>,
+    scored: HashMap<u64, [u8; 1 << FIELD_BITS]>,
+}
+
 struct Plan {
     scope: Scope,
     stats: Arc<Stats>,
     pos: Vec<Matcher>,
+    /// Each of `pos`'s clause index.
+    pos_at: Vec<usize>,
     neg: Vec<Matcher>,
     include: Vec<Filtered>,
+    /// Each of `include`'s place in the query (its clause's index, or past the clauses its filter's), and the
+    /// counters its count sums (none for ids, which are counted as listed).
+    include_of: Vec<(usize, Vec<Vec<u8>>)>,
+    /// Each include's count, once read (`Plan::include_counts`).
+    counts: Option<Vec<u64>>,
     exclude: Vec<Filtered>,
     /// Every document with text, when nothing else leads.
     all: Option<BlockDocs>,
     /// The last block the walk bounded before reading its postings, and its bound (None: no match there).
     shallow: Option<(u64, Option<f64>)>,
-    /// The last block's documents that could beat the page (`next_match`).
-    cands: Option<(u64, Vec<u64>)>,
-    /// Every tag a tag-restricted clause matches was found (else the work limit cut that short).
+    /// The last block's documents that could beat the page (`next_match`), and those every clause holds that
+    /// couldn't.
+    cands: Option<(u64, Vec<u64>, Vec<u64>)>,
+    /// The block those are of, until the walk moves on (`Plan::report_opened`).
+    opened: Option<Opened>,
+    /// Every tag a tag-restricted clause, or a clause's tag names, match was found (else the work limit cut that
+    /// short).
     complete: bool,
+    take: Take,
+    /// Every positive clause matches tag names: some documents may be tied.
+    ties: bool,
+    /// A score over its rank (`Hit::rank`): one positive word's idf, as it ranks by its score before it; else 1.
+    scale: f64,
 }
 
 /// What a walk in id order passed over: documents or blocks that couldn't beat the page, and how many
@@ -1641,6 +3013,37 @@ struct Plan {
 struct Walk {
     skipped: bool,
     checked: u64,
+    /// Id ranges `[from, to)` passed over only because nothing in them could beat the page, in order.
+    floored: Vec<(u64, u64)>,
+    /// Documents every clause holds that a block's bounds passed over, outside `floored`, in order. The includes
+    /// were not sought at them.
+    dropped: Vec<u64>,
+    /// Documents every clause and include stands at that their ceiling passed over.
+    passed: u64,
+    /// Every match is counted, however low it scores: the page's floor passes over no block or document, and only
+    /// spares the scoring of a match that can't beat it, which `counted` counts.
+    counting: bool,
+    counted: u64,
+}
+
+/// How `Plan::by_relevance` reads a page.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Read {
+    /// A single word with an include is read best first until that costs about what the walk led by the rarer of
+    /// them would, then by the counting walk; anything else as `Ranked` reads it.
+    Chosen,
+    /// Tests: a single word best first, under `Limits::ranked`; anything else by the walk in id order.
+    #[cfg(test)]
+    Ranked,
+    /// By the counting walk (`Walk::counting`).
+    Counting,
+}
+
+/// The input a walk's total is estimated by (`Plan::estimate_walked`): a positive single word, by its index in
+/// `pos`, or an include, by its index in `include`.
+enum Leading {
+    Word(usize),
+    Include(usize),
 }
 
 enum Step {
@@ -1650,66 +3053,130 @@ enum Step {
 }
 
 impl Plan {
-    fn new(ctx: &mut Ctx, q: &Query) -> StoreResult<Plan> {
+    fn new(ctx: &mut Ctx, q: &Query, take: Take, names: &TagNames) -> StoreResult<Plan> {
         let stats = scope_stats(ctx, q.scope)?;
+        let known = names.0.get();
+        let mut found: Vec<Option<Named>> = vec![None; q.clauses.len()];
         // The last word is a prefix unless its clause is a closed-quote phrase.
         let last = q
             .clauses
             .iter()
             .rposition(|c| !tokens(&c.text).is_empty())
             .filter(|&i| !q.clauses[i].quoted);
-        let (mut pos, mut neg) = (Vec::new(), Vec::new());
-        let (mut include, mut exclude) = (Vec::new(), Vec::new());
+        let (mut pos, mut pos_at, mut neg) = (Vec::new(), Vec::new(), Vec::new());
+        let (mut include, mut include_of, mut exclude) = (Vec::new(), Vec::new(), Vec::new());
+        let member_count = |t: u64| key::id(key::MEMBER_COUNT, t);
         let mut complete = true;
         let tags_field = tags_field(q.scope);
+        // The tokens of each positive clause that scores; one word ranks without idfs (`Hit::rank`).
+        let scored: Vec<usize> = q
+            .clauses
+            .iter()
+            .filter(|c| !c.negate && !tags_only(tags_field, c))
+            .map(|c| tokens(&c.text).len())
+            .filter(|&n| n > 0)
+            .collect();
+        let one_word = scored == [1];
+        let mut weights = match &q.weights {
+            Some(w) if w.len() != if one_word { 0 } else { scored.iter().sum() } => {
+                return Err(StoreError::Refused(
+                    "invalid cursor: its weights don't match the query's words".into(),
+                ));
+            }
+            Some(w) if !one_word => Some(w.as_slice()),
+            _ => None,
+        };
         for (i, c) in q.clauses.iter().enumerate() {
             let toks = tokens(&c.text);
             // A clause restricted to the tags field: the cards carrying a tag whose name it matches.
-            if let (Some(t), Some(fs)) = (tags_field, &c.fields)
-                && !fs.is_empty()
-                && fs.iter().all(|&f| f == t)
-                && !toks.is_empty()
-            {
-                let until = ctx.work.saturating_add(q.limits.tags);
-                let (tags, done) = named_tags(ctx, toks, Some(i) == last, until)?;
-                complete &= done;
-                let carriers = Filtered::Any(AnyOf(tags.into_iter().map(members).collect()));
+            if tags_only(tags_field, c) {
+                let n = match known.and_then(|k| k.get(i).cloned().flatten()) {
+                    Some(n) => n,
+                    None => {
+                        let until = ctx.work.saturating_add(q.limits.tags);
+                        named(ctx, toks, Some(i) == last, until, false)?
+                    }
+                };
+                complete &= n.done;
+                let carriers = Filtered::Carriers(Carriers::of(&n.source));
                 if c.negate {
                     exclude.push(carriers);
                 } else {
+                    // As `named` counts them.
+                    let counters = match &n.source {
+                        Source::Tags(tags) => tags.iter().map(|&t| member_count(t)).collect(),
+                        Source::Term(t) => vec![key::term_carriers(t.kind, &t.term)],
+                    };
                     include.push(carriers);
+                    include_of.push((i, counters));
                 }
+                found[i] = Some(n);
                 continue;
             }
-            if let Some(m) = Matcher::new(
+            let idfs = match &mut weights {
+                Some(w) if !c.negate => {
+                    let (these, rest) = w.split_at(toks.len());
+                    *w = rest;
+                    Some(these)
+                }
+                _ => None,
+            };
+            if let Some(mut m) = Matcher::new(
                 ctx,
                 q.scope,
                 &stats,
-                toks,
+                toks.clone(),
                 c.fields.as_deref(),
                 Some(i) == last,
+                idfs,
             )? {
+                // A clause over every field matches tag names too.
+                if q.scope == Scope::LIBRARY && c.fields.is_none() {
+                    let n = match known.and_then(|k| k.get(i).cloned().flatten()) {
+                        Some(n) => n,
+                        None => {
+                            let until = ctx.work.saturating_add(q.limits.tags);
+                            named(ctx, toks, Some(i) == last, until, true)?
+                        }
+                    };
+                    complete &= n.done;
+                    if n.count > 0 {
+                        m.tag(ctx, n.source.clone(), n.count)?;
+                    }
+                    found[i] = Some(n);
+                }
                 if c.negate {
                     neg.push(m);
                 } else {
                     pos.push(m);
+                    pos_at.push(i);
                 }
             }
         }
-        for f in &q.filters {
+        for (fi, f) in q.filters.iter().enumerate() {
+            let at = q.clauses.len() + fi;
             match f {
                 Filter::AllTags(tags) => {
-                    include.extend(tags.iter().map(|&t| Filtered::Tags(members(t))))
+                    for &t in tags {
+                        include.push(Filtered::Tags(members(t)));
+                        include_of.push((at, vec![member_count(t)]));
+                    }
                 }
-                Filter::AnyTag(tags) => include.push(Filtered::Any(AnyOf(
-                    tags.iter().map(|&t| members(t)).collect(),
-                ))),
+                Filter::AnyTag(tags) => {
+                    include.push(Filtered::Any(AnyOf(
+                        tags.iter().map(|&t| members(t)).collect(),
+                    )));
+                    include_of.push((at, tags.iter().map(|&t| member_count(t)).collect()));
+                }
                 Filter::NoTag(tags) => exclude.push(Filtered::Any(AnyOf(
                     tags.iter().map(|&t| members(t)).collect(),
                 ))),
-                Filter::Ids(ids) => include.push(Filtered::Ids(Listed::new(
-                    ids.iter().map(|&d| (d, ())).collect(),
-                ))),
+                Filter::Ids(ids) => {
+                    include.push(Filtered::Ids(Listed::new(
+                        ids.iter().map(|&d| (d, ())).collect(),
+                    )));
+                    include_of.push((at, Vec::new()));
+                }
                 Filter::NotIds(ids) => exclude.push(Filtered::Ids(Listed::new(
                     ids.iter().map(|&d| (d, ())).collect(),
                 ))),
@@ -1719,20 +3186,142 @@ impl Plan {
                 }
             }
         }
+        if known.is_none() {
+            let _ = names.0.set(found);
+        }
         let all = (pos.is_empty() && include.is_empty())
             .then(|| BlockDocs::new(lengths(q.scope), LENGTH_BITS));
+        let ties = !pos.is_empty() && pos.iter().all(|m: &Matcher| m.tagged.is_some());
+        let scale = match pos.as_mut_slice() {
+            [m] if m.tokens.len() == 1 => m.local_units(),
+            _ => 1.0,
+        };
+        let single = pos.len() == 1;
+        for m in &mut pos {
+            if let Some(t) = &mut m.tagged {
+                t.lead = match take {
+                    Take::All => Lead::Both,
+                    Take::Untied if single => Lead::Text,
+                    Take::Untied => Lead::Both,
+                    Take::Tied => Lead::Carriers,
+                };
+            }
+        }
         Ok(Plan {
             scope: q.scope,
             stats,
             pos,
+            pos_at,
             neg,
             include,
+            include_of,
+            counts: None,
             exclude,
             all,
             shallow: None,
             cands: None,
+            opened: None,
             complete,
+            take,
+            ties,
+            scale,
         })
+    }
+
+    /// The idfs the plan ranks by (`Found::weights`).
+    fn weights(&self) -> Option<Vec<f64>> {
+        match self.pos.as_slice() {
+            [] => None,
+            [m] if m.tokens.len() == 1 => None,
+            pos => Some(pos.iter().flat_map(|m| m.idf.iter().copied()).collect()),
+        }
+    }
+
+    /// The score of the tied documents, when there may be some.
+    fn tied(&self) -> Option<f64> {
+        self.ties.then(|| {
+            self.pos
+                .iter()
+                .map(|m| {
+                    let mut s = 0.0;
+                    if let Some(t) = &m.tagged {
+                        s += t.boost;
+                    }
+                    s
+                })
+                .sum::<f64>()
+                + 0.0
+        })
+    }
+
+    /// Whether the walk takes a match of these clauses.
+    fn takes(&self, matched: &[Matched]) -> bool {
+        let tied = || {
+            !matched.is_empty()
+                && matched
+                    .iter()
+                    .all(|m| m.parts.iter().all(|p| p.0 == super::TAG_FIELD))
+        };
+        match self.take {
+            Take::All => true,
+            Take::Untied => !self.ties || !tied(),
+            Take::Tied => self.ties && tied(),
+        }
+    }
+
+    /// Whether the walk takes only matches with text in some clause, and some clause matches tag names.
+    fn needs_text(&self) -> bool {
+        self.take == Take::Untied && self.ties
+    }
+
+    /// An estimate of the tied documents from the counts, when nothing but the clauses narrows them and each
+    /// clause's tags have more than `TIED_COUNTED` carriers: the fewest carriers, less the share of documents
+    /// each word's text holds.
+    fn tied_estimate(&mut self, ctx: &mut Ctx) -> StoreResult<Option<u64>> {
+        if !self.include.is_empty()
+            || !self.exclude.is_empty()
+            || !self.neg.is_empty()
+            || !ctx.checks.is_empty()
+        {
+            return Ok(None);
+        }
+        let n = self.stats.n.max(1.0);
+        let mut least = f64::INFINITY;
+        let mut share = 1.0;
+        for i in 0..self.pos.len() {
+            let Some(t) = &self.pos[i].tagged else {
+                return Ok(Some(0));
+            };
+            if t.count <= TIED_COUNTED {
+                return Ok(None);
+            }
+            least = least.min((t.count as f64).min(n));
+            if self.pos[i].word() {
+                let term = self.pos[i].lists[0].term.clone();
+                let docs = ctx.term_docs(self.scope, &term)? as f64;
+                share *= (1.0 - docs / n).max(0.0);
+            }
+        }
+        Ok(Some((least * share).round() as u64))
+    }
+
+    /// Whether `d`, where the walk's clauses and includes stand, is a match it takes, read without scoring it
+    /// (`Walk::counting`).
+    fn counts(&mut self, ctx: &mut Ctx, d: u64) -> StoreResult<bool> {
+        // Whether every clause matches only by tag names.
+        let mut tied = true;
+        for m in &mut self.pos {
+            match m.present(ctx, d)? {
+                None => return Ok(false),
+                Some(text) => tied &= !text,
+            }
+        }
+        let takes = match self.take {
+            Take::All => true,
+            Take::Untied => !self.ties || !tied,
+            Take::Tied => self.ties && tied,
+        };
+        Ok(takes && self.passes(ctx, d)?)
     }
 
     /// Whether `d` passes the filters and negated clauses.
@@ -1770,9 +3359,75 @@ impl Plan {
         self.pos
             .iter()
             .zip(matched)
-            .map(|(m, x)| m.score(x, &self.stats))
+            .map(|(m, x)| m.score(x))
             .sum::<f64>()
             + 0.0
+    }
+
+    /// Reports the lists of the block the walk opened last (`Matcher::report_loose`), once it moves on.
+    fn report_opened(&mut self, ctx: &mut Ctx) -> StoreResult<()> {
+        let Some(o) = self.opened.take() else {
+            return Ok(());
+        };
+        for (ci, li, pairs, lens) in &o.lists {
+            self.pos[*ci].report_loose(
+                ctx,
+                *li,
+                o.block,
+                pairs,
+                lens,
+                Some(&o.scored),
+                &o.carried[*ci],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// The last block the walk may pass over from block `block`, which can't beat the page: the last of the highest
+    /// node over it from which no block can beat `floor` either, by the nodes' maxima; `block` with no floor.
+    /// Each node passed by its bound rather than for holding no match is added to `walk.floored`.
+    fn beaten_up(
+        &mut self,
+        ctx: &mut Ctx,
+        block: u64,
+        floor: Option<&Ranked>,
+        walk: &mut Walk,
+    ) -> StoreResult<u64> {
+        ctx.nodes_passed[0] += 1;
+        let Some(f) = floor else {
+            return Ok(block);
+        };
+        let mut last = block;
+        for level in 1.. {
+            let node = node_of(block, level);
+            // Node 0 holds no maximum, nor does any above it.
+            if node == 0 {
+                break;
+            }
+            let mut bound = Some(0.0);
+            for m in &mut self.pos {
+                bound = match (bound, m.node_bound_at(ctx, level, node, block)?) {
+                    (Some(a), Some(b)) => Some(a + b),
+                    _ => None,
+                };
+                if bound.is_none() {
+                    break;
+                }
+            }
+            // The counting walk passes only nodes where no clause can match.
+            if bound.is_some_and(|b| walk.counting || Ranked(b, 0) <= *f) {
+                break;
+            }
+            ctx.nodes_passed[level as usize] += 1;
+            let to = ((node + 1) << (GROUP_BITS * level as u32)) - 1;
+            if bound.is_some() {
+                walk.skipped = true;
+                walk.floored
+                    .push(((last + 1) << BLOCK_BITS, (to + 1) << BLOCK_BITS));
+            }
+            last = to;
+        }
+        Ok(last)
     }
 
     /// In id order: the first match at or after `d` (and before `end`). With `floor`, documents and blocks that
@@ -1786,6 +3441,10 @@ impl Plan {
         floor: Option<&Ranked>,
         walk: &mut Walk,
     ) -> StoreResult<Step> {
+        if self.take == Take::Tied && !self.ties {
+            return Ok(Step::End);
+        }
+        let needs_text = self.needs_text();
         loop {
             if d >= end {
                 return Ok(Step::End);
@@ -1806,6 +3465,19 @@ impl Plan {
                     let mut next = block;
                     for m in &mut self.pos {
                         match m.next_block(ctx, block)? {
+                            Some(b) => next = next.max(b),
+                            None => return Ok(Step::End),
+                        }
+                    }
+                    if needs_text {
+                        // Some clause's text is in the block.
+                        let mut text: Option<u64> = None;
+                        for m in &mut self.pos {
+                            if let Some(b) = m.text_next_block(ctx, next)? {
+                                text = Some(text.map_or(b, |t| t.min(b)));
+                            }
+                        }
+                        match text {
                             Some(b) => next = next.max(b),
                             None => return Ok(Step::End),
                         }
@@ -1838,61 +3510,120 @@ impl Plan {
             {
                 let beaten = match (bound, floor) {
                     (None, _) => true,
-                    (Some(b), Some(f)) => {
+                    (Some(b), Some(f)) if !walk.counting => {
                         let beaten = Ranked(b, 0) > *f;
-                        walk.skipped |= beaten;
+                        if beaten {
+                            walk.skipped = true;
+                            walk.floored.push((d, (block + 1) << BLOCK_BITS));
+                        }
                         beaten
                     }
                     _ => false,
                 };
                 if beaten {
-                    d = (block + 1) << BLOCK_BITS;
+                    d = (self.beaten_up(ctx, block, floor, walk)? + 1) << BLOCK_BITS;
                     continue;
                 }
                 // With a page to beat and only words, the block's documents that every word holds and whose
                 // counts at the block's shortest lengths could beat it; the rest are passed over.
                 if let Some(f) = floor
+                    && !walk.counting
                     && self.pos.iter().all(|m| !m.phrase)
                 {
                     if self.cands.as_ref().is_none_or(|c| c.0 != block) {
-                        // The documents every word holds, then their bounds.
+                        // The documents every clause may match, then their bounds.
                         let mut all = [u64::MAX; 1 << (BLOCK_BITS - 6)];
-                        for m in &mut self.pos {
-                            let held = m.block_held(ctx, block)?;
-                            for (a, h) in all.iter_mut().zip(held) {
-                                *a &= h;
+                        let mut texts = [0u64; 1 << (BLOCK_BITS - 6)];
+                        let mut carried = Vec::with_capacity(self.pos.len());
+                        self.report_opened(ctx)?;
+                        let mut opened = Opened {
+                            block,
+                            lists: Vec::new(),
+                            carried: Vec::new(),
+                            scored: HashMap::new(),
+                        };
+                        for (ci, m) in self.pos.iter_mut().enumerate() {
+                            let (text, carriers) = m.block_held(ctx, block)?;
+                            let lead = m.lead();
+                            if lead != Lead::Carriers {
+                                for (li, l) in m.lists.iter().enumerate().filter(|x| !x.1.pair) {
+                                    match l.shortest {
+                                        Some((b, lens)) if l.dir.block == Some(block) && b == block => {
+                                            opened.lists.push((ci, li, l.dir.pairs.clone(), lens))
+                                        }
+                                        // No document holds the term there.
+                                        _ if l.dir.block != Some(block) => opened.lists.push((
+                                            ci,
+                                            li,
+                                            Vec::new(),
+                                            [0.0; 1 << FIELD_BITS],
+                                        )),
+                                        _ => {}
+                                    }
+                                }
+                            }
+                            opened.carried.push(carriers);
+                            for i in 0..all.len() {
+                                all[i] &= match lead {
+                                    Lead::Text => text[i],
+                                    Lead::Carriers => carriers[i],
+                                    Lead::Both => text[i] | carriers[i],
+                                };
+                                texts[i] |= text[i];
+                            }
+                            carried.push(carriers);
+                        }
+                        if needs_text {
+                            for (a, t) in all.iter_mut().zip(texts) {
+                                *a &= t;
                             }
                         }
                         let mut total = [0.0f64; 1 << BLOCK_BITS];
-                        for m in &mut self.pos {
-                            m.block_bounds(&all, &mut total);
+                        for (m, c) in self.pos.iter().zip(&carried) {
+                            m.block_bounds(&all, c, &mut total);
                         }
                         let first = block << BLOCK_BITS;
-                        let mut docs = Vec::new();
-                        let mut held = 0;
+                        let (mut docs, mut beaten) = (Vec::new(), Vec::new());
                         for (w, &bits) in all.iter().enumerate() {
                             let mut b = bits;
                             while b != 0 {
                                 let i = w * 64 + b.trailing_zeros() as usize;
                                 b &= b - 1;
-                                held += 1;
                                 let doc = first + i as u64;
                                 if Ranked(total[i], doc) < *f {
                                     docs.push(doc);
+                                } else {
+                                    beaten.push(doc);
                                 }
                             }
                         }
-                        walk.skipped |= docs.len() < held;
-                        self.cands = Some((block, docs));
+                        walk.skipped |= !beaten.is_empty();
+                        self.cands = Some((block, docs, beaten));
+                        self.opened = Some(opened);
                     }
-                    let docs = &self.cands.as_ref().unwrap().1;
-                    match docs.get(docs.partition_point(|&x| x < d)) {
-                        Some(&x) => d = x,
-                        None => {
-                            d = (block + 1) << BLOCK_BITS;
-                            continue;
-                        }
+                    let (_, docs, beaten) = self.cands.as_ref().unwrap();
+                    let next = docs.get(docs.partition_point(|&x| x < d)).copied();
+                    let to = next.unwrap_or((block + 1) << BLOCK_BITS);
+                    let from = beaten.partition_point(|&x| x < d);
+                    let past = beaten.partition_point(|&x| x < to);
+                    walk.dropped.extend_from_slice(&beaten[from..past]);
+                    d = to;
+                    if next.is_none() {
+                        continue;
                     }
+                }
+            }
+            if needs_text {
+                // To the first document from `d` where some clause's text may be.
+                let mut text: Option<u64> = None;
+                for m in &mut self.pos {
+                    if let Some(x) = m.text_align(ctx, d)? {
+                        text = Some(text.map_or(x, |t| t.min(x)));
+                    }
+                }
+                match text {
+                    Some(x) => d = d.max(x),
+                    None => return Ok(Step::End),
                 }
             }
             // Align every positive source on one document.
@@ -1934,22 +3665,29 @@ impl Plan {
             if !agreed || d >= end {
                 continue;
             }
+            if needs_text && !self.pos.iter().any(|m| m.text_doc == Some(d)) {
+                d += 1;
+                continue;
+            }
             if let Some(f) = floor
+                && !walk.counting
                 && !self.pos.is_empty()
             {
                 let mut blocks = 0.0;
                 for m in &mut self.pos {
-                    blocks += m.block_ceiling(ctx)?;
+                    blocks += m.block_ceiling(ctx, d)?;
                 }
                 if Ranked(blocks, 0) > *f {
                     walk.skipped = true;
-                    d = self
+                    let to = self
                         .pos
                         .iter()
                         .map(Matcher::block_end)
                         .min()
                         .unwrap_or(u64::MAX)
                         .max(d + 1);
+                    walk.floored.push((d, to));
+                    d = to;
                     continue;
                 }
             }
@@ -1961,7 +3699,16 @@ impl Plan {
                     here += m.doc_ceiling(ctx, d)?;
                 }
                 if Ranked(here, d) > *f {
-                    walk.skipped = true;
+                    if walk.counting {
+                        walk.checked += 1;
+                        ctx.checked += 1;
+                        if self.counts(ctx, d)? {
+                            walk.counted += 1;
+                        }
+                    } else {
+                        walk.skipped = true;
+                        walk.passed += 1;
+                    }
                     d += 1;
                     continue;
                 }
@@ -1979,7 +3726,14 @@ impl Plan {
                     }
                 }
             }
-            if !all || !self.passes(ctx, d)? {
+            if let Some(o) = &mut self.opened
+                && o.block == d >> BLOCK_BITS
+                && let Some((sc, cd, codes)) = ctx.codes
+                && (sc, cd) == (self.scope, d)
+            {
+                o.scored.insert(d, codes);
+            }
+            if !all || !self.takes(&matched) || !self.passes(ctx, d)? {
                 d += 1;
                 continue;
             }
@@ -1995,32 +3749,165 @@ impl Plan {
         ))
     }
 
-    /// An estimate of the total from `counted` matches among `checked` candidates: the rarest word's documents
-    /// at that rate; with no word, by the share of the ids passed when the walk stopped at `stopped`.
-    fn estimate_total(
+    /// An estimate of the descent's total from `counted` matches among the word's `checked` documents: its
+    /// documents at that rate.
+    fn estimate_descended(
         &mut self,
         ctx: &mut Ctx,
         counted: u64,
         checked: u64,
-        stopped: Option<u64>,
     ) -> StoreResult<u64> {
-        let mut lead: Option<u64> = None;
+        let term = self.pos[0].lists[0].term.clone();
+        let n = ctx.term_docs(self.scope, &term)?;
+        if checked == 0 {
+            return Ok(counted);
+        }
+        Ok(((n as f64 * counted as f64 / checked as f64).round() as u64).max(counted))
+    }
+
+    /// Each include's count: ids as listed, carriers by their stored counts, read once per query.
+    fn include_counts(&mut self, ctx: &mut Ctx) -> StoreResult<&[u64]> {
+        if self.counts.is_none() {
+            let mut out = Vec::with_capacity(self.include.len());
+            for (f, (_, counters)) in self.include.iter().zip(&self.include_of) {
+                out.push(match f {
+                    Filtered::Ids(l) => l.items.len() as u64,
+                    _ => {
+                        let mut c = 0;
+                        for k in counters {
+                            c += ctx.counter(k)?;
+                        }
+                        c
+                    }
+                });
+            }
+            self.counts = Some(out);
+        }
+        Ok(self.counts.as_deref().unwrap_or_default())
+    }
+
+    /// The input with the fewest entries by its stored count, and that count: a positive single word or an
+    /// include. On a tie ids lead, as their count is exact, then the first in the query.
+    fn leading(&mut self, ctx: &mut Ctx) -> StoreResult<Option<(Leading, u64)>> {
+        // (count, not ids, place in the query)
+        let mut best: Option<((u64, bool, usize), Leading)> = None;
         for i in 0..self.pos.len() {
-            if self.pos[i].single().is_some() {
-                let term = self.pos[i].lists[0].term.clone();
-                let n = ctx.counter(&term_docs(self.scope, &term))?;
-                lead = Some(lead.map_or(n, |m: u64| m.min(n)));
+            if self.pos[i].single().is_none() {
+                continue;
+            }
+            let term = self.pos[i].lists[0].term.clone();
+            let rank = (ctx.term_docs(self.scope, &term)?, true, self.pos_at[i]);
+            if best.as_ref().is_none_or(|b| rank < b.0) {
+                best = Some((rank, Leading::Word(i)));
             }
         }
-        if let Some(n) = lead
-            && checked > 0
-        {
-            return Ok(((n as f64 * counted as f64 / checked as f64).round() as u64).max(counted));
+        let counts = self.include_counts(ctx)?.to_vec();
+        for (j, &c) in counts.iter().enumerate() {
+            let at = self.include_of[j].0;
+            let rank = (c, !matches!(self.include[j], Filtered::Ids(_)), at);
+            if best.as_ref().is_none_or(|b| rank < b.0) {
+                best = Some((rank, Leading::Include(j)));
+            }
         }
-        match stopped {
-            Some(at) => self.estimate(ctx, counted, at),
-            None => Ok(counted),
+        Ok(best.map(|(r, l)| (l, r.0)))
+    }
+
+    /// A leading tag or word list's lowest and highest ids (None when it has none): over every cursor of a lead
+    /// read from several lists.
+    fn lead_ends(&self, ctx: &mut Ctx, lead: &Leading) -> StoreResult<Option<(u64, u64)>> {
+        let lists: Vec<&Members> = match lead {
+            Leading::Word(i) => return self.pos[*i].lists[0].dir.ends(ctx),
+            Leading::Include(j) => match &self.include[*j] {
+                Filtered::Tags(m) => vec![m],
+                Filtered::Any(a) | Filtered::Carriers(Carriers::Tags(a)) => a.0.iter().collect(),
+                Filtered::Carriers(Carriers::Term(t)) => std::iter::once(&t.map)
+                    .chain(&t.heavy)
+                    .chain(t.moving.iter().map(|(_, m)| m))
+                    .collect(),
+                Filtered::Ids(_) => return Ok(None),
+            },
+        };
+        let mut out: Option<(u64, u64)> = None;
+        for m in lists {
+            if let Some((a, b)) = m.ends(ctx)? {
+                out = Some(out.map_or((a, b), |(x, y)| (x.min(a), y.max(b))));
+            }
         }
+        Ok(out)
+    }
+
+    /// An estimate of a walk's total from the `counted` matches it found, ending or stopping at `stopped`: the
+    /// leading input's count (`leading`) at the rate its candidates the walk checked matched. A candidate is checked
+    /// when the walk counted it or ruled it out; one passed over only for not beating the page (`Walk`) is not.
+    /// Ids are counted where the walk stood; a tag's or word's candidates up to there are taken as an even share of
+    /// the ids its list spans, and so are those among the documents `Walk::dropped` holds for a tag. With neither a
+    /// single word nor an include, by the share of the ids passed.
+    fn estimate_walked(
+        &mut self,
+        ctx: &mut Ctx,
+        counted: u64,
+        walk: &Walk,
+        stopped: Option<u64>,
+    ) -> StoreResult<u64> {
+        let Some((lead, c)) = self.leading(ctx)? else {
+            return match stopped {
+                Some(at) => self.estimate(ctx, counted, at),
+                None => Ok(counted),
+            };
+        };
+        if counted == 0 {
+            return Ok(0);
+        }
+        let passed = walk.passed as f64;
+        let ids = match &lead {
+            Leading::Include(j) => match &self.include[*j] {
+                Filtered::Ids(l) => Some(l),
+                _ => None,
+            },
+            Leading::Word(_) => None,
+        };
+        let checked = if let Some(l) = ids {
+            let end = stopped.unwrap_or(u64::MAX);
+            let below = |d: u64| l.items.partition_point(|x| x.0 < d) as f64;
+            let floored: f64 = walk
+                .floored
+                .iter()
+                .map(|&(a, b)| (below(b.min(end)) - below(a)).max(0.0))
+                .sum();
+            let dropped = walk
+                .dropped
+                .iter()
+                .filter(|&&d| d < end && l.items.binary_search_by_key(&d, |x| x.0).is_ok())
+                .count() as f64;
+            below(end) - floored - dropped - passed
+        } else {
+            let Some((first, last)) = self.lead_ends(ctx, &lead)? else {
+                return Ok(counted);
+            };
+            let span = (last - first + 1) as f64;
+            let end = stopped.map_or(last + 1, |s| s.min(last + 1));
+            let mut covered = end.saturating_sub(first) as f64;
+            for &(a, b) in &walk.floored {
+                let (a, b) = (a.max(first), b.min(end));
+                if a < b {
+                    covered -= (b - a) as f64;
+                }
+            }
+            let dropped = walk
+                .dropped
+                .iter()
+                .filter(|&&d| first <= d && d < end)
+                .count() as f64;
+            let dropped = match lead {
+                Leading::Word(_) => dropped,
+                Leading::Include(_) => dropped * c as f64 / span,
+            };
+            c as f64 * covered / span - dropped - passed
+        };
+        // Every match counted was checked.
+        let checked = checked.max(counted as f64);
+        let e = (c as f64 * counted as f64 / checked).round() as u64;
+        Ok(e.min(c).max(counted))
     }
 
     /// An estimate of the total from the matches counted up to `from`, by the share of the ids they cover.
@@ -2034,13 +3921,133 @@ impl Plan {
         Ok(((counted as f64 / share).round() as u64).max(counted))
     }
 
-    fn by_relevance(&mut self, ctx: &mut Ctx, q: &Query) -> StoreResult<Found> {
-        if self.pos.len() == 1
-            && self.pos[0].single().is_some()
-            && let Some(found) = self.top_first(ctx, q)?
-        {
-            return Ok(found);
+    /// One word, best first (`Matcher::single`): from the top of its block maxima, the node or block whose bound
+    /// ranks best is taken next, a node giving way to its children and a block read, until none can beat the
+    /// page. A node's bound ranks as its first document's would: every document under it ranks at most so.
+    /// Returns the matches counted and whether it finished before `budget`; `walk` says whether it passed over
+    /// any document by a bound and how many it checked.
+    fn descend(
+        &mut self,
+        ctx: &mut Ctx,
+        after: Option<&Ranked>,
+        best: &mut Best,
+        budget: u64,
+        walk: &mut Walk,
+    ) -> StoreResult<(u64, bool)> {
+        let scope = self.scope;
+        let (term, mask, as_prefix) = {
+            let l = &self.pos[0].lists[0];
+            (l.term.clone(), l.mask, l.as_prefix)
+        };
+        self.pos[0].lists[0].dir.park();
+        // (level, node) by bound, then first document.
+        let mut heap: BinaryHeap<Reverse<(Ranked, u64, u64)>> = BinaryHeap::new();
+        // The nodes of a maxima map in the word's reading whose bound can beat the page, onto the heap.
+        let push_group = |plan: &mut Plan,
+                          ctx: &mut Ctx,
+                          best: &Best,
+                          heap: &mut BinaryHeap<Reverse<(Ranked, u64, u64)>>,
+                          walk: &mut Walk,
+                          level: u64,
+                          group: u64|
+         -> StoreResult<()> {
+            let map = ctx.max_map(block_maxima(scope, &term, level, group))?;
+            for &(sl, _) in map.iter() {
+                let (node, field, prefix) = unmax_slot(group, sl);
+                // Node 0 above level 0 is held by the group-0 maps below it.
+                if field.is_some() || prefix != as_prefix || (level > 0 && node == 0) {
+                    continue;
+                }
+                let first = node << (GROUP_BITS * level as u32);
+                let Some(bound) = plan.pos[0].node_bound_at(ctx, level, node, first)? else {
+                    continue;
+                };
+                let r = Ranked(bound, first << BLOCK_BITS);
+                if best.worst().is_some_and(|f| r >= *f) {
+                    walk.skipped = true;
+                    continue;
+                }
+                heap.push(Reverse((r, level, node)));
+            }
+            Ok(())
+        };
+        let top = top_level(last_block(ctx, scope)?);
+        for level in 0..=top {
+            push_group(self, ctx, best, &mut heap, walk, level, 0)?;
         }
+        let mut counted = 0;
+        while let Some(Reverse((r, level, node))) = heap.pop() {
+            if ctx.work > budget {
+                return Ok((counted, false));
+            }
+            if best.worst().is_some_and(|f| r >= *f) {
+                walk.skipped = true;
+                break;
+            }
+            if level > 0 {
+                push_group(self, ctx, best, &mut heap, walk, level - 1, node)?;
+                continue;
+            }
+            // A block: each document's bound at the block's shortest lengths, then the exact score of those that
+            // can beat the page.
+            let block = node;
+            ctx.posting_blocks += 1;
+            let pairs = ctx.map(posting_block(scope, &term, block))?;
+            let mut held = [0u64; 1 << (BLOCK_BITS - 6)];
+            mark_held(mask, &pairs, &mut held);
+            let lens = shortest_lens(ctx, scope, mask, block)?;
+            let carried = self.pos[0].carried_in(ctx, block)?;
+            // The length codes of the documents scored here.
+            let mut scored: HashMap<u64, [u8; 1 << FIELD_BITS]> = HashMap::new();
+            let mut bounds = [0.0f64; 1 << BLOCK_BITS];
+            self.pos[0].bounds_of(&[(mask, &pairs, lens)], &held, &carried, &mut bounds);
+            let first = block << BLOCK_BITS;
+            for (w, &bits) in held.iter().enumerate() {
+                let mut b = bits;
+                while b != 0 {
+                    let i = w * 64 + b.trailing_zeros() as usize;
+                    b &= b - 1;
+                    let doc = first + i as u64;
+                    if ctx.work > budget {
+                        return Ok((counted, false));
+                    }
+                    if best.worst().is_some_and(|f| Ranked(bounds[i], doc) >= *f) {
+                        walk.skipped = true;
+                        continue;
+                    }
+                    walk.checked += 1;
+                    ctx.checked += 1;
+                    let matched = self.pos[0].check(ctx, doc)?;
+                    if let Some((sc, cd, codes)) = ctx.codes
+                        && (sc, cd) == (scope, doc)
+                    {
+                        scored.insert(doc, codes);
+                    }
+                    let Some(matched) = matched else {
+                        continue;
+                    };
+                    let matched = [matched];
+                    if !self.takes(&matched) || !self.passes(ctx, doc)? {
+                        continue;
+                    }
+                    counted += 1;
+                    let r = Ranked(self.score(&matched), doc);
+                    if after.is_none_or(|a| r > *a) {
+                        best.push(r);
+                    }
+                }
+            }
+            self.pos[0].report_loose(ctx, 0, block, &pairs, &lens, Some(&scored), &carried)?;
+        }
+        Ok((counted, true))
+    }
+
+    /// A prefix word over every field with at most this many documents has each of them checked, whatever the
+    /// filters, so its total is exact. 128 is the size of the per-word lists this replaced, so totals stay exact
+    /// for the same words.
+    const CHECKED_WHOLE: u64 = 128;
+
+    fn by_relevance(&mut self, ctx: &mut Ctx, q: &Query, read: Read) -> StoreResult<Found> {
         let after = match &q.after {
             Some(After::Score(s, d)) => Some(Ranked(*s, *d)),
             _ => None,
@@ -2049,11 +4056,68 @@ impl Plan {
             cap: q.limit + 1,
             set: BTreeSet::new(),
         };
-        let budget = ctx.work.saturating_add(q.limits.enumerate);
+        // A prefix word over every field: its documents are those its count counts. With few of them, every
+        // one is checked, so the total is exact whatever the filters; with more, the count is the total when
+        // nothing filters.
+        let mut docs = None;
+        if self.pos.len() == 1
+            && self.pos[0].single().is_some()
+            && self.pos[0].lists[0].as_prefix
+            && self.pos[0].lists[0].mask == self.pos[0].mask_all()
+        {
+            let term = self.pos[0].lists[0].term.clone();
+            docs = Some(ctx.term_docs(self.scope, &term)?);
+        }
+        let whole = docs.is_some_and(|n| n <= Self::CHECKED_WHOLE);
+        let filtered = !self.include.is_empty()
+            || !self.exclude.is_empty()
+            || !self.neg.is_empty()
+            || !ctx.checks.is_empty();
         let (mut total, mut d, mut stopped) = (0u64, 0u64, None);
-        let mut walk = Walk::default();
+        let mut counting = read == Read::Counting;
+        if !counting && !whole && self.pos.len() == 1 && self.pos[0].single().is_some() {
+            // With an include, the descent gets about the work of the walk led by the rarer of it and the word;
+            // past that, the counting walk reads the page instead.
+            let led = read == Read::Chosen && !self.include.is_empty();
+            let mut limit = q.limits.ranked;
+            if led {
+                let term = self.pos[0].lists[0].term.clone();
+                let df = ctx.term_docs(self.scope, &term)?;
+                let c = self.include_counts(ctx)?.iter().copied().min().unwrap_or(0);
+                limit = limit.min(c.min(df).saturating_mul(2 * SEEK));
+            }
+            let budget = ctx.work.saturating_add(limit);
+            let mut walk = Walk::default();
+            let (counted, done) =
+                self.descend(ctx, after.as_ref(), &mut best, budget, &mut walk)?;
+            if !led || done {
+                let mut total_exact = done && !walk.skipped;
+                let mut total = counted;
+                if let Some(n) = docs
+                    && !filtered
+                {
+                    (total, total_exact) = (n, true);
+                }
+                if !total_exact {
+                    // Out of id order: no share of the ids passed to estimate by.
+                    total = self.estimate_descended(ctx, total, walk.checked)?;
+                }
+                return Ok(page_of(best, q.limit, total, total_exact, done, self.scale));
+            }
+            best.set.clear();
+            counting = true;
+        }
+        let mut walk = Walk {
+            counting,
+            ..Walk::default()
+        };
+        let budget = if whole {
+            u64::MAX
+        } else {
+            ctx.work.saturating_add(q.limits.enumerate)
+        };
         loop {
-            let floor = best.worst().map(|r| Ranked(r.0, r.1));
+            let floor = best.worst().filter(|_| !whole).map(|r| Ranked(r.0, r.1));
             match self.next_match(ctx, d, u64::MAX, budget, floor.as_ref(), &mut walk)? {
                 Step::Match(doc, matched) => {
                     #[cfg(test)]
@@ -2072,170 +4136,19 @@ impl Plan {
                 }
             }
         }
+        self.report_opened(ctx)?;
+        total += walk.counted;
         let page_exact = stopped.is_none();
-        let total_exact = page_exact && !walk.skipped;
-        if !total_exact {
-            total = self.estimate_total(ctx, total, walk.checked, stopped)?;
-        }
-        Ok(page_of(best, q.limit, total, total_exact, page_exact))
-    }
-
-    /// One word over every field: its documents when they are few, else its top list, read from the top or
-    /// from `after`'s place. None when the list is missing, being built, or its entries can't prove the page: the
-    /// walk answers (and a missing or due list asks for the next slice of its pass).
-    fn top_first(&mut self, ctx: &mut Ctx, q: &Query) -> StoreResult<Option<Found>> {
-        let scope = self.scope;
-        let (term, mask, as_prefix) = {
-            let l = &self.pos[0].lists[0];
-            (l.term.clone(), l.mask, l.as_prefix)
-        };
-        // Lists rank by the prefix counts over every field.
-        if !as_prefix || mask != self.pos[0].mask_all() {
-            return Ok(None);
-        }
-        let after = match &q.after {
-            Some(After::Score(s, d)) => Some(Ranked(*s, *d)),
-            _ => None,
-        };
-        let n = ctx.counter(&term_docs(scope, &term))?;
-        let filtered = !self.include.is_empty() || !self.exclude.is_empty() || !self.neg.is_empty();
-        let mut best = Best {
-            cap: q.limit + 1,
-            set: BTreeSet::new(),
-        };
-        let mut counted = 0u64;
-        if n <= top::MAX as u64 {
-            // Every document of the term.
-            let mut docs = BlockDocs::postings(scope, &term);
-            docs.seek(ctx, 0)?;
-            let defs = scope.fields();
-            while let Some(doc) = docs.doc() {
-                let hits: Vec<(u32, FieldHit)> = docs
-                    .doc_pairs()
-                    .map(|(f, v)| (f, unpack(defs[f as usize].prefix, v)))
-                    .collect();
-                let tfs = tfs_of(ctx, scope, hits, doc, mask, true)?;
-                #[cfg(test)]
-                super::tests::hook("word");
-                docs.seek(ctx, doc + 1)?;
-                if !self.passes(ctx, doc)? {
-                    continue;
-                }
-                counted += 1;
-                let r = Ranked(self.score_word(tfs), doc);
-                if after.as_ref().is_none_or(|a| r > *a) {
-                    best.push(r);
-                }
-            }
-            return Ok(Some(page_of(best, q.limit, counted, true, true)));
-        }
-        let params: Vec<(f64, f64)> = (0..scope.fields().len() as u32)
-            .map(|f| match self.pos[0].parts.get(&(0, f)) {
-                Some(&p) => (self.pos[0].part[p].weight_idf, self.pos[0].avg[f as usize]),
-                None => (0.0, 0.0),
-            })
-            .collect();
-        self.listed_page(ctx, q, &term, n, filtered, &params)
-    }
-
-    /// The page from a word's top list (`top_first`); None when it can't prove the page.
-    fn listed_page(
-        &mut self,
-        ctx: &mut Ctx,
-        q: &Query,
-        term: &str,
-        n: u64,
-        filtered: bool,
-        params: &[(f64, f64)],
-    ) -> StoreResult<Option<Found>> {
-        let scope = self.scope;
-        let term = term.to_string();
-        let params = params.to_vec();
-        let after = match &q.after {
-            Some(After::Score(s, d)) => Some(Ranked(*s, *d)),
-            _ => None,
-        };
-        // The query's view reads one state of the keyspace (`Store`'s snapshot): the head and the entries are
-        // of one version of the list.
-        let generation = ctx.counter(&top_generation(scope, &term))?;
-        let head = ctx
-            .get(&super::top(scope, &term))?
-            .and_then(|b| Head::decode(&b));
-        let count = ctx.counter(&top_count(scope, &term))?;
-        #[cfg(test)]
-        super::tests::hook("list");
-        let head = head.filter(|h| {
-            h.generation == generation && h.passing.is_none() && count >= top::MIN as u64
-        });
-        let entries = match head {
-            Some(_) => list_entries(ctx, scope, &term)?,
-            None => Vec::new(),
-        };
-        if head
-            .as_ref()
-            .is_none_or(|h| drift(&h.params, &params) > DRIFT)
+        let mut total_exact = page_exact && !walk.skipped;
+        if let Some(n) = docs
+            && !filtered
         {
-            ctx.refill = Some(Refill {
-                scope,
-                term: term.clone(),
-                params: params.clone(),
-            });
+            (total, total_exact) = (n, true);
         }
-        let Some(head) = head else {
-            return Ok(None);
-        };
-        let mut best = Best {
-            cap: q.limit + 1,
-            set: BTreeSet::new(),
-        };
-        let (mut seen, mut counted) = (0u64, 0u64);
-        // Scores now are within these factors of the list's.
-        let up = drift(&head.params, &params);
-        let down = drift(&params, &head.params);
-        // A document outside the list scores at most this; one tying it ranks by id only while scores haven't
-        // drifted.
-        let outside = Ranked(head.floor * up, if up > 1.0 { 0 } else { head.floor_doc });
-        // Entries scoring above `after` by more than the drift rank above it now: passed over.
-        let from = after.as_ref().map_or(f64::INFINITY, |a| a.0 * down);
-        for (listed_score, doc, fields) in entries {
-            if listed_score > from {
-                continue;
-            }
-            // Every entry from here on scores at most this now.
-            let bound = Ranked(listed_score * up, if up > 1.0 { 0 } else { doc });
-            if best.worst().is_some_and(|w| bound >= *w) {
-                break;
-            }
-            seen += 1;
-            if !self.passes(ctx, doc)? {
-                continue;
-            }
-            counted += 1;
-            let r = Ranked(self.score_word(fields), doc);
-            if after.as_ref().is_none_or(|a| r > *a) {
-                best.push(r);
-            }
+        if !total_exact {
+            total = self.estimate_walked(ctx, total, &walk, stopped)?;
         }
-        // Nothing outside the list can beat the page's last hit, nor any entry not read.
-        if !best.worst().is_some_and(|w| outside > *w) {
-            return Ok(None);
-        }
-        let mut total = n;
-        if filtered && seen > 0 {
-            total = (total as f64 * counted as f64 / seen as f64).round() as u64;
-        }
-        let mut found = page_of(best, q.limit, total, !filtered, true);
-        found.listed = true;
-        Ok(Some(found))
-    }
-
-    /// The single word's score from its (field, tf, length code).
-    fn score_word(&self, fields: Fields) -> f64 {
-        let parts = fields
-            .into_iter()
-            .map(|(f, tf, code)| (f, self.pos[0].parts[&(0, f)], tf, code))
-            .collect();
-        self.score(&[Matched { parts }])
+        Ok(page_of(best, q.limit, total, total_exact, page_exact, self.scale))
     }
 
     fn by_key(&mut self, ctx: &mut Ctx, q: &Query, order: &dyn SortKey) -> StoreResult<Found> {
@@ -2249,7 +4162,7 @@ impl Plan {
         let page = q.limit.max(1) as f64;
         let estimate = match self.pos.as_slice() {
             [m] if m.single().is_some() => {
-                Some(ctx.counter(&term_docs(self.scope, &m.lists[0].term))? as f64)
+                Some(ctx.term_docs(self.scope, &m.lists[0].term)? as f64)
             }
             _ => None,
         };
@@ -2337,6 +4250,7 @@ impl Plan {
                 .map(|(k, doc)| Hit {
                     doc,
                     score: 0.0,
+                    rank: 0.0,
                     key: Some(k),
                 })
                 .collect(),
@@ -2356,321 +4270,181 @@ impl Matcher {
     }
 }
 
-/// How far scores now can be above a list's: the highest ratio of a field's weight times idf now to the list's,
-/// times how far its average length now is above the list's.
-fn drift(list: &[(f64, f64)], now: &[(f64, f64)]) -> f64 {
-    let mut most: f64 = 0.0;
-    for (i, &(w, avg)) in now.iter().enumerate() {
-        if w <= 0.0 {
-            continue;
-        }
-        let (lw, lavg) = list.get(i).copied().unwrap_or((0.0, 0.0));
-        if lw <= 0.0 {
-            return f64::INFINITY;
-        }
-        let a = if lavg > 0.0 {
-            (avg / lavg).max(1.0)
-        } else {
-            1.0
-        };
-        most = most.max(w / lw * a);
-    }
-    most.max(1.0)
-}
-
-/// How far a list's scores may drift before a query builds it again.
-const DRIFT: f64 = 1.1;
-
-/// A top list being built: its head and entries (score, document, fields), best first.
-pub struct Building {
-    pub head: Head,
-    pub entries: Vec<(f64, u64, Fields)>,
-}
-
-/// Continues a list's pass over its term's postings from `head.passing` until it ends or the work passes
-/// `until`: each document scored at the list's parameters, kept while among the `top::MAX` best, the floor
-/// raised to every document dropped or passed over (a block, or a document, whose bound at its block's
-/// shortest lengths can't beat the lowest kept).
-fn pass(ctx: &mut Ctx, scope: Scope, term: &str, b: &mut Building, until: u64) -> StoreResult<()> {
-    use std::cmp::Reverse;
-    use std::collections::BinaryHeap;
-    #[derive(PartialEq)]
-    struct ByScore(f64, u64);
-    impl Eq for ByScore {}
-    impl PartialOrd for ByScore {
-        fn partial_cmp(&self, o: &Self) -> Option<Ordering> {
-            Some(self.cmp(o))
-        }
-    }
-    impl Ord for ByScore {
-        fn cmp(&self, o: &Self) -> Ordering {
-            self.0.total_cmp(&o.0).then(o.1.cmp(&self.1))
-        }
-    }
-    let Some(from) = b.head.passing else {
-        return Ok(());
-    };
-    let defs = scope.fields();
-    let mut heap: BinaryHeap<Reverse<ByScore>> = BinaryHeap::new();
-    let mut kept: HashMap<u64, Fields> = HashMap::new();
-    let push = |heap: &mut BinaryHeap<Reverse<ByScore>>,
-                kept: &mut HashMap<u64, Fields>,
-                head: &mut Head,
-                score: f64,
-                doc: u64,
-                fields: Fields| {
-        heap.push(Reverse(ByScore(score, doc)));
-        kept.insert(doc, fields);
-        if heap.len() > top::MAX {
-            let Reverse(ByScore(s, out)) = heap.pop().unwrap();
-            kept.remove(&out);
-            head.raise_floor(s, out);
-        }
-    };
-    for (score, doc, fields) in b.entries.drain(..) {
-        push(&mut heap, &mut kept, &mut b.head, score, doc, fields);
-    }
-    let lowest = |heap: &BinaryHeap<Reverse<ByScore>>| {
-        (heap.len() >= top::MAX).then(|| heap.peek().map(|r| (r.0.0, r.0.1)).unwrap())
-    };
-    let prefix = postings(scope, term);
-    let mut cur = Cursor::new(&prefix);
-    cur.seek(ctx, &posting_block(scope, term, from))?;
-    let mut next = None;
-    while let Some((k, v)) = cur.get() {
-        let mut at = prefix.len();
-        let block = u64_at(k, &mut at)?;
-        if ctx.work > until {
-            next = Some(block);
-            break;
-        }
-        // The block's shortest length per field, as a length code.
-        let mut short = [0u8; 1 << FIELD_BITS];
-        for f in 0..defs.len() as u32 {
-            short[f as usize] = length_code(shortest_in(ctx, scope, f, block)?.unwrap_or(0));
-        }
-        if let Some(min) = lowest(&heap) {
-            let mut bound = 0.0;
-            for f in 0..defs.len() as u32 {
-                let most = most_in(ctx, scope, term, f, block)?;
-                if most > 0 {
-                    bound += b.head.score(&[(f, most, short[f as usize])]);
-                }
-            }
-            if !top::above((bound, block << BLOCK_BITS), min) {
-                b.head.raise_floor(bound, block << BLOCK_BITS);
-                cur.advance(ctx)?;
-                continue;
-            }
-        }
-        let _ = v;
-        let v = cur.take();
-        let pairs = ctx.pairs(v)?;
-        let mut i = 0;
-        while i < pairs.len() {
-            let (doc, _) = unslot(block, pairs[i].0);
-            let mut hits = Vec::new();
-            while let Some(&(s, v)) = pairs.get(i) {
-                let (d, f) = unslot(block, s);
-                if d != doc {
-                    break;
-                }
-                hits.push((f, unpack(defs[f as usize].prefix, v)));
-                i += 1;
-            }
-            // Its counts at the block's shortest lengths bound it before its lengths are read.
-            if let Some(min) = lowest(&heap) {
-                let mut bound = 0.0;
-                for &(f, h) in &hits {
-                    bound += b.head.score(&[(f, h.tf(true), short[f as usize])]);
-                }
-                if !top::above((bound, doc), min) {
-                    b.head.raise_floor(bound, doc);
-                    continue;
-                }
-            }
-            let tfs = tfs_of(ctx, scope, hits, doc, u64::MAX, true)?;
-            if tfs.is_empty() {
-                continue;
-            }
-            let score = b.head.score(&tfs);
-            if lowest(&heap).is_none_or(|m| top::above((score, doc), m)) {
-                push(&mut heap, &mut kept, &mut b.head, score, doc, tfs);
-            } else {
-                b.head.raise_floor(score, doc);
-            }
-        }
-        cur.advance(ctx)?;
-    }
-    b.head.passing = next;
-    b.entries = heap
-        .into_iter()
-        .map(|Reverse(ByScore(score, doc))| (score, doc, kept.remove(&doc).unwrap_or_default()))
-        .collect();
-    b.entries
-        .sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
-    Ok(())
-}
-
-/// A top list's entries, best first.
-fn list_entries(ctx: &mut Ctx, scope: Scope, term: &str) -> StoreResult<Vec<(f64, u64, Fields)>> {
-    let prefix = top_entries(scope, term);
-    let end = key::prefix_end(&prefix);
-    let mut from = prefix.clone();
-    let mut out = Vec::new();
-    loop {
-        let page = ctx.scan(&from, &end, 1024)?;
-        for (k, v) in &page {
-            let (score, doc) = top::parse_rank(&k[prefix.len()..])
-                .ok_or_else(|| StoreError::Entry("a top list entry doesn't decode".into()))?;
-            let fields = top::decode_fields(&v.clone().into_bytes())
-                .ok_or_else(|| StoreError::Entry("a top list entry doesn't decode".into()))?;
-            out.push((score, doc, fields));
-        }
-        match page.last() {
-            Some((k, _)) if page.len() == 1024 => from = successor(k),
-            _ => return Ok(out),
-        }
-    }
-}
-
-/// The next slice of a term's top list's pass, run in the commit queue (so every commit before it is seen and
-/// every one after it follows what it writes): a list that is missing, stale, under `top::MIN` entries or
-/// built at parameters more than `DRIFT` from `params` starts again at `params`; then the pass goes on for at
-/// most `SLICE` work. Writes the entries that came and went, the count and the head.
-pub fn refill(
-    view: &View,
-    out: &mut Out,
-    scope: Scope,
-    term: &str,
-    params: &[(f64, f64)],
-) -> StoreResult<()> {
-    let mut ctx = Ctx::new(view, None);
-    if ctx.counter(&term_docs(scope, term))? <= top::MAX as u64 {
-        return Ok(());
-    }
-    let generation = ctx.counter(&top_generation(scope, term))?;
-    let head = ctx
-        .get(&super::top(scope, term))?
-        .and_then(|b| Head::decode(&b));
-    let count = ctx.counter(&top_count(scope, term))?;
-    let again = head.as_ref().is_none_or(|h| {
-        h.generation != generation
-            || (h.passing.is_none()
-                && (count < top::MIN as u64 || drift(&h.params, params) > DRIFT))
-    });
-    let old = list_entries(&mut ctx, scope, term)?;
-    let mut b = match head {
-        Some(h) if !again => {
-            if h.passing.is_none() {
-                return Ok(());
-            }
-            Building {
-                head: h,
-                entries: old.clone(),
-            }
-        }
-        _ => Building {
-            head: Head::new(generation, params.to_vec()),
-            entries: Vec::new(),
-        },
-    };
-    let until = ctx.work.saturating_add(SLICE);
-    pass(&mut ctx, scope, term, &mut b, until)?;
-    write_list(out, scope, term, &old, &b);
-    Ok(())
-}
-
-/// The entries that changed from `old` to the list `b`, its count and its head.
-fn write_list(out: &mut Out, scope: Scope, term: &str, old: &[(f64, u64, Fields)], b: &Building) {
-    let was: HashMap<(u64, u64), &Fields> =
-        old.iter().map(|(s, d, f)| ((s.to_bits(), *d), f)).collect();
-    let is: HashMap<(u64, u64), &Fields> = b
-        .entries
-        .iter()
-        .map(|(s, d, f)| ((s.to_bits(), *d), f))
-        .collect();
-    for (s, d, _) in old {
-        if !is.contains_key(&(s.to_bits(), *d)) {
-            out.del(top_entry(scope, term, *s, *d));
-        }
-    }
-    for (s, d, f) in &b.entries {
-        if was.get(&(s.to_bits(), *d)) != Some(&f) {
-            out.put(top_entry(scope, term, *s, *d), top::encode_fields(f));
-        }
-    }
-    out.put(
-        top_count(scope, term),
-        counter_bytes(b.entries.len() as i64),
-    );
-    out.put(super::top(scope, term), b.head.encode());
-}
-
-/// The parameters a word's list is built at: per field the weight times idf (of the term as a prefix term in
-/// the prefix fields, as a whole token elsewhere, as a query's last word matches), and the average length.
-pub fn list_params(view: &View, scope: Scope, term: &str) -> StoreResult<Vec<(f64, f64)>> {
-    let mut ctx = Ctx::new(view, None);
-    let stats = read_stats(&mut ctx, scope)?;
-    let mut params = Vec::new();
-    for (f, d) in scope.fields().iter().enumerate() {
-        let kind = if d.prefix {
-            TermKind::Gram
-        } else {
-            TermKind::Exact
-        };
-        let df = ctx.counter(&doc_freq(scope, kind, term, f as u32))? as f64;
-        params.push((d.weight * idf(df, stats.n), stats.avg[f]));
-    }
-    Ok(params)
-}
-
-/// A term's whole list, built at once (a bulk load into an empty store).
-pub fn build_list(view: &View, scope: Scope, term: &str) -> StoreResult<Building> {
-    let mut ctx = Ctx::new(view, None);
-    let generation = ctx.counter(&top_generation(scope, term))?;
-    let params = list_params(view, scope, term)?;
-    let mut b = Building {
-        head: Head::new(generation, params),
-        entries: Vec::new(),
-    };
-    pass(&mut ctx, scope, term, &mut b, u64::MAX)?;
-    Ok(b)
-}
-
-/// A built list's entries: entry keys with their values, the count and the head.
-pub fn list_entries_of(scope: Scope, term: &str, b: &Building) -> Vec<(Vec<u8>, Vec<u8>)> {
-    let mut out = Out::default();
-    write_list(&mut out, scope, term, &[], b);
-    out.entries
-        .into_iter()
-        .filter_map(|(k, v)| match v {
-            crate::keyspace::val::Val::Put(b) => Some((k, b)),
-            _ => None,
-        })
-        .collect()
-}
-
-/// A term's scope and text from its `term_docs` key.
-pub fn parse_term_key(k: &[u8]) -> Option<(Scope, String)> {
-    let mut at = key::of(key::SEARCH_TERM_DOCS).len();
-    let kind = get_u64(k, &mut at)?;
-    let owner = get_u64(k, &mut at)?;
-    let term = String::from_utf8(get_bytes(k, &mut at)?).ok()?;
-    (at == k.len()).then_some((Scope { kind, owner }, term))
-}
-
-/// Whether a word of this term reads a top list: a query's last word of 2 to 20 characters.
-pub fn has_list(term: &str) -> bool {
-    (GRAM_MIN..=GRAM_MAX).contains(&char_len(term))
+/// The count at `slot` of a map's counts (sorted by slot; 0 when it has none).
+pub fn count_at(counts: &[(u32, u64)], slot: u32) -> u64 {
+    counts
+        .binary_search_by_key(&slot, |x| x.0)
+        .map_or(0, |i| counts[i].1)
 }
 
 /// The library field holding a card's own tags, which a clause restricts itself to for tag membership.
+/// Whether a clause is restricted to the tags field (`tags_field`), with a word: it matches the cards carrying a tag
+/// whose name it matches, and doesn't score.
+fn tags_only(tags_field: Option<u32>, c: &Clause) -> bool {
+    matches!((tags_field, &c.fields), (Some(t), Some(fs))
+        if !fs.is_empty() && fs.iter().all(|&f| f == t) && !tokens(&c.text).is_empty())
+}
+
 fn tags_field(scope: Scope) -> Option<u32> {
     (scope == Scope::LIBRARY)
         .then(|| scope.fields().iter().position(|d| d.name == "tags"))
         .flatten()
         .map(|f| f as u32)
+}
+
+/// Where the carriers of the tags whose names match a clause's tokens are read from (`last`: the query's last
+/// clause, its last token a prefix), and whether every tag was found before the work passed `until`; with
+/// `counted`, their carriers summed (else 0).
+fn named(
+    ctx: &mut Ctx,
+    toks: Vec<String>,
+    last: bool,
+    until: u64,
+    counted: bool,
+) -> StoreResult<Named> {
+    if let Some((kind, term)) = mapped_term(&toks, last) {
+        let count = match counted {
+            true => ctx.counter(&key::term_carriers(kind, &term))?,
+            false => 0,
+        };
+        let (t, done) = term_tags(ctx, kind, term, until)?;
+        return Ok(Named {
+            source: Source::Term(t),
+            done,
+            count,
+        });
+    }
+    let (tags, done) = named_tags(ctx, toks, last, until)?;
+    let mut count = 0;
+    if counted {
+        for &t in &tags {
+            count += ctx.counter(&key::id(key::MEMBER_COUNT, t))?;
+        }
+    }
+    Ok(Named {
+        source: Source::Tags(tags),
+        done,
+        count,
+    })
+}
+
+/// The term the carrier maps (`store::carriers`) hold a clause's tags by: its one token, as a prefix term when
+/// it is the query's last word and has `GRAM_MIN` to `GRAM_MAX` characters, whole when it isn't a prefix. None
+/// for a longer prefix or a phrase, whose tags are found by their names (`named_tags`).
+fn mapped_term(toks: &[String], last: bool) -> Option<(TermKind, String)> {
+    let [tok] = toks else {
+        return None;
+    };
+    let n = char_len(tok);
+    if !(last && n >= GRAM_MIN) {
+        Some((TermKind::Exact, tok.clone()))
+    } else if n <= GRAM_MAX {
+        Some((TermKind::Gram, tok.clone()))
+    } else {
+        None
+    }
+}
+
+/// A term's heavy and moving tags (`store::carriers`), and whether every one was read before the work passed
+/// `until`.
+fn term_tags(
+    ctx: &mut Ctx,
+    kind: TermKind,
+    term: String,
+    until: u64,
+) -> StoreResult<(TermTags, bool)> {
+    let want = (kind, term.clone());
+    let holds = |name: &[u8]| carriers::name_terms(name).contains(&want);
+    let mut t = TermTags {
+        kind,
+        term: term.clone(),
+        heavy: Vec::new(),
+        moving: Vec::new(),
+    };
+    let mut done = true;
+    tags_under(
+        ctx,
+        key::term_key(key::TERM_MOVING, kind, &term),
+        until,
+        &mut done,
+        |ctx, tag| {
+            let Some(TagMap {
+                heavy,
+                flight: Some(f),
+            }) = ctx
+                .get(&key::id(key::TAG_MAP, tag))?
+                .map(|b| TagMap::parse(&b))
+                .transpose()?
+            else {
+                return Err(StoreError::Entry("a moving tag has no move".into()));
+            };
+            // Until the indexed name or the band changes, the move's target name is the indexed name.
+            let named = if f.pending {
+                let texts = ctx.texts(Scope::TAGS, tag, 0)?;
+                holds(&carriers::one_name(
+                    &texts.iter().map(Vec::as_slice).collect::<Vec<_>>(),
+                )?)
+            } else {
+                holds(&f.target_name)
+            };
+            t.moving.push(Mover {
+                tag,
+                cursor: f.cursor,
+                below: !f.target_heavy && holds(&f.target_name),
+                above: !heavy && holds(&f.mapped_name),
+                named,
+                target_has: holds(&f.target_name),
+                mapped_has: holds(&f.mapped_name),
+            });
+            Ok(())
+        },
+    )?;
+    if done {
+        tags_under(
+            ctx,
+            key::term_key(key::TERM_HEAVY, kind, &term),
+            until,
+            &mut done,
+            |_, tag| {
+                if t.moving.binary_search_by_key(&tag, |m| m.tag).is_err() {
+                    t.heavy.push(tag);
+                }
+                Ok(())
+            },
+        )?;
+    }
+    Ok((t, done))
+}
+
+/// Each tag keyed under `prefix` in order, until the work passes `until` (then `done` is cleared).
+fn tags_under(
+    ctx: &mut Ctx,
+    prefix: Vec<u8>,
+    until: u64,
+    done: &mut bool,
+    mut each: impl FnMut(&mut Ctx, u64) -> StoreResult<()>,
+) -> StoreResult<()> {
+    let end = key::prefix_end(&prefix);
+    let mut from = prefix.clone();
+    loop {
+        if ctx.work > until {
+            *done = false;
+            return Ok(());
+        }
+        let page = ctx.scan(&from, &end, 64)?;
+        for (k, _) in &page {
+            if ctx.work > until {
+                *done = false;
+                return Ok(());
+            }
+            let mut at = prefix.len();
+            each(ctx, u64_at(k, &mut at)?)?;
+        }
+        match page.last() {
+            Some((k, _)) if page.len() == 64 => from = successor(k),
+            _ => return Ok(()),
+        }
+    }
 }
 
 /// The tags whose names match a clause's tokens (`last`: the query's last clause, its last token a prefix),
@@ -2682,7 +4456,7 @@ fn named_tags(
     until: u64,
 ) -> StoreResult<(Vec<u64>, bool)> {
     let stats = scope_stats(ctx, Scope::TAGS)?;
-    let Some(mut m) = Matcher::new(ctx, Scope::TAGS, &stats, toks, None, last)? else {
+    let Some(mut m) = Matcher::new(ctx, Scope::TAGS, &stats, toks, None, last, None)? else {
         return Ok((Vec::new(), true));
     };
     let mut out = Vec::new();
@@ -2702,107 +4476,27 @@ fn named_tags(
     }
 }
 
-/// The tags whose names match the library query `q`: each positive clause that can apply to tags (any field,
-/// or the card tags field among its fields) matches the name, no negated one does; a clause restricted to
-/// other fields means none. Best first: the whole name is the query's words, then every word a whole word of
-/// the name, then the rest (the last word a prefix); then more carriers, then the lower id. With whether every
-/// matching tag was weighed.
-fn tag_matches(ctx: &mut Ctx, q: &Query) -> StoreResult<(Vec<TagMatch>, bool)> {
-    let tags_field = Scope::LIBRARY
-        .fields()
-        .iter()
-        .position(|d| d.name == "tags")
-        .map(|f| f as u32);
-    let mut clauses = Vec::new();
-    for c in &q.clauses {
-        if tokens(&c.text).is_empty() {
-            continue;
-        }
-        if c.fields
-            .as_ref()
-            .is_some_and(|fs| !tags_field.is_some_and(|t| fs.contains(&t)))
-        {
-            return Ok((Vec::new(), true));
-        }
-        clauses.push(Clause {
-            fields: None,
-            ..c.clone()
-        });
-    }
-    if !clauses.iter().any(|c| !c.negate) {
-        return Ok((Vec::new(), true));
-    }
-    let tq = Query {
-        scope: Scope::TAGS,
-        clauses,
-        filters: Vec::new(),
-        order: Order::Relevance,
-        limit: TAG_MATCHES,
-        after: None,
-        limits: q.limits,
-    };
-    // The query's words, and each positive clause's.
-    let words: Vec<Vec<String>> = tq
-        .clauses
-        .iter()
-        .filter(|c| !c.negate)
-        .map(|c| tokens(&c.text))
-        .collect();
-    let all: Vec<String> = words.iter().flatten().cloned().collect();
-    let mut plan = Plan::new(ctx, &tq)?;
-    let budget = ctx.work.saturating_add(q.limits.tags);
-    // (quality, carriers reversed, tag), with the name.
-    let mut best: Vec<((u8, u64, u64), Vec<u8>)> = Vec::new();
-    let mut d = 0;
-    let mut exact = true;
-    loop {
-        match plan.next_match(ctx, d, u64::MAX, budget, None, &mut Walk::default())? {
-            Step::Match(tag, _) => {
-                let name = ctx.texts(Scope::TAGS, tag, 0)?.concat();
-                let carriers = ctx.counter(&key::id(key::MEMBER_COUNT, tag))?;
-                let quality = if tokens(&name) == all {
-                    0
-                } else if words.iter().all(|w| phrase_in(&name, w, false, true).0) {
-                    1
-                } else {
-                    2
-                };
-                best.push(((quality, u64::MAX - carriers, tag), name));
-                best.sort_by_key(|a| a.0);
-                best.truncate(TAG_MATCHES);
-                d = tag + 1;
-            }
-            Step::End => break,
-            Step::Stopped(_) => {
-                exact = false;
-                break;
-            }
-        }
-    }
-    Ok((
-        best.into_iter()
-            .map(|((_, c, tag), name)| TagMatch {
-                tag,
-                name,
-                carriers: u64::MAX - c,
-            })
-            .collect(),
-        exact,
-    ))
-}
-
 /// Whether a term's list can hold documents that have it only as a prefix term (in a prefix field).
 fn gram_shared(scope: Scope, term: &str) -> bool {
     char_len(term) >= GRAM_MIN && scope.fields().iter().any(|d| d.prefix)
 }
 
-fn page_of(best: Best, limit: usize, total: u64, total_exact: bool, page_exact: bool) -> Found {
+/// `scale`: a hit's score over its rank (`Plan::scale`).
+fn page_of(
+    best: Best,
+    limit: usize,
+    total: u64,
+    total_exact: bool,
+    page_exact: bool,
+    scale: f64,
+) -> Found {
     let mut hits: Vec<Hit> = best
         .set
         .into_iter()
-        .map(|Ranked(score, doc)| Hit {
+        .map(|Ranked(rank, doc)| Hit {
             doc,
-            score,
+            score: rank * scale,
+            rank,
             key: None,
         })
         .collect();

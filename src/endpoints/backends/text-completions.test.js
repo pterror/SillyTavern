@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import http from 'node:http';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mock } from 'node:test';
@@ -61,14 +60,11 @@ const { router, buildRawActionTextCompletionRequest } = await import('./text-com
 const { writeAllSettings } = await import('../../settings-store.js');
 const { importWorldInfoFromRaw } = await import('../worldinfo.js');
 const { writeSecret, deleteSecret, SECRET_KEYS } = await import('../secrets.js');
-const { saveChatToTree, loadBranch, appendMessages, editMessage, getAncestorPath, getAlternatives, disposeMessageTreeStores, getMessageTreeDb } = await import('../../message-tree-db.js');
 const { writeBack, tokenKeyHash } = await import('../../token-count-store.js');
-const { readItemization } = await import('../../itemization-store.js');
 // The client-side compact-stream decoder (public/scripts/llamacpp-compact-stream.js) has no browser-
 // only dependencies (just TextDecoder/Uint8Array, both real Node globals), so it's imported directly
 // here rather than re-implementing a second copy of the decode logic for this test file.
 const { CompactStreamDecoder } = await import('../../../public/scripts/llamacpp-compact-stream.js');
-const { upsertCharacterFromWrite } = await import('../../character-metadata-db.js');
 const { SentencePieceProcessor } = await import('@agnai/sentencepiece-js');
 
 // Every sentencepiece encode this process makes, by model file. Installed before anything encodes,
@@ -88,20 +84,34 @@ const sentencepieceEncodes = [];
 }
 const llamaEncodes = () => sentencepieceEncodes.filter(file => /[\\/]llama\.model$/.test(file ?? ''));
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-text-completions-raw-action-test-'));
-const charactersDir = path.join(root, 'characters');
-const groupsDir = path.join(root, 'groups');
-const worldsDir = path.join(root, 'worlds');
-const filesDir = path.join(root, 'files');
-const chatsDir = path.join(root, 'chats');
-fs.mkdirSync(charactersDir, { recursive: true });
-fs.mkdirSync(groupsDir, { recursive: true });
-fs.mkdirSync(worldsDir, { recursive: true });
-fs.mkdirSync(filesDir, { recursive: true });
-fs.mkdirSync(chatsDir, { recursive: true });
+const { SESSION_HEADER } = await import('../../request-session.js');
+const { convertedUser, writeLibraryCard, saveBranch, loadBranch, sessionAt, chatContextOf, seedMessages, treeOf, editMessage } = await import('../../../tests/converted-user.fixture.js');
 
-const directories = { root, characters: charactersDir, groups: groupsDir, worlds: worldsDir, files: filesDir, chats: chatsDir };
-globalThis.DATA_ROOT = root;
+const user = await convertedUser('st-text-completions-raw-action-test-');
+const { directories } = user;
+globalThis.DATA_ROOT = user.dataRoot;
+
+const { newSessionKey } = await import('../../chat-engine.js');
+
+/**
+ * The chat context a request naming `nodeId` acts in: the session of the branch holding it, else a new one.
+ * @param {string} avatar
+ * @param {unknown} nodeId
+ */
+async function chatOf(avatar, nodeId) {
+    return chatContextOf(user.store, { avatar }, (await sessionAt(user.store, nodeId)) ?? newSessionKey());
+}
+
+/**
+ * Messages appended after `after` (null: opening the tree) through the session of the branch holding it.
+ * @param {string} avatar
+ * @param {string | null} after
+ * @param {Record<string, any>[]} contents
+ */
+async function appendThrough(avatar, after, contents) {
+    const session = (await sessionAt(user.store, after)) ?? newSessionKey();
+    return { ok: true, node_ids: await seedMessages(user.store, { avatar }, after, contents, { session }) };
+}
 
 const baseImage = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'public', 'img', 'ai4.png'));
 
@@ -135,8 +145,7 @@ async function writeCharacter(avatar, overrides = {}) {
     };
     const cardJson = JSON.stringify(card);
     const buffer = writeCard(baseImage, cardJson);
-    fs.writeFileSync(path.join(charactersDir, avatar), buffer);
-    await upsertCharacterFromWrite(directories, avatar, cardJson);
+    await writeLibraryCard(user, avatar, cardJson, buffer);
     return avatar;
 }
 
@@ -185,18 +194,18 @@ async function run() {
     // ADDRESSING MODEL doc comment) - every raw-action call below resolves and passes the real
     // `node_id` (a leaf id from `loadBranch()`) instead.
     const branchName = 'main-chat';
-    await saveChatToTree(directories, ownerId, branchName, [
+    await saveBranch(user.store, { avatar: ownerId }, branchName, [
         { chat_metadata: {} },
         { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
         { name: 'Tester', is_user: true, mes: 'Hi Rex, nice to meet you.', send_date: 2, extra: {} },
         { name: 'Rex', is_user: false, mes: 'Likewise!', send_date: 3, extra: {} },
     ]);
-    const mainBranchInfo = await loadBranch(directories, ownerId, branchName);
+    const mainBranchInfo = await loadBranch(user.store, { avatar: ownerId }, branchName);
     const mainLeafId = mainBranchInfo.branch.leaf_id;
 
     // --- happy path: a new user message on an existing conversation, addressed by its real node_id ---
     const built = await buildRawActionTextCompletionRequest(directories, {
-        characterAvatar: avatar, ownerId, nodeId: mainLeafId,
+        characterAvatar: avatar, chat: await chatOf(avatar, mainLeafId), nodeId: mainLeafId,
         type: 'normal', userMessageText: 'What happens next, Rex?',
         tokenizerOptions: fakeTokenizerOptions,
     });
@@ -206,7 +215,7 @@ async function run() {
     assert.equal(built.name1, 'Tester', 'name1 resolves from settings.json username, same as the orchestrator input');
     assert.ok(built.anchorNodeId, 'anchorNodeId resolves to the real leaf of the loaded branch');
 
-    const branchBeforeAppend = await loadBranch(directories, ownerId, branchName);
+    const branchBeforeAppend = await loadBranch(user.store, { avatar: ownerId }, branchName);
     assert.equal(built.anchorNodeId, branchBeforeAppend.branch.leaf_id, 'anchorNodeId is exactly the given node_id\'s real leaf_id');
     assert.equal(built.anchorNodeId, mainLeafId, 'anchorNodeId is exactly the given node_id, unchanged from before');
 
@@ -217,18 +226,18 @@ async function run() {
     assert.ok(built.params.prompt.includes('What happens next, Rex?'), 'the raw user_message made it into the assembled prompt');
 
     // --- persistence: the anchorNodeId this function resolves is really appendable-after ---
-    const appendResult = await appendMessages(directories, ownerId, built.anchorNodeId, [
+    const appendResult = await appendThrough(ownerId, built.anchorNodeId, [
         { name: built.name1, is_user: true, mes: 'What happens next, Rex?', extra: {}, send_date: Date.now() },
     ]);
     assert.equal(appendResult.ok, true, 'appendMessages() accepts the resolved anchorNodeId as a real anchor');
-    const branchAfterAppend = await loadBranch(directories, ownerId, branchName);
+    const branchAfterAppend = await loadBranch(user.store, { avatar: ownerId }, branchName);
     assert.equal(branchAfterAppend.messages.length, 4, 'the persisted user message is now part of the real loaded branch');
     assert.equal(branchAfterAppend.messages[3].mes, 'What happens next, Rex?');
 
     // --- continue/swipe: no userMessageText, still resolves and assembles from the real history,
     // addressed by the real current leaf's node_id ---
     const continued = await buildRawActionTextCompletionRequest(directories, {
-        characterAvatar: avatar, ownerId, nodeId: branchAfterAppend.branch.leaf_id, type: 'continue', isContinue: true,
+        characterAvatar: avatar, chat: await chatOf(avatar, branchAfterAppend.branch.leaf_id), nodeId: branchAfterAppend.branch.leaf_id, type: 'continue', isContinue: true,
         tokenizerOptions: fakeTokenizerOptions,
     });
     assert.ok(continued.params.prompt.includes('Likewise!'), 'continue resolves from the real existing history with no new message appended');
@@ -237,8 +246,8 @@ async function run() {
 
     // --- error handling: unknown character ---
     await assert.rejects(
-        () => buildRawActionTextCompletionRequest(directories, {
-            characterAvatar: 'NoSuchCharacter.png', ownerId, nodeId: mainLeafId,
+        async () => buildRawActionTextCompletionRequest(directories, {
+            characterAvatar: 'NoSuchCharacter.png', chat: await chatOf(avatar, mainLeafId), nodeId: mainLeafId,
             tokenizerOptions: fakeTokenizerOptions,
         }),
         /Character not found/,
@@ -246,8 +255,8 @@ async function run() {
 
     // --- error handling: unknown node ---
     await assert.rejects(
-        () => buildRawActionTextCompletionRequest(directories, {
-            characterAvatar: avatar, ownerId, nodeId: 'no-such-node-id',
+        async () => buildRawActionTextCompletionRequest(directories, {
+            characterAvatar: avatar, chat: await chatOf(avatar, 'no-such-node-id'), nodeId: 'no-such-node-id',
             tokenizerOptions: fakeTokenizerOptions,
         }),
         /Chat node not found/,
@@ -258,8 +267,8 @@ async function run() {
     // route handler's stand-in for "the JSON body never had this key at all") must be rejected,
     // distinctly from an explicit `null`. ---
     await assert.rejects(
-        () => buildRawActionTextCompletionRequest(directories, {
-            characterAvatar: avatar, ownerId,
+        async () => buildRawActionTextCompletionRequest(directories, {
+            characterAvatar: avatar, chat: await chatOf(avatar, undefined),
             tokenizerOptions: fakeTokenizerOptions,
         }),
         /node_id is required \(pass null explicitly for a brand-new, empty conversation\)/,
@@ -269,11 +278,11 @@ async function run() {
     // model's central safety rule: the server must NOT silently guess "the current leaf" once real,
     // possibly-since-changed history exists; this must be a real, reportable error instead. ---
     await assert.rejects(
-        () => buildRawActionTextCompletionRequest(directories, {
-            characterAvatar: avatar, ownerId, nodeId: null,
+        async () => buildRawActionTextCompletionRequest(directories, {
+            characterAvatar: avatar, chat: await chatOf(avatar, null), nodeId: null,
             tokenizerOptions: fakeTokenizerOptions,
         }),
-        /node_id is required: this character\/group already has an existing conversation/,
+        /node_id is required: this chat is not at its start/,
     );
 
     // --- happy path: node_id: null on a GENUINELY BRAND-NEW character with zero prior messages -
@@ -286,14 +295,14 @@ async function run() {
         data: { name: 'Fresh', description: 'Fresh is a brand-new character with no chat history yet.', first_mes: 'Hello, this is Fresh.' },
     });
     const builtFresh = await buildRawActionTextCompletionRequest(directories, {
-        characterAvatar: freshAvatar, ownerId: freshAvatar, nodeId: null,
+        characterAvatar: freshAvatar, chat: await chatOf(freshAvatar, null), nodeId: null,
         type: 'normal', userMessageText: 'Hi Fresh, this is our first message ever.',
         tokenizerOptions: fakeTokenizerOptions,
     });
-    assert.ok(builtFresh.anchorNodeId, 'a genuinely new, empty conversation still resolves to a real, appendable anchor node id (the owner\'s own anchor)');
+    assert.equal(builtFresh.anchorNodeId, null, 'a new, empty conversation is at its tree\'s root: the reply opens it');
     assert.ok(!builtFresh.params.prompt.includes('Hello there, traveler.'), 'no unrelated prior history (Rex\'s) leaked into a brand-new character\'s resolved, empty chat');
     assert.ok(builtFresh.params.prompt.includes('Hi Fresh, this is our first message ever.'), 'the raw user_message for this turn still made it into the assembled prompt even though the resolved prior history was empty');
-    const freshAppendResult = await appendMessages(directories, freshAvatar, builtFresh.anchorNodeId, [
+    const freshAppendResult = await appendThrough(freshAvatar, builtFresh.anchorNodeId, [
         { name: builtFresh.name1, is_user: true, mes: 'Hi Fresh, this is our first message ever.', extra: {}, send_date: Date.now() },
     ]);
     assert.equal(freshAppendResult.ok, true, 'the anchor-resolved node id for a brand-new conversation is a real, appendable node - not a fake/synthetic id');
@@ -302,7 +311,7 @@ async function run() {
     // check runs first) ---
     await assert.rejects(
         () => buildRawActionTextCompletionRequest(directories, {
-            ownerId, nodeId: mainLeafId,
+            nodeId: mainLeafId,
             tokenizerOptions: fakeTokenizerOptions,
         }),
         /character_avatar or group_id is required/,
@@ -327,8 +336,12 @@ async function run() {
         const app = express();
         app.use(express.json());
         app.use((req, _res, next) => {
-            req.user = { directories };
-            next();
+            req.user = { directories, profile: { handle: 'u' } };
+            if (req.get(SESSION_HEADER)) return next();
+            sessionAt(user.store, req.body?.node_id).then(session => {
+                if (session) req.headers[SESSION_HEADER.toLowerCase()] = session;
+                next();
+            }, next);
         });
         app.use('/', router);
         return app;
@@ -489,7 +502,7 @@ async function run() {
         });
         pointBackendAt(fakeBackend.url);
 
-        const branchBefore = await loadBranch(directories, ownerId, branchName);
+        const branchBefore = await loadBranch(user.store, { avatar: ownerId }, branchName);
         const messageCountBefore = branchBefore.messages.length;
 
         const app = buildTestApp();
@@ -503,7 +516,7 @@ async function run() {
         assert.equal(data.choices?.[0]?.text, 'Rex says hello back.', 'response body reaches the client unmodified');
         assert.equal(typeof data.assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
 
-        const branchAfter = await loadBranch(directories, ownerId, branchName);
+        const branchAfter = await loadBranch(user.store, { avatar: ownerId }, branchName);
         assert.equal(branchAfter.messages.length, messageCountBefore + 2, 'both the user message and the assistant reply were appended');
         const [userMsg, assistantMsg] = branchAfter.messages.slice(-2);
         assert.equal(userMsg.mes, 'One more time, Rex?');
@@ -522,7 +535,7 @@ async function run() {
         });
         pointBackendAt(fakeBackend.url);
 
-        const branchBefore = await loadBranch(directories, ownerId, branchName);
+        const branchBefore = await loadBranch(user.store, { avatar: ownerId }, branchName);
         const messageCountBefore = branchBefore.messages.length;
 
         const app = buildTestApp();
@@ -534,7 +547,7 @@ async function run() {
 
         assert.equal(status, 200, 'the error branch still responds (with an error body), not a thrown exception');
 
-        const branchAfter = await loadBranch(directories, ownerId, branchName);
+        const branchAfter = await loadBranch(user.store, { avatar: ownerId }, branchName);
         assert.equal(branchAfter.messages.length, messageCountBefore + 1, 'only the user message was appended - no assistant reply for a failed generation');
         assert.equal(branchAfter.messages[branchAfter.messages.length - 1].mes, 'Are you there, Rex?');
         assert.equal(branchAfter.messages[branchAfter.messages.length - 1].is_user, true);
@@ -559,11 +572,11 @@ async function run() {
      * @param {string} replyText The text the backend's answer carries.
      */
     async function assertNonStreamSendStored(chatName, replyText) {
-        await saveChatToTree(directories, ownerId, chatName, [
+        await saveBranch(user.store, { avatar: ownerId }, chatName, [
             { chat_metadata: {} },
             { name: 'Rex', is_user: false, mes: `Hello there, ${chatName}.`, send_date: 1, extra: {} },
         ]);
-        const branchBefore = await loadBranch(directories, ownerId, chatName);
+        const branchBefore = await loadBranch(user.store, { avatar: ownerId }, chatName);
 
         const { status, data } = await postGenerate(buildTestApp(), {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
@@ -572,7 +585,7 @@ async function run() {
 
         assert.equal(status, 200);
         assert.ok(JSON.stringify(data).includes(replyText), `the backend's reply reaches the page: ${JSON.stringify(data)}`);
-        const branchAfter = await loadBranch(directories, ownerId, chatName);
+        const branchAfter = await loadBranch(user.store, { avatar: ownerId }, chatName);
         assert.deepEqual(
             branchAfter.messages.slice(branchBefore.messages.length).map(m => ({ is_user: m.is_user, mes: m.mes })),
             [{ is_user: true, mes: `Question for ${chatName}?` }, { is_user: false, mes: replyText }],
@@ -646,11 +659,11 @@ async function run() {
         });
         pointLlamaCppBackendAt(backend.url);
         const chatName = 'nonstream-unreadable-chat';
-        await saveChatToTree(directories, ownerId, chatName, [
+        await saveBranch(user.store, { avatar: ownerId }, chatName, [
             { chat_metadata: {} },
             { name: 'Rex', is_user: false, mes: `Hello there, ${chatName}.`, send_date: 1, extra: {} },
         ]);
-        const branchBefore = await loadBranch(directories, ownerId, chatName);
+        const branchBefore = await loadBranch(user.store, { avatar: ownerId }, chatName);
         const logged = [];
         const realWarn = console.warn;
         console.warn = (...args) => { logged.push(args.map(String).join(' ')); };
@@ -678,7 +691,7 @@ async function run() {
         const keyLines = logged.filter(line => line.includes('unexpected_field'));
         assert.equal(keyLines.length, 1, `the answer's keys are logged once: ${JSON.stringify(logged)}`);
         assert.equal(logged.some(line => line.includes('Secret unreadable reply.')), false, 'the answer\'s content is never logged');
-        const branchAfter = await loadBranch(directories, ownerId, chatName);
+        const branchAfter = await loadBranch(user.store, { avatar: ownerId }, chatName);
         assert.deepEqual(
             branchAfter.messages.slice(branchBefore.messages.length).map(m => ({ is_user: m.is_user, mes: m.mes })),
             [{ is_user: true, mes: `Question for ${chatName}?` }],
@@ -699,11 +712,11 @@ async function run() {
         const backend = await startFakeBackend(handler);
         point(backend.url);
         try {
-            await saveChatToTree(directories, ownerId, chatName, [
+            await saveBranch(user.store, { avatar: ownerId }, chatName, [
                 { chat_metadata: {} },
                 { name: 'Rex', is_user: false, mes: `Hello there, ${chatName}.`, send_date: 1, extra: {} },
             ]);
-            const branchBefore = await loadBranch(directories, ownerId, chatName);
+            const branchBefore = await loadBranch(user.store, { avatar: ownerId }, chatName);
             const ref = `ref-${chatName}`;
             const body = {
                 owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
@@ -721,7 +734,7 @@ async function run() {
                 stored = data.stored;
             }
             const branchAfter = await waitFor(async () => {
-                const branch = await loadBranch(directories, ownerId, chatName);
+                const branch = await loadBranch(user.store, { avatar: ownerId }, chatName);
                 return branch.messages.length === branchBefore.messages.length + 2 ? branch : null;
             });
             const userNode = branchAfter.messages[branchBefore.messages.length];
@@ -792,11 +805,11 @@ async function run() {
         const server = app.listen(0, '127.0.0.1');
         await new Promise(resolve => server.once('listening', resolve));
         try {
-            await saveChatToTree(directories, ownerId, chatName, [
+            await saveBranch(user.store, { avatar: ownerId }, chatName, [
                 { chat_metadata: {} },
                 { name: 'Rex', is_user: false, mes: `Hello there, ${chatName}.`, send_date: 1, extra: {} },
             ]);
-            const branchBefore = await loadBranch(directories, ownerId, chatName);
+            const branchBefore = await loadBranch(user.store, { avatar: ownerId }, chatName);
             const ref = `ref-${chatName}`;
             const res = await fetch(`http://127.0.0.1:${server.address().port}/generate`, {
                 method: 'POST',
@@ -807,7 +820,7 @@ async function run() {
                 }),
             });
             const answer = { status: res.status, headers: res.headers, text: await res.text() };
-            const branchAfter = await loadBranch(directories, ownerId, chatName);
+            const branchAfter = await loadBranch(user.store, { avatar: ownerId }, chatName);
             const added = branchAfter.messages.slice(branchBefore.messages.length);
             assert.deepEqual(added.map(m => m.mes), [`Question for ${chatName}?`], 'only the user message was stored');
             const stored = [{ ref, node_id: added[0].node_id }];
@@ -876,7 +889,7 @@ async function run() {
         });
         pointBackendAt(fakeBackend.url);
 
-        const branchBefore = await loadBranch(directories, ownerId, branchName);
+        const branchBefore = await loadBranch(user.store, { avatar: ownerId }, branchName);
         const messageCountBefore = branchBefore.messages.length;
         const leafBefore = branchBefore.branch.leaf_id;
 
@@ -894,7 +907,7 @@ async function run() {
         assert.equal(status, 200, 'the (unchanged) response is forwarded to the client');
         assert.deepEqual(data, { choices: [{ text: 'I think you should go north.' }] }, 'the generated text still reaches the client unmodified');
 
-        const branchAfter = await loadBranch(directories, ownerId, branchName);
+        const branchAfter = await loadBranch(user.store, { avatar: ownerId }, branchName);
         assert.equal(branchAfter.messages.length, messageCountBefore, 'no message (user or assistant) was appended for is_impersonate: true');
         assert.equal(branchAfter.branch.leaf_id, leafBefore, 'the branch leaf/ancestor path is completely unchanged');
     }
@@ -908,7 +921,7 @@ async function run() {
         });
         pointBackendAt(fakeBackend.url);
 
-        const branchBefore = await loadBranch(directories, ownerId, branchName);
+        const branchBefore = await loadBranch(user.store, { avatar: ownerId }, branchName);
         const messageCountBefore = branchBefore.messages.length;
         const leafBefore = branchBefore.branch.leaf_id;
 
@@ -926,7 +939,7 @@ async function run() {
         assert.equal(status, 200, 'the (unchanged) response is forwarded to the client');
         assert.deepEqual(data, { choices: [{ text: 'Meta/background result.' }] }, 'the generated text still reaches the client unmodified');
 
-        const branchAfter = await loadBranch(directories, ownerId, branchName);
+        const branchAfter = await loadBranch(user.store, { avatar: ownerId }, branchName);
         assert.equal(branchAfter.messages.length, messageCountBefore, 'no message (user or assistant) was appended for type: \'quiet\'');
         assert.equal(branchAfter.branch.leaf_id, leafBefore, 'the branch leaf/ancestor path is completely unchanged');
     }
@@ -937,16 +950,16 @@ async function run() {
     // shared `branchName` state above.
     {
         const swipeBranch = 'swipe-chat';
-        await saveChatToTree(directories, ownerId, swipeBranch, [
+        await saveBranch(user.store, { avatar: ownerId }, swipeBranch, [
             { chat_metadata: {} },
             { name: 'Tester', is_user: true, mes: 'Hi Rex.', send_date: 1, extra: {} },
             { name: 'Rex', is_user: false, mes: 'Hello there!', send_date: 2, extra: {} },
         ]);
 
-        const branchBefore = await loadBranch(directories, ownerId, swipeBranch);
+        const branchBefore = await loadBranch(user.store, { avatar: ownerId }, swipeBranch);
         const messageCountBefore = branchBefore.messages.length;
         const swipedNodeId = branchBefore.branch.leaf_id;
-        const swipedAncestry = await getAncestorPath(directories, swipedNodeId);
+        const swipedAncestry = (await user.store.chats.load({ tree: await treeOf(user.store, { avatar: ownerId }), at: swipedNodeId })).messages;
         const parentNodeId = swipedAncestry[swipedAncestry.length - 2].node_id;
 
         const fakeBackend = await startFakeBackend((_req, res) => {
@@ -966,18 +979,18 @@ async function run() {
         assert.equal(data.choices?.[0]?.text, 'Greetings, traveler!', 'the generated text still reaches the client unmodified');
         assert.equal(typeof data.assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
 
-        const branchAfter = await loadBranch(directories, ownerId, swipeBranch);
+        const branchAfter = await loadBranch(user.store, { avatar: ownerId }, swipeBranch);
         assert.equal(branchAfter.messages.length, messageCountBefore, 'a swipe replaces the leaf position - it does not add DEPTH to the default path');
         assert.notEqual(branchAfter.branch.leaf_id, swipedNodeId, 'the branch is now positioned on a DIFFERENT node - the new alternative');
         assert.equal(branchAfter.messages[branchAfter.messages.length - 1].mes, 'Greetings, traveler!', '(a) the new alternative is now the active/default path, showing the newly generated text');
 
         // (a) a new SIBLING was added under the correct parent - not a child of the swiped message.
         const newNodeId = branchAfter.branch.leaf_id;
-        const newAncestry = await getAncestorPath(directories, newNodeId);
+        const newAncestry = (await user.store.chats.load({ tree: await treeOf(user.store, { avatar: ownerId }), at: newNodeId })).messages;
         assert.equal(newAncestry.length, swipedAncestry.length, 'the new alternative sits at the SAME depth as the swiped message (a sibling), not one deeper (a child)');
         assert.equal(newAncestry[newAncestry.length - 2].node_id, parentNodeId, 'the new alternative shares the swiped message\'s real parent');
 
-        const alternatives = await getAlternatives(directories, swipedNodeId);
+        const alternatives = await user.store.chats.alternatives({ node_id: swipedNodeId });
         assert.equal(alternatives.total, 2, 'the swiped message and the new alternative are now real siblings under the same parent');
         assert.ok(alternatives.alternatives.some(a => a.node_id === swipedNodeId && a.mes === 'Hello there!'), '(b) the swiped message\'s own original content is completely unchanged');
         assert.ok(alternatives.alternatives.some(a => a.node_id === newNodeId && a.mes === 'Greetings, traveler!'));
@@ -985,7 +998,7 @@ async function run() {
         // (c) selectDefaultChild() really was called - the parent's default_child_id now points at
         // the new alternative, which is exactly what branchAfter.branch.leaf_id resolving to newNodeId
         // (via descendDefaultSync, asserted above) already demonstrates; double-checked directly here.
-        const parentAlternatives = await getAlternatives(directories, newNodeId);
+        const parentAlternatives = await user.store.chats.alternatives({ node_id: newNodeId });
         assert.equal(parentAlternatives.selected, parentAlternatives.alternatives.findIndex(a => a.node_id === newNodeId), 'the new alternative is the one getAlternatives() reports as currently selected');
     }
 
@@ -994,13 +1007,13 @@ async function run() {
     // route never distinguishes between the two literal `type` strings for persistence purposes.
     {
         const regenBranch = 'regenerate-chat';
-        await saveChatToTree(directories, ownerId, regenBranch, [
+        await saveBranch(user.store, { avatar: ownerId }, regenBranch, [
             { chat_metadata: {} },
             { name: 'Tester', is_user: true, mes: 'Hi Rex, regenerate test.', send_date: 101, extra: {} },
             { name: 'Rex', is_user: false, mes: 'Hello there, regenerate test!', send_date: 102, extra: {} },
         ]);
 
-        const branchBefore = await loadBranch(directories, ownerId, regenBranch);
+        const branchBefore = await loadBranch(user.store, { avatar: ownerId }, regenBranch);
         const swipedNodeId = branchBefore.branch.leaf_id;
 
         const fakeBackend = await startFakeBackend((_req, res) => {
@@ -1017,9 +1030,9 @@ async function run() {
         fakeBackend.server.close();
 
         assert.equal(status, 200);
-        const branchAfter = await loadBranch(directories, ownerId, regenBranch);
+        const branchAfter = await loadBranch(user.store, { avatar: ownerId }, regenBranch);
         assert.notEqual(branchAfter.branch.leaf_id, swipedNodeId, 'regenerate also produced a sibling alternative, now selected as current');
-        const alternatives = await getAlternatives(directories, swipedNodeId);
+        const alternatives = await user.store.chats.alternatives({ node_id: swipedNodeId });
         assert.equal(alternatives.total, 2, 'regenerate did not chain a child - the original message still has exactly one real sibling');
     }
 
@@ -1028,13 +1041,13 @@ async function run() {
     // user-message node may be created.
     {
         const continueBranch = 'continue-chat';
-        await saveChatToTree(directories, ownerId, continueBranch, [
+        await saveBranch(user.store, { avatar: ownerId }, continueBranch, [
             { chat_metadata: {} },
             { name: 'Tester', is_user: true, mes: 'Tell me a story, Rex.', send_date: 1, extra: {} },
             { name: 'Rex', is_user: false, mes: 'Once upon a time,', send_date: 2, extra: {} },
         ]);
 
-        const branchBefore = await loadBranch(directories, ownerId, continueBranch);
+        const branchBefore = await loadBranch(user.store, { avatar: ownerId }, continueBranch);
         const messageCountBefore = branchBefore.messages.length;
         const leafBefore = branchBefore.branch.leaf_id;
         assert.equal(branchBefore.messages[branchBefore.messages.length - 1].mes, 'Once upon a time,');
@@ -1056,7 +1069,7 @@ async function run() {
         assert.equal(data.choices?.[0]?.text, ' there was a brave adventurer.', 'the generated text still reaches the client unmodified');
         assert.equal(typeof data.assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
 
-        const branchAfter = await loadBranch(directories, ownerId, continueBranch);
+        const branchAfter = await loadBranch(user.store, { avatar: ownerId }, continueBranch);
         assert.equal(branchAfter.messages.length, messageCountBefore, 'no new node (user or assistant) was created - continue only edits the existing leaf');
         assert.equal(branchAfter.branch.leaf_id, leafBefore, 'the SAME node is still the leaf - editMessage() edits in place, it does not reparent/replace the node');
         assert.equal(branchAfter.messages[branchAfter.messages.length - 1].mes, 'Once upon a time, there was a brave adventurer.', 'the stored text is now oldText + newText, on the same node, at the same position');
@@ -1069,13 +1082,13 @@ async function run() {
     // assistant message before it is untouched.
     {
         const continueWithUserTextBranch = 'continue-with-user-text-chat';
-        await saveChatToTree(directories, ownerId, continueWithUserTextBranch, [
+        await saveBranch(user.store, { avatar: ownerId }, continueWithUserTextBranch, [
             { chat_metadata: {} },
             { name: 'Tester', is_user: true, mes: 'Tell me a story, Rex.', send_date: 1, extra: {} },
             { name: 'Rex', is_user: false, mes: 'Once upon a time,', send_date: 2, extra: {} },
         ]);
 
-        const branchBefore = await loadBranch(directories, ownerId, continueWithUserTextBranch);
+        const branchBefore = await loadBranch(user.store, { avatar: ownerId }, continueWithUserTextBranch);
         const messageCountBefore = branchBefore.messages.length;
         const originalLeafId = branchBefore.branch.leaf_id;
 
@@ -1096,14 +1109,14 @@ async function run() {
 
         assert.equal(status, 200);
 
-        const branchAfter = await loadBranch(directories, ownerId, continueWithUserTextBranch);
+        const branchAfter = await loadBranch(user.store, { avatar: ownerId }, continueWithUserTextBranch);
         assert.equal(branchAfter.messages.length, messageCountBefore + 1, 'one message added: the user message, continued in place');
         const newLeaf = branchAfter.messages[branchAfter.messages.length - 1];
         assert.equal(newLeaf.is_user, true);
         assert.equal(newLeaf.mes, 'Wait, actually - tell me about dragons instead. And elves too.', 'the reply is stored as the continuation of the user message');
         assert.equal(body.assistant_node_id, branchAfter.branch.leaf_id, 'the page is told where the reply was stored');
 
-        const originalNode = (await getAlternatives(directories, originalLeafId)).alternatives.find(a => a.node_id === originalLeafId);
+        const originalNode = (await user.store.chats.alternatives({ node_id: originalLeafId })).alternatives.find(a => a.node_id === originalLeafId);
         assert.equal(originalNode.mes, 'Once upon a time,', 'the assistant message before it is unchanged');
     }
 
@@ -1145,7 +1158,7 @@ async function run() {
             generation_mode_join_prefix: '',
             generation_mode_join_suffix: '',
         };
-        fs.writeFileSync(path.join(groupsDir, `${groupId}.json`), JSON.stringify(groupMetadata, null, 4));
+        await user.store.lib.writeGroup(groupMetadata);
 
         // Enable names_as_stop_strings so groupMemberNames' real effect (not just its presence in the
         // resolver's return value) is observable in the assembled generate_data.
@@ -1161,18 +1174,18 @@ async function run() {
 
         // A chat branch owned by the GROUP's own id - not either member's avatar - with one message
         // from each member already in history, matching a real multi-member group conversation.
-        await saveChatToTree(directories, groupId, groupChatId, [
+        await saveBranch(user.store, { group: groupId }, groupChatId, [
             { chat_metadata: {} },
             { name: 'Tester', is_user: true, mes: 'Hello, party!', send_date: 1, extra: {} },
             { name: 'Zephyr', is_user: false, mes: 'Winds are shifting!', send_date: 2, extra: {}, original_avatar: zephyr },
         ]);
-        const groupLeafId = (await loadBranch(directories, groupId, groupChatId)).branch.leaf_id;
+        const groupLeafId = (await loadBranch(user.store, { group: groupId }, groupChatId)).branch.leaf_id;
 
         // --- assembly: buildRawActionTextCompletionRequest() with BOTH characterAvatar (Nova, the
         // member actually responding this turn) AND groupId (the group) set together, addressed by
         // the group chat's real node_id. ---
         const builtGroup = await buildRawActionTextCompletionRequest(directories, {
-            characterAvatar: nova, groupId, ownerId: groupId, nodeId: groupLeafId,
+            characterAvatar: nova, groupId, chat: await chatContextOf(user.store, { group: groupId }, await sessionAt(user.store, groupLeafId)), nodeId: groupLeafId,
             type: 'normal', userMessageText: 'Nova, status report?',
             tokenizerOptions: fakeTokenizerOptions,
         });
@@ -1198,7 +1211,7 @@ async function run() {
 
         // --- persistence: a real, route-level raw-action /generate call persists BOTH sides against
         // the GROUP's own owner_id, chained under the group's real chat branch. ---
-        const branchBeforeGroup = await loadBranch(directories, groupId, groupChatId);
+        const branchBeforeGroup = await loadBranch(user.store, { group: groupId }, groupChatId);
         const messageCountBeforeGroup = branchBeforeGroup.messages.length;
 
         const fakeBackend = await startFakeBackend((_req, res) => {
@@ -1218,7 +1231,7 @@ async function run() {
         assert.equal(data.choices?.[0]?.text, 'All systems nominal, Captain.', 'response body reaches the client unmodified');
         assert.equal(typeof data.assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
 
-        const branchAfterGroup = await loadBranch(directories, groupId, groupChatId);
+        const branchAfterGroup = await loadBranch(user.store, { group: groupId }, groupChatId);
         assert.equal(branchAfterGroup.messages.length, messageCountBeforeGroup + 2, 'both the user message and the assistant reply were persisted under the GROUP\'s own owner_id');
         const [userMsg, assistantMsg] = branchAfterGroup.messages.slice(-2);
         assert.equal(userMsg.mes, 'Nova, status report?');
@@ -1229,7 +1242,7 @@ async function run() {
 
         // Sanity: none of this leaked into either single-character owner namespace used elsewhere in
         // this file (Rex's own branch, keyed by his own avatar as ownerId).
-        const rexBranchUnaffected = await loadBranch(directories, ownerId, branchName);
+        const rexBranchUnaffected = await loadBranch(user.store, { avatar: ownerId }, branchName);
         assert.ok(rexBranchUnaffected.messages.every(m => m.mes !== 'All systems nominal, Captain.'), 'the group turn did not leak into an unrelated single-character owner namespace');
     }
 
@@ -1244,7 +1257,7 @@ async function run() {
     // waitFor() rather than asserting immediately after the fetch resolves).
     {
         const streamBranch = 'stream-plain-chat';
-        await saveChatToTree(directories, ownerId, streamBranch, [
+        await saveBranch(user.store, { avatar: ownerId }, streamBranch, [
             { chat_metadata: {} },
             { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
         ]);
@@ -1252,7 +1265,7 @@ async function run() {
         const fakeBackend = await startFakeSseBackend(['Rex ', 'says ', 'hello ', 'back, ', 'streamed.']);
         pointBackendAt(fakeBackend.url);
 
-        const branchBefore = await loadBranch(directories, ownerId, streamBranch);
+        const branchBefore = await loadBranch(user.store, { avatar: ownerId }, streamBranch);
         const messageCountBefore = branchBefore.messages.length;
 
         const app = buildTestApp();
@@ -1269,7 +1282,7 @@ async function run() {
         assert.ok(decoded.assistantNodeId, 'the assistant_node_id frame was sent as the final frame');
 
         const branchAfter = await waitFor(async () => {
-            const branch = await loadBranch(directories, ownerId, streamBranch);
+            const branch = await loadBranch(user.store, { avatar: ownerId }, streamBranch);
             return branch.messages.length === messageCountBefore + 2 ? branch : null;
         });
         const [userMsg, assistantMsg] = branchAfter.messages.slice(-2);
@@ -1294,13 +1307,13 @@ async function run() {
     // test (f)'s own distinct text, for the exact same reason, predating this session).
     {
         const streamSwipeBranch = 'stream-swipe-chat';
-        await saveChatToTree(directories, ownerId, streamSwipeBranch, [
+        await saveBranch(user.store, { avatar: ownerId }, streamSwipeBranch, [
             { chat_metadata: {} },
             { name: 'Tester', is_user: true, mes: 'Hi Rex, streaming swipe test.', send_date: 1, extra: {} },
             { name: 'Rex', is_user: false, mes: 'Hello there, streaming swipe test!', send_date: 2, extra: {} },
         ]);
 
-        const branchBefore = await loadBranch(directories, ownerId, streamSwipeBranch);
+        const branchBefore = await loadBranch(user.store, { avatar: ownerId }, streamSwipeBranch);
         const swipedNodeId = branchBefore.branch.leaf_id;
 
         const fakeBackend = await startFakeSseBackend(['Greetings, ', 'traveler, ', 'streamed!']);
@@ -1320,12 +1333,12 @@ async function run() {
         assert.ok(decoded.assistantNodeId);
 
         const branchAfter = await waitFor(async () => {
-            const branch = await loadBranch(directories, ownerId, streamSwipeBranch);
+            const branch = await loadBranch(user.store, { avatar: ownerId }, streamSwipeBranch);
             return branch.branch.leaf_id !== swipedNodeId ? branch : null;
         });
         assert.equal(branchAfter.messages[branchAfter.messages.length - 1].mes, 'Greetings, traveler, streamed!');
         assert.equal(branchAfter.messages[branchAfter.messages.length - 1].node_id, decoded.assistantNodeId, 'the node id sent to the client in the compact stream\'s assistant_node_id frame is the exact node the swipe actually landed on');
-        const alternatives = await getAlternatives(directories, swipedNodeId);
+        const alternatives = await user.store.chats.alternatives({ node_id: swipedNodeId });
         assert.equal(alternatives.total, 2, 'the streamed swipe produced a real sibling alternative, not a chained child');
         assert.ok(alternatives.alternatives.some(a => a.mes === 'Hello there, streaming swipe test!'), 'the original swiped message is unchanged');
     }
@@ -1337,13 +1350,13 @@ async function run() {
     // exact text here would edit THEIR fixture's node instead of a clean one of this test's own).
     {
         const streamContinueBranch = 'stream-continue-chat';
-        await saveChatToTree(directories, ownerId, streamContinueBranch, [
+        await saveBranch(user.store, { avatar: ownerId }, streamContinueBranch, [
             { chat_metadata: {} },
             { name: 'Tester', is_user: true, mes: 'Tell me a streaming story, Rex.', send_date: 1, extra: {} },
             { name: 'Rex', is_user: false, mes: 'Once upon a streaming time,', send_date: 2, extra: {} },
         ]);
 
-        const branchBefore = await loadBranch(directories, ownerId, streamContinueBranch);
+        const branchBefore = await loadBranch(user.store, { avatar: ownerId }, streamContinueBranch);
         const leafBefore = branchBefore.branch.leaf_id;
         const messageCountBefore = branchBefore.messages.length;
 
@@ -1364,7 +1377,7 @@ async function run() {
         assert.equal(decoded.assistantNodeId, leafBefore, 'a continue edits in place - the node id sent in the compact stream\'s assistant_node_id frame is the SAME node it started at, not a new one');
 
         const branchAfter = await waitFor(async () => {
-            const branch = await loadBranch(directories, ownerId, streamContinueBranch);
+            const branch = await loadBranch(user.store, { avatar: ownerId }, streamContinueBranch);
             const leaf = branch.messages[branch.messages.length - 1];
             return leaf.mes === 'Once upon a streaming time, there was a brave, streamed adventurer.' ? branch : null;
         });
@@ -1379,7 +1392,7 @@ async function run() {
     // and accumulated/persisted once the stream ends.
     {
         const ollamaBranch = 'stream-ollama-chat';
-        await saveChatToTree(directories, ownerId, ollamaBranch, [
+        await saveBranch(user.store, { avatar: ownerId }, ollamaBranch, [
             { chat_metadata: {} },
             { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
         ]);
@@ -1403,7 +1416,7 @@ async function run() {
         });
         pointOllamaBackendAt(fakeBackend.url);
 
-        const branchBefore = await loadBranch(directories, ownerId, ollamaBranch);
+        const branchBefore = await loadBranch(user.store, { avatar: ownerId }, ollamaBranch);
         const messageCountBefore = branchBefore.messages.length;
 
         const app = buildTestApp();
@@ -1420,7 +1433,7 @@ async function run() {
         assert.ok(decoded.assistantNodeId, 'the assistant_node_id frame was sent as the final frame');
 
         const branchAfter = await waitFor(async () => {
-            const branch = await loadBranch(directories, ownerId, ollamaBranch);
+            const branch = await loadBranch(user.store, { avatar: ownerId }, ollamaBranch);
             return branch.messages.length === messageCountBefore + 2 ? branch : null;
         });
         const [userMsg, assistantMsg] = branchAfter.messages.slice(-2);
@@ -1437,7 +1450,7 @@ async function run() {
     // stored at the reply's node instead of sent down the stream.
     {
         const llamaCppBranch = 'stream-llamacpp-chat';
-        await saveChatToTree(directories, ownerId, llamaCppBranch, [
+        await saveBranch(user.store, { avatar: ownerId }, llamaCppBranch, [
             { chat_metadata: {} },
             { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
         ]);
@@ -1452,7 +1465,7 @@ async function run() {
         });
         pointLlamaCppBackendAt(fakeBackend.url);
 
-        const branchBefore = await loadBranch(directories, ownerId, llamaCppBranch);
+        const branchBefore = await loadBranch(user.store, { avatar: ownerId }, llamaCppBranch);
         const messageCountBefore = branchBefore.messages.length;
 
         const app = buildTestApp();
@@ -1468,14 +1481,14 @@ async function run() {
         assert.equal(decoded.itemization, null, 'the itemization isn\'t sent down the stream');
 
         const branchAfter = await waitFor(async () => {
-            const branch = await loadBranch(directories, ownerId, llamaCppBranch);
+            const branch = await loadBranch(user.store, { avatar: ownerId }, llamaCppBranch);
             return branch.messages.length === messageCountBefore + 2 ? branch : null;
         });
         const [userMsg, assistantMsg] = branchAfter.messages.slice(-2);
         assert.equal(userMsg.mes, 'Say hi via llama.cpp.');
         assert.equal(assistantMsg.mes, 'Hello from llama.cpp, streamed.', 'the full text, accumulated across every compact-stream event, was persisted');
         assert.equal(assistantMsg.name, 'Rex');
-        const stored = await readItemization(directories, assistantMsg.node_id);
+        const stored = await user.store.chats.readItemization({ node_id: assistantMsg.node_id });
         assert.equal(stored?.entry.presetName, 'Page preset', 'the page\'s part of the itemization is stored with the reply');
         assert.ok(String(stored?.entry.rawPrompt).includes('Say hi via llama.cpp.'), 'with the server\'s breakdown of the prompt it built');
     }
@@ -1517,11 +1530,11 @@ async function run() {
     // reordered a reasoning frame relative to already-buffered content would show up as garbled text.
     {
         const coalesceBranch = 'stream-compact-coalesce-chat';
-        await saveChatToTree(directories, ownerId, coalesceBranch, [
+        await saveBranch(user.store, { avatar: ownerId }, coalesceBranch, [
             { chat_metadata: {} },
             { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
         ]);
-        const branchBefore = await loadBranch(directories, ownerId, coalesceBranch);
+        const branchBefore = await loadBranch(user.store, { avatar: ownerId }, coalesceBranch);
 
         const textChunks = Array.from({ length: 12 }, (_, i) => `tok${i} `);
         const reasoningByIndex = { 0: 'think0 ', 1: 'think1 ', 2: 'think2 ' };
@@ -1572,7 +1585,7 @@ async function run() {
         assert.ok(readChunkCount < textChunks.length, `expected fewer network reads (${readChunkCount}) than upstream chunks (${textChunks.length}) - proves content was coalesced into fewer, larger writes instead of one frame per upstream chunk`);
 
         const branchAfter = await waitFor(async () => {
-            const branch = await loadBranch(directories, ownerId, coalesceBranch);
+            const branch = await loadBranch(user.store, { avatar: ownerId }, coalesceBranch);
             const leaf = branch.messages[branch.messages.length - 1];
             return leaf.mes === textChunks.join('') ? branch : null;
         });
@@ -1599,11 +1612,11 @@ async function run() {
     // resume-endpoint mechanics themselves.
     {
         const disconnectBranch = 'stream-compact-disconnect-chat';
-        await saveChatToTree(directories, ownerId, disconnectBranch, [
+        await saveBranch(user.store, { avatar: ownerId }, disconnectBranch, [
             { chat_metadata: {} },
             { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
         ]);
-        const branchBefore = await loadBranch(directories, ownerId, disconnectBranch);
+        const branchBefore = await loadBranch(user.store, { avatar: ownerId }, disconnectBranch);
 
         let releaseStream = () => { };
         const streamGate = new Promise(resolve => { releaseStream = resolve; });
@@ -1659,7 +1672,7 @@ async function run() {
         // escaped uncaught - that's the primary thing this test proves. The generation kept running
         // after the disconnect and its FULL text (pre- and post-disconnect) was persisted.
         const branchAfter = await waitFor(async () => {
-            const branch = await loadBranch(directories, ownerId, disconnectBranch);
+            const branch = await loadBranch(user.store, { avatar: ownerId }, disconnectBranch);
             const leaf = branch.messages[branch.messages.length - 1];
             return leaf?.mes === 'Partial before disconnect. Still generated after disconnect.' ? branch : null;
         });
@@ -1691,7 +1704,7 @@ async function run() {
             type: 'normal', user_message: { is_user: true, name: 'User', mes: 'This should also be rejected.' }, stream: false,
         });
         assert.equal(status, 400, 'node_id: null on an owner with real existing history is a real 400');
-        assert.match(data.message, /already has an existing conversation/, 'the error explains why null was rejected here');
+        assert.match(data.message, /is not at its start/, 'the error explains why null was rejected here');
     }
 
     // (i-9) ROUTE-LEVEL: a real `user_message_extra` file-attachment reference, forwarded on a raw-
@@ -1700,7 +1713,7 @@ async function run() {
     // generic file-attachment-inline.js machinery - into the real prompt text the fake backend
     // receives, not just carried through as inert data.
     {
-        fs.writeFileSync(path.join(filesDir, 'raw-action-attach.txt'), 'The password is hunter2.');
+        fs.writeFileSync(path.join(directories.files, 'raw-action-attach.txt'), 'The password is hunter2.');
 
         let capturedRequestBody = null;
         const fakeBackend = await startFakeBackend((_req, res, body) => {
@@ -1710,7 +1723,7 @@ async function run() {
         });
         pointBackendAt(fakeBackend.url);
 
-        const branchBefore = await loadBranch(directories, ownerId, branchName);
+        const branchBefore = await loadBranch(user.store, { avatar: ownerId }, branchName);
         const app = buildTestApp();
         const { status } = await postGenerate(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
@@ -1727,7 +1740,7 @@ async function run() {
             'the real file-attachment content, resolved via the forwarded user_message_extra reference, was inlined into the prompt actually sent to the backend',
         );
 
-        const branchAfter = await loadBranch(directories, ownerId, branchName);
+        const branchAfter = await loadBranch(user.store, { avatar: ownerId }, branchName);
         const persistedUserMsg = branchAfter.messages[branchAfter.messages.length - 2];
         assert.equal(persistedUserMsg.mes, 'Check the attached file.');
         assert.deepEqual(
@@ -1747,7 +1760,7 @@ async function run() {
         });
         pointBackendAt(fakeBackend.url);
 
-        const branchBefore = await loadBranch(directories, ownerId, branchName);
+        const branchBefore = await loadBranch(user.store, { avatar: ownerId }, branchName);
         const app = buildTestApp();
         const { status } = await postGenerate(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
@@ -1767,7 +1780,7 @@ async function run() {
         fakeBackend.server.close();
         assert.equal(status, 200, 'a garbage-shaped extra does not crash the request');
 
-        const branchAfter = await loadBranch(directories, ownerId, branchName);
+        const branchAfter = await loadBranch(user.store, { avatar: ownerId }, branchName);
         const persistedUserMsg = branchAfter.messages[branchAfter.messages.length - 2];
         assert.equal(persistedUserMsg.mes, 'This has a garbage attachment payload.');
         assert.equal(persistedUserMsg.extra.evil_script, '<script>alert(1)</script>', 'the message is stored as the page sent it; only the prompt reads its attachments, through the allowlist');
@@ -1824,16 +1837,16 @@ async function run() {
         });
         const dupOwnerId = dupAvatar;
         const dupBranchName = 'dup-bug-chat';
-        await saveChatToTree(directories, dupOwnerId, dupBranchName, [
+        await saveBranch(user.store, { avatar: dupOwnerId }, dupBranchName, [
             { chat_metadata: {} },
             { name: 'DupBug', is_user: false, mes: 'Hi.', send_date: 1, extra: {} },
         ]);
-        const dupBranchInfo = await loadBranch(directories, dupOwnerId, dupBranchName);
+        const dupBranchInfo = await loadBranch(user.store, { avatar: dupOwnerId }, dupBranchName);
         const dupParentLeafId = dupBranchInfo.branch.leaf_id;
 
         // (1) Simulates the client's own sendMessageAsUser() -> chatOpAppend() call, BEFORE this
         // session's fix - a real `persona` field, a display `name`, same text.
-        const clientSideAppend = await appendMessages(directories, dupOwnerId, dupParentLeafId, [
+        const clientSideAppend = await appendThrough(dupOwnerId, dupParentLeafId, [
             { name: 'Tester', is_user: true, mes: 'What happens next?', persona: 'user-default.png', extra: {}, send_date: Date.now() },
         ]);
         assert.equal(clientSideAppend.ok, true);
@@ -1841,7 +1854,7 @@ async function run() {
         // Simulates the raw-action route independently resolving the SAME anchor for the SAME send
         // (exactly buildRawActionTextCompletionRequest()'s own real resolution, exercised for real).
         const dupBuilt = await buildRawActionTextCompletionRequest(directories, {
-            characterAvatar: dupAvatar, ownerId: dupOwnerId, nodeId: dupParentLeafId,
+            characterAvatar: dupAvatar, chat: await chatOf(dupAvatar, dupParentLeafId), nodeId: dupParentLeafId,
             type: 'normal', userMessageText: 'What happens next?',
             tokenizerOptions: fakeTokenizerOptions,
         });
@@ -1849,7 +1862,7 @@ async function run() {
 
         // (2) Simulates this SAME route handler's own re-append of the identical logical message -
         // `built.name1`, no `persona` - this is the exact call the real route handler makes.
-        const serverSideAppend = await appendMessages(directories, dupOwnerId, dupBuilt.anchorNodeId, [
+        const serverSideAppend = await appendThrough(dupOwnerId, dupBuilt.anchorNodeId, [
             { name: dupBuilt.name1, is_user: true, mes: 'What happens next?', extra: {}, send_date: Date.now() },
         ]);
         assert.equal(serverSideAppend.ok, true);
@@ -1858,7 +1871,7 @@ async function run() {
             clientSideAppend.node_ids[0], serverSideAppend.node_ids[0],
             'ORIGINAL BUG reproduced: the persona-keyed (client) and name-keyed (server) identity hashes differ, so the server\'s own re-append does NOT converge onto the client\'s already-persisted node - it creates a genuine duplicate sibling instead',
         );
-        const dupAlternatives = await getAlternatives(directories, clientSideAppend.node_ids[0]);
+        const dupAlternatives = await user.store.chats.alternatives({ node_id: clientSideAppend.node_ids[0] });
         assert.equal(dupAlternatives.total, 2, 'ORIGINAL BUG: two sibling user-message nodes now exist under the same parent for what a user experiences as one single message send');
 
         // --- THE FIX, verified: once sendMessageAsUser() is told to skip its own tree-append
@@ -1872,25 +1885,25 @@ async function run() {
         });
         const fixedOwnerId = fixedAvatar;
         const fixedBranchName = 'fixed-bug-chat';
-        await saveChatToTree(directories, fixedOwnerId, fixedBranchName, [
+        await saveBranch(user.store, { avatar: fixedOwnerId }, fixedBranchName, [
             { chat_metadata: {} },
             { name: 'FixedBug', is_user: false, mes: 'Hi.', send_date: 1, extra: {} },
         ]);
-        const fixedBranchInfo = await loadBranch(directories, fixedOwnerId, fixedBranchName);
+        const fixedBranchInfo = await loadBranch(user.store, { avatar: fixedOwnerId }, fixedBranchName);
         const fixedParentLeafId = fixedBranchInfo.branch.leaf_id;
 
         const fixedBuilt = await buildRawActionTextCompletionRequest(directories, {
-            characterAvatar: fixedAvatar, ownerId: fixedOwnerId, nodeId: fixedParentLeafId,
+            characterAvatar: fixedAvatar, chat: await chatOf(fixedAvatar, fixedParentLeafId), nodeId: fixedParentLeafId,
             type: 'normal', userMessageText: 'What happens next?',
             tokenizerOptions: fakeTokenizerOptions,
         });
         // Post-fix reality: this is the ONLY appendMessages() call for this send - the client's own
         // chatOpAppend() never ran (skipped by sendMessageAsUser()'s `skipTreePersistence`).
-        const onlyAppend = await appendMessages(directories, fixedOwnerId, fixedBuilt.anchorNodeId, [
+        const onlyAppend = await appendThrough(fixedOwnerId, fixedBuilt.anchorNodeId, [
             { name: fixedBuilt.name1, is_user: true, mes: 'What happens next?', extra: {}, send_date: Date.now() },
         ]);
         assert.equal(onlyAppend.ok, true);
-        const fixedAlternatives = await getAlternatives(directories, onlyAppend.node_ids[0]);
+        const fixedAlternatives = await user.store.chats.alternatives({ node_id: onlyAppend.node_ids[0] });
         assert.equal(fixedAlternatives.total, 1, 'THE FIX: exactly one user-message node exists for one logical send once the client no longer makes its own redundant, differently-keyed append');
     }
 
@@ -1917,7 +1930,7 @@ async function run() {
     }
 
     await tokenizerCase('profile generation, unmapped model: dropped warning, no llama', async () => {
-        const presetDir = path.join(root, 'TextGen Settings');
+        const presetDir = path.join(directories.root, 'TextGen Settings');
         fs.mkdirSync(presetDir, { recursive: true });
         directories.textGen_Settings = presetDir;
         fs.writeFileSync(path.join(presetDir, 'BiasPreset.json'), JSON.stringify({
@@ -1964,11 +1977,11 @@ async function run() {
 
     await tokenizerCase('raw-action generation, unmapped model: bans and bias needing ids dropped and listed', async () => {
         const entryAvatar = await writeCharacter('EntryDrop.png', { name: 'EntryDrop', data: { name: 'EntryDrop', first_mes: 'Hi.' } });
-        await saveChatToTree(directories, entryAvatar, 'entry-drop-chat', [
+        await saveBranch(user.store, { avatar: entryAvatar }, 'entry-drop-chat', [
             { chat_metadata: {} },
             { name: 'EntryDrop', is_user: false, mes: 'Hi.', send_date: 1, extra: {} },
         ]);
-        const entryBranch = await loadBranch(directories, entryAvatar, 'entry-drop-chat');
+        const entryBranch = await loadBranch(user.store, { avatar: entryAvatar }, 'entry-drop-chat');
 
         let backendBody = null;
         const fakeBackend = await startFakeBackend((_req, res, body) => {
@@ -1996,7 +2009,7 @@ async function run() {
         // The route sends a generic backend only OpenAI-compatible fields, so the bans are read off
         // the built request.
         const built = await buildRawActionTextCompletionRequest(directories, {
-            characterAvatar: entryAvatar, ownerId: entryAvatar, nodeId: entryBranch.branch.leaf_id,
+            characterAvatar: entryAvatar, chat: await chatOf(entryAvatar, entryBranch.branch.leaf_id), nodeId: entryBranch.branch.leaf_id,
             type: 'continue', isContinue: true,
         });
         writeAllSettings(directories, buildSettingsFixture());
@@ -2016,8 +2029,8 @@ async function run() {
         const trimAvatar = await writeCharacter('TrimEst.png', { name: 'TrimEst', data: { name: 'TrimEst', first_mes: 'Hi.' } });
         const line = 'abcdefghij'.repeat(20); // 200 bytes: 60 estimated tokens, 200 per-character ones
         const history = Array.from({ length: 40 }, (_, i) => ({ name: i % 2 ? 'Tester' : 'TrimEst', is_user: i % 2 === 1, mes: `m${String(i).padStart(2, '0')} ${line}`, send_date: i + 1, extra: {} }));
-        await saveChatToTree(directories, trimAvatar, 'trim-chat', [{ chat_metadata: {} }, ...history]);
-        const trimBranch = await loadBranch(directories, trimAvatar, 'trim-chat');
+        await saveBranch(user.store, { avatar: trimAvatar }, 'trim-chat', [{ chat_metadata: {} }, ...history]);
+        const trimBranch = await loadBranch(user.store, { avatar: trimAvatar }, 'trim-chat');
 
         const settings = buildSettingsFixture();
         settings.power_user.tokenizer = 99;
@@ -2026,7 +2039,7 @@ async function run() {
 
         let localEncodes = 0;
         const built = await buildRawActionTextCompletionRequest(directories, {
-            characterAvatar: trimAvatar, ownerId: trimAvatar, nodeId: trimBranch.branch.leaf_id,
+            characterAvatar: trimAvatar, chat: await chatOf(trimAvatar, trimBranch.branch.leaf_id), nodeId: trimBranch.branch.leaf_id,
             type: 'continue', isContinue: true,
             tokenizerOptions: { encodeLocal: async (_key, text) => { localEncodes++; return Array.from(String(text)); } },
         });
@@ -2059,11 +2072,11 @@ async function run() {
 
     await tokenizerCase('raw-action stream, /tokenize failing, gemma-2 model: gemma copy for single fields, the estimate for counts that begin the prompt, no llama', async () => {
         const failAvatar = await writeCharacter('TokenizeFail.png', { name: 'TokenizeFail', data: { name: 'TokenizeFail', first_mes: 'Hi.' } });
-        await saveChatToTree(directories, failAvatar, 'tokenize-fail-chat', [
+        await saveBranch(user.store, { avatar: failAvatar }, 'tokenize-fail-chat', [
             { chat_metadata: {} },
             { name: 'TokenizeFail', is_user: false, mes: 'Hi.', send_date: 1, extra: {} },
         ]);
-        const failBranch = await loadBranch(directories, failAvatar, 'tokenize-fail-chat');
+        const failBranch = await loadBranch(user.store, { avatar: failAvatar }, 'tokenize-fail-chat');
 
         const backend = await startFailingTokenizeLlamaCpp('ok');
         const settings = buildSettingsFixture();
@@ -2100,8 +2113,8 @@ async function run() {
         const trimAvatar = await writeCharacter('TokenizeFailTrim.png', { name: 'TokenizeFailTrim', data: { name: 'TokenizeFailTrim', first_mes: 'Hi.' } });
         const line = 'abcdefghij'.repeat(20);
         const history = Array.from({ length: 40 }, (_, i) => ({ name: i % 2 ? 'Tester' : 'TokenizeFailTrim', is_user: i % 2 === 1, mes: `m${String(i).padStart(2, '0')} ${line}`, send_date: i + 1, extra: {} }));
-        await saveChatToTree(directories, trimAvatar, 'tokenize-fail-trim-chat', [{ chat_metadata: {} }, ...history]);
-        const trimBranch = await loadBranch(directories, trimAvatar, 'tokenize-fail-trim-chat');
+        await saveBranch(user.store, { avatar: trimAvatar }, 'tokenize-fail-trim-chat', [{ chat_metadata: {} }, ...history]);
+        const trimBranch = await loadBranch(user.store, { avatar: trimAvatar }, 'tokenize-fail-trim-chat');
 
         const backend = await startFailingTokenizeLlamaCpp('ok');
         const settings = buildSettingsFixture();
@@ -2132,12 +2145,12 @@ async function run() {
 
     await tokenizerCase('raw-action on llama.cpp: the counts that begin the prompt send add_special: true, message counts upstream\'s request', async () => {
         const bosAvatar = await writeCharacter('BosCount.png', { name: 'BosCount', data: { name: 'BosCount', description: 'BosCount tells stories.', first_mes: 'Hi.' } });
-        await saveChatToTree(directories, bosAvatar, 'bos-chat', [
+        await saveBranch(user.store, { avatar: bosAvatar }, 'bos-chat', [
             { chat_metadata: {} },
             { name: 'BosCount', is_user: false, mes: 'Hi.', send_date: 1, extra: {} },
             { name: 'Tester', is_user: true, mes: 'Tell me one.', send_date: 2, extra: {} },
         ]);
-        const bosBranch = await loadBranch(directories, bosAvatar, 'bos-chat');
+        const bosBranch = await loadBranch(user.store, { avatar: bosAvatar }, 'bos-chat');
 
         const tokenizeBodies = [];
         const backend = await startFakeBackend((req, res, body) => {
@@ -2160,7 +2173,7 @@ async function run() {
 
         const built = await buildRawActionTextCompletionRequest(directories, {
             request: /** @type {any} */ ({ body: { api_type: 'llamacpp' }, user: { directories } }),
-            characterAvatar: bosAvatar, ownerId: bosAvatar, nodeId: bosBranch.branch.leaf_id,
+            characterAvatar: bosAvatar, chat: await chatOf(bosAvatar, bosBranch.branch.leaf_id), nodeId: bosBranch.branch.leaf_id,
             type: 'continue', isContinue: true,
         });
         backend.server.close();
@@ -2208,12 +2221,12 @@ async function run() {
     async function buildOnPropsLlamaCpp(backend, model) {
         const name = `PropsCheck${++propsChats}`;
         const avatar = await writeCharacter(`${name}.png`, { name, data: { name, first_mes: 'Hi.' } });
-        await saveChatToTree(directories, avatar, 'props-chat', [
+        await saveBranch(user.store, { avatar: avatar }, 'props-chat', [
             { chat_metadata: {} },
             { name, is_user: false, mes: 'Hi.', send_date: 1, extra: {} },
             { name: 'Tester', is_user: true, mes: 'Tell me one.', send_date: 2, extra: {} },
         ]);
-        const branch = await loadBranch(directories, avatar, 'props-chat');
+        const branch = await loadBranch(user.store, { avatar: avatar }, 'props-chat');
         const settings = buildSettingsFixture();
         settings.power_user.tokenizer = 99;
         Object.assign(settings.textgenerationwebui_settings, {
@@ -2225,7 +2238,7 @@ async function run() {
         try {
             return await buildRawActionTextCompletionRequest(directories, {
                 request: /** @type {any} */ ({ body: { api_type: 'llamacpp' }, user: { directories } }),
-                characterAvatar: avatar, ownerId: avatar, nodeId: branch.branch.leaf_id,
+                characterAvatar: avatar, chat: await chatOf(avatar, branch.branch.leaf_id), nodeId: branch.branch.leaf_id,
                 type: 'continue', isContinue: true,
             });
         } finally {
@@ -2307,11 +2320,11 @@ async function run() {
             [name, 'Mind the loose step near the top.'],
             ['Tester', 'I will be careful.'],
         ];
-        await saveChatToTree(directories, avatar, 'store-chat', [
+        await saveBranch(user.store, { avatar: avatar }, 'store-chat', [
             { chat_metadata: {} },
             ...lines.map(([speaker, mes], i) => ({ name: speaker, is_user: speaker === 'Tester', mes, send_date: i + 1, extra: {} })),
         ]);
-        const branch = await loadBranch(directories, avatar, 'store-chat');
+        const branch = await loadBranch(user.store, { avatar: avatar }, 'store-chat');
         assert.equal(branch.messages.length, 10);
 
         const props = { model_alias: 'tokenstore-model', model_path: '/models/tokenstore-model.gguf', build_info: 'b1-store' };
@@ -2339,10 +2352,10 @@ async function run() {
         /** One generation; returns it and the /tokenize bodies it sent. */
         const generate = async () => {
             const start = tokenizeBodies().length;
-            const leaf = (await loadBranch(directories, avatar, 'store-chat')).branch.leaf_id;
+            const leaf = (await loadBranch(user.store, { avatar: avatar }, 'store-chat')).branch.leaf_id;
             const built = await buildRawActionTextCompletionRequest(directories, {
                 request: /** @type {any} */ ({ body: { api_type: 'llamacpp' }, user: { directories } }),
-                characterAvatar: avatar, ownerId: avatar, nodeId: leaf, type: 'normal',
+                characterAvatar: avatar, chat: await chatOf(avatar, leaf), nodeId: leaf, type: 'normal',
             });
             return { built, sent: tokenizeBodies().slice(start) };
         };
@@ -2370,7 +2383,7 @@ async function run() {
             await writeBack(directories, second.built.tokenCountRows);
             const edited = branch.messages[4];
             const newText = 'My grandmother, stone by patient stone.';
-            const editResult = await editMessage(directories, avatar, edited.node_id, { ...edited, mes: newText });
+            const editResult = await editMessage(user.store, { avatar: avatar }, edited.node_id, { ...edited, mes: newText });
             assert.equal(editResult.ok, true, editResult.reason);
             const afterEdit = await generate();
             assert.ok(afterEdit.sent.length > 0, 'the edited text is tokenized');
@@ -2382,12 +2395,22 @@ async function run() {
         }
     });
 
-    /** Rows stored under `identity` in token_counts and token_ids together. */
+    /** The keys (hex text hashes) the user's token cache was given to store, per tokenizer identity and table. */
+    const written = new Map();
+    const realWriteBack = user.store.tokens.writeBack.bind(user.store.tokens);
+    user.store.tokens.writeBack = async (pending, now) => {
+        for (const [table, rows] of [['token_counts', pending.counts ?? []], ['token_ids', pending.ids ?? []]]) {
+            for (const { identity, hash } of rows) {
+                if (!written.has(identity)) written.set(identity, { token_counts: new Set(), token_ids: new Set() });
+                written.get(identity)[table].add(hash);
+            }
+        }
+        return realWriteBack(pending, now);
+    };
+    /** Rows stored under `identity` in token_counts and token_ids together (each case's identity is new to it). */
     async function storedRowsUnder(identity) {
-        const db = await getMessageTreeDb(directories);
-        const counts = /** @type {{ n: number }} */ (db.get('SELECT COUNT(*) AS n FROM token_counts WHERE identity = @identity', { identity }));
-        const ids = /** @type {{ n: number }} */ (db.get('SELECT COUNT(*) AS n FROM token_ids WHERE identity = @identity', { identity }));
-        return Number(counts.n) + Number(ids.n);
+        const w = written.get(identity);
+        return w ? w.token_counts.size + w.token_ids.size : 0;
     }
 
     let writeBackChats = 0;
@@ -2399,13 +2422,13 @@ async function run() {
     async function setUpWriteBackGeneration(props, onCompletion) {
         const name = `WriteBack${++writeBackChats}`;
         const avatar = await writeCharacter(`${name}.png`, { name, data: { name, description: `${name} tends the garden.`, first_mes: 'Hello.' } });
-        await saveChatToTree(directories, avatar, 'write-back-chat', [
+        await saveBranch(user.store, { avatar: avatar }, 'write-back-chat', [
             { chat_metadata: {} },
             { name, is_user: false, mes: 'Hello.', send_date: 1, extra: {} },
             { name: 'Tester', is_user: true, mes: 'What grows here?', send_date: 2, extra: {} },
             { name, is_user: false, mes: 'Roses, mostly.', send_date: 3, extra: {} },
         ]);
-        const branch = await loadBranch(directories, avatar, 'write-back-chat');
+        const branch = await loadBranch(user.store, { avatar: avatar }, 'write-back-chat');
         const urls = [];
         const requests = [];
         const backend = await startFakeBackend((req, res, body) => {
@@ -2509,8 +2532,8 @@ async function run() {
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ content: 'Yes.', choices: [{ text: 'Yes.' }] }));
         });
-        const db = await getMessageTreeDb(directories);
-        const realGet = db.get;
+        const tokens = user.store.tokens;
+        const realRead = tokens.read;
         try {
             const fresh = await postGenerate(buildTestApp(), body);
             assert.equal(fresh.status, 200);
@@ -2518,12 +2541,11 @@ async function run() {
             const freshTokenizes = urls.filter(url => url === '/tokenize').length;
             urls.length = 0;
 
-            db.get = (sql, params) => {
-                if (/FROM token_(counts|ids)\b/.test(sql)) throw new Error('token table read failed (test)');
-                return realGet(sql, params);
+            tokens.read = async () => {
+                throw new Error('token table read failed (test)');
             };
             const failing = await postGenerate(buildTestApp(), body);
-            db.get = realGet;
+            tokens.read = realRead;
             assert.equal(failing.status, 200);
             assert.notEqual(failing.data?.error, true, 'the generation succeeded');
             assert.equal(completions.length, 2, 'the backend received both generations');
@@ -2531,7 +2553,7 @@ async function run() {
             assert.deepEqual(completions[1].logit_bias, completions[0].logit_bias, 'the same bias');
             assert.equal(urls.filter(url => url === '/tokenize').length, freshTokenizes, 'everything counted and encoded fresh again');
         } finally {
-            db.get = realGet;
+            tokens.read = realRead;
             backend.server.close();
             writeAllSettings(directories, buildSettingsFixture());
         }
@@ -2544,9 +2566,7 @@ async function run() {
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ content: 'Yes.', choices: [{ text: 'Yes.' }] }));
         });
-        const db = await getMessageTreeDb(directories);
-        const storedHashes = table => new Set(Array.from(/** @type {Iterable<{ text_hash: string }>} */ (db.iterate(
-            `SELECT text_hash FROM ${table} WHERE identity = @identity`, { identity })), row => row.text_hash));
+        const storedHashes = table => new Set(written.get(identity)?.[table] ?? []);
         try {
             const cold = await postGenerate(buildTestApp(), body);
             assert.equal(cold.status, 200);
@@ -2584,7 +2604,4 @@ run()
         console.error(error);
         process.exitCode = 1;
     })
-    .finally(() => {
-        disposeMessageTreeStores();
-        fs.rmSync(root, { recursive: true, force: true });
-    });
+    .finally(() => user.close());

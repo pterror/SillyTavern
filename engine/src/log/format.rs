@@ -338,7 +338,8 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // A session's pointer moves to the root of `tree` (no message), by `user`.
+    // A session's pointer moves to the root of `tree` (no message), by `user`, at `time` (where the chat list
+    // places a position at a root).
     Kind {
         name: "pointerRoot",
         base: 127,
@@ -346,11 +347,49 @@ pub static KINDS: &[Kind] = &[
             req("session", Ty::Id(Space::Position)),
             req("user", Ty::Id(Space::User)),
             req("tree", Ty::Id(Space::Entity)),
+            req("time", Ty::Time),
+        ],
+        internal: false,
+    },
+    // `user`'s remembered position in `tree` (the user tier of landing) is `at` (absent: the tree's root), set by no
+    // session's move: an import that keeps the chat a card names as where the character opens.
+    Kind {
+        name: "userPosition",
+        base: 250,
+        slots: &[
+            req("user", Ty::Id(Space::User)),
+            req("tree", Ty::Id(Space::Entity)),
+            opt("at", Ty::Id(Space::Message)),
+        ],
+        internal: false,
+    },
+    // `session`'s current chat in `tree` (upstream's open chat file) becomes `bookmark` (absent: none), by `user`: an
+    // explicit switch (opening a chat, a new chat, a branch opened), never an append or a move.
+    Kind {
+        name: "currentChat",
+        base: 254,
+        slots: &[
+            req("session", Ty::Id(Space::Position)),
+            req("user", Ty::Id(Space::User)),
+            req("tree", Ty::Id(Space::Entity)),
+            opt("bookmark", Ty::Id(Space::Position)),
+        ],
+        internal: false,
+    },
+    // A conversation, a `bookmark` or a `session`'s in `tree` (where it has no current chat), has its last
+    // meaningful activity here: written only by the conversion, in the order of the conversations' last messages.
+    Kind {
+        name: "conversationActive",
+        base: 1400,
+        slots: &[
+            opt("bookmark", Ty::Id(Space::Position)),
+            opt("session", Ty::Id(Space::Position)),
+            opt("tree", Ty::Id(Space::Entity)),
         ],
         internal: false,
     },
     // A session steps back or forward to the `n`-th entry of its history: the cursor and the pointer go there, and
-    // no entry is added.
+    // no entry is added. `time`: when (a step to a root is when the session got there).
     Kind {
         name: "historyStep",
         base: 220,
@@ -358,6 +397,23 @@ pub static KINDS: &[Kind] = &[
             req("session", Ty::Id(Space::Position)),
             req("user", Ty::Id(Space::User)),
             req("n", Ty::UInt),
+            req("time", Ty::Time),
+        ],
+        internal: false,
+    },
+    // `session` (new, with nothing of its own yet) is forked from `from` by `user` at `time`: its history's entries 1
+    // to `length` are `from`'s (read through it, never copied) and its cursor is the `cursor`-th; its pointer goes
+    // where that entry points (a gone one's: the nearest earlier entry still there, as a step back lands).
+    Kind {
+        name: "sessionFork",
+        base: 1300,
+        slots: &[
+            req("session", Ty::Id(Space::Position)),
+            req("from", Ty::Id(Space::Position)),
+            req("user", Ty::Id(Space::User)),
+            req("length", Ty::UInt),
+            req("cursor", Ty::UInt),
+            req("time", Ty::Time),
         ],
         internal: false,
     },
@@ -453,7 +509,7 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // A bookmark at the root of `tree` (no message), as `positionCreate` makes one at a message.
+    // A bookmark at the root of `tree` (no message), as `positionCreate` makes one at a message, made at `time`.
     Kind {
         name: "positionRoot",
         base: 234,
@@ -463,6 +519,7 @@ pub static KINDS: &[Kind] = &[
             req("session", Ty::Id(Space::Position)),
             req("user", Ty::Id(Space::User)),
             req("tree", Ty::Id(Space::Entity)),
+            req("time", Ty::Time),
         ],
         internal: false,
     },
@@ -506,6 +563,18 @@ pub static KINDS: &[Kind] = &[
         name: "positionMode",
         base: 57,
         slots: &[req("id", Ty::Id(Space::Position)), req("mode", Ty::UInt)],
+        internal: false,
+    },
+    // A bookmark moves to `at`, a message of its tree (absent: the tree's root), at `time` (where the chat list
+    // places one at a root). The message it was made at stays its own.
+    Kind {
+        name: "positionMove",
+        base: 252,
+        slots: &[
+            req("id", Ty::Id(Space::Position)),
+            req("time", Ty::Time),
+            opt("at", Ty::Id(Space::Message)),
+        ],
         internal: false,
     },
     // A list item's place in its list; its text is the text value of `item_field(list, item)`.
@@ -682,7 +751,8 @@ pub static KINDS: &[Kind] = &[
         slots: &[req("id", Ty::Id(Space::Position))],
         internal: false,
     },
-    // A message goes (only one nothing replies to).
+    // A message goes (only one nothing replies to), at `time` (a tree's last opening going puts the positions at it
+    // at the root then).
     Kind {
         name: "messageDelete",
         base: 97,
@@ -690,10 +760,12 @@ pub static KINDS: &[Kind] = &[
             req("message", Ty::Id(Space::Message)),
             opt("session", Ty::Id(Space::Position)),
             opt("user", Ty::Id(Space::User)),
+            req("time", Ty::Time),
         ],
         internal: false,
     },
-    // A message and everything below it go (`store::prune`), through `session` by `user`.
+    // A message and everything below it go (`store::prune`), through `session` by `user`, at `time` (as
+    // `messageDelete`'s).
     Kind {
         name: "subtreeDelete",
         base: 228,
@@ -701,6 +773,7 @@ pub static KINDS: &[Kind] = &[
             req("message", Ty::Id(Space::Message)),
             opt("session", Ty::Id(Space::Position)),
             opt("user", Ty::Id(Space::User)),
+            req("time", Ty::Time),
         ],
         internal: false,
     },

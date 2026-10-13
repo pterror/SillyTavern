@@ -343,8 +343,11 @@ test.describe('tag assignments changed in another tab', () => {
             await page.route('**/api/tags/changes', route => route.fulfill({ status: 500 }));
             await api(other, '/api/tags/delete', { id: merged, mergeInto: target });
             await api(other, '/api/tags/delete', { id: gone });
-            // Both deletes have finished once neither tag can be read any more.
-            await expect.poll(async () => (await api(other, '/api/tags/by-ids', { ids: [merged, gone] })).tags.length, { timeout: 15000 }).toBe(0);
+            // Both deletes are stored: the server answers one as merged into the target, the other as gone.
+            await expect.poll(async () => {
+                const answer = await api(other, '/api/tags/by-ids', { ids: [merged, gone] });
+                return [answer.gone, answer.merged];
+            }, { timeout: 15000 }).toEqual([[gone], { [merged]: target }]);
             await page.waitForTimeout(STREAM_SETTLE_MS);
             const heldDefinitions = () => page.evaluate(async (ids) => {
                 const { tagsStore } = await import('/scripts/tags.js');
@@ -359,8 +362,9 @@ test.describe('tag assignments changed in another tab', () => {
 
             const toast = page.locator('#toast-container .toast-warning', { hasText: 'Tag was deleted' });
             await expect(toast).toBeVisible({ timeout: 15000 });
-            await expect(toast).toContainText(`'${merged}' was deleted, so it does not show on TagAssignOtherTabsDeleted.`);
-            await expect(toast).toContainText(`'${gone}' was deleted, so it does not show on TagAssignOtherTabsDeleted.`);
+            // A merge is kept: assigning the merged tag gives the character its target.
+            await expect(toast).toContainText(`'${merged}' was deleted and merged into '${target}', so TagAssignOtherTabsDeleted got '${target}'.`);
+            await expect(toast).toContainText(`'${gone}' was not added to TagAssignOtherTabsDeleted: the tag was deleted.`);
             expect(await heldDefinitions()).toBe(0);
             await expect(page.locator(`#tagList .tag[id="${merged}"], #tagList .tag[id="${gone}"]`)).toHaveCount(0);
             // What the server has: the two ids, with no tag behind them.

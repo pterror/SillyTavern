@@ -13,8 +13,6 @@ import { parseArgs } from 'node:util';
 import { DIST_DIR, ENGINE_DIR, sourceKey } from './source-hash.js';
 import { TARGETS, currentPlatform, nativeFileName, wasmFileName } from './platform.js';
 
-const { values } = parseArgs({ options: { platform: { type: 'string' }, wasm: { type: 'boolean' } } });
-
 /**
  * @param {string} command
  * @param {string[]} args
@@ -34,40 +32,57 @@ function libraryName(rustTarget) {
     return 'libst_engine.so';
 }
 
-const key = sourceKey();
-let built;
-let name;
-if (values.wasm) {
-    const target = TARGETS.wasm.rust;
-    run('cargo', ['build', '--release', '--target', target], { EMNAPI_LINK_DIR: path.join(ENGINE_DIR, 'node_modules', 'emnapi', 'lib', target) });
-    built = path.join(ENGINE_DIR, 'target', target, 'release', 'st_engine.wasm');
-    name = wasmFileName(key);
-} else if (values.platform) {
-    const target = TARGETS.native.find(t => t.platform === values.platform);
-    if (!target) throw new Error(`No platform ${values.platform} in targets.json`);
-    const env = target.rustflags ? { RUSTFLAGS: target.rustflags } : {};
-    if (target.build === 'zigbuild') {
-        run('cargo', ['zigbuild', '--release', '--target', target.zigTarget], env);
-    } else if (target.build === 'android') {
-        const ndk = process.env.ANDROID_NDK_LATEST_HOME || process.env.ANDROID_NDK_HOME;
-        if (!ndk) throw new Error('Set ANDROID_NDK_HOME to the Android NDK');
-        const linker = path.join(ndk, 'toolchains', 'llvm', 'prebuilt', 'linux-x86_64', 'bin', target.ndkClang);
-        run('cargo', ['build', '--release', '--target', target.rust], { ...env, [`CARGO_TARGET_${target.rust.toUpperCase().replaceAll('-', '_')}_LINKER`]: linker });
+/**
+ * Builds st-engine into the dist directory, named for this checkout's source hash. Throws if cargo is missing or the build fails.
+ * @param {object} [options]
+ * @param {string|null} [options.platform] targets.json native platform to build the way CI does; null for this machine
+ * @param {boolean} [options.wasm] Build the wasm instead
+ * @param {string} [options.distDir]
+ * @returns {string} Path of the file written
+ */
+export function buildEngine({ platform = null, wasm = false, distDir = DIST_DIR } = {}) {
+    const key = sourceKey();
+    let built;
+    let name;
+    if (wasm) {
+        const target = TARGETS.wasm.rust;
+        run('cargo', ['build', '--release', '--target', target], { EMNAPI_LINK_DIR: path.join(ENGINE_DIR, 'node_modules', 'emnapi', 'lib', target) });
+        built = path.join(ENGINE_DIR, 'target', target, 'release', 'st_engine.wasm');
+        name = wasmFileName(key);
+    } else if (platform) {
+        const target = TARGETS.native.find(t => t.platform === platform);
+        if (!target) throw new Error(`No platform ${platform} in targets.json`);
+        const env = target.rustflags ? { RUSTFLAGS: target.rustflags } : {};
+        if (target.build === 'zigbuild') {
+            run('cargo', ['zigbuild', '--release', '--target', target.zigTarget], env);
+        } else if (target.build === 'android') {
+            const ndk = process.env.ANDROID_NDK_LATEST_HOME || process.env.ANDROID_NDK_HOME;
+            if (!ndk) throw new Error('Set ANDROID_NDK_HOME to the Android NDK');
+            const linker = path.join(ndk, 'toolchains', 'llvm', 'prebuilt', 'linux-x86_64', 'bin', target.ndkClang);
+            run('cargo', ['build', '--release', '--target', target.rust], { ...env, [`CARGO_TARGET_${target.rust.toUpperCase().replaceAll('-', '_')}_LINKER`]: linker });
+        } else {
+            run('cargo', ['build', '--release', '--target', target.rust], env);
+        }
+        built = path.join(ENGINE_DIR, 'target', target.rust, 'release', libraryName(target.rust));
+        name = nativeFileName(key, target.platform);
     } else {
-        run('cargo', ['build', '--release', '--target', target.rust], env);
+        const host = currentPlatform();
+        if (!host) throw new Error(`No native target in targets.json for ${process.platform}-${process.arch}; build --wasm`);
+        const rustTarget = TARGETS.native.find(t => t.platform === host).rust;
+        run('cargo', ['build', '--release']);
+        built = path.join(ENGINE_DIR, 'target', 'release', libraryName(rustTarget));
+        name = nativeFileName(key, host);
     }
-    built = path.join(ENGINE_DIR, 'target', target.rust, 'release', libraryName(target.rust));
-    name = nativeFileName(key, target.platform);
-} else {
-    const platform = currentPlatform();
-    if (!platform) throw new Error(`No native target in targets.json for ${process.platform}-${process.arch}; build --wasm`);
-    const rustTarget = TARGETS.native.find(t => t.platform === platform).rust;
-    run('cargo', ['build', '--release']);
-    built = path.join(ENGINE_DIR, 'target', 'release', libraryName(rustTarget));
-    name = nativeFileName(key, platform);
+
+    fs.mkdirSync(distDir, { recursive: true });
+    const out = path.join(distDir, name);
+    const tmp = `${out}.${process.pid}.tmp`;
+    fs.copyFileSync(built, tmp);
+    fs.renameSync(tmp, out);
+    return out;
 }
 
-fs.mkdirSync(DIST_DIR, { recursive: true });
-const out = path.join(DIST_DIR, name);
-fs.copyFileSync(built, out);
-console.log(out);
+if (process.argv[1] && path.resolve(process.argv[1]) === import.meta.filename) {
+    const { values } = parseArgs({ options: { platform: { type: 'string' }, wasm: { type: 'boolean' } } });
+    console.log(buildEngine({ platform: values.platform ?? null, wasm: values.wasm ?? false }));
+}

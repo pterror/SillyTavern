@@ -9,6 +9,16 @@ import { isProvisionalNodeId } from './node-identity.js';
 import { _snapshotMessages } from './generation.js';
 
 /**
+ * Takes the state where the session now is from an answer that moved it (`chat_metadata`), when it carries one.
+ * @param {{ chat_metadata?: ChatMetadata } | null | undefined} answer
+ */
+async function takeStateFrom(answer) {
+    if (!answer?.chat_metadata) return;
+    const { takeServerState } = await import('./metadata-store.js');
+    takeServerState(answer.chat_metadata);
+}
+
+/**
  * Switches to a sibling's path; nothing is removed from the database, so swiping back reaches the old alternative's children again.
  * With `redraw: false` only the data moves (node, selection, the continuation in `chat`); the caller redraws
  * from mesId + 1 itself, e.g. mid-animation, so the old text stays on screen until the swipe hides it.
@@ -43,7 +53,7 @@ export async function switchToAlternativePath(mesId, swipeId, { redraw = true } 
             }
             payload = await response.json();
             if (avatar != null) {
-                _setCurrentTarget(targetNodeId, null);
+                _setCurrentTarget(getCurrentChatId() ?? '', null);
             }
         } catch (error) {
             console.warn('[switchToAlternativePath] Failed to select the alternative:', error);
@@ -58,6 +68,7 @@ export async function switchToAlternativePath(mesId, swipeId, { redraw = true } 
 
     updateMessage(mesId, { node_id: targetNodeId, swipe_id: swipeId });
     chat.splice(mesId + 1, chat.length - (mesId + 1), ...(payload.messages ?? []));
+    await takeStateFrom(payload);
 
     // Without this the freshly-fetched messages read as changed against the snapshot on the next save.
     _snapshotMessages();
@@ -83,13 +94,16 @@ async function _persistNodeSelection(targetNodeId) {
     if (avatar == null || isProvisionalNodeId(targetNodeId)) {
         return;
     }
-    _setCurrentTarget(targetNodeId, null);
     try {
-        await fetch('/api/chats/message/select', {
+        const response = await fetch('/api/chats/message/select', {
             method: 'POST',
             headers: getRequestHeaders(),
             body: JSON.stringify({ avatar_url: avatar, node_id: targetNodeId, activate: true }),
         });
+        if (response.ok) {
+            _setCurrentTarget(getCurrentChatId() ?? '', null);
+            await takeStateFrom(await response.json());
+        }
     } catch (error) {
         console.warn('[switchToNode] Failed to persist the selection:', error);
     }
@@ -131,7 +145,8 @@ export async function switchToNode(targetNodeId) {
         const answer = await response.json();
         ancestry = answer?.ancestry;
         below = answer?.messages ?? [];
-        _setCurrentTarget(targetNodeId, null);
+        _setCurrentTarget(getCurrentChatId() ?? '', null);
+        await takeStateFrom(answer);
     } catch (error) {
         console.warn('[switchToNode] Failed to go to the message:', error);
         return false;

@@ -22,6 +22,7 @@ unicode-normalization = "0.1.25"
 # instead of holding each engine thread's peak, as glibc's per-thread arenas do. Node's own memory isn't affected.
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 mimalloc = { version = "0.1", default-features = false }
+sysinfo = { version = "0.37", default-features = false, features = ["system"] }
 
 [[example]]
 name = "measure"
@@ -50,3 +51,7 @@ napi-build = "2.6.0"
 lto = true
 codegen-units = 1
 strip = "symbols"
+
+[[test]]
+name = "bulk_budget"
+required-features = ["measure"]

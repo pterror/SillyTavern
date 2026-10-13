@@ -1,8 +1,9 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, holdCharacters } from './frontent-test-utils.js';
 
-// Duplicating a character copies its tags on the server, from what the server has. The page sends no tag list of
-// its own, so a copy of the original it holds that is out of date can't decide what the duplicate gets.
+// Duplicating a character copies its tags on the server, in the same write as the card, from what the server has.
+// The page sends no tag request of its own, so a copy of the original it holds that is out of date can't decide
+// what the duplicate gets.
 
 /**
  * Loads the app and waits for APP_READY.
@@ -142,6 +143,12 @@ function recordTagWrites(page) {
 test.describe('Duplicating a character copies its tags on the server', () => {
     test.setTimeout(180000);
 
+    // A route handler can still be waiting on a request the page sent near the end of a test; drop the routes so
+    // teardown doesn't fail it.
+    test.afterEach(async ({ page }) => {
+        await page.unrouteAll({ behavior: 'ignoreErrors' });
+    });
+
     test('the duplicate gets the tag another tab gave the original, which this page has not seen', async ({ browser, page }) => {
         const stamp = Date.now();
         const fixture = await withSetupPage(browser, async (setup) => {
@@ -167,22 +174,9 @@ test.describe('Duplicating a character copies its tags on the server', () => {
         const copy = await duplicate(page, fixture.card);
         expect(copy).toBeTruthy();
 
-        expect(writes).toEqual([{ path: '/api/tags/copy', body: { from: fixture.card, to: copy } }]);
+        expect(writes).toEqual([]);
         const expected = [fixture.seen, fixture.unseen].sort();
         expect((await serverTagsOf(page, copy)).sort()).toEqual(expected);
         expect((await serverTagsOf(page, fixture.card)).sort()).toEqual(expected);
-    });
-
-    test('a failed copy is reported', async ({ browser, page }) => {
-        const stamp = Date.now();
-        const fixture = await withSetupPage(browser, async (setup) => {
-            const card = await createCharacter(setup, `TagCopyFails-${stamp}`);
-            return { card };
-        });
-
-        await loadApp(page);
-        await page.route('**/api/tags/copy', route => route.fulfill({ status: 500, body: '' }));
-        expect(await duplicate(page, fixture.card)).toBeTruthy();
-        await expect(page.locator('.toast-error', { hasText: 'Tags could not be copied to the duplicate.' })).toBeVisible({ timeout: 15000 });
     });
 });

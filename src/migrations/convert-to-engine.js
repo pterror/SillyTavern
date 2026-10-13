@@ -1,4 +1,3 @@
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
@@ -7,8 +6,9 @@ import { setConfigFilePath } from '../util.js';
 import { USER_DIRECTORY_TEMPLATE } from '../constants.js';
 import { alternativesFromMessage, identityHashOf } from '../message-tree-db.js';
 import { isChatHeaderEntry, parseChatFile } from '../chat-header.js';
-import { TYPE } from '../library-codes.js';
+import { TYPE, convertedFileKey } from '../library-codes.js';
 import { bookKey } from '../world-info-keys.js';
+import { parseTimestamp } from '../timestamps.js';
 import { TAG_SORTS } from '../library-engine-tags.js';
 import { probeConfiguredServer } from './cleanup-zztest-leftovers.js';
 import { characterRecords, groupRecords, ownedBookRecords, tagRecords, worldBookRecords } from './convert-to-engine/records.js';
@@ -80,46 +80,6 @@ function count(report, kind, n = 1) {
 }
 
 /**
- * The sha256 of a file, read in chunks.
- * @param {string} file
- */
-function fileHash(file) {
-    const hash = crypto.createHash('sha256');
-    const fd = fs.openSync(file, 'r');
-    try {
-        const buf = Buffer.allocUnsafe(1 << 20);
-        for (;;) {
-            const n = fs.readSync(fd, buf, 0, buf.length, null);
-            if (n === 0) break;
-            hash.update(buf.subarray(0, n));
-        }
-    } finally {
-        fs.closeSync(fd);
-    }
-    return hash.digest('hex');
-}
-
-/**
- * Puts an avatar in the store under its content hash: a hard link (no image data written), else a copy (a reflink
- * where the filesystem has them). Identical images become one file: one already there is left as it is.
- * @param {string} source
- * @param {string} target
- * @returns {'linked' | 'copied' | 'present'}
- */
-function placeAvatar(source, target) {
-    if (fs.existsSync(target)) return 'present';
-    try {
-        fs.linkSync(source, target);
-        return 'linked';
-    } catch (err) {
-        const code = /** @type {any} */ (err).code;
-        if (!['EXDEV', 'EPERM', 'ENOTSUP', 'EMLINK', 'EOPNOTSUPP', 'ENOSYS'].includes(code)) throw err;
-        fs.copyFileSync(source, target, fs.constants.COPYFILE_FICLONE);
-        return 'copied';
-    }
-}
-
-/**
  * The user's directories this conversion reads.
  * @param {string} root
  */
@@ -168,8 +128,6 @@ export async function convert(o) {
     const sink = new Sink(store);
     /** @type {import('./convert-to-engine/records.js').Ids} */
     const ids = { nextId: 1n };
-    const avatarsDir = o.apply ? path.join(/** @type {string} */ (o.storeDir), 'avatars') : '';
-    if (o.apply) fs.mkdirSync(avatarsDir, { recursive: true });
     /** @type {import('../endpoints/sqlite-engine.js').SqliteEngineHandle[]} */
     const backups = [];
     let overlay = null;
@@ -231,7 +189,8 @@ export async function convert(o) {
         const links = new Map();
         /** @type {string[]} */
         const withBooks = [];
-        const avatarCounts = { linked: 0, copied: 0, copiedBytes: 0, present: 0, missing: 0 };
+        /** @type {{ name: string, size: number, mtimeMs: number }[]} The files of `characters/` converted, as they are now. */
+        const convertedFiles = [];
         if (meta) {
             let done = 0;
             for (const batch of characterBatches(meta)) {
@@ -242,19 +201,13 @@ export async function convert(o) {
                     }
                     const id = ids.nextId++;
                     const imageFile = path.join(dirs.characters, c.avatar);
-                    let avatarHash = null;
                     if (fs.existsSync(imageFile)) {
-                        if (o.apply) {
-                            avatarHash = fileHash(imageFile);
-                            const how = placeAvatar(imageFile, path.join(avatarsDir, `${avatarHash}${path.extname(c.avatar) || '.png'}`));
-                            avatarCounts[how]++;
-                            if (how === 'copied') avatarCounts.copiedBytes += fs.statSync(imageFile).size;
-                        }
+                        const st = fs.statSync(imageFile);
+                        convertedFiles.push({ name: c.avatar, size: st.size, mtimeMs: st.mtimeMs });
                     } else {
-                        avatarCounts.missing++;
-                        warn(report, 'characters with no image file (no avatar under a hash)', c.avatar);
+                        warn(report, 'characters with no image file in characters/ (shown with the default avatar)', c.avatar);
                     }
-                    const built = characterRecords(id, c.avatar, c.card, { fav: c.fav, dateAdded: c.dateAdded, contentHash: c.contentHash, avatarIdentityHash: c.avatarIdentityHash, avatarHash, directories: dirs });
+                    const built = characterRecords(id, c.avatar, c.card, { fav: c.fav, dateAdded: c.dateAdded, contentHash: c.contentHash, avatarIdentityHash: c.avatarIdentityHash, directories: dirs });
                     const records = built.records;
                     for (const t of await carried(c.tags)) records.push({ kind: 'tagAssign', entity: id, tag: t, assigned: true });
                     await sink.toLoad(records);
@@ -271,7 +224,6 @@ export async function convert(o) {
                 done += batch.length;
                 progress(`characters read: ${done}`);
             }
-            for (const [k, n] of Object.entries(avatarCounts)) if (n) count(report, `avatar files ${k}`, n);
             for (const r of strayCharacterTagRows(meta)) warn(report, 'character tag rows of no character', `${r.entity} -> ${r.tag}`);
         }
 
@@ -325,7 +277,7 @@ export async function convert(o) {
         phase('reading the library');
         progress('installing the bulk load');
         const loadStats = await sink.finishLoad();
-        if (loadStats) report.lines.push(`bulk load: ${loadStats.records} records, ${loadStats.totalMs.toFixed(0)} ms (derive ${loadStats.deriveMs.toFixed(0)} ms of CPU, merge ${loadStats.mergeMs.toFixed(0)} ms, numberings ${loadStats.numbersMs.toFixed(0)} ms, top lists ${loadStats.listsMs.toFixed(0)} ms), ${loadStats.logBytes} log bytes, ${loadStats.runBytes} run bytes`);
+        if (loadStats) report.lines.push(`bulk load: ${loadStats.records} records, ${loadStats.totalMs.toFixed(0)} ms (derive ${loadStats.deriveMs.toFixed(0)} ms of CPU, merge ${loadStats.mergeMs.toFixed(0)} ms, numberings ${loadStats.numbersMs.toFixed(0)} ms), ${loadStats.logBytes} log bytes, ${loadStats.runBytes} run bytes`);
 
         phase('installing the bulk load');
         // ---- after the load: merges, the tag pass, marks ----
@@ -423,6 +375,10 @@ export async function convert(o) {
                 }
             }
         }
+        for (const f of convertedFiles) {
+            await sink.commit([{ kind: 'metaValue', key: convertedFileKey(f.name), json: JSON.stringify([f.size, f.mtimeMs]) }]);
+            count(report, 'character files recorded as converted (a rescan leaves them)');
+        }
 
         phase('tags, world books, links and own books');
         // ---- chats ----
@@ -482,6 +438,8 @@ export async function convert(o) {
             let doneOwners = 0;
             /** @type {object[]} */
             const afterLoad = [];
+            /** @type {{ time: number, record: object }[]} */
+            const conversations = [];
             /** @type {Parameters<typeof verify>[0]['owners']} */
             const checks = [];
             for (const [ownerId, t] of trees) {
@@ -516,6 +474,7 @@ export async function convert(o) {
                 }
                 checks.push({ input, tree: t.id, files: fileItemizations });
                 for (const r of counts.later) afterLoad.push(r);
+                for (const a of counts.active) conversations.push(a);
                 for (const node of counts.badSendKeys) warn(report, 'send keys that aren\'t UUIDs (not converted: a draft re-sent with one may store the message again)', `${t.kind} ${ownerId} message ${node}`);
                 count(report, 'messages', counts.messages);
                 count(report, 'bookmarks', counts.bookmarks);
@@ -540,6 +499,10 @@ export async function convert(o) {
             progress('installing the chats\' bulk load');
             const chatLoad = await sink.finishLoad();
             if (chatLoad) report.lines.push(`chats' bulk load: ${chatLoad.records} records, ${chatLoad.totalMs.toFixed(0)} ms (derive ${chatLoad.deriveMs.toFixed(0)} ms of CPU, merge ${chatLoad.mergeMs.toFixed(0)} ms), ${chatLoad.logBytes} log bytes, ${chatLoad.runBytes} run bytes`);
+            // The conversations last, by the time of their last messages (a stable sort: ties stay in owner order).
+            conversations.sort((a, b) => a.time - b.time);
+            for (const a of conversations) afterLoad.push(a.record);
+            count(report, 'conversations listed in recent chats', conversations.length);
             for (let i = 0; i < afterLoad.length; i += 2000) await sink.commit(afterLoad.slice(i, i + 2000));
             chatChecks = checks;
         }
@@ -551,8 +514,8 @@ export async function convert(o) {
         if (o.apply) {
             progress('checking the store against the old files');
             const differs = await verify({
-                store, meta, avatarsDir, charactersDir: dirs.characters, tags, groups: groupRead.groups,
-                books: () => worldBooks(dirs.worlds), bookNames, owners: chatChecks, handle: o.handle, counts: report.counts, progress,
+                store, meta, charactersDir: dirs.characters, tags, groups: groupRead.groups,
+                books: () => worldBooks(dirs.worlds), bookNames, owners: chatChecks, handle: o.handle, now, counts: report.counts, progress,
             });
             report.problems.push(...differs);
             phase('the check');
@@ -690,7 +653,7 @@ function droppedChats(report, db, dirs, ownerId, group, skipStray) {
         const header = /** @type {any} */ (parsed.header);
         const metadata = header && typeof header.chat_metadata === 'object' && header.chat_metadata !== null && !Array.isArray(header.chat_metadata) ? header.chat_metadata : null;
         if (parsed.messages.length === 0) {
-            out.push({ name, kind: 'empty', metadata });
+            out.push({ name, kind: 'empty', metadata, created: parseTimestamp(header?.create_date) || null });
             report.lines.push(`group ${ownerId} chat "${name}" (header only): a bookmark at the tree's root`);
             continue;
         }
@@ -734,14 +697,6 @@ function sizeOfDir(dir) {
         else if (e.isFile()) n += fs.statSync(full).size;
     }
     return n;
-}
-
-/**
- * The bytes the store's own files take, counting a hard-linked avatar as none.
- * @param {string} dir
- */
-function storeBytes(dir) {
-    return sizeOfDir(dir) - sizeOfDir(path.join(dir, 'avatars'));
 }
 
 /**
@@ -847,7 +802,7 @@ export async function runConversion(options) {
         warnLine(`${LOG_PREFIX} FAILED: the new store differs from the old files; it was deleted and nothing else was changed`);
         return 1;
     }
-    const bytes = storeBytes(building);
+    const bytes = sizeOfDir(building);
     fs.renameSync(building, storeDir);
     const dirFd = fs.openSync(root, 'r');
     try {
@@ -858,7 +813,7 @@ export async function runConversion(options) {
         fs.closeSync(dirFd);
     }
     log(`${LOG_PREFIX} records: ${sink.loaded.toLocaleString('en-US')} bulk loaded, ${sink.committed.toLocaleString('en-US')} committed in ${sink.commits} commits`);
-    log(`${LOG_PREFIX} store: ${(bytes / 1e6).toFixed(1)} MB (log ${(stats.logBytes / 1e6).toFixed(1)} MB written by commits, runs ${(stats.runBytes / 1e6).toFixed(1)} MB), avatars hard-linked`);
+    log(`${LOG_PREFIX} store: ${(bytes / 1e6).toFixed(1)} MB (log ${(stats.logBytes / 1e6).toFixed(1)} MB written by commits, runs ${(stats.runBytes / 1e6).toFixed(1)} MB)`);
     log(`${LOG_PREFIX} done in ${((Date.now() - started) / 1000).toFixed(1)} s, every value checked. The old files are kept; delete them once the server has started cleanly on ${storeDir}.`);
     return 0;
 }

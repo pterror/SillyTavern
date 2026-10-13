@@ -24,8 +24,8 @@ import { accountStorage } from './util/AccountStorage.js';
 import { emptySelection, isSelected, setOne, setRange, setAll, isEverything, isEmpty, countSelection, selectionToWire } from './bulk-selection.js';
 
 /**
- * @typedef {object} PreparedSelection A selection the server has fixed as a job (`/api/characters/bulk/prepare`).
- * @property {string} job
+ * @typedef {object} PreparedSelection A selection the server has read (`/api/characters/bulk/prepare`).
+ * @property {object} selection The selection as sent (`selectionToWire()`): what the actions walk.
  * @property {number} count How many characters it holds.
  * @property {boolean} containsCurrent Whether the current character is one of them.
  * @property {string[]} sample Its first avatars.
@@ -45,7 +45,7 @@ async function prepareSelection(wire) {
         toastr.error(t`The selected characters could not be read.`, t`Bulk edit`);
         return null;
     }
-    const prepared = await response.json();
+    const prepared = { ...await response.json(), selection: wire };
     if (Array.isArray(prepared.missing) && prepared.missing.length > 0) {
         toastr.warning(t`These selected characters no longer exist, so they are left out:` + `<br />${prepared.missing.map(escapeHtml).join('<br />')}`,
             t`Bulk edit`, { escapeHtml: false, timeOut: 0, extendedTimeOut: 0 });
@@ -53,33 +53,25 @@ async function prepareSelection(wire) {
     return prepared;
 }
 
-/** @param {string} job */
-function dropPrepared(job) {
-    fetch('/api/characters/bulk/drop', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({ job }),
-    }).catch(error => console.warn('Could not drop a bulk selection:', error));
-}
-
 /**
- * A prepared selection's avatars, a page at a time.
- * @param {string} job
+ * A selection's avatars, a page at a time.
+ * @param {object} selection The selection as sent (`selectionToWire()`).
  * @returns {AsyncGenerator<string[], void, undefined>}
  */
-async function* preparedAvatars(job) {
-    let after = '';
+async function* preparedAvatars(selection) {
+    /** @type {string|undefined} */
+    let after;
     for (;;) {
         const response = await fetch('/api/characters/bulk/ids', {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify({ job, after }),
+            body: JSON.stringify({ selection, ...(after === undefined ? {} : { after }) }),
         });
         if (!response.ok) throw new Error(`/api/characters/bulk/ids failed with ${response.status}`);
-        const { avatars, more } = await response.json();
-        if (avatars.length > 0) yield avatars;
-        if (!more || avatars.length === 0) return;
-        after = avatars[avatars.length - 1];
+        const page = await response.json();
+        if (page.avatars.length > 0) yield page.avatars;
+        if (!page.more || page.avatars.length === 0 || typeof page.after !== 'string') return;
+        after = page.after;
     }
 }
 
@@ -129,7 +121,7 @@ async function runPrepared(prepared, action, options, title, onItem) {
         const response = await fetch('/api/characters/bulk/run', {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify({ job: prepared.job, action, options, watch: watchedAvatars() }),
+            body: JSON.stringify({ selection: prepared.selection, action, options, watch: watchedAvatars() }),
         });
         if (!response.ok || !response.body) {
             return { done, failed, stopped: true };
@@ -514,8 +506,7 @@ class BulkTagPopupHandler {
     }
 
     /**
-     * Append and show the tag control for a prepared selection. The popup owns the selection from here on and drops
-     * it when it closes.
+     * Append and show the tag control for a prepared selection.
      * @param {PreparedSelection} prepared
      * @param {string[]} [characterIds] The characters it was made from, when named one by one.
      */
@@ -523,7 +514,6 @@ class BulkTagPopupHandler {
         this.#prepared = prepared;
         this.characterIds = characterIds;
         if (prepared.count === 0) {
-            dropPrepared(prepared.job);
             this.#prepared = null;
             return;
         }
@@ -558,7 +548,7 @@ class BulkTagPopupHandler {
         const response = await fetch('/api/characters/bulk/mutual-tags', {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify({ job: this.#prepared.job }),
+            body: JSON.stringify({ selection: this.#prepared.selection }),
         });
         if (!response.ok) {
             toastr.error(t`The server could not be asked which tags they have.`, t`Tags could not be read`);
@@ -637,7 +627,6 @@ class BulkTagPopupHandler {
         if (popupElement) {
             document.body.removeChild(popupElement);
         }
-        if (this.#prepared) dropPrepared(this.#prepared.job);
         this.#prepared = null;
         this.#mutualTagIds = [];
 
@@ -1134,9 +1123,8 @@ class BulkEditOverlay {
     };
 
     /**
-     * Has the server fix the selection as a job, and hands it to `use`; the job is dropped afterwards unless `use`
-     * says it keeps it (returns true).
-     * @param {(prepared: PreparedSelection) => Promise<boolean|void>} use
+     * Has the server read the selection (how many it holds, which are gone) and hands it to `use`.
+     * @param {(prepared: PreparedSelection) => Promise<void>} use
      */
     #withPrepared = async (use) => {
         if (isEmpty(this.#selection)) {
@@ -1151,16 +1139,11 @@ class BulkEditOverlay {
             await reading.hide();
         }
         if (!prepared) return;
-        let kept = false;
-        try {
-            if (prepared.count === 0) {
-                toastr.info(t`None of the selected characters exist any more.`, t`Bulk edit`);
-                return;
-            }
-            kept = (await use(prepared)) === true;
-        } finally {
-            if (!kept) dropPrepared(prepared.job);
+        if (prepared.count === 0) {
+            toastr.info(t`None of the selected characters exist any more.`, t`Bulk edit`);
+            return;
         }
+        await use(prepared);
     };
 
     /**
@@ -1209,7 +1192,7 @@ class BulkEditOverlay {
             const progress = progressToast(t`Convert to persona`, prepared.count);
             let result;
             try {
-                result = await convertCharactersToPersonas(preparedAvatars(prepared.job), done => progress.update(done));
+                result = await convertCharactersToPersonas(preparedAvatars(prepared.selection), done => progress.update(done));
             } catch (error) {
                 console.error('Bulk persona conversion failed:', error);
                 toastr.error(t`It stopped before the end. The characters it hadn't reached yet were not converted.`, t`Convert to persona`);
@@ -1335,8 +1318,6 @@ class BulkEditOverlay {
     handleContextMenuTag = async () => {
         await this.#withPrepared(async (prepared) => {
             await this.#bulkTagPopupHandler.showPrepared(prepared);
-            // The popup owns the job now and drops it when it closes.
-            return true;
         });
         this.browseState();
     };

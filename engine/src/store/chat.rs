@@ -85,7 +85,12 @@ fn time_key(k: &mut Vec<u8>, t: i64) {
 }
 
 fn time_of(rec: &Record) -> i64 {
-    match rec.values[APPEND_TIME] {
+    time_at(rec, APPEND_TIME)
+}
+
+/// The record's time slot `i`.
+pub(super) fn time_at(rec: &Record, i: usize) -> i64 {
+    match rec.values[i] {
         Value::Time(t) => t,
         _ => unreachable!("checked by Record::new"),
     }
@@ -356,6 +361,38 @@ pub(super) fn bookmark_entries(out: &mut Out, b: u64, owner: u64, at: u64, put: 
     }
 }
 
+/// A bookmark's place in its tree's order by time (`key::TREE_BOOKMARK_TIME`): the receive time of the message it is
+/// at, or for one at the tree's root the time it was made.
+pub(super) fn bookmark_time_put(out: &mut Out, b: u64, tree: u64, time: i64) {
+    let tk = sessions::time_key(time);
+    out.put(key::id(key::BOOKMARK_TIME, b), varints(&[tk]));
+    let mut k = key::ids(key::TREE_BOOKMARK_TIME, tree, tk);
+    put_u64(&mut k, b);
+    out.put(k, Vec::new());
+}
+
+/// Takes a bookmark out of its tree's order by message time.
+pub(super) fn bookmark_time_del(
+    view: &View,
+    out: &mut Out,
+    b: u64,
+    tree: u64,
+) -> Result<(), StoreError> {
+    if let Some(v) = view.get(&key::id(key::BOOKMARK_TIME, b))? {
+        let [tk] = parse_varints::<1>(&v)?;
+        let mut k = key::ids(key::TREE_BOOKMARK_TIME, tree, tk);
+        put_u64(&mut k, b);
+        out.del(k);
+        out.del(key::id(key::BOOKMARK_TIME, b));
+    }
+    Ok(())
+}
+
+/// The receive time of a stored message.
+pub(super) fn message_time(view: &View, m: u64) -> Result<i64, StoreError> {
+    Ok(time_of(&require_message(view, m)?.1))
+}
+
 pub(super) fn root_bookmark_entries(out: &mut Out, b: u64, tree: u64, put: bool) {
     let r = key::ids(key::ROOT_BOOKMARKS, tree, b);
     let t = key::ids(key::TREE_BOOKMARK, tree, b);
@@ -391,7 +428,7 @@ pub fn root_bookmarks(view: &View, tree: u64) -> Result<Vec<u64>, StoreError> {
 }
 
 /// The tree a bookmark is in, at a message or at the root.
-fn bookmark_tree(view: &View, b: u64) -> Result<Option<u64>, StoreError> {
+pub(super) fn bookmark_tree(view: &View, b: u64) -> Result<Option<u64>, StoreError> {
     if let Some(m) = bookmark_at(view, b)? {
         return Ok(Some(id(&require_message(view, m)?.1, APPEND_OWNER)));
     }
@@ -501,7 +538,17 @@ impl Deriver for MessageAppend {
         sessions::appended(view, out, m, parent)?;
         // Shown through its session: the session moves to it, and continuing there is choosing it.
         if let Some(s) = s {
-            sessions::moved(view, out, s, u, owner, Some(m), at, false, true)?;
+            sessions::moved(
+                view,
+                out,
+                s,
+                u,
+                owner,
+                sessions::Spot::Message(m),
+                at,
+                false,
+                true,
+            )?;
             let f = match parent {
                 Some(p) => Fork::Message(p),
                 None => Fork::Root(owner),
@@ -524,6 +571,8 @@ impl Deriver for MessageAppend {
                 if bookmark_mode(view, b)? == Some(FOLLOWING) {
                     bookmark_entries(out, b, owner, p, false);
                     bookmark_entries(out, b, owner, m, true);
+                    bookmark_time_del(view, out, b, owner)?;
+                    bookmark_time_put(out, b, owner, time_of(rec));
                 }
             }
         } else {
@@ -531,6 +580,8 @@ impl Deriver for MessageAppend {
                 if bookmark_mode(view, b)? == Some(FOLLOWING) {
                     root_bookmark_entries(out, b, owner, false);
                     bookmark_entries(out, b, owner, m, true);
+                    bookmark_time_del(view, out, b, owner)?;
+                    bookmark_time_put(out, b, owner, time_of(rec));
                 }
             }
         }
@@ -591,7 +642,7 @@ impl Deriver for MessageDelete {
         if let Some(s) = s {
             sessions::activity(view, out, s, owner, at.pos)?;
         }
-        delete_message(view, out, m, (l, append), false)
+        delete_message(view, out, m, (l, append), false, time_at(rec, 3))
     }
 
     fn is_live(&self, _: &Record, _: u64, _: &View) -> Result<bool, StoreError> {
@@ -603,14 +654,15 @@ impl Deriver for MessageDelete {
     }
 }
 
-/// Message `m` (its append at `l`) goes, with every value it holds and what names it. `detached`: it is a
-/// subtree delete's root, already taken from among its parent's replies.
+/// Message `m` (its append at `l`) goes at `time`, with every value it holds and what names it. `detached`: it is
+/// a subtree delete's root, already taken from among its parent's replies.
 pub(super) fn delete_message(
     view: &View,
     out: &mut Out,
     m: u64,
     (l, append): (Loc, Record),
     detached: bool,
+    time: i64,
 ) -> Result<(), StoreError> {
     let owner = id(&append, APPEND_OWNER);
     let h = Holder::Message(m);
@@ -640,7 +692,7 @@ pub(super) fn delete_message(
         out.del(send_key_key(owner, sk));
     }
     drop_key(view, out, KEYED_MESSAGE, m)?;
-    sessions::message_gone(view, out, m, parent, owner)?;
+    sessions::message_gone(view, out, m, parent, owner, time)?;
     super::state::message_gone(view, out, m)?;
     dead(out, l);
     out.del(key::id(key::MESSAGE, m));
@@ -1003,6 +1055,7 @@ impl Deriver for PositionCreate {
         out.put(key::id(key::POSITION, b), loc_bytes(at));
         out.max(key::of(key::NEXT_POSITION), b + 1);
         bookmark_entries(out, b, tree, ptr, true);
+        bookmark_time_put(out, b, tree, time_of(&m));
         sessions::branch_created(out, ptr, b);
         sessions::activity(view, out, s, tree, at.pos)
     }
@@ -1038,6 +1091,7 @@ impl Deriver for PositionRoot {
         out.put(key::id(key::POSITION, b), loc_bytes(at));
         out.max(key::of(key::NEXT_POSITION), b + 1);
         root_bookmark_entries(out, b, tree, true);
+        bookmark_time_put(out, b, tree, time_at(rec, 5));
         sessions::activity(view, out, s, tree, at.pos)
     }
 
@@ -1072,13 +1126,7 @@ impl Deriver for PositionName {
                 Value::Text(t) => Some(t.as_slice()),
                 _ => None,
             };
-            // Session names are unique in the store (its users share them, as upstream's chat files in a user
-            // data directory): a name another session holds is refused.
-            if let Some(n) = name
-                && sessions::by_name(view, n)?.iter().any(|&s| s != p)
-            {
-                return Err(StoreError::Refused("the session name is taken".into()));
-            }
+            // A session's name is a free label, as a bookmark's.
             let old = super::searched::position_name(view, p)?;
             super::searched::session_named(view, out, p, old.as_deref(), name)?;
             if let Some(o) = &old {
@@ -1088,16 +1136,11 @@ impl Deriver for PositionName {
                 out.put(sessions::named_key(n, p), Vec::new());
             }
         } else if let Some(tree) = bookmark_tree(view, p)? {
-            // Bookmark names are unique in their tree, as upstream's chat names were per character.
+            // A bookmark's name is a free label: several may share one (the tree's index lists each).
             let name = match &rec.values[1] {
                 Value::Text(t) => Some(t.as_slice()),
                 _ => None,
             };
-            if let Some(n) = name
-                && bookmarks_named(view, tree, n)?.iter().any(|&b| b != p)
-            {
-                return Err(StoreError::Refused("the bookmark name is taken".into()));
-            }
             if let Some(o) = super::searched::position_name(view, p)? {
                 out.del(bookmark_named_key(tree, &o, p));
             }
@@ -1179,6 +1222,71 @@ impl Deriver for PositionMode {
     }
 }
 
+/// `positionMove`: a bookmark moves to a message of its tree, or to its root.
+pub struct PositionMove;
+
+impl Deriver for PositionMove {
+    fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
+        let (b, target) = (id(rec, 0), opt_id(rec, 2));
+        if view.get(&key::id(key::POSITION, b))?.is_none() {
+            return Err(StoreError::Refused(format!("no bookmark {b}")));
+        }
+        let Some(tree) = bookmark_tree(view, b)? else {
+            return Err(StoreError::Refused(format!("bookmark {b} is nowhere")));
+        };
+        if let Some(m) = target {
+            if sessions::tree_of(view, m)? != tree {
+                return Err(StoreError::Refused(format!(
+                    "message {m} isn't in tree {tree}"
+                )));
+            }
+            super::prune::refuse_doomed(view, tree, m)?;
+        }
+        match bookmark_at(view, b)? {
+            Some(m) => bookmark_entries(out, b, tree, m, false),
+            None => root_bookmark_entries(out, b, tree, false),
+        }
+        bookmark_time_del(view, out, b, tree)?;
+        match target {
+            Some(m) => {
+                bookmark_entries(out, b, tree, m, true);
+                bookmark_time_put(out, b, tree, message_time(view, m)?);
+            }
+            None => {
+                root_bookmark_entries(out, b, tree, true);
+                bookmark_time_put(out, b, tree, time_at(rec, 1));
+            }
+        }
+        let k = key::id(key::POSITION_MOVE, b);
+        if let Some(v) = view.get(&k)? {
+            dead(out, parse_loc(&v)?);
+        }
+        out.put(k, loc_bytes(at));
+        Ok(())
+    }
+
+    fn is_live(&self, rec: &Record, pos: u64, view: &View) -> Result<bool, StoreError> {
+        live_at(view, &key::id(key::POSITION_MOVE, id(rec, 0)), pos)
+    }
+
+    fn repoint(
+        &self,
+        rec: &Record,
+        from: u64,
+        to: Loc,
+        view: &View,
+        out: &mut Out,
+    ) -> Result<(), StoreError> {
+        repoint_at(
+            view,
+            out,
+            &key::id(key::POSITION_MOVE, id(rec, 0)),
+            from,
+            to,
+        )
+    }
+}
+
 /// `positionDelete`: a bookmark goes.
 pub struct PositionDelete;
 
@@ -1227,7 +1335,8 @@ pub(super) fn bookmark_gone(view: &View, out: &mut Out, b: u64, cl: Loc) -> Resu
     }
     dead(out, cl);
     out.del(key::id(key::POSITION, b));
-    for s in [key::POSITION_NAME, key::POSITION_MODE] {
+    sessions::convo_gone(view, out, sessions::Convo::Bookmark(b))?;
+    for s in [key::POSITION_NAME, key::POSITION_MODE, key::POSITION_MOVE] {
         if let Some(v) = view.get(&key::id(s, b))? {
             dead(out, parse_loc(&v)?);
             out.del(key::id(s, b));
@@ -1240,11 +1349,13 @@ pub(super) fn bookmark_gone(view: &View, out: &mut Out, b: u64, cl: Loc) -> Resu
             out.del(bookmark_named_key(tree, &n, b));
         }
         bookmark_entries(out, b, tree, m, false);
+        bookmark_time_del(view, out, b, tree)?;
     } else if let Some(tree) = bookmark_root(view, b)? {
         if let Some(n) = super::searched::position_name(view, b)? {
             out.del(bookmark_named_key(tree, &n, b));
         }
         root_bookmark_entries(out, b, tree, false);
+        bookmark_time_del(view, out, b, tree)?;
     }
     Ok(())
 }
@@ -1264,7 +1375,7 @@ impl Deriver for PointerMove {
             s,
             u,
             id(&r, APPEND_OWNER),
-            Some(target),
+            sessions::Spot::Message(target),
             at,
             true,
             false,
@@ -1294,7 +1405,8 @@ impl Deriver for PointerRoot {
     fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
         let (s, u, tree) = (id(rec, 0), id(rec, 1), id(rec, 2));
         sessions::check_actor(view, Some(s), Some(u))?;
-        sessions::moved(view, out, s, u, tree, None, at, true, false)
+        let spot = sessions::Spot::Root(time_at(rec, 3));
+        sessions::moved(view, out, s, u, tree, spot, at, true, false)
     }
 
     fn is_live(&self, _: &Record, pos: u64, view: &View) -> Result<bool, StoreError> {
@@ -1313,6 +1425,104 @@ impl Deriver for PointerRoot {
     }
 }
 
+/// `userPosition`: a user's remembered position in a tree, set by no session's move.
+pub struct UserPosition;
+
+impl Deriver for UserPosition {
+    fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
+        let (u, tree, m) = (id(rec, 0), id(rec, 1), opt_id(rec, 2));
+        sessions::check_actor(view, None, Some(u))?;
+        if let Some(m) = m {
+            if sessions::tree_of(view, m)? != tree {
+                return Err(StoreError::Refused(format!(
+                    "message {m} isn't in tree {tree}"
+                )));
+            }
+            super::prune::refuse_doomed(view, tree, m)?;
+        }
+        dead(out, at);
+        sessions::set_user_tree(view, out, u, tree, sessions::NO_SESSION, m)
+    }
+
+    fn is_live(&self, _: &Record, _: u64, _: &View) -> Result<bool, StoreError> {
+        Ok(false)
+    }
+
+    fn repoint(&self, _: &Record, _: u64, _: Loc, _: &View, _: &mut Out) -> Result<(), StoreError> {
+        Ok(())
+    }
+}
+
+/// `conversationActive`: a conversation (a bookmark, or a session's in a tree) has its last meaningful activity here.
+/// Written only by the conversion, which places the conversations it makes in the order of their last messages.
+pub struct ConversationActive;
+
+impl Deriver for ConversationActive {
+    fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
+        let c = match (opt_id(rec, 0), opt_id(rec, 1), opt_id(rec, 2)) {
+            (Some(b), None, None) => {
+                if bookmark_tree(view, b)?.is_none() {
+                    return Err(StoreError::Refused(format!("no bookmark {b}")));
+                }
+                sessions::Convo::Bookmark(b)
+            }
+            (None, Some(s), Some(tree)) => {
+                sessions::check_actor(view, Some(s), None)?;
+                sessions::Convo::Session(s, tree)
+            }
+            _ => {
+                return Err(StoreError::Refused(
+                    "a conversation is a bookmark, or a session and a tree".into(),
+                ));
+            }
+        };
+        dead(out, at);
+        sessions::convo_active(view, out, c, at.pos)
+    }
+
+    fn is_live(&self, _: &Record, _: u64, _: &View) -> Result<bool, StoreError> {
+        Ok(false)
+    }
+
+    fn repoint(&self, _: &Record, _: u64, _: Loc, _: &View, _: &mut Out) -> Result<(), StoreError> {
+        Ok(())
+    }
+}
+
+/// `currentChat`: a session's current chat in a tree (upstream's open chat file) becomes a bookmark of the tree, or
+/// none: an explicit switch, never an append or a move.
+pub struct CurrentChat;
+
+impl Deriver for CurrentChat {
+    fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
+        let (s, u, tree, b) = (id(rec, 0), id(rec, 1), id(rec, 2), opt_id(rec, 3));
+        sessions::check_actor(view, Some(s), Some(u))?;
+        if let Some(b) = b
+            && bookmark_tree(view, b)? != Some(tree)
+        {
+            return Err(StoreError::Refused(format!(
+                "no bookmark {b} in tree {tree}"
+            )));
+        }
+        sessions::current_chat_set(view, out, s, tree, b, at)
+    }
+
+    fn is_live(&self, rec: &Record, pos: u64, view: &View) -> Result<bool, StoreError> {
+        sessions::current_chat_live(view, id(rec, 0), id(rec, 2), pos)
+    }
+
+    fn repoint(
+        &self,
+        rec: &Record,
+        from: u64,
+        to: Loc,
+        view: &View,
+        out: &mut Out,
+    ) -> Result<(), StoreError> {
+        sessions::current_chat_repoint(view, out, id(rec, 0), id(rec, 2), from, to)
+    }
+}
+
 /// `historyStep`: a session steps back or forward in its history; the record is its cursor's while it stays there.
 pub struct HistoryStep;
 
@@ -1320,7 +1530,7 @@ impl Deriver for HistoryStep {
     fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
         let (s, u, n) = (id(rec, 0), id(rec, 1), id(rec, 2));
         sessions::check_actor(view, Some(s), Some(u))?;
-        sessions::stepped(view, out, s, u, n, at)
+        sessions::stepped(view, out, s, u, n, at, time_at(rec, 3))
     }
 
     fn is_live(&self, rec: &Record, pos: u64, view: &View) -> Result<bool, StoreError> {
@@ -1336,6 +1546,31 @@ impl Deriver for HistoryStep {
         out: &mut Out,
     ) -> Result<(), StoreError> {
         sessions::step_repoint(view, out, id(rec, 0), from, to)
+    }
+}
+
+/// `sessionFork`: a new session reads another's history up to an entry; the record is kept while it does.
+pub struct SessionFork;
+
+impl Deriver for SessionFork {
+    fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
+        let (s, from, u, len, c) = (id(rec, 0), id(rec, 1), id(rec, 2), id(rec, 3), id(rec, 4));
+        sessions::forked(view, out, s, from, u, len, c, at, time_at(rec, 5))
+    }
+
+    fn is_live(&self, rec: &Record, pos: u64, view: &View) -> Result<bool, StoreError> {
+        sessions::fork_live(view, id(rec, 0), pos)
+    }
+
+    fn repoint(
+        &self,
+        rec: &Record,
+        from: u64,
+        to: Loc,
+        view: &View,
+        out: &mut Out,
+    ) -> Result<(), StoreError> {
+        sessions::fork_repoint(view, out, id(rec, 0), from, to)
     }
 }
 
@@ -1476,6 +1711,10 @@ pub fn deriver(kind: &str) -> Option<&'static dyn Deriver> {
         "pointerMove" => &PointerMove,
         "pointerRoot" => &PointerRoot,
         "historyStep" => &HistoryStep,
+        "sessionFork" => &SessionFork,
+        "userPosition" => &UserPosition,
+        "currentChat" => &CurrentChat,
+        "conversationActive" => &ConversationActive,
         "openingChoice" => &OpeningChoice,
         "forkSelection" => &ForkSelection,
         "messageAppend" => &MessageAppend,
@@ -1487,6 +1726,7 @@ pub fn deriver(kind: &str) -> Option<&'static dyn Deriver> {
         "positionRoot" => &PositionRoot,
         "positionName" => &PositionName,
         "positionMode" => &PositionMode,
+        "positionMove" => &PositionMove,
         "positionDelete" => &PositionDelete,
         "subtreeDelete" => &super::prune::SubtreeDelete,
         _ => return None,

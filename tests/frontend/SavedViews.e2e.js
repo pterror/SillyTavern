@@ -51,7 +51,8 @@ async function saveAs(page, name) {
 
 /** @param {import('@playwright/test').Page} page */
 async function pickerNames(page) {
-    return page.locator('.view_picker_popover .view_picker_row .view_picker_row_name').allTextContents();
+    // The saved views' rows; open folders are listed in a section of their own.
+    return page.locator('.view_picker_popover .view_picker_row:not(.view_picker_folder) .view_picker_row_name').allTextContents();
 }
 
 test.describe('saved views', () => {
@@ -105,6 +106,30 @@ test.describe('saved views', () => {
         await expect.poll(() => pickerNames(page)).toEqual(['All characters', 'First', 'Two']);
         // Three was the view in use, so the list is back to "All characters".
         await expect(page.locator('#character_view_picker .view_picker_name')).toHaveText('All characters');
+    });
+
+    test('a change from elsewhere redraws the picker around a rename or a delete being confirmed, keeping what was typed', async ({ page }) => {
+        for (const name of ['One', 'Two']) {
+            await setView(page, { text: name.toLowerCase() });
+            await saveAs(page, name);
+        }
+        await openPicker(page);
+        const redraw = () => page.evaluate(async () => {
+            const { onSavedViewsChanged } = await import('/scripts/saved-views.js');
+            await onSavedViewsChanged();
+        });
+
+        await page.locator('.view_picker_row', { hasText: 'Two' }).locator('[data-action="rename"]').click();
+        await page.locator('.view_picker_rename').fill('Half typ');
+        await redraw();
+        await expect(page.locator('.view_picker_rename')).toHaveValue('Half typ');
+        await expect(page.locator('.view_picker_rename')).toBeFocused();
+        await page.locator('.view_picker_rename').press('Escape');
+
+        await page.locator('.view_picker_row', { hasText: 'One' }).locator('[data-action="delete"]').click();
+        await redraw();
+        await page.locator('.view_picker_confirm').click();
+        await expect.poll(() => pickerNames(page)).toEqual(['All characters', 'Two']);
     });
 
     test('Escape in the picker closes it and leaves the drawer open', async ({ page }) => {

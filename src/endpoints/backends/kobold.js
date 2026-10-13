@@ -11,13 +11,13 @@ import { createStoredCounter, writeBack } from '../../token-count-store.js';
 import { fetchKoboldStatus, koboldCanUseTokenization, rememberRemoteTokenization } from '../../backend-status.js';
 import { resolveTextCompletionGenerationInput } from '../../text-completion-generation-input.js';
 import { assembleTextCompletionPrompt, buildItemizationBreakdown } from '../../text-completion-prompt-orchestrator.js';
-import { getAncestorPath } from '../../message-tree-db.js';
 import { generateTurnOf } from '../../page-writes.js';
 import { storeUserMessage, withStoredMessages } from '../../stored-messages.js';
 import { readCardContent } from '../characters.js';
 import { getGroupsByIds } from '../groups.js';
 import { persistAssistantReply } from '../../assistant-reply-persist.js';
-import { itemizationOf } from '../../itemization-store.js';
+import { itemizationOf } from '../../itemization-of.js';
+import { answerSessionOnHeaders, chatContext } from '../../chat-request.js';
 import { withGenerationStop } from '../../generation-stop.js';
 import { forwardAndPersistCompactStream } from './text-completions.js';
 
@@ -49,21 +49,20 @@ export const router = express.Router();
  * @param {import('express').Request} [params.request]
  * @param {string} [params.characterAvatar]
  * @param {string} [params.groupId]
- * @param {string} params.ownerId
+ * @param {import('../../chat-request.js').ChatContext} params.chat The chat the request acts in.
  * @param {string|null} params.nodeId REQUIRED (`undefined` throws) - see
  * src/endpoints/backends/text-completions.js's `buildRawActionTextCompletionRequest()` own
  * ADDRESSING MODEL doc comment for the full rationale this mirrors verbatim: a real node id string
- * addresses that specific existing node; `null` asserts "this is a genuinely new, empty
- * conversation" and only succeeds when that is actually true (checked via
- * `resolveTextCompletionGenerationInput()`'s own `chatResolutionAmbiguous`/`resolvedNodeId`, read
- * back below). There is no `branchName`/`branch_name` field in this raw-action surface anymore.
+ * addresses that specific existing node; `null` goes on from the tree's root, and only succeeds
+ * when that is current (checked via `resolveTextCompletionGenerationInput()`'s own
+ * `chatResolutionAmbiguous`/`resolvedNodeId`, read back below). There is no `branchName`/`branch_name` field in this raw-action surface anymore.
  * @param {string} [params.type]
  * @param {boolean} [params.isImpersonate]
  * @param {boolean} [params.isContinue]
  * @param {boolean} [params.isSwipe]
  * @param {string} [params.userMessageText]
  * @param {object} [params.userMessageExtra] Already-SERVER-VALIDATED `extra` (see
- * `sanitizeUserMessageExtra()` in message-tree-db.js) for the new user message being appended -
+ * `sanitizeUserMessageExtra()` in user-message-extra.js) for the new user message being appended -
  * identical contract to buildRawActionTextCompletionRequest()'s own equivalent param. Kobold has no
  * media/image inlining (that machinery is chat-completion-specific) - only `.files` is ever actually
  * read downstream (file-attachment-inline.js, via resolveTextCompletionGenerationInput()); `.media`
@@ -80,13 +79,10 @@ export const router = express.Router();
  * writeBack() once the request is sent.
  */
 export async function buildRawActionKoboldRequest(directories, {
-    request, characterAvatar, groupId, ownerId, nodeId,
+    request, characterAvatar, groupId, chat, nodeId,
     type = 'normal', isImpersonate = false, isContinue = false, isSwipe = false, userMessageText, userMessageExtra,
     tokenizerOptions = {}, macroExtras = {},
 } = {}) {
-    if (!ownerId) {
-        throw new Error('owner_id is required');
-    }
     if (!characterAvatar && !groupId) {
         throw new Error('character_avatar or group_id is required');
     }
@@ -107,20 +103,19 @@ export async function buildRawActionKoboldRequest(directories, {
         }
     }
     if (groupId) {
-        const group = getGroupsByIds(directories, [groupId])[groupId];
+        const group = (await getGroupsByIds(directories, [groupId]))[groupId];
         if (!group) {
             throw new Error(`Group not found: ${groupId}`);
         }
     }
 
-    // Anchor resolution - a real given `nodeId` is verified directly; `nodeId === null` (the
-    // "genuinely new, empty conversation" assertion) is left unresolved here and read back off
+    // Anchor resolution - a real given `nodeId` is verified directly; `nodeId === null` (going on
+    // from the tree's root) is left unresolved here and read back off
     // `orchestratorInput.resolvedNodeId`/`chatResolutionAmbiguous` once resolved below - identical
     // pattern to buildRawActionTextCompletionRequest()'s own Step 2.
     let anchorNodeId = null;
     if (nodeId !== null) {
-        const ancestorPath = await getAncestorPath(directories, nodeId);
-        if (!ancestorPath) {
+        if (!await chat.store.chats.messageOf(chat.tree, nodeId)) {
             throw new Error(`Chat node not found: ${nodeId}`);
         }
         anchorNodeId = nodeId;
@@ -142,16 +137,16 @@ export async function buildRawActionKoboldRequest(directories, {
     const countTokens = storedCounter.countText;
 
     const orchestratorInput = await resolveTextCompletionGenerationInput(directories, {
-        avatar: characterAvatar, groupId, mainApi: 'kobold', ownerId, nodeId,
+        avatar: characterAvatar, groupId, mainApi: 'kobold', chatContext: chat, nodeId,
         type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra,
         countTokens, encodeTokens, macroExtras,
     });
 
-    // `nodeId === null` ("genuinely new, empty conversation") is only valid when this owner's
-    // conversation really is empty - see buildRawActionTextCompletionRequest()'s identical handling.
+    // `nodeId === null` goes on from the tree's root only when that is current - see
+    // buildRawActionTextCompletionRequest()'s identical handling.
     if (nodeId === null) {
         if (orchestratorInput.chatResolutionAmbiguous) {
-            throw new Error('node_id is required: this character/group already has an existing conversation - resolve which node the client was looking at and pass its node_id (null is only valid for a genuinely new, empty conversation)');
+            throw new Error('node_id is required: this chat is not at its start - pass the node_id of the message to generate from (null is only valid in a new chat)');
         }
         anchorNodeId = orchestratorInput.resolvedNodeId;
     }
@@ -167,7 +162,7 @@ export async function buildRawActionKoboldRequest(directories, {
         params: assembled.generate_data, anchorNodeId, anchorContent, tokenCountRows: storedCounter.pending,
         name1: orchestratorInput.name1, name2: orchestratorInput.name2,
         warnings: sendTokenizerWarnings(tokenizerState, resolvedTokenizer, tokenizerOutcome, assembled.droppedEntries),
-        // The server's part of the reply's stored prompt itemization (itemization-store.js itemizationOf()).
+        // The server's part of the reply's stored prompt itemization (itemizationOf()).
         itemization: buildItemizationBreakdown(assembled),
     };
 }
@@ -203,7 +198,7 @@ router.post('/generate', withGenerationStop(async function (request, response_ge
 
     if (request.body.owner_id && (request.body.character_avatar || request.body.group_id)) {
         const {
-            character_avatar: characterAvatar, group_id: groupId, owner_id: ownerId,
+            character_avatar: characterAvatar, group_id: groupId,
             type = 'normal', streaming: streamingRequested = false,
             can_abort: canAbortRequested = false,
         } = request.body;
@@ -217,14 +212,19 @@ router.post('/generate', withGenerationStop(async function (request, response_ge
         const isSwipe = type === 'swipe' || type === 'regenerate';
 
         const directories = request.user.directories;
-        const turn = await generateTurnOf(response_generate, directories, { ownerId, avatar: characterAvatar, groupId, body: request.body });
+        const chat = await chatContext(request, { avatar: characterAvatar, group: groupId });
+        if (!chat) {
+            return response_generate.status(400).send({ error: true, message: groupId ? `Group not found: ${groupId}` : `Character not found: ${characterAvatar}` });
+        }
+        answerSessionOnHeaders(response_generate, chat.session);
+        const turn = await generateTurnOf(response_generate, chat, request.body);
         if (!turn) return;
         const { nodeId, userMessageText, userMessageExtra } = turn;
 
         let built;
         try {
             built = await buildRawActionKoboldRequest(directories, {
-                request, characterAvatar, groupId, ownerId, nodeId,
+                request, characterAvatar, groupId, chat, nodeId,
                 type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra,
             });
         } catch (error) {
@@ -238,13 +238,13 @@ router.post('/generate', withGenerationStop(async function (request, response_ge
         // that file's own extensive comment on impersonate/quiet skipping, the swipe/regenerate
         // sibling-vs-child distinction, and the continue/userMessageText tree-shape edge case. Not
         // re-derived here; identical reasoning applies verbatim since both routes share the exact
-        // same resolveTextCompletionGenerationInput()/message-tree-db.js persistence primitives.
+        // same resolveTextCompletionGenerationInput() and persistence primitives.
         const skipPersistence = isImpersonate || type === 'quiet';
         let replyAnchorNodeId = built.anchorNodeId;
         const userMessage = turn.userMessage;
-        if (!skipPersistence && typeof userMessageText === 'string' && built.anchorNodeId) {
+        if (!skipPersistence && typeof userMessageText === 'string') {
             const userNodeId = await storeUserMessage(response_generate, {
-                directories, ownerId, anchorNodeId: built.anchorNodeId, ref: request.body.user_message_ref,
+                chat, anchorNodeId: built.anchorNodeId, ref: request.body.user_message_ref,
                 message: userMessage,
             });
             if (!userNodeId) return;
@@ -255,11 +255,14 @@ router.post('/generate', withGenerationStop(async function (request, response_ge
         const continuesUserMessage = isContinue && replyAnchorNodeId !== built.anchorNodeId;
         if (!skipPersistence) {
             pendingAssistantPersist = {
-                directories, ownerId, anchorNodeId: replyAnchorNodeId, name2: built.name2,
+                chat, anchorNodeId: replyAnchorNodeId, name2: built.name2,
                 isSwipe, isContinue, anchorContent: continuesUserMessage ? userMessage : built.anchorContent,
                 warnings, generationStop: response_generate.locals.generationStop,
                 itemization: itemizationOf(request.body.itemization, built.itemization),
             };
+            // The reply's write goes through the session; one made for it is in the headers, which a
+            // stream sends before the reply is stored.
+            chat.session.actor();
         }
 
         // Replace the body entirely - `built.params` already carries `api_server`

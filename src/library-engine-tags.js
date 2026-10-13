@@ -551,14 +551,28 @@ export class LibraryTags extends EventEmitter {
     }
 
     /**
-     * findTagsByNames(): per distinct name, in the order given, the live tag it stands for (names compared folded,
-     * the first created of several), or null.
+     * findTagsByNames(): per distinct name, in the order given, the tag it stands for (names compared folded): a live
+     * tag with it (the first created of several), else the live tag the merges of the tag deleted last with it lead
+     * to (none when that one was deleted with no merge), else null.
      * @param {string[]} names
      * @returns {Promise<{ name: string, tag: Record<string, unknown> | null }[]>}
      */
     async findByNames(names) {
         const distinct = [...new Set(names)];
+        /** @type {(bigint | null)[]} */
         const found = distinct.length > 0 ? await this.store.tagByNames(distinct) : [];
+        const unfound = distinct.filter((_, i) => found[i] === null);
+        if (unfound.length > 0) {
+            const gone = /** @type {(bigint | null)[]} */ (await this.store.tagGoneByNames(unfound));
+            const goneIds = /** @type {bigint[]} */ (gone.filter(t => t !== null));
+            const intoOf = new Map((goneIds.length > 0 ? await this.store.tagKeys(goneIds) : []).map((/** @type {any} */ k, /** @type {number} */ i) => [goneIds[i], k?.into ?? null]));
+            const intoKeys = /** @type {string[]} */ ([...new Set([...intoOf.values()].filter(k => k !== null))]);
+            const intoIds = new Map((await this.status(intoKeys)).map((s, i) => [intoKeys[i], s?.state === 'live' ? s.id : null]));
+            unfound.forEach((name, j) => {
+                const into = gone[j] === null ? null : intoOf.get(gone[j]) ?? null;
+                found[distinct.indexOf(name)] = into === null ? null : intoIds.get(into) ?? null;
+            });
+        }
         const definitions = await this.definitions(found.filter((/** @type {bigint | null} */ t) => t !== null));
         let next = 0;
         return distinct.map((name, i) => ({ name, tag: found[i] === null ? null : definitions[next++] }));
@@ -749,15 +763,18 @@ export class LibraryTags extends EventEmitter {
     }
 
     /**
-     * unassignEntityTag(): only the named tag's own assignment goes, never its merge target's.
+     * unassignEntityTag(): only the named tag's own assignment goes, never its merge target's. A deleted tag's
+     * carriers belong to the tag it merged into, however far its fold has got, so unassigning it removes nothing:
+     * `'deleted'`.
      * @param {string} key
      * @param {string} tagId
-     * @returns {Promise<'ok'>}
+     * @returns {Promise<'ok' | 'deleted'>}
      */
     async unassign(key, tagId) {
         if (tagEntityTypeOf(key) === null) return 'ok';
         const [status] = await this.status([tagId]);
         if (!status) return 'ok';
+        if (status.state === 'gone') return 'deleted';
         return this.withEntities([key], async ([entity]) => {
             if (entity?.tags.includes(status.id)) await this.store.commit([{ kind: 'tagAssign', entity: entity.id, tag: status.id, assigned: false }]);
             return 'ok';

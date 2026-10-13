@@ -33,7 +33,7 @@ const samples = [
     { kind: 'textValue', message: 10n, field: 1, text: 'edited' },
     { kind: 'jsonValue', message: 10n, field: 'extra.api', json: '"openai"' },
     { kind: 'positionCreate', id: 8n, mode: 1, session: 7n, user: 1n, pointer: 10n },
-    { kind: 'positionRoot', id: 12n, mode: 2, session: 7n, user: 1n, tree: 3n },
+    { kind: 'positionRoot', id: 12n, mode: 2, session: 7n, user: 1n, tree: 3n, time: 1_700_000_000_000 },
     { kind: 'textValue', entity: 5n, field: 2, text: 'a description '.repeat(20) },
     { kind: 'textEdit', entity: 5n, field: 2, offset: 10, removed: 4, text: 'word' },
     { kind: 'textValue', entity: 5n, field: 'my-extension/key', text: 'x'.repeat(40_000) },
@@ -154,9 +154,6 @@ for (const [name, engine] of Object.entries(bindings)) {
         assert.deepEqual(found.hits.map(h => h.doc), [3n, 1n, 2n]);
         assert.equal(found.total, 3);
         assert.ok(found.totalExact && found.pageExact && !found.more);
-        // Tags whose names match are answered in the library only.
-        assert.deepEqual(found.tags, []);
-        assert.ok(found.tagsExact);
         assert.deepEqual((await search([{ text: 'cafe' }, { text: 'dragon' }])).hits.map(h => h.doc), [3n]);
         assert.deepEqual((await search([{ text: 'the dragon', quoted: true }])).hits.map(h => h.doc), [1n]);
         assert.deepEqual((await search([{ text: 'dragon' }, { text: 'drake', negate: true }])).hits.map(h => h.doc), [3n, 1n]);
@@ -170,6 +167,34 @@ for (const [name, engine] of Object.entries(bindings)) {
         found = await search([{ text: 'DRAGON' }]);
         assert.deepEqual(found.hits.map(h => h.doc), [3n, 1n, 2n]);
         await store.close();
+    });
+}
+
+for (const [name, engine] of Object.entries(bindings)) {
+    test(`${name}: every open of a directory until its close is one store, and a world book reads whole on this thread`, async () => {
+        const dir = path.join(tmp, `${name}-shared`);
+        const opening = engine.Store.open(dir);
+        const sync = engine.Store.openSync(dir);
+        const store = await opening;
+        await store.commit([
+            { kind: 'entityCreate', entity: 1n, type: 3, key: 'lore', added: 0 },
+            { kind: 'jsonValue', entity: 1n, field: 41, json: '' },
+            { kind: 'textValue', entity: 1n, field: 'name', text: 'Lore' },
+            { kind: 'entityCreate', entity: 2n, type: 5, key: '1:0', added: 0 },
+            { kind: 'itemPlace', entity: 1n, list: 0, item: 2n, position: 10n },
+            { kind: 'textValue', entity: 2n, field: 'content', text: 'hi' },
+        ]);
+        const book = sync.worldBookSync('lore');
+        assert.equal(book.id, 1n);
+        assert.equal(book.entity.values.find(v => v.field === 'name')?.text, 'Lore');
+        assert.equal(book.entity.values.find(v => v.field === 41)?.json, '');
+        assert.deepEqual(book.entries.map(x => [x.entity.key, x.position, x.entity.values.map(v => v.text)]), [['1:0', 10, ['hi']]]);
+        assert.equal(book.original, undefined);
+        assert.equal(sync.worldBookSync('nothing'), null);
+        await sync.close();
+        const after = engine.Store.openSync(dir);
+        assert.equal(after.worldBookSync('lore').entries.length, 1, 'a closed store is opened again');
+        await after.close();
     });
 }
 

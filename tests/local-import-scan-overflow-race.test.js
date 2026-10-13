@@ -36,8 +36,8 @@ afterAll(() => process.chdir(originalCwd));
 
 /** @type {typeof import('../src/local-import-scan.js')} */
 let localImportScan;
-/** @type {typeof import('../src/character-metadata-db.js')} */
-let metadataDb;
+/** @type {typeof import('./converted-user.fixture.js')} */
+let fixture;
 /** @type {typeof import('../src/users.js')} */
 let users;
 /** @type {typeof import('../src/constants.js')} */
@@ -49,7 +49,7 @@ beforeAll(async () => {
     process.chdir(path.resolve(originalCwd, '..'));
 
     localImportScan = await import('../src/local-import-scan.js');
-    metadataDb = await import('../src/character-metadata-db.js');
+    fixture = await import('./converted-user.fixture.js');
     users = await import('../src/users.js');
     constants = await import('../src/constants.js');
 });
@@ -59,8 +59,13 @@ describe('local-import-scan: watcher-overflow signal during an in-flight periodi
     let userCharactersDir;
     let sourceDir;
 
-    beforeAll(() => {
-        dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'st-local-import-scan-overflow-test-'));
+    /** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
+    let user;
+
+    beforeAll(async () => {
+        // The default user's store, in a data root of its own.
+        user = await fixture.emptyUser('st-local-import-scan-overflow-test-');
+        dataRoot = user.dataRoot;
         globalThis.DATA_ROOT = dataRoot;
         const userDirectories = users.getUserDirectories(constants.DEFAULT_USER.handle);
         userCharactersDir = userDirectories.characters;
@@ -68,8 +73,8 @@ describe('local-import-scan: watcher-overflow signal during an in-flight periodi
         fs.mkdirSync(userDirectories.chats, { recursive: true });
     });
 
-    afterAll(() => {
-        fs.rmSync(dataRoot, { recursive: true, force: true });
+    afterAll(async () => {
+        await user.close();
     });
 
     beforeEach(() => {
@@ -87,7 +92,6 @@ describe('local-import-scan: watcher-overflow signal during an in-flight periodi
 
     afterEach(() => {
         localImportScan.disposeLocalImportScan();
-        metadataDb.disposeMetadataStores();
         fs.rmSync(sourceDir, { recursive: true, force: true });
         for (const file of fs.readdirSync(userCharactersDir)) {
             fs.rmSync(path.join(userCharactersDir, file), { force: true });
@@ -99,7 +103,9 @@ describe('local-import-scan: watcher-overflow signal during an in-flight periodi
     });
 
     test('an overflow signal arriving while a normally-scheduled pass is still running does not start a second, overlapping pass', async () => {
-        jest.useFakeTimers();
+        // setImmediate stays real: a pass reads the store before it lists the directory, which takes the event loop.
+        jest.useFakeTimers({ doNotFake: ['setImmediate'] });
+        const settle = async () => { for (let i = 0; i < 50; i++) await new Promise(resolve => setImmediate(resolve)); };
         const realOpendir = fs.promises.opendir.bind(fs.promises);
         let opendirCallCount = 0;
         /** @type {() => void} */
@@ -122,16 +128,13 @@ describe('local-import-scan: watcher-overflow signal during an in-flight periodi
 
             // Fire the real scheduled timer for the SECOND pass (opendir call #2, stalled by the mock above).
             await jest.advanceTimersByTimeAsync(1000);
-            await Promise.resolve();
-            await Promise.resolve();
+            await settle();
             expect(opendirCallCount).toBe(2);
 
             // Simulate a watcher-overflow signal arriving WHILE that second pass is still stalled inside its own
             // opendir() call - the exact window the historical bug launched an overlapping third pass in.
             capturedOnOverflow();
-            await Promise.resolve();
-            await Promise.resolve();
-            await Promise.resolve();
+            await settle();
 
             // Fixed behavior: passInFlight blocks the overflow-triggered rescan outright - no third opendir call.
             expect(opendirCallCount).toBe(2);

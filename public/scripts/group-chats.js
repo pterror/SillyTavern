@@ -2616,7 +2616,7 @@ export async function deleteGroupChat(groupId, chatId, { jumpToNewChat = true } 
         _setCurrentTarget(chat_id, null, { group_id: groupId });
     }
     if (jumpToNewChat && chats.length) {
-        await openGroupChat(groupId, chats[chats.length - 1]);
+        await openGroupChat(groupId, chats[0]);
     }
 
     await eventSource.emit(event_types.GROUP_CHAT_DELETED, chatId);

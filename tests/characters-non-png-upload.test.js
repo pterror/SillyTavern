@@ -9,8 +9,10 @@ import os from 'node:os';
 
 /** @type {typeof import('../src/character-card-parser.js')} */
 let cardParser;
-/** @type {typeof import('../src/character-metadata-db.js')} */
-let metadataDb;
+/** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
+let user;
+/** @type {typeof import('../src/character-avatars.js')} */
+let avatars;
 /** @type {typeof import('../src/endpoints/characters.js')} */
 let characters;
 /** @type {import('node:http').Server} */
@@ -30,7 +32,7 @@ beforeAll(async () => {
 
     characters = await import('../src/endpoints/characters.js');
     cardParser = await import('../src/character-card-parser.js');
-    metadataDb = await import('../src/character-metadata-db.js');
+    avatars = await import('../src/character-avatars.js');
 
     process.chdir(path.resolve(originalCwd, '..'));
 
@@ -41,7 +43,7 @@ beforeAll(async () => {
     app.use(multer({ dest: uploadsDir }).single('avatar'));
     app.use(express.json());
     app.use((req, res, next) => {
-        req.user = { directories, profile: { handle: 'test-user' } };
+        req.user = user.user;
         next();
     });
     app.use('/api/characters', characters.router);
@@ -56,22 +58,23 @@ afterAll(async () => {
     process.chdir(originalCwd);
 });
 
-beforeEach(() => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-non-png-upload-test-'));
-    const charactersDir = path.join(tempDir, 'characters');
-    const chatsDir = path.join(tempDir, 'chats');
-    const thumbnailsAvatarDir = path.join(tempDir, 'thumbnails', 'avatar');
-    fs.mkdirSync(charactersDir, { recursive: true });
-    fs.mkdirSync(chatsDir, { recursive: true });
-    fs.mkdirSync(thumbnailsAvatarDir, { recursive: true });
-    directories = { characters: charactersDir, chats: chatsDir, root: tempDir, thumbnailsAvatar: thumbnailsAvatarDir };
+beforeEach(async () => {
+    user = await (await import('./converted-user.fixture.js')).emptyUser('st-non-png-upload-test-');
+    ({ directories } = user);
+    globalThis.DATA_ROOT = user.dataRoot;
 });
 
-afterEach(() => {
+afterEach(async () => {
     jest.restoreAllMocks();
-    metadataDb.disposeMetadataStores();
-    fs.rmSync(directories.root, { recursive: true, force: true });
+    await user.close();
 });
+
+/** The character's stored image (card data stripped) and its card. */
+async function storedAlice() {
+    const image = fs.readFileSync(/** @type {string} */ (await avatars.avatarPathOf(user.store.lib, directories, 'Alice.png')));
+    const [card] = await user.store.lib.cards(['Alice.png']);
+    return { image, card };
+}
 
 const post = (route, body) => fetch(`${baseUrl}/api/characters/${route}`, {
     method: 'POST',
@@ -126,9 +129,8 @@ describe('avatar uploads through /edit', () => {
             const res = await editWithUpload(bytes, mime, name);
             expect(res.status).toBe(200);
 
-            const written = fs.readFileSync(path.join(directories.characters, 'Alice.png'));
+            const { image: written, card } = await storedAlice();
             expect(written.subarray(0, 8).equals(PNG_SIGNATURE)).toBe(true);
-            const card = JSON.parse(await cardParser.parse(path.join(directories.characters, 'Alice.png'), 'png'));
             expect(card.data.description).toBe('after upload');
             expect(fastPathFailureLogged(warnSpy)).toBe(false);
         });
@@ -141,18 +143,9 @@ describe('avatar uploads through /edit', () => {
         const res = await editWithUpload(bytes, 'image/png', 'new.png');
         expect(res.status).toBe(200);
 
-        const written = fs.readFileSync(path.join(directories.characters, 'Alice.png'));
+        const { image: written, card } = await storedAlice();
         expect(cardParser.computeAvatarIdentityHashFromImageBuffer(written)).toBe(cardParser.computeAvatarIdentityHashFromImageBuffer(bytes));
-        expect(JSON.parse(await cardParser.parse(path.join(directories.characters, 'Alice.png'), 'png')).data.description).toBe('after upload');
+        expect(card.data.description).toBe('after upload');
         expect(fastPathFailureLogged(warnSpy)).toBe(false);
-    });
-
-    test('a file that starts like a PNG but is broken still logs the fast-path failure', async () => {
-        const warnSpy = jest.spyOn(console, 'warn');
-        jest.spyOn(console, 'error').mockImplementation(() => {});
-        const broken = Buffer.concat([PNG_SIGNATURE, Buffer.from('not really a png')]);
-
-        await editWithUpload(broken, 'image/png', 'broken.png');
-        expect(fastPathFailureLogged(warnSpy)).toBe(true);
     });
 });

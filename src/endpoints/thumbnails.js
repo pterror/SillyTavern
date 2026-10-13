@@ -9,7 +9,8 @@ import { imageSize as sizeOf } from 'image-size';
 
 import { getConfigValue, invalidateFirefoxCache } from '../util.js';
 import { DEFAULT_AVATAR_PATH } from '../constants.js';
-import { characterRowExists } from '../character-metadata-db.js';
+import { userStore } from '../user-stores.js';
+import { avatarPathOf } from '../character-avatars.js';
 import { getThumbnailResolution, isAnimatedWebP, isAnimatedApng, thumbnailDimensions as dimensions } from './image-metadata.js';
 import { ResizeStrategy } from '@jimp/plugin-resize';
 
@@ -53,27 +54,23 @@ function getThumbnailFolder(directories, type) {
 }
 
 /**
- * Gets a path to the original images folder based on the type.
+ * The original image a thumbnail is made from: a background's or persona's file, a character's image in the store
+ * (the default avatar when its card names none); null for a character that doesn't exist.
  * @param {import('../users.js').UserDirectoryList} directories User directories
  * @param {ThumbnailType} type Thumbnail type
- * @returns {string} Path to the original images folder
+ * @param {string} file The image's name (a character's avatar)
+ * @returns {Promise<string | null>}
  */
-function getOriginalFolder(directories, type) {
-    let originalFolder;
-
+async function originalPathOf(directories, type, file) {
     switch (type) {
         case 'bg':
-            originalFolder = directories.backgrounds;
-            break;
+            return path.join(directories.backgrounds, file);
         case 'avatar':
-            originalFolder = directories.characters;
-            break;
+            return avatarPathOf((await userStore(directories)).lib, directories, file);
         case 'persona':
-            originalFolder = directories.avatars;
-            break;
+            return path.join(directories.avatars, file);
     }
-
-    return originalFolder;
+    throw new Error('Invalid thumbnail type');
 }
 
 /**
@@ -129,12 +126,12 @@ export async function generateThumbnail(directories, type, file, forceGenerate =
     }
 
     const thumbnailFolder = getThumbnailFolder(directories, type);
-    const originalFolder = getOriginalFolder(directories, type);
-    if (thumbnailFolder === undefined || originalFolder === undefined) throw new Error('Invalid thumbnail type');
+    if (thumbnailFolder === undefined) throw new Error('Invalid thumbnail type');
     const pathToCachedFile = path.join(thumbnailFolder, file);
 
     try {
-        const pathToOriginalFile = path.join(originalFolder, file);
+        const pathToOriginalFile = await originalPathOf(directories, type, file);
+        if (pathToOriginalFile === null) return { path: null, aspectRatio: null, resolution: null };
 
         // Check if thumbnail already exists and return it if not forcing regeneration
         if (!forceGenerate && fs.existsSync(pathToCachedFile)) {
@@ -196,7 +193,7 @@ export async function generateThumbnail(directories, type, file, forceGenerate =
         }
 
         // Process the image to generate thumbnail
-        const result = await processSingleImage(file, originalFolder, thumbnailFolder, type);
+        const result = await processSingleImage(file, pathToOriginalFile, thumbnailFolder, type);
         if (result.success) {
             return { path: pathToCachedFile, aspectRatio: result.aspectRatio ?? null, resolution: result.resolution ?? null };
         } else {
@@ -212,13 +209,12 @@ export async function generateThumbnail(directories, type, file, forceGenerate =
 /**
  * Processes a single image to generate its thumbnail.
  * @param {string} file - The filename of the image.
- * @param {string} originalFolder - Path to the original image folder.
+ * @param {string} pathToOriginalFile - The original image.
  * @param {string} thumbnailFolder - Path to the thumbnail output folder.
  * @param {ThumbnailType} type - The type of thumbnail to generate.
  * @returns {Promise<{success: boolean, filename?: string, error?: string, aspectRatio?: number, resolution?: number}>} Result of the processing.
  */
-async function processSingleImage(file, originalFolder, thumbnailFolder, type) {
-    const pathToOriginalFile = path.join(originalFolder, file);
+async function processSingleImage(file, pathToOriginalFile, thumbnailFolder, type) {
     const pathToCachedFile = path.join(thumbnailFolder, file);
 
     try {
@@ -279,14 +275,16 @@ publicRouter.get('/', async function (request, response) {
         const file = sanitize(rawFile);
         if (file !== rawFile) return response.sendStatus(403);
 
-        // Before the cache lookup: a cached thumbnail of a missing PNG would show an image the character no longer has.
-        if (type === 'avatar' && !fs.existsSync(path.join(request.user.directories.characters, file)) && await characterRowExists(request.user.directories, file)) {
+        const original = await originalPathOf(request.user.directories, type, file);
+        // Before the cache lookup: a character with no image of its own shows the default avatar, never a thumbnail
+        // cached from an image it had.
+        if (type === 'avatar' && original === DEFAULT_AVATAR_PATH) {
             return response.sendFile(path.resolve(DEFAULT_AVATAR_PATH));
         }
 
         const serveOriginal = () => {
-            const folder = getOriginalFolder(request.user.directories, type);
-            const pathToOriginalFile = path.resolve(path.join(folder, file));
+            if (original === null) return response.sendStatus(404);
+            const pathToOriginalFile = path.resolve(original);
             if (!fs.existsSync(pathToOriginalFile)) return response.sendStatus(404);
             invalidateFirefoxCache(pathToOriginalFile, request, response);
             return response.sendFile(pathToOriginalFile);

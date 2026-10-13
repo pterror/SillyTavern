@@ -101,6 +101,48 @@ impl Drop for Snapshot<'_> {
     }
 }
 
+/// A scan's pages from the buffers, newest first, and whether each was cut (it holds as many entries that aren't
+/// deletions as it was asked for, so more may follow).
+type Pages = Vec<(Vec<(Vec<u8>, Val)>, bool)>;
+
+/// The pages of a scan from the buffers, newest first. A buffer's page ends after `limit` entries that aren't
+/// deletions, but a newer buffer's entries (deletions too) can hide that many of an older buffer's, so an older
+/// page reaches past as many entries as the newer buffers hold in the range.
+fn buffer_pages(
+    mems: &[Arc<RwLock<Mem>>],
+    start: &[u8],
+    end: &[u8],
+    limit: usize,
+    seq: Option<u64>,
+    page: impl Fn(&Mem, usize) -> Vec<(Vec<u8>, Val)>,
+) -> Pages {
+    let mut extra = 0usize;
+    let mut pages = Vec::with_capacity(mems.len());
+    for (i, m) in mems.iter().enumerate() {
+        let m = m.read().unwrap();
+        let want = limit.saturating_add(extra);
+        let p = page(&m, want);
+        let cut = p.iter().filter(|(_, v)| *v != Val::Del).count() == want;
+        pages.push((p, cut));
+        if i + 1 < mems.len() {
+            extra = extra.saturating_add(m.count_all(start, end, seq));
+        }
+    }
+    pages
+}
+
+/// How far a scan's pages speak for the buffers: up to the nearest last key of a page that was cut (forward: the
+/// least; `rev`: the greatest), or everywhere. An entry that isn't a deletion yet settles to nothing (a map whose
+/// every slot is removed) fills a page without giving the scan a result, so a page can be cut before the scan has
+/// its `limit` results; past that key the page's buffer is unread, and an older run's value there may be hidden.
+fn pages_bound(pages: &Pages, rev: bool) -> Option<Vec<u8>> {
+    let lasts = pages
+        .iter()
+        .filter(|(_, cut)| *cut)
+        .filter_map(|(p, _)| p.last().map(|(k, _)| k.clone()));
+    if rev { lasts.max() } else { lasts.min() }
+}
+
 impl Snapshot<'_> {
     /// `Keyspace::get_val` in this state.
     pub fn get_val(&self, key: &[u8]) -> KsResult<Option<Val>> {
@@ -110,12 +152,12 @@ impl Snapshot<'_> {
                 let done = !val.is_partial();
                 out.push(val);
                 if done {
-                    return Ok(val::fold(out).and_then(Val::settled));
+                    return Ok(val::fold(key, out).and_then(|v| v.settled(key)));
                 }
             }
         }
         let out = self.ks.run_values(&self.version.runs, key, out)?;
-        Ok(val::fold(out).and_then(Val::settled))
+        Ok(val::fold(key, out).and_then(|v| v.settled(key)))
     }
 
     /// `Keyspace::scan_vals` in this state.
@@ -125,14 +167,18 @@ impl Snapshot<'_> {
         end: &[u8],
         limit: usize,
     ) -> KsResult<Vec<(Vec<u8>, Val)>> {
-        let pages = self
-            .version
-            .mems
-            .iter()
-            .map(|m| m.read().unwrap().page_at(start, end, limit, self.seq))
-            .collect();
-        self.ks
-            .merge_scan(pages, &self.version.runs, start, end, limit)
+        let mems = &self.version.mems;
+        self.ks.merge_scan(
+            |from, n| {
+                buffer_pages(mems, from, end, n, Some(self.seq), |m, n| {
+                    m.page_at(from, end, n, self.seq)
+                })
+            },
+            &self.version.runs,
+            start,
+            end,
+            limit,
+        )
     }
 
     /// `Keyspace::values_sorted` in this state.
@@ -158,18 +204,18 @@ impl Snapshot<'_> {
         end: &[u8],
         limit: usize,
     ) -> KsResult<Vec<(Vec<u8>, Val)>> {
-        let pages = self
-            .version
-            .mems
-            .iter()
-            .map(|m| {
-                m.read()
-                    .unwrap()
-                    .page_rev(start, end, limit, Some(self.seq))
-            })
-            .collect();
-        self.ks
-            .merge_scan_rev(pages, &self.version.runs, start, end, limit)
+        let mems = &self.version.mems;
+        self.ks.merge_scan_rev(
+            |to, n| {
+                buffer_pages(mems, start, to, n, Some(self.seq), |m, n| {
+                    m.page_rev(start, to, n, Some(self.seq))
+                })
+            },
+            &self.version.runs,
+            start,
+            end,
+            limit,
+        )
     }
 }
 
@@ -517,12 +563,12 @@ impl Keyspace {
 
     /// The value of `key`.
     pub fn get(&self, key: &[u8]) -> KsResult<Option<Vec<u8>>> {
-        Ok(val::fold(self.values(key)?).and_then(Val::resolved))
+        Ok(val::fold(key, self.values(key)?).and_then(|v| v.resolved(key)))
     }
 
     /// The value of `key`, settled (`Val::settled`).
     pub fn get_val(&self, key: &[u8]) -> KsResult<Option<Val>> {
-        Ok(val::fold(self.values(key)?).and_then(Val::settled))
+        Ok(val::fold(key, self.values(key)?).and_then(|v| v.settled(key)))
     }
 
     /// Up to `limit` keys in `[start, end)` that have values, in order, with their values.
@@ -530,7 +576,10 @@ impl Keyspace {
         Ok(self
             .scan_vals(start, end, limit)?
             .into_iter()
-            .map(|(k, v)| (k, v.into_bytes()))
+            .map(|(k, v)| {
+                let b = v.into_bytes(&k);
+                (k, b)
+            })
             .collect())
     }
 
@@ -542,13 +591,13 @@ impl Keyspace {
         limit: usize,
     ) -> KsResult<Vec<(Vec<u8>, Val)>> {
         let v = self.version();
-        // A buffer's first `limit` live entries bound where the page can end, so nothing past them is needed.
-        let pages = v
-            .mems
-            .iter()
-            .map(|m| m.read().unwrap().page(start, end, limit))
-            .collect();
-        self.merge_scan(pages, &v.runs, start, end, limit)
+        self.merge_scan(
+            |from, n| buffer_pages(&v.mems, from, end, n, None, |m, n| m.page(from, end, n)),
+            &v.runs,
+            start,
+            end,
+            limit,
+        )
     }
 
     /// `scan_vals` last first: up to `limit` keys in `[start, end)` from the last down.
@@ -559,84 +608,124 @@ impl Keyspace {
         limit: usize,
     ) -> KsResult<Vec<(Vec<u8>, Val)>> {
         let v = self.version();
-        let pages = v
-            .mems
-            .iter()
-            .map(|m| m.read().unwrap().page_rev(start, end, limit, None))
-            .collect();
-        self.merge_scan_rev(pages, &v.runs, start, end, limit)
+        self.merge_scan_rev(
+            |to, n| {
+                buffer_pages(&v.mems, start, to, n, None, |m, n| {
+                    m.page_rev(start, to, n, None)
+                })
+            },
+            &v.runs,
+            start,
+            end,
+            limit,
+        )
     }
 
+    /// A reverse scan's page from the buffers' pages (`pages(to, n)`: their pages of `[start, to)` for `n` results)
+    /// and the runs; where a cut page stops speaking for its buffer (`pages_bound`), the pages are read again
+    /// below it.
     fn merge_scan_rev(
         &self,
-        pages: Vec<Vec<(Vec<u8>, Val)>>,
+        pages: impl Fn(&[u8], usize) -> Pages,
         runs: &[Arc<Run>],
         start: &[u8],
         end: &[u8],
         limit: usize,
     ) -> KsResult<Vec<(Vec<u8>, Val)>> {
-        let mut sources: Vec<Box<dyn Source>> = Vec::new();
-        for p in pages {
-            sources.push(Box::new(VecSource::new(p)));
-        }
-        for r in runs {
-            sources.push(Box::new(run::RunRevIter::new(
-                r.clone(),
-                end,
-                Some(&self.pool.cache),
-                Some(&self.counts),
-            )?));
-        }
-        let mut merge = run::MergeRev::new(sources);
         let mut out = Vec::new();
+        let mut to = end.to_vec();
         while out.len() < limit {
-            let Some((k, val)) = merge.next_entry()? else {
-                break;
-            };
-            if k.as_slice() < start {
-                break;
+            let p = pages(&to, limit - out.len());
+            let bound = pages_bound(&p, true);
+            let mut sources: Vec<Box<dyn Source>> = Vec::new();
+            for (p, _) in p {
+                sources.push(Box::new(VecSource::new(p)));
             }
-            if let Some(v) = val.settled() {
-                out.push((k, v));
+            for r in runs {
+                sources.push(Box::new(run::RunRevIter::new(
+                    r.clone(),
+                    &to,
+                    Some(&self.pool.cache),
+                    Some(&self.counts),
+                )?));
+            }
+            let mut merge = run::MergeRev::new(sources);
+            let mut past = false;
+            while out.len() < limit {
+                let Some((k, val)) = merge.next_entry()? else {
+                    break;
+                };
+                if k.as_slice() < start {
+                    break;
+                }
+                if bound.as_ref().is_some_and(|b| k < *b) {
+                    past = true;
+                    break;
+                }
+                if let Some(v) = val.settled(&k) {
+                    out.push((k, v));
+                }
+            }
+            match bound {
+                Some(b) if past => to = b,
+                _ => break,
             }
         }
         Ok(out)
     }
 
-    /// A scan's page from the buffers' pages and the runs.
+    /// A scan's page from the buffers' pages (`pages(from, n)`: their pages of `[from, end)` for `n` results) and
+    /// the runs; where a cut page stops speaking for its buffer (`pages_bound`), the pages are read again past it.
     fn merge_scan(
         &self,
-        pages: Vec<Vec<(Vec<u8>, Val)>>,
+        pages: impl Fn(&[u8], usize) -> Pages,
         runs: &[Arc<Run>],
         start: &[u8],
         end: &[u8],
         limit: usize,
     ) -> KsResult<Vec<(Vec<u8>, Val)>> {
-        let mut sources: Vec<Box<dyn Source>> = Vec::new();
-        for p in pages {
-            sources.push(Box::new(VecSource::new(p)));
-        }
-        for r in runs {
-            if start <= r.max_key.as_slice() {
-                sources.push(Box::new(RunIter::new(
-                    r.clone(),
-                    start,
-                    Some(&self.pool.cache),
-                    Some(&self.counts),
-                )?));
-            }
-        }
-        let mut merge = Merge::new(sources);
         let mut out = Vec::new();
+        let mut from = start.to_vec();
         while out.len() < limit {
-            let Some((k, val)) = merge.next_entry()? else {
-                break;
-            };
-            if k.as_slice() >= end {
-                break;
+            let p = pages(&from, limit - out.len());
+            let bound = pages_bound(&p, false);
+            let mut sources: Vec<Box<dyn Source>> = Vec::new();
+            for (p, _) in p {
+                sources.push(Box::new(VecSource::new(p)));
             }
-            if let Some(v) = val.settled() {
-                out.push((k, v));
+            for r in runs {
+                if from.as_slice() <= r.max_key.as_slice() {
+                    sources.push(Box::new(RunIter::new(
+                        r.clone(),
+                        &from,
+                        Some(&self.pool.cache),
+                        Some(&self.counts),
+                    )?));
+                }
+            }
+            let mut merge = Merge::new(sources);
+            let mut past = false;
+            while out.len() < limit {
+                let Some((k, val)) = merge.next_entry()? else {
+                    break;
+                };
+                if k.as_slice() >= end {
+                    break;
+                }
+                if bound.as_ref().is_some_and(|b| k > *b) {
+                    past = true;
+                    break;
+                }
+                if let Some(v) = val.settled(&k) {
+                    out.push((k, v));
+                }
+            }
+            match bound {
+                Some(mut b) if past => {
+                    b.push(0);
+                    from = b;
+                }
+                _ => break,
             }
         }
         Ok(out)
@@ -951,7 +1040,7 @@ impl Keyspace {
         let mut n = 0u64;
         while let Some((k, v)) = merge.next_entry()? {
             let v = if bottom {
-                match v.bottom() {
+                match v.bottom(&k) {
                     Some(v) => v,
                     None => continue,
                 }

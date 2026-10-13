@@ -1,34 +1,29 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals';
-import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { storedTagDefinitions } from './tag-store-reads.js';
 
 // The tag definition change log: every write that changes what a reader gets as a tag's definition logs the tag, and
 // /api/tags/changes answers a cursor with what each changed tag is now.
 
-/** @type {typeof import('../src/character-metadata-db.js')} */
-let metadataDb;
-/** @type {import('../src/users.js').UserDirectoryList} */
-let directories;
+/** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
+let user;
+/** @type {typeof import('./converted-user.fixture.js')} */
+let fixture;
 /** @type {import('node:http').Server} */
 let server;
 let baseUrl = '';
-/** @type {string[]} The root of every TAG_CHANGES_EVENT emitted during the test. */
-let reported = [];
-/** @param {string} root */
-const onReported = (root) => { reported.push(root); };
 
 beforeAll(async () => {
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
-    metadataDb = await import('../src/character-metadata-db.js');
+    fixture = await import('./converted-user.fixture.js');
 
     const { router } = await import('../src/endpoints/tags.js');
     const express = (await import('express')).default;
     const app = express();
     app.use(express.json());
     app.use((req, res, next) => {
-        req.user = { directories };
+        req.user = user.user;
         next();
     });
     app.use('/api/tags', router);
@@ -40,28 +35,11 @@ beforeAll(async () => {
 afterAll(() => new Promise(resolve => server.close(resolve)));
 
 beforeEach(async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-tags-changes-test-'));
-    directories = /** @type {any} */ ({
-        root,
-        characters: path.join(root, 'characters'),
-        chats: path.join(root, 'chats'),
-        groups: path.join(root, 'groups'),
-        groupChats: path.join(root, 'groupChats'),
-    });
-    for (const dir of [directories.characters, directories.chats, directories.groups, directories.groupChats]) {
-        fs.mkdirSync(dir, { recursive: true });
-    }
-    // The store with its tag query columns ready and its sort_order fill finished, so moves apply at once.
-    await metadataDb.ensureSchemaMigrated(directories);
-    reported = [];
-    metadataDb.characterChangeEmitter.on(metadataDb.TAG_CHANGES_EVENT, onReported);
+    user = await fixture.emptyUser('st-tags-changes-test-');
+    globalThis.DATA_ROOT = user.dataRoot;
 });
 
-afterEach(() => {
-    metadataDb.characterChangeEmitter.off(metadataDb.TAG_CHANGES_EVENT, onReported);
-    metadataDb.disposeMetadataStores();
-    fs.rmSync(directories.root, { recursive: true, force: true });
-});
+afterEach(() => user.close());
 
 /** @returns {Promise<{ status: number, body: any }>} */
 async function post(urlPath, body = {}) {
@@ -133,17 +111,14 @@ describe('what each write logs', () => {
         expect(page.removed).toEqual([]);
         expect(page.tags).toEqual([expect.objectContaining({ id: 'a', name: 'a', color: '#112233' })]);
         expect(page.seq).toBe(await cursor());
-        expect(reported).toEqual([directories.root]);
     });
 
     test('a refused create logs nothing', async () => {
         await create('a');
         const seq = await cursor();
-        reported = [];
         const { body } = await post('/api/tags/create', { tag: { id: 'a', name: 'again' } });
         expect(body.refused).toEqual([{ id: 'a', reason: 'exists' }]);
         expect(await cursor()).toBe(seq);
-        expect(reported).toEqual([]);
     });
 
     test('an edit lists the tag as it is now; one that changes nothing logs nothing', async () => {
@@ -153,10 +128,8 @@ describe('what each write logs', () => {
         const page = await changes(seq);
         expect(page.tags).toEqual([expect.objectContaining({ id: 'a', name: 'renamed' })]);
 
-        reported = [];
         await post('/api/tags/edit', { id: 'a', patch: { name: 'renamed' } });
         expect(await cursor()).toBe(page.seq);
-        expect(reported).toEqual([]);
     });
 
     test('a tag changed several times is listed once', async () => {
@@ -166,7 +139,8 @@ describe('what each write logs', () => {
         await post('/api/tags/edit', { id: 'a', patch: { name: 'two' } });
         const page = await changes(seq);
         expect(page.tags).toEqual([expect.objectContaining({ id: 'a', name: 'two' })]);
-        expect(page.seq).toBe(seq + 3);
+        // A position in the feed: its end, read through.
+        expect(page.seq).toBe(await cursor());
     });
 
     test('a deleted tag is listed as removed, with the tag it was merged into', async () => {
@@ -174,8 +148,8 @@ describe('what each write logs', () => {
         await create('merged');
         await create('target');
         const seq = await cursor();
-        await metadataDb.deleteTagDefinition(directories, 'gone');
-        await metadataDb.deleteTagDefinition(directories, 'merged', 'target');
+        await user.store.lib.tags.delete('gone');
+        await user.store.lib.tags.delete('merged', 'target');
         const page = await changes(seq);
         expect(page.tags).toEqual([]);
         expect(page.removed).toEqual([{ id: 'gone', mergedInto: null }, { id: 'merged', mergedInto: 'target' }]);
@@ -184,7 +158,7 @@ describe('what each write logs', () => {
     test('a refused delete logs nothing', async () => {
         await create('a');
         const seq = await cursor();
-        const { refused } = await metadataDb.deleteTagDefinition(directories, 'a', 'nowhere');
+        const { refused } = await user.store.lib.tags.delete('a', 'nowhere');
         expect(refused).toEqual([{ id: 'nowhere', reason: 'missing' }]);
         expect(await cursor()).toBe(seq);
     });
@@ -192,7 +166,7 @@ describe('what each write logs', () => {
     test('a created then deleted tag is listed as removed only', async () => {
         const seq = await cursor();
         await create('a');
-        await metadataDb.deleteTagDefinition(directories, 'a');
+        await user.store.lib.tags.delete('a');
         const page = await changes(seq);
         expect(page.tags).toEqual([]);
         expect(page.removed).toEqual([{ id: 'a', mergedInto: null }]);
@@ -255,49 +229,47 @@ describe('what each write logs', () => {
     });
 });
 
-describe('what a reader can\'t be told one by one', () => {
-    test('a whole-set write is one batch row, answered with reset and the log\'s end', async () => {
-        await create('a');
-        const seq = await cursor();
-        await metadataDb.saveTagDefinitions(directories, [{ id: 'a', name: 'a' }, { id: 'b', name: 'b' }]);
-        await create('c');
-        const end = await cursor();
-        expect(end).toBe(seq + 2);
-        expect(await changes(seq)).toEqual({ seq: end, reset: true, tags: [], removed: [], hasMore: false });
-        // Past the batch row the reader is told one by one again.
-        expect(ids(await changes(seq + 1))).toEqual(['c']);
-    });
-
-    test('a reorder pass is one batch row once it has ended, however many tags it wrote', async () => {
+describe('a reorder pass', () => {
+    test('lists each tag it wrote once, as it is after the pass', async () => {
         await create('a');
         await create('b');
         await create('c');
-        const queued = await metadataDb.reorderTagDefinitions(directories, 'c', { before: 'a' }, 'alphabetical');
+        const queued = await user.store.lib.tags.reorderDefinitions('c', { before: 'a' }, 'alphabetical');
         expect(queued).toEqual({ refused: [], queued: true });
         const seq = await cursor();
-        await metadataDb.runTagReorderPassIfNeeded(directories);
+        while (await user.store.lib.tags.passStep());
         const page = await changes(seq);
-        expect(page.reset).toBe(true);
+        // The feed holds one entry per tag, so a pass needs no reset.
+        expect(page.reset).toBe(false);
+        const ids = page.tags.map(tag => tag.id);
+        expect(new Set(ids).size).toBe(ids.length);
+        expect(ids).toContain('c');
+        const stored = new Map((await storedTagDefinitions(user.store.lib)).map(tag => [tag.id, tag]));
+        for (const tag of page.tags) expect(tag).toEqual(stored.get(tag.id));
         expect(page.seq).toBe(await cursor());
         expect(page.seq).toBeGreaterThan(seq);
     });
 });
 
 describe('paging', () => {
-    test('at most `limit` log rows per page; hasMore until the last', async () => {
+    test('at most `limit` tags per page; hasMore until the last', async () => {
         const seq = await cursor();
         await create('a');
         await create('b');
         await create('c');
-        const first = await metadataDb.getTagChangesSince(directories, seq, { limit: 2 });
-        expect(first).toEqual(expect.objectContaining({ seq: seq + 2, reset: false, hasMore: true }));
+        const first = await user.store.lib.tags.changes(seq, { limit: 2 });
+        expect(first).toEqual(expect.objectContaining({ reset: false, hasMore: true }));
+        expect(first.seq).toBeGreaterThan(seq);
         expect(first.tags.map(tag => /** @type {any} */ (tag).id).sort()).toEqual(['a', 'b']);
-        const second = await metadataDb.getTagChangesSince(directories, first.seq, { limit: 2 });
-        expect(second).toEqual(expect.objectContaining({ seq: seq + 3, reset: false, hasMore: false }));
+        const second = await user.store.lib.tags.changes(first.seq, { limit: 2 });
+        expect(second).toEqual(expect.objectContaining({ seq: await cursor(), reset: false, hasMore: false }));
         expect(second.tags.map(tag => /** @type {any} */ (tag).id)).toEqual(['c']);
     });
 
-    test('a limit that is not a positive integer throws', async () => {
-        await expect(metadataDb.getTagChangesSince(directories, 0, { limit: 0 })).rejects.toThrow(TypeError);
+    test('a limit of 0 answers no entries, the cursor unchanged', async () => {
+        const seq = await cursor();
+        await create('a');
+        const page = await user.store.lib.tags.changes(seq, { limit: 0 });
+        expect(page).toEqual(expect.objectContaining({ seq, reset: false, tags: [], removed: [] }));
     });
 });

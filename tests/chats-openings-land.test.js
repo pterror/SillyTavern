@@ -1,38 +1,28 @@
 import { beforeAll, afterAll, describe, test, expect } from '@jest/globals';
-import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 
-// chats.js reads these config values at module load (see chats-graft-degraft.test.js).
-process.env.SILLYTAVERN_BACKUPS_CHAT_ENABLED = 'false';
-process.env.SILLYTAVERN_BACKUPS_CHAT_MAXTOTALBACKUPS = '-1';
-process.env.SILLYTAVERN_BACKUPS_CHAT_THROTTLEINTERVAL = '0';
-process.env.SILLYTAVERN_BACKUPS_CHAT_CHECKINTEGRITY = 'true';
-process.env.SILLYTAVERN_PERFORMANCE_SHALLOWCHARACTERSINCLUDECREATORNOTES = 'false';
-process.env.SILLYTAVERN_PERFORMANCE_CHARACTERINDEXBUILDCONCURRENCY = '4';
-process.env.SILLYTAVERN_PERFORMANCE_CHARACTERMETADATARECONCILEINTERVALMS = '300000';
-process.env.SILLYTAVERN_PERFORMANCE_ALLOWEXPENSIVEDUPLICATEFALLBACK = 'true';
-
+/** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
+let user;
+/** @type {typeof import('./converted-user.fixture.js')} */
+let fixture;
 /** @type {import('node:http').Server} */
 let server;
 let baseUrl;
-let tempDir;
 
 beforeAll(async () => {
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
+    fixture = await import('./converted-user.fixture.js');
     const chats = await import('../src/endpoints/chats.js');
 
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-openings-land-test-'));
-    const directories = { root: tempDir, characters: path.join(tempDir, 'characters'), chats: path.join(tempDir, 'chats') };
-    fs.mkdirSync(directories.characters, { recursive: true });
-    fs.mkdirSync(directories.chats, { recursive: true });
+    user = await fixture.emptyUser('st-openings-land-test-');
+    globalThis.DATA_ROOT = user.dataRoot;
 
     const express = (await import('express')).default;
     const app = express();
     app.use(express.json());
     app.use((req, res, next) => {
-        req.user = { directories, profile: { handle: 'test-user' } };
+        req.user = user.user;
         next();
     });
     app.use('/api/chats', chats.router);
@@ -43,7 +33,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
     await new Promise(resolve => server.close(resolve));
-    fs.rmSync(tempDir, { recursive: true, force: true });
+    await user.close();
 });
 
 async function postJson(urlPath, body) {
@@ -58,16 +48,18 @@ async function postJson(urlPath, body) {
 let counter = 0;
 
 /**
- * A character with no card on disk whose stored openings are `texts`, in order. Resolves to its avatar and their row ids.
+ * A character whose stored openings are `texts`, in order. Resolves to its avatar and their row ids.
  * @param {string[]} texts
  */
 async function ownerWithOpenings(texts) {
     counter += 1;
     const avatar = `land-owner-${counter}.png`;
     const contents = texts.map(mes => ({ name: 'Char', is_user: false, is_system: false, send_date: 'd0', mes, extra: {} }));
-    const res = await postJson('/api/chats/openings/ensure', { avatar_url: avatar, contents });
-    expect(res.status).toBe(200);
-    return { avatar, ids: res.body.node_ids };
+    await user.store.lib.writeCard(user.directories, avatar, JSON.stringify({ name: 'Char', data: { name: 'Char' } }));
+    // Each text an opening of its own: a message with no parent.
+    const ids = [];
+    for (const content of contents) ids.push(...await fixture.seedMessages(user.store, { avatar }, null, [content]));
+    return { avatar, ids };
 }
 
 const openings = n => Array.from({ length: n }, (_, i) => `opening ${i}`);
@@ -110,16 +102,27 @@ describe('POST /api/chats/openings/land', () => {
     });
 
     test('no openings at all answers with no opening', async () => {
+        // A character with no greeting and no stored opening (an avatar no character has is an unknown chat, 404).
+        await user.store.lib.writeCard(user.directories, 'land-nobody.png', JSON.stringify({ name: 'Nobody', data: { name: 'Nobody' } }));
         const res = await postJson('/api/chats/openings/land', { avatar_url: 'land-nobody.png', shown_text: 'gone', index: 0 });
         expect(res.status).toBe(200);
         expect(res.body).toEqual({ index: -1, opening: null });
     });
 
-    test('a missing shown_text, a bad index or too many edits is a 400', async () => {
+    test('every edit of a save counts, however many: one among 150 still leads to its opening', async () => {
+        const texts = openings(15);
+        const { avatar, ids } = await ownerWithOpenings(texts);
+        const edits = [{ from: 'was edited', to: texts[13] }, ...Array.from({ length: 149 }, (_, i) => ({ from: `before ${i}`, to: `after ${i}` }))];
+        const res = await postJson('/api/chats/openings/land', { avatar_url: avatar, shown_text: 'was edited', index: 1, edits });
+        expect(res.status).toBe(200);
+        expect(res.body.index).toBe(13);
+        expect(res.body.opening.node_id).toBe(ids[13]);
+    });
+
+    test('a missing shown_text, a bad index or edits that aren\'t a list is a 400', async () => {
         expect((await postJson('/api/chats/openings/land', { avatar_url: 'a.png', index: 0 })).status).toBe(400);
         expect((await postJson('/api/chats/openings/land', { avatar_url: 'a.png', shown_text: 'x', index: -1 })).status).toBe(400);
         expect((await postJson('/api/chats/openings/land', { avatar_url: 'a.png', shown_text: 'x', index: 1.5 })).status).toBe(400);
-        const many = Array.from({ length: 65 }, () => ({ from: 'a', to: 'b' }));
-        expect((await postJson('/api/chats/openings/land', { avatar_url: 'a.png', shown_text: 'x', index: 0, edits: many })).status).toBe(400);
+        expect((await postJson('/api/chats/openings/land', { avatar_url: 'a.png', shown_text: 'x', index: 0, edits: { from: 'a', to: 'b' } })).status).toBe(400);
     });
 });

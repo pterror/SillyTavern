@@ -1,10 +1,9 @@
-import crypto from 'node:crypto';
-
 import _ from 'lodash';
 
 import { deepMerge, tryParse } from './util.js';
 import { readWorldInfoFile, getCharacterWorldLink } from './endpoints/worldinfo.js';
 import { character_world_link } from '../public/scripts/character-world-link.js';
+export { computeContentIdentityHash, stripInstallLocalFields } from './card-identity-hash.js';
 
 /**
  * Normalizes an arbitrary parsed character JSON object (V1 or V2) into Spec V2 shape.
@@ -98,51 +97,8 @@ export function omitChatField(char) {
 }
 
 /**
- * Strips fav/data.extensions.fav/chat/create_date for content-identity comparison, so two independently
- * imported copies of the same card hash identically. Returns a deep clone; never mutates `char`.
- */
-export function stripInstallLocalFields(char) {
-    const clone = _.cloneDeep(char);
-    _.unset(clone, 'fav');
-    _.unset(clone, 'data.extensions.fav');
-    _.unset(clone, 'chat');
-    _.unset(clone, 'create_date');
-    return clone;
-}
-
-/**
- * sha256 over a canonical (sorted-keys) JSON serialization of the character with install-local fields stripped.
- *
- * Lives here rather than in character-metadata-db.js so worker_threads workers can import it without pulling
- * in that module's top-level getConfigValue() calls, which crash outside the main thread.
- * @returns {string} sha256 hex digest
- */
-export function computeContentIdentityHash(character) {
-    const stripped = stripInstallLocalFields(character);
-    return crypto.createHash('sha256').update(canonicalStringify(stripped)).digest('hex');
-}
-
-/**
- * JSON.stringify with object keys sorted at every level, for deterministic output regardless of insertion order.
- * @param {*} value
- * @returns {string}
- */
-function canonicalStringify(value) {
-    if (Array.isArray(value)) {
-        return `[${value.map(canonicalStringify).join(',')}]`;
-    }
-    if (value !== null && typeof value === 'object') {
-        // Skip undefined-valued keys, matching JSON.stringify()'s own omission semantics — otherwise hashes
-        // differ depending on whether the object was round-tripped through JSON before reaching here.
-        const keys = Object.keys(value).filter(k => value[k] !== undefined).sort();
-        return `{${keys.map(k => `${JSON.stringify(k)}:${canonicalStringify(value[k])}`).join(',')}}`;
-    }
-    return JSON.stringify(value);
-}
-
-/**
  * Top-level Spec-V1 field name -> its `data.*` Spec-V2 path. The one place this mapping is defined -
- * readFromV2() and characters.js's correctV1FieldDriftOnRead() both read it rather than each keeping
+ * readFromV2() and characters.js's readCardContent() both read it rather than each keeping
  * their own copy.
  */
 export const V1_V2_FIELD_MAPPINGS = {

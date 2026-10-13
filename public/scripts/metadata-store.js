@@ -1,21 +1,13 @@
 import { getCurrentCharacter } from '../script.js';
 import { chat, chat_metadata } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
-import { groupsStore, selected_group } from './group-chats.js';
-import { _setCurrentTarget, setMetadataStoredListener } from './chat-store.js';
+import { selected_group } from './group-chats.js';
+import { setMetadataStoredListener } from './chat-store.js';
 import { delay } from './utils.js';
 import { t } from './i18n.js';
 import { isStoredNodeId } from './node-identity.js';
-import { baselineAfter, baselineOf, changesStateHere, metadataChanges, replaceInPlace, unsavedVariables } from './state-sync.js';
-
-// Mirrors _messageSnapshots (generation.js), but for chat_metadata's own content (author's note, custom
-// extension keys, `tainted`, etc.) rather than message rows - so a tree op that only changed the message
-// tree (already persisted via its own chatOp*/degraft/endPath call) doesn't also trigger a redundant
-// /api/chats/metadata POST that would write back the exact same metadata unchanged. `null` always
-// means "unknown state, save unconditionally" - every metadata reset in this file clears it to that,
-// so this can only ever cause an extra save, never a dropped one.
-/** @type {string|null} */
-let _lastSavedMetadataJSON = null;
+import { applyChanges, baselineAfter, baselineOf, changesStateHere, metadataChanges, replaceInPlace, unsavedVariables } from './state-sync.js';
+import { jsonHash } from './hash-utils.js';
 
 /**
  * Each chat metadata key's value as JSON, as the page last had it from the server or last stored it.
@@ -28,26 +20,6 @@ const _sentMetadataChanges = new Map();
 
 /** @typedef {{ set: Record<string, unknown>, unset: string[] }} MetadataChanges */
 
-
-/**
- * The chat metadata keys the page changed since it last had them from the server or stored them.
- * @returns {MetadataChanges|null} Null when nothing changed.
- */
-export function changedMetadataKeys() {
-    /** @type {MetadataChanges} */
-    const changes = { set: {}, unset: [] };
-    const current = baselineOf(chat_metadata);
-    for (const [key, json] of current) {
-        if (_metadataBaseline.get(key) !== json) changes.set[key] = chat_metadata[key];
-    }
-    for (const key of _metadataBaseline.keys()) {
-        if (!current.has(key)) changes.unset.push(key);
-    }
-    return Object.keys(changes.set).length || changes.unset.length ? changes : null;
-}
-
-// State layer 1 (`chat_metadata` as the state at the pointer, variables sent one by one): switched on at the
-// engine cut (build path 5f), which moves the senders and the answers moving the pointer onto these.
 
 /**
  * What changed in `chat_metadata` since the page last had it from the server, per key and per variable.
@@ -72,7 +44,6 @@ export function noteMetadataChangesStored(changes) {
 export function takeServerState(state) {
     replaceInPlace(chat_metadata, state);
     _metadataBaseline = baselineOf(state);
-    _lastSavedMetadataJSON = _metadataContentJSON(state);
 }
 
 /**
@@ -103,26 +74,95 @@ export function stateChangedHere(at) {
  */
 export function noteMetadataStored(metadata) {
     _metadataBaseline = baselineOf(metadata);
-    _lastSavedMetadataJSON = _metadataContentJSON(metadata);
 }
 
 /**
  * Remembers changes sent under `ref`, so they count as stored once the server says so.
  * @param {string} ref
- * @param {MetadataChanges} changes
+ * @param {import('./state-sync.js').MetadataChanges} changes
  */
 export function noteMetadataSent(ref, changes) {
     _sentMetadataChanges.set(ref, changes);
 }
 
-setMetadataStoredListener(({ ref, integrity }) => {
+setMetadataStoredListener(({ ref, node_id: at, integrity, notSaved }) => {
     const changes = _sentMetadataChanges.get(ref);
     if (!changes) return;
     _sentMetadataChanges.delete(ref);
+    if (notSaved) {
+        void readStateAt(at === '' ? null : at).then(state => {
+            if (state) metadataChangesNotSaved(state, changes);
+        });
+        return;
+    }
     chat_metadata.integrity = integrity ?? undefined;
-    for (const [key, value] of Object.entries(changes.set)) _metadataBaseline.set(key, JSON.stringify(value));
-    for (const key of changes.unset) _metadataBaseline.delete(key);
+    noteMetadataChangesStored(changes);
 });
+
+/**
+ * The open chat's owner as chat routes name it, or null.
+ * @returns {{ avatar_url: string } | { group_id: string } | null}
+ */
+function openOwner() {
+    if (selected_group != null) return { group_id: String(selected_group) };
+    const avatar = getCurrentCharacter()?.avatar;
+    return typeof avatar === 'string' && avatar !== '' ? { avatar_url: avatar } : null;
+}
+
+/**
+ * Reads the server's state again after a change elsewhere (the changes stream's `state-changed`: `tree` the
+ * character's avatar or group's id, null when every page reads again; `at` the message it hangs on, null at the
+ * root) when it changes what this page shows. This page's own changes not saved yet stay on top of it.
+ * @param {{ tree: string | null, at: string | null }} frame
+ */
+export async function onStateChanged({ tree, at }) {
+    const owner = openOwner();
+    if (!owner) return;
+    const open = 'group_id' in owner ? owner.group_id : owner.avatar_url;
+    if (tree !== null && (tree !== open || !stateChangedHere(at))) return;
+    let position = null;
+    for (let i = chat.length - 1; i >= 0; i--) {
+        if (isStoredNodeId(chat[i]?.node_id)) {
+            position = chat[i].node_id;
+            break;
+        }
+    }
+    try {
+        const response = await fetch('/api/state/at', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ ...owner, at: position, if_hash: jsonHash(chat_metadata) }),
+        });
+        if (!response.ok) return;
+        const answer = await response.json();
+        // The page may have opened another chat meanwhile.
+        if (!answer?.state || JSON.stringify(openOwner()) !== JSON.stringify(owner)) return;
+        const pending = changedMetadata();
+        takeServerState(answer.state);
+        if (pending) applyChanges(chat_metadata, pending);
+    } catch (error) {
+        console.error('Could not read the chat\'s state again:', error);
+    }
+}
+
+/**
+ * The server's state at a message of the open chat (null: its root), or null when it can't be read.
+ * @param {string|null} at
+ * @returns {Promise<ChatMetadata|null>}
+ */
+async function readStateAt(at) {
+    const owner = openOwner();
+    if (!owner) return null;
+    try {
+        const response = await fetch('/api/state/at', { method: 'POST', headers: getRequestHeaders(), body: JSON.stringify({ ...owner, at }) });
+        if (!response.ok) return null;
+        const answer = await response.json();
+        return answer?.state ?? null;
+    } catch (error) {
+        console.error('Could not read the chat\'s state back:', error);
+        return null;
+    }
+}
 
 /** @typedef {Error & {status: number}} HttpError */
 
@@ -134,23 +174,11 @@ function _hasHttpStatus(error) {
     return error instanceof Error && typeof (/** @type {*} */ (error).status) === 'number';
 }
 
-// `integrity` is excluded on purpose: the server rotates it on every metadata write (even a true
-// no-op one), so comparing it would make every save look "dirty" and defeat the whole point.
-/** @param {ChatMetadata|null|undefined} metadata */
-function _metadataContentJSON(metadata) {
-    if (!metadata || typeof metadata !== 'object') {
-        return JSON.stringify(metadata);
-    }
-    const rest = { ...metadata };
-    delete rest.integrity;
-    return JSON.stringify(rest);
-}
-
-// Forces the next tree-chat metadata save to go through unconditionally, e.g. after chat_metadata
-// is wholesale reset/reassigned (new chat, chat switch, import) rather than merged in place - in
-// those cases the previous snapshot no longer describes what the server has, so treat it as unknown.
+/**
+ * Forgets what was sent and not answered yet, and takes `chat_metadata` as it is now as what the server has (the
+ * chat was opened or replaced whole).
+ */
 export function _resetMetadataSaveSnapshot() {
-    _lastSavedMetadataJSON = null;
     _metadataBaseline = baselineOf(chat_metadata);
     _sentMetadataChanges.clear();
 }
@@ -183,59 +211,27 @@ async function _retryOp(fn, { attempts = 3, baseDelayMs = 500 } = {}) {
     throw lastError;
 }
 
-// Shared conflict UX for a metadata write rejected because the node's `integrity` changed elsewhere since this
-// client last saw it - same toast+refresh convention as the settings save-partial 409 (see saveSettingsDebounced/
-// savePartialSettings), adapted to chat metadata: there's no equivalent of getSettings() to silently refetch into,
-// so this just tells the user to reload rather than risk clobbering the other session's write.
-function _handleMetadataIntegrityConflict() {
-    console.warn('Chat metadata save rejected: it was changed by another session since this client last saw it.');
-    toastr.warning(t`This chat's metadata was changed in another tab or session. Reload the page to see the latest version.`, t`Metadata save rejected`);
-}
-
-// Every metadata-saving call (saveMetadata()'s solo/group branches, and saveChat()'s (generation.js)
-// tree-chat branch) funnels through _postChatMetadata() below, and every call chains onto this same
-// promise - so a second call built while the first is still in flight WAITS for the first's write (and
-// its chat_metadata.integrity update) to land before it even decides whether it still has anything new
-// to send. Without this, two saves fired close together (e.g. one from a generation's normal
-// finish path and another from an abort-cleanup path racing it) both read the SAME stale
-// chat_metadata.integrity before either response applied, so the second one's `expected_integrity`
-// is already wrong by the time the server sees it - a false-positive "changed in another session"
-// 409 against ITS OWN prior write, not a real conflict.
+// Saves are chained: one built while another is in flight waits for it, so it diffs against what that one stored.
 let _metadataSaveChain = Promise.resolve();
 
 /**
- * POSTs one owner's chat_metadata to /api/chats/metadata, with the same retry-then-toast policy for
- * both solo and group chats. Queued behind any already-in-flight call via `_metadataSaveChain` - see
- * that variable's own doc comment above.
+ * Saves what changed in `chat_metadata` (`changedMetadata()`) as state changes where the request's session is, with
+ * the same retry-then-toast policy for solo and group chats. A refusal takes the server's state back and names the
+ * variables not saved.
  * @param {{avatar_url: string}|{group_id: string}} owner
- * @param {string} target The node/label this chat is addressed by (character.chat, or group.chat_id).
- * @param {ChatMetadata} metadata
  */
-export async function _postChatMetadata(owner, target, metadata) {
+export async function _postChatMetadata(owner) {
     const run = async () => {
-        // Re-derive the integrity to assert from the LIVE chat_metadata.integrity, not
-        // metadata.integrity as it was captured by the caller (possibly before this call was even
-        // queued) - an earlier call chained ahead of this one may have already rotated it. The
-        // content comparison below (_metadataContentJSON) already excludes `integrity` for the
-        // same underlying reason, so this only affects what's actually sent on the wire.
-        const freshMetadata = metadata.integrity === chat_metadata.integrity ? metadata : { ...metadata, integrity: chat_metadata.integrity };
-        const metadataContentJSON = _metadataContentJSON(freshMetadata);
-        if (metadataContentJSON === _lastSavedMetadataJSON) {
-            return;
-        }
-
-        /** @returns {Promise<{integrity?: string}|null>} */
+        const changes = changedMetadata();
+        if (!changes) return;
+        /** @returns {Promise<{ ok?: boolean, state?: ChatMetadata }>} */
         const postMetadata = async () => {
             const response = await fetch('/api/chats/metadata', {
                 method: 'POST',
                 headers: getRequestHeaders(),
-                body: JSON.stringify({ ...owner, file_name: target, metadata: freshMetadata, expected_integrity: freshMetadata.integrity }),
+                body: JSON.stringify({ ...owner, ...changes }),
             });
-            if (response.status === 409) {
-                _handleMetadataIntegrityConflict();
-                return null;
-            }
-            if (!response.ok) {
+            if (!response.ok && response.status !== 409) {
                 const error = /** @type {HttpError} */ (new Error(`/api/chats/metadata responded ${response.status}`));
                 error.status = response.status;
                 throw error;
@@ -245,13 +241,8 @@ export async function _postChatMetadata(owner, target, metadata) {
 
         try {
             const result = await _retryOp(postMetadata);
-            if (result && typeof result.integrity === 'string') {
-                _setCurrentTarget(target, result.integrity, owner);
-            }
-            if (result) {
-                _lastSavedMetadataJSON = metadataContentJSON;
-                _metadataBaseline = baselineOf(freshMetadata);
-            }
+            if (result.ok === false && result.state) metadataChangesNotSaved(result.state, changes);
+            else noteMetadataChangesStored(changes);
         } catch (error) {
             console.error('[saveMetadata] Failed to save metadata after retrying:', error);
             toastr.error(t`Could not save chat metadata. Check your connection and try again.`, t`Save failed`);
@@ -264,40 +255,9 @@ export async function _postChatMetadata(owner, target, metadata) {
     return chained;
 }
 
-/**
- * @param {string|null} fallback
- * @returns {string|null}
- */
-export function deriveChatAddressNode(fallback) {
-    const position = getCurrentCharacter()?.chat;
-    const opening = chat[0]?.node_id;
-    return chat.some(m => m.node_id === position) ? position : (isStoredNodeId(opening) ? opening : fallback);
-}
-
-// Persists chat_metadata alone, without dragging the per-message diff (or, for a group, the whole-array
-// resave) a full save would do.
+/** Saves what changed in `chat_metadata` (upstream's `saveMetadata()`), where this tab's session is. */
 export async function saveMetadata() {
-    const metadata = chat_metadata;
-
-    if (selected_group != null) {
-        const group = groupsStore.get(selected_group);
-        if (group == null || group.chat_id.length === 0) {
-            console.warn('[saveMetadata] Group has no current chat_id - nothing to save metadata onto yet.');
-            return;
-        }
-        return await _postChatMetadata({ group_id: selected_group }, group.chat_id, metadata);
-    }
-
-    const avatar = getCurrentCharacter()?.avatar;
-    if (avatar == null) {
-        return;
-    }
-
-    const target = deriveChatAddressNode(null);
-    if (target == null || target.length === 0) {
-        console.warn('[saveMetadata] No valid node to address this chat by - nothing to save metadata onto yet.');
-        return;
-    }
-
-    return await _postChatMetadata({ avatar_url: avatar }, target, metadata);
+    const owner = openOwner();
+    if (!owner) return;
+    return await _postChatMetadata(owner);
 }

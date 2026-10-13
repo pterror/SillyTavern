@@ -209,6 +209,10 @@ await testCase('computeLogitBias, claude: no bias, nothing listed as dropped', a
 // happens; they are claude.json, whose ids differ from llama3 and tiktoken.
 const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'st-tokenizers-test-'));
 globalThis.DATA_ROOT = dataRoot;
+// The token tables are the user's store (a new one, in `dataRoot`).
+const stores = await import('../user-stores.js');
+const engineBinding = (await import('../../engine/load.js')).loadEngine().binding;
+stores.setStoreEngine(() => engineBinding);
 fs.mkdirSync(path.join(dataRoot, '_cache'));
 for (const name of ['nemo.json', 'deepseek.json']) {
     fs.copyFileSync(path.join(__dirname, '..', 'tokenizers', 'claude.json'), path.join(dataRoot, '_cache', name));
@@ -903,7 +907,6 @@ await testCase('countChatCompletionMessages: answeredOut names the tokenizer tha
 await testCase('computeLogitBias at a custom llama.cpp URL: with a storedEncoder, a second call after writeBack encodes nothing; without one, every call encodes', async () => {
     const { createLlamaCppPropsCheck } = await import('../llamacpp-props.js');
     const { createStoredEncoder, writeBack } = await import('../token-count-store.js');
-    const { disposeMessageTreeStores } = await import('../message-tree-db.js');
     resetStepFake();
     stepFake.props = { model_path: '/models/bias.gguf' };
     const directories = { root: dataRoot };
@@ -939,7 +942,6 @@ await testCase('computeLogitBias at a custom llama.cpp URL: with a storedEncoder
         assert.deepEqual(second.dropped, []);
     } finally {
         resetStepFake();
-        disposeMessageTreeStores();
     }
 });
 
@@ -948,10 +950,9 @@ await testCase('computeLogitBias at a custom llama.cpp URL: with a storedEncoder
 {
     const { clearLlamaCppPropsMemory } = await import('../llamacpp-props.js');
     const { TOKEN_KEY_KINDS, tokenKeyHash, readCount, readIdsRow, writeBack } = await import('../token-count-store.js');
-    const { getMessageTreeDb, disposeMessageTreeStores } = await import('../message-tree-db.js');
     const directories = { root: dataRoot };
     const identity = 'llamacpp:["/models/current.gguf","b1-abc"]';
-    const idsRowsRunning = async () => Number((await getMessageTreeDb(directories)).get('SELECT value FROM meta WHERE key = \'token_ids_rows\'')?.value ?? 0);
+    const idsRowsRunning = async () => Number(await (await stores.userStore(directories)).lib.store.chatRead('tokenCacheCount', { table: 1 }));
     /** Waits for a write-back that runs after the response: `read()` until it gives something other than null. */
     const stored = async (read) => {
         for (let i = 0; i < 200; i++) {
@@ -1042,16 +1043,14 @@ await testCase('computeLogitBias at a custom llama.cpp URL: with a storedEncoder
      * @param {() => Promise<void>} body
      */
     const withFailingTokenReads = async (body) => {
-        const db = await getMessageTreeDb(directories);
-        const realGet = db.get;
-        const get = mock.method(db, 'get', (sql, params) => {
-            if (/FROM token_(counts|ids)\b/.test(sql)) throw new Error('token table read failed (test)');
-            return realGet(sql, params);
+        const { tokens } = await stores.userStore(directories);
+        const read = mock.method(tokens, 'read', async () => {
+            throw new Error('token table read failed (test)');
         });
         try {
             await body();
         } finally {
-            get.mock.restore();
+            read.mock.restore();
         }
     };
 
@@ -1086,9 +1085,9 @@ await testCase('computeLogitBias at a custom llama.cpp URL: with a storedEncoder
     });
 
     resetStepFake();
-    disposeMessageTreeStores();
 }
 
+await stores.closeUserStores();
 fakeServer.close();
 server.close();
 stepServer.close();

@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { after, test } from 'node:test';
@@ -18,21 +17,18 @@ setConfigFilePath(path.join(__dirname, '..', '..', 'config.yaml'));
 // A new character has no chat name minted for it.
 const { router: chatsRouter } = await import('./chats.js');
 const { router: charactersRouter } = await import('./characters.js');
-const { loadBranch } = await import('../message-tree-db.js');
-const { getCharacterActiveChatsByIds, upsertCharacterFromWrite } = await import('../character-metadata-db.js');
+const { convertedUser, writeLibraryCard, treeOf } = await import('../../tests/converted-user.fixture.js');
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-chats-import-test-'));
-const directories = { root };
-for (const dir of ['chats', 'groupChats', 'groups', 'backups', 'characters', 'thumbnailsAvatar', 'uploads']) {
-    directories[dir] = path.join(root, dir);
-    fs.mkdirSync(directories[dir], { recursive: true });
-}
-globalThis.DATA_ROOT = root;
+const user = await convertedUser('st-chats-import-test-');
+const { directories } = user;
+globalThis.DATA_ROOT = user.dataRoot;
+directories.uploads = path.join(user.root, 'uploads');
+fs.mkdirSync(directories.uploads, { recursive: true });
 
 const app = express();
 app.use(express.json());
 app.use((req, _res, next) => {
-    req.user = { directories, profile: { handle: 'tester' } };
+    req.user = { directories, profile: { handle: 'u' } };
     next();
 });
 // Stands in for the server's upload middleware: the test names a file it wrote under `uploads`.
@@ -72,8 +68,22 @@ async function writeCharacter(avatar, name) {
         data: { name, description: '', personality: '', scenario: '', first_mes: 'Hi.', mes_example: '', system_prompt: '', post_history_instructions: '', character_version: '', creator_notes: '', alternate_greetings: [], extensions: {} },
     };
     const cardJson = JSON.stringify(card);
-    fs.writeFileSync(path.join(directories.characters, avatar), writeCard(baseImage, cardJson));
-    await upsertCharacterFromWrite(directories, avatar, cardJson);
+    await writeLibraryCard(user, avatar, cardJson, writeCard(baseImage, cardJson));
+}
+
+/**
+ * A tree's bookmarks (compat id, name and the messages shown down to it).
+ * @param {{ avatar?: string, group?: string }} owner
+ */
+async function bookmarksOf(owner) {
+    const tree = await treeOf(user.store, owner);
+    const out = [];
+    for (let after; ;) {
+        const page = await user.store.chats.bookmarks({ tree, after, limit: 500 });
+        for (const b of page.rows) out.push({ id: `b${b.id}`, name: b.name, messages: (await user.store.chats.load({ tree, at: b.at }))?.messages ?? [] });
+        if (!page.more) return out;
+        after = page.rows[page.rows.length - 1].id;
+    }
 }
 
 /** Writes an upload and names it for the next request. */
@@ -94,18 +104,20 @@ test('an imported chat is stored in the tree, and no chat file is written', asyn
     const { status, data } = await postJson('/api/chats/import', { avatar_url: 'nia.png', file_type: 'jsonl', character_name: 'Nia', user_name: 'User' }, { 'X-Test-Upload': file['X-Test-Upload'] });
     assert.equal(status, 200);
     assert.equal(data.res, true);
-    const name = data.fileNames[0].replace(/\.jsonl$/, '');
-    assert.deepEqual((await loadBranch(directories, 'nia', name)).messages.map(m => m.mes), ['Imported hello.']);
+    const id = data.fileNames[0].replace(/\.jsonl$/, '');
+    assert.deepEqual((await bookmarksOf({ avatar: 'nia.png' })).find(b => b.id === id)?.messages.map(m => m.mes), ['Imported hello.']);
     assert.equal(fs.existsSync(path.join(directories.chats, 'nia')), false, 'no chat folder or file');
     assert.equal(fs.existsSync(path.join(directories.uploads, file.name)), false, 'the upload is removed');
 });
 
 test('a group chat import that names no group fails and leaves no file', async () => {
+    // The converted user's group chat folder holds what the conversion left; the import adds nothing to it.
+    const before = fs.readdirSync(directories.groupChats);
     const file = upload(jsonl);
     const { data } = await postJson('/api/chats/group/import', {}, { 'X-Test-Upload': file['X-Test-Upload'] });
     assert.equal(data.error, true);
     assert.equal(fs.existsSync(path.join(directories.uploads, file.name)), false);
-    assert.deepEqual(fs.readdirSync(directories.groupChats), []);
+    assert.deepEqual(fs.readdirSync(directories.groupChats), before);
 });
 
 test('a new character has no chat name minted for it', async () => {
@@ -113,8 +125,10 @@ test('a new character has no chat name minted for it', async () => {
     assert.equal(created.status, 200);
     const avatar = String(created.data);
     assert.match(avatar, /\.png$/);
-    const active = (await getCharacterActiveChatsByIds(directories, [avatar]))[avatar];
-    assert.equal(active, undefined);
+    assert.deepEqual(await bookmarksOf({ avatar }), []);
 });
 
-after(() => setImmediate(() => process.exit(0)));
+after(async () => {
+    await user.close();
+    setImmediate(() => process.exit(0));
+});

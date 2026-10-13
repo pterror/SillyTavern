@@ -92,10 +92,8 @@ describe('convert-to-engine', () => {
         expect(snapshot(root)).toEqual(before);
         expect(fs.existsSync(path.join(root, convert.STORE_DIR))).toBe(true);
         expect(fs.existsSync(path.join(root, convert.BUILDING_DIR))).toBe(false);
-        // Hard links: the avatars' bytes weren't written again.
-        const avatars = fs.readdirSync(path.join(root, convert.STORE_DIR, 'avatars'));
-        expect(avatars.length).toBe(3);
-        expect(fs.statSync(path.join(root, convert.STORE_DIR, 'avatars', avatars[0])).nlink).toBe(2);
+        // Images stay in characters/, untouched: the store holds none.
+        expect(fs.existsSync(path.join(root, convert.STORE_DIR, 'avatars'))).toBe(false);
 
         // Converted once: a second run refuses.
         expect((await run(dataRoot, { apply: true, serverStopped: true })).code).toBe(1);
@@ -110,13 +108,17 @@ describe('convert-to-engine', () => {
             const chats = await ChatEngine.open(lib.store, people);
             const [alice, bob, group] = await people.trees([{ avatar: 'Alice.png' }, { avatar: 'Bob.png' }, { group: '1700000000001' }]);
             const names = async (/** @type {bigint} */ t) => (await chats.bookmarks({ tree: t, limit: 20 })).rows.map(b => [b.name, b.mode]);
-            // In the order the old chat list had them (their messages' creation), a repeated name suffixed.
-            expect(new Set((await names(alice)).map(n => n.join(' | ')))).toEqual(new Set(['Alice - 2024-05-01@10h00m00s | following', 'Alice - 2024-05-01@10h00m00s - Branch #1 | following', 'Odd name | following', 'Odd name (1) | following']));
+            // Old labels convert as they are, a repeated one too.
+            expect((await names(alice)).map(n => n.join(' | ')).sort()).toEqual(['Alice - 2024-05-01@10h00m00s - Branch #1 | following', 'Alice - 2024-05-01@10h00m00s | following', 'Odd name | following', 'Odd name | following']);
             expect(await names(bob)).toEqual([['Bob - Checkpoint #1', 'pinned']]);
             expect(await names(group)).toEqual([['Party chat', 'following'], ['Dropped empty', 'following'], ['Dropped twin', 'following']]);
             const rows = (await chats.chatList({ tree: group, limit: 10, withMetadata: true })).rows;
-            expect(rows[1]).toMatchObject({ name: 'Dropped empty', at: null, message_count: 0, chat_metadata: { note_prompt: 'Empty one.' } });
-            expect(rows[2].at).toBe(rows[0].at);
+            const row = (/** @type {string} */ name) => rows.find(r => r.name === name);
+            // Newest first: the two at the chat's last message (the later made first), then the one at the root, made
+            // (its header's create_date) before the chat's messages.
+            expect(rows.map(r => r.name)).toEqual(['Dropped twin', 'Party chat', 'Dropped empty']);
+            expect(row('Dropped empty')).toMatchObject({ at: null, message_count: 0, chat_metadata: { note_prompt: 'Empty one.' } });
+            expect(row('Dropped twin')?.at).toBe(row('Party chat')?.at);
             // The deterministic session lands where today's server opens the chat.
             const landed = await chats.resolveSession({ tree: alice, user: 'u', header: undefined });
             const at = await chats.pointer(/** @type {string} */ (landed.session));
@@ -147,6 +149,8 @@ describe('convert-to-engine', () => {
         const applied = await run(dataRoot, { apply: true, serverStopped: true, keepOrphans: true });
         expect(applied.code).toBe(0);
         expect(applied.text).toContain('unowned tree kept: owner Gone, 1 message(s), 1 bookmark(s)');
+        // Every conversation made is listed in recent chats, in the order of its last message (the check reads it back).
+        expect(applied.text).toMatch(/conversations listed in recent chats 14/);
         const { LibraryEngine, TYPE } = await import('../src/library-engine.js');
         const lib = await LibraryEngine.open(engine, path.join(dataRoot, 'u', convert.STORE_DIR));
         try {

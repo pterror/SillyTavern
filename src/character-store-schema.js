@@ -1,3 +1,7 @@
+import { foldName } from './fold-name.js';
+
+export { foldName };
+
 /**
  * The `characters` table of the fields layout, and what every connection to a store in that layout needs. The card itself is in the card tables (character-card-reader.js), split by
  * character-card-storage.js.
@@ -12,18 +16,6 @@
 
 /** The SQL function the name sort folds names with: lower case, compatibility-decomposed, combining marks dropped. */
 export const NAME_FOLD_FUNCTION = 'st_fold';
-
-/**
- * NFKD-normalizes and strips combining marks so "É"/"e" sort and prefix-match the same as "é"/"e".
- * @param {unknown} name
- * @returns {string}
- */
-export function foldName(name) {
-    return String(name ?? '')
-        .toLowerCase()
-        .normalize('NFKD')
-        .replace(/[̀-ͯ]/g, '');
-}
 
 /**
  * Registers the functions the store's indexes and triggers call. Every connection that writes `characters` needs

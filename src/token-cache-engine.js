@@ -1,10 +1,20 @@
-import { LAST_USED_GRANULARITY_MS, PRUNE_BATCH_ROWS, PRUNE_PAUSE_MS, TOKEN_COUNT_ROW_CAP } from './token-count-store.js';
-
 /**
  * The token-count cache in the engine's keyspace (build path 5b): counts and token ids keyed by the tokenizer's
  * identity and the text's hash (`tokenKeyHash()`), each table kept at a cap of entries by evicting the least
  * recently used in slices. A crash may lose results not yet flushed; they are tokenized again.
  */
+
+/**
+ * How far a reused key's `last_used` may lag before it is written again. `last_used` only orders entries for
+ * eviction, where a day's difference doesn't matter, so a key reused many times a day costs one write a day, not one per use.
+ */
+export const LAST_USED_GRANULARITY_MS = 24 * 60 * 60 * 1000;
+/** Entries each table may hold before the least recently used are evicted. */
+export const TOKEN_COUNT_ROW_CAP = 1_000_000;
+/** Entries one eviction batch removes at most. */
+export const PRUNE_BATCH_ROWS = 5000;
+/** The pause between eviction batches. */
+export const PRUNE_PAUSE_MS = 50;
 
 /** The engine's tables. */
 export const TABLE = Object.freeze({ counts: 0, ids: 1 });

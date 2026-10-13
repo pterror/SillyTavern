@@ -2,7 +2,7 @@ import { jsonHash } from '../public/scripts/hash-utils.js';
 import { POSITION_GAP, pushAll, valueRecords } from './entity-values.js';
 import { TYPE } from './library-codes.js';
 import { bookKey } from './world-info-keys.js';
-import { searchClauses } from './search-clauses.js';
+import { cursorWeights, cursorWeightsOf, searchClauses } from './search-clauses.js';
 
 /**
  * World info on the engine: books and their entries as entities whose values are the engine's records.
@@ -371,37 +371,13 @@ export class WorldInfoEngine {
     }
 
     /**
-     * A stored book in upstream's shape: a world book's `entries` an object by key, an owned book's a list.
+     * A stored book in upstream's shape (`assembleBook()`).
      * @param {StoredBook} s
      * @param {boolean} world
      * @returns {Record<string, unknown>}
      */
     assemble(s, world) {
-        /** @type {Map<string, unknown>} */
-        const found = new Map();
-        let order;
-        for (const v of s.entity?.values ?? []) {
-            if (v.field === DEFINED) continue;
-            if (v.field === ORDER) {
-                order = v.text;
-                continue;
-            }
-            if (typeof v.field === 'string') found.set(v.field, v.text !== undefined ? v.text : JSON.parse(/** @type {string} */ (v.json)));
-        }
-        if (s.original) found.set('originalData', this.assemble(s.original, false));
-        const list = [...s.entries.values()].sort((a, b) => a.position - b.position);
-        if (world) {
-            /** @type {Record<string, unknown>} */
-            const entries = {};
-            for (const x of list) setOwn(entries, x.entity.key.slice(x.entity.key.indexOf(':') + 1), entryObject(x.entity, false));
-            found.set('entries', entries);
-        } else {
-            found.set('entries', list.map(x => entryObject(x.entity, true)));
-        }
-        /** @type {Record<string, unknown>} */
-        const out = {};
-        for (const k of ordered(bookCanonical([...found.keys()]), order)) setOwn(out, k, found.get(k));
-        return out;
+        return assembleBook(s, world);
     }
 
     /**
@@ -589,10 +565,11 @@ export class WorldInfoEngine {
      * link holding the old name.
      * @param {string} name
      * @param {string} newName
-     * @param {{ relink?: boolean }} [options]
+     * @param {{ relink?: boolean, moved?: bigint[] }} [options] `moved` gets the characters whose link the rename
+     * moved to the new name (with `relink`, those linking the book).
      * @returns {Promise<'ok' | 'missing' | 'taken'>}
      */
-    rename(name, newName, { relink = true } = {}) {
+    rename(name, newName, { relink = true, moved } = {}) {
         const [from, to] = [bookKey(name), bookKey(newName)];
         return this.lane([from, to], async () => {
             const found = await this.find(name);
@@ -615,6 +592,7 @@ export class WorldInfoEngine {
             const linkers = [...(relink ? own : []), ...(there ? await this.linkers(there.id) : [])];
             pushAll(records, await this.lib.identityRecords(linkers, to));
             await this.store.commit(records);
+            if (moved && relink) pushAll(moved, own);
             return 'ok';
         });
     }
@@ -884,20 +862,31 @@ export class WorldInfoEngine {
         if (book === null) return 'missing';
         const clauses = searchClauses(search);
         if (clauses.length === 0) return { entries: [], total: 0, totalExact: true };
-        const m = typeof cursor === 'string' ? /^s([^:]+):(\d+)$/.exec(cursor) : null;
-        const after = m && Number.isFinite(Number(m[1])) ? { score: Number(m[1]), doc: BigInt(m[2]) } : undefined;
-        const found = await this.store.search({ scope: { book }, clauses, limit, ...(after ? { after } : {}) });
+        // `s<rank>:<doc>`, then `:<idf>,…` with several words (`cursorWeightsOf`). A cursor that doesn't read, or
+        // whose weights don't fit the query's words, is none.
+        const m = typeof cursor === 'string' ? /^s([^:]+):(\d+)(?::([^:]*))?$/.exec(cursor) : null;
+        const weights = m?.[3] === undefined ? undefined : cursorWeights(m[3]);
+        const after = m && Number.isFinite(Number(m[1])) && weights !== null
+            ? { score: Number(m[1]), doc: BigInt(m[2]), ...(weights ? { weights } : {}) }
+            : undefined;
+        const read = (/** @type {object | undefined} */ from) => this.store.search({ scope: { book }, clauses, limit, ...(from ? { after: from } : {}) });
+        let found;
+        try {
+            found = await read(after);
+        } catch (err) {
+            if (!after || !/^invalid cursor/.test(String(/** @type {any} */ (err)?.message))) throw err;
+            found = await read(undefined);
+        }
         const entities = await this.lib.entities(found.hits.map((/** @type {any} */ h) => h.doc));
         const entries = found.hits.flatMap((/** @type {any} */ h, /** @type {number} */ i) => {
             const e = entities[i];
             return e ? [{ uid: e.key.slice(e.key.indexOf(':') + 1), score: h.score }] : [];
         });
-        const last = found.hits[found.hits.length - 1];
         return {
             entries,
             total: found.total,
             totalExact: found.totalExact,
-            ...(found.more && last ? { cursor: `s${last.score}:${last.doc}` } : {}),
+            ...(found.next ? { cursor: `s${found.next.score}:${found.next.doc}${cursorWeightsOf(found.next)}` } : {}),
         };
     }
 
@@ -913,6 +902,79 @@ export class WorldInfoEngine {
         if (book === undefined) return s ? this.deleteRecords(s) : [];
         return this.bookRecords(id ?? this.lib.nextId++, s, book, { ownedKey: `${owner}:${slot}` });
     }
+}
+
+/**
+ * A stored book in upstream's shape: a world book's `entries` an object by key, an owned book's a list.
+ * @param {StoredBook} s
+ * @param {boolean} world
+ * @returns {Record<string, unknown>}
+ */
+function assembleBook(s, world) {
+    /** @type {Map<string, unknown>} */
+    const found = new Map();
+    let order;
+    for (const v of s.entity?.values ?? []) {
+        if (v.field === DEFINED) continue;
+        if (v.field === ORDER) {
+            order = v.text;
+            continue;
+        }
+        if (typeof v.field === 'string') found.set(v.field, v.text !== undefined ? v.text : JSON.parse(/** @type {string} */ (v.json)));
+    }
+    if (s.original) found.set('originalData', assembleBook(s.original, false));
+    const list = [...s.entries.values()].sort((a, b) => a.position - b.position);
+    if (world) {
+        /** @type {Record<string, unknown>} */
+        const entries = {};
+        for (const x of list) setOwn(entries, x.entity.key.slice(x.entity.key.indexOf(':') + 1), entryObject(x.entity, false));
+        found.set('entries', entries);
+    } else {
+        found.set('entries', list.map(x => entryObject(x.entity, true)));
+    }
+    /** @type {Record<string, unknown>} */
+    const out = {};
+    for (const k of ordered(bookCanonical([...found.keys()]), order)) setOwn(out, k, found.get(k));
+    return out;
+}
+
+/**
+ * A book as `Store.worldBookSync` read it, as stored (`WorldInfoEngine.stored()`).
+ * @param {any} read
+ * @returns {StoredBook}
+ */
+function storedOfRead(read) {
+    return {
+        id: read.id,
+        entity: read.entity,
+        entries: new Map(read.entries.map((/** @type {any} */ x) => [x.entity.key.slice(x.entity.key.indexOf(':') + 1), x])),
+        original: read.original ? storedOfRead(read.original) : null,
+    };
+}
+
+/**
+ * Whether a world book has this name (`WorldInfoEngine.exists()`), read on this thread from one state of the store.
+ * @param {any} store The binding's `Store` (`engineStoreHere()`)
+ * @param {string} name
+ * @returns {boolean}
+ */
+export function bookExistsHere(store, name) {
+    const key = bookKey(name);
+    return key ? store.worldBookExistsSync(key) : false;
+}
+
+/**
+ * A world book in upstream's shape (`WorldInfoEngine.read()`), read on this thread from one state of the store, or
+ * null when no book has the name.
+ * @param {any} store The binding's `Store` (`engineStoreHere()`)
+ * @param {string} name
+ * @returns {Record<string, unknown> | null}
+ */
+export function readBookHere(store, name) {
+    const key = bookKey(name);
+    if (!key) return null;
+    const read = store.worldBookSync(key);
+    return read ? assembleBook(storedOfRead(read), true) : null;
 }
 
 /**

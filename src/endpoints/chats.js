@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -12,31 +13,19 @@ import {
     humanizedDateTime,
     tryParse,
     formatBytes,
-    isPathUnderParent,
 } from '../util.js';
-import { getCharacterActiveChatsByIds, setCharacterActiveChat } from '../character-metadata-db.js';
-import { resolveGroupOwner } from '../character-shallow.js';
-import { readGroupFile, writeGroupFile } from './groups.js';
-import { withGroupLock } from '../group-lock.js';
-import { readCardContent } from './characters.js';
 import { triggerAutoSave } from './settings.js';
 import { readAllSettingsAsJson, readSettingsAtPaths, writeSettingsKeys } from '../settings-store.js';
 import { getStringHash } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel } from '../greeting-list.js';
 import { applyPageWrites } from '../page-writes.js';
 import { storedMessagesOf } from '../stored-messages.js';
-import {
-    isAvailable as isTreeAvailable, hasSavedChats,
-    saveChatToTree, loadBranch, forkBranch, labelNode,
-    deleteBranch, renameBranch as renameBranchInTree, listBranches, listRecentBranches, searchBranchesByContent,
-    ownerDescriptorOf, renameCharacterInMessages, renameGroupMemberInMessages, getAlternatives, getContinuation, getAncestorPath, editMessage, editMessages, appendMessages, addAlternatives, setChatMetadata, getOpeningAlternatives, loadDefaultChain, storedSendKeys, chooseCardOpening, findOpeningToLandOn, LANDING_EDITS_MAX, addOpeningAlternatives, loadAtNode, mergeChatMetadataKeys, listLabels, setNodeMetadata, selectDefaultChild, endPathAt, endPathAtAnchor, graftMessage, degraftRange, swapAdjacent, deleteAlternative,
-} from '../message-tree-db.js';
-
-/**
- * @typedef {import('../message-tree-db.js').Directories} Directories
- * @typedef {import('../message-tree-db.js').TreeChatMessage} TreeChatMessage
- * @typedef {import('../message-tree-db.js').ChatHeaderLike} ChatHeaderLike
- */
+import { engineStoreHere, requestStore } from '../user-stores.js';
+import { chatContext, chatNamePosition, compatChatIdOf, isOwnChat, labelBaseOf, openChatNamed } from '../chat-request.js';
+import { SESSION_GONE_HEADER } from '../request-session.js';
+import { bookmarkCompatId, loadSync, resolveChatNameSync, sessionCompatId, storedForm, treeOfChatIdSync } from '../chat-engine.js';
+import { TYPE } from '../library-engine.js';
+import { USER_DIRECTORY_TEMPLATE } from '../constants.js';
 
 /**
  * @param {unknown} error
@@ -47,6 +36,49 @@ function hasErrorCode(error) {
 }
 
 export const CHAT_BACKUPS_PREFIX = 'chat_';
+
+/**
+ * Builds a stable filename key for a chat's backups (upstream's): non-ASCII characters become underscores, so a
+ * short hash of the raw name keeps such names' keys distinct while ASCII names stay unchanged.
+ * @param {string} name The name of the chat.
+ * @returns {string} Sanitized filename key for the backup files.
+ */
+export function getBackupKey(name) {
+    const sanitized = sanitize(name).replace(/[^a-z0-9]/gi, '_').toLowerCase();
+    if (/[^\x20-\x7E]/.test(name)) {
+        const hash = crypto.createHash('sha256').update(name).digest('hex').slice(0, 8);
+        return `${sanitized}_${hash}`;
+    }
+    return sanitized;
+}
+
+/**
+ * The chat an upstream chat file path names: `<user>/chats/<avatar stem>/<name>.jsonl` (a character's) or
+ * `<user>/group chats/<name>.jsonl` (a group's), with the user's directories; null for any other path.
+ * @param {string} filePath
+ * @returns {{ directories: any, avatar: string | null, name: string } | null}
+ */
+function chatFileOf(filePath) {
+    const full = path.resolve(filePath);
+    const name = chatName(path.basename(full));
+    const parent = path.dirname(full);
+    /** @type {string} */
+    let root;
+    /** @type {string | null} */
+    let avatar = null;
+    if (path.basename(parent) === USER_DIRECTORY_TEMPLATE.groupChats) {
+        root = path.dirname(parent);
+    } else if (path.basename(path.dirname(parent)) === USER_DIRECTORY_TEMPLATE.chats) {
+        root = path.dirname(path.dirname(parent));
+        avatar = `${path.basename(parent)}.png`;
+    } else {
+        return null;
+    }
+    /** @type {any} */
+    const directories = { root };
+    for (const [k, v] of Object.entries(USER_DIRECTORY_TEMPLATE)) directories[k] = path.join(root, /** @type {string} */ (v));
+    return { directories, avatar, name };
+}
 
 /**
  * Gets a preview message from a chat message string.
@@ -450,121 +482,243 @@ export async function getChatInfo(pathToFile, additionalData = {}, withMetadata 
     });
 }
 
+
 export const router = express.Router();
 
-// https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Error
-class IntegrityMismatchError extends Error {
-    /** @param {ConstructorParameters<typeof Error>} params */
-    constructor(...params) {
-        // Pass remaining arguments (including vendor specific ones) to parent constructor
-        super(...params);
-        // Maintains proper stack trace for where our error was thrown (non-standard, but always
-        // present in this server's Node/V8 runtime).
-        Error.captureStackTrace(this, IntegrityMismatchError);
-        this.date = new Date();
+/**
+ * The chat a route acts in: a group's (`group_id`) when it names one, else a character's (`avatar_url`); null when it
+ * names none that exists.
+ * @param {import('express').Request} request
+ * @param {{ avatar_url?: unknown, group_id?: unknown }} [body]
+ */
+function chatOf(request, body = request.body ?? {}) {
+    return chatContext(request, { avatar: body.avatar_url, group: body.group_id });
+}
+
+/**
+ * A chat name as upstream's routes send it: without `.jsonl`.
+ * @param {unknown} name
+ */
+function chatName(name) {
+    return String(name ?? '').replace(/\.jsonl$/, '');
+}
+
+/**
+ * A chat's list, newest first (`chatList()`), each by its compat chat id (`file_id`: a bookmark's `b<id>`, the
+ * tab's own conversation's `s<UUID>.<tree>`) and its `label` (the name the user gave it, or null).
+ * @param {import('../chat-request.js').ChatContext} chat
+ * @param {{ withMetadata?: boolean }} [o]
+ */
+async function chatListOf(chat, { withMetadata = false } = {}) {
+    const rows = [];
+    /** @type {string | undefined} */
+    let after;
+    for (;;) {
+        const page = await chat.store.chats.chatList({ tree: chat.tree, session: chat.session.reader().session ?? undefined, after, limit: 500, withMetadata });
+        rows.push(...page.rows.map(r => ({ ...r, file_id: r.bookmark != null ? bookmarkCompatId(r.bookmark) : sessionCompatId(String(r.session), chat.tree), label: r.name ?? null })));
+        if (!page.more || page.rows.length === 0) return rows;
+        after = page.rows[page.rows.length - 1].position;
     }
 }
 
 /**
- * Picks a branch name that doesn't already exist for this owner, for callers that only have a desired
- * base name (e.g. "Some Chat") and want the server - not a client-fetched chat list - to be the source
- * of truth for uniqueness. Mirrors labelNode()'s "<name> - Branch #N" scheme. Checked against the tree
- * DB itself (listBranches()), the only place a chat name is actually registered now that /save no
- * longer ever writes a JSONL file - a directory listing would never find a collision.
- * @param {import('../users.js').UserDirectoryList} directories
- * @param {string} ownerId
- * @param {string} baseName Desired chat name, without extension.
- * @returns {Promise<string>} `baseName` unchanged if free, otherwise `<baseName> - Branch #N` for the first free N.
+ * Stores a whole chat (upstream's `/save` and `/group/save`) through the request's session, at the chat `name`
+ * names: the request's own conversation (its compat chat id, or its session's UUID) is the session's (made by the
+ * save when it has no key yet); another bookmark (`resolveChatName()`: its `b<id>`, or a label only it has) is the
+ * session's place first and becomes its current chat (a following bookmark follows the save's appends; a pinned one
+ * stays); another session is what the save acts as, this tab's current chat unchanged; a name naming nothing, or any
+ * name with `unique`, is a new bookmark labelled so at the chat's last message, not opened. No name: the session's
+ * own conversation. Answers what `/save` sends, `file_name` the compat chat id of the chat saved.
+ * @param {import('express').Request} request
+ * @param {import('express').Response} response
+ * @param {import('../chat-request.js').ChatContext} chat
+ * @param {string} name
+ * @param {any[]} chatData
  */
-async function pickUniqueChatFileName(directories, ownerId, baseName) {
-    const existing = new Set((await listBranches(directories, ownerId)).map(b => b.name));
-    if (!existing.has(baseName)) {
-        return baseName;
+async function saveWholeChat(request, response, chat, name, chatData) {
+    const { chats } = chat.store;
+    let actor = chat.session.actor();
+    /** @type {string | null} The label of the bookmark the save makes at its end. */
+    let newBookmark = null;
+    // Upstream's integrity check passes a chat file that doesn't exist yet: a save that makes its chat isn't checked.
+    let force = request.body.force === true;
+    const own = chat.session.reader().session;
+    /** @type {string} */
+    let used = name;
+    const found = name === '' || name === own || request.body.unique === true ? null : await chats.resolveChatName({ tree: chat.tree, name });
+    if (name !== '' && (name === own || (found !== null && await isOwnChat(chat, found)))) {
+        used = '';
+        if (await chats.sessionId(own ?? undefined) === null) force = true;
+    } else if (name !== '') {
+        if (found === null) {
+            newBookmark = name;
+            force = true;
+        } else if ('bookmark' in found) {
+            used = bookmarkCompatId(found.bookmark);
+            await openChatNamed(chat, used);
+        } else {
+            actor = { user: actor.user, session: found.session };
+            used = sessionCompatId(found.session, chat.tree);
+        }
     }
-    const cleanBase = String(baseName).replace(/ - Branch #\d+$/, '');
-    let i = 1;
-    while (existing.has(`${cleanBase} - Branch #${i}`)) i++;
-    return `${cleanBase} - Branch #${i}`;
+    const base = Array.isArray(request.body.base) ? request.body.base : undefined;
+    const saved = await chats.saveChat({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, chat: chatData, actor, force, base });
+    chat.session.answer(response, { moved: true });
+    if ('empty' in saved) return { status: 200, body: { ok: true, file_name: used || await compatChatIdOf(chat) } };
+    if (!saved.ok) return { status: 400, body: { error: saved.reason } };
+    if (saved.dropped) console.warn(`[chats/save] A save of "${name}" dropped:`, JSON.stringify(saved.dropped));
+    if (saved.deletes_refused) console.warn(`[chats/save] A save of "${name}" refused deletes:`, JSON.stringify(saved.deletes_refused));
+    if (newBookmark !== null) {
+        const at = await chats.landingOf(chat.tree, actor);
+        const made = await chats.createBookmark({ tree: chat.tree, node_id: at, name: newBookmark, actor });
+        if (made.ok) used = bookmarkCompatId(made.bookmark);
+    }
+    return {
+        status: 200,
+        body: {
+            ok: true,
+            integrity: saved.integrity,
+            assigned_node_ids: saved.assigned_node_ids,
+            file_name: used || await compatChatIdOf(chat),
+            ...(saved.dropped ? { dropped: saved.dropped } : {}),
+            ...(saved.deletes_refused ? { deletes_refused: saved.deletes_refused } : {}),
+        },
+    };
+}
+
+/**
+ * Upstream's save of a whole chat to its file, on the engine: the chat the path names (`chatFileOf()`), saved as
+ * `/save` saves it, by `handle` with no tab. Throws when the integrity check fails (unless `skipIntegrityCheck`), the
+ * path names no chat this user has, or the save fails. Chats aren't files here, so nothing is written to
+ * `backupDirectory`.
+ * @param {Array} chatData The chat array to save.
+ * @param {string} filePath Target file path for the data.
+ * @param {boolean} skipIntegrityCheck
+ * @param {string} handle The user's handle.
+ * @param {string} [_cardName]
+ * @param {string} [_backupDirectory]
+ */
+export async function trySaveChat(chatData, filePath, skipIntegrityCheck = false, handle, _cardName, _backupDirectory) {
+    const file = chatFileOf(filePath);
+    if (!file) throw new Error(`Not a chat file path: "${filePath}"`);
+    /** @type {any} */
+    const request = { user: { directories: file.directories, profile: { handle } }, body: { force: skipIntegrityCheck === true }, headers: {}, get: () => undefined };
+    const chat = file.avatar !== null ? await chatContext(request, { avatar: file.avatar }) : await groupChatOf(request, file.name);
+    if (!chat) throw new Error(`No chat to save at "${filePath}"`);
+    /** @type {any} */
+    const response = { setHeader() {}, headersSent: false };
+    const { status, body } = await saveWholeChat(request, response, chat, file.name, chatData);
+    if (status === 400 && body.error === 'integrity') {
+        throw new Error(`Chat integrity check failed for "${filePath}". The expected integrity slug was "${chatData[0]?.chat_metadata?.integrity}".`);
+    }
+    if (status !== 200) throw new Error(`The chat at "${filePath}" could not be saved: ${body.error}`);
 }
 
 router.post('/save', validateAvatarUrlMiddleware, async function (request, response) {
     try {
-        const cardName = String(request.body.avatar_url).replace('.png', '');
         const chatData = request.body.chat;
-        // An unnamed chat (no file_name) is stored without a name; a character with no current chat is then on it.
-        let chatName = typeof request.body.file_name === 'string' ? request.body.file_name.replace(/\.jsonl$/, '') : '';
-
         if (!Array.isArray(chatData)) {
             return response.status(400).send({ error: 'The request\'s body.chat is not an array.' });
         }
-
-        // Whole-array save: our own frontend uses this on the normal path too (a fresh chat's first
-        // save, and tree-chat snapshots), alongside the named per-row operations for everything else.
-        const owner = ownerDescriptorOf({ avatar: request.body.avatar_url });
-
-        // A fresh branch/bookmark save asks for a name minted here (like /chats/label's unique:true)
-        // instead of asserting a name the client uniquified against its own fetched chat list.
-        if (request.body.unique) {
-            chatName = await pickUniqueChatFileName(request.user.directories, cardName, chatName);
-        }
-
-        const result = await saveChatToTree(request.user.directories, cardName, chatName, chatData, false, owner);
-        if (result && 'integrity' in result) {
-            if (chatName === '' && result.assignedNodeIds.length > 0) {
-                const avatar = String(request.body.avatar_url);
-                const current = /** @type {string|undefined} */ ((await getCharacterActiveChatsByIds(request.user.directories, [avatar]))[avatar]);
-                if (current === undefined) {
-                    chatName = result.assignedNodeIds[0].node_id;
-                    await setCharacterActiveChat(request.user.directories, avatar, chatName);
-                }
-            }
-            return response.send({
-                ok: true,
-                integrity: result.integrity,
-                assigned_node_ids: result.assignedNodeIds,
-                file_name: chatName,
-            });
-        }
-
-        // Nothing to save (chatData had no messages beyond the header). Not an error - the client
-        // still expects an { ok: true } response with the name it asked to save under.
-        return response.send({ ok: true, file_name: chatName });
+        const chat = await chatOf(request, { avatar_url: request.body.avatar_url });
+        if (!chat) return response.status(404).send({ error: 'not_found' });
+        const { status, body } = await saveWholeChat(request, response, chat, chatName(request.body.file_name), chatData);
+        return response.status(status).send(body);
     } catch (error) {
-        if (error instanceof IntegrityMismatchError) {
-            console.error(error.message);
-            return response.status(400).send({ error: 'integrity' });
-        }
         console.error(error);
         return response.status(500).send({ error: 'An error has occurred, see the console logs for more information.' });
     }
 });
 
+/**
+ * A chat as upstream's `/get` answers it: `[header, ...messages]`, the header's `chat_metadata` the state at its
+ * position (with the request's session's `integrity`).
+ * @param {import('../chat-request.js').ChatContext} chat
+ * @param {string | null} at
+ */
+async function chatArray(chat, at) {
+    const loaded = await chat.store.chats.load({ tree: chat.tree, at, session: chat.session.reader().session });
+    if (!loaded) return null;
+    return [{ chat_metadata: { ...loaded.metadata }, user_name: 'unused', character_name: 'unused' }, ...loaded.messages];
+}
+
+/**
+ * Where a chat identifier is in a tree, read on this thread: as `chatNamePosition()` (`resolveChatNameSync()`);
+ * undefined when it names nothing there.
+ * @param {any} store The binding's `Store`.
+ * @param {bigint} tree
+ * @param {string} name
+ * @returns {string | null | undefined}
+ */
+function chatNamePositionSync(store, tree, name) {
+    const outside = (/** @type {bigint | null} */ at) => {
+        if (at === null) return null;
+        const [m] = store.chatReadSync('messages', { ids: [at] });
+        return m?.oldKey ?? String(at);
+    };
+    const found = resolveChatNameSync(store, tree, name);
+    if (found === null) return undefined;
+    if ('bookmark' in found) {
+        const [b] = store.chatReadSync('bookmarks', { ids: [found.bookmark] });
+        return b ? outside(b.at) : undefined;
+    }
+    // An `s<UUID>.<tree>` names that session's position there, else where the tree lands.
+    const where = found.session === null ? null : store.chatReadSync('sessionInTree', { session: found.session, tree });
+    if (!where && 'derived' in found) return outside(store.chatReadSync('landing', { tree, ...(found.session === null ? {} : { session: found.session }) }));
+    return where ? outside(where.at) : undefined;
+}
+
+/**
+ * The group tree a group chat id names, read on this thread: as `groupOfChat()`.
+ * @param {any} store The binding's `Store`.
+ * @param {string} name
+ * @returns {bigint | null}
+ */
+function groupTreeOfChatSync(store, name) {
+    const tree = treeOfChatIdSync(store, name);
+    if (tree === null) return null;
+    const [e] = store.libraryEntitiesSync([tree], { fields: [], lists: [] });
+    return e?.type === TYPE.group ? tree : null;
+}
+
+/**
+ * Upstream's read of a chat file, on the engine (synchronous, as upstream's): the chat the path names
+ * (`chatFileOf()`) as `/get` answers it, `[header, ...messages]`; [] when it names no chat.
+ * @param {string} chatFilePath The full chat file path.
+ * @returns {Array}
+ */
+export function getChatData(chatFilePath) {
+    const file = chatFileOf(chatFilePath);
+    const missing = () => {
+        console.warn(`File not found: ${chatFilePath}. The chat does not exist or is empty.`);
+        return [];
+    };
+    if (!file) return missing();
+    const store = engineStoreHere(file.directories);
+    /** @type {bigint | null | undefined} */
+    let tree;
+    if (file.avatar !== null) [tree] = store.libraryIdsSync([[TYPE.character, file.avatar]]);
+    else tree = groupTreeOfChatSync(store, file.name);
+    if (tree === null || tree === undefined) return missing();
+    const at = chatNamePositionSync(store, tree, file.name);
+    if (at === undefined) return missing();
+    // Upstream reads the chat file: every alternative's text.
+    const loaded = loadSync(store, { tree, at, full: true });
+    if (!loaded) return missing();
+    return [{ chat_metadata: { ...loaded.metadata }, user_name: 'unused', character_name: 'unused' }, ...loaded.messages];
+}
+
 router.post('/get', validateAvatarUrlMiddleware, async function (request, response) {
     try {
-        const dirName = String(request.body.avatar_url).replace('.png', '');
-        const chatName = String(request.body.file_name || '');
-
-        if (chatName) {
-            // The pointer may be a node id (exact) or a legacy chat name (looked up, not unique per owner);
-            // both are accepted so an existing pointer keeps working while the client moves over.
-            const result = await loadAtNode(request.user.directories, dirName, chatName)
-                ?? await loadBranch(request.user.directories, dirName, chatName);
-            if (result) {
-                /** @type {any} */
-                const header = {
-                    chat_metadata: { ...result.metadata },
-                    user_name: 'unused',
-                    character_name: 'unused',
-                };
-                return response.send([header, ...result.messages]);
-            }
-            // A 404 (rather than {}) here lets the client distinguish "stale pointer to a gone chat" from
-            // a legitimately new/unsaved chat and trigger recovery instead of silently rendering blank.
-            return response.status(404).send({ error: 'not_found' });
-        }
-
+        const name = chatName(request.body.file_name);
         // No file_name: an empty chat, as upstream answers it.
-        return response.send({});
+        if (!name) return response.send({});
+        const chat = await chatOf(request, { avatar_url: request.body.avatar_url });
+        const at = chat ? await chatNamePosition(chat, name) : undefined;
+        const answer = chat && at !== undefined ? await chatArray(chat, at) : null;
+        // A 404 (rather than {}) lets the client tell a stale name from a new, unsaved chat.
+        if (!answer) return response.status(404).send({ error: 'not_found' });
+        return response.send(answer);
     } catch (error) {
         console.error(error);
         return response.send({});
@@ -592,582 +746,16 @@ function recordLastOpened(request, opened) {
 }
 
 /**
- * A card's openings as the page draws them: the first window (`openings`, as /openings answers an empty body) and,
- * when the card has greetings with no row, all of those (`card_openings`, as /openings answers `{ offset: stored,
- * limit: card-only count }`).
- * @param {Directories} directories
- * @param {string} ownerId
+ * A card's greetings in the message shape the openings merge against, and its greeting texts by card position;
+ * both empty when the character can't be read.
+ * @param {import('../user-stores.js').UserStore} store
  * @param {string} avatar
+ * @returns {Promise<{ greetings: Record<string, any>[], texts: string[] }>}
  */
-async function openingsForPage(directories, ownerId, avatar) {
-    const cardGreetings = await _cardGreetingsFromDisk(directories, avatar);
-    const openings = await getOpeningAlternatives(directories, ownerId, {}, cardGreetings);
-    if (!openings) return { openings: null, card_openings: null };
-    const stored = openings.stored;
-    const cardOnly = openings.total - stored;
-    const cardOpenings = cardOnly > 0
-        ? await getOpeningAlternatives(directories, ownerId, { offset: stored, limit: cardOnly }, cardGreetings)
-        : null;
-    return { openings, card_openings: cardOpenings };
-}
-
-/**
- * Opens a character's or a group's conversation: the one named by `chat` (a chat name or node id, as upstream names
- * chats) when it exists, else the one it is on, else (a character) its most recently active bookmark, else the
- * choices last made from its first message, else nothing yet (the card's greetings). With `make_current`, a `chat`
- * that exists becomes the owner's current one. Records which character or group was opened last. Writes only what
- * changed; mints no names and creates nothing on disk.
- *
- * Body: `{ avatar_url }` or `{ group_id }`; optionally `chat`, `make_current`, (a character) `fresh`: open no
- * conversation, only the card's greetings (a new chat), and `send_keys`: keys of sends the page kept because it
- * doesn't know they were stored; `stored_sends` answers those the owner has.
- * Answers `{ chat, chat_metadata, messages, openings, card_openings, active_character, active_group, settings_hash? }`:
- * `chat` is upstream's identifier for the open chat ('' when there is no conversation yet), `messages` as
- * /get answers them after the header; `openings`/`card_openings` for a character only (null for a group);
- * for a group also `chats` and `date_last_chat` as stored. 404 when the character or group doesn't exist.
- */
-/**
- * What `/open` answers: resolves which conversation a character or group opens on, records what was opened, and
- * reads everything the screen draws.
- * @param {import('express').Request} request
- * @param {{ avatar_url?: unknown, group_id?: unknown, chat?: unknown, make_current?: unknown, fresh?: unknown, send_keys?: unknown }} body
- * @returns {Promise<{ status: number, answer?: object }>}
- */
-async function openChatAnswer(request, body) {
-    const directories = request.user.directories;
-    const requested = typeof body.chat === 'string' && body.chat !== '' ? body.chat : null;
-    const makeCurrent = body.make_current === true;
-
-    if (body.group_id) {
-        const groupId = String(body.group_id);
-        const opened = await withGroupLock(directories, groupId, async () => {
-            const group = readGroupFile(directories, groupId);
-            if (!group) return null;
-            const chats = Array.isArray(group.chats) ? group.chats : [];
-            const target = requested !== null && chats.includes(requested) ? requested : group.chat_id;
-            if (makeCurrent && target !== group.chat_id) {
-                group.chat_id = target;
-                group.date_last_chat = Date.now();
-                await writeGroupFile(directories, group);
-            }
-            return { chatId: String(target ?? ''), chats, dateLastChat: group.date_last_chat };
-        });
-        if (!opened) return { status: 404 };
-
-        const loaded = opened.chatId
-            ? await loadAtNode(directories, groupId, opened.chatId) ?? await loadBranch(directories, groupId, opened.chatId)
-            : null;
-        return {
-            status: 200,
-            answer: {
-                chat: opened.chatId,
-                chat_metadata: { ...(loaded?.metadata ?? {}) },
-                messages: loaded?.messages ?? [],
-                openings: null,
-                card_openings: null,
-                chats: opened.chats,
-                date_last_chat: opened.dateLastChat,
-                stored_sends: await storedSendKeys(directories, groupId, body.send_keys),
-                ...recordLastOpened(request, { character: null, group: groupId }),
-            },
-        };
-    }
-
-    const avatar = String(body.avatar_url || '');
-    if (!avatar) return { status: 400 };
-    const ownerId = avatar.replace('.png', '');
-    if ((await readCardContent(directories, avatar)) == null) return { status: 404 };
-
-    const fresh = body.fresh === true;
-    const current = (await getCharacterActiveChatsByIds(directories, [avatar]))[avatar] ?? null;
-    /** @type {{ messages: TreeChatMessage[], metadata: ChatMetadata } | null} */
-    let loaded = null;
-    let chatId = '';
-    for (const target of fresh ? [] : [requested, current]) {
-        if (target === null || loaded) continue;
-        loaded = await loadAtNode(directories, ownerId, target) ?? await loadBranch(directories, ownerId, target);
-        if (loaded) chatId = target;
-    }
-    if (loaded && makeCurrent && chatId === requested && requested !== current) {
-        await setCharacterActiveChat(directories, avatar, requested);
-    }
-    if (!loaded && !fresh) {
-        const branches = await listBranches(directories, ownerId);
-        branches.sort((a, b) => b.last_activity - a.last_activity);
-        if (branches.length) {
-            loaded = await loadAtNode(directories, ownerId, branches[0].id);
-            if (loaded) chatId = branches[0].id;
-        }
-    }
-    if (!loaded && !fresh) {
-        loaded = await loadDefaultChain(directories, ownerId);
-        chatId = loaded?.messages[0]?.node_id ?? '';
-    }
-
-    return {
-        status: 200,
-        answer: {
-            chat: chatId,
-            chat_metadata: { ...(loaded?.metadata ?? {}) },
-            messages: loaded?.messages ?? [],
-            ...await openingsForPage(directories, ownerId, avatar),
-            stored_sends: await storedSendKeys(directories, ownerId, body.send_keys),
-            ...recordLastOpened(request, { character: avatar, group: null }),
-        },
-    };
-}
-
-router.post('/open', validateAvatarUrlMiddleware, async function (request, response) {
+async function cardGreetingsOf(store, avatar) {
     try {
-        const { status, answer } = await openChatAnswer(request, request.body);
-        return answer ? response.send(answer) : response.sendStatus(status);
-    } catch (error) {
-        console.error('Error opening a chat:', error);
-        return response.status(500).send({ error: true });
-    }
-});
-
-/**
- * Bookmarks a message: names it `label` (with `unique`, "<label> - Branch #N" when the name is taken). A greeting
- * shown without a row (`opening`) is stored first, as /message/select stores it. The bookmark carries the chat
- * metadata of the chat it was made from (`from`, a node id or chat name), unless the message already has its own.
- * With `also_node_id` (a fork at an alternative) that message, the one shown, is named too. A group's bookmark is
- * added to the group's chats. With `open`, the bookmark is opened as /open opens a chat (`make_current`), and its
- * answer is `opened`.
- */
-router.post('/bookmark', validateAvatarUrlMiddleware, async function (request, response) {
-    try {
-        const directories = request.user.directories;
-        const ownerId = ownerOf(request);
-        const groupId = request.body.group_id ? String(request.body.group_id) : null;
-        const label = typeof request.body.label === 'string' ? request.body.label.trim() : '';
-        if (!label) return response.status(400).send({ error: 'label is required' });
-
-        let nodeId = String(request.body.node_id || '');
-        if (!nodeId && request.body.opening) {
-            const written = await applyPageWrites(response, directories, {
-                ownerId, avatar: request.body.avatar_url, groupId: groupId ?? undefined,
-                body: { node_id: null, opening: request.body.opening, page_metadata: request.body.page_metadata },
-            });
-            if (!written) return;
-            nodeId = storedMessagesOf(response)?.find(s => !('integrity' in s))?.node_id ?? '';
-        }
-        if (!nodeId) return response.status(400).send({ error: 'node_id is required' });
-
-        const labeled = await labelNode(directories, nodeId, label, { ownerId, unique: request.body.unique === true });
-        if (!labeled.ok || typeof labeled.label !== 'string' || labeled.label === '') return response.status(409).send({ ok: false, reason: 'unknown message' });
-        const name = labeled.label;
-
-        const from = typeof request.body.from === 'string' && request.body.from !== '' ? request.body.from : null;
-        if (from !== null && from !== nodeId) {
-            const source = await loadAtNode(directories, ownerId, from) ?? await loadBranch(directories, ownerId, from);
-            const target = await loadAtNode(directories, ownerId, nodeId);
-            const own = Object.keys(target?.metadata ?? {}).filter(key => key !== 'integrity');
-            if (source && own.length === 0) {
-                const merged = await mergeChatMetadataKeys(directories, ownerId, nodeId, { ...source.metadata, ...(groupId !== null ? { __is_group: true } : {}) }, []);
-                if (!merged.ok) return response.status(500).send({ error: 'The bookmark was made, but the chat\'s metadata could not be copied to it.' });
-            }
-        }
-
-        const alsoNodeId = String(request.body.also_node_id || '');
-        if (alsoNodeId && alsoNodeId !== nodeId) {
-            await labelNode(directories, alsoNodeId, name, { ownerId });
-        }
-
-        /** @type {string[]|undefined} */
-        let chats;
-        if (groupId !== null) {
-            const group = resolveGroupOwner(directories.groups, { groupId });
-            if (group) {
-                await registerGroupChatIdIfNew(directories, group, name);
-                chats = /** @type {{ chats?: string[] } | null} */ (readGroupFile(directories, groupId))?.chats;
-            }
-        }
-
-        const opened = request.body.open === true
-            ? (await openChatAnswer(request, { avatar_url: request.body.avatar_url, group_id: groupId, chat: name, make_current: true, send_keys: request.body.send_keys })).answer
-            : undefined;
-        return response.send({ ok: true, node_id: nodeId, label: name, chats, opened, stored: storedMessagesOf(response) ?? undefined });
-    } catch (error) {
-        console.error('Error bookmarking a message:', error);
-        return response.status(500).send({ error: true });
-    }
-});
-
-router.post('/rename', validateAvatarUrlMiddleware, async function (request, response) {
-    try {
-        if (!request.body || !request.body.original_file || !request.body.renamed_file) {
-            return response.sendStatus(400);
-        }
-
-        const oldName = String(request.body.original_file).replace(/\.jsonl$/, '');
-
-        // `avatar_url` means nothing for a group; its owner is resolved from the chat being renamed instead.
-        /** @type {string|null} */
-        let ownerId = null;
-        if (request.body.is_group) {
-            ownerId = resolveGroupOwner(request.user.directories.groups, { chatId: oldName, groupId: request.body.group_id })?.id ?? null;
-        } else {
-            ownerId = String(request.body.avatar_url).replace('.png', '');
-        }
-
-        if (ownerId == null || ownerId === '' || !await hasSavedChats(request.user.directories, ownerId)) {
-            return response.status(400).send({ error: true });
-        }
-
-        const newName = String(request.body.renamed_file).replace(/\.jsonl$/, '');
-        const renamed = await renameBranchInTree(request.user.directories, ownerId, oldName, newName);
-        if (!renamed) {
-            return response.status(400).send({ error: true });
-        }
-        return response.send({ ok: true, sanitizedFileName: newName });
-    } catch (error) {
-        console.error('Error renaming chat file:', error);
-        return response.status(500).send({ error: true });
-    }
-});
-
-/**
- * Deletes a character's chat (upstream's route). When it was the character's current chat, the character moves to its
- * most recently active remaining chat (`activeChat`, '' when none remains). With `open`, the character's chat is then
- * opened as /open opens it, answered as `opened`.
- */
-router.post('/delete', validateAvatarUrlMiddleware, async function (request, response) {
-    try {
-        if (!path.extname(request.body.chatfile)) {
-            request.body.chatfile += '.jsonl';
-        }
-
-        const directories = request.user.directories;
-        const avatar = String(request.body.avatar_url);
-        const ownerId = avatar.replace('.png', '');
-        const chatName = String(request.body.chatfile).replace(/\.jsonl$/, '');
-
-        if (!await hasSavedChats(directories, ownerId)) {
-            return response.sendStatus(400);
-        }
-
-        // Absent when the character has no current chat.
-        const current = /** @type {string|undefined} */ ((await getCharacterActiveChatsByIds(directories, [avatar]))[avatar]) ?? null;
-        const deleted = await deleteBranch(directories, ownerId, chatName);
-        if (deleted === false) {
-            return response.sendStatus(400);
-        }
-        const opened = async () => request.body.open === true
-            ? (await openChatAnswer(request, { avatar_url: avatar, send_keys: request.body.send_keys })).answer
-            : undefined;
-        // The pointer names the chat by its name or by the message it is at.
-        if (current === null || (current !== chatName && current !== deleted)) {
-            return response.send({ ok: true, opened: await opened() });
-        }
-        // Same recency measure listRecentBranches() already sorts by: last_activity (a branch's
-        // leaf message), falling back to the label's own creation time for a branch with no
-        // activity of its own yet.
-        const remaining = await listBranches(directories, ownerId);
-        remaining.sort((a, b) => b.last_activity - a.last_activity);
-        const activeChat = remaining.length ? remaining[0].id : null;
-        await setCharacterActiveChat(directories, avatar, activeChat);
-        return response.send({ ok: true, activeChat: activeChat ?? '', opened: await opened() });
-    } catch (error) {
-        console.error(error);
-        return response.sendStatus(500);
-    }
-});
-
-/**
- * Starts a new chat. A character's chat moves to `chat` (the greeting the page shows for a new chat: its stored row's
- * id, or '' for a card greeting with no row); a group gets a new chat id, made its current one, and the answer carries
- * it opened (`opened`, as /open answers). With `replace`, the chat it replaces is deleted, as /delete or /group/delete
- * deletes one, and named in `deleted`.
- */
-router.post('/new', validateAvatarUrlMiddleware, async function (request, response) {
-    try {
-        const directories = request.user.directories;
-        const replace = typeof request.body.replace === 'string' && request.body.replace !== '' ? request.body.replace : null;
-        /** @type {string[]} */
-        const deleted = [];
-
-        if (request.body.group_id) {
-            const groupId = String(request.body.group_id);
-            const made = await withGroupLock(directories, groupId, async () => {
-                const group = readGroupFile(directories, groupId);
-                if (!group) return null;
-                const chatId = String(Date.now());
-                const chats = Array.isArray(group.chats) ? group.chats.filter(id => id !== replace) : [];
-                group.chats = [...chats, chatId];
-                group.chat_id = chatId;
-                if (replace !== null && await deleteBranch(directories, groupId, replace) !== false) deleted.push(replace);
-                await writeGroupFile(directories, group);
-                return { chatId, chats: group.chats };
-            });
-            if (!made) return response.sendStatus(404);
-            const opened = (await openChatAnswer(request, { group_id: groupId, send_keys: request.body.send_keys })).answer;
-            return response.send({ ok: true, chat_id: made.chatId, chats: made.chats, deleted, opened });
-        }
-
-        const avatar = String(request.body.avatar_url || '');
-        if (!avatar) return response.sendStatus(400);
-        const ownerId = avatar.replace('.png', '');
-        const chat = typeof request.body.chat === 'string' && request.body.chat !== '' ? request.body.chat : null;
-        const current = /** @type {string|undefined} */ ((await getCharacterActiveChatsByIds(directories, [avatar]))[avatar]) ?? null;
-        if (current !== chat) await setCharacterActiveChat(directories, avatar, chat);
-        if (replace !== null && replace !== chat && await deleteBranch(directories, ownerId, replace) !== false) deleted.push(replace);
-        return response.send({ ok: true, deleted });
-    } catch (error) {
-        console.error('Error starting a new chat:', error);
-        return response.status(500).send({ error: true });
-    }
-});
-
-// ---------------------------------------------------------------------------
-//  Tree-specific endpoints (fork, label, list-branches)
-// ---------------------------------------------------------------------------
-
-/** Deprecated, unused by this frontend (superseded by /label); kept for extensions using the stock API. */
-router.post('/fork', validateAvatarUrlMiddleware, async function (request, response) {
-    try {
-        const { avatar_url, node_id, branch_name, metadata } = request.body;
-        if (!avatar_url || !node_id || !branch_name) {
-            return response.sendStatus(400);
-        }
-
-        const ownerId = String(avatar_url).replace('.png', '');
-        const result = await forkBranch(
-            request.user.directories,
-            ownerId,
-            String(node_id),
-            String(branch_name),
-            false,
-            metadata || {},
-        );
-
-        if (result) {
-            return response.send({ ok: true, ...result });
-        }
-        return response.status(400).send({ error: 'Fork failed — message node not found.' });
-    } catch (error) {
-        console.error('Error creating fork:', error);
-        return response.status(500).send({ error: true });
-    }
-});
-
-/** Labels (pins/checkpoints) a message node - a checkpoint is just a label on an existing node in the tree model. */
-router.post('/label', validateAvatarUrlMiddleware, async function (request, response) {
-    try {
-        const { avatar_url, group_id, node_id, label, unique } = request.body;
-        if (!node_id) {
-            return response.sendStatus(400);
-        }
-
-        // group_id first, same priority as ownerOf() above - but unlike ownerOf(), left undefined (not
-        // the literal string "undefined") when neither is given, since `unique`'s de-duplication scan
-        // treats a real ownerId as optional and a bogus one as a real (and wrong) scope to scan.
-        const ownerId = group_id ? String(group_id) : (avatar_url ? String(avatar_url).replace('.png', '') : undefined);
-        const result = await labelNode(request.user.directories, String(node_id), label || null, { ownerId, unique: !!unique });
-        return response.send(result);
-    } catch (error) {
-        console.error('Error labeling node:', error);
-        return response.status(500).send({ error: true });
-    }
-});
-
-/** Renames the character name inside all messages for a character, directly in the DB. */
-router.post('/tree/rename-in-content', validateAvatarUrlMiddleware, async function (request, response) {
-    try {
-        const { avatar_url, new_name } = request.body;
-        if (!avatar_url || !new_name) {
-            return response.sendStatus(400);
-        }
-
-        const ownerId = String(avatar_url).replace('.png', '');
-
-        // No-op, not a failure - an explicit flag lets the client tell this apart from a real failure.
-        if (!await hasSavedChats(request.user.directories, ownerId)) {
-            return response.send({ ok: true, updated: 0, noSavedChats: true });
-        }
-
-        const updated = await renameCharacterInMessages(request.user.directories, ownerId, String(new_name));
-        return response.send({ ok: true, updated, noSavedChats: false });
-    } catch (error) {
-        console.error('Error renaming character in messages:', error);
-        return response.status(500).send({ error: true });
-    }
-});
-
-/** Renames one member's messages inside a group's tree, directly in the DB. */
-router.post('/tree/rename-group-member', async function (request, response) {
-    try {
-        const { group_id, old_avatar, new_avatar, new_name } = request.body;
-        if (!group_id || !old_avatar || !new_avatar || !new_name) {
-            return response.sendStatus(400);
-        }
-
-        const updated = await renameGroupMemberInMessages(request.user.directories, String(group_id), String(old_avatar), String(new_avatar), String(new_name));
-        return response.send({ ok: true, updated });
-    } catch (error) {
-        console.error('Error renaming group member in messages:', error);
-        return response.status(500).send({ error: true });
-    }
-});
-
-/** Lists all branches for a character in the tree DB. */
-router.post('/tree/branches', validateAvatarUrlMiddleware, async function (request, response) {
-    try {
-        const ownerId = String(request.body.avatar_url).replace('.png', '');
-        const branches = await listBranches(request.user.directories, ownerId);
-
-        const result = branches.map(b => ({
-            node_id: b.id,
-            file_name: b.name,
-            file_size: 0,
-            message_count: b.message_count,
-            last_mes: b.last_mes ?? '',
-            chat_metadata: b.metadata != null && b.metadata !== '' ? JSON.parse(b.metadata) : {},
-        }));
-
-        return response.send(result);
-    } catch (error) {
-        console.error('Error listing tree branches:', error);
-        return response.status(500).send([]);
-    }
-});
-
-/**
- * Fills in the alternatives a chat load left as holes: a load ships only a window around the selected
- * alternative, since a wide fork point can carry thousands of them.
- */
-router.post('/alternatives', async function (request, response) {
-    try {
-        const nodeId = String(request.body.node_id || '');
-        if (!nodeId) {
-            return response.status(400).send({ error: 'node_id is required' });
-        }
-
-        const offset = Number.isFinite(Number(request.body.offset)) ? Number(request.body.offset) : undefined;
-        const limit = Number.isFinite(Number(request.body.limit)) ? Number(request.body.limit) : undefined;
-
-        const result = await getAlternatives(request.user.directories, nodeId, { offset, limit });
-        if (!result) {
-            return response.status(404).send({ error: 'Node not found' });
-        }
-        return response.send(result);
-    } catch (error) {
-        console.error('Error fetching alternatives:', error);
-        return response.status(500).send({ error: true });
-    }
-});
-
-/** The path from root down to a node, for bridging to a bookmark off the client's currently loaded path. */
-router.post('/ancestry', async function (request, response) {
-    try {
-        const nodeId = String(request.body.node_id || '');
-        if (!nodeId) {
-            return response.status(400).send({ error: 'node_id is required' });
-        }
-        const chatName = typeof request.body.chat_name === 'string' ? request.body.chat_name : null;
-        const result = await getAncestorPath(request.user.directories, nodeId, chatName);
-        if (!result) {
-            return response.status(404).send({ error: 'Node not found' });
-        }
-        return response.send({ messages: result });
-    } catch (error) {
-        console.error('Error fetching ancestry:', error);
-        return response.status(500).send({ error: true });
-    }
-});
-
-/** The conversation below a node, for moving onto a different alternative's path. */
-// ---------------------------------------------------------------------------
-//  Per-row operations a save is made of, replacing handing the whole conversation over each time.
-// ---------------------------------------------------------------------------
-
-/**
- * Which owner an operation is against: a character by avatar, or a group by its own id (a group has no
- * avatar). No migration precondition here - these routes act on a row the client already holds, which it
- * can only hold because a load (which runs migrate-on-touch) put it there.
- */
-const ownerOf = (/** @type {import('express').Request} */ request) => (request.body.group_id
-    ? String(request.body.group_id)
-    : String(request.body.avatar_url).replace('.png', ''));
-
-/** The owner descriptor for an op's request: the group named by group_id, else the character named by avatar_url. */
-const ownerDescriptorOfRequest = (/** @type {import('express').Request} */ request) =>
-    ownerDescriptorOf({ groupId: request.body.group_id, avatar: request.body.avatar_url });
-
-/** Edits one message's content. */
-router.post('/message/edit', validateAvatarUrlMiddleware, async function (request, response) {
-    try {
-        const nodeId = String(request.body.node_id || '');
-        if (!nodeId) return response.status(400).send({ error: 'node_id is required' });
-
-        const result = await editMessage(request.user.directories, ownerOf(request), nodeId, request.body.content);
-        return response.status(result.ok ? 200 : 409).send(result);
-    } catch (error) {
-        console.error('Error editing message:', error);
-        return response.status(500).send({ error: true });
-    }
-});
-
-/** Applies one change that spans many messages as one request; refusals are reported per message. */
-router.post('/message/edit-batch', validateAvatarUrlMiddleware, async function (request, response) {
-    try {
-        const edits = Array.isArray(request.body.edits) ? request.body.edits : null;
-        if (!edits) return response.status(400).send({ error: 'edits is required' });
-
-        const result = await editMessages(request.user.directories, ownerOf(request), edits);
-        return response.status(result.ok ? 200 : 409).send(result);
-    } catch (error) {
-        console.error('Error editing messages:', error);
-        return response.status(500).send({ error: true });
-    }
-});
-
-/**
- * Appends one or more messages after a node. `send_keys[i]` is the key the page made when the user sent
- * `messages[i]`; a send already stored under its key is answered with its node (in `already_stored` too).
- */
-router.post('/message/append', validateAvatarUrlMiddleware, async function (request, response) {
-    try {
-        const after = String(request.body.after_node_id || '');
-        if (!after) return response.status(400).send({ error: 'after_node_id is required' });
-
-        const contents = Array.isArray(request.body.messages) ? request.body.messages : [];
-        const sendKeys = Array.isArray(request.body.send_keys) ? request.body.send_keys : [];
-        const result = await appendMessages(request.user.directories, ownerOf(request), after, contents, { sendKeys });
-
-        return response.status(result.ok ? 200 : 409).send(result);
-    } catch (error) {
-        console.error('Error appending messages:', error);
-        return response.status(500).send({ error: true });
-    }
-});
-
-/**
- * Reads a character's card fresh off disk and returns its greetings in the message-object shape
- * {@link getOpeningAlternatives} merges against. Reads server-side rather than trusting a caller-supplied
- * array: a greeting only ever reaches disk through a confirmed `/greetings/*` op, so the stored card is
- * always the freshest copy by the time anything asks for openings.
- * @param {import('../users.js').UserDirectoryList} directories
- * @param {string} avatar
- * @returns {Promise<TreeChatMessage[]>} Empty array if the character can't be read.
- */
-async function _cardGreetingsFromDisk(directories, avatar) {
-    return (await _cardFromDisk(directories, avatar)).greetings;
-}
-
-/**
- * {@link _cardGreetingsFromDisk}'s greetings, plus the card's greeting texts by card position.
- * @param {import('../users.js').UserDirectoryList} directories
- * @param {string} avatar
- * @returns {Promise<{ greetings: TreeChatMessage[], texts: string[] }>} Both empty if the character can't be read.
- */
-async function _cardFromDisk(directories, avatar) {
-    try {
-        // readCardContent(), not readCharacterData(): a greeting edit is persisted to the metadata db
-        // without rewriting the PNG, so reading the file directly could show stale greetings.
-        const pngStringData = await readCardContent(directories, avatar);
-        if (pngStringData == null || pngStringData === '') return { greetings: [], texts: [] };
-        const character = JSON.parse(pngStringData);
+        const [character] = /** @type {any[]} */ (await store.lib.cards([avatar]));
+        if (!character) return { greetings: [], texts: [] };
         const { greetings } = cardToGreetingsModel(character);
         const speaker = character?.name ?? character?.data?.name ?? '';
         const sendDate = Date.now();
@@ -1184,9 +772,433 @@ async function _cardFromDisk(directories, avatar) {
 }
 
 /**
- * The openings a character can start on: every greeting any of its chats has ever opened from. Addressed by
- * character rather than node, since starting a chat has no node yet. An entry with no node_id is a card
- * greeting with no row yet - it gets one when someone opens a conversation on it.
+ * A card's openings as the page draws them: the first window (`openings`, as /openings answers an empty body) and,
+ * when the card has greetings with no row, all of those (`card_openings`).
+ * @param {import('../chat-request.js').ChatContext} chat
+ * @param {string} avatar
+ */
+async function openingsForPage(chat, avatar) {
+    const cardGreetings = (await cardGreetingsOf(chat.store, avatar)).greetings;
+    const actor = chat.session.reader();
+    const openings = await chat.store.chats.openingAlternatives({ tree: chat.tree, actor, cardGreetings });
+    const cardOnly = openings.total - openings.stored;
+    const cardOpenings = cardOnly > 0
+        ? await chat.store.chats.openingAlternatives({ tree: chat.tree, actor, range: { offset: openings.stored, limit: cardOnly }, cardGreetings })
+        : null;
+    return { openings, card_openings: cardOpenings };
+}
+
+/**
+ * What `/open` answers: the conversation a character or group opens on through the request's session, and
+ * everything the screen draws. `chat` (a chat name) opens that chat, and with `make_current` the session moves
+ * there; else the session's own place in the tree (where it lands); `fresh` (a character): no conversation, only
+ * the card's greetings. Records which character or group was opened last.
+ *
+ * Answers `{ chat, label_base, chat_metadata, messages, openings, card_openings, stored_sends, active_character,
+ * active_group, settings_hash? }`: `chat` is upstream's identifier for the open chat (`compatChatIdOf()`), `label_base`
+ * what its suggested bookmark names start from (`labelBaseOf()`), `messages` as /get answers
+ * them after the header; `openings`/`card_openings` for a character only (null for a group); for a group also
+ * `chats` and `date_last_chat`. 404 when the character or group doesn't exist.
+ * @param {import('express').Request} request
+ * @param {import('express').Response} response
+ * @param {{ avatar_url?: unknown, group_id?: unknown, chat?: unknown, make_current?: unknown, fresh?: unknown, send_keys?: unknown }} body
+ * @returns {Promise<{ status: number, answer?: object }>}
+ */
+async function openChatAnswer(request, response, body) {
+    const chat = await chatOf(request, body);
+    if (!chat) return { status: body.group_id || body.avatar_url ? 404 : 400 };
+    const { chats } = chat.store;
+    const requested = typeof body.chat === 'string' && body.chat !== '' ? chatName(body.chat) : null;
+    const fresh = body.fresh === true && !body.group_id;
+    /** @type {string | null | undefined} */
+    let at = requested === null ? undefined : await chatNamePosition(chat, requested);
+    if (at !== undefined && body.make_current === true && requested !== null) {
+        await openChatNamed(chat, requested);
+        chat.session.answer(response, { moved: true });
+    }
+    if (at === undefined) at = fresh ? null : await chats.landingOf(chat.tree, chat.session.reader());
+    const loaded = at === null ? null : await chats.load({ tree: chat.tree, at, session: chat.session.reader().session });
+    const metadata = loaded?.metadata ?? await chats.metadata(chat.tree, null, chat.session.reader().session);
+    const common = {
+        chat: await compatChatIdOf(chat),
+        label_base: await labelBaseOf(chat),
+        chat_metadata: { ...metadata },
+        messages: loaded?.messages ?? [],
+        stored_sends: await chats.storedSendKeys(chat.tree, body.send_keys),
+    };
+    if (body.group_id) {
+        const groupId = String(body.group_id);
+        const stats = await chat.store.lib.chatStats([chat.tree]);
+        return {
+            status: 200,
+            answer: {
+                ...common,
+                openings: null,
+                card_openings: null,
+                chats: (await chatListOf(chat)).map(r => r.file_id),
+                date_last_chat: stats.get(chat.tree)?.date_last_chat ?? 0,
+                ...recordLastOpened(request, { character: null, group: groupId }),
+            },
+        };
+    }
+    const avatar = String(body.avatar_url);
+    return {
+        status: 200,
+        answer: {
+            ...common,
+            ...await openingsForPage(chat, avatar),
+            ...recordLastOpened(request, { character: avatar, group: null }),
+        },
+    };
+}
+
+router.post('/open', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const { status, answer } = await openChatAnswer(request, response, request.body);
+        return answer ? response.send(answer) : response.sendStatus(status);
+    } catch (error) {
+        console.error('Error opening a chat:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
+/**
+ * Bookmarks a message: a bookmark named `label` at `node_id`; no `label` suggests one (a branch's, `branchLabel()`). A
+ * greeting shown without a row (`opening`) is stored first, as /message/select stores it. For a group the answer
+ * carries its chat list (`chats`). With `open`, the bookmark is opened as /open opens a chat (`make_current`),
+ * answered as `opened`. `also_node_id` is accepted and ignored.
+ */
+router.post('/bookmark', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const chat = await chatOf(request);
+        if (!chat) return response.sendStatus(404);
+        const given = typeof request.body.label === 'string' ? request.body.label.trim() : '';
+        const label = given || await branchLabel(chat);
+
+        let nodeId = String(request.body.node_id || '');
+        if (!nodeId && request.body.opening) {
+            const written = await applyPageWrites(response, chat, { node_id: null, opening: request.body.opening, page_metadata: request.body.page_metadata });
+            if (!written) return;
+            nodeId = storedMessagesOf(response)?.find(s => !('integrity' in s))?.node_id ?? '';
+        }
+        if (!nodeId) return response.status(400).send({ error: 'node_id is required' });
+
+        const made = await chat.store.chats.createBookmark({ tree: chat.tree, node_id: nodeId, name: label, actor: chat.session.actor() });
+        if (!made.ok || made.name === null) return response.status(409).send({ ok: false, reason: made.ok ? 'no name' : made.reason });
+        const chats = request.body.group_id ? (await chatListOf(chat)).map(r => r.file_id) : undefined;
+        const opened = request.body.open === true
+            ? (await openChatAnswer(request, response, { avatar_url: request.body.avatar_url, group_id: request.body.group_id, chat: bookmarkCompatId(made.bookmark), make_current: true, send_keys: request.body.send_keys })).answer
+            : undefined;
+        chat.session.answer(response, { moved: !!nodeId });
+        // `id` is the bookmark's compat chat id (what upstream code passes back as the chat's name); `label` its label.
+        return response.send({ ok: true, node_id: nodeId, id: bookmarkCompatId(made.bookmark), label: made.name, chats, opened, stored: storedMessagesOf(response) ?? undefined });
+    } catch (error) {
+        console.error('Error bookmarking a message:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
+/**
+ * A branch's suggested label (upstream's `createBranch()` naming): the chat's label base with any branch suffix taken
+ * off, then ` - Branch #<n>`, the lowest n from 1 no bookmark of the tree is labelled.
+ * @param {import('../chat-request.js').ChatContext} chat
+ */
+async function branchLabel(chat) {
+    const base = (await labelBaseOf(chat)).replace(/ - Branch #\d+$/, '').replace(/^Branch #\d+ - /, '');
+    for (let i = 1; ; i++) {
+        const name = `${base} - Branch #${i}`;
+        if ((await chat.store.chats.store.chatRead('bookmarksNamed', { tree: chat.tree, name })).length === 0) return name;
+    }
+}
+
+/**
+ * The group a chat id names when the request names no group (upstream's group routes send the chat id they were
+ * given): a bookmark's `b<id>`, an `s<UUID>.<tree>`, or a session's UUID; a bare label names none.
+ * @param {import('express').Request} request
+ * @param {string} name
+ * @returns {Promise<string | null>} The group's id.
+ */
+async function groupOfChat(request, name) {
+    const store = await requestStore(request);
+    const tree = await store.chats.treeOfChatId(name);
+    if (tree === null) return null;
+    const [key] = await store.lib.store.libraryKeys([tree]);
+    return key?.type === TYPE.group ? key.key : null;
+}
+
+/**
+ * The chat a group route names: by `group_id`, else the group that has a chat of that name.
+ * @param {import('express').Request} request
+ * @param {string} name
+ */
+async function groupChatOf(request, name) {
+    const groupId = request.body.group_id ? String(request.body.group_id) : await groupOfChat(request, name);
+    return groupId === null ? null : chatContext(request, { group: groupId });
+}
+
+/**
+ * Relabels a chat: the bookmark or session the identifier names (`resolveChatName()`), the new label as given.
+ * Answers `{ ok, sanitizedFileName, label }`: its compat chat id, unchanged by the relabel, and the label.
+ */
+router.post('/rename', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        if (!request.body || !request.body.original_file || !request.body.renamed_file) {
+            return response.sendStatus(400);
+        }
+        const oldName = chatName(request.body.original_file);
+        const newName = chatName(request.body.renamed_file);
+        const chat = request.body.is_group ? await groupChatOf(request, oldName) : await chatOf(request, { avatar_url: request.body.avatar_url });
+        if (!chat) return response.status(400).send({ error: true });
+        const { chats } = chat.store;
+        const found = await chats.resolveChatName({ tree: chat.tree, name: oldName });
+        if (found === null) return response.status(400).send({ error: true });
+        const renamed = 'bookmark' in found
+            ? await chats.changeBookmark({ tree: chat.tree, bookmark: String(found.bookmark), change: { name: newName } })
+            : await chats.nameSession({ session: found.session, name: newName, actor: chat.session.actor() });
+        if (!renamed.ok) return response.status(400).send({ error: true });
+        // A label changes, not the chat: upstream code goes on with the name it is answered, the same compat id.
+        const id = 'bookmark' in found ? bookmarkCompatId(found.bookmark) : 'derived' in found ? sessionCompatId(found.session, chat.tree) : found.session;
+        return response.send({ ok: true, sanitizedFileName: id, label: newName });
+    } catch (error) {
+        console.error('Error renaming chat file:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
+/**
+ * Deletes a chat by name (answer 3 of the cut): a bookmark goes (its messages stay); a session goes, and a tab on it
+ * is told and lands through the cascade. Answers `{ ok, opened? }`, `opened` (with `open`) the character's chat as
+ * /open opens it after.
+ * @param {import('express').Request} request
+ * @param {import('express').Response} response
+ * @param {import('../chat-request.js').ChatContext} chat
+ * @param {string} name
+ * @returns {Promise<boolean>} Whether a chat of that name was deleted.
+ */
+async function deleteChatNamed(request, response, chat, name) {
+    const { chats } = chat.store;
+    const found = await chats.resolveChatName({ tree: chat.tree, name });
+    if (found === null) return false;
+    if ('bookmark' in found) {
+        const deleted = await chats.changeBookmark({ tree: chat.tree, bookmark: String(found.bookmark), change: { delete: true } });
+        return deleted.ok;
+    }
+    await chats.deleteSession(found.session);
+    if (chat.session.reader().session === found.session) response.setHeader(SESSION_GONE_HEADER, '1');
+    return true;
+}
+
+router.post('/delete', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const chat = await chatOf(request, { avatar_url: request.body.avatar_url });
+        if (!chat || !await deleteChatNamed(request, response, chat, chatName(request.body.chatfile))) {
+            return response.sendStatus(400);
+        }
+        const opened = request.body.open === true
+            ? (await openChatAnswer(request, response, { avatar_url: request.body.avatar_url, send_keys: request.body.send_keys })).answer
+            : undefined;
+        return response.send({ ok: true, opened });
+    } catch (error) {
+        console.error(error);
+        return response.sendStatus(500);
+    }
+});
+
+/**
+ * Starts a new chat through the request's session (answer 7 of the cut). A character's: `chat` '' is a new chat on
+ * its first greeting, a stored greeting's id moves the session to that opening. A group's: the session goes to its
+ * root, the members' greetings shown provisionally; answered with its `chat_id` and `chats` and `opened` (as /open
+ * answers). `replace` deletes the bookmark of that name, named in `deleted`.
+ */
+router.post('/new', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const chat = await chatOf(request);
+        if (!chat) return response.sendStatus(request.body.group_id || request.body.avatar_url ? 404 : 400);
+        const { chats } = chat.store;
+        const actor = chat.session.actor();
+        const replace = typeof request.body.replace === 'string' && request.body.replace !== '' ? request.body.replace : null;
+        /** @type {string[]} */
+        const deleted = [];
+        if (replace !== null) {
+            const found = await chats.resolveChatName({ tree: chat.tree, name: replace });
+            if (found !== null && 'bookmark' in found && (await chats.changeBookmark({ tree: chat.tree, bookmark: String(found.bookmark), change: { delete: true } })).ok) {
+                deleted.push(replace);
+            }
+        }
+        if (request.body.group_id) {
+            await chats.newChat({ tree: chat.tree, actor, group: true });
+            await chats.setCurrentChat({ tree: chat.tree, bookmark: null, actor });
+            chat.session.answer(response, { moved: true });
+            const opened = (await openChatAnswer(request, response, { group_id: request.body.group_id, send_keys: request.body.send_keys })).answer;
+            return response.send({ ok: true, chat_id: await compatChatIdOf(chat), chats: (await chatListOf(chat)).map(r => r.file_id), deleted, opened });
+        }
+        const opening = typeof request.body.chat === 'string' && request.body.chat !== '' ? request.body.chat : null;
+        if (opening === null) await chats.newChat({ tree: chat.tree, actor });
+        else await chats.goTo({ tree: chat.tree, node_id: opening, actor });
+        await chats.setCurrentChat({ tree: chat.tree, bookmark: null, actor });
+        chat.session.answer(response, { moved: true });
+        return response.send({ ok: true, deleted, chat: await compatChatIdOf(chat), label_base: await labelBaseOf(chat) });
+    } catch (error) {
+        console.error('Error starting a new chat:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
+/**
+ * A bookmark named `branch_name` at `node_id` (the chat's metadata is the state there, nothing is copied), opened as
+ * upstream opens the fork: the session goes there and it is the current chat. Answers `chat` and `label_base` too.
+ */
+router.post('/fork', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const { node_id, branch_name } = request.body;
+        if (!node_id || !branch_name) {
+            return response.sendStatus(400);
+        }
+        const chat = await chatOf(request);
+        if (!chat) return response.sendStatus(400);
+        const made = await chat.store.chats.createBookmark({ tree: chat.tree, node_id: String(node_id), name: String(branch_name), actor: chat.session.actor() });
+        if (made.ok) {
+            const id = bookmarkCompatId(made.bookmark);
+            await openChatNamed(chat, id);
+            chat.session.answer(response, { moved: true });
+            return response.send({ ok: true, id, name: made.name, chat: id, label_base: await labelBaseOf(chat) });
+        }
+        return response.status(400).send({ error: 'Fork failed — message node not found.' });
+    } catch (error) {
+        console.error('Error creating fork:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
+/** One member of a group renamed (a new avatar and name) in the group's messages. */
+router.post('/tree/rename-group-member', async function (request, response) {
+    try {
+        const { group_id, old_avatar, new_avatar, new_name } = request.body;
+        if (!group_id || !old_avatar || !new_avatar || !new_name) {
+            return response.sendStatus(400);
+        }
+        const chat = await chatContext(request, { group: String(group_id) });
+        if (!chat) return response.sendStatus(404);
+        const updated = await chat.store.chats.renameMemberInMessages({ tree: chat.tree, oldAvatar: String(old_avatar), newAvatar: String(new_avatar), newName: String(new_name) });
+        return response.send({ ok: true, updated });
+    } catch (error) {
+        console.error('Error renaming group member in messages:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
+/**
+ * The chat a message is in, through the request's session.
+ * @param {import('express').Request} request
+ * @param {string} nodeId
+ */
+async function chatOfMessage(request, nodeId) {
+    const store = await requestStore(request);
+    const [id] = await store.chats.messageIds([nodeId]);
+    const s = id === null ? undefined : (await store.chats.stored([id])).get(id);
+    if (!s) return null;
+    const [key] = await store.lib.store.libraryKeys([s.owner]);
+    if (!key) return null;
+    return chatContext(request, key.type === TYPE.group ? { group: key.key } : { avatar: key.key });
+}
+
+/** The alternatives at a message, a window of them (`offset`, `limit`). */
+router.post('/alternatives', async function (request, response) {
+    try {
+        const nodeId = String(request.body.node_id || '');
+        if (!nodeId) {
+            return response.status(400).send({ error: 'node_id is required' });
+        }
+        const offset = Number.isFinite(Number(request.body.offset)) ? Number(request.body.offset) : undefined;
+        const limit = Number.isFinite(Number(request.body.limit)) ? Number(request.body.limit) : undefined;
+        const store = await requestStore(request);
+        const result = await store.chats.alternatives({ node_id: nodeId, offset, limit });
+        if (!result) {
+            return response.status(404).send({ error: 'Node not found' });
+        }
+        return response.send(result);
+    } catch (error) {
+        console.error('Error fetching alternatives:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
+/** The path from the root down to a message. */
+router.post('/ancestry', async function (request, response) {
+    try {
+        const nodeId = String(request.body.node_id || '');
+        if (!nodeId) {
+            return response.status(400).send({ error: 'node_id is required' });
+        }
+        const chat = await chatOfMessage(request, nodeId);
+        const loaded = chat ? await chat.store.chats.load({ tree: chat.tree, at: nodeId, session: chat.session.reader().session }) : null;
+        if (!loaded) {
+            return response.status(404).send({ error: 'Node not found' });
+        }
+        return response.send({ messages: loaded.messages });
+    } catch (error) {
+        console.error('Error fetching ancestry:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
+/** Edits one message's content. */
+router.post('/message/edit', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const nodeId = String(request.body.node_id || '');
+        if (!nodeId) return response.status(400).send({ error: 'node_id is required' });
+        const chat = await chatOf(request);
+        if (!chat) return response.status(409).send({ ok: false, reason: 'unknown chat' });
+        const result = await chat.store.chats.editMessages({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, edits: [{ node_id: nodeId, content: request.body.content }], actor: chat.session.actor() });
+        const refused = result.refused[0];
+        return refused ? response.status(409).send({ ok: false, ...refused }) : response.send({ ok: true });
+    } catch (error) {
+        console.error('Error editing message:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
+/** Applies one change that spans many messages as one request; refusals are reported per message. */
+router.post('/message/edit-batch', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const edits = Array.isArray(request.body.edits) ? request.body.edits : null;
+        if (!edits) return response.status(400).send({ error: 'edits is required' });
+        const chat = await chatOf(request);
+        if (!chat) return response.status(409).send({ ok: false, reason: 'unknown chat' });
+        const result = await chat.store.chats.editMessages({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, edits, actor: chat.session.actor() });
+        const ok = result.refused.length === 0;
+        return response.status(ok ? 200 : 409).send({ ...result, ok });
+    } catch (error) {
+        console.error('Error editing messages:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
+/**
+ * Appends one or more messages after a message, through the request's session (it moves to the last). `send_keys[i]`
+ * is the key the page made when the user sent `messages[i]`; a send already stored under its key is answered with
+ * its message (in `already_stored` too).
+ */
+router.post('/message/append', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const after = String(request.body.after_node_id || '');
+        if (!after) return response.status(400).send({ error: 'after_node_id is required' });
+        const chat = await chatOf(request);
+        if (!chat) return response.status(409).send({ ok: false, reason: 'unknown chat' });
+        const contents = (Array.isArray(request.body.messages) ? request.body.messages : []).map(storedForm);
+        const sendKeys = Array.isArray(request.body.send_keys) ? request.body.send_keys : [];
+        const result = await chat.store.chats.appendMessages({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, after, contents, sendKeys, actor: chat.session.actor() });
+        chat.session.answer(response, { moved: result.ok });
+        return response.status(result.ok ? 200 : 409).send(result);
+    } catch (error) {
+        console.error('Error appending messages:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
+/**
+ * The openings a character or group can start on: its stored openings, then the card's greetings with no row
+ * (`node_id` null), windowed by `offset`, `limit` or `around`.
  */
 router.post('/openings', validateAvatarUrlMiddleware, async function (request, response) {
     try {
@@ -1195,12 +1207,12 @@ router.post('/openings', validateAvatarUrlMiddleware, async function (request, r
         const around = request.body.around && typeof request.body.around === 'object' && typeof request.body.around.mes === 'string'
             ? request.body.around
             : undefined;
-        const avatar = String(request.body.avatar_url || '');
-        // Group chats have no single card to read greetings off of.
-        const cardGreetings = avatar ? await _cardGreetingsFromDisk(request.user.directories, avatar) : [];
-        const result = await getOpeningAlternatives(request.user.directories, ownerOf(request), { offset, limit, around }, cardGreetings);
-        if (!result) return response.status(404).send({ error: 'Tree storage unavailable' });
-        return response.send(result);
+        const chat = await chatOf(request);
+        if (!chat) return response.status(404).send({ error: 'unknown chat' });
+        const avatar = request.body.group_id ? '' : String(request.body.avatar_url || '');
+        // A group has no card to read greetings off of.
+        const cardGreetings = avatar ? (await cardGreetingsOf(chat.store, avatar)).greetings : [];
+        return response.send(await chat.store.chats.openingAlternatives({ tree: chat.tree, actor: chat.session.reader(), range: { offset, limit, around }, cardGreetings }));
     } catch (error) {
         console.error('Error listing openings:', error);
         return response.status(500).send({ error: true });
@@ -1208,10 +1220,10 @@ router.post('/openings', validateAvatarUrlMiddleware, async function (request, r
 });
 
 /**
- * Where a chat showing one of a character's card greetings should land after the card changed, from the full list
- * of its openings (see findOpeningToLandOn). Body: `shown_text` (the text the chat showed), `index` (the opening
- * index it was on) and `edits` (this page's own edits in the change, `{ from, to, index }`, at most
- * LANDING_EDITS_MAX). Answers `{ index, opening }`, `opening` null when the character has no openings.
+ * Where a chat showing one of a character's card greetings should land after the card changed. Body: `shown_text`
+ * (the text the chat showed), `index` (the opening index it was on) and `edits` (every greeting whose text the change
+ * edited, `{ from, to, index }`: a card has any number of greetings, so the list has no cap but the body's size).
+ * Answers `{ index, opening }`, `opening` null when the character has no openings.
  */
 router.post('/openings/land', validateAvatarUrlMiddleware, async function (request, response) {
     try {
@@ -1222,16 +1234,16 @@ router.post('/openings/land', validateAvatarUrlMiddleware, async function (reque
         const index = request.body.index;
         if (!Number.isInteger(index) || index < 0) return response.status(400).send({ error: 'index must be a non-negative integer' });
         const rawEdits = request.body.edits ?? [];
-        if (!Array.isArray(rawEdits) || rawEdits.length > LANDING_EDITS_MAX) return response.status(400).send({ error: `edits must be a list of at most ${LANDING_EDITS_MAX}` });
+        if (!Array.isArray(rawEdits)) return response.status(400).send({ error: 'edits must be a list' });
         const edits = [];
         for (const e of rawEdits) {
             if (typeof e?.from !== 'string' || typeof e?.to !== 'string') return response.status(400).send({ error: 'each edit needs from and to' });
             edits.push({ from: e.from, to: e.to, index: Number.isInteger(e.index) ? e.index : undefined });
         }
-        const card = await _cardFromDisk(request.user.directories, avatar);
-        const result = await findOpeningToLandOn(request.user.directories, ownerOf(request), card.greetings, card.texts, { shownText, index, edits });
-        if (!result) return response.status(404).send({ error: 'Tree storage unavailable' });
-        return response.send(result);
+        const chat = await chatOf(request, { avatar_url: avatar });
+        if (!chat) return response.status(404).send({ error: 'unknown chat' });
+        const card = await cardGreetingsOf(chat.store, avatar);
+        return response.send(await chat.store.chats.openingToLandOn({ tree: chat.tree, cardGreetings: card.greetings, cardTexts: card.texts, request: { shownText, index, edits } }));
     } catch (error) {
         console.error('Error finding the opening to land on:', error);
         return response.status(500).send({ error: true });
@@ -1239,20 +1251,19 @@ router.post('/openings/land', validateAvatarUrlMiddleware, async function (reque
 });
 
 /**
- * Records that the character's chat was switched to one of its card greetings that has no row yet, so reopening the
- * chat shows it. Body: `text` (the greeting's text) and `index` (its card position). Selecting a stored opening
- * (`/message/select`) replaces it.
+ * The request's session chooses one of the character's card greetings that has no row: a new chat on it, its text
+ * the card's at that position until a reply stores it. Body: `index` (its card position); `text` accepted.
  */
 router.post('/openings/choose', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const avatar = String(request.body.avatar_url || '');
         if (!avatar) return response.status(400).send({ error: 'avatar_url is required' });
-        const text = request.body.text;
-        if (typeof text !== 'string' || text.length === 0) return response.status(400).send({ error: 'text is required' });
         const index = request.body.index;
         if (!Number.isInteger(index) || index < 0) return response.status(400).send({ error: 'index must be a non-negative integer' });
-        const ok = await chooseCardOpening(request.user.directories, ownerOf(request), text, index);
-        if (!ok) return response.status(404).send({ error: 'Tree storage unavailable' });
+        const chat = await chatOf(request, { avatar_url: avatar });
+        if (!chat) return response.status(404).send({ error: 'unknown chat' });
+        await chat.store.chats.chooseCardGreeting({ tree: chat.tree, index, actor: chat.session.actor() });
+        chat.session.answer(response, { moved: true });
         return response.send({ ok: true });
     } catch (error) {
         console.error('Error recording the chosen opening:', error);
@@ -1260,60 +1271,43 @@ router.post('/openings/choose', validateAvatarUrlMiddleware, async function (req
     }
 });
 
-/** Makes sure these openings exist for a character, creating its anchor if this is the first. */
-router.post('/openings/ensure', validateAvatarUrlMiddleware, async function (request, response) {
-    try {
-        const contents = request.body.contents ?? request.body.content;
-        if (!contents) return response.status(400).send({ error: 'content or contents is required' });
-
-        const result = await addOpeningAlternatives(request.user.directories, ownerOf(request), contents, ownerDescriptorOfRequest(request));
-        return response.status(result.ok ? 200 : 409).send(result);
-    } catch (error) {
-        console.error('Error ensuring openings:', error);
-        return response.status(500).send({ error: true });
-    }
-});
-
-/** Adds alternatives alongside an existing node. Idempotent, so a set can be asserted repeatedly. */
+/**
+ * Adds alternatives beside a message, shown to no one: each another reply of its parent (another opening, for an
+ * opening). One with a stored reply's speaker and text is that reply. Answers `{ ok, node_ids }`.
+ */
 router.post('/message/alternative', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const sibling = String(request.body.sibling_node_id || '');
         if (!sibling) return response.status(400).send({ error: 'sibling_node_id is required' });
-
-        const contents = request.body.contents ?? request.body.content;
-        if (!contents) return response.status(400).send({ error: 'content or contents is required' });
-
-        const result = await addAlternatives(request.user.directories, ownerOf(request), sibling, contents);
-
-        return response.status(result.ok ? 200 : 409).send(result);
+        const given = request.body.contents ?? request.body.content;
+        if (!given) return response.status(400).send({ error: 'content or contents is required' });
+        const contents = (Array.isArray(given) ? given : [given]).map(storedForm);
+        const chat = await chatOf(request);
+        const s = chat ? await chat.store.chats.messageOf(chat.tree, sibling) : null;
+        if (!chat || !s) return response.status(409).send({ ok: false, reason: 'unknown node' });
+        const { chats } = chat.store;
+        const actor = { user: chat.session.actor().user };
+        if (s.parent === null) {
+            const added = await chats.addOpenings({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, contents, actor });
+            return response.send(added);
+        }
+        const [parent] = await chats.externalIds([s.parent]);
+        const nodeIds = [];
+        for (const content of contents) {
+            const added = await chats.appendMessages({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, after: parent, contents: [content], actor });
+            if (!added.ok) return response.status(409).send(added);
+            nodeIds.push(added.node_ids[0]);
+        }
+        return response.send({ ok: true, node_ids: nodeIds });
     } catch (error) {
         console.error('Error adding alternative:', error);
         return response.status(500).send({ error: true });
     }
 });
 
-/** Ends the conversation at this node: cuts the tail without deleting it (a later select restores it). */
-router.post('/message/end-path', validateAvatarUrlMiddleware, async function (request, response) {
-    try {
-        if (request.body.end_at_anchor) {
-            const ok = await endPathAtAnchor(request.user.directories, ownerOf(request), ownerDescriptorOfRequest(request));
-            return response.status(ok ? 200 : 409).send({ ok, reason: ok ? undefined : 'no tree store' });
-        }
-
-        const nodeId = String(request.body.node_id || '');
-        if (!nodeId) return response.status(400).send({ error: 'node_id is required' });
-
-        const ok = await endPathAt(request.user.directories, ownerOf(request), nodeId);
-        return response.status(ok ? 200 : 409).send({ ok, reason: ok ? undefined : 'unknown node' });
-    } catch (error) {
-        console.error('Error ending the path:', error);
-        return response.status(500).send({ error: true });
-    }
-});
-
 /**
- * Inserts a new node between two adjacent nodes — the mid-chain-insert primitive (a user-typed message spliced into the
- * middle of a chain, not appended at the end). A `send_key` already stored is answered with its node and `already_stored`.
+ * Inserts a new message between two adjacent messages (a message spliced into the middle of a chain). A `send_key`
+ * already stored is answered with its message and `already_stored`.
  */
 router.post('/message/graft', validateAvatarUrlMiddleware, async function (request, response) {
     try {
@@ -1321,9 +1315,13 @@ router.post('/message/graft', validateAvatarUrlMiddleware, async function (reque
         if (!after) return response.status(400).send({ error: 'after_node_id is required' });
         const before = String(request.body.before_node_id || '');
         if (!before) return response.status(400).send({ error: 'before_node_id is required' });
-
-        const result = await graftMessage(request.user.directories, ownerOf(request), after, before, request.body.content, { sendKey: request.body.send_key });
-
+        const chat = await chatOf(request);
+        if (!chat) return response.status(409).send({ ok: false, reason: 'unknown chat' });
+        const result = await chat.store.chats.graftMessage({
+            tree: chat.tree, treeSpeaker: chat.treeSpeaker, after, before, content: storedForm(request.body.content),
+            sendKey: typeof request.body.send_key === 'string' ? request.body.send_key : null, actor: chat.session.actor(),
+        });
+        chat.session.answer(response, { moved: result.ok });
         return response.status(result.ok ? 200 : 409).send(result);
     } catch (error) {
         console.error('Error grafting message:', error);
@@ -1331,30 +1329,40 @@ router.post('/message/graft', validateAvatarUrlMiddleware, async function (reque
     }
 });
 
-/** Removes one or more contiguous messages from the default path — the mid-chain-delete primitive. */
-router.post('/message/degraft', validateAvatarUrlMiddleware, async function (request, response) {
+/**
+ * Cuts `first_node_id` .. `last_node_id` out of the request's session's path (upstream's delete of messages: they
+ * leave this chat; other branches keep what they share). `preview` answers what else it would drop (bookmarks,
+ * state changes), writing nothing; `confirm` names exactly those, else it is refused with them. Applied, `copied`
+ * maps each message the path now shows a copy of (a later message other branches share) to its copy.
+ */
+router.post('/message/cut', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const first = String(request.body.first_node_id || '');
         if (!first) return response.status(400).send({ error: 'first_node_id is required' });
         const last = String(request.body.last_node_id || first);
-
-        const result = await degraftRange(request.user.directories, ownerOf(request), first, last);
+        const chat = await chatOf(request);
+        if (!chat) return response.status(409).send({ ok: false, reason: 'unknown chat' });
+        const preview = request.body.preview === true;
+        const result = await chat.store.chats.cutFromPath({ tree: chat.tree, first, last, actor: chat.session.actor(), preview, confirm: request.body.confirm });
+        chat.session.answer(response, { moved: result.ok && !preview });
         return response.status(result.ok ? 200 : 409).send(result);
     } catch (error) {
-        console.error('Error degrafting message:', error);
+        console.error('Error cutting messages:', error);
         return response.status(500).send({ error: true });
     }
 });
 
-/** Swaps two adjacent on-path messages — the mid-chain-reorder primitive (`messageEditMove()`'s array-slot swap was silently not persisting, since both messages keep their own node_id). */
+/** Swaps two adjacent messages of the path. */
 router.post('/message/swap-adjacent', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const upper = String(request.body.upper_node_id || '');
         if (!upper) return response.status(400).send({ error: 'upper_node_id is required' });
         const lower = String(request.body.lower_node_id || '');
         if (!lower) return response.status(400).send({ error: 'lower_node_id is required' });
-
-        const result = await swapAdjacent(request.user.directories, ownerOf(request), upper, lower);
+        const chat = await chatOf(request);
+        if (!chat) return response.status(409).send({ ok: false, reason: 'unknown chat' });
+        const result = await chat.store.chats.swapAdjacent({ tree: chat.tree, upper, lower, actor: chat.session.actor() });
+        chat.session.answer(response, { moved: result.ok });
         return response.status(result.ok ? 200 : 409).send(result);
     } catch (error) {
         console.error('Error swapping adjacent messages:', error);
@@ -1362,13 +1370,20 @@ router.post('/message/swap-adjacent', validateAvatarUrlMiddleware, async functio
     }
 });
 
-/** Deletes an unused alternative (swipe) outright — the mid-chain-delete-a-leaf primitive. Refused (409) if it's currently shown, has its own descendants, or is labeled — see {@link deleteAlternative}'s doc comment for why each of those is non-negotiable. */
+/**
+ * Deletes a swipe and everything below it. `preview` answers what else it would drop (bookmarks, state changes),
+ * writing nothing; `confirm` names exactly those (as the preview did), else it is refused with them.
+ */
 router.post('/message/alternative/delete', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const node = String(request.body.node_id || '');
         if (!node) return response.status(400).send({ error: 'node_id is required' });
-
-        const result = await deleteAlternative(request.user.directories, ownerOf(request), node);
+        const chat = await chatOf(request);
+        if (!chat) return response.status(409).send({ ok: false, reason: 'unknown chat' });
+        const result = await chat.store.chats.deleteSubtree({
+            tree: chat.tree, node_id: node, actor: chat.session.actor(),
+            preview: request.body.preview === true, confirm: request.body.confirm,
+        });
         return response.status(result.ok ? 200 : 409).send(result);
     } catch (error) {
         console.error('Error deleting alternative:', error);
@@ -1377,116 +1392,70 @@ router.post('/message/alternative/delete', validateAvatarUrlMiddleware, async fu
 });
 
 /**
- * Selects a message: it becomes the shown alternative where it is, and with `activate` the character's chat is at
- * it. `opening` (the chat's greetings, shown but not stored yet) stores them first and selects the first
- * (applyPageWrites()); the answer's `stored` names their rows. Answers the conversation below the message, and with
- * `with_ancestry` the path down to it too.
+ * Swipes to a message: it becomes the request's session's choice where it is, and the session goes down that
+ * branch along the fork choices to its end. `opening` (the chat's greetings, shown but not stored yet) stores them
+ * first and selects the first (applyPageWrites()); `stored` names their rows. Answers the conversation below the
+ * message (`messages`, down to where the session now is), and with `with_ancestry` the path down to it too, and
+ * `chat_metadata`, the state where the session now is.
  */
 router.post('/message/select', validateAvatarUrlMiddleware, async function (request, response) {
     try {
-        const directories = request.user.directories;
+        // A message names its tree; the owner fields name it only for the opening, which has no id yet.
+        const named = String(request.body.node_id || '');
+        const chat = named ? await chatOfMessage(request, named) : await chatOf(request);
+        if (!chat) return response.status(409).send({ ok: false, reason: 'unknown chat' });
         let child = String(request.body.node_id || '');
         if (!child && request.body.opening) {
-            const written = await applyPageWrites(response, directories, {
-                ownerId: ownerOf(request), avatar: request.body.avatar_url, groupId: request.body.group_id,
-                body: { node_id: null, opening: request.body.opening, page_metadata: request.body.page_metadata },
-            });
+            const written = await applyPageWrites(response, chat, { node_id: null, opening: request.body.opening, page_metadata: request.body.page_metadata });
             if (!written) return;
             child = storedMessagesOf(response)?.find(s => !('integrity' in s))?.node_id ?? '';
         }
         if (!child) return response.status(400).send({ error: 'node_id is required' });
-
-        const ok = await selectDefaultChild(directories, child);
-        if (!ok) {
-            return response.status(409).send({ ok, reason: 'unknown node, or it has no parent' });
+        const { chats } = chat.store;
+        const actor = chat.session.actor();
+        if (!await chats.select({ tree: chat.tree, node_id: child, actor })) {
+            return response.status(409).send({ ok: false, reason: 'unknown node' });
         }
-        if (request.body.activate && request.body.avatar_url) {
-            await setCharacterActiveChat(directories, request.body.avatar_url, child);
-        }
-        const branchName = request.body.chat_name ? String(request.body.chat_name) : null;
-        const continuation = await getContinuation(directories, child, branchName);
-        const ancestry = request.body.with_ancestry ? await getAncestorPath(directories, child, branchName) : undefined;
-        return response.send({ ok: true, messages: continuation?.messages ?? [], ancestry, stored: storedMessagesOf(response) ?? undefined });
+        chat.session.answer(response, { moved: true });
+        const loaded = await chats.load({ tree: chat.tree, at: await chats.landingOf(chat.tree, actor), session: actor.session });
+        const messages = loaded?.messages ?? [];
+        const at = messages.findIndex(m => m.node_id === child);
+        return response.send({
+            ok: true,
+            messages: at === -1 ? [] : messages.slice(at + 1),
+            ancestry: request.body.with_ancestry ? (at === -1 ? [] : messages.slice(0, at + 1)) : undefined,
+            chat_metadata: loaded?.metadata,
+            stored: storedMessagesOf(response) ?? undefined,
+        });
     } catch (error) {
         console.error('Error selecting alternative:', error);
         return response.status(500).send({ error: true });
     }
 });
 
-// ---------------------------------------------------------------------------
-//  Node-addressed reads. A node id is the only thing that identifies a position - `label` is not
-//  unique per owner, so looking one up by name would silently pick whichever row comes first.
-// ---------------------------------------------------------------------------
-
-/** Reads the tree at a node: everything above it, and the continuation below it. */
-router.post('/at', validateAvatarUrlMiddleware, async function (request, response) {
-    try {
-        const nodeId = String(request.body.node_id || '');
-        if (!nodeId) return response.status(400).send({ error: 'node_id is required' });
-
-        const result = await loadAtNode(request.user.directories, ownerOf(request), nodeId);
-        if (!result) return response.status(404).send({ error: 'Node not found' });
-        return response.send(result);
-    } catch (error) {
-        console.error('Error reading at node:', error);
-        return response.status(500).send({ error: true });
-    }
-});
-
-/** The bookmarks an owner has: nodes someone labelled so they could get back to them. */
-router.post('/labels', validateAvatarUrlMiddleware, async function (request, response) {
-    try {
-        return response.send(await listLabels(request.user.directories, ownerOf(request)));
-    } catch (error) {
-        console.error('Error listing labels:', error);
-        return response.status(500).send([]);
-    }
-});
-
 /**
- * Builds the /api/settings/save-partial-shaped 409 body for a metadata write whose `expected_integrity`
- * no longer matches the node's current `integrity` - same `result`/`error`/`conflictingKeys` convention,
- * with the single addressed node/chat standing in for save-partial's list of conflicting settings keys.
- * @param {string} id
+ * Changes the chat's state where the request's session is (the page's `changedMetadata()`): `{ set, unset,
+ * variables? }`, each key or variable written only when its value differs. Answers `{ ok }`; a failure `{ ok: false,
+ * reason, state }` with the state there as stored.
  */
-function integrityConflictResponse(id) {
-    return {
-        result: 'conflict',
-        error: 'This metadata was changed by another session since this client last saw it.',
-        conflictingKeys: [id],
-    };
-}
-
-/** Replaces the metadata stored on a node. */
-router.post('/node/metadata', validateAvatarUrlMiddleware, async function (request, response) {
-    try {
-        const nodeId = String(request.body.node_id || '');
-        if (!nodeId) return response.status(400).send({ error: 'node_id is required' });
-
-        const expectedIntegrity = request.body.expected_integrity;
-        const result = await setNodeMetadata(request.user.directories, ownerOf(request), nodeId, request.body.metadata, expectedIntegrity);
-        if (!result.ok && result.reason === 'conflict') {
-            return response.status(409).send(integrityConflictResponse(nodeId));
-        }
-        return response.status(result.ok ? 200 : 409).send(result);
-    } catch (error) {
-        console.error('Error saving node metadata:', error);
-        return response.status(500).send({ error: true });
-    }
-});
-
-/** Replaces a chat's metadata. */
 router.post('/metadata', validateAvatarUrlMiddleware, async function (request, response) {
     try {
-        const chatName = String(request.body.file_name || '');
-        if (!chatName) return response.status(400).send({ error: 'file_name is required' });
-
-        const expectedIntegrity = request.body.expected_integrity;
-        const result = await setChatMetadata(request.user.directories, ownerOf(request), chatName, request.body.metadata, expectedIntegrity);
-        if (!result.ok && result.reason === 'conflict') {
-            return response.status(409).send(integrityConflictResponse(chatName));
+        const chat = await chatOf(request);
+        if (!chat) return response.status(404).send({ ok: false, reason: 'unknown chat' });
+        const { chats } = chat.store;
+        const actor = chat.session.actor();
+        const at = await chats.landingOf(chat.tree, actor);
+        const body = request.body;
+        const set = body.set && typeof body.set === 'object' && !Array.isArray(body.set) ? body.set : {};
+        const unset = Array.isArray(body.unset) ? body.unset : [];
+        const variables = body.variables && typeof body.variables === 'object' && !Array.isArray(body.variables) ? body.variables : undefined;
+        const merged = await chats.mergeMetadata({ tree: chat.tree, at, set, unset, variables, actor });
+        chat.session.answer(response);
+        if (!merged.ok) {
+            const there = await chats.stateAt({ tree: chat.tree, at, session: actor.session });
+            return response.status(409).send({ ok: false, reason: merged.reason, state: there && 'state' in there ? there.state : {} });
         }
-        return response.status(result.ok ? 200 : 409).send(result);
+        return response.send({ ok: true });
     } catch (error) {
         console.error('Error saving chat metadata:', error);
         return response.status(500).send({ error: true });
@@ -1497,153 +1466,111 @@ router.post('/export', validateAvatarUrlMiddleware, async function (request, res
     if (!request.body.file || (!request.body.avatar_url && request.body.is_group === false)) {
         return response.sendStatus(400);
     }
-
-    const chatName = String(request.body.file).replace(/\.jsonl$/, '');
+    const name = chatName(request.body.file);
     const exportfilename = request.body.exportfilename;
-
-    // The group case previously never reached the tree DB path here (it only checked a non-group
-    // `ownerId`, so group exports always fell through to the now-removed JSONL fallback) - resolving
-    // the owning group the same way /rename and /group/get do closes that gap instead of carrying it
-    // forward as a silent regression once the fallback goes away.
-    const ownerId = request.body.is_group
-        ? resolveGroupOwner(request.user.directories.groups, { chatId: chatName, groupId: request.body.group_id })?.id ?? null
-        : String(request.body.avatar_url).replace('.png', '');
-
-    if (ownerId == null || ownerId === '' || !await hasSavedChats(request.user.directories, ownerId)) {
-        return response.status(404).json({ message: `Could not find chat to export: ${chatName}.` });
-    }
-
     try {
-        const result = await loadBranch(request.user.directories, ownerId, chatName, true);
-        if (!result) {
-            return response.status(404).json({ message: `Branch "${chatName}" not found in tree DB.` });
+        const chat = request.body.is_group ? await groupChatOf(request, name) : await chatOf(request, { avatar_url: request.body.avatar_url });
+        const at = chat ? await chatNamePosition(chat, name) : undefined;
+        const loaded = chat && at !== undefined ? await chat.store.chats.load({ tree: chat.tree, at, full: true }) : null;
+        if (!loaded) {
+            return response.status(404).json({ message: `Could not find chat to export: ${name}.` });
         }
-
-        const header = { chat_metadata: result.metadata, user_name: 'unused', character_name: 'unused' };
-        // message-tree-db.js's rowToMessage() always stamps a runtime `node_id` onto every TreeChatMessage
-        // it returns, but that field isn't part of the `TreeChatMessage` JSDoc type itself (cross-file gap
-        // in a file this pass doesn't own) - annotated locally rather than editing message-tree-db.js.
-        const allData = /** @type {(typeof header | (TreeChatMessage & { node_id: string }))[]} */ ([header, ...result.messages]);
-
         if (request.body.format === 'jsonl') {
-            const jsonl = allData.map(m => {
+            const header = { chat_metadata: loaded.metadata, user_name: 'unused', character_name: 'unused' };
+            const jsonl = [header, ...loaded.messages].map(m => {
                 const clean = /** @type {Record<string, unknown>} */ ({ ...m });
-                delete clean.node_id; // Strip internal tree field from export
+                delete clean.node_id;
                 return JSON.stringify(clean);
             }).join('\n');
-            return response.status(200).json({
-                message: `Chat saved to ${exportfilename}`,
-                result: jsonl,
-            });
+            return response.status(200).json({ message: `Chat saved to ${exportfilename}`, result: jsonl });
         }
-
         // Plain text export
         let buffer = '';
-        for (const msg of result.messages) {
+        for (const msg of loaded.messages) {
             if (msg.is_system === true) continue;
             if (msg.mes != null && msg.mes !== '') {
-                const name = msg.name;
                 const displayText = msg.extra?.display_text;
                 const text = (displayText != null && displayText !== '') ? displayText : msg.mes;
-                const message = text.replace(/\r?\n/g, '\n');
-                buffer += `${name}: ${message}\n\n`;
+                buffer += `${msg.name}: ${String(text).replace(/\r?\n/g, '\n')}\n\n`;
             }
         }
-        return response.status(200).json({
-            message: `Chat saved to ${exportfilename}`,
-            result: buffer,
-        });
+        return response.status(200).json({ message: `Chat saved to ${exportfilename}`, result: buffer });
     } catch (err) {
-        console.error('Tree chat export failed:', err);
+        console.error('Chat export failed:', err);
         return response.sendStatus(400);
     }
 });
 
+/**
+ * Stores an imported chat (answer 3 of the cut): its messages from the tree's root as a branch of their own, and a
+ * bookmark named after it at its last message; no session moves.
+ * @param {import('../chat-request.js').ChatContext} chat
+ * @param {string} chatText jsonl: a header line, then one message per line.
+ * @param {string} name
+ * @returns {Promise<string | null>} The bookmark's compat chat id (`b<id>`); null when it couldn't be stored.
+ */
+async function importChatText(chat, chatText, name) {
+    const lines = chatText.split('\n').map(line => tryParse(line)).filter(x => x);
+    const header = lines.length && !('mes' in lines[0]) ? lines.shift() : null;
+    const imported = await chat.store.chats.importChat({
+        tree: chat.tree, treeSpeaker: chat.treeSpeaker, name, messages: lines.map(storedForm), metadata: header?.chat_metadata, actor: chat.session.actor(),
+    });
+    return imported.ok ? bookmarkCompatId(imported.bookmark) : null;
+}
+
 router.post('/group/import', async function (request, response) {
+    const filedata = request.file;
+    if (!filedata) return response.sendStatus(400);
+    const pathToUpload = path.join(filedata.destination, filedata.filename);
     try {
-        const filedata = request.file;
-
-        if (!filedata) {
-            return response.sendStatus(400);
+        const chat = request.body?.group_id ? await chatContext(request, { group: String(request.body.group_id) }) : null;
+        if (!chat) {
+            console.error('Group chat import failed: no group was named (group_id).');
+            return response.send({ error: true });
         }
-
-        const chatname = humanizedDateTime();
-        const pathToUpload = path.join(filedata.destination, filedata.filename);
-
-        const useTree = await isTreeAvailable(request.user.directories);
-        const group = useTree ? resolveGroupOwner(request.user.directories.groups, { groupId: request.body?.group_id }) : null;
-
-        if (group) {
-            const raw = fs.readFileSync(pathToUpload, 'utf8');
-            const chatData = raw.split('\n').map(line => tryParse(line)).filter(x => x);
-            if (chatData.length === 0) {
-                fs.unlinkSync(pathToUpload);
-                console.error('Group chat import failed: the uploaded file held no parseable lines.');
-                return response.send({ error: true });
-            }
-
-            const result = await saveChatToTree(request.user.directories, group.id, chatname, chatData, true);
-            fs.unlinkSync(pathToUpload);
-            if (result && 'integrity' in result) {
-                return response.send({ res: chatname });
-            }
+        const name = await importChatText(chat, fs.readFileSync(pathToUpload, 'utf8'), humanizedDateTime());
+        if (name === null) {
+            console.error('Group chat import failed: the chat could not be stored.');
+            return response.send({ error: true });
         }
-
-        if (fs.existsSync(pathToUpload)) fs.unlinkSync(pathToUpload);
-        console.error(group ? 'Group chat import failed: the chat could not be stored.' : 'Group chat import failed: no group was named (group_id).');
-        return response.send({ error: true });
+        return response.send({ res: name });
     } catch (error) {
         console.error(error);
         return response.send({ error: true });
+    } finally {
+        if (fs.existsSync(pathToUpload)) fs.unlinkSync(pathToUpload);
     }
 });
 
 router.post('/import', validateAvatarUrlMiddleware, async function (request, response) {
     if (!request.body) return response.sendStatus(400);
+    if (!request.file) return response.sendStatus(400);
 
     const format = request.body.file_type;
-    const avatarUrl = (request.body.avatar_url).replace('.png', '');
     const characterName = sanitize(request.body.character_name) || 'Character';
     const userName = sanitize(request.body.user_name) || 'User';
     /** @type {string[]} */
     const fileNames = [];
-
-    if (!request.file) {
-        return response.sendStatus(400);
-    }
-
-    const directoryPath = path.join(request.user.directories.chats, avatarUrl);
-    if (!isPathUnderParent(request.user.directories.chats, directoryPath)) {
-        return response.sendStatus(400);
-    }
+    /** Chats of the upload that couldn't be stored, by name. @type {string[]} */
+    const notSaved = [];
+    const pathToUpload = path.join(request.file.destination, request.file.filename);
 
     try {
-        const pathToUpload = path.join(request.file.destination, request.file.filename);
+        const chat = await chatOf(request, { avatar_url: request.body.avatar_url });
+        if (!chat) return response.send({ error: true });
         const data = fs.readFileSync(pathToUpload, 'utf8');
-
-        /** Chats of the upload that couldn't be stored, by name. @type {string[]} */
-        const notSaved = [];
-        /**
-         * @param {string} chatText jsonl-formatted chat text (header line + one message per line)
-         * @param {string} chatName
-         * @returns {Promise<boolean>} Whether it was stored.
-         */
-        const saveImportToTree = async (chatText, chatName) => {
-            const chatData = chatText.split('\n').map(line => tryParse(line)).filter(x => x);
-            const result = await saveChatToTree(request.user.directories, avatarUrl, chatName, chatData, false, ownerDescriptorOf({ avatar: request.body.avatar_url }));
-            return !!(result && 'integrity' in result);
+        const store = async (/** @type {string} */ chatText) => {
+            const fileName = `${characterName} - ${humanizedDateTime()} imported`;
+            const name = await importChatText(chat, chatText, fileName);
+            if (name === null) notSaved.push(`${fileName}.jsonl`);
+            else fileNames.push(`${name}.jsonl`);
         };
 
         if (format === 'json') {
-            fs.unlinkSync(pathToUpload);
             const jsonData = JSON.parse(data);
-
-            // jsonData is genuinely dynamic here (parsed from an untrusted uploaded file, format-sniffed
-            // below), so importFunc's 3rd parameter has to be `any` to accept whichever narrower format
-            // typedef each concrete import*Chat() function declares.
+            // jsonData is parsed from an untrusted upload and format-sniffed below, so each importer takes `any`.
             /** @type {(userName: string, characterName: string, jsonData: any) => string|string[]} */
             let importFunc;
-
             if (jsonData.savedsettings !== undefined) { // Kobold Lite format
                 importFunc = importKoboldLiteChat;
             } else if (jsonData.histories !== undefined) { // CAI Tools format
@@ -1658,63 +1585,34 @@ router.post('/import', validateAvatarUrlMiddleware, async function (request, res
                 console.error('Incorrect chat format .json');
                 return response.send({ error: true });
             }
-
-            const handleChat = async (/** @type {string} */ chat) => {
-                const fileName = `${characterName} - ${humanizedDateTime()} imported.jsonl`;
-                if (await saveImportToTree(chat, fileName.replace(/\.jsonl$/, ''))) {
-                    fileNames.push(fileName);
-                } else {
-                    notSaved.push(fileName);
-                }
-            };
-
-            const chat = importFunc(userName, characterName, jsonData);
-
-            if (Array.isArray(chat)) {
-                for (const c of chat) await handleChat(c);
-            } else {
-                await handleChat(chat);
-            }
-
-            return notSaved.length
-                ? response.send({ error: true, message: `These chats could not be saved: ${notSaved.join(', ')}`, not_saved: notSaved, fileNames })
-                : response.send({ res: true, fileNames });
-        }
-
-        if (format === 'jsonl') {
-            let lines = data.split('\n');
-            const header = lines[0];
-
-            const jsonData = JSON.parse(header);
-
-            if (!(jsonData.user_name !== undefined || jsonData.name !== undefined || jsonData.chat_metadata !== undefined)) {
+            const imported = importFunc(userName, characterName, jsonData);
+            for (const c of Array.isArray(imported) ? imported : [imported]) await store(c);
+        } else if (format === 'jsonl') {
+            const lines = data.split('\n');
+            const header = JSON.parse(lines[0]);
+            if (!(header.user_name !== undefined || header.name !== undefined || header.chat_metadata !== undefined)) {
                 console.error('Incorrect chat format .jsonl');
                 return response.send({ error: true });
             }
-
-            // Do a tiny bit of work to import Chub Chat data
-            // Processing the entire file is so fast that it's not worth checking if it's a Chub chat first
+            // Chub chats are flattened; a failure here keeps the chat as it came.
             let flattenedChat = data;
             try {
-                // flattening is unlikely to break, but it's not worth failing to
-                // import normal chats in an attempt to import a Chub chat
                 flattenedChat = flattenChubChat(userName, characterName, lines);
             } catch (error) {
                 console.warn('Failed to flatten Chub Chat data: ', error);
             }
-
-            const fileName = `${characterName} - ${humanizedDateTime()} imported.jsonl`;
-            const saved = await saveImportToTree(flattenedChat, fileName.replace(/\.jsonl$/, ''));
-            fs.unlinkSync(pathToUpload);
-            if (!saved) {
-                return response.send({ error: true, message: `This chat could not be saved: ${fileName}`, not_saved: [fileName], fileNames });
-            }
-            fileNames.push(fileName);
-            response.send({ res: true, fileNames });
+            await store(flattenedChat);
+        } else {
+            return response.send({ error: true });
         }
+        return notSaved.length
+            ? response.send({ error: true, message: `These chats could not be saved: ${notSaved.join(', ')}`, not_saved: notSaved, fileNames })
+            : response.send({ res: true, fileNames });
     } catch (error) {
         console.error(error);
         return response.send({ error: true });
+    } finally {
+        if (fs.existsSync(pathToUpload)) fs.unlinkSync(pathToUpload);
     }
 });
 
@@ -1723,58 +1621,47 @@ router.post('/group/get', async (request, response) => {
         if (!request.body || !request.body.id) {
             return response.sendStatus(400);
         }
-
-        const id = String(request.body.id);
-        const group = resolveGroupOwner(request.user.directories.groups, { chatId: id, groupId: request.body.group_id });
-
-        if (group) {
-            const result = await loadAtNode(request.user.directories, group.id, id)
-                ?? await loadBranch(request.user.directories, group.id, id);
-            if (result) {
-                /** @type {any} */
-                const header = {
-                    chat_metadata: { ...result.metadata },
-                    user_name: 'unused',
-                    character_name: 'unused',
-                };
-                return response.send([header, ...result.messages]);
-            }
-        }
-        // Empty array, not the 404 character /get returns: getGroupChat() reads a miss as "fresh chat"
-        // and seeds it from member greetings, which groups have no isNewChat flag to signal otherwise.
-        // Also what a group not found at all resolves to (no group claims `id`, nothing to load).
-        return response.send([]);
+        const name = chatName(request.body.id);
+        const chat = await groupChatOf(request, name);
+        const at = chat ? await chatNamePosition(chat, name) : undefined;
+        const answer = chat && at !== undefined ? await chatArray(chat, at) : null;
+        // An empty array, not a 404: getGroupChat() reads a miss as a new chat and shows the members' greetings.
+        return response.send(answer ?? []);
     } catch (error) {
         console.error(error);
         return response.send([]);
     }
 });
 
-/** Every chat a group owns, in one call, the way /tree/branches answers it for a character. */
+/**
+ * A chat list row as upstream's chat pickers draw it.
+ * @param {Record<string, any>} r A `chatList()` row with its `file_id`.
+ * @param {boolean} withMetadata
+ */
+function pickerRow(r, withMetadata) {
+    return {
+        node_id: r.at,
+        file_id: r.file_id,
+        file_name: `${r.file_id}.jsonl`,
+        label: r.label,
+        file_size: formatBytes(0),
+        chat_items: r.message_count,
+        mes: r.last_mes || '[No messages]',
+        last_mes: r.last_activity,
+        chat_metadata: withMetadata ? r.chat_metadata : undefined,
+    };
+}
+
+/** Every chat a group has (its chat list), as the chat pickers draw them. */
 router.post('/group/branches', async (request, response) => {
     try {
         if (!request.body || !request.body.group_id) {
             return response.sendStatus(400);
         }
-
-        const groupId = String(request.body.group_id);
-        const group = resolveGroupOwner(request.user.directories.groups, { groupId });
-        if (!group) {
-            return response.send([]);
-        }
-
-        const branches = await listBranches(request.user.directories, group.id);
-        return response.send(branches.map(b => ({
-            node_id: b.id,
-            file_id: b.name,
-            file_name: `${b.name}.jsonl`,
-            file_size: formatBytes(0),
-            chat_items: b.message_count,
-            mes: (b.last_mes != null && b.last_mes !== '') ? b.last_mes : '[No messages]',
-            // The branch's leaf, not its label's birthday - see branchViewSync().
-            last_mes: b.last_activity,
-            chat_metadata: (request.body.metadata && b.metadata != null && b.metadata !== '') ? JSON.parse(b.metadata) : undefined,
-        })));
+        const chat = await chatContext(request, { group: String(request.body.group_id) });
+        if (!chat) return response.send([]);
+        const withMetadata = !!request.body.metadata;
+        return response.send((await chatListOf(chat, { withMetadata })).map(r => pickerRow(r, withMetadata)));
     } catch (error) {
         console.error('Error listing group branches:', error);
         return response.status(500).send([]);
@@ -1786,81 +1673,33 @@ router.post('/group/info', async (request, response) => {
         if (!request.body || !request.body.id) {
             return response.sendStatus(400);
         }
-
-        const id = String(request.body.id);
-        const group = resolveGroupOwner(request.user.directories.groups, { chatId: id, groupId: request.body.group_id });
-
-        if (group) {
-            const branch = (await listBranches(request.user.directories, group.id)).find(b => b.name === id);
-            if (branch) {
-                return response.send({
-                    match: true,
-                    file_id: branch.name,
-                    file_name: `${branch.name}.jsonl`,
-                    file_size: formatBytes(0),
-                    chat_items: branch.message_count,
-                    mes: (branch.last_mes != null && branch.last_mes !== '') ? branch.last_mes : '[The chat is empty]',
-                    last_mes: branch.last_activity,
-                });
-            }
-        }
-
-        return response.send({ match: false });
+        const name = chatName(request.body.id);
+        const chat = await groupChatOf(request, name);
+        const row = chat ? (await chatListOf(chat)).find(r => r.file_id === name) : undefined;
+        if (!row) return response.send({ match: false });
+        return response.send({ match: true, ...pickerRow(row, false), mes: row.last_mes || '[The chat is empty]' });
     } catch (error) {
         console.error(error);
         return response.sendStatus(500);
     }
 });
 
+/**
+ * Deletes a group's chat by name (answer 3 of the cut). Answers `{ ok, chats, chat_id }`, the group's chat list and
+ * the request's compat chat id after it.
+ */
 router.post('/group/delete', async (request, response) => {
     try {
         if (!request.body || !request.body.id) {
             return response.sendStatus(400);
         }
-
-        const id = String(request.body.id);
-        // The client drops this chat from its in-memory copy of the group's `chats` before asking, and may
-        // never save that list, so the id can still be in the group file - group_id names the owner either way.
-        const group = resolveGroupOwner(request.user.directories.groups, { chatId: id, groupId: request.body.group_id });
-        if (!group) {
+        const name = chatName(request.body.id);
+        const chat = await groupChatOf(request, name);
+        if (!chat || !await deleteChatNamed(request, response, chat, name)) {
             console.error('The group chat was not deleted.');
             return response.sendStatus(400);
         }
-
-        /** The group's chats and current chat after the delete, answered so the page needn't decide them. */
-        const groupAfter = /** @type {{ chats?: string[], chat_id?: string }} */ ({});
-        // Same lock as /api/groups/new-chat's read-modify-write of `chats`, which would otherwise write the id back.
-        const outcome = await withGroupLock(request.user.directories, group.id, async () => {
-            // A chat with no saved messages has no labelled branch, but its id is still in `chats`.
-            const branchDeleted = await deleteBranch(request.user.directories, group.id, id);
-            const fullGroup = /** @type {{ chats?: string[] } | null} */ (readGroupFile(request.user.directories, group.id));
-            if (!fullGroup || !Array.isArray(fullGroup.chats) || !fullGroup.chats.includes(id)) {
-                return branchDeleted !== false ? 'ok' : 'not_deleted';
-            }
-            fullGroup.chats = fullGroup.chats.filter(chatId => chatId !== id);
-            // The group's current chat moves to its last remaining one ('' when none remains).
-            const groupFile = /** @type {{ chats: string[], chat_id?: string }} */ (fullGroup);
-            if (groupFile.chat_id === id) groupFile.chat_id = groupFile.chats[groupFile.chats.length - 1] ?? '';
-            try {
-                await writeGroupFile(request.user.directories, fullGroup);
-            } catch (err) {
-                console.error(`Could not remove deleted chat id "${id}" from group ${group.id}:`, err);
-                return 'list_not_saved';
-            }
-            groupAfter.chats = groupFile.chats;
-            groupAfter.chat_id = groupFile.chat_id ?? '';
-            return 'ok';
-        });
-
-        if (outcome === 'ok') {
-            return response.send({ ok: true, ...groupAfter });
-        }
-        if (outcome === 'list_not_saved') {
-            return response.status(500).send({ error: 'The chat was deleted, but it could not be removed from the group\'s chat list. See the server console for details.' });
-        }
-
-        console.error('The group chat was not deleted.');
-        return response.sendStatus(400);
+        return response.send({ ok: true, chats: (await chatListOf(chat)).map(r => r.file_id), chat_id: await compatChatIdOf(chat) });
     } catch (error) {
         console.error(error);
         return response.sendStatus(500);
@@ -1868,69 +1707,16 @@ router.post('/group/delete', async (request, response) => {
 });
 
 /**
- * Same idea as pickUniqueChatFileName(), but for group chats: uniqueness is checked against the group's
- * own `chats` id list (already loaded via resolveGroupOwner()) instead of a directory listing, since a
- * group chat id doubles as its display name in this legacy save path.
- * @param {string[]} existingIds Group's current `chats` array.
- * @param {string} baseId Desired chat id, e.g. the main chat's display name.
- * @returns {string} `baseId` unchanged if free, otherwise `<baseId> - Branch #N` for the first free N.
- */
-function pickUniqueGroupChatId(existingIds, baseId) {
-    const existing = new Set(Array.isArray(existingIds) ? existingIds : []);
-    if (!existing.has(baseId)) {
-        return baseId;
-    }
-    const cleanBase = String(baseId).replace(/ - Branch #\d+$/, '');
-    let i = 1;
-    while (existing.has(`${cleanBase} - Branch #${i}`)) i++;
-    return `${cleanBase} - Branch #${i}`;
-}
-
-/**
- * Registers a chat id in the group's own persisted `chats` list, if it isn't already there. A fresh
- * branch/bookmark save (or the `unique` minting above) introduces an id the group descriptor has never
- * heard of; without this, the caller previously had to follow up with a whole separate
- * /api/groups/save-partial request just to append one string to `chats` - two requests to persist what
- * is, from the user's perspective, one action (create a branch/bookmark). `group` here is the shallow
- * `{id, chats}` view from `resolveGroupOwner()`, so the full descriptor is re-read
- * before writing back - writing the shallow view would silently drop every other group field.
- * Ordinary chat saves (the hot path - every message of an ongoing group chat) hit the early return: the
- * id was already registered when the group/chat was created, so no extra read or write happens.
- * @param {import('../users.js').UserDirectoryList} directories
- * @param {{id: string, chats: string[]}} group Shallow group view already resolved by the caller.
- * @param {string} chatId The id this save is actually writing under (post `unique` minting).
- */
-async function registerGroupChatIdIfNew(directories, group, chatId) {
-    if (group.chats.includes(chatId)) {
-        return;
-    }
-    // readGroupFile() (groups.js, not owned by this pass) declares its return as the bare `object` type,
-    // so the full on-disk group descriptor's actual shape - including `chats` - isn't visible here; narrowed
-    // locally to the one field this function reads/writes.
-    await withGroupLock(directories, group.id, async () => {
-        const fullGroup = /** @type {{ chats?: string[] } | null} */ (readGroupFile(directories, group.id));
-        if (!fullGroup || (Array.isArray(fullGroup.chats) && fullGroup.chats.includes(chatId))) {
-            return;
-        }
-        fullGroup.chats = Array.isArray(fullGroup.chats) ? [...fullGroup.chats, chatId] : [chatId];
-        await writeGroupFile(directories, fullGroup);
-    });
-}
-
-/**
- * Fills in `extra.gen_id` for character messages missing one before a group chat is written to disk.
- * Group regeneration/swipe tracking depends on every character message carrying *some* gen_id; minting
- * the fallback here means callers that hand the server a whole chat array in one request (e.g. converting
- * a solo chat to a group) don't need to fabricate one client-side. A message that already has a gen_id -
- * real prior generation data - is left untouched; only messages missing one are filled in, with a value
- * that only needs to be unique within this one save (mirrors the old client-side `Date.now() + index`).
- * @param {(ChatHeaderLike | TreeChatMessage)[]} chatData Chat array as posted to /group/save, i.e. [header, ...messages].
+ * Fills in `extra.gen_id` for character messages missing one before a group chat is stored: group regeneration and
+ * swipe tracking need one on every character message. A message that has one keeps it; the value only needs to be
+ * unique within this save.
+ * @param {any[]} chatData Chat array as posted to /group/save, i.e. [header, ...messages].
  */
 function assignMissingGenIds(chatData) {
     const baseId = Date.now();
     for (let index = 1; index < chatData.length; index++) {
-        const message = /** @type {TreeChatMessage} */ (chatData[index]);
-        if (message.is_user === true || message.is_system === true) {
+        const message = chatData[index];
+        if (!message || typeof message !== 'object' || message.is_user === true || message.is_system === true) {
             continue;
         }
         if (message.extra && typeof message.extra === 'object' && message.extra.gen_id !== undefined) {
@@ -1948,122 +1734,94 @@ router.post('/group/save', async function (request, response) {
         if (!request.body || !request.body.id) {
             return response.sendStatus(400);
         }
-
-        let id = String(request.body.id);
         const chatData = request.body.chat;
-
         if (!Array.isArray(chatData)) {
             return response.status(400).send({ error: 'The request\'s body.chat is not an array.' });
         }
-
         assignMissingGenIds(chatData);
-
-        const group = resolveGroupOwner(request.user.directories.groups, { chatId: id, groupId: request.body.group_id });
-        if (!group) {
-            // Refused rather than silently written to a file nothing reads once the group is tree-backed.
-            console.error(`Refusing to save group chat "${id}": no group claims it.`);
+        const name = chatName(request.body.id);
+        const chat = await groupChatOf(request, name);
+        if (!chat) {
+            console.error(`Refusing to save group chat "${name}": no group claims it.`);
             return response.status(400).send({ error: 'unknown_group' });
         }
-
-        // A fresh branch/bookmark save asks for an id minted here (like /chats/label's unique:true)
-        // instead of asserting an id the client uniquified against its own in-memory group.chats list.
-        if (request.body.unique) {
-            id = pickUniqueGroupChatId(group.chats, id);
-        }
-
-        const result = await saveChatToTree(request.user.directories, group.id, id, chatData, true);
-        if (result && 'integrity' in result) {
-            try {
-                await registerGroupChatIdIfNew(request.user.directories, group, id);
-            } catch (err) {
-                console.error(`Could not register new chat id "${id}" on group ${group.id}:`, err);
-                return response.status(500).send({ error: 'The chat was saved, but it could not be added to the group\'s chat list, so the group won\'t show it. See the server console for details.' });
-            }
-
-            return response.send({
-                ok: true,
-                integrity: result.integrity,
-                assigned_node_ids: result.assignedNodeIds,
-                chat_id: id,
-            });
-        }
-
-        // Nothing to save (chatData had no messages beyond the header). Not an error - the client
-        // still expects an { ok: true } response with the id it asked to save under.
-        return response.send({ ok: true, chat_id: id });
+        const { status, body } = await saveWholeChat(request, response, chat, name, chatData);
+        const { file_name: chatId, ...rest } = /** @type {any} */ (body);
+        return response.status(status).send(chatId === undefined ? rest : { ...rest, chat_id: chatId });
     } catch (error) {
-        if (error instanceof IntegrityMismatchError) {
-            console.error(error.message);
-            return response.status(400).send({ error: 'integrity' });
-        }
         console.error(error);
         return response.status(500).send({ error: 'An error has occurred, see the console logs for more information.' });
     }
 });
 
+/** Chats `/search` reads at most per page. */
+const SEARCH_PAGE_MAX = 500;
+
+/**
+ * Searches a character's or group's chat list: an item matches by its name, or by the messages on the path down to it
+ * holding every word, or the whole query as a lower-cased substring (a capped scan of the messages' texts).
+ * Upstream's callers (no `limit`) get every match, a bare array; with `limit` (1 to SEARCH_PAGE_MAX) the answer is a
+ * page `{ results, cursor, scan_cursor, exact }`: `cursor` sent back for the next page, and once it is null
+ * `scan_cursor` (when not null) sent back as `scan_cursor` for the scan's next results; `exact` is false while the
+ * scan was capped.
+ */
 router.post('/search', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const { query, avatar_url, group_id } = request.body;
-        const page = Math.max(0, Math.floor(Number(request.body.page) || 0));
-        const pageSize = Math.max(0, Math.floor(Number(request.body.page_size) || 0));
-
-        /** @type {string[]} */
-        const fragments = query ? query.trim().toLowerCase().split(/\s+/).filter((/** @type {string} */ x) => x) : [];
-
-        /** @type {ChatMatchFunction} */
-        const hasTextMatch = (textArray) => {
-            if (fragments.length === 0) {
-                return true;
-            }
-            return fragments.every(fragment => textArray.some(text => String(text ?? '').toLowerCase().includes(fragment)));
+        if (!avatar_url && !group_id) return response.send([]);
+        const limit = request.body.limit;
+        if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > SEARCH_PAGE_MAX)) {
+            return response.status(400).send({ error: `limit must be an integer from 1 to ${SEARCH_PAGE_MAX}` });
+        }
+        const chat = await chatOf(request);
+        if (!chat) return response.send(limit === undefined ? [] : { results: [], cursor: null, exact: true });
+        const row = (/** @type {Record<string, any>} */ r) => {
+            const id = r.bookmark != null ? bookmarkCompatId(r.bookmark) : sessionCompatId(String(r.session), chat.tree);
+            return {
+                node_id: r.at,
+                file_name: id,
+                label: r.name ?? null,
+                file_size: null,
+                message_count: r.message_count,
+                last_mes: r.last_activity ?? '',
+                preview_message: getPreviewMessage(r.last_mes ?? undefined),
+            };
         };
-
-        if (!avatar_url && !group_id) {
-            return response.send([]);
+        const search = typeof query === 'string' ? query : '';
+        const session = chat.session.reader().session ?? undefined;
+        if (limit !== undefined) {
+            const after = typeof request.body.cursor === 'string' && /^\d+:\d+$/.test(request.body.cursor) ? request.body.cursor : undefined;
+            const scanCursor = typeof request.body.scan_cursor === 'string' && /^m\d+$/.test(request.body.scan_cursor) ? request.body.scan_cursor : undefined;
+            const page = await chat.store.chats.searchChatList({ tree: chat.tree, search, session, after, limit, scanCursor });
+            return response.send({ results: page.rows.map(row), cursor: page.more && page.next !== undefined ? page.next : null, scan_cursor: page.scanCursor ?? null, exact: page.exact });
         }
-
-        const ownerId = group_id
-            ? resolveGroupOwner(request.user.directories.groups, { groupId: String(group_id) })?.id ?? null
-            : String(avatar_url).replace('.png', '');
-
-        if (ownerId == null || ownerId === '') {
-            return response.send([]);
-        }
-
-        const branches = await searchBranchesByContent(request.user.directories, ownerId, fragments);
-        let results = (branches ?? []).map(b => ({
-            node_id: b.id,
-            file_name: b.name,
-            file_size: null,
-            message_count: b.message_count,
-            last_mes: b.leaf_send_date != null ? b.leaf_send_date : '',
-            preview_message: getPreviewMessage(b.last_mes ?? undefined),
-        }));
-
-        // Also match branch names against the query (content search only covers message text)
-        if (query && branches !== null) {
-            const matchedNames = new Set(results.map(r => r.file_name));
-            const allBranches = fragments.length === 0 ? branches
-                : await searchBranchesByContent(request.user.directories, ownerId, []);
-
-            if (allBranches) {
-                for (const b of allBranches) {
-                    if (!matchedNames.has(b.name) && hasTextMatch([b.name])) {
-                        results.push({
-                            node_id: b.id,
-                            file_name: b.name,
-                            file_size: null,
-                            message_count: b.message_count,
-                            last_mes: b.leaf_send_date != null ? b.leaf_send_date : '',
-                            preview_message: getPreviewMessage(b.last_mes ?? undefined),
-                        });
-                    }
+        const results = [];
+        // An item whose path holds scan matches in two reads comes once.
+        const seen = new Set();
+        const add = (/** @type {any[]} */ rows) => {
+            for (const r of rows.map(row)) {
+                if (!seen.has(r.file_name)) {
+                    seen.add(r.file_name);
+                    results.push(r);
                 }
             }
+        };
+        /** @type {string | undefined} */
+        let after;
+        /** @type {string | undefined} */
+        let scanCursor;
+        for (;;) {
+            const page = await chat.store.chats.searchChatList({ tree: chat.tree, search, session, after, limit: SEARCH_PAGE_MAX });
+            add(page.rows);
+            scanCursor ??= page.scanCursor;
+            if (!page.more || page.next === undefined) break;
+            after = page.next;
         }
-
-        if (pageSize > 0) {
-            results = results.slice(page * pageSize, (page + 1) * pageSize);
+        // Upstream's callers get every match: the scan goes on until it has read the owner's messages.
+        while (scanCursor !== undefined) {
+            const page = await chat.store.chats.searchChatList({ tree: chat.tree, search, session, limit: SEARCH_PAGE_MAX, scanCursor });
+            add(page.rows);
+            scanCursor = page.scanCursor;
         }
         return response.send(results);
     } catch (error) {
@@ -2072,41 +1830,131 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
     }
 });
 
+/** Messages `/search/messages` answers at most per page. */
+const MESSAGE_SEARCH_PAGE_MAX = 200;
+
+/**
+ * Searches a character's or group's messages: `{ avatar_url | group_id, search, limit?, after?, scan_cursor? }` →
+ * `{ rows, more, after?, total, totalExact, partial?, scanCursor? }` (`ChatEngine.searchMessages()`). Opening a
+ * row moves the session there (`/open` with the chat, or `/message/select`).
+ */
+router.post('/search/messages', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const { search, after, scan_cursor: scanCursor } = request.body ?? {};
+        if (typeof search !== 'string') return response.status(400).send({ error: 'search is required' });
+        const limit = request.body.limit ?? 50;
+        if (!Number.isInteger(limit) || limit < 1 || limit > MESSAGE_SEARCH_PAGE_MAX) {
+            return response.status(400).send({ error: `limit must be an integer from 1 to ${MESSAGE_SEARCH_PAGE_MAX}` });
+        }
+        const chat = await chatOf(request);
+        if (!chat) return response.status(404).send({ error: 'unknown chat' });
+        try {
+            const found = await chat.store.chats.searchMessages({
+                tree: chat.tree, search, limit,
+                ...(typeof after === 'string' ? { after } : {}),
+                ...(typeof scanCursor === 'string' ? { scanCursor } : {}),
+            });
+            // A row's depth is the engine's integer.
+            return response.type('json').send(JSON.stringify(found, (_key, value) => (typeof value === 'bigint' ? Number(value) : value)));
+        } catch (err) {
+            if (/invalid (scan )?cursor/.test(String(/** @type {any} */ (err)?.message))) return response.status(400).send({ error: 'invalid cursor' });
+            throw err;
+        }
+    } catch (error) {
+        console.error('Message search error:', error);
+        return response.status(500).json({ error: 'Search failed' });
+    }
+});
+
+/** Conversations `/recent` lists at most. */
+const RECENT_MAX = 1000;
+
+const FORK_SESSION_KEY = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * Forks the session a tab found another tab holding (see public/scripts/tab-session.js): `{ from, length, cursor,
+ * chats: [{ tree: { avatar } | { group }, bookmark }] }`, the tab's last place in `from`'s history and its current
+ * chats. Answers `{ session }`, the fork's UUID; 404 when `from` isn't a stored session.
+ */
+router.post('/session/fork', async function (request, response) {
+    try {
+        const { from, length, cursor, chats: tabChats } = request.body ?? {};
+        const count = (/** @type {unknown} */ n) => Number.isSafeInteger(n) && /** @type {number} */ (n) >= 0;
+        if (typeof from !== 'string' || !FORK_SESSION_KEY.test(from) || !count(length) || !count(cursor) || (length > 0) !== (cursor > 0) || cursor > length || !Array.isArray(tabChats)) {
+            return response.status(400).send({ error: 'invalid fork' });
+        }
+        const store = await requestStore(request);
+        const owners = tabChats.map(c => (typeof c?.tree?.avatar === 'string' ? { avatar: c.tree.avatar } : typeof c?.tree?.group === 'string' ? { group: c.tree.group } : null));
+        const trees = await store.people.trees(owners.map(o => o ?? {}));
+        const chats = [];
+        for (let i = 0; i < tabChats.length; i++) {
+            const bookmark = tabChats[i]?.bookmark;
+            if (trees[i] === null || typeof bookmark !== 'string') continue;
+            chats.push({ tree: trees[i], bookmark });
+        }
+        const forked = await store.chats.forkSession({ from, length, cursor, chats, user: request.user.profile.handle });
+        if (!forked.ok) return response.status(404).send({ error: forked.reason });
+        return response.send({ session: forked.session });
+    } catch (error) {
+        console.error(error);
+        return response.sendStatus(500);
+    }
+});
+
+/**
+ * Upstream's recent chats: the conversations (a bookmark, or a session's where it has no current chat) by their last
+ * meaningful activity, the most recent first, one row per compat chat id; first the pinned chats (`pinned`:
+ * `{ file_name, avatar | group }`, resolved by name in their character's or group's tree). `max` bounds the unpinned
+ * ones.
+ */
 router.post('/recent', async function (request, response) {
     try {
-        /** @type {import('../../public/scripts/welcome-screen.js').PinnedChat[]} */
+        /** @type {{ file_name?: string, avatar?: string, group?: string }[]} */
         const pinnedChats = Array.isArray(request.body.pinned) ? request.body.pinned : [];
-        const max = parseInt(request.body.max ?? Number.MAX_SAFE_INTEGER) + pinnedChats.length;
+        const max = Math.min(RECENT_MAX, Math.max(0, parseInt(request.body.max ?? RECENT_MAX) || 0));
+        const withMetadata = !!request.body.metadata;
+        const store = await requestStore(request);
+        const { chats } = store;
 
-        const treeChatInfo = (/** @type {import('../message-tree-db.js').BranchView} */ branch, /** @type {boolean} */ withMetadata) => ({
-            node_id: branch.id,
-            file_name: `${branch.name}.jsonl`,
-            ...(branch.is_group ? { group: branch.owner_id } : { avatar: `${branch.owner_id}.png` }),
+        const ownerOf = async (/** @type {bigint} */ tree) => {
+            const [key] = await store.lib.store.libraryKeys([tree]);
+            if (!key) return null;
+            return key.type === TYPE.group ? { group: key.key } : { avatar: key.key };
+        };
+        const info = (/** @type {Record<string, any>} */ r, /** @type {object} */ owner, /** @type {string} */ id) => ({
+            node_id: r.at,
+            file_name: `${id}.jsonl`,
+            label: r.name ?? null,
+            ...owner,
             file_size: 0,
-            chat_items: branch.message_count,
-            mes: (branch.last_mes != null && branch.last_mes !== '') ? branch.last_mes : '[No messages]',
-            last_mes: branch.last_activity,
-            chat_metadata: (withMetadata && branch.metadata != null && branch.metadata !== '') ? JSON.parse(branch.metadata) : undefined,
+            chat_items: r.message_count,
+            mes: r.last_mes || '[No messages]',
+            last_mes: r.last_activity,
+            chat_metadata: withMetadata ? r.chat_metadata : undefined,
         });
 
-        const branches = await listRecentBranches(request.user.directories, max);
-
-        const isPinned = (/** @type {import('../message-tree-db.js').BranchView} */ branch) => pinnedChats.some(p =>
-            p.file_name === `${branch.name}.jsonl` && (branch.is_group ? p.group === branch.owner_id : p.avatar === `${branch.owner_id}.png`));
-        const recentChats = branches.sort((a, b) => {
-            const isAPinned = isPinned(a);
-            const isBPinned = isPinned(b);
-
-            if (isAPinned && !isBPinned) return -1;
-            if (!isAPinned && isBPinned) return 1;
-
-            return b.last_activity - a.last_activity;
-        }).slice(0, max);
-
-        const withMetadata = !!request.body.metadata;
-        const chatData = recentChats.map(branch => treeChatInfo(branch, withMetadata));
-
-        return response.send(chatData);
+        const pinned = [];
+        for (const pin of pinnedChats) {
+            const owner = typeof pin.group === 'string' && pin.group !== '' ? { group: pin.group } : typeof pin.avatar === 'string' && pin.avatar !== '' ? { avatar: pin.avatar } : null;
+            if (!owner || typeof pin.file_name !== 'string') continue;
+            const chat = await chatContext(request, owner);
+            if (!chat) continue;
+            // A pin holds a chat id, or an old chat name (a label, resolved in its own tree while one bookmark has it).
+            const found = await chat.store.chats.resolveChatName({ tree: chat.tree, name: chatName(pin.file_name) });
+            if (!found) continue;
+            const id = 'bookmark' in found ? bookmarkCompatId(found.bookmark) : sessionCompatId(found.session, chat.tree);
+            const row = (await chatListOf(chat, { withMetadata })).find(r => r.file_id === id);
+            if (row) pinned.push(info(row, owner, row.file_id));
+        }
+        const recent = await chats.recentConversations({ limit: max, withMetadata });
+        const rows = [];
+        for (const r of recent.rows) {
+            const owner = await ownerOf(r.tree);
+            if (!owner) continue;
+            if (pinned.some(p => p.file_name === `${r.id}.jsonl` && (p.group ?? p.avatar) === (owner.group ?? owner.avatar))) continue;
+            rows.push(info(r, owner, r.id));
+        }
+        return response.send([...pinned, ...rows]);
     } catch (error) {
         console.error(error);
         return response.sendStatus(500);

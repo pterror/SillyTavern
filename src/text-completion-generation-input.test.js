@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -17,25 +16,14 @@ setConfigFilePath(path.join(__dirname, '..', 'config.yaml'));
 const { resolveTextCompletionGenerationInput } = await import('./text-completion-generation-input.js');
 const { importWorldInfoFromRaw } = await import('./endpoints/worldinfo.js');
 const { writeAllSettings } = await import('./settings-store.js');
-const { saveChatToTree, disposeMessageTreeStores } = await import('./message-tree-db.js');
 const { assembleTextCompletionPrompt } = await import('./text-completion-prompt-orchestrator.js');
-const { upsertCharacterFromWrite } = await import('./character-metadata-db.js');
+const { newSessionKey } = await import('./chat-engine.js');
+const { convertedUser, writeLibraryCard, seedMessages, chatContextOf, treeOf } = await import('../tests/converted-user.fixture.js');
 const { tokenizers } = await import('./tokenizer-ids.js');
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-text-completion-generation-input-test-'));
-const charactersDir = path.join(root, 'characters');
-const groupsDir = path.join(root, 'groups');
-const worldsDir = path.join(root, 'worlds');
-const filesDir = path.join(root, 'files');
-const chatsDir = path.join(root, 'chats');
-fs.mkdirSync(charactersDir, { recursive: true });
-fs.mkdirSync(groupsDir, { recursive: true });
-fs.mkdirSync(worldsDir, { recursive: true });
-fs.mkdirSync(filesDir, { recursive: true });
-fs.mkdirSync(chatsDir, { recursive: true });
-
-const directories = { root, characters: charactersDir, groups: groupsDir, worlds: worldsDir, files: filesDir, chats: chatsDir };
-globalThis.DATA_ROOT = root;
+const user = await convertedUser('st-text-completion-generation-input-test-');
+const directories = user.directories;
+globalThis.DATA_ROOT = user.dataRoot;
 
 /** Minimal real on-disk lorebook, matching src/world-info/candidate-resolution.test.js's own fixture shape. */
 function writeLorebook(name, entries) {
@@ -77,9 +65,7 @@ async function writeCharacter(avatar, overrides = {}) {
         ...overrides,
     };
     const cardJson = JSON.stringify(card);
-    const buffer = writeCard(baseImage, cardJson);
-    fs.writeFileSync(path.join(charactersDir, avatar), buffer);
-    await upsertCharacterFromWrite(directories, avatar, cardJson);
+    await writeLibraryCard(user, avatar, cardJson, writeCard(baseImage, cardJson));
     return avatar;
 }
 
@@ -248,19 +234,19 @@ async function run() {
         data: { name: 'Rex', description: 'Rex is a {{char}}.', first_mes: 'Hi, I am Rex.' },
     });
 
-    const ownerId = avatar;
-    const branchName = 'main-chat';
-    await saveChatToTree(directories, ownerId, branchName, [
-        { chat_metadata: {} },
+    // The chat is named by its session, as upstream's chat name names it.
+    const branchName = newSessionKey();
+    const chatContext = await chatContextOf(user.store, { avatar }, branchName);
+    await seedMessages(user.store, { avatar }, null, [
         { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
         { name: 'Tester', is_user: true, mes: 'Hi Rex, nice to meet you.', send_date: 2, extra: {} },
         { name: 'Rex', is_user: false, mes: 'Likewise!', send_date: 3, extra: {} },
-    ]);
+    ], { session: branchName });
 
     const { countTokens, encodeTokens } = makeFakeTokenizers();
 
     const input = await resolveTextCompletionGenerationInput(directories, {
-        avatar, ownerId, branchName,
+        avatar, chatContext, branchName,
         type: 'normal', isImpersonate: false, isContinue: false, isSwipe: false,
         textareaText: 'What happens next?',
         countTokens, encodeTokens,
@@ -294,13 +280,13 @@ async function run() {
 
     // An explicit override (including []) always wins over auto-resolution.
     const overriddenWI = await resolveTextCompletionGenerationInput(directories, {
-        avatar, ownerId, branchName, countTokens, encodeTokens, worldInfoCandidates: [],
+        avatar, chatContext, branchName, countTokens, encodeTokens, worldInfoCandidates: [],
     });
     assert.deepEqual(overriddenWI.worldInfoCandidates, [], 'an explicit worldInfoCandidates override bypasses auto-resolution');
 
     // --- userMessageText: appends the pending user action onto the loaded chat history ---
     const withUserMessage = await resolveTextCompletionGenerationInput(directories, {
-        avatar, ownerId, branchName, countTokens, encodeTokens,
+        avatar, chatContext, branchName, countTokens, encodeTokens,
         userMessageText: 'What happens next, Rex?',
     });
     assert.equal(withUserMessage.chat.length, 4, 'userMessageText appends one new message onto the real loaded history');
@@ -314,9 +300,9 @@ async function run() {
     // --- userMessageExtra: a forwarded file-attachment reference becomes the appended message's
     // real `extra`, and is later actually inlined by the real orchestrator (not just carried through
     // as inert data) ---
-    fs.writeFileSync(path.join(filesDir, 'notes.txt'), 'The tower key is hidden under the loose stone.');
+    fs.writeFileSync(path.join(directories.files, 'notes.txt'), 'The tower key is hidden under the loose stone.');
     const withUserMessageExtra = await resolveTextCompletionGenerationInput(directories, {
-        avatar, ownerId, branchName, countTokens, encodeTokens,
+        avatar, chatContext, branchName, countTokens, encodeTokens,
         userMessageText: 'Check my notes.',
         userMessageExtra: { files: [{ url: '/user/files/notes.txt', size: 42, name: 'notes.txt', created: 1700000000000 }] },
     });
@@ -341,7 +327,7 @@ async function run() {
     assert.equal(input.settings.temp, 0.9);
 
     // --- chat resolution (real message-tree DB round trip, not a hand-typed fixture) ---
-    assert.equal(input.chat.length, 3, 'chat resolves via a real loadBranch() round trip through message-tree-db.js');
+    assert.equal(input.chat.length, 3, 'chat resolves through the chat engine');
     assert.equal(input.chat[0].mes, 'Hello there, traveler.');
     assert.equal(input.chat[0].name, 'Rex');
     assert.equal(input.chat[0].is_user, false);
@@ -351,7 +337,7 @@ async function run() {
 
     // --- macroExtras override ---
     const overridden = await resolveTextCompletionGenerationInput(directories, {
-        avatar, ownerId, branchName, countTokens, encodeTokens,
+        avatar, chatContext, branchName, countTokens, encodeTokens,
         macroExtras: { quiet_prompt: 'Summarize the scene.', isDryRun: true },
     });
     assert.equal(overridden.quiet_prompt, 'Summarize the scene.', 'macroExtras is shallow-merged over the resolved object');
@@ -359,11 +345,11 @@ async function run() {
 
     // --- required-param guards ---
     await assert.rejects(
-        () => resolveTextCompletionGenerationInput(directories, { avatar, ownerId, branchName, encodeTokens }),
+        () => resolveTextCompletionGenerationInput(directories, { avatar, chatContext, branchName, encodeTokens }),
         /countTokens is required/,
     );
     await assert.rejects(
-        () => resolveTextCompletionGenerationInput(directories, { avatar, ownerId, branchName, countTokens }),
+        () => resolveTextCompletionGenerationInput(directories, { avatar, chatContext, branchName, countTokens }),
         /encodeTokens is required/,
     );
 
@@ -391,7 +377,7 @@ async function run() {
 
     // --- mainApi: 'kobold' dispatch (new in this task) ---
     const koboldInput = await resolveTextCompletionGenerationInput(directories, {
-        avatar, ownerId, branchName, mainApi: 'kobold', countTokens, encodeTokens,
+        avatar, chatContext, branchName, mainApi: 'kobold', countTokens, encodeTokens,
     });
     assert.equal(koboldInput.mainApi, 'kobold');
     assert.equal(koboldInput.settings.temp, 0.65, 'settings resolves from the real top-level kai_settings, not textgenerationwebui_settings');
@@ -406,7 +392,7 @@ async function run() {
 
     // --- mainApi: 'novel' dispatch (new in this task) ---
     const novelInput = await resolveTextCompletionGenerationInput(directories, {
-        avatar, ownerId, branchName, mainApi: 'novel', countTokens, encodeTokens,
+        avatar, chatContext, branchName, mainApi: 'novel', countTokens, encodeTokens,
         macroExtras: { encodeTokensByType: (_tokenizerType, text) => encodeTokens(text), novelTokenizerType: tokenizers.NERD },
     });
     assert.equal(novelInput.mainApi, 'novel');
@@ -419,54 +405,47 @@ async function run() {
 
     // --- mainApi: 'koboldhorde' is explicitly rejected (see module doc comment) ---
     await assert.rejects(
-        () => resolveTextCompletionGenerationInput(directories, { avatar, ownerId, branchName, mainApi: 'koboldhorde', countTokens, encodeTokens }),
+        () => resolveTextCompletionGenerationInput(directories, { avatar, chatContext, branchName, mainApi: 'koboldhorde', countTokens, encodeTokens }),
         /unsupported mainApi/,
     );
 
-    // --- CORRECTED ADDRESSING MODEL (this task): resolveChatHistory()'s new "neither branchName nor
-    // nodeId given" branch - see that function's own doc comment. `branchName` itself stays a real,
-    // still-supported LEGACY input here (kobold.js/novelai.js still use it) - only the raw-action
-    // builders (buildRawActionTextCompletionRequest()) stopped accepting it; this resolver's own
-    // behavior for an explicit branchName/nodeId is completely unchanged (regression, not just
-    // "still passes" - reasserted below against the SAME real fixture used throughout this file). ---
+    // --- addressing: by chat name, by node id, or (only where the chat starts) by neither ---
     {
-        // (a) explicit nodeId resolves identically to the equivalent explicit branchName - the exact
-        // node id a real client would already have from having loaded this same chat.
+        // (a) an explicit nodeId resolves the same history as the chat that is at it.
         const mainLeafId = input.chat[input.chat.length - 1].node_id;
         const viaNodeId = await resolveTextCompletionGenerationInput(directories, {
-            avatar, ownerId, nodeId: mainLeafId, countTokens, encodeTokens,
+            avatar, chatContext, nodeId: mainLeafId, countTokens, encodeTokens,
         });
-        // A load by branch name hides that chat's own name from its first message's bookmark_link (6e5fa5820);
-        // a load by node id has no chat name to hide. Apart from that label, the histories are the same.
-        const withoutOwnName = chat => chat.map(m => {
-            if (m.extra?.bookmark_link !== branchName) return m;
-            const extra = { ...m.extra };
-            delete extra.bookmark_link;
-            return { ...m, extra };
-        });
-        assert.deepEqual(withoutOwnName(viaNodeId.chat), input.chat, 'an explicit node_id resolves the exact same chat history as the equivalent explicit branch_name');
+        assert.deepEqual(viaNodeId.chat, input.chat, 'an explicit node_id resolves the exact same chat history as the chat at it');
         assert.equal(viaNodeId.resolvedNodeId, mainLeafId, 'resolvedNodeId echoes back the given node_id');
         assert.equal(viaNodeId.chatResolutionAmbiguous, false);
 
-        // (b) neither branchName nor nodeId given, on an owner that ALREADY has real history -
-        // ambiguous: true, chat: [] - never a silent guess at "the current leaf".
+        // (b) neither given, by a session that isn't at the tree's root while the tree has messages: ambiguous.
         const ambiguous = await resolveTextCompletionGenerationInput(directories, {
-            avatar, ownerId, countTokens, encodeTokens,
+            avatar, chatContext, countTokens, encodeTokens,
         });
-        assert.equal(ambiguous.chatResolutionAmbiguous, true, 'an owner with real existing history and no given identifier is reported as ambiguous, not silently resolved');
+        assert.equal(ambiguous.chatResolutionAmbiguous, true, 'no given identifier, away from the start, is reported as ambiguous, not silently resolved');
         assert.equal(ambiguous.resolvedNodeId, null);
-        assert.deepEqual(ambiguous.chat, [], 'the ambiguous case resolves to an empty chat rather than guessing the current leaf');
+        assert.deepEqual(ambiguous.chat, [], 'the ambiguous case resolves to an empty chat rather than guessing');
 
-        // (c) neither branchName nor nodeId given, on a GENUINELY BRAND-NEW owner with zero prior
-        // messages - the only safe identifier-free case: resolves via the owner's own anchor
-        // (auto-created, no name required) to a real node id and an empty chat.
-        const freshOwnerId = 'fresh-owner-with-no-history';
-        const fresh = await resolveTextCompletionGenerationInput(directories, {
-            avatar, ownerId: freshOwnerId, countTokens, encodeTokens,
+        // (c) neither given, by a session at the tree's root (a new chat): the root, an empty chat.
+        const atStart = newSessionKey();
+        await user.store.chats.goTo({ tree: await treeOf(user.store, { avatar }), node_id: null, actor: { user: 'u', session: atStart } });
+        const started = await resolveTextCompletionGenerationInput(directories, {
+            avatar, chatContext: await chatContextOf(user.store, { avatar }, atStart), countTokens, encodeTokens,
         });
-        assert.equal(fresh.chatResolutionAmbiguous, false, 'a genuinely empty owner is not ambiguous');
-        assert.ok(fresh.resolvedNodeId, 'a genuinely empty owner still resolves to a real anchor node id');
-        assert.deepEqual(fresh.chat, [], 'a genuinely new owner correctly resolves to an empty chat, not an error');
+        assert.equal(started.chatResolutionAmbiguous, false, 'a new chat is not ambiguous');
+        assert.equal(started.resolvedNodeId, null);
+        assert.deepEqual(started.chat, []);
+
+        // (d) neither given, in a tree with no message yet: the root.
+        const freshAvatar = await writeCharacter('Fresh.png', { name: 'Fresh' });
+        const fresh = await resolveTextCompletionGenerationInput(directories, {
+            avatar: freshAvatar, chatContext: await chatContextOf(user.store, { avatar: freshAvatar }, newSessionKey()), countTokens, encodeTokens,
+        });
+        assert.equal(fresh.chatResolutionAmbiguous, false, 'an empty tree is not ambiguous');
+        assert.equal(fresh.resolvedNodeId, null);
+        assert.deepEqual(fresh.chat, [], 'an empty tree resolves to an empty chat, not an error');
     }
 
     console.log('text-completion-generation-input.test.js: all assertions passed');
@@ -477,7 +456,4 @@ run()
         console.error(error);
         process.exitCode = 1;
     })
-    .finally(() => {
-        disposeMessageTreeStores();
-        fs.rmSync(root, { recursive: true, force: true });
-    });
+    .finally(() => user.close());

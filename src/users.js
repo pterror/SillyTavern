@@ -16,12 +16,11 @@ import { sync as writeFileAtomicSync } from 'write-file-atomic';
 import sanitize from 'sanitize-filename';
 import ipMatching from 'ip-matching';
 
-import { USER_DIRECTORY_TEMPLATE, DEFAULT_USER, PUBLIC_DIRECTORIES, UPLOADS_DIRECTORY, DEFAULT_AVATAR_PATH } from './constants.js';
+import { USER_DIRECTORY_TEMPLATE, DEFAULT_USER, PUBLIC_DIRECTORIES, UPLOADS_DIRECTORY } from './constants.js';
 import { getConfigValue, color, delay, generateTimestamp, invalidateFirefoxCache, isPathUnderParent, setPermissionsSync } from './util.js';
 import { readAllSettings } from './settings-store.js';
 import { allowKeysExposure, readSecret, writeSecret, SECRETS_FILE } from './endpoints/secrets.js';
 import { getContentOfType } from './endpoints/content-manager.js';
-import { characterRowExists } from './character-metadata-db.js';
 import { serverDirectory } from './server-directory.js';
 import { filterValidIpPatterns, getIpFromRequest } from './express-common.js';
 import { extensionsEnabledFeatureGuard } from './endpoints/extensions.js';
@@ -416,7 +415,7 @@ export async function migrateUserData() {
                 for (const entry of fs.readdirSync(migration.old, { withFileTypes: true })) {
                     const from = path.join(migration.old, entry.name);
                     if (entry.isFile() && path.extname(entry.name).toLowerCase() === '.json') {
-                        importWorldInfoFromRaw(userDirectories, entry.name, fs.readFileSync(from, 'utf8'));
+                        await importWorldInfoFromRaw(userDirectories, entry.name, fs.readFileSync(from, 'utf8'));
                     } else {
                         fs.cpSync(from, path.join(migration.new, entry.name), { recursive: true, force: true });
                     }
@@ -1111,18 +1110,30 @@ function createRouteHandler(directoryFn, missingFileFallbackFn) {
 }
 
 /**
- * A character whose PNG is missing is served as the default avatar. Only a top-level `<avatar>.png` with a row
- * qualifies; sprites and charx asset folders under the same directory keep their 404.
- * @param {import('express').Request} req
- * @param {string} filePath Relative to the characters directory
- * @returns {Promise<string|null>}
+ * `/characters/<path>`: a character's image by its avatar (`<avatar>.png` at the top: the image its card names in the
+ * store, the default avatar when it names none); any other file (sprites, card assets) from the characters directory.
+ * @returns {import('express').RequestHandler}
  */
-async function missingCharacterAvatarFallback(req, filePath) {
-    const avatar = path.normalize(filePath);
-    if (path.dirname(avatar) !== '.' || !avatar.endsWith('.png')) {
-        return null;
-    }
-    return await characterRowExists(req.user.directories, avatar) ? path.resolve(DEFAULT_AVATAR_PATH) : null;
+function characterFilesHandler() {
+    const files = createRouteHandler(req => req.user.directories.characters);
+    return async (req, res, next) => {
+        try {
+            const avatar = path.normalize(decodeURIComponent(req.params[0]));
+            if (path.dirname(avatar) === '.' && avatar.endsWith('.png')) {
+                const { userStore } = await import('./user-stores.js');
+                const { avatarPathOf } = await import('./character-avatars.js');
+                const { lib } = await userStore(req.user.directories, req.user.profile.handle);
+                const file = await avatarPathOf(lib, req.user.directories, avatar);
+                if (file !== null) {
+                    invalidateFirefoxCache(file, req, res);
+                    return res.sendFile(path.resolve(file));
+                }
+            }
+        } catch (error) {
+            return res.sendStatus(500);
+        }
+        return files(req, res, next);
+    };
 }
 
 /**
@@ -1251,7 +1262,7 @@ export async function getAllEnabledUsers() {
  */
 export const router = express.Router();
 router.use('/backgrounds/*', createRouteHandler(req => req.user.directories.backgrounds));
-router.use('/characters/*', createRouteHandler(req => req.user.directories.characters, missingCharacterAvatarFallback));
+router.use('/characters/*', characterFilesHandler());
 router.use('/User%20Avatars/*', createRouteHandler(req => req.user.directories.avatars));
 router.use('/assets/*', createRouteHandler(req => req.user.directories.assets));
 router.use('/user/images/*', createRouteHandler(req => req.user.directories.userImages));

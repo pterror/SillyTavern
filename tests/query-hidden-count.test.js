@@ -1,7 +1,6 @@
 import { describe, test, expect, jest, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals';
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import process from 'node:process';
 import lodash from 'lodash';
 
@@ -41,14 +40,12 @@ jest.unstable_mockModule('../public/script.js', () => ({ unshallowCharacter: asy
 
 const realFetch = globalThis.fetch;
 
-/** @type {typeof import('../src/character-metadata-db.js')} */
-let metadataDb;
+/** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
+let user;
+/** @type {typeof import('./converted-user.fixture.js')} */
+let fixture;
 /** @type {typeof import('../src/character-card-parser.js')} */
 let cardParser;
-/** @type {typeof import('../src/endpoints/search-index-coordinator.js')} */
-let searchCoordinator;
-/** @type {typeof import('../src/endpoints/search-engine.js')} */
-let searchEngine;
 /** @type {typeof import('../public/scripts/character-repository.js')} */
 let repositoryModule;
 /** @type {import('node:http').Server} */
@@ -61,10 +58,8 @@ beforeAll(async () => {
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(originalCwd, '..', 'default', 'config.yaml'));
 
-    metadataDb = await import('../src/character-metadata-db.js');
+    fixture = await import('./converted-user.fixture.js');
     cardParser = await import('../src/character-card-parser.js');
-    searchCoordinator = await import('../src/endpoints/search-index-coordinator.js');
-    searchEngine = await import('../src/endpoints/search-engine.js');
     const { router } = await import('../src/endpoints/characters.js');
     const groupsModule = await import('../src/endpoints/groups.js');
     repositoryModule = await import('../public/scripts/character-repository.js');
@@ -73,7 +68,7 @@ beforeAll(async () => {
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
-        req.user = { directories, profile: { handle: `test-user-${path.basename(directories.root)}` } };
+        req.user = user.user;
         next();
     });
     app.use('/api/characters', router);
@@ -85,26 +80,16 @@ beforeAll(async () => {
 
 afterAll(() => new Promise(resolve => server.close(resolve)));
 
-beforeEach(() => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-query-hidden-count-test-'));
-    directories = {
-        root,
-        characters: path.join(root, 'characters'),
-        chats: path.join(root, 'chats'),
-        groups: path.join(root, 'groups'),
-        groupChats: path.join(root, 'groupChats'),
-    };
-    for (const dir of [directories.characters, directories.chats, directories.groups, directories.groupChats]) {
-        fs.mkdirSync(dir, { recursive: true });
-    }
+beforeEach(async () => {
+    user = await fixture.emptyUser('st-query-hidden-count-test-');
+    directories = user.directories;
+    globalThis.DATA_ROOT = user.dataRoot;
     globalThis.fetch = jest.fn((url, init) => realFetch(String(url).startsWith('/') ? `${baseUrl}${url}` : url, init));
 });
 
 afterEach(async () => {
     globalThis.fetch = realFetch;
-    await searchCoordinator.disposeSearchWorkers();
-    metadataDb.disposeMetadataStores();
-    fs.rmSync(directories.root, { recursive: true, force: true });
+    await user.close();
 });
 
 /**
@@ -121,15 +106,16 @@ async function seedCharacter(avatar, { name = avatar.replace(/\.png$/, ''), fav 
     });
     if (file) {
         const image = await fs.promises.readFile(path.join(originalCwd, '..', 'public', 'img', 'ai4.png'));
-        await fs.promises.writeFile(path.join(directories.characters, avatar), cardParser.write(image, card));
+        await fixture.writeCardWithImage(user, avatar, card, cardParser.write(image, card));
+        return;
     }
-    await metadataDb.upsertCharacterFromWrite(directories, avatar, card);
+    await user.store.lib.writeCard(directories, avatar, card);
 }
 
 /** @param {string} id @param {boolean} fav */
 async function seedGroup(id, fav) {
     const group = { id, name: id, members: [], chats: [], fav };
-    await metadataDb.writeGroupFileAndRow(directories, group, () => fs.writeFileSync(path.join(directories.groups, `${id}.json`), JSON.stringify(group)));
+    await user.store.lib.writeGroup(group);
 }
 
 /** @param {object} body */
@@ -161,7 +147,9 @@ describe('/query want: hidden', () => {
         for (const [page, rows, hidden] of [[1, 2, 5], [2, 1, 6], [3, 0, 7]]) {
             const withGroups = await queryJson({ filter: { fav: true, includeGroups: true }, sort: NAME_ASC, page, pageSize: 2, want: ['rows', 'hidden'] });
             expect(withGroups.rows).toHaveLength(rows);
-            expect(withGroups).toMatchObject({ total: 3, hidden });
+            expect(withGroups).toMatchObject({ hidden });
+            // Only what `want` names is answered.
+            expect(withGroups.total).toBeUndefined();
         }
         // Characters only: five in all, two matches.
         for (const [page, hidden] of [[1, 4], [2, 4]]) {
@@ -200,7 +188,6 @@ describe('/query want: hidden', () => {
     }, 30000);
 
     test('a relevance page past its listed rows counts every match and the hidden count stays exact', async () => {
-        if ((await searchEngine.resolveSearchEngine()).tier !== 'tantivy') return;
         for (let i = 0; i < 20; i++) {
             await seedCharacter(`v${String(i).padStart(2, '0')}.png`, { name: `Vampire ${i}`, file: true });
         }

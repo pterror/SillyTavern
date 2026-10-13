@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import http from 'node:http';
-import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -21,17 +20,14 @@ setConfigFilePath(path.join(__dirname, '..', '..', '..', 'config.yaml'));
 const { router: textRouter } = await import('./text-completions.js');
 const { router: chatRouter } = await import('./chat-completions.js');
 const { writeAllSettings } = await import('../../settings-store.js');
-const { saveChatToTree, loadBranch, disposeMessageTreeStores } = await import('../../message-tree-db.js');
 const { CompactStreamDecoder } = await import('../../../public/scripts/llamacpp-compact-stream.js');
-const { upsertCharacterFromWrite } = await import('../../character-metadata-db.js');
+const { newSessionKey } = await import('../../chat-engine.js');
+const { SESSION_HEADER } = await import('../../request-session.js');
+const { convertedUser, writeLibraryCard, seedMessages, sessionPath } = await import('../../../tests/converted-user.fixture.js');
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-generation-stop-test-'));
-const directories = { root };
-for (const dir of ['characters', 'groups', 'worlds', 'files', 'chats']) {
-    directories[dir] = path.join(root, dir);
-    fs.mkdirSync(directories[dir], { recursive: true });
-}
-globalThis.DATA_ROOT = root;
+const user = await convertedUser('st-generation-stop-test-');
+const { directories } = user;
+globalThis.DATA_ROOT = user.dataRoot;
 
 const baseImage = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'public', 'img', 'ai4.png'));
 
@@ -46,8 +42,7 @@ async function writeCharacter(avatar, name) {
         },
     };
     const cardJson = JSON.stringify(card);
-    fs.writeFileSync(path.join(directories.characters, avatar), writeCard(baseImage, cardJson));
-    await upsertCharacterFromWrite(directories, avatar, cardJson);
+    await writeLibraryCard(user, avatar, cardJson, writeCard(baseImage, cardJson));
     return avatar;
 }
 
@@ -140,7 +135,7 @@ function startApp(router) {
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
-        req.user = { directories, profile: { handle: req.get('X-Test-User') ?? 'alice' } };
+        req.user = { directories, profile: { handle: req.get('X-Test-User') ?? 'u' } };
         next();
     });
     app.use('/', router);
@@ -153,13 +148,21 @@ async function closeApp(server) {
     await new Promise(resolve => server.close(resolve));
 }
 
-async function newBranch(ownerId, name) {
-    await saveChatToTree(directories, ownerId, name, [
-        { chat_metadata: {} },
-        { name: 'Rex', is_user: false, mes: 'Hello there.', send_date: 1, extra: {} },
-    ]);
-    return loadBranch(directories, ownerId, name);
+let branches = 0;
+
+/**
+ * A new conversation of `avatar`'s, its greeting stored through a session of its own: what a generate request's
+ * session continues.
+ * @param {string} avatar
+ */
+async function newBranch(avatar) {
+    const session = newSessionKey();
+    // A greeting of its own: one with the same text would be the stored one, and so would the messages after it.
+    const [greeting] = await seedMessages(user.store, { avatar }, null, [{ name: 'Rex', is_user: false, mes: `Hello there. (${++branches})`, send_date: 1, extra: {} }], { session });
+    return { session, leaf: greeting, messages: await sessionPath(user.store, { avatar }, session) };
 }
+
+const shown = (/** @type {string} */ avatar, /** @type {{ session: string }} */ branch) => sessionPath(user.store, { avatar }, branch.session);
 
 async function waitFor(check, timeoutMs = 3000) {
     const deadline = Date.now() + timeoutMs;
@@ -178,14 +181,14 @@ async function waitFor(check, timeoutMs = 3000) {
 async function stopMidStreamCase({ label, router, settings, format, avatar }) {
     const backend = await startPacedBackend({ format });
     writeAllSettings(directories, settings(backend.url));
-    const branch = await newBranch(avatar, `stop-${label}`);
+    const branch = await newBranch(avatar);
     const { server, base } = await startApp(router);
     const id = randomUUID();
     try {
         const res = await fetch(`${base}/generate`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-Generation-Id': id },
-            body: JSON.stringify({ owner_id: avatar, character_avatar: avatar, node_id: branch.branch.leaf_id, type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Go on.' }, stream: true }),
+            headers: { 'Content-Type': 'application/json', 'X-Generation-Id': id, [SESSION_HEADER]: branch.session },
+            body: JSON.stringify({ owner_id: avatar, character_avatar: avatar, node_id: branch.leaf, type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Go on.' }, stream: true }),
         });
         assert.equal(res.status, 200, `${label}: stream started`);
         assert.equal(res.headers.get('X-Generation-Id'), id, `${label}: the server used the page's generation id`);
@@ -229,12 +232,12 @@ async function stopMidStreamCase({ label, router, settings, format, avatar }) {
         assert.ok(stop.mes && stop.node_id, `${label}: the stop answers with the stored text and node`);
         assert.equal(text, stop.mes, `${label}: the page's stream ends with exactly the stored text`);
         assert.equal(nodeId, stop.node_id, `${label}: the stream's last frame names the same node`);
-        const after = await loadBranch(directories, avatar, `stop-${label}`);
-        const last = after.messages[after.messages.length - 1];
+        const after = await shown(avatar, branch);
+        const last = after[after.length - 1];
         assert.equal(last.is_user, false);
         assert.equal(last.mes, stop.mes, `${label}: the stored reply is what was streamed, not the full generation`);
         assert.equal(last.node_id, stop.node_id);
-        assert.equal(after.messages.length, branch.messages.length + 2, `${label}: one user message and one reply, no extra`);
+        assert.equal(after.length, branch.messages.length + 2, `${label}: one user message and one reply, no extra`);
     } finally {
         backend.server.close();
         await closeApp(server);
@@ -253,15 +256,15 @@ async function run() {
     {
         const backend = await startPacedBackend({ count: 30, delayMs: 60, nonStream: true, finalJson: { choices: [{ text: 'never sent' }] }, format: genericFormat });
         writeAllSettings(directories, textSettings('generic', backend.url));
-        const branch = await newBranch(avatar, 'stop-nonstream');
+        const branch = await newBranch(avatar);
         const { server, base } = await startApp(textRouter);
         const id = randomUUID();
         const controller = new AbortController();
         try {
             const pending = fetch(`${base}/generate`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'X-Generation-Id': id },
-                body: JSON.stringify({ owner_id: avatar, character_avatar: avatar, node_id: branch.branch.leaf_id, type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Quick.' }, stream: false }),
+                headers: { 'Content-Type': 'application/json', 'X-Generation-Id': id, [SESSION_HEADER]: branch.session },
+                body: JSON.stringify({ owner_id: avatar, character_avatar: avatar, node_id: branch.leaf, type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Quick.' }, stream: false }),
                 signal: controller.signal,
             }).catch(() => null);
             await waitFor(() => backend.state.started);
@@ -273,8 +276,8 @@ async function run() {
             assert.equal(stop.mes, null, 'non-streaming: nothing was shown, nothing is stored as a reply');
             await waitFor(() => backend.state.closedEarly, 1000).catch(() => assert.fail('non-streaming: the upstream request was aborted'));
             assert.ok(backend.state.closedAt - stoppedAt < 1000, 'non-streaming: aborted within a second of the stop');
-            const after = await loadBranch(directories, avatar, 'stop-nonstream');
-            assert.deepEqual(after.messages.slice(branch.messages.length).map(m => m.is_user), [true], 'non-streaming: only the user message is stored');
+            const after = await shown(avatar, branch);
+            assert.deepEqual(after.slice(branch.messages.length).map(m => m.is_user), [true], 'non-streaming: only the user message is stored');
         } finally {
             backend.server.close();
             await closeApp(server);
@@ -285,14 +288,14 @@ async function run() {
     {
         const backend = await startPacedBackend({ count: 8, delayMs: 30, format: genericFormat });
         writeAllSettings(directories, textSettings('generic', backend.url));
-        const branch = await newBranch(avatar, 'disconnect-no-stop');
+        const branch = await newBranch(avatar);
         const { server, base } = await startApp(textRouter);
         const controller = new AbortController();
         try {
             const res = await fetch(`${base}/generate`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ owner_id: avatar, character_avatar: avatar, node_id: branch.branch.leaf_id, type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Keep going.' }, stream: true }),
+                headers: { 'Content-Type': 'application/json', [SESSION_HEADER]: branch.session },
+                body: JSON.stringify({ owner_id: avatar, character_avatar: avatar, node_id: branch.leaf, type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Keep going.' }, stream: true }),
                 signal: controller.signal,
             });
             const reader = res.body.getReader();
@@ -302,10 +305,10 @@ async function run() {
             assert.equal(backend.state.closedEarly, false, 'a disconnect does not close the upstream request');
             const full = Array.from({ length: 8 }, (_, i) => `w${i} `).join('');
             const after = await waitFor(async () => {
-                const b = await loadBranch(directories, avatar, 'disconnect-no-stop');
-                return b.messages.length === branch.messages.length + 2 ? b : null;
+                const b = await shown(avatar, branch);
+                return b.length === branch.messages.length + 2 ? b : null;
             });
-            assert.equal(after.messages[after.messages.length - 1].mes, full, 'the whole reply is stored after a disconnect');
+            assert.equal(after[after.length - 1].mes, full, 'the whole reply is stored after a disconnect');
         } finally {
             backend.server.close();
             await closeApp(server);
@@ -331,7 +334,4 @@ run()
         console.error(error);
         process.exitCode = 1;
     })
-    .finally(() => {
-        disposeMessageTreeStores();
-        fs.rmSync(root, { recursive: true, force: true });
-    });
+    .finally(() => user.close());

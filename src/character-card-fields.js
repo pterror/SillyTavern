@@ -191,7 +191,7 @@ async function computeGroupCards(directories, group, characterAvatar, chatMetada
  */
 export async function getGroupCharacterDepthPrompts(directories, groupId, characterAvatar) {
     if (!groupId) return [];
-    const group = getGroupsByIds(directories, [groupId])[groupId] ?? null;
+    const group = (await getGroupsByIds(directories, [groupId]))[groupId] ?? null;
     if (!group || !Array.isArray(group.members) || !group.members.length) return [];
 
     const SWAP = 0; // group_generation_mode.SWAP, public/scripts/group-chats.js
@@ -254,7 +254,7 @@ export async function getCharacterCardFields(directories, options = {}) {
 
     const character = await loadCharacter(directories, avatar);
     const useGroupCards = Boolean(groupId) && Boolean(character);
-    const group = useGroupCards ? (getGroupsByIds(directories, [groupId])[groupId] ?? null) : null;
+    const group = useGroupCards ? ((await getGroupsByIds(directories, [groupId]))[groupId] ?? null) : null;
     const groupCards = group ? await computeGroupCards(directories, group, avatar, chatMetadata) : null;
 
     const name2 = character?.name || undefined;

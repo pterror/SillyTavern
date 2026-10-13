@@ -5,12 +5,12 @@ import { canonicalCardHash, canonicalJson } from '../../character-card-storage.j
 import { decodeMessage } from '../../chat-codec.js';
 import { ChatEngine, defaultSessionKey, storedForm } from '../../chat-engine.js';
 import { libraryPeople } from '../../chat-people.js';
-import { LibraryEngine, HASH } from '../../library-engine.js';
-import { TYPE } from '../../library-codes.js';
+import { LibraryEngine } from '../../library-engine.js';
+import { TYPE, convertedFileKey } from '../../library-codes.js';
 import { normalizeFav, normalizeTagIds } from '../../../public/scripts/hash-utils.js';
 import { characterBatches, readsAs } from './old-library.js';
 import { contentsOf, pathTo } from './old-chats.js';
-import { planOwner, stateOf } from './chats.js';
+import { activeConversations, planOwner, stateOf } from './chats.js';
 
 /**
  * Checks the new store against the old stores, reading both: every card by its canonical hash and its avatar under
@@ -33,7 +33,6 @@ const GROUP_READ_KEYS = ['id', 'fav', 'tag_ids', 'date_added', 'create_date', 'd
  * @param {object} v
  * @param {any} v.store
  * @param {import('../../endpoints/sqlite-engine.js').SqliteEngineHandle | null} v.meta
- * @param {string} v.avatarsDir
  * @param {string} v.charactersDir
  * @param {import('./old-library.js').OldTags | null} v.tags
  * @param {import('./old-library.js').OldGroup[]} v.groups
@@ -41,6 +40,7 @@ const GROUP_READ_KEYS = ['id', 'fav', 'tag_ids', 'date_added', 'create_date', 'd
  * @param {Set<string>} v.bookNames The ones converted.
  * @param {{ input: import('./chats.js').OwnerInput, tree: bigint, files: Map<string, Record<string, any>> }[]} v.owners
  * @param {string} v.handle
+ * @param {number} v.now When the conversion ran.
  * @param {Record<string, number>} v.counts
  * @param {(line: string) => void} v.progress
  * @returns {Promise<string[]>} What differs.
@@ -74,9 +74,9 @@ export async function verify(v) {
                 if (JSON.stringify(tagKeys.get(e.id)) !== JSON.stringify(want)) bad.push(`character ${c.avatar}: its tags read back differently`);
                 const image = path.join(v.charactersDir, c.avatar);
                 if (fs.existsSync(image)) {
-                    const h = e.hashes.find(x => x.which === HASH.avatar)?.hash.toString('hex');
-                    const file = h ? path.join(v.avatarsDir, `${h}${path.extname(c.avatar) || '.png'}`) : null;
-                    if (!file || !fs.existsSync(file) || fs.statSync(file).size !== fs.statSync(image).size) bad.push(`character ${c.avatar}: its avatar isn't in the store under its hash`);
+                    const st = fs.statSync(image);
+                    const [recorded] = await v.store.meta([convertedFileKey(c.avatar)]);
+                    if (recorded !== JSON.stringify([st.size, st.mtimeMs])) bad.push(`character ${c.avatar}: its file isn't recorded as converted`);
                 }
             }
             v.progress(`checked characters: ${characters}`);
@@ -132,10 +132,26 @@ export async function verify(v) {
     // ---- chats ----
     const [user] = await v.store.chatRead('ids', { space: 2, keys: [v.handle] });
     let checked = 0;
+    /** @type {{ time: number, id: string }[]} */
+    const listed = [];
     for (const o of v.owners) {
-        for (const line of await verifyOwner(v, chats, o, user)) bad.push(`owner ${o.input.ownerId}: ${line}`);
+        const { lines, conversations } = await verifyOwner(v, chats, o, user);
+        for (const line of lines) bad.push(`owner ${o.input.ownerId}: ${line}`);
+        for (const c of conversations) listed.push(c);
         if (++checked % 200 === 0) v.progress(`checked chat owners: ${checked} of ${v.owners.length}`);
     }
+    // Recent chats list the conversations by the time of their last messages (ties: the order they were made in).
+    listed.sort((a, b) => a.time - b.time);
+    /** @type {string[]} */
+    const got = [];
+    for (let before; ;) {
+        const page = await v.store.chatRead('conversations', { limit: 5000, ...(before === undefined ? {} : { before }) });
+        for (const c of page) got.push(c.bookmark !== null ? `b${c.bookmark}` : `s${c.session}.${c.tree}`);
+        if (page.length < 5000) break;
+        before = page[page.length - 1].position;
+    }
+    got.reverse();
+    if (!sameList(got, listed.map(c => c.id))) bad.push(`recent chats list ${got.length} conversations, converted ${listed.length}, or in another order`);
     return bad;
 }
 
@@ -144,7 +160,8 @@ export async function verify(v) {
  * @param {ChatEngine} chats
  * @param {Parameters<typeof verify>[0]['owners'][number]} o
  * @param {bigint | null} user
- * @returns {Promise<string[]>}
+ * @returns {Promise<{ lines: string[], conversations: { time: number, id: string }[] }>} What differs, and the conversations
+ * listed in recent chats: an id naming each, with the time of its last message.
  */
 async function verifyOwner(v, chats, o, user) {
     const bad = [];
@@ -196,13 +213,20 @@ async function verifyOwner(v, chats, o, user) {
         const got = await v.store.chatRead('path', { tree, at: newOf(at) });
         return { want: pathTo(input.db, at).map(x => newOf(x)), got };
     };
-    for (const b of plan.bookmarks) {
-        const [id] = await v.store.chatRead('bookmarksNamed', { tree, name: b.name });
-        if (id === undefined) {
-            bad.push(`bookmark "${b.name}" isn't there`);
-            continue;
-        }
-        const [row] = await v.store.chatRead('bookmarks', { ids: [id] });
+    // The converter makes the tree's bookmarks in the plan's order (labels may repeat), so they read back in id order.
+    /** @type {any[]} */
+    const stored = [];
+    for (let after; ;) {
+        const page = await v.store.chatRead('treeBookmarks', { tree, ...(after === undefined ? {} : { after }), limit: 500 });
+        stored.push(...page);
+        if (page.length < 500) break;
+        after = page[page.length - 1].id;
+    }
+    if (stored.length !== plan.bookmarks.length) bad.push(`${stored.length} bookmarks, converted ${plan.bookmarks.length}`);
+    for (const [i, b] of plan.bookmarks.entries()) {
+        const row = stored[i];
+        if (!row) continue;
+        if (row.name !== b.name) bad.push(`bookmark "${b.name}" reads back labelled otherwise`);
         if (b.at === null ? row.root !== tree : row.at !== newOf(b.at)) bad.push(`bookmark "${b.name}" is elsewhere`);
         if (row.mode !== b.mode) bad.push(`bookmark "${b.name}" has another mode`);
         const p = await pathOf(b.at);
@@ -237,5 +261,9 @@ async function verifyOwner(v, chats, o, user) {
             });
         }
     }
-    return bad;
+    const conversations = activeConversations(model, plan, v.now).map(a => ({
+        time: a.time,
+        id: a.bookmark === null ? `s${session}.${tree}` : `b${stored[a.bookmark]?.id}`,
+    }));
+    return { lines: bad, conversations };
 }

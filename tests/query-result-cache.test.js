@@ -80,4 +80,31 @@ describe('query result cache', () => {
         await cache.writeQueryCache('huge', entryOf(5 * 1024));
         expect(keys()).toEqual([]);
     });
+
+    test('a page\'s cursor is read from its kept page, or kept alone for an answer without rows', async () => {
+        void cache.writeQueryCache('page', { ...entryOf(1), cursor: 'p1' });
+        // Read behind the write just asked for.
+        expect(await cache.readQueryCursor('page')).toBe('p1');
+        await cache.writeQueryCursor('total-only', 'j1');
+        expect(await cache.readQueryCursor('total-only')).toBe('j1');
+        // A cursor alone is no kept page.
+        expect(await cache.readQueryCache('total-only')).toBeNull();
+        expect(await cache.readQueryCursor('missing')).toBeNull();
+    });
+
+    test('changing a kept page\'s cursor keeps its rows; an entry left with nothing goes; the same cursor writes nothing', async () => {
+        await cache.writeQueryCache('page', { ...entryOf(1, 'tok'), cursor: 'p1' });
+        await cache.writeQueryCursor('page', undefined);
+        expect(await cache.readQueryCursor('page')).toBeNull();
+        expect((await cache.readQueryCache('page'))?.token).toBe('tok');
+        await cache.writeQueryCursor('alone', 'j1');
+        await cache.writeQueryCursor('alone', undefined);
+        expect(keys()).toEqual(['page']);
+        await cache.writeQueryCursor('alone', 'j2');
+        const store = instances.get('SillyTavern_QueryCache_tester');
+        const setItem = jest.spyOn(store, 'setItem');
+        await cache.writeQueryCursor('alone', 'j2');
+        expect(setItem).not.toHaveBeenCalled();
+        setItem.mockRestore();
+    });
 });

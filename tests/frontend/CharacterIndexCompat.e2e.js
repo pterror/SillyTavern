@@ -198,7 +198,7 @@ async function saveChat(page, avatar, fileName) {
 }
 
 /**
- * The character's chat names, as the server lists them (without .jsonl).
+ * The character's chat names, as the server lists them: each chat's label, or its compat id when it has none.
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
  * @returns {Promise<string[]>}
@@ -209,7 +209,7 @@ async function listChatNames(page, avatar) {
         const headers = SillyTavern.getContext().getRequestHeaders();
         const response = await fetch('/api/characters/chats', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatar }) });
         const data = await response.json();
-        return Object.values(data).map((/** @type {any} */ chat) => String(chat.file_name).replace(/\.jsonl$/, '')).sort();
+        return Object.values(data).map((/** @type {any} */ chat) => chat.label ?? String(chat.file_name).replace(/\.jsonl$/, '')).sort();
     }, avatar);
 }
 
@@ -338,7 +338,7 @@ test.describe('positional character parameters (#1-#8)', () => {
                 const results = [];
                 for (const ref of refs) {
                     const chats = await getPastCharacterChats(ref);
-                    results.push(chats.map(chat => String(chat.file_name).replace(/\.jsonl$/, '')).sort());
+                    results.push(chats.map(chat => chat.label ?? String(chat.file_name).replace(/\.jsonl$/, '')).sort());
                 }
                 return results;
             }, { refs: [index, Number(index), target] });
@@ -519,24 +519,31 @@ test.describe('positional character parameters (#1-#8)', () => {
         }
     });
 
-    test('#8 updateRemoteChatName updates the same character\'s pointer for an index string, a number and an avatar', async ({ page }) => {
+    test('#8 updateRemoteChatName moves the tab to the same character\'s chat for an index string, a number and an avatar', async ({ page }) => {
         const [current, target] = await createCharacters(page, 'IdxRemoteName', 2);
         try {
+            const names = ['pointer-by-index-string', 'pointer-by-number', 'pointer-by-avatar'];
+            for (const name of names) await saveChat(page, target, name);
             const index = (await openGroupOf(page, [current, target])).indices[target];
             await expectIndexNames(page, index, target);
 
-            const calls = [['pointer-by-index-string', index], ['pointer-by-number', Number(index)], ['pointer-by-avatar', target]];
+            // The current chat is the tab's session; naming a chat moves the session there.
+            const calls = [[names[0], index], [names[1], Number(index)], [names[2], target]];
             for (const [newName, ref] of calls) {
-                const local = await page.evaluate(async ({ ref, newName, avatar }) => {
+                const { local, session, shown } = await page.evaluate(async ({ ref, newName, avatar }) => {
                     const { updateRemoteChatName } = await import('/script.js');
+                    const { tabSession } = await import('/scripts/tab-session.js');
                     await updateRemoteChatName(ref, newName);
                     // @ts-ignore
-                    return SillyTavern.getContext().getCharacterByAvatar(avatar).chat;
+                    const context = SillyTavern.getContext();
+                    const response = await fetch('/api/chats/open', { method: 'POST', headers: context.getRequestHeaders(), body: JSON.stringify({ avatar_url: avatar }) });
+                    const opened = await response.json();
+                    return { local: context.getCharacterByAvatar(avatar).chat, session: tabSession(), shown: opened.messages.at(-1)?.mes };
                 }, { ref, newName, avatar: target });
-                expect(local).toBe(newName);
-                expect((await fetchStoredCharacter(page, target)).body.chat).toBe(newName);
+                expect(shown).toBe(`message in ${newName}`);
+                expect(local).toBe(session);
+                expect((await fetchStoredCharacter(page, target)).body.chat).toBe(session);
             }
-            expect((await fetchStoredCharacter(page, current)).body.chat).not.toBe('pointer-by-avatar');
         } finally {
             await deleteCharacters(page, [current, target]);
         }

@@ -1,5 +1,5 @@
 import { describe, test, expect } from '@jest/globals';
-import { getStringHash, bucketOf, emptyDigest, combineDigest, digestsEqual, contentHashOf, characterDigestFieldsHash, characterContentFieldsFingerprint, canonicalStringify, DEFAULT_DIGEST_BUCKET_COUNT } from '../public/scripts/hash-utils.js';
+import { applyCharacterRowFields, characterRowFieldHashes, characterRowFields, getStringHash, bucketOf, emptyDigest, combineDigest, digestsEqual, contentHashOf, characterDigestFieldsHash, characterContentFieldsFingerprint, canonicalStringify, DEFAULT_DIGEST_BUCKET_COUNT } from '../public/scripts/hash-utils.js';
 
 describe('getStringHash', () => {
     test('is deterministic for the same string and seed', () => {
@@ -155,5 +155,48 @@ describe('canonicalStringify', () => {
 
     test('preserves array order (arrays are not sorted)', () => {
         expect(canonicalStringify([1, 2, 3])).not.toBe(canonicalStringify([3, 2, 1]));
+    });
+});
+
+describe('character row fields', () => {
+    /** What `/api/characters/batch` answers for `held`'s hashes against `row`. */
+    function answer(row, held) {
+        const hashes = held ? characterRowFieldHashes(held) : {};
+        const now = characterRowFieldHashes(row);
+        const set = Object.fromEntries([...characterRowFields(row)].filter(([path]) => hashes[path] !== now[path]));
+        return { set, unset: Object.keys(hashes).filter(path => !(path in now)) };
+    }
+
+    const ROW = { avatar: 'a.png', name: 'A', fav: false, data: { name: 'A', tags: ['x'], extensions: { fav: false, world: 'W', depth_prompt: { depth: 4 } } }, chat: 'c' };
+
+    test('every field comes back for no copy, and rebuilds the row', () => {
+        const { set, unset } = answer(ROW, null);
+        expect(unset).toEqual([]);
+        expect(applyCharacterRowFields({}, { set })).toEqual(ROW);
+    });
+
+    test('a fav flip sends fav and its mirror only, and the copy becomes the row', () => {
+        const held = structuredClone(ROW);
+        const row = { ...structuredClone(ROW), fav: true, data: { ...structuredClone(ROW.data), extensions: { ...ROW.data.extensions, fav: true } } };
+        const changes = answer(row, held);
+        expect(Object.keys(changes.set).sort()).toEqual(['["data","extensions","fav"]', '["fav"]']);
+        expect(applyCharacterRowFields(held, changes)).toEqual(row);
+    });
+
+    test('keys gone, empty objects and values that stop or start being objects', () => {
+        const shapes = [
+            ROW,
+            { ...ROW, data: {} },
+            { ...ROW, data: { name: 'A', extensions: {} } },
+            { ...ROW, data: { name: 'A', extensions: 'not an object' } },
+            { ...ROW, data: null },
+            { avatar: 'a.png' },
+        ];
+        for (const from of shapes) {
+            for (const to of shapes) {
+                const held = structuredClone(from);
+                expect(applyCharacterRowFields(held, answer(to, from))).toEqual(to);
+            }
+        }
     });
 });

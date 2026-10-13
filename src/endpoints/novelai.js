@@ -11,13 +11,13 @@ import { createStoredCounter, writeBack } from '../token-count-store.js';
 import { tokenizers } from '../tokenizer-ids.js';
 import { resolveTextCompletionGenerationInput } from '../text-completion-generation-input.js';
 import { assembleTextCompletionPrompt } from '../text-completion-prompt-orchestrator.js';
-import { getAncestorPath } from '../message-tree-db.js';
 import { generateTurnOf } from '../page-writes.js';
 import { storeUserMessage, withStoredMessages } from '../stored-messages.js';
 import { readCardContent } from './characters.js';
 import { getGroupsByIds } from './groups.js';
 import { persistAssistantReply } from '../assistant-reply-persist.js';
-import { itemizationOf } from '../itemization-store.js';
+import { itemizationOf } from '../itemization-of.js';
+import { answerSessionOnHeaders, chatContext } from '../chat-request.js';
 import { withGenerationStop } from '../generation-stop.js';
 import { forwardAndPersistCompactStream } from './backends/text-completions.js';
 
@@ -198,12 +198,12 @@ router.post('/status', async function (req, res) {
  * @param {import('express').Request} [params.request]
  * @param {string} [params.characterAvatar]
  * @param {string} [params.groupId]
- * @param {string} params.ownerId
+ * @param {import('../chat-request.js').ChatContext} params.chat The chat the request acts in.
  * @param {string|null} params.nodeId REQUIRED (`undefined` throws) - see
  * src/endpoints/backends/text-completions.js's `buildRawActionTextCompletionRequest()` own
  * ADDRESSING MODEL doc comment for the full rationale this mirrors verbatim: a real node id string
- * addresses that specific existing node; `null` asserts "this is a genuinely new, empty
- * conversation" and only succeeds when that is actually true. There is no `branchName`/`branch_name`
+ * addresses that specific existing node; `null` goes on from the tree's root, and only succeeds
+ * when that is current. There is no `branchName`/`branch_name`
  * field in this raw-action surface anymore.
  * @param {string} [params.type]
  * @param {boolean} [params.isImpersonate]
@@ -211,7 +211,7 @@ router.post('/status', async function (req, res) {
  * @param {boolean} [params.isSwipe]
  * @param {string} [params.userMessageText]
  * @param {object} [params.userMessageExtra] Already-SERVER-VALIDATED `extra` (see
- * `sanitizeUserMessageExtra()` in message-tree-db.js) for the new user message being appended -
+ * `sanitizeUserMessageExtra()` in user-message-extra.js) for the new user message being appended -
  * identical contract to buildRawActionTextCompletionRequest()'s own equivalent param. NovelAI has no
  * media/image inlining wired here - only `.files` is meaningfully consumed downstream
  * (file-attachment-inline.js, via resolveTextCompletionGenerationInput()).
@@ -220,13 +220,10 @@ router.post('/status', async function (req, res) {
  * writeBack() once the request is sent.
  */
 export async function buildRawActionNovelRequest(directories, {
-    request, characterAvatar, groupId, ownerId, nodeId,
+    request, characterAvatar, groupId, chat, nodeId,
     type = 'normal', isImpersonate = false, isContinue = false, isSwipe = false, userMessageText, userMessageExtra,
     tokenizerOptions = {},
 } = {}) {
-    if (!ownerId) {
-        throw new Error('owner_id is required');
-    }
     if (!characterAvatar && !groupId) {
         throw new Error('character_avatar or group_id is required');
     }
@@ -247,20 +244,19 @@ export async function buildRawActionNovelRequest(directories, {
         }
     }
     if (groupId) {
-        const group = getGroupsByIds(directories, [groupId])[groupId];
+        const group = (await getGroupsByIds(directories, [groupId]))[groupId];
         if (!group) {
             throw new Error(`Group not found: ${groupId}`);
         }
     }
 
-    // Anchor resolution - a real given `nodeId` is verified directly; `nodeId === null` (the
-    // "genuinely new, empty conversation" assertion) is left unresolved here and read back off
+    // Anchor resolution - a real given `nodeId` is verified directly; `nodeId === null` (going on
+    // from the tree's root) is left unresolved here and read back off
     // `orchestratorInput.resolvedNodeId`/`chatResolutionAmbiguous` once resolved below - identical
     // pattern to buildRawActionTextCompletionRequest()'s own Step 2.
     let anchorNodeId = null;
     if (nodeId !== null) {
-        const ancestorPath = await getAncestorPath(directories, nodeId);
-        if (!ancestorPath) {
+        if (!await chat.store.chats.messageOf(chat.tree, nodeId)) {
             throw new Error(`Chat node not found: ${nodeId}`);
         }
         anchorNodeId = nodeId;
@@ -280,17 +276,17 @@ export async function buildRawActionNovelRequest(directories, {
     const novelTokenizerType = resolvedTokenizer.kind === 'estimate' ? tokenizers.NONE : resolvedTokenizer.id;
 
     const orchestratorInput = await resolveTextCompletionGenerationInput(directories, {
-        avatar: characterAvatar, groupId, mainApi: 'novel', ownerId, nodeId,
+        avatar: characterAvatar, groupId, mainApi: 'novel', chatContext: chat, nodeId,
         type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra,
         countTokens, encodeTokens,
         macroExtras: { encodeTokensByType, novelTokenizerType },
     });
 
-    // `nodeId === null` ("genuinely new, empty conversation") is only valid when this owner's
-    // conversation really is empty - see buildRawActionTextCompletionRequest()'s identical handling.
+    // `nodeId === null` goes on from the tree's root only when that is current - see
+    // buildRawActionTextCompletionRequest()'s identical handling.
     if (nodeId === null) {
         if (orchestratorInput.chatResolutionAmbiguous) {
-            throw new Error('node_id is required: this character/group already has an existing conversation - resolve which node the client was looking at and pass its node_id (null is only valid for a genuinely new, empty conversation)');
+            throw new Error('node_id is required: this chat is not at its start - pass the node_id of the message to generate from (null is only valid in a new chat)');
         }
         anchorNodeId = orchestratorInput.resolvedNodeId;
     }
@@ -325,7 +321,7 @@ router.post('/generate', withGenerationStop(async function (req, res) {
     let tokenCountRows = null;
     if (req.body.owner_id && (req.body.character_avatar || req.body.group_id)) {
         const {
-            character_avatar: characterAvatar, group_id: groupId, owner_id: ownerId,
+            character_avatar: characterAvatar, group_id: groupId,
             type = 'normal',
         } = req.body;
         // is_impersonate/is_continue/is_swipe are NOT read from the wire - see kobold.js's own
@@ -336,14 +332,19 @@ router.post('/generate', withGenerationStop(async function (req, res) {
         const isSwipe = type === 'swipe' || type === 'regenerate';
 
         const directories = req.user.directories;
-        const turn = await generateTurnOf(res, directories, { ownerId, avatar: characterAvatar, groupId, body: req.body });
+        const chat = await chatContext(req, { avatar: characterAvatar, group: groupId });
+        if (!chat) {
+            return res.status(400).send({ error: true, message: groupId ? `Group not found: ${groupId}` : `Character not found: ${characterAvatar}` });
+        }
+        answerSessionOnHeaders(res, chat.session);
+        const turn = await generateTurnOf(res, chat, req.body);
         if (!turn) return;
         const { nodeId, userMessageText, userMessageExtra } = turn;
 
         let built;
         try {
             built = await buildRawActionNovelRequest(directories, {
-                request: req, characterAvatar, groupId, ownerId, nodeId,
+                request: req, characterAvatar, groupId, chat, nodeId,
                 type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra,
             });
         } catch (error) {
@@ -360,9 +361,9 @@ router.post('/generate', withGenerationStop(async function (req, res) {
         const skipPersistence = isImpersonate || type === 'quiet';
         let replyAnchorNodeId = built.anchorNodeId;
         const userMessage = turn.userMessage;
-        if (!skipPersistence && typeof userMessageText === 'string' && built.anchorNodeId) {
+        if (!skipPersistence && typeof userMessageText === 'string') {
             const userNodeId = await storeUserMessage(res, {
-                directories, ownerId, anchorNodeId: built.anchorNodeId, ref: req.body.user_message_ref,
+                chat, anchorNodeId: built.anchorNodeId, ref: req.body.user_message_ref,
                 message: userMessage,
             });
             if (!userNodeId) return;
@@ -373,11 +374,14 @@ router.post('/generate', withGenerationStop(async function (req, res) {
         const continuesUserMessage = isContinue && replyAnchorNodeId !== built.anchorNodeId;
         if (!skipPersistence) {
             pendingAssistantPersist = {
-                directories, ownerId, anchorNodeId: replyAnchorNodeId, name2: built.name2,
+                chat, anchorNodeId: replyAnchorNodeId, name2: built.name2,
                 isSwipe, isContinue, anchorContent: continuesUserMessage ? userMessage : built.anchorContent,
                 warnings, generationStop: res.locals.generationStop,
                 itemization: itemizationOf(req.body.itemization, null),
             };
+            // The reply's write goes through the session; one made for it is in the headers, which a
+            // stream sends before the reply is stored.
+            chat.session.actor();
         }
 
         // Replace the body entirely - the existing dispatch code below (bad-words/logit-bias

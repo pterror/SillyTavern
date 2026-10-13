@@ -29,8 +29,6 @@ import {
     getCookieSessionName,
     ensurePublicDirectoriesExist,
     getUserDirectoriesList,
-    getAllUserHandles,
-    getUserDirectories,
     migrateSystemPrompts,
     migrateUserData,
     requireLoginMiddleware,
@@ -43,7 +41,6 @@ import {
     migratePublicOverrides,
 } from './users.js';
 
-import { getSqliteEngine } from './endpoints/sqlite-engine.js';
 import getWebpackServeMiddleware from './middleware/webpack-serve.js';
 import basicAuthMiddleware from './middleware/basicAuth.js';
 import getWhitelistMiddleware from './middleware/whitelist.js';
@@ -76,18 +73,14 @@ import { init as statsInit, onExit as statsOnExit } from './endpoints/stats.js';
 import { checkForNewContent } from './endpoints/content-manager.js';
 import { init as settingsInit } from './endpoints/settings.js';
 import { redirectDeprecatedEndpoints, ServerStartup, setupPrivateEndpoints } from './server-startup.js';
-import { diskCache } from './endpoints/characters.js';
-import { CharacterStoreLayoutError, initializeMetadataStores, disposeMetadataStores, startChatStatsReconcile } from './character-metadata-db.js';
-import { startMetadataMigrations, disposeMetadataMigrationWorkers } from './metadata-migration-coordinator.js';
-import { startSearchWorkerIfIndexed } from './endpoints/characters-search-index.js';
+import { diskCache, dropStoppedRuns, startDroppedWatch, stopDroppedWatches } from './endpoints/characters.js';
+import { OldFormatError, assertConverted, closeUserStores, resumeStoreWork, setStoreEngine } from './user-stores.js';
+import { closeSavedViews } from './saved-views.js';
 import { initializeLocalImportScan, disposeLocalImportScan } from './local-import-scan.js';
-import { disposeMessageTreeStores } from './message-tree-db.js';
-import { installOwnerChatStatsHook } from './owner-chat-stats.js';
 import { migrateFlatSecrets } from './endpoints/secrets.js';
 import { wasBrowserRecentlyConnected } from './browser-presence.js';
-import { startTokenCountMaintenance } from './token-count-store.js';
 import { ensureEngine, EngineFetchError } from '../engine/fetch.js';
-import { loadEngine, EngineLoadError } from '../engine/load.js';
+import { loadEngine, getEngine, EngineLoadError } from '../engine/load.js';
 
 // Work around a node v20.0.0, v20.1.0, and v20.2.0 bug. The issue was fixed in v20.3.0.
 // https://github.com/nodejs/node/issues/47822#issuecomment-1564708870
@@ -328,7 +321,6 @@ app.get('/version', async function (_, response) {
 
 redirectDeprecatedEndpoints(app);
 setupPrivateEndpoints(app);
-installOwnerChatStatsHook();
 
 /**
  * Tasks that need to be run before the server starts listening.
@@ -357,15 +349,6 @@ async function preSetupTasks() {
         console.log(`[boot-timing] ${label}: +${Number(now - __t0) / 1e6}ms total`);
     };
 
-    try {
-        await ensureEngine();
-        loadEngine();
-    } catch (err) {
-        if (!(err instanceof EngineFetchError || err instanceof EngineLoadError)) throw err;
-        console.error(color.red(err.message));
-        process.exit(1);
-    }
-    __mark('loadEngine');
 
     const directories = await getUserDirectoriesList();
     __mark('getUserDirectoriesList');
@@ -379,23 +362,6 @@ async function preSetupTasks() {
     __mark('cleanUploads');
     migrateAccessLog();
     __mark('migrateAccessLog');
-
-    // Only schema creation is awaited; the bootstrap backfill runs in the background so a large
-    // library doesn't delay the server from listening.
-    try {
-        await initializeMetadataStores(directories);
-    } catch (err) {
-        if (!(err instanceof CharacterStoreLayoutError)) throw err;
-        console.error(color.red(err.message));
-        process.exit(1);
-    }
-    __mark('initializeMetadataStores');
-
-    // Fire-and-forget, so a user's first search doesn't wait for their search index worker to start.
-    for (const handle of await getAllUserHandles()) {
-        startSearchWorkerIfIndexed(handle, getUserDirectories(handle))
-            .catch(err => console.error(color.red(`[search] Starting the search index worker for ${handle} failed:`), err));
-    }
 
     // Inert unless localImport.directories is configured.
     await initializeLocalImportScan();
@@ -425,10 +391,10 @@ async function preSetupTasks() {
             await cleanupPlugins();
         }
         diskCache.dispose();
-        await disposeMetadataMigrationWorkers();
-        disposeMetadataStores();
         disposeLocalImportScan();
-        disposeMessageTreeStores();
+        await closeSavedViews();
+        await stopDroppedWatches();
+        await closeUserStores();
         setWindowTitle(consoleTitle);
         process.exit();
     };
@@ -558,33 +524,38 @@ async function postSetupTasks(result) {
     setupLogLevel();
     serverEvents.emit(EVENT_NAMES.SERVER_STARTED, { url: browserLaunchUrl });
 
-    // Counts the chat stats of rows inserted before now, a small batch at a time on this thread.
-    startChatStatsReconcile(await getUserDirectoriesList());
-
-    // Not awaited. Each store's one-time metadata migration passes, in a worker per store, once its boot chain ends.
-    startMetadataMigrations(await getUserDirectoriesList())
-        .catch(err => console.error(color.red('[metadata-migrations] Starting the metadata migration workers failed:'), err));
-
-    // Not awaited. Sets each store's token table row counts and prunes a table over its cap, in small batches on this thread.
-    startTokenCountMaintenance(await getUserDirectoriesList())
-        .catch(err => console.error(color.red('[token-count-store] Counting and pruning the token tables failed:'), err));
+    // Not awaited. Opens each user's store and resumes what a stop left under way (a tag reorder pass, the pair
+    // postings' build or delete), in small batches; a bulk action a stop cut short is reported and its list dropped.
+    // Each user's characters/ is then rescanned in batches and watched for dropped PNGs.
+    resumeStoreWork(await getUserDirectoriesList(), async (store, directories) => {
+        await dropStoppedRuns(store.lib);
+        startDroppedWatch(/** @type {import('./users.js').UserDirectoryList} */ (directories));
+    })
+        .catch(err => console.error(color.red('[user-stores] Resuming the stores\' work failed:'), err));
 }
 
 /**
- * Chat data is stored as a message tree in SQLite (see message-tree-db.js). Without a usable engine,
- * every tree-storage function there silently returns null and every route in chats.js falls back to
- * legacy JSONL files instead - refusing to boot here means that degraded mode can never happen
- * silently at runtime.
+ * Fetches (when needed) and loads the engine, before anything that reads or writes a user's store (the old public
+ * folders' import included); a user directory still in the format before the engine stops the server with one line
+ * naming the conversion.
  */
-async function verifySqliteBackend() {
-    const engine = await getSqliteEngine();
-    if (engine) {
-        return;
+async function loadStoreEngine() {
+    try {
+        await ensureEngine();
+        loadEngine();
+        setStoreEngine(getEngine);
+    } catch (err) {
+        if (!(err instanceof EngineFetchError || err instanceof EngineLoadError)) throw err;
+        console.error(color.red(err.message));
+        process.exit(1);
     }
-    console.error(color.red('FATAL: No usable SQLite backend is available on this install.'));
-    console.error(color.red('Both the native (better-sqlite3) and WebAssembly (node-sqlite3-wasm) SQLite engines failed to load - see the errors logged above by sqlite-engine.js for the specific cause.'));
-    console.error(color.red('SillyTavern stores chat data as a message tree in SQLite and cannot run without one of these engines.'));
-    process.exit(1);
+    try {
+        await assertConverted(await getUserDirectoriesList());
+    } catch (err) {
+        if (!(err instanceof OldFormatError)) throw err;
+        console.error(color.red(err.message));
+        process.exit(1);
+    }
 }
 
 /**
@@ -618,10 +589,10 @@ function setDnsResolutionOrder() {
 initUserStorage(globalThis.DATA_ROOT)
     .then(setDnsResolutionOrder)
     .then(ensurePublicDirectoriesExist)
+    .then(loadStoreEngine)
     .then(migrateUserData)
     .then(migrateSystemPrompts)
     .then(migratePublicOverrides)
-    .then(verifySqliteBackend)
     .then(verifySecuritySettings)
     .then(preSetupTasks)
     .then(apply404Middleware)

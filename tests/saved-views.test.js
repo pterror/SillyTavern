@@ -1,39 +1,34 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals';
-import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 
-/** @type {typeof import('../src/character-metadata-db.js')} */
-let metadataDb;
+/** @type {typeof import('../src/saved-views.js')} */
+let savedViews;
 /** @type {import('node:http').Server} */
 let server;
 let baseUrl;
-/** @type {import('../src/users.js').UserDirectoryList} */
-let directories;
 
-function makeDirectories() {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-saved-views-test-'));
-    const dirs = {
-        root: tempDir,
-        characters: path.join(tempDir, 'characters'),
-        chats: path.join(tempDir, 'chats'),
-        groups: path.join(tempDir, 'groups'),
-        groupChats: path.join(tempDir, 'groupChats'),
-    };
-    for (const dir of [dirs.characters, dirs.chats, dirs.groups, dirs.groupChats]) fs.mkdirSync(dir, { recursive: true });
-    return dirs;
+/** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
+let user;
+/** @type {typeof import('./converted-user.fixture.js')} */
+let fixture;
+
+/** A fresh user with an empty store. */
+async function makeUser() {
+    const made = await fixture.emptyUser('st-saved-views-test-');
+    return made;
 }
 
 beforeAll(async () => {
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
-    metadataDb = await import('../src/character-metadata-db.js');
+    savedViews = await import('../src/saved-views.js');
+    fixture = await import('./converted-user.fixture.js');
     const { router } = await import('../src/endpoints/views.js');
     const express = (await import('express')).default;
     const app = express();
     app.use(express.json());
     app.use((req, res, next) => {
-        req.user = { directories, profile: { handle: `test-user-${path.basename(directories.root)}` } };
+        req.user = user.user;
         next();
     });
     app.use('/api/views', router);
@@ -44,16 +39,16 @@ beforeAll(async () => {
 
 afterAll(() => new Promise(resolve => server.close(resolve)));
 
-/** @type {string[]} */
+/** @type {Awaited<ReturnType<typeof makeUser>>[]} */
 let made = [];
-beforeEach(() => {
-    directories = makeDirectories();
-    made = [directories.root];
+beforeEach(async () => {
+    user = await makeUser();
+    made = [user];
 });
 
-afterEach(() => {
-    metadataDb.disposeMetadataStores();
-    for (const root of made) fs.rmSync(root, { recursive: true, force: true });
+afterEach(async () => {
+    await savedViews.closeSavedViews();
+    for (const each of made) await each.close();
 });
 
 /** @param {string} route @param {object} body */
@@ -148,28 +143,28 @@ describe('/api/views', () => {
 
     test('each user has their own views', async () => {
         await post('create', { name: 'Mine', view: {} });
-        const other = makeDirectories();
-        made.push(other.root);
-        const mine = directories;
-        directories = other;
+        const other = await makeUser();
+        made.push(other);
+        const mine = user;
+        user = other;
         expect(await listNames()).toEqual([]);
         await post('create', { name: 'Theirs', view: {} });
-        directories = mine;
+        user = mine;
         expect(await listNames()).toEqual(['Mine']);
     });
 
     test('every write tells the change stream once', async () => {
         const roots = [];
         const listener = root => roots.push(root);
-        metadataDb.characterChangeEmitter.on(metadataDb.SAVED_VIEWS_EVENT, listener);
+        savedViews.savedViewsEvents.on('changed', listener);
         try {
             const { body: made } = await post('create', { name: 'A', view: {} });
             await post('change', { id: made.id, name: 'A' });
             await post('change', { id: made.id, name: 'B' });
             await post('delete', { id: made.id });
         } finally {
-            metadataDb.characterChangeEmitter.off(metadataDb.SAVED_VIEWS_EVENT, listener);
+            savedViews.savedViewsEvents.off('changed', listener);
         }
-        expect(roots).toEqual([directories.root, directories.root, directories.root]);
+        expect(roots).toEqual([user.root, user.root, user.root]);
     });
 });

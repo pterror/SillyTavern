@@ -15,6 +15,9 @@
 //! `--real`: the library as the app stores it (build path 5d): tags and characters as entities (`entityCreate`),
 //! each card field its code's text value, card tags and alternate greetings as list items; tags take ids
 //! 1..=tags, cards the ids after them. The store can then be opened by `LibraryEngine` (`scripts/bench-search-synth.mjs`).
+//!
+//! `--spread` (with `--real`): the cards' ids in runs of 64, each run `1 << 26` ids after the last, so they sit
+//! under many nodes of the search's block maxima above level 0 (`search::node_of`).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -626,9 +629,17 @@ fn real() -> bool {
     *REAL.get_or_init(|| std::env::args().any(|a| a == "--real"))
 }
 
+/// `--spread`: the cards' ids spread out.
+fn spread() -> bool {
+    static SPREAD: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *SPREAD.get_or_init(|| std::env::args().any(|a| a == "--spread"))
+}
+
 /// The id of the generator's card `i` (from 0): after the tags' ids with `--real`.
 fn card_id(i: usize, tags: usize) -> u64 {
-    i as u64 + 1 + if real() { tags as u64 } else { 0 }
+    let i = i as u64;
+    let at = if spread() { i % 64 + (i / 64 << 26) } else { i };
+    at + 1 + if real() { tags as u64 } else { 0 }
 }
 
 /// A generator field's text code (`src/library-codes.js`) or list (`LIST`), as the app stores a card.
@@ -864,6 +875,13 @@ fn queries(tags: &[(u64, String)]) -> Vec<(String, usize, Vec<Clause>, Vec<Filte
     ] {
         out.push((q.to_string(), q.split(' ').count(), words(q), Vec::new()));
     }
+    // A word of the name of the tag carried most (the first by the generator's tag order).
+    if let Some(w) = tags
+        .first()
+        .and_then(|(_, n)| tokens(n.as_bytes()).into_iter().next())
+    {
+        out.push((format!("{w} [top tag]"), 1, vec![c(&w)], Vec::new()));
+    }
     for q in ["dark knight", "the dragon"] {
         let mut cl = c(q);
         cl.quoted = true;
@@ -931,6 +949,8 @@ fn main() {
     let kind = args[2].as_str();
     let cards: usize = args[3].parse().unwrap();
     let check = !args.iter().any(|a| a == "--no-check");
+    // Without --real, tags share the cards' ids.
+    assert!(!spread() || real(), "--spread needs --real");
     // --reuse: a store an earlier run left with the same library; only the queries run.
     let reuse = args.iter().any(|a| a == "--reuse") && dir.exists();
     if !reuse {
@@ -956,6 +976,7 @@ fn main() {
             order: Order::Relevance,
             limit: 50,
             after: None,
+            weights: None,
             limits: Limits::default(),
         };
         let first = s.search(&q).unwrap();
@@ -981,7 +1002,7 @@ fn main() {
 
     // ---- the check: every card read twice (statistics, then matches) ----
     let mut checked: Vec<Option<Answer>> = vec![None; results.len()];
-    let mut tags_checked: Vec<Option<bool>> = vec![None; results.len()];
+    let mut tied: Vec<Option<usize>> = vec![None; results.len()];
     if check {
         let tag_names: BTreeMap<u64, Vec<u8>> = tags
             .iter()
@@ -1009,10 +1030,7 @@ fn main() {
             }
         }
         for (i, ch) in checkers.into_iter().enumerate() {
-            let want =
-                st_engine::search::brute::tag_matches(&results[i].2, &tag_names, &ch.carriers);
-            let got: Vec<u64> = results[i].3.tags.iter().map(|t| t.tag).collect();
-            tags_checked[i] = Some(got == want);
+            tied[i] = Some(ch.tied.len());
             checked[i] = Some(ch.result());
         }
     }
@@ -1031,7 +1049,8 @@ fn main() {
         println!(
             "{{\"phase\":\"query\",\"q\":{:?},\"words\":{words},\"median_ms\":{:.3},\"total\":{},\"total_exact\":{},\
              \"page_exact\":{},\"work\":{},\"scans\":{},\"entries\":{},\"pairs\":{},\"gets\":{},\"texts\":{},\"plan_us\":{},\"blocks\":{blocks},\"file_reads\":{file_reads},\
-             \"brute_total\":{brute_total},\"page_equal\":{same_page},\"total_equal\":{same_total},\"listed\":{},\"tags\":{},\"tags_equal\":{},\"length_reads\":{},\"steps\":{},\"checked\":{}}}",
+             \"brute_total\":{brute_total},\"page_equal\":{same_page},\"total_equal\":{same_total},\"tie\":{},\"brute_tied\":{},\"length_reads\":{},\"steps\":{},\"checked\":{},\
+             \"posting_blocks\":{},\"max_reads\":{},\"next_blocks\":{},\"nodes_passed\":{:?}}}",
             label,
             median.as_secs_f64() * 1000.0,
             f.total,
@@ -1044,17 +1063,23 @@ fn main() {
             f.gets,
             f.texts,
             f.plan_micros,
-            f.listed,
-            f.tags.len(),
-            tags_checked[i].map_or("null".into(), |x| x.to_string()),
+            f.tied.map_or("null".into(), |t| format!("{t:.3}")),
+            tied[i].map_or("null".into(), |x| x.to_string()),
             f.length_reads,
             f.steps,
             f.checked,
+            f.posting_blocks,
+            f.max_reads,
+            f.next_blocks,
+            f.nodes_passed,
         );
     }
 
     if !reuse {
         writes(&s, cards, tags.len());
+        if real() {
+            creates_and_deletes(&s, kind, cards, tags.len());
+        }
     } else {
         probe(&s);
         terms(&s);
@@ -1073,7 +1098,7 @@ fn load_and_space(
     // ---- load ----
     let started = Instant::now();
     let bulk = std::env::args().any(|a| a == "--bulk");
-    // --no-lists: tag names committed first, so the bulk load leaves the top lists to slices. With --real the tags
+    // --no-lists: tag names committed first, not loaded with the cards. With --real the tags
     // come first in the load (their ids are below the cards').
     let tags_first = !bulk || std::env::args().any(|a| a == "--no-lists");
     if tags_first {
@@ -1122,7 +1147,7 @@ fn load_and_space(
             ),
     );
     if bulk {
-        // Into an empty store, tag names and all: the load builds the top lists. The cards are generated on a
+        // Into an empty store, tag names and all. The cards are generated on a
         // thread of their own, so the load's time is the loader's, not the generator's.
         let mut l = s.loader().unwrap();
         let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<Record>>(16);
@@ -1171,13 +1196,10 @@ fn load_and_space(
     let mut by: BTreeMap<u64, (u64, u64)> = BTreeMap::new();
     for structure in [
         key::SEARCH_POSTING,
-        key::SEARCH_DOC_FREQ,
+        key::SEARCH_TERM_COUNTS.id(),
         key::SEARCH_LENGTH,
         key::SEARCH_BLOCK_MAX,
         key::SEARCH_SHORTEST,
-        key::SEARCH_TOP,
-        key::SEARCH_TERM_DOCS,
-        key::SEARCH_FIELD_TOKENS,
         key::SEARCH_DOCS,
         key::SEARCH_MAX_DOC,
         key::MEMBER,
@@ -1209,7 +1231,9 @@ fn load_and_space(
         .collect();
     let search_bytes: u64 = by
         .iter()
-        .filter(|(k, _)| **k < key::MEMBER || **k == key::SEARCH_SHORTEST || **k == key::SEARCH_TOP)
+        .filter(|(k, _)| {
+            **k < key::MEMBER || **k == key::SEARCH_SHORTEST || **k == key::SEARCH_TERM_COUNTS.id()
+        })
         .map(|(_, (_, b))| b)
         .sum();
     println!(
@@ -1226,9 +1250,7 @@ fn space_detail(s: &Store) {
         key::SEARCH_POSTING,
         key::SEARCH_BLOCK_MAX,
         key::SEARCH_SHORTEST,
-        key::SEARCH_TOP,
-        key::SEARCH_DOC_FREQ,
-        key::SEARCH_TERM_DOCS,
+        key::SEARCH_TERM_COUNTS.id(),
         key::MEMBER_BLOCK,
     ] {
         let start = key::of(structure);
@@ -1237,22 +1259,15 @@ fn space_detail(s: &Store) {
         loop {
             let page = s.scan(&from, &end, 65536).unwrap();
             for (k, v) in &page {
-                let kind = if structure != key::SEARCH_DOC_FREQ {
-                    0
-                } else {
-                    let mut at = 0;
-                    for _ in 0..3 {
-                        st_engine::keyspace::val::get_u64(k, &mut at).unwrap();
-                    }
-                    k[at]
-                };
-                let e = by.entry((structure, kind)).or_default();
+                let e = by.entry((structure, 0)).or_default();
                 e[0] += 1;
                 e[1] += k.len() as u64;
                 e[2] += v.len() as u64;
-                if structure != key::SEARCH_DOC_FREQ && structure != key::SEARCH_TERM_DOCS {
-                    e[3] += st_engine::keyspace::val::map_pairs(v).map_or(0, |p| p.len() as u64);
-                }
+                e[3] += if structure == key::SEARCH_TERM_COUNTS.id() {
+                    st_engine::keyspace::val::map_counts(v).map_or(0, |p| p.len() as u64)
+                } else {
+                    st_engine::keyspace::val::map_pairs(v).map_or(0, |p| p.len() as u64)
+                };
             }
             match page.last() {
                 Some((k, _)) if page.len() == 65536 => {
@@ -1276,7 +1291,7 @@ fn space_detail(s: &Store) {
 /// Terms by their documents: how many have more than a top list's documents, and what lists of 128 and of 1024
 /// for each of them would hold together.
 fn terms(s: &Store) {
-    let start = key::of(key::SEARCH_TERM_DOCS);
+    let start = key::SEARCH_TERM_COUNTS.prefix();
     let end = key::prefix_end(&start);
     let mut from = start.clone();
     let mut over = [0u64; 4];
@@ -1285,7 +1300,9 @@ fn terms(s: &Store) {
     loop {
         let page = s.scan(&from, &end, 65536).unwrap();
         for (_, v) in &page {
-            let n = st_engine::keyspace::val::counter_value(v).unwrap_or(0);
+            let counts = st_engine::keyspace::val::map_counts(v).unwrap_or_default();
+            let n =
+                st_engine::search::query::count_at(&counts, st_engine::search::DOCS_SLOT) as i64;
             for (i, &m) in sizes.iter().enumerate() {
                 if n > m {
                     over[i] += 1;
@@ -1379,6 +1396,7 @@ fn writes(s: &Store, cards: usize, tag_count: usize) {
                 order: Order::Relevance,
                 limit: 5,
                 after: None,
+                weights: None,
                 limits: Limits::default(),
             })
             .unwrap();
@@ -1479,14 +1497,55 @@ fn writes(s: &Store, cards: usize, tag_count: usize) {
     );
 }
 
-/// Times single reads of the store's derived entries: a point read of a counter, and a scan of a term's postings.
+/// Entries written per card created and per card deleted (`--real`, where cards are entities): the generator's
+/// cards past the library's, each created in a commit of its own, then each deleted.
+fn creates_and_deletes(s: &Store, kind: &str, cards: usize, tag_count: usize) {
+    const N: usize = 50;
+    // A generator of N more cards, its first `cards` passed over.
+    let mut g = generator(kind, cards + N);
+    for _ in 0..cards {
+        g.card();
+    }
+    let entries_of = |recs: Vec<Record>| {
+        let before = s.stats().ks.inserted;
+        s.commit_wait(recs).unwrap();
+        s.stats().ks.inserted - before
+    };
+    let ids: Vec<u64> = (cards..cards + N).map(|i| card_id(i, tag_count)).collect();
+    use st_engine::store::derive::PRODUCED;
+    let produced = |s: u64| PRODUCED[s as usize].load(std::sync::atomic::Ordering::Relaxed);
+    let (maxima, counts) = (key::SEARCH_BLOCK_MAX, key::SEARCH_TERM_COUNTS.id());
+    let (m0, c0) = (produced(maxima), produced(counts));
+    let created: u64 = ids
+        .iter()
+        .map(|&id| entries_of(card_records(id, &g.card())))
+        .sum();
+    // A create counts each of its terms once.
+    let (max_writes, terms) = (produced(maxima) - m0, produced(counts) - c0);
+    let deleted: u64 = ids
+        .iter()
+        .map(|&id| entries_of(vec![rec("entityDelete", vec![Value::Id(id)])]))
+        .sum();
+    println!(
+        "{{\"phase\":\"creates\",\"cards\":{N},\"entries_per_create\":{:.2},\"entries_per_delete\":{:.2},\
+         \"maxima_writes_per_create\":{:.2},\"terms_per_create\":{:.2},\"maxima_writes_per_term\":{:.3}}}",
+        created as f64 / N as f64,
+        deleted as f64 / N as f64,
+        max_writes as f64 / N as f64,
+        terms as f64 / N as f64,
+        max_writes as f64 / terms as f64
+    );
+}
+
+/// Times single reads of the store's derived entries: a point read of a term's counts, and a scan of a term's
+/// postings.
 fn probe(s: &Store) {
-    use st_engine::search::{TermKind, doc_freq, postings};
+    use st_engine::search::{postings, term_counts_of};
     let words = ["dragon", "quokka", "saxophone", "girl", "the", "vampire"];
     let n = 2000;
     let t = Instant::now();
     for i in 0..n {
-        s.get(&doc_freq(Scope::LIBRARY, TermKind::Exact, words[i % 6], 2))
+        s.get(&term_counts_of(Scope::LIBRARY, words[i % 6]))
             .unwrap();
     }
     let get_us = t.elapsed().as_secs_f64() * 1e6 / n as f64;
