@@ -63,6 +63,7 @@ const LOG_PREFIX = '[restore-group-chats]';
  * @property {object[]} messages Every line of the headerless original, parsed
  * @property {unknown} backupMetadata The chat's metadata from the backup, or null when it has none
  * @property {string} backupPath
+ * @property {{ kind: 'character', rowId: string }} [character] The owner is this character (its avatar), not a group
  */
 
 /**
@@ -385,7 +386,7 @@ export function applyChatRestore(db, plan, input, now) {
         return;
     }
 
-    const anchor = ensureAnchorSync(db, ownerId, now, { kind: 'group', rowId: ownerId });
+    const anchor = ensureAnchorSync(db, ownerId, now, input.character ?? { kind: 'group', rowId: ownerId });
     let parent = anchor.id;
     for (const message of messages) {
         const alts = alternativesFromMessage(/** @type {any} */ (message));
@@ -399,7 +400,7 @@ export function applyChatRestore(db, plan, input, now) {
         }
         parent = chosen;
     }
-    labelNodeSync(db, parent, chatId, JSON.stringify({ ...plan.metadataAdd, __is_group: true }));
+    labelNodeSync(db, parent, chatId, JSON.stringify(input.character ? plan.metadataAdd : { ...plan.metadataAdd, __is_group: true }));
 }
 
 /**

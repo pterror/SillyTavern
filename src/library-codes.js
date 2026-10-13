@@ -42,6 +42,13 @@ export const TAG_KEY_PREFIX = 'tag:';
 export const convertedFileKey = name => `converted.characters.${name}`;
 
 /**
+ * The `metaValue` name of the per-chat prompt itemization files (`<user>/itemized prompts/`) the conversion placed
+ * none or not all of the entries of, each kept on disk as it is: a list of `{ file, reason, entries }`, `entries`
+ * being how many of its entries weren't placed.
+ */
+export const KEPT_ITEMIZATION_FILES = 'itemized prompts.kept';
+
+/**
  * The list code of a character's rename history: one item per entry (`renameItem()`), oldest first. A message sent
  * before an entry's `until` (ms) shows its `name`, the first such entry's, when the rename that ended it kept past
  * chats as they were. It is the store's, never the card's: card writes keep it, and cards are read without it.

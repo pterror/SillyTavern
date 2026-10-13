@@ -75,7 +75,8 @@ describe('convert-to-engine', () => {
         expect(dry.code).toBe(0);
         expect(snapshot(root)).toEqual(before);
         expect(fs.existsSync(path.join(root, convert.BUILDING_DIR))).toBe(false);
-        for (const want of ['characters 3', 'groups 2', 'world books 3', 'bookmarks 9', 'bookmarks at a tree\'s root 1', 'send keys 1', 'fork choices 2', 'itemizations 2',
+        for (const want of ['characters 3', 'groups 2', 'world books 3', 'bookmarks 9', 'bookmarks at a tree\'s root 1', 'send keys 1', 'fork choices 2', 'itemizations 1',
+            'some of its entries are past the end of its chat, so it may have been saved under another chat\'s name: 3 entries in 1 file(s)',
             'owner Gone: 1 message(s), 1 label(s)', 'Broken.json', 'Odd name', 'leftover.jsonl', 'chat "Dropped empty" (header only)', 'chat "Dropped twin"', 'queued tag moves with no reorder pass, applied: 1', 'group chat repaired: group 1700000000002 chat "c1"']) {
             expect(dry.text).toContain(want);
         }
@@ -139,6 +140,70 @@ describe('convert-to-engine', () => {
             const [c1] = (await chats.bookmarks({ tree: damaged, limit: 5 })).rows;
             expect(c1.name).toBe('c1');
             expect((await chats.load({ tree: damaged, at: c1.at }))?.messages.map(m => m.mes)).toEqual(['m1b', 'm2a', 'm3']);
+        } finally {
+            await lib.close();
+        }
+    });
+
+    test('a character\'s chat file no label names converts as a chat of its own; itemization files placed only where sure, the rest listed', async () => {
+        const dataRoot = await oldUser();
+        const root = path.join(dataRoot, 'u');
+        const zlib = await import('node:zlib');
+        const line = (/** @type {object} */ o) => JSON.stringify(o) + '\n';
+        const header = (/** @type {object} */ chatMetadata) => ({ user_name: 'You', character_name: 'x', chat_metadata: chatMetadata });
+        const msg = (/** @type {string} */ name, /** @type {boolean} */ isUser, /** @type {string} */ mes, /** @type {object} */ more = {}) => ({ name, is_user: isUser, is_system: false, send_date: '2024-05-01T10:00:00.000Z', mes, extra: {}, ...more });
+        // Cara has no rows in the tree: her chat is written whole, every swipe kept.
+        fs.mkdirSync(path.join(root, 'chats', 'Cara'), { recursive: true });
+        fs.writeFileSync(path.join(root, 'chats', 'Cara', 'Cara lost.jsonl.pre-migration'),
+            line(header({ note_prompt: 'Lost.' })) + line({ ...msg('Cara', false, 'Greetings.'), swipes: ['Greetings.', 'Other greeting.'], swipe_id: 0, swipe_info: [{}, {}] }) + line(msg('You', true, 'Hello Cara.')));
+        // Only a header: a bookmark at the root.
+        fs.mkdirSync(path.join(root, 'chats', 'Alice'), { recursive: true });
+        fs.writeFileSync(path.join(root, 'chats', 'Alice', 'Alice header only.jsonl.pre-migration'), line(header({ note_prompt: 'Header only.' })));
+        // A line that isn't JSON: read up to it; what's before is Bob's greeting, already in the tree.
+        fs.mkdirSync(path.join(root, 'chats', 'Bob'), { recursive: true });
+        fs.writeFileSync(path.join(root, 'chats', 'Bob', 'Bob broken.jsonl.pre-migration'), line(header({})) + line(msg('Bob', false, 'Bob here.')) + 'not json\n' + line(msg('You', true, 'Lost.')));
+        // Two files naming the same messages: the same entry is placed once, different ones nowhere.
+        const itemized = (/** @type {string} */ name, /** @type {object[]} */ list) => fs.writeFileSync(path.join(root, 'itemized prompts', `${name}.json.zst`), zlib.zstdCompressSync(Buffer.from(JSON.stringify(list))));
+        itemized('Alice - 2024-05-01@10h00m00s', [{ mesId: 0, rawPrompt: 'one' }, { mesId: 1, rawPrompt: 'same' }]);
+        itemized('Alice - 2024-05-01@10h00m00s - Branch #1', [{ mesId: 0, rawPrompt: 'another' }, { mesId: 1, rawPrompt: 'same' }]);
+
+        const dry = await run(dataRoot, { apply: false, serverStopped: false });
+        expect(dry.code).toBe(0);
+        for (const want of [
+            'chat files with no label converted 3',
+            'Cara lost.jsonl.pre-migration: 2 message(s); its messages written as a branch of their own, with every swipe',
+            'Alice header only.jsonl.pre-migration: 0 message(s); no messages: a bookmark at the tree\'s root',
+            'Bob broken.jsonl.pre-migration: 1 message(s); its messages are a path in the tree: a bookmark at its last',
+            'Bob broken.jsonl.pre-migration: stops at line 3, 2 line(s) not converted',
+            'another file has a different itemization for a message it names: 2 entries in 2 file(s)',
+            'itemizations 2',
+        ]) expect(dry.text).toContain(want);
+
+        const applied = await run(dataRoot, { apply: true, serverStopped: true });
+        expect(applied.text).not.toContain('PROBLEM');
+        expect(applied.code).toBe(0);
+        const { LibraryEngine } = await import('../src/library-engine.js');
+        const { ChatEngine } = await import('../src/chat-engine.js');
+        const { libraryPeople } = await import('../src/chat-people.js');
+        const { KEPT_ITEMIZATION_FILES } = await import('../src/library-codes.js');
+        const lib = await LibraryEngine.open(engine, path.join(root, convert.STORE_DIR));
+        try {
+            const people = libraryPeople(lib);
+            const chats = await ChatEngine.open(lib.store, people);
+            const [cara, alice, bob] = await people.trees([{ avatar: 'Cara.png' }, { avatar: 'Alice.png' }, { avatar: 'Bob.png' }]);
+            const [lost] = (await chats.bookmarks({ tree: cara, limit: 5 })).rows;
+            expect(lost.name).toBe('Cara lost');
+            const opened = await chats.load({ tree: cara, at: lost.at });
+            expect(opened?.messages.map(m => m.mes)).toEqual(['Greetings.', 'Hello Cara.']);
+            expect(opened?.messages[0].swipes).toEqual(['Greetings.', 'Other greeting.']);
+            expect((await chats.chatList({ tree: cara, limit: 5, withMetadata: true })).rows[0]).toMatchObject({ name: 'Cara lost', chat_metadata: { note_prompt: 'Lost.' } });
+            const aliceRows = (await chats.chatList({ tree: alice, limit: 10, withMetadata: true })).rows;
+            expect(aliceRows.find(r => r.name === 'Alice header only')).toMatchObject({ at: null, chat_metadata: { note_prompt: 'Header only.' } });
+            expect((await chats.bookmarks({ tree: bob, limit: 5 })).rows.map(b => b.name).sort()).toEqual(['Bob - Checkpoint #1', 'Bob broken']);
+            const [kept] = await lib.store.meta([KEPT_ITEMIZATION_FILES]);
+            expect(JSON.parse(kept).filter((/** @type {any} */ k) => k.reason.startsWith('another file')).map((/** @type {any} */ k) => [k.file, k.entries]).sort()).toEqual([
+                ['Alice - 2024-05-01@10h00m00s - Branch #1.json.zst', 1], ['Alice - 2024-05-01@10h00m00s.json.zst', 1],
+            ]);
         } finally {
             await lib.close();
         }
