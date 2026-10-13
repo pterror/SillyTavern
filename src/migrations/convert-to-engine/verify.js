@@ -6,7 +6,7 @@ import { decodeMessage } from '../../chat-codec.js';
 import { ChatEngine, defaultSessionKey, storedForm } from '../../chat-engine.js';
 import { libraryPeople } from '../../chat-people.js';
 import { LibraryEngine } from '../../library-engine.js';
-import { TYPE, convertedFileKey } from '../../library-codes.js';
+import { KEPT_ITEMIZATION_FILES, TYPE, convertedFileKey } from '../../library-codes.js';
 import { normalizeFav, normalizeTagIds } from '../../../public/scripts/hash-utils.js';
 import { characterBatches, readsAs } from './old-library.js';
 import { contentsOf, pathTo } from './old-chats.js';
@@ -39,6 +39,7 @@ const GROUP_READ_KEYS = ['id', 'fav', 'tag_ids', 'date_added', 'create_date', 'd
  * @param {() => Iterable<import('./worlds.js').WorldBook>} v.books The world books, read again.
  * @param {Set<string>} v.bookNames The ones converted.
  * @param {{ input: import('./chats.js').OwnerInput, tree: bigint, files: Map<string, Record<string, any>> }[]} v.owners
+ * @param {{ file: string, reason: string, entries: number }[]} v.keptItemizations
  * @param {string} v.handle
  * @param {number} v.now When the conversion ran.
  * @param {Record<string, number>} v.counts
@@ -130,6 +131,8 @@ export async function verify(v) {
     if (groups.total !== (v.counts.groups ?? 0)) bad.push(`groups counted in the store: ${groups.total}, converted: ${v.counts.groups ?? 0}`);
 
     // ---- chats ----
+    const [kept] = await v.store.meta([KEPT_ITEMIZATION_FILES]);
+    if ((kept ?? null) !== (v.keptItemizations.length ? JSON.stringify(v.keptItemizations) : null)) bad.push('the list of prompt itemization files kept unplaced reads back differently');
     const [user] = await v.store.chatRead('ids', { space: 2, keys: [v.handle] });
     let checked = 0;
     /** @type {{ time: number, id: string }[]} */

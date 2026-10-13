@@ -7,9 +7,10 @@ import sanitize from 'sanitize-filename';
 
 import { openNativeDatabase } from '../../endpoints/sqlite-engine.js';
 import { openReadOnly } from './old-library.js';
-import { descendDefaultSync, getPathSync, resolveNodeOrName } from '../../message-tree-db.js';
+import { alternativesFromMessage, descendDefaultSync, getPathSync, identityHashOf, resolveNodeOrName } from '../../message-tree-db.js';
 import { createMessageStatsTableSync } from '../../message-stats.js';
-import { restoreGroupChatLosses } from '../restore-group-chat-migration-losses.js';
+import { isChatHeaderEntry } from '../../chat-header.js';
+import { applyChatRestore, planChatRestore, restoreGroupChatLosses } from '../restore-group-chat-migration-losses.js';
 import { STRAY_OWNER, planRepoint, planStrayOwner, GROUP_ID as ZZTEST_GROUP_ID, GROUP_CHAT as ZZTEST_GROUP_CHAT, STRAY_GROUP_CHAT, IVY_OPENING_ID, GROUP_ANCHOR_ID } from '../cleanup-zztest-leftovers.js';
 
 /**
@@ -37,15 +38,17 @@ export function openTree(Database, file) {
 }
 
 /**
- * A copy in memory of the group owners' rows, with the group chat repair (`restore-group-chat-migration-losses.js`)
- * applied to it as that script applies it: the old file is only read.
+ * A copy in memory of the group owners' rows and of `characterIds`' rows, with the group chat repair
+ * (`restore-group-chat-migration-losses.js`) applied to it as that script applies it: the old file is only read.
  * @param {any} Database
  * @param {Db} tree
  * @param {{ root: string, groups: string, groupChats: string, backups: string }} dirs
  * @param {string[]} groupIds
+ * @param {string[]} [characterIds] Characters' owner ids whose chat files `importChatFile()` writes into the copy.
  * @returns {Promise<{ db: Db, result: import('../restore-group-chat-migration-losses.js').RestoreResult }>}
  */
-export async function groupOverlay(Database, tree, dirs, groupIds) {
+export async function groupOverlay(Database, tree, dirs, groupIds, characterIds = []) {
+    const ownerList = [...groupIds, ...characterIds];
     const db = openNativeDatabase(Database, ':memory:');
     const schema = /** @type {{ type: string, sql: string }[]} */ (tree.readBounded(
         'SELECT type, sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY rowid', [], 100000));
@@ -58,7 +61,19 @@ export async function groupOverlay(Database, tree, dirs, groupIds) {
         const insert = `INSERT INTO "${table}" (${cols.map(c => `"${c}"`).join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`;
         db.transaction(() => {
             for (const row of /** @type {Iterable<Record<string, unknown>>} */ (tree.iterate(
-                `SELECT ${cols.map(c => `"${c}"`).join(', ')} FROM "${table}" WHERE owner_id IN (SELECT value FROM json_each(?))`, [JSON.stringify(groupIds)]))) {
+                `SELECT ${cols.map(c => `"${c}"`).join(', ')} FROM "${table}" WHERE owner_id IN (SELECT value FROM json_each(?))`, [JSON.stringify(ownerList)]))) {
+                db.run(insert, cols.map(c => row[c]));
+            }
+        });
+    }
+    // What hangs off the copied messages by their id.
+    for (const table of ['send_keys', 'itemizations']) {
+        if (!tree.get('SELECT 1 AS ok FROM sqlite_master WHERE type = \'table\' AND name = ?', [table])) continue;
+        const cols = /** @type {{ name: string }[]} */ (tree.readBounded(`PRAGMA table_info("${table}")`, [], 1000)).map(c => c.name);
+        const insert = `INSERT INTO "${table}" (${cols.map(c => `"${c}"`).join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`;
+        db.transaction(() => {
+            for (const row of /** @type {Iterable<Record<string, unknown>>} */ (tree.iterate(
+                `SELECT ${cols.map(c => `t."${c}"`).join(', ')} FROM "${table}" t JOIN messages m ON m.id = t.node_id WHERE m.owner_id IN (SELECT value FROM json_each(?))`, [JSON.stringify(ownerList)]))) {
                 db.run(insert, cols.map(c => row[c]));
             }
         });
@@ -69,6 +84,125 @@ export async function groupOverlay(Database, tree, dirs, groupIds) {
     createMessageStatsTableSync(db);
     const result = await restoreGroupChatLosses(dirs, { reader: db, apply: true, pauseMs: 0, queueChatStats: null });
     return { db, result };
+}
+
+/**
+ * A chat file's header and its messages: the lines from the start that each hold a JSON object, up to the first that
+ * doesn't. Blank lines are skipped.
+ * @param {string} raw
+ * @returns {{ header: Record<string, any> | null, messages: Record<string, any>[], stopsAt: number | null, rest: number }}
+ * `stopsAt`: the line number of the first line not read; `rest`: the non-blank lines from there on, none read.
+ */
+export function readChatRun(raw) {
+    const lines = raw.split('\n');
+    /** @type {Record<string, any>[]} */
+    const entries = [];
+    let stopsAt = null;
+    let rest = 0;
+    for (let i = 0; i < lines.length; i++) {
+        if (!lines[i].trim()) continue;
+        if (stopsAt !== null) {
+            rest++;
+            continue;
+        }
+        let entry;
+        try {
+            entry = JSON.parse(lines[i]);
+        } catch {
+            entry = null;
+        }
+        if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+            stopsAt = i + 1;
+            rest++;
+            continue;
+        }
+        entries.push(entry);
+    }
+    const header = entries.length > 0 && isChatHeaderEntry(entries[0]) ? entries[0] : null;
+    return { header, messages: header ? entries.slice(1) : entries, stopsAt, rest };
+}
+
+/**
+ * Follows a chat's messages down an owner's tree from its first anchor, each to the reply holding its shown text,
+ * else the text of its shown swipe (a greeting whose `mes` has its macros filled in where the tree holds them as
+ * written).
+ * @param {Db} db
+ * @param {string} ownerId
+ * @param {Record<string, any>[]} messages
+ * @returns {{ end: string | null, bySwipe: number }} `end`: the message the last one is, null when one isn't there;
+ * `bySwipe`: how many were found by their shown swipe's text.
+ */
+export function walkChat(db, ownerId, messages) {
+    const anchor = /** @type {{ id: string } | undefined} */ (db.get('SELECT id FROM messages WHERE owner_id = ? AND parent_id IS NULL ORDER BY created_at ASC, id ASC LIMIT 1', [ownerId]));
+    let at = anchor?.id ?? null;
+    let bySwipe = 0;
+    const replyOf = (/** @type {string} */ parent, /** @type {string} */ content) => /** @type {{ id: string } | undefined} */ (db.get('SELECT id FROM messages WHERE parent_id = ? AND identity_hash = ?', [parent, identityHashOf(parent, content)]))?.id ?? null;
+    for (const message of messages) {
+        if (at === null) break;
+        const alts = alternativesFromMessage(/** @type {any} */ (message));
+        let next = replyOf(at, alts.contents[alts.selected]);
+        const swipe = Array.isArray(message.swipes) && Number.isInteger(message.swipe_id) ? message.swipes[message.swipe_id] : undefined;
+        if (next === null && typeof swipe === 'string' && swipe !== message.mes) {
+            const shown = alternativesFromMessage(/** @type {any} */ ({ ...message, mes: swipe }));
+            next = replyOf(at, shown.contents[shown.selected]);
+            if (next !== null) bySwipe++;
+        }
+        at = next;
+    }
+    return { end: at, bySwipe };
+}
+
+/**
+ * A character's chat files (`chats/<owner>/<name>.jsonl.pre-migration`) that no label of that owner in the tree
+ * names (as the label, or as its file name).
+ * @param {Db} tree
+ * @param {string} chatsDir
+ * @returns {{ ownerId: string, name: string, file: string }[]}
+ */
+export function unlabeledChatFiles(tree, chatsDir) {
+    const suffix = '.jsonl.pre-migration';
+    const out = [];
+    if (!fs.existsSync(chatsDir)) return out;
+    for (const dir of fs.readdirSync(chatsDir, { withFileTypes: true })) {
+        if (!dir.isDirectory()) continue;
+        const ownerId = dir.name;
+        /** @type {Set<string> | null} */
+        let fileNames = null;
+        for (const f of fs.readdirSync(path.join(chatsDir, ownerId)).sort()) {
+            if (!f.endsWith(suffix)) continue;
+            const name = f.slice(0, -suffix.length);
+            if (tree.get('SELECT 1 AS ok FROM messages WHERE owner_id = ? AND label = ? LIMIT 1', [ownerId, name])) continue;
+            fileNames ??= new Set([...tree.iterate('SELECT DISTINCT label FROM messages WHERE owner_id = ? AND label IS NOT NULL', [ownerId])].map(r => sanitize(String(r.label))));
+            if (fileNames.has(name)) continue;
+            out.push({ ownerId, name, file: path.join(chatsDir, ownerId, f) });
+        }
+    }
+    return out;
+}
+
+/**
+ * Writes a character's chat read from its file into an owner's rows as the group chat repair writes a chat it
+ * restores whole: each message with all its alternatives under the one before it from the anchor (a reply already
+ * holding one's text is that one), the last labelled with the chat's name and holding its metadata.
+ * @param {Db} db The overlay holding the owner's rows.
+ * @param {{ ownerId: string, avatar: string, name: string, file: string, header: Record<string, any> | null, messages: Record<string, any>[] }} chat
+ * Its messages at least one.
+ * @param {number} now
+ * @returns {{ written: true } | { reason: string }}
+ */
+export function importChatFile(db, chat, now) {
+    const input = {
+        ownerId: chat.ownerId, chatId: chat.name, messages: chat.messages, backupPath: chat.file,
+        backupMetadata: chat.header?.chat_metadata ?? null, character: /** @type {const} */ ({ kind: 'character', rowId: chat.avatar }),
+    };
+    /** @type {{ plan?: import('../restore-group-chat-migration-losses.js').ChatRestorePlan }} */
+    const out = {};
+    db.transaction(() => {
+        out.plan = planChatRestore(db, input);
+        if (out.plan.status === 'restore') applyChatRestore(db, out.plan, input, now);
+    });
+    const plan = /** @type {import('../restore-group-chat-migration-losses.js').ChatRestorePlan} */ (out.plan);
+    return plan.status === 'restore' ? { written: true } : { reason: 'reason' in plan ? plan.reason : 'it is in the tree already' };
 }
 
 /**
@@ -283,15 +417,26 @@ export function decodeEntries(stored) {
  * @property {string | null} ownerId
  * @property {{ nodeId: string, mesId: number }[]} convert
  * @property {{ mesId: unknown, reason: string }[]} left Entries not converted, and why.
+ * @property {string} [kept] Why none of its entries are converted (a `KEPT` reason): the file is kept as it is.
+ * @property {number} entries How many entries it holds.
  * @property {string} [unreadable]
  */
+
+/** Why an itemization file's entries are kept in it rather than converted. */
+export const KEPT = Object.freeze({
+    noChat: 'no chat has this name or id now',
+    ownerShared: 'more than one character or group has a chat by this name',
+    nameShared: 'more than one chat has a name this file name stands for',
+    pastEnd: 'some of its entries are past the end of its chat, so it may have been saved under another chat\'s name',
+    conflict: 'another file has a different itemization for a message it names',
+});
 
 /**
  * What converting each per-chat itemization file does (the rules of the deleted
  * `convert-itemized-prompts-to-nodes.js`): each entry to the message at its position down its chat's current path;
- * not converted, and listed: an entry past the chat's end, a later entry for a position that already had one, an
- * entry for a message that has an itemization row, and every entry of a file whose chat can't be found or is named by
- * more than one character or group.
+ * not converted, and listed: a later entry for a position that already had one and an entry for a message that has
+ * an itemization row. A file whose chat can't be found or is named by more than one character or group, or with an
+ * entry past its chat's end, is kept (`kept`): none of its entries are converted.
  * @param {Db} tree
  * @param {(ownerId: string) => Db} dbOf The tree an owner is read from (a repaired group's copy, else the file).
  * @param {string} dir `<user>/itemized prompts`.
@@ -311,23 +456,21 @@ export function itemizedFilePlans(tree, dbOf, dir) {
     const hasTable = Boolean(tree.get('SELECT 1 AS ok FROM sqlite_master WHERE type = \'table\' AND name = \'itemizations\''));
     return files.map(file => {
         /** @type {ItemizedFilePlan} */
-        const plan = { file, ownerId: null, convert: [], left: [] };
+        const plan = { file, ownerId: null, convert: [], left: [], entries: 0 };
         const entries = readItemizedFile(dir, file);
         if ('unreadable' in entries) return { ...plan, unreadable: entries.unreadable };
-        const leaveAll = (/** @type {string} */ reason) => {
-            for (const entry of entries.list) plan.left.push({ mesId: entry?.mesId, reason });
-            return plan;
-        };
+        plan.entries = entries.list.length;
+        const keep = (/** @type {string} */ reason) => ({ ...plan, kept: reason });
         const chatId = file.slice(0, -ITEMIZED_SUFFIX.length);
         const asNode = /** @type {{ owner_id: string } | undefined} */ (tree.get('SELECT owner_id FROM messages WHERE id = ? AND parent_id IS NOT NULL', [chatId]));
         const candidates = asNode ? [{ ownerId: asNode.owner_id, label: chatId }] : (byFileName.get(chatId) ?? []);
-        if (candidates.length === 0) return leaveAll('no chat has this name or id now');
-        if (new Set(candidates.map(c => c.ownerId)).size > 1) return leaveAll('more than one character or group has a chat by this name');
-        if (new Set(candidates.map(c => c.label)).size > 1) return leaveAll('more than one chat has a name this file name stands for');
+        if (candidates.length === 0) return keep(KEPT.noChat);
+        if (new Set(candidates.map(c => c.ownerId)).size > 1) return keep(KEPT.ownerShared);
+        if (new Set(candidates.map(c => c.label)).size > 1) return keep(KEPT.nameShared);
         const ownerId = candidates[0].ownerId;
         const db = dbOf(ownerId);
         const at = opens(db, ownerId, candidates[0].label);
-        if (!at) return leaveAll('no chat has this name or id now');
+        if (!at) return keep(KEPT.noChat);
         plan.ownerId = ownerId;
         const ids = pathTo(db, at.end);
         const taken = new Set();
@@ -337,10 +480,7 @@ export function itemizedFilePlans(tree, dbOf, dir) {
                 plan.left.push({ mesId: entry?.mesId, reason: 'it names no message position' });
                 continue;
             }
-            if (mesId >= ids.length) {
-                plan.left.push({ mesId, reason: `the chat has ${ids.length} messages now` });
-                continue;
-            }
+            if (mesId >= ids.length) return keep(KEPT.pastEnd);
             const nodeId = ids[mesId];
             if (taken.has(nodeId)) {
                 plan.left.push({ mesId, reason: 'an earlier entry for this message was the one shown' });

@@ -4,15 +4,15 @@ import process from 'node:process';
 
 import { setConfigFilePath } from '../util.js';
 import { USER_DIRECTORY_TEMPLATE } from '../constants.js';
-import { alternativesFromMessage, identityHashOf } from '../message-tree-db.js';
 import { isChatHeaderEntry, parseChatFile } from '../chat-header.js';
-import { TYPE, convertedFileKey } from '../library-codes.js';
+import { KEPT_ITEMIZATION_FILES, TYPE, convertedFileKey } from '../library-codes.js';
+import { canonicalJson } from '../character-card-storage.js';
 import { bookKey } from '../world-info-keys.js';
 import { parseTimestamp } from '../timestamps.js';
 import { TAG_SORTS } from '../library-engine-tags.js';
 import { probeConfiguredServer } from './cleanup-zztest-leftovers.js';
 import { BATCH, cardsOf, characterBatches, hasTable, openOld, readGroups, readTags, readsAs, strayCharacterTagRows } from './convert-to-engine/old-library.js';
-import { STRAY_OWNER, ZZTEST_GROUP_ID, STRAY_GROUP_CHAT, IVY_OPENING_ID, GROUP_ANCHOR_ID, groupOverlay, itemizedEntries, itemizedFilePlans, openTree, ownerIds, zztestPlans } from './convert-to-engine/old-chats.js';
+import { STRAY_OWNER, ZZTEST_GROUP_ID, STRAY_GROUP_CHAT, IVY_OPENING_ID, GROUP_ANCHOR_ID, KEPT, groupOverlay, importChatFile, itemizedEntries, itemizedFilePlans, openTree, ownerIds, readChatRun, unlabeledChatFiles, walkChat, zztestPlans } from './convert-to-engine/old-chats.js';
 import { bookmarkLinksOf, backupNames, classify, openBackups } from './convert-to-engine/labels.js';
 import { planOwner, writeOwner } from './convert-to-engine/chats.js';
 import { worldBooks } from './convert-to-engine/worlds.js';
@@ -40,7 +40,9 @@ const { verify } = await import('./convert-to-engine/verify.js');
  * written: the user deletes them after a clean start.
  *
  * Folded in: the fields converter's pass-less tag moves, the world-info sidecar conversion, the group chat repair,
- * the zztest cleanup and the old per-chat prompt itemization files.
+ * the zztest cleanup and the old per-chat prompt itemization files. A character's chat file no label in the tree names
+ * converts as a chat of its own. Prompt itemization files whose entries can't be placed for sure stay on disk as they
+ * are, listed in the store under `KEPT_ITEMIZATION_FILES`.
  */
 
 const LOG_PREFIX = '[convert-to-engine]';
@@ -137,6 +139,8 @@ export async function convert(o) {
     let overlay = null;
     /** @type {Parameters<typeof verify>[0]['owners']} */
     let chatChecks = [];
+    /** @type {{ file: string, reason: string, entries: number }[]} */
+    const keptItemizations = [];
     try {
         // ---- groups and tags ----
         const groupRead = meta ? readGroups(meta, dirs.groups) : { groups: [], unread: [], rowsWithoutFile: [] };
@@ -388,12 +392,55 @@ export async function convert(o) {
         // ---- chats ----
         if (tree) {
             const groupIdList = groupRead.groups.map(g => g.group.id);
-            overlay = await groupOverlay(o.Database, tree, dirs, groupIdList);
+            // A character's chat files no label in the tree names: each converts as a chat of its own.
+            const unlabeled = unlabeledChatFiles(tree, dirs.chats).filter(f => !(f.ownerId === STRAY_OWNER && zz?.stray.status === 'change'));
+            const importOwners = new Set(unlabeled.filter(f => byStem.has(f.ownerId)).map(f => f.ownerId));
+            overlay = await groupOverlay(o.Database, tree, dirs, groupIdList, [...importOwners]);
             for (const it of overlay.result.restored) report.lines.push(`group chat repaired: group ${it.groupId} chat "${it.chatId}": ${it.text}`);
             for (const it of overlay.result.unrestorable) warn(report, 'group chats the repair can\'t restore (converted as they are)', `group ${it.groupId} chat "${it.chatId}": ${it.text}`);
             for (const it of overlay.result.notices) warn(report, 'group chat repair notes', `group ${it.groupId} chat "${it.chatId}": ${it.text}`);
             const repaired = /** @type {any} */ (overlay.db);
-            const dbOf = (/** @type {string} */ ownerId) => (groupEntity.has(ownerId) ? repaired : tree);
+            const dbOf = (/** @type {string} */ ownerId) => (groupEntity.has(ownerId) || importOwners.has(ownerId) ? repaired : tree);
+            /** @type {Map<string, import('./convert-to-engine/chats.js').Dropped[]>} */
+            const importedAsBookmarks = new Map();
+            for (const f of unlabeled) {
+                const avatar = byStem.get(f.ownerId);
+                if (avatar === undefined) {
+                    warn(report, 'chat files with no label in the tree and no character (left where they are)', f.file);
+                    continue;
+                }
+                const run = readChatRun(fs.readFileSync(f.file, 'utf8'));
+                if (run.stopsAt !== null) warn(report, 'chat files read only up to a line that isn\'t a JSON object (the rest not converted; the file is left where it is)', `${f.file}: stops at line ${run.stopsAt}, ${run.rest} line(s) not converted`);
+                const metadata = run.header && typeof run.header.chat_metadata === 'object' && run.header.chat_metadata !== null && !Array.isArray(run.header.chat_metadata) ? run.header.chat_metadata : null;
+                const asBookmark = (/** @type {import('./convert-to-engine/chats.js').Dropped} */ d) => {
+                    if (!importedAsBookmarks.has(f.ownerId)) importedAsBookmarks.set(f.ownerId, []);
+                    /** @type {any[]} */ (importedAsBookmarks.get(f.ownerId)).push(d);
+                };
+                let how;
+                if (run.messages.length === 0) {
+                    asBookmark({ name: f.name, kind: 'empty', metadata, created: parseTimestamp(run.header?.create_date) || null });
+                    how = 'no messages: a bookmark at the tree\'s root';
+                } else {
+                    const walked = walkChat(repaired, f.ownerId, run.messages);
+                    if (walked.end !== null) {
+                        asBookmark({ name: f.name, kind: 'twin', end: walked.end, metadata });
+                        how = `its messages are a path in the tree: a bookmark at its last${walked.bySwipe ? ` (${walked.bySwipe} found by their shown swipe's text)` : ''}`;
+                    } else {
+                        const r = importChatFile(repaired, { ownerId: f.ownerId, avatar, name: f.name, file: f.file, header: run.header, messages: run.messages }, now);
+                        if ('reason' in r) {
+                            warn(report, 'chat files with no label in the tree that can\'t be converted (left where they are)', `${f.file}: ${r.reason}`);
+                            continue;
+                        }
+                        how = 'its messages written as a branch of their own, with every swipe';
+                    }
+                }
+                warn(report, 'chat files with no label in the tree, converted as chats of their own (the file is left where it is)', `${f.file}: ${run.messages.length} message(s); ${how}`);
+                count(report, 'chat files with no label converted');
+                if (!trees.has(f.ownerId)) {
+                    const s = /** @type {import('../chat-codec.js').Speaker} */ (speakers.get(avatar));
+                    trees.set(f.ownerId, { id: s.id, kind: 'character', speaker: s });
+                }
+            }
             if (zz) {
                 for (const [name, plan] of /** @type {[string, any][]} */ ([['the group anchor\'s default child', zz.repoint], ['owner zztestchar\'s rows', zz.stray]])) {
                     if (plan.status === 'change') report.lines.push(`zztest leftovers: ${name} not converted as it was (${plan.lines.join('; ')})`);
@@ -407,6 +454,10 @@ export async function convert(o) {
             for (const plan of itemizedFilePlans(tree, dbOf, itemizedDir)) {
                 if (plan.unreadable) {
                     warn(report, 'prompt itemization files that can\'t be read (left where they are)', `${plan.file}: ${plan.unreadable}`);
+                    continue;
+                }
+                if (plan.kept !== undefined) {
+                    keptItemizations.push({ file: plan.file, reason: plan.kept, entries: plan.entries });
                     continue;
                 }
                 for (const l of plan.left) warn(report, 'prompt itemization entries not converted', `${plan.file} message ${String(l.mesId)}: ${l.reason}`);
@@ -450,7 +501,7 @@ export async function convert(o) {
                 const db = dbOf(ownerId);
                 const group = t.kind === 'group' ? groupRead.groups.find(g => g.group.id === ownerId)?.group : undefined;
                 const active = t.kind === 'character' ? activeChats.get(/** @type {any} */ (t.speaker).avatar) ?? null : typeof group?.chat_id === 'string' ? group.chat_id : null;
-                const dropped = group ? droppedChats(report, db, dirs, ownerId, group, zz?.strayChat && ownerId === ZZTEST_GROUP_ID) : [];
+                const dropped = group ? droppedChats(report, db, dirs, ownerId, group, zz?.strayChat && ownerId === ZZTEST_GROUP_ID) : (importedAsBookmarks.get(ownerId) ?? []);
                 const input = {
                     db,
                     ownerId,
@@ -469,8 +520,28 @@ export async function convert(o) {
                 if (plan.strayDefaults.length) warn(report, 'default children that aren\'t one of their message\'s replies (no fork choice)', `${t.kind} ${ownerId}: ${plan.strayDefaults.join(', ')}`);
                 for (const s of plan.overrides) warn(report, 'chat metadata a later chat at the same message overrides (both recorded there, the later one read)', `${t.kind} ${ownerId} at ${s.at ?? 'the root'} (${s.earlier} -> ${s.later}): keys ${s.keys.map(k => `${k.slice(2)}${k.startsWith('v') ? ' (variable)' : ''}`).join(', ')}`);
                 for (const s of plan.shadows) warn(report, 'chat metadata a deeper chat\'s shadows below it (each kept at its own message)', `${t.kind} ${ownerId} at ${s.at ?? 'the root'} (${s.sources.join(', ')}): key ${s.key.slice(2)}${s.key.startsWith('v') ? ' (variable)' : ''}, ${s.upper} -> ${s.lower ?? 'removed'}`);
+                // Files giving one message the same entry place it once; differing ones place none there.
+                /** @type {Map<string, { entry: Record<string, any>, json: string, files: string[], differ: boolean }>} */
+                const byNode = new Map();
+                for (const fp of itemizedByOwner.get(ownerId) ?? []) {
+                    for (const [node, entry] of itemizedEntries(itemizedDir, fp)) {
+                        const json = canonicalJson(entry);
+                        const seen = byNode.get(node);
+                        if (!seen) byNode.set(node, { entry, json, files: [fp.file], differ: false });
+                        else {
+                            seen.files.push(fp.file);
+                            if (seen.json !== json) seen.differ = true;
+                        }
+                    }
+                }
                 const fileItemizations = new Map();
-                for (const fp of itemizedByOwner.get(ownerId) ?? []) for (const [node, entry] of itemizedEntries(itemizedDir, fp)) fileItemizations.set(node, entry);
+                /** @type {Map<string, number>} */
+                const conflicting = new Map();
+                for (const [node, v] of byNode) {
+                    if (!v.differ) fileItemizations.set(node, v.entry);
+                    else for (const file of v.files) conflicting.set(file, (conflicting.get(file) ?? 0) + 1);
+                }
+                for (const [file, n] of conflicting) keptItemizations.push({ file, reason: KEPT.conflict, entries: n });
                 const counts = await writeOwner(ctx, input, plan, t, fileItemizations);
                 if (counts.unreadable.length) {
                     report.problems.push(`owner ${ownerId}: message(s) whose stored JSON can't be read: ${counts.unreadable.join(', ')}`);
@@ -509,6 +580,20 @@ export async function convert(o) {
             count(report, 'conversations listed in recent chats', conversations.length);
             for (let i = 0; i < afterLoad.length; i += 2000) await sink.commit(afterLoad.slice(i, i + 2000));
             chatChecks = checks;
+            if (keptItemizations.length) {
+                await sink.commit([{ kind: 'metaValue', key: KEPT_ITEMIZATION_FILES, json: JSON.stringify(keptItemizations) }]);
+                /** @type {Map<string, { files: number, entries: number }>} */
+                const byReason = new Map();
+                for (const k of keptItemizations) {
+                    const r = byReason.get(k.reason) ?? { files: 0, entries: 0 };
+                    r.files++;
+                    r.entries += k.entries;
+                    byReason.set(k.reason, r);
+                }
+                for (const [reason, r] of byReason) {
+                    warn(report, `prompt itemization entries kept unplaced, not dropped (each file left on disk as it is and listed in the store's "${KEPT_ITEMIZATION_FILES}")`, `${reason}: ${r.entries} entries in ${r.files} file(s)`);
+                }
+            }
         }
         for (const dir of [dirs.chats, dirs.groupChats]) {
             for (const f of jsonlLeftovers(dir)) warn(report, 'chat files today\'s server doesn\'t read (left where they are; import them through the chat import)', f);
@@ -519,7 +604,7 @@ export async function convert(o) {
             progress('checking the store against the old files');
             const differs = await verify({
                 store, meta, charactersDir: dirs.characters, tags, groups: groupRead.groups,
-                books: () => worldBooks(dirs.worlds), bookNames, owners: chatChecks, handle: o.handle, now, counts: report.counts, progress,
+                books: () => worldBooks(dirs.worlds), bookNames, owners: chatChecks, keptItemizations, handle: o.handle, now, counts: report.counts, progress,
             });
             report.problems.push(...differs);
             phase('the check');
@@ -661,20 +746,13 @@ function droppedChats(report, db, dirs, ownerId, group, skipStray) {
             report.lines.push(`group ${ownerId} chat "${name}" (header only): a bookmark at the tree's root`);
             continue;
         }
-        const anchor = /** @type {{ id: string } | undefined} */ (db.get('SELECT id FROM messages WHERE owner_id = ? AND parent_id IS NULL ORDER BY created_at ASC, id ASC LIMIT 1', [ownerId]));
-        let at = anchor?.id ?? null;
-        for (const message of parsed.messages) {
-            if (at === null) break;
-            const alts = alternativesFromMessage(/** @type {any} */ (message));
-            const row = /** @type {{ id: string } | undefined} */ (db.get('SELECT id FROM messages WHERE parent_id = ? AND identity_hash = ?', [at, identityHashOf(at, alts.contents[alts.selected])]));
-            at = row?.id ?? null;
-        }
-        if (at === null) {
+        const walked = walkChat(db, ownerId, /** @type {any[]} */ (parsed.messages));
+        if (walked.end === null) {
             warn(report, kind, `group ${ownerId} chat "${name}": its messages aren't a path in the tree`);
             continue;
         }
-        out.push({ name, kind: 'twin', end: at, metadata });
-        report.lines.push(`group ${ownerId} chat "${name}" (a duplicate of a chat in the tree): a bookmark at the message it ends on`);
+        out.push({ name, kind: 'twin', end: walked.end, metadata });
+        report.lines.push(`group ${ownerId} chat "${name}" (a duplicate of a chat in the tree${walked.bySwipe ? `, ${walked.bySwipe} message(s) found by their shown swipe's text` : ''}): a bookmark at the message it ends on`);
     }
     return out;
 }
