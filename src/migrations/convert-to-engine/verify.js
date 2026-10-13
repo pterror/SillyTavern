@@ -38,7 +38,7 @@ const GROUP_READ_KEYS = ['id', 'fav', 'tag_ids', 'date_added', 'create_date', 'd
  * @param {import('./old-library.js').OldGroup[]} v.groups
  * @param {() => Iterable<import('./worlds.js').WorldBook>} v.books The world books, read again.
  * @param {Set<string>} v.bookNames The ones converted.
- * @param {{ input: import('./chats.js').OwnerInput, tree: bigint, files: Map<string, Record<string, any>> }[]} v.owners
+ * @param {{ input: import('./chats.js').OwnerInput, tree: bigint, itemized: Set<string> }[]} v.owners `itemized`: the messages the old per-chat files' entries were placed on.
  * @param {{ file: string, reason: string, entries: number }[]} v.keptItemizations
  * @param {string} v.handle
  * @param {number} v.now When the conversion ran.
@@ -184,7 +184,7 @@ async function verifyOwner(v, chats, o, user) {
     }
     const newOf = (/** @type {string | null} */ old) => (old === null ? null : ids.get(old) ?? null);
     const hasTable = (/** @type {string} */ t) => !!input.db.get('SELECT 1 AS ok FROM sqlite_master WHERE type = \'table\' AND name = ?', [t]);
-    const itemized = new Set(o.files.keys());
+    const itemized = new Set(o.itemized);
     if (hasTable('itemizations')) {
         for (const r of /** @type {Iterable<{ node_id: string }>} */ (input.db.iterate('SELECT i.node_id FROM itemizations i JOIN messages m ON m.id = i.node_id WHERE m.owner_id = ?', [input.ownerId]))) itemized.add(r.node_id);
     }
