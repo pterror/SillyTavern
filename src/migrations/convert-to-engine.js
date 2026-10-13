@@ -11,14 +11,18 @@ import { bookKey } from '../world-info-keys.js';
 import { parseTimestamp } from '../timestamps.js';
 import { TAG_SORTS } from '../library-engine-tags.js';
 import { probeConfiguredServer } from './cleanup-zztest-leftovers.js';
-import { characterRecords, groupRecords, ownedBookRecords, tagRecords, worldBookRecords } from './convert-to-engine/records.js';
 import { BATCH, cardsOf, characterBatches, hasTable, openOld, readGroups, readTags, readsAs, strayCharacterTagRows } from './convert-to-engine/old-library.js';
 import { STRAY_OWNER, ZZTEST_GROUP_ID, STRAY_GROUP_CHAT, IVY_OPENING_ID, GROUP_ANCHOR_ID, groupOverlay, itemizedEntries, itemizedFilePlans, openTree, ownerIds, zztestPlans } from './convert-to-engine/old-chats.js';
 import { bookmarkLinksOf, backupNames, classify, openBackups } from './convert-to-engine/labels.js';
 import { planOwner, writeOwner } from './convert-to-engine/chats.js';
 import { worldBooks } from './convert-to-engine/worlds.js';
 import { Sink } from './convert-to-engine/sink.js';
-import { verify } from './convert-to-engine/verify.js';
+
+// These read config when they load, so a static import would run before the config path is set.
+const isMain = process.argv[1] && import.meta.url === `file://${process.argv[1]}`;
+if (isMain) setConfigFilePath(parseArgs(process.argv.slice(2)).config);
+const { characterRecords, groupRecords, ownedBookRecords, tagRecords, worldBookRecords } = await import('./convert-to-engine/records.js');
+const { verify } = await import('./convert-to-engine/verify.js');
 
 /**
  * Converts one user's data into the engine store (build path stage 5e): the library, chats, world info and search,
@@ -836,14 +840,12 @@ export function parseArgs(argv) {
     return out;
 }
 
-const isMain = process.argv[1] && import.meta.url === `file://${process.argv[1]}`;
 if (isMain) {
     const args = parseArgs(process.argv.slice(2));
     if (args.unknown.length > 0 || args.dryRun === args.apply) {
         console.warn(`${LOG_PREFIX} usage: --dry-run | --apply --server-stopped  [--data-root ./data] [--handle default-user] [--config ./config.yaml] [--keep-orphans]`);
         process.exitCode = 2;
     } else {
-        setConfigFilePath(args.config);
         const { getBetterSqlite3 } = await import('../endpoints/native-sqlite.js');
         const { loadEngine } = await import('../../engine/load.js');
         process.exitCode = await runConversion({ ...args, Database: await getBetterSqlite3(), engine: () => loadEngine().binding });
