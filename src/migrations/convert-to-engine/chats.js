@@ -195,10 +195,13 @@ export function planOwner(input) {
         if (kids[kids.length - 1].id !== dflt) plan.forks.push({ at: at(r.id), reply: dflt });
     }
 
-    // The pointer: the active chat's place; else the root when a card greeting is chosen there.
+    // The pointer: the active chat's place (a label, else a chat converted from its file); else the root when a card
+    // greeting is chosen there.
     if (input.active !== null) {
         const open = opens(db, ownerId, input.active);
+        const file = open ? undefined : input.dropped.find(d => d.name === input.active);
         if (open) plan.pointer = { at: at(open.end) };
+        else if (file) plan.pointer = { at: file.kind === 'twin' ? file.end : null };
         else plan.activeUnresolved = true;
     }
     if (plan.pointer === null && input.openingChoice !== null) plan.pointer = { at: null };
