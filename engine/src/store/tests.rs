@@ -501,12 +501,10 @@ fn derived(s: &Store, entities: std::ops::Range<u64>) -> Vec<(Vec<u8>, Vec<u8>)>
     let mut out = Vec::new();
     for st in [
         key::SEARCH_POSTING,
-        key::SEARCH_DOC_FREQ,
+        key::SEARCH_TERM_COUNTS.id(),
         key::SEARCH_BLOCK_MAX,
         key::SEARCH_SHORTEST,
         key::SEARCH_LENGTH,
-        key::SEARCH_TERM_DOCS,
-        key::SEARCH_FIELD_TOKENS,
         key::SEARCH_DOCS,
         key::SEARCH_MAX_DOC,
         key::MEMBER_OF,
@@ -559,9 +557,11 @@ fn a_bulk_load_derives_what_commits_derive() {
         Store::open_in(&a, SMALL, small_pool()).unwrap(),
         Store::open_in(&b, SMALL, small_pool()).unwrap(),
     );
-    // Some state first, which the load reads and replaces in part.
+    // Some state first, which the load reads and replaces in part; no assignments, as the load numbers the library.
+    let mut first = library(1, 20);
+    first.retain(|r| r.kind.name != "tagAssign");
     for s in [&sa, &sb] {
-        for c in library(1, 20).chunks(7) {
+        for c in first.chunks(7) {
             s.commit_wait(c.to_vec()).unwrap();
         }
     }
@@ -594,6 +594,50 @@ fn a_bulk_load_derives_what_commits_derive() {
     let sb = Store::open_in(&b, SMALL, small_pool()).unwrap();
     assert_eq!(derived(&sa, 0..401), derived(&sb, 0..401));
     let _ = (fs::remove_dir_all(&a), fs::remove_dir_all(&b));
+}
+
+/// A load that fits in its memory budget writes no spill file; one in a budget of a byte writes every run to a
+/// file, keeps none in memory, and derives the same, in partition order and out of it.
+#[test]
+fn a_bulk_load_spills_to_files_only_past_its_budget() {
+    let recs = library(1, 300);
+    let (first, second): (Vec<_>, Vec<_>) = recs
+        .iter()
+        .cloned()
+        .enumerate()
+        .partition(|(i, _)| i % 2 == 0);
+    let mut shuffled: Vec<Record> = first.into_iter().map(|(_, r)| r).collect();
+    shuffled.extend(second.into_iter().rev().map(|(_, r)| r));
+    let committed = temp_dir("bulk-budget-commits");
+    let sa = Store::open_in(&committed, SMALL, small_pool()).unwrap();
+    for c in recs.chunks(9) {
+        sa.commit_wait(c.to_vec()).unwrap();
+    }
+    let want = derived(&sa, 0..310);
+    for (name, order) in [("ordered", &recs), ("shuffled", &shuffled)] {
+        for budget in [None, Some(1)] {
+            let dir = temp_dir(&format!("bulk-budget-{name}-{budget:?}"));
+            let sb = Store::open_in(&dir, SMALL, small_pool()).unwrap();
+            bulk::set_load_budget(budget);
+            let mut l = sb.loader().unwrap();
+            bulk::set_load_budget(None);
+            for c in order.chunks(100) {
+                l.add(c.to_vec()).unwrap();
+            }
+            let st = l.finish().unwrap();
+            match budget {
+                None => assert_eq!(st.spills, 0, "{name}: {st:?}"),
+                Some(_) => {
+                    assert!(st.spills > 0, "{name}: {st:?}");
+                    assert_eq!(st.kept_runs, 0, "{name}: {st:?}");
+                }
+            }
+            assert_eq!(derived(&sb, 0..310), want, "{name}, budget {budget:?}");
+            drop(sb);
+            let _ = fs::remove_dir_all(&dir);
+        }
+    }
+    let _ = fs::remove_dir_all(&committed);
 }
 
 #[test]
@@ -669,7 +713,10 @@ fn a_bulk_load_stopped_while_installing_is_whole_or_absent_after_reopening() {
     for (point, visible) in [(1u8, false), (2, true)] {
         let dir = temp_dir("bulk-crash");
         let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
-        s.commit_wait(library(1, 3)).unwrap();
+        // Without assignments: the load numbers the library, which it does only over one with none.
+        let mut before = library(1, 3);
+        before.retain(|r| r.kind.name != "tagAssign");
+        s.commit_wait(before).unwrap();
         let mut l = s.loader().unwrap();
         l.add(library(10, 50)).unwrap();
         l.fail_at(point);
@@ -700,4 +747,233 @@ fn a_bulk_load_stopped_while_installing_is_whole_or_absent_after_reopening() {
         drop(s);
         let _ = fs::remove_dir_all(&dir);
     }
+}
+
+#[test]
+fn an_added_map_kinds_keys_take_added_maps_and_deletes() {
+    use crate::keyspace::val::{Val, map_bytes};
+    let k = key::test_add_map(3);
+    let mut layer = std::collections::BTreeMap::new();
+    let mut out = derive::Out::default();
+    out.add_map(k.clone(), vec![(1, 2), (4, 1)]);
+    out.add_map(k.clone(), vec![(1, -1)]);
+    out.apply(&mut layer);
+    assert_eq!(
+        layer.get(k.bytes()),
+        Some(&Val::AddMap(vec![(1, 1), (4, 1)]))
+    );
+    let mut out = derive::Out::default();
+    out.del(k.clone());
+    out.add_map(k.clone(), vec![(4, 5)]);
+    out.apply(&mut layer);
+    assert_eq!(layer.get(k.bytes()), Some(&Val::Put(map_bytes(&[(4, 5)]))));
+}
+
+/// Each map value kind written unpublished, read through a view's layer over each published value its key can
+/// hold: a get and both scans give the newer value over the whole published map. A maxima map over a published
+/// map keeps the published slots it doesn't raise.
+#[test]
+fn a_layers_map_values_read_over_every_published_value_they_can_meet() {
+    use crate::keyspace::val::{Val, count_bytes, map_bytes};
+    let dir = temp_dir("layered-maps");
+    let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
+    s.wait_ready().unwrap();
+    // A key of no structure the store writes, for a set or raised map.
+    let plain = |i: u8| vec![0xfe, 0xfe, i];
+    let added = |i: u64| key::test_add_map(i).bytes().to_vec();
+    let base = [(1, 5), (4, 2), (9, 7)];
+    let wide: Vec<(u32, u64)> = base.iter().map(|&(s, v)| (s, u64::from(v))).collect();
+    // (name, key, published, unpublished, what a read gives)
+    let cases: Vec<(&str, Vec<u8>, Val, Val, Vec<(u32, u32)>)> = vec![
+        (
+            "Map over a Map",
+            plain(1),
+            Val::Map(base.to_vec()),
+            Val::Map(vec![(4, 0), (6, 3), (9, 1)]),
+            vec![(1, 5), (6, 3), (9, 1)],
+        ),
+        (
+            "Map over a Put",
+            plain(2),
+            Val::Put(map_bytes(&base)),
+            Val::Map(vec![(4, 0), (6, 3), (9, 1)]),
+            vec![(1, 5), (6, 3), (9, 1)],
+        ),
+        (
+            "Map over a Del",
+            plain(3),
+            Val::Del,
+            Val::Map(vec![(4, 0), (6, 3)]),
+            vec![(6, 3)],
+        ),
+        (
+            "MaxMap over a Map",
+            plain(4),
+            Val::MaxMap(base.to_vec()),
+            Val::MaxMap(vec![(4, 1), (6, 3), (9, 8)]),
+            vec![(1, 5), (4, 2), (6, 3), (9, 8)],
+        ),
+        (
+            "MaxMap over a Put",
+            plain(5),
+            Val::Put(map_bytes(&base)),
+            Val::MaxMap(vec![(4, 1), (6, 3), (9, 8)]),
+            vec![(1, 5), (4, 2), (6, 3), (9, 8)],
+        ),
+        (
+            "MaxMap over a Del",
+            plain(6),
+            Val::Del,
+            Val::MaxMap(vec![(4, 1), (6, 3)]),
+            vec![(4, 1), (6, 3)],
+        ),
+        (
+            "AddMap over Counts",
+            added(1),
+            Val::AddMap(wide.iter().map(|&(s, v)| (s, v as i64)).collect()),
+            Val::AddMap(vec![(4, -2), (6, 3), (9, 1)]),
+            vec![(1, 5), (6, 3), (9, 8)],
+        ),
+        (
+            "AddMap over a Put",
+            added(2),
+            Val::Put(count_bytes(&wide)),
+            Val::AddMap(vec![(4, -2), (6, 3), (9, 1)]),
+            vec![(1, 5), (6, 3), (9, 8)],
+        ),
+        (
+            "AddMap over a Del",
+            added(3),
+            Val::Del,
+            Val::AddMap(vec![(6, 3)]),
+            vec![(6, 3)],
+        ),
+    ];
+    s.inner
+        .ks
+        .insert(cases.iter().map(|c| (c.1.clone(), c.2.clone())), None);
+    let mut layer = std::collections::BTreeMap::new();
+    for c in &cases {
+        layer.insert(c.1.clone(), c.3.clone());
+    }
+    s.derived(|v| {
+        let v = v.with_layer(&layer);
+        for (name, k, _, _, want) in &cases {
+            let end = key::prefix_end(k);
+            let got = |x: Option<Val>| x.and_then(|x| x.into_pairs(k)).unwrap_or_default();
+            assert_eq!(&got(v.get_val(k)?), want, "{name}: get");
+            let scanned = v.scan_vals(k, &end, 1)?.into_iter().next().map(|x| x.1);
+            assert_eq!(&got(scanned), want, "{name}: scan");
+            let back = v.scan_vals_rev(k, &end, 1)?.into_iter().next().map(|x| x.1);
+            assert_eq!(&got(back), want, "{name}: scan back");
+        }
+        Ok(())
+    })
+    .unwrap();
+    s.close();
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Each map value kind written unpublished, range-read through a view's layer over each published value its
+/// key can hold: the newer value over the published map, within the range. A maxima map over a published map
+/// keeps the published slots it doesn't raise.
+#[test]
+fn a_layers_map_values_range_read_over_every_published_value_they_can_meet() {
+    use crate::keyspace::val::{Val, count_bytes, map_bytes};
+    let dir = temp_dir("layered-map-ranges");
+    let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
+    s.wait_ready().unwrap();
+    let plain = |i: u8| vec![0xfe, 0xfd, i];
+    let added = |i: u64| key::test_add_map(i).bytes().to_vec();
+    let base = [(1, 5), (4, 2), (9, 7)];
+    let wide: Vec<(u32, u64)> = base.iter().map(|&(s, v)| (s, u64::from(v))).collect();
+    // (name, key, published, unpublished, what a read of all slots gives)
+    let cases: Vec<(&str, Vec<u8>, Val, Val, Vec<(u32, u32)>)> = vec![
+        (
+            "Map over a Map",
+            plain(1),
+            Val::Map(base.to_vec()),
+            Val::Map(vec![(4, 0), (6, 3), (9, 1)]),
+            vec![(1, 5), (6, 3), (9, 1)],
+        ),
+        (
+            "Map over a Put",
+            plain(2),
+            Val::Put(map_bytes(&base)),
+            Val::Map(vec![(4, 0), (6, 3), (9, 1)]),
+            vec![(1, 5), (6, 3), (9, 1)],
+        ),
+        (
+            "Map over a Del",
+            plain(3),
+            Val::Del,
+            Val::Map(vec![(4, 0), (6, 3)]),
+            vec![(6, 3)],
+        ),
+        (
+            "MaxMap over a Map",
+            plain(4),
+            Val::MaxMap(base.to_vec()),
+            Val::MaxMap(vec![(4, 1), (6, 3), (9, 8)]),
+            vec![(1, 5), (4, 2), (6, 3), (9, 8)],
+        ),
+        (
+            "MaxMap over a Put",
+            plain(5),
+            Val::Put(map_bytes(&base)),
+            Val::MaxMap(vec![(4, 1), (6, 3), (9, 8)]),
+            vec![(1, 5), (4, 2), (6, 3), (9, 8)],
+        ),
+        (
+            "MaxMap over a Del",
+            plain(6),
+            Val::Del,
+            Val::MaxMap(vec![(4, 1), (6, 3)]),
+            vec![(4, 1), (6, 3)],
+        ),
+        (
+            "AddMap over Counts",
+            added(1),
+            Val::AddMap(wide.iter().map(|&(s, v)| (s, v as i64)).collect()),
+            Val::AddMap(vec![(4, -2), (6, 3), (9, 1)]),
+            vec![(1, 5), (6, 3), (9, 8)],
+        ),
+        (
+            "AddMap over a Put",
+            added(2),
+            Val::Put(count_bytes(&wide)),
+            Val::AddMap(vec![(4, -2), (6, 3), (9, 1)]),
+            vec![(1, 5), (6, 3), (9, 8)],
+        ),
+        (
+            "AddMap over a Del",
+            added(3),
+            Val::Del,
+            Val::AddMap(vec![(6, 3)]),
+            vec![(6, 3)],
+        ),
+    ];
+    s.inner
+        .ks
+        .insert(cases.iter().map(|c| (c.1.clone(), c.2.clone())), None);
+    let mut layer = std::collections::BTreeMap::new();
+    for c in &cases {
+        layer.insert(c.1.clone(), c.3.clone());
+    }
+    s.derived(|v| {
+        let v = v.with_layer(&layer);
+        for (name, k, _, _, want) in &cases {
+            assert_eq!(&v.map_range(k, 0, u32::MAX, true)?, want, "{name}: all");
+            let inner: Vec<(u32, u32)> = want
+                .iter()
+                .copied()
+                .filter(|x| x.0 >= 2 && x.0 < 9)
+                .collect();
+            assert_eq!(&v.map_range(k, 2, 9, true)?, &inner, "{name}: [2, 9)");
+        }
+        Ok(())
+    })
+    .unwrap();
+    s.close();
+    let _ = fs::remove_dir_all(&dir);
 }

@@ -1,13 +1,9 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 
 import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 
-import { disposeMessageTreeStores } from './message-tree-db.js';
-import { getSqliteEngine } from './endpoints/sqlite-engine.js';
 // token-count-store.js imports tokenizer-resolve.js, whose import chain reads process-wide config at import
 // time (src/endpoints/secrets.js), so the config path is set first and the module imported after it.
 import { setConfigFilePath } from './util.js';
@@ -27,43 +23,33 @@ const {
     LAST_USED_GRANULARITY_MS,
     PRUNE_BATCH_ROWS,
     PRUNE_PAUSE_MS,
-    pruneBatch,
-    pruneTokenTable,
-    startTokenCountMaintenance,
-    tokenCountMaintenanceIdle,
 } = await import('./token-count-store.js');
 const { tokenizers, tokenizerIdentity } = await import('./tokenizer-resolve.js');
 const { countChatCompletionMessages } = await import('./endpoints/tokenizers.js');
+const { TABLE } = await import('./token-cache-engine.js');
+const { convertedUser } = await import('../tests/converted-user.fixture.js');
 
-const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'token-count-store-test-'));
-const directories = { root: tmpRoot };
-const storedRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'token-count-store-test-'));
-const chunksRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'token-count-store-test-'));
-const oldRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'token-count-store-test-'));
-const pruneRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'token-count-store-test-'));
+// One converted user's cache holds every case; each case's identities are its own.
+const user = await convertedUser('token-count-store-test-');
+const directories = user.directories;
+const { store } = user;
+
+/** How many entries each table holds. */
+async function counted() {
+    return {
+        counts: await store.lib.store.chatRead('tokenCacheCount', { table: TABLE.counts }),
+        ids: await store.lib.store.chatRead('tokenCacheCount', { table: TABLE.ids }),
+    };
+}
 
 /**
- * Reads the rows and the running counts straight from the file, on a handle of its own.
- * @param {string} [root]
+ * When an entry was last marked used; undefined when there is none.
+ * @param {number} table
+ * @param {string} identity
+ * @param {string} hash
  */
-async function inspect(root = tmpRoot) {
-    const engine = await getSqliteEngine();
-    const db = engine.openDatabase(path.join(root, 'message-tree.sqlite'));
-    try {
-        const rows = table => db.readBounded(`SELECT identity, text_hash, last_used FROM ${table} ORDER BY identity, text_hash`, [], 100);
-        const running = key => {
-            const row = /** @type {{ value: string } | undefined} */ (db.get('SELECT value FROM meta WHERE key = @key', { key }));
-            return row === undefined ? undefined : Number(row.value);
-        };
-        return {
-            counts: rows('token_counts'),
-            ids: rows('token_ids'),
-            countsRunning: running('token_counts_rows'),
-            idsRunning: running('token_ids_rows'),
-        };
-    } finally {
-        db.close();
-    }
+async function usedAt(table, identity, hash) {
+    return (await store.tokens.read(table, identity, hash))?.used;
 }
 
 // A fake llama.cpp `/tokenize`: one token per UTF-8 byte, ids 0..n-1, or 500 when `fakeTokenize.fail`. With
@@ -123,9 +109,8 @@ try {
     const idsHash = tokenKeyHash(TOKEN_KEY_KINDS.IDS, hello);
     assert.equal(await readCount(directories, idA, textHash), null);
     assert.equal(await readIds(directories, idA, idsHash), null);
-    let state = await inspect();
-    assert.equal(state.counts.length, 0);
-    assert.equal(state.countsRunning, undefined, 'a read writes nothing');
+    const empty = await counted();
+    assert.deepEqual(await counted(), empty, 'a read writes nothing');
 
     // --- a written count and ids array read back under their identity and hash ---
     await writeBack(directories, {
@@ -144,29 +129,24 @@ try {
     assert.equal(await readCount(directories, idA, idsHash), null, 'ids are not a count');
     assert.equal(await readIds(directories, idA, textHash), null, 'a count is not ids');
 
-    // --- inserting rows raises the running count by that many ---
-    state = await inspect();
-    assert.equal(state.counts.length, 2);
-    assert.equal(state.countsRunning, 2);
-    assert.equal(state.ids.length, 1);
-    assert.equal(state.idsRunning, 1);
-    assert.ok(state.counts.every(row => row.last_used === 1000));
+    // --- new keys are new entries, used when written ---
+    assert.deepEqual(await counted(), { counts: empty.counts + 2, ids: empty.ids + 1 });
+    assert.equal(await usedAt(TABLE.counts, idA, textHash), 1000);
+    assert.equal(await usedAt(TABLE.counts, idA, ccGpt4), 1000);
 
     // --- a reused key within LAST_USED_GRANULARITY_MS of its last_used writes nothing ---
     const DAY = LAST_USED_GRANULARITY_MS;
     assert.equal(DAY, 24 * 60 * 60 * 1000);
-    const beforeReuse = await inspect();
     await writeBack(directories, { counts: [{ identity: idA, hash: textHash, count: 3 }], ids: [{ identity: idA, hash: idsHash, ids: [15496, 995] }] }, 1000 + DAY - 1);
-    assert.deepEqual(await inspect(), beforeReuse, 'reused within a day: nothing written');
+    assert.equal(await usedAt(TABLE.counts, idA, textHash), 1000, 'reused within a day: not marked');
+    assert.equal(await usedAt(TABLE.ids, idA, idsHash), 1000);
 
-    // --- writeBack of an unchanged row a day or more later changes only last_used and leaves the running count ---
+    // --- a reused key a day or more later is only marked used ---
     await writeBack(directories, { counts: [{ identity: idA, hash: textHash, count: 3 }], ids: [{ identity: idA, hash: idsHash, ids: [15496, 995] }] }, 1000 + DAY);
-    state = await inspect();
-    assert.equal(state.countsRunning, 2, 'no row added');
-    assert.equal(state.idsRunning, 1, 'no row added');
-    assert.equal(state.counts.find(row => row.text_hash === textHash).last_used, 1000 + DAY, 'marked used');
-    assert.equal(state.counts.find(row => row.text_hash === ccGpt4).last_used, 1000, 'a row not written is untouched');
-    assert.equal(state.ids[0].last_used, 1000 + DAY);
+    assert.deepEqual(await counted(), { counts: empty.counts + 2, ids: empty.ids + 1 }, 'no entry added');
+    assert.equal(await usedAt(TABLE.counts, idA, textHash), 1000 + DAY, 'marked used');
+    assert.equal(await usedAt(TABLE.counts, idA, ccGpt4), 1000, 'an entry not written is untouched');
+    assert.equal(await usedAt(TABLE.ids, idA, idsHash), 1000 + DAY);
     assert.equal(await readCount(directories, idA, textHash), 3);
     assert.deepEqual(await readIds(directories, idA, idsHash), [15496, 995]);
 
@@ -183,20 +163,17 @@ try {
             { identity: idB, hash: ccTurbo, count: 12 },
         ],
     }, 3000 + DAY);
-    state = await inspect();
-    assert.equal(state.counts.length, 4);
-    assert.equal(state.countsRunning, 4, 'raised by the two keys new to the table');
-    assert.equal(state.idsRunning, 1, 'the other table\'s count is its own');
+    assert.deepEqual(await counted(), { counts: empty.counts + 4, ids: empty.ids + 1 }, 'the two keys new to the table');
     assert.equal(await readCount(directories, idB, textHash), 4);
 
     // --- nothing to write: nothing written ---
-    await writeBack(directories, { counts: [], ids: [] }, 4000 + DAY);
+    const before = await counted();
+    assert.deepEqual(await writeBack(directories, { counts: [], ids: [] }, 4000 + DAY), { prunesScheduled: [] });
     await writeBack(directories, {}, 4000 + DAY);
-    const after = await inspect();
-    assert.deepEqual(after, state);
+    assert.deepEqual(await counted(), before);
 
     // ===== createStoredCounter =====
-    const storedDirs = { root: storedRoot };
+    const storedDirs = directories;
     const gpt4 = { id: tokenizers.OPENAI, model: 'gpt-4', name: 'OpenAI' };
     const llamaCpp = (localCopy = null) => ({
         kind: /** @type {const} */ ('remote'),
@@ -424,7 +401,7 @@ try {
     }
 
     // ===== chunks: a token_ids row may hold llama.cpp's pieces, as /current/encode answers them =====
-    const chunksDirs = { root: chunksRoot };
+    const chunksDirs = directories;
     const idC = 'llamacpp:["/models/c.gguf","b1"]';
     const hashAe = tokenKeyHash(TOKEN_KEY_KINDS.IDS, 'aé');
     {
@@ -434,40 +411,20 @@ try {
 
         await writeBack(chunksDirs, { ids: [{ identity: idC, hash: hashAe, ids: [0, 1, 2], chunks: ['a', 'é'] }] }, 2000);
         assert.deepEqual(await readIdsRow(chunksDirs, idC, hashAe), { ids: [0, 1, 2], chunks: ['a', 'é'] }, 'a row without chunks gets them');
-        let state = await inspect(chunksRoot);
-        assert.equal(state.idsRunning, 1, 'no row added');
-        assert.equal(state.ids[0].last_used, 1000, 'chunks written; last_used within a day left as it was');
 
         await writeBack(chunksDirs, { ids: [{ identity: idC, hash: hashAe, ids: [0, 1, 2], chunks: ['x'] }] }, 3000);
         await writeBack(chunksDirs, { ids: [{ identity: idC, hash: hashAe, ids: [0, 1, 2] }] }, 1000 + LAST_USED_GRANULARITY_MS);
         assert.deepEqual(await readIdsRow(chunksDirs, idC, hashAe), { ids: [0, 1, 2], chunks: ['a', 'é'] }, 'a row with chunks keeps them');
-        state = await inspect(chunksRoot);
-        assert.equal(state.ids[0].last_used, 1000 + LAST_USED_GRANULARITY_MS, 'marked used');
 
         const hashB = tokenKeyHash(TOKEN_KEY_KINDS.IDS, 'b');
         await writeBack(chunksDirs, { ids: [{ identity: idC, hash: hashB, ids: [0], chunks: ['b'] }] }, 5000);
         assert.deepEqual(await readIdsRow(chunksDirs, idC, hashB), { ids: [0], chunks: ['b'] }, 'a new row with chunks');
-        assert.equal((await inspect(chunksRoot)).idsRunning, 2);
         assert.equal(await readIdsRow(chunksDirs, 'another', hashB), null);
-    }
-
-    // A store whose token_ids was created before it had a chunks column gains it, keeping its rows.
-    {
-        const engine = await getSqliteEngine();
-        const old = engine.openDatabase(path.join(oldRoot, 'message-tree.sqlite'));
-        old.exec(`CREATE TABLE token_ids (identity TEXT NOT NULL, text_hash TEXT NOT NULL, ids TEXT NOT NULL,
-                  last_used INTEGER NOT NULL, PRIMARY KEY (identity, text_hash))`);
-        old.run('INSERT INTO token_ids (identity, text_hash, ids, last_used) VALUES (@identity, @hash, @ids, 1)', { identity: idC, hash: hashAe, ids: '[0,1,2]' });
-        old.close();
-        const oldDirs = { root: oldRoot };
-        assert.deepEqual(await readIdsRow(oldDirs, idC, hashAe), { ids: [0, 1, 2], chunks: null });
-        await writeBack(oldDirs, { ids: [{ identity: idC, hash: hashAe, ids: [0, 1, 2], chunks: ['a', 'é'] }] }, 2);
-        assert.deepEqual(await readIdsRow(oldDirs, idC, hashAe), { ids: [0, 1, 2], chunks: ['a', 'é'] });
     }
 
     // --- encodeTextWithChunks ---
     {
-        const counterDirs = { root: fs.mkdtempSync(path.join(chunksRoot, 'counter-')) };
+        const counterDirs = directories;
         const counter = () => createStoredCounter({ resolved: llamaCpp(), identity: llamaIdentity, directories: counterDirs });
 
         resetFake();
@@ -528,154 +485,13 @@ try {
         assert.deepEqual(local.pending.ids.map(row => Object.keys(row)), [['identity', 'hash', 'ids']]);
     }
 
-    // --- pruning, with the constants passed in small ---
+    // --- the cache's limits ---
     assert.equal(TOKEN_COUNT_ROW_CAP, 1_000_000);
     assert.equal(PRUNE_BATCH_ROWS, 5000);
     assert.equal(PRUNE_PAUSE_MS, 50);
-
-    const pruneIdentity = 'file:sentencepiece:prune';
-    /** One count row per `last_used`, written one write-back each, so each has its own time. */
-    const writeRows = async (dirs, lastUseds, limits = undefined) => {
-        for (const lastUsed of lastUseds) {
-            await writeBack(dirs, { counts: [{ identity: pruneIdentity, hash: tokenKeyHash(TOKEN_KEY_KINDS.TEXT, `row ${lastUsed}`), count: 1 }] }, lastUsed, limits);
-        }
-    };
-    const lastUseds = rows => rows.map(row => Number(row.last_used)).sort((a, b) => a - b);
-    const range = (from, to) => Array.from({ length: to - from + 1 }, (_, i) => from + i);
-    /** Sets a running count by hand, on a handle of its own, as a store whose count went wrong. */
-    const setRunning = async (root, key, value) => {
-        const engine = await getSqliteEngine();
-        const db = engine.openDatabase(path.join(root, 'message-tree.sqlite'));
-        try {
-            db.run('INSERT INTO meta (key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value = @value', { key, value: String(value) });
-        } finally {
-            db.close();
-        }
-    };
-
-    // A batch deletes the least recently used, at most the batch size and never below the cap.
-    {
-        const dirs = { root: fs.mkdtempSync(path.join(pruneRoot, 'batch-')) };
-        await writeRows(dirs, range(1, 25));
-        const limits = { cap: 10, batchRows: 5, pauseMs: 0 };
-        assert.equal(await pruneBatch(dirs, 'token_counts', limits), 5, 'one batch is the batch size');
-        let pruned = await inspect(dirs.root);
-        assert.deepEqual(lastUseds(pruned.counts), range(6, 25), 'the 5 least recently used went');
-        assert.equal(pruned.countsRunning, 20);
-
-        const logged = [];
-        const log = console.log;
-        console.log = (...args) => { logged.push(args.join(' ')); };
-        let batches, idle;
-        try {
-            batches = await pruneTokenTable(dirs, 'token_counts', limits);
-            idle = await pruneTokenTable(dirs, 'token_counts', limits);
-        } finally {
-            console.log = log;
-        }
-        assert.equal(batches, 2, 'the rest in two more batches of 5');
-        assert.equal(idle, 0);
-        assert.equal(logged.length, 1, 'one line for the pass that pruned, none for the one that had nothing to prune');
-        assert.match(logged[0], /\b10 rows\b.*\btoken_counts\b/);
-        assert.ok(logged[0].includes(dirs.root));
-        pruned = await inspect(dirs.root);
-        assert.deepEqual(lastUseds(pruned.counts), range(16, 25), 'the 10 most recently used are left');
-        assert.equal(pruned.countsRunning, 10, 'the running count is the real count');
-        assert.equal(await pruneBatch(dirs, 'token_counts', limits), 0, 'at the cap: nothing to delete');
-
-        // Near the cap a batch takes only what is over it.
-        await writeRows(dirs, range(26, 27));
-        assert.equal(await pruneBatch(dirs, 'token_counts', limits), 2);
-        pruned = await inspect(dirs.root);
-        assert.deepEqual(lastUseds(pruned.counts), range(18, 27));
-        assert.equal(pruned.countsRunning, 10);
-        assert.equal(pruned.idsRunning, undefined, 'the other table is untouched');
-    }
-
-    // A write-back that crosses the cap schedules one prune, and the table ends at the cap.
-    {
-        const dirs = { root: fs.mkdtempSync(path.join(pruneRoot, 'crossing-')) };
-        const limits = { cap: 10, batchRows: 4, pauseMs: 30 };
-        await writeRows(dirs, range(1, 10), limits);
-        assert.equal((await inspect(dirs.root)).counts.length, 10, 'at the cap: nothing pruned');
-        assert.deepEqual(await writeBack(dirs, { counts: [{ identity: pruneIdentity, hash: tokenKeyHash(TOKEN_KEY_KINDS.TEXT, 'row 11'), count: 1 }] }, 11, limits),
-            { prunesScheduled: ['token_counts'] }, 'crossing the cap schedules a prune');
-        // While that prune pauses between batches, more rows cross the cap again: no second prune.
-        assert.deepEqual(await writeBack(dirs, {
-            counts: range(12, 20).map(n => ({ identity: pruneIdentity, hash: tokenKeyHash(TOKEN_KEY_KINDS.TEXT, `row ${n}`), count: 1 })),
-        }, 20, limits), { prunesScheduled: [] }, 'one prune pending at a time');
-        await tokenCountMaintenanceIdle(dirs);
-        const after = await inspect(dirs.root);
-        assert.equal(after.counts.length, 10, 'the table ends at the cap');
-        assert.equal(after.countsRunning, 10, 'the running count equals the real row count');
-        assert.deepEqual(lastUseds(after.counts), [...range(12, 20).map(() => 20), 11].sort((a, b) => a - b), 'the most recently used are kept');
-        // Under the cap, a write-back schedules nothing.
-        assert.deepEqual(await writeBack(dirs, { counts: [{ identity: pruneIdentity, hash: tokenKeyHash(TOKEN_KEY_KINDS.TEXT, 'row 12'), count: 1 }] }, 21, limits),
-            { prunesScheduled: [] });
-    }
-
-    // After listen: each table's running count is set from a paged count, then a table over the cap is pruned.
-    {
-        const dirs = { root: fs.mkdtempSync(path.join(pruneRoot, 'boot-')) };
-        await writeRows(dirs, range(1, 13));
-        await writeBack(dirs, { ids: [{ identity: pruneIdentity, hash: tokenKeyHash(TOKEN_KEY_KINDS.IDS, 'x'), ids: [1] }] }, 1);
-        await setRunning(dirs.root, 'token_counts_rows', 999);
-        await setRunning(dirs.root, 'token_ids_rows', 0);
-
-        // Under a cap it doesn't reach: the counts are corrected, nothing pruned.
-        await startTokenCountMaintenance([dirs], { cap: 100, batchRows: 4, pauseMs: 0 });
-        let state = await inspect(dirs.root);
-        assert.equal(state.countsRunning, 13, 'a wrong running count is set to the real one');
-        assert.equal(state.idsRunning, 1);
-        assert.equal(state.counts.length, 13);
-
-        // Rows written while the count pauses between pages are counted once, on either side of where it has got to.
-        await setRunning(dirs.root, 'token_counts_rows', 999);
-        const counting = startTokenCountMaintenance([dirs], { cap: 100, batchRows: 4, pauseMs: 100 });
-        await new Promise(resolve => setTimeout(resolve, 150));
-        const early = { identity: '', hash: tokenKeyHash(TOKEN_KEY_KINDS.TEXT, 'early') };
-        const late = { identity: '￿', hash: tokenKeyHash(TOKEN_KEY_KINDS.TEXT, 'late') };
-        await writeBack(dirs, { counts: [{ ...early, count: 1 }, { ...late, count: 1 }] }, 50, { cap: 100, batchRows: 4, pauseMs: 100 });
-        await counting;
-        state = await inspect(dirs.root);
-        assert.equal(state.counts.length, 15);
-        assert.equal(state.countsRunning, 15, 'the running count equals the real row count');
-
-        // Over the cap at boot: pruned to it.
-        await startTokenCountMaintenance([dirs], { cap: 6, batchRows: 4, pauseMs: 0 });
-        state = await inspect(dirs.root);
-        assert.equal(state.counts.length, 6);
-        assert.equal(state.countsRunning, 6);
-        assert.deepEqual(lastUseds(state.counts), [10, 11, 12, 13, 50, 50]);
-    }
-
-    // A store whose running count already matches isn't written.
-    {
-        const dirs = { root: fs.mkdtempSync(path.join(pruneRoot, 'unchanged-')) };
-        await startTokenCountMaintenance([dirs], { cap: 10, batchRows: 4, pauseMs: 0 });
-        const state = await inspect(dirs.root);
-        assert.equal(state.countsRunning, undefined, 'an empty table with no running count gets none');
-        assert.equal(state.idsRunning, undefined);
-    }
-
-    // The server starts it after it listens, unawaited.
-    {
-        const source = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'server-main.js'), 'utf8');
-        const postSetup = source.slice(source.indexOf('async function postSetupTasks('));
-        const postSetupBody = postSetup.slice(0, postSetup.indexOf('\n}\n'));
-        assert.match(postSetupBody, /startTokenCountMaintenance\(/);
-        assert.doesNotMatch(postSetupBody, /await\s+startTokenCountMaintenance/);
-        const preSetup = source.slice(source.indexOf('async function preSetupTasks('));
-        assert.doesNotMatch(preSetup.slice(0, preSetup.indexOf('\n}\n')), /startTokenCountMaintenance\(/);
-    }
 } finally {
     fakeServer.close();
-    disposeMessageTreeStores();
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
-    fs.rmSync(storedRoot, { recursive: true, force: true });
-    fs.rmSync(chunksRoot, { recursive: true, force: true });
-    fs.rmSync(oldRoot, { recursive: true, force: true });
-    fs.rmSync(pruneRoot, { recursive: true, force: true });
+    await user.close();
 }
 
 console.log('token-count-store.test.js: all assertions passed');

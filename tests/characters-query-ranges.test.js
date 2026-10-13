@@ -1,24 +1,10 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals';
-import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
-import { defineCharacterStoreFunctions } from '../src/character-store-schema.js';
 
-/**
- * Registers on a raw connection to the character store the functions its indexes and triggers call.
- * @template {import('better-sqlite3').Database} T
- * @param {T} db
- * @returns {T}
- */
-function withStoreFunctions(db) {
-    defineCharacterStoreFunctions({ defineFunction: (name, fn) => db.function(name, { deterministic: true }, fn) });
-    return db;
-}
-
-/** @type {typeof import('../src/character-metadata-db.js')} */
-let metadataDb;
-/** @type {typeof import('better-sqlite3')} */
-let Database;
+/** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
+let user;
+/** @type {typeof import('./converted-user.fixture.js')} */
+let fixture;
 /** @type {import('express').Router} */
 let router;
 /** @type {import('node:http').Server} */
@@ -30,14 +16,13 @@ let directories;
 beforeAll(async () => {
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
-    metadataDb = await import('../src/character-metadata-db.js');
-    Database = (await import('better-sqlite3')).default;
+    fixture = await import('./converted-user.fixture.js');
     ({ router } = await import('../src/endpoints/characters.js'));
     const express = (await import('express')).default;
     const app = express();
     app.use(express.json());
     app.use((req, res, next) => {
-        req.user = { directories, profile: { handle: `test-user-${path.basename(directories.root)}` } };
+        req.user = user.user;
         next();
     });
     app.use('/api/characters', router);
@@ -48,57 +33,41 @@ beforeAll(async () => {
 
 afterAll(() => new Promise(resolve => server.close(resolve)));
 
-beforeEach(() => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-query-ranges-test-'));
-    directories = {
-        root: tempDir,
-        characters: path.join(tempDir, 'characters'),
-        chats: path.join(tempDir, 'chats'),
-        groups: path.join(tempDir, 'groups'),
-        groupChats: path.join(tempDir, 'groupChats'),
-    };
-    for (const dir of [directories.characters, directories.chats, directories.groups, directories.groupChats]) {
-        fs.mkdirSync(dir, { recursive: true });
-    }
+beforeEach(async () => {
+    user = await fixture.emptyUser('st-query-ranges-test-');
+    ({ directories } = user);
+    globalThis.DATA_ROOT = user.dataRoot;
 });
 
-afterEach(() => {
-    metadataDb.disposeMetadataStores();
-    fs.rmSync(directories.root, { recursive: true, force: true });
-});
+afterEach(() => user.close());
 
-/** @param {string} sql @param {unknown[]} [params] */
-function runSql(sql, params = []) {
-    const db = withStoreFunctions(new Database(path.join(directories.root, 'character-metadata.sqlite')));
-    try {
-        return db.prepare(sql).run(...params);
-    } finally {
-        db.close();
-    }
-}
+// Characters' and groups' dates are set; their data sizes and chats differ, and the ranges are read against the
+// values the store holds for them (chat sizes and times come from the messages stored).
+const CHARACTERS = Array.from({ length: 12 }, (_, i) => ({ id: `c${String(i).padStart(2, '0')}.png`, fav: i % 3 === 0, created: 1000 + i * 100, messages: i, dataSize: 50 + i * 5 }));
+const GROUPS = Array.from({ length: 4 }, (_, i) => ({ id: `g${i}`, fav: i % 2 === 1, created: 1050 + i * 300, messages: i }));
 
-// Each character's create_date, date_last_chat, chat_size and data_size; a group's date_added stands for its create_date.
-const CHARACTERS = Array.from({ length: 12 }, (_, i) => ({ id: `c${String(i).padStart(2, '0')}.png`, fav: i % 3 === 0 ? 1 : 0, created: 1000 + i * 100, lastChat: 5000 - i * 10, chatSize: i * 7, dataSize: 50 + i * 5 }));
-const GROUPS = Array.from({ length: 4 }, (_, i) => ({ id: `g${i}`, fav: i % 2, created: 1050 + i * 300, lastChat: 4990 - i * 25, chatSize: i * 20 }));
+/** @type {{ type: string, id: string, fav: boolean, created: number, lastChat: number, chatSize: number, dataSize?: number }[]} */
+let ALL = [];
 
+/** Stores the entities, then reads the values each now has: the model the ranges are checked against. */
 async function seed() {
     for (const c of CHARACTERS) {
-        const cardJson = JSON.stringify({ name: c.id, data: { name: c.id, tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
-        await metadataDb.upsertCharacterFromWrite(directories, c.id, cardJson);
+        const cardJson = JSON.stringify({
+            name: c.id, create_date: new Date(c.created).toISOString(),
+            data: { name: c.id, description: 'd'.repeat(c.dataSize), tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } },
+        });
+        await user.store.lib.writeCard(directories, c.id, cardJson, { fav: c.fav, dateAdded: c.created });
+        if (c.messages > 0) await fixture.saveBranch(user.store, { avatar: c.id }, `chat ${c.id}`, [{}, ...Array.from({ length: c.messages }, (_, m) => ({ name: 'User', is_user: true, mes: `message ${m} `.repeat(m + 1), send_date: 'x', extra: {} }))]);
     }
     for (const g of GROUPS) {
-        const group = { id: g.id, name: g.id, members: [], chats: [], fav: false };
-        fs.writeFileSync(path.join(directories.groups, `${g.id}.json`), JSON.stringify(group));
-        await metadataDb.upsertGroupRow(directories, g.id, g.id, { fav: false, group });
+        await user.store.lib.writeGroup({ id: g.id, name: g.id, members: [], fav: g.fav }, { dateAdded: g.created });
+        if (g.messages > 0) await fixture.saveBranch(user.store, { group: g.id }, `chat ${g.id}`, [{}, ...Array.from({ length: g.messages }, (_, m) => ({ name: 'User', is_user: true, mes: `message ${m} `.repeat(m + 1), send_date: 'x', extra: {} }))]);
     }
-    metadataDb.disposeMetadataStores();
-    for (const c of CHARACTERS) {
-        runSql('UPDATE characters SET fav = ?, create_date = ?, date_added = ?, date_last_chat = ?, chat_size = ?, data_size = ? WHERE id = ?',
-            [c.fav, c.created, c.created, c.lastChat, c.chatSize, c.dataSize, c.id]);
-    }
-    for (const g of GROUPS) {
-        runSql('UPDATE groups SET fav = ?, date_added = ?, date_last_chat = ?, chat_size = ? WHERE id = ?', [g.fav, g.created, g.lastChat, g.chatSize, g.id]);
-    }
+    const page = await user.store.lib.query({ limit: 100, wantRows: true, wantTotal: false });
+    ALL = /** @type {any[]} */ (page.rows).map(({ type, item }) => (type === 'group'
+        ? { type, id: item.id, fav: item.fav, created: item.date_added, lastChat: item.date_last_chat, chatSize: item.chat_size }
+        : { type, id: item.avatar, fav: item.fav, created: Date.parse(item.create_date), lastChat: item.date_last_chat, chatSize: item.chat_size, dataSize: item.data_size }));
+    expect(ALL).toHaveLength(CHARACTERS.length + GROUPS.length);
 }
 
 /**
@@ -112,22 +81,30 @@ function inRanges(e, ranges) {
         && (min === undefined || value[field] >= min) && (max === undefined || value[field] <= max));
 }
 
-const ALL = [...CHARACTERS.map(c => ({ ...c, type: 'character' })), ...GROUPS.map(g => ({ ...g, type: 'group' }))];
+/** A value of a field over the entities that have it, `at` of the way up. @param {(e: typeof ALL[number]) => number | undefined} get @param {number} at */
+const quantile = (get, at) => {
+    const values = ALL.map(get).filter(v => v !== undefined).sort((a, b) => a - b);
+    return values[Math.floor(values.length * at)];
+};
+const median = get => quantile(get, 0.5);
 
-const RANGES = [
-    { create_date: { min: 1300, max: 1900 } },
-    { date_last_chat: { max: 4950 } },
-    { chat_size: { min: 20 } },
-    { data_size: { min: 60, max: 90 } },
-    { create_date: { min: 1100 }, chat_size: { max: 60 } },
-];
+/** Ranges that each leave some entities in and some out, from the seeded values. */
+function rangesList() {
+    return [
+        { create_date: { min: 1300, max: 1900 } },
+        { date_last_chat: { max: median(e => e.lastChat) } },
+        { chat_size: { min: median(e => e.chatSize) } },
+        { data_size: { min: quantile(e => e.dataSize, 0.25), max: quantile(e => e.dataSize, 0.75) } },
+        { create_date: { min: 1100 }, chat_size: { max: median(e => e.chatSize) } },
+    ];
+}
 
 /** @param {object} params */
 async function listedSet(params) {
     const rows = [];
     for (let offset = 0; ; offset += 4) {
-        const result = await metadataDb.queryEntities(directories, { offset, limit: 4, wantTotal: false, ...params });
-        rows.push(...result.rows.map(r => `${r.type}:${r.id}`));
+        const result = await user.store.lib.query({ offset, limit: 4, wantTotal: false, ...params });
+        rows.push(...result.rows.map(r => `${r.type}:${r.type === 'group' ? r.item.id : r.item.avatar}`));
         if (result.rows.length < 4) break;
     }
     return rows;
@@ -136,8 +113,9 @@ async function listedSet(params) {
 describe('/query filter.ranges', () => {
     test('every sort and direction lists exactly the entities inside the ranges, paged', async () => {
         await seed();
-        for (const ranges of RANGES) {
+        for (const ranges of rangesList()) {
             const want = ALL.filter(e => inRanges(e, ranges)).map(e => `${e.type}:${e.id}`).sort();
+            expect(want.length).toBeGreaterThan(0);
             for (const sortField of ['name', 'create_date', 'date_last_chat', 'chat_size', 'data_size', 'fav']) {
                 for (const sortOrder of ['asc', 'desc']) {
                     const rows = await listedSet({ ranges, sortField, sortOrder });
@@ -150,8 +128,7 @@ describe('/query filter.ranges', () => {
 
     test('random order with ranges lists each entity inside them once', async () => {
         await seed();
-        await metadataDb.fillRandomRanksIfNeeded(directories);
-        for (const ranges of RANGES) {
+        for (const ranges of rangesList()) {
             const want = ALL.filter(e => inRanges(e, ranges)).map(e => `${e.type}:${e.id}`).sort();
             const rows = await listedSet({ ranges, sortField: 'random', sortOrder: 'asc', seed: 7 });
             expect([...rows].sort()).toEqual(want);
@@ -162,18 +139,18 @@ describe('/query filter.ranges', () => {
     test('ranges combine with fav, and the characters-only query applies them too', async () => {
         await seed();
         const ranges = { create_date: { min: 1100, max: 1800 } };
-        const favWant = ALL.filter(e => e.fav === 1 && inRanges(e, ranges)).map(e => `${e.type}:${e.id}`).sort();
+        const favWant = ALL.filter(e => e.fav && inRanges(e, ranges)).map(e => `${e.type}:${e.id}`).sort();
         expect((await listedSet({ ranges, fav: true, sortField: 'name', sortOrder: 'asc' })).sort()).toEqual(favWant);
 
-        const result = await metadataDb.queryCharacters(directories, { ranges, sortField: 'name', sortOrder: 'asc', offset: 0, limit: 100, wantTotal: true });
-        const charsWant = CHARACTERS.filter(c => inRanges({ ...c, type: 'character' }, ranges)).map(c => c.id).sort();
-        expect(result.rows.map(r => r.avatar).sort()).toEqual(charsWant);
+        const result = await user.store.lib.query({ ranges, sortField: 'name', sortOrder: 'asc', offset: 0, limit: 100, wantTotal: true, includeGroups: false });
+        const charsWant = ALL.filter(e => e.type === 'character' && inRanges(e, ranges)).map(e => e.id).sort();
+        expect(result.rows.map(r => r.item.avatar).sort()).toEqual(charsWant);
     });
 
     test('the total of a ranged query is right, whether counted or estimated', async () => {
         await seed();
-        const ranges = { chat_size: { min: 20 } };
-        const result = await metadataDb.queryEntities(directories, { ranges, offset: 0, limit: 2, wantTotal: true });
+        const ranges = { chat_size: { min: median(e => e.chatSize) } };
+        const result = await user.store.lib.query({ ranges, offset: 0, limit: 2, wantTotal: true });
         const want = ALL.filter(e => inRanges(e, ranges)).length;
         expect(result.total).toBe(want);
     });
@@ -186,10 +163,11 @@ describe('/query filter.ranges', () => {
         expect((await post({ filter: { ranges: { chat_size: { min: 'a lot' } } } })).status).toBe(400);
         expect((await post({ filter: { ranges: [] } })).status).toBe(400);
 
-        const ok = await post({ filter: { ranges: { chat_size: { min: 20 } }, includeGroups: true }, sort: { field: 'name', order: 'asc' }, pageSize: 100 });
+        const min = median(e => e.chatSize);
+        const ok = await post({ filter: { ranges: { chat_size: { min } }, includeGroups: true }, sort: { field: 'name', order: 'asc' }, pageSize: 100 });
         expect(ok.status).toBe(200);
         const body = await ok.json();
-        const want = ALL.filter(e => inRanges(e, { chat_size: { min: 20 } })).length;
+        const want = ALL.filter(e => inRanges(e, { chat_size: { min } })).length;
         expect(body.rows).toHaveLength(want);
 
         const empty = await post({ filter: { ranges: { chat_size: {} }, includeGroups: true }, sort: { field: 'name', order: 'asc' }, pageSize: 100 });

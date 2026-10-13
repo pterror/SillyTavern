@@ -67,3 +67,23 @@ export function searchClauses(search, labels = {}) {
     }
     return out;
 }
+
+/**
+ * A cursor's weight list (`<idf>,<idf>,…`) as numbers; null when one isn't a finite number.
+ * @param {string} list
+ * @returns {number[] | null}
+ */
+export function cursorWeights(list) {
+    const weights = list.split(',').map(w => (w === '' ? NaN : Number(w)));
+    return weights.every(Number.isFinite) ? weights : null;
+}
+
+/**
+ * The `:<idf>,<idf>,…` a cursor ends with when the engine's `next` has `weights` (each as `Number#toString` writes
+ * it, which reads back exactly), else nothing.
+ * @param {{ weights?: number[] }} next
+ * @returns {string}
+ */
+export function cursorWeightsOf(next) {
+    return next.weights ? `:${next.weights.join(',')}` : '';
+}

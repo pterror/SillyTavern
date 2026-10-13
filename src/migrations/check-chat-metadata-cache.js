@@ -6,31 +6,36 @@ import process from 'node:process';
 import { setConfigFilePath } from '../util.js';
 import { USER_DIRECTORY_TEMPLATE } from '../constants.js';
 import { normalizeGroupRecord } from '../group-id.js';
+import { TYPE } from '../library-codes.js';
 import { probeConfiguredServer } from './cleanup-zztest-leftovers.js';
 
 /**
  * Checks that one user's `chat-metadata.sqlite`, a cache of the old `.jsonl` chat files no code reads, holds no
- * value that exists nowhere else, and deletes it only then. A one-off: run once on the existing data, then deleted.
+ * value that exists nowhere else, and deletes it only then. A one-off, run after `convert-to-engine.js`: once on the
+ * existing data, then deleted.
  *
- * The only value in it someone set is a chat's metadata (`chats.chat_metadata_json`). Each row's must equal, as
- * canonical JSON, the metadata of the same chat in message-tree.sqlite: the chat's label row, found by owner and
- * chat name from `file_path` (`chats/<owner>/<name>.jsonl`; `group chats/<name>.jsonl`, the owner being the group
- * whose `chats` lists the name). Compared as the tree stores it: the cache's `main_chat` and `fork_point` are left
- * out (the tree derives them from the messages) and the tree's `__is_group` is left out (the store's own mark).
- * Metadata that is NULL or holds no key holds no value. Everything else in the file is skipped: counts and previews
- * derived from messages, the old files' mtime and size, and the cache's own bookkeeping.
+ * The only value in it someone set is a chat's metadata (`chats.chat_metadata_json`). Each value it holds (each
+ * top-level key, and each variable of `variables`) must be in the engine's state at the node of that chat's label,
+ * equal as canonical JSON: the label found in the old `message-tree.sqlite` (left in place by the conversion) by
+ * owner and chat name from `file_path` (`chats/<owner>/<name>.jsonl`; `group chats/<name>.jsonl`, the owner being the
+ * group whose `chats` lists the name), the node as the conversion keyed it (a label on an anchor row: its tree's
+ * root). Left out: the cache's `main_chat` and `fork_point` and the chat's `integrity` (derived now), and
+ * `__is_group` (the old store's own mark). Metadata that is NULL or holds no key holds no value. Everything else in
+ * the file is skipped: counts and previews derived from messages, the old files' mtime and size, and the cache's own
+ * bookkeeping.
  *
- * Output names no chat and shows no content: each row that doesn't match is listed by owner kind, the sha256 of its
- * file path, its key count and the sha256 of both canonical metadata values.
+ * Output names no chat and shows no content: each row whose values aren't all there is listed by owner kind, the
+ * sha256 of its file path, its key count, how many of its values differ, and the sha256 of its canonical metadata.
  *
- * Dry run (read-only opens, writes nothing, may run while the server is running):
- *   node src/migrations/check-chat-metadata-cache.js --dry-run [--data-root ./data] [--handle default-user] [--config ./config.yaml]
- * Real run (the server must be stopped; deletes the file only when every row matches):
+ * It opens the user's engine store, so both runs need the server stopped:
+ *   node src/migrations/check-chat-metadata-cache.js --dry-run --server-stopped [--data-root ./data] [--handle default-user] [--config ./config.yaml]
  *   node src/migrations/check-chat-metadata-cache.js --apply --server-stopped [--data-root ./data] [--handle default-user] [--config ./config.yaml]
+ * The real run deletes the file only when every row's values are there.
  */
 
 const LOG_PREFIX = '[check-chat-metadata]';
 const PAGE_ROWS = 500;
+const LEFT_OUT = ['main_chat', 'fork_point', 'integrity', '__is_group'];
 
 /** @param {unknown} value */
 function sortKeysDeep(value) {
@@ -46,21 +51,28 @@ function sha256(text) {
     return crypto.createHash('sha256').update(text).digest('hex');
 }
 
+/** @param {unknown} value */
+const canonical = value => JSON.stringify(sortKeysDeep(value));
+
 /**
- * @param {string | null} json
- * @param {string[]} leftOut Top-level keys not compared.
- * @returns {{ canonical: string, keys: number } | { unparseable: true }}
+ * The values a metadata object holds: each top-level key (left-out ones aside), and each variable of an object
+ * `variables` on its own, as canonical JSON.
+ * @param {unknown} metadata
+ * @returns {Map<string, string>} `k\0<key>` and `v\0<name>`.
  */
-function canonicalMetadata(json, leftOut) {
-    let value;
-    try {
-        value = json === null ? {} : JSON.parse(json);
-    } catch {
-        return { unparseable: true };
+function valuesOf(metadata) {
+    /** @type {Map<string, string>} */
+    const out = new Map();
+    if (metadata === null || typeof metadata !== 'object' || Array.isArray(metadata)) return out;
+    for (const [key, value] of Object.entries(metadata)) {
+        if (LEFT_OUT.includes(key)) continue;
+        if (key === 'variables' && value !== null && typeof value === 'object' && !Array.isArray(value)) {
+            for (const [name, v] of Object.entries(value)) out.set(`v\0${name}`, canonical(v));
+        } else {
+            out.set(`k\0${key}`, canonical(value));
+        }
     }
-    if (value === null || typeof value !== 'object' || Array.isArray(value)) return { canonical: JSON.stringify(sortKeysDeep(value)), keys: 1 };
-    const kept = Object.fromEntries(Object.entries(value).filter(([key]) => !leftOut.includes(key)));
-    return { canonical: JSON.stringify(sortKeysDeep(kept)), keys: Object.keys(kept).length };
+    return out;
 }
 
 /**
@@ -95,22 +107,46 @@ function groupChatOwners(groupsDir) {
  * @property {'missing' | 'mismatch' | 'unparseable'} kind
  * @property {'character' | 'group' | 'unknown'} ownerKind
  * @property {string} pathHash sha256 of the row's file_path.
- * @property {number} keys Keys in the cache's metadata.
+ * @property {number} keys Values in the cache's metadata.
+ * @property {number} differing Of them, those not in the engine's state (all of them when the chat isn't there).
  * @property {string} cacheHash sha256 of the cache's canonical metadata.
- * @property {string | null} treeHash sha256 of the tree's, null when the chat isn't there.
  */
 
 /**
- * Compares every cache row with the tree.
+ * The engine's state where a chat's label is, as `chat_metadata` reads it; null when the label or its node isn't
+ * found once.
+ * @param {object} options
+ * @param {any} options.tree better-sqlite3 connection to message-tree.sqlite.
+ * @param {import('../user-stores.js').UserStore} options.store
+ * @param {'character' | 'group'} kind
+ * @param {string[]} ownerIds Old owner ids.
+ * @param {string} chatName
+ * @returns {Promise<Record<string, unknown> | null>}
+ */
+async function engineState({ tree, store }, kind, ownerIds, chatName) {
+    const found = ownerIds.flatMap(ownerId => [...tree.prepare('SELECT id, parent_id, owner_id FROM messages WHERE owner_id = ? AND label = ? LIMIT 2').iterate(ownerId, chatName)]);
+    if (found.length !== 1) return null;
+    const [row] = found;
+    const [owned] = kind === 'character'
+        ? await store.lib.ids(TYPE.character, [`${row.owner_id}.png`])
+        : await store.lib.ids(TYPE.group, [row.owner_id]);
+    const [treeId] = owned !== null ? [owned] : await store.lib.ids(TYPE.tree, [row.owner_id]);
+    if (treeId === null) return null;
+    const answer = await store.chats.stateAt({ tree: treeId, at: row.parent_id === null ? null : row.id });
+    return answer && 'state' in answer ? answer.state : null;
+}
+
+/**
+ * Compares every cache row with the engine.
  * @param {object} options
  * @param {any} options.cache better-sqlite3 connection to chat-metadata.sqlite.
  * @param {any} options.tree better-sqlite3 connection to message-tree.sqlite.
+ * @param {import('../user-stores.js').UserStore} options.store The user's engine store.
  * @param {{ chats: string, groupChats: string, groups: string }} options.dirs
- * @returns {{ rows: number, empty: number, matched: number, problems: RowProblem[] }}
+ * @returns {Promise<{ rows: number, empty: number, matched: number, problems: RowProblem[] }>}
  */
-export function checkCache({ cache, tree, dirs }) {
+export async function checkCache({ cache, tree, store, dirs }) {
     const groupOwners = groupChatOwners(dirs.groups);
-    const labelRows = tree.prepare('SELECT metadata FROM messages WHERE owner_id = ? AND label = ? LIMIT 2');
     const page = cache.prepare('SELECT rowid AS r, file_path, chat_metadata_json FROM chats WHERE rowid > ? ORDER BY rowid LIMIT ?');
     const result = { rows: 0, empty: 0, matched: 0, problems: /** @type {RowProblem[]} */ ([]) };
     let after = 0;
@@ -120,13 +156,18 @@ export function checkCache({ cache, tree, dirs }) {
         for (const row of rows) {
             result.rows++;
             const filePath = String(row.file_path);
-            const cached = canonicalMetadata(row.chat_metadata_json, ['main_chat', 'fork_point']);
             const base = { pathHash: sha256(filePath) };
-            if ('unparseable' in cached) {
-                result.problems.push({ kind: 'unparseable', ownerKind: 'unknown', ...base, keys: 0, cacheHash: sha256(String(row.chat_metadata_json)), treeHash: null });
+            let metadata;
+            try {
+                metadata = row.chat_metadata_json === null ? {} : JSON.parse(row.chat_metadata_json);
+            } catch {
+                result.problems.push({ kind: 'unparseable', ownerKind: 'unknown', ...base, keys: 0, differing: 0, cacheHash: sha256(String(row.chat_metadata_json)) });
                 continue;
             }
-            if (cached.keys === 0) {
+            const values = metadata !== null && typeof metadata === 'object' && !Array.isArray(metadata)
+                ? valuesOf(metadata)
+                : new Map([['whole', canonical(metadata)]]);
+            if (values.size === 0) {
                 result.empty++;
                 continue;
             }
@@ -143,19 +184,16 @@ export function checkCache({ cache, tree, dirs }) {
                 ownerKind = 'character';
                 ownerIds = [path.basename(parent)];
             }
-            const found = ownerIds.flatMap(ownerId => [...labelRows.iterate(ownerId, chatName)]);
-            const problem = { ownerKind, ...base, keys: cached.keys, cacheHash: sha256(cached.canonical) };
-            if (found.length !== 1) {
-                result.problems.push({ kind: 'missing', ...problem, treeHash: null });
+            const problem = { ownerKind, ...base, keys: values.size, cacheHash: sha256(canonical(metadata)) };
+            const state = ownerKind === 'unknown' ? null : await engineState({ tree, store }, ownerKind, ownerIds, chatName);
+            if (state === null) {
+                result.problems.push({ kind: 'missing', ...problem, differing: values.size });
                 continue;
             }
-            const stored = canonicalMetadata(found[0].metadata ?? null, ['__is_group']);
-            const storedCanonical = 'unparseable' in stored ? String(found[0].metadata) : stored.canonical;
-            if (storedCanonical === cached.canonical) {
-                result.matched++;
-            } else {
-                result.problems.push({ kind: 'mismatch', ...problem, treeHash: sha256(storedCanonical) });
-            }
+            const there = valuesOf(state);
+            const differing = [...values].filter(([k, v]) => there.get(k) !== v).length;
+            if (differing === 0) result.matched++;
+            else result.problems.push({ kind: 'mismatch', ...problem, differing });
         }
         after = rows[rows.length - 1].r;
         if (rows.length < PAGE_ROWS) break;
@@ -170,6 +208,7 @@ export function checkCache({ cache, tree, dirs }) {
  * @param {boolean} options.apply
  * @param {boolean} options.serverStopped
  * @param {any} options.Database better-sqlite3 constructor, or null when the native binding isn't usable.
+ * @param {() => any} options.engine The engine's binding.
  * @param {() => Promise<{ running: boolean, lines: string[] }>} [options.probeServer]
  * @param {(line: string) => void} [options.log]
  * @param {(line: string) => void} [options.warn]
@@ -194,17 +233,15 @@ export async function runCheck(options) {
         warn(`${LOG_PREFIX} REFUSED: native better-sqlite3 is not available; this script never opens these databases with the wasm engine`);
         return 1;
     }
-    if (apply) {
-        if (!serverStopped) {
-            warn(`${LOG_PREFIX} REFUSED: the real run needs --server-stopped (stop the server first; a --port override is not visible to the port probe)`);
-            return 1;
-        }
-        const probe = await probeServer();
-        probe.lines.forEach(line => log(`${LOG_PREFIX} ${line}`));
-        if (probe.running) {
-            warn(`${LOG_PREFIX} REFUSED: the server appears to be running (or the port could not be checked); stop it and rerun`);
-            return 1;
-        }
+    if (!serverStopped) {
+        warn(`${LOG_PREFIX} REFUSED: this opens the user's store, so it needs --server-stopped (stop the server first; a --port override is not visible to the port probe)`);
+        return 1;
+    }
+    const probe = await probeServer();
+    probe.lines.forEach(line => log(`${LOG_PREFIX} ${line}`));
+    if (probe.running) {
+        warn(`${LOG_PREFIX} REFUSED: the server appears to be running (or the port could not be checked); stop it and rerun`);
+        return 1;
     }
     if (!fs.existsSync(cachePath)) {
         log(`${LOG_PREFIX} ${cachePath} does not exist; nothing to do.`);
@@ -214,20 +251,28 @@ export async function runCheck(options) {
         warn(`${LOG_PREFIX} REFUSED: ${treePath} does not exist`);
         return 1;
     }
+    const stores = await import('../user-stores.js');
+    if (!fs.existsSync(path.join(root, stores.STORE_DIR))) {
+        warn(`${LOG_PREFIX} REFUSED: ${path.join(root, stores.STORE_DIR)} does not exist; run src/migrations/convert-to-engine.js first`);
+        return 1;
+    }
 
+    stores.setStoreEngine(options.engine);
+    const store = await stores.userStore({ root }, handle);
     const cache = new Database(cachePath, { readonly: true, fileMustExist: true });
     const tree = new Database(treePath, { readonly: true, fileMustExist: true });
     let result;
     try {
-        result = checkCache({ cache, tree, dirs });
+        result = await checkCache({ cache, tree, store, dirs });
     } finally {
         cache.close();
         tree.close();
+        await stores.closeUserStores();
     }
 
-    log(`${LOG_PREFIX} ${result.rows} cached chat(s): ${result.empty} with no metadata, ${result.matched} matching the tree, ${result.problems.length} not.`);
+    log(`${LOG_PREFIX} ${result.rows} cached chat(s): ${result.empty} with no metadata, ${result.matched} with every value in the engine, ${result.problems.length} not.`);
     for (const p of result.problems) {
-        warn(`${LOG_PREFIX}   ${p.kind.toUpperCase()} ${p.ownerKind} chat path#${p.pathHash.slice(0, 16)}: ${p.keys} key(s), cache#${p.cacheHash.slice(0, 16)}${p.treeHash ? `, tree#${p.treeHash.slice(0, 16)}` : ''}`);
+        warn(`${LOG_PREFIX}   ${p.kind.toUpperCase()} ${p.ownerKind} chat path#${p.pathHash.slice(0, 16)}: ${p.keys} value(s), ${p.differing} not there, cache#${p.cacheHash.slice(0, 16)}`);
     }
     if (result.problems.length > 0) {
         const byKind = Object.entries(Object.groupBy(result.problems, p => `${p.kind} ${p.ownerKind}`)).map(([key, list]) => `${key}: ${list?.length}`).join(', ');
@@ -235,7 +280,7 @@ export async function runCheck(options) {
         return 1;
     }
     if (!apply) {
-        log(`${LOG_PREFIX} safe to delete. dry run: nothing was written.`);
+        log(`${LOG_PREFIX} safe to delete. dry run: nothing was deleted.`);
         return 0;
     }
     for (const suffix of ['', '-wal', '-shm', '-journal']) fs.rmSync(cachePath + suffix, { force: true });
@@ -265,6 +310,7 @@ export function parseArgs(argv) {
  * @param {string[]} argv
  * @param {object} deps
  * @param {any} deps.Database
+ * @param {() => any} deps.engine
  * @param {() => Promise<{ running: boolean, lines: string[] }>} [deps.probeServer]
  * @param {(line: string) => void} [deps.log]
  * @param {(line: string) => void} [deps.warn]
@@ -274,7 +320,7 @@ export async function main(argv, deps) {
     const args = parseArgs(argv);
     const warn = deps.warn ?? console.warn;
     if (args.unknown.length > 0 || args.dryRun === args.apply) {
-        warn(`${LOG_PREFIX} usage: --dry-run | --apply --server-stopped  [--data-root ./data] [--handle default-user] [--config ./config.yaml]`);
+        warn(`${LOG_PREFIX} usage: --dry-run | --apply, with --server-stopped  [--data-root ./data] [--handle default-user] [--config ./config.yaml]`);
         if (args.unknown.length > 0) warn(`${LOG_PREFIX} unknown argument(s): ${args.unknown.join(' ')}`);
         return 2;
     }
@@ -287,5 +333,7 @@ if (isMain) {
     setConfigFilePath(args.config);
     const { getBetterSqlite3 } = await import('../endpoints/native-sqlite.js');
     const Database = await getBetterSqlite3();
-    process.exitCode = await main(process.argv.slice(2), { Database });
+    const { loadEngine } = await import('../../engine/load.js');
+    const binding = loadEngine().binding;
+    process.exitCode = await main(process.argv.slice(2), { Database, engine: () => binding });
 }

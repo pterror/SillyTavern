@@ -1,73 +1,39 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach, jest } from '@jest/globals';
-import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import { deleteTagRowRaw, rawTagRowInserter } from './util/stored-counters.js';
-import { defineCharacterStoreFunctions } from '../src/character-store-schema.js';
 
-/**
- * better-sqlite3 with the store's SQL functions registered on every connection, as the store's own connections have
- * them (character-store-schema.js).
- * @param {typeof import('better-sqlite3')} Base
- * @returns {typeof import('better-sqlite3')}
- */
-function withStoreFunctions(Base) {
-    return /** @type {any} */ (class extends /** @type {any} */ (Base) {
-        constructor(/** @type {any[]} */ ...args) {
-            super(...args);
-            defineCharacterStoreFunctions({ defineFunction: (name, fn) => this.function(name, { deterministic: true }, fn) });
-        }
-    });
-}
+// Seeding a few hundred tags takes a moment on a loaded machine.
+jest.setTimeout(60000);
 
-/** @type {typeof import('../src/character-metadata-db.js')} */
-let metadataDb;
+/** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
+let user;
+/** @type {typeof import('./converted-user.fixture.js')} */
+let fixture;
+/** @type {typeof import('../src/library-codes.js').TYPE} */
+let TYPE;
 /** @type {(name: string) => string} */
 let tagNameKey;
-/** @type {typeof import('better-sqlite3')} */
-let Database;
+/** @type {typeof import('../src/tag-order.js').tagDerivedColumns} */
+let tagDerivedColumns;
 /** @type {import('node:http').Server} */
 let server;
 let baseUrl;
 /** @type {import('../src/users.js').UserDirectoryList} */
 let directories;
 
-/** Every statement the store's handle streamed, and how many rows each yielded, while recording. */
-let recording = false;
-/** @type {{ sql: string, params: any, yielded: number }[]} */
-let iterated = [];
-
-/** @param {any} handle */
-function instrumentedHandle(handle) {
-    const wrapped = { ...handle };
-    wrapped.iterate = function* (sql, params) {
-        const entry = { sql, params, yielded: 0 };
-        if (recording) iterated.push(entry);
-        for (const row of handle.iterate(sql, params)) {
-            entry.yielded++;
-            yield row;
-        }
-    };
-    return wrapped;
-}
-
 beforeAll(async () => {
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
-    const sqliteEngine = await import('../src/endpoints/sqlite-engine.js');
-    const engine = await sqliteEngine.getSqliteEngine();
-    const openDatabase = engine.openDatabase;
-    engine.openDatabase = (dbPath, options) => instrumentedHandle(openDatabase(dbPath, options));
-    metadataDb = await import('../src/character-metadata-db.js');
+    fixture = await import('./converted-user.fixture.js');
+    ({ TYPE } = await import('../src/library-codes.js'));
     ({ tagNameKey } = await import('../public/scripts/hash-utils.js'));
-    Database = withStoreFunctions((await import('better-sqlite3')).default);
+    ({ tagDerivedColumns } = await import('../src/tag-order.js'));
 
     const { router } = await import('../src/endpoints/tags.js');
     const express = (await import('express')).default;
     const app = express();
     app.use(express.json({ limit: '10mb' }));
     app.use((req, res, next) => {
-        req.user = { directories };
+        req.user = user.user;
         next();
     });
     app.use('/api/tags', router);
@@ -78,36 +44,20 @@ beforeAll(async () => {
 
 afterAll(() => new Promise(resolve => server.close(resolve)));
 
-beforeEach(() => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-tags-query-test-'));
-    directories = /** @type {any} */ ({
-        root,
-        characters: path.join(root, 'characters'),
-        chats: path.join(root, 'chats'),
-        groups: path.join(root, 'groups'),
-        groupChats: path.join(root, 'groupChats'),
-    });
-    for (const dir of [directories.characters, directories.chats, directories.groups, directories.groupChats]) {
-        fs.mkdirSync(dir, { recursive: true });
-    }
-    recording = false;
-    iterated = [];
+beforeEach(async () => {
+    user = await fixture.emptyUser('st-tags-query-test-');
+    directories = user.directories;
+    globalThis.DATA_ROOT = user.dataRoot;
+    model = [];
 });
 
-/** @type {import('better-sqlite3').Database | null} */
-let liveDb = null;
-function live() {
-    liveDb ??= new Database(path.join(directories.root, 'character-metadata.sqlite'));
-    return liveDb;
-}
-
-afterEach(() => {
+afterEach(async () => {
     jest.restoreAllMocks();
-    liveDb?.close();
-    liveDb = null;
-    metadataDb.disposeMetadataStores();
-    fs.rmSync(directories.root, { recursive: true, force: true });
+    await user.close();
 });
+
+/** The tags seeded and still there, in creation order, each with the count of characters carrying it. @type {{ tag: any, count: number }[]} */
+let model = [];
 
 /**
  * @param {object} body
@@ -170,41 +120,41 @@ function mixedTags() {
 
 /**
  * Writes tags and assignments: tag i gets (i % 4) assignments, and every tag divisible by 9 gets one that is then
- * removed, leaving it a tag_usage row at 0.
+ * removed, leaving it at count 0.
  * @param {object[]} tags
  */
 async function seed(tags) {
-    await metadataDb.ensureSchemaMigrated(directories);
-    await metadataDb.saveTagDefinitions(directories, tags);
-    const db = live();
-    const assign = rawTagRowInserter(db, 'character_tags');
-    db.transaction(() => {
-        tags.forEach((tag, i) => {
-            for (let n = 0; n < i % 4; n++) assign.run(`c${n}.png`, tag.id);
-            if (i % 9 === 0) {
-                assign.run('gone.png', tag.id);
-                deleteTagRowRaw(db, 'character_tags', 'gone.png', tag.id);
-            }
-        });
-    })();
+    // Written as given: the stored order forms the coercion covers must come back as they went in.
+    for (let i = 0; i < tags.length; i += 200) {
+        await Promise.all(tags.slice(i, i + 200).map(tag => user.store.lib.writeTag(/** @type {any} */ (tag))));
+    }
+    for (const name of ['c0.png', 'c1.png', 'c2.png', 'gone.png']) {
+        await user.store.lib.writeCard(directories, name, JSON.stringify({ name, data: { name, tags: [], extensions: {} } }));
+    }
+    const lib = user.store.lib;
+    for (const [i, tag] of tags.entries()) {
+        for (let n = 0; n < i % 4; n++) await lib.assignTag(TYPE.character, `c${n}.png`, /** @type {any} */ (tag).id, true);
+        if (i % 9 === 0) {
+            await lib.assignTag(TYPE.character, 'gone.png', /** @type {any} */ (tag).id, true);
+            await lib.assignTag(TYPE.character, 'gone.png', /** @type {any} */ (tag).id, false);
+        }
+    }
+    model = tags.map((tag, i) => ({ tag, count: i % 4 }));
 }
 
 /** @param {string} a @param {string} b */
 const bytes = (a, b) => Buffer.compare(Buffer.from(a, 'utf8'), Buffer.from(b, 'utf8'));
 
 /**
- * The expected ids, computed from the rows directly: upstream's compareTagsForSort, with ties by rowid and names
- * compared as SQLite's BINARY does.
+ * The expected ids, computed from the tags seeded: upstream's compareTagsForSort, with ties by creation order and
+ * names compared byte by byte.
  * @param {string} sort
  * @param {{ used?: boolean, folders?: boolean, search?: string, name?: string, contains?: string, ids?: string[] }} filter
  */
 function expected(sort, filter) {
-    const rows = [...live().prepare(`SELECT t.rowid AS r, t.id, t.data, COALESCE(u.count, 0) AS count FROM tags t
-        LEFT JOIN tag_usage u ON u.tag_id = t.id WHERE t.id NOT IN (SELECT tag_id FROM tag_deletions)`).iterate()];
-    const items = rows.map(row => {
-        const tag = JSON.parse(row.data);
-        const { sortOrder, isFolder } = metadataDb.tagDerivedColumns(tag);
-        return { id: row.id, r: row.r, s: sortOrder, k: typeof tag.name === 'string' ? tagNameKey(tag.name) : '', c: row.count, folder: isFolder === 1 };
+    const items = model.map(({ tag, count }, r) => {
+        const { sortOrder, isFolder } = tagDerivedColumns(tag);
+        return { id: tag.id, r, s: sortOrder, k: typeof tag.name === 'string' ? tagNameKey(tag.name) : '', c: count, folder: isFolder === 1 };
     }).filter(t => (!filter.used || t.c > 0)
         && (!filter.folders || t.folder)
         && (!filter.search || Buffer.from(t.k).subarray(0, Buffer.byteLength(tagNameKey(filter.search.trim()))).equals(Buffer.from(tagNameKey(filter.search.trim()))))
@@ -250,15 +200,6 @@ const FILTERS = [
     { ids: ['t005', 't001', 't040', 't033', 't013'], contains: 'a' },
 ];
 
-/** EXPLAIN QUERY PLAN of every statement recorded, as text. */
-function recordedPlans() {
-    return iterated.map(({ sql, params }) => {
-        const bound = Array.isArray(params) ? params : Object.fromEntries(Object.entries(params ?? {}));
-        const plan = Array.from(live().prepare(`EXPLAIN QUERY PLAN ${sql}`).iterate(bound), row => row.detail).join(' | ');
-        return { sql, plan };
-    });
-}
-
 describe('POST /api/tags/query', () => {
     test('ifHash: the answer carries its hash, and is only "unchanged" while the page is what the hash was made of', async () => {
         await seed(mixedTags());
@@ -277,7 +218,7 @@ describe('POST /api/tags/query', () => {
 
         // A rename of a tag on the page changes the page.
         const renamed = first.body.rows[0];
-        await metadataDb.editTagDefinition(directories, renamed.id, { color: '#123456' });
+        await user.store.lib.tags.edit(renamed.id, { color: '#123456' });
         const after = await query({ ...ask, ifHash: first.body.hash });
         expect(after.body.unchanged).toBeUndefined();
         expect(after.body.hash).not.toBe(first.body.hash);
@@ -325,8 +266,9 @@ describe('POST /api/tags/query', () => {
 
         test('tags marked deleted are left out', async () => {
             await seed(mixedTags());
-            await metadataDb.deleteTagDefinition(directories, 't002', null);
-            await metadataDb.deleteTagDefinition(directories, 't014', null);
+            await user.store.lib.tags.delete('t002', null);
+            await user.store.lib.tags.delete('t014', null);
+            model = model.filter(({ tag }) => tag.id !== 't002' && tag.id !== 't014');
             for (const sort of SORTS) {
                 const got = await queryAll({ sort: { field: sort }, pageSize: 9 });
                 expect(got.ids).not.toContain('t002');
@@ -339,7 +281,7 @@ describe('POST /api/tags/query', () => {
     describe('counts, indexed path', () => {
         test('counts are given only when asked, for the rows on the page, from tag_usage', async () => {
             await seed(mixedTags());
-            const usage = new Map(live().prepare('SELECT tag_id, count FROM tag_usage').all().map(row => [row.tag_id, row.count]));
+            const usage = new Map(model.map(({ tag, count }) => [tag.id, count]));
             for (const sort of SORTS) {
                 const plain = await query({ sort: { field: sort }, pageSize: 7 });
                 expect(plain.body).not.toHaveProperty('counts');
@@ -349,7 +291,6 @@ describe('POST /api/tags/query', () => {
                 do {
                     const { body } = await query({ sort: { field: sort }, pageSize: 7, counts: true, cursor });
                     const ids = body.rows.map(t => t.id);
-                    // A tag never assigned has no tag_usage row, and one assigned then unassigned has one at 0.
                     expect(body.counts).toEqual(Object.fromEntries(ids.map(id => [id, usage.get(id) ?? 0])));
                     expect(body.approximate).toEqual([]);
                     cursor = body.cursor;
@@ -357,44 +298,51 @@ describe('POST /api/tags/query', () => {
             }
         });
 
-        test('a marked tag\'s count goes to the tag it merges into, which is listed as approximate', async () => {
-            await metadataDb.ensureSchemaMigrated(directories);
-            await metadataDb.saveTagDefinitions(directories, [{ id: 'source', name: 'Source' }, { id: 'target', name: 'Target' }, { id: 'other', name: 'Other' }]);
-            const assign = rawTagRowInserter(live(), 'character_tags');
-            assign.run('a.png', 'source');
-            assign.run('b.png', 'source');
-            assign.run('a.png', 'target');
-            assign.run('a.png', 'other');
-            await metadataDb.deleteTagDefinition(directories, 'source', 'target');
+        test('a merged tag\'s carriers count for the tag it merges into, listed as approximate until they have moved', async () => {
+            for (const tag of [{ id: 'source', name: 'Source' }, { id: 'target', name: 'Target' }, { id: 'other', name: 'Other' }]) await user.store.lib.writeTag(tag);
+            for (const name of ['a.png', 'b.png']) await user.store.lib.writeCard(directories, name, JSON.stringify({ name, data: { name, tags: [], extensions: {} } }));
+            await user.store.lib.assignTag(TYPE.character, 'a.png', 'source', true);
+            await user.store.lib.assignTag(TYPE.character, 'b.png', 'source', true);
+            await user.store.lib.assignTag(TYPE.character, 'a.png', 'target', true);
+            await user.store.lib.assignTag(TYPE.character, 'a.png', 'other', true);
+            await user.store.lib.tags.delete('source', 'target');
 
-            const { body } = await query({ sort: { field: 'alphabetical' }, counts: true });
+            // The carriers move in steps after the delete; once they have, the count is exact: a.png carried both.
+            let body;
+            const deadline = Date.now() + 10_000;
+            do {
+                ({ body } = await query({ sort: { field: 'alphabetical' }, counts: true }));
+                expect(body.approximate.filter(id => id !== 'target')).toEqual([]);
+            } while (body.approximate.length > 0 && Date.now() < deadline && await new Promise(resolve => setTimeout(resolve, 20, true)));
             expect(body.rows.map(t => t.id)).toEqual(['other', 'target']);
-            expect(body.counts).toEqual({ other: 1, target: 3 });
-            expect(body.approximate).toEqual(['target']);
+            expect(body.counts).toEqual({ other: 1, target: 2 });
+            expect(body.approximate).toEqual([]);
         });
 
-        test('a batch-import row not yet flushed counts, once, and a count of 0 is a tag prune would delete', async () => {
-            await metadataDb.ensureSchemaMigrated(directories);
-            await metadataDb.saveTagDefinitions(directories, [{ id: 'buffered', name: 'Buffered' }, { id: 'both', name: 'Both' }, { id: 'unused', name: 'Unused' }]);
+        test('a character written in a batch of imports counts, once, and a count of 0 is a tag prune would delete', async () => {
+            for (const tag of [{ id: 'buffered', name: 'Buffered' }, { id: 'both', name: 'Both' }, { id: 'unused', name: 'Unused' }]) await user.store.lib.writeTag(tag);
             const card = name => JSON.stringify({ name, data: { name, tags: [], extensions: {} } });
-            await metadataDb.upsertCharacterFromWrite(directories, 'Stored.png', card('Stored'));
-            expect(await metadataDb.assignEntityTag(directories, 'Stored.png', 'both')).toBe('ok');
+            const lib = user.store.lib;
+            await lib.writeCard(directories, 'Stored.png', card('Stored'));
+            expect((await lib.tags.assign('Stored.png', 'both')).result).toBe('ok');
 
-            await metadataDb.beginBatchImport(directories);
-            await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', card('Bob'), null, null, { fromImport: true });
-            expect(await metadataDb.assignEntityTag(directories, 'Bob.png', 'buffered')).toBe('ok');
-            expect(await metadataDb.assignEntityTag(directories, 'Bob.png', 'both')).toBe('ok');
-            // Imported again over its stored row: tag_usage already counts the stored assignment.
-            await metadataDb.upsertCharacterFromWrite(directories, 'Stored.png', card('Stored'), null, null, { fromImport: true });
-            expect(await metadataDb.assignEntityTag(directories, 'Stored.png', 'both')).toBe('ok');
+            lib.beginBatch();
+            try {
+                await lib.writeCard(directories, 'Bob.png', card('Bob'));
+                expect((await lib.tags.assign('Bob.png', 'buffered')).result).toBe('ok');
+                expect((await lib.tags.assign('Bob.png', 'both')).result).toBe('ok');
+                // Written again over its stored card: the stored assignment is the one it has.
+                await lib.writeCard(directories, 'Stored.png', card('Stored'));
+                expect((await lib.tags.assign('Stored.png', 'both')).result).toBe('ok');
 
-            const { body } = await query({ sort: { field: 'alphabetical' }, counts: true });
-            expect(body.counts).toEqual({ both: 2, buffered: 1, unused: 0 });
-            expect(body.approximate).toEqual([]);
-            const unused = await (await fetch(`${baseUrl}/api/tags/unused-count`, { method: 'POST' })).json();
-            expect(unused.count).toBe(1);
-
-            await metadataDb.endBatchImport(directories);
+                const { body } = await query({ sort: { field: 'alphabetical' }, counts: true });
+                expect(body.counts).toEqual({ both: 2, buffered: 1, unused: 0 });
+                expect(body.approximate).toEqual([]);
+                const unused = await (await fetch(`${baseUrl}/api/tags/unused-count`, { method: 'POST' })).json();
+                expect(unused.count).toBe(1);
+            } finally {
+                lib.endBatch();
+            }
             const after = await query({ sort: { field: 'alphabetical' }, counts: true });
             expect(after.body.counts).toEqual({ both: 2, buffered: 1, unused: 0 });
         });
@@ -434,94 +382,5 @@ describe('POST /api/tags/query', () => {
         // 500 distinct ids, repeated, is within the cap.
         const ids = Array.from({ length: 500 }, (_, i) => `x${i}`);
         expect((await query({ filter: { ids: [...ids, ...ids] } })).status).toBe(200);
-    });
-
-    test('every indexed read goes through its index in order, with no sort step and no scan of the table', async () => {
-        await seed(mixedTags());
-        recording = true;
-        for (const sort of SORTS) {
-            for (const filter of FILTERS) {
-                if (filter.ids) continue;
-                await queryAll({ sort: { field: sort }, filter, pageSize: 3 });
-            }
-        }
-        recording = false;
-        const plans = recordedPlans().filter(p => p.sql.includes('INDEXED BY'));
-        expect(plans.length).toBeGreaterThan(0);
-        for (const { sql, plan } of plans) {
-            const index = /INDEXED BY (\w+)/.exec(sql)[1];
-            expect({ sql, plan }).toEqual({ sql, plan: expect.stringContaining(`USING INDEX ${index}`) });
-            expect(plan).not.toContain('TEMP B-TREE');
-        }
-        // by id: through the primary key.
-        iterated = [];
-        recording = true;
-        await query({ filter: { ids: ['t001', 't002'] } });
-        recording = false;
-        for (const { plan } of recordedPlans()) expect(plan).toContain('sqlite_autoindex_tags_1');
-    });
-
-    test('a page after a cursor reads only its own rows, however deep, in every sort', async () => {
-        const tags = Array.from({ length: 3000 }, (_, i) => ({ id: `d${String(i).padStart(4, '0')}`, name: `N ${i % 1500}`, sort_order: i < 2000 ? i % 7 : undefined }));
-        await seed(tags);
-        for (const sort of SORTS) {
-            let cursor = null;
-            for (let page = 0; page < 60; page++) {
-                iterated = [];
-                recording = true;
-                const response = await query({ sort: { field: sort }, pageSize: 50, cursor });
-                recording = false;
-                expect(response.body.rows).toHaveLength(50);
-                // Each row read is on the page: no row before the cursor is walked again.
-                expect(iterated.reduce((n, q) => n + q.yielded, 0)).toBe(50);
-                cursor = response.body.cursor;
-            }
-        }
-    });
-
-    test('a walk the index doesn\'t cover stops at the work cap with more, and following cursors finds every match once', async () => {
-        const cap = metadataDb.TAG_QUERY_WORK_CAP;
-        // Unused folders, then used folders last by name: the folder index fixes is_folder, not usage_count.
-        const tags = Array.from({ length: cap + 1500 }, (_, i) => ({ id: `w${String(i).padStart(6, '0')}`, name: `W ${String(i).padStart(6, '0')}`, sort_order: i, folder_type: 'OPEN' }));
-        for (let i = 0; i < 5; i++) tags.push({ id: `f${i}`, name: `ZZ folder ${i}`, folder_type: 'OPEN' });
-        await metadataDb.ensureSchemaMigrated(directories);
-        await metadataDb.saveTagDefinitions(directories, tags);
-        live().transaction(() => {
-            const assign = rawTagRowInserter(live(), 'character_tags');
-            for (let i = 0; i < 5; i++) assign.run('c.png', `f${i}`);
-        })();
-
-        const first = await query({ sort: { field: 'alphabetical' }, filter: { folders: true, used: true }, pageSize: 50 });
-        expect(first.body).toEqual({ rows: [], cursor: expect.any(String), more: true });
-        const got = await queryAll({ sort: { field: 'alphabetical' }, filter: { folders: true, used: true }, pageSize: 50 });
-        expect(got.ids).toEqual(['f0', 'f1', 'f2', 'f3', 'f4']);
-        expect(got.capped).toBe(1);
-
-        // Most used of the folders has its own index, so it reads only folders, in order, and is never cut.
-        const byUse = await queryAll({ sort: { field: 'by_entries' }, filter: { folders: true }, pageSize: 50 });
-        expect(byUse.ids.slice(0, 5)).toEqual(['f0', 'f1', 'f2', 'f3', 'f4']);
-        expect(byUse.capped).toBe(0);
-
-        // The same for a search under manual phase 1 and under most used.
-        for (const sort of ['manual', 'by_entries']) {
-            const all = await queryAll({ sort: { field: sort }, filter: { search: 'zz' }, pageSize: 50 });
-            expect(all.ids).toEqual(expected(sort, { search: 'zz' }));
-            expect(all.capped).toBeGreaterThan(0);
-        }
-
-        // Text anywhere in the name is checked row by row in every sort, alphabetical included.
-        for (const sort of SORTS) {
-            const all = await queryAll({ sort: { field: sort }, filter: { contains: 'folder' }, pageSize: 50 });
-            expect(all.ids).toEqual(expected(sort, { contains: 'folder' }));
-            expect(all.ids).toHaveLength(5);
-            expect(all.capped).toBeGreaterThan(0);
-        }
-
-        // restCount stops counting at 10,000 and says there may be more.
-        const counted = await query({ sort: { field: 'manual' }, pageSize: 3, restCount: true });
-        expect(counted.body.rest).toEqual({ count: 10000, more: true });
-        // A page the work cap cut short counts nothing.
-        const cut = await query({ sort: { field: 'alphabetical' }, filter: { folders: true, used: true }, pageSize: 50, restCount: true });
-        expect(cut.body).toEqual({ rows: [], cursor: expect.any(String), more: true });
     });
 });

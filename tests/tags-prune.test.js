@@ -1,40 +1,28 @@
-import { describe, test, expect, beforeAll, afterAll, afterEach } from '@jest/globals';
-import fs from 'node:fs';
+import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals';
 import path from 'node:path';
-import os from 'node:os';
 import { storedTagDefinitions, storedTagUsageRows } from './tag-store-reads.js';
 
-/** @type {typeof import('../src/character-metadata-db.js')} */
-let metadataDb;
+/** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
+let user;
+/** @type {typeof import('./converted-user.fixture.js')} */
+let fixture;
 /** @type {import('node:http').Server} */
 let server;
 let baseUrl;
-let tempDir;
 /** @type {import('../src/users.js').UserDirectoryList} */
 let directories;
 
 beforeAll(async () => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-tags-prune-test-'));
-    directories = {
-        root: tempDir,
-        characters: path.join(tempDir, 'characters'),
-        chats: path.join(tempDir, 'chats'),
-        groups: path.join(tempDir, 'groups'),
-    };
-    for (const dir of [directories.characters, directories.chats, directories.groups]) {
-        fs.mkdirSync(dir, { recursive: true });
-    }
-
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
 
-    metadataDb = await import('../src/character-metadata-db.js');
+    fixture = await import('./converted-user.fixture.js');
     const { router } = await import('../src/endpoints/tags.js');
     const express = (await import('express')).default;
     const app = express();
     app.use(express.json());
     app.use((req, res, next) => {
-        req.user = { directories };
+        req.user = user.user;
         next();
     });
     app.use('/api/tags', router);
@@ -45,13 +33,13 @@ beforeAll(async () => {
 
 afterAll(() => new Promise(resolve => server.close(resolve)));
 
-afterEach(() => {
-    metadataDb.disposeMetadataStores();
-    const dbPath = path.join(tempDir, 'character-metadata.sqlite');
-    if (fs.existsSync(dbPath)) {
-        fs.rmSync(dbPath);
-    }
+beforeEach(async () => {
+    user = await fixture.emptyUser('st-tags-prune-test-');
+    directories = user.directories;
+    globalThis.DATA_ROOT = user.dataRoot;
 });
+
+afterEach(() => user.close());
 
 async function post(urlPath, body = {}) {
     return fetch(`${baseUrl}${urlPath}`, {
@@ -69,15 +57,15 @@ function cardJson(name) {
 }
 
 async function seedCharacter(avatar) {
-    await metadataDb.upsertCharacterFromWrite(directories, avatar, cardJson(avatar.replace(/\.png$/, '')));
+    await user.store.lib.writeCard(directories, avatar, cardJson(avatar.replace(/\.png$/, '')));
 }
 
 async function saveTags(ids) {
-    await metadataDb.saveTagDefinitions(directories, ids.map(id => ({ id, name: id })));
+    for (const id of ids) await user.store.lib.tags.create({ id, name: id });
 }
 
 async function tagIds() {
-    return (await storedTagDefinitions(metadataDb, directories)).map(t => t.id).sort();
+    return (await storedTagDefinitions(user.store.lib)).map(t => t.id).sort();
 }
 
 async function unusedCount() {
@@ -87,7 +75,7 @@ async function unusedCount() {
 describe('POST /api/tags/unused-count and /api/tags/prune', () => {
     test('prunes only tags no character or group uses', async () => {
         await seedCharacter('Alice.png');
-        await metadataDb.upsertGroupRow(directories, 'group1', 'group1');
+        await user.store.lib.writeGroup({ id: 'group1', name: 'group1', members: [] });
         await saveTags(['onChar', 'onGroup', 'wasUsed', 'neverUsed']);
         await post('/api/tags/assign', { id: 'Alice.png', tagId: 'onChar' });
         await post('/api/tags/assign', { id: 'group1', tagId: 'onGroup' });
@@ -106,14 +94,14 @@ describe('POST /api/tags/unused-count and /api/tags/prune', () => {
         expect(await unusedCount()).toBe(0);
     });
 
-    test('removes each pruned tag\'s zero-count tag_usage row and keeps the others', async () => {
+    test('removes each pruned tag and keeps the others', async () => {
         await seedCharacter('Alice.png');
         await saveTags(['onChar', 'wasUsed']);
         await post('/api/tags/assign', { id: 'Alice.png', tagId: 'onChar' });
         await post('/api/tags/assign', { id: 'Alice.png', tagId: 'wasUsed' });
         await post('/api/tags/unassign', { id: 'Alice.png', tagId: 'wasUsed' });
 
-        const usage = () => storedTagUsageRows(directories);
+        const usage = () => storedTagUsageRows(user.store.lib);
         expect(await usage()).toEqual({ onChar: 1, wasUsed: 0 });
 
         const body = await (await post('/api/tags/prune', { limit: 500 })).json();
@@ -121,17 +109,19 @@ describe('POST /api/tags/unused-count and /api/tags/prune', () => {
         expect(await usage()).toEqual({ onChar: 1 });
     });
 
-    test('keeps a tag carried only by a batch-import row not yet flushed', async () => {
+    test('keeps a tag carried only by a character written in a batch of imports', async () => {
         await saveTags(['pendingTag']);
-        await metadataDb.beginBatchImport(directories);
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson('Bob'), null, null, { fromImport: true });
-        expect(await metadataDb.assignEntityTag(directories, 'Bob.png', 'pendingTag')).toBe('ok');
+        user.store.lib.beginBatch();
+        try {
+            await user.store.lib.writeCard(directories, 'Bob.png', cardJson('Bob'));
+            expect((await user.store.lib.tags.assign('Bob.png', 'pendingTag')).result).toBe('ok');
 
-        expect(await unusedCount()).toBe(0);
-        expect((await (await post('/api/tags/prune', { limit: 500 })).json()).deleted).toEqual([]);
-        expect(await tagIds()).toEqual(['pendingTag']);
-
-        await metadataDb.endBatchImport(directories);
+            expect(await unusedCount()).toBe(0);
+            expect((await (await post('/api/tags/prune', { limit: 500 })).json()).deleted).toEqual([]);
+            expect(await tagIds()).toEqual(['pendingTag']);
+        } finally {
+            user.store.lib.endBatch();
+        }
     });
 
     test('deletes at most `limit` per call and reports whether more remain', async () => {

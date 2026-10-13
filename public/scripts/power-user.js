@@ -36,8 +36,7 @@ import {
 } from './group-chats.js';
 import { groups } from './group-store.js';
 import {
-    chatOpDegraft,
-    chatOpEndPath,
+    chatOpCut,
 } from './chat-store.js';
 import {
     instruct_presets,
@@ -3336,7 +3335,7 @@ async function doMesCut(args, text) {
     let cutText = '';
 
     // Persist the whole cut as ONE tree op instead of relying on deleteMessage()'s own per-message
-    // persistence (which would fire one chatOpDegraft/chatOpEndPath request per cut message).
+    // persistence (which would fire one chatOpCut request per cut message).
     // deleteMessage()'s widening (getMessageDeletionStartId) can pull extra preceding tool-call
     // messages into the deletion, but that can only happen on the FIRST message it's asked to delete,
     // since it walks the *entire* contiguous run of preceding tool-call messages in one pass - by the
@@ -3346,16 +3345,8 @@ async function doMesCut(args, text) {
     // reproduces exactly the range the old per-message loop would have removed - just in one request.
     if (messagesToCut.length > 0) {
         const firstMessageId = getMessageDeletionStartId(range.start, deleteToolCalls);
-        const preCutLength = chat.length;
-        const removedCount = range.end - firstMessageId + 1;
-        const postCutLength = preCutLength - removedCount;
-        const isTailDeletion = postCutLength > 0 && firstMessageId === postCutLength;
         try {
-            if (isTailDeletion) {
-                await chatOpEndPath(firstMessageId - 1);
-            } else {
-                await chatOpDegraft(firstMessageId, range.end);
-            }
+            await chatOpCut(firstMessageId, range.end);
         } catch (error) {
             console.error('Could not remove the cut message range from the tree:', error);
         }

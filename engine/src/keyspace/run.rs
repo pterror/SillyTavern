@@ -14,8 +14,8 @@ use std::collections::BinaryHeap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use super::block::{Block, BlockBuilder, Cursor, KIND_DATA, KIND_INDEX};
 use super::cache::Cache;
@@ -67,12 +67,20 @@ pub fn parse_run_name(name: &str) -> Option<(u64, u64)> {
 // ---- reading a file from any thread ----
 
 /// A run file's read handle. Under wasm a file descriptor belongs to the thread that opened it, so each thread
-/// opens its own (a few kept per thread).
-struct RunFile {
+/// opens its own (a few kept per thread). A run built in memory (`RunWriter::in_memory`) is read from its bytes.
+enum RunFile {
     #[cfg(not(target_family = "wasm"))]
-    file: File,
+    File(File),
     #[cfg(target_family = "wasm")]
-    path: PathBuf,
+    Path(PathBuf),
+    Memory(Memory),
+}
+
+/// A run's bytes in memory, until `Run::write_out` writes them to the run's file: reads go there from then on.
+struct Memory {
+    bytes: RwLock<Option<Box<[u8]>>>,
+    file: OnceLock<Box<RunFile>>,
+    len: u64,
 }
 
 #[cfg(target_family = "wasm")]
@@ -83,43 +91,84 @@ thread_local! {
 impl RunFile {
     fn open(path: &Path) -> io::Result<RunFile> {
         #[cfg(not(target_family = "wasm"))]
-        return Ok(RunFile {
-            file: File::open(path)?,
-        });
+        return Ok(RunFile::File(File::open(path)?));
         #[cfg(target_family = "wasm")]
         {
             File::open(path)?;
-            Ok(RunFile {
-                path: path.to_path_buf(),
-            })
+            Ok(RunFile::Path(path.to_path_buf()))
+        }
+    }
+
+    fn len(&self, path: &Path) -> io::Result<u64> {
+        match self {
+            RunFile::Memory(m) => Ok(m.len),
+            _ => Ok(fs::metadata(path)?.len()),
         }
     }
 
     fn read_exact_at(&self, buf: &mut [u8], offset: u64) -> io::Result<()> {
-        #[cfg(not(target_family = "wasm"))]
-        return read_exact_at(&self.file, buf, offset);
-        #[cfg(target_family = "wasm")]
-        {
-            let file = HANDLES.with(|h| -> io::Result<std::rc::Rc<File>> {
-                let mut h = h.borrow_mut();
-                if let Some(i) = h.iter().position(|(p, _)| *p == self.path) {
-                    let e = h.remove(i);
-                    h.push(e);
-                } else {
-                    if h.len() == 16 {
-                        h.remove(0);
+        match self {
+            #[cfg(not(target_family = "wasm"))]
+            RunFile::File(file) => read_exact_at(file, buf, offset),
+            #[cfg(target_family = "wasm")]
+            RunFile::Path(path) => {
+                let file = HANDLES.with(|h| -> io::Result<std::rc::Rc<File>> {
+                    let mut h = h.borrow_mut();
+                    if let Some(i) = h.iter().position(|(p, _)| p == path) {
+                        let e = h.remove(i);
+                        h.push(e);
+                    } else {
+                        if h.len() == 16 {
+                            h.remove(0);
+                        }
+                        h.push((path.clone(), std::rc::Rc::new(File::open(path)?)));
                     }
-                    h.push((self.path.clone(), std::rc::Rc::new(File::open(&self.path)?)));
+                    Ok(h.last().unwrap().1.clone())
+                })?;
+                read_exact_at(&file, buf, offset)
+            }
+            RunFile::Memory(m) => {
+                if let Some(f) = m.file.get() {
+                    return f.read_exact_at(buf, offset);
                 }
-                Ok(h.last().unwrap().1.clone())
-            })?;
-            read_exact_at(&file, buf, offset)
+                let held = m.bytes.read().unwrap_or_else(|e| e.into_inner());
+                let Some(b) = held.as_ref() else {
+                    drop(held);
+                    let f = m
+                        .file
+                        .get()
+                        .expect("a run's bytes leave memory once its file is written");
+                    return f.read_exact_at(buf, offset);
+                };
+                let from = usize::try_from(offset).unwrap_or(usize::MAX);
+                let bytes = from
+                    .checked_add(buf.len())
+                    .and_then(|to| b.get(from..to))
+                    .ok_or_else(|| io::Error::from(io::ErrorKind::UnexpectedEof))?;
+                buf.copy_from_slice(bytes);
+                Ok(())
+            }
         }
     }
 
     #[cfg(target_family = "wasm")]
     fn forget(&self) {
-        HANDLES.with(|h| h.borrow_mut().retain(|(p, _)| *p != self.path));
+        match self {
+            RunFile::Path(path) => HANDLES.with(|h| h.borrow_mut().retain(|(p, _)| p != path)),
+            RunFile::Memory(m) => {
+                if let Some(f) = m.file.get() {
+                    f.forget();
+                }
+            }
+        }
+    }
+
+    /// Whether the run has a file (to remove once it is obsolete).
+    fn on_disk(&self) -> bool {
+        match self {
+            RunFile::Memory(m) => m.file.get().is_some(),
+            _ => true,
+        }
     }
 }
 
@@ -186,7 +235,7 @@ pub struct Run {
 
 impl Drop for Run {
     fn drop(&mut self) {
-        if self.obsolete.load(Ordering::Acquire) {
+        if self.file.on_disk() && self.obsolete.load(Ordering::Acquire) {
             #[cfg(target_family = "wasm")]
             self.file.forget();
             let _ = fs::remove_file(&self.path);
@@ -196,12 +245,58 @@ impl Drop for Run {
 
 impl Run {
     pub fn open(path: &Path, lo: u64, hi: u64) -> KsResult<Run> {
+        Run::read(path, RunFile::open(path)?, lo, hi)
+    }
+
+    /// The run `RunWriter::in_memory` wrote, `bytes`, read from memory until `write_out`. `path` is where
+    /// `write_out` puts it, and stands for it in errors.
+    pub fn in_memory(path: &Path, bytes: Vec<u8>, lo: u64, hi: u64) -> KsResult<Run> {
+        let len = bytes.len() as u64;
+        let m = Memory {
+            bytes: RwLock::new(Some(bytes.into_boxed_slice())),
+            file: OnceLock::new(),
+            len,
+        };
+        Run::read(path, RunFile::Memory(m), lo, hi)
+    }
+
+    /// Whether the run's bytes are in memory.
+    pub fn in_memory_now(&self) -> bool {
+        matches!(&self.file, RunFile::Memory(m) if m.file.get().is_none())
+    }
+
+    /// Writes a run held in memory to its file (`path`), which reads go to from then on, and lets its bytes go;
+    /// returns how many. Nothing for a run on disk already. One thread at a time writes a given run out.
+    pub fn write_out(&self) -> KsResult<u64> {
+        let RunFile::Memory(m) = &self.file else {
+            return Ok(0);
+        };
+        if m.file.get().is_some() {
+            return Ok(0);
+        }
+        {
+            let held = m.bytes.read().unwrap_or_else(|e| e.into_inner());
+            let Some(b) = held.as_ref() else {
+                return Ok(0);
+            };
+            let mut f = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&self.path)?;
+            f.write_all(b)?;
+            f.sync_data()?;
+        }
+        let _ = m.file.set(Box::new(RunFile::open(&self.path)?));
+        *m.bytes.write().unwrap_or_else(|e| e.into_inner()) = None;
+        Ok(m.len)
+    }
+
+    fn read(path: &Path, file: RunFile, lo: u64, hi: u64) -> KsResult<Run> {
         let corrupt = |why: String| KsError::Corrupt {
             file: path.display().to_string(),
             why,
         };
-        let file = RunFile::open(path)?;
-        let bytes = fs::metadata(path)?.len();
+        let bytes = file.len(path)?;
         if bytes < FOOTER as u64 {
             return Err(corrupt("shorter than a footer".into()));
         }
@@ -528,6 +623,14 @@ pub trait Source {
     fn key(&self) -> Option<&[u8]>;
     fn val(&self) -> KsResult<Val>;
     fn advance(&mut self) -> KsResult<()>;
+
+    /// For a source in ascending order: on to the first entry at or after `target`, if it is behind it.
+    fn seek(&mut self, target: &[u8]) -> KsResult<()> {
+        while self.key().is_some_and(|k| k < target) {
+            self.advance()?;
+        }
+        Ok(())
+    }
 }
 
 /// A run's entries from a key on, in order.
@@ -615,6 +718,33 @@ impl Source for RunIter<'_> {
         };
         c.advance().map_err(|e| self.run.corrupt(e))?;
         self.descend(None)
+    }
+
+    /// Stays in the blocks held down to the lowest index entry at or after `target` (an index entry's key is
+    /// its child's last key), and reads blocks only below it.
+    fn seek(&mut self, target: &[u8]) -> KsResult<()> {
+        if self.key().is_none_or(|k| k >= target) {
+            return Ok(());
+        }
+        let data = self.path.len() - 1;
+        let keep = (0..data)
+            .rev()
+            .find(|&j| self.path[j].valid && self.path[j].key.as_slice() >= target);
+        match keep {
+            Some(j) => {
+                self.path.truncate(j + 2);
+                self.path[j + 1]
+                    .reseek(target)
+                    .map_err(|e| self.run.corrupt(e))?;
+            }
+            None => {
+                self.path.clear();
+                let top =
+                    Cursor::seek(self.run.top.clone(), target).map_err(|e| self.run.corrupt(e))?;
+                self.path.push(top);
+            }
+        }
+        self.descend(Some(target))
     }
 }
 
@@ -789,7 +919,8 @@ impl<'a> MergeRev<'a> {
                 self.heap.push((k.to_vec(), Reverse(i)));
             }
         }
-        Ok(Some((key, super::val::fold(vals).unwrap())))
+        let v = super::val::fold(&key, vals).unwrap();
+        Ok(Some((key, v)))
     }
 }
 
@@ -837,8 +968,7 @@ impl<'a> Merge<'a> {
         }
     }
 
-    /// The next key and its values' fold.
-    pub fn next_entry(&mut self) -> KsResult<Option<(Vec<u8>, Val)>> {
+    fn start(&mut self) {
         if !self.started {
             self.started = true;
             for (i, s) in self.sources.iter().enumerate() {
@@ -847,6 +977,33 @@ impl<'a> Merge<'a> {
                 }
             }
         }
+    }
+
+    /// The next key, left to `next_entry`.
+    pub fn peek(&mut self) -> Option<&[u8]> {
+        self.start();
+        self.heap.peek().map(|Reverse((k, _))| k.as_slice())
+    }
+
+    /// On to the first key at or after `target`: each source behind it seeks it.
+    pub fn seek(&mut self, target: &[u8]) -> KsResult<()> {
+        self.start();
+        while let Some(Reverse((k, _))) = self.heap.peek()
+            && k.as_slice() < target
+        {
+            let Reverse((_, i)) = self.heap.pop().unwrap();
+            let s = &mut self.sources[i];
+            s.seek(target)?;
+            if let Some(k) = s.key() {
+                self.heap.push(Reverse((k.to_vec(), i)));
+            }
+        }
+        Ok(())
+    }
+
+    /// The next key and its values' fold.
+    pub fn next_entry(&mut self) -> KsResult<Option<(Vec<u8>, Val)>> {
+        self.start();
         let Some(Reverse((key, first))) = self.heap.pop() else {
             return Ok(None);
         };
@@ -867,7 +1024,8 @@ impl<'a> Merge<'a> {
                 self.heap.push(Reverse((k.to_vec(), i)));
             }
         }
-        Ok(Some((key, super::val::fold(vals).unwrap())))
+        let v = super::val::fold(&key, vals).unwrap();
+        Ok(Some((key, v)))
     }
 }
 
@@ -901,7 +1059,7 @@ pub fn restamp(path: &Path, covered: u64, lo: u64, hi: u64) -> io::Result<()> {
 }
 
 pub struct RunWriter {
-    out: BufWriter<File>,
+    out: RunOut,
     offset: u64,
     block_size: usize,
     data: BlockBuilder,
@@ -910,17 +1068,34 @@ pub struct RunWriter {
     entries: u64,
 }
 
+enum RunOut {
+    File(BufWriter<File>),
+    Memory(Vec<u8>),
+}
+
 impl RunWriter {
     pub fn create(path: &Path, block_size: usize) -> io::Result<RunWriter> {
         let file = OpenOptions::new().write(true).create_new(true).open(path)?;
-        Ok(RunWriter {
-            out: BufWriter::with_capacity(1 << 20, file),
+        Ok(RunWriter::to(
+            RunOut::File(BufWriter::with_capacity(1 << 20, file)),
+            block_size,
+        ))
+    }
+
+    /// A writer of a run kept in memory (`finish_in_memory`), its buffer allocated for `capacity` bytes.
+    pub fn in_memory(block_size: usize, capacity: usize) -> RunWriter {
+        RunWriter::to(RunOut::Memory(Vec::with_capacity(capacity)), block_size)
+    }
+
+    fn to(out: RunOut, block_size: usize) -> RunWriter {
+        RunWriter {
+            out,
             offset: 0,
             block_size,
             data: BlockBuilder::default(),
             index: Vec::new(),
             entries: 0,
-        })
+        }
     }
 
     pub fn entries(&self) -> u64 {
@@ -933,7 +1108,10 @@ impl RunWriter {
     }
 
     fn write_block(&mut self, bytes: &[u8]) -> io::Result<Handle> {
-        self.out.write_all(bytes)?;
+        match &mut self.out {
+            RunOut::File(out) => out.write_all(bytes)?,
+            RunOut::Memory(out) => out.extend_from_slice(bytes),
+        }
         let h = Handle {
             offset: self.offset,
             len: bytes.len() as u64,
@@ -1001,8 +1179,8 @@ impl RunWriter {
         Ok(())
     }
 
-    /// Writes the rest and the footer, and syncs the file. Returns the file's size.
-    pub fn finish(mut self, covered: u64, lo: u64, hi: u64) -> io::Result<u64> {
+    /// Writes the rest and the footer.
+    fn close(&mut self, covered: u64, lo: u64, hi: u64) -> io::Result<()> {
         if !self.data.is_empty() {
             self.flush_data()?;
         }
@@ -1032,8 +1210,25 @@ impl RunWriter {
         f.extend_from_slice(&crc.to_le_bytes());
         f.resize(FOOTER, 0);
         self.write_block(&f)?;
-        let file = self.out.into_inner().map_err(|e| e.into_error())?;
-        file.sync_data()?;
+        Ok(())
+    }
+
+    /// Writes the rest and the footer, and syncs the file. Returns the file's size.
+    pub fn finish(mut self, covered: u64, lo: u64, hi: u64) -> io::Result<u64> {
+        self.close(covered, lo, hi)?;
+        match self.out {
+            RunOut::File(out) => out.into_inner().map_err(|e| e.into_error())?.sync_data()?,
+            RunOut::Memory(_) => return Err(io::Error::other("a run in memory has no file")),
+        }
         Ok(self.offset)
+    }
+
+    /// `finish` for a writer `in_memory`: the run's bytes, for `Run::in_memory`.
+    pub fn finish_in_memory(mut self, covered: u64, lo: u64, hi: u64) -> io::Result<Vec<u8>> {
+        self.close(covered, lo, hi)?;
+        match self.out {
+            RunOut::Memory(bytes) => Ok(bytes),
+            RunOut::File(_) => Err(io::Error::other("a run written to a file isn't in memory")),
+        }
     }
 }

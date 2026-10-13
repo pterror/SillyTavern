@@ -4,18 +4,20 @@ import zlib from 'node:zlib';
 
 import { textEdit } from './text-edit.js';
 import { META, TOP, decodeMessage, encodeMessage, messageRecords } from './chat-codec.js';
-import { ITEMIZED_PROMPT_FLAG } from './message-tree-db.js';
+import { ITEMIZED_PROMPT_FLAG } from './itemization-of.js';
+import { FIELD, NAME_HISTORY, TYPE, renamesOf } from './library-codes.js';
+import { storedValues } from './entity-values.js';
 import { jsonHash } from '../public/scripts/hash-utils.js';
 import { bookKey } from './world-info-keys.js';
-import { searchClauses } from './search-clauses.js';
+import { cursorWeights, cursorWeightsOf, searchClauses } from './search-clauses.js';
 
 /**
  * Chats on the engine (build path 5b): each character's or group's messages as a tree, sessions and bookmarks as
  * positions in it, the state (`chat_metadata`) at each message. Upstream's chat concepts exist only at the edges:
  * a "chat" read is a position's path assembled in upstream's shape.
  *
- * Ids outside: a message is named by the id it had before the engine (its outside key) or, made since, by its
- * integer as a decimal string; a session by its UUID; a user by their handle. Writes to one tree run one after
+ * Ids outside: a message is named by its outside key, a UUID (the id it had before the engine, else one made with it);
+ * a session by its UUID; a user by their handle. Writes to one tree run one after
  * another, so each reads what the one before it stored.
  */
 
@@ -23,7 +25,7 @@ const zstdCompress = promisify(zlib.zstdCompress);
 const zstdDecompress = promisify(zlib.zstdDecompress);
 
 /** `chatRead('ids')` spaces. */
-const SPACE = Object.freeze({ message: 0, session: 1, user: 2 });
+export const SPACE = Object.freeze({ message: 0, session: 1, user: 2 });
 
 /** The namespace of a user's deterministic session in a tree (UUID v5 of `<handle>\0<tree id>`). */
 export const SESSION_NAMESPACE = 'b3c3d5a0-6b5e-4f61-9d2e-5a0c1f7e9e21';
@@ -47,10 +49,104 @@ function snippetOf(text, needles) {
     return `${from > 0 ? '…' : ''}${text.slice(from, to)}${to < text.length ? '…' : ''}`;
 }
 
-/** Names `nameSession()` tries before giving up, as upstream's `getUniqueName()`'s `maxTries`. */
-const SESSION_NAME_TRIES = 1000;
 
 const DECIMAL = /^(0|[1-9][0-9]*)$/;
+
+/** Alternatives a load sends with their text on each side of the shown one; the rest are holes, read on demand. */
+const ALTERNATIVE_WINDOW = 5;
+
+/**
+ * The alternatives a load sends with text: `[from, to)` of a message's siblings.
+ * @param {number} count The siblings.
+ * @param {number} shown The shown one's place among them.
+ * @param {boolean} full Every one.
+ * @returns {[number, number]}
+ */
+function alternativeWindow(count, shown, full) {
+    if (full) return [0, count];
+    const at = Math.max(0, shown);
+    return [Math.max(0, at - ALTERNATIVE_WINDOW), Math.min(count, at + ALTERNATIVE_WINDOW + 1)];
+}
+/**
+ * The alternatives of a level that a message of a saved chat holds as holes (`null` in `swipes`: not sent to the
+ * caller, so not left out by it), placed by the ids sent around each run of them; null when those ids aren't in the
+ * level's order, so no hole can be placed.
+ * @param {any} message
+ * @param {string[]} level The level's outside ids, in order.
+ * @returns {Set<string> | null}
+ */
+function heldAsHoles(message, level) {
+    const swipes = Array.isArray(message?.swipes) ? message.swipes : [];
+    /** @type {Set<string>} */
+    const held = new Set();
+    if (!swipes.some(x => x === null)) return held;
+    const info = Array.isArray(message.swipe_info) ? message.swipe_info : [];
+    const shown = Number.isInteger(message.swipe_id) ? message.swipe_id : 0;
+    const place = new Map(level.map((id, k) => [id, k]));
+    let before = -1;
+    let run = false;
+    const close = (/** @type {number} */ after) => {
+        if (run) for (let k = before + 1; k < after; k++) held.add(level[k]);
+        run = false;
+    };
+    for (let k = 0; k < swipes.length; k++) {
+        if (swipes[k] === null) {
+            run = true;
+            continue;
+        }
+        const id = info[k]?.node_id ?? (k === shown ? message.node_id : null);
+        const at = id == null ? undefined : place.get(String(id));
+        if (at === undefined) continue;
+        if (at <= before) return null;
+        close(at);
+        before = at;
+    }
+    close(level.length);
+    return held;
+}
+
+const BOOKMARK_COMPAT_ID = /^b(0|[1-9][0-9]*)$/;
+
+/**
+ * A bookmark's compat chat id: `b<id>`, a prefix no message id has, so a message id never names a bookmark.
+ * @param {bigint | number | string} id The bookmark's id.
+ */
+export function bookmarkCompatId(id) {
+    return `b${id}`;
+}
+
+const SESSION_COMPAT_ID = /^s(.+)\.(0|[1-9][0-9]*)$/;
+
+/**
+ * The compat chat id of a session's conversation in a tree when it has no current chat there: `s<UUID>.<tree>`, stable
+ * from the session's first read (its UUID is made before any write), and each tree's its own.
+ * @param {string} session The session's UUID.
+ * @param {bigint | number | string} tree
+ */
+export function sessionCompatId(session, tree) {
+    return `s${session}.${tree}`;
+}
+
+/**
+ * The session and tree a compat chat id `s<UUID>.<tree>` names; null for anything else.
+ * @param {unknown} compat
+ * @returns {{ session: string, tree: bigint } | null}
+ */
+export function sessionCompatOf(compat) {
+    const m = typeof compat === 'string' ? SESSION_COMPAT_ID.exec(compat) : null;
+    return m ? { session: m[1], tree: BigInt(m[2]) } : null;
+}
+
+/**
+ * The bookmark id a compat chat id names (`b<digits>`), as the decimal string the engine's own callers take; null for
+ * anything else (a bare decimal is a label).
+ * @param {unknown} compat
+ * @returns {string | null}
+ */
+export function bookmarkIdOf(compat) {
+    const m = typeof compat === 'string' ? BOOKMARK_COMPAT_ID.exec(compat) : null;
+    return m ? m[1] : null;
+}
 
 /** State change author kinds (`state.rs`), and the bit naming a variable. */
 export const AUTHOR = Object.freeze({ user: 0, script: 1, model: 2, rule: 3, migration: 4 });
@@ -161,6 +257,15 @@ function isSaveBase(base) {
 function identityOf(m) {
     const speaker = m?.is_user ? `u\u0001${m?.persona ?? m?.name ?? ''}` : `c\u0001${m?.name ?? ''}`;
     return `${speaker}\u0000${m?.mes ?? ''}`;
+}
+
+/**
+ * Whether a message is a tool-call turn (its tool calls and their results in `extra.tool_invocations`): each is its own
+ * message, never taken as another with the same text.
+ * @param {Record<string, any>} m
+ */
+function isToolTurn(m) {
+    return Array.isArray(m?.extra?.tool_invocations);
 }
 
 /**
@@ -280,7 +385,7 @@ function alternativeEntry(nodeId, o, itemized) {
 
 /**
  * @typedef {{ bookmarks: { id: string, name: string | null, node_id: string }[], changes: { id: string, key: string | number, variable: boolean, node_id: string | null }[] }} Drops
- * @typedef {{ ok: true, preview?: true, drops?: Drops } | { ok: false, reason: string, drops?: Drops }} EditAnswer
+ * @typedef {{ ok: true, preview?: true, drops?: Drops, copied?: Record<string, string> } | { ok: false, reason: string, drops?: Drops }} EditAnswer
  * @typedef {{ id: string, alternatives?: string[] }[]} SaveBase The messages a page knew, in its chat's order: each
  * its shown message's id and its alternatives' ids.
  */
@@ -335,20 +440,26 @@ export class ChatEngine {
      * @returns {Promise<(bigint | null)[]>}
      */
     async messageIds(externals) {
-        const mapped = await this.store.chatRead('ids', { space: SPACE.message, keys: externals });
-        const decimals = externals.map((e, i) => (mapped[i] === null && DECIMAL.test(e) ? BigInt(e) : null));
-        const toCheck = decimals.filter(d => d !== null);
-        const found = toCheck.length ? await this.store.chatRead('messages', { ids: toCheck }) : [];
-        const exists = new Set(found.filter(Boolean).map(m => m.id));
-        return externals.map((_, i) => mapped[i] ?? (decimals[i] !== null && exists.has(decimals[i]) ? decimals[i] : null));
+        return this.store.chatRead('ids', { space: SPACE.message, keys: externals });
     }
 
     /**
-     * A message's outside id.
+     * Gives a message made in this write its outside id: a new UUID, in the write's records.
+     * @param {object[]} records
+     * @param {bigint} id
+     */
+    keyNew(records, id) {
+        records.push({ kind: 'keyMap', message: id, key: Buffer.from(newSessionKey(), 'utf8') });
+    }
+
+    /**
+     * A message's outside id. Every stored message has a key (a UUID made at its append, or the old id the converter
+     * mapped), so a message without one is a bug, never answered with its decimal id.
      * @param {{ id: bigint, oldKey: string | null }} stored
      */
     externalId(stored) {
-        return stored.oldKey ?? String(stored.id);
+        if (typeof stored.oldKey !== 'string') throw new Error(`Message ${stored.id} has no key`);
+        return stored.oldKey;
     }
 
     /**
@@ -398,7 +509,7 @@ export class ChatEngine {
         if (header === undefined || header === null) {
             const [uid] = await this.store.chatRead('ids', { space: SPACE.user, keys: [user] });
             const last = uid === null ? null : await this.store.chatRead('userInTree', { user: uid, tree });
-            if (last !== null) {
+            if (last !== null && last.session !== null) {
                 const [s] = await this.store.chatRead('sessions', { ids: [last.session] });
                 if (s) return { session: s.key, identifier: s.key };
             }
@@ -409,6 +520,77 @@ export class ChatEngine {
         const [state] = await this.store.chatRead('keyStates', { space: SPACE.session, keys: [header] });
         if (state === 'gone') return { session: null, identifier: defaultSessionKey(user, tree), gone: true };
         return { session: header, identifier: header };
+    }
+
+    /**
+     * A session's current chat in a tree (upstream's open chat file): the bookmark it last switched to there while
+     * that bookmark is in the tree, else null (none: its own conversation). Only explicit switches change it
+     * (`setCurrentChat()`), never appends or moves.
+     * @param {string | null | undefined} session The session's UUID.
+     * @param {bigint} tree
+     * @returns {Promise<bigint | null>}
+     */
+    async currentChat(session, tree) {
+        const sid = session ? await this.sessionId(session) : null;
+        return sid === null ? null : await this.store.chatRead('currentChat', { session: sid, tree });
+    }
+
+    /**
+     * Upstream's compat chat id of a session's conversation in a tree (`getCurrentChatId()`, `characters[].chat`,
+     * `group.chat_id`): its current chat's `b<id>`, else `s<UUID>.<tree>`.
+     * @param {string | null | undefined} session The session's UUID, when it has one stored or made.
+     * @param {string} identifier The UUID the conversation is named by (the session's, or the caller's deterministic one).
+     * @param {bigint} tree
+     */
+    async compatChatId(session, identifier, tree) {
+        const current = await this.currentChat(session, tree);
+        return current === null ? sessionCompatId(identifier, tree) : bookmarkCompatId(current);
+    }
+
+    /**
+     * Switches a session's current chat in a tree (an explicit switch: opening a chat, a new chat, a branch opened):
+     * to a bookmark of the tree, or none (null). Writes nothing when it is already so.
+     * @param {object} p
+     * @param {bigint} p.tree
+     * @param {bigint | string | null} p.bookmark
+     * @param {Actor} p.actor Through a session.
+     */
+    setCurrentChat({ tree, bookmark, actor }) {
+        return this.serialized(tree, async () => {
+            const b = bookmark === null ? null : BigInt(bookmark);
+            const known = await this.knownActorIds(actor);
+            const now = known.session === null ? null : await this.store.chatRead('currentChat', { session: known.session, tree });
+            if (now === b) return { ok: true };
+            /** @type {object[]} */
+            const records = [];
+            const { user, session } = await this.actorIds(actor, records);
+            if (session === null) throw new Error('A current chat is a session\'s');
+            records.push({ kind: 'currentChat', session, user, tree, ...(b === null ? {} : { bookmark: b }) });
+            await this.store.commit(records);
+            return { ok: true };
+        });
+    }
+
+    /**
+     * Makes a message (its outside id; null: the tree's root) the user's remembered position in the tree, where the
+     * user lands there with no position of a session's own (the user tier of landing). No session moves.
+     * @param {object} p
+     * @param {bigint} p.tree
+     * @param {string | null} p.at
+     * @param {string} p.user The user's handle.
+     * @returns {Promise<{ ok: true } | { ok: false, reason: 'unknown node' }>}
+     */
+    rememberUserPosition({ tree, at, user }) {
+        return this.serialized(tree, async () => {
+            /** @type {object[]} */
+            const records = [];
+            const uid = await this.idOf(SPACE.user, user, 'user', records);
+            const m = at === null ? null : await this.messageOf(tree, at);
+            if (at !== null && !m) return { ok: false, reason: 'unknown node' };
+            records.push({ kind: 'userPosition', user: uid, tree, ...(m ? { at: m.id } : {}) });
+            await this.store.commit(records);
+            return { ok: true };
+        });
     }
 
     /**
@@ -425,15 +607,111 @@ export class ChatEngine {
     }
 
     /**
-     * The session named exactly `name` (its UUID), or null: what a route taking a chat name resolves it to. Names
-     * are unique in the store, which is the owner's: every user acting in it shares them, as upstream's chat file
-     * names in a user data directory, so a session moving between trees keeps its name and never clashes.
+     * Where a session is in its history: how many entries it has and which one its cursor is at (0: none); null for
+     * a session not stored.
+     * @param {string} session
+     * @returns {Promise<{ length: number, cursor: number } | null>}
+     */
+    async sessionPlace(session) {
+        const sid = await this.sessionId(session);
+        if (sid === null) return null;
+        const [s] = await this.store.chatRead('sessions', { ids: [sid] });
+        return s ? { length: s.length, cursor: s.cursor ?? 0 } : null;
+    }
+
+    /**
+     * The session's current chats, a page at a time: `{ tree, bookmark }`, the bookmark's id as a decimal string.
+     * @param {string} session
+     * @returns {AsyncGenerator<{ tree: bigint, bookmark: string }[]>}
+     */
+    async* currentChats(session) {
+        const sid = await this.sessionId(session);
+        if (sid === null) return;
+        const limit = 256;
+        /** @type {bigint | undefined} */
+        let after;
+        for (;;) {
+            const page = await this.store.chatRead('currentChats', { session: sid, limit, ...(after === undefined ? {} : { after }) });
+            const live = page.filter((/** @type {any} */ c) => c.bookmark !== null).map((/** @type {any} */ c) => ({ tree: c.tree, bookmark: String(c.bookmark) }));
+            if (live.length) yield live;
+            if (page.length < limit) return;
+            after = page[page.length - 1].tree;
+        }
+    }
+
+    /**
+     * Forks a session for a tab that finds another tab holding it: a new session whose history is `from`'s first
+     * `length` entries (read through `from`, not copied), at the `cursor`-th, and whose current chats are `chats` (a
+     * bookmark gone since is none). `length` 0: no history.
+     * @param {object} p
+     * @param {string} p.from
+     * @param {number} p.length
+     * @param {number} p.cursor
+     * @param {{ tree: bigint, bookmark: string }[]} p.chats
+     * @param {string} p.user The user's handle.
+     * @returns {Promise<{ ok: true, session: string } | { ok: false, reason: string }>}
+     */
+    forkSession({ from, length, cursor, chats, user }) {
+        const session = newSessionKey();
+        return this.serialized(`session:${from}`, async () => {
+            const [state] = await this.store.chatRead('keyStates', { space: SPACE.session, keys: [from] });
+            if (state === null || state === 'gone') return { ok: false, reason: 'unknown session' };
+            const records = [];
+            const ids = await this.actorIds({ user, session }, records);
+            const sid = /** @type {bigint} */ (ids.session);
+            if (length > 0) records.push({ kind: 'sessionFork', session: sid, from: state.id, user: ids.user, length, cursor, time: this.now() });
+            for (const { tree, bookmark } of chats) {
+                if (await this.bookmarkOf(tree, bookmark)) records.push({ kind: 'currentChat', session: sid, user: ids.user, tree, bookmark: BigInt(bookmark) });
+            }
+            await this.store.commit(records);
+            return { ok: true, session };
+        });
+    }
+
+    /**
+     * A new session whose one move is to where `from` is.
+     * @param {bigint} from The session's id.
+     * @param {string} user The user's handle.
+     * @returns {Promise<string>} The new session's UUID.
+     */
+    async sessionAt(from, user) {
+        const session = newSessionKey();
+        const [s] = await this.store.chatRead('sessions', { ids: [from] });
+        if (!s || s.tree === null) return session;
+        return this.serialized(s.tree, async () => {
+            const records = [];
+            const ids = await this.actorIds({ user, session }, records);
+            const [now] = await this.store.chatRead('sessions', { ids: [from] });
+            if (!now || now.tree === null) return session;
+            records.push(now.at === null
+                ? { kind: 'pointerRoot', session: ids.session, user: ids.user, tree: now.tree, time: this.now() }
+                : { kind: 'pointerMove', session: ids.session, user: ids.user, target: now.at });
+            await this.store.commit(records);
+            return session;
+        });
+    }
+
+    /**
+     * A page of the user's sessions by their last move, newest first: `{ position, session }` (the session's UUID).
+     * @param {object} p
+     * @param {bigint} [p.before]
+     * @param {number} p.limit
+     */
+    async recentSessionKeys({ before, limit }) {
+        const page = await this.store.chatRead('recent', { limit, ...(before === undefined ? {} : { before }) });
+        const rows = page.length ? await this.store.chatRead('sessions', { ids: page.map((/** @type {any} */ e) => e.session) }) : [];
+        return page.map((/** @type {any} */ e, /** @type {number} */ i) => ({ position: e.position, id: e.session, session: rows[i]?.key ?? null }));
+    }
+
+    /**
+     * The one session labelled exactly `name` (its UUID), or null when none or several are. A session's name is a
+     * free label; its identity is its UUID.
      * @param {string} name
      * @returns {Promise<string | null>}
      */
     async sessionNamed(name) {
         const ids = await this.store.chatRead('sessionsNamed', { name });
-        if (ids.length === 0) return null;
+        if (ids.length !== 1) return null;
         const [row] = await this.store.chatRead('sessions', { ids: [ids[0]] });
         return row?.key ?? null;
     }
@@ -628,6 +906,19 @@ export class ChatEngine {
     }
 
     /**
+     * Where an actor's session is, or lands, in a tree: its last position there, else its user's, else the end of
+     * the followed path from the root; null for the tree's root (nothing shown yet).
+     * @param {bigint} tree
+     * @param {Actor} actor
+     * @returns {Promise<string | null>} The message's outside id.
+     */
+    async landingOf(tree, actor) {
+        const { user, session } = await this.knownActorIds(actor);
+        const lands = await this.store.chatRead('landing', { tree, ...(session === null ? {} : { session }), ...(user === null ? {} : { user }) });
+        return lands === null ? null : (await this.externalIds([lands]))[0];
+    }
+
+    /**
      * Where a chat showing a card greeting lands among the tree's openings (stored first, then the card's
      * greetings no stored opening already is), from the whole list:
      * 1. the first opening with exactly the shown text (so a stored one before a card greeting);
@@ -701,6 +992,7 @@ export class ChatEngine {
                 const time = now + added;
                 const speaker = await this.speakerFor(content, treeSpeaker);
                 records.push(...messageRecords(id, encodeMessage(content, time, speaker), { parent: null, owner: tree, time, session: null, user, sendKey: null }));
+                this.keyNew(records, id);
                 byIdentity.set(key, id);
                 ids.push(id);
                 added++;
@@ -715,9 +1007,10 @@ export class ChatEngine {
     /**
      * Stores messages after a message (null: as the tree's openings), each after the one before, each with the state
      * changes made while producing it (hung on it, marked as its own). A message whose send key the tree already
-     * stored is not stored again. A message matching a reply already there (same speaker and text, and the same
-     * changes made while producing it) is that reply, so nothing is recorded twice; the same text with other changes
-     * is stored as an alternative of its own. Through a session, the session moves to each and chooses it.
+     * stored is not stored again. A message matching a reply already there (same speaker and text) is that reply, so
+     * nothing is recorded twice; for a `regenerated` reply the changes made while producing it must be the same too,
+     * and the same text with other changes is stored as an alternative of its own. A tool-call turn is always stored.
+     * Through a session, the session moves to each and chooses it.
      * @param {object} p
      * @param {bigint} p.tree
      * @param {Speaker | null} p.treeSpeaker The tree's character (null for a group).
@@ -728,10 +1021,11 @@ export class ChatEngine {
      * in order (as `changeState`'s ops: a key whose value is already that records nothing).
      * @param {number} [p.author] The changes' author kind.
      * @param {string | null} [p.ref] The changes' author reference.
+     * @param {boolean} [p.regenerated] The messages are a reply generated again (a swipe or a regenerate).
      * @param {Actor} p.actor
      * @returns {Promise<{ ok: boolean, reason?: string, node_ids: string[], already_stored?: string[] }>}
      */
-    appendMessages({ tree, treeSpeaker, after, contents, sendKeys = [], changes = [], author = AUTHOR.user, ref = null, actor }) {
+    appendMessages({ tree, treeSpeaker, after, contents, sendKeys = [], changes = [], author = AUTHOR.user, ref = null, regenerated = false, actor }) {
         const lorebooks = changes.flatMap(ops => (Array.isArray(ops) ? ops : [])).filter(op => op?.key === WORLD_INFO && !op.variable).map(op => op.value);
         return this.serialized(tree, () => this.withWorldLinks(lorebooks, async link => {
             /** @type {object[]} */
@@ -765,7 +1059,7 @@ export class ChatEngine {
                 }
                 state ??= await this.stateMap(tree, cursor);
                 const produced = producedChanges(changes[i], state);
-                const twin = await this.twinOf(tree, cursor, content, ids, produced);
+                const twin = isToolTurn(content) ? null : await this.twinOf(tree, cursor, content, ids, regenerated ? produced : undefined);
                 if (twin !== null) {
                     if (session !== null) records.push(...this.moveTo(session, user, cursor, twin));
                     ids.push(twin);
@@ -777,6 +1071,7 @@ export class ChatEngine {
                 const time = now + i;
                 const speaker = await this.speakerFor(content, treeSpeaker);
                 records.push(...messageRecords(id, encodeMessage(content, time, speaker), { parent: cursor, owner: tree, time, session, user, sendKey: key }));
+                this.keyNew(records, id);
                 for (const c of produced) {
                     /** @type {Record<string, unknown>} */
                     const r = { kind: 'stateChange', id: this.next.change++, message: id, time, author: author | PRODUCED | (c.variable ? VARIABLE : 0), key: c.key, user };
@@ -849,14 +1144,15 @@ export class ChatEngine {
     }
 
     /**
-     * Each id's outside id.
+     * Each id's outside id; a message that isn't stored (gone) is answered by null: a decimal never names a message.
      * @param {bigint[]} ids
+     * @returns {Promise<(string | null)[]>}
      */
     async externalIds(ids) {
         const stored = await this.stored(ids);
         return ids.map(id => {
             const s = stored.get(id);
-            return s ? this.externalId(s) : String(id);
+            return s ? this.externalId(s) : null;
         });
     }
 
@@ -951,7 +1247,7 @@ export class ChatEngine {
                     refused.push({ node_id: edit.node_id, reason: 'refused to blank stored text' });
                     continue;
                 }
-                if (s.parent !== null) {
+                if (s.parent !== null && !isToolTurn(next)) {
                     const twin = await this.twinOf(tree, s.parent, next, []);
                     if (twin !== null && twin !== id) {
                         refused.push({ node_id: edit.node_id, reason: 'an alternative with this text already exists', twin: (await this.externalIds([twin]))[0] });
@@ -1018,7 +1314,7 @@ export class ChatEngine {
             if (session === null) throw new Error('A session moves through itself');
             const [now] = await this.store.chatRead('sessions', { ids: [session] });
             if (now && now.tree === tree && now.at === id) return { ok: true };
-            records.push(id === null ? { kind: 'pointerRoot', session, user, tree } : { kind: 'pointerMove', session, user, target: id });
+            records.push(id === null ? { kind: 'pointerRoot', session, user, tree, time: this.now() } : { kind: 'pointerMove', session, user, target: id });
             await this.store.commit(records);
             return { ok: true };
         });
@@ -1042,7 +1338,7 @@ export class ChatEngine {
             if (now?.n !== reached.n) return { ok: false, reason: 'moved meanwhile' };
             const records = [];
             const { user } = await this.actorIds(actor, records);
-            records.push({ kind: 'historyStep', session, user, n: reached.n });
+            records.push({ kind: 'historyStep', session, user, n: reached.n, time: this.now() });
             await this.store.commit(records);
             return { ok: true, tree, at: reached.target === null ? null : (await this.externalIds([reached.target]))[0] };
         });
@@ -1066,7 +1362,7 @@ export class ChatEngine {
             const atRoot = !!now && now.tree === tree && now.at === null;
             const chosen = now ? await this.store.chatRead('openingChoice', { session, tree }) : null;
             if (atRoot && chosen === index) return { ok: true };
-            if (!atRoot) records.push({ kind: 'pointerRoot', session, user, tree });
+            if (!atRoot) records.push({ kind: 'pointerRoot', session, user, tree, time: this.now() });
             records.push({ kind: 'openingChoice', session, user, tree, index });
             await this.store.commit(records);
             return { ok: true };
@@ -1099,55 +1395,26 @@ export class ChatEngine {
             if (!sa || sa.owner !== tree) return { ok: false, reason: 'unknown after node' };
             if (!sb || sb.owner !== tree) return { ok: false, reason: 'unknown before node' };
             if (sb.parent !== a) return { ok: false, reason: 'not adjacent' };
+            // A session at `before` or below it shows the grafted message where it is; any other goes to `before`.
+            const [now] = session === null ? [null] : await this.store.chatRead('sessions', { ids: [session] });
+            const moves = session !== null && !(now?.tree === tree && now.at !== null && await this.store.chatRead('within', { message: b, at: now.at }));
             let id = await this.twinOf(tree, a, content, []);
             if (id === null) {
                 id = this.next.message++;
                 const time = this.now();
                 const speaker = await this.speakerFor(content, treeSpeaker);
-                records.push(...messageRecords(id, encodeMessage(content, time, speaker), { parent: a, owner: tree, time, session, user, sendKey: sendKey ? Buffer.from(sendKey, 'utf8') : null }));
-            } else if (session !== null) {
+                records.push(...messageRecords(id, encodeMessage(content, time, speaker), { parent: a, owner: tree, time, session: moves ? session : null, user, sendKey: sendKey ? Buffer.from(sendKey, 'utf8') : null }));
+                this.keyNew(records, id);
+            } else if (moves) {
                 records.push(...this.moveTo(session, user, a, id));
             }
             records.push({ kind: 'messageParent', message: b, parent: id, user, ...(session === null ? {} : { session }) });
-            if (session !== null) records.push(...this.moveTo(session, user, id, b));
+            if (moves) records.push(...this.moveTo(session, user, id, b));
             await this.store.commit(records);
             return { ok: true, node_id: (await this.externalIds([id]))[0] };
         });
     }
 
-    /**
-     * Takes `first` .. `last` (a run of replies, each the next's parent) out of the path: the reply of `last`
-     * that a session follows moves under `first`'s parent.
-     * @param {object} p
-     * @param {bigint} p.tree
-     * @param {string} p.first
-     * @param {string} p.last
-     * @param {Actor} p.actor
-     */
-    degraftRange({ tree, first, last, actor }) {
-        return this.serialized(tree, async () => {
-            const records = [];
-            const { user, session } = await this.actorIds(actor, records);
-            const [f, l] = await this.messageIds([first, last]);
-            const stored = await this.stored([f, l].filter(x => x !== null));
-            const sf = f === null ? undefined : stored.get(f);
-            if (!sf || sf.owner !== tree || sf.parent === null) return { ok: false, reason: 'unknown node' };
-            let cur = /** @type {bigint} */ (f);
-            const seen = new Set([cur]);
-            while (cur !== l) {
-                const next = await this.followedReply(tree, cur, session, user);
-                if (next === null || seen.has(next)) return { ok: false, reason: 'not on default path' };
-                seen.add(next);
-                cur = next;
-            }
-            const child = await this.followedReply(tree, cur, session, user);
-            if (child === null) return { ok: false, reason: 'use end-path instead' };
-            records.push({ kind: 'messageParent', message: child, parent: sf.parent, user, ...(session === null ? {} : { session }) });
-            if (session !== null) records.push(...this.moveTo(session, user, sf.parent, child));
-            await this.store.commit(records);
-            return { ok: true };
-        });
-    }
 
     /**
      * The reply followed below a message by a session and user.
@@ -1231,7 +1498,9 @@ export class ChatEngine {
      * `subtreeDelete` of each root, then with `root` a `rootStateClear` of the tree.
      * @param {object} p
      * @param {bigint} p.tree
-     * @param {{ roots: bigint[], keep?: bigint[], records?: object[], root?: boolean }} p.plan
+     * @param {{ roots: bigint[], keep?: bigint[], records?: object[], root?: boolean, rootBookmarks?: { id: string, name: string | null }[], copies?: [bigint, bigint][] }} p.plan
+     * `rootBookmarks`: bookmarks at the tree's root that `records` delete, listed with the drops. `copies`: the
+     * messages `records` copy (original, copy), answered applied as `copied` (outside ids).
      * @param {{ user: bigint, session: bigint | null }} p.who
      * @param {object[]} p.keys The actor's new outside keys.
      * @param {boolean} [p.preview]
@@ -1240,6 +1509,7 @@ export class ChatEngine {
      */
     async applyEdit({ tree, plan, who, keys, preview, confirm }) {
         const drops = await this.dropsOf(tree, plan.roots, plan.keep ?? [], plan.root);
+        for (const b of plan.rootBookmarks ?? []) drops.bookmarks.push({ ...b, node_id: null });
         if (preview) return { ok: true, preview: true, drops };
         const same = (/** @type {string[] | undefined} */ named, /** @type {{ id: string }[]} */ found) =>
             new Set(named ?? []).size === found.length && found.every(x => (named ?? []).includes(x.id));
@@ -1248,10 +1518,22 @@ export class ChatEngine {
             return { ok: false, reason: 'confirm', drops };
         }
         const actorPart = { user: who.user, ...(who.session === null ? {} : { session: who.session }) };
-        const records = [...keys, ...(plan.records ?? []), ...plan.roots.map(message => ({ kind: 'subtreeDelete', message, ...actorPart }))];
+        const time = this.now();
+        const records = [...keys, ...(plan.records ?? []), ...plan.roots.map(message => ({ kind: 'subtreeDelete', message, ...actorPart, time }))];
         if (plan.root && drops.changes.some(c => c.node_id === null)) records.push({ kind: 'rootStateClear', tree });
         if (records.length > keys.length) await this.store.commit(records);
-        return any ? { ok: true, drops } : { ok: true };
+        const copied = plan.copies?.length ? await this.copiedIds(plan.copies) : null;
+        return { ok: true, ...(any ? { drops } : {}), ...(copied ? { copied } : {}) };
+    }
+
+    /**
+     * Copied messages' outside ids, the original's to its copy's.
+     * @param {[bigint, bigint][]} copies
+     * @returns {Promise<Record<string, string>>}
+     */
+    async copiedIds(copies) {
+        const outside = await this.externalIds(copies.flat());
+        return Object.fromEntries(copies.map((_, i) => [outside[2 * i], outside[2 * i + 1]]));
     }
 
     /**
@@ -1331,14 +1613,20 @@ export class ChatEngine {
         return this.edit({ tree, actor, confirm: 'any' }, async () => {
             /** @type {object[]} */
             const records = [];
+            /** @type {{ id: string, name: string | null }[]} */
+            const rootBookmarks = [];
             let after;
             for (;;) {
                 const page = await this.bookmarks({ tree, after, limit: 500 });
-                for (const b of page.rows) if (b.at === null) records.push({ kind: 'positionDelete', id: BigInt(b.id) });
+                for (const b of page.rows) {
+                    if (b.at !== null) continue;
+                    records.push({ kind: 'positionDelete', id: BigInt(b.id) });
+                    rootBookmarks.push({ id: String(b.id), name: b.name ?? null });
+                }
                 if (!page.more) break;
                 after = page.rows[page.rows.length - 1].id;
             }
-            return { roots: await this.children(tree, null), records, root: true };
+            return { roots: await this.children(tree, null), records, root: true, rootBookmarks };
         });
     }
 
@@ -1400,13 +1688,17 @@ export class ChatEngine {
             }
             const before = fi > 0 ? path[fi - 1] : null;
             const records = [];
+            /** @type {[bigint, bigint][]} */
+            const copies = [];
             /** @type {bigint | null} */
             let parent = before;
             /** @type {bigint | null} */
             let first = null;
             for (let i = li + 1; i < k; i++) {
                 const id = this.next.message++;
+                copies.push([path[i], id]);
                 records.push(...await this.copyRecords(stored.get(path[i]), id, parent, user));
+                this.keyNew(records, id);
                 first ??= id;
                 parent = id;
             }
@@ -1417,14 +1709,14 @@ export class ChatEngine {
             if (first !== null) records.push(this.moveTo(/** @type {bigint} */ (session), user, before, first)[0]);
             const newEnd = k <= end ? path[end] : parent;
             if (newEnd !== path[end]) {
-                records.push(newEnd === null ? { kind: 'pointerRoot', session, user, tree: p.tree } : { kind: 'pointerMove', session, user, target: newEnd });
+                records.push(newEnd === null ? { kind: 'pointerRoot', session, user, tree: p.tree, time: this.now() } : { kind: 'pointerMove', session, user, target: newEnd });
             }
             // The cut messages nothing else passes through once the tail moved away: from the cut's last up.
             const moved = k === li + 1 && k <= end;
-            if (replies(li) - (moved ? 1 : 0) > 0) return { roots: [], records };
+            if (replies(li) - (moved ? 1 : 0) > 0) return { roots: [], records, copies };
             let t = li;
             while (t - 1 >= fi && replies(t - 1) === 1) t--;
-            return { roots: [path[t]], keep: moved ? [path[k]] : [], records };
+            return { roots: [path[t]], keep: moved ? [path[k]] : [], records, copies };
         });
     }
 
@@ -1511,31 +1803,15 @@ export class ChatEngine {
     // ---- bookmarks ----
 
     /**
-     * The name a bookmark of the tree can take: `name`, or with upstream's suffix (`getUniqueName()`: `name (1)`,
-     * `name (2)`, ... up to 1000 tries) when another bookmark of the tree holds it; null when none is free.
-     * @param {bigint} tree
-     * @param {string} name
-     * @param {bigint | null} self The bookmark being named (it may keep its own name).
-     */
-    async freeBookmarkName(tree, name, self) {
-        for (let i = 0; i < SESSION_NAME_TRIES; i++) {
-            const candidate = i === 0 ? name : `${name} (${i})`;
-            const held = await this.store.chatRead('bookmarksNamed', { tree, name: candidate });
-            if (held.every((/** @type {bigint} */ b) => b === self)) return candidate;
-        }
-        return null;
-    }
-
-    /**
-     * Makes a bookmark at a message, or at the tree's root (`node_id` null). Bookmark names are unique in a tree (as
-     * upstream's chat names were per character): a name another bookmark holds gets upstream's suffix.
+     * Makes a bookmark at a message, or at the tree's root (`node_id` null), labelled `name` as given (a free label:
+     * several bookmarks may share one; its identity is its id).
      * @param {object} p
      * @param {bigint} p.tree
      * @param {string | null} p.node_id
      * @param {string | null} p.name
      * @param {number} [p.mode]
      * @param {Actor} p.actor
-     * @returns {Promise<{ ok: true, bookmark: bigint, name: string | null } | { ok: false, reason: 'unknown node' | 'no free name' }>}
+     * @returns {Promise<{ ok: true, bookmark: bigint, name: string | null } | { ok: false, reason: 'unknown node' }>}
      */
     createBookmark({ tree, node_id, name, mode = MODE.following, actor }) {
         return this.serialized(tree, async () => {
@@ -1544,30 +1820,88 @@ export class ChatEngine {
             const records = [];
             const actorIds = await this.actorIds(actor, records);
             if (actorIds.session === null) throw new Error('A bookmark is made through a session');
-            const free = name === null ? null : await this.freeBookmarkName(tree, name, null);
-            if (name !== null && free === null) return { ok: false, reason: 'no free name' };
             const b = this.next.position++;
-            const where = s === null ? { kind: 'positionRoot', tree } : { kind: 'positionCreate', pointer: s.id };
+            const where = s === null ? { kind: 'positionRoot', tree, time: this.now() } : { kind: 'positionCreate', pointer: s.id };
             records.push({ id: b, mode, session: actorIds.session, user: actorIds.user, ...where });
-            if (free !== null) records.push({ kind: 'positionName', id: b, name: free });
+            if (name !== null) records.push({ kind: 'positionName', id: b, name });
             await this.store.commit(records);
-            return { ok: true, bookmark: b, name: free };
+            return { ok: true, bookmark: b, name };
         });
     }
 
     /**
-     * What a route's chat name names in the tree: the bookmark with that name, else the session with that name in
-     * the store, else nothing (upstream's "not found").
+     * Stores an imported chat: its messages from the tree's root as a branch of their own, each replying to the one
+     * before (one with a stored reply's speaker and text is that reply, as for any append), moving no session; and a
+     * bookmark labelled `name` at the last message, at the root for none;
+     * the chat's `metadata` the state there.
+     * @param {object} p
+     * @param {bigint} p.tree
+     * @param {Speaker | null} p.treeSpeaker
+     * @param {string} p.name
+     * @param {Record<string, any>[]} p.messages Messages as stored today (after `sanitizeForStorage()`).
+     * @param {Record<string, unknown>} [p.metadata] The chat's `chat_metadata`.
+     * @param {Actor} p.actor The bookmark's maker, through a session.
+     * @returns {Promise<{ ok: true, bookmark: bigint, name: string | null, node_ids: string[] } | { ok: false, reason: string }>}
+     */
+    async importChat({ tree, treeSpeaker, name, messages, metadata, actor }) {
+        const appended = messages.length
+            ? await this.appendMessages({ tree, treeSpeaker, after: null, contents: messages, actor: { user: actor.user } })
+            : { ok: true, node_ids: [] };
+        if (!appended.ok) return { ok: false, reason: appended.reason ?? 'not stored' };
+        const last = appended.node_ids.length ? appended.node_ids[appended.node_ids.length - 1] : null;
+        if (metadata && typeof metadata === 'object' && Object.keys(metadata).length > 0) {
+            await this.mergeMetadata({ tree, at: last, set: metadata, unset: [], actor });
+        }
+        const made = await this.createBookmark({ tree, node_id: last, name, actor });
+        if (!made.ok) return made;
+        return { ok: true, bookmark: made.bookmark, name: made.name, node_ids: appended.node_ids };
+    }
+
+    /**
+     * What a route's chat identifier names in the tree. An id first: a bookmark of the tree by its compat id
+     * (`b<id>`), a session's conversation in the tree by `s<UUID>.<tree>` (`derived`; the session may not be stored
+     * yet), a live session by its UUID. Else a label (an old caller's chat name; a bare decimal too): the one
+     * bookmark of the tree labelled so, else the one session in the store labelled so; none, or several, is nothing
+     * (upstream's "not found").
      * @param {object} p
      * @param {bigint} p.tree
      * @param {string} p.name
-     * @returns {Promise<{ bookmark: bigint } | { session: string } | null>}
+     * @returns {Promise<{ bookmark: bigint } | { session: string, derived?: true } | null>}
      */
     async resolveChatName({ tree, name }) {
-        const [b] = await this.store.chatRead('bookmarksNamed', { tree, name });
-        if (b !== undefined) return { bookmark: b };
+        const bookmark = bookmarkIdOf(name);
+        const byId = bookmark === null ? null : await this.bookmarkOf(tree, bookmark);
+        if (byId) return { bookmark: byId.id };
+        const derived = sessionCompatOf(name);
+        if (derived !== null) return derived.tree === tree ? { session: derived.session, derived: true } : null;
+        const [state] = await this.store.chatRead('keyStates', { space: SPACE.session, keys: [name] });
+        if (state !== null && state !== 'gone') return { session: name };
+        const labelled = await this.store.chatRead('bookmarksNamed', { tree, name });
+        if (labelled.length === 1) return { bookmark: labelled[0] };
+        if (labelled.length > 1) return null;
         const session = await this.sessionNamed(name);
         return session === null ? null : { session };
+    }
+
+    /**
+     * The tree a compat chat id names with no tree given (a group route with no `group_id`): a bookmark's `b<id>` its
+     * bookmark's tree, `s<UUID>.<tree>` its tree, a live session's UUID the tree it is in; a label names none (labels
+     * are free text).
+     * @param {string} id
+     * @returns {Promise<bigint | null>}
+     */
+    async treeOfChatId(id) {
+        const derived = sessionCompatOf(id);
+        if (derived !== null) return derived.tree;
+        const bookmark = bookmarkIdOf(id);
+        if (bookmark !== null) {
+            const [b] = await this.store.chatRead('bookmarks', { ids: [BigInt(bookmark)] });
+            if (b) return b.at === null ? b.root : (await this.stored([b.at])).get(b.at)?.owner ?? null;
+        }
+        const sid = await this.sessionId(id);
+        if (sid === null) return null;
+        const [s] = await this.store.chatRead('sessions', { ids: [sid] });
+        return s?.tree ?? null;
     }
 
     // ---- a whole chat saved (upstream's `saveChat`) ----
@@ -1642,6 +1976,7 @@ export class ChatEngine {
                                     const time = now + k;
                                     const through = k === selected ? sessionId : null;
                                     records.push(...messageRecords(sid, encodeMessage(content, time, await this.speakerFor(content, treeSpeaker)), { parent, owner: tree, time, session: through, user, sendKey: null }));
+                                    this.keyNew(records, sid);
                                     level.add(sid, content);
                                 }
                             }
@@ -1663,6 +1998,7 @@ export class ChatEngine {
                         const time = now + k;
                         const through = k === selected ? sessionId : null;
                         records.push(...messageRecords(sid, encodeMessage(content, time, await this.speakerFor(content, treeSpeaker)), { parent, owner: tree, time, session: through, user, sendKey: null }));
+                        this.keyNew(records, sid);
                         level.add(sid, content);
                     }
                     if (k === selected) chosen = sid;
@@ -1676,7 +2012,7 @@ export class ChatEngine {
             if (!movedByAppend) {
                 const [where] = await this.store.chatRead('sessions', { ids: [sessionId] });
                 const there = !!where && where.tree === tree && where.at === parent;
-                if (!there) records.push(parent === null ? { kind: 'pointerRoot', session: sessionId, user, tree } : { kind: 'pointerMove', session: sessionId, user, target: parent });
+                if (!there) records.push(parent === null ? { kind: 'pointerRoot', session: sessionId, user, tree, time: this.now() } : { kind: 'pointerMove', session: sessionId, user, target: parent });
             }
             if (records.some(r => r.kind !== 'keyMap')) await this.store.commit(records);
             return { at: parent, assigned };
@@ -1728,9 +2064,15 @@ export class ChatEngine {
             }
         };
         const sent = new Set();
+        /** @type {Map<string, any>} each id a message of the chat holds → that message */
+        const holder = new Map();
         for (const m of messages) {
             if (m?.node_id != null) sent.add(String(m.node_id));
             for (const info of Array.isArray(m?.swipe_info) ? m.swipe_info : []) if (info?.node_id != null) sent.add(String(info.node_id));
+        }
+        for (const m of messages) {
+            if (m?.node_id != null) holder.set(String(m.node_id), m);
+            for (const info of Array.isArray(m?.swipe_info) ? m.swipe_info : []) if (info?.node_id != null) holder.set(String(info.node_id), m);
         }
         if (base === undefined) {
             const [sid] = await this.store.chatRead('ids', { space: SPACE.session, keys: [String(actor.session)] });
@@ -1742,8 +2084,13 @@ export class ChatEngine {
                 if (!sent.has(shown[i])) continue;
                 const level = await this.children(tree, i === 0 ? null : path[i - 1]);
                 const ext = await this.externalIds(level);
+                const holes = heldAsHoles(holder.get(shown[i]), ext);
                 for (const [k, other] of level.entries()) {
-                    if (other === id || sent.has(ext[k])) continue;
+                    if (other === id || sent.has(ext[k]) || holes?.has(ext[k])) continue;
+                    if (holes === null) {
+                        refused.push({ node_id: ext[k], reason: 'not loaded' });
+                        continue;
+                    }
                     took(await this.deleteSubtree({ tree, actor, node_id: ext[k], confirm: 'any' }), ext[k]);
                 }
             }
@@ -1912,8 +2259,9 @@ export class ChatEngine {
     }
 
     /**
-     * A bookmark named by the message's `extra.bookmark_link`, made at `at`, when no bookmark of the tree is named
-     * that already.
+     * A bookmark for the message's `extra.bookmark_link`, made at `at`, unless the link names a bookmark already (its
+     * id, or a label a bookmark of the tree has) or one this save makes: a new link (upstream's page names a new
+     * checkpoint before saving it) is a following bookmark labelled so.
      * @param {bigint} tree
      * @param {Record<string, any>} msg
      * @param {bigint} at
@@ -1924,7 +2272,8 @@ export class ChatEngine {
     async bookmarkLinkRecords(tree, msg, at, session, user, records) {
         const link = msg?.extra?.bookmark_link;
         if (typeof link !== 'string' || link === '') return;
-        // Names are unique in the tree: a bookmark with that name, wherever it is, is the one the link names.
+        const linked = bookmarkIdOf(link);
+        if (linked !== null && await this.bookmarkOf(tree, linked)) return;
         if ((await this.store.chatRead('bookmarksNamed', { tree, name: link })).length) return;
         if (records.some(r => r.kind === 'positionName' && r.name === link)) return;
         const b = this.next.position++;
@@ -2010,6 +2359,19 @@ export class ChatEngine {
             throw e;
         }
         return { ok: true, change: String(id) };
+    }
+
+    /**
+     * Where a committed `stateChange` record hangs: its tree and message (`at`, its outside id; null: the tree's
+     * root); `tree` null for a `stateRevert`, whose place isn't in its record; null for a message that's gone.
+     * @param {Record<string, any>} record
+     * @returns {Promise<{ tree: bigint | null, at: string | null } | null>}
+     */
+    async stateChangePlace(record) {
+        if (record.kind !== 'stateChange') return { tree: null, at: null };
+        if (record.message === undefined) return { tree: record.tree, at: null };
+        const s = (await this.stored([record.message])).get(record.message);
+        return s ? { tree: s.owner, at: this.externalId(s) } : null;
     }
 
     /**
@@ -2465,10 +2827,10 @@ export class ChatEngine {
 
     /**
      * Rows of chat list items: a bookmark (`bookmark`, its id) or a tab's session (`session`, its UUID), its name,
-     * where it is, the message count there, the message's text and time; `position` is a bookmark's id (the `after`
-     * of the next page).
+     * where it is, the message count there, the message's text and time; `position` is the item's place in the list
+     * (the `after` of the next page).
      * @param {bigint} tree
-     * @param {{ bookmark: bigint | null, session: bigint | null, at: bigint | null }[]} items
+     * @param {{ bookmark: bigint | null, session: bigint | null, at: bigint | null, key?: [bigint, bigint] }[]} items
      * @param {boolean} withMetadata Adds each position's state as `chat_metadata`.
      */
     async listRows(tree, items, withMetadata) {
@@ -2489,11 +2851,12 @@ export class ChatEngine {
             const row = {};
             if (item.bookmark !== null) {
                 const b = marks.get(item.bookmark);
-                Object.assign(row, { bookmark: String(item.bookmark), session: null, name: b?.name ?? null, position: item.bookmark });
+                Object.assign(row, { bookmark: String(item.bookmark), session: null, name: b?.name ?? null });
             } else {
                 const s = sessionRows[si++];
-                Object.assign(row, { bookmark: null, session: s?.key ?? null, name: s?.name ?? null, position: null });
+                Object.assign(row, { bookmark: null, session: s?.key ?? null, name: s?.name ?? null });
             }
+            row.position = item.key ? listCursor(item.key) : null;
             Object.assign(row, {
                 tree,
                 at: m ? this.externalId(m) : null,
@@ -2510,13 +2873,13 @@ export class ChatEngine {
 
     /**
      * Upstream's chat list of a character or group (`/api/characters/chats`, `/api/chats/group/info`, the chat
-     * pickers): the tree's bookmarks in the order they were made, and first the tab's session when it is in the tree
-     * and no bookmark is at its message (so `getCurrentChatId()`'s chat is listed). `after` is the last row's
-     * `position` of the page before.
+     * pickers), newest first (upstream's order): the tree's bookmarks by the time of the message each is at, and the
+     * tab's session by its own when it is in the tree and no bookmark is at its message (so `getCurrentChatId()`'s
+     * chat is listed). `after` is the last row's `position` of the page before.
      * @param {object} p
      * @param {bigint} p.tree
      * @param {string} [p.session] The tab's session (its UUID).
-     * @param {bigint} [p.after]
+     * @param {string} [p.after]
      * @param {number} p.limit
      * @param {boolean} [p.withMetadata]
      */
@@ -2529,26 +2892,42 @@ export class ChatEngine {
      * lower-cased, as upstream's file names) or by the path down to it holding every word (whole words; a
      * closed-quote phrase as a phrase) in some message, none of a negated one. `exact` is false when the search's
      * work limit cut it short (results "~"); `more` and `next` read on.
+     *
+     * On top, a first page (no `after`) scans the tree's messages' texts newest first for `search` without its search
+     * syntax (a phrase's quotes, a leading dash) as a lower-cased substring (as upstream matched), under a cap of text
+     * bytes (`scanBytes`): the items whose path holds a message found, that the index and names didn't match, follow
+     * the page's rows. When the scan stops
+     * short the answer has a `scanCursor` and is not `exact`; passing `scanCursor` back scans on from there alone (an
+     * item may come again, when its path holds matches in both reads).
      * @param {object} p
      * @param {bigint} p.tree
      * @param {string} p.search
      * @param {string} [p.session] The tab's session (its UUID).
-     * @param {bigint} [p.after]
+     * @param {string} [p.after] A row's `position`, or a page's `next`.
      * @param {number} p.limit
      * @param {boolean} [p.withMetadata]
+     * @param {string} [p.scanCursor]
+     * @param {number} [p.scanBytes]
      */
-    async searchChatList({ tree, search, session, after, limit, withMetadata = false }) {
+    async searchChatList({ tree, search, session, after, limit, withMetadata = false, scanCursor, scanBytes }) {
         const sid = await this.sessionId(session);
+        const from = after === undefined ? undefined : /^(\d+):(\d+)$/.exec(after);
+        if (from === null) throw new Error('invalid cursor');
+        if (scanCursor !== undefined && !/^m\d+$/.test(scanCursor)) throw new Error('invalid scan cursor');
         const page = await this.store.chatSearchList({
             tree, clauses: searchClauses(search), limit,
             ...(sid === null ? {} : { session: sid }),
-            ...(after === undefined ? {} : { after }),
+            ...(from === undefined ? {} : { after: [BigInt(from[1]), BigInt(from[2])] }),
+            ...(search.trim() ? { scan: true } : {}),
+            ...(scanCursor === undefined ? {} : { scanBelow: BigInt(scanCursor.slice(1)) }),
+            ...(scanBytes === undefined ? {} : { scanBytes }),
         });
         return {
-            rows: await this.listRows(tree, page.hits, withMetadata),
+            rows: await this.listRows(tree, [...page.hits, ...page.scanned], withMetadata),
             more: page.more,
-            exact: page.exact,
-            ...(page.next === undefined ? {} : { next: page.next }),
+            exact: page.exact && page.scan === undefined,
+            ...(page.next === undefined ? {} : { next: listCursor(page.next) }),
+            ...(page.scan === undefined ? {} : { scanCursor: `m${page.scan}` }),
         };
     }
 
@@ -2570,12 +2949,14 @@ export class ChatEngine {
      */
     async searchMessages({ tree, search, limit, after, scanCursor, scanBytes }) {
         const clauses = searchClauses(search);
-        const afterAt = after === undefined ? null : /^s([^:]+):(\d+)$/.exec(after);
-        if (after !== undefined && !afterAt) throw new Error('invalid cursor');
+        // `s<rank>:<message>`, then `:<idf>,…` with several words (`cursorWeightsOf`).
+        const afterAt = after === undefined ? null : /^s([^:]+):(\d+)(?::([^:]*))?$/.exec(after);
+        const weights = afterAt?.[3] === undefined ? undefined : cursorWeights(afterAt[3]);
+        if (after !== undefined && (!afterAt || weights === null)) throw new Error('invalid cursor');
         if (scanCursor !== undefined && !/^m\d+$/.test(scanCursor)) throw new Error('invalid scan cursor');
         const found = await this.store.chatSearchMessages({
             tree, clauses, limit,
-            ...(afterAt ? { after: { score: Number(afterAt[1]), doc: BigInt(afterAt[2]) } } : {}),
+            ...(afterAt ? { after: { score: Number(afterAt[1]), doc: BigInt(afterAt[2]), ...(weights ? { weights } : {}) } } : {}),
             ...(scanCursor === undefined ? {} : { scanBelow: BigInt(scanCursor.slice(1)) }),
             ...(scanBytes === undefined ? {} : { scanBytes }),
         });
@@ -2590,11 +2971,10 @@ export class ChatEngine {
             if (!m || !d) return null;
             return { id: this.externalId(m), score, name: d.name ?? null, is_user: !!d.is_user, time: m.time, depth: depths.get(id) ?? null, snippet: snippetOf(String(d.mes ?? ''), needles) };
         };
-        const last = found.hits[found.hits.length - 1];
         return {
             rows: [...found.hits.map(h => row(h.message, h.score)), ...found.scanned.map(id => row(id, null))].filter(Boolean),
             more: found.more,
-            ...(found.more && last ? { after: `s${last.score}:${last.message}` } : {}),
+            ...(found.next ? { after: `s${found.next.score}:${found.next.doc}${cursorWeightsOf(found.next)}` } : {}),
             total: found.total,
             totalExact: found.totalExact,
             ...(found.scan === undefined ? {} : { partial: true, scanCursor: `m${found.scan}` }),
@@ -2631,39 +3011,53 @@ export class ChatEngine {
     }
 
     /**
-     * Names a session (null: no name). A name another session holds gets upstream's suffix (`getUniqueName()`:
-     * `name`, then `name (1)`, `name (2)`, ... up to 1000 tries). Answers the name given; nothing is written when the
-     * session already has it.
+     * A page of the conversations by their last meaningful activity, the most recent first: each bookmark someone
+     * acted in, and each session's conversation in a tree where it has no current chat (one row per compat chat id).
+     * `id` is the row's compat chat id, `name` the bookmark's label (null for a session's), `last_activity` the time
+     * of the message the conversation is at; `before` is the last row's `position` of the page before.
+     * @param {object} p
+     * @param {bigint} [p.before]
+     * @param {number} p.limit
+     * @param {boolean} [p.withMetadata]
+     */
+    async recentConversations({ before, limit, withMetadata = false }) {
+        const page = await this.store.chatRead('conversations', { limit: limit + 1, ...(before === undefined ? {} : { before }) });
+        const rows = [];
+        for (const e of page.slice(0, limit)) {
+            let at;
+            if (e.bookmark !== null) {
+                const [b] = await this.store.chatRead('bookmarks', { ids: [e.bookmark] });
+                at = b?.at ?? null;
+            } else {
+                const where = await this.store.chatRead('sessionInTree', { session: e.session, tree: e.tree });
+                at = where?.at ?? null;
+            }
+            const [row] = await this.listRows(e.tree, [{ bookmark: e.bookmark, session: e.bookmark === null ? e.session : null, at }], withMetadata);
+            if (row.bookmark === null && row.session === null) continue;
+            rows.push({ ...row, position: e.position, id: e.bookmark === null ? sessionCompatId(row.session, e.tree) : bookmarkCompatId(e.bookmark), name: e.bookmark === null ? null : row.name });
+        }
+        return { rows, more: page.length > limit };
+    }
+
+    /**
+     * Names a session (null: no name), the name as given (a free label; its identity is its UUID). Nothing is
+     * written when the session already has it.
      * @param {object} p
      * @param {string} p.session
      * @param {string | null} p.name
      * @param {Actor} p.actor
-     * @returns {Promise<{ ok: true, name: string | null } | { ok: false, reason: 'no free name' }>}
+     * @returns {Promise<{ ok: true, name: string | null }>}
      */
     nameSession({ session, name, actor }) {
-        // Names are checked and written in one lane for the store, so two sessions never take the same one.
-        return this.serialized('session-names', () => this.serialized(`session:${session}`, async () => {
+        return this.serialized(`session:${session}`, async () => {
             const records = [];
             const { session: sid } = await this.actorIds({ ...actor, session }, records);
-            let free = name;
-            if (name !== null) {
-                free = null;
-                for (let i = 0; i < SESSION_NAME_TRIES; i++) {
-                    const candidate = i === 0 ? name : `${name} (${i})`;
-                    const held = await this.store.chatRead('sessionsNamed', { name: candidate });
-                    if (held.every((/** @type {bigint} */ s) => s === sid)) {
-                        free = candidate;
-                        break;
-                    }
-                }
-                if (free === null) return { ok: false, reason: 'no free name' };
-            }
             const [now] = await this.store.chatRead('sessions', { ids: [sid] });
-            if ((now?.name ?? null) === free) return { ok: true, name: free };
-            records.push({ kind: 'positionName', id: sid, ...(free === null ? {} : { name: free }) });
+            if ((now?.name ?? null) === name) return { ok: true, name };
+            records.push({ kind: 'positionName', id: sid, ...(name === null ? {} : { name }) });
             await this.store.commit(records);
-            return { ok: true, name: free };
-        }));
+            return { ok: true, name };
+        });
     }
 
     /**
@@ -2720,9 +3114,8 @@ export class ChatEngine {
     }
 
     /**
-     * Renames a bookmark (null: no name; a name another bookmark of the tree holds gets upstream's suffix, and the
-     * answer says the name it took), makes it following or pinned, or deletes it; nothing is written when nothing
-     * changes.
+     * Relabels a bookmark (null: no label; as given, as labels may repeat), makes it following or pinned, or deletes
+     * it; nothing is written when nothing changes.
      * @param {object} p
      * @param {bigint} p.tree
      * @param {string} p.bookmark
@@ -2737,9 +3130,8 @@ export class ChatEngine {
             if (change.delete) records.push({ kind: 'positionDelete', id: b.id });
             else {
                 if (change.name !== undefined && change.name !== b.name) {
-                    name = change.name === null ? null : await this.freeBookmarkName(tree, change.name, b.id);
-                    if (change.name !== null && name === null) return { ok: false, reason: 'no free name' };
-                    if (name !== b.name) records.push({ kind: 'positionName', id: b.id, ...(name === null ? {} : { name }) });
+                    name = change.name;
+                    records.push({ kind: 'positionName', id: b.id, ...(name === null ? {} : { name }) });
                 }
                 if (change.mode !== undefined && change.mode !== b.mode) records.push({ kind: 'positionMode', id: b.id, mode: change.mode });
             }
@@ -2748,18 +3140,44 @@ export class ChatEngine {
         });
     }
 
+    /**
+     * Moves a bookmark to a message of its tree (`node_id` null: the tree's root), whatever its mode; nothing is
+     * written when it is there already. The message it was made at stays its own (`bookmark_link`, `branches`).
+     * @param {object} p
+     * @param {bigint} p.tree
+     * @param {string} p.bookmark
+     * @param {string | null} p.node_id
+     * @returns {Promise<{ ok: true, moved: boolean } | { ok: false, reason: 'unknown bookmark' | 'unknown message' }>}
+     */
+    moveBookmark({ tree, bookmark, node_id }) {
+        return this.serialized(tree, async () => {
+            const b = await this.bookmarkOf(tree, bookmark);
+            if (!b) return { ok: false, reason: 'unknown bookmark' };
+            let at = null;
+            if (node_id !== null) {
+                [at] = await this.messageIds([node_id]);
+                if (at === null) return { ok: false, reason: 'unknown message' };
+            }
+            if (at === b.at) return { ok: true, moved: false };
+            await this.store.commit([{ kind: 'positionMove', id: b.id, time: this.now(), ...(at === null ? {} : { at }) }]);
+            return { ok: true, moved: true };
+        });
+    }
+
     // ---- reading a position ----
 
     /**
      * A position's messages in upstream's shape: the path from the tree's root down to `at` (nothing below it),
-     * each with every alternative's text in `swipes`, its outside id, and the bookmarks made at it; and the state
-     * there as `chat_metadata` (with `integrity` when read through a session).
+     * each with its alternatives in `swipes` / `swipe_info` (full length; text only within ALTERNATIVE_WINDOW of the
+     * shown one unless `full`, the others null), its outside id, and the bookmarks made at it; and the state there as
+     * `chat_metadata` (with `integrity` when read through a session).
      * @param {object} p
      * @param {bigint} p.tree
      * @param {string | null} p.at The message (null: the tree's root, no message).
      * @param {string | null} [p.session] The session's UUID.
+     * @param {boolean} [p.full] Every alternative's text (an export).
      */
-    async load({ tree, at, session = null }) {
+    async load({ tree, at, session = null, full = false }) {
         let atId = null;
         if (at !== null) {
             [atId] = await this.messageIds([at]);
@@ -2777,14 +3195,21 @@ export class ChatEngine {
             const parent = s.parent === null ? undefined : stored.get(s.parent);
             siblings.set(key, parent?.replies === 1 ? [id] : await this.children(tree, s.parent));
         }
-        const allIds = [...new Set([...siblings.values()].flat())];
+        const sent = new Set(ids);
+        for (const id of ids) {
+            const sibs = /** @type {bigint[]} */ (siblings.get(String(stored.get(id).parent)));
+            const [from, to] = alternativeWindow(sibs.length, sibs.indexOf(id), full);
+            for (let k = from; k < to; k++) sent.add(sibs[k]);
+        }
+        const allIds = [...sent];
         const others = await this.stored(allIds.filter(id => !stored.has(id)));
         const all = new Map([...stored, ...others]);
         const decodedList = await this.decoded(allIds.map(id => all.get(id)));
         const decoded = new Map(allIds.map((id, i) => [id, decodedList[i]]));
         const bookmarkIds = [...new Set(ids.flatMap(id => all.get(id).branches))];
         const bookmarks = bookmarkIds.length ? await this.store.chatRead('bookmarks', { ids: bookmarkIds }) : [];
-        const names = new Map(bookmarkIds.map((b, i) => [b, bookmarks[i]?.name ?? null]));
+        // A bookmark's compat chat identifier is `b<id>` (its label is free text): `bookmark_link` and `branches` name those.
+        const live = new Set(bookmarkIds.filter((b, i) => bookmarks[i]));
         const messages = [];
         for (const id of ids) {
             const s = all.get(id);
@@ -2792,8 +3217,11 @@ export class ChatEngine {
             msg.node_id = this.externalId(s);
             const sibs = siblings.get(String(s.parent));
             if (sibs.length > 1) {
-                msg.swipes = sibs.map(x => decoded.get(x).mes ?? '');
-                msg.swipe_info = sibs.map(x => {
+                const [from, to] = alternativeWindow(sibs.length, sibs.indexOf(id), full);
+                const inWindow = (/** @type {number} */ k) => k >= from && k < to;
+                msg.swipes = sibs.map((x, k) => (inWindow(k) ? decoded.get(x).mes ?? '' : null));
+                msg.swipe_info = sibs.map((x, k) => {
+                    if (!inWindow(k)) return null;
                     const o = decoded.get(x);
                     const extra = { ...(o.extra && typeof o.extra === 'object' && !Array.isArray(o.extra) ? o.extra : {}) };
                     if (all.get(x).itemized) extra[ITEMIZED_PROMPT_FLAG] = true;
@@ -2801,7 +3229,7 @@ export class ChatEngine {
                 });
                 msg.swipe_id = sibs.indexOf(id);
             }
-            const made = s.branches.map(b => names.get(b)).filter(n => typeof n === 'string');
+            const made = s.branches.filter(b => live.has(b)).map(bookmarkCompatId);
             if (made.length) {
                 if (!msg.extra || typeof msg.extra !== 'object') msg.extra = {};
                 msg.extra.bookmark_link = made[made.length - 1];
@@ -2812,4 +3240,194 @@ export class ChatEngine {
         }
         return { messages, metadata: await this.metadata(tree, atId, session), node_id: atId === null ? null : this.externalId(/** @type {any} */ (stored.get(atId))) };
     }
+}
+
+/**
+ * `resolveChatName()` read on this thread: a bookmark of the tree by its `b<id>`, a live session by its UUID, else
+ * the one bookmark of the tree labelled so, else the one session labelled so; `session` is the session's integer id
+ * (null for an `s<UUID>.<tree>`, `derived`, whose session isn't stored yet).
+ * @param {any} store The binding's `Store`.
+ * @param {bigint} tree
+ * @param {string} name
+ * @returns {{ bookmark: bigint } | { session: bigint | null, derived?: true } | null}
+ */
+export function resolveChatNameSync(store, tree, name) {
+    const bookmark = bookmarkIdOf(name);
+    if (bookmark !== null) {
+        const [b] = store.chatReadSync('bookmarks', { ids: [BigInt(bookmark)] });
+        const owner = (/** @type {any} */ x) => (x.at === null ? x.root : store.chatReadSync('messages', { ids: [x.at] })[0]?.owner ?? null);
+        if (b && owner(b) === tree) return { bookmark: b.id };
+    }
+    const derived = sessionCompatOf(name);
+    if (derived !== null) {
+        if (derived.tree !== tree) return null;
+        const [sid] = store.chatReadSync('ids', { space: SPACE.session, keys: [derived.session] });
+        return { session: sid, derived: true };
+    }
+    const [state] = store.chatReadSync('keyStates', { space: SPACE.session, keys: [name] });
+    if (state !== null && state !== 'gone') return { session: state.id };
+    const labelled = store.chatReadSync('bookmarksNamed', { tree, name });
+    if (labelled.length === 1) return { bookmark: labelled[0] };
+    if (labelled.length > 1) return null;
+    const sessions = store.chatReadSync('sessionsNamed', { name });
+    return sessions.length === 1 ? { session: sessions[0] } : null;
+}
+
+/**
+ * `treeOfChatId()` read on this thread.
+ * @param {any} store The binding's `Store`.
+ * @param {string} id
+ * @returns {bigint | null}
+ */
+export function treeOfChatIdSync(store, id) {
+    const derived = sessionCompatOf(id);
+    if (derived !== null) return derived.tree;
+    const bookmark = bookmarkIdOf(id);
+    if (bookmark !== null) {
+        const [b] = store.chatReadSync('bookmarks', { ids: [BigInt(bookmark)] });
+        if (b) return b.at === null ? b.root : store.chatReadSync('messages', { ids: [b.at] })[0]?.owner ?? null;
+    }
+    const [state] = store.chatReadSync('keyStates', { space: SPACE.session, keys: [id] });
+    if (state === null || state === 'gone') return null;
+    const [s] = store.chatReadSync('sessions', { ids: [state.id] });
+    return s?.tree ?? null;
+}
+
+/**
+ * `ChatEngine.load()` read on this thread, for a synchronous caller (upstream's `getChatData`): the same answer,
+ * through the binding's synchronous reads.
+ * @param {any} store The binding's `Store` (`engineStoreHere()`).
+ * @param {{ tree: bigint, at: string | null, session?: string | null, full?: boolean }} p `full`: every alternative's text, as `load()`.
+ * @returns {{ messages: Record<string, any>[], metadata: Record<string, unknown>, node_id: string | null } | null}
+ */
+export function loadSync(store, { tree, at, session = null, full = false }) {
+    const read = (/** @type {string} */ op, /** @type {object} */ args) => store.chatReadSync(op, args);
+    /** @param {bigint[]} list */
+    const storedOf = list => {
+        const unique = [...new Set(list)];
+        const found = unique.length ? read('messages', { ids: unique }) : [];
+        return new Map(found.filter(Boolean).map((/** @type {any} */ m) => [m.id, m]));
+    };
+    const externalId = (/** @type {{ id: bigint, oldKey: string | null }} */ s) => s.oldKey ?? String(s.id);
+    let atId = null;
+    if (at !== null) {
+        const [mapped] = read('ids', { space: SPACE.message, keys: [at] });
+        atId = mapped;
+        if (atId === null) return null;
+    }
+    /** @type {bigint[]} */
+    const ids = atId === null ? [] : read('path', { tree, at: atId });
+    const stored = storedOf(ids);
+    /** @type {Map<string, bigint[]>} */
+    const siblings = new Map();
+    for (const id of ids) {
+        const s = stored.get(id);
+        const key = String(s.parent);
+        if (siblings.has(key)) continue;
+        const parent = s.parent === null ? undefined : stored.get(s.parent);
+        if (parent?.replies === 1) {
+            siblings.set(key, [id]);
+            continue;
+        }
+        /** @type {bigint[]} */
+        const replies = [];
+        let after;
+        for (;;) {
+            const page = read('children', { tree, ...(s.parent === null ? {} : { parent: s.parent }), ...(after === undefined ? {} : { after }), limit: 500 });
+            replies.push(...page.ids);
+            if (!page.more) break;
+            after = page.ids[page.ids.length - 1];
+        }
+        siblings.set(key, replies);
+    }
+    const sent = new Set(ids);
+    for (const id of ids) {
+        const sibs = /** @type {bigint[]} */ (siblings.get(String(stored.get(id).parent)));
+        const [from, to] = alternativeWindow(sibs.length, sibs.indexOf(id), full);
+        for (let k = from; k < to; k++) sent.add(sibs[k]);
+    }
+    const allIds = [...sent];
+    const all = new Map([...stored, ...storedOf(allIds.filter(id => !stored.has(id)))]);
+    const speakerIds = new Set();
+    for (const id of allIds) {
+        const s = all.get(id);
+        if (s.speaker !== null) speakerIds.add(s.speaker);
+        const over = s.values.find((/** @type {any} */ v) => v.field === META.speaker);
+        const overId = over ? JSON.parse(over.json) : null;
+        if (overId !== null) speakerIds.add(BigInt(overId));
+    }
+    const speakerList = [...speakerIds];
+    const entities = speakerList.length ? store.libraryEntitiesSync(speakerList, { fields: [FIELD.name], lists: [NAME_HISTORY] }) : [];
+    /** @type {Map<bigint, import('./chat-codec.js').Speaker>} */
+    const speakers = new Map();
+    entities.forEach((/** @type {any} */ e, /** @type {number} */ i) => {
+        if (!e || e.type !== TYPE.character) return;
+        const name = e.values.find((/** @type {any} */ v) => v.field === FIELD.name);
+        const history = storedValues(e).lists.get(NAME_HISTORY);
+        speakers.set(speakerList[i], { id: e.id, name: name === undefined ? '' : name.text !== undefined ? name.text : JSON.parse(name.json), avatar: e.key, ...(history === undefined ? {} : { renames: renamesOf(history) }) });
+    });
+    const decoded = new Map(allIds.map(id => [id, JSON.parse(decodeMessage(all.get(id), sid => speakers.get(sid) ?? null))]));
+    const bookmarkIds = [...new Set(ids.flatMap(id => all.get(id).branches))];
+    const bookmarks = bookmarkIds.length ? read('bookmarks', { ids: bookmarkIds }) : [];
+    // A bookmark's compat chat identifier is `b<id>` (its label is free text): `bookmark_link` and `branches` name those.
+    const live = new Set(bookmarkIds.filter((b, i) => bookmarks[i]));
+    const messages = [];
+    for (const id of ids) {
+        const s = all.get(id);
+        const msg = { ...decoded.get(id) };
+        msg.node_id = externalId(s);
+        const sibs = /** @type {bigint[]} */ (siblings.get(String(s.parent)));
+        if (sibs.length > 1) {
+            const [from, to] = alternativeWindow(sibs.length, sibs.indexOf(id), full);
+            const inWindow = (/** @type {number} */ k) => k >= from && k < to;
+            msg.swipes = sibs.map((x, k) => (inWindow(k) ? decoded.get(x).mes ?? '' : null));
+            msg.swipe_info = sibs.map((x, k) => {
+                if (!inWindow(k)) return null;
+                const o = decoded.get(x);
+                const extra = { ...(o.extra && typeof o.extra === 'object' && !Array.isArray(o.extra) ? o.extra : {}) };
+                if (all.get(x).itemized) extra[ITEMIZED_PROMPT_FLAG] = true;
+                return { send_date: o.send_date, extra, name: o.name, is_user: !!o.is_user, node_id: externalId(all.get(x)) };
+            });
+            msg.swipe_id = sibs.indexOf(id);
+        }
+        const made = s.branches.filter((/** @type {bigint} */ b) => live.has(b)).map(bookmarkCompatId);
+        if (made.length) {
+            if (!msg.extra || typeof msg.extra !== 'object') msg.extra = {};
+            msg.extra.bookmark_link = made[made.length - 1];
+            msg.extra.branches = made;
+        }
+        if (s.itemized) msg.extra = { ...(msg.extra && typeof msg.extra === 'object' ? msg.extra : {}), [ITEMIZED_PROMPT_FLAG]: true };
+        messages.push(msg);
+    }
+    const state = read('state', { tree, ...(atId === null ? {} : { at: atId }) });
+    const isLink = (/** @type {{ variable: boolean, field: string, json: string }} */ e) => !e.variable && e.field === WORLD_INFO && e.json.startsWith(LINK);
+    const links = state.filter(isLink);
+    const resolved = links.length ? store.worldReadSync('resolved', { ids: links.map((/** @type {any} */ e) => BigInt(e.json.slice(1).split(' ')[0])) }) : [];
+    /** @type {Record<string, unknown>} */
+    const metadata = {};
+    let li = 0;
+    for (const raw of state) {
+        let e = raw;
+        if (isLink(raw)) {
+            const [bookId, ...own] = raw.json.slice(1).split(' ');
+            e = { ...raw, json: JSON.stringify(own.length ? JSON.parse(own.join(' ')) : resolved[li]?.key ?? bookId) };
+            li++;
+        }
+        if (e.variable) {
+            if (!metadata.variables || typeof metadata.variables !== 'object') metadata.variables = {};
+            /** @type {Record<string, unknown>} */ (metadata.variables)[e.field] = JSON.parse(e.json);
+        } else if (e.field === 'variables' && e.json === '{}') {
+            if (!metadata.variables || typeof metadata.variables !== 'object') metadata.variables = {};
+        } else metadata[e.field] = JSON.parse(e.json);
+    }
+    if (session !== null) metadata.integrity = session;
+    return { messages, metadata, node_id: atId === null ? null : externalId(/** @type {any} */ (stored.get(atId))) };
+}
+
+/**
+ * A chat list cursor: an item's place, `<time key>:<bookmark>`.
+ * @param {[bigint, bigint]} key
+ */
+function listCursor(key) {
+    return `${key[0]}:${key[1]}`;
 }

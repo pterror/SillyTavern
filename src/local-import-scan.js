@@ -10,8 +10,10 @@ import { DEFAULT_USER, UPLOADS_DIRECTORY } from './constants.js';
 import { getUserDirectories } from './users.js';
 import { readSettingsAtPaths } from './settings-store.js';
 import { copyCharacterFile } from './local-import-copy.js';
-import { importCharacterFileHeadless, buildPngImportData, buildJsonImportData, mintCharacterId, fireMetadataUpsertHook, reflinkAgainstExistingDuplicate } from './endpoints/characters.js';
-import { beginBatchImport, endBatchImport, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, getLocalImportSkip, setLocalImportSkip, clearLocalImportSkip, getLocalImportMtime, getLocalImportMtimesForPaths, getLocalImportMtimeSourcePathsAfter, setLocalImportMtime, clearLocalImportMtime, setCharacterDateAdded, seedCardTagsForSingleCharacter } from './character-metadata-db.js';
+import { importCharacterFileHeadless, buildPngImportData, buildJsonImportData, mintCharacterId } from './endpoints/characters.js';
+import { userStore } from './user-stores.js';
+import { HASH, TYPE } from './library-engine.js';
+import { writeWithAvatar } from './character-avatars.js';
 import { attachLinuxDirectoryWatch, isWindowsOverflowSignal } from './watch-overflow.js';
 import { detectFormat } from './local-import-classify.js';
 import { LocalImportWorkerPool, resolveWorkerPoolSize } from './local-import-worker-pool.js';
@@ -28,8 +30,9 @@ import { importFailure } from './character-import-error.js';
  * that confirmed, the periodic full pass is replaced by a cheap heartbeat probe (checkWatcherHeartbeat()) that
  * falls back to a full pass on any miss.
  *
- * png/json imports are done entirely by the worker pool (local-import-worker.js), including the write, reusing
- * buildPngImportData()/buildJsonImportData() from the browser `/import` path. charx/byaf/yaml are staged into
+ * png/json files are read, hashed and classified by the worker pool (local-import-worker.js), which also strips the
+ * card's image; the main thread builds the card with buildPngImportData()/buildJsonImportData() from the browser
+ * `/import` path and stores both. charx/byaf/yaml are staged into
  * the uploads directory and imported via importCharacterFileHeadless(), unchanged from before the worker pool.
  *
  * Single-user only: every discovered file lands in DEFAULT_USER's library regardless of `enableUserAccounts`.
@@ -144,7 +147,7 @@ let capturedScanIntervalMs = null;
 let disposed = false;
 /** True for the duration of an actual runScanCycle() pass. Without this, triggerImmediateRescan() could launch a
  * second concurrent runScanCycle() (checking stale `scanTimeout` truthiness isn't enough - it's never cleared
- * when a normally-scheduled timer fires), corrupting shared beginBatchImport()/endBatchImport() batch state. */
+ * when a normally-scheduled timer fires), two passes over the same files. */
 let passInFlight = false;
 /** @type {Promise<void> | null} Exported via waitForCurrentScanPass() for tests only - production never awaits it. */
 let currentPassPromise = null;
@@ -194,7 +197,7 @@ async function stageFile(sourcePath) {
 async function markProcessed(state, directories, sourcePath, filename, mtimeMs, duplicateOf = null) {
     touchLastSeenMtime(state, filename, mtimeMs);
     try {
-        await setLocalImportMtime(directories, sourcePath, mtimeMs, duplicateOf);
+        await (await userStore(directories)).lib.setLocalImportMtime(sourcePath, mtimeMs, duplicateOf);
     } catch (err) {
         console.debug(`[local-import] Failed to persist processed-mtime record for ${sourcePath} (will just be re-processed on the next restart, not incorrectly):`, err.message);
     }
@@ -214,12 +217,12 @@ async function cleanupRemovedFile(state, directories, filename) {
     state.lastSeenMtimeMs.delete(filename);
     const sourcePath = path.join(state.sourceDir, filename);
     try {
-        await clearLocalImportMtime(directories, sourcePath);
+        await (await userStore(directories)).lib.clearLocalImportMtime(sourcePath);
     } catch (clearErr) {
         console.debug(`[local-import] Failed to clear stale local_import_mtimes record for ${sourcePath}:`, clearErr.message);
     }
     try {
-        await clearLocalImportSkip(directories, sourcePath);
+        await (await userStore(directories)).lib.clearLocalImportSkip(sourcePath);
     } catch (clearErr) {
         console.debug(`[local-import] Failed to clear stale local_import_skips record for ${sourcePath}:`, clearErr.message);
     }
@@ -242,7 +245,7 @@ async function sweepRemovedFiles(state, directories) {
     const prefix = state.sourceDir.endsWith(path.sep) ? state.sourceDir : state.sourceDir + path.sep;
     let cursor = '';
     for (;;) {
-        const page = await getLocalImportMtimeSourcePathsAfter(directories, cursor, REMOVED_FILE_SWEEP_PAGE_SIZE);
+        const page = await (await userStore(directories)).lib.localImportPathsAfter(cursor, REMOVED_FILE_SWEEP_PAGE_SIZE);
         if (page.length === 0) break;
         cursor = page[page.length - 1];
 
@@ -350,9 +353,9 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
             lastMtimeMs = bulkMtimeHints.get(sourcePath);
             touchLastSeenMtime(state, filename, lastMtimeMs);
         } else {
-            const persisted = await getLocalImportMtime(directories, sourcePath);
-            if (persisted) {
-                lastMtimeMs = persisted.mtimeMs;
+            const persisted = (await (await userStore(directories)).lib.localImportMtimes([sourcePath])).get(sourcePath);
+            if (persisted !== undefined) {
+                lastMtimeMs = persisted;
                 touchLastSeenMtime(state, filename, lastMtimeMs);
             }
         }
@@ -364,7 +367,7 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
     // Gated on mtime match: a file edited since its skip was recorded falls through to reclassification instead
     // of staying permanently skipped.
     if (format === 'json') {
-        const existingSkip = await getLocalImportSkip(directories, sourcePath);
+        const existingSkip = await (await userStore(directories)).lib.localImportSkip(sourcePath);
         if (existingSkip && existingSkip.mtimeMs === stat.mtimeMs) {
             await markProcessed(state, directories, sourcePath, filename, stat.mtimeMs);
             return;
@@ -399,7 +402,7 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
                 ? 'not valid JSON (the content does not look like a character card - possibly a misnamed/mislabeled file, e.g. an image saved with a .json extension)'
                 : 'valid JSON but not a recognized character card shape (no spec/name/char_name field - likely a lorebook/world-info export or other non-character JSON)';
             console.warn(color.yellow(`[local-import] Permanently skipping ${sourcePath}: ${reasonText}. Will not retry unless the file changes.`));
-            await setLocalImportSkip(directories, sourcePath, stat.mtimeMs, classification);
+            await (await userStore(directories)).lib.setLocalImportSkip(sourcePath, stat.mtimeMs, classification);
             await markProcessed(state, directories, sourcePath, filename, stat.mtimeMs);
             return;
         }
@@ -408,7 +411,7 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
             // The mtime-gated check above already means any existing skip row is stale - clear it so an
             // edited-into-importable file doesn't keep carrying a misleading skip record.
             try {
-                await clearLocalImportSkip(directories, sourcePath);
+                await (await userStore(directories)).lib.clearLocalImportSkip(sourcePath);
             } catch (clearErr) {
                 console.debug(`[local-import] Failed to clear stale local_import_skips record for ${sourcePath}:`, clearErr.message);
             }
@@ -417,7 +420,8 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
         const contentHash = pipelineResult.contentHash;
 
         await withPerHashLock(state, contentHash, async () => {
-            const alreadyImported = await findCharacterIdByContentHash(directories, contentHash);
+            const { lib } = await userStore(directories);
+            const alreadyImported = await lib.findByHash(HASH.content, contentHash);
             if (alreadyImported) {
                 if (pipelineResult.needsWrite) await pipelineResult.finish({ type: 'no-write' });
                 // duplicate_of is cascade-cleared if the matched character is later deleted, so the source file
@@ -428,7 +432,7 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
 
             if (allowIdentityFallback && pipelineResult.identityHash) {
                 try {
-                    const identityMatch = await findCharacterIdByContentIdentityHash(directories, pipelineResult.identityHash);
+                    const identityMatch = await lib.findByHash(HASH.identity, pipelineResult.identityHash);
                     if (identityMatch) {
                         if (pipelineResult.needsWrite) await pipelineResult.finish({ type: 'no-write' });
                         await markProcessed(state, directories, sourcePath, filename, stat.mtimeMs, identityMatch);
@@ -450,7 +454,13 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
                 // key any imported sprite folder the same way runtime lookup resolves one, instead of the
                 // display name. Cheap even when the build below turns out to fail or return null: mintCharacterId
                 // only checks for an unused id, it doesn't write anything.
-                const pngName = mintCharacterId(directories);
+                let pngName;
+                try {
+                    pngName = await mintCharacterId(directories);
+                } catch (mintErr) {
+                    await pipelineResult.finish({ type: 'no-write' }).catch(() => { });
+                    throw mintErr;
+                }
 
                 // png/json: the worker already read/parsed the file, so build the final data here and hand it
                 // back to finish the write, reusing the same buffer - no second read of sourcePath.
@@ -470,25 +480,16 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
                     console.warn(`[local-import] Failed to import ${sourcePath} (unrecognized content or import error) - will retry next pass.`);
                 } else {
                     importedCharacterId = `${pngName}.png`;
-                    const destPath = path.join(directories.characters, `${pngName}.png`);
-                    await pipelineResult.finish({ type: 'write', destPath, data });
-                    try {
-                        await fireMetadataUpsertHook(directories, `${pngName}.png`, data, contentHash, pipelineResult.avatarIdentityHash, { fromImport: true });
-                    } catch (err) {
-                        // Retried next pass under a new id; a file left behind here would be a second copy.
-                        fs.rmSync(destPath, { force: true });
-                        throw err;
-                    }
-                    await reflinkAgainstExistingDuplicate(directories, `${pngName}.png`, destPath, data, pipelineResult.avatarIdentityHash);
-                    try {
-                        await setCharacterDateAdded(directories, `${pngName}.png`, stat.mtimeMs);
-                    } catch (err) {
-                        console.debug(`[local-import] Failed to set date_added for ${pngName}.png from source mtime ${sourcePath}:`, err.message);
-                    }
+                    const { image } = await pipelineResult.finish({ type: 'write' });
+                    if (!image) throw new Error('the import worker answered no image');
+                    // Dated by its source file, as the library shows when a card arrived.
+                    await writeWithAvatar(lib, directories, `${pngName}.png`, image, () => lib.writeCard(directories, `${pngName}.png`, data, {
+                        contentHash, avatarIdentityHash: image.avatarIdentityHash, dateAdded: Math.round(stat.mtimeMs),
+                    }));
                     state.scanProgress?.add();
                     if (tagImportSetting !== 2) {
                         try {
-                            await seedCardTagsForSingleCharacter(directories, `${pngName}.png`);
+                            await lib.tags.seedCardTags(`${pngName}.png`);
                         } catch (err) {
                             console.warn(`[local-import] Failed to seed tags for ${pngName}.png:`, err.message);
                         }
@@ -511,13 +512,13 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
                     importedCharacterId = `${result.fileName}.png`;
                     state.scanProgress?.add();
                     try {
-                        await setCharacterDateAdded(directories, `${result.fileName}.png`, stat.mtimeMs);
+                        await lib.updateEntity(TYPE.character, `${result.fileName}.png`, { dateAdded: Math.round(stat.mtimeMs) });
                     } catch (err) {
                         console.debug(`[local-import] Failed to set date_added for ${result.fileName}.png from source mtime ${sourcePath}:`, err.message);
                     }
                     if (tagImportSetting !== 2) {
                         try {
-                            await seedCardTagsForSingleCharacter(directories, `${result.fileName}.png`);
+                            await lib.tags.seedCardTags(`${result.fileName}.png`);
                         } catch (err) {
                             console.warn(`[local-import] Failed to seed tags for ${result.fileName}.png:`, err.message);
                         }
@@ -539,9 +540,8 @@ const SCAN_BATCH_SIZE = 2000;
 
 /**
  * One full pass over one configured directory: streams it in fixed-size batches, bulk-prefetching each batch's
- * persisted mtimes before dispatching through processFile(). Wrapped in beginBatchImport()/endBatchImport() so
- * writes are buffered; DB commits happen every BATCH_IMPORT_FLUSH_SIZE buffered rows (character-metadata-db.js),
- * so a mid-pass restart only loses the still-open buffer, not the whole pass.
+ * persisted mtimes before dispatching through processFile(). Each card is stored as it is imported, so a restart
+ * mid-pass loses nothing already imported.
  * @param {DirectoryScanState} state
  * @param {import('./users.js').UserDirectoryList} directories
  * @returns {Promise<void>}
@@ -552,7 +552,6 @@ export async function scanDirectory(state, directories) {
         return;
     }
 
-    await beginBatchImport(directories);
     state.scanProgress = new ProgressLog({ what: `[local-import] importing new cards from ${state.sourceDir}` });
     try {
         await sweepRemovedFiles(state, directories);
@@ -572,7 +571,7 @@ export async function scanDirectory(state, directories) {
         const runBatch = async () => {
             if (!batch.length) return;
             const sourcePaths = batch.map(filename => path.join(state.sourceDir, filename));
-            const bulkMtimeHints = await getLocalImportMtimesForPaths(directories, sourcePaths);
+            const bulkMtimeHints = await (await userStore(directories)).lib.localImportMtimes(sourcePaths);
             await mapWithConcurrency(batch, concurrency, filename => processFile(state, filename, directories, tagImportSetting, bulkMtimeHints));
             batch = [];
         };
@@ -590,7 +589,6 @@ export async function scanDirectory(state, directories) {
             await dir.close().catch(() => { /* already closed by the for-await loop exhausting it - best-effort */ });
         }
     } finally {
-        await endBatchImport(directories);
         state.hashLocks?.clear();
         const { scanProgress } = state;
         state.scanProgress = null;
@@ -687,7 +685,7 @@ function stopWatcherFor(state) {
 /**
  * Runs one full pass over every configured directory, then schedules the next one `scanIntervalMs` after this
  * one finishes (self-pacing, not a fixed-rate timer - a slow pass on a large corpus would otherwise overlap the
- * next tick and corrupt shared beginBatchImport()/endBatchImport() state).
+ * next tick).
  * @param {import('./users.js').UserDirectoryList} userDirectories
  * @param {number} scanIntervalMs
  * @returns {Promise<void>} Resolves once this one pass completes, not future rescheduled ones.

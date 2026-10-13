@@ -2,38 +2,9 @@ import crypto from 'node:crypto';
 
 import express from 'express';
 
-import {
-    assignEntityTagReporting,
-    unassignEntityTag,
-    copyEntityTags,
-    moveEntityTags,
-    restoreTagBackup,
-    getEntityTagIdsForMany,
-    streamTagDefinitionBatches,
-    streamEntityTagAssignmentBatches,
-    createTagDefinition,
-    editTagDefinition,
-    moveTagDefinition,
-    reorderTagDefinitions,
-    deleteTagDefinition,
-    countUnusedTags,
-    pruneUnusedTags,
-    getTagChangesSince,
-    getTagChangesSeq,
-    getEntityTagChangesSince,
-    getEntityTagChangesEnd,
-    getTagDefinitionsByIds,
-    getGoneTagIds,
-    getMergedTagTargets,
-    findTagsByNames,
-    queryTags,
-    decodeTagQueryCursor,
-    TAG_QUERY_SORTS,
-    TAG_REORDER_MODES,
-} from '../character-metadata-db.js';
-import { requestMetadataMigrationPass } from '../metadata-migration-coordinator.js';
+import { requestStore } from '../user-stores.js';
+import { TAG_REORDER_MODES, TAG_SORTS } from '../library-engine-tags.js';
 import { writeBackpressured } from '../util.js';
-import { contentHashOf } from '../../public/scripts/hash-utils.js';
 
 export const router = express.Router();
 
@@ -57,9 +28,9 @@ router.post('/create', async (request, response) => {
             return response.status(400).send({ error: 'freeName needs a non-empty tag.name to start from' });
         }
 
-        const result = await createTagDefinition(request.user.directories, tag, { freeName: freeName === true });
+        const result = await (await requestStore(request)).lib.tags.create(tag, { freeName: freeName === true });
         if (result === null) {
-            return response.status(503).send({ error: 'Character metadata store is unavailable' });
+            return response.status(400).send({ error: 'tag with a non-empty id is required' });
         }
 
         response.send({ result: 'ok', refused: result.refused, tag: result.tag });
@@ -87,10 +58,7 @@ router.post('/edit', async (request, response) => {
             return response.status(400).send({ error: 'patch.id must match id' });
         }
 
-        const result = await editTagDefinition(request.user.directories, id, patch);
-        if (result === null) {
-            return response.status(503).send({ error: 'Character metadata store is unavailable' });
-        }
+        const result = await (await requestStore(request)).lib.tags.edit(id, patch);
 
         response.send({ result: 'ok', refused: result.refused });
     } catch (err) {
@@ -103,8 +71,8 @@ router.post('/edit', async (request, response) => {
  * `{ id, before }` or `{ id, after }` → `{ result, refused: [{ id, reason: 'same' | 'deleted' | 'missing' |
  * 'unreadable' | 'unordered' | 'no-room' }], written: [{ id, sort_order }], queued }`. Puts tag `id` right before or
  * after the anchor tag (by id) in the manual order. written: every tag the move wrote, with the sort_order now
- * stored. queued: the move arrived before the tag sort_order fill finished or while a reorder pass is recorded, and
- * is applied when that pass ends (moveTagDefinition()); the changes stream says when ('tag-order-settled').
+ * stored. queued: the move arrived while a reorder pass is recorded, and is applied when that pass ends; the changes
+ * stream says when ('tag-order-settled').
  */
 router.post('/move', async (request, response) => {
     try {
@@ -122,10 +90,7 @@ router.post('/move', async (request, response) => {
             return response.status(400).send({ error: 'before or after must be a non-empty tag id' });
         }
 
-        const result = await moveTagDefinition(request.user.directories, id, before !== undefined ? { before } : { after });
-        if (result === null) {
-            return response.status(503).send({ error: 'Character metadata store is unavailable' });
-        }
+        const result = await (await requestStore(request)).lib.tags.moveDefinition(id, before !== undefined ? { before } : { after });
 
         response.send({ result: 'ok', refused: result.refused, written: result.written, queued: result.queued === true });
     } catch (err) {
@@ -160,14 +125,11 @@ router.post('/reorder', async (request, response) => {
             return response.status(400).send({ error: `mode must be one of ${TAG_REORDER_MODES.join(', ')}` });
         }
 
-        const result = await reorderTagDefinitions(request.user.directories, id, before !== undefined ? { before } : { after }, mode);
-        if (result === null) {
-            return response.status(503).send({ error: 'Character metadata store is unavailable' });
-        }
+        const { lib } = await requestStore(request);
+        const result = await lib.tags.reorderDefinitions(id, before !== undefined ? { before } : { after }, mode);
         if (result.queued) {
-            // Not awaited: the pass writes every tag's sort_order in a worker, after this responds.
-            requestMetadataMigrationPass(request.user.directories, 'runTagReorderPassIfNeeded')
-                .catch(err => console.error('Could not run the tag reorder pass', err));
+            // Not awaited: the pass writes every tag's sort_order in small batches, after this responds.
+            lib.tags.startPass();
         }
 
         response.send({ result: 'ok', refused: result.refused, queued: result.queued });
@@ -179,10 +141,7 @@ router.post('/reorder', async (request, response) => {
 
 router.post('/unused-count', async (request, response) => {
     try {
-        const count = await countUnusedTags(request.user.directories);
-        if (count === null) {
-            return response.status(503).send({ error: 'Character metadata store is unavailable' });
-        }
+        const count = await (await requestStore(request)).lib.tags.countUnused();
         response.send({ count });
     } catch (err) {
         console.error('Could not count unused tags', err);
@@ -199,10 +158,7 @@ router.post('/prune', async (request, response) => {
         if (!Number.isInteger(limit) || limit < 1 || limit > PRUNE_MAX_LIMIT) {
             return response.status(400).send({ error: `limit must be an integer from 1 to ${PRUNE_MAX_LIMIT}` });
         }
-        const deleted = await pruneUnusedTags(request.user.directories, limit);
-        if (deleted === null) {
-            return response.status(503).send({ error: 'Character metadata store is unavailable' });
-        }
+        const deleted = await (await requestStore(request)).lib.tags.prune(limit);
         response.send({ deleted, more: deleted.length === limit });
     } catch (err) {
         console.error('Could not prune unused tags', err);
@@ -228,15 +184,7 @@ router.post('/delete', async (request, response) => {
             return response.status(400).send({ error: 'mergeInto must be a string or null' });
         }
 
-        const result = await deleteTagDefinition(request.user.directories, id, mergeInto);
-        if (result === null) {
-            return response.status(503).send({ error: 'Character metadata store is unavailable' });
-        }
-        if (!result.refused.length) {
-            // Not awaited: the pass moves the deleted tag's rows onto its merge target in a worker, after this responds.
-            requestMetadataMigrationPass(request.user.directories, 'finishDeletedTags')
-                .catch(err => console.error('Could not run the deleted tag finishing pass', err));
-        }
+        const result = await (await requestStore(request)).lib.tags.delete(id, mergeInto);
 
         response.send({ result: 'ok', refused: result.refused, mergedInto: result.mergedInto, target: result.target });
     } catch (err) {
@@ -254,11 +202,9 @@ router.post('/backup', async (request, response) => {
     let definitions;
     let assignments;
     try {
-        definitions = await streamTagDefinitionBatches(request.user.directories);
-        assignments = await streamEntityTagAssignmentBatches(request.user.directories);
-        if (definitions === null || assignments === null) {
-            return response.status(503).send({ error: 'Character metadata store is unavailable' });
-        }
+        const { lib } = await requestStore(request);
+        definitions = lib.tags.backupDefinitions();
+        assignments = lib.tags.backupAssignments();
     } catch (err) {
         console.error('Could not start the tag backup', err);
         return response.sendStatus(500);
@@ -333,7 +279,7 @@ router.post('/query', async (request, response) => {
         const body = request.body ?? {};
         const filter = body.filter ?? {};
         const sortField = body.sort?.field ?? 'manual';
-        if (!TAG_QUERY_SORTS.includes(sortField)) {
+        if (!Object.hasOwn(TAG_SORTS, sortField)) {
             return response.status(400).send({ error: true, reason: 'invalid-sort-field' });
         }
         if (filter.search !== undefined && typeof filter.search !== 'string') {
@@ -372,13 +318,10 @@ router.post('/query', async (request, response) => {
                 return response.status(400).send({ error: true, reason: 'too-many-ids', message: `at most ${QUERY_MAX_IDS} distinct ids per request` });
             }
         }
-        let after = null;
-        if (body.cursor !== undefined && body.cursor !== null) {
-            after = decodeTagQueryCursor(body.cursor, sortField);
-            if (after === null) {
-                return response.status(400).send({ error: true, reason: 'invalid-cursor' });
-            }
+        if (body.cursor !== undefined && body.cursor !== null && typeof body.cursor !== 'string') {
+            return response.status(400).send({ error: true, reason: 'invalid-cursor' });
         }
+        const cursor = typeof body.cursor === 'string' ? body.cursor : null;
         const pageSize = Number.isFinite(Number(body.pageSize)) && Number(body.pageSize) >= 1
             ? Math.min(Math.trunc(Number(body.pageSize)), MAX_QUERY_PAGE_SIZE)
             : DEFAULT_QUERY_PAGE_SIZE;
@@ -394,20 +337,16 @@ router.post('/query', async (request, response) => {
             folders: filter.folders === true || filter.folderType !== undefined,
             folderType: filter.folderType,
             pageSize,
-            after,
+            cursor,
         };
-        let result = await queryTags(request.user.directories, params);
-        if (result === null) {
-            return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
-        }
+        const { lib } = await requestStore(request);
+        let result = await lib.tags.query(params);
         if (result === 'invalid-cursor') {
             return response.status(400).send({ error: true, reason: 'invalid-cursor' });
         }
         if (body.restCount === true && !ids && result.cursor && !result.more && result.rows.length === pageSize) {
-            const restAfter = decodeTagQueryCursor(result.cursor, sortField);
-            const rest = restAfter === null ? null : await queryTags(request.user.directories,
-                { ...params, counts: false, pageSize: QUERY_REST_COUNT_MAX, after: restAfter });
-            if (rest && rest !== 'invalid-cursor') {
+            const rest = await lib.tags.query({ ...params, counts: false, pageSize: QUERY_REST_COUNT_MAX, cursor: result.cursor });
+            if (rest !== 'invalid-cursor') {
                 result = { ...result, rest: { count: rest.rows.length, more: rest.cursor !== null } };
             }
         }
@@ -442,26 +381,7 @@ router.post('/by-ids', async (request, response) => {
         if (known !== undefined && (known === null || typeof known !== 'object' || Array.isArray(known))) {
             return response.status(400).send({ error: 'known must be an object of id to hash' });
         }
-        const merged = await getMergedTagTargets(request.user.directories, ids);
-        const asked = new Set(ids.map(String));
-        const targets = merged === null ? [] : [...new Set(Object.values(merged))].filter(id => !asked.has(id));
-        const tags = merged === null ? null : await getTagDefinitionsByIds(request.user.directories, [...ids, ...targets]);
-        const goneOrMerged = tags === null ? null : await getGoneTagIds(request.user.directories, ids);
-        if (tags === null || goneOrMerged === null || merged === null) {
-            return response.send({ tags: null });
-        }
-        const gone = goneOrMerged.filter(id => !Object.hasOwn(merged, id));
-        if (!known) {
-            return response.send({ tags, gone, merged });
-        }
-        /** @type {string[]} */
-        const unchanged = [];
-        const changed = tags.filter((tag) => {
-            if (!Object.hasOwn(known, tag.id) || known[tag.id] !== contentHashOf(tag)) return true;
-            unchanged.push(tag.id);
-            return false;
-        });
-        response.send({ tags: changed, gone, merged, unchanged });
+        response.send(await (await requestStore(request)).lib.tags.byIds(ids, known));
     } catch (err) {
         console.error('Could not read tag definitions by id', err);
         response.sendStatus(500);
@@ -472,7 +392,7 @@ const BY_NAMES_MAX_NAMES = 100;
 
 /**
  * `{ names }` → `{ tags: [{ name, tag }] }`, one entry per distinct name in the order given: the tag each name stands
- * for (findTagsByNames()), or null.
+ * for (`lib.tags.findByNames()`), or null.
  */
 router.post('/by-names', async (request, response) => {
     try {
@@ -483,10 +403,7 @@ router.post('/by-names', async (request, response) => {
         if (new Set(names).size > BY_NAMES_MAX_NAMES) {
             return response.status(400).send({ error: `at most ${BY_NAMES_MAX_NAMES} distinct names per request` });
         }
-        const found = await findTagsByNames(request.user.directories, names);
-        if (found === null) {
-            return response.status(503).send({ error: 'Character metadata store is unavailable' });
-        }
+        const found = await (await requestStore(request)).lib.tags.findByNames(names);
         response.send({ tags: found });
     } catch (err) {
         console.error('Could not look up tags by name', err);
@@ -501,8 +418,9 @@ router.post('/by-names', async (request, response) => {
  */
 router.post('/manifest', async (request, response) => {
     try {
-        const changesSeq = await getTagChangesSeq(request.user.directories);
-        const assignmentChanges = await getEntityTagChangesEnd(request.user.directories);
+        const { lib } = await requestStore(request);
+        const changesSeq = await lib.tags.changesSeq();
+        const assignmentChanges = await lib.tags.entityChangesEnd();
         response.send({ changesSeq, assignmentChanges });
     } catch (err) {
         console.error('Could not read the tag change cursors', err);
@@ -514,16 +432,13 @@ const TAG_CHANGES_PAGE_SIZE = 500;
 
 /**
  * `{ sinceSeq }` → one page of what changed in the tag definitions past that cursor:
- * `{ seq, reset, tags, removed: [{ id, mergedInto }], hasMore }` (TagChangesPage). At most TAG_CHANGES_PAGE_SIZE log
+ * `{ seq, reset, tags, removed: [{ id, mergedInto }], hasMore }`. At most TAG_CHANGES_PAGE_SIZE log
  * rows per answer. `reset` tells the client to re-read the tags it holds instead; a missing or unusable `sinceSeq`
  * always answers that, with the cursor to go on from.
  */
 router.post('/changes', async (request, response) => {
     try {
-        const page = await getTagChangesSince(request.user.directories, request.body?.sinceSeq, { limit: TAG_CHANGES_PAGE_SIZE });
-        if (page === null) {
-            return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
-        }
+        const page = await (await requestStore(request)).lib.tags.changes(request.body?.sinceSeq, { limit: TAG_CHANGES_PAGE_SIZE });
         response.send(page);
     } catch (err) {
         console.error('Could not read tag changes', err);
@@ -533,7 +448,7 @@ router.post('/changes', async (request, response) => {
 
 /**
  * `{ sinceSeq, sinceGroupsVersion }` → one page of which characters and groups may have had their tags changed past
- * those cursors: `{ seq, groupsVersion, endSeq, endGroupsVersion, reset, ids, hasMore }` (EntityTagChangesPage). At
+ * those cursors: `{ seq, groupsVersion, endSeq, endGroupsVersion, reset, ids, hasMore }`. At
  * most TAG_CHANGES_PAGE_SIZE log rows per answer. The client reads the tags of the listed entities it holds with
  * /for. `reset` tells it to re-read the tags of everything it holds instead; missing or unusable cursors always
  * answer that, with the cursors to go on from.
@@ -541,10 +456,7 @@ router.post('/changes', async (request, response) => {
 router.post('/assignment-changes', async (request, response) => {
     try {
         const { sinceSeq, sinceGroupsVersion } = request.body ?? {};
-        const page = await getEntityTagChangesSince(request.user.directories, { sinceSeq, sinceGroupsVersion }, { limit: TAG_CHANGES_PAGE_SIZE });
-        if (page === null) {
-            return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
-        }
+        const page = await (await requestStore(request)).lib.tags.entityChanges({ sinceSeq, sinceGroupsVersion }, { limit: TAG_CHANGES_PAGE_SIZE });
         response.send(page);
     } catch (err) {
         console.error('Could not read tag assignment changes', err);
@@ -570,10 +482,7 @@ router.post('/for', async (request, response) => {
             return response.status(400).send({ error: `at most ${FOR_MAX_IDS} distinct ids per request` });
         }
 
-        const result = await getEntityTagIdsForMany(request.user.directories, uniqueIds);
-        if (result === null) {
-            return response.status(503).send({ error: 'Character metadata store is unavailable' });
-        }
+        const result = await (await requestStore(request)).lib.tags.tagIdsFor(uniqueIds);
 
         response.send(result);
     } catch (err) {
@@ -595,10 +504,7 @@ router.post('/assign', async (request, response) => {
             return response.status(400).send({ error: 'id and tagId are required non-empty strings' });
         }
 
-        const answer = await assignEntityTagReporting(request.user.directories, id, tagId);
-        if (answer === null) {
-            return response.status(503).send({ error: 'Character metadata store is unavailable' });
-        }
+        const answer = await (await requestStore(request)).lib.tags.assign(id, tagId);
         if (answer.result === 'not_found') {
             return response.status(404).send({ error: 'Character or group not found' });
         }
@@ -618,12 +524,9 @@ router.post('/unassign', async (request, response) => {
             return response.status(400).send({ error: 'id and tagId are required non-empty strings' });
         }
 
-        const result = await unassignEntityTag(request.user.directories, id, tagId);
-        if (result === null) {
-            return response.status(503).send({ error: 'Character metadata store is unavailable' });
-        }
+        const answer = await (await requestStore(request)).lib.tags.unassign(id, tagId);
 
-        response.send({ result: 'ok' });
+        response.send(answer === 'deleted' ? { result: 'ok', refused: [{ id: tagId, reason: 'deleted' }] } : { result: 'ok' });
     } catch (err) {
         console.error('Could not unassign tag', err);
         response.sendStatus(500);
@@ -638,10 +541,7 @@ router.post('/copy', async (request, response) => {
             return response.status(400).send({ error: 'from and to are required non-empty strings' });
         }
 
-        const result = await copyEntityTags(request.user.directories, from, to);
-        if (result === null) {
-            return response.status(503).send({ error: 'Character metadata store is unavailable' });
-        }
+        const result = await (await requestStore(request)).lib.tags.copy(from, to);
         if (result === 'not_found') {
             return response.status(404).send({ error: 'Character or group not found' });
         }
@@ -665,10 +565,7 @@ router.post('/rename-key', async (request, response) => {
             return response.status(400).send({ error: 'from and to are required non-empty strings' });
         }
 
-        const answer = await moveEntityTags(request.user.directories, from, to);
-        if (answer === null) {
-            return response.status(503).send({ error: 'Character metadata store is unavailable' });
-        }
+        const answer = await (await requestStore(request)).lib.tags.move(from, to);
         if (answer.result === 'not_found') {
             return response.status(404).send({ error: 'Character or group not found' });
         }
@@ -682,7 +579,7 @@ router.post('/rename-key', async (request, response) => {
 
 /**
  * `{ tags, tagMap, overwrite }` (a tag backup's `tags` and `tag_map`, and whether the backup's settings replace
- * those of tags that already exist) → everything restoreTagBackup() did not restore, plus `createdTagIds` and
+ * those of tags that already exist) → everything `lib.tags.restore()` did not restore, plus `createdTagIds` and
  * `updatedTagIds`.
  */
 router.post('/restore', async (request, response) => {
@@ -698,10 +595,7 @@ router.post('/restore', async (request, response) => {
             return response.status(400).send({ error: 'overwrite must be a boolean' });
         }
 
-        const result = await restoreTagBackup(request.user.directories, { tags, tagMap, overwrite });
-        if (result === null) {
-            return response.status(503).send({ error: 'Character metadata store is unavailable' });
-        }
+        const result = await (await requestStore(request)).lib.tags.restore({ tags, tagMap, overwrite });
 
         response.send(result);
     } catch (err) {

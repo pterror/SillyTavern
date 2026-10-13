@@ -208,7 +208,7 @@ async function openSwipePicker(messageId) {
                         }
                     }
 
-                    const newSwipeId = await deleteSwipe(index, messageId);
+                    const newSwipeId = await deleteSwipe(index, messageId, { ask: true });
                     if (!Number.isInteger(newSwipeId)) {
                         return;
                     }

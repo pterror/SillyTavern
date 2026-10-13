@@ -14,8 +14,18 @@ afterAll(() => process.chdir(originalCwd));
 
 /** @type {import('express').Router} */
 let router;
-/** @type {typeof import('../src/character-metadata-db.js')} */
-let metadataDb;
+/** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
+let user;
+/** @type {typeof import('../src/character-avatars.js')} */
+let avatars;
+let TYPE;
+let HASH;
+
+/** How many characters the library has. */
+async function characterCount() {
+    const res = await fetch(`${baseUrl}/api/characters/query`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ want: ['total'] }) });
+    return (await res.json()).total;
+}
 /** @type {import('node:http').Server} */
 let server;
 let baseUrl;
@@ -35,7 +45,9 @@ beforeAll(async () => {
     setConfigFilePath(path.join(originalCwd, '..', 'default', 'config.yaml'));
 
     ({ router } = await import('../src/endpoints/characters.js'));
-    metadataDb = await import('../src/character-metadata-db.js');
+    avatars = await import('../src/character-avatars.js');
+    ({ TYPE } = await import('../src/library-codes.js'));
+    ({ HASH } = await import('../src/library-engine.js'));
 
     // importFromJson()/importFromYaml() read DEFAULT_AVATAR_PATH ('./public/img/...') relative to cwd - see
     // this file's own note on `originalCwd` above.
@@ -49,7 +61,7 @@ beforeAll(async () => {
     app.use(multer({ dest: uploadsDir }).single('avatar'));
     app.use(express.json());
     app.use((req, res, next) => {
-        req.user = { directories, profile: { handle: `test-user-${path.basename(directories.root)}` } };
+        req.user = user.user;
         next();
     });
     app.use('/api/characters', router);
@@ -60,22 +72,13 @@ beforeAll(async () => {
 
 afterAll(() => new Promise(resolve => server.close(resolve)));
 
-beforeEach(() => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-characters-import-test-'));
-    const charactersDir = path.join(tempDir, 'characters');
-    const chatsDir = path.join(tempDir, 'chats');
-    const thumbnailsAvatarDir = path.join(tempDir, 'thumbnails', 'avatar');
-    fs.mkdirSync(charactersDir, { recursive: true });
-    fs.mkdirSync(chatsDir, { recursive: true });
-    fs.mkdirSync(thumbnailsAvatarDir, { recursive: true });
-    // thumbnailsAvatar is needed for the preserved_name replace path - /import calls invalidateThumbnail() for
-    // any request that carries preserved_name, which throws if this directory isn't in `directories` at all.
-    directories = { root: tempDir, characters: charactersDir, chats: chatsDir, thumbnailsAvatar: thumbnailsAvatarDir };
+beforeEach(async () => {
+    user = await (await import('./converted-user.fixture.js')).emptyUser('st-characters-import-test-');
+    ({ directories } = user);
+    globalThis.DATA_ROOT = user.dataRoot;
 });
 
-afterEach(() => {
-    metadataDb.disposeMetadataStores();
-});
+afterEach(() => user.close());
 
 /**
  * POSTs a v1-JSON character import (the simplest format importFromJson() accepts - no PNG re-encode pipeline
@@ -112,9 +115,10 @@ describe('POST /api/characters/import', () => {
         const response = await importJsonCharacter();
         const data = await response.json();
 
-        const row = await metadataDb.getCharacterMetadataRow(directories, `${data.file_name}.png`);
-        expect(row.content_hash).toEqual(expect.any(String));
-        expect(row.content_hash.length).toBe(64); // sha256 hex digest
+        const e = await user.store.lib.entity(TYPE.character, `${data.file_name}.png`);
+        const contentHash = e.hashes.find(h => h.which === HASH.content)?.hash.toString('hex');
+        expect(contentHash).toEqual(expect.any(String));
+        expect(contentHash.length).toBe(64); // sha256 hex digest
     });
 
     test('exact byte-identical dedup: importing the same bytes twice skips the second one', async () => {
@@ -130,8 +134,7 @@ describe('POST /api/characters/import', () => {
         expect(secondData.file_name).toBeUndefined();
 
         // Only one character actually exists.
-        const files = fs.readdirSync(directories.characters);
-        expect(files.length).toBe(1);
+        expect(await characterCount()).toBe(1);
     });
 
     test('different content is never treated as a duplicate', async () => {
@@ -145,8 +148,7 @@ describe('POST /api/characters/import', () => {
         expect(secondData.duplicate).toBeUndefined();
         expect(secondData.file_name).not.toBe(firstData.file_name);
 
-        const files = fs.readdirSync(directories.characters);
-        expect(files.length).toBe(2);
+        expect(await characterCount()).toBe(2);
     });
 
     test('in-batch dedup: two identical files uploaded back to back while batch-import mode is active still dedupe (pending buffer, not yet flushed)', async () => {
@@ -158,13 +160,6 @@ describe('POST /api/characters/import', () => {
             const firstData = await first.json();
             expect(firstData.duplicate).toBeUndefined();
 
-            // Still buffered, not yet in the real table - the write-path hook that recorded firstData's hash
-            // went through applyOrBuffer() while batch mode is active, so a lookup that only checked the SQL
-            // table would miss it (see findCharacterIdByContentHash()'s own doc comment on why it also checks
-            // entry.batch.pending).
-            const rowBeforeFlush = await metadataDb.getCharacterMetadataRow(directories, `${firstData.file_name}.png`);
-            expect(rowBeforeFlush).toBeUndefined();
-
             const second = await importJsonCharacter();
             const secondData = await second.json();
             expect(secondData.duplicate).toBe(true);
@@ -174,9 +169,8 @@ describe('POST /api/characters/import', () => {
             expect(endResponse.status).toBe(204);
         }
 
-        // After the flush, still only one character on disk.
-        const files = fs.readdirSync(directories.characters);
-        expect(files.length).toBe(1);
+        // After the batch, still only one character.
+        expect(await characterCount()).toBe(1);
     });
 
     test('a preserved_name replace bypasses dedup even if the bytes match another character', async () => {
@@ -216,8 +210,8 @@ describe('POST /api/characters/import', () => {
         formData.append('preserved_name', `${firstData.file_name}.png`);
         await fetch(`${baseUrl}/api/characters/import`, { method: 'POST', body: formData });
 
-        const row = await metadataDb.getCharacterMetadataRow(directories, `${firstData.file_name}.png`);
-        const originalRow = await metadataDb.findCharacterIdByContentHash(directories, row.content_hash);
+        const e = await user.store.lib.entity(TYPE.character, `${firstData.file_name}.png`);
+        const originalRow = await user.store.lib.findByHash(HASH.content, e.hashes.find(h => h.which === HASH.content)?.hash.toString('hex') ?? null);
         // The stored hash now resolves back to this same id, and a fresh duplicate of the REPLACED content
         // (not the original) is what a subsequent identical upload should be caught against.
         expect(originalRow).toBe(`${firstData.file_name}.png`);
@@ -244,7 +238,7 @@ describe('POST /api/characters/import - fav/chat no longer written to the card (
 
         // Post-import canonical PNGs are image-only (no embedded chara/ccv3 chunk - see writeCharacterData()'s
         // imageOnly write path), so the stored card is verified through the metadata db, the only place it lives.
-        const storedJson = JSON.parse(await metadataDb.getCharacterCardJson(directories, `${data.file_name}.png`));
+        const storedJson = (await user.store.lib.cards([`${data.file_name}.png`]))[0];
 
         expect('fav' in storedJson).toBe(false);
         expect('chat' in storedJson).toBe(false);
@@ -255,7 +249,7 @@ describe('POST /api/characters/import - fav/chat no longer written to the card (
         const response = await importJsonCharacter({ name: 'V1 Ghost', fav: true });
         const data = await response.json();
 
-        const storedJson = JSON.parse(await metadataDb.getCharacterCardJson(directories, `${data.file_name}.png`));
+        const storedJson = (await user.store.lib.cards([`${data.file_name}.png`]))[0];
 
         expect('fav' in storedJson).toBe(false);
         expect('chat' in storedJson).toBe(false);
@@ -288,7 +282,7 @@ describe('POST /api/characters/import - PNG import no longer re-encodes the avat
         const data = await response.json();
         expect(data.file_name).toEqual(expect.any(String));
 
-        const stored = fs.readFileSync(path.join(directories.characters, `${data.file_name}.png`));
+        const stored = fs.readFileSync(/** @type {string} */ (await avatars.avatarPathOf(user.store.lib, directories, `${data.file_name}.png`)));
 
         // Compare every non-tEXt chunk (IHDR/IDAT/IEND/...) byte-for-byte - the Jimp decode/cover/re-encode
         // round trip this used to always go through would produce a DIFFERENT IDAT (different compressor),

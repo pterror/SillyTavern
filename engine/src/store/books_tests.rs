@@ -578,3 +578,98 @@ fn an_entry_edit_writes_the_same_whatever_its_books_size() {
     drop(s);
     fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn a_world_book_reads_whole_from_one_view() {
+    let dir = temp_dir("world-book");
+    let s = Store::open_in(&dir, SMALL, pool()).unwrap();
+    let json = |e: u64, k: &str, v: &str| {
+        rec(
+            "jsonValue",
+            vec![
+                Value::Sel(0, e),
+                Value::Field(FieldRef::Key(k.as_bytes().to_vec())),
+                text(v),
+                Value::Absent,
+                Value::Absent,
+            ],
+        )
+    };
+    // A book of 2500 entries (three scans of places), placed out of id order, one deleted.
+    let n = 2500u64;
+    let mut r = vec![
+        create(1, BOOK, "lore"),
+        defined(1, true),
+        json(1, "name", "\"Lore\""),
+    ];
+    for i in 0..n {
+        let e = 100 + i;
+        r.push(create(e, ENTRY, &format!("1:{i}")));
+        r.push(place(1, e, (n - i) * 10));
+        r.push(json(e, "content", &format!("\"{i}\"")));
+    }
+    for chunk in r.chunks(500) {
+        s.commit_wait(chunk.to_vec()).unwrap();
+    }
+    s.commit_wait(vec![delete(100 + 7)]).unwrap();
+    // Its `originalData`, and a book that is only a name a link holds.
+    s.commit_wait(vec![
+        create(2, OWNED, "1:o"),
+        create(3, ENTRY, "2:0"),
+        place(2, 3, 5),
+        create(4, BOOK, "ghost"),
+    ])
+    .unwrap();
+    let check = |s: &Store| {
+        let b = s.world_book(b"lore").unwrap().unwrap();
+        assert_eq!(b.id, 1);
+        assert_eq!(b.entity.as_ref().unwrap().key, b"lore");
+        let want: Vec<(u64, u64)> = (0..n)
+            .rev()
+            .filter(|i| *i != 7)
+            .map(|i| (100 + i, (n - i) * 10))
+            .collect();
+        let got: Vec<(u64, u64)> = b.entries.iter().map(|(e, p)| (e.id, *p)).collect();
+        assert_eq!(got, want);
+        let original = b.original.as_ref().unwrap();
+        assert_eq!(original.id, 2);
+        assert_eq!(
+            original
+                .entries
+                .iter()
+                .map(|(e, p)| (e.id, *p))
+                .collect::<Vec<_>>(),
+            vec![(3, 5)]
+        );
+        assert!(original.original.is_none());
+        assert!(
+            s.world_book(b"ghost").unwrap().is_none(),
+            "an unresolved name"
+        );
+        assert!(s.world_book(b"none").unwrap().is_none(), "no book");
+        assert!(s.world_book_exists(b"lore").unwrap());
+        assert!(!s.world_book_exists(b"ghost").unwrap());
+        assert!(!s.world_book_exists(b"none").unwrap());
+    };
+    check(&s);
+    s.close();
+    drop(s);
+    let s = Store::open_in(&dir, SMALL, pool()).unwrap();
+    check(&s);
+    // A name forwarded into another book reads as nothing of its own; an undefined book as nothing.
+    s.commit_wait(vec![
+        create(5, BOOK, "other"),
+        defined(5, true),
+        forward(4, 5),
+        defined(1, false),
+    ])
+    .unwrap();
+    assert!(s.world_book(b"ghost").unwrap().is_none());
+    assert!(s.world_book(b"lore").unwrap().is_none());
+    assert_eq!(s.world_book(b"other").unwrap().unwrap().id, 5);
+    for (k, there) in [(&b"ghost"[..], false), (b"lore", false), (b"other", true)] {
+        assert_eq!(s.world_book_exists(k).unwrap(), there);
+    }
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}

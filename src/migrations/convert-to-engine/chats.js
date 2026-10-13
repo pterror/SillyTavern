@@ -22,9 +22,10 @@ const WORLD_INFO = 'world_info';
 /**
  * @typedef {import('./old-chats.js').Db} Db
  * @typedef {ReturnType<typeof loadOwner>} Model
- * @typedef {{ name: string, kind: 'twin', end: string, metadata: Record<string, unknown> | null } | { name: string, kind: 'empty', metadata: Record<string, unknown> | null }} Dropped
+ * @typedef {{ name: string, kind: 'twin', end: string, metadata: Record<string, unknown> | null } | { name: string, kind: 'empty', metadata: Record<string, unknown> | null, created: number | null }} Dropped
  * A chat of a group's `chats` the file-to-tree migration left without a name: an exact duplicate of a chat in the
- * tree (`end`: the message its file ends on), or a file with only its header.
+ * tree (`end`: the message its file ends on), or a file with only its header (`created`: its header's `create_date`,
+ * null when there is none that reads).
  * @typedef {object} OwnerInput
  * @property {Db} db The tree the owner is read from.
  * @property {string} ownerId
@@ -77,29 +78,11 @@ export function shortHash(/** @type {string | undefined} */ json) {
 }
 
 /**
- * The names a tree's bookmarks get: each label in (created_at, id) order, then each dropped chat; a name an earlier
- * one holds gets upstream's `getUniqueName()` suffix (`name (1)`, `name (2)`, ...), as `createBookmark()` does.
- * @param {string[]} names
- * @returns {string[]}
- */
-export function uniqueNames(names) {
-    const taken = new Set();
-    return names.map(name => {
-        for (let i = 0; ; i++) {
-            const candidate = i === 0 ? name : `${name} (${i})`;
-            if (!taken.has(candidate)) {
-                taken.add(candidate);
-                return candidate;
-            }
-        }
-    });
-}
-
-/**
  * @typedef {object} OwnerPlan
  * @property {Model} model
- * @property {{ at: string | null, label: string | null, name: string, mode: number, source: string }[]} bookmarks `at`:
- * the old message it is at (null: the root); `source`: the label's row, or the dropped chat's name.
+ * @property {{ at: string | null, label: string | null, name: string, mode: number, source: string, made: number | null }[]} bookmarks
+ * `at`: the old message it is at (null: the root); `source`: the label's row, or the dropped chat's name; `made`:
+ * when it was made (ms; null when that isn't stored).
  * @property {string[]} unsettled Label names nothing classified (made following).
  * @property {{ at: string | null, sources: string[], base: Map<string, string>, target: Map<string, string> }[]} states
  * The state each metadata sets at its message (null: the root), in the order they are recorded (an ancestor first;
@@ -135,13 +118,13 @@ export function planOwner(input) {
     // Labels, then the chats the old migration left unnamed.
     const labeled = model.sorted.filter(r => r.label !== null && !unreachable.has(r.id));
     const sources = [
-        ...labeled.map(r => ({ name: /** @type {string} */ (r.label), at: at(descendDefault(db, model, r.id)), label: r.id })),
-        ...input.dropped.map(d => ({ name: d.name, at: d.kind === 'twin' ? d.end : null, label: null })),
+        ...labeled.map(r => ({ name: /** @type {string} */ (r.label), at: at(descendDefault(db, model, r.id)), label: r.id, made: r.created })),
+        ...input.dropped.map(d => ({ name: d.name, at: d.kind === 'twin' ? d.end : null, label: null, made: d.kind === 'empty' ? d.created : null })),
     ];
     const { modes, unsettled } = input.classify(sources.map(s => s.name));
     plan.unsettled = unsettled;
-    const names = uniqueNames(sources.map(s => s.name));
-    plan.bookmarks = sources.map((s, i) => ({ at: s.at, label: s.label, name: names[i], mode: modes.get(s.name) ?? MODE.following, source: s.label ?? s.name }));
+    // A bookmark's label is free text: old labels convert as they are, repeats included.
+    plan.bookmarks = sources.map(s => ({ at: s.at, label: s.label, name: s.name, mode: modes.get(s.name) ?? MODE.following, source: s.label ?? s.name, made: s.made }));
 
     // Metadata: each row's own, at that row; a dropped chat's at its place. Several at one place are each recorded
     // there in label order (rows by (created_at, id), then the dropped chats), so the last one's values read.
@@ -236,9 +219,11 @@ export function planOwner(input) {
 
 /**
  * The counts of what an owner's conversion wrote.
- * @typedef {{ messages: number, bookmarks: number, rootBookmarks: number, changes: number, forks: number, itemizations: number, sendKeys: number, badSendKeys: string[], tokenCounts: number, sessions: number, unreadable: string[], later: object[] }} OwnerCounts
+ * @typedef {{ messages: number, bookmarks: number, rootBookmarks: number, changes: number, forks: number, itemizations: number, sendKeys: number, badSendKeys: string[], tokenCounts: number, sessions: number, unreadable: string[], later: object[], active: { time: number, record: object }[] }} OwnerCounts
  * `unreadable`: messages whose stored JSON can't be read (nothing of the owner is written past the first); `later`: the
- * session's records, committed once the bulk load holding the messages is in place.
+ * session's records, committed once the bulk load holding the messages is in place; `active`: the `conversationActive`
+ * record of each conversation made (a bookmark, the pointer's), with the time of its last message: committed last,
+ * all owners' together in that order, which is the order recent chats list them in.
  */
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -258,7 +243,7 @@ export async function writeOwner(ctx, input, plan, tree, fileItemizations) {
     const { db, ownerId } = input;
     const { model } = plan;
     /** @type {OwnerCounts} */
-    const counts = { messages: 0, bookmarks: 0, rootBookmarks: 0, changes: 0, forks: 0, itemizations: 0, sendKeys: 0, badSendKeys: [], tokenCounts: 0, sessions: 0, unreadable: [], later: [] };
+    const counts = { messages: 0, bookmarks: 0, rootBookmarks: 0, changes: 0, forks: 0, itemizations: 0, sendKeys: 0, badSendKeys: [], tokenCounts: 0, sessions: 0, unreadable: [], later: [], active: [] };
     /** @type {Map<string, bigint>} */
     const ids = new Map();
     for (const r of model.sorted) {
@@ -358,21 +343,43 @@ export async function writeOwner(ctx, input, plan, tree, fileItemizations) {
         }
         if (plan.pointer !== null) {
             later.push(plan.pointer.at === null
-                ? { kind: 'pointerRoot', session, user, tree: tree.id }
+                ? { kind: 'pointerRoot', session, user, tree: tree.id, time: ctx.now }
                 : { kind: 'pointerMove', session, user, target: idOf(plan.pointer.at) });
         }
         if (input.openingChoice !== null) later.push({ kind: 'openingChoice', session, user, tree: tree.id, index: input.openingChoice });
+        /** @type {bigint[]} */
+        const bookmarkIds = [];
         for (const b of plan.bookmarks) {
             const id = ctx.ids.position++;
+            bookmarkIds.push(id);
             later.push(b.at === null
-                ? { kind: 'positionRoot', id, mode: b.mode, session, user, tree: tree.id }
+                ? { kind: 'positionRoot', id, mode: b.mode, session, user, tree: tree.id, time: b.made ?? ctx.now }
                 : { kind: 'positionCreate', id, mode: b.mode, session, user, pointer: idOf(b.at) });
             later.push({ kind: 'positionName', id, name: b.name });
             counts.bookmarks++;
             if (b.at === null) counts.rootBookmarks++;
         }
+        for (const a of activeConversations(model, plan, ctx.now)) {
+            counts.active.push({ time: a.time, record: { kind: 'conversationActive', ...(a.bookmark === null ? { session, tree: tree.id } : { bookmark: bookmarkIds[a.bookmark] }) } });
+        }
     }
     return counts;
+}
+
+/**
+ * The conversations an owner's conversion makes that recent chats list: each bookmark (`bookmark`: its index in the
+ * plan), then the pointer's (`bookmark` null), each with the time of the message it is at (a root's: when the bookmark
+ * was made, else `now`).
+ * @param {Model} model
+ * @param {OwnerPlan} plan
+ * @param {number} now
+ * @returns {{ time: number, bookmark: number | null }[]}
+ */
+export function activeConversations(model, plan, now) {
+    const timeOf = (/** @type {string | null} */ at, /** @type {number} */ root) => (at === null ? root : /** @type {any} */ (model.rows.get(at)).created);
+    const out = plan.bookmarks.map((b, bookmark) => ({ time: timeOf(b.at, b.made ?? now), bookmark }));
+    if (plan.pointer !== null) out.push({ time: timeOf(plan.pointer.at, now), bookmark: null });
+    return out;
 }
 
 /** Each row's end down its default children, as `descendDefaultSync()` finds it, kept per model. */

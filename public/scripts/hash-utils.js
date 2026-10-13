@@ -447,3 +447,88 @@ export function digestsEqual(a, b) {
 export function jsonHash(value) {
     return getStringHash(JSON.stringify(value) ?? 'undefined');
 }
+
+/** @param {unknown} value */
+const isPlainObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+
+/** @param {unknown} value An object with a defined key (an empty one is a field itself, so it keeps being there). */
+const opens = value => isPlainObject(value) && Object.values(/** @type {object} */ (value)).some(v => v !== undefined);
+
+/**
+ * A character row's fields, the card's values as they are stored: every top-level key but `data`, every key of
+ * `data` but `extensions`, every key of `data.extensions` (a `data` or `extensions` that isn't an object, or is an
+ * empty one, is a field itself). Each is named by its path, the JSON of its keys (`'["data","extensions","fav"]'`).
+ * @param {Record<string, any>} row
+ * @returns {Map<string, unknown>}
+ */
+export function characterRowFields(row) {
+    /** @type {Map<string, unknown>} */
+    const fields = new Map();
+    for (const [key, value] of Object.entries(row)) {
+        if (value === undefined) continue;
+        if (key !== 'data' || !opens(value)) {
+            fields.set(JSON.stringify([key]), value);
+            continue;
+        }
+        for (const [dataKey, dataValue] of Object.entries(value)) {
+            if (dataValue === undefined) continue;
+            if (dataKey !== 'extensions' || !opens(dataValue)) {
+                fields.set(JSON.stringify(['data', dataKey]), dataValue);
+                continue;
+            }
+            for (const [extKey, extValue] of Object.entries(dataValue)) {
+                if (extValue !== undefined) fields.set(JSON.stringify(['data', 'extensions', extKey]), extValue);
+            }
+        }
+    }
+    return fields;
+}
+
+/**
+ * The hash of each of a character row's fields (`characterRowFields()`), by its path: what the page holds, sent to
+ * `/api/characters/batch` so only the fields that differ come back.
+ * @param {Record<string, any>} row
+ * @returns {Record<string, number>}
+ */
+export function characterRowFieldHashes(row) {
+    /** @type {Record<string, number>} */
+    const hashes = {};
+    for (const [path, value] of characterRowFields(row)) hashes[path] = getStringHash(canonicalStringify(value));
+    return hashes;
+}
+
+/**
+ * Applies what `/api/characters/batch` answered for a row's field hashes: each path in `unset` removed, then each
+ * in `set` written (objects made along the way, a value that isn't an object replaced by one).
+ * @param {Record<string, any>} row Changed in place.
+ * @param {{ set?: Record<string, unknown>, unset?: string[] }} changes
+ * @returns {Record<string, any>} The row.
+ */
+export function applyCharacterRowFields(row, { set = {}, unset = [] }) {
+    for (const path of unset) {
+        /** @type {string[]} */
+        const keys = JSON.parse(path);
+        /** @type {Record<string, any>[]} */
+        const chain = [row];
+        for (const key of keys.slice(0, -1)) {
+            const next = chain[chain.length - 1][key];
+            if (!isPlainObject(next)) break;
+            chain.push(next);
+        }
+        if (chain.length !== keys.length) continue;
+        delete chain[chain.length - 1][keys[keys.length - 1]];
+        // An object this leaves empty goes too: one the row has empty is a field of its own, so `set` holds it.
+        for (let i = chain.length - 1; i > 0 && Object.keys(chain[i]).length === 0; i--) delete chain[i - 1][keys[i - 1]];
+    }
+    for (const [path, value] of Object.entries(set)) {
+        /** @type {string[]} */
+        const keys = JSON.parse(path);
+        let at = row;
+        for (const key of keys.slice(0, -1)) {
+            if (!isPlainObject(at[key])) at[key] = {};
+            at = at[key];
+        }
+        at[keys[keys.length - 1]] = value;
+    }
+    return row;
+}

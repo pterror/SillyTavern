@@ -1,13 +1,9 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals';
-import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { getStringHash } from '../public/scripts/hash-utils.js';
 
 /** @type {typeof import('../src/character-card-parser.js')} */
 let cardParser;
-/** @type {typeof import('../src/character-metadata-db.js')} */
-let metadataDb;
 /** @type {import('express').Router} */
 let router;
 /** @type {typeof import('../src/endpoints/characters.js').readCardContent} */
@@ -15,7 +11,12 @@ let readCardContent;
 /** @type {import('node:http').Server} */
 let server;
 let baseUrl;
-
+/** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').convertedUser>>} */
+let user;
+/** @type {typeof import('./converted-user.fixture.js')} */
+let fixture;
+/** @type {typeof import('../src/request-session.js').SESSION_HEADER} */
+let SESSION_HEADER;
 /** @type {import('../src/users.js').UserDirectoryList} */
 let directories;
 
@@ -29,7 +30,8 @@ beforeAll(async () => {
 
     ({ router, readCardContent } = await import('../src/endpoints/characters.js'));
     cardParser = await import('../src/character-card-parser.js');
-    metadataDb = await import('../src/character-metadata-db.js');
+    fixture = await import('./converted-user.fixture.js');
+    ({ SESSION_HEADER } = await import('../src/request-session.js'));
 
     process.chdir(path.resolve(originalCwd, '..'));
 
@@ -37,7 +39,7 @@ beforeAll(async () => {
     const app = express();
     app.use(express.json());
     app.use((req, res, next) => {
-        req.user = { directories, profile: { handle: 'test-user' } };
+        req.user = user.user;
         next();
     });
     app.use('/api/characters', router);
@@ -51,19 +53,32 @@ afterAll(async () => {
     process.chdir(originalCwd);
 });
 
-beforeEach(() => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-characters-active-chat-test-'));
-    const charactersDir = path.join(tempDir, 'characters');
-    const chatsDir = path.join(tempDir, 'chats');
-    fs.mkdirSync(charactersDir, { recursive: true });
-    fs.mkdirSync(chatsDir, { recursive: true });
-    directories = { characters: charactersDir, chats: chatsDir, root: tempDir };
+beforeEach(async () => {
+    user = await fixture.emptyUser('st-characters-active-chat-test-');
+    ({ directories } = user);
+    globalThis.DATA_ROOT = user.dataRoot;
 });
 
-afterEach(() => {
-    metadataDb.disposeMetadataStores();
-    fs.rmSync(directories.root, { recursive: true, force: true });
+afterEach(async () => {
+    await user.close();
 });
+
+/**
+ * Two chats of Alice, each a session of its own: the tab's, and one the tests move it to (`name`).
+ * @param {string} name The other chat's name.
+ * @returns {Promise<{ tab: string, other: string }>}
+ */
+async function twoChats(name) {
+    const owner = { avatar: 'Alice.png' };
+    const tab = await fixture.saveBranch(user.store, owner, 'tab chat', [{}, { name: 'User', is_user: true, mes: 'in the tab', send_date: 'x', extra: {} }]);
+    const other = await fixture.saveBranch(user.store, owner, name, [{}, { name: 'User', is_user: true, mes: `in ${name}`, send_date: 'x', extra: {} }]);
+    return { tab, other };
+}
+
+/** The messages the tab shows in Alice's tree. */
+async function shownBy(tab) {
+    return (await fixture.sessionPath(user.store, { avatar: 'Alice.png' }, tab)).map(m => m.mes);
+}
 
 /**
  * @param {object} body
@@ -80,10 +95,10 @@ async function create(body) {
  * @param {string} avatarUrl
  * @param {object} body
  */
-async function edit(avatarUrl, body) {
+async function edit(avatarUrl, body, tab) {
     return fetch(`${baseUrl}/api/characters/edit`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(tab ? { [SESSION_HEADER]: tab } : {}) },
         body: JSON.stringify({ avatar_url: avatarUrl, ...body }),
     });
 }
@@ -91,10 +106,10 @@ async function edit(avatarUrl, body) {
 /**
  * @param {object} body
  */
-async function setChat(body) {
+async function setChat(body, tab) {
     return fetch(`${baseUrl}/api/characters/chat`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(tab ? { [SESSION_HEADER]: tab } : {}) },
         body: JSON.stringify(body),
     });
 }
@@ -102,24 +117,24 @@ async function setChat(body) {
 /**
  * @param {object} body
  */
-async function mergeAttributes(body) {
+async function mergeAttributes(body, tab) {
     return fetch(`${baseUrl}/api/characters/merge-attributes`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(tab ? { [SESSION_HEADER]: tab } : {}) },
         body: JSON.stringify(body),
     });
 }
 
 describe('POST /api/characters/chat (dedicated active-chat write path)', () => {
-    test('happy path: 204, and the row\'s active_chat is updated', async () => {
+    test('happy path: 200 with the tab\'s chat id, and the tab\'s session is at the chat', async () => {
         const createResponse = await create({ ch_name: 'Alice', description: 'desc', file_name: 'Alice' });
         expect(createResponse.status).toBe(200);
+        const { tab } = await twoChats('Alice - Some Chat');
 
-        const response = await setChat({ avatar: 'Alice.png', chat: 'Alice - Some Chat' });
-        expect(response.status).toBe(204);
+        const response = await setChat({ avatar: 'Alice.png', chat: 'Alice - Some Chat' }, tab);
+        expect(response.status).toBe(200);
 
-        const row = await metadataDb.getCharacterMetadataRow(directories, 'Alice.png');
-        expect(row.active_chat).toBe('Alice - Some Chat');
+        expect(await shownBy(tab)).toEqual(['in Alice - Some Chat']);
     });
 
     test('404 for an untracked avatar', async () => {
@@ -172,27 +187,28 @@ describe('/edit no longer writes chat into the card file, but still updates the 
         expect(exported.chat).toBeUndefined();
     });
 
-    test('the db row is updated via the seed-after-write path', async () => {
+    test('the tab\'s session moves to the chat via the write path', async () => {
         const createResponse = await create({ ch_name: 'Alice', description: 'desc', file_name: 'Alice' });
         expect(createResponse.status).toBe(200);
 
-        const editResponse = await edit('Alice.png', { ch_name: 'Alice', description: 'desc', avatar_url: 'Alice.png', chat: 'Alice - Edited Chat' });
+        const { tab } = await twoChats('Alice - Edited Chat');
+
+        const editResponse = await edit('Alice.png', { ch_name: 'Alice', description: 'desc', avatar_url: 'Alice.png', chat: 'Alice - Edited Chat' }, tab);
         expect(editResponse.status).toBe(200);
 
-        const row = await metadataDb.getCharacterMetadataRow(directories, 'Alice.png');
-        expect(row.active_chat).toBe('Alice - Edited Chat');
+        expect(await shownBy(tab)).toEqual(['in Alice - Edited Chat']);
     });
 
     test('an /edit with no chat in the request body leaves the existing db active_chat untouched', async () => {
         const createResponse = await create({ ch_name: 'Alice', description: 'desc', file_name: 'Alice' });
         expect(createResponse.status).toBe(200);
-        await setChat({ avatar: 'Alice.png', chat: 'Alice - Original Chat' });
+        const { tab } = await twoChats('Alice - Original Chat');
+        await setChat({ avatar: 'Alice.png', chat: 'Alice - Original Chat' }, tab);
 
-        const editResponse = await edit('Alice.png', { ch_name: 'Alice', description: 'now edited', avatar_url: 'Alice.png' });
+        const editResponse = await edit('Alice.png', { ch_name: 'Alice', description: 'now edited', avatar_url: 'Alice.png' }, tab);
         expect(editResponse.status).toBe(200);
 
-        const row = await metadataDb.getCharacterMetadataRow(directories, 'Alice.png');
-        expect(row.active_chat).toBe('Alice - Original Chat');
+        expect(await shownBy(tab)).toEqual(['in Alice - Original Chat']);
     });
 });
 
@@ -201,27 +217,27 @@ describe('/merge-attributes carves chat out the same way, and never writes it in
         const createResponse = await create({ ch_name: 'Alice', description: 'desc', file_name: 'Alice' });
         expect(createResponse.status).toBe(200);
 
-        const mergeResponse = await mergeAttributes({ avatar: 'Alice.png', chat: 'Alice - Merged Chat' });
+        const { tab } = await twoChats('Alice - Merged Chat');
+        const mergeResponse = await mergeAttributes({ avatar: 'Alice.png', chat: 'Alice - Merged Chat' }, tab);
         expect(mergeResponse.status).toBe(200);
 
         // Authoritative content, not the PNG - see the /edit sibling test above for why.
         const card = JSON.parse(await readCardContent(directories, 'Alice.png'));
         expect(card.chat).toBeUndefined();
 
-        const row = await metadataDb.getCharacterMetadataRow(directories, 'Alice.png');
-        expect(row.active_chat).toBe('Alice - Merged Chat');
+        expect(await shownBy(tab)).toEqual(['in Alice - Merged Chat']);
     });
 
     test('a merge payload with no chat key leaves the existing db active_chat untouched', async () => {
         const createResponse = await create({ ch_name: 'Alice', description: 'desc', file_name: 'Alice' });
         expect(createResponse.status).toBe(200);
-        await setChat({ avatar: 'Alice.png', chat: 'Alice - Original Chat' });
+        const { tab } = await twoChats('Alice - Original Chat');
+        await setChat({ avatar: 'Alice.png', chat: 'Alice - Original Chat' }, tab);
 
-        const mergeResponse = await mergeAttributes({ avatar: 'Alice.png', description: 'now merged' });
+        const mergeResponse = await mergeAttributes({ avatar: 'Alice.png', description: 'now merged' }, tab);
         expect(mergeResponse.status).toBe(200);
 
-        const row = await metadataDb.getCharacterMetadataRow(directories, 'Alice.png');
-        expect(row.active_chat).toBe('Alice - Original Chat');
+        expect(await shownBy(tab)).toEqual(['in Alice - Original Chat']);
     });
 });
 

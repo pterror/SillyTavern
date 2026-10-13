@@ -27,6 +27,7 @@
 
 pub mod books;
 pub mod bulk;
+pub mod carriers;
 pub mod chat;
 pub mod chat_read;
 pub mod chat_search;
@@ -117,7 +118,8 @@ fn tag_status(v: &View, k: &[u8]) -> StoreResult<Option<TagStatus>> {
 
 #[derive(Debug)]
 pub enum StoreError {
-    /// A commit that can't be applied; nothing was written.
+    /// A commit that can't be applied, or a read asked what it can't answer (a search cursor that doesn't fit its
+    /// query); nothing was written.
     Refused(String),
     Log(LogError),
     Ks(KsError),
@@ -275,14 +277,18 @@ struct Group {
     records: Pending,
 }
 
-struct Pipe {
+/// The jobs waiting to be prepared, and whether the store takes more.
+struct Jobs {
     queue: VecDeque<Job>,
+    closed: bool,
+}
+
+struct Pipe {
     /// Where the next group starts.
     cursor: Cursor,
     open: Group,
     /// The group being synced: its entries and records are seen by the prepare activity until published.
     syncing: Option<Group>,
-    closed: bool,
     failed: Option<String>,
     /// A bulk load holds the log files after the cursor's: groups stay in the cursor's file.
     loading: Option<Loading>,
@@ -340,6 +346,9 @@ struct Inner {
     log: Log,
     ks: Arc<Keyspace>,
     pipe: Mutex<Pipe>,
+    /// Lock order: `pipe`, then `jobs`, never the other way. Nothing holds `jobs` across a derive, so a submit
+    /// never waits on one.
+    jobs: Mutex<Jobs>,
     /// The tail file's write handle, used by the sync activity only.
     tail: Mutex<TailFile>,
     /// Replays first, then lays out one job per step.
@@ -360,13 +369,25 @@ struct Inner {
     counters: Counters,
     /// Search statistics per scope, kept between queries while nothing is published.
     search_stats: crate::search::query::StatsCache,
-    /// Top lists whose next slice is queued (`crate::search::query::refill`).
-    refilling: Mutex<HashSet<(crate::search::Scope, String)>>,
+    /// Blocks whose maxima a query found too high, each queued once until its job ends (`Inner::tighten`).
+    tightening: Mutex<HashSet<crate::search::query::Tighten>>,
+    /// Tests: tightening jobs that wrote something.
+    #[cfg(test)]
+    tightened: AtomicU64,
     /// Tag folds (`library::fold_step`): one step queued at a time; `.1` asks for another pass once it ends.
     folding: Mutex<(bool, bool)>,
     /// Depth rewrites after message moves (`sessions::depth_step`), queued as folds are.
     depthing: Mutex<(bool, bool)>,
     pruning: Mutex<(bool, bool)>,
+    /// Tag carrier moves (`carriers::move_step`) and re-siding (`carriers::reside_step`), queued as folds are.
+    moving: Mutex<(bool, bool)>,
+    residing: Mutex<(bool, bool)>,
+    /// Tests: carrier moves and re-siding wait while set (`Store::hold_carriers`).
+    #[cfg(test)]
+    carriers_held: AtomicBool,
+    /// Tests: folds wait while set (`Store::hold_folds`).
+    #[cfg(test)]
+    folds_held: AtomicBool,
 }
 
 #[derive(Default)]
@@ -440,13 +461,15 @@ impl Store {
                 log,
                 ks: ks.clone(),
                 pipe: Mutex::new(Pipe {
-                    queue: VecDeque::new(),
                     cursor,
                     open: Group::default(),
                     syncing: None,
-                    closed: false,
                     failed: None,
                     loading: None,
+                }),
+                jobs: Mutex::new(Jobs {
+                    queue: VecDeque::new(),
+                    closed: false,
                 }),
                 tail: Mutex::new(tail),
                 prepare_act: activity(Inner::prepare_step),
@@ -461,10 +484,18 @@ impl Store {
                 clean_cv: Condvar::new(),
                 counters: Counters::default(),
                 search_stats: Default::default(),
-                refilling: Default::default(),
+                tightening: Default::default(),
+                #[cfg(test)]
+                tightened: AtomicU64::new(0),
                 folding: Default::default(),
                 depthing: Default::default(),
                 pruning: Default::default(),
+                moving: Default::default(),
+                residing: Default::default(),
+                #[cfg(test)]
+                carriers_held: AtomicBool::new(false),
+                #[cfg(test)]
+                folds_held: AtomicBool::new(false),
             }
         });
         ks.start(Box::new(StoreHooks(Arc::downgrade(&inner))))?;
@@ -527,6 +558,11 @@ impl Store {
             }
             _ => Some(f),
         }
+    }
+
+    /// Whether the store is closed (`close`).
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
     }
 
     /// Whether replay is done, without waiting.
@@ -608,7 +644,7 @@ impl Store {
         limit: usize,
         scan_bytes: u64,
     ) -> StoreResult<chat_search::Messages> {
-        self.derived(|v| {
+        let found = self.derived(|v| {
             chat_search::messages(
                 v,
                 tree,
@@ -618,7 +654,9 @@ impl Store {
                 scan_bytes,
                 &self.inner.search_stats,
             )
-        })
+        })?;
+        self.inner.tighten(&found.tighten);
+        Ok(found)
     }
 
     /// A tree's chat list searched (`chat_search::chat_list`).
@@ -627,8 +665,9 @@ impl Store {
         tree: u64,
         clauses: &[crate::search::query::Clause],
         session: Option<u64>,
-        after: Option<u64>,
+        start: chat_search::ListStart,
         limit: usize,
+        scan: Option<chat_search::ListScan>,
     ) -> StoreResult<chat_search::ListPage> {
         self.derived(|v| {
             chat_search::chat_list(
@@ -636,8 +675,9 @@ impl Store {
                 tree,
                 clauses,
                 session,
-                after,
+                start,
                 limit,
+                scan,
                 &self.inner.search_stats,
             )
         })
@@ -652,9 +692,7 @@ impl Store {
     ) -> StoreResult<library_search::Searched> {
         let found = self
             .derived(|v| library_search::page(v, q, clauses, ordered, &self.inner.search_stats))?;
-        if let Some(r) = &found.refill {
-            self.inner.refill(r.clone());
-        }
+        self.inner.tighten(&found.tighten);
         Ok(found)
     }
 
@@ -673,6 +711,16 @@ impl Store {
             Some(only) => library_read::entities_only(v, ids, only),
             None => ids.iter().map(|e| library_read::entity(v, *e)).collect(),
         })
+    }
+
+    /// The defined world book keyed `k`, whole, from one state of the keyspace (`books::world_book`).
+    pub fn world_book(&self, k: &[u8]) -> StoreResult<Option<books::BookRead>> {
+        self.derived(|v| books::world_book(v, k))
+    }
+
+    /// Whether a defined world book is keyed `k` (`books::world_book_exists`).
+    pub fn world_book_exists(&self, k: &[u8]) -> StoreResult<bool> {
+        self.derived(|v| books::world_book_exists(v, k))
     }
 
     /// The entity of each (type, key), or None.
@@ -726,6 +774,11 @@ impl Store {
     /// The live tag each name stands for.
     pub fn tag_by_names(&self, names: &[Vec<u8>]) -> StoreResult<Vec<Option<u64>>> {
         self.derived(|v| names.iter().map(|n| tags::by_name(v, n)).collect())
+    }
+
+    /// The tag deleted last with each name (as names fold), for a name no live tag has.
+    pub fn tag_gone_by_names(&self, names: &[Vec<u8>]) -> StoreResult<Vec<Option<u64>>> {
+        self.derived(|v| names.iter().map(|n| tags::gone_by_name(v, n)).collect())
     }
 
     /// Each tag's cursor in a sort's order (`tags::positions`).
@@ -889,17 +942,75 @@ impl Store {
         &self,
         q: &crate::search::query::Query,
     ) -> StoreResult<crate::search::query::Found> {
-        let found = self.derived(|v| crate::search::query::run(v, q, &self.inner.search_stats))?;
-        if let Some(r) = &found.refill {
-            self.inner.refill(r.clone());
-        }
+        let found = self.derived(|v| {
+            crate::search::query::run(v, q, &self.inner.search_stats, &Default::default())
+        })?;
+        self.inner.tighten(&found.tighten);
         Ok(found)
     }
 
-    /// Tests: queues a slice of a top list's pass.
+    /// Tests: `search` without queueing its reports' jobs.
     #[cfg(test)]
-    pub(crate) fn queue_refill(&self, r: crate::search::query::Refill) {
-        self.inner.refill(r);
+    pub(crate) fn search_unqueued(
+        &self,
+        q: &crate::search::query::Query,
+    ) -> StoreResult<crate::search::query::Found> {
+        self.derived(|v| {
+            crate::search::query::run(v, q, &self.inner.search_stats, &Default::default())
+        })
+    }
+
+    /// Tests: a read of the derived state, as a request reads it.
+    #[cfg(test)]
+    pub(crate) fn derived_read<T>(
+        &self,
+        f: impl FnOnce(&View) -> StoreResult<T>,
+    ) -> StoreResult<T> {
+        self.derived(f)
+    }
+
+    /// Tests: queues the jobs for these reports.
+    #[cfg(test)]
+    pub(crate) fn tighten_queue(&self, reports: &[crate::search::query::Tighten]) {
+        self.inner.tighten(reports);
+    }
+
+    /// Tests: the jobs lowering maxima that wrote something.
+    #[cfg(test)]
+    pub(crate) fn tightened(&self) -> u64 {
+        self.inner.tightened.load(Ordering::SeqCst)
+    }
+
+    /// Tests: waits until every job queued before it has ended.
+    #[cfg(test)]
+    pub(crate) fn jobs_wait(&self) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.inner.submit(Job::Derive(
+            Box::new(|_, _| Ok(())),
+            Box::new(move |r| {
+                let _ = tx.send(r);
+            }),
+        ));
+        rx.recv().unwrap().unwrap();
+    }
+
+    /// Tests: holds carrier moves and re-siding (a step under way still ends), or lets them go on.
+    #[cfg(test)]
+    pub(crate) fn hold_carriers(&self, held: bool) {
+        self.inner.carriers_held.store(held, Ordering::SeqCst);
+        if !held {
+            self.inner.kick_carriers(true);
+            self.inner.kick_carriers(false);
+        }
+    }
+
+    /// Tests: holds folds of merged tags' carriers (a step under way still ends), or lets them go on.
+    #[cfg(test)]
+    pub(crate) fn hold_folds(&self, held: bool) {
+        self.inner.folds_held.store(held, Ordering::SeqCst);
+        if !held {
+            self.inner.kick_folds();
+        }
     }
 
     /// A derived entry's value.
@@ -1002,14 +1113,20 @@ impl Store {
         }
         let i = &self.inner;
         i.clean.lock().unwrap().stop = true;
-        i.pipe.lock().unwrap().closed = true;
+        {
+            let _p = i.pipe.lock().unwrap();
+            i.jobs.lock().unwrap().closed = true;
+        }
         loop {
             i.prepare_act.kick();
             i.sync_act.kick();
             i.prepare_act.wait_idle();
             i.sync_act.wait_idle();
             let p = i.pipe.lock().unwrap();
-            if p.queue.is_empty() && p.open.dones.is_empty() && p.syncing.is_none() {
+            if i.jobs.lock().unwrap().queue.is_empty()
+                && p.open.dones.is_empty()
+                && p.syncing.is_none()
+            {
                 break;
             }
             drop(p);
@@ -1046,13 +1163,13 @@ impl Drop for Store {
 
 impl Inner {
     fn submit(&self, job: Job) {
-        let mut p = self.pipe.lock().unwrap();
-        if p.closed {
-            drop(p);
+        let mut j = self.jobs.lock().unwrap();
+        if j.closed {
+            drop(j);
             return fail_job(job, StoreError::Closed);
         }
-        p.queue.push_back(job);
-        drop(p);
+        j.queue.push_back(job);
+        drop(j);
         self.prepare_act.kick();
     }
 
@@ -1105,28 +1222,44 @@ impl Inner {
         }
     }
 
-    /// Queues the next slice of a top list's pass, unless one is queued already.
-    pub(crate) fn refill(&self, r: crate::search::query::Refill) {
-        let id = (r.scope, r.term.clone());
-        if !self.refilling.lock().unwrap().insert(id.clone()) {
-            return;
+    /// Queues a job lowering each reported block's maxima (`search::index::tighten`), unless one is queued for it.
+    fn tighten(&self, reports: &[crate::search::query::Tighten]) {
+        for r in reports {
+            if !self.tightening.lock().unwrap().insert(r.clone()) {
+                continue;
+            }
+            let me = self.me.clone();
+            #[cfg(test)]
+            let wrote = self.me.clone();
+            let (job, done) = (r.clone(), r.clone());
+            self.submit(Job::Derive(
+                Box::new(move |view, out| {
+                    #[cfg(test)]
+                    let before = out.entries.len();
+                    crate::search::index::tighten(view, out, job.scope, &job.term, job.block)?;
+                    #[cfg(test)]
+                    if out.entries.len() > before
+                        && let Some(i) = wrote.upgrade()
+                    {
+                        i.tightened.fetch_add(1, Ordering::SeqCst);
+                    }
+                    Ok(())
+                }),
+                Box::new(move |_| {
+                    if let Some(i) = me.upgrade() {
+                        i.tightening.lock().unwrap().remove(&done);
+                    }
+                }),
+            ));
         }
-        let me = self.me.clone();
-        let done_id = id.clone();
-        self.submit(Job::Derive(
-            Box::new(move |view, out| {
-                crate::search::query::refill(view, out, r.scope, &r.term, &r.params)
-            }),
-            Box::new(move |_| {
-                if let Some(i) = me.upgrade() {
-                    i.refilling.lock().unwrap().remove(&done_id);
-                }
-            }),
-        ));
     }
 
     /// Moves merged tags' carriers, a bounded step at a time between commits, until none waits.
     pub(crate) fn kick_folds(&self) {
+        #[cfg(test)]
+        if self.folds_held.load(Ordering::SeqCst) {
+            return;
+        }
         {
             let mut f = self.folding.lock().unwrap();
             if f.0 {
@@ -1151,7 +1284,11 @@ impl Inner {
                 let Some(i) = me.upgrade() else { return };
                 let again = {
                     let mut f = i.folding.lock().unwrap();
-                    let again = r.is_ok() && (more.load(Ordering::Relaxed) || f.1);
+                    #[cfg(test)]
+                    let held = i.folds_held.load(Ordering::SeqCst);
+                    #[cfg(not(test))]
+                    let held = false;
+                    let again = r.is_ok() && !held && (more.load(Ordering::Relaxed) || f.1);
                     *f = (again, false);
                     again
                 };
@@ -1238,6 +1375,81 @@ impl Inner {
         ));
     }
 
+    /// Moves tags' carriers in their maps (`moves`) or re-sides tags (else), a bounded step at a time between
+    /// commits, until none waits.
+    fn kick_carriers(&self, moves: bool) {
+        #[cfg(test)]
+        if self.carriers_held.load(Ordering::SeqCst) {
+            return;
+        }
+        {
+            let mut f = self.carrier_queue(moves).lock().unwrap();
+            if f.0 {
+                f.1 = true;
+                return;
+            }
+            *f = (true, false);
+        }
+        self.queue_carriers(moves);
+    }
+
+    fn carrier_queue(&self, moves: bool) -> &Mutex<(bool, bool)> {
+        if moves { &self.moving } else { &self.residing }
+    }
+
+    fn queue_carriers(&self, moves: bool) {
+        let more = Arc::new(AtomicBool::new(false));
+        let found = more.clone();
+        let me = self.me.clone();
+        self.submit(Job::Derive(
+            Box::new(move |view, out| {
+                let step = if moves {
+                    carriers::move_step
+                } else {
+                    carriers::reside_step
+                };
+                found.store(step(view, out)?, Ordering::Relaxed);
+                Ok(())
+            }),
+            Box::new(move |r| {
+                let Some(i) = me.upgrade() else { return };
+                let again = {
+                    let mut f = i.carrier_queue(moves).lock().unwrap();
+                    #[cfg(test)]
+                    let held = i.carriers_held.load(Ordering::SeqCst);
+                    #[cfg(not(test))]
+                    let held = false;
+                    let again = r.is_ok() && !held && (more.load(Ordering::Relaxed) || f.1);
+                    *f = (again, false);
+                    again
+                };
+                if again {
+                    i.queue_carriers(moves);
+                }
+            }),
+        ));
+    }
+
+    /// A done that, once the entries are published, queues the carrier steps they wake (`carriers::wakes`).
+    fn carrier_wake(&self, (moves, resides): (bool, bool)) -> Option<Done> {
+        if !moves && !resides {
+            return None;
+        }
+        let me = self.me.clone();
+        Some(Done::Job(Box::new(move |r| {
+            if r.is_ok()
+                && let Some(i) = me.upgrade()
+            {
+                if moves {
+                    i.kick_carriers(true);
+                }
+                if resides {
+                    i.kick_carriers(false);
+                }
+            }
+        })))
+    }
+
     // ---- replay ----
 
     /// Derives the records after `from` into the buffer, as at their commits.
@@ -1321,6 +1533,19 @@ impl Inner {
             if !matches!(self.ks.scan(&fold, &key::prefix_end(&fold), 1), Ok(f) if f.is_empty()) {
                 self.kick_folds();
             }
+            let moving = key::of(key::MOVING);
+            if !matches!(self.ks.scan(&moving, &key::prefix_end(&moving), 1), Ok(f) if f.is_empty())
+            {
+                self.kick_carriers(true);
+            }
+            let scanning = self
+                .ks
+                .get(&key::of(key::RESIDE))
+                .map_err(StoreError::from)
+                .and_then(|b| b.map(|b| carriers::Reside::parse(&b)).transpose());
+            if !matches!(&scanning, Ok(r) if r.as_ref().is_none_or(|r| r.scan.is_none())) {
+                self.kick_carriers(false);
+            }
             let pending = key::of(sessions::DEPTH_PENDING);
             if !matches!(self.ks.scan(&pending, &key::prefix_end(&pending), 1), Ok(f) if f.is_empty())
             {
@@ -1344,14 +1569,12 @@ impl Inner {
                 .as_ref()
                 .is_some_and(|l| l.offset() >= self.cfg.log.file_target);
         let installing = p.loading.as_ref().is_some_and(|l| l.installing);
-        if full
-            || installing
-            || p.queue.is_empty()
-            || !self.ks.pool().room_or_wait(&self.prepare_act)
-        {
+        let empty = self.jobs.lock().unwrap().queue.is_empty();
+        if full || installing || empty || !self.ks.pool().room_or_wait(&self.prepare_act) {
             return false;
         }
-        let Some(job) = p.queue.pop_front() else {
+        // Popped under `pipe`, so a job is always in the queue or in a group (`shut` counts on it).
+        let Some(job) = self.jobs.lock().unwrap().queue.pop_front() else {
             return false;
         };
         if let Some(why) = &p.failed {
@@ -1361,7 +1584,7 @@ impl Inner {
             return true;
         }
         self.prepare(&mut p, job);
-        let more = !p.queue.is_empty();
+        let more = !self.jobs.lock().unwrap().queue.is_empty();
         drop(p);
         self.sync_act.kick();
         more
@@ -1401,8 +1624,11 @@ impl Inner {
                 drop(view);
                 match r {
                     Ok(()) => {
+                        let wake =
+                            self.carrier_wake(carriers::wakes(out.entries.iter().map(|(k, _)| k)));
                         out.apply(&mut open.entries);
                         open.dones.push(Done::Job(done));
+                        open.dones.extend(wake);
                     }
                     Err(e) => done(Err(e)),
                 }
@@ -1519,6 +1745,7 @@ impl Inner {
                 if layout.is_empty() {
                     open.layout = None;
                 }
+                let wake = self.carrier_wake(carriers::wakes(entries.keys()));
                 for (k, v) in entries {
                     apply(&mut open.entries, k, v);
                 }
@@ -1534,6 +1761,7 @@ impl Inner {
                     Job::Relocate(_, d) => Done::Job(d),
                     Job::Derive(..) => unreachable!("derived before"),
                 });
+                open.dones.extend(wake);
             }
             Err(e) => {
                 layout.restore(mark);
@@ -1594,7 +1822,7 @@ impl Inner {
                 let why = e.to_string();
                 p.failed = Some(why.clone());
                 let open = std::mem::take(&mut p.open);
-                let queued: Vec<Job> = p.queue.drain(..).collect();
+                let queued: Vec<Job> = self.jobs.lock().unwrap().queue.drain(..).collect();
                 drop(p);
                 for d in dones.into_iter().chain(open.dones) {
                     d.fail(&why);
@@ -1793,8 +2021,8 @@ impl Hooks for StoreHooks {
                     }
                 }
             }
-            let total = fold(vals)
-                .and_then(Val::resolved)
+            let total = fold(k, vals)
+                .and_then(|v| v.resolved(k))
                 .and_then(|b| counter_value(&b))
                 .unwrap_or(0);
             let Ok(file) = file_from_key(k) else { continue };
@@ -1818,6 +2046,8 @@ impl Hooks for StoreHooks {
 
 #[cfg(test)]
 mod books_tests;
+#[cfg(test)]
+mod carriers_tests;
 #[cfg(test)]
 mod chat_tests;
 #[cfg(test)]

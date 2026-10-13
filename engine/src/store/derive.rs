@@ -166,24 +166,25 @@ impl View<'_> {
     }
 
     pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
-        Ok(self.get_val(key)?.map(Val::into_bytes))
+        Ok(self.get_val(key)?.map(|v| v.into_bytes(key)))
     }
 
     /// `get`, the value settled (`Val::settled`): a map as its pairs.
     pub fn get_val(&self, key: &[u8]) -> Result<Option<Val>, StoreError> {
-        let mut vals = self.unpublished(key)?;
-        if vals.iter().all(Val::is_partial) {
+        let vals = self.unpublished(key)?;
+        let newer = fold(key, vals);
+        if newer.as_ref().is_none_or(Val::is_partial) {
             let published = match self.snap {
                 Some(s) => s.get_val(key)?,
                 None => self.ks.get_val(key)?,
             };
-            match published {
-                Some(v) => vals.push(v),
-                None if vals.is_empty() => return Ok(None),
-                None => {}
-            }
+            return Ok(match (newer, published) {
+                (Some(v), Some(b)) => v.over_settled(key, &b).settled(key),
+                (Some(v), None) => v.settled(key),
+                (None, b) => b,
+            });
         }
-        Ok(fold(vals).and_then(Val::settled))
+        Ok(newer.and_then(|v| v.settled(key)))
     }
 
     /// The pairs of the map at `key` whose slots are in `[lo, hi)`, removals dropped; with `published` false,
@@ -196,6 +197,10 @@ impl View<'_> {
         published: bool,
     ) -> Result<Vec<(u32, u32)>, StoreError> {
         let mut acc: Vec<(u32, u32)> = Vec::new();
+        // An added map's deltas, summed.
+        let mut adds: Vec<(u32, i64)> = Vec::new();
+        // A maxima map's raises, their maximum.
+        let mut maxes: Vec<(u32, u32)> = Vec::new();
         let mut base: Option<Option<Vec<u8>>> = None;
         // Folds one value (newest first) into `acc`; true once it hides everything older.
         let mut take = |v: &Val, acc: &mut Vec<(u32, u32)>| -> bool {
@@ -204,6 +209,18 @@ impl View<'_> {
                     let from = p.partition_point(|x| x.0 < lo);
                     let to = p.partition_point(|x| x.0 < hi);
                     *acc = crate::keyspace::val::map_over(acc, p[from..to].to_vec());
+                    false
+                }
+                Val::AddMap(p) => {
+                    let from = p.partition_point(|x| x.0 < lo);
+                    let to = p.partition_point(|x| x.0 < hi);
+                    adds = crate::keyspace::val::add_pairs(&p[from..to], std::mem::take(&mut adds));
+                    false
+                }
+                Val::MaxMap(p) => {
+                    let from = p.partition_point(|x| x.0 < lo);
+                    let to = p.partition_point(|x| x.0 < hi);
+                    maxes = crate::keyspace::val::map_max(&p[from..to], std::mem::take(&mut maxes));
                     false
                 }
                 Val::Put(b) => {
@@ -247,8 +264,34 @@ impl View<'_> {
                 .collect();
             acc = crate::keyspace::val::map_over(&acc, older);
         }
+        if !maxes.is_empty() {
+            acc = crate::keyspace::val::map_max(&maxes, acc);
+        }
+        if !adds.is_empty() {
+            let wide = acc.into_iter().map(|(s, v)| (s, u64::from(v))).collect();
+            acc = crate::keyspace::val::add_onto(key, &adds, wide)
+                .into_iter()
+                .map(|(s, v)| u32::try_from(v).map(|v| (s, v)))
+                .collect::<Result<_, _>>()
+                .map_err(|_| StoreError::Entry("a map doesn't decode".into()))?;
+        }
         acc.retain(|x| x.1 != 0);
         Ok(acc)
+    }
+
+    /// This view with `layer` over its unpublished entries.
+    pub fn with_layer<'b>(&'b self, layer: &'b BTreeMap<Vec<u8>, Val>) -> View<'b> {
+        let mut layers = vec![Layer::Sorted(layer)];
+        layers.extend(self.layers.iter().copied());
+        View {
+            layers,
+            pending: self.pending.clone(),
+            staged: self.staged,
+            bulk: self.bulk,
+            ks: self.ks,
+            snap: self.snap,
+            log: self.log,
+        }
     }
 
     /// Whether a bulk load derives through this view (see `bulk`).
@@ -271,7 +314,10 @@ impl View<'_> {
         Ok(self
             .scan_vals(start, end, limit)?
             .into_iter()
-            .map(|(k, v)| (k, v.into_bytes()))
+            .map(|(k, v)| {
+                let b = v.into_bytes(&k);
+                (k, b)
+            })
             .collect())
     }
 
@@ -285,7 +331,7 @@ impl View<'_> {
         let mut unpublished: BTreeMap<Vec<u8>, Val> = BTreeMap::new();
         let mut over = |k: &Vec<u8>, v: Val| {
             let v = match unpublished.remove(k) {
-                Some(older) => v.over(&older),
+                Some(older) => v.over(k, &older),
                 None => v,
             };
             unpublished.insert(k.clone(), v);
@@ -329,10 +375,11 @@ impl View<'_> {
                     let (k, v) = unpublished.next().unwrap();
                     let base = published.next_if(|(pk, _)| *pk == k).map(|(_, b)| b);
                     let v = match base {
-                        Some(b) => v.over(&b),
+                        Some(b) => v.over_settled(&k, &b),
                         None => v,
                     };
-                    Some((k, v.settled()))
+                    let v = v.settled(&k);
+                    Some((k, v))
                 }
             };
             if let Some((k, Some(v))) = next {
@@ -373,7 +420,9 @@ impl View<'_> {
                 {
                     v.extend(p.iter().cloned());
                 }
-                fold(v).and_then(Val::settled).map(Val::into_bytes)
+                fold(k, v)
+                    .and_then(|v| v.settled(k))
+                    .map(|v| v.into_bytes(k))
             })
             .collect())
     }
@@ -404,7 +453,7 @@ impl View<'_> {
         let mut unpublished: BTreeMap<Vec<u8>, Val> = BTreeMap::new();
         let mut over = |k: &Vec<u8>, v: Val| {
             let v = match unpublished.remove(k) {
-                Some(older) => v.over(&older),
+                Some(older) => v.over(k, &older),
                 None => v,
             };
             unpublished.insert(k.clone(), v);
@@ -446,10 +495,11 @@ impl View<'_> {
                     let (k, v) = unpublished.next().unwrap();
                     let base = published.next_if(|(pk, _)| *pk == k).map(|(_, b)| b);
                     let v = match base {
-                        Some(b) => v.over(&b),
+                        Some(b) => v.over_settled(&k, &b),
                         None => v,
                     };
-                    Some((k, v.settled()))
+                    let v = v.settled(&k);
+                    Some((k, v))
                 }
             };
             if let Some((k, Some(v))) = next {
@@ -507,37 +557,125 @@ impl View<'_> {
     }
 }
 
+/// A structure whose values are only ever `Val::AddMap`s: no other map is written at its keys, which only its
+/// `AddMapKey`s name.
+#[derive(Clone, Copy)]
+pub struct AddMapKind(u64);
+
+impl AddMapKind {
+    pub const fn new(structure: u64) -> AddMapKind {
+        AddMapKind(structure)
+    }
+
+    pub const fn id(self) -> u64 {
+        self.0
+    }
+
+    /// The prefix of every key of this structure.
+    pub fn prefix(self) -> Vec<u8> {
+        super::kinds::key::of(self.0)
+    }
+
+    /// The key of this structure with `parts` (its components) after the structure's id.
+    pub fn key(self, parts: impl FnOnce(&mut Vec<u8>)) -> AddMapKey {
+        let mut k = super::kinds::key::of(self.0);
+        parts(&mut k);
+        AddMapKey(k)
+    }
+}
+
+/// A key of an `AddMapKind`: `Out::add_map` and `Out::del` take it, the other writers don't.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AddMapKey(Vec<u8>);
+
+#[cfg(test)]
+impl AddMapKey {
+    pub fn bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl AddMapKey {
+    /// The key's bytes, for a bulk load's sink, which writes only `Val::AddMap`s at them.
+    pub(super) fn into_raw(self) -> Vec<u8> {
+        self.0
+    }
+}
+
+mod sealed {
+    pub trait Key {
+        fn into_key(self) -> Vec<u8>;
+    }
+}
+
+/// A key `Out::del` takes: any key, an `AddMapKey` included.
+pub trait DelKey: sealed::Key {}
+
+impl sealed::Key for Vec<u8> {
+    fn into_key(self) -> Vec<u8> {
+        self
+    }
+}
+impl DelKey for Vec<u8> {}
+
+impl sealed::Key for AddMapKey {
+    fn into_key(self) -> Vec<u8> {
+        self.0
+    }
+}
+impl DelKey for AddMapKey {}
+
 /// The entries a deriver produces, in order.
 #[derive(Default)]
 pub struct Out {
     pub entries: Vec<(Vec<u8>, Val)>,
 }
 
+/// Entries derivers have produced, by the structure their key is in (the key's first `u64`, below 256).
+#[cfg(feature = "measure")]
+pub static PRODUCED: [std::sync::atomic::AtomicU64; 256] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; 256];
+
 impl Out {
-    pub fn put(&mut self, key: Vec<u8>, value: Vec<u8>) {
-        self.entries.push((key, Val::Put(value)));
+    fn push(&mut self, key: Vec<u8>, v: Val) {
+        #[cfg(feature = "measure")]
+        if let Some(s) = crate::keyspace::val::get_u64(&key, &mut 0)
+            && let Some(c) = PRODUCED.get(s as usize)
+        {
+            c.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.entries.push((key, v));
     }
 
-    pub fn del(&mut self, key: Vec<u8>) {
-        self.entries.push((key, Val::Del));
+    pub fn put(&mut self, key: Vec<u8>, value: Vec<u8>) {
+        self.push(key, Val::Put(value));
+    }
+
+    pub fn del(&mut self, key: impl DelKey) {
+        self.push(sealed::Key::into_key(key), Val::Del);
     }
 
     pub fn add(&mut self, key: Vec<u8>, n: i64) {
-        self.entries.push((key, Val::Add(n)));
+        self.push(key, Val::Add(n));
     }
 
     pub fn max(&mut self, key: Vec<u8>, n: u64) {
-        self.entries.push((key, Val::Max(n)));
+        self.push(key, Val::Max(n));
     }
 
     /// Raises slots of the key's map (`Val::MaxMap`).
     pub fn max_map(&mut self, key: Vec<u8>, pairs: Vec<(u32, u32)>) {
-        self.entries.push((key, Val::MaxMap(pairs)));
+        self.push(key, Val::MaxMap(pairs));
     }
 
     /// Sets slots of the key's map (`Val::Map`).
     pub fn map(&mut self, key: Vec<u8>, pairs: Vec<(u32, u32)>) {
-        self.entries.push((key, Val::Map(pairs)));
+        self.push(key, Val::Map(pairs));
+    }
+
+    /// Adds to slots of the key's map (`Val::AddMap`): (slot, delta) pairs sorted by slot, no delta 0.
+    pub fn add_map(&mut self, key: AddMapKey, pairs: Vec<(u32, i64)>) {
+        self.push(key.0, Val::AddMap(pairs));
     }
 
     /// Applies the entries over `layer`.
@@ -562,7 +700,7 @@ impl Out {
             match hashed.get_mut(&k) {
                 Some(old) => {
                     let older = std::mem::replace(old, Val::Del);
-                    *old = v.over_owned(older);
+                    *old = v.over_owned(&k, older);
                 }
                 None => {
                     hashed.insert(k, v);
@@ -576,7 +714,7 @@ pub fn apply(layer: &mut BTreeMap<Vec<u8>, Val>, k: Vec<u8>, v: Val) {
     match layer.get_mut(&k) {
         Some(old) => {
             let older = std::mem::replace(old, Val::Del);
-            *old = v.over_owned(older);
+            *old = v.over_owned(&k, older);
         }
         None => {
             layer.insert(k, v);

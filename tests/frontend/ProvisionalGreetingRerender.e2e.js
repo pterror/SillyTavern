@@ -39,7 +39,8 @@ async function createCharacter(page, name, greetings) {
 }
 
 /**
- * Stores openings for a character.
+ * Stores openings for a character, as the page stores a greeting shown without a row: the first selected (the tab's
+ * session goes to it), the others added beside it.
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
  * @param {string} name The character's name, i.e. the speaker.
@@ -51,9 +52,16 @@ async function storeOpenings(page, avatar, name, texts) {
         // @ts-ignore
         const headers = SillyTavern.getContext().getRequestHeaders();
         const contents = texts.map(mes => ({ name, is_user: false, is_system: false, send_date: Date.now(), mes, extra: {} }));
-        const response = await fetch('/api/chats/openings/ensure', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatar, contents }) });
-        if (!response.ok) throw new Error(`ensure failed: ${response.status}`);
-        return (await response.json()).node_ids;
+        const post = async (url, body) => {
+            const response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
+            if (!response.ok) throw new Error(`${url} failed: ${response.status}`);
+            return response.json();
+        };
+        const selected = await post('/api/chats/message/select', { avatar_url: avatar, opening: { refs: ['opening'], messages: [contents[0]] } });
+        const first = selected.stored.find((/** @type {any} */ s) => s.ref === 'opening').node_id;
+        if (contents.length === 1) return [first];
+        const added = await post('/api/chats/message/alternative', { avatar_url: avatar, sibling_node_id: first, contents: contents.slice(1) });
+        return [first, ...added.node_ids];
     }, { avatar, name, texts });
 }
 

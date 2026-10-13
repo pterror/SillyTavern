@@ -56,6 +56,9 @@ fn opt(v: Option<u64>) -> Value {
 
 const MES_F: FieldRef = FieldRef::Code(MES);
 
+/// The time of the focused tests' records that carry one.
+const NOW: i64 = 1_700_000_000_000;
+
 /// Sessions are positions 1..=SESSIONS, users 1..=USERS; bookmarks are numbered after the sessions.
 const SESSIONS: u64 = 4;
 const USERS: u64 = 2;
@@ -143,6 +146,10 @@ struct Model {
     branches: BTreeMap<u64, Vec<u64>>,
     itemized: BTreeMap<u64, (bool, Vec<u8>)>,
     seq: u64,
+    /// The time of the record being made.
+    now: i64,
+    /// Per (session, tree) at the tree's root: when it got there.
+    root_times: BTreeMap<(u64, u64), i64>,
 }
 
 fn fork_of(parent: Option<u64>, owner: u64) -> Fork {
@@ -157,6 +164,7 @@ impl Model {
         Model {
             keys: actor_keys(),
             next_pos: SESSIONS + 1,
+            now: NOW,
             ..Model::default()
         }
     }
@@ -244,6 +252,9 @@ impl Model {
         let entering = ses.pointer.map(|(t, _)| t) != Some(tree);
         ses.pointer = Some((tree, target));
         ses.trees.insert(tree, target);
+        if target.is_none() {
+            self.root_times.insert((s, tree), self.now);
+        }
         self.recent.insert(s, q);
         self.user_tree.insert((u, tree), (s, target));
         self.user_order.entry((u, tree)).or_default().insert(s, q);
@@ -314,15 +325,18 @@ impl Model {
             Some(p) => Some(p),
             None => self.children(None, msg.owner).last().copied(),
         };
-        for ses in self.sessions.values_mut() {
+        for (s, ses) in self.sessions.iter_mut() {
             if let Some((t, Some(p))) = ses.pointer
                 && p == m
             {
                 ses.pointer = Some((t, to));
             }
-            for p in ses.trees.values_mut() {
+            for (t, p) in ses.trees.iter_mut() {
                 if *p == Some(m) {
                     *p = to;
+                    if to.is_none() {
+                        self.root_times.insert((*s, *t), self.now);
+                    }
                 }
             }
             for h in &mut ses.history {
@@ -357,7 +371,7 @@ impl Model {
             .copied()
             .filter(|m| self.below(*m, r))
             .collect();
-        for ses in self.sessions.values_mut() {
+        for (s, ses) in self.sessions.iter_mut() {
             if let Some((t, Some(p))) = ses.pointer
                 && doomed.contains(&p)
             {
@@ -367,6 +381,9 @@ impl Model {
                 && doomed.contains(p)
             {
                 ses.trees.insert(tree, to);
+                if to.is_none() {
+                    self.root_times.insert((*s, tree), self.now);
+                }
             }
         }
         for ((_, t), v) in self.user_tree.iter_mut() {
@@ -407,6 +424,7 @@ impl Model {
         self.choices
             .retain(|(tier, who, _), _| !(*tier == 0 && *who == s));
         self.sessions.remove(&s);
+        self.root_times.retain(|(x, _), _| *x != s);
         self.recent.remove(&s);
         for a in self.activity.values_mut() {
             a.remove(&s);
@@ -605,8 +623,23 @@ impl Model {
                 assert!(chat::bookmarks_at(v, bm.at)?.contains(b));
                 let owner = self.msgs[&bm.at].owner;
                 assert!(v.get(&key::ids(key::TREE_BOOKMARK, owner, *b))?.is_some());
+                let mut tk = key::ids(
+                    key::TREE_BOOKMARK_TIME,
+                    owner,
+                    (self.msgs[&bm.at].time + (1 << 53)) as u64,
+                );
+                crate::keyspace::val::put_u64(&mut tk, *b);
+                assert!(
+                    v.get(&tk)?.is_some(),
+                    "bookmark {b} in its tree's time order"
+                );
             }
             let all = key::of(key::BOOKMARK_AT);
+            assert_eq!(
+                v.scan(&all, &key::prefix_end(&all), usize::MAX)?.len(),
+                self.bookmarks.len()
+            );
+            let all = key::of(key::TREE_BOOKMARK_TIME);
             assert_eq!(
                 v.scan(&all, &key::prefix_end(&all), usize::MAX)?.len(),
                 self.bookmarks.len()
@@ -652,11 +685,13 @@ impl Model {
                     );
                 }
                 for t in &owners {
-                    assert_eq!(
-                        sessions::session_in_tree(v, s, *t)?,
-                        ses.trees.get(t).copied(),
-                        "{s} in {t}"
-                    );
+                    let want = ses.trees.get(t).copied().map(|p| {
+                        let tk = p
+                            .is_none()
+                            .then(|| sessions::time_key(self.root_times[&(s, *t)]));
+                        (p, tk)
+                    });
+                    assert_eq!(sessions::session_tree_entry(v, s, *t)?, want, "{s} in {t}");
                 }
             }
             let mut recent: Vec<(u64, u64)> = self.recent.iter().map(|(s, q)| (*q, *s)).collect();
@@ -669,6 +704,27 @@ impl Model {
                 got,
                 recent.into_iter().map(|(_, s)| s).collect::<Vec<_>>(),
                 "recent sessions"
+            );
+            // Conversations: each is in the order once and is a live bookmark's or a live
+            // session's.
+            let order = sessions::conversations(v, None, usize::MAX)?;
+            let mut seen = BTreeSet::new();
+            for (_, c) in &order {
+                assert!(seen.insert(format!("{c:?}")), "{c:?} twice");
+                match c {
+                    sessions::Convo::Bookmark(b) => {
+                        assert!(self.bookmarks.contains_key(b), "bookmark {b} is gone")
+                    }
+                    sessions::Convo::Session(s, _) => {
+                        assert!(self.sessions.contains_key(s), "session {s} is gone")
+                    }
+                }
+            }
+            let p = key::of(sessions::CONVO_AT);
+            assert_eq!(
+                v.scan(&p, &key::prefix_end(&p), usize::MAX)?.len(),
+                order.len(),
+                "conversation positions"
             );
             for t in &owners {
                 let mut want: Vec<(u64, u64)> = self
@@ -878,6 +934,7 @@ fn step(model: &mut Model, rng: &mut Rng, i: u64) -> Vec<Record> {
     let ids: Vec<u64> = model.msgs.keys().copied().collect();
     let pick = |rng: &mut Rng| ids[rng.below(ids.len() as u64) as usize];
     let time = 1_700_000_000_000 + (i as i64) * 1000 - (rng.below(3) as i64) * 500;
+    model.now = time;
     let owner = 1 + rng.below(3);
     let session = 1 + rng.below(SESSIONS);
     let user = 1 + rng.below(USERS);
@@ -1020,7 +1077,10 @@ fn step(model: &mut Model, rng: &mut Rng, i: u64) -> Vec<Record> {
                 model.act(s, tree);
             }
             model.message_gone(m);
-            vec![rec("messageDelete", vec![Value::Id(m), sv, uv])]
+            vec![rec(
+                "messageDelete",
+                vec![Value::Id(m), sv, uv, Value::Time(time)],
+            )]
         }
         9 => {
             let m = pick(rng);
@@ -1136,7 +1196,12 @@ fn step(model: &mut Model, rng: &mut Rng, i: u64) -> Vec<Record> {
             model.stepped(session, user, n);
             vec![rec(
                 "historyStep",
-                vec![Value::Id(session), Value::Id(user), Value::UInt(n)],
+                vec![
+                    Value::Id(session),
+                    Value::Id(user),
+                    Value::UInt(n),
+                    Value::Time(time),
+                ],
             )]
         }
         13 | 14 if rng.below(6) == 0 => {
@@ -1162,7 +1227,12 @@ fn step(model: &mut Model, rng: &mut Rng, i: u64) -> Vec<Record> {
             model.moved(session, user, owner, None, false);
             vec![rec(
                 "pointerRoot",
-                vec![Value::Id(session), Value::Id(user), Value::Id(owner)],
+                vec![
+                    Value::Id(session),
+                    Value::Id(user),
+                    Value::Id(owner),
+                    Value::Time(time),
+                ],
             )]
         }
         13 | 14 => {
@@ -1215,7 +1285,10 @@ fn step(model: &mut Model, rng: &mut Rng, i: u64) -> Vec<Record> {
                 model.act(s, tree);
             }
             model.subtree_gone(m);
-            vec![rec("subtreeDelete", vec![Value::Id(m), sv, uv])]
+            vec![rec(
+                "subtreeDelete",
+                vec![Value::Id(m), sv, uv, Value::Time(time)],
+            )]
         }
         16 if i.is_multiple_of(5) && model.sessions.contains_key(&session) => {
             // The session goes, and the test's tab takes up a new session with the same number.
@@ -1461,7 +1534,7 @@ fn deleting_messages_and_sessions_moves_what_named_them() {
     model.message_gone(2);
     s.commit_wait(vec![rec(
         "messageDelete",
-        vec![Value::Id(2), Value::Id(1), Value::Id(1)],
+        vec![Value::Id(2), Value::Id(1), Value::Id(1), Value::Time(NOW)],
     )])
     .unwrap();
     model.act(1, 7);
@@ -1475,7 +1548,7 @@ fn deleting_messages_and_sessions_moves_what_named_them() {
     model.message_gone(1);
     s.commit_wait(vec![rec(
         "messageDelete",
-        vec![Value::Id(1), Value::Absent, Value::Absent],
+        vec![Value::Id(1), Value::Absent, Value::Absent, Value::Time(NOW)],
     )])
     .unwrap();
     model.check(&s);
@@ -1486,7 +1559,7 @@ fn deleting_messages_and_sessions_moves_what_named_them() {
     model.message_gone(0);
     s.commit_wait(vec![rec(
         "messageDelete",
-        vec![Value::Id(0), Value::Absent, Value::Absent],
+        vec![Value::Id(0), Value::Absent, Value::Absent, Value::Time(NOW)],
     )])
     .unwrap();
     model.check(&s);
@@ -1566,6 +1639,85 @@ fn deleting_messages_and_sessions_moves_what_named_them() {
 }
 
 #[test]
+fn a_users_position_set_by_no_session_is_where_they_land_until_a_session_moves() {
+    let dir = temp_dir("user-position");
+    let (s, mut model) = open_with_actors(&dir);
+    let recs = vec![
+        append(&mut model, 7, None, 1, "a", None, Some(1), 1),
+        append(&mut model, 7, Some(0), 2, "a1", None, None, 1),
+        append(&mut model, 8, None, 3, "b", None, None, 1),
+    ];
+    s.commit_wait(recs).unwrap();
+    let position = |u: u64, tree: u64, at: Option<u64>| {
+        rec("userPosition", vec![Value::Id(u), Value::Id(tree), opt(at)])
+    };
+    s.commit_wait(vec![position(2, 7, Some(1))]).unwrap();
+    assert_eq!(
+        s.derived(|v| sessions::user_in_tree(v, 2, 7)).unwrap(),
+        Some((sessions::NO_SESSION, Some(1)))
+    );
+    assert_eq!(
+        s.derived(|v| sessions::landing(v, None, Some(2), 7))
+            .unwrap(),
+        Some(1)
+    );
+    // No session moved.
+    assert_eq!(
+        s.derived(|v| sessions::session_pointer(v, 1)).unwrap(),
+        Some((7, Some(0)))
+    );
+    assert_eq!(
+        s.derived(|v| sessions::session_pointer(v, 2)).unwrap(),
+        None
+    );
+    // A message of another tree, and a user with no key, are refused.
+    for r in [position(2, 7, Some(2)), position(9, 7, Some(1))] {
+        assert!(matches!(
+            s.commit_wait(vec![r]),
+            Err(StoreError::Refused(_))
+        ));
+    }
+    s.commit_wait(vec![position(2, 7, None)]).unwrap();
+    assert_eq!(
+        s.derived(|v| sessions::user_in_tree(v, 2, 7)).unwrap(),
+        Some((sessions::NO_SESSION, None))
+    );
+    // The message going moves it to its parent, as a session's remembered position.
+    s.commit_wait(vec![position(2, 7, Some(1))]).unwrap();
+    s.commit_wait(vec![rec(
+        "messageDelete",
+        vec![Value::Id(1), Value::Absent, Value::Absent, Value::Time(NOW)],
+    )])
+    .unwrap();
+    assert_eq!(
+        s.derived(|v| sessions::user_in_tree(v, 2, 7)).unwrap(),
+        Some((sessions::NO_SESSION, Some(0)))
+    );
+    drop(s);
+    let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
+    assert_eq!(
+        s.derived(|v| sessions::user_in_tree(v, 2, 7)).unwrap(),
+        Some((sessions::NO_SESSION, Some(0)))
+    );
+    assert!(matches!(
+        s.derived(|v| super::chat_read::user_in_tree(v, 2, 7)).unwrap(),
+        Js::Obj(ref o) if matches!(o[0], ("session", Js::Null))
+    ));
+    // A session's move by the user replaces it.
+    s.commit_wait(vec![rec(
+        "pointerMove",
+        vec![Value::Id(2), Value::Id(2), Value::Id(0)],
+    )])
+    .unwrap();
+    assert_eq!(
+        s.derived(|v| sessions::user_in_tree(v, 2, 7)).unwrap(),
+        Some((2, Some(0)))
+    );
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn a_bookmark_outliving_the_message_it_was_made_at_leaves_nothing_when_it_goes() {
     let dir = temp_dir("stray");
     let (s, mut model) = open_with_actors(&dir);
@@ -1596,7 +1748,7 @@ fn a_bookmark_outliving_the_message_it_was_made_at_leaves_nothing_when_it_goes()
     .unwrap();
     s.commit_wait(vec![rec(
         "messageDelete",
-        vec![Value::Id(0), Value::Absent, Value::Absent],
+        vec![Value::Id(0), Value::Absent, Value::Absent, Value::Time(NOW)],
     )])
     .unwrap();
     s.commit_wait(vec![rec("positionDelete", vec![Value::Id(9)])])
@@ -1605,6 +1757,200 @@ fn a_bookmark_outliving_the_message_it_was_made_at_leaves_nothing_when_it_goes()
         assert_eq!(v.get(&key::id(chat::SHAPE, 0))?, None, "a stray shape of 0");
         let p = key::id(sessions::BRANCH_FROM, 0);
         assert!(v.scan(&p, &key::prefix_end(&p), usize::MAX)?.is_empty());
+        Ok(())
+    })
+    .unwrap();
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_current_chat_is_per_session_and_tree_and_changes_only_by_its_records() {
+    let dir = temp_dir("current");
+    let (s, mut model) = open_with_actors(&dir);
+    let recs = vec![
+        append(&mut model, 1, None, 1, "a", None, None, 1),
+        append(&mut model, 2, None, 2, "b", None, None, 1),
+    ];
+    s.commit_wait(recs).unwrap();
+    let bookmark = |b: u64, mode: u64, m: u64| {
+        rec(
+            "positionCreate",
+            vec![
+                Value::Id(b),
+                Value::UInt(mode),
+                Value::Id(1),
+                Value::Id(1),
+                Value::Id(m),
+            ],
+        )
+    };
+    let current = |ses: u64, tree: u64, b: Option<u64>| {
+        rec(
+            "currentChat",
+            vec![Value::Id(ses), Value::Id(1), Value::Id(tree), opt(b)],
+        )
+    };
+    let read = |ses: u64, tree: u64| s.derived(|v| sessions::current_chat(v, ses, tree)).unwrap();
+    s.commit_wait(vec![bookmark(9, PINNED, 0), bookmark(10, FOLLOWING, 1)])
+        .unwrap();
+    assert_eq!(read(1, 1), None);
+    s.commit_wait(vec![current(1, 1, Some(9))]).unwrap();
+    // Per (session, tree): the other tree and the other session have none.
+    assert_eq!(read(1, 1), Some(9));
+    assert_eq!(read(1, 2), None);
+    assert_eq!(read(2, 1), None);
+    // A bookmark of another tree is refused.
+    assert!(s.commit_wait(vec![current(1, 1, Some(10))]).is_err());
+    assert_eq!(read(1, 1), Some(9));
+    // An append past the pinned bookmark and a bookmark made at the pointer change nothing.
+    let reply = append(&mut model, 1, Some(0), 3, "a1", None, Some(1), 1);
+    s.commit_wait(vec![reply, bookmark(11, FOLLOWING, 2)])
+        .unwrap();
+    assert_eq!(read(1, 1), Some(9));
+    // None takes no entry; the bookmark again does.
+    s.commit_wait(vec![current(1, 1, None)]).unwrap();
+    assert_eq!(read(1, 1), None);
+    s.derived(|v| {
+        assert_eq!(v.get(&key::ids(sessions::CURRENT_CHAT, 1, 1))?, None);
+        Ok(())
+    })
+    .unwrap();
+    s.commit_wait(vec![current(1, 1, Some(11)), current(1, 2, Some(10))])
+        .unwrap();
+    assert_eq!((read(1, 1), read(1, 2)), (Some(11), Some(10)));
+    // A deleted bookmark is none; the record survives a reopen.
+    s.commit_wait(vec![rec("positionDelete", vec![Value::Id(11)])])
+        .unwrap();
+    assert_eq!(read(1, 1), None);
+    drop(s);
+    let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
+    assert_eq!(
+        s.derived(|v| sessions::current_chat(v, 1, 2)).unwrap(),
+        Some(10)
+    );
+    // A session that goes takes its entries.
+    s.commit_wait(vec![rec("positionDelete", vec![Value::Id(1)])])
+        .unwrap();
+    s.derived(|v| {
+        let p = key::id(sessions::CURRENT_CHAT, 1);
+        assert!(v.scan(&p, &key::prefix_end(&p), usize::MAX)?.is_empty());
+        Ok(())
+    })
+    .unwrap();
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn conversations_are_ordered_by_the_meaningful_activity_of_the_acting_sessions_current_chat() {
+    use sessions::Convo::{Bookmark, Session};
+    let dir = temp_dir("convos");
+    let (s, mut model) = open_with_actors(&dir);
+    let order = |s: &Store| -> Vec<sessions::Convo> {
+        s.derived(|v| {
+            Ok(sessions::conversations(v, None, usize::MAX)?
+                .into_iter()
+                .map(|(_, c)| c)
+                .collect())
+        })
+        .unwrap()
+    };
+    let bookmark = |b: u64, m: u64| {
+        rec(
+            "positionCreate",
+            vec![
+                Value::Id(b),
+                Value::UInt(PINNED),
+                Value::Id(1),
+                Value::Id(1),
+                Value::Id(m),
+            ],
+        )
+    };
+    let current = |ses: u64, tree: u64, b: Option<u64>| {
+        rec(
+            "currentChat",
+            vec![Value::Id(ses), Value::Id(1), Value::Id(tree), opt(b)],
+        )
+    };
+    let active = |b: Option<u64>, ses: Option<u64>, tree: Option<u64>| {
+        rec("conversationActive", vec![opt(b), opt(ses), opt(tree)])
+    };
+    // Appends through sessions: each session's conversation in its tree.
+    let a = append(&mut model, 1, None, 1, "a", None, Some(1), 1);
+    let b = append(&mut model, 2, None, 2, "b", None, Some(2), 1);
+    s.commit_wait(vec![a, b]).unwrap();
+    assert_eq!(order(&s), vec![Session(2, 2), Session(1, 1)]);
+    // A session nowhere in a tree has no conversation there: choosing a reply is only kept.
+    let sibling = append(&mut model, 2, None, 3, "b2", None, None, 1);
+    let sibling_id = model.next_msg - 1;
+    s.commit_wait(vec![
+        sibling,
+        rec(
+            "forkSelection",
+            vec![
+                Value::Absent,
+                Value::Id(sibling_id),
+                Value::Id(3),
+                Value::Id(1),
+            ],
+        ),
+    ])
+    .unwrap();
+    assert_eq!(order(&s), vec![Session(2, 2), Session(1, 1)]);
+    // A bookmark made through a session is that session's act, not an entry of its own.
+    s.commit_wait(vec![bookmark(9, 0)]).unwrap();
+    assert_eq!(order(&s), vec![Session(1, 1), Session(2, 2)]);
+    // Switching alone is no activity; the session's conversation became the bookmark's.
+    s.commit_wait(vec![current(1, 1, Some(9))]).unwrap();
+    assert_eq!(order(&s), vec![Session(2, 2)]);
+    // The next act in the new current chat gives the bookmark its entry.
+    let reply_id = model.next_msg;
+    let reply = append(&mut model, 1, Some(0), 3, "a1", None, Some(1), 1);
+    s.commit_wait(vec![reply]).unwrap();
+    assert_eq!(order(&s), vec![Bookmark(9), Session(2, 2)]);
+    // Another session in the same bookmark: one row.
+    s.commit_wait(vec![current(2, 1, Some(9))]).unwrap();
+    let again = append(&mut model, 1, Some(reply_id), 4, "a2", None, Some(2), 1);
+    s.commit_wait(vec![again]).unwrap();
+    assert_eq!(order(&s), vec![Bookmark(9), Session(2, 2)]);
+    s.commit_wait(vec![active(None, Some(2), Some(2))]).unwrap();
+    assert_eq!(order(&s), vec![Session(2, 2), Bookmark(9)]);
+    s.commit_wait(vec![active(Some(9), None, None)]).unwrap();
+    assert_eq!(order(&s), vec![Bookmark(9), Session(2, 2)]);
+    // Neither or both is refused, as is a bookmark that isn't there.
+    assert!(s.commit_wait(vec![active(None, None, None)]).is_err());
+    assert!(
+        s.commit_wait(vec![active(Some(9), Some(1), Some(1))])
+            .is_err()
+    );
+    assert!(s.commit_wait(vec![active(Some(77), None, None)]).is_err());
+    // Paging: before a position.
+    let first = s.derived(|v| sessions::conversations(v, None, 1)).unwrap();
+    assert_eq!(first.len(), 1);
+    let rest = s
+        .derived(|v| sessions::conversations(v, Some(first[0].0), 10))
+        .unwrap();
+    assert_eq!(
+        rest.into_iter().map(|(_, c)| c).collect::<Vec<_>>(),
+        vec![Session(2, 2)]
+    );
+    drop(s);
+    let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
+    assert_eq!(order(&s), vec![Bookmark(9), Session(2, 2)]);
+    // A deleted bookmark and a deleted session take their entries.
+    s.commit_wait(vec![rec("positionDelete", vec![Value::Id(9)])])
+        .unwrap();
+    assert_eq!(order(&s), vec![Session(2, 2)]);
+    s.commit_wait(vec![rec("positionDelete", vec![Value::Id(2)])])
+        .unwrap();
+    assert_eq!(order(&s), vec![]);
+    s.derived(|v| {
+        for space in [sessions::CONVO_ORDER, sessions::CONVO_AT] {
+            let p = key::of(space);
+            assert!(v.scan(&p, &key::prefix_end(&p), usize::MAX)?.is_empty());
+        }
         Ok(())
     })
     .unwrap();
@@ -1642,7 +1988,7 @@ fn chat_writes_that_cant_apply_are_refused_and_write_nothing() {
         // A message with replies doesn't go; a move below itself or into another tree is refused.
         vec![rec(
             "messageDelete",
-            vec![Value::Id(0), Value::Absent, Value::Absent],
+            vec![Value::Id(0), Value::Absent, Value::Absent, Value::Time(NOW)],
         )],
         vec![rec(
             "messageParent",
@@ -1768,7 +2114,7 @@ fn chat_writes_that_cant_apply_are_refused_and_write_nothing() {
     assert!(matches!(
         s.commit_wait(vec![rec(
             "messageDelete",
-            vec![Value::Id(1), Value::Absent, Value::Absent]
+            vec![Value::Id(1), Value::Absent, Value::Absent, Value::Time(NOW)]
         )]),
         Err(StoreError::Refused(_))
     ));
@@ -2054,7 +2400,7 @@ fn stats_count_as_today_and_place_the_owner_in_the_library() {
     // Deleting the earliest user message brings the next one up.
     s.commit_wait(vec![rec(
         "messageDelete",
-        vec![Value::Id(2), Value::Absent, Value::Absent],
+        vec![Value::Id(2), Value::Absent, Value::Absent, Value::Time(NOW)],
     )])
     .unwrap();
     let st = s.derived(|v| stats::owner_stats(v, 500)).unwrap();
@@ -2076,10 +2422,10 @@ fn stats_count_as_today_and_place_the_owner_in_the_library() {
                 Some(size as f64)
             );
             for sort in [library::LAST_CHAT, library::CHAT_SIZE] {
-                let (kind, sk, tie) = library::sort_place(v, e, sort)?.unwrap();
+                let (kind, sk) = library::sort_place(v, e, sort)?.unwrap();
                 let mut k = library::order_prefix(&library::Scope::All, sort, kind, false);
                 k.extend_from_slice(&sk);
-                crate::keyspace::val::put_bytes(&mut k, &tie);
+                crate::keyspace::val::put_u64(&mut k, e);
                 assert!(v.get(&k)?.is_some(), "{e} in order {sort}");
             }
         }
@@ -2117,7 +2463,7 @@ fn history_steps_move_a_cursor_and_opening_choices_last_until_an_opening_is_chos
     model.moved(1, 1, 2, None, false);
     s.commit_wait(vec![rec(
         "pointerRoot",
-        vec![Value::Id(1), Value::Id(1), Value::Id(2)],
+        vec![Value::Id(1), Value::Id(1), Value::Id(2), Value::Time(NOW)],
     )])
     .unwrap();
     let step = |model: &mut Model, back: bool| {
@@ -2125,7 +2471,7 @@ fn history_steps_move_a_cursor_and_opening_choices_last_until_an_opening_is_chos
         model.stepped(1, 1, n);
         s.commit_wait(vec![rec(
             "historyStep",
-            vec![Value::Id(1), Value::Id(1), Value::UInt(n)],
+            vec![Value::Id(1), Value::Id(1), Value::UInt(n), Value::Time(NOW)],
         )])
         .unwrap();
         n
@@ -2149,13 +2495,13 @@ fn history_steps_move_a_cursor_and_opening_choices_last_until_an_opening_is_chos
     model.message_gone(2);
     s.commit_wait(vec![rec(
         "messageDelete",
-        vec![Value::Id(2), Value::Absent, Value::Absent],
+        vec![Value::Id(2), Value::Absent, Value::Absent, Value::Time(NOW)],
     )])
     .unwrap();
     assert!(
         s.commit_wait(vec![rec(
             "historyStep",
-            vec![Value::Id(1), Value::Id(1), Value::UInt(3)],
+            vec![Value::Id(1), Value::Id(1), Value::UInt(3), Value::Time(NOW)],
         )])
         .is_err()
     );
@@ -2199,6 +2545,152 @@ fn history_steps_move_a_cursor_and_opening_choices_last_until_an_opening_is_chos
     drop(s);
     let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
     model.check(&s);
+}
+
+fn fork_rec(s: u64, from: u64, len: u64, cursor: u64) -> Record {
+    rec(
+        "sessionFork",
+        vec![
+            Value::Id(s),
+            Value::Id(from),
+            Value::Id(1),
+            Value::UInt(len),
+            Value::UInt(cursor),
+            Value::Time(NOW),
+        ],
+    )
+}
+
+#[test]
+fn a_fork_reads_its_originals_history_and_keeps_it_through_the_originals_delete() {
+    let dir = temp_dir("fork");
+    let (s, mut model) = open_with_actors(&dir);
+    let recs = vec![
+        append(&mut model, 1, None, 1, "a", None, Some(1), 1),
+        append(&mut model, 1, Some(0), 2, "b", None, Some(1), 1),
+        append(&mut model, 1, Some(1), 3, "c", None, Some(1), 1),
+    ];
+    s.commit_wait(recs).unwrap();
+    let targets = |v: &View, ses: u64| -> Result<Vec<(u64, sessions::Target)>, StoreError> {
+        Ok(sessions::history(v, ses, 0, usize::MAX)?
+            .into_iter()
+            .map(|(n, t, _)| (n, t))
+            .collect())
+    };
+    let msg = sessions::Target::Message;
+    // Session 1 steps back to b; session 2 forks it there, forward entry included.
+    s.commit_wait(vec![rec(
+        "historyStep",
+        vec![Value::Id(1), Value::Id(1), Value::UInt(2), Value::Time(NOW)],
+    )])
+    .unwrap();
+    s.commit_wait(vec![fork_rec(2, 1, 3, 2)]).unwrap();
+    assert_eq!(
+        s.derived(|v| targets(v, 2)).unwrap(),
+        vec![(1, msg(0)), (2, msg(1)), (3, msg(2))]
+    );
+    assert_eq!(s.derived(|v| sessions::cursor(v, 2)).unwrap(), Some(2));
+    assert_eq!(
+        s.derived(|v| sessions::session_pointer(v, 2)).unwrap(),
+        Some((1, Some(1)))
+    );
+    // Only a new session forks, and only within the original's history.
+    assert!(s.commit_wait(vec![fork_rec(2, 1, 3, 2)]).is_err());
+    assert!(s.commit_wait(vec![fork_rec(3, 1, 4, 2)]).is_err());
+    assert!(s.commit_wait(vec![fork_rec(3, 1, 3, 4)]).is_err());
+    // From then on each moves on its own.
+    s.commit_wait(vec![rec(
+        "pointerMove",
+        vec![Value::Id(2), Value::Id(1), Value::Id(0)],
+    )])
+    .unwrap();
+    s.commit_wait(vec![rec(
+        "pointerMove",
+        vec![Value::Id(1), Value::Id(1), Value::Id(2)],
+    )])
+    .unwrap();
+    assert_eq!(s.derived(|v| targets(v, 2)).unwrap()[3], (4, msg(0)));
+    assert_eq!(s.derived(|v| targets(v, 1)).unwrap()[3], (4, msg(2)));
+    assert_eq!(
+        s.derived(|v| sessions::session_pointer(v, 2)).unwrap(),
+        Some((1, Some(0)))
+    );
+    // A step back from the fork's own entry reaches the inherited ones.
+    assert_eq!(
+        s.derived(|v| sessions::step_target(v, 2, true)).unwrap(),
+        Some((3, msg(2)))
+    );
+    // A fork of the fork chains through it.
+    s.commit_wait(vec![fork_rec(3, 2, 4, 4)]).unwrap();
+    assert_eq!(
+        s.derived(|v| targets(v, 3)).unwrap(),
+        vec![(1, msg(0)), (2, msg(1)), (3, msg(2)), (4, msg(0))]
+    );
+    let own = |v: &View, ses: u64| -> Result<usize, StoreError> {
+        let p = key::id(sessions::HISTORY, ses);
+        Ok(v.scan(&p, &key::prefix_end(&p), usize::MAX)?.len())
+    };
+    // The original's delete keeps the entries its fork reads and drops the rest.
+    s.commit_wait(vec![rec("positionDelete", vec![Value::Id(1)])])
+        .unwrap();
+    assert_eq!(s.derived(|v| own(v, 1)).unwrap(), 3);
+    assert_eq!(s.derived(|v| targets(v, 3)).unwrap().len(), 4);
+    s.commit_wait(vec![rec("positionDelete", vec![Value::Id(2)])])
+        .unwrap();
+    assert_eq!(s.derived(|v| own(v, 1)).unwrap(), 3);
+    assert_eq!(s.derived(|v| own(v, 2)).unwrap(), 1);
+    assert_eq!(s.derived(|v| targets(v, 3)).unwrap().len(), 4);
+    // The last fork's delete frees them all, through the chain.
+    s.commit_wait(vec![rec("positionDelete", vec![Value::Id(3)])])
+        .unwrap();
+    for ses in 1..=3 {
+        assert_eq!(s.derived(|v| own(v, ses)).unwrap(), 0);
+    }
+    for space in [sessions::FORK_BASE, sessions::FORK_REFS] {
+        let p = key::of(space);
+        assert!(
+            s.derived(|v| v.scan(&p, &key::prefix_end(&p), 1))
+                .unwrap()
+                .is_empty()
+        );
+    }
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_fork_at_a_gone_entry_lands_where_a_step_back_would() {
+    let dir = temp_dir("fork-gone");
+    let (s, mut model) = open_with_actors(&dir);
+    let recs = vec![
+        append(&mut model, 1, None, 1, "a", None, Some(1), 1),
+        append(&mut model, 1, Some(0), 2, "b", None, Some(1), 1),
+        append(&mut model, 1, Some(1), 3, "c", None, Some(1), 1),
+    ];
+    s.commit_wait(recs).unwrap();
+    s.commit_wait(vec![rec(
+        "messageDelete",
+        vec![Value::Id(2), Value::Absent, Value::Absent, Value::Time(NOW)],
+    )])
+    .unwrap();
+    s.commit_wait(vec![fork_rec(2, 1, 3, 3)]).unwrap();
+    assert_eq!(s.derived(|v| sessions::cursor(v, 2)).unwrap(), Some(2));
+    assert_eq!(
+        s.derived(|v| sessions::session_pointer(v, 2)).unwrap(),
+        Some((1, Some(1)))
+    );
+    // The fork survives a reopen.
+    drop(s);
+    let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
+    assert_eq!(
+        s.derived(|v| sessions::history(v, 2, 0, usize::MAX))
+            .unwrap()
+            .len(),
+        3
+    );
+    assert_eq!(s.derived(|v| sessions::cursor(v, 2)).unwrap(), Some(2));
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -2349,7 +2841,7 @@ fn a_subtree_being_deleted_reads_as_deleted_and_its_delete_resumes_after_a_crash
         &s,
         vec![rec(
             "subtreeDelete",
-            vec![Value::Id(2), Value::Id(1), Value::Id(1)],
+            vec![Value::Id(2), Value::Id(1), Value::Id(1), Value::Time(NOW)],
         )],
     );
     model.act(1, 1);
@@ -2382,7 +2874,10 @@ fn a_subtree_being_deleted_reads_as_deleted_and_its_delete_resumes_after_a_crash
             v,
             1,
             &clauses,
-            chat_search::Start::Index { after: None },
+            chat_search::Start::Index {
+                after: None,
+                weights: None,
+            },
             50,
             chat_search::SCAN_BYTES,
             &Default::default(),
@@ -2441,11 +2936,16 @@ fn a_subtree_being_deleted_reads_as_deleted_and_its_delete_resumes_after_a_crash
         ),
         rec(
             "subtreeDelete",
-            vec![Value::Id(7), Value::Absent, Value::Absent],
+            vec![Value::Id(7), Value::Absent, Value::Absent, Value::Time(NOW)],
         ),
         rec(
             "messageDelete",
-            vec![Value::Id(side), Value::Absent, Value::Absent],
+            vec![
+                Value::Id(side),
+                Value::Absent,
+                Value::Absent,
+                Value::Time(NOW),
+            ],
         ),
         rec(
             "textValue",
@@ -2520,7 +3020,7 @@ fn a_delete_beside_a_move_dooms_only_its_subtree_while_depths_are_rewritten() {
             ),
             rec(
                 "subtreeDelete",
-                vec![Value::Id(1), Value::Absent, Value::Absent],
+                vec![Value::Id(1), Value::Absent, Value::Absent, Value::Time(NOW)],
             ),
         ],
     );
@@ -2585,7 +3085,7 @@ fn a_send_key_of_a_message_being_deleted_stores_a_new_message() {
         &s,
         vec![rec(
             "subtreeDelete",
-            vec![Value::Id(1), Value::Absent, Value::Absent],
+            vec![Value::Id(1), Value::Absent, Value::Absent, Value::Time(NOW)],
         )],
     );
     // While the delete is pending the key names nothing, and sending it again stores a new message.
@@ -2624,6 +3124,7 @@ fn a_bookmark_at_a_trees_root_is_named_moves_with_a_new_opening_and_goes() {
                 Value::Id(1),
                 Value::Id(1),
                 Value::Id(tree),
+                Value::Time(NOW),
             ],
         )
     };
@@ -2636,13 +3137,14 @@ fn a_bookmark_at_a_trees_root_is_named_moves_with_a_new_opening_and_goes() {
         root(12, FOLLOWING, 8),
     ])
     .unwrap();
-    // Names are unique in the tree, root bookmarks' as any other's.
-    assert!(s.commit_wait(vec![name(11, "empty")]).is_err());
+    // Names are free labels: two bookmarks of a tree may share one, and the tree's index lists both.
+    s.commit_wait(vec![name(11, "empty")]).unwrap();
     s.derived(|v| {
         assert_eq!(chat::bookmark_root(v, 10)?, Some(7));
         assert_eq!(chat::bookmark_at(v, 10)?, None);
         assert_eq!(chat::root_bookmarks(v, 7)?, vec![10, 11]);
-        assert_eq!(chat::bookmarks_named(v, 7, b"empty")?, vec![10]);
+        assert_eq!(chat::bookmarks_named(v, 7, b"empty")?, vec![10, 11]);
+        assert!(chat::bookmarks_named(v, 7, b"kept")?.is_empty());
         let Js::Arr(rows) = super::chat_read::tree_bookmarks(v, 7, None, 10)? else {
             panic!("a list");
         };
@@ -2658,11 +3160,11 @@ fn a_bookmark_at_a_trees_root_is_named_moves_with_a_new_opening_and_goes() {
         assert_eq!(chat::bookmark_at(v, 10)?, Some(0));
         assert_eq!(chat::root_bookmarks(v, 7)?, vec![11]);
         assert_eq!(chat::root_bookmarks(v, 8)?, vec![12]);
-        assert_eq!(chat::bookmarks_named(v, 7, b"empty")?, vec![10]);
+        assert_eq!(chat::bookmarks_named(v, 7, b"empty")?, vec![10, 11]);
         Ok(())
     })
     .unwrap();
-    // Deleting it takes its name and places; its name is free again.
+    // Deleting it takes its name and places.
     s.commit_wait(vec![rec("positionDelete", vec![Value::Id(11)])])
         .unwrap();
     s.commit_wait(vec![name(10, "kept")]).unwrap();
@@ -2674,6 +3176,95 @@ fn a_bookmark_at_a_trees_root_is_named_moves_with_a_new_opening_and_goes() {
         assert_eq!(chat::bookmarks_named(v, 7, b"kept")?, vec![10]);
         let p = key::id(key::TREE_BOOKMARK, 7);
         assert_eq!(v.scan(&p, &key::prefix_end(&p), usize::MAX)?.len(), 1);
+        Ok(())
+    })
+    .unwrap();
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_moved_bookmark_takes_its_place_and_time_in_its_tree_and_keeps_where_it_was_made() {
+    let dir = temp_dir("bookmark-move");
+    let (s, mut model) = open_with_actors(&dir);
+    let a = append(&mut model, 7, None, 5, "a", None, None, 1);
+    let b = append(&mut model, 7, Some(0), 6, "b", None, None, 1);
+    let c = append(&mut model, 8, None, 7, "c", None, None, 1);
+    s.commit_wait(vec![a, b, c]).unwrap();
+    let mv = |bm: u64, at: Option<u64>| {
+        rec(
+            "positionMove",
+            vec![Value::Id(bm), Value::Time(NOW + 5), opt(at)],
+        )
+    };
+    let time_entry = |tree: u64, tk: u64, bm: u64| {
+        let mut k = key::ids(key::TREE_BOOKMARK_TIME, tree, tk);
+        crate::keyspace::val::put_u64(&mut k, bm);
+        k
+    };
+    s.commit_wait(vec![
+        rec(
+            "positionCreate",
+            vec![
+                Value::Id(10),
+                Value::UInt(PINNED),
+                Value::Id(1),
+                Value::Id(1),
+                Value::Id(0),
+            ],
+        ),
+        rec(
+            "positionName",
+            vec![Value::Id(10), Value::Text(text("saved"))],
+        ),
+    ])
+    .unwrap();
+    s.commit_wait(vec![mv(10, Some(1))]).unwrap();
+    s.derived(|v| {
+        assert_eq!(chat::bookmark_at(v, 10)?, Some(1));
+        assert!(chat::bookmarks_at(v, 0)?.is_empty());
+        assert_eq!(chat::bookmarks_at(v, 1)?, vec![10]);
+        assert_eq!(sessions::branches_from(v, 0)?, vec![10]);
+        assert!(v.get(&time_entry(7, sessions::time_key(6), 10))?.is_some());
+        assert!(v.get(&time_entry(7, sessions::time_key(5), 10))?.is_none());
+        assert_eq!(chat::bookmarks_named(v, 7, b"saved")?, vec![10]);
+        Ok(())
+    })
+    .unwrap();
+    // Another tree's message, or no such bookmark: refused.
+    assert!(s.commit_wait(vec![mv(10, Some(2))]).is_err());
+    assert!(s.commit_wait(vec![mv(99, Some(1))]).is_err());
+    // To the root: placed by the move's time.
+    s.commit_wait(vec![mv(10, None)]).unwrap();
+    s.derived(|v| {
+        assert_eq!(chat::bookmark_at(v, 10)?, None);
+        assert_eq!(chat::bookmark_root(v, 10)?, Some(7));
+        assert!(chat::bookmarks_at(v, 1)?.is_empty());
+        assert!(
+            v.get(&time_entry(7, sessions::time_key(NOW + 5), 10))?
+                .is_some()
+        );
+        Ok(())
+    })
+    .unwrap();
+    s.commit_wait(vec![mv(10, Some(0))]).unwrap();
+    drop(s);
+    let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
+    s.derived(|v| {
+        assert_eq!(chat::bookmark_at(v, 10)?, Some(0));
+        assert_eq!(chat::root_bookmarks(v, 7)?, Vec::<u64>::new());
+        assert!(v.get(&key::id(key::POSITION_MOVE, 10))?.is_some());
+        Ok(())
+    })
+    .unwrap();
+    // Deleting it leaves nothing of its moves.
+    s.commit_wait(vec![rec("positionDelete", vec![Value::Id(10)])])
+        .unwrap();
+    s.derived(|v| {
+        assert_eq!(v.get(&key::id(key::POSITION_MOVE, 10))?, None);
+        assert!(chat::bookmarks_at(v, 0)?.is_empty());
+        let p = key::id(key::TREE_BOOKMARK_TIME, 7);
+        assert!(v.scan(&p, &key::prefix_end(&p), usize::MAX)?.is_empty());
         Ok(())
     })
     .unwrap();

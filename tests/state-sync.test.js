@@ -1,6 +1,6 @@
 import { describe, test, expect } from '@jest/globals';
 
-import { baselineAfter, baselineOf, changesStateHere, metadataChanges, replaceInPlace, unsavedVariables } from '../public/scripts/state-sync.js';
+import { applyChanges, baselineAfter, baselineOf, changeOps, changesSince, changesStateHere, metadataChanges, replaceInPlace, unsavedVariables } from '../public/scripts/state-sync.js';
 
 const none = { set: {}, unset: [], variables: { set: {}, unset: [] } };
 
@@ -73,5 +73,35 @@ describe('chat_metadata as state, sent per key and per variable', () => {
         expect(changesStateHere(null, path)).toBe(true);
         expect(changesStateHere('r', path)).toBe(true);
         expect(changesStateHere('other', path)).toBe(false);
+    });
+});
+
+describe('changes made while producing a reply, and changes kept over the server\'s state', () => {
+    test('what changed after the start: new and changed keys and variables, and what went back as it was', () => {
+        const baseline = baselineOf({ note: 'a', mood: 'calm', variables: { hp: 3, mp: 1 } });
+        const atStart = { note: 'typed', mood: 'calm', variables: { hp: 2, mp: 1 } };
+        const now = { note: 'typed', scene: 'x', variables: { hp: 3, gold: 5 } };
+        const since = changesSince(metadataChanges(atStart, baseline), metadataChanges(now, baseline), now);
+        expect(since).toEqual({ set: { scene: 'x' }, unset: ['mood'], variables: { set: { gold: 5, hp: 3 }, unset: ['mp'] } });
+        expect(changesSince(metadataChanges(atStart, baseline), metadataChanges(atStart, baseline), atStart)).toBeNull();
+        expect(changesSince(null, null, {})).toBeNull();
+    });
+
+    test('as ops: keys set and removed, variables by name, the variables object itself none', () => {
+        expect(changeOps({ set: { scene: 'x', variables: {} }, unset: ['mood'], variables: { set: { gold: 5 }, unset: ['mp'] } })).toEqual([
+            { key: 'scene', value: 'x' },
+            { key: 'mood' },
+            { key: 'gold', variable: true, value: 5 },
+            { key: 'mp', variable: true },
+        ]);
+    });
+
+    test('changes applied over another state keep it where they don\'t say otherwise', () => {
+        const target = { note: 'server', other: 1, variables: { hp: 9, xp: 1 } };
+        applyChanges(target, { set: { note: 'mine' }, unset: ['other'], variables: { set: { hp: 3 }, unset: ['xp'] } });
+        expect(target).toEqual({ note: 'mine', variables: { hp: 3 } });
+        const bare = { note: 'x' };
+        applyChanges(bare, { set: {}, unset: [], variables: { set: { hp: 1 }, unset: [] } });
+        expect(bare).toEqual({ note: 'x', variables: { hp: 1 } });
     });
 });

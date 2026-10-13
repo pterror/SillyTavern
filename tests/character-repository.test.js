@@ -178,8 +178,8 @@ function addGroup(group) {
  * The next /query answer: `ids` in server order, each a character or group fixture id. With `unchanged`, the
  * answer is the server's JSON `{seq, token, unchanged: true}` stub instead.
  */
-function queueQuery({ ids = [], total = undefined, approxTotal = false, seq, token = null, searchBackend = undefined, unchanged = false, more = false, cursor = undefined }) {
-    server.queryResponses.push({ ids, total, approxTotal, seq, token, searchBackend, unchanged, more, cursor });
+function queueQuery({ ids = [], total = undefined, approxTotal = false, seq, token = null, searchBackend = undefined, unchanged = false, more = false, cursor = undefined, refused = undefined }) {
+    server.queryResponses.push({ ids, total, approxTotal, seq, token, searchBackend, unchanged, more, cursor, refused });
 }
 
 function jsonResponse(data) {
@@ -203,11 +203,13 @@ async function fakeFetch(url, init) {
     if (url === '/api/characters/query') {
         const next = server.queryResponses.shift();
         if (!next) throw new Error('unexpected /api/characters/query call');
+        if (next.refused) return { ok: false, status: 400, json: async () => ({ error: true, reason: next.refused }) };
         if (next.unchanged) return jsonResponse({ seq: next.seq, token: next.token, unchanged: true });
         if (!body.want.includes('hashes')) {
             const payload = { seq: next.seq, token: next.token };
             if (next.total !== undefined) payload.total = next.approxTotal ? `~${next.total}` : next.total;
             if (next.searchBackend !== undefined) payload.searchBackend = next.searchBackend;
+            if (next.cursor !== undefined) payload.cursor = next.cursor;
             return jsonResponse(payload);
         }
         const buffer = encodeQueryHashes({
@@ -284,14 +286,35 @@ jest.unstable_mockModule('../public/scripts/character-cache.js', () => ({
     saveCachedGroups: saveCachedGroupsFake,
     getCacheUserHandle: () => 'tester',
 }));
-// Nothing kept in browser storage between tests: every query goes to the (fake) server.
+// Browser storage: what the query cache keeps, by request signature. It outlives a reload (the repository
+// re-imported) and is emptied before each test. Kept pages are read back only where a test sets `keepPages`; else
+// every query goes to the (fake) server, and only the cursors kept with pages are read.
+/** @type {Map<string, any>} */
+const stored = new Map();
+let keepPages = false;
 jest.unstable_mockModule('../public/scripts/query-result-cache.js', () => ({
     setQueryCacheUser: () => {},
-    readQueryCache: async () => null,
-    writeQueryCache: async () => {},
+    readQueryCache: async key => (keepPages && stored.get(key)?.hashRows ? structuredClone(stored.get(key)) : null),
+    writeQueryCache: async (key, entry) => { stored.set(key, structuredClone(entry)); },
+    readQueryCursor: async key => stored.get(key)?.cursor ?? null,
+    writeQueryCursor: async (key, cursor) => {
+        const entry = stored.get(key);
+        if (entry?.hashRows) {
+            if (cursor === undefined) delete entry.cursor;
+            else entry.cursor = cursor;
+        } else if (cursor === undefined) {
+            stored.delete(key);
+        } else {
+            stored.set(key, { cursor });
+        }
+    },
     pinQueryCache: async () => {},
     pinnedQueryCacheKeys: async () => [],
 }));
+beforeEach(() => {
+    stored.clear();
+    keepPages = false;
+});
 
 /** @type {typeof import('../public/scripts/character-repository.js').CharacterRepository} */
 let CharacterRepository;
@@ -548,6 +571,106 @@ describe('query()', () => {
 
         const bodies = global.fetch.mock.calls.filter(([url]) => url === '/api/characters/query').map(([, init]) => JSON.parse(init.body));
         expect(bodies.map(body => [body.page, body.cursor])).toEqual([[1, undefined], [2, 'end-of-1']]);
+    });
+
+    test('a cursor the server refuses: the page is asked for again by its position', async () => {
+        const repo = new CharacterRepository(makeStore([]));
+        addCharacter({ avatar: 'a', name: 'A' });
+        addCharacter({ avatar: 'b', name: 'B' });
+        queueQuery({ ids: ['a'], seq: 1, cursor: 'end-of-1' });
+        queueQuery({ refused: 'invalid-cursor' });
+        queueQuery({ ids: ['b'], seq: 1 });
+
+        await repo.query({ search: 'x' }, { field: 'name', order: 'asc' }, 1, 1, ['rows']);
+        const second = await repo.query({ search: 'x' }, { field: 'name', order: 'asc' }, 2, 1, ['rows']);
+
+        expect(second.rows.map(row => row.avatar)).toEqual(['b']);
+        const bodies = global.fetch.mock.calls.filter(([url]) => url === '/api/characters/query').map(([, init]) => JSON.parse(init.body));
+        expect(bodies.map(body => [body.page, body.cursor])).toEqual([[1, undefined], [2, 'end-of-1'], [2, undefined]]);
+        // The refused cursor is let go: page 2 isn't asked from it again.
+        expect([...stored.values()].map(entry => entry.cursor)).not.toContain('end-of-1');
+    });
+
+    /** The page and cursor of each `/query` request so far. */
+    const sent = () => global.fetch.mock.calls.filter(([url]) => url === '/api/characters/query').map(([, init]) => JSON.parse(init.body)).map(body => [body.page, body.cursor]);
+    const nameSort = { field: 'name', order: 'asc' };
+
+    test('a page starts from the cursor browser storage kept for the page before: next and previous alike', async () => {
+        const repo = new CharacterRepository(makeStore([]));
+        for (const avatar of ['a', 'b', 'c']) addCharacter({ avatar, name: avatar.toUpperCase() });
+        queueQuery({ ids: ['a'], seq: 1, token: 't1', cursor: 'end-1' });
+        queueQuery({ ids: ['b'], seq: 1, token: 't2', cursor: 'end-2' });
+        queueQuery({ ids: ['c'], seq: 1, token: 't3' });
+        queueQuery({ ids: ['b'], seq: 1, token: 't2', cursor: 'end-2' });
+
+        for (const page of [1, 2, 3]) await repo.query({ search: 'x' }, nameSort, page, 1, ['rows']);
+        const back = await repo.query({ search: 'x' }, nameSort, 2, 1, ['rows'], { onFresh: () => {} });
+
+        expect(back.rows.map(row => row.avatar)).toEqual(['b']);
+        expect(sent()).toEqual([[1, undefined], [2, 'end-1'], [3, 'end-2'], [2, 'end-1']]);
+    });
+
+    test('after a reload, a page starts from the cursor kept in browser storage, not from page memory', async () => {
+        for (const avatar of ['a', 'b']) addCharacter({ avatar, name: avatar.toUpperCase() });
+        queueQuery({ ids: ['a'], seq: 1, token: 't1', cursor: 'end-1' });
+        queueQuery({ ids: ['b'], seq: 1, token: 't2' });
+
+        await new CharacterRepository(makeStore([])).query({ search: 'x' }, nameSort, 1, 1, ['rows']);
+        // A reload: the module is read again (which also clears the recorded requests).
+        const beforeReload = sent();
+        jest.resetModules();
+        const { CharacterRepository: Reloaded } = await import('../public/scripts/character-repository.js');
+        const second = await new Reloaded(makeStore([])).query({ search: 'x' }, nameSort, 2, 1, ['rows']);
+
+        expect(second.rows.map(row => row.avatar)).toEqual(['b']);
+        expect([...beforeReload, ...sent()]).toEqual([[1, undefined], [2, 'end-1']]);
+    });
+
+    test('a kept page refreshed after a reload is asked for from the cursor the page before ended at', async () => {
+        keepPages = true;
+        for (const avatar of ['a', 'b', 'c']) addCharacter({ avatar, name: avatar.toUpperCase() });
+        queueQuery({ ids: ['a'], seq: 1, token: 't1', cursor: 'end-1' });
+        queueQuery({ ids: ['b'], seq: 1, token: 't2', cursor: 'end-2' });
+        queueQuery({ ids: ['c'], seq: 2, token: 't2b', cursor: 'end-2' });
+
+        const repo = new CharacterRepository(makeStore([]));
+        await repo.query({ search: 'x' }, nameSort, 1, 1, ['rows']);
+        await repo.query({ search: 'x' }, nameSort, 2, 1, ['rows']);
+        const beforeReload = sent();
+        jest.resetModules();
+        const { CharacterRepository: Reloaded } = await import('../public/scripts/character-repository.js');
+        /** @type {(result: any) => void} */
+        let onFresh = () => {};
+        const fresh = new Promise(resolve => { onFresh = resolve; });
+        const stale = await new Reloaded(makeStore([])).query({ search: 'x' }, nameSort, 2, 1, ['rows'], { onFresh });
+
+        expect(stale.rows.map(row => row.avatar)).toEqual(['b']);
+        expect((/** @type {any} */ (await fresh)).rows.map(row => row.avatar)).toEqual(['c']);
+        expect([...beforeReload, ...sent()]).toEqual([[1, undefined], [2, 'end-1'], [2, 'end-1']]);
+    });
+
+    test('page 1, and a page whose page before browser storage didn\'t keep, are asked for by position', async () => {
+        const repo = new CharacterRepository(makeStore([]));
+        for (const avatar of ['a', 'b']) addCharacter({ avatar, name: avatar.toUpperCase() });
+        queueQuery({ ids: ['b'], seq: 1, token: 't3', cursor: 'end-3' });
+        queueQuery({ ids: ['a'], seq: 1, token: 't1', cursor: 'end-1' });
+
+        await repo.query({ search: 'x' }, nameSort, 3, 1, ['rows']);
+        await repo.query({ search: 'x' }, nameSort, 1, 1, ['rows']);
+
+        expect(sent()).toEqual([[3, undefined], [1, undefined]]);
+    });
+
+    test('an answer without hash rows keeps its cursor alone, and the next page starts from it', async () => {
+        const repo = new CharacterRepository(makeStore([]));
+        queueQuery({ seq: 1, total: 5, cursor: 'j1' });
+        queueQuery({ seq: 1, total: 5 });
+
+        await repo.query({ search: 'x' }, nameSort, 1, 1, ['total']);
+        await repo.query({ search: 'x' }, nameSort, 2, 1, ['total']);
+
+        expect(sent()).toEqual([[1, undefined], [2, 'j1']]);
+        expect([...stored.values()]).toEqual([{ cursor: 'j1' }]);
     });
 
     test('passes an approximate (~-prefixed) total through unchanged, never coercing it to a number', async () => {

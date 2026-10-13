@@ -3,7 +3,7 @@ import { favsToHotswap } from './RossAscends-mods.js';
 import { characters, charactersStore, this_avatar, resolveCharacterRef } from './character-store.js';
 import { getGroups, getGroupBlock } from './group-chats.js';
 import { power_user, sortEntitiesList } from './power-user.js';
-import { normalizeFav } from './hash-utils.js';
+import { applyCharacterRowFields, characterRowFieldHashes, normalizeFav } from './hash-utils.js';
 import { debounce, delay, PAGINATION_TEMPLATE, localizePagination, renderPaginationDropdown, paginationDropdownChangeHandler } from './utils.js';
 import { debounce_timeout } from './constants.js';
 import { filterByTagState, printTagFilters, printTagList, tag_filter_type, compareTagsForSort, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, heldTagsForIds, searchTagsByName, readTagsForIds, registerFolderCaseHandlers } from './tags.js';
@@ -12,7 +12,6 @@ import { FILTER_STATES, FILTER_TYPES, FilterHelper, isFilterState } from './filt
 import { characterRepository, buildCharacterQuery, isInvalidSortFieldError, normalizeQueryRow, parseQueryTotal } from './character-repository.js';
 import { cleanRanges, parseSearchText, sameView, serializeSearchText, viewToQueryState } from './character-view.js';
 import { initViewPills, makeSearchGuide } from './character-view-pills.js';
-import { renderTagMatchChips, viewForTagChip } from './tag-match-chips.js';
 import { initSavedViews, refreshSavedViewState, restoreCurrentView } from './saved-views.js';
 import { initFolderSwitcher, refreshFolderSwitcher } from './folder-switcher.js';
 import { getRandomSortSeed } from './random-sort.js';
@@ -548,7 +547,6 @@ export async function printCharacters(fullRefresh = false) {
         let pendingFirstPage = firstPage;
         // Whether the latest page response's `total` was `~`-prefixed (approximate).
         let pageTotalApprox = isApproxTotal(firstPage.total);
-        showTagMatches(firstPage);
 
         serverPagedList = true;
         $('#rm_print_characters_pagination').pagination({
@@ -592,7 +590,6 @@ export async function printCharacters(fullRefresh = false) {
                             totalApprox: pageTotalApprox,
                         };
                         if (result.searchBackend !== undefined) showSearchBackend(result.searchBackend);
-                        showTagMatches(result);
                         ajaxParams.success({ rows: pageEntities, total: result.total });
                     })
                     .catch(error => {
@@ -606,18 +603,6 @@ export async function printCharacters(fullRefresh = false) {
             callback: makePageCallback(() => pageHidden),
         });
     }
-}
-
-/**
- * Shows a page's tag matches as chips above the list (none without a search); picking one filters by the tag and
- * takes its matched words out of the search.
- * @param {{ tagMatches?: { id: string, name: string, carriers: number }[] }} result
- */
-function showTagMatches(result) {
-    const container = document.getElementById('character_tag_matches');
-    if (!container) return;
-    const chips = hasActiveCharacterSearch() && Array.isArray(result.tagMatches) ? result.tagMatches : [];
-    renderTagMatchChips(container, chips, chip => setCharacterView(viewForTagChip(getCharacterView(), chip)), name => t`Show only those tagged "${name}"`);
 }
 
 // Auto-selects the "Search" sort option only when the search term first becomes active, preserving a manual switch away from it.
@@ -838,13 +823,13 @@ export function getCharacterView() {
     const { text, conditions } = parseSearchText(entitiesFilter.getFilterData(FILTER_TYPES.SEARCH) ?? '');
     // With no term the option is about to be deselected (verifyCharactersSearchSortRule()), so the saved sort applies.
     const isSearchSort = hasActiveCharacterSearch() && isSearchSortSelected();
-    const isRandom = !isSearchSort && power_user.sort_order === 'random';
+    // The saved sort; under the search sort it orders the matches only tag names match (they all score alike).
+    /** @type {{ field: string, order: 'asc'|'desc', seed?: number }} */
+    const listSort = power_user.sort_order === 'random'
+        ? { field: 'random', order: 'asc', seed: getRandomSortSeed(accountStorage) }
+        : { field: power_user.sort_field, order: power_user.sort_order === 'desc' ? 'desc' : 'asc' };
     /** @type {import('./character-view.js').CharacterViewSort} */
-    const sort = isSearchSort
-        ? { field: 'search', order: 'asc' }
-        : isRandom
-            ? { field: 'random', order: 'asc', seed: getRandomSortSeed(accountStorage) }
-            : { field: power_user.sort_field, order: power_user.sort_order === 'desc' ? 'desc' : 'asc' };
+    const sort = isSearchSort ? { field: 'search', order: 'asc', tie: listSort } : listSort;
     return {
         text,
         conditions,
@@ -1248,21 +1233,28 @@ async function fetchCharactersDelta(progress) {
         /** @type {Map<string, object>} fresh/updated records to save back to the cache */
         const fresh = new Map();
 
+        // Each changed character's fields the cache holds are sent as hashes, and only the fields that differ come
+        // back (a character the cache lacks comes back whole).
         for (let i = 0; i < wholeRecordIds.length; i += CHARACTER_BATCH_CHUNK_SIZE) {
             const chunk = wholeRecordIds.slice(i, i + CHARACTER_BATCH_CHUNK_SIZE);
+            const held = await readCachedCharactersByIds(chunk);
+            /** @type {Record<string, Record<string, number>>} */
+            const hashes = {};
+            for (const [avatar, character] of held) hashes[avatar] = characterRowFieldHashes(character);
             const batchResponse = await fetch('/api/characters/batch', {
                 method: 'POST',
                 headers: getRequestHeaders(),
-                body: JSON.stringify({ avatars: chunk }),
+                body: JSON.stringify({ avatars: chunk, hashes }),
             });
 
             if (!batchResponse.ok) {
                 throw new Error(`Failed to fetch character batch: ${batchResponse.statusText}`);
             }
             const batchData = await batchResponse.json();
-            for (const character of batchData) {
+            for (const changes of batchData) {
+                const character = applyCharacterRowFields(held.get(changes.avatar) ?? {}, changes);
                 finalizeFetchedCharacter(character);
-                fresh.set(character.avatar, character);
+                fresh.set(changes.avatar, character);
             }
         }
 

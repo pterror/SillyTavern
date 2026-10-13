@@ -187,10 +187,15 @@ async function setUpTags() {
     }
 }
 
+/**
+ * 50 varied characters, written in list order. Their avatars sort in that order too: the old store breaks ties by
+ * avatar and the engine by creation order, so with the two the same the old store's pages are the reference for the
+ * engine's.
+ */
 function library50(seed = 1) {
     const r = rng(seed);
     return Array.from({ length: 50 }, (_, i) => ({
-        avatar: `char-${String(Math.floor(r() * 1000)).padStart(3, '0')}-${i}.png`,
+        avatar: `char-${String(i).padStart(3, '0')}-${String(Math.floor(r() * 1000)).padStart(3, '0')}.png`,
         card: makeCard(r, i),
         fav: r() < 0.3,
         tags: TAG_IDS.filter(() => r() < 0.35),
@@ -419,8 +424,9 @@ describe('the library on the engine', () => {
         expect(library.store.stats().logBytes).toBe(before);
         await metadataDb.setCharacterDateAdded(directories, c.avatar, 5);
         expect(await library.updateEntity(lib.TYPE.character, c.avatar, { dateAdded: 5 })).toBe(true);
-        // A rename keeps the character: its fav, tags and date added go with it.
-        const renamed = 'renamed-avatar.png';
+        // A rename keeps the character: its fav, tags, date added and place among ties (its creation) go with it. The
+        // new avatar sorts where the old one did, so the old store, which ties by avatar, still places it the same.
+        const renamed = 'char-000-renamed.png';
         await metadataDb.upsertCharacterFromWrite(directories, renamed, JSON.stringify(a.card));
         await metadataDb.setCharacterAllowGlobalStyles(directories, renamed, true);
         await metadataDb.setCharacterFav(directories, renamed, a.fav);

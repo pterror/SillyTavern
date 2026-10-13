@@ -32,12 +32,11 @@ import { normalizeFav } from '../../../public/scripts/hash-utils.js';
  * @param {number} p.dateAdded
  * @param {string | null} p.contentHash
  * @param {string | null} p.avatarIdentityHash
- * @param {string | null} p.avatarHash
  * @param {import('../../users.js').UserDirectoryList} p.directories
  * @returns {{ records: object[], book: Record<string, unknown> | undefined, linkKey: string, name: string }} `book`:
  * its own book; `linkKey`: the key of the book its lorebook names ('' for none); `name`: its name as the library reads it.
  */
-export function characterRecords(id, avatar, card, { fav, dateAdded, contentHash, avatarIdentityHash, avatarHash, directories }) {
+export function characterRecords(id, avatar, card, { fav, dateAdded, contentHash, avatarIdentityHash, directories }) {
     const records = [];
     if (fav) records.push({ kind: 'fav', entity: id, fav: true });
     const parts = splitCard(card);
@@ -55,7 +54,7 @@ export function characterRecords(id, avatar, card, { fav, dateAdded, contentHash
     records.push({ kind: 'dataSize', entity: id, size: calculateDataSize(normalized.data ?? {}) });
     const ms = parseCreateDateToEpochMs(normalized.create_date);
     records.push({ kind: 'createDate', entity: id, ...(ms === null ? {} : { ms }) });
-    const hashes = [[HASH.identity, computeContentIdentityHash(card)], [HASH.content, contentHash], [HASH.avatarIdentity, avatarIdentityHash], [HASH.avatar, avatarHash]];
+    const hashes = [[HASH.identity, computeContentIdentityHash(card)], [HASH.content, contentHash], [HASH.avatarIdentity, avatarIdentityHash]];
     for (const [which, hex] of hashes) {
         if (hex === null || hex === undefined) continue;
         records.push({ kind: 'cardHash', entity: id, which, hash: Buffer.from(/** @type {string} */ (hex), 'hex') });

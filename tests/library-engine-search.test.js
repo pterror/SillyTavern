@@ -6,7 +6,7 @@ import os from 'node:os';
 /**
  * The library's `/query` search on the engine (src/library-engine.js `query({ search })`) against a model of the
  * cards and groups written: which entities match, every page through cursors in relevance and list orders, labels,
- * closed and unclosed quotes, tag matches, and a write found by the next query.
+ * closed and unclosed quotes, tag names, and a write found by the next query.
  */
 
 /** @type {typeof import('../src/library-engine.js')} */
@@ -113,7 +113,8 @@ describe('library search on the engine', () => {
         const body = (/** @type {any} */ x, /** @type {string} */ w, /** @type {boolean} */ prefix) => holds(x.description, w, prefix) || x.members.some((/** @type {string} */ m) => holds(m, w, prefix));
         const cases = [
             { search: 'dark', match: (/** @type {any} */ x) => holds(x.name, 'dark', true) || body(x, 'dark', false) },
-            { search: 'dr', match: (/** @type {any} */ x) => holds(x.name, 'dr', true) || body(x, 'dr', false) },
+            // "dragon riders" is a tag's name: its carriers match too ("love" has none).
+            { search: 'dr', match: (/** @type {any} */ x) => holds(x.name, 'dr', true) || body(x, 'dr', false) || x.riders },
             { search: 'name:dark', match: (/** @type {any} */ x) => holds(x.name, 'dark', true) },
             { search: 'love -name:the', match: (/** @type {any} */ x) => (holds(x.name, 'love', true) || body(x, 'love', false)) && !holds(x.name, 'the', false) },
             { search: '"dark kn', match: (/** @type {any} */ x) => holds(x.name, 'dark kn', true) || body(x, 'dark kn', true) },
@@ -135,12 +136,23 @@ describe('library search on the engine', () => {
         }
     }, 120_000);
 
-    test('a tag whose name matches is answered beside the page', async () => {
-        await build(30);
-        const out = /** @type {any} */ (await library.query({ search: 'riders', sortField: 'search', limit: 5, includeGroups: true }));
-        expect(out.tagMatches.map((/** @type {any} */ t) => [t.id, t.name])).toEqual([['t-riders', 'dragon riders']]);
-        expect(out.tagMatchesExact).toBe(true);
-    });
+    test('the carriers only a tag name matches tie, in the list sort, after the text matches', async () => {
+        const model = await build(150);
+        const textMatch = (/** @type {any} */ x) => holds(x.name, 'dr', true) || holds(x.description, 'dr', false) || x.members.some((/** @type {string} */ m) => holds(m, 'dr', false));
+        for (const sort of [{ tieSortField: 'name' }, { tieSortField: 'name', tieSortOrder: 'desc' }, { tieSortField: 'date_added', tieSortOrder: 'desc' }]) {
+            const listed = async (/** @type {string[]} */ ids) => (await allPages({ ids, sortField: sort.tieSortField, sortOrder: sort.tieSortOrder, limit: 7, includeGroups: true })).keys;
+            // No text holds "riders": every match is a carrier, in the list's order.
+            const riders = [...model.keys()].filter(k => model.get(k)?.riders);
+            const searched = await allPages({ search: 'riders', sortField: 'search', ...sort, limit: 7, includeGroups: true });
+            expect(searched.keys).toEqual(await listed(riders));
+            // With text matches: the tied carriers are one run in the list's order.
+            const tied = riders.filter(k => !textMatch(model.get(k)));
+            const dr = (await allPages({ search: 'dr', sortField: 'search', ...sort, limit: 7, includeGroups: true })).keys;
+            const at = Math.min(...tied.map(k => dr.indexOf(k)));
+            expect(dr.slice(at, at + tied.length).sort()).toEqual([...tied].sort());
+            expect(dr.slice(at, at + tied.length)).toEqual(await listed(tied));
+        }
+    }, 120_000);
 
     test('a write is found by the next query', async () => {
         await library.writeCard({}, 'a.png', JSON.stringify({ spec: 'chara_card_v2', spec_version: '2.0', data: { name: 'Quiet', description: 'an old tower' } }), { dateAdded: 1 });

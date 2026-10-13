@@ -299,6 +299,7 @@ pub fn sessions(view: &View, ids: &[u64]) -> Result<Js, StoreError> {
                 "cursor",
                 sessions::cursor(view, s)?.map_or(Js::Null, |n| Js::Num(n as f64)),
             ),
+            ("length", Js::Num(sessions::history_len(view, s)? as f64)),
         ]))
     }
     Ok(Js::Arr(out))
@@ -312,10 +313,20 @@ pub fn session_in_tree(view: &View, s: u64, tree: u64) -> Result<Js, StoreError>
     })
 }
 
-/// The user's last move in a tree: `{ session, at }`, or null.
+/// The user's last move in a tree: `{ session, at }` (session null: set by no session's move), or null.
 pub fn user_in_tree(view: &View, u: u64, tree: u64) -> Result<Js, StoreError> {
     Ok(match sessions::user_in_tree(view, u, tree)? {
-        Some((s, at)) => Js::Obj(vec![("session", Js::Big(s)), ("at", opt_big(at))]),
+        Some((s, at)) => Js::Obj(vec![
+            (
+                "session",
+                if s == sessions::NO_SESSION {
+                    Js::Null
+                } else {
+                    Js::Big(s)
+                },
+            ),
+            ("at", opt_big(at)),
+        ]),
         None => Js::Null,
     })
 }
@@ -360,6 +371,26 @@ pub fn history_step(view: &View, s: u64, back: bool) -> Result<Js, StoreError> {
     })
 }
 
+/// The session's current chat in the tree: its bookmark, or null for none.
+pub fn current_chat(view: &View, s: u64, tree: u64) -> Result<Js, StoreError> {
+    Ok(sessions::current_chat(view, s, tree)?.map_or(Js::Null, Js::Big))
+}
+
+/// A page of the session's current chats: `[{ tree, bookmark }]`, bookmark null when it went.
+pub fn current_chats(
+    view: &View,
+    s: u64,
+    after: Option<u64>,
+    limit: usize,
+) -> Result<Js, StoreError> {
+    Ok(Js::Arr(
+        sessions::current_chats(view, s, after, limit)?
+            .into_iter()
+            .map(|(t, b)| Js::Obj(vec![("tree", Js::Big(t)), ("bookmark", opt_big(b))]))
+            .collect(),
+    ))
+}
+
 /// The card greeting's index the session chose for the tree with no message stored, or null.
 pub fn opening_choice(view: &View, s: u64, tree: u64) -> Result<Js, StoreError> {
     Ok(sessions::opening_choice(view, s, tree)?.map_or(Js::Null, |i| Js::Num(i as f64)))
@@ -378,6 +409,29 @@ pub fn recent(view: &View, before: Option<u64>, limit: usize) -> Result<Js, Stor
     Ok(order_page(sessions::recent(view, before, limit)?))
 }
 
+/// Conversations by their last meaningful activity, newest first, before a position (the last one of a page
+/// before): `{ position, bookmark, session, tree }`, a bookmark's (its tree) or a session's (and its tree); a
+/// bookmark of no tree is left out.
+pub fn conversations(view: &View, before: Option<u64>, limit: usize) -> Result<Js, StoreError> {
+    let mut out = Vec::new();
+    for (pos, c) in sessions::conversations(view, before, limit)? {
+        let (bookmark, session, tree) = match c {
+            sessions::Convo::Bookmark(b) => match chat::bookmark_tree(view, b)? {
+                Some(t) => (Js::Big(b), Js::Null, t),
+                None => continue,
+            },
+            sessions::Convo::Session(s, t) => (Js::Null, Js::Big(s), t),
+        };
+        out.push(Js::Obj(vec![
+            ("position", Js::Big(pos)),
+            ("bookmark", bookmark),
+            ("session", session),
+            ("tree", Js::Big(tree)),
+        ]));
+    }
+    Ok(Js::Arr(out))
+}
+
 /// A tree's sessions by their last meaningful activity there, newest first.
 pub fn in_tree(
     view: &View,
@@ -394,6 +448,15 @@ pub fn message_count(view: &View, tree: u64, at: Option<u64>) -> Result<Js, Stor
         ("count", Js::Num(n as f64)),
         ("estimate", Js::Bool(estimate)),
     ]))
+}
+
+/// Whether `message` is `at` or one of its ancestors (false when either is missing).
+pub fn within(view: &View, message: u64, at: u64) -> Result<Js, StoreError> {
+    if chat::message_entry(view, at)?.is_none() || chat::message_entry(view, message)?.is_none() {
+        return Ok(Js::Bool(false));
+    }
+    let tree = sessions::tree_of(view, at)?;
+    Ok(Js::Bool(prune::under(view, tree, message, at)?))
 }
 
 /// The id each outside key names in a space (0 message, 1 session, 2 user), or null.
@@ -478,6 +541,37 @@ pub fn tree_bookmarks(
         let b = get_u64(&k, &mut at)
             .ok_or_else(|| StoreError::Entry("a bookmark key doesn't decode".into()))?;
         out.push(bookmark(view, b)?);
+    }
+    Ok(Js::Arr(out))
+}
+
+/// A tree's bookmarks newest first, by the receive time of the message each is at (one at the root by when it was
+/// made), each `{ bookmark, timeKey }`, from before `before` (a `[timeKey, bookmark]` cursor), at most `limit`.
+pub fn tree_bookmarks_newest(
+    view: &View,
+    tree: u64,
+    before: Option<(u64, u64)>,
+    limit: usize,
+) -> Result<Js, StoreError> {
+    let p = key::id(key::TREE_BOOKMARK_TIME, tree);
+    let end = match before {
+        Some((tk, b)) => {
+            let mut k = key::ids(key::TREE_BOOKMARK_TIME, tree, tk);
+            crate::keyspace::val::put_u64(&mut k, b);
+            k
+        }
+        None => key::prefix_end(&p),
+    };
+    let mut out = Vec::new();
+    for (k, _) in view.scan_vals_rev(&p, &end, limit)? {
+        let mut at = p.len();
+        let bad = || StoreError::Entry("a bookmark time key doesn't decode".into());
+        let tk = get_u64(&k, &mut at).ok_or_else(bad)?;
+        let b = get_u64(&k, &mut at).ok_or_else(bad)?;
+        out.push(Js::Obj(vec![
+            ("bookmark", bookmark(view, b)?),
+            ("timeKey", Js::Big(tk)),
+        ]));
     }
     Ok(Js::Arr(out))
 }
@@ -820,7 +914,7 @@ pub fn entity_changes(view: &View, after: u64, limit: usize) -> Result<Js, Store
 }
 
 /// The entities of `kind` whose folded name (`library::fold_name`) is `name`'s, read from the name order of the
-/// whole library (favourites and the rest), at most `limit`: `[{ id, tie }]` in the order's tie order per part.
+/// whole library (favourites and the rest), at most `limit`: `[{ id }]` in id order per part (the order's tie).
 /// What compares equal more strictly (exactly, or case- and accent-insensitively) is the caller's check.
 pub fn library_named(view: &View, kind: u64, name: &[u8], limit: usize) -> Result<Js, StoreError> {
     use super::library::{BY_NAME, Scope, fold_name, order_prefix};
@@ -829,14 +923,12 @@ pub fn library_named(view: &View, kind: u64, name: &[u8], limit: usize) -> Resul
     for fav in [false, true] {
         let mut p = order_prefix(&Scope::All, BY_NAME, kind, fav);
         crate::keyspace::val::put_bytes(&mut p, &folded);
-        for (k, v) in view.scan(&p, &key::prefix_end(&p), limit.saturating_sub(out.len()))? {
+        for (k, _) in view.scan(&p, &key::prefix_end(&p), limit.saturating_sub(out.len()))? {
             let mut at = p.len();
-            let tie = crate::keyspace::val::get_bytes(&k, &mut at)
+            let id = get_u64(&k, &mut at)
+                .filter(|_| at == k.len())
                 .ok_or_else(|| StoreError::Entry("a name order key doesn't decode".into()))?;
-            let mut i = 0;
-            let id = crate::log::format::get_uvarint(&v, &mut i)
-                .map_err(|_| StoreError::Entry("a name order entry doesn't decode".into()))?;
-            out.push(Js::Obj(vec![("id", Js::Big(id)), ("tie", Js::Text(tie))]));
+            out.push(Js::Obj(vec![("id", Js::Big(id))]));
         }
     }
     Ok(Js::Arr(out))

@@ -58,6 +58,13 @@ test('a fork is one request and opens the branch with the chat\'s metadata', asy
         const context = SillyTavern.getContext();
         const { ensureOpeningRow } = await import('/scripts/chat-store.js');
         const opening = await ensureOpeningRow(0);
+        // The tab is at the opening: the key set here holds below it.
+        const set = await fetch('/api/chats/metadata', {
+            method: 'POST',
+            headers: context.getRequestHeaders(),
+            body: JSON.stringify({ avatar_url: avatar, set: { note_prompt: 'Stay calm.' }, unset: [] }),
+        });
+        if (!set.ok) throw new Error(`metadata failed: ${set.status}`);
         const response = await fetch('/api/chats/message/append', {
             method: 'POST',
             headers: context.getRequestHeaders(),
@@ -67,11 +74,6 @@ test('a fork is one request and opens the branch with the chat\'s metadata', asy
             ] }),
         });
         if (!response.ok) throw new Error(`append failed: ${response.status}`);
-        await fetch('/api/chats/metadata', {
-            method: 'POST',
-            headers: context.getRequestHeaders(),
-            body: JSON.stringify({ avatar_url: avatar, file_name: opening, metadata: { note_prompt: 'Stay calm.' } }),
-        });
     }, avatar);
     await page.reload();
     await testSetup.awaitST({ page });
@@ -83,15 +85,18 @@ test('a fork is one request and opens the branch with the chat\'s metadata', asy
         const { forkChat } = await import('/scripts/bookmarks.js');
         return forkChat(1);
     });
-    expect(typeof name).toBe('string');
+    // The fork's compat chat id; the tab's session moves there and the fork is its current chat.
+    expect(name).toMatch(/^b\d+$/);
     expect(requests).toEqual(['/api/chats/bookmark']);
 
-    const state = await page.evaluate(() => {
+    const state = await page.evaluate(async () => {
         // @ts-ignore
         const context = SillyTavern.getContext();
-        return { chatId: context.getCurrentChatId(), messages: context.chat.map(m => m.mes), note: context.chatMetadata.note_prompt ?? null };
+        const { tabSession } = await import('/scripts/tab-session.js');
+        return { chatId: context.getCurrentChatId(), session: tabSession(), messages: context.chat.map(m => m.mes), note: context.chatMetadata.note_prompt ?? null };
     });
     expect(state.chatId).toBe(name);
-    expect(state.messages).toEqual(['Hello.', 'Where to?', 'North.']);
+    // The fork's place: the path down to the forked message, nothing below it.
+    expect(state.messages).toEqual(['Hello.', 'Where to?']);
     expect(state.note).toBe('Stay calm.');
 });

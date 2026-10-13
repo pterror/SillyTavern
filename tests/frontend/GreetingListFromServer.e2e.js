@@ -664,8 +664,12 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
             // @ts-ignore
             const headers = SillyTavern.getContext().getRequestHeaders();
             const contents = texts.map(mes => ({ name, is_user: false, is_system: false, send_date: Date.now(), mes, extra: {} }));
-            const response = await fetch('/api/chats/openings/ensure', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatar, contents }) });
-            return response.ok;
+            // As the page stores a greeting shown without a row: the first selected, the others added beside it.
+            const selected = await fetch('/api/chats/message/select', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatar, opening: { refs: ['opening'], messages: [contents[0]] } }) });
+            if (!selected.ok) return false;
+            const first = (await selected.json()).stored.find((/** @type {any} */ x) => x.ref === 'opening').node_id;
+            const added = await fetch('/api/chats/message/alternative', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatar, sibling_node_id: first, contents: contents.slice(1) }) });
+            return added.ok;
         }, { avatar, name, texts: g.slice(0, 13) });
         expect(stored).toBe(true);
         await openCharacter(page, avatar);

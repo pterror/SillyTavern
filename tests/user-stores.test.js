@@ -82,6 +82,24 @@ describe('user stores', () => {
         expect((await again.lib.tags.byIds(['t1'])).tags.map((/** @type {any} */ t) => t.name)).toEqual(['One']);
     });
 
+    test('a store a read on this thread made is the one userStore() gives, still marked for the default tags; an old-format user is refused there too', async () => {
+        const root = path.join(tempRoot(), 'u');
+        fs.mkdirSync(root);
+        const here = stores.engineStoreHere({ root });
+        expect(stores.engineStoreHere({ root })).toBe(here);
+        expect(here.worldBookSync('none')).toBeNull();
+        const s = await stores.userStore({ root });
+        expect(await s.lib.store.meta(['tags_seed_pending'])).toEqual(['true']);
+        await s.lib.books.write('Shared', { entries: { 0: { content: 'one' } } });
+        expect(here.worldBookSync('Shared').entries).toHaveLength(1);
+
+        const old = path.join(tempRoot(), 'u');
+        fs.mkdirSync(old);
+        fs.writeFileSync(path.join(old, 'message-tree.sqlite'), '');
+        expect(() => stores.engineStoreHere({ root: old })).toThrow(stores.OldFormatError);
+        expect(fs.existsSync(path.join(old, stores.STORE_DIR))).toBe(false);
+    });
+
     test('a converted user is served, its old files left beside the store', async () => {
         const dataRoot = tempRoot();
         const root = path.join(dataRoot, 'u');

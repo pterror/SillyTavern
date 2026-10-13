@@ -1,15 +1,15 @@
 import { CARD_COLUMNS, assembleCard, splitCard } from './character-card-storage.js';
-import { LIST_CREATOR_NOTES_PATHS, LIST_EXTRA_PATHS, cardListValues } from './character-card-reader.js';
-import { getCharaCardV2, computeContentIdentityHash } from './character-card-normalize.js';
+import { computeContentIdentityHash } from './card-identity-hash.js';
+import { LIST_CREATOR_NOTES_PATHS, LIST_EXTRA_PATHS, cardListValues } from './card-list-values.js';
 import { calculateDataSize } from './character-shallow.js';
 import { parseCreateDateToEpochMs } from './util.js';
 import { tagDerivedColumns } from './tag-order.js';
 import { LibraryTags } from './library-engine-tags.js';
 import { textEdit, wtf8Length } from './text-edit.js';
 import { itemField, pushAll, storedValues, valueRecords } from './entity-values.js';
-import { FIELD, TAG_KEY_PREFIX, TYPE } from './library-codes.js';
+import { FIELD, NAME_HISTORY, TAG_KEY_PREFIX, TYPE, renameItem, renamesOf } from './library-codes.js';
 import { bookKey } from './world-info-keys.js';
-import { LIBRARY_LABELS, searchClauses } from './search-clauses.js';
+import { LIBRARY_LABELS, cursorWeights, cursorWeightsOf, searchClauses } from './search-clauses.js';
 import { SLOT, WorldInfoEngine, isEntryList } from './world-info-engine.js';
 import { groupDigestContentHash, groupDigestFavHash, groupDigestTagIdsHash, normalizeFav, normalizeTagIds, tagNameKey } from '../public/scripts/hash-utils.js';
 
@@ -28,7 +28,7 @@ export { FIELD, TAG_KEY_PREFIX, TYPE, textEdit, wtf8Length, itemField, valueReco
 /** @typedef {import('./entity-values.js').StoredEntity} StoredEntity */
 
 /** List codes. */
-export const LIST = Object.freeze({ alternate_greetings: 0, group_only_greetings: 1, tags: 2 });
+export const LIST = Object.freeze({ alternate_greetings: 0, group_only_greetings: 1, tags: 2, nameHistory: NAME_HISTORY });
 
 /** A group's field codes; its other keys are stored by key, `group:<key>`. */
 export const GROUP_FIELD = Object.freeze({
@@ -65,25 +65,76 @@ export function ownerKeyOf(avatar) {
 }
 
 /** `cardHash` kinds. */
-export const HASH = Object.freeze({ identity: 0, content: 1, avatar: 2, avatarIdentity: 3 });
+export const HASH = Object.freeze({ identity: 0, content: 1, avatarIdentity: 3 });
 
 /**
- * A relevance page's cursor (`s<score>:<entity>`, the page's last hit) as the engine's `after`.
+ * A relevance page's cursor as the engine's `after`: `s<rank>:<entity>` (the page ended at that hit),
+ * `t<rank>:<order>.<list cursor>` (among the matches tied at that rank, ordered by `order`), `b<rank>` (past
+ * those), each followed by `:<idf>,<idf>,…` when the query has several words (the idfs page 1 ranked by, so every
+ * page ranks alike). A rank is a hit's place in the order: one word's score before its idf, which cards added or
+ * removed don't move; else the score. A tied cursor made in another order is refused (`'invalid'`).
  * @param {string} cursor
- * @returns {{ score: number, doc: bigint } | null}
+ * @param {string} order The page's tie order (`order` as list cursors name it).
+ * @returns {({ score: number, doc: bigint } | { tied: number, cursor: Buffer } | { below: number }) & { weights?: number[] } | 'invalid' | null}
  */
-function parseRelevanceCursor(cursor) {
-    const m = /^s([^:]+):(\d+)$/.exec(cursor);
-    if (!m) return null;
-    const score = Number(m[1]);
-    return Number.isFinite(score) ? { score, doc: BigInt(m[2]) } : null;
+function parseRelevanceCursor(cursor, order) {
+    const at = (/** @type {object} */ after, /** @type {string | undefined} */ list) => {
+        if (list === undefined) return after;
+        const weights = cursorWeights(list);
+        return weights ? { ...after, weights } : null;
+    };
+    const s = /^s([^:]+):(\d+)(?::([^:]*))?$/.exec(cursor);
+    if (s) {
+        const score = Number(s[1]);
+        return Number.isFinite(score) ? at({ score, doc: BigInt(s[2]) }, s[3]) : null;
+    }
+    const t = /^t([^:]+):([^.]*)\.([^:]*)(?::([^:]*))?$/.exec(cursor);
+    if (t) {
+        const tied = Number(t[1]);
+        if (t[2] !== order) return 'invalid';
+        return Number.isFinite(tied) ? at({ tied, cursor: Buffer.from(t[3], 'base64url') }, t[4]) : null;
+    }
+    const b = /^b([^:]+)(?::([^:]*))?$/.exec(cursor);
+    if (b) {
+        const below = Number(b[1]);
+        return Number.isFinite(below) ? at({ below }, b[2]) : null;
+    }
+    return null;
+}
+
+/**
+ * The engine's `next` of a relevance page as a cursor (see `parseRelevanceCursor`).
+ * @param {{ score?: number, doc?: bigint, tied?: number, cursor?: Buffer, below?: number, weights?: number[] }} next
+ * @param {string} order
+ * @returns {string}
+ */
+function relevanceCursorOf(next, order) {
+    const weights = cursorWeightsOf(next);
+    if (next.tied !== undefined) return `t${next.tied}:${order}.${/** @type {Buffer} */ (next.cursor).toString('base64url')}${weights}`;
+    if (next.below !== undefined) return `b${next.below}${weights}`;
+    return `s${next.score}:${next.doc}${weights}`;
+}
+
+/**
+ * A list sort as the engine takes it.
+ * @param {string | undefined} field
+ * @param {string | undefined} order
+ * @param {number | undefined} seed
+ * @returns {Record<string, unknown>}
+ */
+function listSort(field, order, seed) {
+    const desc = order === 'desc';
+    if (field === 'random') return { seed: Number(seed) || 0, desc };
+    if (field === 'fav') return { fav: true, desc };
+    if (Object.hasOwn(SORT_KEYS, field ?? '')) return { key: SORT_KEYS[/** @type {keyof typeof SORT_KEYS} */ (field)], desc };
+    return { key: SORT_KEYS.name, desc: false };
 }
 
 /** The pair postings' modes (`search::pairs`; 0 is off). */
 const PAIRS = Object.freeze({ building: 1, on: 2, deleting: 3 });
 
 /** Sort key codes of `Store.libraryPage`. */
-const SORT_KEYS = Object.freeze({ name: 0, create_date: 1, date_added: 2, date_last_chat: 3, chat_size: 4, data_size: 5 });
+export const SORT_KEYS = Object.freeze({ name: 0, create_date: 1, date_added: 2, date_last_chat: 3, chat_size: 4, data_size: 5 });
 
 const EXTENSION_PREFIX = 'ext:';
 
@@ -135,6 +186,19 @@ export function cardValues(parts) {
     return { values, lists };
 }
 
+/**
+ * A character's rename history items (`renameItem()`) after a rename from `renamed.from`, given those it has.
+ * @param {string[]} items
+ * @param {{ from: string, pastChats: boolean, at?: number }} renamed
+ * @returns {string[]}
+ */
+function renamedHistory(items, { from, pastChats, at = Date.now() }) {
+    if (pastChats) return [];
+    // Entries stay in time order even if the clock stepped back.
+    const until = Math.max(at, renamesOf(items.slice(-1))[0]?.until ?? 0);
+    return [...items, renameItem({ until, name: from })];
+}
+
 const CODE_NAMES = new Map(Object.entries(FIELD).map(([k, v]) => [v, k]));
 const LIST_NAMES = new Map(Object.entries(LIST).map(([k, v]) => [v, k]));
 
@@ -164,7 +228,7 @@ export function cardParts(entity) {
     for (const [list, texts] of lists) {
         const name = LIST_NAMES.get(list);
         if (name === 'tags') texts.forEach((text, position) => parts.tags.push({ position, name: text }));
-        else if (name) texts.forEach((text, position) => parts.greetings.push({ list: name, position, text }));
+        else if (name === 'alternate_greetings' || name === 'group_only_greetings') texts.forEach((text, position) => parts.greetings.push({ list: name, position, text }));
     }
     // A lorebook linked by id reads as the name of the book it resolves as; a card's own text is kept only where
     // it differs from that name.
@@ -200,6 +264,20 @@ export function groupValues(group) {
 }
 
 /**
+ * The records turning a stored group (none: a new one) into `group`: its fav (normalizeFav()) and its own values.
+ * @param {bigint} id
+ * @param {StoredEntity | null} stored
+ * @param {Record<string, unknown>} group
+ */
+function groupRecords(id, stored, group) {
+    const records = [];
+    const fav = normalizeFav(group.fav);
+    if (stored ? stored.fav !== fav : fav) records.push({ kind: 'fav', entity: id, fav });
+    records.push(...valueRecords(id, stored, groupValues(group)));
+    return records;
+}
+
+/**
  * A stored group's object: its id and its own values, the inverse of groupValues().
  * @param {StoredEntity} entity
  * @returns {Record<string, unknown>}
@@ -227,6 +305,70 @@ export const FIND_WORK_CAP = 20000;
 /**
  * The library of one user's store.
  */
+/** The lane type of an import's upload content hash, beside the entity types' lanes. */
+const IMPORT_LANE = -1;
+
+/** Records a grouped commit holds at most. */
+const GROUP_RECORDS = 4000;
+
+/**
+ * Commits writes together: a write waiting while a commit is under way goes in the next one, so a lone write is sent
+ * at once and writes arriving together share a commit. A refused commit (which writes nothing) is retried one write
+ * at a time, so one write's refusal fails only that write.
+ */
+class GroupedCommits {
+    /** @param {any} store */
+    constructor(store) {
+        this.store = store;
+        /** @type {{ records: object[], resolve: () => void, reject: (err: unknown) => void }[]} */
+        this.waiting = [];
+        this.sending = false;
+    }
+
+    /**
+     * @param {object[]} records
+     * @returns {Promise<void>} Once they are durable.
+     */
+    commit(records) {
+        return new Promise((resolve, reject) => {
+            this.waiting.push({ records, resolve, reject });
+            this.next();
+        });
+    }
+
+    next() {
+        if (this.sending || this.waiting.length === 0) return;
+        let n = 0;
+        let size = 0;
+        while (n < this.waiting.length && (n === 0 || size + this.waiting[n].records.length <= GROUP_RECORDS)) size += this.waiting[n++].records.length;
+        const group = this.waiting.splice(0, n);
+        this.sending = true;
+        this.send(group).finally(() => {
+            this.sending = false;
+            this.next();
+        });
+    }
+
+    /** @param {GroupedCommits['waiting']} group */
+    async send(group) {
+        try {
+            await this.store.commit(group.flatMap(w => w.records));
+            for (const w of group) w.resolve();
+            return;
+        } catch (err) {
+            if (group.length === 1) return group[0].reject(err);
+        }
+        for (const w of group) {
+            try {
+                await this.store.commit(w.records);
+                w.resolve();
+            } catch (err) {
+                w.reject(err);
+            }
+        }
+    }
+}
+
 export class LibraryEngine {
     /**
      * @param {any} store The engine's `Store`.
@@ -243,6 +385,33 @@ export class LibraryEngine {
         this.pairsRun = null;
         this.pairsAgain = false;
         this.pairsStopped = false;
+        /** Open batch imports (`beginBatch()` less `endBatch()`). */
+        this.batches = 0;
+        this.cardCommits = new GroupedCommits(store);
+    }
+
+    /**
+     * Opens a batch import: until it ends, card writes are committed together, the cards whose writes are waiting
+     * while a commit is under way in the next one. Each write still answers only once its card is durable.
+     */
+    beginBatch() {
+        this.batches++;
+    }
+
+    endBatch() {
+        this.batches = Math.max(0, this.batches - 1);
+    }
+
+    /**
+     * Runs `write` after every earlier one given the same upload content hash: an import's duplicate check and its
+     * write, so an identical file sent alongside finds the first stored.
+     * @template T
+     * @param {string} contentHash
+     * @param {() => Promise<T>} write
+     * @returns {Promise<T>}
+     */
+    importLane(contentHash, write) {
+        return this.serialized(IMPORT_LANE, contentHash, write);
     }
 
     /**
@@ -366,19 +535,20 @@ export class LibraryEngine {
      * @param {object} [options]
      * @param {string | null} [options.contentHash] sha256 of the uploaded file's bytes (imports).
      * @param {string | null} [options.avatarIdentityHash]
-     * @param {string | null} [options.avatarHash] sha256 of the image file.
      * @param {number} [options.dateAdded]
      * @param {boolean} [options.fav] The favourite flag for a new character; a stored one keeps its own.
+     * @param {{ from: string, pastChats: boolean, at?: number }} [options.renamed] The card is the stored one renamed from `from`. With `pastChats`, past messages show the new name (the rename history is cleared); without, messages sent before `at` (now) keep showing `from`, and any earlier rename's names stay.
+     * @param {bigint[]} [options.tags] Tag ids added to what the character carries, in the same commit as the card.
      * @returns {Promise<{ id: bigint, records: number }>}
      */
-    writeCard(directories, avatar, cardJson, { contentHash = null, avatarIdentityHash = null, avatarHash = null, dateAdded = Date.now(), fav } = {}) {
+    writeCard(directories, avatar, cardJson, { contentHash = null, avatarIdentityHash = null, dateAdded = Date.now(), fav, renamed, tags = [] } = {}) {
         return this.serialized(TYPE.character, avatar, async () => {
             const card = JSON.parse(cardJson);
             const stored = await this.entity(TYPE.character, avatar);
             const records = [];
             const id = stored ? stored.id : await this.newId(ownerKeyOf(avatar), records);
             if (!stored) {
-                const seeded = fav ?? !!(card?.fav ?? card?.data?.extensions?.fav);
+                const seeded = fav ?? normalizeFav(card?.fav ?? card?.data?.extensions?.fav);
                 if (seeded) records.push({ kind: 'fav', entity: id, fav: true });
             }
             const parts = splitCard(card);
@@ -388,16 +558,21 @@ export class LibraryEngine {
             if (isEntryList(book)) parts.extra.splice(bookAt, 1);
             pushAll(records, (await this.books.ownedRecords(id, SLOT.characterBook, isEntryList(book) ? book : undefined)));
             const next = cardValues(parts);
+            const kept = stored ? storedValues(stored).lists.get(NAME_HISTORY) ?? [] : [];
+            const history = renamed ? renamedHistory(kept, renamed) : kept;
+            if (history.length > 0) next.lists.set(NAME_HISTORY, history);
             const world = next.values.get(FIELD.world)?.text;
             const linkKey = world ? bookKey(world) : '';
             if (linkKey && world === linkKey) next.values.delete(FIELD.world);
             records.push(...valueRecords(id, stored, next));
+            // Loaded here, not at the top: it reaches the world book reads, which reach the user stores, which load this module.
+            const { getCharaCardV2 } = await import('./character-card-normalize.js');
             const normalized = getCharaCardV2(JSON.parse(cardJson), directories, false);
             const size = calculateDataSize(normalized.data ?? {});
             if (stored?.dataSize !== size) records.push({ kind: 'dataSize', entity: id, size });
             const ms = parseCreateDateToEpochMs(normalized.create_date);
             if (!stored || (stored.createMs ?? null) !== ms) records.push({ kind: 'createDate', entity: id, ...(ms === null ? {} : { ms }) });
-            const hashes = [[HASH.identity, computeContentIdentityHash(card)], [HASH.content, contentHash], [HASH.avatarIdentity, avatarIdentityHash], [HASH.avatar, avatarHash]];
+            const hashes = [[HASH.identity, computeContentIdentityHash(card)], [HASH.content, contentHash], [HASH.avatarIdentity, avatarIdentityHash]];
             for (const [which, hex] of hashes) {
                 // A hash is replaced only by a new one: most writers have none, and an import's must outlive them.
                 if (hex === null) continue;
@@ -405,11 +580,14 @@ export class LibraryEngine {
                 if (had && had.hash.toString('hex') === hex) continue;
                 records.push({ kind: 'cardHash', entity: id, which, hash: Buffer.from(hex, 'hex') });
             }
+            records.push(...this.tags.addRecords(stored ?? { id, tags: [] }, tags));
             // A new entity's create comes after its values, so it enters the orders once, with its keys.
             if (!stored) records.push({ kind: 'entityCreate', entity: id, type: TYPE.character, key: avatar, added: dateAdded });
             const commit = async () => {
                 records.push(...(await this.linkRecords(id, stored, linkKey)));
-                if (records.length > 0) await this.store.commit(records);
+                if (records.length === 0) return;
+                if (this.batches > 0) await this.cardCommits.commit(records);
+                else await this.store.commit(records);
             };
             // A name no book has becomes an unresolved book, made once whichever card links it first.
             if (linkKey) await this.serialized(TYPE.book, linkKey, commit);
@@ -453,12 +631,29 @@ export class LibraryEngine {
             const stored = await this.entity(TYPE.group, key);
             const records = [];
             const id = stored ? stored.id : await this.newId(key, records);
-            const fav = normalizeFav(group.fav);
-            if (stored ? stored.fav !== fav : fav) records.push({ kind: 'fav', entity: id, fav });
-            records.push(...valueRecords(id, stored, groupValues(group)));
+            records.push(...groupRecords(id, stored, group));
             if (!stored) records.push({ kind: 'entityCreate', entity: id, type: TYPE.group, key, added: dateAdded });
             if (records.length > 0) await this.store.commit(records);
             return { id, records: records.length };
+        });
+    }
+
+    /**
+     * Changes a stored group: `change` edits its object (its own values, id and fav, as `groups()` answers it but
+     * its tag ids) in place, and what then differs is written, after every earlier write to the group.
+     * @param {string} key
+     * @param {(group: Record<string, any>) => void} change
+     * @returns {Promise<boolean>} Whether there is such a group.
+     */
+    updateGroup(key, change) {
+        return this.serialized(TYPE.group, key, async () => {
+            const stored = await this.entity(TYPE.group, key);
+            if (!stored) return false;
+            const group = { ...groupObject(stored), fav: stored.fav };
+            change(group);
+            const records = groupRecords(stored.id, stored, { ...group, id: key });
+            if (records.length > 0) await this.store.commit(records);
+            return true;
         });
     }
 
@@ -513,6 +708,14 @@ export class LibraryEngine {
         }
         const last = page.entries.length ? Number(page.entries[page.entries.length - 1].pos) : null;
         return { seq: last ?? Math.max(Math.trunc(sinceSeq), Number(page.end)), changes, truncated: false, hasMore: page.more };
+    }
+
+    /**
+     * Where the characters' change feed (`changes()`) ends now.
+     * @returns {Promise<number>}
+     */
+    async changesEnd() {
+        return Number((await this.store.chatRead('entityChanges', { after: 0n, limit: 0 })).end);
     }
 
     /**
@@ -958,9 +1161,13 @@ export class LibraryEngine {
      * @param {string} [params.sortField]
      * @param {'asc' | 'desc'} [params.sortOrder]
      * @param {number} [params.seed]
+     * @param {string} [params.tieSortField] With `sortField: 'search'`: the list sort the matches only tag names
+     *   match (all scoring alike) follow; by name if none.
+     * @param {'asc' | 'desc'} [params.tieSortOrder]
+     * @param {number} [params.tieSeed]
      * @param {number} [params.offset]
      * @param {number} [params.limit]
-     * @param {string} [params.cursor]
+     * @param {string} [params.cursor] A page's `cursor`; one made for another sort answers `'invalid-cursor'`.
      * @param {boolean} [params.wantRows]
      * @param {boolean} [params.wantTotal]
      * @param {boolean} [params.wantHashes]
@@ -968,27 +1175,31 @@ export class LibraryEngine {
      * @param {boolean} [params.includeGroups]
      * @param {boolean} [params.includeCreatorNotes]
      * @param {boolean} [params.wantHidden] Also `hidden` and `approxHidden`, as `/query`'s `want: 'hidden'`.
+     * @param {{ characters: boolean, groups: boolean }} [params.hiddenKinds] What `hidden` counts every entity of; by
+     *   default the kinds this page may hold.
      * @param {number} [params.cap]
      * @param {string} [params.search] Only the characters and groups the search string matches (`searchClauses()`
-     *   with the library's labels); with `sortField: 'search'` best match first. The answer then also holds
-     *   `tagMatches` (up to 5 tags whose names match the search, best first: `{ id, name, carriers }`) and
-     *   `tagMatchesExact` (every tag was weighed).
+     *   with the library's labels); with `sortField: 'search'` best match first.
      */
     async query(params) {
-        const { tags, fav, world, ranges, excludeIds, ids, sortField, sortOrder, seed, offset = 0, limit = 500, cursor, wantRows = true, wantTotal = true, wantHashes = false, wantHidden = false, groupsOnly = false, includeGroups = true, includeCreatorNotes = false, cap = 20_000, search } = params;
+        const { tags, fav, world, ranges, excludeIds, ids, sortField, sortOrder, seed, tieSortField, tieSortOrder, tieSeed, offset = 0, limit = 500, cursor, wantRows = true, wantTotal = true, wantHashes = false, wantHidden = false, groupsOnly = false, includeGroups = true, includeCreatorNotes = false, cap = 20_000, search } = params;
+        const hiddenKinds = params.hiddenKinds ?? { characters: !groupsOnly, groups: groupsOnly || includeGroups };
         const clauses = typeof search === 'string' ? searchClauses(search, LIBRARY_LABELS) : [];
-        // Upstream's "N hidden": every entity of the kinds listed (every character, and every group with groups)
-        // less the rows on this page.
+        // Every entity of those kinds less the rows on this page.
         const hiddenOf = async (/** @type {number} */ shown) => {
             if (!wantHidden) return {};
-            const all = await this.store.libraryPage({ characters: !groupsOnly, groups: groupsOnly || includeGroups, count: true, limit: 0, cap, sort: { key: SORT_KEYS.name, desc: false } });
+            const all = await this.store.libraryPage({ ...hiddenKinds, count: true, limit: 0, cap, sort: { key: SORT_KEYS.name, desc: false } });
             return { hidden: Math.max(0, Number(all.total) - shown), approxHidden: !all.totalExact };
         };
         const include = (tags?.include ?? []).filter(Boolean).map(String);
         const exclude = (tags?.exclude ?? []).filter(Boolean).map(String);
         const tagIds = new Map();
         const tagKeys = [...new Set([...include, ...exclude, ...Object.keys(ranges ?? {}).filter(k => k.startsWith('tag:')).map(k => k.slice(4))])];
-        (await this.ids(TYPE.tag, tagKeys)).forEach((t, i) => tagIds.set(tagKeys[i], t));
+        // A deleted tag filters as the live tag its merges lead to; one deleted with no merge as no tag.
+        const statuses = /** @type {({ id: bigint, state: string, into?: string } | null)[]} */ (tagKeys.length > 0 ? await this.store.tagStatus(tagKeys) : []);
+        const intoKeys = [...new Set(statuses.flatMap(s => (s?.state === 'gone' && s.into !== undefined ? [s.into] : [])))];
+        const intoIds = new Map(/** @type {any[]} */ (intoKeys.length > 0 ? await this.store.tagStatus(intoKeys) : []).map((s, i) => [intoKeys[i], s?.id ?? null]));
+        statuses.forEach((s, i) => tagIds.set(tagKeys[i], s?.state === 'gone' ? (s.into === undefined ? null : intoIds.get(s.into) ?? null) : s?.id ?? null));
         const known = (/** @type {string[]} */ keys) => keys.map(k => tagIds.get(k)).filter(t => t !== null && t !== undefined);
         /** @type {Record<string, unknown>} */
         const q = {
@@ -1026,28 +1237,30 @@ export class LibraryEngine {
                 ...(typeof b.max === 'number' ? { max: b.max } : {}),
             }));
         }
-        const desc = sortOrder === 'desc';
-        if (sortField === 'random') q.sort = { seed: Number(seed) || 0, desc };
-        else if (sortField === 'fav') q.sort = { fav: true, desc };
-        else if (Object.hasOwn(SORT_KEYS, sortField ?? '')) q.sort = { key: SORT_KEYS[/** @type {keyof typeof SORT_KEYS} */ (sortField)], desc };
-        else q.sort = { key: SORT_KEYS.name, desc: false };
-        if (typeof cursor === 'string' && cursor.startsWith('e')) q.cursor = Buffer.from(cursor.slice(1), 'base64url');
         const relevance = clauses.length > 0 && sortField === 'search';
+        q.sort = relevance ? listSort(tieSortField, tieSortOrder, tieSeed) : listSort(sortField, sortOrder, seed);
+        // A list cursor names the order it was made in (`e<order>.<place>`); one made in another is refused.
+        const order = Buffer.from(JSON.stringify(q.sort)).toString('base64url');
+        if (typeof cursor === 'string' && cursor.startsWith('e')) {
+            const dot = cursor.indexOf('.');
+            if (relevance || dot === -1 || cursor.slice(1, dot) !== order) return 'invalid-cursor';
+            q.cursor = Buffer.from(cursor.slice(dot + 1), 'base64url');
+        } else if (typeof cursor === 'string' && /^[stb]/.test(cursor) && !relevance) {
+            return 'invalid-cursor';
+        }
         let page;
-        /** @type {Record<string, unknown>} */
-        let found = {};
         if (clauses.length > 0) {
-            const after = relevance && typeof cursor === 'string' ? parseRelevanceCursor(cursor) : null;
-            if (relevance) delete q.sort;
-            const s = await this.store.librarySearch({ ...q, clauses, relevance, ...(after ? { after } : {}) });
-            const relevanceCursor = relevance && s.more && s.ids.length > 0
-                ? `s${s.scores[s.scores.length - 1]}:${s.ids[s.ids.length - 1]}`
-                : undefined;
-            const tagEntities = await this.entities(s.tags.map(t => t.tag));
-            found = {
-                tagMatches: s.tags.map((t, i) => ({ id: tagEntities[i]?.key, name: t.name, carriers: t.carriers })).filter(t => t.id !== undefined),
-                tagMatchesExact: s.tagsExact,
-            };
+            const after = relevance && typeof cursor === 'string' ? parseRelevanceCursor(cursor, order) : null;
+            if (after === 'invalid') return 'invalid-cursor';
+            let s;
+            try {
+                s = await this.store.librarySearch({ ...q, clauses, relevance, ...(after ? { after } : {}) });
+            } catch (err) {
+                // A cursor whose weights don't fit the query's words.
+                if (after && /^invalid cursor/.test(String(/** @type {any} */ (err)?.message))) return 'invalid-cursor';
+                throw err;
+            }
+            const relevanceCursor = relevance && s.more && s.next ? relevanceCursorOf(s.next, order) : undefined;
             page = { ...s, cursor: relevance ? undefined : s.cursor, relevanceCursor, more: relevance ? false : s.more };
         } else {
             page = await this.store.libraryPage(q);
@@ -1058,10 +1271,9 @@ export class LibraryEngine {
         const out = {
             total: wantTotal ? page.total : undefined,
             approxTotal: wantTotal ? !page.totalExact : false,
-            ...(page.cursor ? { cursor: `e${page.cursor.toString('base64url')}` } : {}),
+            ...(page.cursor ? { cursor: `e${order}.${page.cursor.toString('base64url')}` } : {}),
             ...(page.relevanceCursor ? { cursor: page.relevanceCursor } : {}),
             ...(page.more ? { more: true } : {}),
-            ...found,
         };
         const groups = /** @type {StoredEntity[]} */ ((await this.entities(pageEntities.filter(e => e.type === TYPE.group).map(e => e.id))).filter(e => e !== null));
         const groupOf = new Map(groups.map(g => [g.id, g]));

@@ -1,7 +1,5 @@
 import { describe, test, expect, jest, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals';
-import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import process from 'node:process';
 import lodash from 'lodash';
 
@@ -116,6 +114,8 @@ globalThis.toastr = { error: toastrError, warning: noop, info: noop, success: no
 
 const realFetch = globalThis.fetch;
 
+/** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
+let user;
 /** @type {import('../src/users.js').UserDirectoryList} */
 let directories;
 
@@ -155,7 +155,7 @@ const MODES = [
 ];
 
 describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLoadCharacters=$lazy', ({ creatorNotes, lazy }) => {
-    /** @type {{ metadataDb: typeof import('../src/character-metadata-db.js'), searchCoordinator: typeof import('../src/endpoints/search-index-coordinator.js'), characterList: typeof import('../public/scripts/character-list.js'), server: import('node:http').Server, baseUrl: string }} */
+    /** @type {{ fixture: typeof import('./converted-user.fixture.js'), stores: typeof import('../src/user-stores.js'), characterList: typeof import('../public/scripts/character-list.js'), server: import('node:http').Server, baseUrl: string }} */
     let mode;
 
     beforeAll(async () => {
@@ -167,8 +167,9 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
         const { setConfigFilePath } = await import('../src/util.js');
         setConfigFilePath(path.join(originalCwd, '..', 'default', 'config.yaml'));
 
-        const metadataDb = await import('../src/character-metadata-db.js');
-        const searchCoordinator = await import('../src/endpoints/search-index-coordinator.js');
+        const fixture = await import('./converted-user.fixture.js');
+        // The routes' own module instance: clientResolve() resets modules between tests.
+        const stores = await import('../src/user-stores.js');
         const { router } = await import('../src/endpoints/characters.js');
         const characterList = await import('../public/scripts/character-list.js');
 
@@ -178,7 +179,7 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
         const app = express();
         app.use(express.json());
         app.use((req, res, next) => {
-            req.user = { directories, profile: { handle: `test-user-${path.basename(directories.root)}` } };
+            req.user = user.user;
             next();
         });
         app.use('/api/characters', router);
@@ -186,7 +187,7 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
         await new Promise(resolve => server.once('listening', resolve));
         const baseUrl = `http://127.0.0.1:${server.address().port}`;
 
-        mode = { metadataDb, searchCoordinator, characterList, server, baseUrl };
+        mode = { fixture, stores, characterList, server, baseUrl };
     });
 
     afterAll(async () => {
@@ -196,21 +197,10 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
         delete process.env.SILLYTAVERN_PERFORMANCE_LAZYLOADCHARACTERS;
     });
 
-    beforeEach(() => {
-        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-hash-hit-shape-test-'));
-        directories = {
-            root: tempDir,
-            characters: path.join(tempDir, 'characters'),
-            chats: path.join(tempDir, 'chats'),
-            groups: path.join(tempDir, 'groups'),
-            groupChats: path.join(tempDir, 'groupChats'),
-            backups: path.join(tempDir, 'backups'),
-            thumbnailsAvatar: path.join(tempDir, 'thumbnails', 'avatar'),
-            worlds: path.join(tempDir, 'worlds'),
-        };
-        for (const dir of Object.values(directories)) {
-            fs.mkdirSync(dir, { recursive: true });
-        }
+    beforeEach(async () => {
+        user = await mode.fixture.emptyUser('st-hash-hit-shape-test-', mode.stores);
+        ({ directories } = user);
+        globalThis.DATA_ROOT = user.dataRoot;
         clearClientCaches();
         toastrError.mockClear();
         // The client issues root-relative URLs; route them to the test server.
@@ -219,9 +209,7 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
 
     afterEach(async () => {
         globalThis.fetch = realFetch;
-        await mode.searchCoordinator.disposeSearchWorkers();
-        mode.metadataDb.disposeMetadataStores();
-        fs.rmSync(directories.root, { recursive: true, force: true });
+        await user.close();
     });
 
     function clearClientCaches() {
@@ -248,7 +236,7 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
     }
 
     test.each(CARDS)('%s card: a hit is the row a miss returns', async (_label, card) => {
-        await mode.metadataDb.upsertCharacterFromWrite(directories, 'Char.png', JSON.stringify(card));
+        await user.store.lib.writeCard(directories, 'Char.png', JSON.stringify(card));
 
         const miss = await clientResolve('Char.png');
         expect(miss.batched).toBe(true);

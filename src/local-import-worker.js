@@ -1,22 +1,23 @@
+import './local-import-worker-config.js';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { parentPort } from 'node:worker_threads';
 import extract from 'png-chunks-extract';
 
 import { classifyJsonCandidate, computeCandidateContentIdentityHash, computeContentIdentityHashFromRawText } from './local-import-classify.js';
-import { readFromChunks, computeAvatarIdentityHashFromChunks, computeDefaultAvatarIdentityHash } from './character-card-parser.js';
-import { copyCharacterFile } from './local-import-copy.js';
+import { readFromChunks, computeAvatarIdentityHashFromChunks, computeAvatarIdentityHashFromImageBuffer, computeDefaultAvatarIdentityHash, stripCardData } from './character-card-parser.js';
 import { DEFAULT_AVATAR_PATH } from './constants.js';
 
 /**
  * Reads each source file's bytes exactly once, reusing that buffer through hashing, classification, identity
  * hashing, and the eventual write. png/json candidates use a two-phase protocol: a 'parsed' reply stashes the
- * decoded buffer/chunks in `pendingTasks`, and a later `{ type: 'continue' }` message triggers the write.
+ * decoded buffer/chunks in `pendingTasks`, and a later `{ type: 'continue' }` message answers the card's image to
+ * store.
  * charx/byaf/yaml stay on the original single-message protocol. Never touches sqlite - that stays on the main
  * thread (no WAL/busy_timeout here, and scanDirectory() wraps a pass in one write transaction).
  */
 
-/** @type {Map<number, { sourcePath: string, sourceBuffer: Buffer, chunks: Array<{name: string, data: Uint8Array}> | null, format: string, allowCrossDeviceCopyFallback: boolean }>} */
+/** @type {Map<number, { sourcePath: string, sourceBuffer: Buffer, chunks: Array<{name: string, data: Uint8Array}> | null, format: string }>} */
 const pendingTasks = new Map();
 
 /**
@@ -41,7 +42,7 @@ parentPort.on('message', async (msg) => {
         return;
     }
 
-    const { id, sourcePath, format, allowIdentityFallback, allowCrossDeviceCopyFallback } = msg;
+    const { id, sourcePath, format, allowIdentityFallback } = msg;
     try {
         const sourceBuffer = fs.readFileSync(sourcePath);
         const contentHash = crypto.createHash('sha256').update(sourceBuffer).digest('hex');
@@ -71,7 +72,7 @@ parentPort.on('message', async (msg) => {
             : (!jsonClassification && (format === 'json' || format === 'yaml' || format === 'yml')) ? computeDefaultAvatarIdentityHash() : null;
 
         if (decoded) {
-            pendingTasks.set(id, { sourcePath, sourceBuffer, chunks: decoded.chunks, format, allowCrossDeviceCopyFallback });
+            pendingTasks.set(id, { sourcePath, sourceBuffer, chunks: decoded.chunks, format });
             parentPort.postMessage({ id, phase: 'parsed', ok: true, contentHash, jsonClassification, identityHash, avatarIdentityHash, rawText: decoded.rawText });
             return;
         }
@@ -83,7 +84,9 @@ parentPort.on('message', async (msg) => {
 });
 
 /**
- * @param {{ id: number, outcome: 'no-write' | 'write', destPath?: string, data?: string }} msg
+ * Answers a write with the card's image: the PNG's own (else the default avatar), its card data stripped, and its
+ * identity hash; the main thread stores it.
+ * @param {{ id: number, outcome: 'no-write' | 'write' }} msg
  * @param {{ sourcePath: string, sourceBuffer: Buffer, chunks: Array<{name: string, data: Uint8Array}> | null, format: string }} pending
  */
 async function finishWrite(msg, pending) {
@@ -93,14 +96,9 @@ async function finishWrite(msg, pending) {
         return;
     }
     try {
-        const { destPath } = msg;
-        // Card data lives in the metadata db (fireMetadataUpsertHook(), local-import-scan.js), so the on-disk
-        // png is never read back for it - it must stay byte-identical to sourcePath.
-        const result = await copyCharacterFile(pending.format === 'png' ? pending.sourcePath : DEFAULT_AVATAR_PATH, destPath, pending.allowCrossDeviceCopyFallback);
-        if (pending.format === 'png' && result.method === 'copy') {
-            console.warn(`[local-import] Neither reflink nor hardlink is available for ${destPath}; fell back to a full copy of ${pending.sourcePath}.`);
-        }
-        parentPort.postMessage({ id, phase: 'done', ok: true, outcome: 'write', reflinked: result.method !== 'copy' });
+        const image = stripCardData(pending.format === 'png' ? pending.sourceBuffer : fs.readFileSync(DEFAULT_AVATAR_PATH));
+        const avatarIdentityHash = computeAvatarIdentityHashFromImageBuffer(image);
+        parentPort.postMessage({ id, phase: 'done', ok: true, outcome: 'write', image, avatarIdentityHash });
     } catch (err) {
         parentPort.postMessage({ id, phase: 'done', ok: false, error: /** @type {any} */ (err)?.message ?? String(err) });
     }

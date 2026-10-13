@@ -1,10 +1,10 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals';
-import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 
-/** @type {typeof import('../src/character-metadata-db.js')} */
-let metadataDb;
+/** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
+let user;
+/** @type {typeof import('./converted-user.fixture.js')} */
+let fixture;
 /** @type {import('express').Router} */
 let router;
 /** @type {import('express').Router} */
@@ -18,14 +18,14 @@ let directories;
 beforeAll(async () => {
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
-    metadataDb = await import('../src/character-metadata-db.js');
+    fixture = await import('./converted-user.fixture.js');
     ({ router } = await import('../src/endpoints/characters.js'));
     ({ router: tagsRouter } = await import('../src/endpoints/tags.js'));
     const express = (await import('express')).default;
     const app = express();
     app.use(express.json());
     app.use((req, res, next) => {
-        req.user = { directories, profile: { handle: `test-user-${path.basename(directories.root)}` } };
+        req.user = user.user;
         next();
     });
     app.use('/api/characters', router);
@@ -37,24 +37,13 @@ beforeAll(async () => {
 
 afterAll(() => new Promise(resolve => server.close(resolve)));
 
-beforeEach(() => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-query-folder-test-'));
-    directories = {
-        root: tempDir,
-        characters: path.join(tempDir, 'characters'),
-        chats: path.join(tempDir, 'chats'),
-        groups: path.join(tempDir, 'groups'),
-        groupChats: path.join(tempDir, 'groupChats'),
-    };
-    for (const dir of [directories.characters, directories.chats, directories.groups, directories.groupChats]) {
-        fs.mkdirSync(dir, { recursive: true });
-    }
+beforeEach(async () => {
+    user = await fixture.emptyUser('st-query-folder-test-');
+    directories = user.directories;
+    globalThis.DATA_ROOT = user.dataRoot;
 });
 
-afterEach(() => {
-    metadataDb.disposeMetadataStores();
-    fs.rmSync(directories.root, { recursive: true, force: true });
-});
+afterEach(() => user.close());
 
 const post = (route, body) => fetch(`${baseUrl}${route}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 
@@ -78,17 +67,15 @@ const CARRIES = {
 };
 
 async function seed() {
-    for (const tag of TAGS) await metadataDb.createTagDefinition(directories, tag);
+    for (const tag of TAGS) await user.store.lib.tags.create(tag);
     for (const [id, tags] of Object.entries(CARRIES)) {
         if (id.endsWith('.png')) {
             const cardJson = JSON.stringify({ name: id, data: { name: id, tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
-            await metadataDb.upsertCharacterFromWrite(directories, id, cardJson);
+            await user.store.lib.writeCard(directories, id, cardJson);
         } else {
-            const group = { id, name: id, members: [], chats: [], fav: false };
-            fs.writeFileSync(path.join(directories.groups, `${id}.json`), JSON.stringify(group));
-            await metadataDb.upsertGroupRow(directories, id, id, { fav: false, group });
+            await user.store.lib.writeGroup({ id, name: id, members: [], fav: false });
         }
-        for (const tagId of tags) await metadataDb.assignEntityTag(directories, id, tagId);
+        for (const tagId of tags) await user.store.lib.tags.assign(id, tagId);
     }
 }
 
@@ -137,7 +124,7 @@ describe('/query filter.folder', () => {
     test('a tag turned into a closed folder changes the "none" answer and its token', async () => {
         await seed();
         const first = await (await post('/api/characters/query', { filter: { includeGroups: true, folder: 'none' }, pageSize: 100 })).json();
-        await metadataDb.editTagDefinition(directories, 'plain', { folder_type: 'CLOSED' });
+        await user.store.lib.tags.edit('plain', { folder_type: 'CLOSED' });
         const again = await (await post('/api/characters/query', { filter: { includeGroups: true, folder: 'none' }, pageSize: 100, ifToken: first.token })).json();
         expect(again.unchanged).not.toBe(true);
         expect(again.rows.map(r => r.item.avatar ?? r.item.id).sort()).toEqual(['c0.png', 'c4.png', 'g1']);
@@ -145,7 +132,7 @@ describe('/query filter.folder', () => {
 
     test('while no tag is a closed folder, "none" is no filter: every row, with a counted total', async () => {
         await seed();
-        for (const id of ['closedA', 'closedB']) await metadataDb.editTagDefinition(directories, id, { folder_type: 'OPEN' });
+        for (const id of ['closedA', 'closedB']) await user.store.lib.tags.edit(id, { folder_type: 'OPEN' });
         const body = await (await post('/api/characters/query', { filter: { includeGroups: true, folder: 'none' }, pageSize: 2 })).json();
         expect(body.total).toBe(Object.keys(CARRIES).length);
     });

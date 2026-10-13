@@ -1,36 +1,32 @@
 import { test, expect, beforeAll, afterAll } from '@jest/globals';
-import fs from 'node:fs';
 import http from 'node:http';
-import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
 
 /** @type {import('node:http').Server} */
 let server;
 let baseUrl;
-/** @type {typeof import('../src/character-metadata-db.js')} */
-let metadataDb;
-let tempDir;
+/** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
+let user;
 let previousDataRoot;
 
 beforeAll(async () => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-sse-compression-test-'));
-    // `/changes/stream` writes browser-presence.json under DATA_ROOT.
-    previousDataRoot = globalThis.DATA_ROOT;
-    globalThis.DATA_ROOT = tempDir;
-
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
 
+    user = await (await import('./converted-user.fixture.js')).emptyUser('st-sse-compression-test-');
+    // `/changes/stream` writes browser-presence.json under DATA_ROOT.
+    previousDataRoot = globalThis.DATA_ROOT;
+    globalThis.DATA_ROOT = user.dataRoot;
+
     const { router } = await import('../src/endpoints/characters.js');
     const { default: compressionMiddleware } = await import('../src/middleware/compression.js');
-    metadataDb = await import('../src/character-metadata-db.js');
 
     const express = (await import('express')).default;
     const app = express();
     app.use(compressionMiddleware);
     app.use((req, res, next) => {
-        req.user = { directories: { root: tempDir }, profile: { handle: 'test-user-sse-compression' } };
+        req.user = user.user;
         next();
     });
     app.use('/api/characters', router);
@@ -43,7 +39,7 @@ afterAll(async () => {
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
     globalThis.DATA_ROOT = previousDataRoot;
-    fs.rmSync(tempDir, { recursive: true, force: true });
+    await user.close();
 });
 
 test('a /changes/stream event reaches a gzip-accepting client within a second', async () => {
@@ -70,7 +66,8 @@ test('a /changes/stream event reaches a gzip-accepting client within a second', 
             });
         });
 
-        metadataDb.characterChangeEmitter.emit('change');
+        // A commit to the store is what the stream reports.
+        await user.store.lib.writeCard(user.directories, 'Sse.png', JSON.stringify({ name: 'Sse', data: { name: 'Sse' } }));
 
         const arrived = await Promise.race([
             eventArrived,

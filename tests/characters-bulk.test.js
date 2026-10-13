@@ -1,14 +1,13 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals';
-import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 
 // /api/characters/bulk/*: a selection held as rules over the character list (every character a filter matches,
 // position ranges of the list, characters picked or left out one by one) is fixed on the server as a job, counted,
 // and acted on a batch at a time, with no list of every selected character on the page or in one request.
 
-/** @type {typeof import('../src/character-metadata-db.js')} */
-let metadataDb;
+/** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
+let user;
+let TYPE;
 /** @type {import('node:http').Server} */
 let server;
 let baseUrl;
@@ -20,14 +19,14 @@ beforeAll(async () => {
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
 
-    metadataDb = await import('../src/character-metadata-db.js');
+    ({ TYPE } = await import('../src/library-codes.js'));
     const { router } = await import('../src/endpoints/characters.js');
 
     const express = (await import('express')).default;
     const app = express();
     app.use(express.json());
     app.use((req, res, next) => {
-        req.user = { directories, profile: { handle: `test-user-${path.basename(directories.root)}` } };
+        req.user = user.user;
         next();
     });
     app.use('/api/characters', router);
@@ -38,25 +37,13 @@ beforeAll(async () => {
 
 afterAll(() => new Promise(resolve => server.close(resolve)));
 
-beforeEach(() => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-characters-bulk-test-'));
-    directories = /** @type {any} */ ({
-        root: tempDir,
-        characters: path.join(tempDir, 'characters'),
-        chats: path.join(tempDir, 'chats'),
-        groups: path.join(tempDir, 'groups'),
-        groupChats: path.join(tempDir, 'groupChats'),
-        thumbnailsAvatar: path.join(tempDir, 'thumbnails', 'avatar'),
-    });
-    for (const dir of [directories.characters, directories.chats, directories.groups, directories.groupChats, directories.thumbnailsAvatar]) {
-        fs.mkdirSync(dir, { recursive: true });
-    }
+beforeEach(async () => {
+    user = await (await import('./converted-user.fixture.js')).emptyUser('st-characters-bulk-test-');
+    ({ directories } = user);
+    globalThis.DATA_ROOT = user.dataRoot;
 });
 
-afterEach(() => {
-    metadataDb.disposeMetadataStores();
-    fs.rmSync(directories.root, { recursive: true, force: true });
-});
+afterEach(() => user.close());
 
 /** @returns {Promise<{ status: number, body: any, text: string }>} */
 async function post(route, body) {
@@ -86,17 +73,22 @@ async function seedCharacter(avatar, isFav = false) {
         fav: isFav,
         data: { name, tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: isFav, world: '' } },
     });
-    await metadataDb.upsertCharacterFromWrite(directories, avatar, cardJson);
+    await user.store.lib.writeCard(directories, avatar, cardJson);
 }
 
 /** Avatars C0000.png .. C{n-1}.png; every third one a favorite. */
 async function seedMany(n) {
     /** @type {string[]} */
     const avatars = [];
-    for (let i = 0; i < n; i++) {
-        const avatar = `C${String(i).padStart(4, '0')}.png`;
-        await seedCharacter(avatar, i % 3 === 0);
-        avatars.push(avatar);
+    for (let i = 0; i < n; i++) avatars.push(`C${String(i).padStart(4, '0')}.png`);
+    // Written in one batch of commits, as an import writes a library.
+    user.store.lib.beginBatch();
+    try {
+        for (let i = 0; i < n; i += 100) {
+            await Promise.all(avatars.slice(i, i + 100).map((avatar, j) => seedCharacter(avatar, (i + j) % 3 === 0)));
+        }
+    } finally {
+        user.store.lib.endBatch();
     }
     return avatars;
 }
@@ -104,12 +96,12 @@ async function seedMany(n) {
 /** The list the page shows: every character, by name. */
 const LIST = { filter: { includeGroups: true }, sort: { field: 'name', order: 'asc' } };
 
-/** @param {string} job @returns {Promise<string[]>} every avatar the job holds */
-async function jobAvatars(job) {
+/** @param {object} selection @returns {Promise<string[]>} every avatar the selection holds */
+async function jobAvatars(selection) {
     const avatars = [];
     let after = '';
     for (;;) {
-        const { body } = await post('/bulk/ids', { job, after });
+        const { body } = await post('/bulk/ids', { selection, after });
         avatars.push(...body.avatars);
         if (!body.more) return avatars;
         after = body.avatars[body.avatars.length - 1];
@@ -121,33 +113,33 @@ describe('POST /api/characters/bulk/prepare', () => {
         const avatars = await seedMany(30);
         const favs = avatars.filter((_, i) => i % 3 === 0);
 
-        const { status, body } = await post('/bulk/prepare', {
-            selection: { query: { filter: { fav: true, includeGroups: true }, sort: LIST.sort }, all: true, exclude: [favs[0]], include: ['C0001.png'] },
-            current: favs[1],
-        });
+        const selection = { query: { filter: { fav: true, includeGroups: true }, sort: LIST.sort }, all: true, exclude: [favs[0]], include: ['C0001.png'] };
+        const { status, body } = await post('/bulk/prepare', { selection, current: favs[1] });
 
         expect(status).toBe(200);
         expect(body.count).toBe(favs.length);
         expect(body.containsCurrent).toBe(true);
         expect(body.missing).toEqual([]);
-        expect((await jobAvatars(body.job)).sort()).toEqual([...favs.slice(1), 'C0001.png'].sort());
+        expect((await jobAvatars(selection)).sort()).toEqual([...favs.slice(1), 'C0001.png'].sort());
     });
 
     test('ranges are positions of the list in its own order, across its pages', async () => {
         const avatars = await seedMany(1030);
 
-        const { body } = await post('/bulk/prepare', { selection: { query: LIST, ranges: [[5, 9], [995, 1004]] } });
+        const selection = { query: LIST, ranges: [[5, 9], [995, 1004]] };
+        const { body } = await post('/bulk/prepare', { selection });
 
         expect(body.count).toBe(15);
-        expect((await jobAvatars(body.job)).sort()).toEqual([...avatars.slice(5, 10), ...avatars.slice(995, 1005)].sort());
-    });
+        expect((await jobAvatars(selection)).sort()).toEqual([...avatars.slice(5, 10), ...avatars.slice(995, 1005)].sort());
+    }, 60000);
 
     test('excludeRanges leave positions out of all', async () => {
         const avatars = await seedMany(20);
 
-        const { body } = await post('/bulk/prepare', { selection: { query: LIST, all: true, excludeRanges: [[0, 4]], include: ['C0002.png'] } });
+        const selection = { query: LIST, all: true, excludeRanges: [[0, 4]], include: ['C0002.png'] };
+        await post('/bulk/prepare', { selection });
 
-        expect((await jobAvatars(body.job)).sort()).toEqual([...avatars.slice(5), 'C0002.png'].sort());
+        expect((await jobAvatars(selection)).sort()).toEqual([...avatars.slice(5), 'C0002.png'].sort());
     });
 
     test('a character picked that no character has is named in missing, and the rest are kept', async () => {
@@ -177,41 +169,42 @@ describe('POST /api/characters/bulk/prepare', () => {
 describe('POST /api/characters/bulk/run', () => {
     test('fav flips each selected character from its own stored value, a batch at a time, and reports only watched ones', async () => {
         const avatars = await seedMany(1200);
-        const { body: prepared } = await post('/bulk/prepare', { selection: { query: LIST, all: true } });
+        const selection = { query: LIST, all: true };
 
-        const lines = await postLines('/bulk/run', { job: prepared.job, action: 'fav', watch: ['C0000.png', 'C0001.png'] });
+        const lines = await postLines('/bulk/run', { selection, action: 'fav', watch: ['C0000.png', 'C0001.png'] });
 
         expect(lines.filter(line => line.type === 'item')).toEqual([
             { type: 'item', avatar: 'C0000.png', fav: false },
             { type: 'item', avatar: 'C0001.png', fav: true },
         ]);
-        expect(lines.filter(line => line.type === 'progress').length).toBeGreaterThanOrEqual(3);
+        // A progress line after each chunk of the run list (1,000 characters).
+        expect(lines.filter(line => line.type === 'progress')).toEqual([
+            { type: 'progress', done: 1000, failed: 0 },
+            { type: 'progress', done: 1200, failed: 0 },
+        ]);
         expect(lines[lines.length - 1]).toEqual({ type: 'done', done: 1200, failed: 0 });
-        const favs = await metadataDb.getCharacterFavsByIds(directories, avatars);
+        const favs = Object.fromEntries(await Promise.all(avatars.map(async avatar => [avatar, (await user.store.lib.entity(TYPE.character, avatar))?.fav])));
         expect(avatars.filter(avatar => favs[avatar]).length).toBe(1200 - Math.ceil(1200 / 3));
-    });
+    }, 60000);
 
-    test('delete removes exactly the selected characters, and the job outlives it until dropped', async () => {
+    test('delete removes exactly the selected characters', async () => {
         const avatars = await seedMany(12);
-        const { body: prepared } = await post('/bulk/prepare', { selection: { query: LIST, ranges: [[2, 6]] } });
+        const selection = { query: LIST, ranges: [[2, 6]] };
 
-        const lines = await postLines('/bulk/run', { job: prepared.job, action: 'delete' });
+        const lines = await postLines('/bulk/run', { selection, action: 'delete' });
 
         expect(lines[lines.length - 1]).toEqual({ type: 'done', done: 5, failed: 0 });
-        const exists = await metadataDb.checkCharactersExist(directories, avatars);
+        const exists = Object.fromEntries(await Promise.all(avatars.map(async avatar => [avatar, (await user.store.lib.entity(TYPE.character, avatar)) !== null])));
         expect(avatars.filter(avatar => exists[avatar])).toEqual([...avatars.slice(0, 2), ...avatars.slice(7)]);
-
-        expect((await jobAvatars(prepared.job))).toHaveLength(5);
-        expect((await post('/bulk/drop', { job: prepared.job })).status).toBe(204);
-        expect((await post('/bulk/ids', { job: prepared.job })).status).toBe(404);
     });
 
     test('a character that failed is named, and the rest are still done', async () => {
         await seedMany(3);
-        const { body: prepared } = await post('/bulk/prepare', { selection: { include: ['C0000.png', 'C0001.png'] } });
-        await metadataDb.deleteCharacterRow(directories, 'C0001.png');
+        const selection = { include: ['C0000.png', 'C0001.png'] };
+        await post('/bulk/prepare', { selection });
+        await user.store.lib.deleteEntity(TYPE.character, 'C0001.png');
 
-        const lines = await postLines('/bulk/run', { job: prepared.job, action: 'fav' });
+        const lines = await postLines('/bulk/run', { selection, action: 'fav' });
 
         expect(lines.filter(line => line.type === 'failed').map(line => line.avatar)).toEqual(['C0001.png']);
         expect(lines[lines.length - 1]).toEqual({ type: 'done', done: 1, failed: 1 });
@@ -219,28 +212,33 @@ describe('POST /api/characters/bulk/run', () => {
 
     test('tags: add, the shared ones, remove, reset', async () => {
         await seedMany(4);
-        await metadataDb.assignEntityTag(directories, 'C0000.png', 'own');
-        const { body: prepared } = await post('/bulk/prepare', { selection: { include: ['C0000.png', 'C0001.png', 'C0002.png'] } });
+        for (const id of ['own', 'shared', 'other']) await user.store.lib.writeTag({ id, name: id });
+        await user.store.lib.assignTag(TYPE.character, 'C0000.png', 'own', true);
+        const selection = { include: ['C0000.png', 'C0001.png', 'C0002.png'] };
+        await post('/bulk/prepare', { selection });
 
-        await postLines('/bulk/run', { job: prepared.job, action: 'tag-add', options: { tagIds: ['shared', 'other'] } });
-        expect((await post('/bulk/mutual-tags', { job: prepared.job })).body.tagIds.sort()).toEqual(['other', 'shared']);
+        await postLines('/bulk/run', { selection, action: 'tag-add', options: { tagIds: ['shared', 'other'] } });
+        expect((await post('/bulk/mutual-tags', { selection })).body.tagIds.sort()).toEqual(['other', 'shared']);
 
-        await postLines('/bulk/run', { job: prepared.job, action: 'tag-remove', options: { tagIds: ['other'] } });
-        expect((await post('/bulk/mutual-tags', { job: prepared.job })).body.tagIds).toEqual(['shared']);
-        const afterRemove = await metadataDb.getEntityTagIdsForMany(directories, ['C0000.png', 'C0003.png']);
+        await postLines('/bulk/run', { selection, action: 'tag-remove', options: { tagIds: ['other'] } });
+        expect((await post('/bulk/mutual-tags', { selection })).body.tagIds).toEqual(['shared']);
+        const afterRemove = await user.store.lib.tags.tagIdsFor(['C0000.png', 'C0003.png']);
         expect(afterRemove['C0000.png'].sort()).toEqual(['own', 'shared']);
         expect(afterRemove['C0003.png'] ?? []).toEqual([]);
 
-        await postLines('/bulk/run', { job: prepared.job, action: 'tag-reset' });
-        const afterReset = await metadataDb.getEntityTagIdsForMany(directories, ['C0000.png', 'C0001.png']);
+        await postLines('/bulk/run', { selection, action: 'tag-reset' });
+        const afterReset = await user.store.lib.tags.tagIdsFor(['C0000.png', 'C0001.png']);
         expect(afterReset['C0000.png'] ?? []).toEqual([]);
         expect(afterReset['C0001.png'] ?? []).toEqual([]);
     });
 
-    test('an unknown job is a 404, an unknown action a 400', async () => {
+    test('a run without a selection, or with an unknown action, is a 400', async () => {
         await seedMany(1);
-        const { body: prepared } = await post('/bulk/prepare', { selection: { include: ['C0000.png'] } });
-        expect((await post('/bulk/run', { job: 'nope', action: 'fav' })).status).toBe(404);
-        expect((await post('/bulk/run', { job: prepared.job, action: 'explode' })).status).toBe(400);
+        const selection = { include: ['C0000.png'] };
+        // No jobs: the page sends its selection with each request.
+        const noSelection = await post('/bulk/run', { job: 'nope', action: 'fav' });
+        expect(noSelection.status).toBe(400);
+        expect(noSelection.body.reason).toBe('selection-required');
+        expect((await post('/bulk/run', { selection, action: 'explode' })).status).toBe(400);
     });
 });

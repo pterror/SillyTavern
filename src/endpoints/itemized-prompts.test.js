@@ -1,40 +1,52 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import os from 'node:os';
+import { after, before, describe, test } from 'node:test';
+
 import path from 'node:path';
-import { after, describe, test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import express from 'express';
 
 import '../fetch-patch.js';
+import { setConfigFilePath } from '../util.js';
 
-// Prompt itemizations are kept per message: recorded with the reply, flagged on loaded messages, read one at a time,
-// and removed with their message.
+setConfigFilePath(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'config.yaml'));
+
+// Prompt itemizations are kept per message: recorded with the reply, flagged on loaded messages, read one at a time.
 
 const { router } = await import('./itemized-prompts.js');
-const tree = await import('../message-tree-db.js');
 const { persistAssistantReply } = await import('../assistant-reply-persist.js');
-const { itemizationOf, recordItemization } = await import('../itemization-store.js');
+const { itemizationOf } = await import('../itemization-of.js');
 const { encodeStoredReplyFrame } = await import('./backends/llamacpp-compact-stream.js');
+const { newSessionKey } = await import('../chat-engine.js');
+// The flag a loaded message carries when it has an itemization.
+const ITEMIZED_PROMPT_FLAG = 'has_itemized_prompt';
+const { RequestSession } = await import('../request-session.js');
+const { convertedUser, treeOf, seedMessages } = await import('../../tests/converted-user.fixture.js');
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-itemized-prompts-test-'));
-const directories = { root };
+/** @type {Awaited<ReturnType<typeof convertedUser>>} */
+let user;
+/** @type {import('node:http').Server} */
+let server;
+let base = '';
 
-const app = express();
-app.use(express.json({ limit: '10mb' }));
-app.use((req, _res, next) => {
-    req.user = { directories };
-    next();
+before(async () => {
+    user = await convertedUser('st-itemized-prompts-test-');
+    const app = express();
+    app.use(express.json({ limit: '10mb' }));
+    app.use((req, _res, next) => {
+        req.user = user.user;
+        next();
+    });
+    app.use('/api/itemized-prompts', router);
+    server = app.listen(0, '127.0.0.1');
+    await new Promise(resolve => server.once('listening', resolve));
+    base = `http://127.0.0.1:${/** @type {any} */ (server.address()).port}`;
 });
-app.use('/api/itemized-prompts', router);
-const server = app.listen(0, '127.0.0.1');
-await new Promise(resolve => server.once('listening', resolve));
-const base = `http://127.0.0.1:${server.address().port}`;
 
-after(() => {
-    server.close();
-    tree.disposeMessageTreeStores();
-    fs.rmSync(root, { recursive: true, force: true });
+after(async () => {
+    server.closeAllConnections?.();
+    await new Promise(resolve => server.close(resolve));
+    await user.close();
 });
 
 async function post(route, body) {
@@ -42,28 +54,37 @@ async function post(route, body) {
     return { status: res.status, body: await res.json().catch(() => null) };
 }
 
-const reply = (mes) => ({ name: 'Rex', is_user: false, mes, send_date: 1, extra: {} });
-const user = (mes) => ({ name: 'You', is_user: true, mes, send_date: 1, extra: {} });
+const reply = (mes) => ({ name: 'Alice', is_user: false, mes, send_date: 1, extra: {} });
+const said = (mes) => ({ name: 'You', is_user: true, mes, send_date: 1, extra: {} });
+const alice = { avatar: 'Alice.png' };
 
-/** A chat of `owner`: greeting, user, reply, user, reply; labelled `label`. */
-async function makeChat(owner, label) {
-    const anchor = await tree.getOrCreateAnchor(directories, owner);
-    const { node_ids: ids } = await tree.appendMessages(directories, owner, anchor, [
-        reply(`${label} hello`), user(`${label} one`), reply(`${label} two`), user(`${label} three`), reply(`${label} four`),
-    ]);
-    await tree.labelNode(directories, ids[0], label, { ownerId: owner });
-    return ids;
+/**
+ * A chat of Alice's, through a session of its own: greeting, user, reply, user, reply.
+ * @param {string} label Makes the texts the chat's own.
+ */
+async function makeChat(label) {
+    const session = newSessionKey();
+    const ids = await seedMessages(user.store, alice, null, [
+        reply(`${label} hello`), said(`${label} one`), reply(`${label} two`), said(`${label} three`), reply(`${label} four`),
+    ], { session });
+    return { ids, session };
 }
 
-const db = await tree.getMessageTreeDb(directories);
-const rowCount = () => db.get('SELECT COUNT(*) AS n FROM itemizations').n;
+/** The chat context a reply is stored through. */
+async function chatOf(session = newSessionKey()) {
+    const tree = await treeOf(user.store, alice);
+    const treeSpeaker = (await user.store.people.byAvatar([alice.avatar])).get(alice.avatar) ?? null;
+    return { store: user.store, tree, treeSpeaker, session: new RequestSession(session, 'u', { session, identifier: session }) };
+}
+
+const record = (nodeId, entry) => user.store.chats.recordItemization({ node_id: nodeId, entry });
 
 describe('recording and reading one message', () => {
     test('a stored reply records the itemization sent with it, the server\'s breakdown taking precedence', async () => {
-        const ids = await makeChat('Rex', 'Recorded');
+        const { ids } = await makeChat('Recorded');
         const itemization = itemizationOf({ presetName: 'P', rawPrompt: 'page', mesId: 7 }, { rawPrompt: 'server prompt', finalPrompt: 'f' });
         const persisted = await persistAssistantReply({
-            directories, ownerId: 'Rex', anchorNodeId: ids[4], name2: 'Rex', isSwipe: false, isContinue: false, anchorContent: null,
+            chat: await chatOf(), anchorNodeId: ids[4], name2: 'Alice', isSwipe: false, isContinue: false, anchorContent: null,
             warnings: [], itemization,
         }, 'a new reply');
         assert.ok(persisted?.node_id);
@@ -75,9 +96,9 @@ describe('recording and reading one message', () => {
     });
 
     test('an itemization that can\'t be stored leaves the reply stored and says so, to a stream too', async () => {
-        const ids = await makeChat('Rex', 'Unstorable');
+        const { ids } = await makeChat('Unstorable');
         const pending = {
-            directories, ownerId: 'Rex', anchorNodeId: ids[4], name2: 'Rex', isSwipe: false, isContinue: false, anchorContent: null,
+            chat: await chatOf(), anchorNodeId: ids[4], name2: 'Alice', isSwipe: false, isContinue: false, anchorContent: null,
             warnings: [], itemization: { rawPrompt: 1n },
         };
         const persisted = await persistAssistantReply(pending, 'kept anyway');
@@ -90,86 +111,78 @@ describe('recording and reading one message', () => {
     });
 
     test('a message without one answers 404', async () => {
-        const ids = await makeChat('Rex', 'Without');
+        const { ids } = await makeChat('Without');
         assert.equal((await post('message', { node_id: ids[2] })).status, 404);
         assert.equal((await post('message', {})).status, 400);
     });
 
     test('the previous one is the nearest message above holding a raw prompt', async () => {
-        const ids = await makeChat('Ann', 'Previous');
-        await recordItemization(directories, ids[0], { rawPrompt: 'first' });
-        await recordItemization(directories, ids[2], { presetName: 'no prompt here' });
-        await recordItemization(directories, ids[4], { rawPrompt: 'third' });
+        const { ids } = await makeChat('Previous');
+        await record(ids[0], { rawPrompt: 'first' });
+        await record(ids[2], { presetName: 'no prompt here' });
+        await record(ids[4], { rawPrompt: 'third' });
         assert.equal((await post('message', { node_id: ids[4] })).body.previous_node_id, ids[0]);
         assert.equal((await post('message', { node_id: ids[2] })).body.previous_node_id, ids[0]);
         assert.equal((await post('message', { node_id: ids[0] })).body.previous_node_id, null);
     });
 
     test('recording the same itemization again writes nothing', async () => {
-        const ids = await makeChat('Bob', 'Same');
-        assert.equal(await recordItemization(directories, ids[2], { rawPrompt: 'x', mesId: 2 }), 'written');
-        assert.equal(await recordItemization(directories, ids[2], { rawPrompt: 'x' }), 'unchanged');
-        assert.equal(await recordItemization(directories, 'no-such-node', { rawPrompt: 'x' }), 'no-message');
+        const { ids } = await makeChat('Same');
+        assert.equal(await record(ids[2], { rawPrompt: 'x', mesId: 2 }), 'written');
+        assert.equal(await record(ids[2], { rawPrompt: 'x' }), 'unchanged');
+        assert.equal(await record('no-such-node', { rawPrompt: 'x' }), 'no-message');
     });
 });
 
 describe('the flag on loaded messages', () => {
-    test('a loaded chat flags its itemized messages and alternatives, an export doesn\'t', async () => {
-        const ids = await makeChat('Cat', 'Flags');
-        const alt = (await tree.addAlternatives(directories, 'Cat', ids[2], [reply('Flags two, again')])).node_ids[0];
-        await recordItemization(directories, ids[2], { rawPrompt: 'a' });
-        await recordItemization(directories, alt, { rawPrompt: 'b' });
+    test('a loaded chat flags its itemized messages and alternatives', async () => {
+        const { ids } = await makeChat('Flags');
+        const [alt] = await seedMessages(user.store, alice, ids[1], [reply('Flags two, again')]);
+        await record(ids[2], { rawPrompt: 'a' });
+        await record(alt, { rawPrompt: 'b' });
 
-        const loaded = await tree.loadAtNode(directories, 'Cat', ids[0]);
-        const flagOf = (/** @type {any} */ m) => m?.extra?.[tree.ITEMIZED_PROMPT_FLAG] === true;
+        const loaded = await user.store.chats.load({ tree: await treeOf(user.store, alice), at: ids[4] });
+        const flagOf = (/** @type {any} */ m) => m?.extra?.[ITEMIZED_PROMPT_FLAG] === true;
         assert.deepEqual(loaded.messages.map(flagOf), [false, false, true, false, false]);
         assert.deepEqual(loaded.messages[2].swipe_info.map(flagOf), [true, true]);
-
-        const alternatives = await tree.getAlternatives(directories, ids[2]);
-        assert.deepEqual(alternatives.alternatives.map(flagOf), [true, true]);
-
-        const exported = await tree.loadBranch(directories, 'Cat', 'Flags', true);
-        assert.ok(exported.messages.every(m => !flagOf(m)));
     });
 
     test('the flag is never stored in a message', async () => {
-        const ids = await makeChat('Dan', 'Stored');
-        await recordItemization(directories, ids[2], { rawPrompt: 'a' });
-        const loaded = await tree.loadAtNode(directories, 'Dan', ids[0]);
-        const edited = { ...loaded.messages[2], mes: 'Stored two, edited' };
-        assert.ok((await tree.editMessage(directories, 'Dan', ids[2], edited)).ok);
-        const row = db.get('SELECT content FROM messages WHERE id = @id', { id: ids[2] });
-        assert.equal(JSON.parse(row.content).extra?.[tree.ITEMIZED_PROMPT_FLAG], undefined);
-    });
-
-    test('an itemization goes with its message when the message is deleted', async () => {
-        const ids = await makeChat('Eve', 'Deleted');
-        const alt = (await tree.addAlternatives(directories, 'Eve', ids[4], [reply('Deleted four, again')])).node_ids[0];
-        await recordItemization(directories, alt, { rawPrompt: 'a' });
-        const before = rowCount();
-        assert.ok((await tree.deleteAlternative(directories, 'Eve', alt)).ok);
-        assert.equal(rowCount(), before - 1);
+        const { ids } = await makeChat('Stored');
+        await record(ids[2], { rawPrompt: 'a' });
+        const tree = await treeOf(user.store, alice);
+        const loaded = await user.store.chats.load({ tree, at: ids[4] });
+        const { storedForm } = await import('../chat-engine.js');
+        const edited = await user.store.chats.editMessages({
+            tree, treeSpeaker: null, edits: [{ node_id: ids[2], content: storedForm({ ...loaded.messages[2], mes: 'Stored two, edited' }) }], actor: { user: 'u', session: newSessionKey() },
+        });
+        assert.deepEqual(edited.refused, []);
+        const stored = await user.store.chats.messageOf(tree, ids[2]);
+        const [content] = await user.store.chats.decoded([stored]);
+        assert.equal(content.extra?.[ITEMIZED_PROMPT_FLAG], undefined);
     });
 });
 
 describe('the routes behind upstream\'s exports', () => {
     test('/chat answers a chat\'s itemizations by position, or its node ids', async () => {
-        const ids = await makeChat('Fay', 'Whole');
-        await recordItemization(directories, ids[2], { rawPrompt: 'two' });
-        await recordItemization(directories, ids[4], { rawPrompt: 'four' });
-        const whole = await post('chat', { avatar_url: 'Fay.png', chat: 'Whole' });
+        const { ids, session } = await makeChat('Whole');
+        await record(ids[2], { rawPrompt: 'two' });
+        await record(ids[4], { rawPrompt: 'four' });
+        const whole = await post('chat', { avatar_url: 'Alice.png', chat: session });
         assert.deepEqual(whole.body.entries, [
             { index: 2, node_id: ids[2], entry: { rawPrompt: 'two' } },
             { index: 4, node_id: ids[4], entry: { rawPrompt: 'four' } },
         ]);
-        assert.deepEqual((await post('chat', { avatar_url: 'Fay.png', chat: ids[0], ids_only: true })).body.node_ids, ids);
-        assert.equal((await post('chat', { avatar_url: 'Fay.png', chat: 'Nope' })).status, 404);
-        assert.equal((await post('chat', { avatar_url: 'Someone.png', chat: 'Whole' })).status, 404, 'a chat of another owner');
+        assert.deepEqual((await post('chat', { avatar_url: 'Alice.png', chat: session, ids_only: true })).body.node_ids, ids);
+        assert.equal((await post('chat', { avatar_url: 'Alice.png', chat: 'Nope' })).status, 404);
+        assert.equal((await post('chat', { avatar_url: 'Bob.png', chat: session })).status, 404, 'a chat of another tree');
+        assert.equal((await post('chat', { avatar_url: 'Someone.png', chat: session })).status, 404, 'no such character');
+        assert.equal((await post('chat', { avatar_url: 'Alice.png' })).status, 400);
     });
 
     test('/set replaces entries and merges fields, writing only what changed', async () => {
-        const ids = await makeChat('Gus', 'Set');
-        await recordItemization(directories, ids[2], { rawPrompt: 'old', presetName: 'P' });
+        const { ids } = await makeChat('Set');
+        await record(ids[2], { rawPrompt: 'old', presetName: 'P' });
         const first = await post('set', { items: [
             { node_id: ids[2], fields: { rawPrompt: 'new' } },
             { node_id: ids[4], entry: { rawPrompt: 'four' } },
@@ -183,14 +196,15 @@ describe('the routes behind upstream\'s exports', () => {
     });
 
     test('/delete removes a chat\'s itemizations, /clear all of them', async () => {
-        const ids = await makeChat('Hal', 'Gone');
-        await recordItemization(directories, ids[2], { rawPrompt: 'two' });
-        await recordItemization(directories, ids[4], { rawPrompt: 'four' });
-        assert.deepEqual((await post('delete', { avatar_url: 'Hal.png', chat: 'Gone' })).body, { removed: 2 });
+        const { ids, session } = await makeChat('Gone');
+        await record(ids[2], { rawPrompt: 'two' });
+        await record(ids[4], { rawPrompt: 'four' });
+        assert.deepEqual((await post('delete', { avatar_url: 'Alice.png', chat: session })).body, { removed: 2 });
         assert.equal((await post('message', { node_id: ids[2] })).status, 404);
 
-        assert.ok(rowCount() > 0);
+        const other = await makeChat('Kept');
+        await record(other.ids[2], { rawPrompt: 'two' });
         assert.equal((await post('clear', {})).status, 200);
-        assert.equal(rowCount(), 0);
+        assert.equal((await post('message', { node_id: other.ids[2] })).status, 404);
     });
 });

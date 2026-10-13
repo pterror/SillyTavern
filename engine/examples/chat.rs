@@ -318,7 +318,12 @@ fn actions(s: &Store, l: &mut Load, trees: u64, dev: &str) {
                 .expect("a step back");
             vec![rec(
                 "historyStep",
-                vec![Value::Id(p), Value::Id(1), Value::UInt(n)],
+                vec![
+                    Value::Id(p),
+                    Value::Id(1),
+                    Value::UInt(n),
+                    Value::Time(1_700_000_000_000),
+                ],
             )]
         }),
     ));

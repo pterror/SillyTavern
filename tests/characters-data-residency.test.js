@@ -11,12 +11,13 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals';
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 
 /** @type {typeof import('../src/character-card-parser.js')} */
 let cardParser;
-/** @type {typeof import('../src/character-metadata-db.js')} */
-let metadataDb;
+/** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
+let user;
+/** @type {typeof import('../src/character-avatars.js')} */
+let avatars;
 /** @type {import('express').Router} */
 let router;
 /** @type {import('node:http').Server} */
@@ -35,7 +36,7 @@ beforeAll(async () => {
 
     ({ router } = await import('../src/endpoints/characters.js'));
     cardParser = await import('../src/character-card-parser.js');
-    metadataDb = await import('../src/character-metadata-db.js');
+    avatars = await import('../src/character-avatars.js');
 
     process.chdir(path.resolve(originalCwd, '..'));
 
@@ -43,7 +44,7 @@ beforeAll(async () => {
     const app = express();
     app.use(express.json());
     app.use((req, res, next) => {
-        req.user = { directories, profile: { handle: 'test-user' } };
+        req.user = user.user;
         next();
     });
     app.use('/api/characters', router);
@@ -57,19 +58,13 @@ afterAll(async () => {
     process.chdir(originalCwd);
 });
 
-beforeEach(() => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-residency-test-'));
-    const charactersDir = path.join(tempDir, 'characters');
-    const chatsDir = path.join(tempDir, 'chats');
-    fs.mkdirSync(charactersDir, { recursive: true });
-    fs.mkdirSync(chatsDir, { recursive: true });
-    directories = { characters: charactersDir, chats: chatsDir, root: tempDir };
+beforeEach(async () => {
+    user = await (await import('./converted-user.fixture.js')).emptyUser('st-residency-test-');
+    ({ directories } = user);
+    globalThis.DATA_ROOT = user.dataRoot;
 });
 
-afterEach(() => {
-    metadataDb.disposeMetadataStores();
-    fs.rmSync(directories.root, { recursive: true, force: true });
-});
+afterEach(() => user.close());
 
 const post = (route, body) => fetch(`${baseUrl}/api/characters/${route}`, {
     method: 'POST',
@@ -77,31 +72,46 @@ const post = (route, body) => fetch(`${baseUrl}/api/characters/${route}`, {
     body: JSON.stringify(body),
 });
 
-/** @returns {{ mtimeMs: number, size: number }} */
-function fileStamp(avatar) {
-    const s = fs.statSync(path.join(directories.characters, avatar));
+/** The character's image file in `characters/`, or null when it has none. */
+async function imageFile(avatar) {
+    const file = avatars.avatarFile(directories, avatar);
+    return fs.existsSync(file) ? file : null;
+}
+
+/** @returns {Promise<{ mtimeMs: number, size: number }>} */
+async function fileStamp(avatar) {
+    const s = fs.statSync(/** @type {string} */ (await imageFile(avatar)));
     return { mtimeMs: s.mtimeMs, size: s.size };
 }
 
-/** The card JSON actually embedded in the PNG on disk, ignoring the db entirely. */
+/** The card JSON actually embedded in the PNG on disk, ignoring the store entirely. */
 async function chunkOnDisk(avatar) {
-    return JSON.parse(await cardParser.parse(path.join(directories.characters, avatar), 'png'));
+    return JSON.parse(await cardParser.parse(/** @type {string} */ (await imageFile(avatar)), 'png'));
 }
+
+/** The stored card as JSON, or null for no such character. */
+async function cardJsonOf(avatar) {
+    const [card] = await user.store.lib.cards([avatar]);
+    return card === null || card === undefined ? null : JSON.stringify(card);
+}
+
+/** Where the characters' change feed is: it moves with every write that changes a character. */
+const changeSeq = () => user.store.lib.changesEnd();
 
 describe('metadata-only edits do not touch the PNG', () => {
     test('an /edit that changes only text leaves the file byte-identical and parks the content in the db', async () => {
         expect((await post('create', { ch_name: 'Alice', description: 'original', file_name: 'Alice' })).status).toBe(200);
 
-        expect(JSON.parse(await metadataDb.getCharacterCardJson(directories, 'Alice.png')).data.description).toBe('original');
-        const before = fileStamp('Alice.png');
+        expect(JSON.parse(await cardJsonOf('Alice.png')).data.description).toBe('original');
+        const before = await fileStamp('Alice.png');
 
         expect((await post('edit', { avatar_url: 'Alice.png', ch_name: 'Alice', description: 'EDITED' })).status).toBe(200);
 
         // The file did not move at all - not its bytes, not its mtime.
-        expect(fileStamp('Alice.png')).toEqual(before);
+        expect(await fileStamp('Alice.png')).toEqual(before);
 
         await expect(chunkOnDisk('Alice.png')).rejects.toThrow('PNG metadata does not contain any');
-        const parked = await metadataDb.getCharacterCardJson(directories, 'Alice.png');
+        const parked = await cardJsonOf('Alice.png');
         expect(parked).not.toBeNull();
         expect(JSON.parse(parked).data.description).toBe('EDITED');
     });
@@ -113,7 +123,7 @@ describe('metadata-only edits do not touch the PNG', () => {
         const got = await (await post('get', { avatar_url: 'Alice.png' })).json();
         expect(got.data.description).toBe('EDITED');
 
-        const listRow = (await metadataDb.getShallowByIds(directories, ['Alice.png']))['Alice.png'];
+        const [listRow] = await user.store.lib.cards(['Alice.png']);
         expect(listRow.name).toBe('Alice');
     });
 
@@ -134,25 +144,25 @@ describe('metadata-only edits do not touch the PNG', () => {
 
     test('successive edits keep replacing the parked copy', async () => {
         await post('create', { ch_name: 'Alice', description: 'v1', file_name: 'Alice' });
-        const before = fileStamp('Alice.png');
+        const before = await fileStamp('Alice.png');
 
         await post('edit', { avatar_url: 'Alice.png', ch_name: 'Alice', description: 'v2' });
         await post('edit', { avatar_url: 'Alice.png', ch_name: 'Alice', description: 'v3' });
 
-        expect(fileStamp('Alice.png')).toEqual(before);
-        const parked = JSON.parse(await metadataDb.getCharacterCardJson(directories, 'Alice.png'));
+        expect(await fileStamp('Alice.png')).toEqual(before);
+        const parked = JSON.parse(await cardJsonOf('Alice.png'));
         expect(parked.data.description).toBe('v3');
     });
 
     test('a rename is a metadata-only edit too', async () => {
         await post('create', { ch_name: 'Alice', description: 'desc', file_name: 'Alice' });
-        const before = fileStamp('Alice.png');
+        const before = await fileStamp('Alice.png');
 
         expect((await post('rename', { avatar_url: 'Alice.png', new_name: 'Alicia' })).status).toBe(200);
 
-        expect(fileStamp('Alice.png')).toEqual(before);
-        expect(JSON.parse(await metadataDb.getCharacterCardJson(directories, 'Alice.png')).name).toBe('Alicia');
-        const row = await metadataDb.getCharacterMetadataRow(directories, 'Alice.png');
+        expect(await fileStamp('Alice.png')).toEqual(before);
+        expect(JSON.parse(await cardJsonOf('Alice.png')).name).toBe('Alicia');
+        const [row] = await user.store.lib.cards(['Alice.png']);
         expect(row.name).toBe('Alicia');
     });
 });
@@ -177,14 +187,14 @@ describe('export still hands out a self-contained, current card', () => {
     test('exporting does not mutate the stored file', async () => {
         await post('create', { ch_name: 'Alice', description: 'original', file_name: 'Alice' });
         await post('edit', { avatar_url: 'Alice.png', ch_name: 'Alice', description: 'EDITED' });
-        const before = fileStamp('Alice.png');
+        const before = await fileStamp('Alice.png');
 
         await post('export', { avatar_url: 'Alice.png', format: 'png' });
         await post('export', { avatar_url: 'Alice.png', format: 'png' });
 
         // Export is a read-shaped action a user can trigger in bulk; it must not write to the library.
-        expect(fileStamp('Alice.png')).toEqual(before);
-        expect(await metadataDb.getCharacterCardJson(directories, 'Alice.png')).not.toBeNull();
+        expect(await fileStamp('Alice.png')).toEqual(before);
+        expect(await cardJsonOf('Alice.png')).not.toBeNull();
     });
 
     test('JSON export uses the edited content too', async () => {
@@ -207,19 +217,19 @@ describe('duplicate copies the current content', () => {
         const newAvatar = (await response.json()).path;
 
         await expect(chunkOnDisk(newAvatar)).rejects.toThrow('PNG metadata does not contain any');
-        expect(JSON.parse(await metadataDb.getCharacterCardJson(directories, newAvatar)).data.description).toBe('EDITED');
+        expect(JSON.parse(await cardJsonOf(newAvatar)).data.description).toBe('EDITED');
     });
 });
 
 describe('an image write keeps the stored card set', () => {
-    test('the stored card is the content upsertCharacterFromWrite() was given', async () => {
+    test('the stored card is the content writeCard() was given', async () => {
         await post('create', { ch_name: 'Alice', description: 'original', file_name: 'Alice' });
         await post('edit', { avatar_url: 'Alice.png', ch_name: 'Alice', description: 'EDITED' });
 
-        const cardJson = await metadataDb.getCharacterCardJson(directories, 'Alice.png');
-        await metadataDb.upsertCharacterFromWrite(directories, 'Alice.png', cardJson);
+        const cardJson = await cardJsonOf('Alice.png');
+        await user.store.lib.writeCard(directories, 'Alice.png', /** @type {string} */ (cardJson));
 
-        expect(await metadataDb.getCharacterCardJson(directories, 'Alice.png')).toBe(cardJson);
+        expect(await cardJsonOf('Alice.png')).toBe(cardJson);
     });
 });
 
@@ -249,15 +259,15 @@ describe('greeting operations read and write the same place', () => {
 
     test('a greeting op parks its result and leaves the PNG alone', async () => {
         await post('create', { ch_name: 'Alice', description: 'd', first_mes: 'hello', file_name: 'Alice' });
-        const before = fileStamp('Alice.png');
+        const before = await fileStamp('Alice.png');
 
         expect((await post('greetings/add', { avatar_url: 'Alice.png', position: 1, expected_length: 1, text: 'second' })).status).toBe(200);
 
-        expect(fileStamp('Alice.png')).toEqual(before);
+        expect(await fileStamp('Alice.png')).toEqual(before);
         // Stored file carries no character data at all (image-only since creation), so there's nothing there for
         // the greeting op to have touched - see the create/export test above for the same invariant.
         await expect(chunkOnDisk('Alice.png')).rejects.toThrow('PNG metadata does not contain any');
-        expect(JSON.parse(await metadataDb.getCharacterCardJson(directories, 'Alice.png')).data.alternate_greetings).toEqual(['second']);
+        expect(JSON.parse(await cardJsonOf('Alice.png')).data.alternate_greetings).toEqual(['second']);
     });
 
     test('a greeting added through the op shows up in /get and in an export', async () => {
@@ -274,7 +284,7 @@ describe('greeting operations read and write the same place', () => {
 });
 
 describe('add and unset-default are conflict-checked too', () => {
-    const storedCard = async () => JSON.parse(await metadataDb.getCharacterCardJson(directories, 'Alice.png'));
+    const storedCard = async () => JSON.parse(await cardJsonOf('Alice.png'));
 
     test('add with the current length appends', async () => {
         await post('create', { ch_name: 'Alice', description: 'd', first_mes: 'hello', file_name: 'Alice' });
@@ -333,8 +343,7 @@ describe('add and unset-default are conflict-checked too', () => {
 });
 
 describe('/greetings/move places next to a hash-checked target', () => {
-    const storedCard = async () => JSON.parse(await metadataDb.getCharacterCardJson(directories, 'Alice.png'));
-    const changeSeq = async () => (await metadataDb.getCharacterMetadataRow(directories, 'Alice.png')).version;
+    const storedCard = async () => JSON.parse(await cardJsonOf('Alice.png'));
 
     /** Alice with greetings ['hello', 'second', 'third'], 'hello' the default. Resolves to their hashes. */
     async function aliceWithThreeGreetings() {
@@ -404,7 +413,7 @@ describe('/greetings/move places next to a hash-checked target', () => {
 });
 
 describe('delete, set default and move find a greeting that moved by its hash, and answer with the positions they used', () => {
-    const storedCard = async () => JSON.parse(await metadataDb.getCharacterCardJson(directories, 'Alice.png'));
+    const storedCard = async () => JSON.parse(await cardJsonOf('Alice.png'));
 
     /** Alice with greetings ['hello', 'second', 'third'], 'hello' the default. Resolves to their hashes. */
     async function aliceWithThreeGreetings() {
@@ -465,7 +474,7 @@ describe('delete, set default and move find a greeting that moved by its hash, a
 });
 
 describe('/greetings/add with append appends without a length check', () => {
-    const storedCard = async () => JSON.parse(await metadataDb.getCharacterCardJson(directories, 'Alice.png'));
+    const storedCard = async () => JSON.parse(await cardJsonOf('Alice.png'));
 
     test('it lands after the last greeting whatever the length, and answers with its position', async () => {
         await post('create', { ch_name: 'Alice', description: 'd', first_mes: 'hello', file_name: 'Alice' });
@@ -500,7 +509,7 @@ describe('/greetings/add with append appends without a length check', () => {
 });
 
 describe('/greetings/default/unset with expected_default_hash checks the default greeting, not its position', () => {
-    const storedCard = async () => JSON.parse(await metadataDb.getCharacterCardJson(directories, 'Alice.png'));
+    const storedCard = async () => JSON.parse(await cardJsonOf('Alice.png'));
 
     /** Alice with greetings ['hello', 'second', 'third'], 'second' the default. Resolves to their hashes. */
     async function aliceWithDefaultSecond() {
@@ -544,7 +553,6 @@ describe('/greetings/default/unset with expected_default_hash checks the default
 });
 
 describe('an op whose outcome is already in place answers 200 and writes nothing', () => {
-    const changeSeq = async () => (await metadataDb.getCharacterMetadataRow(directories, 'Alice.png')).version;
 
     test('unset when there is no default, by position or by hash', async () => {
         await post('create', { ch_name: 'Alice', description: 'd', first_mes: 'hello', file_name: 'Alice' });
@@ -645,14 +653,14 @@ describe('/edit\'s content-hash conflict check survives the residency split', ()
             expect(response.status).toBe(200);
         }
 
-        expect(JSON.parse(await metadataDb.getCharacterCardJson(directories, 'Alice.png')).data.description).toBe('v4');
+        expect(JSON.parse(await cardJsonOf('Alice.png')).data.description).toBe('v4');
     });
 });
 
 describe('a character whose PNG is missing', () => {
     test('/batch still returns it from the stored card, never reading the PNG', async () => {
         await post('create', { ch_name: 'Alice', description: 'from-db', file_name: 'Alice' });
-        fs.rmSync(path.join(directories.characters, 'Alice.png'));
+        fs.rmSync(/** @type {string} */ (await imageFile('Alice.png')), { force: true });
 
         const batch = await (await post('batch', { avatars: ['Alice.png'] })).json();
         expect(batch).toHaveLength(1);
@@ -662,7 +670,7 @@ describe('a character whose PNG is missing', () => {
     test('/all without search still lists it, from its row', async () => {
         await post('create', { ch_name: 'Alice', description: 'from-db', file_name: 'Alice' });
         await post('create', { ch_name: 'Bob', description: 'b', file_name: 'Bob' });
-        fs.rmSync(path.join(directories.characters, 'Alice.png'));
+        fs.rmSync(/** @type {string} */ (await imageFile('Alice.png')), { force: true });
 
         const all = await (await post('all', {})).json();
         const byAvatar = Object.fromEntries(all.map(c => [c.avatar, c]));

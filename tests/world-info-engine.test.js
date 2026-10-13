@@ -4,18 +4,16 @@ import path from 'node:path';
 import os from 'node:os';
 
 /**
- * World info on the engine (src/world-info-engine.js) against the old store's routes (src/endpoints/worldinfo.js)
- * for the same writes: books read back, the books list, `/entries/apply`, `/entry/create`, `/entry/edit`,
- * `/entry/transplant`, `/duplicate`, `/delete`; and what only the engine has: what a write records, characters'
- * embedded books, lorebook links by id.
+ * World info on the engine (src/world-info-engine.js): books read back as written, the books list, and the entry
+ * actions (`/entries/apply`, `/entry/create`, `/entry/edit`, `/entry/transplant`, `/duplicate`, `/delete`) against a
+ * model of what each route does to a book; and what a write records, characters' embedded books, lorebook links by
+ * id.
  */
 
 /** @type {typeof import('../src/library-engine.js')} */
 let lib;
 /** @type {typeof import('../public/scripts/hash-utils.js')} */
 let hashUtils;
-/** @type {any} */
-let oldRouter;
 /** @type {any} */
 let engine;
 /** @type {Record<string, any>} */
@@ -32,7 +30,6 @@ beforeAll(async () => {
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
     lib = await import('../src/library-engine.js');
     hashUtils = await import('../public/scripts/hash-utils.js');
-    oldRouter = (await import('../src/endpoints/worldinfo.js')).router;
     const { loadEngine } = await import('../engine/load.js');
     engines.native = loadEngine().binding;
     engines.wasm = loadEngine({ platform: null }).binding;
@@ -51,28 +48,6 @@ afterEach(async () => {
     await library.close();
     fs.rmSync(directories.root, { recursive: true, force: true });
 });
-
-/** An old route's answer: `{ status, body }` (the body as JSON carries it). */
-function old(route, body) {
-    return new Promise((resolve, reject) => {
-        const req = { method: 'POST', url: route, body, user: { directories }, headers: {} };
-        const res = {
-            statusCode: 200,
-            status(c) {
-                this.statusCode = c;
-                return this;
-            },
-            send(b) {
-                resolve({ status: this.statusCode, body: b === undefined ? undefined : JSON.parse(JSON.stringify(b)) });
-            },
-            sendStatus(c) {
-                resolve({ status: c });
-            },
-            setHeader() {},
-        };
-        oldRouter.handle(req, res, (/** @type {any} */ err) => (err ? reject(err) : reject(new Error(`no route ${route}`))));
-    });
-}
 
 /** A deterministic stream of numbers in [0, 1). */
 function rng(seed) {
@@ -154,16 +129,60 @@ function expectSameBook(got, want) {
     }
 }
 
-/** Reads a book both ways and checks they agree. */
-async function same(name) {
-    const want = (await old('/get', { name })).body;
-    const got = await books.read(name);
-    if (!want || Object.keys(want).length === 1 && Object.keys(want.entries ?? {}).length === 0 && !fs.existsSync(path.join(directories.worlds, `${name}.json`))) {
-        expect(got).toBeNull();
-        return null;
+/** As JSON carries it. */
+const json = (/** @type {unknown} */ v) => JSON.parse(JSON.stringify(v));
+
+/** The lowest non-negative integer that isn't a key of `entries`. */
+function freeKey(entries) {
+    let k = 0;
+    while (Object.hasOwn(entries, String(k))) k++;
+    return k;
+}
+
+/** The model of `/entries/apply` on a book (upstream's page actions against their versions); answers as the route. */
+function modelApply(book, entryChanges, fieldChanges) {
+    const isObject = (/** @type {unknown} */ v) => typeof v === 'object' && v !== null && !Array.isArray(v);
+    const hash = (/** @type {unknown} */ v) => (v === undefined ? null : hashUtils.jsonHash(v));
+    const entries = {};
+    const deleted = [];
+    const fields = {};
+    const conflicts = [];
+    const deletedUids = [];
+    for (const change of entryChanges) {
+        const k = String(change.uid);
+        const cur = book.entries[k];
+        const next = isObject(change.data) ? json({ ...change.data, uid: cur?.uid ?? change.uid }) : undefined;
+        if (hash(cur) === hash(next)) continue;
+        if (hash(cur) !== (change.base_hash ?? null)) {
+            conflicts.push({ uid: k, current: cur ?? null });
+            continue;
+        }
+        if (next) {
+            book.entries[k] = next;
+            entries[k] = next;
+        } else {
+            delete book.entries[k];
+            deleted.push(k);
+            deletedUids.push(change.uid);
+        }
     }
-    expectSameBook(JSON.parse(JSON.stringify(got)), want);
-    return got;
+    for (const change of fieldChanges) {
+        const cur = book[change.key];
+        const next = change.value ?? undefined;
+        if (hash(cur) === hash(next)) continue;
+        if (hash(cur) !== (change.base_hash ?? null)) {
+            conflicts.push({ key: change.key, current: cur ?? null });
+            continue;
+        }
+        if (next === undefined) delete book[change.key]; else book[change.key] = json(next);
+        fields[change.key] = next ?? null;
+    }
+    const original = book.originalData;
+    if (deletedUids.length > 0 && original && Array.isArray(original.entries)) {
+        // eslint-disable-next-line eqeqeq
+        original.entries = original.entries.filter((/** @type {any} */ item) => !deletedUids.some(uid => item?.uid == uid));
+    }
+    return json({ ok: true, entries, deleted, fields, conflicts });
 }
 
 describe.each(['native', 'wasm'])('%s', (kind) => {
@@ -171,20 +190,25 @@ describe.each(['native', 'wasm'])('%s', (kind) => {
         engine = engines[kind];
     });
 
-    describe('world books against the old store', () => {
-        test('books read back as written, with every key order kept', async () => {
+    describe('world books against a model of the routes', () => {
+        /** Reads a book and checks it is the model's. */
+        async function same(name, want) {
+            expectSameBook(json(await books.read(name)), want);
+        }
+
+        test('books read back as written, with every key order kept, and listed by file name', async () => {
             const r = rng(5);
+            const want = [];
             for (let b = 0; b < 8; b++) {
                 const name = `Book ${b}`;
                 const data = makeBook(r, 3 + Math.floor(r() * 25));
-                expect((await old('/create', { name, unique: false, data })).status).toBe(200);
                 await books.write(name, data);
-                const got = await same(name);
-                // The engine keeps the book's own key order too (the old store moved `entries` last).
-                expect(Object.keys(/** @type {object} */ (got))).toEqual(Object.keys(data));
+                await same(name, json(data));
+                expect(Object.keys(/** @type {object} */ (await books.read(name)))).toEqual(Object.keys(data));
+                want.push({ file_id: name, name: 'Display', extensions: data.extensions ?? {} });
             }
-            const list = await books.list();
-            expect(list).toEqual((await old('/list', {})).body);
+            want.sort((a, b) => `${a.file_id}.json`.localeCompare(`${b.file_id}.json`));
+            expect(await books.list()).toEqual(want);
         }, 120_000);
 
         test('a whole-book write records only what differs', async () => {
@@ -199,40 +223,49 @@ describe.each(['native', 'wasm'])('%s', (kind) => {
             next.entries[uid].order = 7;
             delete next.entries[Object.keys(next.entries)[5]];
             expect((await books.write('B', next)).records).toBe(2);
-            await old('/create', { name: 'B', unique: false, replace: true, data: next });
-            await same('B');
+            await same('B', next);
         }, 120_000);
 
-        test('entry actions answer as the old routes do', async () => {
+        test('entry actions answer and store as the routes do', async () => {
             const r = rng(13);
             const a = makeBook(r, 12);
             const b = makeBook(r, 6);
             delete a.originalData;
-            for (const [name, data] of [['A', a], ['B', b]]) {
-                await old('/create', { name, unique: false, data });
-                await books.write(name, data);
-            }
+            /** @type {Record<string, any>} */
+            const model = { A: json(a), B: json(b) };
+            await books.write('A', a);
+            await books.write('B', b);
             for (let step = 0; step < 120; step++) {
                 const name = r() < 0.5 ? 'A' : 'B';
-                const current = (await old('/get', { name })).body;
+                const current = model[name];
                 const uids = Object.keys(current.entries);
                 const uid = uids[Math.floor(r() * uids.length)];
                 const op = Math.floor(r() * 5);
-                /** Each action's answer, the engine's and the old route's. */
                 let got;
                 let want;
                 if (op === 0) {
-                    want = { entry: (await old('/entry/create', { name })).body.entry };
+                    const k = freeKey(current.entries);
+                    current.entries[k] = { uid: k };
+                    want = { entry: { uid: k } };
                     got = await books.createEntry(name);
                 } else if (op === 1 && uid !== undefined) {
                     const data = { ...current.entries[uid], content: `edited ${step}`, order: step };
-                    want = { entry: (await old('/entry/edit', { name, uid, data })).body.entry };
-                    got = JSON.parse(JSON.stringify(await books.editEntry(name, uid, data)));
+                    const entry = json({ ...data, uid: current.entries[uid].uid });
+                    current.entries[uid] = entry;
+                    want = { entry };
+                    got = json(await books.editEntry(name, uid, data));
                 } else if (op === 2 && uid !== undefined) {
-                    const target = name === 'A' ? 'B' : 'A';
+                    const target = model[name === 'A' ? 'B' : 'A'];
                     const deleteOriginal = r() < 0.5;
-                    want = { entry: (await old('/entry/transplant', { source_name: name, target_name: target, uid, delete_original: deleteOriginal })).body.entry };
-                    got = await books.transplant({ source: name, target, uid, deleteOriginal });
+                    const k = freeKey(target.entries);
+                    const moved = { ...current.entries[uid] };
+                    moved.uid = k;
+                    const indexes = Object.values(target.entries).flatMap((/** @type {any} */ e) => (e.displayIndex != null ? [Number(e.displayIndex)] : []));
+                    moved.displayIndex = Math.max(-1, ...indexes) + 1;
+                    want = { entry: json(moved) };
+                    target.entries[k] = json(moved);
+                    if (deleteOriginal) delete current.entries[uid];
+                    got = await books.transplant({ source: name, target: name === 'A' ? 'B' : 'A', uid, deleteOriginal });
                 } else if (op === 3) {
                     // Changes against the page's versions, some stale.
                     const entries = [];
@@ -245,17 +278,17 @@ describe.each(['native', 'wasm'])('%s', (kind) => {
                     entries.push({ uid: fresh, base_hash: null, data: makeEntry(r, fresh) });
                     const fields = [{ key: 'name', base_hash: hashUtils.jsonHash(current.name), value: `Renamed ${step}` }];
                     if (r() < 0.3) fields.push({ key: 'extensions', base_hash: 1, value: { y: 2 } });
-                    want = (await old('/entries/apply', { name, entries, fields })).body;
-                    got = JSON.parse(JSON.stringify(await books.apply(name, entries, fields)));
+                    want = modelApply(current, entries, fields);
+                    got = json(await books.apply(name, entries, fields));
                 } else if (op === 4) {
-                    const data = JSON.parse(JSON.stringify(current));
+                    const data = json(current);
                     if (uid !== undefined) data.entries[uid].content = `whole ${step}`;
-                    await old('/edit', { name, data });
+                    model[name] = json(data);
                     await books.write(name, data);
                 }
                 expect(got).toEqual(want);
-                await same('A');
-                await same('B');
+                await same('A', model.A);
+                await same('B', model.B);
             }
         }, 120_000);
 
@@ -263,33 +296,31 @@ describe.each(['native', 'wasm'])('%s', (kind) => {
             const r = rng(21);
             let data;
             do data = makeBook(r, 5); while (!data.originalData);
-            await old('/create', { name: 'O', unique: false, data });
             await books.write('O', data);
-            const current = (await old('/get', { name: 'O' })).body;
+            const current = json(data);
             const uid = Object.keys(current.entries)[0];
             const entries = [{ uid, base_hash: hashUtils.jsonHash(current.entries[uid]), data: null }];
-            expect(JSON.parse(JSON.stringify(await books.apply('O', entries, [])))).toEqual((await old('/entries/apply', { name: 'O', entries, fields: [] })).body);
-            await same('O');
+            const want = modelApply(current, entries, []);
+            expect(json(await books.apply('O', entries, []))).toEqual(want);
+            await same('O', current);
         }, 120_000);
 
         test('duplicate and delete', async () => {
             const r = rng(3);
             const data = makeBook(r, 7);
-            await old('/create', { name: 'D', unique: false, data });
             await books.write('D', data);
-            await old('/duplicate', { name: 'D', new_name: 'D2' });
             await books.write('D2', /** @type {object} */ (await books.read('D')));
-            await same('D2');
-            await old('/delete', { name: 'D' });
+            await same('D2', json(data));
             expect(await books.delete('D')).toBe(true);
             expect(await books.read('D')).toBeNull();
             expect(await books.exists('D')).toBe(false);
-            expect(await books.list()).toEqual((await old('/list', {})).body);
+            expect((await books.list()).map(b => b.file_id)).toEqual(['D2']);
             // Written again under the name, the book is new.
             await books.write('D', { entries: {} });
             expect(await books.read('D')).toEqual({ entries: {} });
         }, 120_000);
     });
+
 
     describe('what only the engine has', () => {
         test('a chat-bound lorebook follows its book', async () => {

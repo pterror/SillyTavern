@@ -1,7 +1,6 @@
-import { describe, test, expect, jest, beforeAll, beforeEach, afterEach, afterAll } from '@jest/globals';
+import { describe, test, expect, beforeAll, beforeEach, afterEach, afterAll } from '@jest/globals';
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import process from 'node:process';
 import { Buffer } from 'node:buffer';
 
@@ -17,7 +16,7 @@ import { Buffer } from 'node:buffer';
 // a second concurrent call for a filename already being processed just joins the first call's own promise
 // instead of running its own redundant pass.
 //
-// findCharacterIdByContentHash() is counted because processFileImpl() calls it exactly once per run on the
+// The library's findByHash() is counted because processFileImpl() calls it exactly once per run on the
 // duplicate path, so its call count is the number of processFileImpl() runs. The stall makes the race
 // deterministic: the second pass's dispatch for the same filename lands while the first is still in flight.
 let findCharacterIdByContentHashCallCount = 0;
@@ -35,8 +34,10 @@ const BLANK_PNG = Buffer.from(
 
 /** @type {typeof import('../src/local-import-scan.js')} */
 let localImportScan;
-/** @type {typeof import('../src/character-metadata-db.js')} */
-let metadataDb;
+/** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
+let user;
+/** @type {typeof import('./converted-user.fixture.js')} */
+let fixture;
 /** @type {typeof import('../src/character-card-parser.js')} */
 let cardParser;
 
@@ -46,49 +47,43 @@ beforeAll(async () => {
     // importFromPng() reads DEFAULT_AVATAR_PATH relative to cwd - same fix local-import-scan.test.js needed.
     process.chdir(path.resolve(originalCwd, '..'));
 
-    const actualMetadataDb = await import('../src/character-metadata-db.js');
-    jest.unstable_mockModule('../src/character-metadata-db.js', () => ({
-        ...actualMetadataDb,
-        findCharacterIdByContentHash: jest.fn(async (...args) => {
-            findCharacterIdByContentHashCallCount++;
-            if (findCharacterIdByContentHashStallMs > 0) {
-                await new Promise(resolve => setTimeout(resolve, findCharacterIdByContentHashStallMs));
-            }
-            return actualMetadataDb.findCharacterIdByContentHash(...args);
-        }),
-    }));
-
+    fixture = await import('./converted-user.fixture.js');
     localImportScan = await import('../src/local-import-scan.js');
-    metadataDb = await import('../src/character-metadata-db.js');
     cardParser = await import('../src/character-card-parser.js');
 });
 
 describe('local-import-scan: concurrent processFile() calls for the SAME filename (watcher/periodic-scan overlap)', () => {
     let tempDir;
     let sourceDir;
-    let charactersDir;
     /** @type {import('../src/users.js').UserDirectoryList} */
     let directories;
 
-    beforeEach(() => {
-        tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-local-import-scan-inflight-test-'));
+    beforeEach(async () => {
+        user = await fixture.emptyUser('st-local-import-scan-inflight-test-');
+        tempDir = user.dataRoot;
+        directories = user.directories;
         sourceDir = path.join(tempDir, 'watched');
-        charactersDir = path.join(tempDir, 'characters');
-        const chatsDir = path.join(tempDir, 'chats');
         fs.mkdirSync(sourceDir, { recursive: true });
-        fs.mkdirSync(charactersDir, { recursive: true });
-        fs.mkdirSync(chatsDir, { recursive: true });
-        directories = { root: tempDir, characters: charactersDir, chats: chatsDir };
         globalThis.DATA_ROOT = tempDir;
+        const findByHash = user.store.lib.findByHash.bind(user.store.lib);
+        user.store.lib.findByHash = async (...args) => {
+            findCharacterIdByContentHashCallCount++;
+            if (findCharacterIdByContentHashStallMs > 0) {
+                await new Promise(resolve => setTimeout(resolve, findCharacterIdByContentHashStallMs));
+            }
+            return findByHash(...args);
+        };
 
         findCharacterIdByContentHashCallCount = 0;
         findCharacterIdByContentHashStallMs = 0;
     });
 
-    afterEach(() => {
-        metadataDb.disposeMetadataStores();
-        fs.rmSync(tempDir, { recursive: true, force: true });
-    });
+    afterEach(() => user.close());
+
+    /** How many characters the library has. */
+    async function characterCount() {
+        return (await user.store.lib.query({ wantRows: false, wantTotal: true, includeGroups: false })).total;
+    }
 
     afterAll(() => {
         localImportScan.disposeLocalImportScan();
@@ -104,7 +99,7 @@ describe('local-import-scan: concurrent processFile() calls for the SAME filenam
         fs.writeFileSync(path.join(sourceDir, 'ghost.png'), cardBuffer);
         const state = buildState();
         await localImportScan.scanDirectory(state, directories);
-        expect(fs.readdirSync(charactersDir).length).toBe(1);
+        expect(await characterCount()).toBe(1);
         findCharacterIdByContentHashCallCount = 0;
 
         fs.writeFileSync(path.join(sourceDir, 'ghost-copy.png'), cardBuffer);
@@ -120,7 +115,7 @@ describe('local-import-scan: concurrent processFile() calls for the SAME filenam
 
         // Still only one character on disk (dedup itself was never in question - see the other dedup tests in
         // local-import-scan.test.js) - what THIS test is actually about is below.
-        expect(fs.readdirSync(charactersDir).length).toBe(1);
+        expect(await characterCount()).toBe(1);
 
         // Without the in-flight guard, both passes run processFileImpl() for ghost-copy.png, each calling
         // findCharacterIdByContentHash() once (ghost.png is skipped by its unchanged mtime).

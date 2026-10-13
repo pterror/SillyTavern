@@ -131,12 +131,9 @@ globalThis.toastr = { error: toastrError, warning: noop, info: noop, success: no
 
 const realFetch = globalThis.fetch;
 
-/** @type {import('../src/users.js').UserDirectoryList} */
-let directories;
-
 describe('delta sync applies only what changed', () => {
-    let metadataDb;
-    let searchCoordinator;
+    let fixture;
+    let user;
     let characterList;
     let server;
     let baseUrl;
@@ -147,8 +144,7 @@ describe('delta sync applies only what changed', () => {
         const { setConfigFilePath } = await import('../src/util.js');
         setConfigFilePath(path.join(originalCwd, '..', 'default', 'config.yaml'));
 
-        metadataDb = await import('../src/character-metadata-db.js');
-        searchCoordinator = await import('../src/endpoints/search-index-coordinator.js');
+        fixture = await import('./converted-user.fixture.js');
         const { router } = await import('../src/endpoints/characters.js');
         characterList = await import('../public/scripts/character-list.js');
 
@@ -161,7 +157,7 @@ describe('delta sync applies only what changed', () => {
         app.use(multer({ dest: uploadsDir }).single('avatar'));
         app.use(express.json());
         app.use((req, res, next) => {
-            req.user = { directories, profile: { handle: `test-user-${path.basename(directories.root)}` } };
+            req.user = user.user;
             next();
         });
         app.use('/api/characters', router);
@@ -177,20 +173,8 @@ describe('delta sync applies only what changed', () => {
     });
 
     beforeEach(async () => {
-        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-delta-sync-apply-test-'));
-        directories = {
-            root: tempDir,
-            characters: path.join(tempDir, 'characters'),
-            chats: path.join(tempDir, 'chats'),
-            groups: path.join(tempDir, 'groups'),
-            groupChats: path.join(tempDir, 'groupChats'),
-            backups: path.join(tempDir, 'backups'),
-            thumbnailsAvatar: path.join(tempDir, 'thumbnails', 'avatar'),
-            worlds: path.join(tempDir, 'worlds'),
-        };
-        for (const dir of Object.values(directories)) {
-            fs.mkdirSync(dir, { recursive: true });
-        }
+        user = await fixture.emptyUser('st-delta-sync-apply-test-');
+        globalThis.DATA_ROOT = user.dataRoot;
         for (const records of localforageStores.values()) records.clear();
         residentCharacters.length = 0;
         store.reindex();
@@ -202,9 +186,7 @@ describe('delta sync applies only what changed', () => {
 
     afterEach(async () => {
         globalThis.fetch = realFetch;
-        await searchCoordinator.disposeSearchWorkers();
-        metadataDb.disposeMetadataStores();
-        fs.rmSync(directories.root, { recursive: true, force: true });
+        await user.close();
     });
 
     async function postJson(urlPath, body) {

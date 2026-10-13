@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import http from 'node:http';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -87,24 +86,27 @@ const { router, buildRawActionKoboldRequest } = await import('./kobold.js');
 const { forwardAndPersistCompactStream } = await import('./text-completions.js');
 const { CompactStreamDecoder } = await import('../../../public/scripts/llamacpp-compact-stream.js');
 const { writeAllSettings } = await import('../../settings-store.js');
-const { saveChatToTree, loadBranch, getAlternatives, disposeMessageTreeStores, getMessageTreeDb } = await import('../../message-tree-db.js');
-const { upsertCharacterFromWrite } = await import('../../character-metadata-db.js');
 const { writeBack } = await import('../../token-count-store.js');
 const { tokenizers } = await import('../../tokenizer-ids.js');
 const { resolveTokenizer, tokenizerIdentity } = await import('../../tokenizer-resolve.js');
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-kobold-raw-action-test-'));
-const charactersDir = path.join(root, 'characters');
-const groupsDir = path.join(root, 'groups');
-const worldsDir = path.join(root, 'worlds');
-const chatsDir = path.join(root, 'chats');
-fs.mkdirSync(charactersDir, { recursive: true });
-fs.mkdirSync(groupsDir, { recursive: true });
-fs.mkdirSync(worldsDir, { recursive: true });
-fs.mkdirSync(chatsDir, { recursive: true });
+const { SESSION_HEADER } = await import('../../request-session.js');
+const { convertedUser, writeLibraryCard, saveBranch, loadBranch, sessionAt, chatContextOf } = await import('../../../tests/converted-user.fixture.js');
 
-const directories = { root, characters: charactersDir, groups: groupsDir, worlds: worldsDir, chats: chatsDir };
-globalThis.DATA_ROOT = root;
+const { newSessionKey } = await import('../../chat-engine.js');
+
+const user = await convertedUser('st-kobold-raw-action-test-');
+
+/**
+ * The chat context a request naming `nodeId` acts in: the session of the branch holding it, else a new one.
+ * @param {string} avatar
+ * @param {unknown} nodeId
+ */
+async function chatOf(avatar, nodeId) {
+    return chatContextOf(user.store, { avatar }, (await sessionAt(user.store, nodeId)) ?? newSessionKey());
+}
+const { directories } = user;
+globalThis.DATA_ROOT = user.dataRoot;
 
 const baseImage = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'public', 'img', 'ai4.png'));
 
@@ -138,8 +140,7 @@ async function writeCharacter(avatar, overrides = {}) {
     };
     const cardJson = JSON.stringify(card);
     const buffer = writeCard(baseImage, cardJson);
-    fs.writeFileSync(path.join(charactersDir, avatar), buffer);
-    await upsertCharacterFromWrite(directories, avatar, cardJson);
+    await writeLibraryCard(user, avatar, cardJson, buffer);
     return avatar;
 }
 
@@ -202,8 +203,12 @@ function buildTestApp() {
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
-        req.user = { directories };
-        next();
+        req.user = { directories, profile: { handle: 'u' } };
+        if (req.get(SESSION_HEADER)) return next();
+        sessionAt(user.store, req.body?.node_id).then(session => {
+            if (session) req.headers[SESSION_HEADER.toLowerCase()] = session;
+            next();
+        }, next);
     });
     app.use('/', router);
     return app;
@@ -295,19 +300,19 @@ async function run() {
     // buildRawActionKoboldRequest()'s own ADDRESSING MODEL doc comment) - every raw-action call below
     // resolves and passes the real `node_id` (a leaf id from `loadBranch()`) instead.
     const branchName = 'main-chat';
-    await saveChatToTree(directories, ownerId, branchName, [
+    await saveBranch(user.store, { avatar: ownerId }, branchName, [
         { chat_metadata: {} },
         { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
         { name: 'Tester', is_user: true, mes: 'Hi Rex, nice to meet you.', send_date: 2, extra: {} },
         { name: 'Rex', is_user: false, mes: 'Likewise!', send_date: 3, extra: {} },
     ]);
-    const mainLeafId = (await loadBranch(directories, ownerId, branchName)).branch.leaf_id;
+    const mainLeafId = (await loadBranch(user.store, { avatar: ownerId }, branchName)).branch.leaf_id;
 
     // --- buildRawActionKoboldRequest(): basic real assembly, including the settings-driven api_server ---
     {
         pointKoboldBackendAt('http://127.0.0.1:9/unused-in-this-assertion');
         const built = await buildRawActionKoboldRequest(directories, {
-            characterAvatar: avatar, ownerId, nodeId: mainLeafId,
+            characterAvatar: avatar, chat: await chatOf(avatar, mainLeafId), nodeId: mainLeafId,
             type: 'normal', userMessageText: 'What happens next, Rex?',
             tokenizerOptions: fakeTokenizerOptions,
         });
@@ -321,19 +326,10 @@ async function run() {
         assert.equal(built.params.streaming, false, 'streaming is unconditionally false for a raw-action-built request - see this file\'s own top-of-file doc comment on why (koboldFlags always defaults to {}, with no way to override it from buildRawActionKoboldRequest()\'s own params)');
     }
 
-    // --- error handling: missing owner_id ---
-    await assert.rejects(
-        () => buildRawActionKoboldRequest(directories, {
-            characterAvatar: avatar, nodeId: mainLeafId,
-            tokenizerOptions: fakeTokenizerOptions,
-        }),
-        /owner_id is required/,
-    );
-
     // --- error handling: unknown character ---
     await assert.rejects(
-        () => buildRawActionKoboldRequest(directories, {
-            characterAvatar: 'NoSuchCharacter.png', ownerId, nodeId: mainLeafId,
+        async () => buildRawActionKoboldRequest(directories, {
+            characterAvatar: 'NoSuchCharacter.png', chat: await chatOf(avatar, mainLeafId), nodeId: mainLeafId,
             tokenizerOptions: fakeTokenizerOptions,
         }),
         /Character not found/,
@@ -341,8 +337,8 @@ async function run() {
 
     // --- error handling: unknown node ---
     await assert.rejects(
-        () => buildRawActionKoboldRequest(directories, {
-            characterAvatar: avatar, ownerId, nodeId: 'no-such-node-id',
+        async () => buildRawActionKoboldRequest(directories, {
+            characterAvatar: avatar, chat: await chatOf(avatar, 'no-such-node-id'), nodeId: 'no-such-node-id',
             tokenizerOptions: fakeTokenizerOptions,
         }),
         /Chat node not found/,
@@ -351,8 +347,8 @@ async function run() {
     // --- error handling: node_id key entirely absent (not even explicit null) - loud failure instead
     // of a silent wrong-guess (see buildRawActionKoboldRequest()'s own ADDRESSING MODEL doc comment). ---
     await assert.rejects(
-        () => buildRawActionKoboldRequest(directories, {
-            characterAvatar: avatar, ownerId,
+        async () => buildRawActionKoboldRequest(directories, {
+            characterAvatar: avatar, chat: await chatOf(avatar, undefined),
             tokenizerOptions: fakeTokenizerOptions,
         }),
         /node_id is required \(pass null explicitly for a brand-new, empty conversation\)/,
@@ -361,16 +357,16 @@ async function run() {
     // --- error handling: node_id: null on an owner that ALREADY has real history - must be a real,
     // reportable error, never a silent guess at "the current leaf". ---
     await assert.rejects(
-        () => buildRawActionKoboldRequest(directories, {
-            characterAvatar: avatar, ownerId, nodeId: null,
+        async () => buildRawActionKoboldRequest(directories, {
+            characterAvatar: avatar, chat: await chatOf(avatar, null), nodeId: null,
             tokenizerOptions: fakeTokenizerOptions,
         }),
-        /node_id is required: this character\/group already has an existing conversation/,
+        /node_id is required: this chat is not at its start/,
     );
 
     // --- happy path: node_id: null on a GENUINELY BRAND-NEW character with zero prior messages - the
-    // ONLY case where omitting a real node id is safe. Resolves via the owner's own anchor to an
-    // empty chat, and still produces a real, appendable anchorNodeId. ---
+    // ONLY case where omitting a real node id is safe: the chat is at the tree's root, with no
+    // history. ---
     {
         pointKoboldBackendAt('http://127.0.0.1:9/unused-in-this-assertion');
         const freshAvatar = await writeCharacter('KoboldFresh.png', {
@@ -379,11 +375,11 @@ async function run() {
             data: { name: 'Fresh', description: 'Fresh is a brand-new character with no chat history yet.', first_mes: 'Hello, this is Fresh.' },
         });
         const builtFresh = await buildRawActionKoboldRequest(directories, {
-            characterAvatar: freshAvatar, ownerId: freshAvatar, nodeId: null,
+            characterAvatar: freshAvatar, chat: await chatOf(freshAvatar, null), nodeId: null,
             type: 'normal', userMessageText: 'Hi Fresh, this is our first message ever.',
             tokenizerOptions: fakeTokenizerOptions,
         });
-        assert.ok(builtFresh.anchorNodeId, 'a genuinely new, empty conversation still resolves to a real, appendable anchor node id');
+        assert.equal(builtFresh.anchorNodeId, null, 'a new, empty conversation is at its tree\'s root: the reply opens it');
         assert.ok(builtFresh.params.prompt.includes('Hi Fresh, this is our first message ever.'), 'the raw user_message for this turn still made it into the prepared prompt even though the resolved prior history was empty');
         assert.ok(!builtFresh.params.prompt.includes('Hello there, traveler.'), 'no unrelated prior history (Rex\'s) leaked into a brand-new character\'s resolved, empty chat');
     }
@@ -405,7 +401,7 @@ async function run() {
         });
         pointKoboldBackendAt(fakeBackend.url);
 
-        const branchBefore = await loadBranch(directories, ownerId, branchName);
+        const branchBefore = await loadBranch(user.store, { avatar: ownerId }, branchName);
         const messageCountBefore = branchBefore.messages.length;
 
         const app = buildTestApp();
@@ -419,7 +415,7 @@ async function run() {
         assert.equal(data.results?.[0]?.text, 'Rex says hello back.', 'the real Kobold response body reaches the client byte-for-byte unmodified');
         assert.equal(typeof data.assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
 
-        const branchAfter = await loadBranch(directories, ownerId, branchName);
+        const branchAfter = await loadBranch(user.store, { avatar: ownerId }, branchName);
         assert.equal(branchAfter.messages.length, messageCountBefore + 2, 'both the user message and the assistant reply were appended');
         const [userMsg, assistantMsg] = branchAfter.messages.slice(-2);
         assert.equal(userMsg.mes, 'One more time, Rex?');
@@ -431,7 +427,7 @@ async function run() {
         // chained, not a sibling: the assistant message is a direct child of the just-appended user
         // message (real ancestry depth check via getAlternatives on the user node - it should have
         // no siblings, and the assistant node is one level deeper).
-        const userAlternatives = await getAlternatives(directories, userMsg.node_id ?? branchAfter.messages[branchAfter.messages.length - 2].node_id);
+        const userAlternatives = await user.store.chats.alternatives({ node_id: userMsg.node_id ?? branchAfter.messages[branchAfter.messages.length - 2].node_id });
         assert.equal(userAlternatives.total, 1, 'the persisted user message has no siblings - it is a genuine new child, not a swipe alternative');
     }
 
@@ -468,7 +464,7 @@ async function run() {
         writeAllSettings(directories, settings);
 
         const streamBranch = 'kobold-stream-attempt-chat';
-        await saveChatToTree(directories, ownerId, streamBranch, [
+        await saveBranch(user.store, { avatar: ownerId }, streamBranch, [
             { chat_metadata: {} },
             { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
         ]);
@@ -480,7 +476,7 @@ async function run() {
         // messages present here too). So growth must be measured relative to a captured
         // messageCountBefore, exactly like tests (a)/(c) below do - NOT asserted against an absolute
         // count.
-        const streamBranchInfo = await loadBranch(directories, ownerId, streamBranch);
+        const streamBranchInfo = await loadBranch(user.store, { avatar: ownerId }, streamBranch);
         const messageCountBefore = streamBranchInfo.messages.length;
         const streamNodeId = streamBranchInfo.branch.leaf_id;
 
@@ -499,7 +495,7 @@ async function run() {
         assert.ok(decoded.assistantNodeId, 'the assistant_node_id frame was sent as the final frame');
 
         const branchAfter = await waitFor(async () => {
-            const branch = await loadBranch(directories, ownerId, streamBranch);
+            const branch = await loadBranch(user.store, { avatar: ownerId }, streamBranch);
             return branch.messages.length === messageCountBefore + 2 ? branch : null;
         });
         const [, assistantMsg] = branchAfter.messages.slice(-2);
@@ -521,11 +517,11 @@ async function run() {
             res.end(sseChunks.map(token => `data: ${JSON.stringify({ token })}\n\n`).join('') + 'data: [DONE]\n\n');
         });
         const directStreamBranch = 'kobold-direct-forward-persist-chat';
-        await saveChatToTree(directories, ownerId, directStreamBranch, [
+        await saveBranch(user.store, { avatar: ownerId }, directStreamBranch, [
             { chat_metadata: {} },
             { name: 'Tester', is_user: true, mes: 'Say hi via the direct SSE path.', send_date: 1, extra: {} },
         ]);
-        const branchBeforeDirect = await loadBranch(directories, ownerId, directStreamBranch);
+        const branchBeforeDirect = await loadBranch(user.store, { avatar: ownerId }, directStreamBranch);
         const anchorNodeId = branchBeforeDirect.branch.leaf_id;
 
         // Uses `node-fetch` (NOT the global web-standard `fetch`) - forwardAndPersistCompactStream()
@@ -546,12 +542,12 @@ async function run() {
             on() {},
         };
         await forwardAndPersistCompactStream(fetchResponse, fakeExpressResponse, {
-            directories, ownerId, anchorNodeId, name2: 'Rex', isSwipe: false, isContinue: false, anchorContent: null,
+            directories, chat: await chatContextOf(user.store, { avatar: ownerId }, branchBeforeDirect.branch.session), anchorNodeId, name2: 'Rex', isSwipe: false, isContinue: false, anchorContent: null,
         }, json => json?.token);
         sseBackend.server.close();
 
         const branchAfterDirect = await waitFor(async () => {
-            const branch = await loadBranch(directories, ownerId, directStreamBranch);
+            const branch = await loadBranch(user.store, { avatar: ownerId }, directStreamBranch);
             return branch.messages.length === 2 ? branch : null;
         });
         assert.equal(branchAfterDirect.messages[1].mes, 'Rex streams a reply.', 'the real forwardAndPersistCompactStream() + the route\'s own {"token":...} extractor correctly accumulated and persisted every chunk');
@@ -567,7 +563,7 @@ async function run() {
         });
         pointKoboldBackendAt(fakeBackend.url);
 
-        const branchBefore = await loadBranch(directories, ownerId, branchName);
+        const branchBefore = await loadBranch(user.store, { avatar: ownerId }, branchName);
         const messageCountBefore = branchBefore.messages.length;
 
         const app = buildTestApp();
@@ -579,7 +575,7 @@ async function run() {
 
         assert.equal(status, 400, 'Kobold\'s own error-response branch replies with 400, not a thrown exception');
 
-        const branchAfter = await loadBranch(directories, ownerId, branchName);
+        const branchAfter = await loadBranch(user.store, { avatar: ownerId }, branchName);
         assert.equal(branchAfter.messages.length, messageCountBefore + 1, 'only the user message was appended - no assistant reply for a failed generation');
         assert.equal(branchAfter.messages[branchAfter.messages.length - 1].mes, 'Are you there, Rex?');
         assert.equal(branchAfter.messages[branchAfter.messages.length - 1].is_user, true);
@@ -599,7 +595,7 @@ async function run() {
             res.end(JSON.stringify({ results: [{ text: 'Legacy, unmanaged reply.' }] }));
         });
 
-        const branchBefore = await loadBranch(directories, ownerId, branchName);
+        const branchBefore = await loadBranch(user.store, { avatar: ownerId }, branchName);
         const messageCountBefore = branchBefore.messages.length;
 
         const app = buildTestApp();
@@ -618,7 +614,7 @@ async function run() {
         assert.equal(status, 200);
         assert.deepEqual(data, { results: [{ text: 'Legacy, unmanaged reply.' }] }, 'the legacy response is forwarded to the client completely unmodified');
 
-        const branchAfter = await loadBranch(directories, ownerId, branchName);
+        const branchAfter = await loadBranch(user.store, { avatar: ownerId }, branchName);
         assert.equal(branchAfter.messages.length, messageCountBefore, 'no persistence was attempted for a non-raw-action request');
     }
 
@@ -674,11 +670,11 @@ async function run() {
         writeAllSettings(directories, settings);
 
         const abortBranch = 'kobold-abort-on-disconnect-chat';
-        await saveChatToTree(directories, ownerId, abortBranch, [
+        await saveBranch(user.store, { avatar: ownerId }, abortBranch, [
             { chat_metadata: {} },
             { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
         ]);
-        const abortNodeId = (await loadBranch(directories, ownerId, abortBranch)).branch.leaf_id;
+        const abortNodeId = (await loadBranch(user.store, { avatar: ownerId }, abortBranch)).branch.leaf_id;
 
         const app = buildTestApp();
         const server = app.listen(0, '127.0.0.1');
@@ -749,7 +745,7 @@ async function run() {
         const localEncodes = [];
         try {
             await buildRawActionKoboldRequest(directories, {
-                characterAvatar: avatar, ownerId, nodeId: mainLeafId,
+                characterAvatar: avatar, chat: await chatOf(avatar, mainLeafId), nodeId: mainLeafId,
                 type: 'normal', userMessageText: 'What happens next, Rex?',
                 tokenizerOptions: { encodeLocal: async (key, text) => { localEncodes.push(text); return [1]; } },
             });
@@ -791,7 +787,7 @@ async function run() {
         let built;
         try {
             built = await buildRawActionKoboldRequest(directories, {
-                characterAvatar: avatar, ownerId, nodeId: mainLeafId,
+                characterAvatar: avatar, chat: await chatOf(avatar, mainLeafId), nodeId: mainLeafId,
                 type: 'normal', userMessageText: 'What happens next, Rex?',
                 tokenizerOptions: { encodeLocal: async (key) => { localKeys.add(key); return [1]; } },
             });
@@ -811,13 +807,13 @@ async function run() {
             name: 'KoboldStore',
             data: { name: 'KoboldStore', description: 'KoboldStore guards the bridge.', first_mes: 'Halt.' },
         });
-        await saveChatToTree(directories, storeAvatar, 'store-chat', [
+        await saveBranch(user.store, { avatar: storeAvatar }, 'store-chat', [
             { chat_metadata: {} },
             { name: 'KoboldStore', is_user: false, mes: 'Halt.', send_date: 1, extra: {} },
             { name: 'Tester', is_user: true, mes: 'May I cross the bridge?', send_date: 2, extra: {} },
             { name: 'KoboldStore', is_user: false, mes: 'Only with the password.', send_date: 3, extra: {} },
         ]);
-        const storeLeafId = (await loadBranch(directories, storeAvatar, 'store-chat')).branch.leaf_id;
+        const storeLeafId = (await loadBranch(user.store, { avatar: storeAvatar }, 'store-chat')).branch.leaf_id;
         const settings = buildSettingsFixture();
         settings.power_user.tokenizer = tokenizers.LLAMA;
         settings.kai_settings.api_server = 'http://127.0.0.1:9/api';
@@ -826,7 +822,7 @@ async function run() {
         const build = async () => {
             const encoded = [];
             const built = await buildRawActionKoboldRequest(directories, {
-                characterAvatar: storeAvatar, ownerId: storeAvatar, nodeId: storeLeafId, type: 'normal',
+                characterAvatar: storeAvatar, chat: await chatOf(storeAvatar, storeLeafId), nodeId: storeLeafId, type: 'normal',
                 tokenizerOptions: { encodeLocal: async (key, text) => { encoded.push(text); return fakeTokenizerOptions.encodeLocal(key, text); } },
             });
             return { built, encoded };
@@ -845,12 +841,11 @@ async function run() {
     }
 
     // --- write-back: /generate stores its counts and ids once the backend has the request ---
-    /** Rows stored under `identity` in token_counts and token_ids together. */
-    async function storedRowsUnder(identity) {
-        const db = await getMessageTreeDb(directories);
-        const counts = /** @type {{ n: number }} */ (db.get('SELECT COUNT(*) AS n FROM token_counts WHERE identity = @identity', { identity }));
-        const ids = /** @type {{ n: number }} */ (db.get('SELECT COUNT(*) AS n FROM token_ids WHERE identity = @identity', { identity }));
-        return Number(counts.n) + Number(ids.n);
+    /** Entries of the token-count cache, counts and ids together (each case's tokenizer identity is new to it). */
+    async function storedRows() {
+        let n = 0;
+        for (const table of [0, 1]) n += Number(await user.store.chats.store.chatRead('tokenCacheCount', { table }));
+        return n;
     }
 
     let writeBackChats = 0;
@@ -861,13 +856,13 @@ async function run() {
     async function setUpWriteBackGeneration(onGenerate) {
         const name = `KoboldWriteBack${++writeBackChats}`;
         const writeBackAvatar = await writeCharacter(`${name}.png`, { name, data: { name, description: `${name} tends the lighthouse.`, first_mes: 'Ahoy.' } });
-        await saveChatToTree(directories, writeBackAvatar, 'write-back-chat', [
+        await saveBranch(user.store, { avatar: writeBackAvatar }, 'write-back-chat', [
             { chat_metadata: {} },
             { name, is_user: false, mes: 'Ahoy.', send_date: 1, extra: {} },
             { name: 'Tester', is_user: true, mes: `Is the lamp lit, ${name}?`, send_date: 2, extra: {} },
             { name, is_user: false, mes: 'Every night.', send_date: 3, extra: {} },
         ]);
-        const leafId = (await loadBranch(directories, writeBackAvatar, 'write-back-chat')).branch.leaf_id;
+        const leafId = (await loadBranch(user.store, { avatar: writeBackAvatar }, 'write-back-chat')).branch.leaf_id;
         const urls = [];
         const backend = await startFakeBackend((req, res, requestBody) => {
             urls.push(req.url);
@@ -890,9 +885,8 @@ async function run() {
     for (const streaming of [false, true]) {
         let rowsWhenReceived = null;
         let rowsBefore = null;
-        let identityForCase = null;
-        const { backend, urls, identity, body } = await setUpWriteBackGeneration(async (_req, res) => {
-            rowsWhenReceived = await storedRowsUnder(identityForCase);
+        const { backend, urls, body } = await setUpWriteBackGeneration(async (_req, res) => {
+            rowsWhenReceived = await storedRows();
             if (streaming) {
                 res.writeHead(200, { 'Content-Type': 'text/event-stream' });
                 return res.end(`data: ${JSON.stringify({ token: 'Two.' })}\n\ndata: [DONE]\n\n`);
@@ -900,16 +894,15 @@ async function run() {
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ results: [{ text: 'Two.' }] }));
         });
-        identityForCase = identity;
         try {
-            rowsBefore = await storedRowsUnder(identity);
+            rowsBefore = await storedRows();
             const { status } = streaming
                 ? await postGenerateStreamBytes(buildTestApp(), { ...body, streaming: true })
                 : await postGenerate(buildTestApp(), body);
             assert.equal(status, 200);
             assert.ok(urls.includes(streaming ? '/extra/generate/stream' : '/v1/generate'), `${streaming ? 'stream' : 'non-stream'}: the backend received the generation`);
             assert.equal(rowsWhenReceived, rowsBefore, `${streaming ? 'stream' : 'non-stream'}: nothing stored when the backend received its request`);
-            await waitFor(async () => (await storedRowsUnder(identity)) > rowsBefore);
+            await waitFor(async () => (await storedRows()) > rowsBefore);
         } finally {
             backend.server.close();
             writeAllSettings(directories, buildSettingsFixture());
@@ -917,7 +910,7 @@ async function run() {
     }
 
     {
-        const { backend, urls, identity, body } = await setUpWriteBackGeneration((_req, res) => {
+        const { backend, urls, body } = await setUpWriteBackGeneration((_req, res) => {
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ results: [{ text: 'Two.' }] }));
         });
@@ -931,13 +924,13 @@ async function run() {
             return request.call(this, url, ...rest);
         };
         try {
-            const rowsBefore = await storedRowsUnder(identity);
+            const rowsBefore = await storedRows();
             const { data } = await postGenerate(buildTestApp(), body);
             assert.equal(data.error, true, 'the generation failed');
             assert.equal(refused, 1, 'the backend request threw');
             assert.ok(!urls.includes('/v1/generate'), 'the backend never received the generation');
             await new Promise(resolve => setTimeout(resolve, 200));
-            assert.equal(await storedRowsUnder(identity), rowsBefore, 'nothing stored');
+            assert.equal(await storedRows(), rowsBefore, 'nothing stored');
         } finally {
             http.request = request;
             backend.server.close();
@@ -953,23 +946,22 @@ async function run() {
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ results: [{ text: 'Two.' }] }));
         });
-        const db = await getMessageTreeDb(directories);
-        const realGet = db.get;
+        const tokens = user.store.tokens;
+        const realRead = tokens.read;
         try {
             const fresh = await postGenerate(buildTestApp(), body);
             assert.equal(fresh.status, 200);
-            db.get = (sql, params) => {
-                if (/FROM token_(counts|ids)\b/.test(sql)) throw new Error('token table read failed (test)');
-                return realGet(sql, params);
+            tokens.read = async () => {
+                throw new Error('token table read failed (test)');
             };
             const failing = await postGenerate(buildTestApp(), body);
-            db.get = realGet;
+            tokens.read = realRead;
             assert.equal(failing.status, 200, 'token table reads failing: the generation succeeds');
             assert.notEqual(failing.data?.error, true, 'token table reads failing: no error');
             assert.equal(generates.length, 2, 'token table reads failing: the backend received both generations');
             assert.deepEqual(generates[1], generates[0], 'token table reads failing: the same request as counted fresh');
         } finally {
-            db.get = realGet;
+            tokens.read = realRead;
             backend.server.close();
             writeAllSettings(directories, buildSettingsFixture());
         }
@@ -996,11 +988,11 @@ async function run() {
         settings.kai_settings.streaming_kobold = streaming;
         writeAllSettings(directories, settings);
         try {
-            await saveChatToTree(directories, ownerId, chatName, [
+            await saveBranch(user.store, { avatar: ownerId }, chatName, [
                 { chat_metadata: {} },
                 { name: 'Rex', is_user: false, mes: `Hello there, ${chatName}.`, send_date: 1, extra: {} },
             ]);
-            const branchBefore = await loadBranch(directories, ownerId, chatName);
+            const branchBefore = await loadBranch(user.store, { avatar: ownerId }, chatName);
             const ref = `ref-${chatName}`;
             const body = {
                 owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
@@ -1017,7 +1009,7 @@ async function run() {
                 stored = (await postGenerate(buildTestApp(), body)).data.stored;
             }
             const branchAfter = await waitFor(async () => {
-                const branch = await loadBranch(directories, ownerId, chatName);
+                const branch = await loadBranch(user.store, { avatar: ownerId }, chatName);
                 return branch.messages.length === branchBefore.messages.length + 2 ? branch : null;
             });
             const userNode = branchAfter.messages[branchBefore.messages.length];
@@ -1050,11 +1042,11 @@ async function run() {
         const server = app.listen(0, '127.0.0.1');
         await new Promise(resolve => server.once('listening', resolve));
         try {
-            await saveChatToTree(directories, ownerId, chatName, [
+            await saveBranch(user.store, { avatar: ownerId }, chatName, [
                 { chat_metadata: {} },
                 { name: 'Rex', is_user: false, mes: `Hello there, ${chatName}.`, send_date: 1, extra: {} },
             ]);
-            const branchBefore = await loadBranch(directories, ownerId, chatName);
+            const branchBefore = await loadBranch(user.store, { avatar: ownerId }, chatName);
             const ref = `ref-${chatName}`;
             const res = await fetch(`http://127.0.0.1:${server.address().port}/generate`, {
                 method: 'POST',
@@ -1065,7 +1057,7 @@ async function run() {
                 }),
             });
             const text = await res.text();
-            const branchAfter = await loadBranch(directories, ownerId, chatName);
+            const branchAfter = await loadBranch(user.store, { avatar: ownerId }, chatName);
             const added = branchAfter.messages.slice(branchBefore.messages.length);
             assert.deepEqual(added.map(m => m.mes), [`Question for ${chatName}?`], 'only the user message was stored');
             const stored = [{ ref, node_id: added[0].node_id }];
@@ -1093,7 +1085,4 @@ run()
         console.error(error);
         process.exitCode = 1;
     })
-    .finally(() => {
-        disposeMessageTreeStores();
-        fs.rmSync(root, { recursive: true, force: true });
-    });
+    .finally(() => user.close());

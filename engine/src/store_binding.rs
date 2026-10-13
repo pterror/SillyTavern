@@ -6,8 +6,9 @@
 //! bits are booleans; an optional value is left out when absent. Anything else, including a property the
 //! kind doesn't have, is refused rather than dropped.
 
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, LazyLock, Mutex, Weak};
 
 use napi::bindgen_prelude::{
     AsyncTask, BigInt, Buffer, FromNapiValue, Object, ToNapiValue, TypeName, Uint8Array, Unknown,
@@ -378,7 +379,7 @@ where
 type TreeRead = Box<dyn FnOnce(&Inner) -> StoreResult<JsTree> + Send>;
 
 /// A chat read's answer (`store::chat_read::Js`) as JavaScript.
-struct JsTree(crate::store::chat_read::Js);
+pub struct JsTree(crate::store::chat_read::Js);
 
 impl ToNapiValue for JsTree {
     unsafe fn to_napi_value(raw_env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
@@ -474,20 +475,41 @@ pub struct Store {
     store: Arc<Inner>,
 }
 
+/// The stores open in this process, by directory: every open of a directory (`open`, `openSync`) until the store
+/// is closed is the same store.
+/// A directory's open store, while one is.
+type OpenSlot = Arc<Mutex<Weak<Inner>>>;
+
+static OPEN: LazyLock<Mutex<HashMap<PathBuf, OpenSlot>>> = LazyLock::new(Default::default);
+
+/// The store in `dir`: the one open there, else opened now. An open of a directory another thread is opening waits
+/// for that open.
+fn open_shared(dir: &Path) -> StoreResult<Arc<Inner>> {
+    let at = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let slot = OPEN.lock().unwrap().entry(at).or_default().clone();
+    let mut held = slot.lock().unwrap();
+    if let Some(s) = held.upgrade()
+        && !s.is_closed()
+    {
+        return Ok(s);
+    }
+    let s = Arc::new(Inner::open(dir, StoreConfig::default())?);
+    *held = Arc::downgrade(&s);
+    Ok(s)
+}
+
 pub struct OpenTask(PathBuf);
 
 impl Task for OpenTask {
-    type Output = Inner;
+    type Output = Arc<Inner>;
     type JsValue = Store;
 
-    fn compute(&mut self) -> Result<Inner> {
-        Inner::open(&self.0, StoreConfig::default()).map_err(store_error)
+    fn compute(&mut self) -> Result<Arc<Inner>> {
+        open_shared(&self.0).map_err(store_error)
     }
 
-    fn resolve(&mut self, _env: Env, store: Inner) -> Result<Store> {
-        Ok(Store {
-            store: Arc::new(store),
-        })
+    fn resolve(&mut self, _env: Env, store: Arc<Inner>) -> Result<Store> {
+        Ok(Store { store })
     }
 }
 
@@ -859,16 +881,26 @@ impl ToNapiValue for LibrarySearched {
         if let Some(c) = p.cursor {
             obj.set("cursor", Buffer::from(c))?;
         }
-        let mut tags = Vec::with_capacity(p.tags.len());
-        for t in p.tags {
+        if let Some(n) = p.next {
             let mut o = Object::new(&env)?;
-            o.set("tag", t.tag)?;
-            o.set("name", text_to_js(t.name)?)?;
-            o.set("carriers", t.carriers as f64)?;
-            tags.push(o);
+            match n {
+                library_search::Resume::Score(score, doc) => {
+                    o.set("score", score)?;
+                    o.set("doc", doc)?;
+                }
+                library_search::Resume::Tied(score, cursor) => {
+                    o.set("tied", score)?;
+                    o.set("cursor", Buffer::from(cursor))?;
+                }
+                library_search::Resume::Below(score) => {
+                    o.set("below", score)?;
+                }
+            }
+            if let Some(w) = p.weights {
+                o.set("weights", w)?;
+            }
+            obj.set("next", o)?;
         }
-        obj.set("tags", tags)?;
-        obj.set("tagsExact", p.tags_exact)?;
         unsafe { Object::to_napi_value(raw_env, obj) }
     }
 }
@@ -897,79 +929,115 @@ impl ToNapiValue for LibraryPage {
 /// Entities with their values as JavaScript sees them; null where there is none.
 pub struct LibraryEntities(Vec<Option<library_read::Entity>>);
 
+/// An entity with its values as JavaScript sees it.
+fn entity_js<'env>(env: &'env Env, e: library_read::Entity) -> Result<Object<'env>> {
+    let mut o = Object::new(env)?;
+    o.set("id", e.id)?;
+    o.set("type", e.kind as f64)?;
+    o.set("key", text_to_js(e.key)?)?;
+    o.set("added", e.added as f64)?;
+    o.set("version", e.version)?;
+    o.set("fav", e.fav)?;
+    o.set("tags", e.tags)?;
+    let mut values = Vec::with_capacity(e.values.len());
+    for (f, v) in e.values {
+        let mut vo = Object::new(env)?;
+        match f {
+            FieldRef::Code(c) => vo.set("field", c as f64)?,
+            FieldRef::Key(k) => vo.set("field", text_to_js(k)?)?,
+        }
+        match v {
+            library_read::Stored::Text(t) => vo.set("text", text_to_js(t)?)?,
+            library_read::Stored::Json(j) => vo.set("json", text_to_js(j)?)?,
+        }
+        values.push(vo);
+    }
+    o.set("values", values)?;
+    let mut items = Vec::with_capacity(e.items.len());
+    for (list, item, position) in e.items {
+        let mut io = Object::new(env)?;
+        io.set("list", list as f64)?;
+        io.set("item", item as f64)?;
+        io.set("position", position as f64)?;
+        items.push(io);
+    }
+    o.set("items", items)?;
+    if let Some(n) = e.data_size {
+        o.set("dataSize", n as f64)?;
+    }
+    if let Some(ms) = e.create_ms {
+        o.set("createMs", ms)?;
+    }
+    let mut hashes = Vec::with_capacity(e.hashes.len());
+    for (which, h) in e.hashes {
+        let mut ho = Object::new(env)?;
+        ho.set("which", which as f64)?;
+        ho.set("hash", Buffer::from(h))?;
+        hashes.push(ho);
+    }
+    o.set("hashes", hashes)?;
+    if let Some(order) = e.tag_order {
+        match order {
+            Some(v) => o.set("tagOrder", v)?,
+            None => o.set("tagOrder", napi::bindgen_prelude::Null)?,
+        }
+    }
+    if let Some((book, k, version)) = e.link {
+        let mut lo = Object::new(env)?;
+        lo.set("book", book)?;
+        lo.set("key", text_to_js(k)?)?;
+        lo.set("version", version)?;
+        o.set("link", lo)?;
+    }
+    if let Some(x) = e.entry_index {
+        o.set("entryIndex", x)?;
+    }
+    Ok(o)
+}
+
 impl ToNapiValue for LibraryEntities {
     unsafe fn to_napi_value(raw_env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
         let env = Env::from_raw(raw_env);
         let mut list = Vec::with_capacity(val.0.len());
         for e in val.0 {
-            let Some(e) = e else {
-                list.push(None);
-                continue;
-            };
-            let mut o = Object::new(&env)?;
-            o.set("id", e.id)?;
-            o.set("type", e.kind as f64)?;
-            o.set("key", text_to_js(e.key)?)?;
-            o.set("added", e.added as f64)?;
-            o.set("version", e.version)?;
-            o.set("fav", e.fav)?;
-            o.set("tags", e.tags)?;
-            let mut values = Vec::with_capacity(e.values.len());
-            for (f, v) in e.values {
-                let mut vo = Object::new(&env)?;
-                match f {
-                    FieldRef::Code(c) => vo.set("field", c as f64)?,
-                    FieldRef::Key(k) => vo.set("field", text_to_js(k)?)?,
-                }
-                match v {
-                    library_read::Stored::Text(t) => vo.set("text", text_to_js(t)?)?,
-                    library_read::Stored::Json(j) => vo.set("json", text_to_js(j)?)?,
-                }
-                values.push(vo);
-            }
-            o.set("values", values)?;
-            let mut items = Vec::with_capacity(e.items.len());
-            for (list, item, position) in e.items {
-                let mut io = Object::new(&env)?;
-                io.set("list", list as f64)?;
-                io.set("item", item as f64)?;
-                io.set("position", position as f64)?;
-                items.push(io);
-            }
-            o.set("items", items)?;
-            if let Some(n) = e.data_size {
-                o.set("dataSize", n as f64)?;
-            }
-            if let Some(ms) = e.create_ms {
-                o.set("createMs", ms)?;
-            }
-            let mut hashes = Vec::with_capacity(e.hashes.len());
-            for (which, h) in e.hashes {
-                let mut ho = Object::new(&env)?;
-                ho.set("which", which as f64)?;
-                ho.set("hash", Buffer::from(h))?;
-                hashes.push(ho);
-            }
-            o.set("hashes", hashes)?;
-            if let Some(order) = e.tag_order {
-                match order {
-                    Some(v) => o.set("tagOrder", v)?,
-                    None => o.set("tagOrder", napi::bindgen_prelude::Null)?,
-                }
-            }
-            if let Some((book, k, version)) = e.link {
-                let mut lo = Object::new(&env)?;
-                lo.set("book", book)?;
-                lo.set("key", text_to_js(k)?)?;
-                lo.set("version", version)?;
-                o.set("link", lo)?;
-            }
-            if let Some(x) = e.entry_index {
-                o.set("entryIndex", x)?;
-            }
-            list.push(Some(o));
+            list.push(match e {
+                Some(e) => Some(entity_js(&env, e)?),
+                None => None,
+            });
         }
         unsafe { Vec::<Option<Object>>::to_napi_value(raw_env, list) }
+    }
+}
+
+/// A world book read whole (`store::books::BookRead`): `{ id, entity, entries: [{ entity, position }], original? }`.
+pub struct BookReadJs(crate::store::books::BookRead);
+
+fn book_read_js<'env>(env: &'env Env, b: crate::store::books::BookRead) -> Result<Object<'env>> {
+    let mut o = Object::new(env)?;
+    o.set("id", b.id)?;
+    match b.entity {
+        Some(e) => o.set("entity", entity_js(env, e)?)?,
+        None => o.set("entity", napi::bindgen_prelude::Null)?,
+    }
+    let mut entries = Vec::with_capacity(b.entries.len());
+    for (e, position) in b.entries {
+        let mut x = Object::new(env)?;
+        x.set("entity", entity_js(env, e)?)?;
+        x.set("position", position as f64)?;
+        entries.push(x);
+    }
+    o.set("entries", entries)?;
+    if let Some(original) = b.original {
+        o.set("original", book_read_js(env, *original)?)?;
+    }
+    Ok(o)
+}
+
+impl ToNapiValue for BookReadJs {
+    unsafe fn to_napi_value(raw_env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
+        let env = Env::from_raw(raw_env);
+        let o = book_read_js(&env, val.0)?;
+        unsafe { Object::to_napi_value(raw_env, o) }
     }
 }
 
@@ -1073,6 +1141,39 @@ fn library_query_rest(
     })
 }
 
+/// An `after`'s `weights` (`query::Query::weights`), each a finite number.
+fn weights_from_js(a: &Object) -> Result<Option<Vec<f64>>> {
+    let Some(w) = a.get::<Vec<f64>>("weights")? else {
+        return Ok(None);
+    };
+    if w.iter().any(|x| !x.is_finite()) {
+        return Err(invalid("after.weights must be finite numbers".into()));
+    }
+    Ok(Some(w))
+}
+
+/// A relevance page's `next`, back as a later page's `after`.
+fn resume_from_js(a: &Object) -> Result<library_search::Resume> {
+    if let Some(t) = a.get::<f64>("tied")? {
+        let c: Buffer = a
+            .get("cursor")?
+            .ok_or_else(|| invalid("after.tied needs a cursor".into()))?;
+        return Ok(library_search::Resume::Tied(t, c.to_vec()));
+    }
+    if let Some(b) = a.get::<f64>("below")? {
+        return Ok(library_search::Resume::Below(b));
+    }
+    let score: f64 = a
+        .get("score")?
+        .ok_or_else(|| invalid("after needs a score".into()))?;
+    let doc = integer(
+        "doc",
+        a.get::<Unknown>("doc")?
+            .ok_or_else(|| invalid("after needs a doc".into()))?,
+    )?;
+    Ok(library_search::Resume::Score(score, doc))
+}
+
 /// A page of search results as JavaScript sees it.
 pub struct SearchPage(Found);
 
@@ -1080,6 +1181,8 @@ impl ToNapiValue for SearchPage {
     unsafe fn to_napi_value(raw_env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
         let env = Env::from_raw(raw_env);
         let f = val.0;
+        let next = f.hits.last().filter(|_| f.more).map(|h| (h.rank, h.doc));
+        let weights = f.weights;
         let mut hits = Vec::with_capacity(f.hits.len());
         for h in f.hits {
             let mut o = Object::new(&env)?;
@@ -1087,22 +1190,21 @@ impl ToNapiValue for SearchPage {
             o.set("score", h.score)?;
             hits.push(o);
         }
-        let mut tags = Vec::with_capacity(f.tags.len());
-        for t in f.tags {
-            let mut o = Object::new(&env)?;
-            o.set("tag", t.tag)?;
-            o.set("name", text_to_js(t.name)?)?;
-            o.set("carriers", t.carriers as f64)?;
-            tags.push(o);
-        }
         let mut obj = Object::new(&env)?;
         obj.set("hits", hits)?;
         obj.set("total", f.total as f64)?;
         obj.set("totalExact", f.total_exact)?;
         obj.set("pageExact", f.page_exact)?;
         obj.set("more", f.more)?;
-        obj.set("tags", tags)?;
-        obj.set("tagsExact", f.tags_exact)?;
+        if let Some((score, doc)) = next {
+            let mut n = Object::new(&env)?;
+            n.set("score", score)?;
+            n.set("doc", doc)?;
+            if let Some(w) = weights {
+                n.set("weights", w)?;
+            }
+            obj.set("next", n)?;
+        }
         unsafe { Object::to_napi_value(raw_env, obj) }
     }
 }
@@ -1191,8 +1293,8 @@ fn query_from_js(q: &Object) -> Result<Query> {
         Some(v) => integer("limit", v)? as usize,
         None => return Err(invalid("a search needs a limit".into())),
     };
-    let after = match q.get::<Object>("after")? {
-        None => None,
+    let (after, weights) = match q.get::<Object>("after")? {
+        None => (None, None),
         Some(a) => {
             let score: f64 = a
                 .get("score")?
@@ -1202,7 +1304,7 @@ fn query_from_js(q: &Object) -> Result<Query> {
                 a.get::<Unknown>("doc")?
                     .ok_or_else(|| invalid("after needs a doc".into()))?,
             )?;
-            Some(After::Score(score, doc))
+            (Some(After::Score(score, doc)), weights_from_js(&a)?)
         }
     };
     Ok(Query {
@@ -1212,6 +1314,7 @@ fn query_from_js(q: &Object) -> Result<Query> {
         order: Order::Relevance,
         limit,
         after,
+        weights,
         limits: Limits::default(),
     })
 }
@@ -1252,6 +1355,36 @@ impl Store {
     #[napi(ts_return_type = "Promise<Store>")]
     pub fn open(dir: String) -> AsyncTask<OpenTask> {
         AsyncTask::new(OpenTask(PathBuf::from(dir)))
+    }
+
+    /// `open` on this thread: the store open in `dir`, else opened now (returning before replay). The same store
+    /// `open` gives for `dir` until it is closed.
+    #[napi]
+    pub fn open_sync(dir: String) -> Result<Store> {
+        Ok(Store {
+            store: open_shared(Path::new(&dir)).map_err(store_error)?,
+        })
+    }
+
+    /// The defined world book keyed `key` whole, read from one state of the store on this thread (waiting for
+    /// replay), or null: `{ id, entity, entries: [{ entity, position }], original? }`, each entity as
+    /// `libraryEntities` gives it, the entries in place order, `original` the book it owns as its `originalData`.
+    #[napi(ts_args_type = "key: string", ts_return_type = "any")]
+    pub fn world_book_sync(&self, key: Unknown) -> Result<Option<BookReadJs>> {
+        let key = string("key", key)?;
+        Ok(self
+            .store
+            .world_book(&key)
+            .map_err(store_error)?
+            .map(BookReadJs))
+    }
+
+    /// Whether a defined world book is keyed `key`, read on this thread (waiting for replay) from one state of the
+    /// store: what `worldBookSync` would find, without reading the book.
+    #[napi(ts_args_type = "key: string")]
+    pub fn world_book_exists_sync(&self, key: Unknown) -> Result<bool> {
+        let key = string("key", key)?;
+        self.store.world_book_exists(&key).map_err(store_error)
     }
 
     /// Resolves once replay is done; rejects if it failed.
@@ -1417,12 +1550,15 @@ impl Store {
     /// - `landing { tree, session?, user? }`, `followed { tree, at?, session?, user? }`: a message or null;
     /// - `sessions { ids }`, `sessionInTree { session, tree }`, `userInTree { user, tree }`;
     /// - `sessionsNamed { name }`: the session named exactly `name` in the store (names are unique there), as a list;
-    /// - `history { session, from, limit }`, `recent { before?, limit }`, `inTree { tree, before?, limit }`;
+    /// - `history { session, from, limit }`, `recent { before?, limit }`, `conversations { before?, limit }`, `inTree { tree, before?, limit }`;
     /// - `historyStep { session, back }`: the entry a step reaches, or null; `openingChoice { session, tree }`;
+    /// - `currentChat { session, tree }`: the session's current chat there (a bookmark), or null for none;
+    /// - `currentChats { session, after?, limit }`: `[{ tree, bookmark }]` by tree, bookmark null where it went;
     /// - `messageCount { tree, at? }`: `{ count, estimate }`;
     /// - `ids { space: 0 message | 1 session | 2 user, keys }`, `keyStates { space, keys }` (`{ id }`, `'gone'` for a
     ///   deleted session's, or null), `nextIds {}`;
     /// - `bookmarks { ids }`, `treeBookmarks { tree, after?, limit }`, `bookmarksAt { message }`;
+    /// - `treeBookmarksNewest { tree, before?: [timeKey, bookmark], limit }`: `[{ bookmark, timeKey }]`, newest first;
     /// - `state { tree, at? }`: `[{ variable, field, json }]`;
     /// - `stats { owners }`: `{ owners, totals }`; `itemization { message }`; `sent { owner, keys }`;
     /// - `itemized { after?, limit }`: `{ ids, more }`, messages with an itemization in id order;
@@ -1444,314 +1580,24 @@ impl Store {
         op: String,
         args: Object,
     ) -> Result<Object<'env>> {
-        use crate::store::chat_read as cr;
-        let a = &args;
-        let limit = |a: &Object| -> Result<usize> { Ok(req_integer(a, "limit")? as usize) };
-        let read: TreeRead = match op.as_str() {
-            "messages" => {
-                let ids = integers(a, "ids")?;
-                Box::new(move |s| s.chat_read(|v| cr::messages(v, &ids)).map(JsTree))
-            }
-            "children" => {
-                let (parent, tree, after, limit) = (
-                    opt_integer(a, "parent")?,
-                    req_integer(a, "tree")?,
-                    opt_integer(a, "after")?,
-                    limit(a)?,
-                );
-                Box::new(move |s| {
-                    s.chat_read(|v| cr::children(v, parent, tree, after, limit))
-                        .map(JsTree)
-                })
-            }
-            "path" | "followed" | "landing" | "branchEnd" => {
-                let (tree, at, ses, user) = (
-                    req_integer(a, "tree")?,
-                    opt_integer(a, "at")?,
-                    opt_integer(a, "session")?,
-                    opt_integer(a, "user")?,
-                );
-                let op = op.clone();
-                Box::new(move |s| {
-                    s.chat_read(|v| match op.as_str() {
-                        "path" => cr::path(v, at),
-                        "followed" => cr::followed(v, tree, at, ses, user),
-                        "branchEnd" => cr::branch_end(v, tree, at, ses, user),
-                        _ => cr::landing(v, tree, ses, user),
-                    })
-                    .map(JsTree)
-                })
-            }
-            "sessions" => {
-                let ids = integers(a, "ids")?;
-                Box::new(move |s| s.chat_read(|v| cr::sessions(v, &ids)).map(JsTree))
-            }
-            "sessionInTree" => {
-                let (ses, tree) = (req_integer(a, "session")?, req_integer(a, "tree")?);
-                Box::new(move |s| {
-                    s.chat_read(|v| cr::session_in_tree(v, ses, tree))
-                        .map(JsTree)
-                })
-            }
-            "sessionsNamed" => {
-                let name = string(
-                    "name",
-                    a.get::<Unknown>("name")?
-                        .ok_or_else(|| invalid("sessionsNamed needs a name".into()))?,
-                )?;
-                Box::new(move |s| {
-                    s.chat_read(|v| {
-                        Ok(cr::Js::Arr(
-                            crate::store::sessions::by_name(v, &name)?
-                                .into_iter()
-                                .map(cr::Js::Big)
-                                .collect(),
-                        ))
-                    })
-                    .map(JsTree)
-                })
-            }
-            "userInTree" => {
-                let (user, tree) = (req_integer(a, "user")?, req_integer(a, "tree")?);
-                Box::new(move |s| s.chat_read(|v| cr::user_in_tree(v, user, tree)).map(JsTree))
-            }
-            "history" => {
-                let (ses, from, limit) = (
-                    req_integer(a, "session")?,
-                    opt_integer(a, "from")?.unwrap_or(0),
-                    limit(a)?,
-                );
-                Box::new(move |s| {
-                    s.chat_read(|v| cr::history(v, ses, from, limit))
-                        .map(JsTree)
-                })
-            }
-            "historyStep" => {
-                let ses = req_integer(a, "session")?;
-                let back: bool = a.get("back")?.unwrap_or(false);
-                Box::new(move |s| s.chat_read(|v| cr::history_step(v, ses, back)).map(JsTree))
-            }
-            "openingChoice" => {
-                let (ses, tree) = (req_integer(a, "session")?, req_integer(a, "tree")?);
-                Box::new(move |s| {
-                    s.chat_read(|v| cr::opening_choice(v, ses, tree))
-                        .map(JsTree)
-                })
-            }
-            "recent" => {
-                let (before, limit) = (opt_integer(a, "before")?, limit(a)?);
-                Box::new(move |s| s.chat_read(|v| cr::recent(v, before, limit)).map(JsTree))
-            }
-            "libraryNamed" => {
-                let (kind, limit) = (req_integer(a, "type")?, limit(a)?);
-                let name = string(
-                    "name",
-                    a.get::<Unknown>("name")?
-                        .ok_or_else(|| invalid("libraryNamed needs a name".into()))?,
-                )?;
-                Box::new(move |s| {
-                    s.chat_read(|v| cr::library_named(v, kind, &name, limit))
-                        .map(JsTree)
-                })
-            }
-            "localImportMtimes" => {
-                let paths = a
-                    .get::<Vec<Unknown>>("paths")?
-                    .ok_or_else(|| invalid("localImportMtimes needs paths".into()))?
-                    .into_iter()
-                    .map(|v| string("path", v))
-                    .collect::<Result<Vec<_>>>()?;
-                Box::new(move |s| {
-                    s.chat_read(|v| cr::local_import_mtimes(v, &paths))
-                        .map(JsTree)
-                })
-            }
-            "localImportSkip" => {
-                let path = string(
-                    "path",
-                    a.get::<Unknown>("path")?
-                        .ok_or_else(|| invalid("localImportSkip needs a path".into()))?,
-                )?;
-                Box::new(move |s| s.chat_read(|v| cr::local_import_skip(v, &path)).map(JsTree))
-            }
-            "localImportPaths" => {
-                let after = match a.get::<Unknown>("after")? {
-                    Some(v) => Some(string("after", v)?),
-                    None => None,
-                };
-                let limit = limit(a)?;
-                Box::new(move |s| {
-                    s.chat_read(|v| cr::local_import_paths(v, after.as_deref(), limit))
-                        .map(JsTree)
-                })
-            }
-            "entityChanges" => {
-                let (after, limit) = (opt_integer(a, "after")?.unwrap_or(0), limit(a)?);
-                Box::new(move |s| {
-                    s.chat_read(|v| cr::entity_changes(v, after, limit))
-                        .map(JsTree)
-                })
-            }
-            "inTree" => {
-                let (tree, before, limit) = (
-                    req_integer(a, "tree")?,
-                    opt_integer(a, "before")?,
-                    limit(a)?,
-                );
-                Box::new(move |s| {
-                    s.chat_read(|v| cr::in_tree(v, tree, before, limit))
-                        .map(JsTree)
-                })
-            }
-            "messageCount" => {
-                let (tree, at) = (req_integer(a, "tree")?, opt_integer(a, "at")?);
-                Box::new(move |s| s.chat_read(|v| cr::message_count(v, tree, at)).map(JsTree))
-            }
-            "ids" => {
-                let space = req_integer(a, "space")?;
-                if space > 2 {
-                    return Err(invalid(format!("no key space {space}")));
-                }
-                let keys = byte_list(a, "keys")?;
-                Box::new(move |s| {
-                    s.chat_read(|v| cr::ids_by_keys(v, space as u8, &keys))
-                        .map(JsTree)
-                })
-            }
-            "keyStates" => {
-                let space = req_integer(a, "space")?;
-                if space > 2 {
-                    return Err(invalid(format!("no key space {space}")));
-                }
-                let keys = byte_list(a, "keys")?;
-                Box::new(move |s| {
-                    s.chat_read(|v| cr::key_states(v, space as u8, &keys))
-                        .map(JsTree)
-                })
-            }
-            "nextIds" => Box::new(|s| s.chat_read(cr::next_ids).map(JsTree)),
-            "bookmarks" => {
-                let ids = integers(a, "ids")?;
-                Box::new(move |s| s.chat_read(|v| cr::bookmarks(v, &ids)).map(JsTree))
-            }
-            "treeBookmarks" => {
-                let (tree, after, limit) =
-                    (req_integer(a, "tree")?, opt_integer(a, "after")?, limit(a)?);
-                Box::new(move |s| {
-                    s.chat_read(|v| cr::tree_bookmarks(v, tree, after, limit))
-                        .map(JsTree)
-                })
-            }
-            "bookmarksAt" => {
-                let m = req_integer(a, "message")?;
-                Box::new(move |s| s.chat_read(|v| cr::bookmarks_at(v, m)).map(JsTree))
-            }
-            "state" => {
-                let (tree, at) = (req_integer(a, "tree")?, opt_integer(a, "at")?);
-                Box::new(move |s| s.chat_read(|v| cr::state_at(v, tree, at)).map(JsTree))
-            }
-            "stats" => {
-                let owners = integers(a, "owners")?;
-                Box::new(move |s| s.chat_read(|v| cr::chat_stats(v, &owners)).map(JsTree))
-            }
-            "itemization" => {
-                let m = req_integer(a, "message")?;
-                Box::new(move |s| s.chat_read(|v| cr::itemization(v, m)).map(JsTree))
-            }
-            "itemized" => {
-                let (after, limit) = (opt_integer(a, "after")?, limit(a)?);
-                Box::new(move |s| s.chat_read(|v| cr::itemized(v, after, limit)).map(JsTree))
-            }
-            "tokenCache" => {
-                let (table, identity, hash) = (
-                    req_integer(a, "table")?,
-                    bytes_of(a, "identity")?,
-                    bytes_of(a, "hash")?,
-                );
-                Box::new(move |s| {
-                    s.chat_read(|v| {
-                        Ok(
-                            match crate::store::token_cache::get(v, table, &identity, &hash)? {
-                                Some((used, value)) => cr::Js::Obj(vec![
-                                    ("used", cr::Js::Num(used as f64)),
-                                    ("value", cr::Js::Bytes(value)),
-                                ]),
-                                None => cr::Js::Null,
-                            },
-                        )
-                    })
-                    .map(JsTree)
-                })
-            }
-            "tokenCacheCount" => {
-                let table = req_integer(a, "table")?;
-                Box::new(move |s| {
-                    s.chat_read(|v| {
-                        Ok(cr::Js::Num(
-                            crate::store::token_cache::count(v, table)? as f64
-                        ))
-                    })
-                    .map(JsTree)
-                })
-            }
-            "bookmarksNamed" => {
-                let tree = req_integer(a, "tree")?;
-                let name = string(
-                    "name",
-                    a.get::<Unknown>("name")?
-                        .ok_or_else(|| invalid("bookmarksNamed needs a name".into()))?,
-                )?;
-                Box::new(move |s| {
-                    s.chat_read(|v| cr::bookmarks_named(v, tree, &name))
-                        .map(JsTree)
-                })
-            }
-            "subtreeDrops" => {
-                let (tree, roots) = (req_integer(a, "tree")?, integers(a, "roots")?);
-                let keep = match a.get::<Vec<Unknown>>("keep")? {
-                    Some(list) => list
-                        .into_iter()
-                        .map(|v| integer("keep", v))
-                        .collect::<Result<Vec<_>>>()?,
-                    None => Vec::new(),
-                };
-                let root = a.get::<bool>("root")?.unwrap_or(false);
-                Box::new(move |s| {
-                    s.chat_read(|v| cr::subtree_drops(v, tree, &roots, &keep, root))
-                        .map(JsTree)
-                })
-            }
-            "produced" => {
-                let ms = integers(a, "messages")?;
-                Box::new(move |s| s.chat_read(|v| cr::produced(v, &ms)).map(JsTree))
-            }
-            "activeChanges" => {
-                let m = req_integer(a, "message")?;
-                Box::new(move |s| s.chat_read(|v| cr::active_changes(v, m)).map(JsTree))
-            }
-            "pendingDelete" => {
-                let tree = req_integer(a, "tree")?;
-                Box::new(move |s| {
-                    s.chat_read(|v| Ok(cr::Js::Bool(crate::store::prune::pending_in(v, tree)?)))
-                        .map(JsTree)
-                })
-            }
-            "sent" => {
-                let (owner, keys) = (req_integer(a, "owner")?, byte_list(a, "keys")?);
-                Box::new(move |s| s.chat_read(|v| cr::sent(v, owner, &keys)).map(JsTree))
-            }
-            other => return Err(invalid(format!("no chat read {other}"))),
-        };
+        let read = chat_read_job(op, &args)?;
         derived(env, &self.store, read)
     }
 
+    /// `chatRead` on this thread (waiting for replay): for a synchronous caller.
+    #[napi(ts_args_type = "op: string, args: object", ts_return_type = "any")]
+    pub fn chat_read_sync(&self, op: String, args: Object) -> Result<JsTree> {
+        chat_read_job(op, &args)?(&self.store).map_err(store_error)
+    }
+
     /// A tree's messages searched (`store::chat_search::messages`): `{ tree, clauses, limit, after?: { score,
-    /// doc }, scanBelow?, scanBytes? }`: an index page (best first, after `after`) with the substring scan from the
-    /// newest message, or with `scanBelow` (a `scan` cursor) the scan alone from there. Resolves with `{ hits:
-    /// [{ message, score }], scanned: bigint[], more, total, totalExact, scan? }`.
+    /// doc }, scanBelow?, scanBytes? }`: an index page (best first, after `after`, a page's `next`) with the
+    /// substring scan from the newest message, or with `scanBelow` (a `scan` cursor) the scan alone from there.
+    /// Resolves with `{ hits: [{ message, score }], scanned: bigint[], more, next?: { score, doc, weights? },
+    /// total, totalExact, scan? }`.
     #[napi(
         ts_args_type = "query: object",
-        ts_return_type = "Promise<{ hits: { message: bigint, score: number }[], scanned: bigint[], more: boolean, total: number, totalExact: boolean, scan?: bigint }>"
+        ts_return_type = "Promise<{ hits: { message: bigint, score: number }[], scanned: bigint[], more: boolean, next?: { score: number, doc: bigint, weights?: number[] }, total: number, totalExact: boolean, scan?: bigint }>"
     )]
     pub fn chat_search_messages<'env>(
         &self,
@@ -1766,16 +1612,20 @@ impl Store {
         let scan_bytes = opt_integer(&query, "scanBytes")?.unwrap_or(SCAN_BYTES);
         let start = match opt_integer(&query, "scanBelow")? {
             Some(m) => Start::ScanBelow(m),
-            None => Start::Index {
-                after: match query.get::<Object>("after")? {
-                    None => None,
-                    Some(a) => {
-                        let score: f64 = a
-                            .get("score")?
-                            .ok_or_else(|| invalid("after needs a score".into()))?;
-                        Some((score, req_integer(&a, "doc")?))
-                    }
+            None => match query.get::<Object>("after")? {
+                None => Start::Index {
+                    after: None,
+                    weights: None,
                 },
+                Some(a) => {
+                    let score: f64 = a
+                        .get("score")?
+                        .ok_or_else(|| invalid("after needs a score".into()))?;
+                    Start::Index {
+                        after: Some((score, req_integer(&a, "doc")?)),
+                        weights: weights_from_js(&a)?,
+                    }
+                }
             },
         };
         derived(env, &self.store, move |s| {
@@ -1800,6 +1650,13 @@ impl Store {
                 ("total", Js::Num(m.total as f64)),
                 ("totalExact", Js::Bool(m.total_exact)),
             ];
+            if let Some((score, doc)) = m.next {
+                let mut n = vec![("score", Js::Num(score)), ("doc", Js::Big(doc))];
+                if let Some(w) = m.weights {
+                    n.push(("weights", Js::Arr(w.into_iter().map(Js::Num).collect())));
+                }
+                o.push(("next", Js::Obj(n)));
+            }
             if let Some(c) = m.scan {
                 o.push(("scan", Js::Big(c)));
             }
@@ -1807,42 +1664,71 @@ impl Store {
         })
     }
 
-    /// A tree's chat list searched (`store::chat_search::chat_list`): `{ tree, clauses, session?, after?, limit }`
-    /// (`session` the tab's, by id; `after` a bookmark). Resolves with `{ hits: [{ bookmark, session, at }], more,
-    /// next?, exact }`.
+    /// A tree's chat list searched (`store::chat_search::chat_list`): `{ tree, clauses, session?, after?, limit,
+    /// scan?, scanBelow?, scanBytes? }` (`session` the tab's, by id; `after` the `key` of the last item read;
+    /// `scan: true` to scan the tree's message texts for the query's text as a substring on a first page, or from
+    /// `scanBelow` (a `scan` cursor) alone). Resolves with `{ hits: [{ bookmark, session, at, key }], scanned: (the
+    /// same), more, next?, exact, scan? }`, each key `[timeKey, bookmark]`.
     #[napi(
         ts_args_type = "query: object",
-        ts_return_type = "Promise<{ hits: { bookmark: bigint | null, session: bigint | null, at: bigint | null }[], more: boolean, next?: bigint, exact: boolean }>"
+        ts_return_type = "Promise<{ hits: { bookmark: bigint | null, session: bigint | null, at: bigint | null, key: [bigint, bigint] }[], scanned: { bookmark: bigint | null, session: bigint | null, at: bigint | null, key: [bigint, bigint] }[], more: boolean, next?: [bigint, bigint], exact: boolean, scan?: bigint }>"
     )]
     pub fn chat_search_list<'env>(&self, env: &'env Env, query: Object) -> Result<Object<'env>> {
         use crate::store::chat_read::Js;
+        use crate::store::chat_search::{self, ListScan, ListStart, SCAN_BYTES};
         let tree = req_integer(&query, "tree")?;
         let limit = req_integer(&query, "limit")? as usize;
-        let (session, after) = (
-            opt_integer(&query, "session")?,
-            opt_integer(&query, "after")?,
-        );
+        let session = opt_integer(&query, "session")?;
+        let after = match query.get::<Vec<Unknown>>("after")? {
+            None => None,
+            Some(pair) => {
+                let mut it = pair.into_iter();
+                let (Some(tk), Some(b), None) = (it.next(), it.next(), it.next()) else {
+                    return Err(invalid("after is [timeKey, bookmark]".into()));
+                };
+                Some((integer("after", tk)?, integer("after", b)?))
+            }
+        };
         let clauses = clauses_from_js(&query, Scope::LIBRARY)?;
+        let scan = if query.get::<bool>("scan")?.unwrap_or(false) {
+            Some(ListScan {
+                bytes: opt_integer(&query, "scanBytes")?.unwrap_or(SCAN_BYTES),
+            })
+        } else {
+            None
+        };
+        let start = match opt_integer(&query, "scanBelow")? {
+            Some(m) => ListStart::ScanBelow(m),
+            None => ListStart::Items { after },
+        };
         derived(env, &self.store, move |s| {
-            let p = s.chat_search_list(tree, &clauses, session, after, limit)?;
-            let hits = p
-                .hits
-                .into_iter()
-                .map(|h| {
-                    Js::Obj(vec![
-                        ("bookmark", h.bookmark.map_or(Js::Null, Js::Big)),
-                        ("session", h.session.map_or(Js::Null, Js::Big)),
-                        ("at", h.at.map_or(Js::Null, Js::Big)),
-                    ])
-                })
-                .collect();
+            let p = s.chat_search_list(tree, &clauses, session, start, limit, scan)?;
+            let items = |items: Vec<chat_search::Item>| {
+                Js::Arr(
+                    items
+                        .into_iter()
+                        .map(|h| {
+                            Js::Obj(vec![
+                                ("bookmark", h.bookmark.map_or(Js::Null, Js::Big)),
+                                ("session", h.session.map_or(Js::Null, Js::Big)),
+                                ("at", h.at.map_or(Js::Null, Js::Big)),
+                                ("key", Js::Arr(vec![Js::Big(h.key.0), Js::Big(h.key.1)])),
+                            ])
+                        })
+                        .collect(),
+                )
+            };
             let mut o = vec![
-                ("hits", Js::Arr(hits)),
+                ("hits", items(p.hits)),
+                ("scanned", items(p.scanned)),
                 ("more", Js::Bool(p.more)),
                 ("exact", Js::Bool(p.exact)),
             ];
-            if let Some(n) = p.next {
-                o.push(("next", Js::Big(n)));
+            if let Some(c) = p.scan {
+                o.push(("scan", Js::Big(c)));
+            }
+            if let Some((tk, b)) = p.next {
+                o.push(("next", Js::Arr(vec![Js::Big(tk), Js::Big(b)])));
             }
             Ok(JsTree(Js::Obj(o)))
         })
@@ -1866,63 +1752,14 @@ impl Store {
         op: String,
         args: Object,
     ) -> Result<Object<'env>> {
-        use crate::store::books as b;
-        let a = &args;
-        let read: TreeRead = match op.as_str() {
-            "books" => {
-                let after = match a.get::<Unknown>("after")? {
-                    Some(v) if !matches!(v.get_type()?, ValueType::Null | ValueType::Undefined) => {
-                        Some(string("after", v)?)
-                    }
-                    _ => None,
-                };
-                let limit = req_integer(a, "limit")? as usize;
-                Box::new(move |s| {
-                    s.chat_read(|v| b::books_page(v, after.as_deref(), limit))
-                        .map(JsTree)
-                })
-            }
-            "entries" => {
-                let (book, after, limit) = (
-                    req_integer(a, "book")?,
-                    opt_integer(a, "after")?,
-                    req_integer(a, "limit")? as usize,
-                );
-                Box::new(move |s| {
-                    s.chat_read(|v| b::entries_page(v, book, after, limit))
-                        .map(JsTree)
-                })
-            }
-            "resolved" => {
-                let ids = integers(a, "ids")?;
-                Box::new(move |s| s.chat_read(|v| b::resolved(v, &ids)).map(JsTree))
-            }
-            "links" => {
-                let ids = integers(a, "ids")?;
-                Box::new(move |s| s.chat_read(|v| b::links(v, &ids)).map(JsTree))
-            }
-            "numbers" => {
-                let book = req_integer(a, "book")?;
-                Box::new(move |s| s.chat_read(|v| b::book_numbers(v, book)).map(JsTree))
-            }
-            "linkers" => {
-                let (book, after, limit) = (
-                    req_integer(a, "book")?,
-                    opt_integer(a, "after")?,
-                    req_integer(a, "limit")? as usize,
-                );
-                Box::new(move |s| {
-                    s.chat_read(|v| b::linkers_page(v, book, after, limit))
-                        .map(JsTree)
-                })
-            }
-            "resolving" => {
-                let book = req_integer(a, "book")?;
-                Box::new(move |s| s.chat_read(|v| b::resolving_page(v, book)).map(JsTree))
-            }
-            other => return Err(invalid(format!("no world read {other}"))),
-        };
+        let read = world_read_job(op, &args)?;
         derived(env, &self.store, read)
+    }
+
+    /// `worldRead` on this thread (waiting for replay): for a synchronous caller.
+    #[napi(ts_args_type = "op: string, args: object", ts_return_type = "any")]
+    pub fn world_read_sync(&self, op: String, args: Object) -> Result<JsTree> {
+        world_read_job(op, &args)?(&self.store).map_err(store_error)
     }
 
     /// The position of the entity's latest record, or null.
@@ -1937,12 +1774,11 @@ impl Store {
 
     /// A page of search results in relevance order: `{ scope: 'library' | 'tags' | { chat: owner }, clauses:
     /// [{ text, fields?, negate?, quoted? }], filters?: { allTags?, anyTag?, noTag?, ids?, notIds? }, limit,
-    /// after? }` (`after` the last hit of the page before). Resolves with `{ hits: [{ doc, score }], total,
-    /// totalExact, pageExact, more, tags: [{ tag, name, carriers }], tagsExact }`: in the library, `tags` are
-    /// the tags whose names match the query, best first, at most 5.
+    /// after? }` (`after` the page before's `next`). Resolves with `{ hits: [{ doc, score }], total, totalExact,
+    /// pageExact, more, next?: { score, doc, weights? } }`.
     #[napi(
         ts_args_type = "query: object",
-        ts_return_type = "Promise<{ hits: { doc: bigint, score: number }[], total: number, totalExact: boolean, pageExact: boolean, more: boolean, tags: { tag: bigint, name: string, carriers: number }[], tagsExact: boolean }>"
+        ts_return_type = "Promise<{ hits: { doc: bigint, score: number }[], total: number, totalExact: boolean, pageExact: boolean, more: boolean, next?: { score: number, doc: bigint, weights?: number[] } }>"
     )]
     pub fn search<'env>(&self, env: &'env Env, query: Object) -> Result<Object<'env>> {
         let q = query_from_js(&query)?;
@@ -1965,34 +1801,40 @@ impl Store {
         })
     }
 
-    /// A page of the library list searched: `libraryPage`'s query plus `clauses` (as `search` takes them, in the
-    /// library scope) and `relevance: true` for best match first (then `after: { score, doc }`, the last hit of
-    /// the page before; `sort` is ignored). Resolves with `{ ids, scores, total, totalExact, more, cursor?, tags,
-    /// tagsExact }`: `scores` in relevance order, `cursor` in a list order, `tags` the tags whose names match.
+    /// `libraryPage` on this thread (waiting for replay): for a synchronous caller.
     #[napi(
         ts_args_type = "query: object",
-        ts_return_type = "Promise<{ ids: bigint[], scores: number[], total: number, totalExact: boolean, more: boolean, cursor?: Buffer, tags: { tag: bigint, name: string, carriers: number }[], tagsExact: boolean }>"
+        ts_return_type = "{ ids: bigint[], total?: number, totalExact: boolean, more: boolean, cursor?: Buffer }"
+    )]
+    pub fn library_page_sync(&self, query: Object) -> Result<LibraryPage> {
+        let q = library_query_from_js(&query, true)?;
+        self.store
+            .library_page(&q)
+            .map(LibraryPage)
+            .map_err(store_error)
+    }
+
+    /// A page of the library list searched: `libraryPage`'s query plus `clauses` (as `search` takes them, in the
+    /// library scope) and `relevance: true` for best match first (`sort`, by name if none, then orders the
+    /// matches only tag names match; `after` is a page's `next`). Resolves with `{ ids, scores, total, totalExact,
+    /// more, cursor?, next? }`: `scores` in relevance order, `cursor` in a list order, `next` in relevance order
+    /// where the next page starts (`{ score, doc }`, `{ tied, cursor }` or `{ below }`, with the idfs it ranks by,
+    /// `weights`, when it has several words).
+    #[napi(
+        ts_args_type = "query: object",
+        ts_return_type = "Promise<{ ids: bigint[], scores: number[], total: number, totalExact: boolean, more: boolean, cursor?: Buffer, next?: ({ score: number, doc: bigint } | { tied: number, cursor: Buffer } | { below: number }) & { weights?: number[] } }>"
     )]
     pub fn library_search<'env>(&self, env: &'env Env, query: Object) -> Result<Object<'env>> {
         let relevance = query.get::<bool>("relevance")?.unwrap_or(false);
-        let q = library_query_from_js(&query, !relevance)?;
+        let sorted = !relevance || query.get::<Object>("sort")?.is_some();
+        let q = library_query_from_js(&query, sorted)?;
         let clauses = clauses_from_js(&query, Scope::LIBRARY)?;
         let ordered = if relevance {
-            let after = match query.get::<Object>("after")? {
-                None => None,
-                Some(a) => {
-                    let score: f64 = a
-                        .get("score")?
-                        .ok_or_else(|| invalid("after needs a score".into()))?;
-                    let doc = integer(
-                        "doc",
-                        a.get::<Unknown>("doc")?
-                            .ok_or_else(|| invalid("after needs a doc".into()))?,
-                    )?;
-                    Some((score, doc))
-                }
+            let (after, weights) = match query.get::<Object>("after")? {
+                None => (None, None),
+                Some(a) => (Some(resume_from_js(&a)?), weights_from_js(&a)?),
             };
-            library_search::Ordered::Relevance { after }
+            library_search::Ordered::Relevance { after, weights }
         } else {
             library_search::Ordered::List
         };
@@ -2013,35 +1855,87 @@ impl Store {
         ids: Vec<Unknown>,
         only: Option<Object>,
     ) -> Result<Object<'env>> {
-        let ids = ids
-            .into_iter()
-            .map(|v| integer("id", v))
-            .collect::<Result<Vec<_>>>()?;
-        let only = match only {
-            None => None,
-            Some(o) => {
-                let mut fields = Vec::new();
-                for v in o.get::<Vec<Unknown>>("fields")?.unwrap_or_default() {
-                    fields.push(match v.get_type()? {
-                        ValueType::String => FieldRef::Key(string("field", v)?),
-                        _ => FieldRef::Code(integer("field", v)?),
-                    });
-                }
-                let lists = o
-                    .get::<Vec<Unknown>>("lists")?
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|v| integer("list", v))
-                    .collect::<Result<Vec<_>>>()?;
-                Some(library_read::Only { fields, lists })
-            }
-        };
+        let (ids, only) = library_entities_args(ids, only)?;
         derived(env, &self.store, move |s| {
             s.library_entities_with(&ids, only.as_ref())
                 .map(LibraryEntities)
         })
     }
 
+    /// `libraryEntities` on this thread (waiting for replay): for a synchronous caller.
+    #[napi(
+        ts_args_type = "ids: (bigint | number)[], only?: { fields: (number | string)[], lists: number[] }",
+        ts_return_type = "(object | null)[]"
+    )]
+    pub fn library_entities_sync(
+        &self,
+        ids: Vec<Unknown>,
+        only: Option<Object>,
+    ) -> Result<LibraryEntities> {
+        let (ids, only) = library_entities_args(ids, only)?;
+        self.store
+            .library_entities_with(&ids, only.as_ref())
+            .map(LibraryEntities)
+            .map_err(store_error)
+    }
+
+    /// `libraryIds` on this thread (waiting for replay): for a synchronous caller.
+    #[napi(
+        ts_args_type = "keys: [number, string][]",
+        ts_return_type = "(bigint | null)[]"
+    )]
+    pub fn library_ids_sync(&self, keys: Vec<Vec<Unknown>>) -> Result<Vec<Option<u64>>> {
+        let keys = library_keys(keys)?;
+        self.store.library_ids(&keys).map_err(store_error)
+    }
+}
+
+/// `libraryEntities`' arguments.
+fn library_entities_args(
+    ids: Vec<Unknown>,
+    only: Option<Object>,
+) -> Result<(Vec<u64>, Option<library_read::Only>)> {
+    let ids = ids
+        .into_iter()
+        .map(|v| integer("id", v))
+        .collect::<Result<Vec<_>>>()?;
+    let only = match only {
+        None => None,
+        Some(o) => {
+            let mut fields = Vec::new();
+            for v in o.get::<Vec<Unknown>>("fields")?.unwrap_or_default() {
+                fields.push(match v.get_type()? {
+                    ValueType::String => FieldRef::Key(string("field", v)?),
+                    _ => FieldRef::Code(integer("field", v)?),
+                });
+            }
+            let lists = o
+                .get::<Vec<Unknown>>("lists")?
+                .unwrap_or_default()
+                .into_iter()
+                .map(|v| integer("list", v))
+                .collect::<Result<Vec<_>>>()?;
+            Some(library_read::Only { fields, lists })
+        }
+    };
+    Ok((ids, only))
+}
+
+/// `libraryIds`' keys.
+fn library_keys(keys: Vec<Vec<Unknown>>) -> Result<Vec<(u64, Vec<u8>)>> {
+    keys.into_iter()
+        .map(|pair| {
+            let mut it = pair.into_iter();
+            let (Some(t), Some(k), None) = (it.next(), it.next(), it.next()) else {
+                return Err(invalid("a key is [type, key]".into()));
+            };
+            Ok((integer("type", t)?, string("key", k)?))
+        })
+        .collect()
+}
+
+#[napi]
+impl Store {
     /// The entity of each `[type, key]`, or null.
     #[napi(
         ts_args_type = "keys: [number, string][]",
@@ -2052,16 +1946,7 @@ impl Store {
         env: &'env Env,
         keys: Vec<Vec<Unknown>>,
     ) -> Result<Object<'env>> {
-        let keys = keys
-            .into_iter()
-            .map(|pair| {
-                let mut it = pair.into_iter();
-                let (Some(t), Some(k), None) = (it.next(), it.next(), it.next()) else {
-                    return Err(invalid("a key is [type, key]".into()));
-                };
-                Ok((integer("type", t)?, string("key", k)?))
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let keys = library_keys(keys)?;
         derived(env, &self.store, move |s| s.library_ids(&keys))
     }
 
@@ -2223,6 +2108,23 @@ impl Store {
             .map(|v| string("name", v))
             .collect::<Result<Vec<_>>>()?;
         derived(env, &self.store, move |s| s.tag_by_names(&names))
+    }
+
+    /// The tag deleted last with each name (names compared folded), or null.
+    #[napi(
+        ts_args_type = "names: string[]",
+        ts_return_type = "Promise<(bigint | null)[]>"
+    )]
+    pub fn tag_gone_by_names<'env>(
+        &self,
+        env: &'env Env,
+        names: Vec<Unknown>,
+    ) -> Result<Object<'env>> {
+        let names = names
+            .into_iter()
+            .map(|v| string("name", v))
+            .collect::<Result<Vec<_>>>()?;
+        derived(env, &self.store, move |s| s.tag_gone_by_names(&names))
     }
 
     /// Each entity's `{ type, key }`, or null.
@@ -2391,8 +2293,6 @@ pub struct LoadStats {
     pub merge_ms: f64,
     pub run_bytes: f64,
     pub run_entries: f64,
-    pub lists_ms: f64,
-    pub list_entries: f64,
     pub numbers_ms: f64,
     pub number_entries: f64,
     pub install_ms: f64,
@@ -2414,8 +2314,6 @@ impl From<crate::store::bulk::LoadStats> for LoadStats {
             merge_ms: ms(s.merge_micros),
             run_bytes: s.run_bytes as f64,
             run_entries: s.run_entries as f64,
-            lists_ms: ms(s.lists_micros),
-            list_entries: s.list_entries as f64,
             numbers_ms: ms(s.numbers_micros),
             number_entries: s.number_entries as f64,
             install_ms: ms(s.install_micros),
@@ -2500,4 +2398,411 @@ impl Load {
     pub fn abandon(&self) {
         drop(self.loader.lock().unwrap().take());
     }
+}
+
+/// The job of a `chatRead`.
+fn chat_read_job(op: String, args: &Object) -> Result<TreeRead> {
+    use crate::store::chat_read as cr;
+    let a = &args;
+    let limit = |a: &Object| -> Result<usize> { Ok(req_integer(a, "limit")? as usize) };
+    let read: TreeRead = match op.as_str() {
+        "messages" => {
+            let ids = integers(a, "ids")?;
+            Box::new(move |s| s.chat_read(|v| cr::messages(v, &ids)).map(JsTree))
+        }
+        "children" => {
+            let (parent, tree, after, limit) = (
+                opt_integer(a, "parent")?,
+                req_integer(a, "tree")?,
+                opt_integer(a, "after")?,
+                limit(a)?,
+            );
+            Box::new(move |s| {
+                s.chat_read(|v| cr::children(v, parent, tree, after, limit))
+                    .map(JsTree)
+            })
+        }
+        "path" | "followed" | "landing" | "branchEnd" => {
+            let (tree, at, ses, user) = (
+                req_integer(a, "tree")?,
+                opt_integer(a, "at")?,
+                opt_integer(a, "session")?,
+                opt_integer(a, "user")?,
+            );
+            let op = op.clone();
+            Box::new(move |s| {
+                s.chat_read(|v| match op.as_str() {
+                    "path" => cr::path(v, at),
+                    "followed" => cr::followed(v, tree, at, ses, user),
+                    "branchEnd" => cr::branch_end(v, tree, at, ses, user),
+                    _ => cr::landing(v, tree, ses, user),
+                })
+                .map(JsTree)
+            })
+        }
+        "sessions" => {
+            let ids = integers(a, "ids")?;
+            Box::new(move |s| s.chat_read(|v| cr::sessions(v, &ids)).map(JsTree))
+        }
+        "sessionInTree" => {
+            let (ses, tree) = (req_integer(a, "session")?, req_integer(a, "tree")?);
+            Box::new(move |s| {
+                s.chat_read(|v| cr::session_in_tree(v, ses, tree))
+                    .map(JsTree)
+            })
+        }
+        "sessionsNamed" => {
+            let name = string(
+                "name",
+                a.get::<Unknown>("name")?
+                    .ok_or_else(|| invalid("sessionsNamed needs a name".into()))?,
+            )?;
+            Box::new(move |s| {
+                s.chat_read(|v| {
+                    Ok(cr::Js::Arr(
+                        crate::store::sessions::by_name(v, &name)?
+                            .into_iter()
+                            .map(cr::Js::Big)
+                            .collect(),
+                    ))
+                })
+                .map(JsTree)
+            })
+        }
+        "userInTree" => {
+            let (user, tree) = (req_integer(a, "user")?, req_integer(a, "tree")?);
+            Box::new(move |s| s.chat_read(|v| cr::user_in_tree(v, user, tree)).map(JsTree))
+        }
+        "history" => {
+            let (ses, from, limit) = (
+                req_integer(a, "session")?,
+                opt_integer(a, "from")?.unwrap_or(0),
+                limit(a)?,
+            );
+            Box::new(move |s| {
+                s.chat_read(|v| cr::history(v, ses, from, limit))
+                    .map(JsTree)
+            })
+        }
+        "historyStep" => {
+            let ses = req_integer(a, "session")?;
+            let back: bool = a.get("back")?.unwrap_or(false);
+            Box::new(move |s| s.chat_read(|v| cr::history_step(v, ses, back)).map(JsTree))
+        }
+        "currentChat" => {
+            let (ses, tree) = (req_integer(a, "session")?, req_integer(a, "tree")?);
+            Box::new(move |s| s.chat_read(|v| cr::current_chat(v, ses, tree)).map(JsTree))
+        }
+        "currentChats" => {
+            let (ses, after, limit) = (
+                req_integer(a, "session")?,
+                opt_integer(a, "after")?,
+                limit(a)?,
+            );
+            Box::new(move |s| {
+                s.chat_read(|v| cr::current_chats(v, ses, after, limit))
+                    .map(JsTree)
+            })
+        }
+        "openingChoice" => {
+            let (ses, tree) = (req_integer(a, "session")?, req_integer(a, "tree")?);
+            Box::new(move |s| {
+                s.chat_read(|v| cr::opening_choice(v, ses, tree))
+                    .map(JsTree)
+            })
+        }
+        "recent" => {
+            let (before, limit) = (opt_integer(a, "before")?, limit(a)?);
+            Box::new(move |s| s.chat_read(|v| cr::recent(v, before, limit)).map(JsTree))
+        }
+        "conversations" => {
+            let (before, limit) = (opt_integer(a, "before")?, limit(a)?);
+            Box::new(move |s| {
+                s.chat_read(|v| cr::conversations(v, before, limit))
+                    .map(JsTree)
+            })
+        }
+        "libraryNamed" => {
+            let (kind, limit) = (req_integer(a, "type")?, limit(a)?);
+            let name = string(
+                "name",
+                a.get::<Unknown>("name")?
+                    .ok_or_else(|| invalid("libraryNamed needs a name".into()))?,
+            )?;
+            Box::new(move |s| {
+                s.chat_read(|v| cr::library_named(v, kind, &name, limit))
+                    .map(JsTree)
+            })
+        }
+        "localImportMtimes" => {
+            let paths = a
+                .get::<Vec<Unknown>>("paths")?
+                .ok_or_else(|| invalid("localImportMtimes needs paths".into()))?
+                .into_iter()
+                .map(|v| string("path", v))
+                .collect::<Result<Vec<_>>>()?;
+            Box::new(move |s| {
+                s.chat_read(|v| cr::local_import_mtimes(v, &paths))
+                    .map(JsTree)
+            })
+        }
+        "localImportSkip" => {
+            let path = string(
+                "path",
+                a.get::<Unknown>("path")?
+                    .ok_or_else(|| invalid("localImportSkip needs a path".into()))?,
+            )?;
+            Box::new(move |s| s.chat_read(|v| cr::local_import_skip(v, &path)).map(JsTree))
+        }
+        "localImportPaths" => {
+            let after = match a.get::<Unknown>("after")? {
+                Some(v) => Some(string("after", v)?),
+                None => None,
+            };
+            let limit = limit(a)?;
+            Box::new(move |s| {
+                s.chat_read(|v| cr::local_import_paths(v, after.as_deref(), limit))
+                    .map(JsTree)
+            })
+        }
+        "entityChanges" => {
+            let (after, limit) = (opt_integer(a, "after")?.unwrap_or(0), limit(a)?);
+            Box::new(move |s| {
+                s.chat_read(|v| cr::entity_changes(v, after, limit))
+                    .map(JsTree)
+            })
+        }
+        "inTree" => {
+            let (tree, before, limit) = (
+                req_integer(a, "tree")?,
+                opt_integer(a, "before")?,
+                limit(a)?,
+            );
+            Box::new(move |s| {
+                s.chat_read(|v| cr::in_tree(v, tree, before, limit))
+                    .map(JsTree)
+            })
+        }
+        "messageCount" => {
+            let (tree, at) = (req_integer(a, "tree")?, opt_integer(a, "at")?);
+            Box::new(move |s| s.chat_read(|v| cr::message_count(v, tree, at)).map(JsTree))
+        }
+        "within" => {
+            let (message, at) = (req_integer(a, "message")?, req_integer(a, "at")?);
+            Box::new(move |s| s.chat_read(|v| cr::within(v, message, at)).map(JsTree))
+        }
+        "ids" => {
+            let space = req_integer(a, "space")?;
+            if space > 2 {
+                return Err(invalid(format!("no key space {space}")));
+            }
+            let keys = byte_list(a, "keys")?;
+            Box::new(move |s| {
+                s.chat_read(|v| cr::ids_by_keys(v, space as u8, &keys))
+                    .map(JsTree)
+            })
+        }
+        "keyStates" => {
+            let space = req_integer(a, "space")?;
+            if space > 2 {
+                return Err(invalid(format!("no key space {space}")));
+            }
+            let keys = byte_list(a, "keys")?;
+            Box::new(move |s| {
+                s.chat_read(|v| cr::key_states(v, space as u8, &keys))
+                    .map(JsTree)
+            })
+        }
+        "nextIds" => Box::new(|s| s.chat_read(cr::next_ids).map(JsTree)),
+        "bookmarks" => {
+            let ids = integers(a, "ids")?;
+            Box::new(move |s| s.chat_read(|v| cr::bookmarks(v, &ids)).map(JsTree))
+        }
+        "treeBookmarks" => {
+            let (tree, after, limit) =
+                (req_integer(a, "tree")?, opt_integer(a, "after")?, limit(a)?);
+            Box::new(move |s| {
+                s.chat_read(|v| cr::tree_bookmarks(v, tree, after, limit))
+                    .map(JsTree)
+            })
+        }
+        "treeBookmarksNewest" => {
+            let (tree, limit) = (req_integer(a, "tree")?, limit(a)?);
+            let before = match a.get::<Vec<Unknown>>("before")? {
+                None => None,
+                Some(pair) => {
+                    let mut it = pair.into_iter();
+                    let (Some(tk), Some(b), None) = (it.next(), it.next(), it.next()) else {
+                        return Err(invalid("before is [timeKey, bookmark]".into()));
+                    };
+                    Some((integer("before", tk)?, integer("before", b)?))
+                }
+            };
+            Box::new(move |s| {
+                s.chat_read(|v| cr::tree_bookmarks_newest(v, tree, before, limit))
+                    .map(JsTree)
+            })
+        }
+        "bookmarksAt" => {
+            let m = req_integer(a, "message")?;
+            Box::new(move |s| s.chat_read(|v| cr::bookmarks_at(v, m)).map(JsTree))
+        }
+        "state" => {
+            let (tree, at) = (req_integer(a, "tree")?, opt_integer(a, "at")?);
+            Box::new(move |s| s.chat_read(|v| cr::state_at(v, tree, at)).map(JsTree))
+        }
+        "stats" => {
+            let owners = integers(a, "owners")?;
+            Box::new(move |s| s.chat_read(|v| cr::chat_stats(v, &owners)).map(JsTree))
+        }
+        "itemization" => {
+            let m = req_integer(a, "message")?;
+            Box::new(move |s| s.chat_read(|v| cr::itemization(v, m)).map(JsTree))
+        }
+        "itemized" => {
+            let (after, limit) = (opt_integer(a, "after")?, limit(a)?);
+            Box::new(move |s| s.chat_read(|v| cr::itemized(v, after, limit)).map(JsTree))
+        }
+        "tokenCache" => {
+            let (table, identity, hash) = (
+                req_integer(a, "table")?,
+                bytes_of(a, "identity")?,
+                bytes_of(a, "hash")?,
+            );
+            Box::new(move |s| {
+                s.chat_read(|v| {
+                    Ok(
+                        match crate::store::token_cache::get(v, table, &identity, &hash)? {
+                            Some((used, value)) => cr::Js::Obj(vec![
+                                ("used", cr::Js::Num(used as f64)),
+                                ("value", cr::Js::Bytes(value)),
+                            ]),
+                            None => cr::Js::Null,
+                        },
+                    )
+                })
+                .map(JsTree)
+            })
+        }
+        "tokenCacheCount" => {
+            let table = req_integer(a, "table")?;
+            Box::new(move |s| {
+                s.chat_read(|v| {
+                    Ok(cr::Js::Num(
+                        crate::store::token_cache::count(v, table)? as f64
+                    ))
+                })
+                .map(JsTree)
+            })
+        }
+        "bookmarksNamed" => {
+            let tree = req_integer(a, "tree")?;
+            let name = string(
+                "name",
+                a.get::<Unknown>("name")?
+                    .ok_or_else(|| invalid("bookmarksNamed needs a name".into()))?,
+            )?;
+            Box::new(move |s| {
+                s.chat_read(|v| cr::bookmarks_named(v, tree, &name))
+                    .map(JsTree)
+            })
+        }
+        "subtreeDrops" => {
+            let (tree, roots) = (req_integer(a, "tree")?, integers(a, "roots")?);
+            let keep = match a.get::<Vec<Unknown>>("keep")? {
+                Some(list) => list
+                    .into_iter()
+                    .map(|v| integer("keep", v))
+                    .collect::<Result<Vec<_>>>()?,
+                None => Vec::new(),
+            };
+            let root = a.get::<bool>("root")?.unwrap_or(false);
+            Box::new(move |s| {
+                s.chat_read(|v| cr::subtree_drops(v, tree, &roots, &keep, root))
+                    .map(JsTree)
+            })
+        }
+        "produced" => {
+            let ms = integers(a, "messages")?;
+            Box::new(move |s| s.chat_read(|v| cr::produced(v, &ms)).map(JsTree))
+        }
+        "activeChanges" => {
+            let m = req_integer(a, "message")?;
+            Box::new(move |s| s.chat_read(|v| cr::active_changes(v, m)).map(JsTree))
+        }
+        "pendingDelete" => {
+            let tree = req_integer(a, "tree")?;
+            Box::new(move |s| {
+                s.chat_read(|v| Ok(cr::Js::Bool(crate::store::prune::pending_in(v, tree)?)))
+                    .map(JsTree)
+            })
+        }
+        "sent" => {
+            let (owner, keys) = (req_integer(a, "owner")?, byte_list(a, "keys")?);
+            Box::new(move |s| s.chat_read(|v| cr::sent(v, owner, &keys)).map(JsTree))
+        }
+        other => return Err(invalid(format!("no chat read {other}"))),
+    };
+    Ok(read)
+}
+
+/// The job of a `worldRead`.
+fn world_read_job(op: String, args: &Object) -> Result<TreeRead> {
+    use crate::store::books as b;
+    let a = &args;
+    let read: TreeRead = match op.as_str() {
+        "books" => {
+            let after = match a.get::<Unknown>("after")? {
+                Some(v) if !matches!(v.get_type()?, ValueType::Null | ValueType::Undefined) => {
+                    Some(string("after", v)?)
+                }
+                _ => None,
+            };
+            let limit = req_integer(a, "limit")? as usize;
+            Box::new(move |s| {
+                s.chat_read(|v| b::books_page(v, after.as_deref(), limit))
+                    .map(JsTree)
+            })
+        }
+        "entries" => {
+            let (book, after, limit) = (
+                req_integer(a, "book")?,
+                opt_integer(a, "after")?,
+                req_integer(a, "limit")? as usize,
+            );
+            Box::new(move |s| {
+                s.chat_read(|v| b::entries_page(v, book, after, limit))
+                    .map(JsTree)
+            })
+        }
+        "resolved" => {
+            let ids = integers(a, "ids")?;
+            Box::new(move |s| s.chat_read(|v| b::resolved(v, &ids)).map(JsTree))
+        }
+        "links" => {
+            let ids = integers(a, "ids")?;
+            Box::new(move |s| s.chat_read(|v| b::links(v, &ids)).map(JsTree))
+        }
+        "numbers" => {
+            let book = req_integer(a, "book")?;
+            Box::new(move |s| s.chat_read(|v| b::book_numbers(v, book)).map(JsTree))
+        }
+        "linkers" => {
+            let (book, after, limit) = (
+                req_integer(a, "book")?,
+                opt_integer(a, "after")?,
+                req_integer(a, "limit")? as usize,
+            );
+            Box::new(move |s| {
+                s.chat_read(|v| b::linkers_page(v, book, after, limit))
+                    .map(JsTree)
+            })
+        }
+        "resolving" => {
+            let book = req_integer(a, "book")?;
+            Box::new(move |s| s.chat_read(|v| b::resolving_page(v, book)).map(JsTree))
+        }
+        other => return Err(invalid(format!("no world read {other}"))),
+    };
+    Ok(read)
 }

@@ -1,7 +1,6 @@
 import { describe, test, expect, beforeAll, beforeEach, afterEach, afterAll } from '@jest/globals';
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import process from 'node:process';
 import { Buffer } from 'node:buffer';
 
@@ -21,8 +20,10 @@ afterAll(() => process.chdir(originalCwd));
 
 /** @type {typeof import('../src/local-import-scan.js')} */
 let localImportScan;
-/** @type {typeof import('../src/character-metadata-db.js')} */
-let metadataDb;
+/** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
+let user;
+/** @type {typeof import('./converted-user.fixture.js')} */
+let fixture;
 /** @type {typeof import('png-chunks-extract').default} */
 let extract;
 /** @type {typeof import('png-chunk-text')} */
@@ -42,7 +43,7 @@ beforeAll(async () => {
     process.chdir(path.resolve(originalCwd, '..'));
 
     localImportScan = await import('../src/local-import-scan.js');
-    metadataDb = await import('../src/character-metadata-db.js');
+    fixture = await import('./converted-user.fixture.js');
     ({ default: extract } = await import('png-chunks-extract'));
     PNGtext = (await import('png-chunk-text')).default ?? await import('png-chunk-text');
     ({ default: pngEncode } = await import('../src/png/encode.js'));
@@ -62,22 +63,23 @@ function writeMalformedPngCharacterFile(dir, filename) {
     fs.writeFileSync(path.join(dir, filename), Buffer.from(pngEncode(chunks)));
 }
 
+/** How many characters the library has. */
+async function characterCount() {
+    return (await user.store.lib.query({ wantRows: false, wantTotal: true, includeGroups: false })).total;
+}
+
 describe('local-import-scan: a build-time throw does not permanently orphan a worker pool slot', () => {
     let tempDir;
     let sourceDir;
-    let charactersDir;
     /** @type {import('../src/users.js').UserDirectoryList} */
     let directories;
 
-    beforeEach(() => {
-        tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-local-import-scan-worker-orphan-'));
+    beforeEach(async () => {
+        user = await fixture.emptyUser('st-local-import-scan-worker-orphan-');
+        tempDir = user.dataRoot;
+        directories = user.directories;
         sourceDir = path.join(tempDir, 'watched');
-        charactersDir = path.join(tempDir, 'characters');
-        const chatsDir = path.join(tempDir, 'chats');
         fs.mkdirSync(sourceDir, { recursive: true });
-        fs.mkdirSync(charactersDir, { recursive: true });
-        fs.mkdirSync(chatsDir, { recursive: true });
-        directories = { root: tempDir, characters: charactersDir, chats: chatsDir };
         globalThis.DATA_ROOT = tempDir;
 
         // Forces a fresh, size-1 worker pool on this test's first scanDirectory() call - with only one worker,
@@ -92,10 +94,9 @@ describe('local-import-scan: a build-time throw does not permanently orphan a wo
         process.env.SILLYTAVERN_PERFORMANCE_ALLOWEXPENSIVEDUPLICATEFALLBACK = 'false';
     });
 
-    afterEach(() => {
+    afterEach(async () => {
         localImportScan.disposeLocalImportScan();
-        metadataDb.disposeMetadataStores();
-        fs.rmSync(tempDir, { recursive: true, force: true });
+        await user.close();
         delete process.env.SILLYTAVERN_PERFORMANCE_LOCALIMPORTWORKERPOOLSIZE;
         delete process.env.SILLYTAVERN_PERFORMANCE_ALLOWEXPENSIVEDUPLICATEFALLBACK;
     });
@@ -109,14 +110,13 @@ describe('local-import-scan: a build-time throw does not permanently orphan a wo
         writeMalformedPngCharacterFile(sourceDir, 'malformed.png');
         const state = { sourceDir, lastSeenMtimeMs: new Map(), watcher: null, watchTimers: new Map() };
         await localImportScan.scanDirectory(state, directories);
-        expect(fs.readdirSync(charactersDir).length).toBe(0);
+        expect(await characterCount()).toBe(0);
 
         fs.writeFileSync(path.join(sourceDir, 'ghost.json'), JSON.stringify({ name: 'Ghost', description: 'ok' }));
         await localImportScan.scanDirectory(state, directories);
 
-        const files = fs.readdirSync(charactersDir);
-        expect(files.length).toBe(1);
-        const row = await metadataDb.getCharacterMetadataRow(directories, files[0]);
-        expect(row.name).toBe('Ghost');
+        expect(await characterCount()).toBe(1);
+        const page = await user.store.lib.query({ wantRows: true, includeGroups: false, limit: 5 });
+        expect(/** @type {any} */ (page.rows)[0].item.name).toBe('Ghost');
     });
 });

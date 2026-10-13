@@ -1,5 +1,8 @@
 import { CARD_COLUMNS, assembleCard, cardNameSource } from './character-card-storage.js';
 import { normalizeTagIds } from '../public/scripts/hash-utils.js';
+import { LIST_CREATOR_NOTES_PATHS, LIST_EXTRA_PATHS, cardListValues } from './card-list-values.js';
+
+export { LIST_CREATOR_NOTES_PATHS, LIST_EXTRA_PATHS, cardListValues };
 
 /**
  * Reads characters stored as fields: the card tables below plus the `characters` row, split by
@@ -176,62 +179,6 @@ export function cardNameText(card) {
     return '';
 }
 
-/**
- * @param {unknown} value
- * @param {unknown} fallback
- */
-function orDefault(value, fallback) {
-    return value === undefined ? fallback : value;
-}
-
-/**
- * The card values a list row shows, as the blob layout's shallow copy holds them: toShallow() of
- * getCharaCardV2(card), with V1 keys hoisted from `data` for a card with `spec`, and a card without `spec` read from
- * its V1 keys alone (convertToV2(): comma-split string tags, defaults for the rest).
- * @param {unknown} card
- * @param {boolean} includeCreatorNotes `performance.shallowCharactersIncludeCreatorNotes`
- * @returns {{ name: unknown, tags: unknown, create_date: unknown, data: { name: unknown, character_version: unknown, creator: unknown, tags: unknown, creator_notes?: unknown, world: unknown } }}
- */
-export function cardListValues(card, includeCreatorNotes) {
-    const record = /** @type {Record<string, any>} */ (typeof card === 'object' && card !== null && !Array.isArray(card) ? card : {});
-    if (record.spec === undefined) {
-        const tags = typeof record.tags === 'string' ? record.tags.split(',').map(x => x.trim()).filter(x => x) : record.tags || [];
-        return {
-            name: record.name,
-            tags,
-            create_date: record.create_date,
-            data: {
-                name: orDefault(record.name, ''),
-                character_version: '',
-                creator: record.creator || '',
-                tags,
-                ...(includeCreatorNotes && { creator_notes: record.creatorcomment || '' }),
-                world: '',
-            },
-        };
-    }
-    const data = record.data;
-    const hoisted = (/** @type {string} */ key) => (data === undefined || data?.[key] === undefined ? record[key] : data[key]);
-    return {
-        name: hoisted('name'),
-        tags: hoisted('tags'),
-        create_date: record.create_date,
-        data: {
-            name: orDefault(data?.name, ''),
-            character_version: orDefault(data?.character_version, ''),
-            creator: orDefault(data?.creator, ''),
-            tags: orDefault(data?.tags, []),
-            ...(includeCreatorNotes && { creator_notes: orDefault(data?.creator_notes, '') }),
-            world: orDefault(data?.extensions?.world, ''),
-        },
-    };
-}
-
-/** The card_extra paths cardListValues() can read (the rest of the card it reads is in columns and card_tags). */
-export const LIST_EXTRA_PATHS = Object.freeze(['whole', 'top:spec', 'present:data', 'top:data', 'name:data', 'name:top', 'data:name', 'top:name',
-    'mirror:name', 'data:tags', 'top:tags', 'mirror:tags', 'top:create_date', 'data:creator', 'data:character_version', 'top:creator',
-    'present:extensions', 'data:extensions']);
-export const LIST_CREATOR_NOTES_PATHS = Object.freeze(['data:creator_notes', 'top:creatorcomment', 'mirror:creatorcomment']);
 
 /**
  * List rows from the fields layout, in the blob layout's shallow-copy shape (toShallow() as character-metadata-db.js

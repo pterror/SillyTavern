@@ -1,4 +1,4 @@
-import { readWorldInfoFile, getCharacterWorldLink } from '../endpoints/worldinfo.js';
+import { readWorldInfo, getCharacterWorldLink } from '../endpoints/worldinfo.js';
 import { character_world_link } from '../../public/scripts/character-world-link.js';
 import { parseDecorators } from './decorators.js';
 import { getStringHash } from '../../public/scripts/hash-utils.js';
@@ -117,16 +117,16 @@ function sortFn(a, b) {
  * entry's own fields, matching client field ordering - not that field order is semantically
  * meaningful here, just faithfully mirrored).
  *
- * Uses `readWorldInfoFile(directories, worldName, true)` directly - the exact same function
+ * Uses `readWorldInfo(directories, worldName, true)` directly - the exact same function
  * `src/endpoints/worldinfo.js`'s `/api/worldinfo/get` endpoint calls - instead of the client's
  * `loadWorldInfo()`, which is only a fetch-and-cache wrapper around that same endpoint. No HTTP
  * round-trip needed server-side.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {string} worldName
- * @returns {Array<object>}
+ * @returns {Promise<Array<object>>}
  */
-function loadWorldEntries(directories, worldName) {
-    const data = readWorldInfoFile(directories, worldName, true);
+async function loadWorldEntries(directories, worldName) {
+    const data = await readWorldInfo(directories, worldName, true);
     if (!data?.entries) {
         return [];
     }
@@ -140,15 +140,15 @@ function loadWorldEntries(directories, worldName) {
  * `selectedWorldInfo` order.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {string[]} selectedWorldInfo
- * @returns {Array<object>}
+ * @returns {Promise<Array<object>>}
  */
-function getGlobalLore(directories, selectedWorldInfo) {
+async function getGlobalLore(directories, selectedWorldInfo) {
     if (!selectedWorldInfo?.length) {
         return [];
     }
     let entries = [];
     for (const worldName of selectedWorldInfo) {
-        entries = entries.concat(loadWorldEntries(directories, worldName));
+        entries = entries.concat(await loadWorldEntries(directories, worldName));
     }
     return entries;
 }
@@ -171,16 +171,16 @@ function getGlobalLore(directories, selectedWorldInfo) {
  * ALSO ports the live client's embedded-`character_book` fallback (public/scripts/world-info.js
  * ~4592-4600, added after this port's original reference snippet was written - closed as a
  * follow-up rather than left as a real behavior gap): when `character.data.extensions.world` names
- * a World that does NOT actually exist on disk (common on imported cards whose linked book never
+ * a World that does NOT actually exist (common on imported cards whose linked book never
  * got exported/renamed alongside them), and the character card carries its own embedded
  * `character_book` with at least one entry, that embedded book's entries are converted via
  * `convertCharacterBook()` (above) and appended, tagged with the `EMBEDDED_WORLD_NAME` sentinel -
  * exactly matching the client. Whether the linked World exists is answered by
  * `getCharacterWorldLink()` (src/endpoints/worldinfo.js), the same rule the client's
- * getCharacterWorldLink() applies to `world_names`: a WI file with zero entries still exists (file
- * presence, not an entry count). A linked name with no file, on a card that embeds a
+ * getCharacterWorldLink() applies to `world_names`: a book with zero entries still exists (the
+ * book's presence, not an entry count). A linked name with no book, on a card that embeds a
  * `character_book`, is a link to that embedded book, whatever the book's own name: that name is
- * never read as a file, so it costs no file read and prints no "doesn't exist" line. The client's
+ * never read as a book, so it costs no book read and prints no "doesn't exist" line. The client's
  * `WORLDINFO_ENTRIES_LOADED` event emission is NOT ported - it exists purely for other client-side
  * subscribers (e.g. the WI editor UI) to react to a fresh load, which has no server-side analog to
  * be wired to yet; flagged as a real, narrow scope boundary, not an oversight.
@@ -190,9 +190,9 @@ function getGlobalLore(directories, selectedWorldInfo) {
  * @param {string[]} selectedWorldInfo
  * @param {string|null} chatWorldName
  * @param {string|null} personaWorldLorebook
- * @returns {Array<object>}
+ * @returns {Promise<Array<object>>}
  */
-function getCharacterLore(directories, character, characterExtraBooks, selectedWorldInfo, chatWorldName, personaWorldLorebook) {
+async function getCharacterLore(directories, character, characterExtraBooks, selectedWorldInfo, chatWorldName, personaWorldLorebook) {
     const worldsToSearch = new Set();
 
     const baseWorldName = character?.data?.extensions?.world;
@@ -211,7 +211,7 @@ function getCharacterLore(directories, character, characterExtraBooks, selectedW
         if (chatWorldName === worldName) continue; // already in chat lore
         if (personaWorldLorebook === worldName) continue; // already in persona lore
         if (worldName === baseWorldName && worldLink === character_world_link.EMBEDDED) continue; // no such file: the link is the embedded book, added below
-        entries = entries.concat(loadWorldEntries(directories, worldName));
+        entries = entries.concat(await loadWorldEntries(directories, worldName));
     }
 
     const characterBook = character?.data?.character_book;
@@ -231,9 +231,9 @@ function getCharacterLore(directories, character, characterExtraBooks, selectedW
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {string|null} chatWorldName
  * @param {string[]} selectedWorldInfo
- * @returns {Array<object>}
+ * @returns {Promise<Array<object>>}
  */
-function getChatLore(directories, chatWorldName, selectedWorldInfo) {
+async function getChatLore(directories, chatWorldName, selectedWorldInfo) {
     if (!chatWorldName) return [];
     if (selectedWorldInfo?.includes(chatWorldName)) return [];
     return loadWorldEntries(directories, chatWorldName);
@@ -245,9 +245,9 @@ function getChatLore(directories, chatWorldName, selectedWorldInfo) {
  * @param {string|null} chatWorldName
  * @param {string|null} personaWorldLorebook
  * @param {string[]} selectedWorldInfo
- * @returns {Array<object>}
+ * @returns {Promise<Array<object>>}
  */
-function getPersonaLore(directories, chatWorldName, personaWorldLorebook, selectedWorldInfo) {
+async function getPersonaLore(directories, chatWorldName, personaWorldLorebook, selectedWorldInfo) {
     if (!personaWorldLorebook) return [];
     if (chatWorldName === personaWorldLorebook) return [];
     if (selectedWorldInfo?.includes(personaWorldLorebook)) return [];
@@ -276,13 +276,13 @@ function getPersonaLore(directories, chatWorldName, personaWorldLorebook, select
  *
  * `structuredClone` at the end is kept for exact behavioral parity with the client, even though the
  * reasoning behind it there (avoid mutating cached `loadWorldInfo()` data that other client code
- * might hold a reference to) doesn't really apply here: `readWorldInfoFile()` parses a fresh object
- * from disk on every call and nothing else on the server holds a reference to it, so the clone is
+ * might hold a reference to) doesn't really apply here: `readWorldInfo()` assembles a fresh object
+ * from the store on every call and nothing else on the server holds a reference to it, so the clone is
  * strictly redundant on this side. Keeping it anyway costs one cheap clone and removes any chance of
  * a future caller accidentally mutating a shared cache should one ever get added later.
  *
  * @param {object} options
- * @param {import('../users.js').UserDirectoryList} options.directories User directories, for `readWorldInfoFile`
+ * @param {import('../users.js').UserDirectoryList} options.directories User directories, for `readWorldInfo`
  * @param {string[]} [options.selectedWorldInfo] Names of the globally-selected lorebooks (replaces `selected_world_info`)
  * @param {{data?: {extensions?: {world?: string}}}|null} [options.character] The active character card (only `.data.extensions.world` is read - replaces `getCurrentCharacter()`)
  * @param {string[]} [options.characterExtraBooks] Extra lorebook names for this character, from the caller's own `world_info.charLore`-equivalent lookup (replaces `world_info.charLore?.find(...)?.extraBooks`)
@@ -303,10 +303,10 @@ export async function resolveWorldInfoCandidates(options) {
     } = options;
 
     try {
-        const globalLore = getGlobalLore(directories, selectedWorldInfo);
-        const characterLore = getCharacterLore(directories, character, characterExtraBooks, selectedWorldInfo, chatWorldName, personaWorldLorebook);
-        const chatLore = getChatLore(directories, chatWorldName, selectedWorldInfo);
-        const personaLore = getPersonaLore(directories, chatWorldName, personaWorldLorebook, selectedWorldInfo);
+        const globalLore = await getGlobalLore(directories, selectedWorldInfo);
+        const characterLore = await getCharacterLore(directories, character, characterExtraBooks, selectedWorldInfo, chatWorldName, personaWorldLorebook);
+        const chatLore = await getChatLore(directories, chatWorldName, selectedWorldInfo);
+        const personaLore = await getPersonaLore(directories, chatWorldName, personaWorldLorebook, selectedWorldInfo);
 
         let entries;
         switch (Number(worldInfoCharacterStrategy)) {

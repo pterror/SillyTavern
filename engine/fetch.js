@@ -1,4 +1,5 @@
-// Makes sure engine/dist/ has a build of this checkout's crate, downloading it from the crate's release if not.
+// Makes sure engine/dist/ has a build of this checkout's crate, downloading it from the crate's release if not,
+// and building it here with cargo if the release doesn't have it yet (a dev build).
 // The server runs this before loading the engine; `node engine/fetch.js` runs it alone (the Docker image build
 // does, so the image never fetches at start).
 
@@ -8,6 +9,7 @@ import process from 'node:process';
 
 import { DIST_DIR, sourceKey } from './source-hash.js';
 import { currentPlatform, nativeFileName, wasmFileName } from './platform.js';
+import { buildEngine } from './build.js';
 
 export const RELEASE_BASE = 'https://github.com/pterror/SillyTavern/releases/download';
 
@@ -50,7 +52,8 @@ function removeOtherHashes(distDir, key) {
 
 /**
  * Leaves engine/dist/ with a file for this checkout's source hash: the platform's native build if the release has
- * one, else the wasm build. Never a file of another hash; once this hash's file is there, other hashes' files are removed.
+ * one, else the wasm build; with no release, a native build made here. Never a file of another hash; once this hash's
+ * file is there (downloaded, built or already present), other hashes' files are removed.
  * @param {object} [options]
  * @param {string|null} [options.platform] targets.json native platform, or null to take the wasm
  * @param {string} [options.releaseBase] URL the `engine-<key>/<file>` paths are under
@@ -81,7 +84,21 @@ export async function ensureEngine({ platform = currentPlatform(), releaseBase =
         removeOtherHashes(distDir, key);
         return path.join(distDir, name);
     }
-    throw new EngineFetchError(`The engine for source hash ${key} has no release yet (engine-${key}). Retry once CI has finished building it.`);
+    const noRelease = `The engine for source hash ${key} has no release yet (engine-${key})`;
+    if (!platform) {
+        throw new EngineFetchError(`${noRelease}, and this machine has no native target to build here. Run \`node engine/build.js --wasm\` (after \`npm ci\` in engine/), or retry once CI has finished building it.`);
+    }
+    console.log(`${noRelease}; building it here with cargo. This can take a few minutes.`);
+    let file;
+    try {
+        file = buildEngine({ platform: platform === currentPlatform() ? null : platform, distDir });
+    } catch (error) {
+        const why = error?.code === 'ENOENT' ? 'cargo was not found' : error.message;
+        throw new EngineFetchError(`${noRelease}, and building it here failed (${why}). Install cargo and run \`node engine/build.js\`, or retry once CI has finished building it.`, { cause: error });
+    }
+    console.log(`Built the engine for source hash ${key}: ${path.basename(file)}`);
+    removeOtherHashes(distDir, key);
+    return file;
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === import.meta.filename) {

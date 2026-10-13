@@ -13,7 +13,7 @@ import { getRequestHeaders } from './request-headers.js';
 import { charactersStore } from './character-store.js';
 import { isFetchedTagIdsCurrent, tagFetchStamp } from './tag-fetch-stamps.js';
 import { getCachedEntriesByIds, saveCachedCharacters, getCachedGroupEntriesByIds, saveCachedGroups, getCacheUserHandle } from './character-cache.js';
-import { readQueryCache, writeQueryCache, setQueryCacheUser, pinQueryCache } from './query-result-cache.js';
+import { readQueryCache, readQueryCursor, writeQueryCache, writeQueryCursor, setQueryCacheUser, pinQueryCache } from './query-result-cache.js';
 import { deserializeQueryHashesBinary } from './query-hashes-binary.js';
 
 /**
@@ -46,6 +46,8 @@ import { deserializeQueryHashesBinary } from './query-hashes-binary.js';
  * @property {'asc'|'desc'} [order]
  * @property {number} [seed] - required (finite) when `field` is `'random'`; mint one with `getRandomSortSeed()`
  * (random-sort.js), never invent one here.
+ * @property {{ field: string, order: 'asc'|'desc', seed?: number }} [tie] - with `field` `'search'`: the list sort that
+ * orders the matches only tag names match.
  */
 
 /**
@@ -62,22 +64,12 @@ import { deserializeQueryHashesBinary } from './query-hashes-binary.js';
  * when `filter.search` was non-empty.
  * @property {number|string} [hidden] - with `want: 'hidden'`: every entity less the rows on this page, `~`-prefixed
  * when approximate like `total`.
- * @property {string} [cursor] - where a walked search (the server's runSearchWalk()) stopped: present when rows match
- * past this page. `query()` sends it back for the next page.
- * @property {{ id: string, name: string, carriers: number }[]} [tagMatches] - with a search: up to 5 tags whose names
- * match it, best first, shown as chips above the list.
- * @property {boolean} [tagMatchesExact] - every tag was weighed for `tagMatches`.
+ * @property {string} [cursor] - where the page ended: present when rows match past it. `query()` keeps it in browser
+ * storage with the page, and page p + 1 starts from it whenever it is asked for (next, previous, a refresh, after a
+ * reload).
  */
 
 const DEFAULT_QUERY_WANT = /** @type {const} */ (['rows', 'total']);
-
-/**
- * Per query (filter, sort, page size and want), the page whose end `query()` last reached and the cursor the server
- * gave there, so the next page carries on from it instead of walking from the start. Cleared past the size limit.
- * @type {Map<string, {page: number, cursor: string}>}
- */
-const pageEndCursors = new Map();
-const PAGE_END_CURSOR_LIMIT = 64;
 
 /**
  * Last-seen `/query` response per exact request signature, so a repeated request can send back its `token` as
@@ -121,6 +113,8 @@ export function parseQueryTotal(total) {
  * @property {string} [sortField] - `power_user.sort_field`, or `'random'`/`'search'` for those two special cases.
  * @property {'asc'|'desc'} [sortOrder] - `'random'` itself is carried via `sortField`, not this.
  * @property {number} [randomSeed] - required (finite) when `sortField === 'random'`.
+ * @property {{ field: string, order: 'asc'|'desc', seed?: number }} [sortTie] - with `sortField === 'search'`: the list
+ * sort that orders the matches only tag names match.
  * @property {boolean} [includeGroups] - see `CharacterQueryFilter.includeGroups`.
  * @property {boolean} [group] - see `CharacterQueryFilter.group`; `undefined` for no Groups filter.
  * @property {string} [folder] - see `CharacterQueryFilter.folder`; `undefined` for no folder case.
@@ -143,6 +137,7 @@ export function buildCharacterQuery({
     sortField = undefined,
     sortOrder = 'asc',
     randomSeed = undefined,
+    sortTie = undefined,
     includeGroups = false,
     group = undefined,
     folder = undefined,
@@ -167,6 +162,7 @@ export function buildCharacterQuery({
         sort = { field: 'random', order: sortOrder === 'desc' ? 'desc' : 'asc', seed: randomSeed };
     } else if (sortField) {
         sort = { field: /** @type {CharacterQuerySort['field']} */ (sortField), order: sortOrder === 'desc' ? 'desc' : 'asc' };
+        if (sortField === 'search' && sortTie) sort.tie = sortTie;
     }
 
     return { filter, sort };
@@ -577,7 +573,7 @@ export class CharacterRepository {
         const includeGroups = normalizedFilter.includeGroups === true;
 
         const cached = queryResponseCache.get(signature);
-        if (useHashMode) setQueryCacheUser(getCacheUserHandle());
+        setQueryCacheUser(getCacheUserHandle());
         // Not in this page's memory: the copy kept in browser storage from an earlier visit, if any.
         const kept = !cached && useHashMode ? await readQueryCache(signature) : null;
         if (kept && onFresh) {
@@ -625,7 +621,7 @@ export class CharacterRepository {
     async #resultFromKept(kept, includeGroups) {
         /** @type {CharacterQueryResult} */
         const result = { seq: kept.seq, token: kept.token, rows: await this.#resolveHashRows(kept.hashRows, includeGroups) };
-        for (const field of /** @type {const} */ (['total', 'hidden', 'searchBackend', 'cursor', 'tagMatches', 'tagMatchesExact'])) {
+        for (const field of /** @type {const} */ (['total', 'hidden', 'searchBackend', 'cursor'])) {
             if (kept[field] !== undefined) result[field] = kept[field];
         }
         resultHashRows.set(result, kept.hashRows);
@@ -644,15 +640,25 @@ export class CharacterRepository {
      * @returns {Promise<CharacterQueryResult>}
      */
     async #fetchQuery(requestShape, signature, cached, kept, useHashMode, includeGroups) {
-        const { filter: normalizedFilter, sort: normalizedSort, page, pageSize, want } = requestShape;
+        const { page } = requestShape;
 
         const fetchStamp = tagFetchStamp();
-        const cursorKey = JSON.stringify({ filter: normalizedFilter, sort: normalizedSort, pageSize, want });
-        const previousEnd = pageEndCursors.get(cursorKey);
-        const firstShape = previousEnd?.page === page - 1 ? { ...requestShape, cursor: previousEnd.cursor } : requestShape;
-        let result = useHashMode
-            ? await this.#queryHashMode(firstShape, cached, includeGroups)
-            : await postJson('/api/characters/query', cached ? { ...firstShape, ifToken: cached.token } : firstShape);
+        // The page starts where page - 1 ended, when browser storage kept that; else by its position.
+        const previousKey = page > 1 ? JSON.stringify({ ...requestShape, page: page - 1 }) : null;
+        const start = previousKey === null ? null : await readQueryCursor(previousKey);
+        const firstShape = start === null ? requestShape : { ...requestShape, cursor: start };
+        const ask = (/** @type {typeof requestShape & { cursor?: string }} */ shape) => (useHashMode
+            ? this.#queryHashMode(shape, cached, includeGroups)
+            : postJson('/api/characters/query', cached ? { ...shape, ifToken: cached.token } : shape));
+        let result;
+        try {
+            result = await ask(firstShape);
+        } catch (error) {
+            // A cursor the server no longer takes: the page is asked for again by its position.
+            if (firstShape === requestShape || !(error instanceof CharacterQueryError) || error.reason !== 'invalid-cursor') throw error;
+            await writeQueryCursor(/** @type {string} */ (previousKey), undefined);
+            result = await ask(requestShape);
+        }
 
         // Server confirmed nothing changed - reuse the cached response rather than the rows/total-less stub.
         if (result?.unchanged === true && cached) {
@@ -670,14 +676,9 @@ export class CharacterRepository {
         if (result?.more === true) {
             result = await this.#fillPage(result, requestShape, useHashMode, includeGroups);
         }
-        if (typeof result?.cursor === 'string') {
-            if (pageEndCursors.size >= PAGE_END_CURSOR_LIMIT) pageEndCursors.clear();
-            pageEndCursors.set(cursorKey, { page, cursor: result.cursor });
-        } else {
-            pageEndCursors.delete(cursorKey);
-        }
-
-        // Kept under its token: a response without one has nothing to send back, so it isn't kept.
+        // Kept under its token: a response without one has nothing to send back, so it isn't kept. The page's cursor is
+        // kept with it, or alone when the page isn't.
+        let keptPage = false;
         if (result && typeof result.token === 'string' && result.token.length > 0) {
             if (queryResponseCache.size >= QUERY_RESPONSE_CACHE_LIMIT) queryResponseCache.clear();
             queryResponseCache.set(signature, result);
@@ -685,12 +686,14 @@ export class CharacterRepository {
             if (hashRows) {
                 /** @type {import('./query-result-cache.js').QueryCacheEntry} */
                 const entry = { hashRows, token: result.token, seq: result.seq };
-                for (const field of /** @type {const} */ (['total', 'hidden', 'searchBackend', 'cursor', 'tagMatches', 'tagMatchesExact'])) {
+                for (const field of /** @type {const} */ (['total', 'hidden', 'searchBackend', 'cursor'])) {
                     if (result[field] !== undefined) entry[field] = result[field];
                 }
                 void writeQueryCache(signature, entry);
+                keptPage = true;
             }
         }
+        if (result && !keptPage) void writeQueryCursor(signature, typeof result.cursor === 'string' ? result.cursor : undefined);
 
         stampRowsTagFetch(result, fetchStamp);
         return result;
@@ -757,10 +760,6 @@ export class CharacterRepository {
         if (decoded.searchBackend !== undefined) result.searchBackend = decoded.searchBackend;
         if (decoded.more) result.more = true;
         if (decoded.cursor !== undefined) result.cursor = decoded.cursor;
-        if (decoded.tagMatches !== undefined) {
-            result.tagMatches = decoded.tagMatches;
-            result.tagMatchesExact = decoded.tagMatchesExact;
-        }
         result.rows = await this.#resolveHashRows(decoded.hashRows, includeGroups);
         resultHashRows.set(result, decoded.hashRows);
         return result;

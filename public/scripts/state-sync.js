@@ -159,3 +159,75 @@ export function unsavedVariables(changes) {
 export function changesStateHere(at, path) {
     return at === null || path.some(m => m?.node_id === at);
 }
+
+/**
+ * Applies `changes` onto `target` in place: its keys set and removed, its variables set and removed by name.
+ * @param {Record<string, unknown>} target
+ * @param {MetadataChanges} changes
+ */
+export function applyChanges(target, changes) {
+    for (const [key, value] of Object.entries(changes.set)) {
+        if (key === 'variables' && isObject(value) && isObject(target.variables)) continue;
+        target[key] = value;
+    }
+    for (const key of changes.unset) delete target[key];
+    const vars = changes.variables;
+    if (!vars) return;
+    if ((Object.keys(vars.set).length || vars.unset.length) && !isObject(target.variables)) target.variables = {};
+    const into = /** @type {Record<string, unknown>} */ (target.variables);
+    for (const [name, value] of Object.entries(vars.set)) into[name] = value;
+    for (const name of vars.unset) delete into[name];
+}
+
+/**
+ * What changed between two `metadataChanges()` of the same chat, `before` and `after`, as changes: a key or variable
+ * whose change differs, or that changed before and is back as it was (then its value now, from `metadata`).
+ * @param {MetadataChanges | null} before
+ * @param {MetadataChanges | null} after
+ * @param {Record<string, unknown>} metadata The chat's metadata now.
+ * @returns {MetadataChanges | null}
+ */
+export function changesSince(before, after, metadata) {
+    /** @type {MetadataChanges} */
+    const out = { set: {}, unset: [], variables: { set: {}, unset: [] } };
+    /**
+     * @param {KeyChanges | undefined} b
+     * @param {KeyChanges | undefined} a
+     * @param {Record<string, unknown>} now
+     * @param {KeyChanges} into
+     */
+    const diff = (b, a, now, into) => {
+        const same = (/** @type {unknown} */ x, /** @type {unknown} */ y) => JSON.stringify(x) === JSON.stringify(y);
+        for (const [key, value] of Object.entries(a?.set ?? {})) {
+            if (!(b && Object.hasOwn(b.set, key) && same(b.set[key], value))) into.set[key] = value;
+        }
+        for (const key of a?.unset ?? []) {
+            if (!b?.unset.includes(key)) into.unset.push(key);
+        }
+        for (const key of [...Object.keys(b?.set ?? {}), ...(b?.unset ?? [])]) {
+            if ((a && Object.hasOwn(a.set, key)) || a?.unset.includes(key)) continue;
+            if (Object.hasOwn(now, key) && now[key] !== undefined) into.set[key] = now[key];
+            else into.unset.push(key);
+        }
+    };
+    diff(before ?? undefined, after ?? undefined, metadata, out);
+    const vars = isObject(metadata.variables) ? metadata.variables : {};
+    diff(before?.variables, after?.variables, vars, out.variables);
+    const any = Object.keys(out.set).length || out.unset.length || Object.keys(out.variables.set).length || out.variables.unset.length;
+    return any ? out : null;
+}
+
+/**
+ * Changes as the state change ops a request carries (`reply_changes`): a key set or removed, a variable by name.
+ * The `variables` object itself made empty is no op of its own (setting a variable makes it).
+ * @param {MetadataChanges} changes
+ * @returns {{ key: string, variable?: true, value?: unknown }[]}
+ */
+export function changeOps(changes) {
+    return [
+        ...Object.entries(changes.set).filter(([key]) => key !== 'variables').map(([key, value]) => ({ key, value })),
+        ...changes.unset.map(key => ({ key })),
+        ...Object.entries(changes.variables.set).map(([key, value]) => ({ key, variable: /** @type {true} */ (true), value })),
+        ...changes.variables.unset.map(key => ({ key, variable: /** @type {true} */ (true) })),
+    ];
+}

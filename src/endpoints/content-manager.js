@@ -8,14 +8,15 @@ import fetch from 'node-fetch';
 import sanitize from 'sanitize-filename';
 
 import { getConfigValue, color, setPermissionsSync, isValidUrl } from '../util.js';
-import { write, parse, computeAvatarIdentityHashFromImageBuffer } from '../character-card-parser.js';
+import { write, parse } from '../character-card-parser.js';
 import { importFailure } from '../character-import-error.js';
 import { serverDirectory } from '../server-directory.js';
 import { Jimp, JimpMime } from '../jimp.js';
 import { DEFAULT_AVATAR_PATH } from '../constants.js';
 import { importWorldInfoFromRaw } from './worldinfo.js';
-import { upsertCharacterFromWrite } from '../character-metadata-db.js';
-import { copyCharacterFile } from '../local-import-copy.js';
+import { userStore } from '../user-stores.js';
+import { TYPE } from '../library-codes.js';
+import { avatarImage, writeWithAvatar } from '../character-avatars.js';
 import { readSettingsAtPaths } from '../settings-store.js';
 
 const contentDirectory = path.join(serverDirectory, 'default/content');
@@ -135,7 +136,7 @@ export function getDefaultPresetFile(filename) {
  * @param {(type: string) => string | null} resolveTarget Function to resolve the target directory for a content type
  * @param {string[]} [forceCategories] List of categories to force check (even if content check is skipped)
  * @param {import('../users.js').UserDirectoryList} [directories] Owning user's directories - only needed for
- * CONTENT_TYPES.CHARACTER (see below); absent for the global seeding pass, which never seeds that type.
+ * CONTENT_TYPES.CHARACTER and CONTENT_TYPES.WORLD (see below); absent for the global seeding pass, which never seeds those types.
  * @returns {Promise<boolean>} Whether any content was added
  */
 async function seedContent(contentIndex, contentLogPath, resolveTarget, forceCategories, directories = undefined) {
@@ -172,44 +173,47 @@ async function seedContent(contentIndex, contentLogPath, resolveTarget, forceCat
         contentLog.push(contentItem.filename);
         newLogEntries.push(contentItem.filename);
 
-        if (fs.existsSync(targetPath)) {
+        // A user's worlds and characters go into the user's store; anything else is a file in its folder.
+        const isWorld = contentItem.type === CONTENT_TYPES.WORLD && !!directories;
+        const isCharacter = contentItem.type === CONTENT_TYPES.CHARACTER && !!directories;
+        const inStore = isWorld || isCharacter;
+        const lib = inStore ? (await userStore(/** @type {any} */ (directories))).lib : null;
+        const exists = isWorld ? await lib.books.exists(path.parse(basePath).name)
+            : isCharacter ? (await lib.ids(TYPE.character, [basePath]))[0] !== null
+                : fs.existsSync(targetPath);
+        if (exists) {
             console.warn(`Content file ${contentItem.filename} already exists in ${contentTarget}`);
             continue;
         }
 
-        fs.mkdirSync(contentTarget, { recursive: true });
+        if (!inStore) fs.mkdirSync(contentTarget, { recursive: true });
 
-        if (contentItem.type === CONTENT_TYPES.CHARACTER && directories) {
+        if (isCharacter) {
             const sourceData = await parse(contentPath, 'png');
-            await copyCharacterFile(contentPath, targetPath);
-            // Inlined rather than importing characters.js's own fireMetadataUpsertHook() wrapper around this
-            // same call, which would create an import cycle (characters.js imports from sprites.js, which
-            // imports from this file).
-            const seed = async () => {
-                const avatarIdentityHash = computeAvatarIdentityHashFromImageBuffer(await fs.promises.readFile(targetPath));
-                await upsertCharacterFromWrite(directories, basePath, sourceData, null, avatarIdentityHash);
-            };
+            const image = avatarImage(await fs.promises.readFile(contentPath));
+            const seed = () => writeWithAvatar(lib, directories, basePath, image, () => lib.writeCard(directories, basePath, sourceData, {
+                avatarIdentityHash: image.avatarIdentityHash,
+            }));
             try {
                 await seed();
             } catch (firstError) {
                 try {
                     await seed();
                 } catch (err) {
-                    // Undo the copy and leave it out of the content log, so the next start seeds it again.
+                    // Left out of the content log, so the next start seeds it again.
                     console.error(`Couldn't add the bundled character "${basePath}"; it will be tried again on the next start.`, err, firstError);
-                    fs.rmSync(targetPath, { force: true });
                     contentLog.pop();
                     newLogEntries.pop();
                     continue;
                 }
             }
-        } else if (contentItem.type === CONTENT_TYPES.WORLD && directories) {
-            importWorldInfoFromRaw(directories, basePath, fs.readFileSync(contentPath, 'utf8'));
+        } else if (isWorld) {
+            await importWorldInfoFromRaw(directories, basePath, fs.readFileSync(contentPath, 'utf8'));
         } else {
             fs.cpSync(contentPath, targetPath, { recursive: true, force: false });
         }
 
-        setPermissionsSync(targetPath);
+        if (!inStore) setPermissionsSync(targetPath);
         console.info(`Content file ${contentItem.filename} copied to ${contentTarget}`);
         anyContentAdded = true;
     }
@@ -1191,7 +1195,7 @@ router.post('/importChubLorebookByPath', async (request, response) => {
         const desiredName = typeof request.body.name === 'string' && request.body.name.trim()
             ? request.body.name.trim()
             : result.fileName;
-        const worldName = importWorldInfoFromRaw(request.user.directories, desiredName, result.buffer.toString('utf8'));
+        const worldName = await importWorldInfoFromRaw(request.user.directories, desiredName, result.buffer.toString('utf8'));
         return response.send({ name: worldName });
     } catch (error) {
         console.error('Importing Chub linked lorebook failed', error);

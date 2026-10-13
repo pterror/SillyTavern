@@ -68,6 +68,20 @@ function withBranchesOfLabels(messages) {
     });
 }
 
+/**
+ * A loaded path with each bookmark's compat id (`b<id>` in `bookmark_link` and `branches`) replaced by its label, as
+ * the old store named them.
+ */
+async function withLinksAsLabels(chats, t, messages) {
+    const { rows } = await chats.bookmarks({ tree: t, limit: 100 });
+    const labels = new Map(rows.map(b => [`b${b.id}`, b.name]));
+    const label = id => labels.get(id) ?? id;
+    return messages.map(m => {
+        if (!m.extra || typeof m.extra !== 'object' || typeof m.extra.bookmark_link !== 'string') return m;
+        return { ...m, extra: { ...m.extra, bookmark_link: label(m.extra.bookmark_link), branches: m.extra.branches.map(label) } };
+    });
+}
+
 for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm: loadEngine({ platform: null }).binding })) {
     test(`${kind}: a conversation built both ways loads the same`, async () => {
         const owner = `cara-${kind}`;
@@ -116,7 +130,7 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
             const o = await tree.loadAtNode(directories, owner, og);
             const { at } = await chats.pointer(actor.session);
             const n = await chats.load({ tree: t, at });
-            assert.deepEqual(normalized(n.messages, newNames), normalized(withBranchesOfLabels(o.messages), oldNames), label);
+            assert.deepEqual(normalized(await withLinksAsLabels(chats, t, n.messages), newNames), normalized(withBranchesOfLabels(o.messages), oldNames), label);
         };
         await compare('after sends, a retry, an alternative and a choice');
 
@@ -142,9 +156,11 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         const ng2 = await chats.graftMessage({ tree: t, treeSpeaker: cara, after: nb, before: new2.node_ids[0], content: inserted, actor });
         name(og2.node_id, ng2.node_id, 'inserted');
         await compare('after a graft');
-        assert.deepEqual(await chats.degraftRange({ tree: t, first: ng2.node_id, last: ng2.node_id, actor }), { ok: true });
+        assert.equal((await chats.cutFromPath({ tree: t, first: ng2.node_id, last: ng2.node_id, actor, confirm: 'any' })).ok, true);
+        // A cut deletes what only this path holds; the old store's degraft kept it as an alternative.
         await tree.degraftMessage(directories, owner, og2.node_id);
-        await compare('after a degraft');
+        assert.equal((await tree.deleteAlternative(directories, owner, og2.node_id)).ok, true);
+        await compare('after a cut');
         await tree.swapAdjacent(directories, owner, ob, old2.node_ids[0]);
         assert.deepEqual(await chats.swapAdjacent({ tree: t, upper: nb, lower: new2.node_ids[0], actor }), { ok: true });
         await compare('after a swap');
@@ -155,11 +171,11 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
 
         // A bookmark at the first reply: its name is the message's bookmark_link, and in `branches` there.
         await tree.labelNode(directories, old1.node_ids[1], 'Checkpoint', { ownerId: owner });
-        await chats.createBookmark({ tree: t, node_id: new1.node_ids[1], name: 'Checkpoint', mode: MODE.pinned, actor });
+        const checkpoint = await chats.createBookmark({ tree: t, node_id: new1.node_ids[1], name: 'Checkpoint', mode: MODE.pinned, actor });
         const atFirst = await chats.load({ tree: t, at: new1.node_ids[1] });
         const reply = atFirst.messages.find(m => m.node_id === new1.node_ids[1]);
-        assert.equal(reply.extra.bookmark_link, 'Checkpoint');
-        assert.deepEqual(reply.extra.branches, ['Checkpoint']);
+        assert.equal(reply.extra.bookmark_link, `b${checkpoint.bookmark}`);
+        assert.deepEqual(reply.extra.branches, [`b${checkpoint.bookmark}`]);
         // Opened at the bookmark, the path is the same; the old store hid the opened chat's own label there, and a
         // bookmark isn't a chat, so the new one shows it (checked above).
         const oldAtFirst = await tree.loadAtNode(directories, owner, old1.node_ids[1]);
@@ -170,7 +186,7 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
             }
             return m;
         });
-        assert.deepEqual(withoutLast(normalized(atFirst.messages, newNames)), withoutLast(normalized(withBranchesOfLabels(oldAtFirst.messages), oldNames)));
+        assert.deepEqual(withoutLast(normalized(await withLinksAsLabels(chats, t, atFirst.messages), newNames)), withoutLast(normalized(withBranchesOfLabels(oldAtFirst.messages), oldNames)));
 
         // Metadata keys set and removed at a position, variables each their own.
         await chats.mergeMetadata({ tree: t, at: new1.node_ids[1], set: { note_prompt: 'A', variables: { hp: 3 } }, unset: [], actor });
@@ -518,6 +534,7 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         const same = async label => {
             const o = await oldLoad();
             const n = await newLoad();
+            n.messages = await withLinksAsLabels(chats, t, n.messages);
             // Unshown alternatives' ids aren't named by the save's answer; their contents are compared.
             assert.deepEqual(mapped(n.messages).map(m => ({ ...m, swipe_info: m.swipe_info?.map(i => ({ ...i, node_id: undefined })) })),
                 mapped(o.messages).map(m => ({ ...m, swipe_info: m.swipe_info?.map(i => ({ ...i, node_id: undefined })) })), label);
@@ -559,6 +576,34 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         assert.deepEqual(await chats.saveChat({ tree: t, treeSpeaker: cara, chat: other, actor }), { ok: false, reason: 'integrity' });
         assert.equal((await chats.saveChat({ tree: t, treeSpeaker: cara, chat: other, actor, force: true })).ok, true);
         assert.deepEqual(await chats.saveChat({ tree: t, treeSpeaker: cara, chat: [], actor }), { empty: true });
+        await store.close();
+    });
+
+    test(`${kind}: every message's id is a UUID, new ones included; a decimal names nothing`, async () => {
+        const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+        const dir = path.join(root, `engine-uuid-${kind}`);
+        let store = await engine.Store.open(dir);
+        let chats = await ChatEngine.open(store, people);
+        const t = cara.id;
+        const first = await chats.appendMessages({ tree: t, treeSpeaker: cara, after: null, contents: [greeting], actor: { user: actor.user } });
+        const second = await chats.appendMessages({ tree: t, treeSpeaker: cara, after: first.node_ids[0], contents: [user1, bot1], actor });
+        const ids = [...first.node_ids, ...second.node_ids];
+        for (const id of ids) assert.match(id, uuid);
+        assert.equal(new Set(ids).size, 3);
+        const resolved = await chats.messageIds(ids);
+        assert.ok(resolved.every(r => typeof r === 'bigint'));
+        // The integers a decimal string would name resolve to nothing.
+        assert.deepEqual(await chats.messageIds(resolved.map(String)), resolved.map(() => null));
+        assert.deepEqual((await chats.load({ tree: t, at: resolved.map(String)[2], session: actor.session })), null);
+        const shown = await chats.load({ tree: t, at: ids[2], session: actor.session });
+        assert.deepEqual(shown.messages.map(m => m.node_id), ids);
+        assert.equal(shown.node_id, ids[2]);
+        // The ids are stored with the messages: they stay after a reopen.
+        await store.close();
+        store = await engine.Store.open(dir);
+        chats = await ChatEngine.open(store, people);
+        assert.deepEqual(await chats.messageIds(ids), resolved);
+        assert.deepEqual((await chats.load({ tree: t, at: ids[2], session: actor.session })).messages.map(m => m.node_id), ids);
         await store.close();
     });
 }

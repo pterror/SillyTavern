@@ -13,8 +13,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', '..', 'config.yaml'));
 
 const { router: statsRouter, keepOldStatsFile, STATS_BACKUP_FILE } = await import('./stats.js');
-const treeDb = await import('../message-tree-db.js');
+const stores = await import('../user-stores.js');
+const engineBinding = (await import('../../engine/load.js')).loadEngine().binding;
+stores.setStoreEngine(() => engineBinding);
+const { seedMessages } = await import('../../tests/converted-user.fixture.js');
 
+// A new user: the store is made in `root` on first use.
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'stats-endpoint-test-'));
 const directories = { root };
 
@@ -50,8 +54,11 @@ async function postJson(app, urlPath, body) {
 const T0 = Date.parse('2026-09-01T10:00:00.000Z');
 
 async function seed() {
-    await treeDb.saveChatToTree(directories, 'rex', 'main', [
-        { chat_metadata: {} },
+    const store = await stores.userStore(directories, 'default-user');
+    await store.lib.writeCard(directories, 'rex.png', JSON.stringify({ name: 'Rex', spec: 'chara_card_v2', spec_version: '2.0', data: { name: 'Rex' } }));
+    // A character with no messages.
+    await store.lib.writeCard(directories, 'nobody.png', JSON.stringify({ name: 'Nobody', spec: 'chara_card_v2', spec_version: '2.0', data: { name: 'Nobody' } }));
+    await seedMessages(store, { avatar: 'rex.png' }, null, [
         { name: 'Rex', is_user: false, mes: 'Welcome back.', send_date: T0, extra: {} },
         { name: 'User', is_user: true, mes: 'Hi there Rex', send_date: T0 + 1000, extra: {} },
         // A streamed reply as the server stores it: its whole text, and when it was generated.
@@ -62,18 +69,18 @@ async function seed() {
         // A reply stored without its generation time.
         { name: 'User', is_user: true, mes: 'Same', send_date: T0 + 6000, extra: {} },
         { name: 'Rex', is_user: false, mes: 'Indeed', send_date: T0 + 7000, extra: {} },
-    ], false, { kind: 'character', rowId: 'rex.png' });
+    ]);
 }
 
 async function run() {
     await seed();
     const app = buildTestApp();
 
-    // Totals: counted from the stored messages, greeting left out; the first count isn't done yet.
+    // Totals: counted from the stored messages at every write, greeting left out.
     {
         const { status, data } = await postJson(app, '/api/stats/totals', {});
         assert.equal(status, 200);
-        assert.equal(data.filled, false, 'the first count of older chats hasn\'t run');
+        assert.equal(data.filled, true, 'the counts are exact at every write: nothing is left to fill');
         assert.equal(data.stats.user_msg_count, 2);
         assert.equal(data.stats.non_user_msg_count, 2, 'the greeting is not a character message');
         assert.equal(data.stats.user_word_count, 4);
@@ -82,17 +89,6 @@ async function run() {
         assert.equal(data.stats.gen_time_unknown_count, 1, 'a reply without its generation time is counted as unknown');
         assert.equal(data.stats.date_first_chat, T0 + 1000);
         assert.equal(data.backup, null);
-    }
-
-    // The fill counts every stored chat; then the totals say so.
-    {
-        let result;
-        do {
-            result = await treeDb.fillMessageStats(directories, 10);
-        } while (!result.done);
-        const { data } = await postJson(app, '/api/stats/totals', {});
-        assert.equal(data.filled, true);
-        assert.equal(data.stats.user_msg_count, 2, 'the fill recounts to the same numbers');
     }
 
     // /get: upstream's per-character shape, for the characters named and with none named.
@@ -137,6 +133,6 @@ async function run() {
 try {
     await run();
 } finally {
-    treeDb.disposeMessageTreeStores();
+    await stores.closeUserStores();
     fs.rmSync(root, { recursive: true, force: true });
 }

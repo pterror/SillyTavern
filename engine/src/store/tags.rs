@@ -422,15 +422,26 @@ pub fn field_written(
 /// `tag_map` may name a tag no definition has), in no order and not listed until a definition is written.
 pub const DEFINED: u64 = 41;
 
-/// A tag entity's definition marker was written (`on`) or removed.
+pub fn has_marker(view: &View, tag: u64) -> Result<bool, StoreError> {
+    Ok(view
+        .get(&key::field(key::VALUE, tag, &FieldRef::Code(DEFINED)))?
+        .is_some())
+}
+
+/// A tag entity's definition marker was written (`on`, not yet in `view`) or removed (still in `view`): its
+/// name is searched only while it has one.
 fn defined(view: &View, out: &mut Out, tag: u64, at: Loc, on: bool) -> Result<(), StoreError> {
-    if !matches!(entity_info(view, tag)?, Some((TAG, _, _))) {
+    let Some((TAG, k, _)) = entity_info(view, tag)? else {
         return Ok(());
-    }
+    };
     let old = place(view, tag)?;
     match (old, on) {
-        (None, true) => placed(view, out, tag, at),
+        (None, true) => {
+            super::searched::created(view, out, tag, TAG, &k, true)?;
+            placed(view, out, tag, at)
+        }
         (Some(p), false) => {
+            super::searched::gone(view, out, tag, TAG, &k)?;
             if !view.is_bulk() {
                 let c = carriers(view, tag)?;
                 reposition(out, tag, Some((&p, c)), None);
@@ -486,7 +497,24 @@ pub fn deleted(view: &View, out: &mut Out, tag: u64, k: &[u8], at: Loc) -> Resul
     put_bytes(&mut gk, k);
     out.put(gk, uvarint(tag));
     out.put(key::id(key::TAG_GONE_ID, tag), k.to_vec());
+    // A defined tag's name goes on standing for it (for the tag its merges lead to), the latest deleted one's.
+    if view
+        .get(&key::field(key::VALUE, tag, &FieldRef::Code(DEFINED)))?
+        .is_some()
+        && let Some(name) = text_value(view, tag, &FieldRef::Code(super::library::NAME))?
+    {
+        let mut nk = key::of(key::TAG_GONE_NAME);
+        put_bytes(&mut nk, &name_key(&name));
+        out.put(nk, uvarint(tag));
+    }
     touched(view, out, tag, at)
+}
+
+/// The tag deleted last whose name folds as `name` does, or None.
+pub fn gone_by_name(view: &View, name: &[u8]) -> Result<Option<u64>, StoreError> {
+    let mut nk = key::of(key::TAG_GONE_NAME);
+    put_bytes(&mut nk, &name_key(name));
+    view.get(&nk)?.map(|b| parse_uvarint(&b)).transpose()
 }
 
 /// The tag a deleted tag's key named, or None.
@@ -841,7 +869,10 @@ impl Stream {
             let found: Vec<(Vec<u8>, Vec<u8>)> = if self.rev {
                 view.scan_vals_rev(lo, hi, window)?
                     .into_iter()
-                    .map(|(k, v)| (k, v.into_bytes()))
+                    .map(|(k, v)| {
+                        let b = v.into_bytes(&k);
+                        (k, b)
+                    })
                     .collect()
             } else {
                 view.scan(lo, hi, window)?

@@ -1,7 +1,5 @@
-import { describe, test, expect, beforeAll, afterAll, beforeEach } from '@jest/globals';
-import fs from 'node:fs';
+import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals';
 import path from 'node:path';
-import os from 'node:os';
 import { Buffer } from 'node:buffer';
 
 // A minimal valid 1x1 transparent PNG - just enough of a real PNG for png-chunks-extract to parse, so
@@ -13,16 +11,17 @@ const BLANK_PNG = Buffer.from(
 
 /** @type {import('../src/character-card-parser.js').write} */
 let writeCard;
-/** @type {import('../src/character-metadata-db.js').upsertCharacterFromWrite} */
-let upsertCharacterFromWrite;
+/** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
+let user;
+/** @type {typeof import('./converted-user.fixture.js')} */
+let fixture;
+/** @type {typeof import('../src/library-codes.js').TYPE} */
+let TYPE;
 /** @type {import('express').Router} */
 let router;
 /** @type {import('node:http').Server} */
 let server;
 let baseUrl;
-
-/** @type {import('../src/users.js').UserDirectoryList} */
-let directories;
 
 /**
  * Mounts the real characters.js router behind a fake auth middleware, same pattern as
@@ -41,13 +40,14 @@ beforeAll(async () => {
 
     ({ router } = await import('../src/endpoints/characters.js'));
     ({ write: writeCard } = await import('../src/character-card-parser.js'));
-    ({ upsertCharacterFromWrite } = await import('../src/character-metadata-db.js'));
+    fixture = await import('./converted-user.fixture.js');
+    ({ TYPE } = await import('../src/library-codes.js'));
 
     const express = (await import('express')).default;
     const app = express();
     app.use(express.json());
     app.use((req, res, next) => {
-        req.user = { directories, profile: { handle: 'test-user' } };
+        req.user = user.user;
         next();
     });
     app.use('/api/characters', router);
@@ -58,22 +58,19 @@ beforeAll(async () => {
 
 afterAll(() => new Promise(resolve => server.close(resolve)));
 
-beforeEach(() => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-characters-duplicate-test-'));
-    const charactersDir = path.join(tempDir, 'characters');
-    const chatsDir = path.join(tempDir, 'chats');
-    fs.mkdirSync(charactersDir, { recursive: true });
-    fs.mkdirSync(chatsDir, { recursive: true });
-    directories = { characters: charactersDir, chats: chatsDir, root: tempDir };
+beforeEach(async () => {
+    user = await fixture.emptyUser('st-characters-duplicate-test-');
+    globalThis.DATA_ROOT = user.dataRoot;
 });
+
+afterEach(() => user.close());
 
 /**
  * Writes a card PNG to `directories.characters/<name>` and its row; the row is what makes the character exist.
  */
 async function writeTestCharacter(name, data = { name: 'Ghost', spec: 'chara_card_v2' }) {
     const buffer = writeCard(BLANK_PNG, JSON.stringify(data));
-    fs.writeFileSync(path.join(directories.characters, name), buffer);
-    await upsertCharacterFromWrite(directories, name, JSON.stringify(data));
+    await fixture.writeCardWithImage(user, name, JSON.stringify(data), buffer);
 }
 
 async function duplicate(avatarUrl) {
@@ -92,7 +89,7 @@ describe('/api/characters/duplicate', () => {
         expect(response.status).toBe(200);
         const body = await response.json();
         expect(body.path).toBe('Ghost_2.png');
-        expect(fs.existsSync(path.join(directories.characters, 'Ghost_2.png'))).toBe(true);
+        expect(await user.store.lib.entity(TYPE.character, 'Ghost_2.png')).not.toBeNull();
     });
 
     test('does not wedge on a suffix long enough to lose float precision', async () => {

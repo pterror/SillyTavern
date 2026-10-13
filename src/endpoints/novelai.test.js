@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import http from 'node:http';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mock } from 'node:test';
@@ -64,26 +63,30 @@ const { default: nodeFetch } = await import('node-fetch');
 const { router, buildRawActionNovelRequest } = await import('./novelai.js');
 const { writeAllSettings } = await import('../settings-store.js');
 const { writeSecret, SECRET_KEYS } = await import('./secrets.js');
-const { saveChatToTree, loadBranch, getAlternatives, disposeMessageTreeStores, getMessageTreeDb } = await import('../message-tree-db.js');
 const { forwardAndPersistCompactStream } = await import('./backends/text-completions.js');
 const { CompactStreamDecoder } = await import('../../public/scripts/llamacpp-compact-stream.js');
-const { upsertCharacterFromWrite } = await import('../character-metadata-db.js');
 const { tokenizers } = await import('../tokenizer-ids.js');
 const { writeBack } = await import('../token-count-store.js');
 const { resolveTokenizer, tokenizerIdentity } = await import('../tokenizer-resolve.js');
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-novelai-raw-action-test-'));
-const charactersDir = path.join(root, 'characters');
-const chatsDir = path.join(root, 'chats');
-const groupsDir = path.join(root, 'groups');
-const worldsDir = path.join(root, 'worlds');
-fs.mkdirSync(charactersDir, { recursive: true });
-fs.mkdirSync(chatsDir, { recursive: true });
-fs.mkdirSync(groupsDir, { recursive: true });
-fs.mkdirSync(worldsDir, { recursive: true });
+const { SESSION_HEADER } = await import('../request-session.js');
+const { convertedUser, writeLibraryCard, saveBranch, loadBranch, sessionAt, chatContextOf } = await import('../../tests/converted-user.fixture.js');
 
-const directories = { root, characters: charactersDir, chats: chatsDir, groups: groupsDir, worlds: worldsDir };
-globalThis.DATA_ROOT = root;
+const user = await convertedUser('st-novelai-raw-action-test-');
+const { directories } = user;
+globalThis.DATA_ROOT = user.dataRoot;
+
+const { newSessionKey } = await import('../chat-engine.js');
+
+/**
+ * The chat context a request naming `nodeId` acts in: the session of the branch holding it, else a new one.
+ * @param {string} avatar
+ * @param {unknown} nodeId
+ */
+async function chatOf(avatar, nodeId) {
+    return chatContextOf(user.store, { avatar }, (await sessionAt(user.store, nodeId)) ?? newSessionKey());
+}
+
 
 const baseImage = fs.readFileSync(path.join(__dirname, '..', '..', 'public', 'img', 'ai4.png'));
 
@@ -117,8 +120,7 @@ async function writeCharacter(avatar, overrides = {}) {
     };
     const cardJson = JSON.stringify(card);
     const buffer = writeCard(baseImage, cardJson);
-    fs.writeFileSync(path.join(charactersDir, avatar), buffer);
-    await upsertCharacterFromWrite(directories, avatar, cardJson);
+    await writeLibraryCard(user, avatar, cardJson, buffer);
     return avatar;
 }
 
@@ -191,8 +193,12 @@ function buildTestApp() {
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
-        req.user = { directories };
-        next();
+        req.user = { directories, profile: { handle: 'u' } };
+        if (req.get(SESSION_HEADER)) return next();
+        sessionAt(user.store, req.body?.node_id).then(session => {
+            if (session) req.headers[SESSION_HEADER.toLowerCase()] = session;
+            next();
+        }, next);
     });
     app.use('/', router);
     return app;
@@ -266,18 +272,18 @@ async function run() {
     // buildRawActionNovelRequest()'s own ADDRESSING MODEL doc comment) - every raw-action call below
     // resolves and passes the real `node_id` (a leaf id from `loadBranch()`) instead.
     const branchName = 'main-chat';
-    await saveChatToTree(directories, ownerId, branchName, [
+    await saveBranch(user.store, { avatar: ownerId }, branchName, [
         { chat_metadata: {} },
         { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
         { name: 'Tester', is_user: true, mes: 'Hi Rex, nice to meet you.', send_date: 2, extra: {} },
         { name: 'Rex', is_user: false, mes: 'Likewise!', send_date: 3, extra: {} },
     ]);
-    const mainLeafId = (await loadBranch(directories, ownerId, branchName)).branch.leaf_id;
+    const mainLeafId = (await loadBranch(user.store, { avatar: ownerId }, branchName)).branch.leaf_id;
 
     // --- buildRawActionNovelRequest(): basic real assembly ---
     {
         const built = await buildRawActionNovelRequest(directories, {
-            characterAvatar: avatar, ownerId, nodeId: mainLeafId,
+            characterAvatar: avatar, chat: await chatOf(avatar, mainLeafId), nodeId: mainLeafId,
             type: 'normal', userMessageText: 'What happens next, Rex?',
             tokenizerOptions: fakeTokenizerOptions,
         });
@@ -291,19 +297,10 @@ async function run() {
         assert.equal(built.params.streaming, undefined, 'createNovelGenerationData()\'s own returned object has NO `streaming` field at all - CONFIRMED by reading its full return statement in src/novel-generation-data.js - so req.body.streaming after the raw-action body replacement is always undefined/falsy, regardless of what the client originally sent');
     }
 
-    // --- error handling: missing owner_id ---
-    await assert.rejects(
-        () => buildRawActionNovelRequest(directories, {
-            characterAvatar: avatar, nodeId: mainLeafId,
-            tokenizerOptions: fakeTokenizerOptions,
-        }),
-        /owner_id is required/,
-    );
-
     // --- error handling: unknown character ---
     await assert.rejects(
-        () => buildRawActionNovelRequest(directories, {
-            characterAvatar: 'NoSuchCharacter.png', ownerId, nodeId: mainLeafId,
+        async () => buildRawActionNovelRequest(directories, {
+            characterAvatar: 'NoSuchCharacter.png', chat: await chatOf(avatar, mainLeafId), nodeId: mainLeafId,
             tokenizerOptions: fakeTokenizerOptions,
         }),
         /Character not found/,
@@ -311,8 +308,8 @@ async function run() {
 
     // --- error handling: unknown node ---
     await assert.rejects(
-        () => buildRawActionNovelRequest(directories, {
-            characterAvatar: avatar, ownerId, nodeId: 'no-such-node-id',
+        async () => buildRawActionNovelRequest(directories, {
+            characterAvatar: avatar, chat: await chatOf(avatar, 'no-such-node-id'), nodeId: 'no-such-node-id',
             tokenizerOptions: fakeTokenizerOptions,
         }),
         /Chat node not found/,
@@ -321,8 +318,8 @@ async function run() {
     // --- error handling: node_id key entirely absent (not even explicit null) - loud failure instead
     // of a silent wrong-guess (see buildRawActionNovelRequest()'s own ADDRESSING MODEL doc comment). ---
     await assert.rejects(
-        () => buildRawActionNovelRequest(directories, {
-            characterAvatar: avatar, ownerId,
+        async () => buildRawActionNovelRequest(directories, {
+            characterAvatar: avatar, chat: await chatOf(avatar, undefined),
             tokenizerOptions: fakeTokenizerOptions,
         }),
         /node_id is required \(pass null explicitly for a brand-new, empty conversation\)/,
@@ -331,11 +328,11 @@ async function run() {
     // --- error handling: node_id: null on an owner that ALREADY has real history - must be a real,
     // reportable error, never a silent guess at "the current leaf". ---
     await assert.rejects(
-        () => buildRawActionNovelRequest(directories, {
-            characterAvatar: avatar, ownerId, nodeId: null,
+        async () => buildRawActionNovelRequest(directories, {
+            characterAvatar: avatar, chat: await chatOf(avatar, null), nodeId: null,
             tokenizerOptions: fakeTokenizerOptions,
         }),
-        /node_id is required: this character\/group already has an existing conversation/,
+        /node_id is required: this chat is not at its start/,
     );
 
     // --- happy path: node_id: null on a GENUINELY BRAND-NEW character with zero prior messages - the
@@ -348,11 +345,11 @@ async function run() {
             data: { name: 'Fresh', description: 'Fresh is a brand-new character with no chat history yet.', first_mes: 'Hello, this is Fresh.' },
         });
         const builtFresh = await buildRawActionNovelRequest(directories, {
-            characterAvatar: freshAvatar, ownerId: freshAvatar, nodeId: null,
+            characterAvatar: freshAvatar, chat: await chatOf(freshAvatar, null), nodeId: null,
             type: 'normal', userMessageText: 'Hi Fresh, this is our first message ever.',
             tokenizerOptions: fakeTokenizerOptions,
         });
-        assert.ok(builtFresh.anchorNodeId, 'a genuinely new, empty conversation still resolves to a real, appendable anchor node id');
+        assert.equal(builtFresh.anchorNodeId, null, 'a new, empty conversation is at its tree\'s root: the reply opens it');
         assert.ok(builtFresh.params.input.includes('Hi Fresh, this is our first message ever.'), 'the raw user_message for this turn still made it into the prepared input even though the resolved prior history was empty');
         assert.ok(!builtFresh.params.input.includes('Hello there, traveler.'), 'no unrelated prior history (Rex\'s) leaked into a brand-new character\'s resolved, empty chat');
     }
@@ -390,7 +387,7 @@ async function run() {
         writeAllSettings(directories, tokenizerSettings('clio-v1', undefined));
         const { keys, options } = recordingTokenizerOptions();
         const built = await buildRawActionNovelRequest(directories, {
-            characterAvatar: avatar, ownerId, nodeId: mainLeafId,
+            characterAvatar: avatar, chat: await chatOf(avatar, mainLeafId), nodeId: mainLeafId,
             type: 'normal', userMessageText: 'Stop strings, Rex?',
             tokenizerOptions: options,
         });
@@ -413,7 +410,7 @@ async function run() {
         writeAllSettings(directories, tokenizerSettings(modelNovel, tokenizerSetting));
         const { keys, options } = recordingTokenizerOptions();
         const built = await buildRawActionNovelRequest(directories, {
-            characterAvatar: avatar, ownerId, nodeId: mainLeafId,
+            characterAvatar: avatar, chat: await chatOf(avatar, mainLeafId), nodeId: mainLeafId,
             type: 'normal', userMessageText: 'No tokenizer, Rex?',
             tokenizerOptions: options,
         });
@@ -439,7 +436,7 @@ async function run() {
     {
         writeAllSettings(directories, tokenizerSettings('clio-v1', undefined));
         const built = await buildRawActionNovelRequest(directories, {
-            characterAvatar: avatar, ownerId, nodeId: mainLeafId,
+            characterAvatar: avatar, chat: await chatOf(avatar, mainLeafId), nodeId: mainLeafId,
             type: 'normal', userMessageText: 'Broken tokenizer, Rex?',
             tokenizerOptions: { encodeLocal: async () => { throw new Error('Failed to load the tokenizer'); } },
         });
@@ -460,19 +457,19 @@ async function run() {
             name: 'NovelStore',
             data: { name: 'NovelStore', description: 'NovelStore sells maps.', first_mes: 'Looking for a map?' },
         });
-        await saveChatToTree(directories, storeAvatar, 'store-chat', [
+        await saveBranch(user.store, { avatar: storeAvatar }, 'store-chat', [
             { chat_metadata: {} },
             { name: 'NovelStore', is_user: false, mes: 'Looking for a map?', send_date: 1, extra: {} },
             { name: 'Tester', is_user: true, mes: 'One of the northern coast.', send_date: 2, extra: {} },
             { name: 'NovelStore', is_user: false, mes: 'That one is rare.', send_date: 3, extra: {} },
         ]);
-        const storeLeafId = (await loadBranch(directories, storeAvatar, 'store-chat')).branch.leaf_id;
+        const storeLeafId = (await loadBranch(user.store, { avatar: storeAvatar }, 'store-chat')).branch.leaf_id;
         writeAllSettings(directories, tokenizerSettings('clio-v1', undefined));
 
         const build = async () => {
             const encoded = [];
             const built = await buildRawActionNovelRequest(directories, {
-                characterAvatar: storeAvatar, ownerId: storeAvatar, nodeId: storeLeafId, type: 'normal',
+                characterAvatar: storeAvatar, chat: await chatOf(storeAvatar, storeLeafId), nodeId: storeLeafId, type: 'normal',
                 tokenizerOptions: { encodeLocal: async (key, text) => { encoded.push(text); return fakeTokenizerOptions.encodeLocal(key, text); } },
             });
             return { built, encoded };
@@ -509,7 +506,7 @@ async function run() {
         });
         pointNovelBackendAt(fakeBackend.url);
 
-        const branchBefore = await loadBranch(directories, ownerId, branchName);
+        const branchBefore = await loadBranch(user.store, { avatar: ownerId }, branchName);
         const messageCountBefore = branchBefore.messages.length;
 
         const app = buildTestApp();
@@ -524,7 +521,7 @@ async function run() {
         assert.equal(data.output, 'Rex says hello back.', 'the real NovelAI response body reaches the client unmodified');
         assert.equal(typeof data.assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
 
-        const branchAfter = await loadBranch(directories, ownerId, branchName);
+        const branchAfter = await loadBranch(user.store, { avatar: ownerId }, branchName);
         assert.equal(branchAfter.messages.length, messageCountBefore + 2, 'both the user message and the assistant reply were appended');
         const [userMsg, assistantMsg] = branchAfter.messages.slice(-2);
         assert.equal(userMsg.mes, 'One more time, Rex?');
@@ -533,7 +530,7 @@ async function run() {
         assert.equal(assistantMsg.is_user, false);
         assert.equal(assistantMsg.name, 'Rex');
 
-        const userAlternatives = await getAlternatives(directories, userMsg.node_id);
+        const userAlternatives = await user.store.chats.alternatives({ node_id: userMsg.node_id });
         assert.equal(userAlternatives.total, 1, 'the persisted user message has no siblings - it is a genuine new child, not a swipe alternative');
     }
 
@@ -558,11 +555,11 @@ async function run() {
         pointNovelBackendAt(fakeBackend.url);
 
         const streamBranch = 'novel-stream-attempt-chat';
-        await saveChatToTree(directories, ownerId, streamBranch, [
+        await saveBranch(user.store, { avatar: ownerId }, streamBranch, [
             { chat_metadata: {} },
             { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
         ]);
-        const streamNodeId = (await loadBranch(directories, ownerId, streamBranch)).branch.leaf_id;
+        const streamNodeId = (await loadBranch(user.store, { avatar: ownerId }, streamBranch)).branch.leaf_id;
 
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
@@ -577,7 +574,7 @@ async function run() {
         assert.equal(data.output, 'Non-streamed despite stream:true.');
         assert.equal(typeof data.assistant_node_id, 'string', 'this is still a raw-action request (real owner_id/character_avatar), so the reply is persisted and its node_id echoed back');
 
-        const branchAfter = await loadBranch(directories, ownerId, streamBranch);
+        const branchAfter = await loadBranch(user.store, { avatar: ownerId }, streamBranch);
         const [, assistantMsg] = branchAfter.messages.slice(-2);
         assert.equal(assistantMsg.mes, 'Non-streamed despite stream:true.', 'persistence still worked correctly via the (only reachable) non-streaming path');
 
@@ -597,11 +594,11 @@ async function run() {
             res.end(sseChunks.map((token, i) => `data: ${JSON.stringify({ token, logprobs: i === 0 ? sseLogprobs : null })}\n\n`).join('') + 'data: [DONE]\n\n');
         });
         const directStreamBranch = 'novel-direct-forward-persist-chat';
-        await saveChatToTree(directories, ownerId, directStreamBranch, [
+        await saveBranch(user.store, { avatar: ownerId }, directStreamBranch, [
             { chat_metadata: {} },
             { name: 'Tester', is_user: true, mes: 'Say hi via the direct SSE path.', send_date: 1, extra: {} },
         ]);
-        const branchBeforeDirect = await loadBranch(directories, ownerId, directStreamBranch);
+        const branchBeforeDirect = await loadBranch(user.store, { avatar: ownerId }, directStreamBranch);
         const anchorNodeId = branchBeforeDirect.branch.leaf_id;
 
         // Uses `node-fetch` (NOT the global web-standard `fetch`) - forwardAndPersistCompactStream()
@@ -620,7 +617,7 @@ async function run() {
             on() {},
         };
         await forwardAndPersistCompactStream(fetchResponse, fakeExpressResponse, {
-            directories, ownerId, anchorNodeId, name2: 'Rex', isSwipe: false, isContinue: false, anchorContent: null,
+            directories, chat: await chatContextOf(user.store, { avatar: ownerId }, branchBeforeDirect.branch.session), anchorNodeId, name2: 'Rex', isSwipe: false, isContinue: false, anchorContent: null,
         }, json => json?.token, json => json?.logprobs);
         sseBackend.server.close();
 
@@ -629,7 +626,7 @@ async function run() {
         assert.deepEqual(decodedDirect.probabilities, [sseLogprobs], 'the route\'s own {"logprobs":...} extractor re-encoded NovelAI\'s per-token logprobs as a 0x02 probabilities frame');
 
         const branchAfterDirect = await waitFor(async () => {
-            const branch = await loadBranch(directories, ownerId, directStreamBranch);
+            const branch = await loadBranch(user.store, { avatar: ownerId }, directStreamBranch);
             return branch.messages.length === 2 ? branch : null;
         });
         assert.equal(branchAfterDirect.messages[1].mes, 'Rex streams a reply.', 'the real forwardAndPersistCompactStream() + the route\'s own extractors correctly accumulated and persisted every chunk');
@@ -646,7 +643,7 @@ async function run() {
         pointNovelBackendAt(fakeBackend.url);
         writeAllSettings(directories, tokenizerSettings('clio-v1', tokenizers.NONE));
 
-        const branchBefore = await loadBranch(directories, ownerId, branchName);
+        const branchBefore = await loadBranch(user.store, { avatar: ownerId }, branchName);
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
@@ -670,7 +667,7 @@ async function run() {
         });
         pointNovelBackendAt(fakeBackend.url);
 
-        const branchBefore = await loadBranch(directories, ownerId, branchName);
+        const branchBefore = await loadBranch(user.store, { avatar: ownerId }, branchName);
         const messageCountBefore = branchBefore.messages.length;
 
         const app = buildTestApp();
@@ -683,7 +680,7 @@ async function run() {
 
         assert.equal(status, 500, 'NovelAI\'s own error-response branch replies with 500, not a thrown exception');
 
-        const branchAfter = await loadBranch(directories, ownerId, branchName);
+        const branchAfter = await loadBranch(user.store, { avatar: ownerId }, branchName);
         assert.equal(branchAfter.messages.length, messageCountBefore + 1, 'only the user message was appended - no assistant reply for a failed generation');
         assert.equal(branchAfter.messages[branchAfter.messages.length - 1].mes, 'Are you there, Rex?');
         assert.equal(branchAfter.messages[branchAfter.messages.length - 1].is_user, true);
@@ -700,7 +697,7 @@ async function run() {
         });
         pointNovelBackendAt(fakeBackend.url);
 
-        const branchBefore = await loadBranch(directories, ownerId, branchName);
+        const branchBefore = await loadBranch(user.store, { avatar: ownerId }, branchName);
         const messageCountBefore = branchBefore.messages.length;
 
         const app = buildTestApp();
@@ -719,17 +716,24 @@ async function run() {
         assert.equal(status, 200);
         assert.deepEqual(data, { output: 'Legacy, unmanaged reply.' }, 'the legacy response is forwarded to the client completely unmodified');
 
-        const branchAfter = await loadBranch(directories, ownerId, branchName);
+        const branchAfter = await loadBranch(user.store, { avatar: ownerId }, branchName);
         assert.equal(branchAfter.messages.length, messageCountBefore, 'no persistence was attempted for a non-raw-action request');
     }
 
     // --- write-back: /generate stores its counts and ids once the backend has the request ---
+    /** The keys (hex text hashes) the user's token cache was given to store, per tokenizer identity. */
+    const written = new Map();
+    const realWriteBack = user.store.tokens.writeBack.bind(user.store.tokens);
+    user.store.tokens.writeBack = async (pending, now) => {
+        for (const { identity, hash } of [...(pending.counts ?? []), ...(pending.ids ?? [])]) {
+            if (!written.has(identity)) written.set(identity, new Set());
+            written.get(identity).add(hash);
+        }
+        return realWriteBack(pending, now);
+    };
     /** Rows stored under `identity` in token_counts and token_ids together. */
     async function storedRowsUnder(identity) {
-        const db = await getMessageTreeDb(directories);
-        const counts = /** @type {{ n: number }} */ (db.get('SELECT COUNT(*) AS n FROM token_counts WHERE identity = @identity', { identity }));
-        const ids = /** @type {{ n: number }} */ (db.get('SELECT COUNT(*) AS n FROM token_ids WHERE identity = @identity', { identity }));
-        return Number(counts.n) + Number(ids.n);
+        return written.get(identity)?.size ?? 0;
     }
 
     let writeBackChats = 0;
@@ -740,13 +744,13 @@ async function run() {
     async function setUpWriteBackGeneration(onGenerate) {
         const name = `NovelWriteBack${++writeBackChats}`;
         const writeBackAvatar = await writeCharacter(`${name}.png`, { name, data: { name, description: `${name} keeps the orchard.`, first_mes: 'Welcome.' } });
-        await saveChatToTree(directories, writeBackAvatar, 'write-back-chat', [
+        await saveBranch(user.store, { avatar: writeBackAvatar }, 'write-back-chat', [
             { chat_metadata: {} },
             { name, is_user: false, mes: 'Welcome.', send_date: 1, extra: {} },
             { name: 'Tester', is_user: true, mes: `Are the pears ripe, ${name}?`, send_date: 2, extra: {} },
             { name, is_user: false, mes: 'Nearly.', send_date: 3, extra: {} },
         ]);
-        const leafId = (await loadBranch(directories, writeBackAvatar, 'write-back-chat')).branch.leaf_id;
+        const leafId = (await loadBranch(user.store, { avatar: writeBackAvatar }, 'write-back-chat')).branch.leaf_id;
         const urls = [];
         const backend = await startFakeBackend((req, res, requestBody) => {
             urls.push(req.url);
@@ -826,26 +830,24 @@ async function run() {
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ output: 'Soon.' }));
         });
-        const db = await getMessageTreeDb(directories);
-        const realGet = db.get;
+        const tokens = user.store.tokens;
+        const realRead = tokens.read;
         try {
             // Earlier cases stored made-up ids under this identity; the first request has to count fresh.
-            db.run('DELETE FROM token_counts WHERE identity = @identity', { identity });
-            db.run('DELETE FROM token_ids WHERE identity = @identity', { identity });
+            tokens.read = async (table, id, hash) => (id === identity ? null : realRead.call(tokens, table, id, hash));
             const fresh = await postGenerate(buildTestApp(), body);
             assert.equal(fresh.status, 200);
-            db.get = (sql, params) => {
-                if (/FROM token_(counts|ids)\b/.test(sql)) throw new Error('token table read failed (test)');
-                return realGet(sql, params);
+            tokens.read = async () => {
+                throw new Error('token table read failed (test)');
             };
             const failing = await postGenerate(buildTestApp(), body);
-            db.get = realGet;
+            tokens.read = realRead;
             assert.equal(failing.status, 200, 'token table reads failing: the generation succeeds');
             assert.notEqual(failing.data?.error, true, 'token table reads failing: no error');
             assert.equal(generates.length, 2, 'token table reads failing: the backend received both generations');
             assert.deepEqual(generates[1], generates[0], 'token table reads failing: the same request as counted fresh');
         } finally {
-            db.get = realGet;
+            tokens.read = realRead;
             backend.server.close();
             pointNovelBackendAt(null);
             writeAllSettings(directories, buildSettingsFixture());
@@ -862,17 +864,17 @@ async function run() {
         });
         pointNovelBackendAt(backend.url);
         try {
-            await saveChatToTree(directories, ownerId, chatName, [
+            await saveBranch(user.store, { avatar: ownerId }, chatName, [
                 { chat_metadata: {} },
                 { name: 'Rex', is_user: false, mes: `Hello there, ${chatName}.`, send_date: 1, extra: {} },
             ]);
-            const branchBefore = await loadBranch(directories, ownerId, chatName);
+            const branchBefore = await loadBranch(user.store, { avatar: ownerId }, chatName);
             const ref = `ref-${chatName}`;
             const { data } = await postGenerate(buildTestApp(), {
                 owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
                 type: 'normal', user_message: { is_user: true, name: 'User', mes: `Question for ${chatName}?` }, user_message_ref: ref, stream: false,
             });
-            const branchAfter = await loadBranch(directories, ownerId, chatName);
+            const branchAfter = await loadBranch(user.store, { avatar: ownerId }, chatName);
             const userNode = branchAfter.messages[branchBefore.messages.length];
             assert.equal(userNode?.mes, `Question for ${chatName}?`);
             assert.deepEqual(data.stored, [{ ref, node_id: userNode.node_id }], 'the user message\'s ref is echoed with the node it was stored at');
@@ -895,11 +897,11 @@ async function run() {
         const server = app.listen(0, '127.0.0.1');
         await new Promise(resolve => server.once('listening', resolve));
         try {
-            await saveChatToTree(directories, ownerId, chatName, [
+            await saveBranch(user.store, { avatar: ownerId }, chatName, [
                 { chat_metadata: {} },
                 { name: 'Rex', is_user: false, mes: `Hello there, ${chatName}.`, send_date: 1, extra: {} },
             ]);
-            const branchBefore = await loadBranch(directories, ownerId, chatName);
+            const branchBefore = await loadBranch(user.store, { avatar: ownerId }, chatName);
             const ref = `ref-${chatName}`;
             const res = await fetch(`http://127.0.0.1:${server.address().port}/generate`, {
                 method: 'POST',
@@ -910,7 +912,7 @@ async function run() {
                 }),
             });
             const text = await res.text();
-            const branchAfter = await loadBranch(directories, ownerId, chatName);
+            const branchAfter = await loadBranch(user.store, { avatar: ownerId }, chatName);
             const added = branchAfter.messages.slice(branchBefore.messages.length);
             assert.deepEqual(added.map(m => m.mes), [`Question for ${chatName}?`], 'only the user message was stored');
             const stored = [{ ref, node_id: added[0].node_id }];
@@ -933,7 +935,4 @@ run()
         console.error(error);
         process.exitCode = 1;
     })
-    .finally(() => {
-        disposeMessageTreeStores();
-        fs.rmSync(root, { recursive: true, force: true });
-    });
+    .finally(() => user.close());

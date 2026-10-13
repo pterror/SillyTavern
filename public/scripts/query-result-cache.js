@@ -1,8 +1,9 @@
 import { localforage } from '../lib.js';
 
 // The character list's query pages, kept in browser storage across reloads: per request, the ordered hash rows (ids
-// and the hashes rows are resolved by) and the token to send back as `ifToken`. Rows themselves live in the
-// character and group caches, never here. One size budget for every entry; the least recently used goes first,
+// and the hashes rows are resolved by), the token to send back as `ifToken`, and the cursor the page ended at, which
+// the next page starts from. A request answered without hash rows keeps its cursor alone. Rows themselves live in
+// the character and group caches, never here. One size budget for every entry; the least recently used goes first,
 // except entries a saved view pins.
 
 /** Stored entries' JSON, in characters, kept at or under this. */
@@ -17,9 +18,13 @@ const INDEX_KEY = '__index__';
  * @property {number|string} [total]
  * @property {number|string} [hidden]
  * @property {string} [searchBackend]
- * @property {string} [cursor]
- * @property {{ id: string, name: string, carriers: number }[]} [tagMatches]
- * @property {boolean} [tagMatchesExact]
+ * @property {string} [cursor] Where the page ended: the next page's start.
+ */
+
+/**
+ * A request's entry with its cursor alone (an answer without hash rows).
+ * @typedef {object} QueryCursorEntry
+ * @property {string} cursor
  */
 
 /** @typedef {Record<string, { size: number, used: number, pins: string[] }>} QueryCacheIndex */
@@ -119,6 +124,56 @@ async function evict(index) {
         delete index[key];
         total -= item.size;
     }
+}
+
+/**
+ * Where a request's page ended (its entry's `cursor`), or null. Read behind the writes already asked for, so a page
+ * just kept is seen.
+ * @param {string} key The request's signature.
+ * @returns {Promise<string | null>}
+ */
+export async function readQueryCursor(key) {
+    try {
+        return await serialized(async () => {
+            const entry = /** @type {Partial<QueryCacheEntry> | null} */ (await getStore().getItem(key));
+            return entry && typeof entry.cursor === 'string' ? entry.cursor : null;
+        });
+    } catch (error) {
+        console.warn('[query-cache] cursor read failed:', error);
+        return null;
+    }
+}
+
+/**
+ * Keeps where a request's page ended (`undefined`: it has no cursor), changing only the cursor of a kept page. An
+ * entry left with neither rows nor a cursor goes. Writes nothing when the cursor is the one kept.
+ * @param {string} key
+ * @param {string | undefined} cursor
+ */
+export async function writeQueryCursor(key, cursor) {
+    await serialized(async () => {
+        const store = getStore();
+        const entry = /** @type {Partial<QueryCacheEntry> | null} */ (await store.getItem(key));
+        if ((entry?.cursor ?? undefined) === cursor) return;
+        const index = await readIndex();
+        const page = entry && Array.isArray(entry.hashRows);
+        /** @type {Partial<QueryCacheEntry> | null} */
+        let next = page ? { ...entry } : null;
+        if (next && cursor === undefined) delete next.cursor;
+        else if (next) next.cursor = cursor;
+        else if (cursor !== undefined) next = { cursor };
+        const pins = index[key]?.pins ?? [];
+        if (next) {
+            await store.setItem(key, next);
+            index[key] = { size: JSON.stringify(next).length, used: Date.now(), pins };
+            await evict(index);
+        } else {
+            await store.removeItem(key);
+            if (pins.length > 0) index[key] = { size: 0, used: Date.now(), pins };
+            else delete index[key];
+        }
+        await store.setItem(INDEX_KEY, index);
+    }).catch(error => console.warn('[query-cache] cursor write failed:', error));
 }
 
 /**

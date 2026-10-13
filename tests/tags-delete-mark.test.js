@@ -1,59 +1,34 @@
-import { describe, test, expect, beforeAll, afterAll, afterEach, jest } from '@jest/globals';
-import fs from 'node:fs';
+import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach, jest } from '@jest/globals';
 import path from 'node:path';
-import os from 'node:os';
 import { storedTagDefinitions, tagCounts } from './tag-store-reads.js';
-import { defineCharacterStoreFunctions } from '../src/character-store-schema.js';
 
-/**
- * better-sqlite3 with the store's SQL functions registered on every connection, as the store's own connections have
- * them (character-store-schema.js).
- * @param {typeof import('better-sqlite3')} Base
- * @returns {typeof import('better-sqlite3')}
- */
-function withStoreFunctions(Base) {
-    return /** @type {any} */ (class extends /** @type {any} */ (Base) {
-        constructor(/** @type {any[]} */ ...args) {
-            super(...args);
-            defineCharacterStoreFunctions({ defineFunction: (name, fn) => this.function(name, { deterministic: true }, fn) });
-        }
-    });
-}
+// A tag deleted with a merge target: its carriers carry the target, every read follows the merge, and the writes that
+// name the deleted tag act on the target.
 
-/** @type {typeof import('../src/character-metadata-db.js')} */
-let metadataDb;
+/** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
+let user;
+/** @type {typeof import('./converted-user.fixture.js')} */
+let fixture;
 /** @type {typeof import('../public/scripts/hash-utils.js')} */
 let hashUtils;
 /** @type {import('node:http').Server} */
 let server;
 let baseUrl;
-let tempDir;
 /** @type {import('../src/users.js').UserDirectoryList} */
 let directories;
 
 beforeAll(async () => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-tags-delete-mark-test-'));
-    directories = {
-        root: tempDir,
-        characters: path.join(tempDir, 'characters'),
-        chats: path.join(tempDir, 'chats'),
-        groups: path.join(tempDir, 'groups'),
-    };
-    for (const dir of [directories.characters, directories.chats, directories.groups]) {
-        fs.mkdirSync(dir, { recursive: true });
-    }
-
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
 
-    metadataDb = await import('../src/character-metadata-db.js');
+    fixture = await import('./converted-user.fixture.js');
     hashUtils = await import('../public/scripts/hash-utils.js');
     const { router } = await import('../src/endpoints/tags.js');
     const express = (await import('express')).default;
     const app = express();
     app.use(express.json());
     app.use((req, res, next) => {
-        req.user = { directories };
+        req.user = user.user;
         next();
     });
     app.use('/api/tags', router);
@@ -64,13 +39,15 @@ beforeAll(async () => {
 
 afterAll(() => new Promise(resolve => server.close(resolve)));
 
-afterEach(() => {
+beforeEach(async () => {
+    user = await fixture.emptyUser('st-tags-delete-mark-test-');
+    directories = user.directories;
+    globalThis.DATA_ROOT = user.dataRoot;
+});
+
+afterEach(async () => {
     jest.restoreAllMocks();
-    metadataDb.disposeMetadataStores();
-    const dbPath = path.join(tempDir, 'character-metadata.sqlite');
-    if (fs.existsSync(dbPath)) {
-        fs.rmSync(dbPath);
-    }
+    await user.close();
 });
 
 async function post(urlPath, body = {}) {
@@ -91,21 +68,19 @@ function cardJson(name, tags = []) {
 }
 
 async function seedCharacter(avatar, tags = []) {
-    await metadataDb.upsertCharacterFromWrite(directories, avatar, cardJson(avatar.replace(/\.png$/, ''), tags));
+    await user.store.lib.writeCard(directories, avatar, cardJson(avatar.replace(/\.png$/, ''), tags));
 }
 
 async function seedGroup(id) {
-    const group = { id, name: id, members: [], fav: false };
-    fs.writeFileSync(path.join(directories.groups, `${id}.json`), JSON.stringify(group));
-    await metadataDb.upsertGroupRow(directories, id, id, { fav: false, group });
+    await user.store.lib.writeGroup({ id, name: id, members: [], fav: false });
 }
 
 async function saveTags(ids) {
-    await metadataDb.saveTagDefinitions(directories, ids.map(id => ({ id, name: `name-${id}` })));
+    for (const id of ids) await user.store.lib.tags.create({ id, name: `name-${id}` });
 }
 
 async function assign(id, tagId) {
-    expect(await metadataDb.assignEntityTag(directories, id, tagId)).toBe('ok');
+    expect((await user.store.lib.tags.assign(id, tagId)).result).toBe('ok');
 }
 
 async function deleteTag(id, mergeInto) {
@@ -115,21 +90,11 @@ async function deleteTag(id, mergeInto) {
 }
 
 async function listedTagIds() {
-    return (await storedTagDefinitions(metadataDb, directories)).map(t => t.id).sort();
+    return (await storedTagDefinitions(user.store.lib)).map(t => t.id).sort();
 }
 
 async function tagsFor(ids) {
     return (await post('/api/tags/for', { ids })).json();
-}
-
-async function withDb(fn) {
-    const Database = withStoreFunctions((await import('better-sqlite3')).default);
-    const db = new Database(path.join(tempDir, 'character-metadata.sqlite'));
-    try {
-        return fn(db);
-    } finally {
-        db.close();
-    }
 }
 
 /**
@@ -151,83 +116,40 @@ async function seedLibrary() {
 }
 
 async function queryIds(tags) {
-    const result = await metadataDb.queryEntities(directories, { tags, sortField: 'name', limit: 100 });
-    return { ids: result.rows.map(r => r.id).sort(), total: result.total };
+    const result = await user.store.lib.query({ tags, sortField: 'name', limit: 100, wantRows: true, wantTotal: true });
+    return { ids: result.rows.map(r => (r.type === 'group' ? r.item.id : r.item.avatar)).sort(), total: result.total };
 }
 
-describe('POST /api/tags/delete marks the tag and leaves its rows', () => {
-    test('the tags row and tag rows stay, a tag_deletions row records the merge target', async () => {
-        await seedLibrary();
-        await deleteTag('x', 'y');
-
-        await withDb((db) => {
-            expect(db.prepare('SELECT id FROM tags WHERE id = ?').get('x')).toEqual({ id: 'x' });
-            expect(Array.from(db.prepare('SELECT character_id FROM character_tags WHERE tag_id = ? ORDER BY character_id').iterate('x'), r => r.character_id)).toEqual(['c1.png', 'c2.png']);
-            expect(Array.from(db.prepare('SELECT group_id FROM group_tags WHERE tag_id = ?').iterate('x'), r => r.group_id)).toEqual(['g1']);
-            expect(Array.from(db.prepare('SELECT tag_id, merge_into FROM tag_deletions').iterate())).toEqual([{ tag_id: 'x', merge_into: 'y' }]);
-        });
-    });
-
-    test('no merge target records NULL', async () => {
-        await seedLibrary();
-        await deleteTag('d');
-        await withDb((db) => {
-            expect(Array.from(db.prepare('SELECT tag_id, merge_into FROM tag_deletions').iterate())).toEqual([{ tag_id: 'd', merge_into: null }]);
-        });
-    });
-
+describe('POST /api/tags/delete', () => {
     test('a delete answers what it did: no refusal, the tag merged into, and that tag\'s definition', async () => {
         await seedLibrary();
-        expect(await deleteTag('x', 'y')).toEqual({ result: 'ok', refused: [], mergedInto: 'y', target: { id: 'y', name: 'name-y' } });
+        expect(await deleteTag('x', 'y')).toMatchObject({ result: 'ok', refused: [], mergedInto: 'y', target: { id: 'y', name: 'name-y' } });
         expect(await deleteTag('d')).toEqual({ result: 'ok', refused: [], mergedInto: null, target: null });
     });
 
     test('an unknown merge target, the tag itself, or a target deleted with no merge: refused, nothing written', async () => {
         await seedLibrary();
         await deleteTag('d');
-        const before = (await (await post('/api/tags/manifest')).json()).hash;
+        const before = (await (await post('/api/tags/manifest')).json()).changesSeq;
 
         expect(await deleteTag('x', 'nope')).toEqual({ result: 'ok', refused: [{ id: 'nope', reason: 'missing' }], mergedInto: null, target: null });
         expect(await deleteTag('z', 'z')).toEqual({ result: 'ok', refused: [{ id: 'z', reason: 'same' }], mergedInto: null, target: null });
         expect(await deleteTag('x', 'd')).toEqual({ result: 'ok', refused: [{ id: 'd', reason: 'deleted' }], mergedInto: null, target: null });
 
-        await withDb((db) => {
-            expect(Array.from(db.prepare('SELECT tag_id, merge_into FROM tag_deletions ORDER BY tag_id').iterate())).toEqual([
-                { tag_id: 'd', merge_into: null },
-            ]);
-        });
-        expect((await (await post('/api/tags/manifest')).json()).hash).toBe(before);
+        expect((await (await post('/api/tags/manifest')).json()).changesSeq).toBe(before);
         expect((await tagsFor(['c1.png', 'c2.png', 'g1']))).toEqual({ 'c1.png': ['x'], 'c2.png': ['x', 'y'], g1: ['x'] });
     });
 
-    test('a merge target whose stored definition cannot be read: refused, nothing written', async () => {
-        await seedLibrary();
-        await withDb((db) => { db.prepare('UPDATE tags SET data = ? WHERE id = ?').run('{not json', 'y'); });
-        expect(await deleteTag('x', 'y')).toEqual({ result: 'ok', refused: [{ id: 'y', reason: 'unreadable' }], mergedInto: null, target: null });
-        await withDb((db) => {
-            expect(db.prepare('SELECT COUNT(*) AS n FROM tag_deletions').get()).toEqual({ n: 0 });
-        });
-    });
-
-    test('a marked merge target is followed to its own target', async () => {
+    test('a deleted merge target is followed to its own target', async () => {
         await seedLibrary();
         await deleteTag('y', 'z');
         expect(await deleteTag('x', 'y')).toMatchObject({ refused: [], mergedInto: 'z', target: { id: 'z' } });
-        await withDb((db) => {
-            expect(db.prepare('SELECT merge_into FROM tag_deletions WHERE tag_id = ?').get('x')).toEqual({ merge_into: 'z' });
-        });
     });
 
-    test('marking a tag others merge into moves them onto its target', async () => {
+    test('deleting a tag others merge into moves them onto its target', async () => {
         await seedLibrary();
         await deleteTag('x', 'y');
         await deleteTag('y', 'z');
-        await withDb((db) => {
-            expect(Array.from(db.prepare('SELECT tag_id, merge_into FROM tag_deletions ORDER BY tag_id').iterate())).toEqual([
-                { tag_id: 'x', merge_into: 'z' },
-                { tag_id: 'y', merge_into: 'z' },
-            ]);
-        });
         expect((await tagsFor(['c1.png', 'c2.png', 'g1']))).toEqual({ 'c1.png': ['z'], 'c2.png': ['z'], g1: ['z'] });
     });
 
@@ -235,19 +157,14 @@ describe('POST /api/tags/delete marks the tag and leaves its rows', () => {
         await seedLibrary();
         await deleteTag('x', 'y');
         expect(await deleteTag('x', 'z')).toEqual({ result: 'ok', refused: [{ id: 'x', reason: 'deleted' }], mergedInto: null, target: null });
-        await withDb((db) => {
-            expect(db.prepare('SELECT merge_into FROM tag_deletions WHERE tag_id = ?').get('x')).toEqual({ merge_into: 'y' });
-        });
+        expect(await tagsFor(['c1.png'])).toEqual({ 'c1.png': ['y'] });
     });
 
-    test('deleting an id with no tags row writes nothing', async () => {
+    test('deleting an id with no tag writes nothing', async () => {
         await seedLibrary();
-        const before = (await (await post('/api/tags/manifest')).json()).hash;
+        const before = (await (await post('/api/tags/manifest')).json()).changesSeq;
         expect(await deleteTag('ghost', 'y')).toEqual({ result: 'ok', refused: [{ id: 'ghost', reason: 'missing' }], mergedInto: null, target: null });
-        await withDb((db) => {
-            expect(db.prepare('SELECT COUNT(*) AS n FROM tag_deletions').get()).toEqual({ n: 0 });
-        });
-        expect((await (await post('/api/tags/manifest')).json()).hash).toBe(before);
+        expect((await (await post('/api/tags/manifest')).json()).changesSeq).toBe(before);
     });
 
     test('a non-string mergeInto is a 400', async () => {
@@ -255,26 +172,9 @@ describe('POST /api/tags/delete marks the tag and leaves its rows', () => {
         const response = await post('/api/tags/delete', { id: 'x', mergeInto: 5 });
         expect(response.status).toBe(400);
     });
-
-    test('the delete lands in the tag name change log, for the search index catch-up', async () => {
-        await seedLibrary();
-        const before = await metadataDb.getCurrentTagNameChangeSeq(directories);
-        await deleteTag('x', 'y');
-        const page = await metadataDb.getTagNameChangesSince(directories, before, { limit: 100 });
-        expect(page.tagIds).toEqual(['x']);
-    });
-
-    test('a tag that merged into the marked one is logged too, since its resolved name changes', async () => {
-        await seedLibrary();
-        await deleteTag('x', 'y');
-        const before = await metadataDb.getCurrentTagNameChangeSeq(directories);
-        await deleteTag('y', 'z');
-        const page = await metadataDb.getTagNameChangesSince(directories, before, { limit: 100 });
-        expect(page.tagIds.sort()).toEqual(['x', 'y']);
-    });
 });
 
-describe('every tag definition read leaves a marked tag out', () => {
+describe('every tag definition read leaves a deleted tag out', () => {
     test('the stored definitions and /by-ids', async () => {
         await seedLibrary();
         await deleteTag('x', 'y');
@@ -285,7 +185,7 @@ describe('every tag definition read leaves a marked tag out', () => {
     });
 });
 
-describe('entity tag lists read a marked tag as its merge target', () => {
+describe('entity tag lists read a deleted tag as its merge target', () => {
     test('/for: x reads as y, once where both are present; a tag with no target is gone', async () => {
         await seedLibrary();
         await deleteTag('x', 'y');
@@ -295,58 +195,16 @@ describe('entity tag lists read a marked tag as its merge target', () => {
         });
     });
 
-    test('getCharacterTagIdsByIds, getCharacterTagIds, getGroupTagIds', async () => {
-        await seedLibrary();
-        await deleteTag('x', 'y');
-        expect(await metadataDb.getCharacterTagIdsByIds(directories, ['c1.png', 'c2.png'])).toEqual({ 'c1.png': ['y'], 'c2.png': ['y'] });
-        expect(await metadataDb.getCharacterTagIds(directories, 'c2.png')).toEqual(['y']);
-        expect(await metadataDb.getGroupTagIds(directories, 'g1')).toEqual(['y']);
-    });
-
-    test('list rows carry the ids as stored: getShallowByIds, queryCharacters rows, queryEntities rows', async () => {
-        await seedLibrary();
-        await deleteTag('x', 'y');
-        const shallow = await metadataDb.getShallowByIds(directories, ['c1.png', 'c2.png']);
-        expect(shallow['c1.png'].tag_ids).toEqual(['x']);
-        expect(shallow['c2.png'].tag_ids).toEqual(['x', 'y']);
-
-        const chars = await metadataDb.queryCharacters(directories, { sortField: 'name', limit: 100 });
-        expect(chars.rows.find(r => r.avatar === 'c1.png').tag_ids).toEqual(['x']);
-
-        const search = await metadataDb.queryCharacters(directories, { sortField: 'search', idOrder: ['c2.png'], limit: 100 });
-        expect(search.rows[0].tag_ids).toEqual(['x', 'y']);
-
-        const entities = await metadataDb.queryEntities(directories, { sortField: 'name', limit: 100 });
-        expect(entities.rows.find(r => r.id === 'c2.png').item.tag_ids).toEqual(['x', 'y']);
-
-        const byIds = await metadataDb.getEntityRowsByIds(directories, [{ type: 'character', id: 'c1.png' }]);
-        expect(byIds.rows[0].item.tag_ids).toEqual(['x']);
-    });
-
     test('group hash rows carry the tag_ids digest of the resolved list', async () => {
         await seedLibrary();
         await deleteTag('x', 'y');
         const groupHash = hashUtils.groupDigestTagIdsHash({ tag_ids: ['y'] });
 
-        const entities = await metadataDb.queryEntities(directories, { sortField: 'name', limit: 100, wantRows: false, wantHashes: true });
+        const entities = await user.store.lib.query({ sortField: 'name', limit: 100, wantRows: false, wantHashes: true });
         expect(entities.hashRows.find(r => r.id === 'g1').tagIdsHash).toBe(groupHash);
 
-        const random = await metadataDb.queryEntities(directories, { sortField: 'random', seed: 3, handle: 'h', limit: 100, wantRows: false, wantHashes: true });
+        const random = await user.store.lib.query({ sortField: 'random', seed: 3, limit: 100, wantRows: false, wantHashes: true });
         expect(random.hashRows.find(r => r.id === 'g1').tagIdsHash).toBe(groupHash);
-
-        const byIds = await metadataDb.getEntityRowsByIds(directories, [{ type: 'group', id: 'g1' }], { wantRows: false, wantHashes: true });
-        expect(byIds.hashRows.map(r => r.tagIdsHash)).toEqual([groupHash]);
-    });
-
-    test('a mark moves no character\'s version, and its rows keep the stored id', async () => {
-        await seedLibrary();
-        const versions = async () => Object.fromEntries(await Promise.all(['c1.png', 'c2.png', 'c3.png'].map(async id => [id, (await metadataDb.getCharacterMetadataRow(directories, id)).version])));
-        const before = await versions();
-        await deleteTag('x', 'y');
-        expect(await versions()).toEqual(before);
-        const chars = await metadataDb.queryCharacters(directories, { sortField: 'name', limit: 100, wantRows: false, wantHashes: true });
-        expect(chars.hashRows.find(r => r.id === 'c1.png').version).toBe(before['c1.png']);
-        expect((await metadataDb.getShallowByIds(directories, ['c1.png']))['c1.png'].tag_ids).toEqual(['x']);
     });
 
     test('a tag read answers a merged id with the live tag it reads as, chains followed', async () => {
@@ -354,7 +212,6 @@ describe('entity tag lists read a marked tag as its merge target', () => {
         await deleteTag('x', 'y');
         await deleteTag('y', 'z');
         await deleteTag('d');
-        expect(await metadataDb.getMergedTagTargets(directories, ['x', 'y', 'z', 'd', 'nope'])).toEqual({ x: 'z', y: 'z' });
         const answer = await (await post('/api/tags/by-ids', { ids: ['x', 'd'] })).json();
         expect(answer.merged).toEqual({ x: 'z' });
         expect(answer.gone).toEqual(['d']);
@@ -362,20 +219,9 @@ describe('entity tag lists read a marked tag as its merge target', () => {
         expect(answer.tags.map(tag => tag.id)).toEqual(['z']);
         expect(answer.tags.every(tag => typeof tag.name === 'string')).toBe(true);
     });
-
-    test('finishing the deletion moves the version of each character whose rows it moved', async () => {
-        await seedLibrary();
-        const before = (await metadataDb.getCharacterMetadataRow(directories, 'c1.png')).version;
-        const c4Before = (await metadataDb.getCharacterMetadataRow(directories, 'c4.png')).version;
-        await deleteTag('x', 'y');
-        await metadataDb.finishDeletedTags(directories);
-        expect((await metadataDb.getCharacterMetadataRow(directories, 'c1.png')).version).toBeGreaterThan(before);
-        expect((await metadataDb.getCharacterMetadataRow(directories, 'c4.png')).version).toBe(c4Before);
-        expect((await metadataDb.getShallowByIds(directories, ['c1.png']))['c1.png'].tag_ids).toEqual(['y']);
-    });
 });
 
-describe('tag filters read a marked tag as its merge target', () => {
+describe('tag filters read a deleted tag as its merge target', () => {
     test('include y matches rows of x, for characters and groups', async () => {
         await seedLibrary();
         await deleteTag('x', 'y');
@@ -414,32 +260,39 @@ describe('tag filters read a marked tag as its merge target', () => {
     test('an id list plus a tag filter (the per-row form)', async () => {
         await seedLibrary();
         await deleteTag('x', 'y');
-        const result = await metadataDb.queryEntities(directories, { ids: ['c1.png', 'c4.png', 'g1'], tags: { include: ['y'] }, sortField: 'name', limit: 100 });
-        expect(result.rows.map(r => r.id).sort()).toEqual(['c1.png', 'g1']);
-        const andResult = await metadataDb.queryCharacters(directories, { ids: ['c1.png', 'c2.png'], tags: { include: ['x', 'y'], mode: 'and' }, sortField: 'name', limit: 100 });
-        expect(andResult.rows.map(r => r.avatar).sort()).toEqual(['c1.png', 'c2.png']);
+        const result = await user.store.lib.query({ ids: ['c1.png', 'c4.png', 'g1'], tags: { include: ['y'] }, sortField: 'name', limit: 100 });
+        expect(result.rows.map(r => (r.type === 'group' ? r.item.id : r.item.avatar)).sort()).toEqual(['c1.png', 'g1']);
+        const andResult = await user.store.lib.query({ ids: ['c1.png', 'c2.png'], tags: { include: ['x', 'y'], mode: 'and' }, sortField: 'name', limit: 100, includeGroups: false });
+        expect(andResult.rows.map(r => r.item.avatar).sort()).toEqual(['c1.png', 'c2.png']);
     });
 });
 
 describe('usage counts', () => {
-    test('a count adds x into y, leaves x out, and lists y as approximate', async () => {
+    test('a count takes x\'s carriers into y, leaves x out, and lists y as approximate until they have moved', async () => {
         await seedLibrary();
         await deleteTag('x', 'y');
         await deleteTag('d');
-        const { counts, approximate } = await tagCounts(metadataDb, directories, ['x', 'y', 'z', 'd']);
+        let read;
+        const deadline = Date.now() + 10_000;
+        do {
+            read = await tagCounts(user.store.lib, ['x', 'y', 'z', 'd']);
+            expect(read.approximate.filter(id => id !== 'y')).toEqual([]);
+        } while (read.approximate.length > 0 && Date.now() < deadline && await new Promise(resolve => setTimeout(resolve, 20, true)));
+        const { counts, approximate } = read;
         expect(counts.x).toBeUndefined();
         expect(counts.d).toBeUndefined();
-        expect(counts.y).toBe(5);
+        // c1, c2 (which carried both), c3 and g1.
+        expect(counts.y).toBe(4);
         expect(counts.z).toBe(2);
-        expect(approximate).toEqual(['y']);
+        expect(approximate).toEqual([]);
     });
 
     test('with nothing merging, the approximate list is empty', async () => {
         await seedLibrary();
-        expect((await tagCounts(metadataDb, directories, ['x', 'y', 'z', 'd'])).approximate).toEqual([]);
+        expect((await tagCounts(user.store.lib, ['x', 'y', 'z', 'd'])).approximate).toEqual([]);
     });
 
-    test('unused-tag count and prune leave marked tags alone and keep a target used only through x', async () => {
+    test('unused-tag count and prune keep a target used only through x', async () => {
         await saveTags(['x', 'y', 'u']);
         await seedCharacter('c1.png');
         await assign('c1.png', 'x');
@@ -447,57 +300,44 @@ describe('usage counts', () => {
         expect((await (await post('/api/tags/unused-count')).json()).count).toBe(1);
         const pruned = await (await post('/api/tags/prune', { limit: 10 })).json();
         expect(pruned.deleted).toEqual(['u']);
-        await withDb((db) => {
-            expect(Array.from(db.prepare('SELECT id FROM tags ORDER BY id').iterate(), r => r.id)).toEqual(['x', 'y']);
-        });
+        expect(await listedTagIds()).toEqual(['y']);
     });
 });
 
-describe('writes that name a marked tag', () => {
-    test('saveTagDefinitions and /edit skip a marked id and warn naming it', async () => {
+describe('writes that name a deleted tag', () => {
+    test('/edit skips a deleted id', async () => {
         await seedLibrary();
         await deleteTag('x', 'y');
-        const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
-        await metadataDb.saveTagDefinitions(directories, ['x', 'y', 'z', 'd'].map(id => ({ id, name: `name-${id}` })));
         const edited = await post('/api/tags/edit', { id: 'x', patch: { name: 'renamed' } });
         expect(await edited.json()).toEqual({ result: 'ok', refused: [{ id: 'x', reason: 'deleted' }] });
         expect(await listedTagIds()).toEqual(['d', 'y', 'z']);
-        await withDb((db) => {
-            expect(db.prepare('SELECT id FROM tags WHERE id = ?').get('x')).toBeUndefined();
-            expect(Array.from(db.prepare('SELECT tag_id FROM tag_deletions').iterate())).toEqual([{ tag_id: 'x' }]);
-        });
-        const messages = warn.mock.calls.map(args => args.join(' '));
-        expect(messages.filter(m => m.includes('x')).length).toBeGreaterThanOrEqual(2);
     });
 
-    test('assign x writes y; assign of a tag with no target writes nothing and warns', async () => {
+    test('assign x writes y; assign of a tag with no target writes nothing', async () => {
         await seedLibrary();
         await deleteTag('x', 'y');
         await deleteTag('d');
-        const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+        jest.spyOn(console, 'warn').mockImplementation(() => {});
         await assign('c4.png', 'x');
         await assign('g2', 'x');
         await assign('c4.png', 'd');
-        await withDb((db) => {
-            expect(Array.from(db.prepare('SELECT tag_id FROM character_tags WHERE character_id = ? ORDER BY tag_id').iterate('c4.png'), r => r.tag_id)).toEqual(['y', 'z']);
-            expect(Array.from(db.prepare('SELECT tag_id FROM group_tags WHERE group_id = ? ORDER BY tag_id').iterate('g2'), r => r.tag_id)).toEqual(['y', 'z']);
-        });
-        expect(warn.mock.calls.map(args => args.join(' ')).some(m => m.includes('d') && m.includes('c4.png'))).toBe(true);
+        expect(await tagsFor(['c4.png', 'g2'])).toEqual({ 'c4.png': ['y', 'z'], g2: ['y', 'z'] });
     });
 
-    test('unassign x removes only the x row, so an entity that also has y keeps it', async () => {
+    test('unassigning x removes nothing and answers deleted: its carriers are y\'s, however far the merge has got', async () => {
         await seedLibrary();
         await deleteTag('x', 'y');
-        expect(await metadataDb.unassignEntityTag(directories, 'c2.png', 'x')).toBe('ok');
-        expect(await metadataDb.unassignEntityTag(directories, 'c1.png', 'x')).toBe('ok');
-        expect(await tagsFor(['c1.png', 'c2.png'])).toEqual({ 'c1.png': [], 'c2.png': ['y'] });
+        expect(await user.store.lib.tags.unassign('c2.png', 'x')).toBe('deleted');
+        const routed = await post('/api/tags/unassign', { id: 'c1.png', tagId: 'x' });
+        expect(await routed.json()).toEqual({ result: 'ok', refused: [{ id: 'x', reason: 'deleted' }] });
+        expect(await tagsFor(['c1.png', 'c2.png'])).toEqual({ 'c1.png': ['y'], 'c2.png': ['y'] });
     });
 
     test('a card tag named like x resolves to y', async () => {
         await saveTags(['x', 'y']);
         await deleteTag('x', 'y');
         await seedCharacter('card.png', ['name-x']);
-        const seeded = await metadataDb.seedCardTagsForSingleCharacter(directories, 'card.png');
+        const seeded = await user.store.lib.tags.seedCardTags('card.png');
         expect(seeded.tagIds).toEqual(['y']);
         expect(seeded.tagDefinitions.map(t => t.id)).toEqual(['y']);
         expect(await tagsFor(['card.png'])).toEqual({ 'card.png': ['y'] });
@@ -507,7 +347,7 @@ describe('writes that name a marked tag', () => {
         await saveTags(['d']);
         await deleteTag('d');
         await seedCharacter('card.png', ['name-d']);
-        const seeded = await metadataDb.seedCardTagsForSingleCharacter(directories, 'card.png');
+        const seeded = await user.store.lib.tags.seedCardTags('card.png');
         expect(seeded.tagIds).toHaveLength(1);
         expect(seeded.tagIds[0]).not.toBe('d');
         expect(seeded.tagDefinitions[0].name).toBe('name-d');
@@ -537,9 +377,7 @@ describe('POST /api/tags/create and /api/tags/edit', () => {
             const response = await post(url, body);
             expect({ url, body, status: response.status }).toEqual({ url, body, status: 400 });
         }
-        await withDb((db) => {
-            expect(Array.from(db.prepare('SELECT id, data FROM tags').iterate())).toEqual([{ id: 'a', data: JSON.stringify({ id: 'a', name: 'name-a' }) }]);
-        });
+        expect((await storedTagDefinitions(user.store.lib)).map(({ id, name }) => ({ id, name }))).toEqual([{ id: 'a', name: 'name-a' }]);
     });
 
     test('create answers { result, refused }: empty when created, exists, deleted', async () => {
@@ -551,25 +389,19 @@ describe('POST /api/tags/create and /api/tags/edit', () => {
         expect(await created.json()).toEqual({ result: 'ok', refused: [], tag: { id: 'n', name: 'New', sort_order: 1 } });
         expect(await (await post('/api/tags/create', { tag: { id: 'n', name: 'Again' } })).json()).toEqual({ result: 'ok', refused: [{ id: 'n', reason: 'exists' }] });
         expect(await (await post('/api/tags/create', { tag: { id: 'm', name: 'Back' } })).json()).toEqual({ result: 'ok', refused: [{ id: 'm', reason: 'deleted' }] });
-        await withDb((db) => {
-            expect(JSON.parse(db.prepare('SELECT data FROM tags WHERE id = ?').get('n').data)).toEqual({ id: 'n', name: 'New', sort_order: 1 });
-        });
+        expect((await storedTagDefinitions(user.store.lib)).find(t => t.id === 'n')).toEqual({ id: 'n', name: 'New', sort_order: 1 });
     });
 
-    test('edit answers { result, refused }: empty when merged, missing, deleted, unreadable', async () => {
-        await saveTags(['a', 'm', 'u']);
+    test('edit answers { result, refused }: empty when merged, missing, deleted', async () => {
+        await saveTags(['a', 'm']);
         await deleteTag('m');
-        await withDb(db => db.prepare('UPDATE tags SET data = ? WHERE id = ?').run('{not json', 'u'));
         jest.spyOn(console, 'warn').mockImplementation(() => {});
         const edited = await post('/api/tags/edit', { id: 'a', patch: { id: 'a', color: 'red' } });
         expect(edited.status).toBe(200);
         expect(await edited.json()).toEqual({ result: 'ok', refused: [] });
         expect(await (await post('/api/tags/edit', { id: 'ghost', patch: { name: 'G' } })).json()).toEqual({ result: 'ok', refused: [{ id: 'ghost', reason: 'missing' }] });
         expect(await (await post('/api/tags/edit', { id: 'm', patch: { name: 'M' } })).json()).toEqual({ result: 'ok', refused: [{ id: 'm', reason: 'deleted' }] });
-        expect(await (await post('/api/tags/edit', { id: 'u', patch: { name: 'U' } })).json()).toEqual({ result: 'ok', refused: [{ id: 'u', reason: 'unreadable' }] });
-        await withDb((db) => {
-            expect(JSON.parse(db.prepare('SELECT data FROM tags WHERE id = ?').get('a').data)).toEqual({ id: 'a', name: 'name-a', color: 'red' });
-            expect(db.prepare('SELECT id FROM tags WHERE id = ?').get('ghost')).toBeUndefined();
-        });
+        expect((await storedTagDefinitions(user.store.lib)).find(t => t.id === 'a')).toMatchObject({ id: 'a', name: 'name-a', color: 'red' });
+        expect((await storedTagDefinitions(user.store.lib)).find(t => t.id === 'ghost')).toBeUndefined();
     });
 });

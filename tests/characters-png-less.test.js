@@ -10,8 +10,11 @@ import os from 'node:os';
 
 /** @type {typeof import('../src/character-card-parser.js')} */
 let cardParser;
-/** @type {typeof import('../src/character-metadata-db.js')} */
-let metadataDb;
+/** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
+let user;
+/** @type {typeof import('../src/character-avatars.js')} */
+let avatars;
+let TYPE;
 /** @type {typeof import('../src/endpoints/characters.js')} */
 let characters;
 /** @type {import('node:http').Server} */
@@ -32,7 +35,8 @@ beforeAll(async () => {
 
     characters = await import('../src/endpoints/characters.js');
     cardParser = await import('../src/character-card-parser.js');
-    metadataDb = await import('../src/character-metadata-db.js');
+    avatars = await import('../src/character-avatars.js');
+    ({ TYPE } = await import('../src/library-codes.js'));
     const { DEFAULT_AVATAR_PATH } = await import('../src/constants.js');
 
     process.chdir(path.resolve(originalCwd, '..'));
@@ -45,7 +49,7 @@ beforeAll(async () => {
     app.use(multer({ dest: uploadsDir }).single('avatar'));
     app.use(express.json());
     app.use((req, res, next) => {
-        req.user = { directories, profile: { handle: 'test-user' } };
+        req.user = user.user;
         next();
     });
     app.use('/api/characters', characters.router);
@@ -59,21 +63,13 @@ afterAll(async () => {
     process.chdir(originalCwd);
 });
 
-beforeEach(() => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-png-less-test-'));
-    const charactersDir = path.join(tempDir, 'characters');
-    const chatsDir = path.join(tempDir, 'chats');
-    const thumbnailsAvatarDir = path.join(tempDir, 'thumbnails', 'avatar');
-    fs.mkdirSync(charactersDir, { recursive: true });
-    fs.mkdirSync(chatsDir, { recursive: true });
-    fs.mkdirSync(thumbnailsAvatarDir, { recursive: true });
-    directories = { characters: charactersDir, chats: chatsDir, root: tempDir, thumbnailsAvatar: thumbnailsAvatarDir };
+beforeEach(async () => {
+    user = await (await import('./converted-user.fixture.js')).emptyUser('st-png-less-test-');
+    ({ directories } = user);
+    globalThis.DATA_ROOT = user.dataRoot;
 });
 
-afterEach(() => {
-    metadataDb.disposeMetadataStores();
-    fs.rmSync(directories.root, { recursive: true, force: true });
-});
+afterEach(() => user.close());
 
 const post = (route, body) => fetch(`${baseUrl}/api/characters/${route}`, {
     method: 'POST',
@@ -81,17 +77,33 @@ const post = (route, body) => fetch(`${baseUrl}/api/characters/${route}`, {
     body: JSON.stringify(body),
 });
 
-const pngPath = (avatar) => path.join(directories.characters, avatar);
+/** The character's image file in `characters/`, or null when it has none. */
+async function imageFile(avatar) {
+    const file = avatars.avatarFile(directories, avatar);
+    return fs.existsSync(file) ? file : null;
+}
+
+/** Whether the character has an image file of its own. */
+async function hasImageFile(avatar) {
+    const file = await imageFile(avatar);
+    return file !== null && fs.existsSync(file);
+}
+
+/** Removes a character's image file, so only its card is left. */
+async function removeImage(avatar) {
+    const file = await imageFile(avatar);
+    if (file !== null) fs.rmSync(file, { force: true });
+    expect(await hasImageFile(avatar)).toBe(false);
+}
 
 /** Creates Alice, then removes her PNG so only the row is left. */
 async function createPngLessAlice() {
     expect((await post('create', { ch_name: 'Alice', description: 'original', file_name: 'Alice' })).status).toBe(200);
-    fs.unlinkSync(pngPath('Alice.png'));
-    expect(fs.existsSync(pngPath('Alice.png'))).toBe(false);
+    await removeImage('Alice.png');
 }
 
 async function storedCard(avatar) {
-    return JSON.parse(await metadataDb.getCharacterCardJson(directories, avatar));
+    return (await user.store.lib.cards([avatar]))[0];
 }
 
 describe('metadata edits on a PNG-less character stay DB-only', () => {
@@ -100,7 +112,7 @@ describe('metadata edits on a PNG-less character stay DB-only', () => {
         const res = await post('rename', { avatar_url: 'Alice.png', new_name: 'Alicia' });
         expect(res.status).toBe(200);
         expect((await storedCard('Alice.png')).data.name).toBe('Alicia');
-        expect(fs.existsSync(pngPath('Alice.png'))).toBe(false);
+        expect(await hasImageFile('Alice.png')).toBe(false);
     });
 
     test('/edit without an upload', async () => {
@@ -108,7 +120,7 @@ describe('metadata edits on a PNG-less character stay DB-only', () => {
         const res = await post('edit', { avatar_url: 'Alice.png', ch_name: 'Alice', description: 'EDITED' });
         expect(res.status).toBe(200);
         expect((await storedCard('Alice.png')).data.description).toBe('EDITED');
-        expect(fs.existsSync(pngPath('Alice.png'))).toBe(false);
+        expect(await hasImageFile('Alice.png')).toBe(false);
     });
 
     test('/edit-attribute', async () => {
@@ -116,7 +128,7 @@ describe('metadata edits on a PNG-less character stay DB-only', () => {
         const res = await post('edit-attribute', { avatar_url: 'Alice.png', ch_name: 'Alice', field: 'description', value: 'ATTR' });
         expect(res.status).toBe(200);
         expect((await storedCard('Alice.png')).data.description).toBe('ATTR');
-        expect(fs.existsSync(pngPath('Alice.png'))).toBe(false);
+        expect(await hasImageFile('Alice.png')).toBe(false);
     });
 
     test('a greeting op', async () => {
@@ -124,7 +136,7 @@ describe('metadata edits on a PNG-less character stay DB-only', () => {
         const res = await post('greetings/add', { avatar_url: 'Alice.png', position: 0, expected_length: 0, text: 'Hello there' });
         expect(res.status).toBe(200);
         expect((await storedCard('Alice.png')).data.alternate_greetings).toContain('Hello there');
-        expect(fs.existsSync(pngPath('Alice.png'))).toBe(false);
+        expect(await hasImageFile('Alice.png')).toBe(false);
     });
 
     test('/merge-attributes without an upload', async () => {
@@ -132,7 +144,7 @@ describe('metadata edits on a PNG-less character stay DB-only', () => {
         const res = await post('merge-attributes', { avatar: 'Alice.png', data: { description: 'MERGED' } });
         expect(res.status).toBe(200);
         expect((await storedCard('Alice.png')).data.description).toBe('MERGED');
-        expect(fs.existsSync(pngPath('Alice.png'))).toBe(false);
+        expect(await hasImageFile('Alice.png')).toBe(false);
     });
 });
 
@@ -147,8 +159,8 @@ describe('image routes on a PNG-less character', () => {
         const res = await fetch(`${baseUrl}/api/characters/edit-avatar`, { method: 'POST', body: formData });
         expect(res.status).toBe(200);
 
-        expect(fs.existsSync(pngPath('Alice.png'))).toBe(true);
-        const written = cardParser.computeAvatarIdentityHashFromImageBuffer(fs.readFileSync(pngPath('Alice.png')));
+        expect(await hasImageFile('Alice.png')).toBe(true);
+        const written = cardParser.computeAvatarIdentityHashFromImageBuffer(fs.readFileSync(/** @type {string} */ (await imageFile('Alice.png'))));
         const uploaded = cardParser.computeAvatarIdentityHashFromImageBuffer(fs.readFileSync(uploadPath));
         expect(written).toBe(uploaded);
     });
@@ -159,14 +171,14 @@ describe('image routes on a PNG-less character', () => {
         expect(res.status).toBe(200);
         const { path: newAvatar } = await res.json();
 
-        expect(fs.readFileSync(pngPath(newAvatar)).equals(fs.readFileSync(defaultAvatarPath))).toBe(true);
+        expect(fs.readFileSync(/** @type {string} */ (await avatars.avatarPathOf(user.store.lib, directories, newAvatar))).equals(fs.readFileSync(defaultAvatarPath))).toBe(true);
         expect((await storedCard(newAvatar)).data.name).toBe('Alice');
     });
 
     test('/duplicate skips a suffix whose row exists without a file', async () => {
         await createPngLessAlice();
         expect((await post('create', { ch_name: 'Bob', file_name: 'Alice_1' })).status).toBe(200);
-        fs.unlinkSync(pngPath('Alice_1.png'));
+        await removeImage('Alice_1.png');
 
         const res = await post('duplicate', { avatar_url: 'Alice.png' });
         expect(res.status).toBe(200);
@@ -195,7 +207,7 @@ describe('existence follows the row', () => {
         await createPngLessAlice();
         const res = await post('delete', { avatar_url: 'Alice.png' });
         expect(res.status).toBe(200);
-        expect(await metadataDb.getCharacterCardJson(directories, 'Alice.png')).toBeNull();
+        expect(await user.store.lib.entity(TYPE.character, 'Alice.png')).toBeNull();
     });
 
     test('/delete with neither row nor file is 400', async () => {
@@ -223,38 +235,14 @@ describe('existence follows the row', () => {
 
         test('skips an id whose row exists without a file', async () => {
             const replay = replayableIds();
-            const first = characters.mintCharacterId(directories);
-            const second = characters.mintCharacterId(directories);
+            const first = await characters.mintCharacterId(directories);
+            const second = await characters.mintCharacterId(directories);
             replay();
 
-            await metadataDb.upsertCharacterFromWrite(directories, `${first}.png`, JSON.stringify({ name: 'Ghost', spec: 'chara_card_v2', data: { name: 'Ghost' } }));
-            expect(fs.existsSync(pngPath(`${first}.png`))).toBe(false);
+            await user.store.lib.writeCard(directories, `${first}.png`, JSON.stringify({ name: 'Ghost', spec: 'chara_card_v2', data: { name: 'Ghost' } }));
+            expect(await hasImageFile(`${first}.png`)).toBe(false);
 
-            expect(characters.mintCharacterId(directories)).toBe(second);
+            expect(await characters.mintCharacterId(directories)).toBe(second);
         });
-
-        test('skips an id still pending in the batch-import buffer', async () => {
-            const replay = replayableIds();
-            const first = characters.mintCharacterId(directories);
-            const second = characters.mintCharacterId(directories);
-            replay();
-
-            await metadataDb.beginBatchImport(directories);
-            try {
-                await metadataDb.upsertCharacterFromWrite(directories, `${first}.png`, JSON.stringify({ name: 'Ghost', spec: 'chara_card_v2', data: { name: 'Ghost' } }), null, null, { fromImport: true });
-                expect(await metadataDb.characterRowExists(directories, `${first}.png`)).toBe(false);
-
-                expect(characters.mintCharacterId(directories)).toBe(second);
-            } finally {
-                await metadataDb.endBatchImport(directories);
-            }
-        });
-    });
-
-    test('processCharacter takes date_added from the default avatar', async () => {
-        await createPngLessAlice();
-        const character = await characters.processCharacter('Alice.png', directories, { shallow: false });
-        expect(character.name).toBe('Alice');
-        expect(character.date_added).toBe(fs.statSync(defaultAvatarPath).ctimeMs);
     });
 });

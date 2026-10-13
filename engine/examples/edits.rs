@@ -137,7 +137,12 @@ fn main() {
     let del = |m: u64| {
         rec(
             "subtreeDelete",
-            vec![Value::Id(m), Value::Id(1), Value::Id(1)],
+            vec![
+                Value::Id(m),
+                Value::Id(1),
+                Value::Id(1),
+                Value::Time(1_700_000_000_000),
+            ],
         )
     };
     println!(

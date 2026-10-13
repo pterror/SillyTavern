@@ -154,7 +154,7 @@ test.describe('a send the server did not store', () => {
         await reopen(page, avatar);
         const chat = await chatState(page);
         expect(chat.map(m => m.mes)).toEqual(['Hello.', text]);
-        expect(chat[1].node_id).toMatch(/^[0-9a-f-]{36}$/);
+        expect(chat[1].node_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
         await expect(page.locator('#chat .mes.failed_send')).toHaveCount(0);
     });
 
@@ -267,6 +267,6 @@ test.describe('a send the server did not store', () => {
         await expect.poll(async () => (await chatState(page)).map(m => m.mes)).toEqual(['Hello.', text]);
         const chat = await chatState(page);
         expect(chat[0].node_id).toBe(greetingNode);
-        expect(chat[1].node_id).toMatch(/^[0-9a-f-]{36}$/);
+        expect(chat[1].node_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     });
 });

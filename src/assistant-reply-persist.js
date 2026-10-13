@@ -1,6 +1,5 @@
-import { appendMessages, addAlternatives, selectDefaultChild, editMessage } from './message-tree-db.js';
+import { storedForm } from './chat-engine.js';
 import { recordGenerationPersisted } from './generation-stop.js';
-import { recordItemization } from './itemization-store.js';
 
 /**
  * The reply text in a non-streaming answer, read exactly as the page's `extractMessageFromData()`
@@ -51,8 +50,8 @@ export function unreadableReplyWarning(data, key) {
 }
 
 /**
- * Persists a raw-action `/generate` request's ASSISTANT reply onto the message tree, once the
- * full generated text is known.
+ * Persists a raw-action `/generate` request's ASSISTANT reply into the chat, through the request's session,
+ * once the full generated text is known.
  *
  * Extracted so BOTH the non-streaming response branch (where the full text is available
  * immediately, straight from the backend's JSON body) and the streaming branches (where it's the
@@ -79,10 +78,9 @@ export function unreadableReplyWarning(data, key) {
  * a spurious tree entry.
  *
  * @param {object} pending
- * @param {import('./users.js').UserDirectoryList} pending.directories
- * @param {string} pending.ownerId message-tree-db.js owner id.
- * @param {string} pending.anchorNodeId The node the reply attaches to/edits/replaces - see the
- *   per-mode description above for exactly how each mode uses it.
+ * @param {import('./chat-request.js').ChatContext} pending.chat The chat the request acts in.
+ * @param {string | null} pending.anchorNodeId The message the reply attaches to/edits/replaces - see the
+ *   per-mode description above for exactly how each mode uses it (null: the tree's root).
  * @param {string} pending.name2 The responding character's display name, stored as the new
  *   message's `name`.
  * @param {boolean} pending.isSwipe
@@ -134,18 +132,23 @@ export async function retryPersistReply(pending, generatedText) {
 
 /**
  * The warning the page gets for a reply that was generated but couldn't be stored. It names the
- * generation, so the page can ask the server to try storing it again.
+ * generation, so the page can ask the server to try storing it again, and the state changes made while producing it
+ * (`changes`, a variable's as `variables.<name>`), which weren't stored either.
  * @param {string} generationId
  * @param {string} reason
- * @returns {{ kind: 'reply-not-saved', key: string, generation_id: string, reason: string, message: string }}
+ * @param {import('./chat-engine.js').StateOp[]} [replyChanges]
+ * @returns {{ kind: 'reply-not-saved', key: string, generation_id: string, reason: string, message: string, changes?: string[] }}
  */
-export function replyNotSavedWarning(generationId, reason) {
+export function replyNotSavedWarning(generationId, reason, replyChanges = []) {
+    const changes = replyChanges.filter(op => typeof op?.key === 'string').map(op => (op.variable ? `variables.${op.key}` : op.key));
+    const unsaved = changes.length ? ` The changes made while producing it weren't saved either: ${changes.join(', ')}.` : '';
     return {
         kind: 'reply-not-saved',
         key: generationId,
         generation_id: generationId,
         reason,
-        message: `This reply wasn't saved (${reason}). It's shown, but it will be gone after a reload unless saving it again works.`,
+        message: `This reply wasn't saved (${reason}). It's shown, but it will be gone after a reload unless saving it again works.${unsaved}`,
+        ...(changes.length ? { changes } : {}),
     };
 }
 
@@ -163,7 +166,7 @@ function recordReplyNotSaved(pending, generatedText, reason) {
         console.error(`Reply not saved and can't be retried (no generation to keep it on): ${reason}`);
         return;
     }
-    const warning = replyNotSavedWarning(entry.id, reason);
+    const warning = replyNotSavedWarning(entry.id, reason, pending.chat?.replyChanges);
     entry.unsaved = { pending, text: generatedText, reason, warning };
     if (Array.isArray(pending.warnings)) {
         pending.warnings.push(warning);
@@ -212,7 +215,7 @@ async function persistReply(pending, generatedText) {
     const result = await storeReply(pending, generatedText);
     if (result && !('error' in result) && pending.itemization) {
         try {
-            await recordItemization(pending.directories, result.node_id, pending.itemization);
+            await pending.chat.store.chats.recordItemization({ node_id: result.node_id, entry: pending.itemization });
         } catch (error) {
             console.error('Failed to store the prompt itemization of a reply:', error);
             pending.itemizationNotSaved = itemizationNotSavedWarning(result.node_id);
@@ -236,50 +239,47 @@ export function itemizationNotSavedWarning(nodeId) {
 
 /** @returns {Promise<{node_id: string, mes: string}|{error: string}|null>} */
 async function storeReply(pending, generatedText) {
-    const { directories, ownerId, anchorNodeId, name2, isSwipe, isContinue, anchorContent } = pending;
+    const { chat, anchorNodeId, name2, isSwipe, isContinue, anchorContent } = pending;
     if (!generatedText) {
         return null;
     }
+    const { store, tree, treeSpeaker, session } = chat;
 
     const times = generationTimes(pending);
     const replyContent = { name: name2, is_user: false, mes: generatedText, extra: {}, send_date: Date.now(), ...times };
 
     if (isContinue) {
-        if (!anchorContent) {
-            console.error('Failed to persist continue edit onto the tree: no anchor content resolved.');
+        if (!anchorContent || typeof anchorNodeId !== 'string') {
+            console.error('Failed to persist continue edit: no anchor content resolved.');
             return { error: 'the message being continued could not be read' };
         }
 
         const oldText = typeof anchorContent.mes === 'string' ? anchorContent.mes : '';
         const mes = oldText + generatedText;
-        const editResult = await editMessage(directories, ownerId, anchorNodeId, { ...anchorContent, mes, ...times });
-        if (!editResult.ok) {
-            console.error('Failed to persist continue edit onto the tree:', editResult.reason);
-            return { error: String(editResult.reason ?? 'the continued message could not be written') };
+        const edited = await store.chats.editMessages({
+            tree, treeSpeaker, edits: [{ node_id: anchorNodeId, content: storedForm({ ...anchorContent, mes, ...times }), changes: chat.replyChanges }], actor: session.actor(),
+        });
+        if (edited.refused.length) {
+            console.error('Failed to persist continue edit:', edited.refused[0].reason);
+            return { error: String(edited.refused[0].reason ?? 'the continued message could not be written') };
         }
         return { node_id: anchorNodeId, mes };
-    } else if (isSwipe) {
-        const addResult = await addAlternatives(directories, ownerId, anchorNodeId, [replyContent]);
-        if (!addResult.ok) {
-            console.error('Failed to persist swipe alternative onto the tree:', addResult.reason);
-            return { error: String(addResult.reason ?? 'the new swipe could not be written') };
-        }
-        if (addResult.node_ids?.length) {
-            const selected = await selectDefaultChild(directories, addResult.node_ids[0]);
-            if (!selected) {
-                console.error('Failed to select the new swipe alternative as current.');
-            }
-            return { node_id: addResult.node_ids[0], mes: generatedText };
-        }
-        return { error: 'the new swipe could not be written' };
-    } else {
-        const appendResult = await appendMessages(directories, ownerId, anchorNodeId, [replyContent]);
-        if (!appendResult.ok) {
-            console.error('Failed to persist assistant reply onto the tree:', appendResult.reason);
-            return { error: String(appendResult.reason ?? 'the reply could not be written') };
-        }
-        return appendResult.node_ids?.length
-            ? { node_id: appendResult.node_ids[appendResult.node_ids.length - 1], mes: generatedText }
-            : { error: 'the reply could not be written' };
     }
+    let after = anchorNodeId;
+    if (isSwipe) {
+        const replaced = typeof anchorNodeId === 'string' ? await store.chats.messageOf(tree, anchorNodeId) : null;
+        if (!replaced) {
+            console.error('Failed to persist swipe alternative: the message being replaced is not in the chat.');
+            return { error: 'the new swipe could not be written' };
+        }
+        after = replaced.parent === null ? null : (await store.chats.externalIds([replaced.parent]))[0];
+    }
+    const appended = await store.chats.appendMessages({
+        tree, treeSpeaker, after, contents: [replyContent], changes: [chat.replyChanges], regenerated: isSwipe, actor: session.actor(),
+    });
+    if (!appended.ok || !appended.node_ids.length) {
+        console.error('Failed to persist assistant reply:', appended.reason);
+        return { error: String(appended.reason ?? (isSwipe ? 'the new swipe could not be written' : 'the reply could not be written')) };
+    }
+    return { node_id: appended.node_ids[appended.node_ids.length - 1], mes: generatedText };
 }

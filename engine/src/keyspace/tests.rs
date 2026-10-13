@@ -120,7 +120,10 @@ fn check(ks: &Keyspace, model: &BTreeMap<Vec<u8>, Vec<u8>>) {
             .scan_vals_rev(&key(0), &key(i), 10)
             .unwrap()
             .into_iter()
-            .map(|(k, v)| (k, v.into_bytes()))
+            .map(|(k, v)| {
+                let b = v.into_bytes(&k);
+                (k, b)
+            })
             .collect();
         let expect: Vec<_> = model
             .range(..key(i))
@@ -134,7 +137,10 @@ fn check(ks: &Keyspace, model: &BTreeMap<Vec<u8>, Vec<u8>>) {
             .scan_vals_rev(&key(i), &[8], 7)
             .unwrap()
             .into_iter()
-            .map(|(k, v)| (k, v.into_bytes()))
+            .map(|(k, v)| {
+                let b = v.into_bytes(&k);
+                (k, b)
+            })
             .collect();
         let expect: Vec<_> = model
             .range(key(i)..)
@@ -148,7 +154,10 @@ fn check(ks: &Keyspace, model: &BTreeMap<Vec<u8>, Vec<u8>>) {
         .scan_vals_rev(&key(0), &[8], usize::MAX)
         .unwrap()
         .into_iter()
-        .map(|(k, v)| (k, v.into_bytes()))
+        .map(|(k, v)| {
+            let b = v.into_bytes(&k);
+            (k, b)
+        })
         .collect();
     let expect: Vec<_> = model.clone().into_iter().rev().collect();
     assert_eq!(all, expect);
@@ -386,14 +395,14 @@ fn sorted_reads_give_each_key_what_a_read_of_it_gives() {
         let together = ks.values_sorted(&refs).unwrap();
         let snap = ks.snapshot().values_sorted(&refs).unwrap();
         for (i, k) in keys.iter().enumerate() {
-            let one = val::fold(ks.values(k).unwrap()).and_then(Val::resolved);
+            let one = val::fold(k, ks.values(k).unwrap()).and_then(|v| v.resolved(k));
             assert_eq!(
-                val::fold(together[i].clone()).and_then(Val::resolved),
+                val::fold(k, together[i].clone()).and_then(|v| v.resolved(k)),
                 one,
                 "key {i}"
             );
             assert_eq!(
-                val::fold(snap[i].clone()).and_then(Val::resolved),
+                val::fold(k, snap[i].clone()).and_then(|v| v.resolved(k)),
                 one,
                 "snapshot key {i}"
             );
@@ -403,4 +412,228 @@ fn sorted_reads_give_each_key_what_a_read_of_it_gives() {
     ks.stop();
     drop(ks);
     fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn an_older_buffers_page_reaches_past_the_entries_a_newer_buffer_hides() {
+    let mut older = Mem::default();
+    let mut newer = Mem::default();
+    for i in [1, 2] {
+        older.insert(&key(i), Val::Put(vec![i as u8]), 1, &mem::Readers(&[]));
+    }
+    newer.insert(&key(2), Val::Del, 2, &mem::Readers(&[]));
+    let mems = vec![Arc::new(RwLock::new(newer)), Arc::new(RwLock::new(older))];
+    let (start, end) = (key(0), key(9));
+    // The newest key is deleted: one live entry of the older buffer must still be in its page, in both directions.
+    let rev = buffer_pages(&mems, &start, &end, 1, None, |m, n| {
+        m.page_rev(&start, &end, n, None)
+    });
+    let mut merge = run::MergeRev::new(
+        rev.into_iter()
+            .map(|(p, _)| Box::new(run::VecSource::new(p)) as Box<dyn run::Source>)
+            .collect(),
+    );
+    let mut live = Vec::new();
+    while let Some((k, v)) = merge.next_entry().unwrap() {
+        if v.settled(&k).is_some() {
+            live.push(k);
+            break;
+        }
+    }
+    assert_eq!(live, vec![key(1)]);
+    let fwd = buffer_pages(&mems, &start, &end, 1, None, |m, n| m.page(&start, &end, n));
+    let mut older_page_keys: Vec<_> = fwd[1].0.iter().map(|(k, _)| k.clone()).collect();
+    older_page_keys.sort();
+    assert_eq!(older_page_keys, vec![key(1), key(2)]);
+}
+
+#[test]
+fn a_seek_ahead_lands_where_a_fresh_iterator_starts() {
+    use run::{Merge, Run, RunIter, RunWriter, Source};
+    let dir = temp_dir("seek");
+    fs::create_dir_all(&dir).unwrap();
+    let key = |i: u32| format!("k{i:06}").into_bytes();
+    // Two runs, every third key in both: blocks of 256 bytes give each several index levels.
+    let mut runs = Vec::new();
+    for (r, keep) in [|i: u32| i % 3 != 1, |i: u32| i % 3 != 2].into_iter().enumerate() {
+        let path = dir.join(format!("{r}.run"));
+        let mut w = RunWriter::create(&path, 256).unwrap();
+        for i in (0..6000).filter(|&i| keep(i)) {
+            w.add(&key(i), &val::Val::Add(1)).unwrap();
+        }
+        w.finish(0, 0, 0).unwrap();
+        runs.push(Arc::new(Run::open(&path, 0, 0).unwrap()));
+    }
+    for stride in [1u32, 2, 7, 40, 333, 2500] {
+        let mut it = RunIter::new(runs[0].clone(), &key(0), None, None).unwrap();
+        let mut m = Merge::new(
+            runs.iter()
+                .map(|r| -> Box<dyn Source> {
+                    Box::new(RunIter::new(r.clone(), &key(0), None, None).unwrap())
+                })
+                .collect(),
+        );
+        let mut t = 0;
+        while t < 6100 {
+            let target = key(t);
+            it.seek(&target).unwrap();
+            let fresh = RunIter::new(runs[0].clone(), &target, None, None).unwrap();
+            assert_eq!(it.key(), fresh.key(), "stride {stride} target {t}");
+            m.seek(&target).unwrap();
+            let want = (t..6000).next().map(key);
+            assert_eq!(m.peek().map(<[u8]>::to_vec), want, "stride {stride} target {t}");
+            if let Some((k, v)) = m.next_entry().unwrap() {
+                assert_eq!(k, key(t));
+                let both = t % 3 == 0;
+                assert_eq!(v, val::Val::Add(if both { 2 } else { 1 }));
+            }
+            t += stride;
+        }
+        it.seek(&key(6100)).unwrap();
+        assert_eq!(it.key(), None);
+    }
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn added_maps_survive_flushes_merges_and_a_reopen() {
+    let dir = temp_dir("addmap");
+    let ks = open(&dir);
+    let mut model: BTreeMap<Vec<u8>, BTreeMap<u32, u32>> = BTreeMap::new();
+    let mut end = 0;
+    let check = |ks: &Keyspace, model: &BTreeMap<Vec<u8>, BTreeMap<u32, u32>>| {
+        for i in 0..40 {
+            let k = key(i);
+            let want: Vec<(u32, u32)> = model
+                .get(&k)
+                .map(|m| m.iter().map(|(&s, &n)| (s, n)).collect())
+                .unwrap_or_default();
+            let got = ks.get_val(&k).unwrap().and_then(|v| v.into_pairs(&k));
+            assert_eq!(got.unwrap_or_default(), want, "key {i}");
+            let bytes = ks.get(&k).unwrap();
+            assert_eq!(
+                bytes,
+                (!want.is_empty()).then(|| val::map_bytes(&want)),
+                "key {i}"
+            );
+        }
+    };
+    for round in 0..8u64 {
+        for i in 0..1500u64 {
+            let n = round * 1500 + i;
+            let k = key(n * 7919 % 40);
+            let slot = (n * 104729 % 64) as u32;
+            let m = model.entry(k.clone()).or_default();
+            let v = if n % 97 == 0 {
+                m.clear();
+                Val::Del
+            } else {
+                let have = m.get(&slot).copied().unwrap_or(0);
+                // Down by 1 or to 0 when there is something to take, else up.
+                let d: i32 = match (have, n % 3) {
+                    (0, _) => (n % 4 + 1) as i32,
+                    (h, 0) => -(h as i32),
+                    (_, 1) => -1,
+                    _ => 2,
+                };
+                let next = (i64::from(have) + i64::from(d)) as u32;
+                if next == 0 {
+                    m.remove(&slot);
+                } else {
+                    m.insert(slot, next);
+                }
+                Val::AddMap(vec![(slot, i64::from(d))])
+            };
+            end += 1;
+            wait_for_room(ks.pool());
+            ks.insert([(k, v)], Some((end, 1)));
+        }
+        check(&ks, &model);
+        ks.freeze_at(end);
+        ks.wait_flushed().unwrap();
+    }
+    ks.wait_merged();
+    let s = ks.stats();
+    assert!(s.merges > 0, "{s:?}");
+    check(&ks, &model);
+    ks.stop();
+    drop(ks);
+    // Reopened, every map is read back from the runs alone.
+    let ks = open(&dir);
+    check(&ks, &model);
+    drop(ks);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A buffer's map entries that remove every slot fill its page without giving a scan anything: the scan reads on
+/// past the page, and never shows a run's map those entries removed.
+#[test]
+fn removed_maps_in_a_buffer_hide_a_runs_maps_past_a_page_in_every_scan() {
+    let dir = temp_dir("removed-maps");
+    let ks = open(&dir);
+    let mut end = 0;
+    for i in 0..40u64 {
+        end += 1;
+        ks.insert(
+            [(key(i), Val::Put(val::map_bytes(&[(1, 1), (2, 1)])))],
+            Some((end, 1)),
+        );
+    }
+    ks.freeze_at(end);
+    ks.wait_flushed().unwrap();
+    let (lo, hi) = (key(0), key(40));
+    let scans = |ks: &Keyspace, from: &[u8], to: &[u8], n: usize| {
+        let names = |v: Vec<(Vec<u8>, Val)>| v.into_iter().map(|(k, _)| k).collect::<Vec<_>>();
+        let snap = ks.snapshot();
+        (
+            names(ks.scan_vals(from, to, n).unwrap()),
+            names(ks.scan_vals_rev(from, to, n).unwrap()),
+            names(snap.scan_vals(from, to, n).unwrap()),
+            names(snap.scan_vals_rev(from, to, n).unwrap()),
+        )
+    };
+    // Every map removed: nothing, at any page size.
+    for i in 0..40u64 {
+        end += 1;
+        ks.insert([(key(i), Val::Map(vec![(1, 0), (2, 0)]))], Some((end, 1)));
+    }
+    for n in [1, 3, 16, 100] {
+        let (f, r, sf, sr) = scans(&ks, &lo, &hi, n);
+        assert!(
+            f.is_empty() && r.is_empty() && sf.is_empty() && sr.is_empty(),
+            "{n}"
+        );
+    }
+    // Every fifth one back: exactly those, a page at a time, both ways and through a snapshot.
+    for i in (0..40u64).step_by(5) {
+        end += 1;
+        ks.insert([(key(i), Val::Map(vec![(2, 3)]))], Some((end, 1)));
+    }
+    let live: Vec<Vec<u8>> = (0..40u64).step_by(5).map(key).collect();
+    for n in [1, 2, 3, 7, 8, 100] {
+        for from in [0u64, 1, 5, 17, 39] {
+            let want: Vec<Vec<u8>> = live
+                .iter()
+                .filter(|k| **k >= key(from))
+                .take(n)
+                .cloned()
+                .collect();
+            let want_rev: Vec<Vec<u8>> = live
+                .iter()
+                .rev()
+                .filter(|k| **k < key(from + 1))
+                .take(n)
+                .cloned()
+                .collect();
+            let (f, _, sf, _) = scans(&ks, &key(from), &hi, n);
+            let (_, r, _, sr) = scans(&ks, &lo, &key(from + 1), n);
+            assert_eq!(f, want, "forward {n} from {from}");
+            assert_eq!(sf, want, "snapshot forward {n} from {from}");
+            assert_eq!(r, want_rev, "reverse {n} to {from}");
+            assert_eq!(sr, want_rev, "snapshot reverse {n} to {from}");
+        }
+    }
+    ks.stop();
+    drop(ks);
+    let _ = fs::remove_dir_all(&dir);
 }

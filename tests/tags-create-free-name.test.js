@@ -1,12 +1,12 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals';
-import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 
 // /api/tags/create with freeName: the server names the new tag, since only it knows which names are taken.
 
-/** @type {typeof import('../src/character-metadata-db.js')} */
-let metadataDb;
+/** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
+let user;
+/** @type {typeof import('./converted-user.fixture.js')} */
+let fixture;
 /** @type {import('node:http').Server} */
 let server;
 let baseUrl;
@@ -18,7 +18,7 @@ beforeAll(async () => {
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
 
-    metadataDb = await import('../src/character-metadata-db.js');
+    fixture = await import('./converted-user.fixture.js');
     const { router: tagsRouter } = await import('../src/endpoints/tags.js');
 
     const express = (await import('express')).default;
@@ -36,24 +36,13 @@ beforeAll(async () => {
 
 afterAll(() => new Promise(resolve => server.close(resolve)));
 
-beforeEach(() => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-tags-create-free-name-test-'));
-    directories = {
-        root: tempDir,
-        characters: path.join(tempDir, 'characters'),
-        chats: path.join(tempDir, 'chats'),
-        groups: path.join(tempDir, 'groups'),
-        groupChats: path.join(tempDir, 'groupChats'),
-    };
-    for (const dir of [directories.characters, directories.chats, directories.groups, directories.groupChats]) {
-        fs.mkdirSync(dir, { recursive: true });
-    }
+beforeEach(async () => {
+    user = await fixture.emptyUser('st-tags-create-free-name-test-');
+    directories = user.directories;
+    globalThis.DATA_ROOT = user.dataRoot;
 });
 
-afterEach(() => {
-    metadataDb.disposeMetadataStores();
-    fs.rmSync(directories.root, { recursive: true, force: true });
-});
+afterEach(() => user.close());
 
 /** @returns {Promise<{ status: number, body: any }>} */
 async function post(urlPath, body) {

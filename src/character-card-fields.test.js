@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -13,20 +12,12 @@ import { setConfigFilePath } from './util.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', 'config.yaml'));
 const { getCharacterCardFields, getGroupCharacterDepthPrompts } = await import('./character-card-fields.js');
-const { upsertCharacterFromWrite } = await import('./character-metadata-db.js');
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-character-card-fields-test-'));
-const charactersDir = path.join(root, 'characters');
-const groupsDir = path.join(root, 'groups');
-const chatsDir = path.join(root, 'chats');
-fs.mkdirSync(charactersDir, { recursive: true });
-fs.mkdirSync(groupsDir, { recursive: true });
-fs.mkdirSync(chatsDir, { recursive: true });
+const { convertedUser, writeLibraryCard } = await import('../tests/converted-user.fixture.js');
 
-const directories = { root, characters: charactersDir, groups: groupsDir, chats: chatsDir };
-// endpoints/characters.js's on-disk read cache keys its cache dir off this global (set by the real
-// server at startup) - point it at our fixture root so the cache doesn't error out standalone.
-globalThis.DATA_ROOT = root;
+const user = await convertedUser('st-character-card-fields-test-');
+const { directories } = user;
+globalThis.DATA_ROOT = user.dataRoot;
 
 // A real base PNG to embed card JSON into, same technique tests/character-metadata-db.test.js uses.
 const baseImage = fs.readFileSync(path.join(__dirname, '..', 'public', 'img', 'ai4.png'));
@@ -75,13 +66,12 @@ async function writeCharacter(avatar, overrides = {}) {
     }
     const cardJson = JSON.stringify(card);
     const buffer = writeCard(baseImage, cardJson);
-    fs.writeFileSync(path.join(charactersDir, avatar), buffer);
-    await upsertCharacterFromWrite(directories, avatar, cardJson);
+    await writeLibraryCard(user, avatar, cardJson, buffer);
     return avatar;
 }
 
-function writeGroup(id, group) {
-    fs.writeFileSync(path.join(groupsDir, `${id}.json`), JSON.stringify({ id, ...group }));
+async function writeGroup(id, group) {
+    await user.store.lib.writeGroup({ id, ...group });
 }
 
 async function run() {
@@ -255,7 +245,7 @@ async function run() {
         });
 
         // generation_mode: APPEND (1) - disabled member is skipped unless it's the "current" avatar.
-        writeGroup('group-append', {
+        await writeGroup('group-append', {
             generation_mode: 1,
             members: [memberA, memberB, memberDisabled],
             disabled_members: [memberDisabled],
@@ -300,7 +290,7 @@ async function run() {
         assert.ok(fieldsAsDisabled.description.includes('Disabled description'), 'disabled member is included when it is the current avatar');
 
         // generation_mode: APPEND_DISABLED (2) - disabled members are always included.
-        writeGroup('group-append-disabled', {
+        await writeGroup('group-append-disabled', {
             generation_mode: 2,
             members: [memberA, memberDisabled],
             disabled_members: [memberDisabled],
@@ -321,7 +311,7 @@ async function run() {
         assert.equal(fieldsOverride.mesExamples, 'Group chat example override');
 
         // A group with generation_mode SWAP (0, falsy) never combines - falls back to the plain character.
-        writeGroup('group-swap', { generation_mode: 0, members: [memberA, memberB] });
+        await writeGroup('group-swap', { generation_mode: 0, members: [memberA, memberB] });
         const fieldsSwap = await getCharacterCardFields(directories, { avatar: memberA, groupId: 'group-swap' });
         assert.equal(fieldsSwap.description, 'A description');
     }
@@ -353,7 +343,7 @@ async function run() {
 
         // APPEND mode (1): disabled_members includes memberDisabledCurrent and memberDisabledOther.
         // characterAvatar = memberDisabledCurrent -> that one IS included (exception), the other is not.
-        writeGroup('group-depth-prompts', {
+        await writeGroup('group-depth-prompts', {
             generation_mode: 1,
             members: [memberNoPrompt, memberWithPrompt, memberDisabledCurrent, memberDisabledOther],
             disabled_members: [memberDisabledCurrent, memberDisabledOther],
@@ -375,7 +365,7 @@ async function run() {
         assert.equal(disabledCurrentEntry.role, 0, 'no explicit role -> SYSTEM (0)');
 
         // Whole-group SWAP-mode (0) exclusion - returns [] regardless of member depth_prompts.
-        writeGroup('group-depth-prompts-swap', {
+        await writeGroup('group-depth-prompts-swap', {
             generation_mode: 0,
             members: [memberWithPrompt],
         });
@@ -395,6 +385,4 @@ run()
         console.error(error);
         process.exitCode = 1;
     })
-    .finally(() => {
-        fs.rmSync(root, { recursive: true, force: true });
-    });
+    .finally(() => user.close());

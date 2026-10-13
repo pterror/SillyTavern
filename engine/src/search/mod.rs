@@ -4,9 +4,9 @@
 //! A term's postings are in id order, compressed per block of ids: each document's fields with the term's count
 //! there. A string is one term both as a whole token and as a prefix term (a token's first 2–20 characters in the
 //! prefix fields): a prefix field's slot holds both counts, so the query's last word reads the same list. Per
-//! block and field the term's highest count, and per block and field the shortest length, bound a block's scores
-//! (block-max WAND). A term with more documents than a page or two also keeps its best documents (`top`), so a
-//! word's first page reads those. No positions: a phrase is checked on the candidates' text.
+//! block the most a document there scores for the term, whole and as a prefix (its block maxima), bounds the
+//! block's scores (block-max WAND); per block and field the shortest length bounds each document's. No positions:
+//! a phrase is checked on the candidates' text.
 //!
 //! A scope is one searchable set of documents: the library (documents are characters and groups), the tag names
 //! (documents are tags), one owner's chat messages (documents are messages), the session names (documents are
@@ -20,10 +20,9 @@ pub mod query;
 #[cfg(test)]
 mod tests;
 pub mod text;
-pub mod top;
 
 use crate::keyspace::val::{put_bytes, put_u64};
-use crate::log::format::{get_uvarint, put_uvarint};
+use crate::log::format::{MAX_ID, get_uvarint, put_uvarint};
 use crate::store::kinds::key;
 
 /// BM25's constants, as tantivy's.
@@ -35,7 +34,7 @@ pub const B: f64 = 0.75;
 pub const BLOCK_BITS: u32 = 10;
 /// A document's lengths in every field are kept per block of `1 << LENGTH_BITS` ids.
 pub const LENGTH_BITS: u32 = 4;
-/// Per-block bounds of a term (or a field's lengths) are one entry per `1 << CHUNK_BITS` blocks.
+/// A field's shortest lengths per block are one entry per `1 << CHUNK_BITS` blocks.
 pub const CHUNK_BITS: u32 = 16;
 
 pub const LIBRARY: u64 = 1;
@@ -93,53 +92,102 @@ pub struct FieldDef {
     pub weight: f64,
     /// The query's last word matches as a prefix here.
     pub prefix: bool,
+    /// The field's reference length in tokens: a field this long weighs its counts as BM25 weighs a field of
+    /// average length.
+    pub ref_len: f64,
 }
 
-const fn field(name: &'static str, weight: f64, prefix: bool) -> FieldDef {
+const fn field(name: &'static str, weight: f64, prefix: bool, ref_len: f64) -> FieldDef {
     FieldDef {
         name,
         weight,
         prefix,
+        ref_len,
     }
 }
+
+// Reference lengths, in tokens. These values are meant to be tuned.
+//
+// Measured: the average token count of each field in `examples/search.rs`'s `synth` cards (their character
+// lengths are from live card samples, over a 30,000-word Zipf vocabulary).
+pub const REF_NAME: f64 = 2.32;
+pub const REF_DESCRIPTION: f64 = 353.09;
+pub const REF_MES_EXAMPLE: f64 = 176.75;
+pub const REF_SCENARIO: f64 = 68.34;
+pub const REF_PERSONALITY: f64 = 47.98;
+pub const REF_FIRST_MES: f64 = 190.37;
+pub const REF_CREATOR_NOTES: f64 = 95.44;
+pub const REF_CREATOR: f64 = 1.92;
+/// A card's own tags list.
+pub const REF_CARD_TAGS: f64 = 20.83;
+/// Every alternate greeting together.
+pub const REF_ALTERNATE_GREETINGS: f64 = 298.26;
+/// One tag's name.
+pub const REF_TAG_NAME: f64 = 2.54;
+// Placeholders: nothing synthetic gives these fields a length like real data's. The one-off conversion of the
+// user's data measures them and replaces these.
+pub const REF_MEMBERS: f64 = 4.0;
+pub const REF_ID: f64 = 1.0;
+pub const REF_CHAT_TEXT: f64 = 150.0;
+pub const REF_SESSION_NAME: f64 = 6.0;
+pub const REF_BOOK_KEY: f64 = 3.0;
+pub const REF_BOOK_GROUP: f64 = 2.0;
+pub const REF_BOOK_COMMENT: f64 = 6.0;
+pub const REF_BOOK_KEYSECONDARY: f64 = 3.0;
+pub const REF_BOOK_CONTENT: f64 = 150.0;
+pub const REF_BOOK_UID: f64 = 1.0;
+pub const REF_BOOK_AUTOMATION_ID: f64 = 1.0;
 
 /// Weights: upstream's Fuse keys for `fuzzySearchCharacters` (name 20, description and example 3, scenario,
 /// personality, first message and notes 2, creator, card tags and alternate greetings 1), which the old index used
 /// as BM25 field boosts too; with them a match in the name outranks body matches. Prefix on name, creator and
 /// tags (design 7.1, Q-F1). Groups are documents of the same scope: their name is the name field, and upstream's
 /// `fuzzySearchGroups` keys `members` (the members' avatar keys) 15 and `id` 1 are their own fields. The names of the
-/// tags an entity carries are not a field: a query's matching tags are answered beside its page
-/// (`query::Found::tags`).
+/// tags an entity carries (upstream's `#tags`, 10) are not indexed per entity: they are read through tag
+/// membership (`tagged`) and score at `TAG_WEIGHT`.
 pub static LIBRARY_FIELDS: &[FieldDef] = &[
-    field("name", 20.0, true),
-    field("description", 3.0, false),
-    field("mes_example", 3.0, false),
-    field("scenario", 2.0, false),
-    field("personality", 2.0, false),
-    field("first_mes", 2.0, false),
-    field("creator_notes", 2.0, false),
-    field("creator", 1.0, true),
-    field("tags", 1.0, true),
-    field("alternate_greetings", 1.0, false),
-    field("members", 15.0, false),
-    field("id", 1.0, false),
+    field("name", 20.0, true, REF_NAME),
+    field("description", 3.0, false, REF_DESCRIPTION),
+    field("mes_example", 3.0, false, REF_MES_EXAMPLE),
+    field("scenario", 2.0, false, REF_SCENARIO),
+    field("personality", 2.0, false, REF_PERSONALITY),
+    field("first_mes", 2.0, false, REF_FIRST_MES),
+    field("creator_notes", 2.0, false, REF_CREATOR_NOTES),
+    field("creator", 1.0, true, REF_CREATOR),
+    field("tags", 1.0, true, REF_CARD_TAGS),
+    field("alternate_greetings", 1.0, false, REF_ALTERNATE_GREETINGS),
+    field("members", 15.0, false, REF_MEMBERS),
+    field("id", 1.0, false, REF_ID),
 ];
 
-pub static TAG_FIELDS: &[FieldDef] = &[field("name", 1.0, true)];
+/// The weight of the names of the tags a library document carries (upstream's `#tags` key). A clause over every
+/// field matches the carriers of the tags whose names it matches (the query's last word as a prefix); a carrier
+/// adds `TAG_WEIGHT` once to the clause's text, before the idf (`local`, `clause_score`).
+pub const TAG_WEIGHT: f64 = 10.0;
 
-pub static CHAT_FIELDS: &[FieldDef] = &[field("text", 1.0, false)];
+/// The field a library match by tag names is at: past the scope's own fields.
+pub const TAG_FIELD: u32 = 12;
 
-pub static SESSION_FIELDS: &[FieldDef] = &[field("name", 1.0, true)];
+/// The tag names' field in `scope`, if it has one.
+pub fn tag_field(scope: Scope) -> Option<u32> {
+    (scope == Scope::LIBRARY).then_some(TAG_FIELD)
+}
+
+pub static TAG_FIELDS: &[FieldDef] = &[field("name", 1.0, true, REF_TAG_NAME)];
+
+pub static CHAT_FIELDS: &[FieldDef] = &[field("text", 1.0, false, REF_CHAT_TEXT)];
+
+pub static SESSION_FIELDS: &[FieldDef] = &[field("name", 1.0, true, REF_SESSION_NAME)];
 
 /// Upstream's `fuzzySearchWorldInfo` keys and weights; `uid` and `automationId` match whole tokens only.
 pub static BOOK_FIELDS: &[FieldDef] = &[
-    field("key", 20.0, true),
-    field("group", 15.0, false),
-    field("comment", 10.0, true),
-    field("keysecondary", 10.0, false),
-    field("content", 3.0, false),
-    field("uid", 1.0, false),
-    field("automationId", 1.0, false),
+    field("key", 20.0, true, REF_BOOK_KEY),
+    field("group", 15.0, false, REF_BOOK_GROUP),
+    field("comment", 10.0, true, REF_BOOK_COMMENT),
+    field("keysecondary", 10.0, false, REF_BOOK_KEYSECONDARY),
+    field("content", 3.0, false, REF_BOOK_CONTENT),
+    field("uid", 1.0, false, REF_BOOK_UID),
+    field("automationId", 1.0, false, REF_BOOK_AUTOMATION_ID),
 ];
 
 /// Which document frequency a term's count is: of the term as a whole token, or as a prefix term (a token's
@@ -176,12 +224,118 @@ pub fn posting_block(s: Scope, term: &str, block: u64) -> Vec<u8> {
     k
 }
 
-/// A term's highest count per block and field: then a chunk of blocks → a maxima map (`Val::MaxMap`) of
-/// `bound_slot(block, field)` → the count (as a prefix term in a prefix field).
-pub fn block_maxima(s: Scope, term: &str, chunk: u64) -> Vec<u8> {
-    let mut k = termed(key::SEARCH_BLOCK_MAX, s, term);
-    put_u64(&mut k, chunk);
+/// The term and block of `posting_block(s, ..)`'s key `k`.
+pub fn parse_posting_block(s: Scope, k: &[u8]) -> Option<(String, u64)> {
+    let mut at = scoped(key::SEARCH_POSTING, s).len();
+    let term = String::from_utf8(crate::keyspace::val::get_bytes(k, &mut at)?).ok()?;
+    let block = crate::keyspace::val::get_u64(k, &mut at)?;
+    (at == k.len()).then_some((term, block))
+}
+
+/// A term's block maxima at level `level`, then a group of nodes → a maxima map (`Val::MaxMap`) of `max_slot`'s
+/// slot → `max_bits` of the most a document under the node scores for the term in that reading (`local_text`),
+/// and of `field_max_slot`'s → the most it scores in that one field (`field_texts`), for the fields some
+/// document under the node holds it in. A level-0 node is a block; a level-ℓ node is `1 << GROUP_BITS` level-(ℓ−1) nodes (`node_of`). Only raised, so
+/// it may be above that.
+///
+/// A document writes levels 0 to its block's `top_level` only, so a level-ℓ ≥ 1 map of group 0 never has node 0:
+/// the blocks under it are held by the group-0 maps below it.
+pub fn block_maxima(s: Scope, term: &str, level: u64, group: u64) -> Vec<u8> {
+    let mut k = block_maxima_at(s, term, level);
+    put_u64(&mut k, group);
     k
+}
+
+/// The prefix of a term's block maxima at level `level`.
+pub fn block_maxima_at(s: Scope, term: &str, level: u64) -> Vec<u8> {
+    let mut k = termed(key::SEARCH_BLOCK_MAX, s, term);
+    put_u64(&mut k, level);
+    k
+}
+
+/// Nodes per group of a maxima map, and per node of the level above.
+pub const GROUP_BITS: u32 = 10;
+
+/// Slots per node in a maxima map: a node's slots are `node << NODE_SLOT_BITS | sub`, sub 0 and 1 its maxima over
+/// every field (exact, prefix), and `(field + 1) << 1 | reading` its maxima in one field, for every field count
+/// `FIELD_BITS` allows.
+pub const NODE_SLOT_BITS: u32 = FIELD_BITS + 2;
+
+/// A node's group and its slot there for a reading (`as_prefix`: the prefix reading) over every field, at the
+/// node's level: at level 0 the node is the block.
+pub fn max_slot(node: u64, as_prefix: bool) -> (u64, u32) {
+    node_slot(node, u32::from(as_prefix))
+}
+
+/// `max_slot` for a reading in field `field` alone.
+pub fn field_max_slot(node: u64, field: u32, as_prefix: bool) -> (u64, u32) {
+    debug_assert!(field < 1 << FIELD_BITS);
+    node_slot(node, (field + 1) << 1 | u32::from(as_prefix))
+}
+
+fn node_slot(node: u64, sub: u32) -> (u64, u32) {
+    (
+        node >> GROUP_BITS,
+        ((node & ((1 << GROUP_BITS) - 1)) as u32) << NODE_SLOT_BITS | sub,
+    )
+}
+
+/// The level-`level` node over block `block`.
+pub const fn node_of(block: u64, level: u64) -> u64 {
+    match block.checked_shr(GROUP_BITS * level as u32) {
+        Some(n) => n,
+        None => 0,
+    }
+}
+
+/// The highest level a document in block `block` writes its maxima at: the least ℓ whose node over the block is
+/// in group 0 at level ℓ.
+pub const fn top_level(block: u64) -> u64 {
+    let mut l = 0;
+    while node_of(block, l) >> GROUP_BITS != 0 {
+        l += 1;
+    }
+    l
+}
+
+/// Levels of maxima any id's block has.
+pub const LEVELS: usize = top_level(MAX_ID >> BLOCK_BITS) as usize + 1;
+
+/// The node of a slot in group `group`, at the group's level; its field (None: every field); and whether it is
+/// the prefix reading's.
+pub fn unmax_slot(group: u64, slot: u32) -> (u64, Option<u32>, bool) {
+    let sub = slot & ((1 << NODE_SLOT_BITS) - 1);
+    (
+        group << GROUP_BITS | u64::from(slot >> NODE_SLOT_BITS),
+        (sub >> 1).checked_sub(1),
+        sub & 1 == 1,
+    )
+}
+
+/// The readings a term has a maximum for: whole, and as a prefix when a query reads it as one: of `GRAM_MIN` to
+/// `GRAM_MAX` characters (a longer prefix is read through its first `GRAM_MAX`).
+pub fn readings(term: &str) -> &'static [bool] {
+    if (text::GRAM_MIN..=text::GRAM_MAX).contains(&text::char_len(term)) {
+        &[false, true]
+    } else {
+        &[false]
+    }
+}
+
+/// A maximum as stored: the bits of the least `f32` strictly greater than `v` (positive `f32` bits sort as their
+/// values).
+pub fn max_bits(v: f64) -> u32 {
+    let f = v as f32;
+    if f64::from(f) > v {
+        f.to_bits()
+    } else {
+        f.to_bits() + 1
+    }
+}
+
+/// The value of a stored maximum.
+pub fn max_value(bits: u32) -> f64 {
+    f64::from(f32::from_bits(bits))
 }
 
 /// A field's shortest length per block: then a chunk of blocks → a maxima map of `bound_slot(block, 0)` →
@@ -203,52 +357,27 @@ pub fn bound_slot(block: u64, field: u32) -> (u64, u32) {
     )
 }
 
-/// Documents holding the term in any field, as a whole token or a prefix term (a counter).
-pub fn term_docs(s: Scope, term: &str) -> Vec<u8> {
-    termed(key::SEARCH_TERM_DOCS, s, term)
+/// A term's document count, an added map (`Val::AddMap`) whose one slot, `DOCS_SLOT`, counts the documents
+/// holding the term in any field, as a whole token or a prefix term.
+pub fn term_counts(s: Scope, term: &str) -> crate::store::derive::AddMapKey {
+    key::SEARCH_TERM_COUNTS.key(|k| {
+        put_u64(k, s.kind);
+        put_u64(k, s.owner);
+        put_bytes(k, term.as_bytes());
+    })
 }
 
-/// A term's top list's head (`top::Head`), for a term with more documents than a list holds.
-pub fn top(s: Scope, term: &str) -> Vec<u8> {
-    termed(key::SEARCH_TOP, s, term)
-}
-
-/// A term's top list's entries: then the score (`top::put_rank`) and document → the document's `top::Fields`.
-pub fn top_entries(s: Scope, term: &str) -> Vec<u8> {
-    termed(key::SEARCH_TOP_ENTRY, s, term)
-}
-
-pub fn top_entry(s: Scope, term: &str, score: f64, doc: u64) -> Vec<u8> {
-    let mut k = top_entries(s, term);
-    top::put_rank(&mut k, score);
-    put_u64(&mut k, doc);
-    k
-}
-
-/// A term's top list's entries (a counter).
-pub fn top_count(s: Scope, term: &str) -> Vec<u8> {
-    termed(key::SEARCH_TOP_COUNT, s, term)
-}
-
-/// Bulk loads that changed a term's documents without following its list: a list built before the last one is
-/// stale (a counter).
-pub fn top_generation(s: Scope, term: &str) -> Vec<u8> {
-    termed(key::SEARCH_TOP_GENERATION, s, term)
-}
-
-/// Documents whose field holds the term: then the field (a counter each).
-pub fn doc_freqs(s: Scope, kind: TermKind, term: &str) -> Vec<u8> {
-    let mut k = scoped(key::SEARCH_DOC_FREQ, s);
-    k.push(kind as u8);
+/// `term_counts`'s key, for reading it.
+pub fn term_counts_of(s: Scope, term: &str) -> Vec<u8> {
+    let mut k = key::SEARCH_TERM_COUNTS.prefix();
+    put_u64(&mut k, s.kind);
+    put_u64(&mut k, s.owner);
     put_bytes(&mut k, term.as_bytes());
     k
 }
 
-pub fn doc_freq(s: Scope, kind: TermKind, term: &str, field: u32) -> Vec<u8> {
-    let mut k = doc_freqs(s, kind, term);
-    put_u64(&mut k, u64::from(field));
-    k
-}
+/// The slot in `term_counts` of the documents holding the term.
+pub const DOCS_SLOT: u32 = 2 << FIELD_BITS;
 
 /// Every document's field lengths: then a length block → a map of `slot_in(LENGTH_BITS, doc, field)` → tokens.
 pub fn lengths(s: Scope) -> Vec<u8> {
@@ -286,13 +415,6 @@ pub fn slot(doc: u64, field: u32) -> u32 {
 /// `unslot_in` for postings blocks.
 pub fn unslot(block: u64, slot: u32) -> (u64, u32) {
     unslot_in(BLOCK_BITS, block, slot)
-}
-
-/// A field's tokens over every document (a counter).
-pub fn field_tokens(s: Scope, field: u32) -> Vec<u8> {
-    let mut k = scoped(key::SEARCH_FIELD_TOKENS, s);
-    put_u64(&mut k, u64::from(field));
-    k
 }
 
 /// Documents with any indexed text (a counter).
@@ -400,7 +522,130 @@ pub fn idf(df: f64, n: f64) -> f64 {
     (1.0 + (n - df + 0.5) / (df + 0.5)).ln()
 }
 
-pub fn tf_norm(tf: f64, len: f64, avg_len: f64) -> f64 {
-    let rel = if avg_len > 0.0 { len / avg_len } else { 1.0 };
+pub fn tf_norm(tf: f64, len: f64, ref_len: f64) -> f64 {
+    let rel = if ref_len > 0.0 { len / ref_len } else { 1.0 };
     tf * (K1 + 1.0) / (tf + K1 * (1.0 - B + B * rel))
+}
+
+/// Field `field`'s part of a document's score for a term matched `tf` times there, in a field of `len` tokens
+/// (as its length code stands for), before the idf.
+pub fn field_score(scope: Scope, field: u32, tf: f64, len: f64) -> f64 {
+    let d = &scope.fields()[field as usize];
+    d.weight * tf_norm(tf, len, d.ref_len)
+}
+
+/// A document's score for one term in one reading (whole token, or prefix), before the term's idf: its
+/// `field_score`s, `fields` giving (field, tf, length) for each field it is in, plus `TAG_WEIGHT` when `tagged`
+/// (it carries a tag whose name holds the term). Depending on the document alone, it orders a word's documents.
+pub fn local(scope: Scope, fields: impl IntoIterator<Item = (u32, u64, f64)>, tagged: bool) -> f64 {
+    with_tag(word_text(scope, fields, false), tagged)
+}
+
+/// A token's text score before the idf, `fields` giving (field, tf, length) in field order. A long prefix (a
+/// word's prefix longer than `GRAM_MAX`, `long_prefix`) is read by two lists, its first `GRAM_MAX` characters in
+/// the prefix fields and the whole token in the others, and sums each list's fields apart before adding them: the
+/// shape of its bound, the sum of the two lists' block maxima.
+pub fn word_text(
+    scope: Scope,
+    fields: impl IntoIterator<Item = (u32, u64, f64)>,
+    long_prefix: bool,
+) -> f64 {
+    sum_parts(
+        scope,
+        fields
+            .into_iter()
+            .map(|(f, tf, len)| (f, field_score(scope, f, tf as f64, len))),
+        long_prefix,
+    )
+}
+
+/// The sum of a token's parts (field, `field_score` or a bound on it) in field order, a long prefix's grouped as
+/// `word_text` groups them.
+pub fn sum_parts(
+    scope: Scope,
+    parts: impl IntoIterator<Item = (u32, f64)>,
+    long_prefix: bool,
+) -> f64 {
+    let defs = scope.fields();
+    let (mut prefixed, mut rest) = (0.0, 0.0);
+    for (f, x) in parts {
+        if long_prefix && defs.get(f as usize).is_some_and(|d| d.prefix) {
+            prefixed += x;
+        } else {
+            rest += x;
+        }
+    }
+    if long_prefix { prefixed + rest } else { rest }
+}
+
+/// Whether a clause's token is a long prefix (`word_text`): the prefix of a word, not of a phrase, longer than
+/// `GRAM_MAX` characters.
+pub fn long_prefix(phrase: bool, as_prefix: bool, token: &str) -> bool {
+    !phrase && as_prefix && text::char_len(token) > text::GRAM_MAX
+}
+
+/// `local` without the tag for a document's term in one reading (`as_prefix`), from its fields holding the term
+/// (`hits`, in field order) and its fields' lengths in tokens (`lens`, by field): what its block's maximum covers.
+pub fn local_text(scope: Scope, hits: &[(u32, FieldHit)], lens: &[u64], as_prefix: bool) -> f64 {
+    local_r(scope, hits, lens, as_prefix, false)
+}
+
+/// `local_text`, with `TAG_WEIGHT` when `tagged`.
+pub fn local_r(
+    scope: Scope,
+    hits: &[(u32, FieldHit)],
+    lens: &[u64],
+    as_prefix: bool,
+    tagged: bool,
+) -> f64 {
+    debug_assert!(hits.windows(2).all(|w| w[0].0 < w[1].0));
+    local(
+        scope,
+        hits.iter()
+            .filter(|(_, h)| h.tf(as_prefix) > 0)
+            .map(|&(f, h)| {
+                (
+                    f,
+                    h.tf(as_prefix),
+                    code_length(length_code(lens[f as usize])),
+                )
+            }),
+        tagged,
+    )
+}
+
+/// `local_text`'s part in each field holding the term in that reading: what its block's maxima in one field cover.
+pub fn field_texts(
+    scope: Scope,
+    hits: &[(u32, FieldHit)],
+    lens: &[u64],
+    as_prefix: bool,
+) -> impl Iterator<Item = (u32, f64)> {
+    hits.iter()
+        .filter(move |(_, h)| h.tf(as_prefix) > 0)
+        .map(move |&(f, h)| {
+            let len = code_length(length_code(lens[f as usize]));
+            (f, field_score(scope, f, h.tf(as_prefix) as f64, len))
+        })
+}
+
+fn with_tag(text: f64, tagged: bool) -> f64 {
+    if tagged { text + TAG_WEIGHT } else { text }
+}
+
+/// A clause's score from its tokens' idfs and their `local` scores without the tag (`texts`, in token order),
+/// `tagged` when the document carries a tag whose name holds the clause. A word scores its idf times its `local`;
+/// a phrase each token's idf times its text, and its tag part at its rarest token's idf.
+pub fn clause_score(idfs: &[f64], texts: &[f64], tagged: bool) -> f64 {
+    if let ([idf], [text]) = (idfs, texts) {
+        return idf * with_tag(*text, tagged);
+    }
+    let mut s = 0.0;
+    for (idf, text) in idfs.iter().zip(texts) {
+        s += idf * text;
+    }
+    if tagged {
+        s += idfs.iter().copied().fold(0.0, f64::max) * TAG_WEIGHT;
+    }
+    s
 }

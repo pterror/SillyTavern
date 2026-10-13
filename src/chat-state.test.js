@@ -72,7 +72,7 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         const { chats, t, at } = await open(engine);
         const reply = { name: 'Cara', is_user: false, mes: 'You find a coin.', extra: {} };
         const gain = [{ key: 'gold', variable: true, value: 1 }, { key: 'scene', value: 'road' }];
-        const append = (changes, actor = tabA, sendKeys = []) => chats.appendMessages({ tree: t, treeSpeaker: cara, after: at, contents: [reply], changes: [changes], sendKeys, actor });
+        const append = (changes, actor = tabA, sendKeys = []) => chats.appendMessages({ tree: t, treeSpeaker: cara, after: at, contents: [reply], changes: [changes], sendKeys, regenerated: true, actor });
         const stateAt = async id => (await chats.stateAt({ tree: t, at: id })).state;
         await chats.changeState({ tree: t, at, ops: [{ key: 'scene', value: 'road' }], actor: tabA });
 
@@ -117,6 +117,30 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         assert.deepEqual(await stateAt(chain.node_ids[1]), { scene: 'road', variables: { gold: 1, took: true }, mood: 'glad' });
         assert.deepEqual(await chats.store.chatRead('produced', { messages: [(await chats.messageIds([chain.node_ids[1]]))[0]] }),
             [[{ key: 'took', variable: true, value: 'true' }]]);
+    });
+
+    test(`${kind}: only a regenerated reply is matched by its changes; a tool-call turn is never matched`, async () => {
+        const { chats, t, at } = await open(engine);
+        const reply = { name: 'Cara', is_user: false, mes: 'You find a coin.', extra: {} };
+        const append = (contents, changes, regenerated = false) => chats.appendMessages({ tree: t, treeSpeaker: cara, after: at, contents, changes, regenerated, actor: tabA });
+        const [r1] = (await append([reply], [[{ key: 'gold', variable: true, value: 1 }]])).node_ids;
+        // Not a regenerated reply: the same speaker and text is that reply, whatever its changes.
+        const head = await chats.store.chatRead('nextIds', {});
+        assert.deepEqual((await append([reply], [[{ key: 'gold', variable: true, value: 2 }]])).node_ids, [r1]);
+        assert.deepEqual(await chats.store.chatRead('nextIds', {}), head);
+
+        const tools = { name: 'System', is_user: false, is_system: true, mes: 'Tool calls: roll', extra: { tool_invocations: [{ id: 'c1', name: 'roll', parameters: '{}', result: null }] } };
+        const [c1] = (await append([tools], [])).node_ids;
+        const [c2] = (await append([tools], [])).node_ids;
+        const [c3] = (await append([tools], [], true)).node_ids;
+        assert.equal(new Set([c1, c2, c3]).size, 3);
+        // A tool call's result written into its turn isn't refused for another turn holding the same text.
+        const resolved = { ...tools, extra: { tool_invocations: [{ ...tools.extra.tool_invocations[0], result: '4' }] } };
+        assert.deepEqual(await chats.editMessages({ tree: t, treeSpeaker: cara, edits: [{ node_id: c2, content: resolved }], actor: tabA }), { ok: true, applied: 1, refused: [] });
+        // Any other message taking a sibling's text is still refused.
+        const [r2] = (await append([{ ...reply, mes: 'Nothing here.' }], [])).node_ids;
+        const edit = await chats.editMessages({ tree: t, treeSpeaker: cara, edits: [{ node_id: r2, content: reply }], actor: tabA });
+        assert.equal(edit.refused.length, 1);
     });
 
     test(`${kind}: a continue's state changes hang on the reply it continues, with the continue`, async () => {

@@ -1,12 +1,11 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals';
-import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 
 // /api/characters/find: findChar()'s answer over the whole library, for findCharAsync().
 
-/** @type {typeof import('../src/character-metadata-db.js')} */
-let metadataDb;
+/** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
+let user;
+let TYPE;
 /** @type {import('node:http').Server} */
 let server;
 let baseUrl;
@@ -18,14 +17,14 @@ beforeAll(async () => {
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
 
-    metadataDb = await import('../src/character-metadata-db.js');
+    ({ TYPE } = await import('../src/library-codes.js'));
     const { router } = await import('../src/endpoints/characters.js');
 
     const express = (await import('express')).default;
     const app = express();
     app.use(express.json());
     app.use((req, res, next) => {
-        req.user = { directories, profile: { handle: `test-user-${path.basename(directories.root)}` } };
+        req.user = user.user;
         next();
     });
     app.use('/api/characters', router);
@@ -36,24 +35,13 @@ beforeAll(async () => {
 
 afterAll(() => new Promise(resolve => server.close(resolve)));
 
-beforeEach(() => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-characters-find-test-'));
-    directories = /** @type {any} */ ({
-        root: tempDir,
-        characters: path.join(tempDir, 'characters'),
-        chats: path.join(tempDir, 'chats'),
-        groups: path.join(tempDir, 'groups'),
-        groupChats: path.join(tempDir, 'groupChats'),
-    });
-    for (const dir of [directories.characters, directories.chats, directories.groups, directories.groupChats]) {
-        fs.mkdirSync(dir, { recursive: true });
-    }
+beforeEach(async () => {
+    user = await (await import('./converted-user.fixture.js')).emptyUser('st-characters-find-test-');
+    ({ directories } = user);
+    globalThis.DATA_ROOT = user.dataRoot;
 });
 
-afterEach(() => {
-    metadataDb.disposeMetadataStores();
-    fs.rmSync(directories.root, { recursive: true, force: true });
-});
+afterEach(() => user.close());
 
 /** @returns {Promise<{ status: number, body: any }>} */
 async function find(body) {
@@ -74,12 +62,12 @@ async function seedCharacter(avatar, name) {
         name,
         data: { name, tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } },
     });
-    await metadataDb.upsertCharacterFromWrite(directories, avatar, cardJson);
+    await user.store.lib.writeCard(directories, avatar, cardJson);
 }
 
 /** @param {string} id @param {string} name */
 async function seedTag(id, name) {
-    await metadataDb.createTagDefinition(directories, { id, name });
+    await user.store.lib.writeTag({ id, name });
 }
 
 describe('POST /api/characters/find', () => {
@@ -109,9 +97,9 @@ describe('POST /api/characters/find', () => {
         await seedTag('t1', 'Hero');
         await seedTag('t2', 'Tall');
         await seedTag('t3', 'hero');
-        await metadataDb.assignEntityTag(directories, 'a.png', 't3');
-        await metadataDb.assignEntityTag(directories, 'b.png', 't1');
-        await metadataDb.assignEntityTag(directories, 'b.png', 't2');
+        await user.store.lib.assignTag(TYPE.character, 'a.png', 't3', true);
+        await user.store.lib.assignTag(TYPE.character, 'b.png', 't1', true);
+        await user.store.lib.assignTag(TYPE.character, 'b.png', 't2', true);
 
         expect((await find({ name: 'Sam', tags: ['Hero'] })).body).toEqual({ ids: ['b.png'], capped: false });
         expect((await find({ name: 'Sam', tags: ['Hero', 'Tall'] })).body).toEqual({ ids: ['b.png'], capped: false });
@@ -124,8 +112,8 @@ describe('POST /api/characters/find', () => {
         await seedCharacter('a.png', 'Sam');
         await seedTag('old', 'Old');
         await seedTag('new', 'New');
-        await metadataDb.assignEntityTag(directories, 'a.png', 'old');
-        await metadataDb.deleteTagDefinition(directories, 'old', 'new');
+        await user.store.lib.assignTag(TYPE.character, 'a.png', 'old', true);
+        await user.store.lib.deleteTag('old', 'new');
 
         expect((await find({ tags: ['New'] })).body).toEqual({ ids: ['a.png'], capped: false });
     });
@@ -137,9 +125,9 @@ describe('POST /api/characters/find', () => {
     });
 
     test('groups by name', async () => {
-        await metadataDb.upsertGroupRow(directories, 'g2', 'Party');
-        await metadataDb.upsertGroupRow(directories, 'g1', 'party');
-        await metadataDb.upsertGroupRow(directories, 'g3', 'Other');
+        await user.store.lib.writeGroup({ id: 'g2', name: 'Party' });
+        await user.store.lib.writeGroup({ id: 'g1', name: 'party' });
+        await user.store.lib.writeGroup({ id: 'g3', name: 'Other' });
         expect((await find({ type: 'group', name: 'PARTY' })).body).toEqual({ ids: ['g1', 'g2'] });
         expect((await find({ type: 'group', name: 'none' })).body).toEqual({ ids: [] });
     });
@@ -150,52 +138,5 @@ describe('POST /api/characters/find', () => {
         expect((await find({ tags: [1] })).status).toBe(400);
         expect((await find({ type: 'group' })).status).toBe(400);
         expect((await find({ type: 'persona', name: 'x' })).status).toBe(400);
-    });
-});
-
-describe('a tag with more deleted tags merging into it than a read takes', () => {
-    /** Marks `count` deleted tags as merging into `target`, as deleteTagDefinition() leaves them before they finish. */
-    async function markMergingInto(target, count) {
-        await metadataDb.ensureSchemaMigrated(directories);
-        const Database = (await import('better-sqlite3')).default;
-        const db = new Database(path.join(directories.root, 'character-metadata.sqlite'));
-        try {
-            const insert = db.prepare('INSERT INTO tag_deletions (tag_id, merge_into) VALUES (?, ?)');
-            db.transaction(() => {
-                for (let i = 0; i < count; i++) insert.run(`gone-${String(i).padStart(5, '0')}`, target);
-            })();
-        } finally {
-            db.close();
-        }
-    }
-
-    /** @returns {Promise<{ status: number, body: any }>} */
-    async function query(body) {
-        const response = await fetch(`${baseUrl}/api/characters/query`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
-        });
-        return { status: response.status, body: await response.json() };
-    }
-
-    test('however many are merging into it, a find by that tag and a query filtering on it answer, with the merged rows', async () => {
-        await seedCharacter('a.png', 'Sam');
-        await seedCharacter('b.png', 'Ben');
-        await seedCharacter('c.png', 'Cal');
-        await seedTag('t1', 'Hero');
-        await metadataDb.assignEntityTag(directories, 'a.png', 't1');
-        // b carries one of the marked tags; its row still counts as Hero until the marks finish.
-        await metadataDb.assignEntityTag(directories, 'b.png', 'gone-01234');
-
-        await markMergingInto('t1', 5000);
-        expect((await find({ tags: ['Hero'] })).body).toEqual({ ids: ['a.png', 'b.png'], capped: false });
-        expect((await find({ name: 'Ben', tags: ['Hero'] })).body).toEqual({ ids: ['b.png'], capped: false });
-        const included = await query({ filter: { tags: { include: ['t1'] } }, want: ['rows', 'total'], page: 1, pageSize: 10 });
-        expect(included.status).toBe(200);
-        expect(included.body.rows.map(row => row.avatar).sort()).toEqual(['a.png', 'b.png']);
-        const excluded = await query({ filter: { tags: { exclude: ['t1'] } }, want: ['rows'], page: 1, pageSize: 10 });
-        expect(excluded.status).toBe(200);
-        expect(excluded.body.rows.map(row => row.avatar)).toEqual(['c.png']);
     });
 });

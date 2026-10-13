@@ -13,7 +13,7 @@ const HASH_QUERY_SEARCH_BACKEND_NAMES = { 1: 'tantivy', 2: 'native', 3: 'wasm', 
  * `serializeQueryHashesBinary()` server-side (src/endpoints/characters.js) for the matching encoder and the
  * field-by-field layout spec this just walks with a `DataView`.
  * @param {ArrayBuffer} buffer
- * @returns {{seq: number, token: string|null, total: number|undefined, totalApprox: boolean, hidden: number|undefined, hiddenApprox: boolean, searchBackend: string|undefined, more: boolean, cursor: string|undefined, tagMatches: {id: string, name: string, carriers: number}[]|undefined, tagMatchesExact: boolean|undefined, hashRows: {id:string, isGroup:boolean, version:number|null, favHash:number, tagIdsHash:number, contentHash:number, date_added:number, create_date:number|null, date_last_chat:number, chat_size:number, data_size:number, chat:string|null}[]}}
+ * @returns {{seq: number, token: string|null, total: number|undefined, totalApprox: boolean, hidden: number|undefined, hiddenApprox: boolean, searchBackend: string|undefined, more: boolean, cursor: string|undefined, hashRows: {id:string, isGroup:boolean, version:number|null, favHash:number, tagIdsHash:number, contentHash:number, date_added:number, create_date:number|null, date_last_chat:number, chat_size:number, data_size:number, chat:string|null}[]}}
  */
 export function deserializeQueryHashesBinary(buffer) {
     const view = new DataView(buffer);
@@ -25,7 +25,6 @@ export function deserializeQueryHashesBinary(buffer) {
     const totalApprox = (headerFlags & 0b10) !== 0;
     const more = (headerFlags & 0b100) !== 0;
     const hasCursor = (headerFlags & 0b1000) !== 0;
-    const hasTagMatches = (headerFlags & 0b10000) !== 0;
     const searchBackendCode = view.getUint8(offset); offset += 1;
     const searchBackend = HASH_QUERY_SEARCH_BACKEND_NAMES[searchBackendCode];
     const seq = view.getFloat64(offset, true); offset += 8;
@@ -79,23 +78,6 @@ export function deserializeQueryHashesBinary(buffer) {
         offset += cursorLen;
     }
 
-    // Present with the header's tag-matches bit: exact(1) count(1), then per tag idLen(2) id nameLen(2) name carriers(8).
-    let tagMatches;
-    let tagMatchesExact;
-    if (hasTagMatches) {
-        tagMatchesExact = view.getUint8(offset) === 1; offset += 1;
-        const count = view.getUint8(offset); offset += 1;
-        tagMatches = [];
-        for (let i = 0; i < count; i++) {
-            const idLen = view.getUint16(offset, true); offset += 2;
-            const id = decoder.decode(new Uint8Array(buffer, offset, idLen)); offset += idLen;
-            const nameLen = view.getUint16(offset, true); offset += 2;
-            const name = decoder.decode(new Uint8Array(buffer, offset, nameLen)); offset += nameLen;
-            const carriers = view.getFloat64(offset, true); offset += 8;
-            tagMatches.push({ id, name, carriers });
-        }
-    }
-
     // Present only when the request wanted 'hidden': hiddenFlags(1) [bit0=approx] + hidden(8).
     let hidden;
     let hiddenApprox = false;
@@ -104,5 +86,5 @@ export function deserializeQueryHashesBinary(buffer) {
         hidden = view.getFloat64(offset, true); offset += 8;
     }
 
-    return { seq, token, total: hasTotal ? total : undefined, totalApprox, searchBackend, hashRows, hidden, hiddenApprox, more, cursor, tagMatches, tagMatchesExact };
+    return { seq, token, total: hasTotal ? total : undefined, totalApprox, searchBackend, hashRows, hidden, hiddenApprox, more, cursor };
 }

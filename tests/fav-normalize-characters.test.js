@@ -7,12 +7,11 @@ import process from 'node:process';
 // writeCharacterData()'s and the JSON importer's DEFAULT_AVATAR_PATH ('./public/img/...') is repo-root-relative.
 const originalCwd = process.cwd();
 
-/** @type {typeof import('../src/character-metadata-db.js')} */
-let metadataDb;
-/** @type {typeof import('../src/endpoints/search-index-coordinator.js')} */
-let searchCoordinator;
-/** @type {typeof import('better-sqlite3')} */
-let Database;
+/** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
+let user;
+/** @type {typeof import('./converted-user.fixture.js')} */
+let fixture;
+let TYPE;
 /** @type {import('node:http').Server} */
 let server;
 let baseUrl;
@@ -45,9 +44,8 @@ beforeAll(async () => {
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(originalCwd, '..', 'default', 'config.yaml'));
 
-    metadataDb = await import('../src/character-metadata-db.js');
-    searchCoordinator = await import('../src/endpoints/search-index-coordinator.js');
-    Database = (await import('better-sqlite3')).default;
+    fixture = await import('./converted-user.fixture.js');
+    ({ TYPE } = await import('../src/library-codes.js'));
     const { router } = await import('../src/endpoints/characters.js');
 
     process.chdir(path.resolve(originalCwd, '..'));
@@ -59,8 +57,7 @@ beforeAll(async () => {
     app.use(multer({ dest: uploadsDir }).single('avatar'));
     app.use(express.json());
     app.use((req, res, next) => {
-        // Search index workers are keyed by handle, so each test's fresh directories get their own handle.
-        req.user = { directories, profile: { handle: `test-user-${path.basename(directories.root)}` } };
+        req.user = user.user;
         next();
     });
     app.use('/api/characters', router);
@@ -74,26 +71,13 @@ afterAll(async () => {
     process.chdir(originalCwd);
 });
 
-beforeEach(() => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-fav-normalize-characters-test-'));
-    directories = {
-        root: tempDir,
-        characters: path.join(tempDir, 'characters'),
-        chats: path.join(tempDir, 'chats'),
-        groups: path.join(tempDir, 'groups'),
-        groupChats: path.join(tempDir, 'groupChats'),
-        thumbnailsAvatar: path.join(tempDir, 'thumbnails', 'avatar'),
-    };
-    for (const dir of [directories.characters, directories.chats, directories.groups, directories.groupChats, directories.thumbnailsAvatar]) {
-        fs.mkdirSync(dir, { recursive: true });
-    }
+beforeEach(async () => {
+    user = await fixture.emptyUser('st-fav-normalize-characters-test-');
+    ({ directories } = user);
+    globalThis.DATA_ROOT = user.dataRoot;
 });
 
-afterEach(async () => {
-    await searchCoordinator.disposeSearchWorkers();
-    metadataDb.disposeMetadataStores();
-    fs.rmSync(directories.root, { recursive: true, force: true });
-});
+afterEach(() => user.close());
 
 async function postJson(urlPath, body) {
     return fetch(`${baseUrl}${urlPath}`, {
@@ -105,15 +89,10 @@ async function postJson(urlPath, body) {
 
 /** @param {string} id @returns {Promise<{ fav: number, shallow: any, card: any }>} The fav column, the list row and the card. */
 async function readCharacterRow(id) {
-    const db = new Database(path.join(directories.root, 'character-metadata.sqlite'), { readonly: true });
-    let fav;
-    try {
-        fav = db.prepare('SELECT fav FROM characters WHERE id = ?').get(id).fav;
-    } finally {
-        db.close();
-    }
-    const shallow = /** @type {any} */ ((await metadataDb.getShallowByIds(directories, [id]))[id]);
-    const card = JSON.parse(/** @type {string} */ (await metadataDb.getCharacterCardJson(directories, id)));
+    const fav = (await user.store.lib.entity(TYPE.character, id))?.fav ? 1 : 0;
+    const page = await user.store.lib.query({ ids: [id], wantRows: true, limit: 1 });
+    const shallow = /** @type {any} */ (page.rows?.[0]?.item);
+    const [card] = await user.store.lib.cards([id]);
     return { fav, shallow, card };
 }
 
@@ -165,32 +144,26 @@ async function createCharacter(value) {
 }
 
 describe('character column writers store the normalized fav in the column, and the list row shows it in both fav fields', () => {
-    test.each(FAV_CASES)('upsertCharacterFromWrite, new row: %s', async (_label, value, expected) => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardWithFav(value));
+    test.each(FAV_CASES)('writeCard, new row: %s', async (_label, value, expected) => {
+        await user.store.lib.writeCard(directories, 'Bob.png', cardWithFav(value));
         expect(await storedFav('Bob.png')).toEqual(storedFavFor(expected));
     });
 
-    test.each([[true, 'false'], [false, 'true']])('upsertCharacterFromWrite, existing row keeps its column (%p) over the card (%p), in both shallow fields', async (existing, cardValue) => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardWithFav(existing));
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardWithFav(cardValue));
+    test.each([[true, 'false'], [false, 'true']])('writeCard, existing row keeps its column (%p) over the card (%p), in both shallow fields', async (existing, cardValue) => {
+        await user.store.lib.writeCard(directories, 'Bob.png', cardWithFav(existing));
+        await user.store.lib.writeCard(directories, 'Bob.png', cardWithFav(cardValue));
         expect(await storedFav('Bob.png')).toEqual(storedFavFor(existing));
     });
 
-    test.each(FAV_CASES)('setCharacterFav: %s', async (_label, value, expected) => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardWithFav(!expected));
-        expect(await metadataDb.setCharacterFav(directories, 'Bob.png', value === MISSING ? undefined : value)).toBe(true);
-        expect(await storedFav('Bob.png')).toEqual(storedFavFor(expected));
-    });
-
     test.each(FAV_CASES)('POST /fav: %s', async (_label, value, expected) => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardWithFav(!expected));
+        await user.store.lib.writeCard(directories, 'Bob.png', cardWithFav(!expected));
         const response = await postJson('/api/characters/fav', withFav({ avatar: 'Bob.png' }, value));
         expect(response.status).toBe(204);
         expect(await storedFav('Bob.png')).toEqual(storedFavFor(expected));
     });
 
     test.each(FAV_CASES)('POST /fav bulk: %s', async (_label, value, expected) => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardWithFav(!expected));
+        await user.store.lib.writeCard(directories, 'Bob.png', cardWithFav(!expected));
         const response = await postJson('/api/characters/fav', { bulk: [withFav({ avatar: 'Bob.png' }, value)] });
         expect(response.status).toBe(200);
         expect((await response.json()).results).toEqual([{ avatar: 'Bob.png', ok: true }]);

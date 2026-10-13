@@ -33,3 +33,33 @@ export const FIELD = Object.freeze({
 
 /** A tag's keys other than its name and folder type are stored by key. */
 export const TAG_KEY_PREFIX = 'tag:';
+
+/**
+ * The `metaValue` name of a file in `characters/` the conversion converted, whose value is `[size, mtimeMs]` as it
+ * was then: `/metadata/rescan` doesn't import it again (the conversion leaves the old store's PNGs there).
+ * @param {string} name The file's name in `characters/`.
+ */
+export const convertedFileKey = name => `converted.characters.${name}`;
+
+/**
+ * The list code of a character's rename history: one item per entry (`renameItem()`), oldest first. A message sent
+ * before an entry's `until` (ms) shows its `name`, the first such entry's, when the rename that ended it kept past
+ * chats as they were. It is the store's, never the card's: card writes keep it, and cards are read without it.
+ */
+export const NAME_HISTORY = 3;
+
+/**
+ * A rename history entry as its list item's text: `until`, a space, then the name (which may hold spaces).
+ * @param {{ until: number, name: string }} entry
+ */
+export const renameItem = entry => `${entry.until} ${entry.name}`;
+
+/**
+ * The rename history entries of their list items' texts.
+ * @param {string[] | undefined} items
+ * @returns {{ until: number, name: string }[]}
+ */
+export const renamesOf = items => (items ?? []).map(text => {
+    const space = text.indexOf(' ');
+    return { until: Number(text.slice(0, space)), name: text.slice(space + 1) };
+});

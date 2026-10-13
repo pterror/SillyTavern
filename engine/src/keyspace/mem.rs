@@ -79,6 +79,7 @@ enum Stored {
     Max(u64),
     Map(Vec<(u32, u32)>),
     MaxMap(Vec<(u32, u32)>),
+    AddMap(Vec<(u32, i64)>),
 }
 
 impl Stored {
@@ -90,6 +91,7 @@ impl Stored {
             Stored::Max(n) => Val::Max(*n),
             Stored::Map(p) => Val::Map(p.clone()),
             Stored::MaxMap(p) => Val::MaxMap(p.clone()),
+            Stored::AddMap(p) => Val::AddMap(p.clone()),
         }
     }
 }
@@ -184,6 +186,11 @@ impl Mem {
                 self.bytes += p.capacity() * 8;
                 Stored::MaxMap(p)
             }
+            Val::AddMap(p) => {
+                self.bytes += p.capacity() * 16;
+                Stored::AddMap(p)
+            }
+            Val::Counts(p) => Stored::Put(self.alloc(&super::val::count_bytes(&p))),
         }
     }
 
@@ -233,13 +240,22 @@ impl Mem {
                     *old = merged;
                     None
                 }
-                (old, v) => Some(v.over(&old.val())),
+                (Stored::AddMap(old), Val::AddMap(n)) => {
+                    let cap = old.capacity();
+                    let merged = super::val::add_pairs(&n, std::mem::take(old));
+                    self.bytes = self.bytes + merged.capacity() * 16 - cap * 16;
+                    *old = merged;
+                    None
+                }
+                (old, v) => Some(v.over(key, &old.val())),
             };
             let slot = self.map.get_mut(key).unwrap();
             slot.seq = seq;
             if let Some(v) = folded {
-                if let Stored::Map(p) | Stored::MaxMap(p) = &slot.val {
-                    self.bytes -= p.capacity() * 8;
+                match &slot.val {
+                    Stored::Map(p) | Stored::MaxMap(p) => self.bytes -= p.capacity() * 8,
+                    Stored::AddMap(p) => self.bytes -= p.capacity() * 16,
+                    _ => {}
                 }
                 let stored = self.store(v);
                 self.map.get_mut(key).unwrap().val = stored;
@@ -247,7 +263,7 @@ impl Mem {
             self.prune(key, readers);
             return self.bytes as i64 - before as i64;
         }
-        let v = val.over(&slot.val.val());
+        let v = val.over(key, &slot.val.val());
         let stored = self.store(v);
         let slot = self.map.get_mut(key).unwrap();
         let old = std::mem::replace(&mut slot.val, stored);
@@ -275,6 +291,7 @@ impl Mem {
                 freed += OLDER_OVERHEAD
                     + match v {
                         Stored::Map(p) | Stored::MaxMap(p) => p.capacity() * 8,
+                        Stored::AddMap(p) => p.capacity() * 16,
                         _ => 0,
                     };
             }
@@ -385,6 +402,14 @@ impl Mem {
                 v.is_some_and(|v| v.val() != Val::Del)
             })
             .count() as u64
+    }
+
+    /// How many entries in `[start, end)` there are, deletions too, as a snapshot at `seq` (None: now) reads them.
+    pub(super) fn count_all(&self, start: &[u8], end: &[u8], seq: Option<u64>) -> usize {
+        self.map
+            .range::<[u8], _>((Bound::Included(start), Bound::Excluded(end)))
+            .filter(|(_, slot)| seq.is_none_or(|seq| slot.at(seq).is_some()))
+            .count()
     }
 
     /// Entries in `[start, end)` in order, until `live` of them aren't deletions.

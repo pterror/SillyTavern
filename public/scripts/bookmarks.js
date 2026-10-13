@@ -7,6 +7,7 @@ import {
     openCharacterChat,
     getThumbnailUrl,
     saveChatConditional,
+    getChatLabelBase,
     getCurrentChatDetails,
     updateMessage,
     hydrateSwipes,
@@ -17,7 +18,6 @@ import {
     chatOpenSendKeys,
     adoptStored,
     openingForRequest,
-    deriveChatAddressNode,
 } from '../script.js';
 import { getCharacters } from './character-list.js';
 import { chat_metadata, chat } from './chat-state.js';
@@ -53,43 +53,43 @@ import { normalizeFav } from './hash-utils.js';
 
 const bookmarkNameToken = 'Bookmark #';
 
+/**
+ * The names of the open character's or group's chats: each chat's label, or its compat id when it has none.
+ * @returns {Promise<string[]>}
+ */
 async function getExistingChatNames() {
-    if (selected_group) {
-        const group = groupsStore.get(selected_group);
-        if (group && Array.isArray(group.chats)) {
-            return [...group.chats];
-        }
-
-        return [];
-    }
-
     const character = getCurrentCharacter();
-    if (!character) {
+    if (!selected_group && !character) {
         return [];
     }
 
-    const response = await fetch('/api/characters/chats', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({ avatar_url: character.avatar, simple: true }),
-    });
+    const response = selected_group
+        ? await fetch('/api/chats/search', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ query: '', group_id: selected_group }),
+        })
+        : await fetch('/api/characters/chats', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ avatar_url: character.avatar, simple: true }),
+        });
 
     if (response.ok) {
         const data = await response.json();
-        // /api/characters/chats sends { error: true } (not an array) on a real read failure - guard against
-        // that here instead of crashing on x.file_name of an object that isn't a chat entry.
+        // A read failure answers { error: true }, not an array.
         if (!Array.isArray(data)) {
             return [];
         }
-        const chats = Object.values(data).map(x => x.file_name.replace('.jsonl', ''));
-        return [...chats];
+        return data.map(x => x.label ?? String(x.file_name).replace(/\.jsonl$/, ''));
     }
 
     return [];
 }
 
 async function getBookmarkName({ isReplace = false, forceName = null } = {}) {
-    const mainChatName = (getCurrentChatDetails()).sessionName;
+    // What the user sees the chat as (the server's label base), never its id.
+    const mainChatName = getChatLabelBase();
 
     function buildCheckpointName(name, i) {
         let cleanName = name.replace(new RegExp(` - ${bookmarkNameToken}\\d+$`), '');
@@ -197,6 +197,7 @@ function _labelOwner() {
 
 /**
  * @typedef {object} BookmarkAnswer
+ * @property {string} id The bookmark's compat chat id (`b<id>`).
  * @property {string} label The name the bookmark got.
  * @property {string[]} [chats] A group's chats, the bookmark among them.
  * @property {import('../script.js').ChatOpenAnswer} [opened] With `open`: the bookmark, opened.
@@ -207,9 +208,9 @@ function _labelOwner() {
  * shown without a row, and gives it the open chat's metadata.
  * @param {number} mesId The message.
  * @param {object} options
- * @param {string} options.label
+ * @param {string} [options.label] None: the server suggests one (a branch's: the chat's label base, upstream's suffix).
  * @param {string|null} [options.nodeId] One of the message's alternatives instead of the one shown.
- * @param {boolean} [options.unique] Name it "<label> - Branch #N" when the name is taken.
+ * @param {boolean} [options.unique] Always a new bookmark, even when a chat has the label.
  * @param {string|null} [options.alsoNodeId] A message to give the same name (the shown one, when forking at an
  * alternative).
  * @param {boolean} [options.open] Open the bookmark too.
@@ -221,9 +222,8 @@ async function requestBookmark(mesId, { label, nodeId = null, unique = false, al
     /** @type {Record<string, unknown>} */
     const body = {
         ...owner,
-        label,
+        ...(label === undefined ? {} : { label }),
         unique,
-        from: selected_group ? groupsStore.get(selected_group)?.chat_id : deriveChatAddressNode(null),
     };
     if (nodeId) {
         body.node_id = nodeId;
@@ -251,11 +251,12 @@ async function requestBookmark(mesId, { label, nodeId = null, unique = false, al
 }
 
 export async function createBranch(mesId, { swipeId = null } = {}) {
-    return (await makeBranch(mesId, { swipeId }))?.label ?? undefined;
+    return (await makeBranch(mesId, { swipeId }))?.id ?? undefined;
 }
 
 /**
- * Branches the chat at a message (or one of its alternatives): names it after the open chat, made unique.
+ * Branches the chat at a message (or one of its alternatives): the server names it after the open chat (its label
+ * base) with upstream's branch suffix.
  * @param {number} mesId
  * @param {{ swipeId?: number|null, open?: boolean, alsoLabelShown?: boolean }} [options] `open`: open the branch
  * too; `alsoLabelShown`: when branching at an alternative, give the shown message the same name.
@@ -273,7 +274,9 @@ async function makeBranch(mesId, { swipeId = null, open = false, alsoLabelShown 
     }
 
     const lastMes = chat[mesId];
+    // The chat branched from, by its id (`main_chat` leads back to it), and what the user sees it as.
     const mainChatName = (getCurrentChatDetails()).sessionName;
+    const labelBase = getChatLabelBase();
     const selectedSwipeId = swipeId === null ? null : Number(swipeId);
 
     if (selectedSwipeId !== null && (!Number.isInteger(selectedSwipeId) || selectedSwipeId < 0 || selectedSwipeId >= (lastMes?.swipes?.length ?? 0))) {
@@ -296,7 +299,6 @@ async function makeBranch(mesId, { swipeId = null, open = false, alsoLabelShown 
         }
         const shownNodeId = chat[mesId]?.node_id;
         const answer = await requestBookmark(mesId, {
-            label: mainChatName,
             nodeId,
             unique: true,
             alsoNodeId: alsoLabelShown && nodeId !== null && isStoredNodeId(shownNodeId) ? shownNodeId : null,
@@ -310,7 +312,7 @@ async function makeBranch(mesId, { swipeId = null, open = false, alsoLabelShown 
         if (chat[mesId] === lastMes || chat[mesId]?.node_id === lastMes.node_id) {
             const extra = typeof lastMes.extra === 'object' ? { ...lastMes.extra } : {};
             const branches = Array.isArray(extra.branches) ? [...extra.branches] : [];
-            if (!branches.includes(answer.label)) branches.push(answer.label);
+            if (!branches.includes(answer.id)) branches.push(answer.id);
             extra.branches = branches;
             updateMessage(mesId, { extra });
         }
@@ -329,8 +331,8 @@ async function makeBranch(mesId, { swipeId = null, open = false, alsoLabelShown 
     }
 
     const name = selected_group
-        ? await saveGroupBookmarkChat(selected_group, mainChatName, newMetadata, mesId, branchChatSnapshot, { unique: true })
-        : await saveChat({ chatName: mainChatName, withMetadata: newMetadata, mesId, chatData: branchChatSnapshot, unique: true });
+        ? await saveGroupBookmarkChat(selected_group, labelBase, newMetadata, mesId, branchChatSnapshot, { unique: true })
+        : await saveChat({ chatName: labelBase, withMetadata: newMetadata, mesId, chatData: branchChatSnapshot, unique: true });
 
     if (!name) {
         console.error('Could not create the branch.');
@@ -343,7 +345,7 @@ async function makeBranch(mesId, { swipeId = null, open = false, alsoLabelShown 
     if (!branches.includes(name)) branches.push(name);
     extra.branches = branches;
     updateMessage(mesId, { extra });
-    return { label: name };
+    return { id: name, label: labelBase };
 }
 
 /**
@@ -387,13 +389,12 @@ export async function createNewBookmark(mesId, { forceName = null } = {}) {
             return null;
         }
 
-        // The label is the bookmark link: a read gives a message its `extra.bookmark_link` from it.
-        const resolvedName = answer.label;
+        // A message's `bookmark_link` is the compat id of the bookmark made at it, as a read gives it.
         const extra = typeof chat[mesId]?.extra === 'object' ? { ...chat[mesId].extra } : {};
-        extra.bookmark_link = resolvedName;
+        extra.bookmark_link = answer.id;
         updateMessage(mesId, { extra });
         toastr.success('Bookmarked. It shows up in the chat list.', 'Bookmark', { timeOut: 6000 });
-        return resolvedName;
+        return answer.id;
     }
 
     // Legacy JSONL path. `integrity` isn't set here - the server mints and rotates it on every
@@ -582,18 +583,18 @@ export async function branchChat(mesId, { swipeId = null } = {}) {
  * Opens a branch makeBranch() made, from the answer it got when it opened it (or by asking, for a branch made the
  * old way).
  * @param {BookmarkAnswer|null|undefined} made
- * @returns {Promise<string|null>} The branch's name.
+ * @returns {Promise<string|null>} The branch's compat chat id.
  */
 async function openBranch(made) {
-    if (!made?.label) {
+    if (!made?.id) {
         return null;
     }
     if (selected_group) {
-        await openGroupChat(selected_group, made.label, { opened: made.opened ?? null });
+        await openGroupChat(selected_group, made.id, { opened: made.opened ?? null });
     } else {
-        await openCharacterChat(made.label, { opened: made.opened ?? null });
+        await openCharacterChat(made.id, { opened: made.opened ?? null });
     }
-    return made.label;
+    return made.id;
 }
 
 /**
@@ -834,10 +835,9 @@ export function initBookmarks() {
     });
 
     $(document).on('click', '.select_chat_block', async function () {
-        // `label` isn't unique per owner, so a name alone would pick whichever row sorts first -
-        // prefer the node id; the name is only a fallback for file-backed chats, which have no nodes.
+        // A row's `file_name` is its chat's compat id (a bookmark's `b<id>`, a session's UUID); `node_id` is where it is.
         const nodeId = $(this).attr('node_id');
-        const target = nodeId || $(this).attr('file_name');
+        const target = $(this).attr('file_name');
 
         if (!target) {
             return;

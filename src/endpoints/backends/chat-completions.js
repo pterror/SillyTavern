@@ -71,12 +71,13 @@ import { resolveTokenizer, sendTokenizerWarnings, createTokenizerOutcome } from 
 import { readConnectionStateHeader } from '../../connection-state-header.js';
 import { fetchOpenRouterModels, rememberOpenRouterModels } from '../../openrouter-models.js';
 import { prepareOpenAIMessages } from '../../chat-completion-prepare-messages.js';
-import { getAncestorPath, appendMessages, editMessage, addAlternatives, selectDefaultChild } from '../../message-tree-db.js';
 import { generateTurnOf } from '../../page-writes.js';
 import { readCardContent } from '../characters.js';
 import { getGroupsByIds } from '../groups.js';
 import { persistAssistantReply, replyTextAsPageShows, unreadableReplyWarning } from '../../assistant-reply-persist.js';
-import { itemizationOf } from '../../itemization-store.js';
+import { itemizationOf } from '../../itemization-of.js';
+import { answerSessionOnHeaders, chatContext } from '../../chat-request.js';
+import { storedForm } from '../../chat-engine.js';
 import { storeUserMessage, withStoredMessages } from '../../stored-messages.js';
 import { getEnabledServerTools, toOpenAIToolSchema } from '../../server-tools.js';
 import {
@@ -2644,9 +2645,8 @@ const SERVER_TOOL_ROUND_LIMIT = 5;
  * 1. Real existence checks for the named character/group (identical pattern to
  *    `buildRawActionTextCompletionRequest()` - `readCardContent`/`getGroupsByIds`, tolerating a
  *    missing/unreadable card as "not found" rather than letting an ENOENT bubble up as an unrelated 500).
- * 2. Real anchor-node resolution (a given `nodeId` verified via `getAncestorPath()`, or - only when
- *    `nodeId` is explicitly `null` AND this owner's conversation is genuinely empty - the owner's
- *    own anchor) - identical logic to the text-completion helper; see this function's own ADDRESSING
+ * 2. Real anchor-node resolution (a given `nodeId` verified as a message of the request's tree, or -
+ *    only when `nodeId` is explicitly `null` AND the tree's root is current - the root) - identical logic to the text-completion helper; see this function's own ADDRESSING
  *    MODEL doc comment below.
  * 3. Read real `oai_settings`/`power_user` via `readSettingsAtPaths()` - JUDGMENT CALL: unlike
  *    text-completion (which needs a separate `resolveTextGenBackend()` step - see
@@ -2729,10 +2729,11 @@ const SERVER_TOOL_ROUND_LIMIT = 5;
  * @param {object} params
  * @param {string} [params.characterAvatar] Character avatar filename. One of this or `groupId` is required.
  * @param {string} [params.groupId] Group id. One of this or `characterAvatar` is required.
- * @param {string} params.ownerId message-tree-db.js owner id.
+ * @param {string} params.ownerId The request's `owner_id`, handed to server tools in their `ctx`.
+ * @param {import('../../chat-request.js').ChatContext} params.chat The chat the request acts in.
  * @param {string|null} params.nodeId REQUIRED (`undefined` throws) - see ADDRESSING MODEL above. A
- * real node id string addresses that node; `null` asserts "this is a genuinely new, empty
- * conversation" and only succeeds when that is actually true.
+ * real node id string addresses that node; `null` goes on from the tree's root, and only succeeds
+ * when that is current.
  * @param {string} [params.type] Generation type ('normal'/'impersonate'/'continue'/'swipe'/...).
  * @param {boolean} [params.isImpersonate]
  * @param {boolean} [params.isContinue]
@@ -2740,7 +2741,7 @@ const SERVER_TOOL_ROUND_LIMIT = 5;
  * @param {string} [params.userMessageText] The literal text the user typed this turn. Omit for
  * generation types that don't add a new message (continue/swipe).
  * @param {object} [params.userMessageExtra] Already-SERVER-VALIDATED `extra` (see
- * `sanitizeUserMessageExtra()` in message-tree-db.js) for the new user message being appended -
+ * `sanitizeUserMessageExtra()` in user-message-extra.js) for the new user message being appended -
  * forwarded verbatim to `resolveChatCompletionGenerationInput()`; the caller (route handler below) is
  * responsible for having already sanitized whatever the client sent. Ignored when `userMessageText`
  * is omitted.
@@ -2794,7 +2795,7 @@ const SERVER_TOOL_ROUND_LIMIT = 5;
  * it off.
  */
 export async function buildRawActionChatCompletionRequest(directories, {
-    characterAvatar, groupId, ownerId, nodeId,
+    characterAvatar, groupId, ownerId, chat, nodeId,
     type = 'normal', isImpersonate = false, isContinue = false, isSwipe = false, userMessageText, userMessageExtra,
     clientToolSchemas, stealthClientToolNames, jsonSchema = null,
 } = {}) {
@@ -2821,7 +2822,7 @@ export async function buildRawActionChatCompletionRequest(directories, {
         }
     }
     if (groupId) {
-        const group = getGroupsByIds(directories, [groupId])[groupId];
+        const group = (await getGroupsByIds(directories, [groupId]))[groupId];
         if (!group) {
             throw new Error(`Group not found: ${groupId}`);
         }
@@ -2830,11 +2831,10 @@ export async function buildRawActionChatCompletionRequest(directories, {
     // Step 2 (anchor resolution) - identical logic to buildRawActionTextCompletionRequest(): a real
     // given `nodeId` is verified directly; `nodeId === null` is left unresolved here and read back
     // off `orchestratorInput.resolvedNodeId`/`chatResolutionAmbiguous` once Step 4 has computed it,
-    // rather than re-deriving "does this owner have real history" a second, independent way.
+    // rather than re-deriving whether the root is current a second, independent way.
     let anchorNodeId = null;
     if (nodeId !== null) {
-        const ancestorPath = await getAncestorPath(directories, nodeId);
-        if (!ancestorPath) {
+        if (!await chat.store.chats.messageOf(chat.tree, nodeId)) {
             throw new Error(`Chat node not found: ${nodeId}`);
         }
         anchorNodeId = nodeId;
@@ -2866,19 +2866,18 @@ export async function buildRawActionChatCompletionRequest(directories, {
     /** @type {import('../../token-count-store.js').PendingTokenRows} */
     const tokenCountRows = { counts: [], ids: [] };
     const orchestratorInput = await resolveChatCompletionGenerationInput(directories, {
-        avatar: characterAvatar, groupId, ownerId, nodeId,
+        avatar: characterAvatar, groupId, chatContext: chat, nodeId,
         type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra, llamaCppProps, tokenCountRows,
         macroExtras: {
             imageInlining: mediaInliningEnabled, videoInlining: mediaInliningEnabled, audioInlining: mediaInliningEnabled,
         },
     });
 
-    // `nodeId === null` is only valid when this owner's conversation is really empty - see this
-    // function's own ADDRESSING MODEL doc comment and buildRawActionTextCompletionRequest()'s
-    // identical handling.
+    // `nodeId === null` goes on from the tree's root only when that is current - see
+    // buildRawActionTextCompletionRequest()'s identical handling.
     if (nodeId === null) {
         if (orchestratorInput.chatResolutionAmbiguous) {
-            throw new Error('node_id is required: this character/group already has an existing conversation - resolve which node the client was looking at and pass its node_id (null is only valid for a genuinely new, empty conversation)');
+            throw new Error('node_id is required: this chat is not at its start - pass the node_id of the message to generate from (null is only valid in a new chat)');
         }
         anchorNodeId = orchestratorInput.resolvedNodeId;
     }
@@ -3631,10 +3630,9 @@ function parseServerToolArguments(rawArguments) {
  * and turned a continue into "overwrite the tool-call turn's own `tool_invocations` with concatenated
  * text at the wrong node" (destroying the tool-call record).
  *
- * Fix, verified against `addAlternatives()`/`appendMessages()`'s real tree-mutation semantics
- * (message-tree-db.js): `isSwipe` now attaches ONLY the very first round's tool-call turn as a REAL
- * SIBLING of the pre-loop anchor (`addAlternatives()` + `selectDefaultChild()` instead of
- * `appendMessages()`) - the sibling-alternative slot a swipe is supposed to occupy is claimed by the
+ * Fix: `isSwipe` now attaches ONLY the very first round's tool-call turn as a REAL SIBLING of the
+ * pre-loop anchor (appended after the anchor's parent, chosen through the session) - the
+ * sibling-alternative slot a swipe is supposed to occupy is claimed by the
  * FIRST real thing that happened during this swipe attempt (a tool call), preserving true event order;
  * everything after round 0 (further rounds, and the caller's own final-reply append) chains onward from
  * there via ordinary `appendMessages()`, exactly like the plain-append case, since by round 1 the sibling
@@ -3648,7 +3646,8 @@ function parseServerToolArguments(rawArguments) {
  * continuation text lands as its own new node after the tool call", not a merged edit).
  * @param {object} params
  * @param {import('../../users.js').UserDirectoryList} params.directories
- * @param {string} params.ownerId
+ * @param {string} params.ownerId The request's `owner_id`, handed to server tools in their `ctx`.
+ * @param {import('../../chat-request.js').ChatContext} params.chat The chat the tool turns are stored in.
  * @param {string} [params.characterAvatar]
  * @param {string} [params.groupId]
  * @param {import('../../server-tools.js').ServerToolRegistration[]} params.enabledTools The exact
@@ -3669,8 +3668,8 @@ function parseServerToolArguments(rawArguments) {
  * @param {string} params.leafNodeId The tree node the first tool-call round (if any) should attach
  *   after - the assistant-reply anchor already resolved for this request.
  * @param {boolean} [params.isSwipe] See this function's own doc comment above - when true, round 0's
- *   tool-call turn claims the sibling-alternative slot (`addAlternatives()`+`selectDefaultChild()`)
- *   instead of being appended as a child of `leafNodeId`. Every later round appends normally.
+ *   tool-call turn is stored as an alternative of `leafNodeId` (a reply of its parent, chosen
+ *   through the session) instead of a reply to it. Every later round appends normally.
  * @param {any} params.initialJson The backend's first response body (already parsed JSON).
  * @param {(messages: object[]) => Promise<import('node-fetch').Response>} params.refetch Re-issues
  *   the backend request with a freshly-resolved `messages` array, everything else unchanged.
@@ -3694,7 +3693,7 @@ function storeTokenCountRowsInBackground(directories, rows) {
     writeBack(directories, rows).catch(error => console.error('Failed to store token counts:', error));
 }
 
-async function runServerToolRounds({ directories, ownerId, characterAvatar, groupId, enabledTools, clientToolNames, clientToolSchemas, stealthToolNames = new Set(), leafNodeId, isSwipe = false, initialJson, refetch }) {
+async function runServerToolRounds({ directories, ownerId, chat, characterAvatar, groupId, enabledTools, clientToolNames, clientToolSchemas, stealthToolNames = new Set(), leafNodeId, isSwipe = false, initialJson, refetch }) {
     const toolsByName = new Map(enabledTools.map(tool => [tool.name, tool]));
     let json = initialJson;
     let currentLeafId = leafNodeId;
@@ -3773,20 +3772,23 @@ async function runServerToolRounds({ directories, ownerId, characterAvatar, grou
         // slot left to claim - the slot was already taken by round 0's own tool turn - so it just
         // chains on as an ordinary child, identical to the plain-append case.
         const claimsSiblingSlot = round === 0 && isSwipe;
-        const appendResult = claimsSiblingSlot
-            ? await addAlternatives(directories, ownerId, currentLeafId, [toolTurnContent])
-            : await appendMessages(directories, ownerId, currentLeafId, [toolTurnContent]);
+        const { chats } = chat.store;
+        let after = currentLeafId;
+        if (claimsSiblingSlot) {
+            const replaced = await chats.messageOf(chat.tree, currentLeafId);
+            if (!replaced) {
+                return { ok: false, status: 500, message: 'Failed to persist the tool invocation results onto the chat.' };
+            }
+            after = replaced.parent === null ? null : (await chats.externalIds([replaced.parent]))[0];
+        }
+        const appendResult = await chats.appendMessages({
+            tree: chat.tree, treeSpeaker: chat.treeSpeaker, after, contents: [toolTurnContent], actor: chat.session.actor(),
+        });
         if (!appendResult.ok || !appendResult.node_ids?.length) {
-            console.error('Failed to persist tool invocation turn onto the tree:', appendResult.reason);
+            console.error('Failed to persist tool invocation turn:', appendResult.reason);
             return { ok: false, status: 500, message: 'Failed to persist the tool invocation results onto the chat.' };
         }
         currentLeafId = appendResult.node_ids[appendResult.node_ids.length - 1];
-        if (claimsSiblingSlot) {
-            const selected = await selectDefaultChild(directories, currentLeafId);
-            if (!selected) {
-                console.error('Failed to select the new tool-call sibling alternative as current (swipe interleaved with a server tool call).');
-            }
-        }
 
         if (pendingToolCalls.length > 0) {
             // See this function's own doc comment, step 5 - stop here, hand off to the client. The
@@ -3807,7 +3809,7 @@ async function runServerToolRounds({ directories, ownerId, characterAvatar, grou
         // `clientToolSchemas` is forwarded again so a LATER round can still detect/hand off a further
         // client-only call (see this function's own `clientToolSchemas` param doc comment).
         const rebuilt = await buildRawActionChatCompletionRequest(directories, {
-            characterAvatar, groupId, ownerId, nodeId: currentLeafId, type: 'normal', clientToolSchemas,
+            characterAvatar, groupId, ownerId, chat, nodeId: currentLeafId, type: 'normal', clientToolSchemas,
         });
 
         const fetchResponse = await refetch(rebuilt.params.messages);
@@ -3836,20 +3838,13 @@ async function runServerToolRounds({ directories, ownerId, characterAvatar, grou
  * via `pending_tool_calls`, addressing the exact tree node that hand-off already persisted.
  *
  * Reuses the SAME `node_id`-required addressing model as every other raw-action request on this route
- * (`buildRawActionChatCompletionRequest()`'s own ADDRESSING MODEL doc comment) - `nodeId` here is
- * resolved via `getAncestorPath()`, the identical helper this file already uses to verify a given
- * `node_id` (see that function's Step 2) - NOT `loadAtNode()` (which descends to the branch's current
- * LEAF, the wrong node whenever a later message already exists under this one; `getAncestorPath()`
- * resolves the exact node addressed, no more, no less, matching the read this route already performs
- * for every non-`tool_result` raw-action request).
+ * (`buildRawActionChatCompletionRequest()`'s own ADDRESSING MODEL doc comment): the exact message
+ * addressed, a message of the request's tree.
  *
- * Persistence is an IN-PLACE EDIT via `editMessage()` (src/message-tree-db.js), NOT a new appended
- * node - identical pattern to `persistAssistantReply()`'s own `isContinue` branch
- * (../../assistant-reply-persist.js): `editMessage()` replaces the WHOLE stored content object, so the
- * full, current node content (read back via `getAncestorPath()`'s own last entry - the same technique
- * `buildRawActionChatCompletionRequest()` already uses to read `anchorContent`) is spread and only
- * `extra.tool_invocations` is touched, exactly mirroring `{...anchorContent, mes: oldText +
- * generatedText}` there.
+ * Persistence is an IN-PLACE EDIT via `editMessages()`, NOT a new message - identical pattern to
+ * `persistAssistantReply()`'s own `isContinue` branch (../../assistant-reply-persist.js): an edit gives
+ * the WHOLE content, so the message's current stored content is spread and only
+ * `extra.tool_invocations` is touched.
  *
  * Only the invocations still `result === null` (chunk (b)/(c)'s "in-flight" marker - see
  * `runServerToolRounds()`'s own doc comment, step 3) are eligible to be filled in; an already-resolved
@@ -3860,23 +3855,20 @@ async function runServerToolRounds({ directories, ownerId, characterAvatar, grou
  * would either crash or silently mis-serialize once replayed into the backend's own tool-result
  * message format, see `chat-completion-history.js`'s own `invocation.result || '[No content]'`
  * fallback - a real but confusing degradation this function chooses to refuse up front instead).
- * @param {import('../../users.js').UserDirectoryList} directories
- * @param {string} ownerId
+ * @param {import('../../chat-request.js').ChatContext} chat
  * @param {string} nodeId The pending tool-call node's own id (the `node_id` the client received on
  *   each `pending_tool_calls` entry for this round).
  * @param {any[]} toolResults Client-supplied `[{id, result, error}, ...]` - `id` is the tool call id
  *   (`pending_tool_calls[].tool_call_id`), `result` is coerced to a string, `error` to a boolean.
  * @returns {Promise<{ok: true}|{ok: false, status: number, message: string}>}
  */
-async function resolvePendingToolResults(directories, ownerId, nodeId, toolResults) {
-    const ancestorPath = await getAncestorPath(directories, nodeId);
-    if (!ancestorPath || ancestorPath.length === 0) {
+async function resolvePendingToolResults(chat, nodeId, toolResults) {
+    const { chats } = chat.store;
+    const stored = await chats.messageOf(chat.tree, nodeId);
+    if (!stored) {
         return { ok: false, status: 400, message: `Chat node not found: ${nodeId}` };
     }
-    const nodeContent = ancestorPath[ancestorPath.length - 1];
-    if (!nodeContent || nodeContent.node_id !== nodeId) {
-        return { ok: false, status: 400, message: `Chat node not found: ${nodeId}` };
-    }
+    const [nodeContent] = await chats.decoded([stored]);
 
     const invocations = nodeContent.extra?.tool_invocations;
     if (!Array.isArray(invocations) || invocations.length === 0) {
@@ -3906,9 +3898,12 @@ async function resolvePendingToolResults(directories, ownerId, nodeId, toolResul
         return { ok: false, status: 400, message: `Not all pending tool calls on node "${nodeId}" were resolved by this request: ${stillPending.map(invocation => invocation.id).join(', ')}` };
     }
 
-    const editResult = await editMessage(directories, ownerId, nodeId, { ...nodeContent, extra: { ...nodeContent.extra, tool_invocations: invocations } });
-    if (!editResult.ok) {
-        console.error('Failed to persist tool_result onto the tree:', editResult.reason);
+    const editResult = await chats.editMessages({
+        tree: chat.tree, treeSpeaker: chat.treeSpeaker, actor: chat.session.actor(),
+        edits: [{ node_id: nodeId, content: storedForm({ ...nodeContent, extra: { ...nodeContent.extra, tool_invocations: invocations } }) }],
+    });
+    if (editResult.refused.length) {
+        console.error('Failed to persist tool_result:', editResult.refused[0].reason);
         return { ok: false, status: 500, message: 'Failed to persist the submitted tool result onto the chat.' };
     }
     return { ok: true };
@@ -3979,7 +3974,7 @@ router.post('/generate', withGenerationStop(async function (request, response) {
     // `runServerToolRounds` further down) - streaming and all 12 provider-`switch` functions are
     // explicitly OUT OF SCOPE for server-native tool execution in this chunk, so this stays `null`
     // (a no-op) for every other path, identical to today's behavior. `characterAvatar`/`groupId` are
-    // carried alongside `directories`/`ownerId` (already on `pendingAssistantPersist`) because
+    // carried alongside `directories`/`ownerId`/`chat` because
     // `runServerToolRounds()` needs the full `ctx` tuple `getEnabledServerTools()`/`tool.invoke()`
     // expect, and because each round re-resolves the prompt via a fresh
     // `buildRawActionChatCompletionRequest()` call, which requires them too.
@@ -4084,7 +4079,12 @@ router.post('/generate', withGenerationStop(async function (request, response) {
                 json_schema: jsonSchema,
             } = request.body;
             const directories = request.user.directories;
-            const turn = await generateTurnOf(response, directories, { ownerId, avatar: characterAvatar, groupId, body: request.body });
+            const chat = await chatContext(request, { avatar: characterAvatar, group: groupId });
+            if (!chat) {
+                return response.status(400).send({ error: true, message: groupId ? `Group not found: ${groupId}` : `Character not found: ${characterAvatar}` });
+            }
+            answerSessionOnHeaders(response, chat.session);
+            const turn = await generateTurnOf(response, chat, request.body);
             if (!turn) return;
             const { nodeId, userMessageText, userMessageExtra } = turn;
 
@@ -4107,7 +4107,7 @@ router.post('/generate', withGenerationStop(async function (request, response) {
                 if (!Array.isArray(toolResults) || toolResults.length === 0) {
                     return response.status(400).send({ error: true, message: 'tool_results must be a non-empty array for type: "tool_result".' });
                 }
-                const resolved = await resolvePendingToolResults(directories, ownerId, nodeId, toolResults);
+                const resolved = await resolvePendingToolResults(chat, nodeId, toolResults);
                 if (!resolved.ok) {
                     return response.status(resolved.status).send({ error: true, message: resolved.message });
                 }
@@ -4125,7 +4125,7 @@ router.post('/generate', withGenerationStop(async function (request, response) {
             let built;
             try {
                 built = await buildRawActionChatCompletionRequest(directories, {
-                    characterAvatar, groupId, ownerId, nodeId,
+                    characterAvatar, groupId, ownerId, chat, nodeId,
                     // `type: 'normal'`/no new user message for the `tool_result` case - see the
                     // `isToolResult` comment above.
                     type: isToolResult ? 'normal' : type, isImpersonate, isContinue, isSwipe,
@@ -4175,9 +4175,9 @@ router.post('/generate', withGenerationStop(async function (request, response) {
             const skipPersistence = isImpersonate || type === 'quiet';
             let replyAnchorNodeId = built.anchorNodeId;
             const userMessage = turn.userMessage;
-            if (!isToolResult && !skipPersistence && typeof userMessageText === 'string' && built.anchorNodeId) {
+            if (!isToolResult && !skipPersistence && typeof userMessageText === 'string') {
                 const userNodeId = await storeUserMessage(response, {
-                    directories, ownerId, anchorNodeId: built.anchorNodeId, ref: request.body.user_message_ref,
+                    chat, anchorNodeId: built.anchorNodeId, ref: request.body.user_message_ref,
                     message: userMessage,
                 });
                 if (!userNodeId) return;
@@ -4199,19 +4199,22 @@ router.post('/generate', withGenerationStop(async function (request, response) {
             //
             // `isSwipe` is carried through identically to text-completions.js's own route wiring - see
             // that file's own comment on this same field for the full rationale (sibling-alternative
-            // persistence via `addAlternatives()`, shared by BOTH `type === 'swipe'` and `type ===
+            // persistence as an alternative of the anchor, shared by BOTH `type === 'swipe'` and `type ===
             // 'regenerate'` via the client's single `is_swipe` flag).
             //
             // `isContinue`/`anchorContent` are carried through identically to text-completions.js's own
             // route wiring too - see that file's own comment on these same fields for the full
-            // rationale (in-place `editMessage()` persistence for a continue, and why `anchorContent`'s
+            // rationale (in-place `editMessages()` persistence for a continue, and why `anchorContent`'s
             // full object - not just the anchor node id - is needed to build it).
             // A continue sent with text in the box stores that text as the user's message first, and the page then
             // continues that message, as upstream does: the reply is stored as an edit of it.
             const continuesUserMessage = isContinue && replyAnchorNodeId !== built.anchorNodeId;
             if (!skipPersistence) {
+                // The reply's write goes through the session; one made for it is in the headers, which a
+                // stream sends before the reply is stored.
+                chat.session.actor();
                 pendingAssistantPersist = {
-                    directories, ownerId, anchorNodeId: replyAnchorNodeId, name2: built.name2,
+                    chat, anchorNodeId: replyAnchorNodeId, name2: built.name2,
                     isSwipe, isContinue, anchorContent: continuesUserMessage ? userMessage : built.anchorContent,
                     warnings,
                     generationStop: response.locals.generationStop,
@@ -4228,7 +4231,7 @@ router.post('/generate', withGenerationStop(async function (request, response) {
                 // plain reply.
                 if (built.enabledServerTools.length > 0 || built.enabledClientToolNames.size > 0) {
                     pendingServerToolLoop = {
-                        directories, ownerId, characterAvatar, groupId,
+                        directories, ownerId, chat, characterAvatar, groupId,
                         enabledTools: built.enabledServerTools,
                         clientToolNames: built.enabledClientToolNames,
                         // THIS TASK (stealth-tool parity) - forwarded into runServerToolRounds()'s own
@@ -4802,10 +4805,8 @@ router.post('/generate', withGenerationStop(async function (request, response) {
             //
             // The actual plain/continue/swipe persistence branching lives in `persistAssistantReply()`
             // (../../assistant-reply-persist.js), shared with the streaming branch above - see that
-            // module's own doc comment for the full continue/`editMessage()` and
-            // swipe/`addAlternatives()`+`selectDefaultChild()` rationale (unchanged from this route's
-            // own original design; also shared, verbatim, with text-completions.js's own identical
-            // persistence for its backend).
+            // module's own doc comment for the plain, continue and swipe modes (shared, verbatim, with
+            // text-completions.js's own identical persistence for its backend).
             if (pendingAssistantPersist) {
                 // `/chat/completions` answers `choices[0].message.content`; a TEXT_COMPLETION_MODELS model
                 // (`isTextCompletion`) goes to `/completions`, which answers `choices[0].text`.

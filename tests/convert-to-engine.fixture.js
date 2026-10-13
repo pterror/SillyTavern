@@ -110,7 +110,7 @@ export async function buildOldUser(root, { extraCharacters = 0 } = {}) {
     // The group: a chat, and two chats listed with no label: one with only its header, one an exact duplicate.
     const groupChat = [header({ __is_group: true, note_prompt: 'Group note.' }), msg('Alice', false, 'Group hello.', { original_avatar: 'Alice.png', force_avatar: '/thumbnail?type=avatar&file=Alice.png' }), msg('You', true, 'Hey all.')];
     await tree.saveChatToTree(directories, groupId, 'Party chat', groupChat, true);
-    fs.writeFileSync(path.join(directories.groupChats, 'Dropped empty.jsonl.pre-migration'), JSON.stringify(header({ note_prompt: 'Empty one.' })) + '\n');
+    fs.writeFileSync(path.join(directories.groupChats, 'Dropped empty.jsonl.pre-migration'), JSON.stringify({ ...header({ note_prompt: 'Empty one.' }), create_date: '2023-5-1@10h00m00s' }) + '\n');
     fs.writeFileSync(path.join(directories.groupChats, 'Dropped twin.jsonl.pre-migration'), groupChat.map(x => JSON.stringify(x)).join('\n') + '\n');
 
     // A group chat the old migration damaged (its headerless original's first line taken as a header): message 1

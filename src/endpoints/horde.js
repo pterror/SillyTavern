@@ -7,7 +7,8 @@ import { buildRawActionKoboldRequest } from './backends/kobold.js';
 import { generateTurnOf } from '../page-writes.js';
 import { storeUserMessage } from '../stored-messages.js';
 import { persistAssistantReply } from '../assistant-reply-persist.js';
-import { itemizationOf } from '../itemization-store.js';
+import { itemizationOf } from '../itemization-of.js';
+import { answerSessionOnHeaders, chatContext } from '../chat-request.js';
 import { withGenerationStop } from '../generation-stop.js';
 import {
     createGenerationRecord, createResumableWriter, createBackpressureWriter, detachFromResponse,
@@ -278,8 +279,8 @@ router.post('/task-status', async (request, response) => {
  * payload - it does not itself submit the job or wait for a result. `/generate-text` (below) submits
  * it, then hands the whole thing to `streamHordeGeneration()`, which polls Horde internally and
  * persists the ASSISTANT's reply server-side once the real final text is known, via the returned
- * `rawActionPersist` (`{anchorNodeId, name2, isSwipe, isContinue, anchorContent}`, merged with
- * `directories`/`ownerId` by the caller before being passed to `persistAssistantReply()`) - `null`
+ * `rawActionPersist` (`{chat, anchorNodeId, name2, isSwipe, isContinue, anchorContent}`, merged with
+ * the request's warnings and stop entry by the caller before being passed to `persistAssistantReply()`) - `null`
  * whenever persistence should be skipped (impersonate/quiet types).
  *
  * MVP SCOPE BOUNDARY (real, narrow, deliberately deferred - NOT attempted here): live
@@ -297,7 +298,7 @@ router.post('/task-status', async (request, response) => {
  */
 async function buildRawActionHordePayload(request, response) {
     const {
-        character_avatar: characterAvatar, group_id: groupId, owner_id: ownerId,
+        character_avatar: characterAvatar, group_id: groupId,
         type = 'normal', trusted_workers: trustedWorkers = false, models,
     } = request.body;
     // is_impersonate/is_continue/is_swipe are NOT read from the wire - see kobold.js's own identical
@@ -307,12 +308,15 @@ async function buildRawActionHordePayload(request, response) {
     const isSwipe = type === 'swipe' || type === 'regenerate';
 
     const directories = request.user.directories;
-    const turn = await generateTurnOf(response, directories, { ownerId, avatar: characterAvatar, groupId, body: request.body });
+    const chat = await chatContext(request, { avatar: characterAvatar, group: groupId });
+    if (!chat) throw new Error(groupId ? `Group not found: ${groupId}` : `Character not found: ${characterAvatar}`);
+    answerSessionOnHeaders(response, chat.session);
+    const turn = await generateTurnOf(response, chat, request.body);
     if (!turn) return null;
     const { nodeId, userMessageText, userMessageExtra } = turn;
 
     const built = await buildRawActionKoboldRequest(directories, {
-        request, characterAvatar, groupId, ownerId, nodeId,
+        request, characterAvatar, groupId, chat, nodeId,
         type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra,
         macroExtras: { isHorde: true },
     });
@@ -321,13 +325,13 @@ async function buildRawActionHordePayload(request, response) {
     // own extensive comment on impersonate/quiet skipping, the swipe/regenerate sibling-vs-child
     // distinction, and the continue/userMessageText tree-shape edge case. Not re-derived here;
     // identical reasoning applies verbatim since both routes share the exact same
-    // resolveTextCompletionGenerationInput()/message-tree-db.js persistence primitives.
+    // resolveTextCompletionGenerationInput() and persistence primitives.
     const skipPersistence = isImpersonate || type === 'quiet';
     let replyAnchorNodeId = built.anchorNodeId;
     const userMessage = turn.userMessage;
-    if (!skipPersistence && typeof userMessageText === 'string' && built.anchorNodeId) {
+    if (!skipPersistence && typeof userMessageText === 'string') {
         const userNodeId = await storeUserMessage(response, {
-            directories, ownerId, anchorNodeId: built.anchorNodeId, ref: request.body.user_message_ref,
+            chat, anchorNodeId: built.anchorNodeId, ref: request.body.user_message_ref,
             message: userMessage,
         });
         if (!userNodeId) return null;
@@ -336,9 +340,12 @@ async function buildRawActionHordePayload(request, response) {
     // A continue sent with text in the box stores that text as the user's message first, and the page then
     // continues that message, as upstream does: the reply is stored as an edit of it.
     const continuesUserMessage = isContinue && replyAnchorNodeId !== built.anchorNodeId;
+    // The reply's write goes through the session; one made for it is in the headers, which the stream
+    // sends before the reply is stored.
+    if (!skipPersistence) chat.session.actor();
     const rawActionPersist = !skipPersistence
         ? {
-            anchorNodeId: replyAnchorNodeId, name2: built.name2, isSwipe, isContinue, anchorContent: continuesUserMessage ? userMessage : built.anchorContent,
+            chat, anchorNodeId: replyAnchorNodeId, name2: built.name2, isSwipe, isContinue, anchorContent: continuesUserMessage ? userMessage : built.anchorContent,
             itemization: itemizationOf(request.body.itemization, built.itemization),
         }
         : null;
@@ -412,8 +419,8 @@ async function fetchHordeJobStatus(jobId, agent) {
  * @param {import('express').Response} params.response
  * @param {string} params.jobId Horde's own job id - also used as the `X-Generation-Id`.
  * @param {string} params.agent
- * @param {object|null} params.rawActionPersist Same shape `persistAssistantReply()` takes minus
- * `directories`/`ownerId` (already merged in by the caller) - or `null` to skip persistence.
+ * @param {object|null} params.rawActionPersist What `persistAssistantReply()` takes - or `null` to
+ * skip persistence.
  * @param {Array<{kind: string, key: string, message: string, entries?: string[]}>|null} [params.warnings]
  * The `/generate-text` route's per-request warnings - when non-empty, written as their own control
  * frame (`{control: {warnings: ...}}`) before any content.
@@ -516,12 +523,11 @@ router.post('/generate-text', withGenerationStop(async (request, response) => {
     /** @type {Array<{kind: string, key: string, message: string, entries?: string[]}>} */
     const warnings = [];
     if (request.body.owner_id && (request.body.character_avatar || request.body.group_id)) {
-        const ownerId = request.body.owner_id;
         try {
             const built = await buildRawActionHordePayload(request, response);
             request.body = built.body;
             rawActionPersist = built.rawActionPersist
-                ? { ...built.rawActionPersist, directories: request.user.directories, ownerId, warnings, generationStop: response.locals.generationStop }
+                ? { ...built.rawActionPersist, warnings, generationStop: response.locals.generationStop }
                 : null;
         } catch (error) {
             console.error('Failed to build raw-action Horde request:', error);

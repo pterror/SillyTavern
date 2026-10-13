@@ -26,11 +26,13 @@
  * @property {string} field A `/query` sort field, or `'search'` / `'random'`.
  * @property {'asc'|'desc'} order
  * @property {number} [seed] Set when `field` is `'random'`.
+ * @property {{ field: string, order: 'asc'|'desc', seed?: number }} [tie] With `field` `'search'`: the list's own sort,
+ *   which orders the matches only tag names match (they all score alike).
  */
 
 /**
  * The fields a condition can name: the canonical label, then the aliases typing turns into it. These are the labels
- * the server's search indexes accept (characters-search-index.js and groups-search-index.js TANTIVY_FIELD_LABELS).
+ * the server's library search accepts (`LIBRARY_LABELS`, src/search-clauses.js).
  * @type {Readonly<Record<string, readonly string[]>>}
  */
 export const SEARCH_FIELDS = Object.freeze({
@@ -61,7 +63,7 @@ export function canonicalSearchField(label) {
     return LABEL_TO_FIELD.get(String(label).toLowerCase()) ?? null;
 }
 
-// Same tokens as the server's tokenizeSearchQuery() (src/endpoints/search-query.js).
+// The server's tokens (`searchClauses()`, src/search-clauses.js), except that an unclosed quote isn't kept as one token here.
 const TOKEN_PATTERN = /[^\s"]*"[^"]*"|\S+/g;
 const CONDITION_PATTERN = /^(-)?([A-Za-z][A-Za-z0-9_]*):(.+)$/;
 
@@ -118,6 +120,7 @@ export function viewToQueryState(view, { includeGroups = false } = {}) {
         sortField: view.sort.field,
         sortOrder: view.sort.order,
         randomSeed: view.sort.field === 'random' ? view.sort.seed : undefined,
+        sortTie: view.sort.field === 'search' ? view.sort.tie : undefined,
         includeGroups,
         group: view.group,
         folder: view.folderCase ?? undefined,

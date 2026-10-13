@@ -69,7 +69,7 @@ async function main() {
                 const query = () => lib.query({ search, sortField, limit: 50, includeGroups: true });
                 const ms = await median(query);
                 const out = /** @type {any} */ (await query());
-                console.log(JSON.stringify({ phase: 'query', q: search, order: sortField, median_ms: Number(ms.toFixed(3)), rows: out.rows.length, total: out.total, approx: out.approxTotal, chips: out.tagMatches?.length ?? 0 }));
+                console.log(JSON.stringify({ phase: 'query', q: search, order: sortField, median_ms: Number(ms.toFixed(3)), rows: out.rows.length, total: out.total, approx: out.approxTotal }));
             }
         }
         // Edits through the app's write path, each looked for by the next search.

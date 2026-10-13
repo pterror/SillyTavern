@@ -18,7 +18,7 @@ use super::library::{
     self, CHARACTER, CHAT_SIZE, CREATED, DATA, FOLDER_TYPE, GROUP, LAST_CHAT, Scope, count_key,
     counter, num_key, order_prefix, parse_uvarint, rand_key, rand_prefix, split_order_key,
 };
-use crate::keyspace::val::{Val, get_bytes, get_u64, max_value, put_bytes, put_u64};
+use crate::keyspace::val::{get_bytes, get_u64, max_value, put_bytes, put_u64};
 use crate::log::format::FieldRef;
 use crate::search::query::{CheckFn, DocCheck};
 
@@ -264,6 +264,20 @@ fn resolve(view: &View, f: &Filter) -> Result<Resolved, StoreError> {
     Ok(r)
 }
 
+/// The tags an entity passing the filter carries, as `Checker::carries` tests them: each required tag's sources,
+/// and the sources of every tag of which one is required, together (empty when no such tag resolves).
+pub fn carried_sources(view: &View, f: &Filter) -> Result<(Vec<Vec<u64>>, Vec<u64>), StoreError> {
+    let r = resolve(view, f)?;
+    let all = r.all.iter().map(|t| r.sources[t].clone()).collect();
+    let mut any = Vec::new();
+    for t in &r.any {
+        for &s in &r.sources[t] {
+            push_new(&mut any, s);
+        }
+    }
+    Ok((all, any))
+}
+
 /// What decides whether an entity passes, each fact read only when the filter needs it.
 struct Checker<'a> {
     view: &'a View<'a>,
@@ -314,10 +328,11 @@ impl<'a> Checker<'a> {
             let at = (s, e >> key::MEMBER_BITS);
             if !self.blocks.contains_key(&at) && self.blocks.len() < BLOCKS_KEPT {
                 let mut bits = Box::new([0u64; 256]);
+                let block = key::member_block(s, e);
                 let pairs = self
                     .view
-                    .get_val(&key::member_block(s, e))?
-                    .and_then(Val::into_pairs)
+                    .get_val(&block)?
+                    .and_then(|v| v.into_pairs(&block))
                     .unwrap_or_default();
                 for (p, v) in pairs {
                     if v != 0 && p < 1 << key::MEMBER_BITS {
@@ -567,11 +582,16 @@ fn range_set(
     for src in &d.sources {
         for kind in kinds(f) {
             for fav in favs(f) {
-                let (mut from, end) = k.span(&order_prefix(src, k.sort, kind, fav));
+                let prefix = order_prefix(src, k.sort, kind, fav);
+                let (prefix_len, k_sort) = (prefix.len(), k.sort);
+                let (mut from, end) = k.span(&prefix);
                 loop {
                     let got = view.scan(&from, &end, 256)?;
-                    for (_, v) in &got {
-                        let e = parse_uvarint(v)?;
+                    for (k, _) in &got {
+                        let (_, e) =
+                            split_order_key(&k[prefix_len..], k_sort).ok_or_else(|| {
+                                StoreError::Entry("an order key doesn't decode".into())
+                            })?;
                         if seen.insert(e) {
                             out.push((e, kind, fav));
                             if out.len() as u64 > most {
@@ -634,7 +654,8 @@ struct Stream {
     desc: bool,
     /// Where the next read starts (ascending) or ends (descending).
     bound: Vec<u8>,
-    buf: std::collections::VecDeque<(Vec<u8>, Vec<u8>, u64)>,
+    /// Sort keys and entities read, in the page's direction.
+    buf: std::collections::VecDeque<(Vec<u8>, u64)>,
     done: bool,
     window: usize,
 }
@@ -662,18 +683,17 @@ impl Stream {
                 b
             };
         }
-        for (k, v) in found {
-            let (sk, tie) = split_order_key(&k[self.prefix.len()..], sort)
+        for (k, _) in found {
+            let (sk, e) = split_order_key(&k[self.prefix.len()..], sort)
                 .ok_or_else(|| StoreError::Entry("an order key doesn't decode".into()))?;
-            let e = parse_uvarint(&v.into_bytes())?;
-            self.buf.push_back((sk, tie, e));
+            self.buf.push_back((sk, e));
         }
         Ok(())
     }
 }
 
-/// A place in a sorted page's order: fav group, sort key, type, tie.
-type Place = (u8, Vec<u8>, u64, Vec<u8>);
+/// A place in a sorted page's order: fav group, sort key, type, entity (the tie).
+type Place = (u8, Vec<u8>, u64, u64);
 
 /// `a` against `b` in the page's order.
 fn place_cmp(a: &Place, b: &Place, desc: bool) -> std::cmp::Ordering {
@@ -688,7 +708,7 @@ fn encode_place(p: &Place, skip: u64, examined_before: u64) -> Vec<u8> {
     b.push(p.0);
     put_u64(&mut b, p.2);
     put_bytes(&mut b, &p.1);
-    put_bytes(&mut b, &p.3);
+    put_u64(&mut b, p.3);
     put_u64(&mut b, skip);
     put_u64(&mut b, examined_before);
     b
@@ -702,7 +722,7 @@ fn decode_place(b: &[u8]) -> Option<(Place, u64)> {
     let mut at = 2;
     let kind = get_u64(b, &mut at)?;
     let sk = get_bytes(b, &mut at)?;
-    let tie = get_bytes(b, &mut at)?;
+    let tie = get_u64(b, &mut at)?;
     let skip = get_u64(b, &mut at)?;
     get_u64(b, &mut at)?;
     (at == b.len()).then_some(((g, sk, kind, tie), skip))
@@ -729,12 +749,12 @@ fn bound_after(s: &Stream, p: &Place) -> Option<Vec<u8>> {
     // the key for an earlier type and at it for a later one.
     Some(match (s.kind.cmp(kind), s.desc) {
         (std::cmp::Ordering::Equal, false) => {
-            put_bytes(&mut at_key, tie);
+            put_u64(&mut at_key, *tie);
             at_key.push(0);
             at_key
         }
         (std::cmp::Ordering::Equal, true) => {
-            put_bytes(&mut at_key, tie);
+            put_u64(&mut at_key, *tie);
             at_key
         }
         (std::cmp::Ordering::Less, _) => key::prefix_end(&at_key),
@@ -803,7 +823,9 @@ fn sorted_page(
         }
     }
     let mut skip = at.as_ref().map_or(q.offset, |(_, s)| *s);
-    let budget = q.cap + skip + q.limit as u64;
+    // Skipped entries count against the budget too: a page far into the list stops at the cap with `more` and a
+    // cursor holding the rest of the skip, so no request reads O(offset).
+    let budget = q.cap + q.limit as u64;
     let mut ids = Vec::new();
     let mut examined = 0u64;
     let mut passed = 0u64;
@@ -829,8 +851,8 @@ fn sorted_page(
                 Some(b) => {
                     let o = &streams[b];
                     let bh = o.buf.front().unwrap();
-                    let mine = (streams[i].group, &head.0, streams[i].kind, &head.1);
-                    let theirs = (o.group, &bh.0, o.kind, &bh.1);
+                    let mine = (streams[i].group, &head.0, streams[i].kind, head.1);
+                    let theirs = (o.group, &bh.0, o.kind, bh.1);
                     let c = if mine.0 != theirs.0 {
                         mine.0.cmp(&theirs.0)
                     } else if desc {
@@ -849,9 +871,9 @@ fn sorted_page(
             let total = at.is_none().then_some(passed);
             return Ok(((ids, false, None), total));
         };
-        let (sk, tie, e) = streams[b].buf.pop_front().unwrap();
+        let (sk, e) = streams[b].buf.pop_front().unwrap();
         let (kind, fav) = (streams[b].kind, streams[b].fav);
-        let place = (streams[b].group, sk, kind, tie);
+        let place = (streams[b].group, sk, kind, e);
         examined += 1;
         last = Some(place);
         // The same entity from two tags' orders comes twice in a row.
@@ -910,11 +932,11 @@ fn set_page(
         if !chk.passes(e, kind, fav)? {
             continue;
         }
-        let Some((_, sk, tie)) = library::sort_place(view, e, sort)? else {
+        let Some((_, sk)) = library::sort_place(view, e, sort)? else {
             continue;
         };
         let group = fav_first.map_or(0, |f| u8::from(fav != f));
-        rows.push(((group, sk, kind, tie), e));
+        rows.push(((group, sk, kind, e), e));
     }
     let total = rows.len() as u64;
     Ok((rows_page(q, rows), Some(total)))
@@ -940,11 +962,11 @@ fn ids_page(q: &Query, chk: &mut Checker) -> Result<Walked, StoreError> {
         if !chk.passes(*e, kind, fav)? {
             continue;
         }
-        let Some((_, sk, tie)) = library::sort_place(chk.view, *e, sort)? else {
+        let Some((_, sk)) = library::sort_place(chk.view, *e, sort)? else {
             continue;
         };
         let group = fav_first.map_or(0, |f| u8::from(fav != f));
-        rows.push(((group, sk, kind, tie), *e));
+        rows.push(((group, sk, kind, *e), *e));
     }
     Ok(rows_page(q, rows))
 }
@@ -1247,9 +1269,17 @@ pub fn entities_only(
         }
         let mut fixed = [None; 7];
         for (i, slot) in fixed.iter_mut().enumerate() {
-            // The version is a position, not a record's place.
-            if i != 1 {
-                *slot = want(&row[i], &mut positions)?;
+            match i {
+                // The version is a position, not a record's place.
+                1 => {}
+                // The entity's entry and its lorebook link keep its numbers after the record's place.
+                0 | 5 => {
+                    if let Some(b) = &row[i] {
+                        positions.push(library::parse_host(b)?.0.pos);
+                        *slot = Some(positions.len() - 1);
+                    }
+                }
+                _ => *slot = want(&row[i], &mut positions)?,
             }
         }
         let mut fields = Vec::with_capacity(only.fields.len());
@@ -1384,7 +1414,7 @@ pub fn keys_many(view: &View, ids: &[u64]) -> Result<Vec<Option<super::EntityKey
     let got = view.get_many(&keys)?;
     let mut positions = Vec::new();
     for b in got.iter().flatten() {
-        positions.push(super::kinds::parse_loc(b)?.pos);
+        positions.push(library::parse_host(b)?.0.pos);
     }
     let mut recs = view.records(&positions)?.into_iter();
     Ok(got
@@ -1664,13 +1694,7 @@ impl Numbering {
         let mut off = 0;
         for (k, f, size) in &self.parts {
             if *k == kind && *f == fav {
-                let mut ak = key::of(key::RAND_AT);
-                self.scope.put(&mut ak);
-                put_u64(&mut ak, e);
-                return Ok(match view.get(&ak)? {
-                    Some(b) => Some(off + parse_uvarint(&b)?),
-                    None => None,
-                });
+                return Ok(library::rank(view, &self.scope, e)?.map(|n| off + n));
             }
             off += size;
         }

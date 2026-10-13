@@ -1,31 +1,17 @@
-import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach, jest } from '@jest/globals';
+import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals';
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
-import { defineCharacterStoreFunctions } from '../src/character-store-schema.js';
-import { splitCard } from '../src/character-card-storage.js';
-
-/**
- * Registers on a raw connection to the character store the functions its indexes and triggers call.
- * @template {import('better-sqlite3').Database} T
- * @param {T} db
- * @returns {T}
- */
-function withStoreFunctions(db) {
-    defineCharacterStoreFunctions({ defineFunction: (name, fn) => db.function(name, { deterministic: true }, fn) });
-    return db;
-}
 
 /** @type {import('express').Router} */
 let router;
-/** @type {typeof import('../src/character-metadata-db.js')} */
-let metadataDb;
+/** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
+let user;
+/** @type {typeof import('./converted-user.fixture.js')} */
+let fixture;
+/** @type {typeof import('../src/library-codes.js').TYPE} */
+let TYPE;
 /** @type {typeof import('../src/character-card-parser.js')} */
 let cardParser;
-/** @type {typeof import('../src/endpoints/search-index-coordinator.js')} */
-let searchCoordinator;
-/** @type {typeof import('../src/endpoints/characters-search-index.js')} */
-let searchIndexModule;
 /** @type {import('node:http').Server} */
 let server;
 let baseUrl;
@@ -35,28 +21,23 @@ let directories;
 
 /**
  * Mounts the real characters.js router behind a fake auth middleware, mirroring characters-manifest.test.js's
- * setup - the middleware reads `directories` from this file's outer-scope `let` at request time (not a snapshot
- * taken once in beforeAll), so beforeEach can point every test at a fresh temp directory / fresh SQLite metadata
- * db without needing a new server per test.
+ * setup - the middleware reads the current test's user at request time, so beforeEach can point every test at a fresh
+ * store without needing a new server per test.
  */
 beforeAll(async () => {
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
 
     ({ router } = await import('../src/endpoints/characters.js'));
-    metadataDb = await import('../src/character-metadata-db.js');
+    fixture = await import('./converted-user.fixture.js');
+    ({ TYPE } = await import('../src/library-codes.js'));
     cardParser = await import('../src/character-card-parser.js');
-    searchCoordinator = await import('../src/endpoints/search-index-coordinator.js');
-    searchIndexModule = await import('../src/endpoints/characters-search-index.js');
 
     const express = (await import('express')).default;
     const app = express();
     app.use(express.json());
     app.use((req, res, next) => {
-        // Handle derived from the current test's tempDir (unique per test via mkdtempSync's random suffix), not
-        // a fixed string: search index workers are keyed by handle, and each one maintains the index of the
-        // `directories` it was spawned with. A real user's handle never remaps to different `directories`.
-        req.user = { directories, profile: { handle: `test-user-${path.basename(directories.root)}` } };
+        req.user = user.user;
         next();
     });
     app.use('/api/characters', router);
@@ -67,35 +48,24 @@ beforeAll(async () => {
 
 afterAll(() => new Promise(resolve => server.close(resolve)));
 
-/**
- * A fresh temp user directory tree. Assigning it to `directories` also switches the request's handle, since the
- * fake auth middleware derives the handle from `directories.root`.
- * @returns {import('../src/users.js').UserDirectoryList}
- */
-function makeUserDirectories() {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-characters-query-test-'));
-    const charactersDir = path.join(tempDir, 'characters');
-    const chatsDir = path.join(tempDir, 'chats');
-    const groupsDir = path.join(tempDir, 'groups');
-    const groupChatsDir = path.join(tempDir, 'groupChats');
-    fs.mkdirSync(charactersDir, { recursive: true });
-    fs.mkdirSync(chatsDir, { recursive: true });
-    fs.mkdirSync(groupsDir, { recursive: true });
-    fs.mkdirSync(groupChatsDir, { recursive: true });
-    return /** @type {import('../src/users.js').UserDirectoryList} */ ({ root: tempDir, characters: charactersDir, chats: chatsDir, groups: groupsDir, groupChats: groupChatsDir });
+/** A fresh user with an empty store; the requests are this user's from now on. */
+async function makeUser() {
+    user = await fixture.emptyUser('st-characters-query-test-');
+    directories = user.directories;
+    globalThis.DATA_ROOT = user.dataRoot;
+    return user;
 }
 
-beforeEach(() => {
-    directories = makeUserDirectories();
+/** Users made by a test besides the one beforeEach made. */
+const otherUsers = [];
+
+beforeEach(async () => {
+    await makeUser();
 });
 
 afterEach(async () => {
-    // Each test's handle has its own search index worker, holding its own connection to this test's db.
-    await searchCoordinator.disposeSearchWorkers();
-    // Fresh tempDir (and therefore a fresh SQLite cache key - character-metadata-db.js keys its per-user entry
-    // map by directories.root) every test, so this just closes whatever this test's calls opened rather than
-    // leaking a growing set of open db handles across the whole suite.
-    metadataDb.disposeMetadataStores();
+    await user.close();
+    for (const other of otherUsers.splice(0)) await other.close();
 });
 
 async function postJson(urlPath, body) {
@@ -105,6 +75,15 @@ async function postJson(urlPath, body) {
         body: JSON.stringify(body),
     });
     return response;
+}
+
+/**
+ * The character changes `/changes` lists after a `/query` answer's `seq` (a place in the change feed characters and
+ * groups share, so a group write moves it).
+ * @param {number} seq
+ */
+async function characterChangesSince(seq) {
+    return (await (await postJson('/api/characters/changes', { sinceSeq: seq })).json()).changes;
 }
 
 /**
@@ -128,7 +107,7 @@ async function seedCharacter(avatar, overrides = {}) {
         },
         ...overrides,
     };
-    await metadataDb.upsertCharacterFromWrite(directories, avatar, JSON.stringify(card));
+    await user.store.lib.writeCard(directories, avatar, JSON.stringify(card));
 }
 
 /**
@@ -157,7 +136,7 @@ async function seedStoredCharacter(avatar, data = {}) {
         spec_version: '2.0',
         data: cardData,
     };
-    await metadataDb.upsertCharacterFromWrite(directories, avatar, JSON.stringify(card));
+    await user.store.lib.writeCard(directories, avatar, JSON.stringify(card));
 }
 
 /**
@@ -185,8 +164,7 @@ async function seedCharacterWithFile(avatar, overrides = {}) {
         ...overrides,
     };
     const buffer = cardParser.write(baseImage, JSON.stringify(card));
-    await fs.promises.writeFile(path.join(directories.characters, avatar), buffer);
-    await metadataDb.upsertCharacterFromWrite(directories, avatar, JSON.stringify(card));
+    await fixture.writeCardWithImage(user, avatar, JSON.stringify(card), buffer);
 }
 
 /**
@@ -194,7 +172,7 @@ async function seedCharacterWithFile(avatar, overrides = {}) {
  * @param {string[]} tagIds
  */
 async function assignTags(characterId, tagIds) {
-    for (const tagId of tagIds) expect(await metadataDb.assignEntityTag(directories, characterId, tagId)).toBe('ok');
+    for (const tagId of tagIds) expect((await user.store.lib.tags.assign(characterId, tagId)).result).toBe('ok');
 }
 
 /**
@@ -205,9 +183,21 @@ async function assignTags(characterId, tagIds) {
  * @param {object} overrides Shallow-merged onto a minimal group object
  */
 async function seedGroup(id, overrides = {}) {
-    const group = { id, name: id, members: [], chats: [], fav: false, ...overrides };
-    fs.writeFileSync(path.join(directories.groups, `${id}.json`), JSON.stringify(group));
-    await metadataDb.upsertGroupRow(directories, id, group.name, { fav: group.fav });
+    const own = { ...overrides };
+    delete own.chats;
+    await user.store.lib.writeGroup({ id, name: id, members: [], fav: false, ...own });
+}
+
+/**
+ * Stores a chat of one message in a group's tree.
+ * @param {string} id
+ * @param {string} name
+ * @returns {Promise<number>} The group's chat size now.
+ */
+async function seedGroupChat(id, name) {
+    await fixture.saveBranch(user.store, { group: id }, name, [{}, { name: 'User', is_user: true, mes: 'a message', send_date: 'x', extra: {} }]);
+    const tree = await fixture.treeOf(user.store, { group: id });
+    return (await user.store.lib.chatStats([tree])).get(tree)?.chat_size ?? 0;
 }
 
 describe('POST /api/characters/query - filter.includeGroups (extends the design doc to groups)', () => {
@@ -289,8 +279,8 @@ describe('POST /api/characters/query - filter.includeGroups (extends the design 
 
     test('each sort field orders characters and groups together: date_last_chat', async () => {
         await seedCharacter('NoChat.png');
-        await seedGroup('g1', { chats: ['c1'] });
-        await metadataDb.applyGroupChatStats(directories, 'g1', { sizeChange: 1, addedCreatedAt: Date.now(), readLastCreatedAt: null });
+        await seedGroup('g1');
+        await seedGroupChat('g1', 'c1');
 
         const response = await postJson('/api/characters/query', { filter: { includeGroups: true }, sort: { field: 'date_last_chat', order: 'desc' }, page: 1, pageSize: 10 });
         const body = await response.json();
@@ -301,13 +291,14 @@ describe('POST /api/characters/query - filter.includeGroups (extends the design 
 
     test('each sort field orders characters and groups together: chat_size', async () => {
         await seedCharacter('NoChat.png');
-        await seedGroup('g1', { chats: ['c1'] });
-        await metadataDb.applyGroupChatStats(directories, 'g1', { sizeChange: 500, addedCreatedAt: Date.now(), readLastCreatedAt: null });
+        await seedGroup('g1');
+        const chatSize = await seedGroupChat('g1', 'c1');
 
         const response = await postJson('/api/characters/query', { filter: { includeGroups: true }, sort: { field: 'chat_size', order: 'desc' }, page: 1, pageSize: 10 });
         const body = await response.json();
         expect(body.rows[0].type).toBe('group');
-        expect(body.rows[0].item.chat_size).toBe(500);
+        expect(chatSize).toBeGreaterThan(0);
+        expect(body.rows[0].item.chat_size).toBe(chatSize);
     });
 
     test('each sort field orders characters and groups together: fav', async () => {
@@ -344,7 +335,7 @@ describe('POST /api/characters/query - filter.includeGroups (extends the design 
         await seedGroup('TaggedGroup');
         await seedGroup('UntaggedGroup');
         await assignTags('Tagged.png', ['folder-1']);
-        await metadataDb.assignEntityTag(directories, 'TaggedGroup', 'folder-1');
+        await user.store.lib.tags.assign('TaggedGroup', 'folder-1');
 
         const response = await postJson('/api/characters/query', { filter: { includeGroups: true, tags: { include: ['folder-1'] } }, sort: { field: 'name' }, page: 1, pageSize: 10 });
         const body = await response.json();
@@ -403,23 +394,10 @@ describe('POST /api/characters/query - filter.includeGroups (extends the design 
         expect(body.rows).toHaveLength(2);
     });
 
-    test.each(['create_date', 'date_added', 'date_last_chat'])('filter.search + includeGroups + %s ascending returns 200 with a group whose file times are fractional ms', async (field) => {
-        await seedCharacterWithFile('VampireB.png', { name: 'Vampire Baron', data: { name: 'Vampire Baron', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
-        await seedGroup('VampireA', { name: 'Vampire Alpha', chats: ['c1'] });
-        fs.writeFileSync(path.join(directories.groupChats, 'c1.jsonl'), 'x');
-        const fractionalMs = 1775384635918.478;
-        fs.utimesSync(path.join(directories.groupChats, 'c1.jsonl'), fractionalMs / 1000, fractionalMs / 1000);
-
-        const response = await postJson('/api/characters/query', { filter: { includeGroups: true, search: 'vampire' }, sort: { field, order: 'asc' }, page: 1, pageSize: 10 });
-        expect(response.status).toBe(200);
-        const body = await response.json();
-        expect(body.total).toBe(2);
-        expect(body.rows).toHaveLength(2);
-    });
 
     test('filter.search + includeGroups + create_date puts a group between characters just older and just newer than it, ascending and descending reversed', async () => {
         await seedGroup('VampireGroup', { name: 'Vampire Group' });
-        const groupDate = fs.statSync(path.join(directories.groups, 'VampireGroup.json')).birthtimeMs;
+        const groupDate = (await user.store.lib.entity(TYPE.group, 'VampireGroup')).added;
         // More than 2048 ms either side: tantivy reports an ascending character's order rounded to a multiple of
         // 2048 at these magnitudes, so closer dates tie with the group.
         const cardFor = (name, createDate) => ({ name, create_date: new Date(createDate).toISOString(), data: { name, description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
@@ -437,7 +415,7 @@ describe('POST /api/characters/query - filter.includeGroups (extends the design 
 
     test('filter.search + includeGroups + create_date ascending places characters and a group 2 ms apart exactly', async () => {
         await seedGroup('VampireGroup', { name: 'Vampire Group' });
-        const groupDate = Math.floor(fs.statSync(path.join(directories.groups, 'VampireGroup.json')).birthtimeMs);
+        const groupDate = (await user.store.lib.entity(TYPE.group, 'VampireGroup')).added;
         const cardFor = (name, createDate) => ({ name, create_date: new Date(createDate).toISOString(), data: { name, description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
         await seedCharacterWithFile('VampireOlder.png', cardFor('Vampire Older', groupDate - 2));
         await seedCharacterWithFile('VampireNewer.png', cardFor('Vampire Newer', groupDate + 2));
@@ -457,25 +435,12 @@ describe('POST /api/characters/query - filter.includeGroups (extends the design 
         await seedCharacterWithFile('Same.png', cardFor('Vampire same'));
         await seedGroup('Alexandre', { name: 'Vampire Alexandre' });
         await seedGroup('Same', { name: 'Vampire same' });
-        await metadataDb.fillNameOrderIfNeeded(directories);
-        await searchIndexModule.rebuildCharacterSearchIndex(`test-user-${path.basename(directories.root)}`, directories);
 
         const response = await postJson('/api/characters/query', { filter: { includeGroups: true, search: 'vampire' }, sort: { field: 'name', order }, page: 1, pageSize: 10 });
         expect(response.status).toBe(200);
         expect((await response.json()).rows.map(r => r.type === 'group' ? r.item.id : r.item.avatar)).toEqual(expected);
     });
 
-    test('a deleted group is not resolvable via getGroupsByIds and is simply dropped from the page rather than shipping a null item', async () => {
-        await seedGroup('g1');
-        // Delete the file but leave the metadata row behind (simulating drift) - the route must not crash or
-        // emit a null item.
-        fs.unlinkSync(path.join(directories.groups, 'g1.json'));
-
-        const response = await postJson('/api/characters/query', { filter: { includeGroups: true }, page: 1, pageSize: 10 });
-        expect(response.status).toBe(200);
-        const body = await response.json();
-        expect(body.rows).toEqual([]);
-    });
 });
 
 describe('POST /api/characters/query - random sort is per user', () => {
@@ -508,14 +473,15 @@ describe('POST /api/characters/query - random sort is per user', () => {
         expect(a.status).toBe(200);
         expect(idsOf(await a.json())).toEqual(expectA);
 
-        const userA = directories;
-        directories = makeUserDirectories();
+        const userA = user;
+        otherUsers.push(await makeUser());
         await seedUser('Beta');
         const b = await postJson('/api/characters/query', request);
         expect(b.status).toBe(200);
         expect(idsOf(await b.json())).toEqual(expectB);
 
-        directories = userA;
+        user = userA;
+        directories = user.directories;
         const again = await postJson('/api/characters/query', request);
         expect(again.status).toBe(200);
         expect(idsOf(await again.json())).toEqual(expectA);
@@ -714,8 +680,7 @@ describe('POST /api/characters/query', () => {
         await seedCharacter('Old.png', {});
         const before = await (await postJson('/api/characters/query', { filter: { ids: ['Old.png'] } })).json();
 
-        await metadataDb.upsertCharacterFromWrite(directories, 'New.png', JSON.stringify({ name: 'New', data: { name: 'New', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } }));
-        await metadataDb.renameCharacterRow(directories, 'Old.png', 'New.png');
+        await user.store.lib.updateEntity(TYPE.character, 'Old.png', { key: 'New.png' });
 
         const after = await (await postJson('/api/characters/query', { filter: { ids: ['New.png'] } })).json();
         expect(after.rows[0].date_added).toBe(before.rows[0].date_added);
@@ -741,8 +706,22 @@ function hashResponseToken(buffer) {
         offset += 2 + view.getUint16(offset, true);
     }
     const tokenLen = view.getUint16(offset, true); offset += 2;
-    expect(offset + tokenLen).toBe(buffer.byteLength);
-    return tokenLen > 0 ? new TextDecoder().decode(new Uint8Array(buffer, offset, tokenLen)) : null;
+    const token = tokenLen > 0 ? new TextDecoder().decode(new Uint8Array(buffer, offset, tokenLen)) : null;
+    offset += tokenLen;
+    // After the token: the cursor (header bit 3), then a search's tag matches (header bit 4).
+    const flags = view.getUint8(0);
+    if (flags & 0b1000) offset += 2 + view.getUint16(offset, true);
+    if (flags & 0b10000) {
+        const count = view.getUint8(offset + 1);
+        offset += 2;
+        for (let i = 0; i < count; i++) {
+            offset += 2 + view.getUint16(offset, true);
+            offset += 2 + view.getUint16(offset, true);
+            offset += 8;
+        }
+    }
+    expect(offset).toBe(buffer.byteLength);
+    return token;
 }
 
 describe('POST /api/characters/query - the freshness token (token / ifToken)', () => {
@@ -767,126 +746,7 @@ describe('POST /api/characters/query - the freshness token (token / ifToken)', (
         expect(afterWrite.rows.map(r => r.avatar).sort()).toEqual(['Alice.png', 'Bob.png']);
     });
 
-    test('a search that lands between a write and the index catching up is not answered unchanged once the index has caught up', async () => {
-        await seedCharacterWithFile('Vampire0.png', cardFor('Vampire 0'));
-        const request = { filter: { search: 'vampire' }, sort: { field: 'search' }, page: 1, pageSize: 50 };
-        // Builds the index.
-        await postJson('/api/characters/query', request);
 
-        // The index catches up about once a second, so a search right after a write usually doesn't have it yet.
-        let behind = null;
-        let avatar = null;
-        for (let i = 1; i <= 20 && !behind; i++) {
-            avatar = `Vampire${i}.png`;
-            await seedCharacterWithFile(avatar, cardFor(`Vampire ${i}`));
-            const body = await (await postJson('/api/characters/query', request)).json();
-            if (!body.rows.some(r => r.avatar === avatar)) behind = body;
-        }
-        expect(behind).not.toBeNull();
-
-        let caughtUp;
-        const deadline = Date.now() + 5000;
-        do {
-            await new Promise(resolve => setTimeout(resolve, 50));
-            caughtUp = await (await postJson('/api/characters/query', request)).json();
-        } while (!caughtUp.rows.some(r => r.avatar === avatar) && Date.now() < deadline);
-        expect(caughtUp.rows.map(r => r.avatar)).toContain(avatar);
-        // The db's seq didn't move while the index caught up; that alone used to be the whole check.
-        expect(caughtUp.seq).toBe(behind.seq);
-
-        // ifSeq, the old check, isn't a freshness check any more: it would call this unchanged.
-        const withSeq = await (await postJson('/api/characters/query', { ...request, ifSeq: behind.seq })).json();
-        expect(withSeq.unchanged).toBeUndefined();
-        expect(withSeq.rows.map(r => r.avatar)).toContain(avatar);
-
-        expect(typeof behind.token).toBe('string');
-
-        const withToken = await (await postJson('/api/characters/query', { ...request, ifToken: behind.token })).json();
-        expect(withToken.unchanged).toBeUndefined();
-        expect(withToken.rows.map(r => r.avatar)).toContain(avatar);
-        expect(withToken.token).toBe(caughtUp.token);
-        expect(withToken.token).not.toBe(behind.token);
-
-
-        const current = await (await postJson('/api/characters/query', { ...request, ifToken: caughtUp.token })).json();
-        expect(current).toEqual({ seq: caughtUp.seq, token: caughtUp.token, unchanged: true });
-    }, 30000);
-
-    test('a retry that re-indexes a card which failed to index is not answered unchanged, though neither the db seq nor the index cursors moved', async () => {
-        const Database = (await import('better-sqlite3')).default;
-        const dbPath = path.join(directories.root, 'character-metadata.sqlite');
-        /**
-         * Stores `stored` as Vampire's card straight in the db (its card table rows and its row's card values).
-         * @param {unknown} stored @param {boolean} change
-         */
-        const setCard = (stored, change) => {
-            const db = withStoreFunctions(new Database(dbPath));
-            try {
-                const id = 'Vampire.png';
-                const parts = splitCard(stored);
-                const { columns } = parts;
-                for (const table of ['cards', 'card_greetings', 'card_tags', 'card_extensions', 'card_extra']) {
-                    db.prepare(`DELETE FROM ${table} WHERE character_id = ?`).run(id);
-                }
-                db.prepare('UPDATE characters SET name = ?, creator = ?, character_version = ?, world = ?, create_date_raw = ? WHERE id = ?')
-                    .run(columns.name ?? null, columns.creator ?? null, columns.character_version ?? null, columns.world ?? null, columns.create_date ?? null, id);
-                const cardColumns = Object.keys(parts.card);
-                db.prepare(`INSERT INTO cards (character_id${cardColumns.map(c => `, ${c}`).join('')}) VALUES (?${cardColumns.map(() => ', ?').join('')})`).run(id, ...cardColumns.map(c => parts.card[c]));
-                for (const g of parts.greetings) db.prepare('INSERT INTO card_greetings VALUES (?, ?, ?, ?)').run(id, g.list, g.position, g.text);
-                for (const t of parts.tags) db.prepare('INSERT INTO card_tags VALUES (?, ?, ?)').run(id, t.position, t.name);
-                for (const e of parts.extensions) db.prepare('INSERT INTO card_extensions VALUES (?, ?, ?)').run(id, e.key, e.value);
-                for (const x of parts.extra) db.prepare('INSERT INTO card_extra VALUES (?, ?, ?)').run(id, x.path, x.value);
-                if (change) db.prepare('INSERT INTO changes (id, op, fields) VALUES (?, \'upsert\', NULL)').run('Vampire.png');
-            } finally {
-                db.close();
-            }
-        };
-        const fangs = { filter: { search: 'fangs' }, sort: { field: 'search' }, page: 1, pageSize: 10 };
-        const garlic = { ...fangs, filter: { search: 'garlic' } };
-        const card = cardFor('Vampire');
-        await seedCharacterWithFile('Vampire.png', { ...card, data: { ...card.data, description: 'fangs' } });
-        expect((await settledQuery(fangs)).rows.map(r => r.avatar)).toEqual(['Vampire.png']);
-
-        // The index can't process this (a V2 card whose `data` is null), so it keeps the card's old doc and marks it
-        // for retry.
-        setCard({ name: 'Vampire', spec: 'chara_card_v2', data: null }, true);
-        const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
-        let failed;
-        try {
-            const marked = () => {
-                const db = withStoreFunctions(new Database(dbPath, { readonly: true }));
-                try {
-                    return db.prepare('SELECT COUNT(*) AS n FROM character_index_retries').get().n > 0;
-                } catch {
-                    return false;
-                } finally {
-                    db.close();
-                }
-            };
-            const markDeadline = Date.now() + 10000;
-            while (!marked() && Date.now() < markDeadline) await new Promise(resolve => setTimeout(resolve, 50));
-            expect(marked()).toBe(true);
-            failed = await settledQuery(fangs);
-            expect(failed.rows.map(r => r.avatar)).toEqual(['Vampire.png']);
-
-            // Mended with no change row: only the retry picks it up.
-            setCard({ ...card, spec: 'chara_card_v2', spec_version: '2.0', data: { ...card.data, description: 'garlic' } }, false);
-            let mended;
-            const deadline = Date.now() + 10000;
-            do {
-                await new Promise(resolve => setTimeout(resolve, 100));
-                mended = await (await postJson('/api/characters/query', garlic)).json();
-            } while (mended.rows.length === 0 && Date.now() < deadline);
-            expect(mended.rows.map(r => r.avatar)).toEqual(['Vampire.png']);
-            expect(mended.seq).toBe(failed.seq);
-        } finally {
-            errorSpy.mockRestore();
-        }
-
-        const stale = await (await postJson('/api/characters/query', { ...fangs, ifToken: failed.token })).json();
-        expect(stale.unchanged).toBeUndefined();
-        expect(stale.rows).toEqual([]);
-    }, 30000);
 
     /**
      * Repeats `request` until two answers in a row have the same token, so the indexes have settled.
@@ -921,79 +781,16 @@ describe('POST /api/characters/query - the freshness token (token / ifToken)', (
         const again = await (await postJson('/api/characters/query', { ...request, ifToken: first.token })).json();
         expect(again).toEqual({ seq: first.seq, token: first.token, unchanged: true });
 
-        // A group tag write: it moves the groups log but not MAX(changes.seq), and the groups index doesn't rebuild on it.
-        const versionBefore = await metadataDb.getGroupsVersion(directories);
-        await metadataDb.assignEntityTag(directories, 'g1', 'folder-1');
-        expect(await metadataDb.getGroupsVersion(directories)).toBeGreaterThan(versionBefore);
+        // A group tag write: no character changed.
+        await user.store.lib.tags.assign('g1', 'folder-1');
         const afterWrite = await (await postJson('/api/characters/query', { ...request, ifToken: first.token })).json();
         expect(afterWrite.unchanged).toBeUndefined();
-        expect(afterWrite.seq).toBe(first.seq);
+        expect(await characterChangesSince(first.seq)).toEqual([]);
         expect(afterWrite.token).not.toBe(first.token);
         expect(typedIds(afterWrite)).toEqual(['character:Vampire.png', 'group:g1']);
     }, 30000);
 
-    test.each(['the search path, tantivy sorted', 'the search path, SQL sorted'])('with includeGroups on %s, a search that lands between a group write and the groups index catching up is not answered unchanged once it has caught up', async (path) => {
-        const request = groupRequests[path];
-        await seedCharacterWithFile('Vampire.png', cardFor('Vampire Lord'));
-        await seedGroup('g0', { name: 'Vampire Coven 0' });
-        await settledQuery(request);
 
-        // The groups index catches up about once a second, so a search right after a write usually doesn't have it yet.
-        let behind = null;
-        let groupId = null;
-        for (let i = 1; i <= 20 && !behind; i++) {
-            groupId = `g${i}`;
-            // As the groups endpoints write a group, so the log row names its file.
-            const group = { id: groupId, name: `Vampire Coven ${i}`, members: [], chats: [], fav: false };
-            await metadataDb.writeGroupFileAndRow(directories, group, () => fs.writeFileSync(`${directories.groups}/${groupId}.json`, JSON.stringify(group)));
-            const body = await (await postJson('/api/characters/query', request)).json();
-            if (!body.rows.some(r => r.type === 'group' && r.item.id === groupId)) behind = body;
-        }
-        expect(behind).not.toBeNull();
-        expect(typeof behind.token).toBe('string');
-        const logVersion = await metadataDb.getGroupsVersion(directories);
-
-        let caughtUp;
-        const deadline = Date.now() + 10000;
-        do {
-            await new Promise(resolve => setTimeout(resolve, 50));
-            caughtUp = await (await postJson('/api/characters/query', request)).json();
-        } while (!caughtUp.rows.some(r => r.type === 'group' && r.item.id === groupId) && Date.now() < deadline);
-        expect(caughtUp.rows.map(r => r.type === 'group' ? r.item.id : r.item.avatar)).toContain(groupId);
-        // Neither log moved while the groups index caught up: only the version it was built from did.
-        expect(await metadataDb.getGroupsVersion(directories)).toBe(logVersion);
-        expect(caughtUp.seq).toBe(behind.seq);
-
-        const withToken = await (await postJson('/api/characters/query', { ...request, ifToken: behind.token })).json();
-        expect(withToken.unchanged).toBeUndefined();
-        expect(withToken.rows.map(r => r.type === 'group' ? r.item.id : r.item.avatar)).toContain(groupId);
-        expect(withToken.token).not.toBe(behind.token);
-    }, 30000);
-
-    test('with includeGroups, a groups version that can\'t be read gives no token and is never answered unchanged; without groups the token stays', async () => {
-        await seedCharacter('Alice.png');
-        await seedGroup('g1');
-        const request = groupRequests['the SQL path'];
-        const before = await (await postJson('/api/characters/query', request)).json();
-        expect(typeof before.token).toBe('string');
-
-        const Database = (await import('better-sqlite3')).default;
-        const raw = withStoreFunctions(new Database(path.join(directories.root, 'character-metadata.sqlite')));
-        raw.exec('DROP TABLE group_changes');
-        raw.close();
-
-        const withGroups = await (await postJson('/api/characters/query', request)).json();
-        expect(withGroups.token).toBeNull();
-        expect(withGroups.rows.length).toBe(2);
-        const again = await (await postJson('/api/characters/query', { ...request, ifToken: before.token })).json();
-        expect(again.unchanged).toBeUndefined();
-
-        const charactersOnly = { ...request, filter: {} };
-        const withoutGroups = await (await postJson('/api/characters/query', charactersOnly)).json();
-        expect(typeof withoutGroups.token).toBe('string');
-        const repeat = await (await postJson('/api/characters/query', { ...charactersOnly, ifToken: withoutGroups.token })).json();
-        expect(repeat.unchanged).toBe(true);
-    });
 
     test('with includeGroups, hash mode carries the token and answers a matching ifToken unchanged', async () => {
         await seedCharacterWithFile('Vampire.png', cardFor('Vampire Lord'));
@@ -1076,18 +873,17 @@ describe('POST /api/characters/query - sort.field "random" (design doc §5.3, de
         await seedGroup('g2');
         const added = await (await postJson('/api/characters/query', { ...request, ifToken: first.token })).json();
         expect(added.unchanged).toBeUndefined();
-        expect(added.seq).toBe(first.seq);
+        expect(await characterChangesSince(first.seq)).toEqual([]);
         expect(ids(added)).toEqual(['Char0.png', 'Char1.png', 'Char2.png', 'Char3.png', 'g1', 'g2']);
 
         // The group that sorts first, so a page read from ids that still hold it misses the one that sorts last.
         const { getStringHash } = await import('../public/scripts/hash-utils.js');
         const gone = getStringHash('g1', request.sort.seed) < getStringHash('g2', request.sort.seed) ? 'g1' : 'g2';
         const kept = gone === 'g1' ? 'g2' : 'g1';
-        fs.unlinkSync(path.join(directories.groups, `${gone}.json`));
-        await metadataDb.deleteGroupRow(directories, gone, { fileDeleted: true });
+        await user.store.lib.deleteEntity(TYPE.group, gone);
         const removed = await (await postJson('/api/characters/query', { ...request, pageSize: 5, ifToken: added.token })).json();
         expect(removed.unchanged).toBeUndefined();
-        expect(removed.seq).toBe(first.seq);
+        expect(await characterChangesSince(first.seq)).toEqual([]);
         expect(ids(removed)).toEqual(['Char0.png', 'Char1.png', 'Char2.png', 'Char3.png', kept]);
     });
 
@@ -1098,7 +894,7 @@ describe('POST /api/characters/query - sort.field "random" (design doc §5.3, de
 });
 
 describe('POST /api/characters/query - filter.search (design doc §5.1/§5)', () => {
-    test('finds a seeded, on-disk character by name and returns its shallow row from SQLite', async () => {
+    test('finds a seeded, on-disk character by name and returns its shallow row', async () => {
         await seedCharacterWithFile('Vampire.png', { name: 'Vampire Lord', data: { name: 'Vampire Lord', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
         await seedCharacterWithFile('Werewolf.png', { name: 'Werewolf', data: { name: 'Werewolf', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
 
@@ -1107,7 +903,8 @@ describe('POST /api/characters/query - filter.search (design doc §5.1/§5)', ()
         const body = await response.json();
         expect(body.rows.map(r => r.avatar)).toEqual(['Vampire.png']);
         expect(body.total).toBe(1);
-        expect(typeof body.searchBackend).toBe('string');
+        // One search engine answers every search, so no answer names one.
+        expect(body.searchBackend).toBeUndefined();
     });
 
     test('a fav toggle through setCharacterFav() (not the card file) is reflected by favorites-only search, caught up by incremental maintenance rather than the explicit full-rebuild endpoint', async () => {
@@ -1122,7 +919,7 @@ describe('POST /api/characters/query - filter.search (design doc §5.1/§5)', ()
         // The db-authoritative fav write path (character-metadata-db.js's setCharacterFav()) - deliberately never
         // touches Vampire.png's card file, so a search index that (wrongly) rebuilt its `fav` field from the card
         // would never see this, whether by a full rebuild or an incremental catch-up.
-        const updated = await metadataDb.setCharacterFav(directories, 'Vampire.png', true);
+        const updated = await user.store.lib.setFav(TYPE.character, 'Vampire.png', true);
         expect(updated).toBe(true);
 
         // The search index worker catches up on its own tick (about once a second) and no request waits for it,
@@ -1165,7 +962,6 @@ describe('POST /api/characters/query - filter.search (design doc §5.1/§5)', ()
         for (let i = 0; i < 12; i++) {
             await seedCharacterWithFile(`Vamp${i}.png`, card(i % 3 === 0 ? `Vampire ${i}` : `Werewolf ${i}`));
         }
-        await metadataDb.fillRandomRanksIfNeeded(directories);
         for (const order of ['asc', 'desc']) {
             const sort = { field: 'random', seed: 31, order };
             const all = await (await postJson('/api/characters/query', { sort, page: 1, pageSize: 50 })).json();
@@ -1234,7 +1030,7 @@ describe('POST /api/characters/query - filter.search with a fast-field sort (tan
     test('filter.fav false keeps only non-favorites on both sides', async () => {
         await seedMixed();
         await seedCharacterWithFile('d.png', cardFor('Delta vampire'));
-        await metadataDb.setCharacterFav(directories, 'd.png', true);
+        await user.store.lib.setFav(TYPE.character, 'd.png', true);
         await seedGroup('grp-h', { name: 'Hotel vampire', fav: true });
 
         let body;
@@ -1247,83 +1043,6 @@ describe('POST /api/characters/query - filter.search with a fast-field sort (tan
         expect(body.total).toBe(byNameAsc.length);
     });
 
-    test('an index hit whose row no longer exists is omitted and the page still fills', async () => {
-        await seedMixed();
-        // Prime both indexes, then remove rows without touching the indexes: the group row directly (the groups
-        // index follows the groups directory, not the metadata db), the character row without a change-log entry.
-        await postJson('/api/characters/query', { filter: { includeGroups: true, search: 'vampire' }, sort: { field: 'name', order: 'asc' }, page: 1, pageSize: 10 });
-        await metadataDb.deleteGroupRow(directories, 'grp-b');
-        metadataDb.disposeMetadataStores();
-        const Database = (await import('better-sqlite3')).default;
-        const raw = withStoreFunctions(new Database(path.join(directories.root, 'character-metadata.sqlite')));
-        raw.prepare('DELETE FROM characters WHERE id = ?').run('c.png');
-        raw.close();
-
-        const response = await postJson('/api/characters/query', { filter: { includeGroups: true, search: 'vampire' }, sort: { field: 'name', order: 'asc' }, page: 1, pageSize: 3 });
-        expect(response.status).toBe(200);
-        const body = await response.json();
-        expect(body.rows.map(rowId)).toEqual(['a.png', 'e.png', 'grp-f']);
-
-        const hashes = await postJson('/api/characters/query', { filter: { includeGroups: true, search: 'vampire' }, sort: { field: 'name', order: 'asc' }, page: 1, pageSize: 3, want: ['hashes', 'total'] });
-        expect(hashes.status).toBe(200);
-    });
-});
-
-describe('search hits whose row no longer exists (the index can lag a delete)', () => {
-    const cardFor = (name) => ({ name, data: { name, description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
-    const deletedIds = ['gone0.png', 'gone1.png', 'gone2.png'];
-
-    /** Five live matches, and three rows deleted without a change-log entry after the index was built, so their
-     * docs stay in the index. The shorter names rank the deleted docs first. */
-    async function seedWithGhosts(prime) {
-        for (const id of deletedIds) {
-            await seedCharacterWithFile(id, cardFor('Vampire'));
-        }
-        for (let i = 0; i < 5; i++) {
-            await seedCharacterWithFile(`live${i}.png`, cardFor(`Vampire lord number ${i}`));
-        }
-        await prime();
-        metadataDb.disposeMetadataStores();
-        const Database = (await import('better-sqlite3')).default;
-        const raw = withStoreFunctions(new Database(path.join(directories.root, 'character-metadata.sqlite')));
-        for (const id of deletedIds) {
-            raw.prepare('DELETE FROM characters WHERE id = ?').run(id);
-        }
-        raw.close();
-    }
-
-    const rowId = (r) => r.type === 'group' ? r.item.id : (r.avatar ?? r.item?.avatar);
-
-    test('/query with the search sort omits them and still fills the page', async () => {
-        const body = { filter: { search: 'vampire' }, sort: { field: 'search' }, page: 1, pageSize: 5 };
-        await seedWithGhosts(() => postJson('/api/characters/query', body));
-
-        const response = await postJson('/api/characters/query', body);
-        expect(response.status).toBe(200);
-        const ids = (await response.json()).rows.map(rowId);
-        expect(ids.sort()).toEqual(['live0.png', 'live1.png', 'live2.png', 'live3.png', 'live4.png']);
-    });
-
-    test('/query with the search sort and includeGroups omits them and still fills the page', async () => {
-        await seedGroup('grp-v', { name: 'Vampire coven of the long night' });
-        const body = { filter: { includeGroups: true, search: 'vampire' }, sort: { field: 'search' }, page: 1, pageSize: 6 };
-        await seedWithGhosts(() => postJson('/api/characters/query', body));
-
-        const response = await postJson('/api/characters/query', body);
-        expect(response.status).toBe(200);
-        const ids = (await response.json()).rows.map(rowId);
-        expect(ids.sort()).toEqual(['grp-v', 'live0.png', 'live1.png', 'live2.png', 'live3.png', 'live4.png']);
-    });
-
-    test('/all with a search omits them and still fills the page', async () => {
-        const body = { search: 'vampire', offset: 0, limit: 5 };
-        await seedWithGhosts(() => postJson('/api/characters/all', body));
-
-        const response = await postJson('/api/characters/all', body);
-        expect(response.status).toBe(200);
-        const ids = (await response.json()).items.map(item => item.avatar);
-        expect(ids.sort()).toEqual(['live0.png', 'live1.png', 'live2.png', 'live3.png', 'live4.png']);
-    });
 });
 
 describe('POST /api/characters/query - sort.field "search" applies filters inside the search index, so the page fills', () => {
@@ -1356,7 +1075,7 @@ describe('POST /api/characters/query - sort.field "search" applies filters insid
     test('fav false: favorited characters ranked above the page don\'t leave it short', async () => {
         await seedCharacters();
         for (const id of aboveCharacterIds) {
-            await metadataDb.setCharacterFav(directories, id, true);
+            await user.store.lib.setFav(TYPE.character, id, true);
         }
 
         const response = await postJson('/api/characters/query', { filter: { search: 'zephyr', fav: false }, sort: { field: 'search' }, page: 1, pageSize: 1 });
@@ -1374,7 +1093,7 @@ describe('POST /api/characters/query - sort.field "search" applies filters insid
 
     test('tags include with includeGroups: untagged groups ranked above the page don\'t leave it short', async () => {
         await seedGroups();
-        await metadataDb.assignEntityTag(directories, 'grp-kept', 'tag-kept');
+        await user.store.lib.tags.assign('grp-kept', 'tag-kept');
 
         const response = await postJson('/api/characters/query', { filter: { includeGroups: true, search: 'zephyr', tags: { include: ['tag-kept'] } }, sort: { field: 'search' }, page: 1, pageSize: 1 });
         expect(response.status).toBe(200);
@@ -1407,8 +1126,8 @@ describe('POST /api/characters/query - a tag filter with only excluded tags', ()
         await seedCharacterWithFile('b-kept.png', cardFor('B zephyr'));
         await seedCharacterWithFile('c-tagged.png', cardFor('C zephyr'));
         await seedCharacterWithFile('d-kept.png', cardFor('D zephyr'));
-        await metadataDb.assignEntityTag(directories, 'a-tagged.png', 'tag-x');
-        await metadataDb.assignEntityTag(directories, 'c-tagged.png', 'tag-x');
+        await user.store.lib.tags.assign('a-tagged.png', 'tag-x');
+        await user.store.lib.tags.assign('c-tagged.png', 'tag-x');
     }
 
     async function seedGroups() {
@@ -1416,8 +1135,8 @@ describe('POST /api/characters/query - a tag filter with only excluded tags', ()
         await seedGroup('grp-b-kept', { name: 'B zephyr' });
         await seedGroup('grp-c-tagged', { name: 'C zephyr' });
         await seedGroup('grp-d-kept', { name: 'D zephyr' });
-        await metadataDb.assignEntityTag(directories, 'grp-a-tagged', 'tag-x');
-        await metadataDb.assignEntityTag(directories, 'grp-c-tagged', 'tag-x');
+        await user.store.lib.tags.assign('grp-a-tagged', 'tag-x');
+        await user.store.lib.tags.assign('grp-c-tagged', 'tag-x');
     }
 
     test('search sort: characters without the excluded tag come back', async () => {
@@ -1453,20 +1172,31 @@ describe('POST /api/characters/query - a tag filter with only excluded tags', ()
     });
 });
 
-describe('POST /api/characters/search-index/rebuild (design doc §3.2 explicit repair endpoint)', () => {
-    test('forces a rebuild and reports which engine tier served it', async () => {
+describe('POST /api/characters/search-index/rebuild', () => {
+    test('answers success and does nothing: the search index is always current', async () => {
         await seedCharacterWithFile('Rebuildable.png');
 
         const response = await postJson('/api/characters/search-index/rebuild', {});
         expect(response.status).toBe(200);
-        const body = await response.json();
-        expect(body.ok).toBe(true);
-        expect(typeof body.backend).toBe('string');
+        expect(await response.json()).toEqual({ ok: true });
 
-        // The rebuilt index actually finds the character - not just a 200 with no real effect.
+        // The character written before is found, rebuild or not.
         const searchResponse = await postJson('/api/characters/query', { filter: { search: 'Rebuildable' }, page: 1, pageSize: 10 });
         const searchBody = await searchResponse.json();
         expect(searchBody.rows.map(r => r.avatar)).toEqual(['Rebuildable.png']);
+    });
+});
+
+describe('POST /api/characters/query - cursors', () => {
+    test('a cursor made for another sort is a 400 invalid-cursor', async () => {
+        for (const name of ['A.png', 'B.png', 'C.png']) await seedCharacter(name);
+        const first = await (await postJson('/api/characters/query', { sort: { field: 'name', order: 'asc' }, page: 1, pageSize: 1 })).json();
+        expect(typeof first.cursor).toBe('string');
+        const same = await postJson('/api/characters/query', { sort: { field: 'name', order: 'asc' }, page: 2, pageSize: 1, cursor: first.cursor });
+        expect(same.status).toBe(200);
+        const other = await postJson('/api/characters/query', { sort: { field: 'date_added', order: 'asc' }, page: 2, pageSize: 1, cursor: first.cursor });
+        expect(other.status).toBe(400);
+        expect((await other.json()).reason).toBe('invalid-cursor');
     });
 });
 
@@ -1481,7 +1211,7 @@ describe('POST /api/characters/exists', () => {
 
     test('a deleted character reads as false, never resolving to whatever reused the filename incorrectly', async () => {
         await seedCharacter('Churn.png');
-        await metadataDb.deleteCharacterRow(directories, 'Churn.png');
+        await user.store.lib.deleteEntity(TYPE.character, 'Churn.png');
 
         const response = await postJson('/api/characters/exists', { ids: ['Churn.png'] });
         expect(await response.json()).toEqual({ 'Churn.png': false });
@@ -1517,7 +1247,7 @@ describe('POST /api/characters/changes', () => {
 
     test('reports an upsert then a delete as two ops for the same id, since sinceSeq 0', async () => {
         await seedCharacter('A.png');
-        await metadataDb.deleteCharacterRow(directories, 'A.png');
+        await user.store.lib.deleteEntity(TYPE.character, 'A.png');
 
         const response = await postJson('/api/characters/changes', { sinceSeq: 0 });
         const body = await response.json();
@@ -1551,32 +1281,6 @@ describe('POST /api/characters/changes', () => {
     });
 });
 
-describe('/query sorted pages past the work cap', () => {
-    test('the reply has the rows read so far, more and a cursor; following the cursor gives the whole page', async () => {
-        for (const name of ['delta', 'alpha', 'echo', 'charlie', 'bravo', 'foxtrot']) await seedCharacter(`${name}.png`);
-        const body = { filter: { includeGroups: true }, sort: { field: 'name', order: 'asc' }, page: 1, pageSize: 4, want: ['rows'] };
-        const whole = await (await postJson('/api/characters/query', body)).json();
-        expect(whole.more).toBeUndefined();
-        expect(whole.rows.map(r => r.item.avatar)).toEqual(['alpha.png', 'bravo.png', 'charlie.png', 'delta.png']);
-
-        metadataDb._setSortedPageWalkForTests({ cap: 1, window: 1 });
-        try {
-            const rows = [];
-            let reply = await (await postJson('/api/characters/query', body)).json();
-            rows.push(...reply.rows);
-            expect(reply.more).toBe(true);
-            expect(typeof reply.cursor).toBe('string');
-            for (let requests = 0; requests < 50 && reply.more === true && rows.length < 4; requests++) {
-                reply = await (await postJson('/api/characters/query', { ...body, pageSize: 4 - rows.length, cursor: reply.cursor })).json();
-                rows.push(...reply.rows);
-            }
-            expect(rows.map(r => r.item.avatar)).toEqual(['alpha.png', 'bravo.png', 'charlie.png', 'delta.png']);
-        } finally {
-            metadataDb._setSortedPageWalkForTests(null);
-        }
-    });
-});
-
 describe('/query relevance pages read from the ranking', () => {
     test('pages followed by cursor give the one-page list in rank order, each with the index\'s exact total', async () => {
         const card = name => ({ name, data: { name, description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
@@ -1603,6 +1307,32 @@ describe('/query relevance pages read from the ranking', () => {
         // A page number with no cursor gives the same page.
         const third = await (await postJson('/api/characters/query', { ...request, page: 3, pageSize: 3 })).json();
         expect(third.rows.map(key)).toEqual(whole.rows.map(key).slice(6, 9));
+    });
+
+    test('several words\' cursors carry the idfs page 1 ranked by; weights that don\'t fit the words are invalid-cursor', async () => {
+        const card = name => ({ name, data: { name, description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+        for (let i = 0; i < 9; i++) await seedCharacterWithFile(`Eta${i}.png`, card(i % 3 === 0 ? `Eta Theta Theta ${i}` : `Eta Theta ${i}`));
+        const request = { filter: { includeGroups: true, search: 'eta theta' }, sort: { field: 'search' }, want: ['rows', 'total'] };
+        const key = row => row.item.avatar;
+        const whole = await (await postJson('/api/characters/query', { ...request, page: 1, pageSize: 20 })).json();
+        const followed = [];
+        let cursor;
+        let firstCursor;
+        for (let page = 1; page <= 4; page++) {
+            const reply = await (await postJson('/api/characters/query', { ...request, page, pageSize: 3, ...(cursor ? { cursor } : {}) })).json();
+            followed.push(...reply.rows.map(key));
+            cursor = reply.cursor;
+            firstCursor ??= cursor;
+        }
+        expect(followed).toEqual(whole.rows.map(key));
+        expect(firstCursor).toMatch(/^s[^:]+:\d+:[^:,]+,[^:,]+$/);
+        const [s, doc, weights] = firstCursor.split(':');
+        const wrong = await postJson('/api/characters/query', { ...request, page: 2, pageSize: 3, cursor: `${s}:${doc}:${weights.split(',')[0]}` });
+        expect(wrong.status).toBe(400);
+        expect((await wrong.json()).reason).toBe('invalid-cursor');
+        const oneWord = await postJson('/api/characters/query', { ...request, filter: { includeGroups: true, search: 'theta' }, page: 2, pageSize: 3, cursor: firstCursor });
+        expect(oneWord.status).toBe(400);
+        expect((await oneWord.json()).reason).toBe('invalid-cursor');
     });
 });
 

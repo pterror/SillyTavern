@@ -30,13 +30,13 @@ import { fetchTextgenStatus, rememberRemoteTokenization } from '../../backend-st
 import { rememberOpenRouterModels } from '../../openrouter-models.js';
 import { resolveTextCompletionGenerationInput } from '../../text-completion-generation-input.js';
 import { assembleTextCompletionPrompt, buildItemizationBreakdown } from '../../text-completion-prompt-orchestrator.js';
-import { getAncestorPath } from '../../message-tree-db.js';
 import { generateTurnOf } from '../../page-writes.js';
 import { storeUserMessage, withStoredMessages } from '../../stored-messages.js';
 import { readCardContent } from '../characters.js';
 import { getGroupsByIds } from '../groups.js';
 import { persistAssistantReply, replyTextAsPageShows, unreadableReplyWarning } from '../../assistant-reply-persist.js';
-import { itemizationOf } from '../../itemization-store.js';
+import { itemizationOf } from '../../itemization-of.js';
+import { answerSessionOnHeaders, chatContext } from '../../chat-request.js';
 import { withGenerationStop, generationIdFor, isGenerationStopped, onGenerationStop, onGenerationStopFlush, stoppableController, handleGenerationStop } from '../../generation-stop.js';
 
 export const router = express.Router();
@@ -516,10 +516,10 @@ router.post('/props', async function (request, response) {
  *   single-character turn.
  * @param {string} [params.groupId] Group id. One of this or `characterAvatar` is required. See
  *   `characterAvatar`'s own doc comment above for the "both together, for a group turn" case.
- * @param {string} params.ownerId message-tree-db.js owner id.
+ * @param {import('../../chat-request.js').ChatContext} params.chat The chat the request acts in.
  * @param {string|null} params.nodeId REQUIRED (`undefined` throws) - see this function's own doc
- * comment ADDRESSING MODEL section. A real node id string addresses that node; `null` asserts "this
- * is a genuinely brand-new, empty conversation" and only succeeds when that is actually true.
+ * comment ADDRESSING MODEL section. A real node id string addresses that node; `null` goes on from the
+ * tree's root, and only succeeds when that is current (`loadChatHistory()`).
  * @param {string} [params.type] Generation type ('normal'/'impersonate'/'continue'/'swipe'/...).
  * @param {boolean} [params.isImpersonate]
  * @param {boolean} [params.isContinue]
@@ -527,7 +527,7 @@ router.post('/props', async function (request, response) {
  * @param {string} [params.userMessageText] The literal text the user typed this turn. Omit for
  * generation types that don't add a new message (continue/swipe).
  * @param {object} [params.userMessageExtra] Already-SERVER-VALIDATED `extra` (see
- * `sanitizeUserMessageExtra()` in message-tree-db.js) for the new user message being appended -
+ * `sanitizeUserMessageExtra()` in user-message-extra.js) for the new user message being appended -
  * forwarded verbatim to `resolveTextCompletionGenerationInput()` and reused as-is for the real
  * persisted append below (the route handler is responsible for having already sanitized whatever the
  * client sent; this function does not re-validate it). Ignored when `userMessageText` is omitted.
@@ -537,7 +537,7 @@ router.post('/props', async function (request, response) {
  * added to the token tables, for writeBack() once the request is sent.
  */
 export async function buildRawActionTextCompletionRequest(directories, {
-    request, characterAvatar, groupId, ownerId, nodeId,
+    request, characterAvatar, groupId, chat, nodeId,
     type = 'normal', isImpersonate = false, isContinue = false, isSwipe = false, userMessageText, userMessageExtra,
     // Test-only injection point, forwarded straight through to encodeWithTokenizerType()'s own
     // `encodeLocal`/`encodeTextgenRemote`/`fetchImpl` options (see that function's JSDoc) - lets a
@@ -545,9 +545,6 @@ export async function buildRawActionTextCompletionRequest(directories, {
     // to tokenize against. Never set by the /generate route itself.
     tokenizerOptions = {},
 } = {}) {
-    if (!ownerId) {
-        throw new Error('owner_id is required');
-    }
     if (!characterAvatar && !groupId) {
         throw new Error('character_avatar or group_id is required');
     }
@@ -577,7 +574,7 @@ export async function buildRawActionTextCompletionRequest(directories, {
         }
     }
     if (groupId) {
-        const group = getGroupsByIds(directories, [groupId])[groupId];
+        const group = (await getGroupsByIds(directories, [groupId]))[groupId];
         if (!group) {
             throw new Error(`Group not found: ${groupId}`);
         }
@@ -593,8 +590,7 @@ export async function buildRawActionTextCompletionRequest(directories, {
     // `orchestratorInput.chatResolutionAmbiguous` once Step 4 has already computed it for real.
     let anchorNodeId = null;
     if (nodeId !== null) {
-        const ancestorPath = await getAncestorPath(directories, nodeId);
-        if (!ancestorPath) {
+        if (!await chat.store.chats.messageOf(chat.tree, nodeId)) {
             throw new Error(`Chat node not found: ${nodeId}`);
         }
         anchorNodeId = nodeId;
@@ -625,23 +621,16 @@ export async function buildRawActionTextCompletionRequest(directories, {
 
     // Step 4
     const orchestratorInput = await resolveTextCompletionGenerationInput(directories, {
-        // `nodeId` passed as-is: `resolveChatHistory()`'s own checks are truthy-based, so `null`
-        // already falls through to its anchor-resolution branch exactly like `undefined` would.
-        avatar: characterAvatar, groupId, ownerId, nodeId,
+        avatar: characterAvatar, groupId, chatContext: chat, nodeId,
         type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra,
         countTokens, encodeTokens, countPromptTokens,
     });
 
-    // `nodeId === null` ("genuinely new, empty conversation") is only valid when this owner's
-    // conversation really is empty - `resolveChatHistory()` (inside the resolver just called) already
-    // determined this for real, via the SAME anchor resolution, and reports it back here rather than
-    // this function re-deriving it independently (see Step 2's own comment above for why that would
-    // risk disagreement). `chatResolutionAmbiguous` means real prior history exists but neither a
-    // node id nor (now-removed) branch name was given to say which point was meant - a real error,
-    // not a silent guess at "the current leaf".
+    // `nodeId === null` goes on from the tree's root only when that is current (`loadChatHistory()`):
+    // otherwise the caller is behind, and is refused rather than generated for at a guessed message.
     if (nodeId === null) {
         if (orchestratorInput.chatResolutionAmbiguous) {
-            throw new Error('node_id is required: this character/group already has an existing conversation - resolve which node the client was looking at and pass its node_id (null is only valid for a genuinely new, empty conversation)');
+            throw new Error('node_id is required: this chat is not at its start - pass the node_id of the message to generate from (null is only valid in a new chat)');
         }
         anchorNodeId = orchestratorInput.resolvedNodeId;
     }
@@ -658,8 +647,8 @@ export async function buildRawActionTextCompletionRequest(directories, {
     // without a second DB read. Reused directly from `orchestratorInput.chat`'s own last entry rather
     // than re-fetched - verified (not assumed) that this resolver never drops or alters that entry for
     // `isContinue` the way it does for `isSwipe` (see resolveTextCompletionGenerationInput()'s own
-    // `chat` construction above: it's exactly `loadedChat` - straight from `loadBranch()`/
-    // `getAncestorPath()` - whenever `userMessageText` is omitted, which is always true for continue).
+    // `chat` construction above: it's exactly `loadedChat` - straight from `loadChatHistory()` -
+    // whenever `userMessageText` is omitted, which is always true for continue).
     // Only meaningful when `orchestratorInput.chat.length > 0`, which the guard above already
     // guarantees for `isContinue` (an empty-chat continue throws before reaching here) - `null` for
     // every other, non-continue caller shape where `chat` could legitimately be empty.
@@ -670,7 +659,7 @@ export async function buildRawActionTextCompletionRequest(directories, {
         tokenCountRows: storedCounter.pending,
         name1: orchestratorInput.name1, name2: orchestratorInput.name2,
         warnings: sendTokenizerWarnings(tokenizerState, resolvedTokenizer, tokenizerOutcome, assembled.droppedEntries),
-        // The server's part of the reply's stored prompt itemization (itemization-store.js itemizationOf()).
+        // The server's part of the reply's stored prompt itemization (itemizationOf()).
         itemization: buildItemizationBreakdown(assembled),
     };
 }
@@ -813,14 +802,19 @@ router.post('/generate', withGenerationStop(async function (request, response) {
             // buildRawActionTextCompletionRequest()'s ADDRESSING MODEL doc comment), unless the request
             // stored messages from the page, which it then generates after.
             const {
-                character_avatar: characterAvatar, group_id: groupId, owner_id: ownerId, type = 'normal',
+                character_avatar: characterAvatar, group_id: groupId, type = 'normal',
             } = request.body;
             const isImpersonate = type === 'impersonate';
             const isContinue = type === 'continue';
             const isSwipe = type === 'swipe' || type === 'regenerate';
 
             const directories = request.user.directories;
-            const turn = await generateTurnOf(response, directories, { ownerId, avatar: characterAvatar, groupId, body: request.body });
+            const chat = await chatContext(request, { avatar: characterAvatar, group: groupId });
+            if (!chat) {
+                return response.status(400).send({ error: true, message: groupId ? `Group not found: ${groupId}` : `Character not found: ${characterAvatar}` });
+            }
+            answerSessionOnHeaders(response, chat.session);
+            const turn = await generateTurnOf(response, chat, request.body);
             if (!turn) return;
             const { nodeId, userMessageText, userMessageExtra } = turn;
 
@@ -828,7 +822,7 @@ router.post('/generate', withGenerationStop(async function (request, response) {
             let built;
             try {
                 built = await buildRawActionTextCompletionRequest(directories, {
-                    request, characterAvatar, groupId, ownerId, nodeId,
+                    request, characterAvatar, groupId, chat, nodeId,
                     type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra,
                 });
             } catch (error) {
@@ -865,9 +859,9 @@ router.post('/generate', withGenerationStop(async function (request, response) {
             const skipPersistence = isImpersonate || type === 'quiet';
             let replyAnchorNodeId = built.anchorNodeId;
             const userMessage = turn.userMessage;
-            if (!skipPersistence && typeof userMessageText === 'string' && built.anchorNodeId) {
+            if (!skipPersistence && typeof userMessageText === 'string') {
                 const userNodeId = await storeUserMessage(response, {
-                    directories, ownerId, anchorNodeId: built.anchorNodeId, ref: request.body.user_message_ref,
+                    chat, anchorNodeId: built.anchorNodeId, ref: request.body.user_message_ref,
                     message: userMessage,
                 });
                 if (!userNodeId) return;
@@ -883,34 +877,35 @@ router.post('/generate', withGenerationStop(async function (request, response) {
             // unchanged via the normal response below, it just never gets persisted.
             //
             // `isSwipe` is carried through so the non-streaming branch below knows to persist the
-            // reply as a SIBLING alternative under the anchor's PARENT (via `addAlternatives()`) -
-            // matching real swipe/regenerate tree semantics - instead of a CHILD after the anchor
-            // (via `appendMessages()`, correct only for a genuinely new turn). `is_swipe` is the
+            // reply as an alternative of the anchor (a reply of its parent) - matching real
+            // swipe/regenerate tree semantics - instead of a reply to the anchor (correct only for a
+            // genuinely new turn). `is_swipe` is the
             // client's own single flag for BOTH `type === 'swipe'` and `type === 'regenerate'` (see
             // public/script.js's `isSwipe` local and this session's task write-up) - both need the
             // identical tree operation here, so this route does not re-derive it from `type` itself.
             //
             // `isContinue`/`anchorContent` are carried through so the non-streaming branch below knows
-            // to persist the reply as an IN-PLACE EDIT of the anchor node's own text (via
-            // `editMessage()`) instead of appending/adding a sibling or child - a continue never
-            // introduces a new node, it lengthens the existing leaf's `mes`. `anchorContent` is the
-            // anchor's CURRENT full content (see `buildRawActionTextCompletionRequest()`'s own doc
-            // comment on this field) - needed here because `editMessage()` replaces the WHOLE stored
-            // content, not just `.mes` (see message-tree-db.js's `editMessageSync()`/
-            // `sanitizeForStorage()`), so the reply text must be spliced into a full copy of the
-            // existing message object, not sent alone.
+            // to persist the reply as an IN-PLACE EDIT of the anchor's own text (via `editMessages()`)
+            // instead of adding a message - a continue never introduces a new message, it lengthens the
+            // existing one's `mes`. `anchorContent` is the anchor's CURRENT full content (see
+            // `buildRawActionTextCompletionRequest()`'s own doc comment on this field) - needed here
+            // because an edit gives the WHOLE content, not just `.mes`, so the reply text must be
+            // spliced into a full copy of the existing message object, not sent alone.
             //
             // A continue sent with text in the box stores that text as the user's message first, and the page then
             // continues that message, as upstream does: the reply is stored as an edit of it.
             const continuesUserMessage = isContinue && replyAnchorNodeId !== built.anchorNodeId;
             if (!skipPersistence) {
                 pendingAssistantPersist = {
-                    directories, ownerId, anchorNodeId: replyAnchorNodeId, name2: built.name2,
+                    chat, anchorNodeId: replyAnchorNodeId, name2: built.name2,
                     isSwipe, isContinue, anchorContent: continuesUserMessage ? userMessage : built.anchorContent,
                     warnings,
                     generationStop: response.locals.generationStop,
                     itemization: itemizationOf(request.body.itemization, built.itemization),
                 };
+                // The reply's write goes through the session; one made for it is in the headers, which a
+                // stream sends before the reply is stored.
+                chat.session.actor();
             }
 
             // Replace the body entirely - mirrors the connection-profile branch's own final
@@ -1114,9 +1109,8 @@ router.post('/generate', withGenerationStop(async function (request, response) {
                 // ever gets committed. Only set when the raw-action branch ran; a no-op otherwise.
                 // The actual plain/continue/swipe persistence branching lives in
                 // `persistAssistantReply()` (../../assistant-reply-persist.js), shared with the
-                // streaming branches above - see that module's own doc comment for the full
-                // continue/`continue_mag`/`editMessage()` and swipe/`addAlternatives()`+
-                // `selectDefaultChild()` rationale (unchanged from this route's own original design).
+                // streaming branches above - see that module's own doc comment for the plain,
+                // continue and swipe modes.
                 if (pendingAssistantPersist) {
                     const generatedText = replyTextAsPageShows(data, 'textgenerationwebui');
                     if (generatedText === null) {

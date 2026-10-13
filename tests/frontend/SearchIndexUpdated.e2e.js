@@ -61,11 +61,17 @@ test.afterEach(async ({ page }) => {
     await setStackedDrawers(page, false);
 });
 
+/** The page's changes stream, whatever its query. */
+const STREAM_ROUTE = /\/api\/characters\/changes\/stream(\?|$)/;
+/** The session the mocked stream gives a fresh tab. */
+const TAB_SESSION = '0190a1b2-0000-7000-8000-00000000e2e1';
+
 /**
  * Records /api/characters/query and /api/characters/changes requests, and can hold /query responses.
- * The real /changes/stream is replaced by one that never sends anything, so the only stream messages are
- * the ones a test sends with sendStreamMessage(). It answers with `log.streamStatus`. A 200 ends at once, and its
- * `retry` keeps the browser from reconnecting within a test, so the stream never reopens by itself.
+ * The real /changes/stream is replaced by one that sends nothing but the tab's session (the page waits for it to
+ * start), so the only other stream messages are the ones a test sends with sendStreamMessage(). It answers with
+ * `log.streamStatus`. A 200 ends at once, and its `retry` (`log.streamRetry`) keeps the browser from reconnecting
+ * within a test, so the stream never reopens by itself.
  * @param {import('@playwright/test').Page} page
  */
 async function instrument(page) {
@@ -95,19 +101,21 @@ async function instrument(page) {
             }
         }).observe(document, { childList: true, subtree: true });
     });
-    await page.route('**/api/characters/changes/stream', async route => {
+    await page.route(STREAM_ROUTE, async route => {
         // Counted before answering, so a notice a failed answer leads to can't be among them yet.
         const notices = await disconnectedNotice(page).count();
         log.streamRequests.push({ at: Date.now(), status: log.streamStatus, notices });
+        const session = new URL(route.request().url()).searchParams.get('session') ?? TAB_SESSION;
         await route.fulfill({
             status: log.streamStatus,
             headers: { 'Content-Type': 'text/event-stream' },
-            body: 'retry: 86400000\n: quiet\n\n',
+            body: `retry: ${log.streamRetry}\ndata: ${JSON.stringify({ type: 'session', session, held: false, place: null })}\n\n: quiet\n\n`,
         });
     });
 
     const log = {
         streamStatus: 200,
+        streamRetry: 86400000,
         /** @type {{ at: number, status: number, notices: number }[]} */
         streamRequests: [],
         /** @type {{ search: string|undefined, pageSize: number, page: number, fav: boolean|undefined }[]} */
@@ -169,7 +177,7 @@ async function waitForQuiet(log, quietMs = QUIET_MS) {
  */
 async function sendStreamMessage(page, message) {
     await page.evaluate((data) => {
-        const streams = window['__changeStreams'].filter(s => s.url.endsWith('/api/characters/changes/stream'));
+        const streams = window['__changeStreams'].filter(s => new URL(s.url).pathname === '/api/characters/changes/stream');
         if (!streams.length) throw new Error('no /changes/stream EventSource');
         for (const stream of streams) {
             stream.onmessage(new MessageEvent('message', { data }));
@@ -906,7 +914,7 @@ function disconnectedNotice(page) {
  */
 async function fireStreamEvents(page, types) {
     await page.evaluate((types) => {
-        const streams = window['__changeStreams'].filter(s => s.url.endsWith('/api/characters/changes/stream'));
+        const streams = window['__changeStreams'].filter(s => new URL(s.url).pathname === '/api/characters/changes/stream');
         if (!streams.length) throw new Error('no /changes/stream EventSource');
         const stream = streams.at(-1);
         for (const type of types) {
@@ -984,7 +992,7 @@ test.describe('the change stream reopening', () => {
     test('an open with no error before it sends nothing', async ({ page }) => {
         log = await instrument(page);
         // The mocked stream's body ends, which is an error, so this uses the server's own stream, which stays open.
-        await page.unroute('**/api/characters/changes/stream');
+        await page.unroute(STREAM_ROUTE);
         await bootWithListShowing(page);
         const from = log.queries.length;
         const changesBefore = log.changes;
@@ -999,33 +1007,42 @@ test.describe('the change stream reopening', () => {
     test('a closed stream is rebuilt with backoff, a notice shows once it has been closed 10s, and the reopen clears it and syncs', async ({ page }) => {
         test.setTimeout(90000);
         log = await instrument(page);
-        log.streamStatus = 500;
+        // The page starts only once its stream has given it its session, so the stream fails after that: the browser
+        // reconnects 1s after each mocked stream ends, and gives up on one that fails.
+        log.streamRetry = 1000;
         await bootWithListShowing(page);
+        log.streamStatus = 500;
+        // The stream that comes back stays (its end isn't reconnected within the test), as before.
+        log.streamRetry = 86400000;
+        const from = log.streamRequests.length;
+        const since = () => log.streamRequests.slice(from);
 
-        // The first connection and 3 rebuilds (after 1s, 2s, 4s) fail; the notice shows before the 4th (after 8s).
-        await expect.poll(() => log.streamRequests.length, { timeout: 30000 }).toBe(4);
+        // The browser's reconnect and 3 rebuilds (after 1s, 2s, 4s) fail; the notice shows before the 4th (after 8s).
+        await expect.poll(() => since().length, { timeout: 30000 }).toBe(4);
         await expect(disconnectedNotice(page)).toHaveCount(1, { timeout: 30000 });
         const changesBefore = log.changes;
         log.streamStatus = 200;
 
-        await expect.poll(() => log.streamRequests.length, { timeout: 30000 }).toBe(5);
+        await expect.poll(() => since().length, { timeout: 30000 }).toBe(5);
         await expect(disconnectedNotice(page)).toHaveCount(0);
         await expect.poll(() => log.changes, { timeout: CHANGE_DEBOUNCE_TIMEOUT_MS }).toBeGreaterThan(changesBefore);
 
-        const requests = log.streamRequests;
+        const requests = since();
         expect(requests.map(r => r.status)).toEqual([500, 500, 500, 500, 200]);
         expect(requests.map(r => r.notices)).toEqual([0, 0, 0, 0, 1]);
         const gaps = requests.slice(1).map((r, i) => r.at - requests[i].at);
         [1000, 2000, 4000, 8000].forEach((least, i) => expect(gaps[i]).toBeGreaterThanOrEqual(least));
 
         const { events, notice } = await page.evaluate(() => ({ events: window['__streamEvents'], notice: window['__notice'] }));
-        const firstOpen = events.find(e => e.type === 'open');
-        const failures = events.filter(e => e.type === 'error' && e.at < firstOpen.at);
-        expect(failures.map(e => e.readyState)).toEqual([EVENT_SOURCE_CLOSED, EVENT_SOURCE_CLOSED, EVENT_SOURCE_CLOSED, EVENT_SOURCE_CLOSED]);
-        // Never open until then, so not open since the first stream was created.
-        expect(notice.shownAt - events[0].at).toBeGreaterThanOrEqual(10000);
-        expect(notice.shownAt).toBeLessThan(firstOpen.at);
-        expect(notice.removedAt).toBeGreaterThanOrEqual(firstOpen.at);
+        const failures = events.filter(e => e.type === 'error' && e.readyState === EVENT_SOURCE_CLOSED);
+        expect(failures).toHaveLength(4);
+        const lastOpen = events.filter(e => e.type === 'open' && e.at < failures[0].at).at(-1);
+        const down = events.find(e => e.type === 'error' && e.at > lastOpen.at);
+        const reopen = events.find(e => e.type === 'open' && e.at > failures[3].at);
+        // Not open since the stream ended before the first failure.
+        expect(notice.shownAt - down.at).toBeGreaterThanOrEqual(10000);
+        expect(notice.shownAt).toBeLessThan(reopen.at);
+        expect(notice.removedAt).toBeGreaterThanOrEqual(reopen.at);
     });
 
     test('a stream the browser is reconnecting shows the notice once it has been down 10s, and an open clears it', async ({ page }) => {
@@ -1035,13 +1052,15 @@ test.describe('the change stream reopening', () => {
 
         await expect(disconnectedNotice(page)).toHaveCount(1, { timeout: 30000 });
         const { events, notice } = await page.evaluate(() => ({ events: window['__streamEvents'], notice: window['__notice'] }));
-        // The mocked stream opens, then its body ends: the browser keeps it CONNECTING and doesn't rebuild it.
-        expect(events.map(e => [e.type, e.readyState])).toEqual([['create', EVENT_SOURCE_CONNECTING], ['open', EVENT_SOURCE_OPEN], ['error', EVENT_SOURCE_CONNECTING]]);
-        expect(notice.shownAt - events[2].at).toBeGreaterThanOrEqual(10000);
+        // The fresh tab's first stream, which asked for a session, is rebuilt once to name the session it was given.
+        // That one opens, then its body ends: the browser keeps it CONNECTING and doesn't rebuild it.
+        const steady = [['create', EVENT_SOURCE_CONNECTING], ['open', EVENT_SOURCE_OPEN], ['error', EVENT_SOURCE_CONNECTING]];
+        expect(events.map(e => [e.type, e.readyState])).toEqual([...steady, ...steady]);
+        expect(notice.shownAt - events[5].at).toBeGreaterThanOrEqual(10000);
 
         await fireStreamEvents(page, ['open']);
         await expect(disconnectedNotice(page)).toHaveCount(0);
-        expect(log.streamRequests).toHaveLength(1);
+        expect(log.streamRequests).toHaveLength(2);
     });
 
     test('the rebuild delay doubles from 1s and stops at 60s', () => {

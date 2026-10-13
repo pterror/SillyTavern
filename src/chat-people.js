@@ -1,4 +1,8 @@
-import { FIELD, TYPE } from './library-codes.js';
+import { FIELD, NAME_HISTORY, TYPE, renamesOf } from './library-codes.js';
+import { storedValues } from './entity-values.js';
+
+/** The values a speaker is made from. */
+const ONLY = { fields: [FIELD.name], lists: [NAME_HISTORY] };
 
 /**
  * Who speaks in chats, from the library on the engine: characters by entity id and by avatar, each with its name
@@ -14,12 +18,13 @@ export function libraryPeople(lib) {
         if (!e || e.type !== TYPE.character) return null;
         const name = e.values.find(v => v.field === FIELD.name);
         const value = name === undefined ? '' : name.text !== undefined ? name.text : JSON.parse(/** @type {string} */ (name.json));
-        return { id: e.id, name: value, avatar: e.key };
+        const history = storedValues(e).lists.get(NAME_HISTORY);
+        return { id: e.id, name: value, avatar: e.key, ...(history === undefined ? {} : { renames: renamesOf(history) }) };
     };
     return {
         /** @param {bigint[]} ids */
         async speakers(ids) {
-            const found = await lib.entities(ids);
+            const found = await lib.entities(ids, ONLY);
             /** @type {Map<bigint, import('./chat-codec.js').Speaker>} */
             const out = new Map();
             found.forEach((e, i) => {
@@ -30,7 +35,7 @@ export function libraryPeople(lib) {
         },
         /** @param {string[]} avatars */
         async byAvatar(avatars) {
-            const found = await lib.entities(await lib.ids(TYPE.character, avatars));
+            const found = await lib.entities(await lib.ids(TYPE.character, avatars), ONLY);
             /** @type {Map<string, import('./chat-codec.js').Speaker>} */
             const out = new Map();
             found.forEach((e, i) => {

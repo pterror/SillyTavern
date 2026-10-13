@@ -1,138 +1,121 @@
 import { describe, test, expect, jest, beforeAll, beforeEach, afterEach } from '@jest/globals';
-import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 
-import * as realSqliteEngine from '../src/endpoints/sqlite-engine.js';
-import { defineCharacterStoreFunctions } from '../src/character-store-schema.js';
+// /query with included and excluded tags: the same lists as the plain rule gives, through every sort, direction and
+// fav filter, by offset pages and by cursor.
 
-/**
- * Registers on a raw connection to the character store the functions its indexes and triggers call.
- * @template {import('better-sqlite3').Database} T
- * @param {T} db
- * @returns {T}
- */
-function withStoreFunctions(db) {
-    defineCharacterStoreFunctions({ defineFunction: (name, fn) => db.function(name, { deterministic: true }, fn) });
-    return db;
-}
-
-/** @type {{ method: string, sql: string, params: any }[]} */
-const calls = [];
-
-async function getRecordingSqliteEngine() {
-    const engine = await realSqliteEngine.getSqliteEngine();
-    if (!engine) return engine;
-    return {
-        ...engine,
-        openDatabase: (dbPath, options) => {
-            const handle = engine.openDatabase(dbPath, options);
-            for (const method of ['all', 'get', 'iterate', 'run']) {
-                const real = handle[method];
-                handle[method] = (sql, params) => {
-                    calls.push({ method, sql, params });
-                    return real(sql, params);
-                };
-            }
-            return handle;
-        },
-    };
-}
-
-jest.unstable_mockModule('../src/endpoints/sqlite-engine.js', () => ({
-    ...realSqliteEngine,
-    getSqliteEngine: getRecordingSqliteEngine,
-}));
-
-/** @type {typeof import('../src/character-metadata-db.js')} */
-let metadataDb;
-/** @type {typeof import('better-sqlite3')} */
-let Database;
+/** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
+let user;
+/** @type {typeof import('./converted-user.fixture.js')} */
+let fixture;
+let TYPE;
 /** @type {import('../src/users.js').UserDirectoryList} */
 let directories;
 
 beforeAll(async () => {
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
-    metadataDb = await import('../src/character-metadata-db.js');
-    Database = (await import('better-sqlite3')).default;
+    fixture = await import('./converted-user.fixture.js');
+    ({ TYPE } = await import('../src/library-codes.js'));
 });
 
-beforeEach(() => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-query-tag-sort-test-'));
-    directories = {
-        root: tempDir,
-        characters: path.join(tempDir, 'characters'),
-        chats: path.join(tempDir, 'chats'),
-        groups: path.join(tempDir, 'groups'),
-        groupChats: path.join(tempDir, 'groupChats'),
-    };
-    for (const dir of [directories.characters, directories.chats, directories.groups, directories.groupChats]) {
-        fs.mkdirSync(dir, { recursive: true });
-    }
-    calls.length = 0;
+beforeEach(async () => {
+    user = await fixture.emptyUser('st-query-tag-sort-test-');
+    ({ directories } = user);
+    globalThis.DATA_ROOT = user.dataRoot;
 });
 
-afterEach(() => {
-    metadataDb.disposeMetadataStores();
-    fs.rmSync(directories.root, { recursive: true, force: true });
-});
-
-const dbPath = () => path.join(directories.root, 'character-metadata.sqlite');
-
-/** Runs statements on a connection of its own, with the store closed, so the store's triggers are what keep up. */
-function withDb(fn) {
-    metadataDb.disposeMetadataStores();
-    const db = withStoreFunctions(new Database(dbPath()));
-    try {
-        return fn(db);
-    } finally {
-        db.close();
-    }
-}
+afterEach(() => user.close());
 
 // Entities with sort keys that tie, and tags: T1 on most, T2 on some, T3 on few.
 const CHARACTERS = [
-    { id: 'b.png', name: 'Same', fav: 1, date: 100, size: 5, tags: ['T1', 'T2'] },
-    { id: 'a.png', name: 'Same', fav: 0, date: 100, size: 5, tags: ['T1'] },
-    { id: 'c.png', name: 'Other', fav: 0, date: 200, size: 0, tags: ['T1', 'T2', 'T3'] },
-    { id: 'z.png', name: 'Same', fav: 1, date: 50, size: 5, tags: ['T2'] },
-    { id: 'm.png', name: 'Zed', fav: 0, date: 100, size: 9, tags: ['T1', 'T3'] },
-    { id: 'n.png', name: 'Alpha', fav: 0, date: 300, size: 1, tags: [] },
+    { id: 'b.png', name: 'Same', fav: true, date: 100, chat: true, tags: ['T1', 'T2'] },
+    { id: 'a.png', name: 'Same', fav: false, date: 100, chat: true, tags: ['T1'] },
+    { id: 'c.png', name: 'Other', fav: false, date: 200, chat: false, tags: ['T1', 'T2', 'T3'] },
+    { id: 'z.png', name: 'Same', fav: true, date: 50, chat: true, tags: ['T2'] },
+    { id: 'm.png', name: 'Zed', fav: false, date: 100, chat: true, tags: ['T1', 'T3'] },
+    { id: 'n.png', name: 'Alpha', fav: false, date: 300, chat: false, tags: [] },
 ];
 const GROUPS = [
-    { id: 'a', name: 'Same', fav: 0, date: 100, size: 5, tags: ['T1'] },
-    { id: 'a-b', name: 'Same', fav: 0, date: 100, size: 5, tags: ['T1', 'T2'] },
-    { id: 'q', name: 'Other', fav: 1, date: 200, size: 0, tags: ['T2'] },
+    { id: 'a', name: 'Same', fav: false, date: 100, chat: true, tags: ['T1'] },
+    { id: 'a-b', name: 'Same', fav: false, date: 100, chat: true, tags: ['T1', 'T2'] },
+    { id: 'q', name: 'Other', fav: true, date: 200, chat: false, tags: ['T2'] },
 ];
 
+/** @type {{ type: string, id: string, name_fold: string, fav: boolean, date: number, lastChat: number, size: number, create_date: number | null, data_size: number | null, tags: string[] }[]} */
+let MODEL = [];
+
+const message = { name: 'User', is_user: true, mes: 'a message', send_date: 'x', extra: {} };
+
 async function seed() {
-    for (const c of CHARACTERS) {
-        const cardJson = JSON.stringify({ name: c.name, data: { name: c.name, tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
-        await metadataDb.upsertCharacterFromWrite(directories, c.id, cardJson);
-    }
-    for (const g of GROUPS) {
-        const group = { id: g.id, name: g.name, members: [], chats: [], fav: false };
-        fs.writeFileSync(path.join(directories.groups, `${g.id}.json`), JSON.stringify(group));
-        await metadataDb.upsertGroupRow(directories, g.id, g.name, { fav: false, group });
-    }
-    withDb(db => {
+    for (const t of ['T1', 'T2', 'T3']) await user.store.lib.writeTag({ id: t, name: t });
+    // The chats' messages are all received at one moment, so equal chats tie in time and size.
+    const now = jest.spyOn(Date, 'now').mockReturnValue(1_800_000_000_000);
+    try {
         for (const c of CHARACTERS) {
-            db.prepare('UPDATE characters SET fav = ?, date_added = ?, date_last_chat = ?, create_date = ?, chat_size = ?, data_size = ? WHERE id = ?')
-                .run(c.fav, c.date, c.date, c.date, c.size, c.size, c.id);
-            for (const t of c.tags) db.prepare('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (?, ?)').run(c.id, t);
+            const card = { name: c.name, create_date: new Date(c.date).toISOString(), data: { name: c.name, description: 'd', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } };
+            await user.store.lib.writeCard(directories, c.id, JSON.stringify(card), { fav: c.fav, dateAdded: c.date });
+            if (c.chat) await fixture.saveBranch(user.store, { avatar: c.id }, `chat ${c.id}`, [{}, message]);
+            for (const t of c.tags) await user.store.lib.assignTag(TYPE.character, c.id, t, true);
         }
         for (const g of GROUPS) {
-            db.prepare('UPDATE groups SET fav = ?, date_added = ?, date_last_chat = ?, chat_size = ? WHERE id = ?').run(g.fav, g.date, g.date, g.size, g.id);
-            for (const t of g.tags) db.prepare('INSERT OR IGNORE INTO group_tags (group_id, tag_id) VALUES (?, ?)').run(g.id, t);
+            await user.store.lib.writeGroup({ id: g.id, name: g.name, members: [], fav: g.fav }, { dateAdded: g.date });
+            if (g.chat) await fixture.saveBranch(user.store, { group: g.id }, `chat ${g.id}`, [{}, message]);
+            for (const t of g.tags) await user.store.lib.assignTag(TYPE.group, g.id, t, true);
         }
-    });
+    } finally {
+        now.mockRestore();
+    }
+    await readModel();
 }
+
+/** Reads what the store holds for each entity: the sort keys and tags the expected lists are made from. */
+async function readModel() {
+    const page = await user.store.lib.query({ limit: 100, wantRows: true, wantTotal: false });
+    MODEL = /** @type {any[]} */ (page.rows).map(({ type, item }) => (type === 'group'
+        ? { type, id: item.id, name_fold: item.name.toLowerCase(), fav: item.fav, date: item.date_added, lastChat: item.date_last_chat, size: item.chat_size, create_date: item.date_added, data_size: null, tags: item.tag_ids }
+        : { type, id: item.avatar, name_fold: item.name.toLowerCase(), fav: item.fav, date: item.date_added, lastChat: item.date_last_chat, size: item.chat_size, create_date: item.create_date === undefined ? null : Date.parse(item.create_date), data_size: item.data_size, tags: item.tag_ids }));
+}
+
+/** UTF-8 byte order, as SQLite's BINARY collation. */
+const bytes = (a, b) => Buffer.compare(Buffer.from(a, 'utf8'), Buffer.from(b, 'utf8'));
+
+/**
+ * The expected list, from the rule itself: ascending, the sort key, then characters before groups, then creation
+ * order (the engine's orders break ties by entity id, not by upstream's avatar or `<id>.json`); descending, that list
+ * reversed. A fav sort only picks which fav value
+ * comes first, with names and ties ascending inside each.
+ * @param {string} sortField
+ * @param {'asc'|'desc'} sortOrder
+ * @param {boolean | undefined} fav
+ * @param {{ include?: string[], exclude?: string[] }} tags
+ */
+function expected(sortField, sortOrder, fav, tags) {
+    const dir = sortOrder === 'desc' ? -1 : 1;
+    const entities = MODEL.filter(e => (fav === undefined || e.fav === fav)
+        && (tags.include ?? []).every(t => e.tags.includes(t)) && !(tags.exclude ?? []).some(t => e.tags.includes(t)));
+    const key = {
+        name: e => e.name_fold, date_added: e => e.date, date_last_chat: e => e.lastChat, chat_size: e => e.size,
+        create_date: e => e.create_date, data_size: e => e.data_size,
+    }[sortField];
+    const byNumber = (ka, kb) => (ka === null || kb === null) ? (ka === kb ? 0 : ka === null ? -1 : 1) : ka - kb;
+    // Seeded characters first, then groups, each in list order: the order they were created in.
+    const created = e => (e.type === 'group' ? CHARACTERS.length + GROUPS.findIndex(g => g.id === e.id) : CHARACTERS.findIndex(c => c.id === e.id));
+    const tie = (a, b) => (a.type === b.type ? 0 : a.type === 'group' ? 1 : -1) || created(a) - created(b);
+    return [...entities].sort((a, b) => {
+        if (sortField === 'fav') return dir * (Number(a.fav) - Number(b.fav)) || bytes(a.name_fold, b.name_fold) || tie(a, b);
+        const ka = key(a), kb = key(b);
+        const byKey = typeof ka === 'string' ? bytes(ka, kb) : byNumber(ka, kb);
+        return dir * (byKey || tie(a, b));
+    }).map(e => `${e.type}:${e.id}`);
+}
+
+const idOf = r => `${r.type}:${r.type === 'group' ? r.item.id : r.item.avatar}`;
 
 /** @param {object} params */
 async function listed(params) {
-    const result = await metadataDb.queryEntities(directories, { offset: 0, limit: 100, wantTotal: false, ...params });
-    return result.rows.map(r => `${r.type}:${r.id}`);
+    const result = await user.store.lib.query({ offset: 0, limit: 100, wantTotal: false, ...params });
+    return result.rows.map(idOf);
 }
 
 const SORTS = ['name', 'fav', 'date_added', 'date_last_chat', 'chat_size', 'create_date', 'data_size'];
@@ -145,14 +128,18 @@ const FILTERS = [
     { include: ['T1', 'T2'], exclude: ['T3'] },
 ];
 
-/** Every combination's list, as `/query` gives it now. */
+/** Every combination's list, as `/query` gives it, with the rule's. */
 async function everyList() {
     const out = [];
     for (const sortField of SORTS) {
         for (const sortOrder of ['asc', 'desc']) {
             for (const fav of [undefined, true, false]) {
                 for (const tags of FILTERS) {
-                    out.push({ sortField, sortOrder, fav, tags, rows: await listed({ sortField, sortOrder, fav, tags: { mode: 'and', ...tags } }) });
+                    out.push({
+                        sortField, sortOrder, fav, tags,
+                        rows: await listed({ sortField, sortOrder, fav, tags: { mode: 'and', ...tags } }),
+                        want: expected(sortField, sortOrder, fav, tags),
+                    });
                 }
             }
         }
@@ -160,23 +147,16 @@ async function everyList() {
     return out;
 }
 
-describe('/query included tags read from the tag sort tables', () => {
-    test('once filled, every sort, direction, fav filter and tag filter lists exactly as the plain query does', async () => {
+describe('/query included and excluded tags', () => {
+    test('every sort, direction, fav filter and tag filter lists exactly as the rule does', async () => {
         await seed();
-        const before = await everyList();
-        expect(before.some(l => l.rows.length > 0)).toBe(true);
-        // The triggers already wrote these rows; the fill finds nothing missing and marks the tables ready.
-        const filled = await metadataDb.fillTagSortTablesIfNeeded(directories);
-        expect(filled.batches).toBeGreaterThan(0);
-        calls.length = 0;
-        const after = await everyList();
-        expect(calls.some(c => /FROM character_tag_sort s\b/.test(c.sql))).toBe(true);
-        expect(after).toEqual(before);
+        const lists = await everyList();
+        expect(lists.some(l => l.rows.length > 0)).toBe(true);
+        for (const { rows, want, ...which } of lists) expect({ ...which, rows }).toEqual({ ...which, rows: want });
     });
 
     test('pages join up to the whole list', async () => {
         await seed();
-        await metadataDb.fillTagSortTablesIfNeeded(directories);
         for (const sortField of ['name', 'date_added', 'fav']) {
             for (const sortOrder of ['asc', 'desc']) {
                 const tags = { mode: 'and', include: ['T1'] };
@@ -188,148 +168,77 @@ describe('/query included tags read from the tag sort tables', () => {
         }
     });
 
-    test('the triggers keep the tables right through tag, sort key, fav, insert and delete writes', async () => {
+    test('the lists stay right through tag, sort key, fav, insert and delete writes', async () => {
         await seed();
-        await metadataDb.fillTagSortTablesIfNeeded(directories);
-        withDb(db => {
-            db.prepare('UPDATE characters SET date_added = 1, fav = 1 WHERE id = ?').run('m.png');
-            db.prepare('DELETE FROM character_tags WHERE character_id = ? AND tag_id = ?').run('b.png', 'T1');
-            db.prepare('INSERT INTO character_tags (character_id, tag_id) VALUES (?, ?)').run('n.png', 'T1');
-            db.prepare('UPDATE groups SET date_added = 999 WHERE id = ?').run('a');
-            db.prepare('DELETE FROM groups WHERE id = ?').run('a-b');
-        });
-        const viaTables = await everyList();
-        withDb(db => db.prepare('DELETE FROM meta WHERE key = ?').run('tag_sort_tables_filled'));
-        const plain = await everyList();
-        expect(viaTables).toEqual(plain);
-        withDb(db => {
-            const rows = db.prepare('SELECT tag_id, entity_id, k_fav, k_date_added FROM character_tag_sort ORDER BY tag_id, entity_id').all();
-            const expected = db.prepare(`SELECT t.tag_id, c.id AS entity_id, c.fav AS k_fav, c.date_added AS k_date_added
-                FROM character_tags t JOIN characters c ON c.id = t.character_id ORDER BY t.tag_id, c.id`).all();
-            expect(rows).toEqual(expected);
-            expect(db.prepare('SELECT COUNT(*) AS n FROM group_tag_sort WHERE entity_id = ?').get('a-b').n).toBe(0);
-        });
+        const lib = user.store.lib;
+        await lib.writeCard(directories, 'm.png', JSON.stringify({ name: 'Zed', create_date: new Date(1).toISOString(), data: { name: 'Zed', description: 'd', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } }));
+        await lib.updateEntity(TYPE.character, 'm.png', { dateAdded: 1 });
+        await lib.setFav(TYPE.character, 'm.png', true);
+        await lib.assignTag(TYPE.character, 'b.png', 'T1', false);
+        await lib.assignTag(TYPE.character, 'n.png', 'T1', true);
+        await lib.updateEntity(TYPE.group, 'a', { dateAdded: 999 });
+        await lib.deleteEntity(TYPE.group, 'a-b');
+        await readModel();
+        expect(MODEL).toHaveLength(CHARACTERS.length + GROUPS.length - 1);
+        for (const { rows, want, ...which } of await everyList()) expect({ ...which, rows }).toEqual({ ...which, rows: want });
     });
 
-    test('a one-tag page walks the tag sort index in order: no temp b-tree sort', async () => {
+    test('an excluded tag leaves out the right entities, with or without an included one', async () => {
         await seed();
-        await metadataDb.fillTagSortTablesIfNeeded(directories);
-        for (const sortField of SORTS) {
-            for (const sortOrder of ['asc', 'desc']) {
-                calls.length = 0;
-                await listed({ sortField, sortOrder, tags: { mode: 'and', include: ['T1'] } });
-                const reads = calls.filter(c => /_tag_sort s\b/.test(c.sql));
-                expect(reads.length).toBe(4);
-                const db = withStoreFunctions(new Database(dbPath(), { readonly: true }));
-                try {
-                    for (const read of reads) {
-                        const plan = db.prepare(`EXPLAIN QUERY PLAN ${read.sql}`).all(...read.params).map(r => r.detail).join(' | ');
-                        expect({ sortField, sortOrder, plan }).toEqual({ sortField, sortOrder, plan: expect.not.stringContaining('TEMP B-TREE') });
-                        expect(plan).toMatch(/idx_(character|group)_tag_sort_/);
-                    }
-                } finally {
-                    db.close();
-                }
-            }
-        }
-    });
-
-    test('an excluded tag is checked per row: the right entities, and no list of the tag\'s rows read first', async () => {
-        await seed();
-        for (const fill of [false, true]) {
-            if (fill) await metadataDb.fillTagSortTablesIfNeeded(directories);
-            for (const tags of [{ exclude: ['T3'] }, { include: ['T1'], exclude: ['T3'] }]) {
-                calls.length = 0;
-                const rows = await listed({ sortField: 'name', sortOrder: 'asc', tags: { mode: 'and', ...tags } });
-                const want = [...CHARACTERS.map(c => ({ ...c, type: 'character' })), ...GROUPS.map(g => ({ ...g, type: 'group' }))]
-                    .filter(e => !e.tags.includes('T3') && (tags.include ?? []).every(t => e.tags.includes(t)))
-                    .map(e => `${e.type}:${e.id}`);
-                expect(new Set(rows)).toEqual(new Set(want));
-                // The index reads, and the per-row checks of their windows.
-                const reads = calls.filter(c => /\bAS k\b/.test(c.sql) || /^SELECT id FROM (characters|groups) WHERE id IN \(SELECT value FROM json_each\(\?\)\) AND/.test(c.sql.trim()));
-                expect(reads.some(c => /json_each/.test(c.sql) && /NOT EXISTS/.test(c.sql))).toBe(true);
-                // Before the fill, an included tag is still read as a list (step 5's fallback); only the exclude is checked then.
-                if (!fill && tags.include) continue;
-                const db = withStoreFunctions(new Database(dbPath(), { readonly: true }));
-                try {
-                    for (const read of reads) {
-                        const plan = db.prepare(`EXPLAIN QUERY PLAN ${read.sql}`).all(...read.params).map(r => r.detail).join(' | ');
-                        // A list built from the tag table's rows is the whole-tag read; the json list of excluded ids is fine.
-                        expect({ fill, tags, plan }).toEqual({ fill, tags, plan: expect.not.stringMatching(/LIST SUBQUERY \d+ \| (SEARCH|SCAN) (character_tags|group_tags)/) });
-                        expect(/NOT EXISTS/.test(read.sql) ? /CORRELATED SCALAR SUBQUERY/.test(plan) : true).toBe(true);
-                    }
-                } finally {
-                    db.close();
-                }
-            }
+        for (const tags of [{ exclude: ['T3'] }, { include: ['T1'], exclude: ['T3'] }]) {
+            const rows = await listed({ sortField: 'name', sortOrder: 'asc', tags: { mode: 'and', ...tags } });
+            const want = [...CHARACTERS.map(c => ({ ...c, type: 'character' })), ...GROUPS.map(g => ({ ...g, type: 'group' }))]
+                .filter(e => !e.tags.includes('T3') && (tags.include ?? []).every(t => e.tags.includes(t)))
+                .map(e => `${e.type}:${e.id}`);
+            expect(new Set(rows)).toEqual(new Set(want));
         }
     });
 
     test('under the work cap, a page that needs more reading comes back with more and a cursor, and following it lists everything once', async () => {
         await seed();
-        await metadataDb.fillTagSortTablesIfNeeded(directories);
-        metadataDb._setSortedPageWalkForTests({ cap: 1, window: 1 });
-        try {
+        {
+            // The cap bounds what a page reads past its own rows: only a list that leaves entities out can reach it.
+            const reachedCap = new Set();
             for (const tags of [{ include: ['T1'], exclude: ['T3'] }, { include: ['T1', 'T2'] }, { exclude: ['T3'] }, {}]) {
                 for (const sortOrder of ['asc', 'desc']) {
                     const filter = { sortField: 'name', sortOrder, tags: { mode: 'and', ...tags } };
-                    metadataDb._setSortedPageWalkForTests(null);
                     const whole = await listed(filter);
-                    metadataDb._setSortedPageWalkForTests({ cap: 1, window: 1 });
                     // As the client does: ask for a page, follow `more` with the cursor until it's full or ends.
                     for (const pageSize of [2, 3]) {
                         const followed = [];
                         let cursor;
                         let sawMore = false;
                         for (let requests = 0; requests < 200; requests++) {
-                            const result = await metadataDb.queryEntities(directories, { ...filter, offset: followed.length, limit: pageSize, wantTotal: false, cursor });
-                            followed.push(...result.rows.map(r => `${r.type}:${r.id}`));
+                            const result = await user.store.lib.query({ ...filter, offset: followed.length, limit: pageSize, wantTotal: false, cursor, cap: 1 });
+                            followed.push(...result.rows.map(idOf));
                             sawMore ||= result.more === true;
                             cursor = result.cursor;
                             if (result.more !== true && result.rows.length < pageSize) break;
                         }
                         expect({ tags, sortOrder, pageSize, rows: followed }).toEqual({ tags, sortOrder, pageSize, rows: whole });
-                        expect(sawMore || whole.length <= 1).toBe(true);
+                        if (sawMore) reachedCap.add(JSON.stringify(tags));
                     }
                 }
             }
-        } finally {
-            metadataDb._setSortedPageWalkForTests(null);
+            expect(reachedCap.size).toBeGreaterThan(0);
+            expect(reachedCap.has(JSON.stringify({}))).toBe(false);
         }
     });
 
     test('a jump past the cap with no cursor answers an empty page with more, and following it reaches the asked page', async () => {
         await seed();
-        metadataDb._setSortedPageWalkForTests(null);
         const whole = await listed({ sortField: 'date_added', sortOrder: 'desc' });
-        metadataDb._setSortedPageWalkForTests({ cap: 1, window: 1 });
-        try {
+        {
             const offset = 6;
-            let result = await metadataDb.queryEntities(directories, { sortField: 'date_added', sortOrder: 'desc', offset, limit: 2, wantTotal: false });
+            let result = await user.store.lib.query({ sortField: 'date_added', sortOrder: 'desc', offset, limit: 2, wantTotal: false, cap: 1 });
             expect(result.rows).toEqual([]);
             expect(result.more).toBe(true);
             const rows = [];
             for (let requests = 0; requests < 100 && result.more === true && rows.length < 2; requests++) {
-                result = await metadataDb.queryEntities(directories, { sortField: 'date_added', sortOrder: 'desc', offset, limit: 2 - rows.length, wantTotal: false, cursor: result.cursor });
-                rows.push(...result.rows.map(r => `${r.type}:${r.id}`));
+                result = await user.store.lib.query({ sortField: 'date_added', sortOrder: 'desc', offset, limit: 2 - rows.length, wantTotal: false, cursor: result.cursor, cap: 1 });
+                rows.push(...result.rows.map(idOf));
             }
             expect(rows).toEqual(whole.slice(offset, offset + 2));
-        } finally {
-            metadataDb._setSortedPageWalkForTests(null);
         }
-    });
-
-    test('the fill resumes after a stop and is idempotent', async () => {
-        await seed();
-        withDb(db => db.prepare('DELETE FROM character_tag_sort').run());
-        withDb(db => db.prepare('INSERT INTO meta (key, value) VALUES (?, ?)').run('tag_sort_fill_upto_character', 'b.png'));
-        await metadataDb.fillTagSortTablesIfNeeded(directories);
-        withDb(db => {
-            // Only ids after b.png were copied by the resumed fill.
-            const ids = db.prepare('SELECT DISTINCT entity_id FROM character_tag_sort ORDER BY entity_id').all().map(r => r.entity_id);
-            expect(ids).toEqual(['c.png', 'm.png', 'z.png']);
-        });
-        const again = await metadataDb.fillTagSortTablesIfNeeded(directories);
-        expect(again.batches).toBe(0);
     });
 });

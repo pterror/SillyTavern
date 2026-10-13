@@ -37,19 +37,16 @@ pub mod key {
     pub const TEXT_EDIT: u64 = 19;
     /// Search (`crate::search`).
     pub const SEARCH_POSTING: u64 = 32;
-    pub const SEARCH_DOC_FREQ: u64 = 33;
     pub const SEARCH_LENGTH: u64 = 35;
-    pub const SEARCH_TERM_DOCS: u64 = 36;
-    pub const SEARCH_FIELD_TOKENS: u64 = 37;
+    /// Per (scope, term): its document counts (`crate::search::term_counts`).
+    pub const SEARCH_TERM_COUNTS: crate::store::derive::AddMapKind =
+        crate::store::derive::AddMapKind::new(208);
     pub const SEARCH_DOCS: u64 = 38;
     pub const SEARCH_MAX_DOC: u64 = 39;
     pub const SEARCH_BLOCK_MAX: u64 = 34;
     pub const SEARCH_SHORTEST: u64 = 44;
-    pub const SEARCH_TOP: u64 = 46;
-    pub const SEARCH_TOP_GENERATION: u64 = 47;
-    pub const SEARCH_TOP_ENTRY: u64 = 48;
-    pub const SEARCH_TOP_COUNT: u64 = 49;
-    /// Per (tag, entity): the `tagAssign` record assigning it.
+    /// Per (tag, entity): the `tagAssign` record assigning it, then the entity's number in the tag's numbering (a
+    /// character or group).
     pub const MEMBER: u64 = 40;
     /// Per (entity, tag): assigned.
     pub const MEMBER_OF: u64 = 41;
@@ -101,17 +98,23 @@ pub mod key {
     /// Per bookmark at a tree's root: the tree. Per (tree, bookmark): a bookmark at its root.
     pub const BOOKMARK_ROOT: u64 = 109;
     pub const ROOT_BOOKMARKS: u64 = 110;
+    /// Per bookmark: the time key it has in its tree's order. Per (tree, time key, bookmark): a bookmark of the tree by
+    /// the receive time of the message it is at (one at the root: when it was made), the compat chat list's
+    /// newest-first order.
+    pub const BOOKMARK_TIME: u64 = 156;
+    pub const TREE_BOOKMARK_TIME: u64 = 157;
+    /// Per bookmark: its latest `positionMove` record.
+    pub const POSITION_MOVE: u64 = 158;
     /// The library (`store::library`).
-    /// Per entity: its `entityCreate` record.
+    /// Per entity: its `entityCreate` record, then its number in the whole library's numbering (a character or
+    /// group).
     pub const ENTITY: u64 = 50;
     /// Per (type, key): the entity.
     pub const ENTITY_KEY: u64 = 51;
-    /// Per (scope, sort, type, fav, sort key, tie): the entity.
+    /// Per (scope, sort, type, fav, sort key, entity): nothing (the entity breaks ties).
     pub const ORDER: u64 = 52;
     /// Per (scope, type, fav, number): the entity at that number of the dense numbering.
     pub const RAND: u64 = 53;
-    /// Per (scope, entity): its number.
-    pub const RAND_AT: u64 = 54;
     /// Per (scope, type, fav): its entities (a counter).
     pub const COUNT: u64 = 55;
     /// Per entity: its `dataSize`, `createDate` record.
@@ -155,6 +158,8 @@ pub mod key {
     pub const TAG_GONE_KEY: u64 = 75;
     /// Per deleted tag: its key.
     pub const TAG_GONE_ID: u64 = 76;
+    /// Per folded name a deleted tag had: the last tag deleted with it.
+    pub const TAG_GONE_NAME: u64 = 159;
     /// Per queued move (by its record's position): its `tagQueue` record.
     pub const TAG_QUEUE: u64 = 77;
     /// The `tagPass` record.
@@ -168,12 +173,86 @@ pub mod key {
     /// The pair postings' option and pass (`search::pairs`); per state: its `searchPairs` record.
     pub const SEARCH_PAIRS: u64 = 82;
     pub const SEARCH_PAIRS_REC: u64 = 83;
+
+    // ---- tag carriers by name term (`store::carriers`); a term is (`TermKind`, its text) ----
+    /// Per (term, member block): per carrier's place, how many of its light-mapped tags' names hold the term.
+    pub const TAG_CARRIERS: crate::store::derive::AddMapKind =
+        crate::store::derive::AddMapKind::new(200);
+    /// Per term: the carriers summed over the tags whose indexed name holds it (a counter).
+    pub const TERM_CARRIERS: u64 = 201;
+    /// Per (term, tag): the tag is heavy, settled with the term in its name, or moving from heavy with it in its
+    /// mapped name.
+    pub const TERM_HEAVY: u64 = 202;
+    /// Per (term, tag): the tag is moving, the term in its mapped, target or indexed name.
+    pub const TERM_MOVING: u64 = 203;
+    /// Per tag that is heavy or moving: its side, and its move (`carriers::TagMap`).
+    pub const TAG_MAP: u64 = 204;
+    /// Per moving tag: nothing (the move queue).
+    pub const MOVING: u64 = 205;
+    /// Every tag's carriers, summed (a counter).
+    pub const CARRIER_PAIRS: u64 = 206;
+    /// The sides' scale and a re-siding scan (`carriers::Reside`).
+    pub const RESIDE: u64 = 207;
+
+    /// The prefix of a term's keys in a structure keyed by term first.
+    pub fn term_key(structure: u64, kind: crate::search::TermKind, term: &str) -> Vec<u8> {
+        let mut k = of(structure);
+        put_u64(&mut k, kind as u64);
+        put_bytes(&mut k, term.as_bytes());
+        k
+    }
+
+    pub fn tag_carriers(
+        kind: crate::search::TermKind,
+        term: &str,
+        block: u64,
+    ) -> crate::store::derive::AddMapKey {
+        TAG_CARRIERS.key(|k| {
+            put_u64(k, kind as u64);
+            put_bytes(k, term.as_bytes());
+            put_u64(k, block);
+        })
+    }
+
+    /// The prefix of a term's `TAG_CARRIERS` entries, for reading them; each is followed by its block.
+    pub fn tag_carriers_of(kind: crate::search::TermKind, term: &str) -> Vec<u8> {
+        let mut k = TAG_CARRIERS.prefix();
+        put_u64(&mut k, kind as u64);
+        put_bytes(&mut k, term.as_bytes());
+        k
+    }
+
+    pub fn term_carriers(kind: crate::search::TermKind, term: &str) -> Vec<u8> {
+        term_key(TERM_CARRIERS, kind, term)
+    }
+
+    pub fn term_heavy(kind: crate::search::TermKind, term: &str, tag: u64) -> Vec<u8> {
+        let mut k = term_key(TERM_HEAVY, kind, term);
+        put_u64(&mut k, tag);
+        k
+    }
+
+    pub fn term_moving(kind: crate::search::TermKind, term: &str, tag: u64) -> Vec<u8> {
+        let mut k = term_key(TERM_MOVING, kind, term);
+        put_u64(&mut k, tag);
+        k
+    }
+
     #[cfg(any(test, feature = "measure"))]
     pub const TEST_SET: u64 = 4096;
     #[cfg(any(test, feature = "measure"))]
     pub const TEST_ORDER: u64 = 4097;
     #[cfg(any(test, feature = "measure"))]
     pub const TEST_COUNT: u64 = 4098;
+    /// Per id: a map of added counts.
+    #[cfg(test)]
+    pub const TEST_ADD_MAP: crate::store::derive::AddMapKind =
+        crate::store::derive::AddMapKind::new(4099);
+
+    #[cfg(test)]
+    pub fn test_add_map(id: u64) -> crate::store::derive::AddMapKey {
+        TEST_ADD_MAP.key(|k| put_u64(k, id))
+    }
 
     pub fn of(structure: u64) -> Vec<u8> {
         let mut k = Vec::new();
@@ -516,16 +595,19 @@ impl Head {
     }
 
     pub(super) fn get(view: &View, h: Holder, f: &FieldRef) -> Result<Option<Head>, StoreError> {
-        let Some(b) = view.get(&h.text_key(f))? else {
-            return Ok(None);
-        };
-        let [pos, len, size, edits, edit_bytes] = parse_varints(&b)?;
-        Ok(Some(Head {
+        view.get(&h.text_key(f))?
+            .map(|b| Head::parse(&b))
+            .transpose()
+    }
+
+    pub(super) fn parse(b: &[u8]) -> Result<Head, StoreError> {
+        let [pos, len, size, edits, edit_bytes] = parse_varints(b)?;
+        Ok(Head {
             full: Loc { pos, len },
             size,
             edits,
             edit_bytes,
-        }))
+        })
     }
 }
 
@@ -536,6 +618,9 @@ fn edits(
     f: &FieldRef,
     head: &Head,
 ) -> Result<Vec<(Vec<u8>, Loc)>, StoreError> {
+    if head.edits == 0 {
+        return Ok(Vec::new());
+    }
     let start = h.edits_prefix(f);
     let end = key::prefix_end(&start);
     let found = view.scan(&start, &end, head.edits as usize)?;
@@ -586,6 +671,16 @@ fn materialize(view: &View, h: Holder, f: &FieldRef, head: &Head) -> Result<Vec<
             .ok_or_else(|| StoreError::Entry(format!("an edit of {h:?}'s text is out of range")))?;
     }
     Ok(text)
+}
+
+/// The text a head entry (`Holder::text_key`) of entity `entity`'s field `f` stands for.
+pub(super) fn text_of_head(
+    view: &View,
+    entity: u64,
+    f: &FieldRef,
+    head: &[u8],
+) -> Result<Vec<u8>, StoreError> {
+    materialize(view, Holder::Entity(entity), f, &Head::parse(head)?)
 }
 
 pub(super) fn text_value(
@@ -1085,7 +1180,7 @@ pub(super) fn unassign(
     let Some(b) = view.get(&k)? else {
         return Ok(false);
     };
-    dead(out, parse_loc(&b)?);
+    dead(out, library::parse_host(&b)?.0);
     out.del(key::ids(key::MEMBER_OF, entity, tag));
     out.add(key::id(key::MEMBER_COUNT, tag), -1);
     out.map(
@@ -1096,8 +1191,9 @@ pub(super) fn unassign(
     Ok(true)
 }
 
-/// Makes `entity` one of `tag`'s carriers, by the record at `at`.
-pub(super) fn assign(out: &mut Out, entity: u64, tag: u64, at: Loc, existed: bool) {
+/// Makes `entity` one of `tag`'s carriers, by the record at `at`; `n` is its number in the tag's numbering, kept
+/// in the membership entry (`library::rank_host`).
+pub(super) fn assign(out: &mut Out, entity: u64, tag: u64, at: Loc, existed: bool, n: Option<u64>) {
     if !existed {
         out.put(key::ids(key::MEMBER_OF, entity, tag), Vec::new());
         out.add(key::id(key::MEMBER_COUNT, tag), 1);
@@ -1106,7 +1202,10 @@ pub(super) fn assign(out: &mut Out, entity: u64, tag: u64, at: Loc, existed: boo
             vec![(key::member_slot(entity), 1)],
         );
     }
-    out.put(key::ids(key::MEMBER, tag, entity), loc_bytes(at));
+    out.put(
+        key::ids(key::MEMBER, tag, entity),
+        library::host_bytes(at, n),
+    );
 }
 
 impl Deriver for TagAssign {
@@ -1120,24 +1219,28 @@ impl Deriver for TagAssign {
                 return Ok(());
             };
             let k = key::ids(key::MEMBER, tag, entity);
-            let old = view.get(&k)?.map(|b| parse_loc(&b)).transpose()?;
-            if let Some(old) = old {
+            let old = view.get(&k)?.map(|b| library::parse_host(&b)).transpose()?;
+            if let Some((old, n)) = old {
                 dead(out, old);
+                assign(out, entity, tag, at, true, n);
             } else {
+                // The membership first: the tag's numbering keeps the entity's number in it.
+                assign(out, entity, tag, at, false, None);
                 library::change(view, out, entity, |st| {
                     st.tags.push(tag);
                     st.tags.sort_unstable();
                 })?;
                 tags::carriers_changed(view, out, tag, 1)?;
+                super::carriers::changed(view, out, tag, entity, 1)?;
                 tags::entity_touched(view, out, entity, at)?;
             }
-            assign(out, entity, tag, at, old.is_some());
         } else {
             dead(out, at);
             // A merged tag's own membership goes, never its target's: an entity that also carries the target
             // keeps it.
             if unassign(view, out, entity, raw)? {
                 tags::carriers_changed(view, out, raw, -1)?;
+                super::carriers::changed(view, out, raw, entity, -1)?;
                 library::change(view, out, entity, |st| st.tags.retain(|t| *t != raw))?;
                 tags::entity_touched(view, out, entity, at)?;
             }
@@ -1158,7 +1261,7 @@ impl Deriver for TagAssign {
         out: &mut Out,
     ) -> Result<(), StoreError> {
         if let Some(k) = self.live_key(rec, from, view)? {
-            out.put(k, loc_bytes(to));
+            library::repoint_host(view, out, &k, from, to)?;
         }
         Ok(())
     }
@@ -1177,12 +1280,7 @@ impl TagAssign {
         }
         for t in tags {
             let k = key::ids(key::MEMBER, t, id(rec, 0));
-            if view
-                .get(&k)?
-                .map(|b| parse_loc(&b))
-                .transpose()?
-                .is_some_and(|l| l.pos == pos)
-            {
+            if library::live_host(view, &k, pos)? {
                 return Ok(Some(k));
             }
         }

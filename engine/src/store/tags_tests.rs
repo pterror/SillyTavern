@@ -582,7 +582,7 @@ fn tag_library() -> Vec<Vec<Record>> {
 
 #[test]
 fn a_bulk_load_places_every_tag_as_commits_do() {
-    for failpoint in [0u8, 3] {
+    for failpoint in [0u8, 2] {
         let committed = temp_dir("bulk-commits");
         let c = Store::open_in(&committed, SMALL, pool()).unwrap();
         for r in tag_library() {
@@ -716,6 +716,43 @@ fn unassigning_a_merged_tag_keeps_its_target() {
         vec![vec![2], vec![2]]
     );
     assert_eq!(s.tag_counts(&[2]).unwrap(), vec![(2, false)]);
+    s.close();
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_deleted_tags_name_finds_the_last_tag_deleted_with_it() {
+    let dir = temp_dir("gone-name");
+    let s = Store::open_in(&dir, SMALL, pool()).unwrap();
+    let mut r = Vec::new();
+    for (t, n) in [(1, "Old"), (2, "Into"), (3, "old"), (4, "Other")] {
+        r.extend([set(t, NAME, n), mark(t), create(t, TAG, &format!("k{t}"))]);
+    }
+    s.commit_wait(r).unwrap();
+    let gone = |name: &str| s.tag_gone_by_names(&[name.as_bytes().to_vec()]).unwrap()[0];
+    assert_eq!(gone("Old"), None);
+    s.commit_wait(vec![
+        rec("tagMerge", vec![Value::Id(1), Value::Id(2)]),
+        rec("entityDelete", vec![Value::Id(1)]),
+    ])
+    .unwrap();
+    wait_folds(&s);
+    // Folded as live names are.
+    assert_eq!(gone("OLD"), Some(1));
+    // A later one with the same folded name takes it over.
+    s.commit_wait(vec![
+        rec("tagMerge", vec![Value::Id(3), Value::Id(4)]),
+        rec("entityDelete", vec![Value::Id(3)]),
+    ])
+    .unwrap();
+    wait_folds(&s);
+    assert_eq!(gone("old"), Some(3));
+    s.close();
+    let s = Store::open_in(&dir, SMALL, pool()).unwrap();
+    assert_eq!(
+        s.tag_gone_by_names(&[b"Old".to_vec()]).unwrap(),
+        vec![Some(3)]
+    );
     s.close();
     let _ = fs::remove_dir_all(&dir);
 }
@@ -908,4 +945,54 @@ fn a_meta_value_reads_back_until_removed() {
     assert_eq!(s.meta(&names).unwrap(), vec![Some(b"2".to_vec()), None]);
     s.close();
     let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn part_counts_after_a_crash_before_install_are_not_doubled() {
+    use crate::keyspace::val::counter_value;
+    let parts = |s: &Store| -> Vec<i64> {
+        s.chat_read(|v| {
+            let mut out = Vec::new();
+            for (f, u) in [(false, false), (true, false), (false, true), (true, true)] {
+                out.push(
+                    v.get(&tags::part_count_key(f, u))?
+                        .and_then(|b| counter_value(&b))
+                        .unwrap_or(0),
+                );
+            }
+            Ok(out)
+        })
+        .unwrap()
+    };
+    let committed = temp_dir("parts-commits");
+    let c = Store::open_in(&committed, SMALL, pool()).unwrap();
+    for r in tag_library() {
+        c.commit_wait(r).unwrap();
+    }
+    let want = parts(&c);
+    for failpoint in [0u8, 2] {
+        let dir = temp_dir("parts-bulk");
+        let s = Store::open_in(&dir, SMALL, pool()).unwrap();
+        let mut l = s.loader().unwrap();
+        for r in tag_library() {
+            l.add(r).unwrap();
+        }
+        l.fail_at(failpoint);
+        let done = l.finish();
+        let s = if failpoint == 0 {
+            done.unwrap();
+            s
+        } else {
+            assert!(done.is_err());
+            drop(s);
+            Store::open_in(&dir, SMALL, pool()).unwrap()
+        };
+        assert_eq!(parts(&s), want);
+        drop(s);
+        let s = Store::open_in(&dir, SMALL, pool()).unwrap();
+        assert_eq!(parts(&s), want);
+        drop(s);
+        let _ = fs::remove_dir_all(&dir);
+    }
+    let _ = fs::remove_dir_all(&committed);
 }

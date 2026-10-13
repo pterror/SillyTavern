@@ -21,7 +21,8 @@ import { getRequestHeaders } from './request-headers.js';
 import { amount_gen, main_api, max_context } from './generation-params.js';
 import { name1 } from './app-selection-state.js';
 import { charactersStore, setCharacterId } from './character-store.js';
-import { changedMetadataKeys, deriveChatAddressNode, noteMetadataSent, noteMetadataStored } from './metadata-store.js';
+import { changedMetadata, noteMetadataSent, noteMetadataStored } from './metadata-store.js';
+import { changeOps, changesSince } from './state-sync.js';
 import { isProvisionalNodeId, isStoredNodeId, provisionalNodeId } from './node-identity.js';
 import { setFloatingPrompt } from './authors-note.js';
 import { getCfgPrompt, getGuidanceScale } from './cfg-scale.js';
@@ -305,8 +306,10 @@ function settlePendingSends(pendingSends) {
  * @property {{ refs: string[], messages: object[] }} [opening] The chat's greetings, when none of the chat is stored.
  * @property {{ refs: string[], messages: object[] }} [page_messages] Messages after the last stored one that no
  * action stored: an extension can put a message on `chat` without storing it, and upstream's prompt has it.
- * @property {{ ref: string, target: string|null, set: Record<string, unknown>, unset: string[] }} [page_metadata] The
- * chat metadata keys changed since the page last had them from the server.
+ * @property {{ ref: string } & import('./state-sync.js').MetadataChanges} [page_metadata] The chat metadata keys and
+ * variables changed since the page last had them from the server.
+ * @property {{ key: string, variable?: true, value?: unknown }[]} [reply_changes] Those changed while producing the
+ * reply, stored with it.
  */
 
 /**
@@ -362,9 +365,13 @@ function sentUserMessageForRequest(sent) {
  * @param {ChatMessage|undefined} lastMessage The message the generation is for, as it was before this generation
  * changed `chat` (a regenerate takes it off).
  * @param {number} lastMessageIndex Its index then.
+ * @param {import('./state-sync.js').MetadataChanges|null} atStart What `changedMetadata()` was when the generation
+ * started: what changed since (the prompt's macros, extensions handling its events) was made while producing the reply,
+ * and is stored with it (`reply_changes`); a quiet generation or an impersonation stores no reply, so its changes are
+ * the chat's like any other.
  * @returns {RawActionWrites}
  */
-function rawActionWritesFor(type, lastMessage, lastMessageIndex) {
+function rawActionWritesFor(type, lastMessage, lastMessageIndex, atStart) {
     const end = Math.min(lastMessageIndex + 1, chat.length);
     /** @type {RawActionWrites} */
     const writes = { node_id: null, type };
@@ -413,17 +420,19 @@ function rawActionWritesFor(type, lastMessage, lastMessageIndex) {
         writes.type = 'normal';
     }
 
-    const changes = changedMetadataKeys();
+    const now = changedMetadata();
+    const repliless = type === 'quiet' || type === 'impersonate';
+    const produced = repliless ? null : changesSince(atStart, now, chat_metadata);
+    const changes = repliless ? now : atStart;
     if (changes || writes.opening) {
         const ref = uuidv4();
-        const sent = changes ?? { set: {}, unset: [] };
+        const sent = changes ?? { set: {}, unset: [], variables: { set: {}, unset: [] } };
         noteMetadataSent(ref, sent);
-        const groupChat = inGroup ? groupsStore.get(selected_group)?.chat_id : undefined;
-        const target = inGroup
-            ? (groupChat !== undefined && groupChat !== '' ? groupChat : null)
-            : (lastStored >= 0 ? deriveChatAddressNode(null) : null);
-        writes.page_metadata = { ref, target, set: sent.set, unset: sent.unset };
+        writes.page_metadata = { ref, ...sent };
     }
+    // The page takes them as stored when the state where the reply landed comes back (the changes stream's
+    // `state-changed`); until then they count as unsaved, and saving them again where they are writes nothing.
+    if (produced) writes.reply_changes = changeOps(produced);
     return writes;
 }
 
@@ -454,6 +463,8 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
  * @returns {Promise<any>}
  */
 async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, force_avatar, signal, quietImage, quietName, jsonSchema = null, depth = 0 } = {}, dryRun = false, pendingSends = []) {
+    // What the chat's metadata changes from here to the request are made while producing the reply.
+    const metadataAtStart = changedMetadata();
     setGenerationProgress(0);
     generation_started = new Date();
 
@@ -1247,7 +1258,7 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
         const ownerId = groupId != null ? String(groupId) : (characterAvatar != null ? String(characterAvatar).replace('.png', '') : undefined);
         // The node to generate from is `lastMessage`, captured before a regenerate takes it off `chat`; the server
         // stores what the page has that it doesn't first (rawActionWritesFor()).
-        const rawActionWrites = rawActionWritesFor(type, lastMessage, lastMessageIndex);
+        const rawActionWrites = rawActionWritesFor(type, lastMessage, lastMessageIndex, metadataAtStart);
         // `characterAvatar` is required unconditionally, group turn or not: even with `groupId` set,
         // a responding member's own avatar must resolve for real (defensively falls through to the
         // legacy path instead of assuming this, for the unlikely case `getCurrentCharacter()` were
@@ -1517,7 +1528,7 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
         // card/prompt resolution. Falls back to the plain per-character ownerId when not in a group,
         // unchanged from before.
         const ownerId = groupId != null ? String(groupId) : (characterAvatar != null ? String(characterAvatar).replace('.png', '') : undefined);
-        const rawActionWrites = rawActionWritesFor(type, lastMessage, lastMessageIndex);
+        const rawActionWrites = rawActionWritesFor(type, lastMessage, lastMessageIndex, metadataAtStart);
         // `characterAvatar` is required unconditionally, group turn or not - see the text-completion
         // cutover's own identical precondition/rationale above.
         if (ownerId != null && characterAvatar != null) {
@@ -3013,8 +3024,8 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
             ? chat.slice(0, Number(mesId) + 1)
             : chat.slice();
     const messages = storableMessages(source);
-    // The open chat is named by the message its character is at; an unnamed one is stored unnamed.
-    const target = chatName ?? deriveChatAddressNode(character.chat) ?? '';
+    // No name: this tab's session's own conversation; a name is a bookmark or session (one is made when none has it).
+    const target = chatName ?? '';
 
     try {
         const answer = await postWholeChat('/api/chats/save', {

@@ -1,117 +1,24 @@
-import { describe, test, expect, jest, beforeAll, afterAll, afterEach } from '@jest/globals';
+import { describe, test, expect, beforeAll, afterEach } from '@jest/globals';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { createRequire } from 'node:module';
 
-import NodeSqlite3Wasm from 'node-sqlite3-wasm';
-import * as realSqliteEngine from '../src/endpoints/sqlite-engine.js';
-const { openWasmDatabase } = realSqliteEngine;
+// The upstream-compatible migration of group files (src/endpoints/groups.js migrateGroupChatsMetadataFormat) works on
+// the old group JSON and chat files only; it never reads or writes the store.
 
-const { Database: WasmDatabase } = NodeSqlite3Wasm;
-
-// A native sqlite build is not guaranteed in every test environment; wasm is.
-jest.unstable_mockModule('../src/endpoints/sqlite-engine.js', () => ({
-    ...realSqliteEngine,
-    getSqliteEngine: jest.fn(async () => ({
-        kind: 'wasm',
-        openDatabase: (dbPath, options) => openWasmDatabase(WasmDatabase, dbPath, options),
-    })),
-    openNativeDatabase: jest.fn(),
-}));
-
-// Lets a test hold migrateGroupChatsMetadataFormat() at its chat-file write, after it has read the group JSON and before it
-// writes it back - the window a concurrent group save would fall into.
-// Mocked at the copy src/ resolves (the repo root's node_modules), not tests/node_modules' own.
-const srcRequire = createRequire(new URL('../src/endpoints/groups.js', import.meta.url));
-const writeFileAtomicPath = srcRequire.resolve('write-file-atomic');
-const realWriteFileAtomic = srcRequire('write-file-atomic');
-/** @type {{ reached: () => void, released: Promise<void> } | null} */
-let chatWriteGate = null;
-jest.unstable_mockModule(writeFileAtomicPath, () => ({
-    default: async (...args) => {
-        const gate = chatWriteGate;
-        if (gate) {
-            chatWriteGate = null;
-            gate.reached();
-            await gate.released;
-        }
-        return realWriteFileAtomic(...args);
-    },
-    sync: realWriteFileAtomic.sync,
-}));
-
-/** Arms the gate; resolves `reached` when the migration arrives at it, and `release()` lets it go on. */
-function armChatWriteGate() {
-    /** @type {() => void} */
-    let release = () => {};
-    /** @type {Promise<void>} */
-    let reached;
-    const released = new Promise(resolve => { release = () => resolve(undefined); });
-    reached = new Promise(resolve => {
-        chatWriteGate = { reached: () => resolve(undefined), released };
-    });
-    return { reached, release };
-}
-
-/** @type {typeof import('../src/message-tree-db.js')} */
-let treeDb;
 /** @type {typeof import('../src/endpoints/groups.js')} */
 let groups;
-/** @type {typeof import('../src/character-metadata-db.js')} */
-let metadataDb;
-/** @type {import('node:http').Server} */
-let server;
-let baseUrl = '';
-/** @type {any} */
-let requestDirectories = null;
 
 beforeAll(async () => {
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
 
-    treeDb = await import('../src/message-tree-db.js');
     groups = await import('../src/endpoints/groups.js');
-    metadataDb = await import('../src/character-metadata-db.js');
-
-    const express = (await import('express')).default;
-    const app = express();
-    app.use(express.json());
-    app.use((req, res, next) => {
-        req.user = { directories: requestDirectories, profile: { handle: `test-user-${path.basename(requestDirectories.root)}` } };
-        next();
-    });
-    app.use('/api/groups', groups.router);
-    server = app.listen(0, '127.0.0.1');
-    await new Promise(resolve => server.once('listening', resolve));
-    baseUrl = `http://127.0.0.1:${server.address().port}`;
-
-    // Creating both stores' schemas on the wasm engine takes about a second; done once here and copied into each
-    // test's fresh directory, so no test's time depends on how loaded the machine is.
-    const template = makeDirectories();
-    await metadataDb.ensureSchemaMigrated(template);
-    await treeDb.getMessageTreeDb(template);
-    treeDb.disposeMessageTreeStores();
-    metadataDb.disposeMetadataStores();
-    templateDbFiles = fs.readdirSync(template.root)
-        .filter(name => name.endsWith('.sqlite'))
-        .map(name => ({ name, bytes: fs.readFileSync(path.join(template.root, name)) }));
-    fs.rmSync(template.root, { recursive: true, force: true });
-    tmpDirs.splice(tmpDirs.indexOf(template.root), 1);
 });
-
-/** @type {{ name: string, bytes: Buffer }[]} */
-let templateDbFiles = [];
-
-afterAll(() => new Promise(resolve => server.close(resolve)));
 
 const tmpDirs = [];
 
 afterEach(() => {
-    chatWriteGate = null;
-    requestDirectories = null;
-    treeDb.disposeMessageTreeStores();
-    metadataDb.disposeMetadataStores();
     for (const dir of tmpDirs.splice(0)) {
         fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -130,9 +37,6 @@ function makeDirectories() {
     };
     for (const dir of [directories.characters, directories.chats, directories.groups, directories.groupChats, directories.backups]) {
         fs.mkdirSync(dir, { recursive: true });
-    }
-    for (const file of templateDbFiles) {
-        fs.writeFileSync(path.join(root, file.name), file.bytes);
     }
     return directories;
 }
@@ -247,52 +151,5 @@ describe('metadata migration never strips metadata it did not land', () => {
         const [headerLine, ...rest] = raw.split('\n');
         expect(JSON.parse(headerLine).chat_metadata).toEqual({ note_prompt: 'm' });
         expect(rest.join('\n')).toBe(original);
-    });
-});
-
-async function postJson(urlPath, body) {
-    const response = await fetch(`${baseUrl}${urlPath}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-    });
-    expect(response.status).toBe(200);
-    return response.json();
-}
-
-/** Whether `promise` has settled 50ms from now. */
-async function isSettled(promise) {
-    let settled = false;
-    promise.then(() => { settled = true; }, () => { settled = true; });
-    await new Promise(resolve => setTimeout(resolve, 50));
-    return settled;
-}
-
-describe('group writes during the metadata migration', () => {
-    test('a group save racing it is not lost', async () => {
-        const directories = makeDirectories();
-        requestDirectories = directories;
-        writeOldFormatGroup(directories, {
-            groupId: 'g-race',
-            chatId: 'chat-race',
-            messages: [makeMessage('r-first'), makeMessage('r-second')],
-            chatMetadata: { note_prompt: 'race meta' },
-        });
-
-        const gate = armChatWriteGate();
-        const pass = groups.migrateGroupChatsMetadataFormat([directories]);
-        await gate.reached;
-
-        const save = postJson('/api/groups/save-partial', { id: 'g-race', props: { name: 'Renamed mid-migration' } });
-        // The save waits for the group's lock, which the migration holds until its step for this group is done.
-        expect(await isSettled(save)).toBe(false);
-        gate.release();
-        await Promise.all([pass, save]);
-
-        const after = readGroup(directories, 'g-race');
-        expect(after.name).toBe('Renamed mid-migration');
-        expect(Object.hasOwn(after, 'chat_metadata')).toBe(false);
-        const [headerLine] = fs.readFileSync(path.join(directories.groupChats, 'chat-race.jsonl'), 'utf8').split('\n');
-        expect(JSON.parse(headerLine).chat_metadata).toEqual({ note_prompt: 'race meta' });
     });
 });

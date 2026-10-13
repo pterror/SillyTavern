@@ -107,6 +107,7 @@ jest.unstable_mockModule('../public/script.js', () => ({
     saveItemizedPrompts: jest.fn(),
     setActiveGroup: jest.fn(),
     getCurrentChatDetails: getCurrentChatDetailsMock,
+    getChatLabelBase: () => 'current-chat',
     selectCharacterByAvatar: jest.fn(),
     updateMessage: updateMessageMock,
     hydrateSwipes: hydrateSwipesMock,
@@ -118,7 +119,6 @@ jest.unstable_mockModule('../public/script.js', () => ({
     chatOpenSendKeys: jest.fn(() => []),
     adoptStored: jest.fn(),
     openingForRequest: jest.fn(() => null),
-    deriveChatAddressNode: jest.fn(() => null),
 }));
 
 jest.unstable_mockModule('../public/scripts/RossAscends-mods.js', () => ({

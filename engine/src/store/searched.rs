@@ -131,14 +131,29 @@ fn of(view: &View, e: u64) -> Result<Option<(Vec<u8>, Searched)>, StoreError> {
     let Some((kind, k, _)) = entity_info(view, e)? else {
         return Ok(None);
     };
-    Ok(searched(view, kind, &k)?.map(|s| (k, s)))
+    let m = marked(view, kind, e)?;
+    Ok(searched(view, kind, &k, m)?.map(|s| (k, s)))
 }
 
-/// What an entity of type `kind` and key `k` is to search.
-pub fn searched(view: &View, kind: u64, k: &[u8]) -> Result<Option<Searched>, StoreError> {
+/// Whether entity `e` of type `kind` is a tag with its definition marker in `view`, not merged away.
+pub fn marked(view: &View, kind: u64, e: u64) -> Result<bool, StoreError> {
+    Ok(kind == TAG
+        && super::tags::has_marker(view, e)?
+        && view.get(&key::id(key::MERGE, e))?.is_none())
+}
+
+/// What an entity of type `kind` and key `k` is to search; `marked`: it is a tag with its definition marker
+/// (a tag's name is searched only while it has one).
+pub fn searched(
+    view: &View,
+    kind: u64,
+    k: &[u8],
+    marked: bool,
+) -> Result<Option<Searched>, StoreError> {
     let (scope, defs, world) = match kind {
         CHARACTER => (Scope::LIBRARY, CHARACTER_DEFS, false),
         GROUP => (Scope::LIBRARY, GROUP_DEFS, false),
+        TAG if !marked => return Ok(None),
         TAG => (Scope::TAGS, TAG_DEFS, false),
         ENTRY => {
             let (book, _) = parse_entry_key(k)?;
@@ -269,17 +284,9 @@ fn whole(
         .filter(|(_, v)| !v.is_empty())
         .map(|(f, v)| (*f, refs(v)))
         .collect();
-    let changes: Vec<search::index::FieldChange> = values
-        .iter()
-        .map(|(f, v)| {
-            if on {
-                (*f, &[][..], v.as_slice())
-            } else {
-                (*f, v.as_slice(), &[][..])
-            }
-        })
-        .collect();
-    search::index::update_fields(view, out, scope, doc, &changes)
+    let fields: Vec<search::index::FieldValues> =
+        values.iter().map(|(f, v)| (*f, v.as_slice())).collect();
+    search::index::whole(view, out, scope, doc, &fields, on)
 }
 
 /// Text value `f` of entity `e` changes from `old` to `new` (None: none).
@@ -387,9 +394,17 @@ pub fn json_written(
     Ok(())
 }
 
-/// Entity `e` (type `kind`, key `k`) is created with the values in `view`.
-pub fn created(view: &View, out: &mut Out, e: u64, kind: u64, k: &[u8]) -> Result<(), StoreError> {
-    let Some(s) = searched(view, kind, k)? else {
+/// Entity `e` (type `kind`, key `k`) is created with the values in `view`, or (`marked`) a tag gets its
+/// definition marker.
+pub fn created(
+    view: &View,
+    out: &mut Out,
+    e: u64,
+    kind: u64,
+    k: &[u8],
+    marked: bool,
+) -> Result<(), StoreError> {
+    let Some(s) = searched(view, kind, k, marked)? else {
         return Ok(());
     };
     let mut now = Vec::new();
@@ -399,9 +414,10 @@ pub fn created(view: &View, out: &mut Out, e: u64, kind: u64, k: &[u8]) -> Resul
     whole(view, out, s.scope, e, &now, true)
 }
 
-/// Entity `e` (type `kind`, key `k`) goes: every field it is searched by, before its values go.
+/// Entity `e` (type `kind`, key `k`) goes, or a tag loses its definition marker: every field it is searched by,
+/// before its values (and the marker) go.
 pub fn gone(view: &View, out: &mut Out, e: u64, kind: u64, k: &[u8]) -> Result<(), StoreError> {
-    let Some(s) = searched(view, kind, k)? else {
+    let Some(s) = searched(view, kind, k, marked(view, kind, e)?)? else {
         return Ok(());
     };
     let mut was = Vec::new();
@@ -420,7 +436,7 @@ pub fn rekeyed(
     old: &[u8],
     new: &[u8],
 ) -> Result<(), StoreError> {
-    let Some(s) = searched(view, kind, old)? else {
+    let Some(s) = searched(view, kind, old, marked(view, kind, e)?)? else {
         return Ok(());
     };
     for d in s.defs.iter().filter(|d| d.source == Source::Key) {

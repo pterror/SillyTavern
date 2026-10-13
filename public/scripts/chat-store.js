@@ -12,6 +12,7 @@ import { selected_group, groupsStore } from './group-chats.js';
 import { t } from './i18n.js';
 import { uuidv4 } from './utils.js';
 import { setStoredAdopter } from './stored-report.js';
+import { askToDrop, confirmOf, hasDrops, warnDropped } from './edit-drops.js';
 
 // Without `noUncheckedIndexedAccess` (a project-wide tsconfig flag, out of scope to flip here since
 // it's shared by all 10 chat-strict files), `chat[i]` types as always-`ChatMessage`, never
@@ -86,7 +87,7 @@ export function setSendStoredListener(listener) {
     _sendStoredListener = listener;
 }
 
-/** @type {(entry: { ref: string, node_id: string, integrity: string|null }) => void} */
+/** @type {(entry: { ref: string, node_id: string, integrity: string|null, notSaved?: true }) => void} */
 let _metadataStoredListener = () => {};
 
 /** Refs of the metadata a group chat's greetings were stored with (ensureOpeningRow()), until the answer comes. */
@@ -94,8 +95,8 @@ const _openingMetadataRefs = new Set();
 
 /**
  * Sets what is told when the server says it stored chat metadata keys the page sent under a ref (an entry of
- * `stored` with `integrity`).
- * @param {(entry: { ref: string, node_id: string, integrity: string|null }) => void} listener
+ * `stored` with `integrity`), or couldn't (`notSaved`; `node_id` where they were to go, '' for the tree's root).
+ * @param {(entry: { ref: string, node_id: string, integrity: string|null, notSaved?: true }) => void} listener
  */
 export function setMetadataStoredListener(listener) {
     _metadataStoredListener = listener;
@@ -105,21 +106,27 @@ export function setMetadataStoredListener(listener) {
  * Takes on the node ids the server reports for the messages it stored: each `{ ref, node_id }` goes to
  * the message on screen holding that ref, which is then saved as far as the page is concerned. A greeting
  * shown without a row takes on its row as ensureOpeningRow() gives it one. An entry with `integrity` reports
- * chat metadata keys stored instead.
+ * chat metadata keys stored instead, one with `metadata_not_saved` keys the server couldn't store.
  * @param {unknown} stored The answer's `stored` list.
  */
 export function adoptStored(stored) {
     if (!Array.isArray(stored)) return;
     for (const entry of stored) {
-        if (typeof entry?.ref !== 'string' || !isStoredNodeId(entry?.node_id)) continue;
+        if (typeof entry?.ref !== 'string') continue;
+        if (entry.metadata_not_saved === true) {
+            _openingMetadataRefs.delete(entry.ref);
+            _metadataStoredListener({ ref: entry.ref, node_id: typeof entry.node_id === 'string' ? entry.node_id : '', integrity: null, notSaved: true });
+            continue;
+        }
         if ('integrity' in entry) {
             if (_openingMetadataRefs.delete(entry.ref)) {
                 chat_metadata.integrity = typeof entry.integrity === 'string' ? entry.integrity : undefined;
                 continue;
             }
-            _metadataStoredListener({ ref: entry.ref, node_id: entry.node_id, integrity: typeof entry.integrity === 'string' ? entry.integrity : null });
+            _metadataStoredListener({ ref: entry.ref, node_id: typeof entry.node_id === 'string' ? entry.node_id : '', integrity: typeof entry.integrity === 'string' ? entry.integrity : null });
             continue;
         }
+        if (!isStoredNodeId(entry.node_id)) continue;
         _sendStoredListener(entry.ref);
         for (let i = chat.length - 1; i >= 0; i--) {
             if (_storeRefs.get(chat[i]) !== entry.ref) continue;
@@ -155,7 +162,7 @@ function _adoptOpeningRow(mesId, realId) {
     updateMessage(mesId, updates);
     _messageSnapshots.delete(provisional);
     if (wasClean) _messageSnapshots.set(realId, chat[mesId]);
-    if (mesId === 0 && (selected_group == null || selected_group === '')) _setCurrentTarget(realId, null);
+    if (mesId === 0 && (selected_group == null || selected_group === '')) _setCurrentTarget(getCurrentChatId() ?? '', null);
 }
 
 setStoredAdopter(adoptStored);
@@ -266,25 +273,25 @@ const _openingRowInFlight = new Map();
 // import of this function, is the same bidirectional pattern chat-store.js already has with
 // script.js - see .oxlint-cycle-baseline's own history for that precedent.
 /**
- * @param {string} nodeId
+ * @param {string} chatId The current chat's compat id: its current chat's `b<id>`, else `s<session>.<tree>` ('' none).
  * @param {string|null} [integrity]
  * @param {{group_id: string}|{avatar_url: string}|null} [owner]
  */
-export function _setCurrentTarget(nodeId, integrity = null, owner = null) {
+export function _setCurrentTarget(chatId, integrity = null, owner = null) {
     chat_metadata.integrity = integrity ?? undefined;
     if (owner) {
         if ('group_id' in owner) {
-            groupsStore.update(owner.group_id, { chat_id: nodeId });
+            groupsStore.update(owner.group_id, { chat_id: chatId });
         } else {
-            charactersStore.update(owner.avatar_url, { chat: nodeId });
+            charactersStore.update(owner.avatar_url, { chat: chatId });
         }
         return;
     }
     if (selected_group != null && selected_group !== '') {
-        groupsStore.update(selected_group, { chat_id: nodeId });
+        groupsStore.update(selected_group, { chat_id: chatId });
     } else {
         const avatar = getCurrentCharacter()?.avatar;
-        if (avatar != null && avatar !== '') charactersStore.update(avatar, { chat: nodeId });
+        if (avatar != null && avatar !== '') charactersStore.update(avatar, { chat: chatId });
     }
 }
 
@@ -402,9 +409,6 @@ export async function rememberCardOpening(text) {
         toastr.warning(t`The chat couldn't remember the greeting you switched to, so reopening it will show the default greeting.`, t`Greeting not remembered`);
     }
 }
-
-/** Most of this page's own edits sent to find where the chat lands (the server's limit too). */
-const LANDING_EDITS = 64;
 
 // Brings the card's current greetings into an already-open chat's opening alternatives. Nothing is
 // written here: an appended slot carries a provisional id, marking it as card-only text; it gains a
@@ -541,7 +545,7 @@ export async function _mergeCardGreetingsIntoOpening({ greetingEdit = null, gree
             const response = await fetch('/api/chats/openings/land', {
                 method: 'POST',
                 headers: getRequestHeaders(),
-                body: JSON.stringify({ avatar_url: character.avatar, shown_text: shownText, index: shownWas, edits: edits.slice(-LANDING_EDITS) }),
+                body: JSON.stringify({ avatar_url: character.avatar, shown_text: shownText, index: shownWas, edits }),
             });
             const landing = response.ok ? await response.json().catch(() => null) : null;
             if (!landing) {
@@ -637,6 +641,7 @@ export async function _restoreContinuation(mesId, { redraw = true } = {}) {
         return false;
     }
 
+    await _takeStateFrom(payload);
     const following = payload?.messages ?? [];
     if (!following.length && chat.length === mesId + 1) return false;
 
@@ -647,6 +652,16 @@ export async function _restoreContinuation(mesId, { redraw = true } = {}) {
         refreshSwipeButtons(true);
     }
     return true;
+}
+
+/**
+ * Takes the state where the session now is from an answer that moved it (`chat_metadata`), when it carries one.
+ * @param {{ chat_metadata?: ChatMetadata } | null | undefined} answer
+ */
+async function _takeStateFrom(answer) {
+    if (!answer?.chat_metadata) return;
+    const { takeServerState } = await import('./metadata-store.js');
+    takeServerState(answer.chat_metadata);
 }
 
 /**
@@ -772,6 +787,37 @@ async function _chatOpPost(path, body, silent = false) {
         });
     } catch (error) {
         if (!silent) _reportChatOpFailure();
+        throw error;
+    }
+}
+
+/**
+ * Posts one operation as `_chatOpPost()` does, but answers the body of a refusal with one of `answered` statuses
+ * (an edit refused for a reason the caller handles) instead of throwing.
+ * @param {string} path
+ * @param {Record<string, unknown>} body
+ * @param {number[]} answered
+ * @returns {Promise<any>}
+ */
+async function _chatOpPostAnswering(path, body, answered) {
+    const owner = _currentOwner();
+    if (!owner) throw new Error('no character or group is selected');
+    try {
+        return await _retryTransient(async () => {
+            const response = await fetch(path, {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ ...owner, ...body }),
+            });
+            if (!response.ok && !answered.includes(response.status)) {
+                const error = /** @type {HttpError} */ (new Error(`${path} responded ${response.status}`));
+                error.status = response.status;
+                throw error;
+            }
+            return response.json().catch(() => ({}));
+        });
+    } catch (error) {
+        _reportChatOpFailure();
         throw error;
     }
 }
@@ -956,27 +1002,85 @@ export async function chatOpGraft(mesId, { silent = false } = {}) {
     return result.node_id;
 }
 
-// Removes a contiguous run of messages [firstMesId..lastMesId] from the default path. Nothing follows
-// the range — deleting to the end of the chat — is the already-correct tail-delete case, so this
-// delegates to chatOpEndPath rather than duplicate that logic.
 /**
- * @param {number} firstMesId
- * @param {number} [lastMesId]
+ * What an edit would drop besides its messages (bookmarks, state changes), asked of the server, and for `ask` (a
+ * delete the user asked for here) whether the user goes on: the edit's `confirm`, or null when the user said no.
+ * @param {string} path
+ * @param {Record<string, unknown>} body
+ * @param {boolean} ask
+ * @returns {Promise<EditTicket | null>}
  */
-export async function chatOpDegraft(firstMesId, lastMesId = firstMesId) {
-    const firstMsg = _chatAt(firstMesId);
-    const lastMsg = _chatAt(lastMesId);
-    if (!isStoredNodeId(firstMsg?.node_id) || !isStoredNodeId(lastMsg?.node_id)) return false;
+async function _editConfirm(path, body, ask) {
+    const preview = await _chatOpPost(path, { ...body, preview: true });
+    const drops = preview?.drops ?? { bookmarks: [], changes: [] };
+    if (hasDrops(drops) && ask && !await askToDrop(drops, t)) return null;
+    return { confirm: confirmOf(drops), drops };
+}
 
-    const after = _chatAt(lastMesId + 1);
-    if (!isStoredNodeId(after?.node_id)) {
-        return chatOpEndPath(firstMesId - 1);
+/**
+ * @typedef {object} EditTicket What an edit drops and the confirm naming exactly that.
+ * @property {{ bookmarks: string[], changes: string[] }} confirm
+ * @property {import('./edit-drops.js').Drops} drops
+ */
+
+/**
+ * Applies an edit with what `_editConfirm()` answered. When what it drops changed meanwhile (someone else edited the
+ * tree), the new drops are asked about again (`ask`) or applied; drops nobody was asked about are shown as a warning.
+ * @param {string} path
+ * @param {Record<string, unknown>} body
+ * @param {EditTicket} ticket
+ * @param {boolean} ask
+ * @returns {Promise<any | null>} The answer, or null when the user said no.
+ */
+async function _applyConfirmed(path, body, ticket, ask) {
+    let { confirm, drops } = ticket;
+    for (;;) {
+        const answer = await _chatOpPostAnswering(path, { ...body, confirm }, [409]);
+        if (answer?.ok !== false) {
+            if (!ask && hasDrops(drops)) warnDropped(drops, t);
+            return answer;
+        }
+        if (answer.reason !== 'confirm' || !answer.drops) {
+            _reportChatOpFailure();
+            throw new Error(`${path} was refused: ${answer.reason}`);
+        }
+        drops = answer.drops;
+        if (ask && !await askToDrop(drops, t)) return null;
+        confirm = confirmOf(drops);
     }
+}
 
-    await _chatOpPost('/api/chats/message/degraft', {
-        first_node_id: firstMsg.node_id,
-        last_node_id: lastMsg.node_id,
-    });
+/**
+ * Cuts messages [firstMesId..lastMesId] out of this chat (upstream's delete of messages: they leave this chat, other
+ * branches keep what they share). What goes with them besides (bookmarks, state changes) is asked about first with
+ * `ask` (the user's own delete here), else applied and shown as a warning. The chat's later messages that are now
+ * copies (other branches shared them) take their copies' ids; the caller removes the cut messages from `chat`.
+ * @param {number} firstMesId
+ * @param {number} lastMesId
+ * @param {{ ask?: boolean }} [options]
+ * @returns {Promise<boolean | null>} true when cut, false when the user said no, null when nothing stored was named.
+ */
+export async function chatOpCut(firstMesId, lastMesId, { ask = false } = {}) {
+    // Messages not stored yet at either end of the range have nothing to cut on the server.
+    let from = firstMesId;
+    let to = lastMesId;
+    while (from <= to && !isStoredNodeId(_chatAt(from)?.node_id)) from++;
+    while (to >= from && !isStoredNodeId(_chatAt(to)?.node_id)) to--;
+    if (from > to) return null;
+    const first = _chatAt(from)?.node_id;
+    const last = _chatAt(to)?.node_id;
+    const body = { first_node_id: first, last_node_id: last };
+    const ticket = await _editConfirm('/api/chats/message/cut', body, ask);
+    if (!ticket) return false;
+    const answer = await _applyConfirmed('/api/chats/message/cut', body, ticket, ask);
+    if (!answer) return false;
+    const copied = answer.copied && typeof answer.copied === 'object' ? answer.copied : {};
+    for (let i = to + 1; i < chat.length; i++) {
+        const copy = copied[chat[i]?.node_id];
+        if (typeof copy !== 'string') continue;
+        updateMessage(i, { node_id: copy });
+        _markMessageSaved(i, copy);
+    }
     return true;
 }
 
@@ -1025,24 +1129,6 @@ export async function chatOpAddAlternative(mesId, text) {
     return created?.node_ids?.[0] ?? null;
 }
 
-// Ends the path here rather than moving the chat's position: a load descends from the pointer to a
-// leaf, so a mid-tree position is walked straight past. Nothing is removed — swiping back restores it.
-/** @param {number} mesId */
-export async function chatOpEndPath(mesId) {
-    const msg = _chatAt(mesId);
-    if (!isStoredNodeId(msg?.node_id)) return false;
-
-    await _chatOpPost('/api/chats/message/end-path', { node_id: msg.node_id });
-    return true;
-}
-
-// Same operation as chatOpEndPath(), for when every message was just deleted and there is no
-// chat[] entry left to name - ends the path at the owner's own anchor instead.
-export async function chatOpEndPathAtAnchor() {
-    await _chatOpPost('/api/chats/message/end-path', { end_at_anchor: true });
-    return true;
-}
-
 /**
  * @param {number} mesId
  * @param {number} swipeId
@@ -1052,54 +1138,36 @@ export async function chatOpSelect(mesId, swipeId) {
     const nodeId = msg?.swipe_info?.[swipeId]?.node_id;
     if (!isStoredNodeId(nodeId) || msg == null) return false;
 
-    await _chatOpPost('/api/chats/message/select', { node_id: nodeId });
+    await _takeStateFrom(await _chatOpPost('/api/chats/message/select', { node_id: nodeId }));
     if (msg.node_id !== nodeId) updateMessage(mesId, { node_id: nodeId });
     _markMessageSaved(mesId, nodeId);
     return true;
 }
 
-// Shared persistence call behind both chatOpDeleteAlternative() and chatOpDeleteAlternativeNode() below.
-/** @param {string|null|undefined} nodeId */
-async function _deleteAlternativeNode(nodeId) {
-    if (!isStoredNodeId(nodeId)) return false;
-
-    await _chatOpPost('/api/chats/message/alternative/delete', { node_id: nodeId });
-    return true;
-}
-
-// Deletes an unused alternative (swipe) outright. This only ever handles the NON-shown case: if
-// `swipeId` names the currently-selected swipe (`msg.node_id`, not the swipe-specific id this reads
-// off `swipe_info`), it refuses WITHOUT contacting the server — the caller (deleteSwipe()) is
-// responsible for calling chatOpSelect() FIRST to swipe away from it, which already persists that
-// selection change on its own. On success, the caller is also responsible for updating its own local
-// `swipes`/`swipe_info` arrays for display — this function's only job is the persistence call.
 /**
- * @param {number} mesId
- * @param {number} swipeId
+ * Readies the delete of an alternative (a swipe) and everything below it: what it would drop besides (bookmarks,
+ * state changes) is asked about first with `ask` (the user's own delete here). Null when the user said no or the
+ * alternative isn't stored; else what `chatOpDeleteAlternativeNode()` takes.
+ * @param {string|null|undefined} nodeId
+ * @param {{ ask?: boolean }} [options]
+ * @returns {Promise<EditTicket | null>}
  */
-export async function chatOpDeleteAlternative(mesId, swipeId) {
-    const msg = _chatAt(mesId);
-    const nodeId = msg?.swipe_info?.[swipeId]?.node_id;
-    if (nodeId === msg?.node_id) return false;
-    return _deleteAlternativeNode(nodeId);
+export async function chatOpReadyAlternativeDelete(nodeId, { ask = false } = {}) {
+    if (!isStoredNodeId(nodeId)) return null;
+    return _editConfirm('/api/chats/message/alternative/delete', { node_id: nodeId }, ask);
 }
 
-// Deletes a swipe's node by its raw id, for callers that can no longer look it up by (mesId, swipeId)
-// because something already spliced it out of `chat[]`'s swipe_info before this runs. Used by
-// deleteSwipe()'s SHOWN-swipe branch: after swipe() finishes swapping the message onto a different
-// alternative (persisting that selection change itself, via its own switchToAlternativePath() ->
-// chatOpSelect-equivalent path), the OLD node is no longer the current default child and becomes
-// eligible for deletion — but its swipe_info entry was already removed from `chat[mesId]` before
-// swipe() ran, so it must be captured by the caller beforehand and passed in here directly.
-// `currentNodeId` is the live node to compare against (pass `chat[mesId]?.node_id` fresh, not a stale
-// copy) — if it still matches `nodeId`, the selection never actually moved (e.g. swipe() bailed out
-// early), and this refuses locally without contacting the server, same guarantee as
-// chatOpDeleteAlternative() above.
 /**
+ * Deletes an alternative (a swipe) and everything below it, readied by `chatOpReadyAlternativeDelete()`. Refuses
+ * without asking the server while it is still the shown one (`currentNodeId`): the caller moves the selection off
+ * it first.
  * @param {string|null|undefined} nodeId
  * @param {string|null|undefined} currentNodeId
+ * @param {EditTicket} ticket
+ * @param {{ ask?: boolean }} [options]
+ * @returns {Promise<boolean>} Whether it was deleted.
  */
-export async function chatOpDeleteAlternativeNode(nodeId, currentNodeId) {
-    if (nodeId === currentNodeId) return false;
-    return _deleteAlternativeNode(nodeId);
+export async function chatOpDeleteAlternativeNode(nodeId, currentNodeId, ticket, { ask = false } = {}) {
+    if (nodeId === currentNodeId || !isStoredNodeId(nodeId)) return false;
+    return !!await _applyConfirmed('/api/chats/message/alternative/delete', { node_id: nodeId }, ticket, ask);
 }

@@ -9,6 +9,8 @@ import { sync as writeFileAtomicSync } from 'write-file-atomic';
 import { getImages, tryParse } from '../util.js';
 import { getFileNameValidationFunction } from '../middleware/validateFileName.js';
 import { applyAvatarCropResize } from './characters.js';
+import { requestStore } from '../user-stores.js';
+import { avatarPathOf } from '../character-avatars.js';
 import { invalidateThumbnail, getThumbnailVersion } from './thumbnails.js';
 import cacheBuster from '../middleware/cacheBuster.js';
 
@@ -56,8 +58,8 @@ router.post('/from-character', getFileNameValidationFunction('overwrite_name'), 
     if (typeof avatar !== 'string' || !avatar || avatar !== sanitize(avatar) || typeof overwriteName !== 'string' || !overwriteName) {
         return response.sendStatus(400);
     }
-    const cardPath = path.join(request.user.directories.characters, avatar);
-    if (!fs.existsSync(cardPath)) return response.sendStatus(404);
+    const cardPath = await avatarPathOf((await requestStore(request)).lib, request.user.directories, avatar);
+    if (cardPath === null) return response.sendStatus(404);
 
     try {
         const image = await applyAvatarCropResize(await Jimp.read(cardPath), undefined);

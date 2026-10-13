@@ -1,5 +1,11 @@
 import { describe, test, expect } from '@jest/globals';
-import { unsetPrivateFields } from '../src/character-card-normalize.js';
+import path from 'node:path';
+import { setConfigFilePath } from '../src/util.js';
+
+// character-card-normalize.js reaches modules that read config at load (through endpoints/worldinfo.js and the engine
+// store), so the config path is set before it is imported.
+setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
+const { unsetPrivateFields } = await import('../src/character-card-normalize.js');
 
 // unsetPrivateFields() strips per-user local state (favorite flag, active chat file) from a character object
 // before it's shared - either inbound (import, so a shared card's local state doesn't leak into the importer's

@@ -1,12 +1,10 @@
 import express from 'express';
 
-import {
-    chatItemizations, clearItemizations, deleteChatItemizations, readItemization, recordItemization, updateItemizationFields,
-} from '../itemization-store.js';
-import { characterOwnerIdOf, chatPathNodeIds } from '../message-tree-db.js';
+import { chatContext, chatNamePosition } from '../chat-request.js';
+import { requestStore } from '../user-stores.js';
 
 /**
- * Prompt itemizations, one per stored reply (itemization-store.js). The server records a reply's itemization when it
+ * Prompt itemizations, one per stored reply (the chat engine's). The server records a reply's itemization when it
  * stores the reply; the page reads one message's when its "Prompt" view is opened. The chat-wide routes and `/set`
  * back upstream's exports (`loadItemizedPrompts`, `saveItemizedPrompts`, `replaceItemizedPromptText`,
  * `deleteItemizedPrompts`, `clearItemizedPrompts`).
@@ -17,13 +15,18 @@ export const router = express.Router();
 const SET_MAX_ITEMS = 1000;
 
 /**
+ * The tree the request names (`group_id`, else `avatar_url`) and the position in it its `chat` names.
  * @param {import('express').Request} request
- * @returns {string | null} The owner id named by `avatar_url` or `group_id`.
+ * @returns {Promise<{ chat: import('../chat-request.js').ChatContext, at: string | null } | 'bad' | 'missing'>} `bad`
+ * when it names no tree or chat; `missing` when there is no such tree or chat.
  */
-function ownerOf(request) {
-    if (request.body?.group_id) return String(request.body.group_id);
-    if (request.body?.avatar_url) return characterOwnerIdOf(String(request.body.avatar_url));
-    return null;
+async function chatOf(request) {
+    const { group_id: group, avatar_url: avatar, chat: name } = request.body ?? {};
+    if ((!group && !avatar) || typeof name !== 'string' || name === '') return 'bad';
+    const chat = await chatContext(request, { avatar: avatar ? String(avatar) : undefined, group: group ? String(group) : undefined });
+    if (!chat) return 'missing';
+    const at = await chatNamePosition(chat, name);
+    return at === undefined ? 'missing' : { chat, at };
 }
 
 /**
@@ -42,7 +45,7 @@ router.post('/message', async function (request, response) {
     try {
         const nodeId = request.body?.node_id;
         if (typeof nodeId !== 'string' || nodeId === '') return response.sendStatus(400);
-        const found = await readItemization(request.user.directories, nodeId);
+        const found = await (await requestStore(request)).chats.readItemization({ node_id: nodeId });
         if (!found) return response.sendStatus(404);
         return response.send(found);
     } catch (error) {
@@ -58,14 +61,15 @@ router.post('/message', async function (request, response) {
  */
 router.post('/chat', async function (request, response) {
     try {
-        const ownerId = ownerOf(request);
-        const chat = request.body?.chat;
-        if (!ownerId || typeof chat !== 'string' || chat === '') return response.sendStatus(400);
+        const found = await chatOf(request);
+        if (found === 'bad') return response.sendStatus(400);
+        if (found === 'missing') return response.sendStatus(404);
+        const { chats } = found.chat.store;
         if (request.body.ids_only === true) {
-            const nodeIds = await chatPathNodeIds(request.user.directories, ownerId, chat);
-            return nodeIds ? response.send({ node_ids: nodeIds }) : response.sendStatus(404);
+            const ids = await chats.pathIds(found.chat.tree, found.at);
+            return ids ? response.send({ node_ids: await chats.externalIds(ids) }) : response.sendStatus(404);
         }
-        const entries = await chatItemizations(request.user.directories, ownerId, chat);
+        const entries = await chats.chatItemizations({ tree: found.chat.tree, at: found.at });
         if (!entries) return response.sendStatus(404);
         return response.send({ entries });
     } catch (error) {
@@ -88,12 +92,13 @@ router.post('/set', async function (request, response) {
                 && (isPlainObject(item.entry) !== isPlainObject(item.fields));
             if (!valid) return response.sendStatus(400);
         }
+        const { chats } = await requestStore(request);
         /** @type {{ written: string[], unchanged: string[], missing: string[] }} */
         const result = { written: [], unchanged: [], missing: [] };
         for (const item of items) {
             const outcome = isPlainObject(item.entry)
-                ? await recordItemization(request.user.directories, item.node_id, item.entry)
-                : await updateItemizationFields(request.user.directories, item.node_id, item.fields);
+                ? await chats.recordItemization({ node_id: item.node_id, entry: item.entry })
+                : await chats.updateItemizationFields({ node_id: item.node_id, fields: item.fields });
             result[outcome === 'written' ? 'written' : outcome === 'unchanged' ? 'unchanged' : 'missing'].push(item.node_id);
         }
         return response.send(result);
@@ -109,10 +114,10 @@ router.post('/set', async function (request, response) {
  */
 router.post('/delete', async function (request, response) {
     try {
-        const ownerId = ownerOf(request);
-        const chat = request.body?.chat;
-        if (!ownerId || typeof chat !== 'string' || chat === '') return response.sendStatus(400);
-        const removed = await deleteChatItemizations(request.user.directories, ownerId, chat);
+        const found = await chatOf(request);
+        if (found === 'bad') return response.sendStatus(400);
+        if (found === 'missing') return response.sendStatus(404);
+        const removed = await found.chat.store.chats.deleteChatItemizations({ tree: found.chat.tree, at: found.at });
         if (removed === null) return response.sendStatus(404);
         return response.send({ removed });
     } catch (error) {
@@ -124,7 +129,7 @@ router.post('/delete', async function (request, response) {
 /** Removes every itemization. */
 router.post('/clear', async function (request, response) {
     try {
-        await clearItemizations(request.user.directories);
+        await (await requestStore(request)).chats.clearItemizations();
         return response.sendStatus(200);
     } catch (error) {
         console.error('Error clearing prompt itemizations:', error);

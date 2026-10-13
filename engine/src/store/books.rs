@@ -16,6 +16,7 @@ use super::StoreError;
 use super::derive::{Deriver, Loc, Out, View};
 use super::kinds::{dead, id, key, loc_bytes, parse_loc, version};
 use super::library::{self, entity_info, uvarint};
+use super::library_read;
 use crate::keyspace::val::{get_u64, put_bytes, put_u64};
 use crate::log::format::{FieldRef, Record, Value, get_uvarint};
 
@@ -37,7 +38,7 @@ pub const BOOKS: u64 = 190;
 pub const ENTRY_INDEX: u64 = 191;
 /// Per entry: its `entryIndex` record.
 pub const ENTRY_INDEX_AT: u64 = 192;
-/// Per character: its `bookLink` record.
+/// Per character: its `bookLink` record, then its number in the linked book's numbering (`library::rank_host`).
 pub const LINK: u64 = 193;
 /// Per (book, character): the character links the book.
 pub const LINKED: u64 = 194;
@@ -218,7 +219,7 @@ pub fn link_of(view: &View, e: u64) -> Result<Option<(Loc, Option<u64>)>, StoreE
     let Some(b) = view.get(&key::id(LINK, e))? else {
         return Ok(None);
     };
-    let l = parse_loc(&b)?;
+    let l = library::parse_host(&b)?.0;
     let (rec, _) = view.record(l.pos)?;
     Ok(Some((l, opt_id(&rec, 1))))
 }
@@ -289,7 +290,7 @@ fn free_holding(view: &View, book: u64, n: u64) -> Result<Option<(u64, u64)>, St
     let Some((k, v)) = found.into_iter().next() else {
         return Ok(None);
     };
-    let (s, e) = parse_free(&k, &v.into_bytes(), book)?;
+    let (s, e) = parse_free(&k, &v.into_bytes(&k), book)?;
     Ok((n < e).then_some((s, e)))
 }
 
@@ -493,6 +494,12 @@ impl Deriver for BookLink {
             return Err(StoreError::Refused(format!("no book {b}")));
         }
         let old = link_of(view, e)?;
+        // The link keeps the character's number in its book's numbering: a relink to another book moves it there
+        // (`library::change`), one to the same book keeps it.
+        let n = match view.get(&key::id(LINK, e))? {
+            Some(b) => library::parse_host(&b)?.1,
+            None => None,
+        };
         if let Some((l, ob)) = old {
             dead(out, l);
             if let Some(ob) = ob {
@@ -502,7 +509,7 @@ impl Deriver for BookLink {
         match book {
             Some(b) => {
                 out.put(key::ids(LINKED, b, e), Vec::new());
-                out.put(key::id(LINK, e), loc_bytes(at));
+                out.put(key::id(LINK, e), library::host_bytes(at, n));
             }
             None => {
                 dead(out, at);
@@ -515,7 +522,7 @@ impl Deriver for BookLink {
     }
 
     fn is_live(&self, rec: &Record, pos: u64, view: &View) -> Result<bool, StoreError> {
-        live_at(view, &key::id(LINK, id(rec, 0)), pos)
+        library::live_host(view, &key::id(LINK, id(rec, 0)), pos)
     }
 
     fn repoint(
@@ -526,7 +533,7 @@ impl Deriver for BookLink {
         view: &View,
         out: &mut Out,
     ) -> Result<(), StoreError> {
-        repoint_at(view, out, &key::id(LINK, id(rec, 0)), from, to)
+        library::repoint_host(view, out, &key::id(LINK, id(rec, 0)), from, to)
     }
 }
 
@@ -778,4 +785,80 @@ pub fn resolving_page(view: &View, book: u64) -> Result<Js, StoreError> {
     Ok(Js::Arr(
         resolving_as(view, book)?.into_iter().map(Js::Big).collect(),
     ))
+}
+
+/// A book as one read finds it (`world_book`): its entity, its entries in their places, and (a world book's) the
+/// book it owns as its `originalData`.
+pub struct BookRead {
+    pub id: u64,
+    pub entity: Option<library_read::Entity>,
+    /// Each entry with its place, in place order.
+    pub entries: Vec<(library_read::Entity, u64)>,
+    pub original: Option<Box<BookRead>>,
+}
+
+/// Entries read per scan of a book's places.
+const PLACES_PAGE: usize = 1000;
+
+/// The book `book` whole, from one view; with `world`, the book it owns as its `originalData` too.
+fn book_read(view: &View, book: u64, world: bool) -> Result<BookRead, StoreError> {
+    let prefix = key::ids(key::ITEM, book, ENTRIES);
+    let end = key::prefix_end(&prefix);
+    let mut start = prefix.clone();
+    let mut entries = Vec::new();
+    loop {
+        let found = view.scan(&start, &end, PLACES_PAGE)?;
+        let full = found.len() == PLACES_PAGE;
+        let mut last = None;
+        for (k, v) in found {
+            let mut at = prefix.len();
+            let position =
+                get_u64(&k, &mut at).ok_or_else(|| err("an entry place doesn't decode"))?;
+            last = Some(position);
+            if let Some(e) = library_read::entity(view, library::parse_uvarint(&v)?)? {
+                entries.push((e, position));
+            }
+        }
+        match last {
+            Some(p) if full => {
+                start = prefix.clone();
+                put_u64(&mut start, p + 1);
+            }
+            _ => break,
+        }
+    }
+    let original = if world {
+        match library::entity_by_key(view, OWNED, format!("{book}:o").as_bytes())? {
+            Some(o) => Some(Box::new(book_read(view, o, false)?)),
+            None => None,
+        }
+    } else {
+        None
+    };
+    Ok(BookRead {
+        id: book,
+        entity: library_read::entity(view, book)?,
+        entries,
+        original,
+    })
+}
+
+/// The defined world book keyed `k`, whole, from one view (what a book read by name finds), or None when no world
+/// book has the key.
+/// Whether a defined world book is keyed `k` (what `world_book` would find), reading only its entity.
+pub fn world_book_exists(view: &View, k: &[u8]) -> Result<bool, StoreError> {
+    let Some(id) = library::entity_by_key(view, BOOK, k)? else {
+        return Ok(false);
+    };
+    Ok(resolve(view, id)? == id && is_defined(view, id)?)
+}
+
+pub fn world_book(view: &View, k: &[u8]) -> Result<Option<BookRead>, StoreError> {
+    let Some(id) = library::entity_by_key(view, BOOK, k)? else {
+        return Ok(None);
+    };
+    if resolve(view, id)? != id || !is_defined(view, id)? {
+        return Ok(None);
+    }
+    book_read(view, id, true).map(Some)
 }

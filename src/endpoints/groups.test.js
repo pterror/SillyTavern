@@ -1,10 +1,9 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import express from 'express';
+import { after, test } from 'node:test';
 
 import { setConfigFilePath } from '../util.js';
 
@@ -22,17 +21,17 @@ setConfigFilePath(path.join(__dirname, '..', '..', 'config.yaml'));
 // itself, since it has no external network dependency to stub out.
 const { router: groupsRouter } = await import('./groups.js');
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-groups-save-partial-test-'));
-const groupsDir = path.join(root, 'groups');
-fs.mkdirSync(groupsDir, { recursive: true });
+const { convertedUser } = await import('../../tests/converted-user.fixture.js');
 
-const directories = { root, groups: groupsDir };
+const user = await convertedUser('st-groups-save-partial-test-');
+const { directories } = user;
+globalThis.DATA_ROOT = user.dataRoot;
 
 function buildTestApp() {
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
-        req.user = { directories, profile: { handle: 'tester' } };
+        req.user = { directories, profile: { handle: 'u' } };
         next();
     });
     app.use('/api/groups', groupsRouter);
@@ -64,7 +63,7 @@ async function postJson(app, urlPath, body) {
  * @param {string} id
  * @returns {object} The fixture object written (same reference is NOT re-read from disk by the caller).
  */
-function writeGroupFixture(id) {
+async function writeGroupFixture(id) {
     const fixture = {
         id,
         name: 'Original Name',
@@ -83,236 +82,191 @@ function writeGroupFixture(id) {
         fav: false,
         date_last_chat: 1000,
     };
-    fs.writeFileSync(path.join(groupsDir, `${id}.json`), JSON.stringify(fixture, null, 4));
-    return fixture;
+    await user.store.lib.writeGroup(fixture);
+    // The group as stored: its chat values (`chat_id`, `chats`) are read from the chats, not kept.
+    return await readGroupFromDisk(id);
 }
 
-function readGroupFromDisk(id) {
-    return JSON.parse(fs.readFileSync(path.join(groupsDir, `${id}.json`), 'utf8'));
+/** The group as stored. */
+async function readGroupFromDisk(id) {
+    const [group] = await user.store.lib.groups([id]);
+    return group;
 }
 
-async function run() {
-    const app = buildTestApp();
+const app = buildTestApp();
+test('(a) activation_strategy - only that field changes.', async () => {
+    const id = 'group-activation';
+    const fixture = await writeGroupFixture(id);
+    const { status, data } = await postJson(app, '/api/groups/save-partial', { id, props: { activation_strategy: 2 } });
+    assert.equal(status, 200);
+    assert.deepEqual(data, { ok: true });
+    const onDisk = await readGroupFromDisk(id);
+    assert.equal(onDisk.activation_strategy, 2, 'activation_strategy was updated');
+    assert.deepEqual({ ...onDisk, activation_strategy: fixture.activation_strategy }, fixture, 'every other field is untouched');
+});
+test('(b) generation_mode - only that field changes.', async () => {
+    const id = 'group-generation-mode';
+    const fixture = await writeGroupFixture(id);
+    const { status } = await postJson(app, '/api/groups/save-partial', { id, props: { generation_mode: 1 } });
+    assert.equal(status, 200);
+    const onDisk = await readGroupFromDisk(id);
+    assert.equal(onDisk.generation_mode, 1);
+    assert.deepEqual({ ...onDisk, generation_mode: fixture.generation_mode }, fixture, 'every other field is untouched');
+});
+test('(c) auto_mode_delay - only that field changes.', async () => {
+    const id = 'group-auto-mode-delay';
+    const fixture = await writeGroupFixture(id);
+    const { status } = await postJson(app, '/api/groups/save-partial', { id, props: { auto_mode_delay: 15 } });
+    assert.equal(status, 200);
+    const onDisk = await readGroupFromDisk(id);
+    assert.equal(onDisk.auto_mode_delay, 15);
+    assert.deepEqual({ ...onDisk, auto_mode_delay: fixture.auto_mode_delay }, fixture, 'every other field is untouched');
+});
+test('(d) template fields (generation_mode_join_prefix/suffix) - bundled in one call, matching onGroupGenerationModeTemplateIn', async () => {
+    const id = 'group-templates';
+    const fixture = await writeGroupFixture(id);
+    const { status: s1 } = await postJson(app, '/api/groups/save-partial', { id, props: { generation_mode_join_prefix: '<PREFIX>' } });
+    assert.equal(s1, 200);
+    const { status: s2 } = await postJson(app, '/api/groups/save-partial', { id, props: { generation_mode_join_suffix: '<SUFFIX>' } });
+    assert.equal(s2, 200);
+    const onDisk = await readGroupFromDisk(id);
+    assert.equal(onDisk.generation_mode_join_prefix, '<PREFIX>');
+    assert.equal(onDisk.generation_mode_join_suffix, '<SUFFIX>');
+    assert.deepEqual(
+        { ...onDisk, generation_mode_join_prefix: fixture.generation_mode_join_prefix, generation_mode_join_suffix: fixture.generation_mode_join_suffix },
+        fixture,
+        'every other field is untouched',
+    );
+});
+test('(e) allow_self_responses / hideMutedSprites - independent single-field saves.', async () => {
+    const id = 'group-toggles';
+    const fixture = await writeGroupFixture(id);
+    const { status: s1 } = await postJson(app, '/api/groups/save-partial', { id, props: { allow_self_responses: true } });
+    assert.equal(s1, 200);
+    let onDisk = await readGroupFromDisk(id);
+    assert.equal(onDisk.allow_self_responses, true);
+    assert.deepEqual({ ...onDisk, allow_self_responses: fixture.allow_self_responses }, fixture, 'hideMutedSprites/everything else untouched by the self-responses save');
 
-    // (a) activation_strategy - only that field changes.
-    {
-        const id = 'group-activation';
-        const fixture = writeGroupFixture(id);
-        const { status, data } = await postJson(app, '/api/groups/save-partial', { id, props: { activation_strategy: 2 } });
-        assert.equal(status, 200);
-        assert.deepEqual(data, { ok: true });
-        const onDisk = readGroupFromDisk(id);
-        assert.equal(onDisk.activation_strategy, 2, 'activation_strategy was updated');
-        assert.deepEqual({ ...onDisk, activation_strategy: fixture.activation_strategy }, fixture, 'every other field is untouched');
-    }
+    const { status: s2 } = await postJson(app, '/api/groups/save-partial', { id, props: { hideMutedSprites: true } });
+    assert.equal(s2, 200);
+    onDisk = await readGroupFromDisk(id);
+    assert.equal(onDisk.hideMutedSprites, true);
+    assert.equal(onDisk.allow_self_responses, true, 'the earlier self-responses save is still in effect');
+});
+test('(f) avatar_url clear - saving an empty string round-trips (not dropped as falsy).', async () => {
+    const id = 'group-avatar';
+    const fixture = { ...await writeGroupFixture(id), avatar_url: 'user/images/custom.png' };
+    await user.store.lib.writeGroup(fixture);
+    const { status } = await postJson(app, '/api/groups/save-partial', { id, props: { avatar_url: '' } });
+    assert.equal(status, 200);
+    const onDisk = await readGroupFromDisk(id);
+    assert.equal(onDisk.avatar_url, '', 'avatar clear (empty string) is actually written, not treated as absent');
+    assert.deepEqual({ ...onDisk, avatar_url: fixture.avatar_url }, fixture, 'every other field is untouched');
+});
+test('(g) members add/remove - the highest-risk site per this task\'s own instructions (subtle shape requirements): confirm a m', async () => {
+    const id = 'group-members';
+    const fixture = await writeGroupFixture(id);
+    const newMembers = ['alice.png', 'bob.png', 'carol.png'];
+    const { status, data } = await postJson(app, '/api/groups/save-partial', { id, props: { members: newMembers } });
+    assert.equal(status, 200);
+    assert.deepEqual(data, { ok: true });
+    const onDisk = await readGroupFromDisk(id);
+    assert.deepEqual(onDisk.members, newMembers, 'member was added');
+    assert.deepEqual({ ...onDisk, members: fixture.members }, fixture, 'disabled_members/chats/chat_id/name/etc. are all untouched by a members-only save');
 
-    // (b) generation_mode - only that field changes.
-    {
-        const id = 'group-generation-mode';
-        const fixture = writeGroupFixture(id);
-        const { status } = await postJson(app, '/api/groups/save-partial', { id, props: { generation_mode: 1 } });
-        assert.equal(status, 200);
-        const onDisk = readGroupFromDisk(id);
-        assert.equal(onDisk.generation_mode, 1);
-        assert.deepEqual({ ...onDisk, generation_mode: fixture.generation_mode }, fixture, 'every other field is untouched');
-    }
+    // Removal, bundled with a disabled_members update the same way onGroupActionClick's
+    // enable/disable handler already saves (an established two-field bundle at one call site).
+    const prunedMembers = ['alice.png', 'carol.png'];
+    const prunedDisabled = [];
+    const { status: s2 } = await postJson(app, '/api/groups/save-partial', { id, props: { members: prunedMembers, disabled_members: prunedDisabled } });
+    assert.equal(s2, 200);
+    const onDisk2 = await readGroupFromDisk(id);
+    assert.deepEqual(onDisk2.members, prunedMembers);
+    assert.deepEqual(onDisk2.disabled_members, prunedDisabled);
+    assert.deepEqual({ ...onDisk2, members: fixture.members, disabled_members: fixture.disabled_members }, fixture, 'chats/chat_id/name/etc. are still untouched');
+});
+test('(h) name rename.', async () => {
+    const id = 'group-name';
+    const fixture = await writeGroupFixture(id);
+    const { status } = await postJson(app, '/api/groups/save-partial', { id, props: { name: 'Renamed Group' } });
+    assert.equal(status, 200);
+    const onDisk = await readGroupFromDisk(id);
+    assert.equal(onDisk.name, 'Renamed Group');
+    assert.deepEqual({ ...onDisk, name: fixture.name }, fixture, 'every other field is untouched');
+});
+test('(i) allowlist hardening: `id` in the props body is ignored - the write still targets the URL/body `id` used to locate th', async () => {
+    const id = 'group-id-guard';
+    const fixture = await writeGroupFixture(id);
+    const { status } = await postJson(app, '/api/groups/save-partial', { id, props: { id: 'some-other-id', name: 'Still This Group' } });
+    assert.equal(status, 200);
+    assert.equal(await readGroupFromDisk('some-other-id'), null, 'no group was written under the spoofed id');
+    const onDisk = await readGroupFromDisk(id);
+    assert.equal(onDisk.id, id, 'the stored id field was not overwritten by the stray id in props');
+    assert.equal(onDisk.name, 'Still This Group', 'the allowed sibling field in the same call was still applied');
+    assert.deepEqual({ ...onDisk, name: fixture.name }, fixture, 'every other field is untouched');
+});
+test('(j) allowlist hardening: an unrecognized/non-schema key (including a `__proto__` key riding along in the JSON body) is d', async () => {
+    const id = 'group-allowlist-guard';
+    const fixture = await writeGroupFixture(id);
+    const maliciousProps = JSON.parse('{"__proto__": {"polluted": true}, "someStrayField": "nope", "auto_mode_delay": 30}');
+    const { status } = await postJson(app, '/api/groups/save-partial', { id, props: maliciousProps });
+    assert.equal(status, 200);
+    const onDisk = await readGroupFromDisk(id);
+    assert.equal(onDisk.auto_mode_delay, 30, 'the one allowed field in the same call was still applied');
+    assert.equal(onDisk.someStrayField, undefined, 'an unrecognized top-level key was dropped, not written');
+    assert.equal(Object.prototype.polluted, undefined, 'global Object.prototype was never touched');
+    assert.deepEqual({ ...onDisk, auto_mode_delay: fixture.auto_mode_delay }, fixture, 'every other field is untouched');
+});
+test('(k2) two independent /save-partial calls for DIFFERENT fields, issued back-to-back without awaiting the first before sta', async () => {
+    const id = 'group-concurrent-fields';
+    await writeGroupFixture(id);
+    const [first, second] = await Promise.all([
+        postJson(app, '/api/groups/save-partial', { id, props: { name: 'Renamed Concurrently' } }),
+        postJson(app, '/api/groups/save-partial', { id, props: { fav: true } }),
+    ]);
+    assert.equal(first.status, 200);
+    assert.equal(second.status, 200);
+    const onDisk = await readGroupFromDisk(id);
+    assert.equal(onDisk.name, 'Renamed Concurrently', 'the first field-edit was not dropped by the second');
+    assert.equal(onDisk.fav, true, 'the second field-edit was not dropped by the first');
+});
+test('(k) unknown id still 404s, and a malformed body still 400s (baseline route-shape regression guard).', async () => {
+    const { status } = await postJson(app, '/api/groups/save-partial', { id: 'does-not-exist', props: { name: 'x' } });
+    assert.equal(status, 404);
+});
+test('group route', async () => {
+    const { status } = await postJson(app, '/api/groups/save-partial', { id: 'group-name', props: 'not-an-object' });
+    assert.equal(status, 400);
+});
+test('/members: one member changed against the group as stored, whatever the page held.', async () => {
+    const id = 'group-members';
+    await writeGroupFixture(id);
+    const step = async (op, avatar, extra = {}) => (await postJson(app, '/api/groups/members', { id, op, avatar, ...extra })).data;
 
-    // (c) auto_mode_delay - only that field changes.
-    {
-        const id = 'group-auto-mode-delay';
-        const fixture = writeGroupFixture(id);
-        const { status } = await postJson(app, '/api/groups/save-partial', { id, props: { auto_mode_delay: 15 } });
-        assert.equal(status, 200);
-        const onDisk = readGroupFromDisk(id);
-        assert.equal(onDisk.auto_mode_delay, 15);
-        assert.deepEqual({ ...onDisk, auto_mode_delay: fixture.auto_mode_delay }, fixture, 'every other field is untouched');
-    }
+    assert.deepEqual(await step('add', 'carol.png'), { members: ['carol.png', 'alice.png', 'bob.png'], disabled_members: ['bob.png'] });
+    // Another tab adds dave meanwhile; removing alice here keeps dave.
+    await step('add', 'dave.png');
+    assert.deepEqual((await step('remove', 'alice.png')).members, ['dave.png', 'carol.png', 'bob.png']);
+    assert.deepEqual((await step('down', 'dave.png')).members, ['carol.png', 'dave.png', 'bob.png']);
+    assert.deepEqual((await step('up', 'bob.png')).members, ['carol.png', 'bob.png', 'dave.png']);
+    assert.deepEqual((await step('unmute', 'bob.png')).disabled_members, []);
+    assert.deepEqual((await step('mute', 'dave.png')).disabled_members, ['dave.png']);
+    assert.deepEqual(await step('replace', 'dave.png', { new_avatar: 'erin.png' }), { members: ['carol.png', 'bob.png', 'erin.png'], disabled_members: ['erin.png'] });
+    assert.deepEqual((await step('remove', 'erin.png')).disabled_members, [], 'a removed member is unmuted too');
 
-    // (d) template fields (generation_mode_join_prefix/suffix) - bundled in one call, matching
-    // onGroupGenerationModeTemplateInput()'s real one-field-per-keystroke shape in group-chats.js
-    // (each textarea saves its own single field; tested together here just to cover both fields).
-    {
-        const id = 'group-templates';
-        const fixture = writeGroupFixture(id);
-        const { status: s1 } = await postJson(app, '/api/groups/save-partial', { id, props: { generation_mode_join_prefix: '<PREFIX>' } });
-        assert.equal(s1, 200);
-        const { status: s2 } = await postJson(app, '/api/groups/save-partial', { id, props: { generation_mode_join_suffix: '<SUFFIX>' } });
-        assert.equal(s2, 200);
-        const onDisk = readGroupFromDisk(id);
-        assert.equal(onDisk.generation_mode_join_prefix, '<PREFIX>');
-        assert.equal(onDisk.generation_mode_join_suffix, '<SUFFIX>');
-        assert.deepEqual(
-            { ...onDisk, generation_mode_join_prefix: fixture.generation_mode_join_prefix, generation_mode_join_suffix: fixture.generation_mode_join_suffix },
-            fixture,
-            'every other field is untouched',
-        );
-    }
+    const stored = await readGroupFromDisk(id);
+    assert.deepEqual(stored.members, ['carol.png', 'bob.png']);
+    assert.equal(stored.name, 'Original Name', 'nothing else in the group changes');
 
-    // (e) allow_self_responses / hideMutedSprites - independent single-field saves.
-    {
-        const id = 'group-toggles';
-        const fixture = writeGroupFixture(id);
-        const { status: s1 } = await postJson(app, '/api/groups/save-partial', { id, props: { allow_self_responses: true } });
-        assert.equal(s1, 200);
-        let onDisk = readGroupFromDisk(id);
-        assert.equal(onDisk.allow_self_responses, true);
-        assert.deepEqual({ ...onDisk, allow_self_responses: fixture.allow_self_responses }, fixture, 'hideMutedSprites/everything else untouched by the self-responses save');
+    const commits = user.store.lib.store.commit;
+    let written = 0;
+    user.store.lib.store.commit = (...args) => { written++; return commits.apply(user.store.lib.store, args); };
+    await step('add', 'carol.png');
+    user.store.lib.store.commit = commits;
+    assert.equal(written, 0, 'no change, no write');
 
-        const { status: s2 } = await postJson(app, '/api/groups/save-partial', { id, props: { hideMutedSprites: true } });
-        assert.equal(s2, 200);
-        onDisk = readGroupFromDisk(id);
-        assert.equal(onDisk.hideMutedSprites, true);
-        assert.equal(onDisk.allow_self_responses, true, 'the earlier self-responses save is still in effect');
-    }
+    assert.equal((await postJson(app, '/api/groups/members', { id, op: 'swap', avatar: 'x.png' })).status, 400);
+    assert.equal((await postJson(app, '/api/groups/members', { id: 'nope', op: 'add', avatar: 'x.png' })).status, 404);
+});
 
-    // (f) avatar_url clear - saving an empty string round-trips (not dropped as falsy).
-    {
-        const id = 'group-avatar';
-        const fixture = { ...writeGroupFixture(id), avatar_url: 'user/images/custom.png' };
-        fs.writeFileSync(path.join(groupsDir, `${id}.json`), JSON.stringify(fixture, null, 4));
-        const { status } = await postJson(app, '/api/groups/save-partial', { id, props: { avatar_url: '' } });
-        assert.equal(status, 200);
-        const onDisk = readGroupFromDisk(id);
-        assert.equal(onDisk.avatar_url, '', 'avatar clear (empty string) is actually written, not treated as absent');
-        assert.deepEqual({ ...onDisk, avatar_url: fixture.avatar_url }, fixture, 'every other field is untouched');
-    }
-
-    // (g) members add/remove - the highest-risk site per this task's own instructions (subtle shape
-    // requirements): confirm a member-list save leaves disabled_members/chats/chat_id/name alone.
-    {
-        const id = 'group-members';
-        const fixture = writeGroupFixture(id);
-        const newMembers = ['alice.png', 'bob.png', 'carol.png'];
-        const { status, data } = await postJson(app, '/api/groups/save-partial', { id, props: { members: newMembers } });
-        assert.equal(status, 200);
-        assert.deepEqual(data, { ok: true });
-        const onDisk = readGroupFromDisk(id);
-        assert.deepEqual(onDisk.members, newMembers, 'member was added');
-        assert.deepEqual({ ...onDisk, members: fixture.members }, fixture, 'disabled_members/chats/chat_id/name/etc. are all untouched by a members-only save');
-
-        // Removal, bundled with a disabled_members update the same way onGroupActionClick's
-        // enable/disable handler already saves (an established two-field bundle at one call site).
-        const prunedMembers = ['alice.png', 'carol.png'];
-        const prunedDisabled = [];
-        const { status: s2 } = await postJson(app, '/api/groups/save-partial', { id, props: { members: prunedMembers, disabled_members: prunedDisabled } });
-        assert.equal(s2, 200);
-        const onDisk2 = readGroupFromDisk(id);
-        assert.deepEqual(onDisk2.members, prunedMembers);
-        assert.deepEqual(onDisk2.disabled_members, prunedDisabled);
-        assert.deepEqual({ ...onDisk2, members: fixture.members, disabled_members: fixture.disabled_members }, fixture, 'chats/chat_id/name/etc. are still untouched');
-    }
-
-    // (h) name rename.
-    {
-        const id = 'group-name';
-        const fixture = writeGroupFixture(id);
-        const { status } = await postJson(app, '/api/groups/save-partial', { id, props: { name: 'Renamed Group' } });
-        assert.equal(status, 200);
-        const onDisk = readGroupFromDisk(id);
-        assert.equal(onDisk.name, 'Renamed Group');
-        assert.deepEqual({ ...onDisk, name: fixture.name }, fixture, 'every other field is untouched');
-    }
-
-    // (i) allowlist hardening: `id` in the props body is ignored - the write still targets the URL/body
-    // `id` used to locate the file, and the file's own `id` field is never retargeted.
-    {
-        const id = 'group-id-guard';
-        const fixture = writeGroupFixture(id);
-        const { status } = await postJson(app, '/api/groups/save-partial', { id, props: { id: 'some-other-id', name: 'Still This Group' } });
-        assert.equal(status, 200);
-        assert.ok(!fs.existsSync(path.join(groupsDir, 'some-other-id.json')), 'no file was written under the spoofed id');
-        const onDisk = readGroupFromDisk(id);
-        assert.equal(onDisk.id, id, 'the stored id field was not overwritten by the stray id in props');
-        assert.equal(onDisk.name, 'Still This Group', 'the allowed sibling field in the same call was still applied');
-        assert.deepEqual({ ...onDisk, name: fixture.name }, fixture, 'every other field is untouched');
-    }
-
-    // (j) allowlist hardening: an unrecognized/non-schema key (including a `__proto__` key riding along
-    // in the JSON body) is dropped rather than Object.assign-ed onto the live group object.
-    {
-        const id = 'group-allowlist-guard';
-        const fixture = writeGroupFixture(id);
-        const maliciousProps = JSON.parse('{"__proto__": {"polluted": true}, "someStrayField": "nope", "auto_mode_delay": 30}');
-        const { status } = await postJson(app, '/api/groups/save-partial', { id, props: maliciousProps });
-        assert.equal(status, 200);
-        const onDisk = readGroupFromDisk(id);
-        assert.equal(onDisk.auto_mode_delay, 30, 'the one allowed field in the same call was still applied');
-        assert.equal(onDisk.someStrayField, undefined, 'an unrecognized top-level key was dropped, not written');
-        assert.equal(Object.prototype.polluted, undefined, 'global Object.prototype was never touched');
-        assert.deepEqual({ ...onDisk, auto_mode_delay: fixture.auto_mode_delay }, fixture, 'every other field is untouched');
-    }
-
-    // (k2) two independent /save-partial calls for DIFFERENT fields, issued back-to-back without
-    // awaiting the first before starting the second - simulates the scenario that motivated
-    // group-chats.js's per-(id, field-set) debounce-key fix (see this task's own report): a user
-    // toggles one field then immediately edits another, and each edit is dispatched as its own
-    // request by the (now per-field-keyed) client debounce instead of one shared timer dropping the
-    // first edit's args. This validates the SERVER's own read-then-merge-then-write is safe for that
-    // pattern - each request reads the current file, merges only its own field, and writes - so both
-    // edits land as long as the writes are not truly simultaneous (they are serialized in practice by
-    // the client's own debounce delay, which is exactly what the client-side fix now guarantees for
-    // different fields).
-    {
-        const id = 'group-concurrent-fields';
-        writeGroupFixture(id);
-        const [first, second] = await Promise.all([
-            postJson(app, '/api/groups/save-partial', { id, props: { name: 'Renamed Concurrently' } }),
-            postJson(app, '/api/groups/save-partial', { id, props: { fav: true } }),
-        ]);
-        assert.equal(first.status, 200);
-        assert.equal(second.status, 200);
-        const onDisk = readGroupFromDisk(id);
-        assert.equal(onDisk.name, 'Renamed Concurrently', 'the first field-edit was not dropped by the second');
-        assert.equal(onDisk.fav, true, 'the second field-edit was not dropped by the first');
-    }
-
-    // (k) unknown id still 404s, and a malformed body still 400s (baseline route-shape regression guard).
-    {
-        const { status } = await postJson(app, '/api/groups/save-partial', { id: 'does-not-exist', props: { name: 'x' } });
-        assert.equal(status, 404);
-    }
-    {
-        const { status } = await postJson(app, '/api/groups/save-partial', { id: 'group-name', props: 'not-an-object' });
-        assert.equal(status, 400);
-    }
-
-    // /members: one member changed against the group as stored, whatever the page held.
-    {
-        const id = 'group-members';
-        writeGroupFixture(id);
-        const step = async (op, avatar, extra = {}) => (await postJson(app, '/api/groups/members', { id, op, avatar, ...extra })).data;
-
-        assert.deepEqual(await step('add', 'carol.png'), { members: ['carol.png', 'alice.png', 'bob.png'], disabled_members: ['bob.png'] });
-        // Another tab adds dave meanwhile; removing alice here keeps dave.
-        await step('add', 'dave.png');
-        assert.deepEqual((await step('remove', 'alice.png')).members, ['dave.png', 'carol.png', 'bob.png']);
-        assert.deepEqual((await step('down', 'dave.png')).members, ['carol.png', 'dave.png', 'bob.png']);
-        assert.deepEqual((await step('up', 'bob.png')).members, ['carol.png', 'bob.png', 'dave.png']);
-        assert.deepEqual((await step('unmute', 'bob.png')).disabled_members, []);
-        assert.deepEqual((await step('mute', 'dave.png')).disabled_members, ['dave.png']);
-        assert.deepEqual(await step('replace', 'dave.png', { new_avatar: 'erin.png' }), { members: ['carol.png', 'bob.png', 'erin.png'], disabled_members: ['erin.png'] });
-        assert.deepEqual((await step('remove', 'erin.png')).disabled_members, [], 'a removed member is unmuted too');
-
-        const stored = readGroupFromDisk(id);
-        assert.deepEqual(stored.members, ['carol.png', 'bob.png']);
-        assert.equal(stored.name, 'Original Name', 'nothing else in the group changes');
-
-        const before = fs.statSync(path.join(groupsDir, `${id}.json`)).mtimeMs;
-        await step('add', 'carol.png');
-        assert.equal(fs.statSync(path.join(groupsDir, `${id}.json`)).mtimeMs, before, 'no change, no write');
-
-        assert.equal((await postJson(app, '/api/groups/members', { id, op: 'swap', avatar: 'x.png' })).status, 400);
-        assert.equal((await postJson(app, '/api/groups/members', { id: 'nope', op: 'add', avatar: 'x.png' })).status, 404);
-    }
-
-    console.log('groups.test.js: all assertions passed');
-}
-
-run()
-    .catch(error => {
-        console.error(error);
-        process.exitCode = 1;
-    })
-    .finally(() => {
-        fs.rmSync(root, { recursive: true, force: true });
-    });
+after(() => user.close());

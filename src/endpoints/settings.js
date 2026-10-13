@@ -18,8 +18,7 @@ import {
     writeNamedSettings,
     settingsExist,
 } from '../settings-store.js';
-import { restartSettingsTagsImport } from '../character-metadata-db.js';
-import { requestMetadataMigrationPass } from '../metadata-migration-coordinator.js';
+import { requestStore, storeRoute } from '../user-stores.js';
 
 const ENABLE_EXTENSIONS = !!getConfigValue('extensions.enabled', true, 'boolean');
 const ENABLE_EXTENSIONS_AUTO_UPDATE = !!getConfigValue('extensions.autoUpdate', true, 'boolean');
@@ -342,7 +341,7 @@ router.post('/toggle-extension', function (request, response) {
 });
 
 // Wintermute's code
-router.post('/get', (request, response) => {
+router.post('/get', storeRoute('reading settings', async (request, response) => {
     let settings;
     try {
         settings = readAllSettingsAsJson(request.user.directories);
@@ -375,11 +374,7 @@ router.post('/get', (request, response) => {
             sortFunction: sortByName(request.user.directories.koboldAI_Settings), removeFileExtension: true,
         });
 
-    const worldFiles = fs
-        .readdirSync(request.user.directories.worlds)
-        .filter(file => path.extname(file).toLowerCase() === '.json')
-        .sort((a, b) => a.localeCompare(b));
-    const world_names = worldFiles.map(item => path.parse(item).name);
+    const world_names = (await (await requestStore(request)).lib.books.list()).map(book => book.file_id);
 
     const themes = readAndParseFromDirectory(request.user.directories.themes);
     const movingUIPresets = readAndParseFromDirectory(request.user.directories.movingUI);
@@ -423,7 +418,7 @@ router.post('/get', (request, response) => {
             timeout: REQUEST_COMPRESSION_TIMEOUT || 0,
         },
     });
-});
+}));
 
 router.post('/get-snapshots', async (request, response) => {
     try {
@@ -497,11 +492,12 @@ router.post('/restore-snapshot', getFileNameValidationFunction('name'), async (r
 
         writeAllSettings(request.user.directories, snapshotSettings);
 
-        // The import pass marks itself done once it has moved these files out of the settings store.
+        // A restored snapshot holding tags is imported again; the import marks itself done once no source is left.
         if (snapshotSettings && typeof snapshotSettings === 'object'
-            && (Object.hasOwn(snapshotSettings, 'tags') || Object.hasOwn(snapshotSettings, 'tag_map'))
-            && await restartSettingsTagsImport(request.user.directories)) {
-            requestMetadataMigrationPass(request.user.directories, 'migrateSettingsTagsIfNeeded')
+            && (Object.hasOwn(snapshotSettings, 'tags') || Object.hasOwn(snapshotSettings, 'tag_map'))) {
+            const { lib } = await requestStore(request);
+            await lib.tags.restartSettingsImport();
+            lib.tags.importSettingsTags(request.user.directories)
                 .catch(err => console.error('Could not run the settings tags import', err));
         }
 

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -16,7 +16,11 @@ import { setConfigFilePath } from './util.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', 'config.yaml'));
 const { assembleTextCompletionPrompt } = await import('./text-completion-prompt-orchestrator.js');
-const { upsertCharacterFromWrite } = await import('./character-metadata-db.js');
+const stores = await import('./user-stores.js');
+const { loadEngine } = await import('../engine/load.js');
+const engineBinding = loadEngine().binding;
+stores.setStoreEngine(() => engineBinding);
+after(() => stores.closeUserStores());
 const { tokenizers } = await import('./tokenizer-ids.js');
 
 /**
@@ -24,9 +28,9 @@ const { tokenizers } = await import('./tokenizer-ids.js');
  * orchestrator (see src/text-completion-prompt-orchestrator.js's module doc comment for exactly
  * what is and isn't wired). No mocking framework - getCharacterCardFields() (one of the 18 already-
  * ported modules) reads real character cards via readCardContent(), which reads the card JSON from
- * the character's metadata-store row (card_json) and never from the PNG. So this test builds a REAL
- * PNG per fixture, with the character JSON embedded in a 'chara' tEXt chunk, and seeds the row with
- * that same card JSON via upsertCharacterFromWrite(), using this repo's own
+ * the user's store and never from the PNG. So this test builds a REAL PNG per fixture, with the
+ * character JSON embedded in a 'chara' tEXt chunk, and writes that same card JSON into the store of the
+ * test's own user directory, using this repo's own
  * character-card-parser.js write() against the repo's default placeholder avatar image
  * (public/img/ai4.png) as the base image - same technique src/character-card-fields.test.js and
  * tests/character-metadata-db.test.js use - exercising the actual character-card-fields module for
@@ -53,7 +57,7 @@ async function writeCharacterCard(directories, avatar, cardV2) {
     const cardJson = JSON.stringify(cardV2);
     const pngBuffer = writeCardIntoPng(baseAvatarBuffer, cardJson);
     fs.writeFileSync(path.join(directories.characters, avatar), pngBuffer);
-    await upsertCharacterFromWrite(directories, avatar, cardJson);
+    await (await stores.userStore(directories)).lib.writeCard(directories, avatar, cardJson);
 }
 
 const fakeCountTokens = async (text) => text.length;
@@ -728,12 +732,12 @@ test('assembleTextCompletionPrompt: group-chat member depth_prompt is spliced in
         },
     });
 
-    fs.writeFileSync(path.join(groupsDir, 'the-woods-group.json'), JSON.stringify({
+    await (await stores.userStore(directories)).lib.writeGroup({
         id: 'the-woods-group',
         generation_mode: 1, // group_generation_mode.APPEND
         members: [avatarAria, avatarBran],
         disabled_members: [],
-    }));
+    });
 
     const input = {
         ...baseFixture(directories, avatarAria),

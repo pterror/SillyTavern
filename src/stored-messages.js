@@ -1,9 +1,11 @@
-import { appendMessages, sanitizeUserMessageExtra } from './message-tree-db.js';
+import { storedForm } from './chat-engine.js';
+import { sanitizeUserMessageExtra } from './user-message-extra.js';
 
 /**
- * @typedef {{ ref: string, node_id: string, integrity?: string | null }} StoredMessage Something the server stored
- * for a request under the ref the page sent for it: a message at `node_id`, or (with `integrity`) chat metadata
- * keys on the node `node_id`, whose integrity slug is then `integrity`.
+ * @typedef {{ ref: string, node_id: string, integrity?: string | null, metadata_not_saved?: true }} StoredMessage
+ * Something the server stored for a request under the ref the page sent for it: a message at `node_id`, or (with
+ * `integrity`) chat metadata keys at `node_id` ('': the tree's root), `integrity` the session's UUID; with
+ * `metadata_not_saved`, chat metadata keys it couldn't store there.
  */
 
 /**
@@ -34,23 +36,27 @@ export function recordStored(response, stored) {
 }
 
 /**
- * Stores the user message a raw-action generate request carries, as a child of `anchorNodeId`, and
- * records it under the page's `ref` for this request's answer (see storedMessagesOf()). The ref is the
- * send's key: a send already stored under it is answered with that node, not stored again.
+ * Stores the user message a raw-action generate request carries, as a reply to `anchorNodeId` (null: as the
+ * tree's opening) through the request's session, and records it under the page's `ref` for this request's answer
+ * (see storedMessagesOf()). The ref is the send's key: a send already stored under it is answered with that
+ * message, not stored again.
  *
  * When it can't be stored, answers the request with an error itself and returns null: the caller then
  * returns without generating, so nothing is generated onto a message the chat doesn't have.
  * @param {import('express').Response} response The generate request's response.
  * @param {object} params
- * @param {import('./users.js').UserDirectoryList} params.directories
- * @param {string} params.ownerId
- * @param {string} params.anchorNodeId
+ * @param {import('./chat-request.js').ChatContext} params.chat
+ * @param {string | null} params.anchorNodeId
  * @param {object} params.message The message content to store.
  * @param {unknown} params.ref The request's `user_message_ref`; nothing is recorded unless it is a non-empty string.
  * @returns {Promise<string|null>} The stored message's node id; null when the request has been answered with the failure.
  */
-export async function storeUserMessage(response, { directories, ownerId, anchorNodeId, message, ref }) {
-    const appendResult = await appendMessages(directories, ownerId, anchorNodeId, [message], { sendKeys: [ref] });
+export async function storeUserMessage(response, { chat, anchorNodeId, message, ref }) {
+    const { store, tree, treeSpeaker, session } = chat;
+    const appendResult = await store.chats.appendMessages({
+        tree, treeSpeaker, after: anchorNodeId, contents: [storedForm(/** @type {Record<string, any>} */ (message))],
+        sendKeys: [typeof ref === 'string' ? ref : null], actor: session.actor(),
+    });
     const nodeId = appendResult.ok ? appendResult.node_ids?.[appendResult.node_ids.length - 1] ?? null : null;
     if (!nodeId) {
         const reason = appendResult.reason ?? 'no node was stored';

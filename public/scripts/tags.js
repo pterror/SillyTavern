@@ -5859,30 +5859,6 @@ function onClearAllFiltersClick(filterHelper) {
 }
 
 /**
- * Asks the server to add the original's tags to its duplicate.
- * @param {{oldAvatar: string, newAvatar: string}} data Event data
- */
-async function copyTags(data) {
-    try {
-        const response = await fetch('/api/tags/copy', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({ from: data.oldAvatar, to: data.newAvatar }),
-            cache: 'no-cache',
-        });
-        if (!response.ok) {
-            throw new Error(`Failed to copy tags: ${response.status}`);
-        }
-    } catch (error) {
-        console.error(`Error copying tags from ${data.oldAvatar} to ${data.newAvatar}:`, error);
-        toastr.error(t`Tags could not be copied to the duplicate.`);
-        return;
-    }
-    // The duplicate is usually not held yet; one that is takes the server's tags.
-    if (resolveTagIdsArray(data.newAvatar) !== undefined) await rereadResidentEntityTagIds([data.newAvatar]);
-}
-
-/**
  * Moves the tags of `oldKey` to `newKey`. Upstream's puts what the page holds for `oldKey` in place of what
  * `newKey` had; here the server adds what it has for `oldKey` to what `newKey` has, so nothing `newKey` has is
  * removed, and takes them off `oldKey`.
@@ -7036,7 +7012,6 @@ export function initTags() {
     $(document).on('click', '.tag_view_backup', onTagsBackupClick);
     $(document).on('click', '.tag_view_restore', onBackupRestoreClick);
     $(document).on('click', '.tag_view_prune', onTagsPruneClick);
-    eventSource.on(event_types.CHARACTER_DUPLICATED, copyTags);
     eventSource.makeFirst(event_types.CHAT_CHANGED, () => selected_group ? applyTagsOnGroupSelect() : applyTagsOnCharacterSelect());
 
     registerTagsSlashCommands();
