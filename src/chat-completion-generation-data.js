@@ -148,11 +148,15 @@ function getReasoningEffort(settings, model, { electronHubReasoningEfforts = nul
                     return 'none';
                 }
                 if ([CHAT_COMPLETION_SOURCES.OPENAI, CHAT_COMPLETION_SOURCES.AZURE_OPENAI].includes(settings.chat_completion_source)) {
-                    if (/^gpt-5\.(4|5|6)/.test(model)) return 'none';
+                    if (/^(?:gpt-5\.(?:4|5|6)|gpt-6-(?:sol|luna))/.test(model)) return 'none';
                     if (/^gpt-5/.test(model)) return reasoning_effort_types.min;
                 }
                 return reasoning_effort_types.low;
             case reasoning_effort_types.max:
+                if ([CHAT_COMPLETION_SOURCES.OPENAI, CHAT_COMPLETION_SOURCES.AZURE_OPENAI].includes(settings.chat_completion_source)
+                    && /^gpt-6-/.test(model)) {
+                    return reasoning_effort_types.max;
+                }
                 if ([CHAT_COMPLETION_SOURCES.OPENAI, CHAT_COMPLETION_SOURCES.AZURE_OPENAI].includes(settings.chat_completion_source)
                     && /^gpt-5\.6/.test(model)) {
                     return 'xhigh';
@@ -543,6 +547,17 @@ export async function createGenerationParameters(settings, model, type, messages
             delete generate_data.presence_penalty;
             delete generate_data.logit_bias;
             delete generate_data.stop;
+        }
+    }
+
+    if (gptSources.includes(settings.chat_completion_source) && /gpt-6-/.test(model)) {
+        generate_data.max_completion_tokens = generate_data.max_tokens;
+        delete generate_data.max_tokens;
+        if (model.includes('gpt-6-astra') || generate_data.reasoning_effort !== 'none') {
+            delete generate_data.temperature;
+            delete generate_data.top_p;
+            delete generate_data.logprobs;
+            delete generate_data.top_logprobs;
         }
     }
 
