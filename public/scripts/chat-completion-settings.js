@@ -442,10 +442,10 @@ const default_settings = {
     personality_format: default_personality_format,
     sort_models: 'alphabetically',
     group_models: false,
-    openai_model: 'gpt-5.6-terra',
+    openai_model: 'gpt-6-sol',
     claude_model: 'claude-sonnet-5',
-    google_model: 'gemini-3.7-flash',
-    vertexai_model: 'gemini-3.7-flash',
+    google_model: 'gemini-3.8-flash',
+    vertexai_model: 'gemini-3.8-flash',
     ai21_model: 'jamba-large',
     mistralai_model: 'mistral-large-latest',
     cohere_model: 'command-r-plus',
@@ -2626,7 +2626,7 @@ function getReasoningEffort(settings = null, model = null) {
                 }
 
                 if ([chat_completion_sources.OPENAI, chat_completion_sources.AZURE_OPENAI].includes(settings.chat_completion_source)) {
-                    if (/^gpt-5\.(4|5|6)/.test(model)) {
+                    if (/^(?:gpt-5\.(?:4|5|6)|gpt-6-(?:sol|luna))/.test(model)) {
                         return 'none';
                     }
                     if (/^gpt-5/.test(model)) {
@@ -2636,6 +2636,10 @@ function getReasoningEffort(settings = null, model = null) {
 
                 return reasoning_effort_types.low;
             case reasoning_effort_types.max:
+                if ([chat_completion_sources.OPENAI, chat_completion_sources.AZURE_OPENAI].includes(settings.chat_completion_source)
+                    && /^gpt-6-/.test(model)) {
+                    return reasoning_effort_types.max;
+                }
                 if ([chat_completion_sources.OPENAI, chat_completion_sources.AZURE_OPENAI].includes(settings.chat_completion_source)
                     && /^gpt-5\.6/.test(model)) {
                     // GPT-5.6 reserves "max" effort for the Responses API.
@@ -3114,6 +3118,17 @@ export async function createGenerationParameters(settings, model, type, messages
             delete generate_data.presence_penalty;
             delete generate_data.logit_bias;
             delete generate_data.stop;
+        }
+    }
+
+    if (gptSources.includes(settings.chat_completion_source) && /gpt-6-/.test(model)) {
+        generate_data.max_completion_tokens = generate_data.max_tokens;
+        delete generate_data.max_tokens;
+        if (model.includes('gpt-6-astra') || generate_data.reasoning_effort !== 'none') {
+            delete generate_data.temperature;
+            delete generate_data.top_p;
+            delete generate_data.logprobs;
+            delete generate_data.top_logprobs;
         }
     }
 
@@ -5135,6 +5150,7 @@ function getMaxContextOpenAI(value) {
 
     /** @type {[RegExp, number][]} */
     const contextMap = [
+        [/^gpt-6-/, max_1050k],
         [/^gpt-5\.6/, max_1050k],
         [/^gpt-5\.[45]/, max_1mil],
         [/^gpt-5/, max_400k],
@@ -6288,6 +6304,9 @@ export function isImageInliningSupported() {
         'gpt-4.1',
         'gpt-4.5-preview',
         'gpt-4o',
+        'gpt-6-astra',
+        'gpt-6-sol',
+        'gpt-6-luna',
         'gpt-5',
         'o1',
         'o3',
