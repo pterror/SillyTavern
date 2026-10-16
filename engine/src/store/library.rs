@@ -1,7 +1,7 @@
 //! The library: characters, groups and tags as entities, their values, and what the list is read from.
 //!
 //! Every character and group is in the orders of each scope it belongs to: the whole library, each tag it
-//! carries, and (a character) the lorebook its card names. Within a scope, each order is split by the entity's
+//! carries, and (a character) each lorebook it links. Within a scope, each order is split by the entity's
 //! type and fav bit, so a filter on either, or sorting favourites first, reads at most four orders and merges
 //! them. An order's key is the sort key, then the entity's id, which breaks ties (so equal keys list in creation
 //! order); the entry holds nothing. Characters sort before groups on equal keys, which the reader does when
@@ -114,16 +114,15 @@ pub struct State {
     /// Sort keys `CREATED..SORTS`; None sorts below every number.
     pub nums: [Option<f64>; 5],
     pub tags: Vec<u64>,
-    pub world: Option<Vec<u8>>,
+    /// The scopes of the books a character links (`books::worlds`), sorted.
+    pub worlds: Vec<Vec<u8>>,
 }
 
 impl State {
     pub fn scopes(&self) -> Vec<Scope> {
         let mut s = vec![Scope::All];
         s.extend(self.tags.iter().map(|t| Scope::Tag(*t)));
-        if let Some(w) = &self.world {
-            s.push(Scope::World(w.clone()));
-        }
+        s.extend(self.worlds.iter().map(|w| Scope::World(w.clone())));
         s
     }
 
@@ -209,14 +208,29 @@ pub fn rand_key(scope: &Scope, kind: u64, fav: bool, n: u64) -> Vec<u8> {
 }
 
 /// The entry keeping `e`'s number in `scope`'s numbering, keyed by the pair already: the entity's own (`ENTITY`)
-/// for the whole library, its membership (`MEMBER`) for a tag, its lorebook link (`books::LINK`) for a lorebook.
-/// A character links one lorebook, so its link stands for the one lorebook scope it is in.
+/// for the whole library, its membership (`MEMBER`) for a tag, its link (`books::LINKED`) for a lorebook. A
+/// `bookLink`'s link keeps it in `books::LINK` instead (`books::world_rank`).
 pub fn rank_host(scope: &Scope, e: u64) -> Vec<u8> {
     match scope {
         Scope::All => key::id(key::ENTITY, e),
         Scope::Tag(t) => key::ids(key::MEMBER, *t, e),
-        Scope::World(_) => key::id(books::LINK, e),
+        Scope::World(w) => key::ids(books::LINKED, world_book(w), e),
     }
+}
+
+/// The book of a lorebook scope's bytes (`books::scope_bytes`).
+fn world_book(w: &[u8]) -> u64 {
+    parse_uvarint(w).expect("a lorebook scope is a book's id")
+}
+
+/// A host entry's value (`rank_host`, key `k`) with its number set to `n`.
+pub fn host_numbered(k: &[u8], v: &[u8], n: Option<u64>) -> Result<Vec<u8>, StoreError> {
+    if k.starts_with(&key::of(books::LINKED)) {
+        let (item, _) = books::parse_linked(v)?
+            .ok_or_else(|| entry_err("a bookLink's link isn't numbered here"))?;
+        return Ok(books::linked_bytes(item, n));
+    }
+    Ok(host_bytes(parse_host(v)?.0, n))
 }
 
 /// A host entry's value (`rank_host`): its record's place, then the entity's number when it is numbered there.
@@ -247,6 +261,9 @@ pub fn parse_host(b: &[u8]) -> Result<(Loc, Option<u64>), StoreError> {
 
 /// `e`'s number in `scope`'s numbering, as `view` has it.
 pub fn rank(view: &View, scope: &Scope, e: u64) -> Result<Option<u64>, StoreError> {
+    if let Scope::World(w) = scope {
+        return books::world_rank(view, world_book(w), e);
+    }
     Ok(match view.get(&rank_host(scope, e))? {
         Some(b) => parse_host(&b)?.1,
         None => None,
@@ -276,6 +293,9 @@ fn set_rank(
     e: u64,
     n: Option<u64>,
 ) -> Result<(), StoreError> {
+    if let Scope::World(w) = scope {
+        return books::set_world_rank(view, out, world_book(w), e, n);
+    }
     let hk = rank_host(scope, e);
     match current(view, out, &hk)? {
         Some(b) => {
@@ -394,12 +414,10 @@ fn state_of(view: &View, e: u64, kind: u64, added: f64) -> Result<Option<State>,
     if kind != CHARACTER && kind != GROUP {
         return Ok(None);
     }
-    let world = if kind == CHARACTER {
-        books::link_of(view, e)?
-            .and_then(|(_, b)| b)
-            .map(books::scope_bytes)
+    let worlds = if kind == CHARACTER {
+        books::worlds(view, e)?
     } else {
-        None
+        Vec::new()
     };
     let mut nums = [None; 5];
     for (sort, n) in (CREATED..SORTS).zip(nums.iter_mut()) {
@@ -411,7 +429,7 @@ fn state_of(view: &View, e: u64, kind: u64, added: f64) -> Result<Option<State>,
         name: folded_name(view, e)?,
         nums,
         tags: tags_of(view, e)?,
-        world,
+        worlds,
     }))
 }
 
@@ -579,12 +597,12 @@ pub fn change(
     Ok(())
 }
 
-/// Whether a text field's value places the entity in the orders.
+/// Whether a text field's value places the entity in the orders: its name, and a character's link.
 pub fn places(f: &FieldRef) -> bool {
-    matches!(f, FieldRef::Code(NAME))
+    matches!(f, FieldRef::Code(NAME)) || books::link_item(f).is_some()
 }
 
-/// A change to a text field's value: the name places the entity (its lorebook is its `bookLink`).
+/// A change to a text field's value: the name places the entity, and a link's text a character in a book's scope.
 pub fn text_changed(
     view: &View,
     out: &mut Out,
@@ -596,7 +614,10 @@ pub fn text_changed(
         FieldRef::Code(NAME) => change(view, out, e, |st| {
             st.name = new.map(fold_name).unwrap_or_default();
         }),
-        _ => Ok(()),
+        _ => match books::link_item(f) {
+            Some(item) => books::link_text_changed(view, out, e, item, new),
+            None => Ok(()),
+        },
     }
 }
 
@@ -666,6 +687,9 @@ impl Deriver for EntityCreate {
         }
         // The entity's entry first: the whole library's numbering keeps its number there.
         out.put(key::id(key::ENTITY, e), host_bytes(at, None));
+        if kind == CHARACTER {
+            books::linker_created(view, out, e)?;
+        }
         if let Some(st) = state_of(view, e, kind, added)? {
             reposition(view, out, e, None, Some(&st))?;
         }
@@ -1158,7 +1182,11 @@ impl Deriver for ItemPlace {
             )));
         }
         let ak = item_at_key(e, list, item);
-        if let Some(b) = view.get(&ak)? {
+        let was = view.get(&ak)?;
+        if list == books::LINKS {
+            books::link_placed(view, out, e, item, was.is_some())?;
+        }
+        if let Some(b) = was {
             let (p, l) = parse_place(&b)?;
             dead(out, l);
             out.del(item_key(e, list, p));
@@ -1203,6 +1231,9 @@ impl Deriver for ItemDelete {
     fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
         let (e, list, item) = (id(rec, 0), id(rec, 1), id(rec, 2));
         dead(out, at);
+        if list == books::LINKS {
+            books::link_deleted(view, out, e, item)?;
+        }
         let ak = item_at_key(e, list, item);
         if let Some(b) = view.get(&ak)? {
             let (p, l) = parse_place(&b)?;

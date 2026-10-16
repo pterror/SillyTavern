@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::books::{self, BOOK, ENTRY, EntryKey, OWNED};
 use super::chat_read::Js;
-use super::library::{BY_NAME, CHARACTER, NAME};
+use super::library::{self, BY_NAME, CHARACTER, NAME};
 use super::library_read::{Filter, Query, Sort};
 use super::*;
 use crate::log::format::{FieldRef, Record, Value, kind_by_name};
@@ -112,10 +112,55 @@ fn index(entry: u64, book: u64, x: Option<f64>) -> Record {
     )
 }
 
-fn link(e: u64, book: Option<u64>) -> Record {
+/// A `bookLink` record (`books::BookLink`): a link from before links were a list.
+fn book_link(e: u64, book: Option<u64>) -> Record {
     rec(
         "bookLink",
         vec![Value::Id(e), book.map_or(Value::Absent, Value::Id)],
+    )
+}
+
+fn link_field(item: u64) -> FieldRef {
+    FieldRef::Code(library::ITEM_BASE + item * library::LISTS + books::LINKS)
+}
+
+fn link_text(e: u64, item: u64, t: &str) -> Record {
+    rec(
+        "textValue",
+        vec![
+            Value::Sel(0, e),
+            Value::Field(link_field(item)),
+            text(t),
+            Value::Absent,
+            Value::Absent,
+        ],
+    )
+}
+
+fn link_place(e: u64, item: u64, position: u64) -> Record {
+    rec(
+        "itemPlace",
+        vec![
+            Value::Id(e),
+            Value::UInt(books::LINKS),
+            Value::UInt(item),
+            Value::UInt(position),
+        ],
+    )
+}
+
+/// Character `e`'s link of `item` (at `position`) to `book`.
+fn link(e: u64, item: u64, position: u64, book: u64) -> Vec<Record> {
+    vec![
+        link_place(e, item, position),
+        link_text(e, item, &book.to_string()),
+    ]
+}
+
+fn unlink(e: u64, item: u64) -> Record {
+    rec(
+        "itemDelete",
+        vec![Value::Id(e), Value::UInt(books::LINKS), Value::UInt(item)],
     )
 }
 
@@ -381,6 +426,92 @@ fn world_page(s: &Store, key: &str) -> Vec<u64> {
     ids
 }
 
+/// The total a lorebook filter's page counts.
+fn world_total(s: &Store, key: &str) -> u64 {
+    let q = Query {
+        filter: Filter {
+            characters: true,
+            world: Some(key.as_bytes().to_vec()),
+            ..Filter::default()
+        },
+        sort: Sort::Key {
+            sort: BY_NAME,
+            desc: false,
+        },
+        offset: 0,
+        limit: 100,
+        cursor: None,
+        count: true,
+        cap: 100_000,
+    };
+    s.library_page(&q).unwrap().total.unwrap()
+}
+
+fn character(e: u64) -> Vec<Record> {
+    vec![
+        create(e, CHARACTER, &format!("c{e}.png")),
+        rec(
+            "textValue",
+            vec![
+                Value::Sel(0, e),
+                Value::Field(FieldRef::Code(NAME)),
+                text(&format!("c{e}")),
+                Value::Absent,
+                Value::Absent,
+            ],
+        ),
+    ]
+}
+
+/// Each numbering of `book`'s scope is dense, and each character in it keeps its number where `rank` reads it.
+fn numbered(s: &Store, book: u64) -> Vec<u64> {
+    let scope = library::Scope::World(books::scope_bytes(book));
+    s.derived(|v| {
+        let mut all = Vec::new();
+        for fav in [false, true] {
+            let n = library::counter(v, &library::count_key(&scope, CHARACTER, fav))?;
+            let p = library::rand_prefix(&scope, CHARACTER, fav);
+            let found = v.scan(&p, &key::prefix_end(&p), usize::MAX)?;
+            assert_eq!(found.len() as i64, n);
+            for (i, (_, e)) in found.iter().enumerate() {
+                let e = library::parse_uvarint(e)?;
+                assert_eq!(library::rank(v, &scope, e)?, Some(i as u64), "{book} {e}");
+                all.push(e);
+            }
+        }
+        all.sort();
+        Ok(all)
+    })
+    .unwrap()
+}
+
+fn multi(s: &Store) -> Vec<u64> {
+    let page = read(s, |v| books::multi_links_page(v, None, 100));
+    let Js::Arr(ids) = field(&page, "ids") else {
+        panic!()
+    };
+    ids.iter()
+        .map(|i| match i {
+            Js::Big(i) => *i,
+            _ => panic!(),
+        })
+        .collect()
+}
+
+fn legacy(s: &Store) -> Vec<(u64, Option<u64>)> {
+    let page = read(s, |v| books::legacy_links_page(v, None, 100));
+    let Js::Arr(list) = field(&page, "links") else {
+        panic!()
+    };
+    list.iter()
+        .map(|l| match (field(l, "entity"), field(l, "book")) {
+            (Js::Big(e), Js::Big(b)) => (*e, Some(*b)),
+            (Js::Big(e), Js::Null) => (*e, None),
+            _ => panic!(),
+        })
+        .collect()
+}
+
 fn listed(s: &Store) -> Vec<(u64, String)> {
     let page = read(s, |v| books::books_page(v, None, 100));
     let Js::Arr(list) = field(&page, "books") else {
@@ -411,21 +542,6 @@ fn resolved(s: &Store, book: u64) -> (u64, String, bool) {
 fn links_name_books_by_id_and_resolve_unresolved_names() {
     let dir = temp_dir("links");
     let s = Store::open_in(&dir, SMALL, pool()).unwrap();
-    let character = |e: u64| {
-        vec![
-            create(e, CHARACTER, &format!("c{e}.png")),
-            rec(
-                "textValue",
-                vec![
-                    Value::Sel(0, e),
-                    Value::Field(FieldRef::Code(NAME)),
-                    text(&format!("c{e}")),
-                    Value::Absent,
-                    Value::Absent,
-                ],
-            ),
-        ]
-    };
     // A book, and a name no book has (unresolved), each linked by a character.
     let mut r = vec![
         defined(1, true),
@@ -434,8 +550,8 @@ fn links_name_books_by_id_and_resolve_unresolved_names() {
     ];
     r.extend(character(10));
     r.extend(character(11));
-    r.push(link(10, Some(1)));
-    r.push(link(11, Some(2)));
+    r.extend(link(10, 1, 100, 1));
+    r.extend(link(11, 1, 100, 2));
     s.commit_wait(r).unwrap();
     assert_eq!(listed(&s), vec![(1, "lore".into())]);
     assert_eq!(world_page(&s, "lore"), vec![10]);
@@ -448,8 +564,15 @@ fn links_name_books_by_id_and_resolve_unresolved_names() {
         refused(vec![forward(1, 2)]),
         "a defined book isn't forwarded"
     );
-    assert!(refused(vec![link(1, Some(1))]), "a book links nothing");
-    assert!(refused(vec![link(10, Some(10))]), "a link names a book");
+    assert!(refused(link(10, 2, 200, 10)), "a link names a book");
+    assert!(
+        refused(link(10, 2, 200, 1)),
+        "a character links a book once"
+    );
+    assert!(
+        refused(vec![link_place(10, 2, 200), link_text(10, 2, "01")]),
+        "a link's text is a book's id in canonical decimal"
+    );
     // The book is renamed to the unresolved name: the name resolves as the book, and goes.
     s.commit_wait(vec![forward(2, 1), delete(2), update(1, BOOK, "gone")])
         .unwrap();
@@ -462,17 +585,171 @@ fn links_name_books_by_id_and_resolve_unresolved_names() {
     assert_eq!(listed(&s), Vec::<(u64, String)>::new());
     assert_eq!(resolved(&s, 2), (1, "gone".into(), false));
     assert_eq!(world_page(&s, "gone"), vec![10, 11]);
-    // A link moves and goes; a character going takes its link.
-    s.commit_wait(vec![link(10, None)]).unwrap();
+    // A link goes; a character going takes its links.
+    s.commit_wait(vec![unlink(10, 1)]).unwrap();
     assert_eq!(world_page(&s, "gone"), vec![11]);
     s.commit_wait(vec![delete(11)]).unwrap();
     assert_eq!(world_page(&s, "gone"), Vec::<u64>::new());
-    let links = read(&s, |v| books::links(v, &[10, 11]));
-    assert_eq!(links, Js::Arr(vec![Js::Null, Js::Null]));
+    assert_eq!(numbered(&s, 1), Vec::<u64>::new());
     s.close();
     drop(s);
     let s = Store::open_in(&dir, SMALL, pool()).unwrap();
     assert_eq!(resolved(&s, 2), (1, "gone".into(), false));
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_characters_links_are_one_list_each_in_its_books_scope() {
+    let dir = temp_dir("link-list");
+    let s = Store::open_in(&dir, SMALL, pool()).unwrap();
+    let mut r = Vec::new();
+    for (b, k) in [(1, "a"), (2, "b"), (3, "c")] {
+        r.push(defined(b, true));
+        r.push(create(b, BOOK, k));
+    }
+    r.extend(character(10));
+    r.extend(character(11));
+    s.commit_wait(r).unwrap();
+    // A 3-link character is in 3 lorebook scopes, numbered in each.
+    let mut r = link(10, 1, 100, 1);
+    r.extend(link(10, 2, 200, 2));
+    r.extend(link(10, 3, 300, 3));
+    r.extend(link(11, 1, 100, 2));
+    s.commit_wait(r).unwrap();
+    for (k, want) in [("a", vec![10]), ("b", vec![10, 11]), ("c", vec![10])] {
+        assert_eq!(world_page(&s, k), want, "{k}");
+    }
+    assert_eq!(numbered(&s, 1), vec![10]);
+    assert_eq!(numbered(&s, 2), vec![10, 11]);
+    assert_eq!(numbered(&s, 3), vec![10]);
+    assert_eq!(multi(&s), vec![10]);
+    let first = |e: u64| read(&s, |v| books::first_link(v, e));
+    assert_eq!(first(10), Some(1));
+    // A reorder moves places only: the first link is another, the scopes stay.
+    s.commit_wait(vec![link_place(10, 3, 50)]).unwrap();
+    assert_eq!(first(10), Some(3));
+    assert_eq!(world_page(&s, "c"), vec![10]);
+    // An edit of a link's text moves the character to the other book's scope.
+    let refused = |r: Vec<Record>| matches!(s.commit_wait(r), Err(StoreError::Refused(_)));
+    assert!(refused(vec![link_text(10, 3, "2")]), "a book linked twice");
+    s.commit_wait(vec![unlink(10, 2), link_text(10, 3, "2")])
+        .unwrap();
+    assert_eq!(world_page(&s, "c"), Vec::<u64>::new());
+    assert_eq!(world_page(&s, "b"), vec![10, 11]);
+    assert_eq!(numbered(&s, 2), vec![10, 11]);
+    assert_eq!(numbered(&s, 3), Vec::<u64>::new());
+    assert_eq!(first(10), Some(2));
+    assert_eq!(multi(&s), vec![10]);
+    // Down to one link, the character isn't multi-linked.
+    s.commit_wait(vec![unlink(10, 3)]).unwrap();
+    assert_eq!(multi(&s), Vec::<u64>::new());
+    assert_eq!(first(10), Some(1));
+    assert_eq!(world_page(&s, "b"), vec![11]);
+    // A character made with its links before its create (values first) is in their scopes.
+    let mut r = link(12, 1, 100, 3);
+    r.extend(link(12, 2, 200, 1));
+    r.extend(character(12));
+    s.commit_wait(r).unwrap();
+    assert_eq!(world_page(&s, "c"), vec![12]);
+    assert_eq!(world_page(&s, "a"), vec![10, 12]);
+    assert_eq!(numbered(&s, 1), vec![10, 12]);
+    assert_eq!(multi(&s), vec![12]);
+    assert!(
+        refused({
+            let mut r = link(13, 1, 100, 3);
+            r.extend(link(13, 2, 200, 3));
+            r.extend(character(13));
+            r
+        }),
+        "a character made with a book linked twice"
+    );
+    // A group's list 4 is no link.
+    s.commit_wait(vec![
+        create(20, library::GROUP, "g"),
+        link_place(20, 1, 100),
+        link_text(20, 1, "anything"),
+    ])
+    .unwrap();
+    assert_eq!(multi(&s), vec![12]);
+    // A character linking a book and a name forwarded into it is listed once.
+    s.commit_wait(vec![create(4, BOOK, "d")]).unwrap();
+    s.commit_wait(link(11, 2, 200, 4)).unwrap();
+    s.commit_wait(vec![forward(4, 2), delete(4)]).unwrap();
+    assert_eq!(world_page(&s, "b"), vec![11]);
+    assert_eq!(world_total(&s, "b"), 1);
+    // A character going takes its links.
+    s.commit_wait(vec![delete(12)]).unwrap();
+    assert_eq!(multi(&s), vec![11]);
+    assert_eq!(numbered(&s, 1), vec![10]);
+    assert_eq!(numbered(&s, 3), Vec::<u64>::new());
+    s.close();
+    drop(s);
+    let s = Store::open_in(&dir, SMALL, pool()).unwrap();
+    assert_eq!(world_page(&s, "a"), vec![10]);
+    assert_eq!(multi(&s), vec![11]);
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_book_link_replays_and_the_first_list_link_takes_it_over() {
+    let dir = temp_dir("book-link");
+    let s = Store::open_in(&dir, SMALL, pool()).unwrap();
+    let mut r = Vec::new();
+    for (b, k) in [(1, "a"), (2, "b")] {
+        r.push(defined(b, true));
+        r.push(create(b, BOOK, k));
+    }
+    for e in [10, 11, 12] {
+        r.extend(character(e));
+    }
+    s.commit_wait(r).unwrap();
+    // Links from before the list: each character in its book's scope.
+    s.commit_wait(vec![
+        book_link(10, Some(1)),
+        book_link(11, Some(1)),
+        book_link(12, Some(2)),
+        book_link(12, None),
+        book_link(12, Some(2)),
+    ])
+    .unwrap();
+    assert_eq!(
+        legacy(&s),
+        vec![(10, Some(1)), (11, Some(1)), (12, Some(2))]
+    );
+    assert_eq!(world_page(&s, "a"), vec![10, 11]);
+    assert_eq!(numbered(&s, 1), vec![10, 11]);
+    // The one-off's records: each `bookLink`'s book as the first link, more after it.
+    let mut r = link(10, 1, 100, 1);
+    r.extend(link(10, 2, 200, 2));
+    r.extend(link(11, 1, 100, 1));
+    r.extend(link(12, 1, 100, 2));
+    s.commit_wait(r).unwrap();
+    assert_eq!(legacy(&s), Vec::<(u64, Option<u64>)>::new());
+    assert_eq!(world_page(&s, "a"), vec![10, 11]);
+    assert_eq!(world_page(&s, "b"), vec![10, 12]);
+    assert_eq!(numbered(&s, 1), vec![10, 11]);
+    assert_eq!(numbered(&s, 2), vec![10, 12]);
+    assert_eq!(multi(&s), vec![10]);
+    // A `bookLink` for a character whose links are a list is refused.
+    assert!(matches!(
+        s.commit_wait(vec![book_link(10, Some(1))]),
+        Err(StoreError::Refused(_))
+    ));
+    // Replayed from the log, the same.
+    s.abandon();
+    drop(s);
+    let s = Store::open_in(&dir, SMALL, pool()).unwrap();
+    assert_eq!(legacy(&s), Vec::<(u64, Option<u64>)>::new());
+    assert_eq!(numbered(&s, 1), vec![10, 11]);
+    assert_eq!(numbered(&s, 2), vec![10, 12]);
+    // No derived entry points at a `bookLink` record: each is dead.
+    s.commit_wait(vec![unlink(10, 1), unlink(11, 1), unlink(12, 1)])
+        .unwrap();
+    assert_eq!(world_page(&s, "a"), Vec::<u64>::new());
+    assert_eq!(numbered(&s, 1), Vec::<u64>::new());
+    assert_eq!(numbered(&s, 2), vec![10]);
     drop(s);
     fs::remove_dir_all(&dir).unwrap();
 }

@@ -93,7 +93,14 @@ struct M {
     added: i64,
     data: u64,
     tags: Vec<u64>,
-    world: Option<String>,
+    /// Lorebook links in list order: (item, book).
+    links: Vec<(u64, u64)>,
+}
+
+impl M {
+    fn links(&self, book: u64) -> bool {
+        self.links.iter().any(|(_, b)| *b == book)
+    }
 }
 
 impl M {
@@ -160,9 +167,11 @@ fn matches(m: &M, e: u64, f: &Filter) -> bool {
         && (f.any_tags.is_empty() || f.any_tags.iter().any(|t| m.tags.contains(t)))
         && !f.no_tags.iter().any(|t| m.tags.contains(t))
         && (m.kind == GROUP
-            || f.world
-                .as_ref()
-                .is_none_or(|w| m.world.as_deref().map(str::as_bytes) == Some(w.as_slice())))
+            || f.world.as_ref().is_none_or(|w| {
+                BOOKS
+                    .iter()
+                    .any(|(b, k)| k.as_bytes() == w.as_slice() && m.links(*b))
+            }))
         && f.ids.as_ref().is_none_or(|i| i.contains(&e))
         && !f.not_ids.contains(&e)
         && f.ranges.iter().all(|(field, lo, hi)| {
@@ -205,13 +214,33 @@ fn all_pages(s: &Store, mut q: Query) -> (Vec<u64>, Page) {
 }
 
 const TAGS: [u64; 3] = [900, 901, 902];
-/// The book every lorebook link names, keyed `lore`.
-const LORE: u64 = 950;
+/// The books lorebook links name, with their keys.
+const BOOKS: [(u64, &str); 2] = [(950, "lore"), (951, "lore2")];
 
-fn link(e: u64, book: Option<u64>) -> Record {
+/// A character's link of `item` to `book` (list 4), at `position`.
+fn link(e: u64, item: u64, position: u64, book: u64) -> Vec<Record> {
+    vec![
+        rec(
+            "itemPlace",
+            vec![
+                Value::Id(e),
+                Value::UInt(books::LINKS),
+                Value::UInt(item),
+                Value::UInt(position),
+            ],
+        ),
+        set(
+            e,
+            library::ITEM_BASE + item * library::LISTS + books::LINKS,
+            &book.to_string(),
+        ),
+    ]
+}
+
+fn unlink(e: u64, item: u64) -> Record {
     rec(
-        "bookLink",
-        vec![Value::Id(e), book.map_or(Value::Absent, Value::Id)],
+        "itemDelete",
+        vec![Value::Id(e), Value::UInt(books::LINKS), Value::UInt(item)],
     )
 }
 const SORTS: [Sort; 15] = [
@@ -315,6 +344,10 @@ fn filters() -> Vec<Filter> {
         Filter {
             world: Some(b"lore".to_vec()),
             groups: false,
+            ..both.clone()
+        },
+        Filter {
+            world: Some(b"lore2".to_vec()),
             ..both.clone()
         },
         Filter {
@@ -516,7 +549,8 @@ fn check(s: &Store, m: &BTreeMap<u64, M>) {
     for scope in [
         library::Scope::All,
         library::Scope::Tag(TAGS[0]),
-        library::Scope::World(books::scope_bytes(LORE)),
+        library::Scope::World(books::scope_bytes(BOOKS[0].0)),
+        library::Scope::World(books::scope_bytes(BOOKS[1].0)),
     ] {
         for kind in [CHARACTER, GROUP] {
             for fav in [false, true] {
@@ -527,7 +561,9 @@ fn check(s: &Store, m: &BTreeMap<u64, M>) {
                         .filter(|x| x.kind == kind && x.fav == fav)
                         .filter(|x| match &scope {
                             library::Scope::Tag(t) => x.tags.contains(t),
-                            library::Scope::World(_) => x.kind == CHARACTER && x.world.is_some(),
+                            library::Scope::World(w) => {
+                                x.kind == CHARACTER && x.links(library::parse_uvarint(w).unwrap())
+                            }
                             library::Scope::All => true,
                         })
                         .count();
@@ -592,7 +628,7 @@ impl Lib {
             added,
             data: 0,
             tags: Vec::new(),
-            world: None,
+            links: Vec::new(),
         };
         if kind == CHARACTER {
             if !self.rand().is_multiple_of(4) {
@@ -602,9 +638,12 @@ impl Lib {
             }
             m.data = self.rand() % 400;
             recs.push(rec("dataSize", vec![Value::Id(e), Value::UInt(m.data)]));
-            if self.rand().is_multiple_of(3) {
-                recs.push(link(e, Some(LORE)));
-                m.world = Some("lore".into());
+            for (i, (b, _)) in BOOKS.iter().enumerate() {
+                if self.rand().is_multiple_of(3) {
+                    let item = i as u64 + 1;
+                    recs.extend(link(e, item, item * 10, *b));
+                    m.links.push((item, *b));
+                }
             }
         }
         if self.rand().is_multiple_of(3) {
@@ -676,9 +715,20 @@ impl Lib {
                 vec![rec("dataSize", vec![Value::Id(e), Value::UInt(d)])]
             }
             5 if kind == CHARACTER => {
-                let w = self.m[&e].world.is_none();
-                self.m.get_mut(&e).unwrap().world = w.then(|| "lore".to_string());
-                vec![link(e, w.then_some(LORE))]
+                // A book's link goes, or comes at the end of the list.
+                let b = BOOKS[(self.rand() % 2) as usize].0;
+                let m = self.m.get_mut(&e).unwrap();
+                match m.links.iter().position(|(_, x)| *x == b) {
+                    Some(i) => {
+                        let (item, _) = m.links.remove(i);
+                        vec![unlink(e, item)]
+                    }
+                    None => {
+                        let item = 1 + m.links.iter().map(|(i, _)| *i).max().unwrap_or(10);
+                        m.links.push((item, b));
+                        link(e, item, item * 10, b)
+                    }
+                }
             }
             6 if ids.len() > 30 => {
                 self.m.remove(&e);
@@ -692,7 +742,7 @@ impl Lib {
 fn tag_records() -> Vec<Record> {
     TAGS.iter()
         .map(|t| create(*t, TAG, &format!("tag-{t}"), 0))
-        .chain([create(LORE, books::BOOK, "lore", 0)])
+        .chain(BOOKS.iter().map(|(b, k)| create(*b, books::BOOK, k, 0)))
         .collect()
 }
 
