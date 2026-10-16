@@ -48,10 +48,6 @@ const NUMBERING_SINKS: usize = 4;
 /// The memory a load may take: half the memory available when it starts, the other half left to the page cache
 /// and whatever else runs; `LOAD_BUFFER_BYTES` where that can't be read.
 fn load_budget() -> usize {
-    #[cfg(any(test, feature = "measure"))]
-    if let Some(b) = BUDGET_SET.get() {
-        return b;
-    }
     #[cfg(not(target_family = "wasm"))]
     {
         let mut s = sysinfo::System::new();
@@ -62,17 +58,6 @@ fn load_budget() -> usize {
         }
     }
     LOAD_BUFFER_BYTES
-}
-
-#[cfg(any(test, feature = "measure"))]
-thread_local! {
-    static BUDGET_SET: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
-}
-
-/// For measuring and tests: the budget of loads started on this thread, in place of `load_budget`'s.
-#[cfg(any(test, feature = "measure"))]
-pub fn set_load_budget(bytes: Option<usize>) {
-    BUDGET_SET.set(bytes);
 }
 
 /// Workers deriving in parallel: every core but two, left to whatever else runs, and no more than give each
@@ -96,16 +81,16 @@ fn spill_memory(bytes: usize, len: usize) -> usize {
         .saturating_add(sorted.max(bytes))
 }
 
-/// A load's memory: what the crate's allocations hold (`memory::committed`), with what spills under way have
-/// reserved, stays under what they held when the load started plus the budget (`load_budget`). Measured every
-/// `STEP` a sink grows, with room for every sink's next step; where it is over, the oldest runs held in memory
-/// are written to files until it is under, and where none is left, the sink is cut and spills to a file. A sink
-/// is cut into a run at its share of the budget, counting what its spill allocates (`spill_memory`), which is
-/// reserved before the spill starts; the run stays in memory while the allocations stay under the cap.
+/// Targets resident growth from the load's start, falling back to allocator bytes where RSS is unavailable.
+/// Reservations cover run encoding and each sink's next measurement step. Pressure evicts held runs first,
+/// then cuts sinks to disk. This is not a hard process limit: the host's heap, in-flight records and the current
+/// partition can grow outside the sinks. A pressured sink still accumulates one `STEP` before cutting again.
 struct Budget {
     limit: usize,
-    /// What the crate's allocations held when the load started.
+    /// The memory measured when the load started, and how it is measured: the process's resident memory, or
+    /// (None) the crate's allocations.
     base: usize,
+    resident: Option<Mutex<crate::memory::Resident>>,
     /// Sinks growing at once: the workers', then the numberings'.
     sinks: AtomicUsize,
     /// Bytes spills under way have reserved (`Budget::reserve`).
@@ -135,9 +120,15 @@ impl Drop for Reserved<'_> {
 
 impl Budget {
     fn new(limit: usize, sinks: usize) -> Budget {
+        let mut resident = crate::memory::Resident::new();
+        let (base, resident) = match resident.read() {
+            Some(rss) => (rss, Some(Mutex::new(resident))),
+            None => (crate::memory::committed(), None),
+        };
         Budget {
             limit,
-            base: crate::memory::committed(),
+            base,
+            resident,
             sinks: AtomicUsize::new(sinks),
             reserved: AtomicUsize::new(0),
             held: Mutex::new(VecDeque::new()),
@@ -149,7 +140,11 @@ impl Budget {
     }
 
     fn measure(&self) -> usize {
-        let c = crate::memory::committed();
+        let c = self
+            .resident
+            .as_ref()
+            .and_then(|r| r.lock().unwrap().read())
+            .unwrap_or_else(crate::memory::committed);
         self.peak
             .fetch_max(c.saturating_sub(self.base), Ordering::Relaxed);
         c
@@ -165,6 +160,7 @@ impl Budget {
             let room = STEP * self.sinks.load(Ordering::Relaxed);
             let taken = self
                 .measure()
+                .max(self.base)
                 .saturating_add(self.reserved.load(Ordering::Acquire));
             if taken.saturating_add(more).saturating_add(room) <= cap {
                 self.reserved.fetch_add(more, Ordering::AcqRel);
@@ -195,11 +191,27 @@ impl Budget {
     /// spill allocates (`spill_memory`), or where the allocations can't otherwise be held under the cap.
     fn grown(&self, bytes: usize, len: usize, next: &mut usize, share: usize) -> StoreResult<bool> {
         let mut cut = bytes.saturating_add(spill_memory(bytes, len)) >= share;
-        if bytes >= *next {
+        // A caller's heap or a retained allocator page may keep RSS over the target even after every held
+        // run is written out. Do not cut again until this sink has accumulated a measurement step: resetting
+        // `next` to zero after a spill otherwise writes one tiny run per partition without relieving pressure.
+        if bytes >= (*next).max(STEP) {
             *next = bytes.saturating_add(STEP);
             cut |= !self.hold()?;
         }
         Ok(cut)
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn external_memory_pressure_does_not_cut_each_small_partition() {
+    let budget = Budget::new(64 << 20, 1);
+    // Reservations exhaust the target even if unrelated allocations are freed during the test.
+    budget.reserved.store(usize::MAX / 2, Ordering::Relaxed);
+    for _ in 0..3 {
+        let mut next = 0;
+        assert!(!budget.grown(1024, 1, &mut next, budget.limit).unwrap());
+        assert!(budget.grown(STEP, 100, &mut next, budget.limit).unwrap());
     }
 }
 
@@ -290,6 +302,11 @@ pub struct Loader {
 impl Store {
     /// Starts a bulk load. Only one runs at a time; commits go on meanwhile.
     pub fn loader(&self) -> StoreResult<Loader> {
+        self.loader_in(None)
+    }
+
+    /// `loader`, its memory budget `budget` bytes in place of `load_budget`'s.
+    pub fn loader_in(&self, budget: Option<usize>) -> StoreResult<Loader> {
         let inner = &self.inner;
         inner.wait_ready()?;
         let dir = inner.dir.join(LOAD_DIR);
@@ -322,7 +339,7 @@ impl Store {
             }
         };
         let seq = Arc::new(AtomicU64::new(0));
-        let limit = load_budget();
+        let limit = budget.unwrap_or_else(load_budget);
         let count = load_workers(limit);
         let budget = Arc::new(Budget::new(limit, count));
         eprintln!(
@@ -490,8 +507,15 @@ impl Loader {
                 .as_ref()
                 .is_some_and(|tx| tx.send(recs).is_ok());
             if !sent {
-                // The worker stopped on an error; `finish` reports it.
-                return Err(StoreError::Failed("a load worker stopped".into()));
+                // A closed receiver means this worker has returned. Preserve its actual
+                // error: callers commonly abandon after add fails instead of calling finish.
+                let worker = &mut self.workers[w];
+                drop(worker.tx.take());
+                return Err(match worker.handle.take().map(|h| h.join()) {
+                    Some(Ok(Err(error))) => error,
+                    Some(Err(_)) => StoreError::Failed("a load worker panicked".into()),
+                    _ => StoreError::Failed("a load worker stopped".into()),
+                });
             }
         }
         Ok(())

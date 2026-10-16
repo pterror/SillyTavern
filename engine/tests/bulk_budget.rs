@@ -1,6 +1,6 @@
-//! A bulk load's memory stays under its budget, measured as what the crate's allocations hold
-//! (`memory::committed`), and what it stores doesn't depend on the budget. A test binary of its own: the memory
-//! measured is this load's alone.
+//! A bulk load's memory stays under its budget, measured as the process's resident memory (`memory::Resident`),
+//! and what it stores doesn't depend on the budget. A test binary of its own: the memory measured is this load's
+//! alone.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -101,23 +101,22 @@ fn library() -> impl Iterator<Item = Record> {
 fn load(dir: &Path, budget: Option<usize>) -> (bulk::LoadStats, usize) {
     let s = Store::open(dir, StoreConfig::default()).unwrap();
     s.wait_ready().unwrap();
-    // The most the allocations reach past what they held at the load's start, sampled meanwhile.
-    let base = st_engine::memory::committed();
+    // The most the process's resident memory reaches past what it was at the load's start, sampled meanwhile.
+    let base = st_engine::memory::Resident::new().read().unwrap();
     let peak = Arc::new(AtomicUsize::new(0));
     let done = Arc::new(AtomicBool::new(false));
     let sampler = {
         let (peak, done) = (peak.clone(), done.clone());
         std::thread::spawn(move || {
+            let mut resident = st_engine::memory::Resident::new();
             while !done.load(Ordering::Relaxed) {
-                let c = st_engine::memory::committed();
+                let c = resident.read().unwrap();
                 peak.fetch_max(c.saturating_sub(base), Ordering::Relaxed);
                 std::thread::sleep(std::time::Duration::from_micros(200));
             }
         })
     };
-    bulk::set_load_budget(budget);
-    let mut l = s.loader().unwrap();
-    bulk::set_load_budget(None);
+    let mut l = s.loader_in(budget).unwrap();
     let mut recs = library().peekable();
     while recs.peek().is_some() {
         l.add(recs.by_ref().take(4096).collect::<Vec<_>>()).unwrap();

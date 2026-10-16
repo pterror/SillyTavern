@@ -2263,10 +2263,21 @@ impl Store {
     }
 
     /// Starts a bulk load (one at a time per store; commits go on meanwhile). Characters, groups, tags and their
-    /// assignments load only into a store with none; text edits and engine-only kinds don't load.
+    /// assignments load only into a store with none; text edits and engine-only kinds don't load. `budget` targets
+    /// resident-memory growth in bytes from the load's start, in place of half the available memory. Host heap
+    /// growth and in-flight records can exceed this spill target.
     #[napi]
-    pub fn load(&self) -> Result<Load> {
-        let loader = self.store.loader().map_err(store_error)?;
+    pub fn load(&self, budget: Option<f64>) -> Result<Load> {
+        let budget = match budget {
+            Some(b) if b.is_finite() && b >= 1.0 => Some(b as usize),
+            Some(_) => {
+                return Err(invalid(
+                    "a load's budget is a number of bytes, at least 1".into(),
+                ));
+            }
+            None => None,
+        };
+        let loader = self.store.loader_in(budget).map_err(store_error)?;
         Ok(Load {
             loader: Arc::new(std::sync::Mutex::new(Some(loader))),
         })
@@ -2288,8 +2299,11 @@ pub struct LoadStats {
     pub derive_wait_ms: f64,
     pub derive_ms: f64,
     pub spill_ms: f64,
+    pub budget_bytes: f64,
+    pub peak_bytes: f64,
     pub spills: f64,
     pub spill_bytes: f64,
+    pub kept_runs: f64,
     pub merge_ms: f64,
     pub run_bytes: f64,
     pub run_entries: f64,
@@ -2309,8 +2323,11 @@ impl From<crate::store::bulk::LoadStats> for LoadStats {
             derive_wait_ms: ms(s.derive_wait_micros),
             derive_ms: ms(s.derive_micros),
             spill_ms: ms(s.spill_micros),
+            budget_bytes: s.budget_bytes as f64,
+            peak_bytes: s.peak_bytes as f64,
             spills: s.spills as f64,
             spill_bytes: s.spill_bytes as f64,
+            kept_runs: s.kept_runs as f64,
             merge_ms: ms(s.merge_micros),
             run_bytes: s.run_bytes as f64,
             run_entries: s.run_entries as f64,
