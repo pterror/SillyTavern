@@ -1,37 +1,20 @@
 import { describe, test, expect, beforeAll, afterAll } from '@jest/globals';
-import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 
 import express from 'express';
 
 import { setConfigFilePath } from '../src/util.js';
 
-/** @type {any} */
-let engine;
-/** @type {typeof import('../src/user-stores.js')} */
-let stores;
-let dataRoot = '';
+/** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').convertedUser>>} */
+let user;
 /** @type {import('node:http').Server} */
 let server;
 let base = '';
 
 beforeAll(async () => {
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
-    engine = (await import('../engine/load.js')).loadEngine().binding;
-    stores = await import('../src/user-stores.js');
-    stores.setStoreEngine(() => engine);
-    dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'state-routes-'));
-    const root = path.join(dataRoot, 'u');
-    await (await import('./convert-to-engine.fixture.js')).buildOldUser(root);
-    (await import('../src/character-metadata-db.js')).disposeMetadataStores();
-    (await import('../src/message-tree-db.js')).disposeMessageTreeStores();
-    const { getBetterSqlite3 } = await import('../src/endpoints/native-sqlite.js');
-    const code = await (await import('../src/migrations/convert-to-engine.js')).runConversion({
-        dataRoot, handle: 'u', Database: await getBetterSqlite3(), engine: () => engine, apply: true, serverStopped: true,
-        probeServer: async () => ({ running: false, lines: [] }), log: () => {}, warn: () => {},
-    });
-    if (code !== 0) throw new Error(`the conversion failed: ${code}`);
+    user = await (await import('./converted-user.fixture.js')).convertedUser('state-routes-');
+    const root = user.root;
     const { router } = await import('../src/endpoints/state.js');
     const app = express();
     app.use(express.json());
@@ -48,8 +31,7 @@ beforeAll(async () => {
 afterAll(async () => {
     server.closeAllConnections?.();
     await new Promise(resolve => server.close(resolve));
-    await stores.closeUserStores();
-    fs.rmSync(dataRoot, { recursive: true, force: true });
+    await user.close();
 });
 
 /** @param {string} url @param {object} body @param {Record<string, string>} [headers] */

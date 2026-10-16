@@ -5,48 +5,24 @@ import path from 'node:path';
 import { USER_DIRECTORY_TEMPLATE } from '../src/constants.js';
 
 /**
- * A user whose store was converted from the synthetic old user (`buildOldUser()`), opened on the engine: what the
- * generate path reads and writes. The handle is `u`.
+ * The standard test user (`buildStandardUser()`) in a new store, opened on the engine: what the generate path reads and
+ * writes. The handle is `u`.
  * @param {string} prefix The temporary directory's name prefix.
- * @returns {Promise<{ dataRoot: string, root: string, directories: any, user: { directories: any, profile: { handle: string } }, store: import('../src/user-stores.js').UserStore, close: () => Promise<void> }>}
+ * @returns {Promise<Awaited<ReturnType<typeof emptyUser>>>}
  */
 export async function convertedUser(prefix) {
-    const engine = (await import('../engine/load.js')).loadEngine().binding;
-    const stores = await import('../src/user-stores.js');
-    stores.setStoreEngine(() => engine);
-    const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-    const root = path.join(dataRoot, 'u');
-    await (await import('./convert-to-engine.fixture.js')).buildOldUser(root);
-    (await import('../src/character-metadata-db.js')).disposeMetadataStores();
-    (await import('../src/message-tree-db.js')).disposeMessageTreeStores();
-    const { getBetterSqlite3 } = await import('../src/endpoints/native-sqlite.js');
-    const code = await (await import('../src/migrations/convert-to-engine.js')).runConversion({
-        dataRoot, handle: 'u', Database: await getBetterSqlite3(), engine: () => engine, apply: true, serverStopped: true,
-        probeServer: async () => ({ running: false, lines: [] }), log: () => {}, warn: () => {},
-    });
-    if (code !== 0) throw new Error(`the conversion failed: ${code}`);
-    /** @type {any} */
-    const directories = { root };
-    for (const [k, v] of Object.entries(USER_DIRECTORY_TEMPLATE)) directories[k] = path.join(root, /** @type {string} */ (v));
-    for (const d of Object.values(directories)) fs.mkdirSync(d, { recursive: true });
-    const store = await stores.userStore(directories, 'u');
-    return {
-        dataRoot, root, directories, store,
-        user: { directories, profile: { handle: 'u' } },
-        close: async () => {
-            await stores.closeUserStores();
-            fs.rmSync(dataRoot, { recursive: true, force: true });
-        },
-    };
+    const user = await emptyUser(prefix);
+    await (await import('./standard-user.fixture.js')).buildStandardUser(user);
+    return user;
 }
 
 /**
- * A user with an empty store (no converted data), opened on the engine: for suites that make their own data through
- * the routes and must not meet the synthetic user's characters, tags and chats. Same shape as `convertedUser()`.
+ * A user with an empty store, opened on the engine: for suites that make their own data through the routes and must
+ * not meet the standard user's characters, tags and chats. The handle is `u`.
  * @param {string} prefix The temporary directory's name prefix.
  * @param {typeof import('../src/user-stores.js')} [stores] The `user-stores.js` module the routes under test use, for a
  * suite that resets modules between tests (its import here would be another instance).
- * @returns {Promise<Awaited<ReturnType<typeof convertedUser>>>}
+ * @returns {Promise<{ dataRoot: string, root: string, directories: any, user: { directories: any, profile: { handle: string } }, store: import('../src/user-stores.js').UserStore, close: () => Promise<void> }>}
  */
 export async function emptyUser(prefix, stores) {
     const engine = (await import('../engine/load.js')).loadEngine().binding;
