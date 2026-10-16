@@ -618,9 +618,7 @@ fn a_bulk_load_spills_to_files_only_past_its_budget() {
         for budget in [None, Some(1)] {
             let dir = temp_dir(&format!("bulk-budget-{name}-{budget:?}"));
             let sb = Store::open_in(&dir, SMALL, small_pool()).unwrap();
-            bulk::set_load_budget(budget);
-            let mut l = sb.loader().unwrap();
-            bulk::set_load_budget(None);
+            let mut l = sb.loader_in(budget).unwrap();
             for c in order.chunks(100) {
                 l.add(c.to_vec()).unwrap();
             }
@@ -664,6 +662,36 @@ fn a_bulk_load_out_of_partition_order_derives_what_commits_derive() {
     l.finish().unwrap();
     assert_eq!(derived(&sa, 0..130), derived(&sb, 0..130));
     let _ = (fs::remove_dir_all(&a), fs::remove_dir_all(&b));
+}
+
+#[test]
+fn a_bulk_load_add_reports_the_worker_error_before_abandoning() {
+    let dir = temp_dir("bulk-worker-error");
+    let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
+    let mut load = s.loader().unwrap();
+    let bad = Record::new(
+        crate::log::format::kind_by_name("entityCreate").unwrap(),
+        vec![
+            Value::Id(1),
+            Value::UInt(99),
+            Value::Text(b"bad".to_vec()),
+            Value::F64(0.0),
+        ],
+    )
+    .unwrap();
+    load.add([bad]).unwrap();
+    let mut error = None;
+    for i in 1..100 {
+        if let Err(e) = load.add(library(i * 100, (i + 1) * 100)) {
+            error = Some(e.to_string());
+            break;
+        }
+    }
+    assert!(error.unwrap().contains("no entity type 99"));
+    drop(load);
+    assert!(!dir.join(bulk::LOAD_DIR).exists());
+    drop(s);
+    let _ = fs::remove_dir_all(dir);
 }
 
 #[test]

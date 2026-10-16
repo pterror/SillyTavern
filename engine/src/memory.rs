@@ -1,10 +1,61 @@
-//! The memory this crate's allocations take: the bytes its allocator has handed out and not had back.
+//! The memory the process takes: its resident memory as the system counts it (`Resident`), where it can be read;
+//! else the bytes this crate's allocator has handed out and not had back (`committed`).
 //!
-//! Counted at the global allocator (`Counting`), not read from mimalloc's own statistics: on Linux mimalloc counts
-//! the arenas it commits up front, and its count neither follows what is in use nor falls when memory is freed.
+//! Resident memory includes allocator rounding, retained pages, fragmentation and the host's allocations.
+//! It detects pressure that the requested-byte count misses, but the loader cannot reclaim the host's memory.
 
 use std::alloc::{GlobalAlloc, Layout};
 use std::sync::atomic::{AtomicIsize, Ordering};
+
+/// The process's resident memory, read from the system (`sysinfo`); not on wasm.
+pub struct Resident {
+    #[cfg(not(target_family = "wasm"))]
+    system: sysinfo::System,
+    #[cfg(not(target_family = "wasm"))]
+    pid: Option<sysinfo::Pid>,
+    /// The last bytes read, given again where a later read fails.
+    last: Option<usize>,
+}
+
+impl Resident {
+    pub fn new() -> Resident {
+        Resident {
+            #[cfg(not(target_family = "wasm"))]
+            system: sysinfo::System::new(),
+            #[cfg(not(target_family = "wasm"))]
+            pid: sysinfo::get_current_pid().ok(),
+            last: None,
+        }
+    }
+
+    /// The process's resident bytes now (where a read fails after one worked, the last read); None where they
+    /// can't be read.
+    pub fn read(&mut self) -> Option<usize> {
+        #[cfg(not(target_family = "wasm"))]
+        if let Some(pid) = self.pid {
+            self.system.refresh_processes_specifics(
+                sysinfo::ProcessesToUpdate::Some(&[pid]),
+                false,
+                sysinfo::ProcessRefreshKind::nothing().with_memory(),
+            );
+            if let Some(bytes) = self
+                .system
+                .process(pid)
+                .map(|p| p.memory())
+                .filter(|&b| b > 0)
+            {
+                self.last = Some(usize::try_from(bytes).unwrap_or(usize::MAX));
+            }
+        }
+        self.last
+    }
+}
+
+impl Default for Resident {
+    fn default() -> Resident {
+        Resident::new()
+    }
+}
 
 /// Counts kept apart, so threads allocating at once mostly touch counts of their own; a byte freed on another
 /// thread than allocated it is taken off another count, and the sum is right.
