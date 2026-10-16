@@ -1,13 +1,11 @@
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
-import { createRequire } from 'node:module';
 import path from 'node:path';
 
 import { LibraryEngine } from './library-engine.js';
 import { ChatEngine } from './chat-engine.js';
 import { libraryPeople } from './chat-people.js';
 import { TokenCache } from './token-cache-engine.js';
-import { getBetterSqlite3 } from './endpoints/native-sqlite.js';
 
 /**
  * Each user's engine store, `<user>/store/`: the library (characters, groups, tags, world info, search), the chats
@@ -17,8 +15,6 @@ import { getBetterSqlite3 } from './endpoints/native-sqlite.js';
 export const STORE_DIR = 'store';
 const OLD_LIBRARY = 'character-metadata.sqlite';
 const OLD_CHATS = 'message-tree.sqlite';
-/** The one table `character-metadata.sqlite` keeps after the conversion (until stage 6). */
-const KEPT_TABLES = new Set(['saved_views']);
 
 export class OldFormatError extends Error {}
 
@@ -55,45 +51,13 @@ export function setStoreEngine(getBinding) {
 }
 
 /**
- * The tables of an SQLite file other than SQLite's own, read without leaving anything behind: a read-only open of a
- * WAL database makes its `-wal` and `-shm` files, which are removed when they weren't there before.
- * @param {string} file
- * @returns {Promise<string[]>}
- */
-async function tablesOf(file) {
-    return tablesWith(await getBetterSqlite3(), file);
-}
-
-/**
- * `tablesOf()` on this thread.
- * @param {any} Database better-sqlite3's constructor
- * @param {string} file
- * @returns {string[]}
- */
-function tablesWith(Database, file) {
-    const sidecars = ['-wal', '-shm'].map(x => file + x).filter(f => !fs.existsSync(f));
-    const db = new Database(file, { readonly: true, fileMustExist: true });
-    try {
-        const names = [];
-        for (const r of /** @type {Iterable<{ name: string }>} */ (db.prepare('SELECT name FROM sqlite_master WHERE type = \'table\' AND name NOT LIKE \'sqlite_%\' LIMIT 1000').iterate())) names.push(r.name);
-        return names;
-    } finally {
-        db.close();
-        for (const f of sidecars) fs.rmSync(f, { force: true });
-    }
-}
-
-/**
  * The line a user directory still in the format before the engine stops the server with, or null when it can be
- * served. Unconverted: the old library or chat store is there and `store/` isn't. A `character-metadata.sqlite` that
- * holds only saved views is the stores' leftover (stage 6 moves them), not an old library.
+ * served: unconverted when the old library or chat store is there and `store/` isn't.
  * @param {{ root: string }} directories
  * @returns {Promise<string | null>}
  */
 export async function oldFormatLine(directories) {
-    if (fs.existsSync(path.join(directories.root, STORE_DIR))) return null;
-    const library = path.join(directories.root, OLD_LIBRARY);
-    return formatLine(directories.root, fs.existsSync(library) && (await tablesOf(library)).some(t => !KEPT_TABLES.has(t)));
+    return oldFormatLineHere(directories);
 }
 
 /**
@@ -103,22 +67,9 @@ export async function oldFormatLine(directories) {
  */
 function oldFormatLineHere(directories) {
     if (fs.existsSync(path.join(directories.root, STORE_DIR))) return null;
-    const library = path.join(directories.root, OLD_LIBRARY);
-    return formatLine(directories.root, fs.existsSync(library)
-        && tablesWith(createRequire(import.meta.url)('better-sqlite3'), library).some(t => !KEPT_TABLES.has(t)));
-}
-
-/**
- * @param {string} root
- * @param {boolean} oldLibrary Whether the old library is there.
- * @returns {string | null}
- */
-function formatLine(root, oldLibrary) {
-    const old = [];
-    if (oldLibrary) old.push(OLD_LIBRARY);
-    if (fs.existsSync(path.join(root, OLD_CHATS))) old.push(OLD_CHATS);
+    const old = [OLD_LIBRARY, OLD_CHATS].filter(f => fs.existsSync(path.join(directories.root, f)));
     if (!old.length) return null;
-    return `${root} holds data in the format before the engine (${old.join(', ')}) and no ${STORE_DIR}/: this version can't open it`;
+    return `${directories.root} holds data in the format before the engine (${old.join(', ')}) and no ${STORE_DIR}/: this version can't open it`;
 }
 
 /**
