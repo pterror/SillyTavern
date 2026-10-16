@@ -23,7 +23,7 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fs::{self, File};
 use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::sync::{Arc, Mutex, Weak};
 use std::thread::JoinHandle;
@@ -125,6 +125,9 @@ struct Budget {
     kept: AtomicU64,
     files: AtomicU64,
     file_bytes: AtomicU64,
+    /// Partitions the workers met again after moving past them (`work`), and whether that was told.
+    revisits: AtomicU64,
+    revisit_told: AtomicBool,
 }
 
 /// Bytes reserved under a budget's cap, given back when dropped.
@@ -156,6 +159,8 @@ impl Budget {
             kept: AtomicU64::new(0),
             files: AtomicU64::new(0),
             file_bytes: AtomicU64::new(0),
+            revisits: AtomicU64::new(0),
+            revisit_told: AtomicBool::new(false),
         }
     }
 
@@ -221,6 +226,17 @@ impl Budget {
         }
         Ok(cut && bytes >= MIN_CUT)
     }
+
+    /// A worker met a partition again after moving past it: counted, and told once per load.
+    fn revisited(&self, partition: u64) {
+        self.revisits.fetch_add(1, Ordering::Relaxed);
+        if !self.revisit_told.swap(true, Ordering::Relaxed) {
+            eprintln!(
+                "st-engine: a bulk load met partition {partition} again after moving past it; records out of \
+                 partition order make a load slow (each return spills and reads back what was spilled)"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -268,6 +284,8 @@ pub struct LoadStats {
     pub budget_bytes: u64,
     pub peak_bytes: u64,
     pub peak_resident_bytes: u64,
+    /// Partitions the workers met again after moving past them: records out of partition order.
+    pub revisits: u64,
     /// Runs of the workers' and the numberings' sinks that went to files, as they were made or later, and
     /// their bytes; and the runs made in memory.
     pub spills: u64,
@@ -658,6 +676,7 @@ impl Loader {
         self.stats.kept_runs = b.kept.load(Ordering::Relaxed);
         self.stats.peak_bytes = b.peak.load(Ordering::Relaxed) as u64;
         self.stats.peak_resident_bytes = b.peak_resident.load(Ordering::Relaxed) as u64;
+        self.stats.revisits = b.revisits.load(Ordering::Relaxed);
 
         // ---- install ----
         let t = Instant::now();
@@ -1693,6 +1712,9 @@ fn work(
                     sink_bytes = sink_bytes.saturating_add_signed(sink_add(&mut sink, k, v));
                 }
                 let again = highest.is_some_and(|h| partition <= h);
+                if again {
+                    budget.revisited(partition);
+                }
                 if budget.grown(sink_bytes, sink.len(), &mut sink_next, share)?
                     || (again && !sink.is_empty())
                 {
