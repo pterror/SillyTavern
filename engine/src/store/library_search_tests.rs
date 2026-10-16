@@ -99,7 +99,7 @@ fn build(s: &Store, n: u64) -> BTreeMap<u64, Ent> {
                 Value::Id(*t),
                 Value::UInt(TAG),
                 text(&format!("t{t}")),
-                Value::Time(0),
+                Value::F64(0.0),
             ],
         ));
     }
@@ -133,7 +133,7 @@ fn build(s: &Store, n: u64) -> BTreeMap<u64, Ent> {
                 Value::Id(e),
                 Value::UInt(kind),
                 text(&format!("k{e:04}")),
-                Value::Time(0),
+                Value::F64(0.0),
             ],
         ));
         for t in &tags {
@@ -727,7 +727,7 @@ fn a_rare_library_tag_leads_the_walk() {
         ),
         rec(
             "entityCreate",
-            vec![Value::Id(1), Value::UInt(TAG), text("t1"), Value::Time(0)],
+            vec![Value::Id(1), Value::UInt(TAG), text("t1"), Value::F64(0.0)],
         ),
     ])
     .unwrap();
@@ -741,7 +741,7 @@ fn a_rare_library_tag_leads_the_walk() {
                 Value::Id(e),
                 Value::UInt(CHARACTER),
                 text(&format!("k{e:05}")),
-                Value::Time(0),
+                Value::F64(0.0),
             ],
         ));
         if (e - 10) % (n / carriers) == 0 {
@@ -826,7 +826,7 @@ fn a_merged_tags_old_name_matches_nothing_while_its_carriers_wait() {
                     Value::Id(t),
                     Value::UInt(TAG),
                     text(&format!("t{t}")),
-                    Value::Time(0),
+                    Value::F64(0.0),
                 ],
             ),
         ];
@@ -941,7 +941,7 @@ fn create_cards(s: &Store, from: u64, n: u64) {
                 Value::Id(e),
                 Value::UInt(CHARACTER),
                 text(&format!("n{e:05}")),
-                Value::Time(0),
+                Value::F64(0.0),
             ],
         ));
         if i % 4 == 0 {
@@ -973,7 +973,12 @@ fn a_words_next_page_goes_on_where_it_was_after_cards_are_created() {
     };
     let mut from = 10_000;
     let mut tied_cursors = 0;
-    for (word, quoted) in [("dr", false), ("riders", false), ("knight", true), ("lo", false)] {
+    for (word, quoted) in [
+        ("dr", false),
+        ("riders", false),
+        ("knight", true),
+        ("lo", false),
+    ] {
         for limit in [5, 40, 120] {
             let c = clause(word, quoted);
             let q = query(all.clone(), sort, limit);
@@ -1022,7 +1027,12 @@ fn a_words_next_page_goes_on_where_it_was_after_cards_are_created() {
 }
 
 /// Every relevance page of a query by offsets, each ranked by `weights` (`Searched::weights`).
-fn relevance_order_under(s: &Store, q: &Query, c: &Clause, weights: &Option<Vec<f64>>) -> Vec<(u64, f64)> {
+fn relevance_order_under(
+    s: &Store,
+    q: &Query,
+    c: &Clause,
+    weights: &Option<Vec<f64>>,
+) -> Vec<(u64, f64)> {
     let mut q = q.clone();
     let mut out = Vec::new();
     loop {
@@ -1064,7 +1074,11 @@ fn several_words_next_page_ranks_by_the_first_pages_idfs() {
     };
     let mut from = 10_000;
     let (mut tied_cursors, mut moved) = (0, 0);
-    for (words, quoted) in [("dragon ri", false), ("dark knight", true), ("the dr", false)] {
+    for (words, quoted) in [
+        ("dragon ri", false),
+        ("dark knight", true),
+        ("the dr", false),
+    ] {
         for limit in [5, 40, 120] {
             let c = clause(words, quoted);
             let q = query(all.clone(), sort, limit);

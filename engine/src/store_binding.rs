@@ -935,7 +935,7 @@ fn entity_js<'env>(env: &'env Env, e: library_read::Entity) -> Result<Object<'en
     o.set("id", e.id)?;
     o.set("type", e.kind as f64)?;
     o.set("key", text_to_js(e.key)?)?;
-    o.set("added", e.added as f64)?;
+    o.set("added", e.added)?;
     o.set("version", e.version)?;
     o.set("fav", e.fav)?;
     o.set("tags", e.tags)?;

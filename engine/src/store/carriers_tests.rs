@@ -96,7 +96,7 @@ fn unmark(t: u64) -> Record {
 fn create(e: u64, kind: u64, key: &str) -> Record {
     rec(
         "entityCreate",
-        vec![Value::Id(e), Value::UInt(kind), text(key), Value::Time(0)],
+        vec![Value::Id(e), Value::UInt(kind), text(key), Value::F64(0.0)],
     )
 }
 
@@ -1723,7 +1723,11 @@ fn block_maxima_cover_their_blocks_through_every_change() {
     });
     assert!(written.contains(&1) && written.contains(&2), "{written:?}");
     assert!(changed.contains(&1) && changed.contains(&2), "{changed:?}");
-    assert!(reported > 0 && s.tightened() > 0, "{reported} reported, {} wrote", s.tightened());
+    assert!(
+        reported > 0 && s.tightened() > 0,
+        "{reported} reported, {} wrote",
+        s.tightened()
+    );
     tagged += maxima_cover_their_blocks(&s, "settled");
     nodes_cover_their_children(&s, "settled");
     assert!(
@@ -1875,13 +1879,18 @@ fn a_tightening_job_keeps_published_slots_under_a_raise_not_yet_published() {
 fn node_at(s: &Store, term: &str, block: u64, level: u64) -> BTreeMap<u32, u32> {
     use crate::search::{GROUP_BITS, NODE_SLOT_BITS, block_maxima, node_of};
     let node = node_of(block, level);
-    s.get(&block_maxima(Scope::LIBRARY, term, level, node >> GROUP_BITS))
-        .unwrap()
-        .map_or_else(Vec::new, |b| map_pairs(&b).unwrap())
-        .into_iter()
-        .filter(|p| u64::from(p.0 >> NODE_SLOT_BITS) == node & ((1 << GROUP_BITS) - 1))
-        .map(|(sl, v)| (sl & ((1 << NODE_SLOT_BITS) - 1), v))
-        .collect()
+    s.get(&block_maxima(
+        Scope::LIBRARY,
+        term,
+        level,
+        node >> GROUP_BITS,
+    ))
+    .unwrap()
+    .map_or_else(Vec::new, |b| map_pairs(&b).unwrap())
+    .into_iter()
+    .filter(|p| u64::from(p.0 >> NODE_SLOT_BITS) == node & ((1 << GROUP_BITS) - 1))
+    .map(|(sl, v)| (sl & ((1 << NODE_SLOT_BITS) - 1), v))
+    .collect()
 }
 
 /// The most each slot of `term`'s node over block `block` covers (`max_bits`), by sub, from the postings and
@@ -1948,7 +1957,12 @@ fn a_tightening_job_keeps_the_raises_committed_around_it() {
     let base = 5u64 << 30;
     let block = base >> crate::search::BLOCK_BITS;
     assert_eq!(crate::search::top_level(block), 2);
-    let card = |e: u64, name: &str| vec![set(e, NAME, name), create(e, CHARACTER, &format!("c{e}.png"))];
+    let card = |e: u64, name: &str| {
+        vec![
+            set(e, NAME, name),
+            create(e, CHARACTER, &format!("c{e}.png")),
+        ]
+    };
     let mut recs = card(base + 1, "omega");
     for i in 2..5 {
         recs.extend(card(base + i, "omega knight knight knight"));
@@ -1972,7 +1986,11 @@ fn a_tightening_job_keeps_the_raises_committed_around_it() {
     let levels_hold_the_truth = |at: &str| {
         let truth = node_truth(&s, "omega", block);
         for level in 0..=2 {
-            assert_eq!(node_at(&s, "omega", block, level), truth, "{at}: level {level}");
+            assert_eq!(
+                node_at(&s, "omega", block, level),
+                truth,
+                "{at}: level {level}"
+            );
         }
         maxima_cover_their_blocks(&s, at);
         nodes_cover_their_children(&s, at);
@@ -1983,7 +2001,12 @@ fn a_tightening_job_keeps_the_raises_committed_around_it() {
     s.commit_wait(vec![delete(base + 1)]).unwrap();
     let stale = node_at(&s, "omega", block, 0);
     let reports = s.search_unqueued(&q).unwrap().tighten;
-    assert!(reports.iter().any(|t| t.term == "omega" && t.block == block), "{reports:?}");
+    assert!(
+        reports
+            .iter()
+            .any(|t| t.term == "omega" && t.block == block),
+        "{reports:?}"
+    );
     s.commit_wait(card(base + 5, "omega knight")).unwrap();
     s.tighten_queue(&reports);
     s.jobs_wait();
@@ -1993,7 +2016,12 @@ fn a_tightening_job_keeps_the_raises_committed_around_it() {
     // That card goes; the job is queued, and a card scoring highest commits behind it.
     s.commit_wait(vec![delete(base + 5)]).unwrap();
     let reports = s.search_unqueued(&q).unwrap().tighten;
-    assert!(reports.iter().any(|t| t.term == "omega" && t.block == block), "{reports:?}");
+    assert!(
+        reports
+            .iter()
+            .any(|t| t.term == "omega" && t.block == block),
+        "{reports:?}"
+    );
     let written = s.tightened();
     s.tighten_queue(&reports);
     s.commit_wait(card(base + 6, "omega")).unwrap();

@@ -2308,7 +2308,7 @@ fn stats_count_as_today_and_place_the_owner_in_the_library() {
                     Value::Id(*e),
                     Value::UInt(0),
                     Value::Text(text(k)),
-                    Value::Time(0),
+                    Value::F64(0.0),
                 ],
             )
         })
@@ -3284,7 +3284,7 @@ fn an_unowned_tree_keeps_its_messages_until_a_character_takes_its_id() {
                 Value::Id(30),
                 Value::UInt(kind),
                 Value::Text(text(key)),
-                Value::Time(1),
+                Value::F64(1.0),
             ],
         )
     };
@@ -3324,10 +3324,10 @@ fn an_unowned_tree_keeps_its_messages_until_a_character_takes_its_id() {
         assert_eq!(library::entity_by_key(v, CHARACTER, b"gone.png")?, Some(30));
         assert!(library::state(v, 30)?.is_some());
         assert_eq!(
-            library::sort_num(v, 30, CHARACTER, Some(1), LAST_CHAT)?,
+            library::sort_num(v, 30, CHARACTER, Some(1.0), LAST_CHAT)?,
             Some(9.0)
         );
-        assert!(library::sort_num(v, 30, CHARACTER, Some(1), CHAT_SIZE)?.unwrap_or(0.0) > 0.0);
+        assert!(library::sort_num(v, 30, CHARACTER, Some(1.0), CHAT_SIZE)?.unwrap_or(0.0) > 0.0);
         assert_eq!(chat::path_to(v, Some(1))?, vec![0, 1]);
         Ok(())
     })

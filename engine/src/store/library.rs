@@ -340,13 +340,13 @@ fn pointed(view: &View, k: &[u8]) -> Result<Option<(Loc, Record)>, StoreError> {
 }
 
 /// An entity's type, key and date added.
-pub fn entity_info(view: &View, e: u64) -> Result<Option<(u64, Vec<u8>, i64)>, StoreError> {
+pub fn entity_info(view: &View, e: u64) -> Result<Option<(u64, Vec<u8>, f64)>, StoreError> {
     let Some(b) = view.get(&key::id(key::ENTITY, e))? else {
         return Ok(None);
     };
     let (rec, _) = view.record(parse_host(&b)?.0.pos)?;
     let added = match rec.values[3] {
-        Value::Time(t) => t,
+        Value::F64(t) => t,
         _ => unreachable!("checked by Record::new"),
     };
     Ok(Some((id(&rec, 1), bytes(&rec, 2).to_vec(), added)))
@@ -383,7 +383,7 @@ pub fn state(view: &View, e: u64) -> Result<Option<State>, StoreError> {
     state_of(view, e, kind, added)
 }
 
-fn state_of(view: &View, e: u64, kind: u64, added: i64) -> Result<Option<State>, StoreError> {
+fn state_of(view: &View, e: u64, kind: u64, added: f64) -> Result<Option<State>, StoreError> {
     if kind != CHARACTER && kind != GROUP {
         return Ok(None);
     }
@@ -420,13 +420,13 @@ pub fn sort_num(
     view: &View,
     e: u64,
     kind: u64,
-    added: Option<i64>,
+    added: Option<f64>,
     sort: u64,
 ) -> Result<Option<f64>, StoreError> {
     let added = || -> Result<Option<f64>, StoreError> {
         Ok(match added {
-            Some(a) => Some(a as f64),
-            None => entity_info(view, e)?.map(|(_, _, a)| a as f64),
+            Some(a) => Some(a),
+            None => entity_info(view, e)?.map(|(_, _, a)| a),
         })
     };
     Ok(match sort {
@@ -642,7 +642,7 @@ impl Deriver for EntityCreate {
     fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
         let (e, kind, k) = (id(rec, 0), id(rec, 1), bytes(rec, 2));
         let added = match rec.values[3] {
-            Value::Time(t) => t,
+            Value::F64(t) => t,
             _ => unreachable!("checked by Record::new"),
         };
         if kind > TREE {
@@ -700,7 +700,7 @@ impl Deriver for EntityUpdate {
     fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
         let (e, kind, k) = (id(rec, 0), id(rec, 1), bytes(rec, 2));
         let added = match rec.values[3] {
-            Value::Time(t) => t,
+            Value::F64(t) => t,
             _ => unreachable!("checked by Record::new"),
         };
         let Some((old_kind, old_k, old_added)) = entity_info(view, e)? else {

@@ -58,7 +58,7 @@ fn create(e: u64, kind: u64, key: &str, added: i64) -> Record {
             Value::Id(e),
             Value::UInt(kind),
             text(key),
-            Value::Time(added),
+            Value::F64(added as f64),
         ],
     )
 }
