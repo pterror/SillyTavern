@@ -858,18 +858,17 @@ impl Store {
     }
 
     /// One-off, deleted with `src/migrations/recompute-search-maxima.js`: recomputes every term's block maxima
-    /// (`search::one_off_recompute`), a slice of up to `slice` posting blocks per job in the commit queue; `dry`
-    /// writes nothing. `done` with what it found.
+    /// (`search::one_off_recompute`) on a thread of its own, from the keyspace as every commit queued before it left
+    /// it, writing the changed maps in the commit queue up to `batch` bytes at a time; `dry` writes nothing. `done`
+    /// with what it found.
     pub fn one_off_recompute_search_maxima(
         &self,
         dry: bool,
-        slice: usize,
+        batch: usize,
         done: Box<dyn FnOnce(StoreResult<crate::search::one_off_recompute::Counts>) + Send>,
     ) {
-        let pass = Arc::new(Mutex::new(crate::search::one_off_recompute::Pass::new(
-            dry, slice,
-        )));
-        self.inner.one_off_slice(pass, done);
+        let inner = self.inner.clone();
+        std::thread::spawn(move || done(inner.one_off_recompute(dry, batch)));
     }
 
     /// The pair postings' mode (`search::pairs`: 0 off, building, on, deleting).
@@ -1269,34 +1268,50 @@ impl Inner {
         }
     }
 
-    /// `Store::one_off_recompute_search_maxima`'s slices, each queued once the one before it has ended.
-    fn one_off_slice(
+    /// `Store::one_off_recompute_search_maxima`'s pass. A write waits for the one before it, so one is queued at
+    /// most while the next is computed.
+    fn one_off_recompute(
         &self,
-        pass: Arc<Mutex<crate::search::one_off_recompute::Pass>>,
-        done: Box<dyn FnOnce(StoreResult<crate::search::one_off_recompute::Counts>) + Send>,
-    ) {
-        let more = Arc::new(AtomicBool::new(false));
-        let found = more.clone();
-        let stepped = pass.clone();
-        let me = self.me.clone();
-        self.submit(Job::Derive(
-            Box::new(move |view, out| {
-                found.store(stepped.lock().unwrap().step(view, out)?, Ordering::Relaxed);
+        dry: bool,
+        batch: usize,
+    ) -> StoreResult<crate::search::one_off_recompute::Counts> {
+        use crate::search::one_off_recompute as pass;
+        use std::sync::mpsc::{Receiver, channel};
+        self.wait_ready()?;
+        let derive = |f: Derive| -> Receiver<StoreResult<()>> {
+            let (tx, rx) = channel();
+            self.submit(Job::Derive(
+                f,
+                Box::new(move |r| {
+                    let _ = tx.send(r);
+                }),
+            ));
+            rx
+        };
+        let wait = |rx: Receiver<StoreResult<()>>| rx.recv().unwrap_or(Err(StoreError::Closed));
+        // Published once every job queued before it has.
+        wait(derive(Box::new(|_, _| Ok(()))))?;
+        let src = pass::Src::new(&self.ks);
+        let mut queued: Option<Receiver<StoreResult<()>>> = None;
+        let counts = pass::run(&src, dry, batch, |maps| {
+            if let Some(rx) = queued.take() {
+                wait(rx)?;
+            }
+            queued = Some(derive(Box::new(move |_, out| {
+                for (k, v) in maps {
+                    match v {
+                        Some(v) => out.put(k, v),
+                        None => out.del(k),
+                    }
+                }
                 Ok(())
-            }),
-            Box::new(move |r| {
-                if let Err(e) = r {
-                    return done(Err(e));
-                }
-                if !more.load(Ordering::Relaxed) {
-                    return done(Ok(pass.lock().unwrap().counts));
-                }
-                match me.upgrade() {
-                    Some(i) => i.one_off_slice(pass, done),
-                    None => done(Err(StoreError::Closed)),
-                }
-            }),
-        ));
+            })));
+            Ok(())
+        })?;
+        if let Some(rx) = queued {
+            wait(rx)?;
+        }
+        Ok(counts)
     }
 
     /// Moves merged tags' carriers, a bounded step at a time between commits, until none waits.

@@ -575,10 +575,34 @@ pub fn block_want(
     term: &str,
     block: u64,
 ) -> Result<HashMap<u32, u32>, StoreError> {
+    let posting = pairs(view.get(&posting_block(scope, term, block))?)?;
+    let tagged: Vec<(bool, Vec<u64>)> = match super::tag_field(scope) {
+        Some(_) => readings(term)
+            .iter()
+            .map(|&r| Ok((r, carried(view, term, r, block)?)))
+            .collect::<Result<_, StoreError>>()?,
+        None => Vec::new(),
+    };
+    want_of(scope, term, block, &posting, &tagged, |lblock| {
+        pairs(view.get(&length_block(scope, lblock))?)
+    })
+}
+
+/// `block_want` from what it reads: the term's posting block's pairs `posting`, per reading the documents of the
+/// block that may carry a tag whose name holds the term (`carried`; none outside a scope with a tag field), and
+/// `lens(b)`, length block `b`'s pairs (asked for in ascending order, each once).
+pub fn want_of(
+    scope: Scope,
+    term: &str,
+    block: u64,
+    posting: &[(u32, u32)],
+    tagged: &[(bool, Vec<u64>)],
+    mut lens_of: impl FnMut(u64) -> Result<Vec<(u32, u32)>, StoreError>,
+) -> Result<HashMap<u32, u32>, StoreError> {
     let defs = scope.fields();
     // Each document's fields holding the term, in field order.
     let mut docs: Vec<(u64, Slots)> = Vec::new();
-    for (sl, v) in pairs(view.get(&posting_block(scope, term, block))?)? {
+    for &(sl, v) in posting {
         if v == 0 {
             continue;
         }
@@ -589,27 +613,23 @@ pub fn block_want(
             _ => docs.push((d, vec![hit])),
         }
     }
-    let tagged: Vec<(bool, Vec<u64>)> = match super::tag_field(scope) {
-        Some(_) => readings(term)
-            .iter()
-            .map(|&r| Ok((r, carried(view, term, r, block)?)))
-            .collect::<Result<_, StoreError>>()?,
-        None => Vec::new(),
-    };
     // The most each slot of the node may hold: (sub, `max_bits`).
     let mut want: HashMap<u32, u32> = HashMap::new();
     let mut lens_at: Option<(u64, Vec<(u32, u32)>)> = None;
     for (d, hits) in &docs {
         let lblock = d >> LENGTH_BITS;
         if lens_at.as_ref().is_none_or(|x| x.0 != lblock) {
-            lens_at = Some((lblock, pairs(view.get(&length_block(scope, lblock))?)?));
+            lens_at = Some((lblock, lens_of(lblock)?));
         }
         let mut lens: Lens = [0; 1 << FIELD_BITS];
         let doc_slot = slot_in(LENGTH_BITS, *d, 0) >> FIELD_BITS;
-        for &(s, len) in &lens_at.as_ref().unwrap().1 {
-            if s >> FIELD_BITS == doc_slot {
-                lens[(s & ((1 << FIELD_BITS) - 1)) as usize] = u64::from(len);
-            }
+        let block_lens = &lens_at.as_ref().unwrap().1;
+        let from = block_lens.partition_point(|p| p.0 >> FIELD_BITS < doc_slot);
+        for &(s, len) in block_lens[from..]
+            .iter()
+            .take_while(|p| p.0 >> FIELD_BITS == doc_slot)
+        {
+            lens[(s & ((1 << FIELD_BITS) - 1)) as usize] = u64::from(len);
         }
         let mut most = |sub: u32, v: f64| {
             let b = max_bits(v);

@@ -1506,7 +1506,7 @@ impl Store {
         let (deferred, promise) = env.create_deferred()?;
         self.store.one_off_recompute_search_maxima(
             dry_run,
-            crate::search::one_off_recompute::SLICE_BLOCKS,
+            crate::search::one_off_recompute::BATCH_BYTES,
             Box::new(move |r| match r {
                 Ok(c) => deferred.resolve(move |env| {
                     let mut o = Object::new(&env)?;
