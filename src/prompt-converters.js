@@ -1302,6 +1302,21 @@ export function calculateGoogleBudgetTokens(maxTokens, reasoningEffort, model) {
         return null;
     }
 
+    if (/^gemini-4-argon(?:$|-)/.test(model)) {
+        switch (reasoningEffort) {
+            case REASONING_EFFORT.min:
+            case REASONING_EFFORT.low:
+                return 'low';
+            case REASONING_EFFORT.medium:
+                return 'medium';
+            case REASONING_EFFORT.high:
+            case REASONING_EFFORT.max:
+                return 'high';
+            default:
+                return null;
+        }
+    }
+
     if (/gemini-3[.\d]*-pro/.test(model)) {
         return getGemini3ProBudget();
     }

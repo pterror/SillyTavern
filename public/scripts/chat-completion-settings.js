@@ -5199,6 +5199,7 @@ function getGeminiMaxContext(model, isUnlocked) {
 
     /** @type {[RegExp, number][]} */
     const contextMap = [
+        [/^gemini-4-argon(?:$|-)/, max_1mil],
         [/gemini-2\.5-flash-image/, max_32k],
         [/gemini-3\.1-flash-image/, max_128k],
         [/gemini-3-pro-image/, max_64k],
