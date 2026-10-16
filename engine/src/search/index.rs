@@ -529,6 +529,52 @@ pub fn tighten(
     term: &str,
     block: u64,
 ) -> Result<(), StoreError> {
+    let mut want = block_want(view, scope, term, block)?;
+    for level in 0..=top_level(block) {
+        let node = node_of(block, level);
+        let (group, first) = max_slot(node, false);
+        let k = block_maxima(scope, term, level, group);
+        let mut m = pairs(view.get(&k)?)?;
+        let mut fell = false;
+        for p in m
+            .iter_mut()
+            .filter(|p| p.0 >> NODE_SLOT_BITS == first >> NODE_SLOT_BITS)
+        {
+            let w = want.get(&(p.0 - first)).copied().unwrap_or(0);
+            if w < p.1 {
+                p.1 = w;
+                fell = true;
+            }
+        }
+        if !fell {
+            break;
+        }
+        m.retain(|p| p.1 != 0);
+        if m.is_empty() {
+            out.del(k);
+        } else {
+            out.put(k, map_bytes(&m));
+        }
+        // The node above holds the most of this map's slots, per sub.
+        want.clear();
+        for &(sl, v) in &m {
+            let w = want.entry(sl & ((1 << NODE_SLOT_BITS) - 1)).or_insert(v);
+            *w = (*w).max(v);
+        }
+    }
+    Ok(())
+}
+
+/// The most each slot of block `block`'s node may hold for the term, by sub (`max_slot(0, ..)`,
+/// `field_max_slot(0, ..)`) → `max_bits`: what its documents score now, over every field (with `TAG_WEIGHT` where
+/// a document may carry a tag whose name holds the term, `carried`) and in each field. A sub no document scores in
+/// is absent.
+pub fn block_want(
+    view: &View,
+    scope: Scope,
+    term: &str,
+    block: u64,
+) -> Result<HashMap<u32, u32>, StoreError> {
     let defs = scope.fields();
     // Each document's fields holding the term, in field order.
     let mut docs: Vec<(u64, Slots)> = Vec::new();
@@ -582,39 +628,7 @@ pub fn tighten(
             }
         }
     }
-    for level in 0..=top_level(block) {
-        let node = node_of(block, level);
-        let (group, first) = max_slot(node, false);
-        let k = block_maxima(scope, term, level, group);
-        let mut m = pairs(view.get(&k)?)?;
-        let mut fell = false;
-        for p in m
-            .iter_mut()
-            .filter(|p| p.0 >> NODE_SLOT_BITS == first >> NODE_SLOT_BITS)
-        {
-            let w = want.get(&(p.0 - first)).copied().unwrap_or(0);
-            if w < p.1 {
-                p.1 = w;
-                fell = true;
-            }
-        }
-        if !fell {
-            break;
-        }
-        m.retain(|p| p.1 != 0);
-        if m.is_empty() {
-            out.del(k);
-        } else {
-            out.put(k, map_bytes(&m));
-        }
-        // The node above holds the most of this map's slots, per sub.
-        want.clear();
-        for &(sl, v) in &m {
-            let w = want.entry(sl & ((1 << NODE_SLOT_BITS) - 1)).or_insert(v);
-            *w = (*w).max(v);
-        }
-    }
-    Ok(())
+    Ok(want)
 }
 
 /// The documents of block `block` that may carry a tag whose name holds `term` in reading `as_prefix`, in order:

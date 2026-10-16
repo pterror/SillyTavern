@@ -15,6 +15,7 @@
 #[cfg(any(test, feature = "measure"))]
 pub mod brute;
 pub mod index;
+pub mod one_off_recompute;
 pub mod pairs;
 pub mod query;
 #[cfg(test)]
@@ -247,9 +248,14 @@ pub fn block_maxima(s: Scope, term: &str, level: u64, group: u64) -> Vec<u8> {
 
 /// The prefix of a term's block maxima at level `level`.
 pub fn block_maxima_at(s: Scope, term: &str, level: u64) -> Vec<u8> {
-    let mut k = termed(key::SEARCH_BLOCK_MAX, s, term);
+    let mut k = block_maxima_of(s, term);
     put_u64(&mut k, level);
     k
+}
+
+/// The prefix of a term's block maxima.
+pub fn block_maxima_of(s: Scope, term: &str) -> Vec<u8> {
+    termed(key::SEARCH_BLOCK_MAX, s, term)
 }
 
 /// Nodes per group of a maxima map, and per node of the level above.
@@ -530,8 +536,20 @@ pub fn tf_norm(tf: f64, len: f64, ref_len: f64) -> f64 {
 /// (as its length code stands for), before the idf.
 pub fn field_score(scope: Scope, field: u32, tf: f64, len: f64) -> f64 {
     let d = &scope.fields()[field as usize];
+    #[cfg(feature = "measure")]
+    if let Some(f) = *REF_LEN_OVERRIDE.read().unwrap() {
+        return d.weight * tf_norm(tf, len, f(scope, field));
+    }
     d.weight * tf_norm(tf, len, d.ref_len)
 }
+
+/// Measurement builds: the reference length of a scope's field in place of `FieldDef::ref_len`, for the one-off
+/// `one_off_recompute`'s test (a store built with other lengths). Deleted with it.
+#[cfg(feature = "measure")]
+pub static REF_LEN_OVERRIDE: std::sync::RwLock<Option<RefLen>> = std::sync::RwLock::new(None);
+
+#[cfg(feature = "measure")]
+pub type RefLen = fn(Scope, u32) -> f64;
 
 /// A document's score for one term in one reading (whole token, or prefix), before the term's idf: its
 /// `field_score`s, `fields` giving (field, tf, length) for each field it is in, plus `TAG_WEIGHT` when `tagged`
