@@ -123,7 +123,7 @@ fn card(r: &mut Rng, e: u64) -> Vec<Record> {
             Value::Id(e),
             Value::UInt(CHARACTER),
             text(&format!("{name}.png")),
-            Value::Time(1_700_000_000_000 + e as i64),
+            Value::F64((1_700_000_000_000 + e) as f64),
         ],
     ));
     recs
@@ -139,7 +139,7 @@ fn load(s: &Store, cards: u64) {
                     Value::Id(t),
                     Value::UInt(TAG),
                     text(&format!("tag{t}")),
-                    Value::Time(0),
+                    Value::F64(0.0),
                 ],
             )
         })
@@ -190,7 +190,7 @@ fn bulk_load(s: &Store, cards: u64) {
                 Value::Id(t),
                 Value::UInt(TAG),
                 text(&format!("tag{t}")),
-                Value::Time(0),
+                Value::F64(0.0),
             ],
         )
     }))
