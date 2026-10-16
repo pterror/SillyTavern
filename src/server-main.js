@@ -75,7 +75,6 @@ import { init as settingsInit } from './endpoints/settings.js';
 import { redirectDeprecatedEndpoints, ServerStartup, setupPrivateEndpoints } from './server-startup.js';
 import { diskCache, dropStoppedRuns, startDroppedWatch, stopDroppedWatches } from './endpoints/characters.js';
 import { OldFormatError, assertConverted, closeUserStores, resumeStoreWork, setStoreEngine } from './user-stores.js';
-import { closeSavedViews } from './saved-views.js';
 import { initializeLocalImportScan, disposeLocalImportScan } from './local-import-scan.js';
 import { migrateFlatSecrets } from './endpoints/secrets.js';
 import { wasBrowserRecentlyConnected } from './browser-presence.js';
@@ -392,7 +391,6 @@ async function preSetupTasks() {
         }
         diskCache.dispose();
         disposeLocalImportScan();
-        await closeSavedViews();
         await stopDroppedWatches();
         await closeUserStores();
         setWindowTitle(consoleTitle);

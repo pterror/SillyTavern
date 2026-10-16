@@ -105,3 +105,22 @@ test('a commit that changes no tag definition sends no tags-changed', async () =
         stream.close();
     }
 });
+
+test('a saved view write sends views-changed and no data: {}; a character write still sends it', async () => {
+    const views = await import('../src/saved-views.js');
+    const stream = await openStream();
+    try {
+        const view = { conditions: [{ field: 'name', op: 'contains', value: 'a' }], ranges: { tokens: { min: 1 } }, fav: true };
+        const made = await views.createSavedView(user.directories, { name: 'V', view });
+        await views.changeSavedView(user.directories, made.id, { view: { ...view, conditions: [{ field: 'name', op: 'not_contains', value: 'b' }] } });
+        await views.deleteSavedView(user.directories, made.id);
+        expect(await frameArrives(stream.frames, f => f?.type === 'views-changed')).toBe(true);
+        // Past the library frame's debounce.
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        expect(stream.frames.some(f => Object.keys(f).length === 0)).toBe(false);
+        await user.store.lib.writeCard(user.directories, 'AfterViews.png', JSON.stringify({ name: 'AfterViews', data: { name: 'AfterViews' } }));
+        expect(await frameArrives(stream.frames, f => Object.keys(f).length === 0)).toBe(true);
+    } finally {
+        stream.close();
+    }
+});
