@@ -153,6 +153,19 @@ describe('calculateClaudeBudgetTokens', () => {
 
 
 describe('calculateGoogleBudgetTokens', () => {
+    describe('Gemini 4 Argon thinking levels', () => {
+        test.each([
+            ['auto', null],
+            ['min', 'low'],
+            ['low', 'low'],
+            ['medium', 'medium'],
+            ['high', 'high'],
+            ['max', 'high'],
+        ])('%s maps to %s', (effort, level) => {
+            expect(mod.calculateGoogleBudgetTokens(8192, effort, 'gemini-4-argon')).toBe(level);
+        });
+    });
+
     test('returns null for unrecognized model', () => {
         expect(mod.calculateGoogleBudgetTokens(8192, 'medium', 'gpt-4')).toBeNull();
     });
