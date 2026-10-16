@@ -1490,6 +1490,39 @@ impl Store {
         Ok(promise)
     }
 
+    /// One-off, deleted with `src/migrations/recompute-search-maxima.js` once that has run; not for the server.
+    /// Recomputes every term's block maxima with this build's reference lengths, writing only the maps that
+    /// differ (none with `dryRun`). Resolves with `{ postingBlocks, entries, raised, lowered, added }`: maps
+    /// written or deleted (or that would be), and their slots raised, lowered or added.
+    #[napi(
+        ts_args_type = "dryRun: boolean",
+        ts_return_type = "Promise<{ postingBlocks: number, entries: number, raised: number, lowered: number, added: number }>"
+    )]
+    pub fn one_off_recompute_search_maxima<'env>(
+        &self,
+        env: &'env Env,
+        dry_run: bool,
+    ) -> Result<Object<'env>> {
+        let (deferred, promise) = env.create_deferred()?;
+        self.store.one_off_recompute_search_maxima(
+            dry_run,
+            crate::search::one_off_recompute::SLICE_BLOCKS,
+            Box::new(move |r| match r {
+                Ok(c) => deferred.resolve(move |env| {
+                    let mut o = Object::new(&env)?;
+                    o.set("postingBlocks", c.posting_blocks as f64)?;
+                    o.set("entries", c.entries as f64)?;
+                    o.set("raised", c.raised as f64)?;
+                    o.set("lowered", c.lowered as f64)?;
+                    o.set("added", c.added as f64)?;
+                    Ok(o)
+                }),
+                Err(e) => deferred.reject(store_error(e)),
+            }),
+        );
+        Ok(promise)
+    }
+
     /// The pair postings' mode: 0 off, 1 building, 2 on, 3 deleting.
     #[napi(ts_return_type = "Promise<number>")]
     pub fn pairs_mode<'env>(&self, env: &'env Env) -> Result<Object<'env>> {

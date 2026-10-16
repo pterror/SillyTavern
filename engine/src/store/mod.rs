@@ -857,6 +857,21 @@ impl Store {
         ));
     }
 
+    /// One-off, deleted with `src/migrations/recompute-search-maxima.js`: recomputes every term's block maxima
+    /// (`search::one_off_recompute`), a slice of up to `slice` posting blocks per job in the commit queue; `dry`
+    /// writes nothing. `done` with what it found.
+    pub fn one_off_recompute_search_maxima(
+        &self,
+        dry: bool,
+        slice: usize,
+        done: Box<dyn FnOnce(StoreResult<crate::search::one_off_recompute::Counts>) + Send>,
+    ) {
+        let pass = Arc::new(Mutex::new(crate::search::one_off_recompute::Pass::new(
+            dry, slice,
+        )));
+        self.inner.one_off_slice(pass, done);
+    }
+
     /// The pair postings' mode (`search::pairs`: 0 off, building, on, deleting).
     pub fn pairs_mode(&self) -> StoreResult<u64> {
         self.derived(|v| Ok(crate::search::pairs::state(v)?.0))
@@ -1252,6 +1267,36 @@ impl Inner {
                 }),
             ));
         }
+    }
+
+    /// `Store::one_off_recompute_search_maxima`'s slices, each queued once the one before it has ended.
+    fn one_off_slice(
+        &self,
+        pass: Arc<Mutex<crate::search::one_off_recompute::Pass>>,
+        done: Box<dyn FnOnce(StoreResult<crate::search::one_off_recompute::Counts>) + Send>,
+    ) {
+        let more = Arc::new(AtomicBool::new(false));
+        let found = more.clone();
+        let stepped = pass.clone();
+        let me = self.me.clone();
+        self.submit(Job::Derive(
+            Box::new(move |view, out| {
+                found.store(stepped.lock().unwrap().step(view, out)?, Ordering::Relaxed);
+                Ok(())
+            }),
+            Box::new(move |r| {
+                if let Err(e) = r {
+                    return done(Err(e));
+                }
+                if !more.load(Ordering::Relaxed) {
+                    return done(Ok(pass.lock().unwrap().counts));
+                }
+                match me.upgrade() {
+                    Some(i) => i.one_off_slice(pass, done),
+                    None => done(Err(StoreError::Closed)),
+                }
+            }),
+        ));
     }
 
     /// Moves merged tags' carriers, a bounded step at a time between commits, until none waits.
