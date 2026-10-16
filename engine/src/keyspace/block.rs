@@ -24,6 +24,10 @@ pub struct BlockBuilder {
 }
 
 impl BlockBuilder {
+    pub fn len(&self) -> usize {
+        self.n
+    }
+
     pub fn is_empty(&self) -> bool {
         self.n == 0
     }

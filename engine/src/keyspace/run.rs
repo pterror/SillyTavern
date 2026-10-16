@@ -1068,6 +1068,38 @@ pub struct RunWriter {
     entries: u64,
 }
 
+#[cfg(test)]
+mod writer_tests {
+    use super::*;
+
+    #[test]
+    fn oversized_index_keys_finish_and_remain_seekable() {
+        for count in [1u32, 2, 3, 17, 64] {
+            let keys: Vec<_> = (0..count)
+                .map(|i| {
+                    let mut key = i.to_be_bytes().to_vec();
+                    key.extend(vec![b'x'; 1024]);
+                    key
+                })
+                .collect();
+            let mut writer = RunWriter::in_memory(256, 0);
+            for key in &keys {
+                writer.add(key, &Val::Add(1)).unwrap();
+                // Catch non-reducing index levels before close could loop forever.
+                assert!(writer.index.len() <= 7);
+            }
+            let bytes = writer.finish_in_memory(0, 0, 0).unwrap();
+            assert!(bytes.len() < (count as usize + 1) * 4096);
+            let run = Arc::new(Run::in_memory(Path::new("synthetic.run"), bytes, 0, 0).unwrap());
+            for key in &keys {
+                let mut it = RunIter::new(run.clone(), key, None, None).unwrap();
+                assert_eq!(it.key(), Some(key.as_slice()));
+                it.advance().unwrap();
+            }
+        }
+    }
+}
+
 enum RunOut {
     File(BufWriter<File>),
     Memory(Vec<u8>),
@@ -1128,7 +1160,9 @@ impl RunWriter {
         }
         let v = h.val();
         let b = &self.index[level].0;
-        if !b.is_empty() && b.size() + key.len() + 32 > self.block_size {
+        // Each full index block must reduce the number of children. With only one
+        // oversized key per block, closing the run would grow levels forever.
+        if b.len() >= 2 && b.size() + key.len() + 32 > self.block_size {
             self.flush_index(level)?;
         }
         self.index[level].0.add(key, &v);
