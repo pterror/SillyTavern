@@ -1,8 +1,11 @@
-//! The memory the process takes: its resident memory as the system counts it (`Resident`), where it can be read;
-//! else the bytes this crate's allocator has handed out and not had back (`committed`).
+//! The memory this crate takes: the bytes its allocator has handed out and not had back (`committed`, counted at
+//! the global allocator), and the process's resident memory as the system counts it (`Resident`).
 //!
-//! Resident memory includes allocator rounding, retained pages, fragmentation and the host's allocations.
-//! It detects pressure that the requested-byte count misses, but the loader cannot reclaim the host's memory.
+//! A bulk load holds itself to the first, with a margin for what the allocator takes past it (`bulk`'s
+//! `ALLOCATOR_OVERHEAD`); the second, which holds that too and the host's own allocations, is only reported: a
+//! load can't free the host's memory, so a cap on it would only make the load cut. mimalloc's own statistics
+//! don't serve as the count: on Linux they count the arenas it commits up front, and neither follow what is in use
+//! nor fall when memory is freed.
 
 use std::alloc::{GlobalAlloc, Layout};
 use std::sync::atomic::{AtomicIsize, Ordering};

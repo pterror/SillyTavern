@@ -2263,9 +2263,9 @@ impl Store {
     }
 
     /// Starts a bulk load (one at a time per store; commits go on meanwhile). Characters, groups, tags and their
-    /// assignments load only into a store with none; text edits and engine-only kinds don't load. `budget` targets
-    /// resident-memory growth in bytes from the load's start, in place of half the available memory. Host heap
-    /// growth and in-flight records can exceed this spill target.
+    /// assignments load only into a store with none; text edits and engine-only kinds don't load. `budget`: the bytes of
+    /// memory the load may take, in place of half the memory available; its allocations are held at the budget
+    /// over the allocator's overhead, so that the process's resident memory rises by no more.
     #[napi]
     pub fn load(&self, budget: Option<f64>) -> Result<Load> {
         let budget = match budget {
@@ -2301,6 +2301,7 @@ pub struct LoadStats {
     pub spill_ms: f64,
     pub budget_bytes: f64,
     pub peak_bytes: f64,
+    pub peak_resident_bytes: f64,
     pub spills: f64,
     pub spill_bytes: f64,
     pub kept_runs: f64,
@@ -2325,6 +2326,7 @@ impl From<crate::store::bulk::LoadStats> for LoadStats {
             spill_ms: ms(s.spill_micros),
             budget_bytes: s.budget_bytes as f64,
             peak_bytes: s.peak_bytes as f64,
+            peak_resident_bytes: s.peak_resident_bytes as f64,
             spills: s.spills as f64,
             spill_bytes: s.spill_bytes as f64,
             kept_runs: s.kept_runs as f64,
