@@ -1,3 +1,5 @@
+import _ from 'lodash';
+
 import { CARD_COLUMNS, assembleCard, splitCard } from './character-card-storage.js';
 import { computeContentIdentityHash } from './card-identity-hash.js';
 import { LIST_CREATOR_NOTES_PATHS, LIST_EXTRA_PATHS, cardListValues } from './card-list-values.js';
@@ -7,6 +9,7 @@ import { tagDerivedColumns } from './tag-order.js';
 import { LibraryTags } from './library-engine-tags.js';
 import { textEdit, wtf8Length } from './text-edit.js';
 import { itemField, pushAll, storedValues, valueRecords } from './entity-values.js';
+import { LINKS, linkListRecords, storedLinks } from './character-links.js';
 import { FIELD, NAME_HISTORY, TAG_KEY_PREFIX, TYPE, renameItem, renamesOf } from './library-codes.js';
 import { bookKey } from './world-info-keys.js';
 import { LIBRARY_LABELS, cursorWeights, cursorWeightsOf, searchClauses } from './search-clauses.js';
@@ -27,8 +30,11 @@ export { FIELD, TAG_KEY_PREFIX, TYPE, textEdit, wtf8Length, itemField, valueReco
 
 /** @typedef {import('./entity-values.js').StoredEntity} StoredEntity */
 
-/** List codes. */
-export const LIST = Object.freeze({ alternate_greetings: 0, group_only_greetings: 1, tags: 2, nameHistory: NAME_HISTORY });
+/**
+ * List codes. A character's `links` are its lorebook links, one ordered list of equal links (each item's text a
+ * book's id in decimal, no book twice): the first is the card's `extensions.world`, the rest upstream's `charLore`.
+ */
+export const LIST = Object.freeze({ alternate_greetings: 0, group_only_greetings: 1, tags: 2, nameHistory: NAME_HISTORY, links: LINKS });
 
 /** A group's field codes; its other keys are stored by key, `group:<key>`. */
 export const GROUP_FIELD = Object.freeze({
@@ -558,12 +564,24 @@ export class LibraryEngine {
             if (isEntryList(book)) parts.extra.splice(bookAt, 1);
             pushAll(records, (await this.books.ownedRecords(id, SLOT.characterBook, isEntryList(book) ? book : undefined)));
             const next = cardValues(parts);
-            const kept = stored ? storedValues(stored).lists.get(NAME_HISTORY) ?? [] : [];
+            const storedLists = stored ? storedValues(stored).lists : new Map();
+            const kept = storedLists.get(NAME_HISTORY) ?? [];
             const history = renamed ? renamedHistory(kept, renamed) : kept;
             if (history.length > 0) next.lists.set(NAME_HISTORY, history);
+            // The links are written by linkRecords(), not as the card's values.
+            if (storedLists.has(LIST.links)) next.lists.set(LIST.links, storedLists.get(LIST.links));
             const world = next.values.get(FIELD.world)?.text;
             const linkKey = world ? bookKey(world) : '';
             if (linkKey && world === linkKey) next.values.delete(FIELD.world);
+            // No first link: the next one reads as `world`, so an empty `world` isn't kept over it, and the identity
+            // hash is of the card as it then reads.
+            let identityCard = card;
+            const links = storedLinks(stored);
+            if (!linkKey && links.length > 1) {
+                if (world === '') next.values.delete(FIELD.world);
+                const name = (await this.bookNames([links[1].book])).get(links[1].book);
+                if (typeof name === 'string') identityCard = _.set(_.cloneDeep(card), 'data.extensions.world', name);
+            }
             records.push(...valueRecords(id, stored, next));
             // Loaded here, not at the top: it reaches the world book reads, which reach the user stores, which load this module.
             const { getCharaCardV2 } = await import('./character-card-normalize.js');
@@ -572,7 +590,7 @@ export class LibraryEngine {
             if (stored?.dataSize !== size) records.push({ kind: 'dataSize', entity: id, size });
             const ms = parseCreateDateToEpochMs(normalized.create_date);
             if (!stored || (stored.createMs ?? null) !== ms) records.push({ kind: 'createDate', entity: id, ...(ms === null ? {} : { ms }) });
-            const hashes = [[HASH.identity, computeContentIdentityHash(card)], [HASH.content, contentHash], [HASH.avatarIdentity, avatarIdentityHash]];
+            const hashes = [[HASH.identity, computeContentIdentityHash(identityCard)], [HASH.content, contentHash], [HASH.avatarIdentity, avatarIdentityHash]];
             for (const [which, hex] of hashes) {
                 // A hash is replaced only by a new one: most writers have none, and an import's must outlive them.
                 if (hex === null) continue;
@@ -597,16 +615,18 @@ export class LibraryEngine {
     }
 
     /**
-     * The records linking character `id` to the book keyed `key` (none: no link), the book made as an unresolved
-     * name when there is none. Runs in the key's lane.
+     * The records making the book keyed `key` character `id`'s first link (none: removing only the first, so the
+     * next one is first), the book made as an unresolved name when there is none. A later link to that book goes
+     * (the first kept). Runs in the key's lane.
      * @param {bigint} id
      * @param {StoredEntity | null} stored
      * @param {string} key
      * @returns {Promise<object[]>}
      */
     async linkRecords(id, stored, key) {
-        if (!key) return stored?.link ? [{ kind: 'bookLink', entity: id }] : [];
-        // A link already resolving as the book with that key names it, through whatever forwards.
+        const before = storedLinks(stored);
+        if (!key) return before.length > 0 ? linkListRecords(id, before, before.slice(1).map(l => l.book)) : [];
+        // A first link already resolving as the book with that key names it, through whatever forwards.
         if (stored?.link?.key === key) return [];
         const records = [];
         let [book] = await this.ids(TYPE.book, [key]);
@@ -614,8 +634,144 @@ export class LibraryEngine {
             book = this.nextId++;
             records.push({ kind: 'entityCreate', entity: book, type: TYPE.book, key, added: Date.now() });
         }
-        records.push({ kind: 'bookLink', entity: id, book });
+        const rest = before.slice(1).map(l => l.book).filter(b => b !== book);
+        pushAll(records, linkListRecords(id, before, [book, ...rest]));
         return records;
+    }
+
+    /**
+     * The names each book reads as (the key of the book it resolves as), or null for no book.
+     * @param {bigint[]} books
+     * @returns {Promise<Map<bigint, string | null>>}
+     */
+    async bookNames(books) {
+        const distinct = [...new Set(books)];
+        const found = distinct.length ? await this.store.worldRead('resolved', { ids: distinct }) : [];
+        return new Map(distinct.map((b, i) => [b, found[i]?.key ?? null]));
+    }
+
+    /**
+     * The names a character's links read as, in list order, a repeat (two links resolving as one book) dropped,
+     * the first kept. The first is its card's `extensions.world`, the rest upstream's `charLore` extra books.
+     * @param {StoredEntity} e Read with its list `LIST.links`.
+     * @returns {Promise<string[]>}
+     */
+    async linkNames(e) {
+        const books = storedLinks(e).map(l => l.book);
+        const names = await this.bookNames(books);
+        return [...new Set(books.map(b => names.get(b)).filter(n => typeof n === 'string'))];
+    }
+
+    /**
+     * The names a character's links after the first read as (upstream's `charLore` extra books for it).
+     * @param {string} avatar
+     * @returns {Promise<string[]>} Empty for no such character.
+     */
+    async extraBookNames(avatar) {
+        const [id] = await this.ids(TYPE.character, [avatar]);
+        const [e] = await this.entities([id], { fields: [], lists: [LIST.links] });
+        return e ? (await this.linkNames(e)).slice(1) : [];
+    }
+
+    /**
+     * Upstream's `world_info.charLore`, built from the characters with 2 or more links (`multiLinks`, in id order):
+     * `{ name: <avatar without its extension>, extraBooks: <the names of its links after the first> }`, a character
+     * whose links read as one name left out.
+     * @returns {Promise<{ name: string, extraBooks: string[] }[]>}
+     */
+    async charLore() {
+        const out = [];
+        let after;
+        for (;;) {
+            const page = await this.store.worldRead('multiLinks', { after, limit: 256 });
+            const entities = await this.entities(page.ids, { fields: [], lists: [LIST.links] });
+            for (const e of entities) {
+                if (!e) continue;
+                const names = await this.linkNames(e);
+                if (names.length > 1) out.push({ name: e.key.replace(/\.[^/.]+$/, ''), extraBooks: names.slice(1) });
+            }
+            if (!page.more || page.ids.length === 0) break;
+            after = page.ids[page.ids.length - 1];
+        }
+        return out;
+    }
+
+    /**
+     * Whether an upstream-shaped `charLore` (as a settings save may carry it) differs from the links of the
+     * characters it names: an entry that isn't `{ name: string, extraBooks: string[] }`, names no character
+     * (`<name>.png`), or lists other extra books than its links read as. Reads only the characters it names.
+     * @param {unknown} charLore
+     * @returns {Promise<boolean>}
+     */
+    async charLoreDiffers(charLore) {
+        if (!Array.isArray(charLore)) return true;
+        for (let i = 0; i < charLore.length; i += 256) {
+            const batch = charLore.slice(i, i + 256);
+            const shaped = batch.every(x => x && typeof x.name === 'string' && Array.isArray(x.extraBooks) && x.extraBooks.every(b => typeof b === 'string'));
+            if (!shaped) return true;
+            const ids = await this.ids(TYPE.character, batch.map(x => `${x.name}.png`));
+            const entities = await this.entities(ids, { fields: [], lists: [LIST.links] });
+            for (const [n, e] of entities.entries()) {
+                if (!e) return true;
+                const extra = (await this.linkNames(e)).slice(1);
+                if (JSON.stringify(extra) !== JSON.stringify(batch[n].extraBooks)) return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Changes a character's links after the first (`/additional-books`): `add` appends the books not linked yet,
+     * `remove` removes the links reading as them, `set` makes them the links after the first (those already there
+     * kept); on a character with no links, the first book added is its first link. Repeats are dropped, the first
+     * kept. Each name is a world book's (the caller checks).
+     * @param {string} avatar
+     * @param {'add' | 'remove' | 'set'} op
+     * @param {string[]} names
+     * @returns {Promise<string[] | null>} The names its links after the first read as (null: no such character).
+     */
+    extraLinks(avatar, op, names) {
+        return this.serialized(TYPE.character, avatar, async () => {
+            const stored = await this.entity(TYPE.character, avatar);
+            if (!stored) return null;
+            const before = storedLinks(stored);
+            const read = await this.bookNames(before.map(l => l.book));
+            const keys = [...new Set(names.map(n => bookKey(n)))];
+            const ids = await this.ids(TYPE.book, keys);
+            const byKey = new Map(keys.map((k, i) => [k, ids[i]]));
+            const nameOf = (/** @type {bigint} */ b) => read.get(b) ?? null;
+            const first = before[0];
+            const rest = before.slice(1);
+            /** @type {bigint[]} */
+            let after;
+            if (op === 'remove') {
+                after = [...(first ? [first.book] : []), ...rest.filter(l => !keys.includes(/** @type {string} */ (nameOf(l.book)))).map(l => l.book)];
+            } else {
+                const kept = op === 'add' ? rest.map(l => l.book) : rest.filter(l => keys.includes(/** @type {string} */ (nameOf(l.book)))).map(l => l.book);
+                const there = new Set([...(first ? [first.book] : []), ...kept].map(nameOf));
+                const added = keys.filter(k => !there.has(k)).map(k => /** @type {bigint} */ (byKey.get(k)));
+                if (op === 'set') {
+                    // In the order asked: each name's kept link, else its book.
+                    const keptByName = new Map(kept.map(b => [nameOf(b), b]));
+                    after = [...(first ? [first.book] : []), ...keys.filter(k => !(first && nameOf(first.book) === k)).map(k => keptByName.get(k) ?? /** @type {bigint} */ (byKey.get(k)))];
+                } else {
+                    after = [...(first ? [first.book] : []), ...kept, ...added];
+                }
+            }
+            after = [...new Set(after)];
+            const records = linkListRecords(stored.id, before, after);
+            // A first link made here is what the card reads as `world`: an empty one stored goes, and the identity
+            // hash follows.
+            if (!first && after.length > 0) {
+                if (stored.values.some(v => v.field === FIELD.world)) records.unshift({ kind: 'valueDelete', entity: stored.id, field: FIELD.world });
+                const key = (await this.bookNames([after[0]])).get(after[0]);
+                const r = await this.identityRecord(stored, /** @type {string} */ (key));
+                if (r) records.push(r);
+            }
+            if (records.length > 0) await this.store.commit(records);
+            const now = await this.bookNames(after);
+            return [...new Set(after.map(b => now.get(b)))].filter(n => typeof n === 'string' && n !== now.get(after[0])).map(String);
+        });
     }
 
     /**
@@ -1083,23 +1239,38 @@ export class LibraryEngine {
     }
 
     /**
-     * The `cardHash` records keeping characters' content identity hashes current when the name their lorebook
-     * link reads as becomes `world` (a book renamed): for each one whose card then hashes differently.
+     * The `cardHash` record keeping character `e`'s content identity hash current once its card's `world` reads as
+     * `world` (its first link renamed, or made), or null when it hashes the same.
+     * @param {StoredEntity} e
+     * @param {string} world
+     * @returns {Promise<object | null>}
+     */
+    async identityRecord(e, world) {
+        // The card's own `world` text is kept only where it differs from the link's name: it goes with the link.
+        const values = e.link ? e.values : e.values.filter(v => v.field !== FIELD.world);
+        const card = await this.assembled({ ...e, values, link: { book: e.link?.book ?? 0n, version: e.link?.version ?? 0n, key: world } });
+        const hex = computeContentIdentityHash(card);
+        if (e.hashes.find(h => h.which === HASH.identity)?.hash.toString('hex') === hex) return null;
+        return { kind: 'cardHash', entity: e.id, which: HASH.identity, hash: Buffer.from(hex, 'hex') };
+    }
+
+    /**
+     * The `cardHash` records keeping characters' content identity hashes current when the name their first
+     * lorebook link reads as becomes `world` (a book renamed): for each one whose first link reads as one of
+     * `reading` now, and whose card then hashes differently.
      * @param {bigint[]} ids Characters linking the book.
      * @param {string} world
+     * @param {string[]} reading
      * @returns {Promise<object[]>}
      */
-    async identityRecords(ids, world) {
+    async identityRecords(ids, world, reading) {
         const records = [];
         for (let i = 0; i < ids.length; i += 256) {
             const entities = await this.entities(ids.slice(i, i + 256));
             for (const e of entities) {
-                if (!e || e.type !== TYPE.character || !e.link) continue;
-                const card = await this.assembled({ ...e, link: { ...e.link, key: world } });
-                const hex = computeContentIdentityHash(card);
-                if (e.hashes.find(h => h.which === HASH.identity)?.hash.toString('hex') !== hex) {
-                    records.push({ kind: 'cardHash', entity: e.id, which: HASH.identity, hash: Buffer.from(hex, 'hex') });
-                }
+                if (!e || e.type !== TYPE.character || !e.link || !reading.includes(e.link.key)) continue;
+                const r = await this.identityRecord(e, world);
+                if (r) records.push(r);
             }
         }
         return records;

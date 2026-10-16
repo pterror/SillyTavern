@@ -1,5 +1,6 @@
 import { jsonHash } from '../public/scripts/hash-utils.js';
-import { POSITION_GAP, pushAll, valueRecords } from './entity-values.js';
+import { POSITION_GAP, itemField, pushAll, valueRecords } from './entity-values.js';
+import { LINKS, storedLinks } from './character-links.js';
 import { TYPE } from './library-codes.js';
 import { bookKey } from './world-info-keys.js';
 import { cursorWeights, cursorWeightsOf, searchClauses } from './search-clauses.js';
@@ -552,7 +553,7 @@ export class WorldInfoEngine {
             if (!found?.defined) return false;
             const records = this.deleteRecords(await this.stored(found.id, true));
             // The links keep the book's name; a card whose hash was made from another reading is made current.
-            pushAll(records, await this.lib.identityRecords(await this.linkers(found.id), key));
+            pushAll(records, await this.lib.identityRecords(await this.linkers(found.id), key, [key]));
             await this.store.commit(records);
             return true;
         });
@@ -561,8 +562,9 @@ export class WorldInfoEngine {
     /**
      * Renames a world book: its key changes, and every link follows it. A new name that is an unresolved name
      * resolves to this book from now on. With `relink` false (upstream's `relink_characters: false`), the
-     * characters whose link resolves as the book keep the name they read as now: their links become an unresolved
-     * link holding the old name.
+     * characters with a link resolving as the book keep the name they read as now: each such link becomes a link to
+     * one unresolved book holding the old name (a character's later links resolving as the book go, the first
+     * kept).
      * @param {string} name
      * @param {string} newName
      * @param {{ relink?: boolean, moved?: bigint[] }} [options] `moved` gets the characters whose link the rename
@@ -586,11 +588,23 @@ export class WorldInfoEngine {
             if (!relink && own.length) {
                 const kept = this.lib.nextId++;
                 records.push({ kind: 'entityCreate', entity: kept, type: TYPE.book, key: from, added: Date.now() });
-                for (const id of own) records.push({ kind: 'bookLink', entity: id, book: kept });
+                const resolving = new Set(await this.store.worldRead('resolving', { book: found.id }));
+                for (let i = 0; i < own.length; i += 256) {
+                    const linkers = await this.lib.entities(own.slice(i, i + 256), { fields: [], lists: [LINKS] });
+                    for (const e of linkers) {
+                        if (!e) continue;
+                        const links = storedLinks(e).filter(l => resolving.has(l.book));
+                        // The first such link holds the new book in place (no link names it yet); the rest go.
+                        links.forEach((l, n) => records.push(n === 0
+                            ? { kind: 'textValue', entity: e.id, field: itemField(LINKS, l.item), text: String(kept) }
+                            : { kind: 'itemDelete', entity: e.id, list: LINKS, item: l.item }));
+                    }
+                }
             }
-            // The cards linking the book now read as the new name: their identity hashes follow, in the same commit.
+            // The cards whose first link reads as the book or the new name now read as the new name: their identity
+            // hashes follow, in the same commit.
             const linkers = [...(relink ? own : []), ...(there ? await this.linkers(there.id) : [])];
-            pushAll(records, await this.lib.identityRecords(linkers, to));
+            pushAll(records, await this.lib.identityRecords(linkers, to, relink ? [from, to] : [to]));
             await this.store.commit(records);
             if (moved && relink) pushAll(moved, own);
             return 'ok';

@@ -1,7 +1,7 @@
 import { readSettingsAtPaths } from './settings-store.js';
 import { resolveTextGenBackend } from './textgen-backend-resolve.js';
 import { loadChatHistory } from './chat-request.js';
-import { readCardContent } from './endpoints/characters.js';
+import { readCardContent, readExtraBooks } from './endpoints/characters.js';
 import { getGroupsByIds } from './endpoints/groups.js';
 import { extension_prompt_types, extension_prompt_roles } from './extension-prompt-table.js';
 import { resolveWorldInfoCandidates, world_info_insertion_strategy } from './world-info/candidate-resolution.js';
@@ -154,7 +154,7 @@ import { resolveWorldInfoCandidates, world_info_insertion_strategy } from './wor
  * public/scripts/world-info.js:
  * - `selectedWorldInfo` <- `world_info_settings.world_info.globalSelect` (NOT a separate top-level
  *   `world_info` settings key - getWorldInfoSettings(), public/scripts/world-info.js, nests the
- *   user's global lorebook SELECTION plus per-character `charLore` overrides under
+ *   user's global lorebook SELECTION under
  *   `world_info_settings.world_info`, alongside the numeric/boolean WI behavior knobs mapped above -
  *   a prior version of this comment claimed these were separate top-level keys; they are not, and
  *   that mistake meant the global lorebook selection was silently never applied). Not filtered against a
@@ -164,10 +164,8 @@ import { resolveWorldInfoCandidates, world_info_insertion_strategy } from './wor
  * - `character` <- the same parsed character-card object `resolveName2AndGroupMemberNames()` already
  *   loads for `name2` (only `.data.extensions.world`/`.data.character_book` are read from it, per
  *   `getCharacterLore()`'s own contract) - reused, not re-read from disk a second time.
- * - `characterExtraBooks` <- `world_info.charLore` (array of `{name, extraBooks}`), matched against
- *   `getCharaFilename(avatar)`'s real derivation (`avatar` with its extension stripped via
- *   `avatar.replace(/\.[^/.]+$/, '')` - verified against public/scripts/utils.js's
- *   `getCharaFilename()`, which does the same strip when given an explicit avatar key).
+ * - `characterExtraBooks` <- the character's lorebook links after the first, read from its entity
+ *   (`readExtraBooks()`); no settings file holds upstream's `world_info.charLore`.
  * - `chatWorldName` <- `chatMetadata[METADATA_KEY]`, `METADATA_KEY === 'world_info'` (verified
  *   against public/scripts/world-info.js's own `export const METADATA_KEY = 'world_info';`) - i.e.
  *   `chatMetadata.world_info`, a plain string chat-metadata field, unrelated to the
@@ -283,12 +281,11 @@ const DEFAULT_STORY_STRING_ROLE = extension_prompt_roles.SYSTEM;
  */
 
 /**
- * The user's global lorebook SELECTION plus per-character overrides - getWorldInfoSettings()
+ * The user's global lorebook SELECTION - getWorldInfoSettings()
  * (public/scripts/world-info.js) nests this under `world_info_settings.world_info` on save; there is
  * no separate top-level `world_info` settings key.
  * @typedef {object} WorldInfoSelectionBundle
  * @property {string[]} [globalSelect]
- * @property {{name?: string, extraBooks?: string[]}[]} [charLore]
  */
 
 /**
@@ -559,9 +556,8 @@ export async function resolveTextCompletionGenerationInput(directories, {
     const WORLD_INFO_METADATA_KEY = 'world_info';
     let worldInfoCandidates = worldInfoCandidatesOverride;
     if (worldInfoCandidates === undefined) {
-        const charFilename = avatar != null ? avatar.replace(/\.[^/.]+$/, '') : null;
-        const charLore = Array.isArray(worldInfoSelection.charLore) ? worldInfoSelection.charLore : [];
-        const characterExtraBooks = charLore.find(e => e.name === charFilename)?.extraBooks ?? [];
+        // The character's links after the first (its card's `world` is the first), read from its entity.
+        const characterExtraBooks = avatar != null ? await readExtraBooks(directories, avatar) : [];
         // resolveWorldInfoCandidates() (src/world-info/candidate-resolution.js, not owned by this
         // task) is typed `Promise<Array<object>>` - genuinely looser than the real entries it returns
         // (each one is `{...WIEntry, world, decorators, content, hash}` per that function's own doc

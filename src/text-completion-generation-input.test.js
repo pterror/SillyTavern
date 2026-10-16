@@ -448,6 +448,23 @@ async function run() {
         assert.deepEqual(fresh.chat, [], 'an empty tree resolves to an empty chat, not an error');
     }
 
+    {
+        // A character's links after the first are its extra books: read from its entity, not from settings.
+        const entry = (/** @type {string} */ uid, /** @type {string} */ content) => ({ uid, key: ['never-said'], keysecondary: [], comment: '', content, constant: true, selective: false, order: 10, position: 0, disable: false });
+        writeLorebook('PrimaryLore', [entry('p1', 'The primary book speaks.')]);
+        writeLorebook('ExtraLore', [entry('e1', 'The extra book speaks.')]);
+        const linker = await writeCharacter('Linker.png', {
+            name: 'Linker',
+            data: { name: 'Linker', extensions: { world: 'PrimaryLore' } },
+        });
+        assert.deepEqual(await user.store.lib.extraLinks(linker, 'add', ['ExtraLore']), ['ExtraLore']);
+        const linked = await resolveTextCompletionGenerationInput(directories, {
+            avatar: linker, chatContext: await chatContextOf(user.store, { avatar: linker }, newSessionKey()), countTokens, encodeTokens,
+        });
+        const worlds = linked.worldInfoCandidates.map(c => c.world).sort();
+        assert.deepEqual(worlds, ['ExtraLore', 'PrimaryLore', 'TestLore'], 'the first link, the extra link and the global selection');
+    }
+
     console.log('text-completion-generation-input.test.js: all assertions passed');
 }
 

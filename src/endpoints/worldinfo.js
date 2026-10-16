@@ -149,11 +149,13 @@ router.post('/get', storeRoute('reading a World Info book', async (request, resp
 }));
 
 /**
- * Adds, removes, or replaces a character's additional (auxiliary) World Info bindings, in one
- * round trip: the client sends the action, not a client-computed next array, so it never needs
- * a fresh copy of world_info_settings just to mutate one character's entry, and this endpoint's
- * write scope is limited to exactly that one sub-path - not the whole settings key, let alone
- * the whole settings store.
+ * Changes a character's lorebook links after the first (upstream's additional World Info), in one round trip: the
+ * client sends the action. `characterAvatar` is the character's file name without its extension (upstream's
+ * `getCharaFilename()`), the character the one keyed `<characterAvatar>.png`. `add` appends the books not linked yet,
+ * `remove` removes them, `set` makes them the links after the first; on a character with no links, the first book
+ * added is its first link (its `world`). Repeats are dropped, the first kept. Unknown books or an unknown character:
+ * 404, nothing written. Answers `{ result: 'ok', extraBooks }`, the links after the first. It writes no settings:
+ * this is the only writer of a character's links after the first.
  */
 router.post('/additional-books', storeRoute('changing a character\'s additional World Info', async (request, response) => {
     const { characterAvatar, op, books } = request.body ?? {};
@@ -163,7 +165,7 @@ router.post('/additional-books', storeRoute('changing a character\'s additional 
     if (!['add', 'remove', 'set'].includes(op)) {
         return response.status(400).send({ result: 'error', error: 'op must be one of: add, remove, set' });
     }
-    const requested = (Array.isArray(books) ? books : [books]).filter(b => typeof b === 'string' && b);
+    const requested = [...new Set((Array.isArray(books) ? books : [books]).filter(b => typeof b === 'string' && b))];
     if (op !== 'remove' && requested.length === 0) {
         return response.status(400).send({ result: 'error', error: 'books must be a non-empty string or array of strings' });
     }
@@ -179,28 +181,12 @@ router.post('/additional-books', storeRoute('changing a character\'s additional 
         return response.status(404).send({ result: 'error', error: 'Unknown World(s)', unknownBooks });
     }
 
-    const path_ = 'world_info_settings.charLore';
-    const current = readSettingsAtPaths(request.user.directories, [path_])[path_];
-    const charLore = Array.isArray(current) ? current : [];
-    const idx = charLore.findIndex(e => e?.name === characterAvatar);
-    const existingBooks = idx !== -1 && Array.isArray(charLore[idx].extraBooks) ? charLore[idx].extraBooks : [];
-
-    let nextBooks;
-    if (op === 'add') nextBooks = [...new Set([...existingBooks, ...requested])];
-    else if (op === 'remove') nextBooks = existingBooks.filter(b => !requested.includes(b));
-    else nextBooks = [...new Set(requested)];
-
-    const nextCharLore = [...charLore];
-    if (nextBooks.length === 0) {
-        if (idx !== -1) nextCharLore.splice(idx, 1);
-    } else if (idx === -1) {
-        nextCharLore.push({ name: characterAvatar, extraBooks: nextBooks });
-    } else {
-        nextCharLore[idx] = { ...nextCharLore[idx], extraBooks: nextBooks };
+    const extraBooks = await lib.extraLinks(`${characterAvatar}.png`, op, requested);
+    if (extraBooks === null) {
+        console.warn(`[additional-books] no character ${characterAvatar}.png: nothing written`);
+        return response.status(404).send({ result: 'error', error: 'Unknown character', unknownCharacter: characterAvatar });
     }
-
-    writeSettingsKeys(request.user.directories, { [path_]: nextCharLore });
-    return response.send({ result: 'ok', extraBooks: nextBooks });
+    return response.send({ result: 'ok', extraBooks });
 }));
 
 router.post('/delete', storeRoute('deleting a World Info book', async (request, response) => {
@@ -374,9 +360,9 @@ router.post('/duplicate', storeRoute('duplicating a World Info book', async (req
 }));
 
 /**
- * Renames a book and moves the links that name it: each character's auxiliary links, the global selection, every
- * persona's lorebook and, with `relink_characters`, each character's primary link (in the same commit as the rename;
- * without, those characters keep linking the old name). A chat's link (in its metadata) is not moved here. 409 when
+ * Renames a book and moves the links that name it: the global selection, every persona's lorebook and, with
+ * `relink_characters`, every character's links to it (in the same commit as the rename; without, those characters
+ * keep linking the old name). A chat's link (in its metadata) is not moved here. 409 when
  * the new name is taken.
  * Answers `{ ok, name, characters_updated, characters_failed, settings: { world_info_settings, 'power_user.persona_data' },
  * settings_hash }`.
@@ -407,11 +393,6 @@ router.post('/rename', storeRoute('renaming a World Info book', async (request, 
         const worldInfo = worldInfoSettings.world_info;
         const before = JSON.stringify(worldInfo);
         if (Array.isArray(worldInfo.globalSelect)) worldInfo.globalSelect = _.uniq(worldInfo.globalSelect.map(rename));
-        if (Array.isArray(worldInfo.charLore)) {
-            worldInfo.charLore = worldInfo.charLore.map(item => Array.isArray(item?.extraBooks)
-                ? { ...item, extraBooks: _.uniq(item.extraBooks.map(rename)) }
-                : item);
-        }
         if (JSON.stringify(worldInfo) !== before) settings.world_info_settings = worldInfoSettings;
     }
     const personaData = _.isPlainObject(current['power_user.persona_data']) ? _.cloneDeep(current['power_user.persona_data']) : null;
