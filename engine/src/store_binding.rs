@@ -2797,6 +2797,17 @@ fn world_read_job(op: String, args: &Object) -> Result<TreeRead> {
                     .map(JsTree)
             })
         }
+        "itemPlaces" => {
+            let (entity, list, items) = (
+                req_integer(a, "entity")?,
+                req_integer(a, "list")?,
+                integers(a, "items")?,
+            );
+            Box::new(move |s| {
+                s.chat_read(|v| b::item_places(v, entity, list, &items))
+                    .map(JsTree)
+            })
+        }
         "resolved" => {
             let ids = integers(a, "ids")?;
             Box::new(move |s| s.chat_read(|v| b::resolved(v, &ids)).map(JsTree))

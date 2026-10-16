@@ -734,7 +734,7 @@ fn saved_view_types_are_created_and_deleted_and_a_type_above_them_is_refused() {
 }
 
 #[test]
-fn entries_read_backward_before_a_place() {
+fn entries_read_backward_before_a_place_and_items_by_id() {
     let dir = temp_dir("entries-before");
     let s = Store::open_in(&dir, SMALL, pool()).unwrap();
     s.commit_wait(vec![create(1, BOOK, "b"), create(2, BOOK, "empty")])
@@ -774,6 +774,11 @@ fn entries_read_backward_before_a_place() {
         s.chat_read(|v| books::entries_page(v, 1, Some(100), Some(300), 5)),
         Err(StoreError::Refused(_))
     ));
+    assert_eq!(
+        read(&s, |v| books::item_places(v, 1, books::ENTRIES, &[12, 99])),
+        Js::Arr(vec![Js::Num(300.0), Js::Null]),
+        "an item's place by its id"
+    );
     drop(s);
     fs::remove_dir_all(&dir).unwrap();
 }
