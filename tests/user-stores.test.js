@@ -46,25 +46,15 @@ describe('user stores', () => {
         expect(fs.existsSync(path.join(root, stores.STORE_DIR))).toBe(false);
     });
 
-    test('a character-metadata.sqlite holding only saved views isn\'t an old library; one holding more is, and nothing is left beside it', async () => {
-        const root = path.join(tempRoot(), 'u');
-        fs.mkdirSync(root);
-        const { getBetterSqlite3 } = await import('../src/endpoints/native-sqlite.js');
-        const Database = await getBetterSqlite3();
-        const file = path.join(root, 'character-metadata.sqlite');
-        const db = new Database(file);
-        db.pragma('journal_mode = WAL');
-        db.exec('CREATE TABLE saved_views (id TEXT PRIMARY KEY)');
-        db.close();
-        const files = () => fs.readdirSync(root).sort();
-        const before = files();
-        expect(await stores.oldFormatLine({ root })).toBeNull();
-        expect(files()).toEqual(before);
-        const db2 = new Database(file);
-        db2.exec('CREATE TABLE characters (id TEXT PRIMARY KEY)');
-        db2.close();
-        expect(await stores.oldFormatLine({ root })).toContain('(character-metadata.sqlite)');
-        expect(files()).toEqual(before);
+    test('with no store/, either old file is refused; with store/, the directory is served', async () => {
+        for (const file of ['character-metadata.sqlite', 'message-tree.sqlite']) {
+            const root = path.join(tempRoot(), 'u');
+            fs.mkdirSync(root);
+            fs.writeFileSync(path.join(root, file), '');
+            expect(await stores.oldFormatLine({ root })).toContain(`(${file})`);
+            fs.mkdirSync(path.join(root, stores.STORE_DIR));
+            expect(await stores.oldFormatLine({ root })).toBeNull();
+        }
     });
 
     test('a new user gets a store marked for the default tags; opened once, read again after a reopen', async () => {
