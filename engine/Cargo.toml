@@ -55,8 +55,3 @@ strip = "symbols"
 [[test]]
 name = "bulk_budget"
 required-features = ["measure"]
-
-# One-off, deleted with `src/migrations/recompute-search-maxima.js`.
-[[test]]
-name = "one_off_recompute_search_maxima"
-required-features = ["measure"]
