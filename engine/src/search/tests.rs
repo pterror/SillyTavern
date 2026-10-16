@@ -1435,7 +1435,7 @@ fn close(got: f64, want: f64) -> bool {
 
 #[test]
 fn the_reference_scores_cases_computed_by_hand() {
-    // Fields: 0 name (20, prefix, 2.32 tokens), 1 description (3, 353.09 tokens).
+    // Fields: 0 name (20, prefix, `REF_NAME` tokens), 1 description (3, `REF_DESCRIPTION` tokens).
     let mut w = World::default();
     w.library.docs.insert(1, library_doc(&[(0, "elf")]));
     w.library.docs.insert(2, library_doc(&[(1, "elf ranger")]));
@@ -1448,10 +1448,10 @@ fn the_reference_scores_cases_computed_by_hand() {
     // n = 4; "elf" is in 2 documents' text, "ranger" in 3 (carried tags don't count).
     let idf_elf = (1.0f64 + 2.5 / 2.5).ln();
     let idf_ranger = (1.0f64 + 1.5 / 3.5).ln();
-    let name1 = 20.0 * tfn(1.0, 1.0, 2.32);
-    let desc2 = 3.0 * tfn(1.0, 2.0, 353.09);
-    let name1_ranger = 20.0 * tfn(1.0, 1.0, 2.32);
-    let desc1 = 3.0 * tfn(1.0, 1.0, 353.09);
+    let name1 = 20.0 * tfn(1.0, 1.0, super::REF_NAME);
+    let desc2 = 3.0 * tfn(1.0, 2.0, super::REF_DESCRIPTION);
+    let name1_ranger = 20.0 * tfn(1.0, 1.0, super::REF_NAME);
+    let desc1 = 3.0 * tfn(1.0, 1.0, super::REF_DESCRIPTION);
 
     // A whole word: idf times the card's text, plus `TAG_WEIGHT` once for a carrier of a tag named by it.
     let q = query(vec![clause("elf", None, false, true)], 10);
@@ -2293,23 +2293,23 @@ fn a_long_prefix_card_scoring_just_under_an_f32_comes_back() {
     // (field, hits, tokens): name and creator hold the longer token, description and scenario the prefix itself.
     let shape = |scenario: usize| {
         [
-            (0, 2, 7, longer),
-            (1, 1, 11, prefix),
+            (0, 1, 12, longer),
+            (1, 1, 1604, prefix),
             (3, 1, scenario, prefix),
-            (7, 1, 6, longer),
+            (7, 1, 212, longer),
         ]
     };
     let len = |n: usize| super::code_length(super::length_code(n as u64));
     let text = super::word_text(
         Scope::LIBRARY,
-        shape(59).map(|(f, hits, n, _)| (f, hits as u64, len(n))),
+        shape(118).map(|(f, hits, n, _)| (f, hits as u64, len(n))),
         true,
     );
     let above = super::max_value(super::max_bits(text));
     assert!(above - text <= 4.0 * text * f64::EPSILON, "{text} {above}");
     let card = 2000;
     // Longer scenarios (of a higher length code) score less.
-    for (doc, scenario) in [(3, 65), (500, 72), (900, 65), (card, 59)] {
+    for (doc, scenario) in [(3, 130), (500, 143), (900, 130), (card, 118)] {
         for (f, hits, n, word) in shape(scenario) {
             lib.set(doc, f as usize, &[field(hits, n, word)]);
         }
@@ -2848,3 +2848,4 @@ fn tagged_results_equal_a_scan_while_carriers_move() {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
