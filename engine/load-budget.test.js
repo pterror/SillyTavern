@@ -112,6 +112,7 @@ test('separate library and chat loads bound resident growth without one spill pe
     const over = peak - start;
     assert.ok(stats.spills > 0 || stats.keptRuns > 0, `the load spilled nothing: ${JSON.stringify(stats)}`);
     assert.ok(stats.peakBytes <= BUDGET, `the allocations reached ${stats.peakBytes}, past the budget ${BUDGET}`);
+    assert.deepEqual(results.map(s => s.revisits), [0, 0], 'each partition is met once per load');
     assert.ok(over <= BUDGET + SLACK, `resident memory rose ${Math.round(over / 2 ** 20)} MiB, past ${Math.round(BUDGET / 2 ** 20)} MiB + ${Math.round(SLACK / 2 ** 20)} MiB`);
     assert.ok(stats.spills < CARDS / 2, `spill storm: ${stats.spills} files`);
     console.log(`chat load ${Math.round(results[1].totalMs)} ms, ${results[1].spills} spill files`);

@@ -66,6 +66,33 @@ async function run(dataRoot, more) {
 }
 
 describe('convert-to-engine', () => {
+    test('thousands of chat owners load meeting each owner\'s partition once per load', async () => {
+        const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'convert-engine-'));
+        dirs.push(dataRoot);
+        await fixture.buildOldUser(path.join(dataRoot, 'u'), { extraCharacters: 3000 });
+        /** @type {any[]} */
+        const loads = [];
+        const observedEngine = { Store: { open: async dir => {
+            const store = await engine.Store.open(dir);
+            return new Proxy(store, { get(target, key) {
+                if (key === 'load') return budget => {
+                    const load = target.load(budget);
+                    return {
+                        add: records => load.add(records),
+                        finish: async () => { const s = await load.finish(); loads.push(s); return s; },
+                        abandon: () => load.abandon(),
+                    };
+                };
+                const value = Reflect.get(target, key);
+                return typeof value === 'function' ? value.bind(target) : value;
+            } });
+        } } };
+        const applied = await run(dataRoot, { apply: true, serverStopped: true, engine: () => observedEngine });
+        expect(applied.code).toBe(0);
+        // The library load, then the chat load: no partition met again, so each load is linear in its records.
+        expect(loads.map(s => s.revisits)).toEqual([0, 0]);
+    }, 600000);
+
     test('a failed load is abandoned before the unfinished store is removed', async () => {
         const dataRoot = await oldUser();
         let abandoned = false;
