@@ -4,7 +4,7 @@ import path from 'node:path';
 import { sync as writeFileAtomicSync } from 'write-file-atomic';
 
 import { SETTINGS_FILE } from './constants.js';
-import { getAtPath, setAtPath } from '../public/scripts/hash-utils.js';
+import { getAtPath, setAtPath, settingsWithoutCharLore } from '../public/scripts/hash-utils.js';
 
 /**
  * Sharded on-disk storage for a user's settings, one file per top-level key
@@ -158,7 +158,8 @@ export function readSettingsAtPaths(directories, dottedPaths) {
 
 /**
  * Writes only the on-disk file(s) for the top-level key(s) named in `keys`, leaving every other key's
- * file untouched. A dotted path is applied against that key's current on-disk value.
+ * file untouched. A dotted path is applied against that key's current on-disk value. Upstream's `charLore`
+ * (CHAR_LORE_PATH) is never stored: characters' links are the store's.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {Record<string, unknown>} keys Top-level keys or dotted paths to their new values.
  * @returns {string[]} The top-level key names touched.
@@ -169,7 +170,9 @@ export function writeSettingsKeys(directories, keys) {
 
     /** @type {Map<string, Array<[string|null, unknown]>>} */
     const updatesByTopKey = new Map();
-    for (const [key, value] of Object.entries(keys)) {
+    for (const [key, given] of Object.entries(keys)) {
+        const { value, skip } = settingsWithoutCharLore(key, given);
+        if (skip) continue;
         const dotIndex = key.indexOf('.');
         const topKey = dotIndex === -1 ? key : key.slice(0, dotIndex);
         if (!isValidSettingsKey(topKey)) {
@@ -204,6 +207,7 @@ export function writeSettingsKeys(directories, keys) {
 /**
  * Writes one file per top-level key in `object` and removes nothing: a key `object` leaves out keeps its file.
  * Unlike writeSettingsKeys(), a key is never read as a dotted path, and an invalid key is logged and skipped.
+ * Upstream's `charLore` (CHAR_LORE_PATH) is never stored.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {Record<string, unknown>} object
  * @returns {Set<string>} The file names written.
@@ -221,7 +225,8 @@ export function writeNamedSettings(directories, object) {
     }
 
     for (const key of validKeys) {
-        writeFileAtomicSync(path.join(dir, `${key}.json`), JSON.stringify(object[key], null, 4), 'utf8');
+        const { value } = settingsWithoutCharLore(key, object[key]);
+        writeFileAtomicSync(path.join(dir, `${key}.json`), JSON.stringify(value, null, 4), 'utf8');
     }
     return new Set(validKeys.map(k => `${k}.json`));
 }

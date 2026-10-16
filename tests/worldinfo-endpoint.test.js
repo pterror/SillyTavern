@@ -38,6 +38,7 @@ beforeAll(async () => {
         next();
     });
     app.use('/api/worldinfo', worldinfo.router);
+    app.use('/api/settings', (await import('../src/endpoints/settings.js')).router);
     server = app.listen(0, '127.0.0.1');
     await new Promise(resolve => server.once('listening', resolve));
     baseUrl = `http://127.0.0.1:${/** @type {any} */ (server.address()).port}`;
@@ -450,8 +451,9 @@ describe('lorebook actions', () => {
 
     test('rename moves the book and the links naming it in settings', async () => {
         const { writeAllSettings, readSettingsAtPaths } = await import('../src/settings-store.js');
+        // A charLore given to a settings write isn't stored: characters' links are the store's.
         writeAllSettings(directories, {
-            world_info_settings: { world_info: { globalSelect: ['Old', 'Other'], charLore: [{ name: 'a.png', extraBooks: ['Old', 'Other'] }] } },
+            world_info_settings: { world_info: { globalSelect: ['Old', 'Other'], charLore: [{ name: 'a', extraBooks: ['Old', 'Other'] }] } },
             power_user: { persona_data: { 'p.png': { lorebook: 'Old' }, 'q.png': { lorebook: 'Other' } } },
         });
         await writeBook('Old', { 0: makeEntry(0, 'zero') });
@@ -465,7 +467,7 @@ describe('lorebook actions', () => {
         expect((await getBook('New')).entries['0'].content).toBe('zero');
 
         const stored = readSettingsAtPaths(directories, ['world_info_settings', 'power_user.persona_data']);
-        expect(stored.world_info_settings.world_info).toEqual({ globalSelect: ['New', 'Other'], charLore: [{ name: 'a.png', extraBooks: ['New', 'Other'] }] });
+        expect(stored.world_info_settings.world_info).toEqual({ globalSelect: ['New', 'Other'] });
         expect(stored['power_user.persona_data']).toEqual({ 'p.png': { lorebook: 'New' }, 'q.png': { lorebook: 'Other' } });
         expect(result.settings).toEqual(stored);
         expect(typeof result.settings_hash).toBe('number');
@@ -473,6 +475,34 @@ describe('lorebook actions', () => {
         await writeBook('Taken2', { 0: makeEntry(0, 'x') });
         expect((await postJson('/api/worldinfo/rename', { name: 'New', new_name: 'Taken2' })).status).toBe(409);
         expect((await postJson('/api/worldinfo/rename', { name: 'Ghost', new_name: 'Elsewhere' })).status).toBe(404);
+    });
+
+    test('additional-books changes a character\'s links after the first, as an action, writing no settings', async () => {
+        const { lib } = await stores.userStore(directories, 'u');
+        const { readAllSettingsAsJson } = await import('../src/settings-store.js');
+        const data = { name: 'Extra', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [] };
+        const card = (/** @type {string} */ world) => JSON.stringify({ spec: 'chara_card_v2', spec_version: '2.0', ...data, data: { ...data, extensions: { world } } });
+        for (const name of ['First', 'X', 'Y']) await writeBook(name, {});
+        await lib.writeCard(directories, 'wi-extra.png', card('First'));
+        const settingsBefore = readAllSettingsAsJson(directories);
+        const op = async (/** @type {object} */ body) => postJson('/api/worldinfo/additional-books', { characterAvatar: 'wi-extra', ...body });
+
+        expect(await (await op({ op: 'add', books: ['X', 'Y', 'X'] })).json()).toEqual({ result: 'ok', extraBooks: ['X', 'Y'] });
+        expect(await (await op({ op: 'remove', books: ['X'] })).json()).toEqual({ result: 'ok', extraBooks: ['Y'] });
+        expect(await (await op({ op: 'set', books: ['X', 'First'] })).json()).toEqual({ result: 'ok', extraBooks: ['X'] });
+        expect(await lib.extraBookNames('wi-extra.png')).toEqual(['X']);
+        expect(/** @type {any} */ ((await lib.cards(['wi-extra.png']))[0]).data.extensions.world).toBe('First');
+
+        // An unknown book or character: 404, nothing written.
+        const unknownBook = await op({ op: 'add', books: ['Nope'] });
+        expect(unknownBook.status).toBe(404);
+        expect((await unknownBook.json()).unknownBooks).toEqual(['Nope']);
+        const unknownCharacter = await postJson('/api/worldinfo/additional-books', { characterAvatar: 'nobody', op: 'add', books: ['Y'] });
+        expect(unknownCharacter.status).toBe(404);
+        expect(await lib.extraBookNames('wi-extra.png')).toEqual(['X']);
+        expect(readAllSettingsAsJson(directories)).toBe(settingsBefore);
+        expect((await op({ op: 'set', books: [] })).status).toBe(400);
+        expect(await (await op({ op: 'remove', books: [] })).json()).toEqual({ result: 'ok', extraBooks: ['X'] });
     });
 
     test('rename with relink_characters moves the characters\' links and answers them; without, they keep the old name', async () => {
@@ -483,8 +513,8 @@ describe('lorebook actions', () => {
         await lib.writeCard(directories, 'wi-linker.png', card('Linked'));
         const linkOf = async () => {
             const [id] = await lib.ids(0, ['wi-linker.png']);
-            const [book] = await lib.store.worldRead('links', { ids: [id] });
-            const [r] = await lib.store.worldRead('resolved', { ids: [book] });
+            const [e] = await lib.entities([id]);
+            const [r] = await lib.store.worldRead('resolved', { ids: [/** @type {any} */ (e).link.book] });
             return r;
         };
 
@@ -495,5 +525,55 @@ describe('lorebook actions', () => {
         const kept = await (await postJson('/api/worldinfo/rename', { name: 'Linked 2', new_name: 'Linked 3' })).json();
         expect(kept.characters_updated).toEqual([]);
         expect(await linkOf()).toMatchObject({ key: 'Linked 2', defined: false });
+    });
+});
+
+describe('charLore at the settings edges', () => {
+    test('/get fills it from the characters\' links, no hash covers it, and saves ignore it', async () => {
+        const { lib } = await stores.userStore(directories, 'u');
+        const { readAllSettingsAsJson, readSettingsAtPaths, writeSettingsKeys } = await import('../src/settings-store.js');
+        const { getStringHash } = await import('../public/scripts/hash-utils.js');
+        const data = { name: 'Lore', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [] };
+        const card = JSON.stringify({ spec: 'chara_card_v2', spec_version: '2.0', ...data, data: { ...data, extensions: { world: 'P' } } });
+        for (const name of ['P', 'Q', 'R']) await lib.books.write(name, { entries: {} });
+        await lib.writeCard(directories, 'wi-lore.png', card);
+        await lib.extraLinks('wi-lore.png', 'add', ['Q', 'R']);
+        writeSettingsKeys(directories, { world_info_settings: { world_info: { globalSelect: ['P'] } } });
+
+        const got = await (await postJson('/api/settings/get', {})).json();
+        const settings = JSON.parse(got.settings);
+        expect(settings.world_info_settings.world_info.charLore).toContainEqual({ name: 'wi-lore', extraBooks: ['Q', 'R'] });
+        expect(settings.world_info_settings.world_info.globalSelect).toEqual(['P']);
+        // The hashes are of the settings as stored, which hold no charLore.
+        expect(got.settingsHash).toBe(getStringHash(readAllSettingsAsJson(directories)));
+        expect(got.keyHashes['world_info_settings.world_info']).toBe(getStringHash(JSON.stringify({ globalSelect: ['P'] }, null, 4)));
+        expect(got.keyHashes['world_info_settings.world_info.charLore']).toBeUndefined();
+
+        const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+        const ignored = (/** @type {any[]} */ calls) => calls.filter(c => String(c[0]).includes('charLore')).length;
+        const settled = () => new Promise(resolve => setTimeout(resolve, 200));
+        try {
+            // A partial save carrying another charLore: stored without it, the links unchanged, one line logged.
+            const other = { globalSelect: ['Q'], charLore: [{ name: 'wi-lore', extraBooks: ['P'] }] };
+            expect((await postJson('/api/settings/save-partial', { keys: { 'world_info_settings.world_info': other } })).status).toBe(200);
+            await settled();
+            expect(readSettingsAtPaths(directories, ['world_info_settings.world_info'])['world_info_settings.world_info']).toEqual({ globalSelect: ['Q'] });
+            expect(await lib.extraBookNames('wi-lore.png')).toEqual(['Q', 'R']);
+            expect(ignored(warn.mock.calls)).toBe(1);
+            // One carrying what the links are logs nothing; a key at charLore itself writes nothing.
+            const same = { world_info_settings: { world_info: { globalSelect: ['P'], charLore: [{ name: 'wi-lore', extraBooks: ['Q', 'R'] }] } } };
+            expect((await postJson('/api/settings/save-partial', { keys: same })).status).toBe(200);
+            expect((await postJson('/api/settings/save-partial', { keys: { 'world_info_settings.world_info.charLore': [] } })).status).toBe(200);
+            await settled();
+            expect(ignored(warn.mock.calls)).toBe(1);
+            expect(readSettingsAtPaths(directories, ['world_info_settings'])['world_info_settings']).toEqual({ world_info: { globalSelect: ['P'] } });
+            // A full save is the same.
+            expect((await postJson('/api/settings/save', { ...settings, world_info_settings: { world_info: other } })).status).toBe(200);
+            await settled();
+            expect(ignored(warn.mock.calls)).toBe(2);
+            expect(readSettingsAtPaths(directories, ['world_info_settings'])['world_info_settings']).toEqual({ world_info: { globalSelect: ['Q'] } });
+        } finally {
+            warn.mockRestore();
+        }
     });
 });

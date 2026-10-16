@@ -56,6 +56,7 @@ import {
     initWorldInfo,
     charUpdatePrimaryWorld,
     charSetAuxWorlds,
+    sendAuxBooksOp,
 } from './scripts/world-info.js';
 import { character_world_link } from './scripts/character-world-link.js';
 
@@ -174,7 +175,7 @@ import {
     uuidv4,
 } from './scripts/utils.js';
 // Imported directly from hash-utils.js, not re-exported via utils.js, so tests mocking utils.js aren't affected.
-import { getAtPath, seedKeyHashes, characterDigestFieldsHash, characterDigestCardBodyHash, normalizeFav } from './scripts/hash-utils.js';
+import { getAtPath, seedKeyHashes, settingsWithoutCharLore, characterDigestFieldsHash, characterDigestCardBodyHash, normalizeFav } from './scripts/hash-utils.js';
 import { debounce_timeout, IGNORE_SYMBOL, inject_ids, MEDIA_DISPLAY, MEDIA_SOURCE, MEDIA_TYPE, OVERSWIPE_BEHAVIOR, SCROLL_BEHAVIOR, SWIPE_DIRECTION, SWIPE_SOURCE, SWIPE_STATE } from './scripts/constants.js';
 
 import { cancelDebouncedMetadataSave, doDailyExtensionUpdatesCheck, extension_settings, initExtensions, loadExtensionSettings, UNSET_VALUE } from './scripts/extensions.js';
@@ -1258,6 +1259,17 @@ const pendingSettingsKeys = new Set();
 // Per-key content hashes of what this client believes the server has; used for the partial save's expectedHashes conflict check.
 /** @type {Record<string, number>} */
 const serverKeyHashes = {};
+
+/**
+ * Seeds serverKeyHashes from settings at `key` ('' for the whole settings object), `world_info.charLore` left out:
+ * characters' extra lorebook links are the store's, and no settings hash covers them (the server's leave them out).
+ * @param {unknown} value
+ * @param {string} [key]
+ */
+function seedSettingsHashes(value, key = '') {
+    const { value: hashed, skip } = settingsWithoutCharLore(key, value);
+    if (!skip) seedKeyHashes(serverKeyHashes, hashed, key);
+}
 // Kind and count of the pending debounced save window (see scheduleSettingsSave()); reset when the window runs or is cancelled.
 /** @type {{ full: boolean, count: any }} */
 let _settingsSaveWindow = { full: false, count: 0 };
@@ -7120,7 +7132,7 @@ export function takeChatOpenAnswer(body, answer) {
  * @param {number} [settingsHash] The server's hash of all settings after the write.
  */
 export function takeServerSettings(values, settingsHash) {
-    for (const [key, value] of Object.entries(values)) seedKeyHashes(serverKeyHashes, value, key);
+    for (const [key, value] of Object.entries(values)) seedSettingsHashes(value, key);
     if (settingsHash != null) knownServerSettingsHash = settingsHash;
 }
 
@@ -7941,7 +7953,7 @@ async function performSave({ full }) {
             }
 
             for (const key of Object.keys(partialPayload)) {
-                seedKeyHashes(serverKeyHashes, partialPayload[key], key);
+                seedSettingsHashes(partialPayload[key], key);
             }
             // Not lastSavedSettingsHash: it only ever means "this exact full payload reached the server", and a keyed save sent only part of it.
             // Server-returned hash keeps knownServerSettingsHash in sync without a full copy of the settings content.
@@ -7985,7 +7997,7 @@ async function performSave({ full }) {
             }
 
             // Update per-key hashes from the full payload (recursively - see seedKeyHashes()).
-            seedKeyHashes(serverKeyHashes, payload);
+            seedSettingsHashes(payload);
             lastSavedSettingsHash = payloadHash;
             // Server-returned hash, not a local JSON.stringify(payload) computation.
             const saveResponse = await result.json().catch(() => ({}));
@@ -8038,7 +8050,7 @@ export async function savePartialSettings(partialSettings) {
     }
 
     for (const key of Object.keys(partialSettings)) {
-        seedKeyHashes(serverKeyHashes, partialSettings[key], key);
+        seedSettingsHashes(partialSettings[key], key);
     }
     return true;
 }
@@ -11428,11 +11440,8 @@ export async function createCharacterFromCreateSave({ jsonData } = {}) {
         setGreetingPagerGreetings([''], 0, []);
 
         if (Array.isArray(create_save.extra_books) && create_save.extra_books.length > 0) {
-            const fileName = getCharaFilename(null, { manualAvatarKey: avatarId });
-            const charLore = world_info.charLore ?? [];
-            charLore.push({ name: fileName, extraBooks: create_save.extra_books });
-            Object.assign(world_info, { charLore: charLore });
-            saveSettingsDebounced('world_info_settings');
+            // The staged extra books, as an action on the character now stored.
+            await sendAuxBooksOp(getCharaFilename(null, { manualAvatarKey: avatarId }), 'set', create_save.extra_books);
         }
         create_save.extra_books = [];
 
