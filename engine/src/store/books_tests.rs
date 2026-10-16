@@ -155,7 +155,7 @@ impl Model {
             let mut got = Vec::new();
             let mut after = None;
             loop {
-                let page = read(s, |v| books::entries_page(v, *book, after, 7));
+                let page = read(s, |v| books::entries_page(v, *book, after, None, 7));
                 let Js::Arr(list) = field(&page, "entries") else {
                     panic!()
                 };
@@ -670,6 +670,110 @@ fn a_world_book_reads_whole_from_one_view() {
     for (k, there) in [(&b"ghost"[..], false), (b"lore", false), (b"other", true)] {
         assert_eq!(s.world_book_exists(k).unwrap(), there);
     }
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn saved_view_types_are_created_and_deleted_and_a_type_above_them_is_refused() {
+    use super::library::{CONDITION, RANGE, VIEW, VIEW_LIST};
+    let dir = temp_dir("view-types");
+    let s = Store::open_in(&dir, SMALL, pool()).unwrap();
+    let version = |e: u64| {
+        s.library_entities(&[e]).unwrap()[0]
+            .as_ref()
+            .unwrap()
+            .version
+    };
+    s.commit_wait(vec![
+        create(1, VIEW_LIST, ""),
+        create(2, VIEW, "u-1"),
+        place(1, 2, 1 << 20),
+        create(3, CONDITION, "u-1:3"),
+        place(2, 3, 1 << 20),
+        create(4, RANGE, "u-1:a:b"),
+    ])
+    .unwrap();
+    let kinds: Vec<u64> = s
+        .library_entities(&[1, 2, 3, 4])
+        .unwrap()
+        .into_iter()
+        .map(|e| e.unwrap().kind)
+        .collect();
+    assert_eq!(kinds, vec![VIEW_LIST, VIEW, CONDITION, RANGE]);
+    let v = version(2);
+    s.commit_wait(vec![rec(
+        "textValue",
+        vec![
+            Value::Sel(0, 3),
+            Value::Field(FieldRef::Code(55)),
+            text("x"),
+            Value::Absent,
+            Value::Absent,
+        ],
+    )])
+    .unwrap();
+    assert!(version(2) > v, "a condition's value changes its view");
+    let v = version(2);
+    s.commit_wait(vec![delete(4)]).unwrap();
+    assert!(version(2) > v, "a range going changes its view");
+    s.commit_wait(vec![delete(3), delete(2), delete(1)])
+        .unwrap();
+    assert!(
+        s.library_entities(&[1, 2, 3, 4])
+            .unwrap()
+            .iter()
+            .all(Option::is_none)
+    );
+    assert!(matches!(
+        s.commit_wait(vec![create(5, RANGE + 1, "x")]),
+        Err(StoreError::Refused(_))
+    ));
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn entries_read_backward_before_a_place() {
+    let dir = temp_dir("entries-before");
+    let s = Store::open_in(&dir, SMALL, pool()).unwrap();
+    s.commit_wait(vec![create(1, BOOK, "b"), create(2, BOOK, "empty")])
+        .unwrap();
+    let mut recs = Vec::new();
+    for (e, p) in [(10, 100), (11, 200), (12, 300), (13, 400)] {
+        recs.push(create(e, ENTRY, &format!("1:{e}")));
+        recs.push(place(1, e, p));
+    }
+    s.commit_wait(recs).unwrap();
+    let ids = |page: &Js| -> (Vec<Js>, Js) {
+        let Js::Arr(entries) = field(page, "entries") else {
+            panic!("no entries")
+        };
+        (
+            entries.iter().map(|e| field(e, "id").clone()).collect(),
+            field(page, "more").clone(),
+        )
+    };
+    let page = read(&s, |v| books::entries_page(v, 1, None, Some(300), 1));
+    assert_eq!(
+        ids(&page),
+        (vec![Js::Big(11)], Js::Bool(true)),
+        "from the middle"
+    );
+    let page = read(&s, |v| books::entries_page(v, 1, None, Some(300), 5));
+    assert_eq!(
+        ids(&page),
+        (vec![Js::Big(11), Js::Big(10)], Js::Bool(false)),
+        "nearest first"
+    );
+    let page = read(&s, |v| books::entries_page(v, 1, None, Some(100), 5));
+    assert_eq!(ids(&page), (vec![], Js::Bool(false)), "from the first");
+    let page = read(&s, |v| books::entries_page(v, 2, None, Some(100), 5));
+    assert_eq!(ids(&page), (vec![], Js::Bool(false)), "an empty list");
+    assert!(matches!(
+        s.chat_read(|v| books::entries_page(v, 1, Some(100), Some(300), 5)),
+        Err(StoreError::Refused(_))
+    ));
     drop(s);
     fs::remove_dir_all(&dir).unwrap();
 }

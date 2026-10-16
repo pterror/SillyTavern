@@ -34,6 +34,13 @@ pub const TAG: u64 = 2;
 /// An unowned tree: messages whose character or group is gone, kept under their old owner key until a character or
 /// group created with that key takes the id (a create in its place, in one commit with this entity's delete).
 pub const TREE: u64 = 6;
+/// A user's saved views of the character list: their holder (key `''`, its list 0 the views), a view (key its
+/// UUID, list 0 its conditions, list 1 its ranges), a view's condition (key `<view key>:<its id>`) and range (key
+/// `<view key>:<card field>`).
+pub const VIEW_LIST: u64 = 7;
+pub const VIEW: u64 = 8;
+pub const CONDITION: u64 = 9;
+pub const RANGE: u64 = 10;
 
 /// Field codes the derivers read: an entity's name, a character's lorebook, a tag's folder type.
 pub const NAME: u64 = 1;
@@ -645,7 +652,7 @@ impl Deriver for EntityCreate {
             Value::F64(t) => t,
             _ => unreachable!("checked by Record::new"),
         };
-        if kind > TREE {
+        if kind > RANGE {
             return Err(StoreError::Refused(format!("no entity type {kind}")));
         }
         if view.get(&key::id(key::ENTITY, e))?.is_some() {
