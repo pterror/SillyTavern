@@ -108,35 +108,34 @@ const fn field(name: &'static str, weight: f64, prefix: bool, ref_len: f64) -> F
 
 // Reference lengths, in tokens. These values are meant to be tuned.
 //
-// Measured: the average token count of each field in `examples/search.rs`'s `synth` cards (their character
-// lengths are from live card samples, over a 30,000-word Zipf vocabulary).
-pub const REF_NAME: f64 = 2.32;
-pub const REF_DESCRIPTION: f64 = 353.09;
-pub const REF_MES_EXAMPLE: f64 = 176.75;
-pub const REF_SCENARIO: f64 = 68.34;
-pub const REF_PERSONALITY: f64 = 47.98;
-pub const REF_FIRST_MES: f64 = 190.37;
-pub const REF_CREATOR_NOTES: f64 = 95.44;
-pub const REF_CREATOR: f64 = 1.92;
+// Measured: the average token count of each field over the documents it is present in, in a converted store of
+// 384,726 library documents (20 of them groups), 69,977 tags, 395,132 messages and 675,795 book entries.
+pub const REF_NAME: f64 = 1.70;
+pub const REF_DESCRIPTION: f64 = 626.97;
+pub const REF_MES_EXAMPLE: f64 = 261.99;
+pub const REF_SCENARIO: f64 = 99.20;
+pub const REF_PERSONALITY: f64 = 62.90;
+pub const REF_FIRST_MES: f64 = 220.71;
+pub const REF_CREATOR_NOTES: f64 = 154.96;
+pub const REF_CREATOR: f64 = 1.40;
 /// A card's own tags list.
-pub const REF_CARD_TAGS: f64 = 20.83;
+pub const REF_CARD_TAGS: f64 = 15.25;
 /// Every alternate greeting together.
-pub const REF_ALTERNATE_GREETINGS: f64 = 298.26;
+pub const REF_ALTERNATE_GREETINGS: f64 = 1041.44;
 /// One tag's name.
-pub const REF_TAG_NAME: f64 = 2.54;
-// Placeholders: nothing synthetic gives these fields a length like real data's. The one-off conversion of the
-// user's data measures them and replaces these.
-pub const REF_MEMBERS: f64 = 4.0;
-pub const REF_ID: f64 = 1.0;
-pub const REF_CHAT_TEXT: f64 = 150.0;
+pub const REF_TAG_NAME: f64 = 2.09;
+pub const REF_MEMBERS: f64 = 6.60;
+pub const REF_ID: f64 = 1.00;
+pub const REF_CHAT_TEXT: f64 = 127.20;
+/// Not measured: the store measured had no session with a name.
 pub const REF_SESSION_NAME: f64 = 6.0;
-pub const REF_BOOK_KEY: f64 = 3.0;
-pub const REF_BOOK_GROUP: f64 = 2.0;
-pub const REF_BOOK_COMMENT: f64 = 6.0;
-pub const REF_BOOK_KEYSECONDARY: f64 = 3.0;
-pub const REF_BOOK_CONTENT: f64 = 150.0;
-pub const REF_BOOK_UID: f64 = 1.0;
-pub const REF_BOOK_AUTOMATION_ID: f64 = 1.0;
+pub const REF_BOOK_KEY: f64 = 4.91;
+pub const REF_BOOK_GROUP: f64 = 1.26;
+pub const REF_BOOK_COMMENT: f64 = 2.35;
+pub const REF_BOOK_KEYSECONDARY: f64 = 5.38;
+pub const REF_BOOK_CONTENT: f64 = 121.82;
+pub const REF_BOOK_UID: f64 = 1.00;
+pub const REF_BOOK_AUTOMATION_ID: f64 = 25.73;
 
 /// Weights: upstream's Fuse keys for `fuzzySearchCharacters` (name 20, description and example 3, scenario,
 /// personality, first message and notes 2, creator, card tags and alternate greetings 1), which the old index used
