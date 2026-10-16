@@ -66,9 +66,40 @@ async function run(dataRoot, more) {
 }
 
 describe('convert-to-engine', () => {
+    test('a failed load is abandoned before the unfinished store is removed', async () => {
+        const dataRoot = await oldUser();
+        let abandoned = false;
+        let closedAfterAbandon = false;
+        const failingEngine = { Store: { open: async dir => {
+            const store = await engine.Store.open(dir);
+            return new Proxy(store, { get(target, key) {
+                if (key === 'load') return budget => {
+                    const load = target.load(budget);
+                    return {
+                        add: async records => { await load.add(records); throw new Error('synthetic load failure'); },
+                        abandon: () => { load.abandon(); abandoned = true; },
+                    };
+                };
+                if (key === 'close') return () => { closedAfterAbandon = abandoned; return target.close(); };
+                const value = Reflect.get(target, key);
+                return typeof value === 'function' ? value.bind(target) : value;
+            } });
+        } } };
+        await expect(run(dataRoot, { apply: true, serverStopped: true, engine: () => failingEngine })).rejects.toThrow('synthetic load failure');
+        expect(abandoned).toBe(true);
+        expect(closedAfterAbandon).toBe(true);
+        expect(fs.existsSync(path.join(dataRoot, 'u', convert.BUILDING_DIR))).toBe(false);
+        expect(fs.existsSync(path.join(dataRoot, 'u', convert.STORE_DIR))).toBe(false);
+    });
+
     test('a dry run writes nothing and reports what the apply writes; the apply checks everything and leaves the old files', async () => {
         const dataRoot = await oldUser();
         const root = path.join(dataRoot, 'u');
+        const dates = new Database(path.join(root, 'character-metadata.sqlite'));
+        dates.function('st_fold', { deterministic: true }, (await import('../src/character-store-schema.js')).foldName);
+        dates.prepare('UPDATE characters SET date_added = ? WHERE id = ?').run(1700000000000.75, 'Alice.png');
+        dates.prepare('UPDATE groups SET date_added = ? WHERE id = ?').run(1700000000000.25, '1700000000001');
+        dates.close();
         const before = snapshot(root);
 
         const dry = await run(dataRoot, { apply: false, serverStopped: false });
@@ -87,7 +118,44 @@ describe('convert-to-engine', () => {
 
         // A run that stopped partway left its directory: it is built again.
         fs.mkdirSync(path.join(root, convert.BUILDING_DIR, 'junk'), { recursive: true });
-        const applied = await run(dataRoot, { apply: true, serverStopped: true });
+        const chatOwners = [];
+        const libraryOwners = [];
+        const loadBudgets = [];
+        const observedEngine = {
+            Store: {
+                open: async dir => {
+                    const store = await engine.Store.open(dir);
+                    return new Proxy(store, {
+                        get(target, key) {
+                            if (key === 'load') return budget => {
+                                loadBudgets.push(budget);
+                                const number = loadBudgets.length;
+                                const load = target.load(budget);
+                                return {
+                                    add: records => {
+                                        for (const r of records) {
+                                            if (number === 1 && typeof r.entity === 'bigint') libraryOwners.push(r.entity);
+                                            if (r.kind === 'messageAppend') chatOwners.push(r.owner);
+                                        }
+                                        return load.add(records);
+                                    },
+                                    finish: () => load.finish(),
+                                };
+                            };
+                            const value = Reflect.get(target, key);
+                            return typeof value === 'function' ? value.bind(target) : value;
+                        },
+                    });
+                },
+            },
+        };
+        const loadBudget = 256 << 20;
+        const applied = await run(dataRoot, { apply: true, serverStopped: true, loadBudget, engine: () => observedEngine });
+        expect(loadBudgets).toEqual([loadBudget, loadBudget]);
+        expect(libraryOwners.length).toBeGreaterThan(0);
+        expect(libraryOwners).toEqual([...libraryOwners].sort((a, b) => a < b ? -1 : a > b ? 1 : 0));
+        expect(chatOwners.length).toBeGreaterThan(0);
+        expect(chatOwners).toEqual([...chatOwners].sort((a, b) => a < b ? -1 : a > b ? 1 : 0));
         expect(applied.text).not.toContain('PROBLEM');
         expect(applied.code).toBe(0);
         expect(snapshot(root)).toEqual(before);
@@ -95,11 +163,6 @@ describe('convert-to-engine', () => {
         expect(fs.existsSync(path.join(root, convert.BUILDING_DIR))).toBe(false);
         // Images stay in characters/, untouched: the store holds none.
         expect(fs.existsSync(path.join(root, convert.STORE_DIR, 'avatars'))).toBe(false);
-        const dates = new Database(path.join(root, 'character-metadata.sqlite'));
-        dates.function('st_fold', { deterministic: true }, (await import('../src/character-store-schema.js')).foldName);
-        dates.prepare('UPDATE characters SET date_added = ? WHERE id = ?').run(1700000000000.75, 'Alice.png');
-        dates.prepare('UPDATE groups SET date_added = ? WHERE id = ?').run(1700000000000.25, '1700000000001');
-        dates.close();
 
         // Converted once: a second run refuses.
         expect((await run(dataRoot, { apply: true, serverStopped: true })).code).toBe(1);
