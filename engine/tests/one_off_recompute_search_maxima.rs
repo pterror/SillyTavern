@@ -200,7 +200,7 @@ impl Lib {
         let (tx, rx) = std::sync::mpsc::channel();
         self.store.one_off_recompute_search_maxima(
             dry,
-            SLICE,
+            BATCH,
             Box::new(move |r| {
                 let _ = tx.send(r);
             }),
@@ -231,8 +231,8 @@ fn fields(r: &mut Rng) -> Vec<(usize, Vec<String>)> {
 }
 
 const DOCS: u64 = 300;
-/// Posting blocks per slice: small, so slices end within terms and between a term's groups.
-const SLICE: usize = 7;
+/// Bytes per write: small, so every changed map is written on its own.
+const BATCH: usize = 7;
 const TAG_COUNT: u64 = 12;
 
 /// Built with the old lengths, with edits that leave maxima loose and terms without postings: each document written,
@@ -376,8 +376,8 @@ fn recomputed_maxima_equal_a_fresh_builds_and_searches_equal_a_scan() {
         "{dry:?}"
     );
     assert!(
-        dry.posting_blocks > 50 * SLICE as u64,
-        "many slices: {dry:?}"
+        dry.posting_blocks > 350,
+        "many posting blocks: {dry:?}"
     );
     let applied = lib.recompute(false);
     assert_eq!(applied, dry, "the dry run counts what the run writes");
