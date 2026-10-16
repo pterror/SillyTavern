@@ -1,6 +1,6 @@
 import { readSettingsAtPaths } from './settings-store.js';
 import { loadChatHistory } from './chat-request.js';
-import { readCardContent } from './endpoints/characters.js';
+import { readCardContent, readExtraBooks } from './endpoints/characters.js';
 import { getGroupsByIds } from './endpoints/groups.js';
 import { getCharacterCardFields } from './character-card-fields.js';
 import { buildChatCompletionMessages, buildChatCompletionMessageExamples, character_names_behavior } from './chat-completion-messages.js';
@@ -482,7 +482,6 @@ import { substituteParams } from './macro-substitution.js';
  * resolver reads.
  * @typedef {object} WorldInfoSelectionShape
  * @property {string[]} [globalSelect]
- * @property {{name?: string, extraBooks?: string[]}[]} [charLore]
  */
 
 /**
@@ -905,8 +904,8 @@ export async function resolveChatCompletionGenerationInput(directories, {
     const charFilename = avatar != null ? avatar.replace(/\.[^/.]+$/, '') : null;
     let worldInfoCandidates = worldInfoCandidatesOverride;
     if (worldInfoCandidates === undefined) {
-        const charLore = Array.isArray(worldInfoSelection.charLore) ? worldInfoSelection.charLore : [];
-        const characterExtraBooks = charLore.find(e => e.name === charFilename)?.extraBooks ?? [];
+        // The character's links after the first (its card's `world` is the first), read from its entity.
+        const characterExtraBooks = avatar != null ? await readExtraBooks(directories, avatar) : [];
         let character = null;
         if (avatar != null) {
             try {

@@ -216,6 +216,17 @@ export async function readCardContent(directories, avatar) {
 }
 
 /**
+ * The names a character's lorebook links after the first read as (upstream's `world_info.charLore` extra books):
+ * its `data.extensions.world` is the first.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {string} avatar
+ * @returns {Promise<string[]>}
+ */
+export async function readExtraBooks(directories, avatar) {
+    return (await userStore(directories)).lib.extraBookNames(avatar);
+}
+
+/**
  * A V2 card with each V1_V2_FIELD_MAPPINGS field at the top level taken from its `data.*` value where that is set and
  * differs: readCardContent() returns the card's raw top-level fields, which its readers (the prompt's card fields)
  * use, and every other reader resolves the same drift through readFromV2(). In memory only: nothing is stored.

@@ -456,5 +456,100 @@ describe.each(['native', 'wasm'])('%s', (kind) => {
             await books.write('Found', { entries: {} });
             expect(await linked('Found')).toEqual(['a.png', 'b.png']);
         }, 120_000);
+
+        test('a character\'s links are one list: world is the first, the rest its extra books', async () => {
+            const card = (/** @type {string | undefined} */ world, name = 'A') => JSON.stringify({ spec: 'chara_card_v2', spec_version: '2.0', data: { name, extensions: world === undefined ? {} : { world } } });
+            const worldOf = async (/** @type {string} */ avatar) => /** @type {any} */ ((await library.cards([avatar]))[0]).data.extensions?.world;
+            const extras = (/** @type {string} */ avatar) => library.extraBookNames(avatar);
+            const linked = async (/** @type {string} */ world) => (await library.query({ world, wantRows: false, wantHashes: true })).hashRows.map((/** @type {any} */ row) => row.id).sort();
+            const { computeContentIdentityHash } = await import('../src/character-card-normalize.js');
+            const hashCurrent = async (/** @type {string} */ avatar) => {
+                const [read] = await library.cards([avatar]);
+                expect(await library.findByHash(lib.HASH.identity, computeContentIdentityHash(read))).toBe(avatar);
+            };
+            for (const name of ['A', 'B', 'C', 'D']) await books.write(name, { entries: {} });
+            await library.writeCard(directories, 'a.png', card('A'));
+            // Extra books are appended after the first link; repeats are dropped, the first kept.
+            expect(await library.extraLinks('a.png', 'add', ['B', 'C', 'B', 'A'])).toEqual(['B', 'C']);
+            expect(await worldOf('a.png')).toBe('A');
+            expect(await extras('a.png')).toEqual(['B', 'C']);
+            for (const w of ['A', 'B', 'C']) expect(await linked(w)).toEqual(['a.png']);
+            expect(await library.charLore()).toEqual([{ name: 'a', extraBooks: ['B', 'C'] }]);
+            // `set` keeps the links asked for, in the order asked; `remove` removes.
+            expect(await library.extraLinks('a.png', 'set', ['D', 'B'])).toEqual(['D', 'B']);
+            expect(await linked('C')).toEqual([]);
+            expect(await library.extraLinks('a.png', 'remove', ['D'])).toEqual(['B']);
+            expect(await library.extraLinks('a.png', 'set', ['C', 'B', 'D'])).toEqual(['C', 'B', 'D']);
+            expect(await library.extraLinks('a.png', 'set', ['D', 'C', 'B'])).toEqual(['D', 'C', 'B']);
+            // A card write setting world replaces only the first link; one a later link has moves up, not twice.
+            await library.writeCard(directories, 'a.png', card('C'));
+            expect(await worldOf('a.png')).toBe('C');
+            expect(await extras('a.png')).toEqual(['D', 'B']);
+            expect(await linked('A')).toEqual([]);
+            await hashCurrent('a.png');
+            // Clearing world removes only the first link: the next one reads as world.
+            await library.writeCard(directories, 'a.png', card(''));
+            expect(await worldOf('a.png')).toBe('D');
+            expect(await extras('a.png')).toEqual(['B']);
+            await hashCurrent('a.png');
+            await library.writeCard(directories, 'a.png', card(undefined));
+            expect(await worldOf('a.png')).toBe('B');
+            expect(await extras('a.png')).toEqual([]);
+            expect(await library.charLore()).toEqual([]);
+            await library.writeCard(directories, 'a.png', card(''));
+            expect(await worldOf('a.png')).toBe('');
+            expect(await linked('B')).toEqual([]);
+            // On a character with no links, the first book added is its first link (its world).
+            expect(await library.extraLinks('a.png', 'add', ['C', 'D'])).toEqual(['D']);
+            expect(await worldOf('a.png')).toBe('C');
+            await hashCurrent('a.png');
+            expect(await library.extraLinks('nobody.png', 'add', ['C'])).toBeNull();
+            // A rename without relinking keeps every link on the old name, unresolved; a delete leaves links unresolved.
+            await library.writeCard(directories, 'b.png', card('D', 'B'));
+            await library.extraLinks('b.png', 'add', ['C']);
+            expect(await books.rename('C', 'C2', { relink: false })).toBe('ok');
+            expect(await worldOf('a.png')).toBe('C');
+            expect(await extras('b.png')).toEqual(['C']);
+            expect(await linked('C2')).toEqual([]);
+            expect(await linked('C')).toEqual(['a.png', 'b.png']);
+            await hashCurrent('a.png');
+            expect(await books.rename('C2', 'C3')).toBe('ok');
+            expect(await books.delete('D')).toBe(true);
+            expect(await extras('a.png')).toEqual(['D']);
+            expect(await worldOf('b.png')).toBe('D');
+            expect(await library.charLore()).toEqual([{ name: 'a', extraBooks: ['D'] }, { name: 'b', extraBooks: ['C'] }]);
+            // Two links that come to read as one book read once.
+            await books.write('D', { entries: {} });
+            expect(await books.rename('D', 'C')).toBe('ok');
+            expect(await worldOf('a.png')).toBe('C');
+            expect(await extras('a.png')).toEqual([]);
+            expect(await library.charLore()).toEqual([]);
+            expect(await linked('C')).toEqual(['a.png', 'b.png']);
+            // A saved charLore is compared, not stored: the links it names.
+            expect(await library.charLoreDiffers([])).toBe(false);
+            expect(await library.charLoreDiffers([{ name: 'b', extraBooks: [] }])).toBe(false);
+            expect(await library.charLoreDiffers([{ name: 'b', extraBooks: ['X'] }])).toBe(true);
+            expect(await library.charLoreDiffers([{ name: 'nobody', extraBooks: [] }])).toBe(true);
+            expect(await library.charLoreDiffers([{ name: 1 }])).toBe(true);
+        }, 120_000);
+
+        test('a link list is changed by book: any reorder, swap, add and remove commits', async () => {
+            const { linkListRecords, storedLinks } = await import('../src/character-links.js');
+            const names = ['A', 'B', 'C', 'D', 'E'];
+            for (const name of names) await books.write(name, { entries: {} });
+            await library.writeCard(directories, 'a.png', JSON.stringify({ spec: 'chara_card_v2', spec_version: '2.0', data: { name: 'A' } }));
+            const ids = await library.ids(lib.TYPE.book, names);
+            const next = rng(7);
+            for (let round = 0; round < 40; round++) {
+                const want = ids.filter(() => next() < 0.6).sort(() => next() - 0.5);
+                const [stored] = await library.entities(await library.ids(lib.TYPE.character, ['a.png']));
+                const records = linkListRecords(/** @type {any} */ (stored).id, storedLinks(stored), /** @type {bigint[]} */ (want));
+                // A book's link is never edited in place.
+                expect(records.some((/** @type {any} */ r) => r.kind === 'textEdit')).toBe(false);
+                if (records.length) await library.store.commit(records);
+                const [after] = await library.entities(await library.ids(lib.TYPE.character, ['a.png']));
+                expect(storedLinks(after).map(l => l.book)).toEqual(want);
+            }
+        }, 120_000);
     });
 });
