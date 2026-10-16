@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { setConfigFilePath } from '../src/util.js';
+import { USER_DIRECTORY_TEMPLATE } from '../src/constants.js';
 
 /** @type {any} */
 let engine;
@@ -33,15 +34,15 @@ function tempRoot() {
 }
 
 describe('user stores', () => {
-    test('a user directory in the old format is refused with one line naming the conversion; nothing is made', async () => {
+    test('a user directory in the old format is refused with one line saying this version can\'t open it; nothing is made', async () => {
         const root = path.join(tempRoot(), 'u');
         fs.mkdirSync(root);
         fs.writeFileSync(path.join(root, 'message-tree.sqlite'), '');
         const line = await stores.oldFormatLine({ root });
-        expect(line).toContain('convert-to-engine.js');
+        expect(line).toContain('this version can\'t open');
         expect(line?.includes('\n')).toBe(false);
         await expect(stores.assertConverted([{ root }])).rejects.toThrow(stores.OldFormatError);
-        await expect(stores.userStore({ root })).rejects.toThrow('convert-to-engine.js');
+        await expect(stores.userStore({ root })).rejects.toThrow('this version can\'t open');
         expect(fs.existsSync(path.join(root, stores.STORE_DIR))).toBe(false);
     });
 
@@ -100,23 +101,15 @@ describe('user stores', () => {
         expect(fs.existsSync(path.join(old, stores.STORE_DIR))).toBe(false);
     });
 
-    test('a converted user is served, its old files left beside the store', async () => {
-        const dataRoot = tempRoot();
-        const root = path.join(dataRoot, 'u');
-        const fixture = await import('./convert-to-engine.fixture.js');
-        await fixture.buildOldUser(root);
-        (await import('../src/character-metadata-db.js')).disposeMetadataStores();
-        (await import('../src/message-tree-db.js')).disposeMessageTreeStores();
-        expect(await stores.oldFormatLine({ root })).toContain('character-metadata.sqlite, message-tree.sqlite');
-        const { getBetterSqlite3 } = await import('../src/endpoints/native-sqlite.js');
-        const convert = await import('../src/migrations/convert-to-engine.js');
-        const code = await convert.runConversion({
-            dataRoot, handle: 'u', Database: await getBetterSqlite3(), engine: () => engine, apply: true, serverStopped: true,
-            probeServer: async () => ({ running: false, lines: [] }), log: () => {}, warn: () => {},
-        });
-        expect(code).toBe(0);
+    test('the standard user is served: its cards, rows with chat stats, finding, card tags and the change feed', async () => {
+        const root = path.join(tempRoot(), 'u');
+        /** @type {any} */
+        const directories = { root };
+        for (const [k, v] of Object.entries(USER_DIRECTORY_TEMPLATE)) directories[k] = path.join(root, /** @type {string} */ (v));
+        for (const d of Object.values(directories)) fs.mkdirSync(d, { recursive: true });
+        const s = await stores.userStore(directories, 'u');
+        await (await import('./standard-user.fixture.js')).buildStandardUser({ directories, store: s });
         expect(await stores.oldFormatLine({ root })).toBeNull();
-        const s = await stores.userStore({ root });
         const [card] = /** @type {any[]} */ (await s.lib.cards(['Alice.png']));
         expect(card.data.name).toBe('Alice');
         // Rows show the chats' stats: the newest message's time and the chat size; a tree with none, 0.
