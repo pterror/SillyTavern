@@ -118,7 +118,7 @@ function formatLine(root, oldLibrary) {
     if (oldLibrary) old.push(OLD_LIBRARY);
     if (fs.existsSync(path.join(root, OLD_CHATS))) old.push(OLD_CHATS);
     if (!old.length) return null;
-    return `${root} holds data in the format before the engine (${old.join(', ')}) and no ${STORE_DIR}/: stop the server and run "node src/migrations/convert-to-engine.js --dry-run", then "--apply --server-stopped"`;
+    return `${root} holds data in the format before the engine (${old.join(', ')}) and no ${STORE_DIR}/: this version can't open it`;
 }
 
 /**
