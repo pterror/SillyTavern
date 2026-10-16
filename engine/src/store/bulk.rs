@@ -71,6 +71,20 @@ fn load_workers(budget: usize) -> usize {
 const STEP: usize = 4 << 20;
 /// An encoding's buffer past the sink's bytes: its index blocks and footer.
 const ENCODE_SLACK: usize = 64 << 10;
+/// The least a sink is cut to a run at. Under a cap it can't meet (memory outside the load's sinks and runs), a
+/// sink goes on growing to this rather than writing a tiny run per partition.
+const MIN_CUT: usize = 64 << 20;
+
+/// The resident memory a bulk load's allocations take, at most, per byte they ask the allocator for: its
+/// size-class rounding, partly used pages and the pages it keeps for reuse. A load holds the bytes asked
+/// (`memory::committed`) at its budget divided by this, so that its resident memory stays within the budget.
+///
+/// Measured through the binding (`Store.load`) on conversion-shaped cards (`characterRecords`, 30,000 to 40,000
+/// cards of about 12,000 words), resident memory past the load's start against the bytes asked past it, Node's
+/// own ~370 MB included: a 1 GiB budget, 1,359 MiB resident at the peak against ~0.8 GB asked; 4 GiB, 3,363 MiB
+/// against ~2.3 GB; the default (17.6 GB), 5,804 MiB against 4.9 GB. Without Node, the allocator's part grew from
+/// about 17% to 30% of what was asked as runs were cut.
+const ALLOCATOR_OVERHEAD: f64 = 1.4;
 
 /// What spilling a sink of `bytes` in `len` entries allocates besides the sink: the encoding's buffer, and the
 /// larger of the entries sorted out of the sink (while encoding) and the run's copy at its exact size (after).
@@ -81,16 +95,22 @@ fn spill_memory(bytes: usize, len: usize) -> usize {
         .saturating_add(sorted.max(bytes))
 }
 
-/// Targets resident growth from the load's start, falling back to allocator bytes where RSS is unavailable.
-/// Reservations cover run encoding and each sink's next measurement step. Pressure evicts held runs first,
-/// then cuts sinks to disk. This is not a hard process limit: the host's heap, in-flight records and the current
-/// partition can grow outside the sinks. A pressured sink still accumulates one `STEP` before cutting again.
+/// A load's memory: what the crate's allocations hold (`memory::committed`), with what spills under way have
+/// reserved, stays under what they held when the load started plus `limit`, the budget over
+/// `ALLOCATOR_OVERHEAD`. Measured every `STEP` a sink grows, with room for every sink's next step; where it is
+/// over, the oldest runs held in memory are written to files until it is under, and where none is left, a sink
+/// of at least `MIN_CUT` is cut and spills to a file. A sink is cut into a run at its share of `limit`, counting
+/// what its spill allocates (`spill_memory`), which is reserved before the spill starts; the run stays in memory
+/// while the allocations stay under the cap. The process's resident memory is read alongside and reported, never
+/// enforced: memory the load can't free (the host's) would only make it cut.
 struct Budget {
+    /// The budget, and the allocations past `base` it allows.
+    budget: usize,
     limit: usize,
-    /// The memory measured when the load started, and how it is measured: the process's resident memory, or
-    /// (None) the crate's allocations.
+    /// What the crate's allocations held when the load started.
     base: usize,
-    resident: Option<Mutex<crate::memory::Resident>>,
+    /// The process's resident memory, where it can be read, and what it was when the load started.
+    resident: Option<(Mutex<crate::memory::Resident>, usize)>,
     /// Sinks growing at once: the workers', then the numberings'.
     sinks: AtomicUsize,
     /// Bytes spills under way have reserved (`Budget::reserve`).
@@ -98,8 +118,9 @@ struct Budget {
     /// Runs made in memory, oldest first; held while a measure and the reservation it allows are made, so two
     /// threads can't both take the same room.
     held: Mutex<VecDeque<Weak<Run>>>,
-    /// The most the allocations have been measured to hold past `base`.
+    /// The most the allocations, and the resident memory, have been measured to hold past their start.
     peak: AtomicUsize,
+    peak_resident: AtomicUsize,
     /// Runs made in memory; runs written to files, as they were made or later; their bytes.
     kept: AtomicU64,
     files: AtomicU64,
@@ -119,34 +140,36 @@ impl Drop for Reserved<'_> {
 }
 
 impl Budget {
-    fn new(limit: usize, sinks: usize) -> Budget {
+    fn new(budget: usize, sinks: usize) -> Budget {
         let mut resident = crate::memory::Resident::new();
-        let (base, resident) = match resident.read() {
-            Some(rss) => (rss, Some(Mutex::new(resident))),
-            None => (crate::memory::committed(), None),
-        };
+        let resident = resident.read().map(|rss| (Mutex::new(resident), rss));
         Budget {
-            limit,
-            base,
+            budget,
+            limit: (budget as f64 / ALLOCATOR_OVERHEAD) as usize,
+            base: crate::memory::committed(),
             resident,
             sinks: AtomicUsize::new(sinks),
             reserved: AtomicUsize::new(0),
             held: Mutex::new(VecDeque::new()),
             peak: AtomicUsize::new(0),
+            peak_resident: AtomicUsize::new(0),
             kept: AtomicU64::new(0),
             files: AtomicU64::new(0),
             file_bytes: AtomicU64::new(0),
         }
     }
 
+    /// What the allocations hold; the resident memory, read alongside for the report.
     fn measure(&self) -> usize {
-        let c = self
-            .resident
-            .as_ref()
-            .and_then(|r| r.lock().unwrap().read())
-            .unwrap_or_else(crate::memory::committed);
+        let c = crate::memory::committed();
         self.peak
             .fetch_max(c.saturating_sub(self.base), Ordering::Relaxed);
+        if let Some((r, base)) = &self.resident
+            && let Some(rss) = r.lock().unwrap().read()
+        {
+            self.peak_resident
+                .fetch_max(rss.saturating_sub(*base), Ordering::Relaxed);
+        }
         c
     }
 
@@ -188,30 +211,34 @@ impl Budget {
     }
 
     /// A sink at `bytes` in `len` entries, measured at `next`: whether it is to be cut, at its `share` with what its
-    /// spill allocates (`spill_memory`), or where the allocations can't otherwise be held under the cap.
+    /// spill allocates (`spill_memory`), or where the allocations can't otherwise be held under the cap; never
+    /// under `MIN_CUT`.
     fn grown(&self, bytes: usize, len: usize, next: &mut usize, share: usize) -> StoreResult<bool> {
         let mut cut = bytes.saturating_add(spill_memory(bytes, len)) >= share;
-        // A caller's heap or a retained allocator page may keep RSS over the target even after every held
-        // run is written out. Do not cut again until this sink has accumulated a measurement step: resetting
-        // `next` to zero after a spill otherwise writes one tiny run per partition without relieving pressure.
-        if bytes >= (*next).max(STEP) {
+        if bytes >= *next {
             *next = bytes.saturating_add(STEP);
             cut |= !self.hold()?;
         }
-        Ok(cut)
+        Ok(cut && bytes >= MIN_CUT)
     }
 }
 
 #[cfg(test)]
 #[test]
-fn external_memory_pressure_does_not_cut_each_small_partition() {
+fn a_sink_under_a_cap_it_cant_meet_is_cut_no_smaller_than_min_cut() {
     let budget = Budget::new(64 << 20, 1);
-    // Reservations exhaust the target even if unrelated allocations are freed during the test.
+    // Reservations past the cap, as memory outside the load's sinks and runs would hold it.
     budget.reserved.store(usize::MAX / 2, Ordering::Relaxed);
     for _ in 0..3 {
         let mut next = 0;
-        assert!(!budget.grown(1024, 1, &mut next, budget.limit).unwrap());
-        assert!(budget.grown(STEP, 100, &mut next, budget.limit).unwrap());
+        assert!(!budget.grown(1024, 1, &mut next, usize::MAX).unwrap());
+        assert!(
+            !budget
+                .grown(MIN_CUT - 1, 100, &mut next, usize::MAX)
+                .unwrap()
+        );
+        next = 0;
+        assert!(budget.grown(MIN_CUT, 100, &mut next, usize::MAX).unwrap());
     }
 }
 
@@ -235,9 +262,12 @@ pub struct LoadStats {
     /// The workers' time deriving, and writing their spills, summed over workers.
     pub derive_micros: u64,
     pub spill_micros: u64,
-    /// The memory it may take (`load_budget`), and the most it was measured to take (`Budget`).
+    /// The memory it may take (`load_budget`); the most its allocations were measured to hold past the start
+    /// (`memory::committed`, held at the budget over `ALLOCATOR_OVERHEAD`), and the most the process's resident
+    /// memory rose (reported, not enforced; 0 where it can't be read).
     pub budget_bytes: u64,
     pub peak_bytes: u64,
+    pub peak_resident_bytes: u64,
     /// Runs of the workers' and the numberings' sinks that went to files, as they were made or later, and
     /// their bytes; and the runs made in memory.
     pub spills: u64,
@@ -343,7 +373,8 @@ impl Store {
         let count = load_workers(limit);
         let budget = Arc::new(Budget::new(limit, count));
         eprintln!(
-            "st-engine: a bulk load's memory budget is {} MiB, over {count} workers",
+            "st-engine: a bulk load's memory budget is {} MiB (its allocations held at {} MiB), over {count} workers",
+            budget.budget >> 20,
             budget.limit >> 20
         );
         let workers = (0..count)
@@ -378,7 +409,7 @@ impl Store {
             keep_staging: false,
             library_empty,
             stats: LoadStats {
-                budget_bytes: budget.limit as u64,
+                budget_bytes: budget.budget as u64,
                 ..LoadStats::default()
             },
             budget,
@@ -626,6 +657,7 @@ impl Loader {
         self.stats.spill_bytes = b.file_bytes.load(Ordering::Relaxed);
         self.stats.kept_runs = b.kept.load(Ordering::Relaxed);
         self.stats.peak_bytes = b.peak.load(Ordering::Relaxed) as u64;
+        self.stats.peak_resident_bytes = b.peak_resident.load(Ordering::Relaxed) as u64;
 
         // ---- install ----
         let t = Instant::now();
