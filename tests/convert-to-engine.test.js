@@ -95,6 +95,11 @@ describe('convert-to-engine', () => {
         expect(fs.existsSync(path.join(root, convert.BUILDING_DIR))).toBe(false);
         // Images stay in characters/, untouched: the store holds none.
         expect(fs.existsSync(path.join(root, convert.STORE_DIR, 'avatars'))).toBe(false);
+        const dates = new Database(path.join(root, 'character-metadata.sqlite'));
+        dates.function('st_fold', { deterministic: true }, (await import('../src/character-store-schema.js')).foldName);
+        dates.prepare('UPDATE characters SET date_added = ? WHERE id = ?').run(1700000000000.75, 'Alice.png');
+        dates.prepare('UPDATE groups SET date_added = ? WHERE id = ?').run(1700000000000.25, '1700000000001');
+        dates.close();
 
         // Converted once: a second run refuses.
         expect((await run(dataRoot, { apply: true, serverStopped: true })).code).toBe(1);

@@ -57,7 +57,7 @@ fn mark(t: u64) -> Record {
 fn create(e: u64, kind: u64, key: &str) -> Record {
     rec(
         "entityCreate",
-        vec![Value::Id(e), Value::UInt(kind), text(key), Value::Time(0)],
+        vec![Value::Id(e), Value::UInt(kind), text(key), Value::F64(0.0)],
     )
 }
 

@@ -8,8 +8,8 @@ use std::sync::atomic::AtomicU64;
 
 use super::books::{BOOK, ENTRY, OWNED};
 use super::chat;
-use super::tags;
 use super::library::{CHARACTER, GROUP, TAG, item_field};
+use super::tags;
 use super::*;
 use crate::keyspace::val::{counter_value, map_pairs};
 use crate::log::format::{Value, kind_by_name};
@@ -95,7 +95,7 @@ fn unset(e: u64, f: u64) -> Record {
 fn create(e: u64, kind: u64, key: &str) -> Record {
     rec(
         "entityCreate",
-        vec![Value::Id(e), Value::UInt(kind), text(key), Value::Time(0)],
+        vec![Value::Id(e), Value::UInt(kind), text(key), Value::F64(0.0)],
     )
 }
 
@@ -328,7 +328,12 @@ impl Model {
                 self.ents.get_mut(&e).unwrap().key = key.clone();
                 vec![rec(
                     "entityUpdate",
-                    vec![Value::Id(e), Value::UInt(GROUP), text(&key), Value::Time(0)],
+                    vec![
+                        Value::Id(e),
+                        Value::UInt(GROUP),
+                        text(&key),
+                        Value::F64(0.0),
+                    ],
                 )]
             }
             10 => {

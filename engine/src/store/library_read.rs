@@ -986,7 +986,7 @@ pub struct Entity {
     pub id: u64,
     pub kind: u64,
     pub key: Vec<u8>,
-    pub added: i64,
+    pub added: f64,
     pub version: u64,
     pub fav: bool,
     /// Tags as they are now (merged tags as their targets; tags merged into none left out), in id order.
@@ -1315,7 +1315,7 @@ pub fn entities_only(
         let info = rec(plan.fixed[0]).expect("an entity's record");
         let kind = super::kinds::id(info, 1);
         let added = match info.values[3] {
-            Value::Time(t) => t,
+            Value::F64(t) => t,
             _ => unreachable!("checked by Record::new"),
         };
         let mut ent = Entity {

@@ -547,7 +547,8 @@ pub static KINDS: &[Kind] = &[
             req("entity", Ty::Id(Space::Entity)),
             req("type", Ty::UInt),
             req("key", Ty::Text),
-            req("added", Ty::Time),
+            // File-derived dates can include fractional milliseconds; preserve the original number.
+            req("added", Ty::F64),
         ],
         internal: false,
     },
@@ -643,7 +644,7 @@ pub static KINDS: &[Kind] = &[
             req("entity", Ty::Id(Space::Entity)),
             req("type", Ty::UInt),
             req("key", Ty::Text),
-            req("added", Ty::Time),
+            req("added", Ty::F64),
         ],
         internal: false,
     },

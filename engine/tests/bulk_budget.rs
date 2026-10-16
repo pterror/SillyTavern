@@ -36,7 +36,7 @@ fn create(e: u64, kind: u64, key: &str) -> Record {
             Value::Id(e),
             Value::UInt(kind),
             Value::Text(key.as_bytes().to_vec()),
-            Value::Time(0),
+            Value::F64(0.0),
         ],
     )
 }

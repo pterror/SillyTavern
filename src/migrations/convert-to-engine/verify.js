@@ -69,6 +69,7 @@ export async function verify(v) {
                     continue;
                 }
                 characters++;
+                if (e.added !== c.dateAdded) bad.push(`character ${c.avatar}: its date added reads back differently`);
                 const card = await lib.assembled(e);
                 if (canonicalCardHash(card) !== canonicalCardHash(c.card)) bad.push(`character ${c.avatar}: its card reads back differently`);
                 const want = normalizeTagIds([...new Set(c.tags.map(t => (v.tags ? readsAs(v.tags, t) : t)).filter(t => t !== null))]);
@@ -86,6 +87,7 @@ export async function verify(v) {
 
     // ---- groups ----
     const groupRows = await lib.groups(v.groups.map(g => g.group.id));
+    const groupEntities = await lib.entities(await lib.ids(TYPE.group, v.groups.map(g => g.group.id)));
     for (const [i, g] of v.groups.entries()) {
         const got = groupRows[i];
         if (!got) {
@@ -95,6 +97,7 @@ export async function verify(v) {
         const own = (/** @type {Record<string, unknown>} */ o) => canonicalJson(Object.fromEntries(Object.entries(o).filter(([k, x]) => !GROUP_READ_KEYS.includes(k) && x !== undefined)));
         if (own(got) !== own(g.group)) bad.push(`group ${g.group.id}: its values read back differently`);
         if (got.fav !== normalizeFav(g.group.fav)) bad.push(`group ${g.group.id}: its fav reads back differently`);
+        if (groupEntities[i]?.added !== g.dateAdded) bad.push(`group ${g.group.id}: its date added reads back differently`);
         const want = normalizeTagIds([...new Set((v.tags?.groupTags.get(g.group.id) ?? []).map(t => (v.tags ? readsAs(v.tags, t) : t)).filter(t => t !== null))]);
         if (JSON.stringify(got.tag_ids) !== JSON.stringify(want)) bad.push(`group ${g.group.id}: its tags read back differently`);
     }
