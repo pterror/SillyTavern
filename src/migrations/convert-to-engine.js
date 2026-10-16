@@ -104,6 +104,7 @@ export function userDirectories(root) {
  * @property {any} engine The engine binding (apply only).
  * @property {boolean} apply
  * @property {boolean} keepOrphans Convert owners with no character or group as unowned trees.
+ * @property {number} [loadBudget] Resident-memory growth target in bytes.
  * @property {number} [now]
  * @property {(line: string) => void} [progress]
  */
@@ -131,7 +132,7 @@ export async function convert(o) {
     const meta = fs.existsSync(metaPath) ? openOld(o.Database, metaPath) : null;
     const tree = fs.existsSync(treePath) ? openTree(o.Database, treePath) : null;
     const store = o.apply ? await o.engine.Store.open(/** @type {string} */ (o.storeDir)) : null;
-    const sink = new Sink(store);
+    const sink = new Sink(store, o.loadBudget);
     /** @type {import('./convert-to-engine/records.js').Ids} */
     const ids = { nextId: 1n };
     /** @type {import('../endpoints/sqlite-engine.js').SqliteEngineHandle[]} */
@@ -207,6 +208,9 @@ export async function convert(o) {
                         report.problems.push(`character ${c.avatar}: its stored card can't be read`);
                         continue;
                     }
+                    // A tag with no definition may be created on first use. Allocate it before this owner,
+                    // so its records do not make the loader revisit a lower-numbered partition afterward.
+                    const carriedTags = await carried(c.tags);
                     const id = ids.nextId++;
                     const imageFile = path.join(dirs.characters, c.avatar);
                     if (fs.existsSync(imageFile)) {
@@ -217,7 +221,7 @@ export async function convert(o) {
                     }
                     const built = characterRecords(id, c.avatar, c.card, { fav: c.fav, dateAdded: c.dateAdded, contentHash: c.contentHash, avatarIdentityHash: c.avatarIdentityHash, directories: dirs });
                     const records = built.records;
-                    for (const t of await carried(c.tags)) records.push({ kind: 'tagAssign', entity: id, tag: t, assigned: true });
+                    for (const t of carriedTags) records.push({ kind: 'tagAssign', entity: id, tag: t, assigned: true });
                     await sink.toLoad(records);
                     speakers.set(c.avatar, { id, name: built.name, avatar: c.avatar });
                     const stem = c.avatar.replace('.png', '');
@@ -239,10 +243,11 @@ export async function convert(o) {
         /** @type {Map<string, bigint>} */
         const groupEntity = new Map();
         for (const g of groupRead.groups) {
+            const carriedTags = await carried(tags?.groupTags.get(g.group.id) ?? []);
             const id = ids.nextId++;
             groupEntity.set(g.group.id, id);
             const records = groupRecords(id, g.group, g.dateAdded);
-            for (const t of await carried(tags?.groupTags.get(g.group.id) ?? [])) records.push({ kind: 'tagAssign', entity: id, tag: t, assigned: true });
+            for (const t of carriedTags) records.push({ kind: 'tagAssign', entity: id, tag: t, assigned: true });
             await sink.toLoad(records);
             count(report, 'groups');
         }
@@ -497,7 +502,9 @@ export async function convert(o) {
             const conversations = [];
             /** @type {Parameters<typeof verify>[0]['owners']} */
             const checks = [];
-            for (const [ownerId, t] of trees) {
+            // Each worker can derive a new partition without probing earlier spill files when owners arrive
+            // in engine-id order. The old tree's owner names have no relationship to those ids.
+            for (const [ownerId, t] of [...trees].sort((a, b) => a[1].id < b[1].id ? -1 : a[1].id > b[1].id ? 1 : 0)) {
                 const db = dbOf(ownerId);
                 const group = t.kind === 'group' ? groupRead.groups.find(g => g.group.id === ownerId)?.group : undefined;
                 const active = t.kind === 'character' ? activeChats.get(/** @type {any} */ (t.speaker).avatar) ?? null : typeof group?.chat_id === 'string' ? group.chat_id : null;
@@ -612,6 +619,9 @@ export async function convert(o) {
         report.lines.push(`time: ${phases.join(', ')}`);
         return { report, sink, stats: store?.stats() ?? null };
     } finally {
+        // A rejected add leaves the load alive until explicitly abandoned (or garbage-collected).
+        // Join its workers before closing the store and removing the unfinished directory.
+        sink.load?.abandon();
         await store?.close();
         meta?.close();
         tree?.close();
@@ -806,6 +816,7 @@ export function reportLines(report) {
  * @param {string} options.handle
  * @param {boolean} options.apply
  * @param {boolean} options.serverStopped
+ * @param {number} [options.loadBudget] Resident-memory growth target in bytes.
  * @param {boolean} [options.keepOrphans]
  * @param {any} options.Database better-sqlite3's constructor, or null when it can't be loaded.
  * @param {() => any} options.engine Loads the engine binding.
@@ -869,7 +880,7 @@ export async function runConversion(options) {
     fs.mkdirSync(building);
     let result;
     try {
-        result = await convert({ root, handle: options.handle, Database: options.Database, engine: options.engine(), apply: true, keepOrphans: !!options.keepOrphans, storeDir: building, progress });
+        result = await convert({ root, handle: options.handle, Database: options.Database, engine: options.engine(), apply: true, keepOrphans: !!options.keepOrphans, storeDir: building, progress, loadBudget: options.loadBudget });
     } catch (err) {
         fs.rmSync(building, { recursive: true, force: true });
         if (!(err instanceof Stop)) throw err;

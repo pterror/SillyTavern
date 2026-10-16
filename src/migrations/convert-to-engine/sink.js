@@ -27,8 +27,10 @@ function sizeOf(r) {
 export class Sink {
     /**
      * @param {any} store The engine's `Store`, or null for a dry run.
+     * @param {number} [loadBudget] Resident-memory growth target in bytes.
      */
-    constructor(store) {
+    constructor(store, loadBudget) {
+        this.loadBudget = loadBudget;
         this.store = store;
         /** @type {Record<string, number>} Records per kind. */
         this.kinds = {};
@@ -67,7 +69,7 @@ export class Sink {
         if (!this.load) {
             // A load refuses records sharing a partition with commits made while it runs: none are in flight.
             await this.flush();
-            this.load = this.store.load();
+            this.load = this.store.load(this.loadBudget);
         }
         for (const r of records) this.loadBatch.push(r);
         if (this.loadBatch.length >= LOAD_RECORDS) await this.flushLoad();
