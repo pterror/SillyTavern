@@ -9,7 +9,7 @@ import bytes from 'bytes';
 import { getConfigValue, generateTimestamp, removeOldBackups } from '../util.js';
 import { getAllUserHandles, getUserDirectories } from '../users.js';
 import { getFileNameValidationFunction } from '../middleware/validateFileName.js';
-import { getStringHash, seedKeyHashes } from '../../public/scripts/hash-utils.js';
+import { CHAR_LORE_PATH, getStringHash, seedKeyHashes, settingsWithoutCharLore } from '../../public/scripts/hash-utils.js';
 import {
     readAllSettingsAsJson,
     readSettingsAtPaths,
@@ -18,7 +18,7 @@ import {
     writeNamedSettings,
     settingsExist,
 } from '../settings-store.js';
-import { requestStore, storeRoute } from '../user-stores.js';
+import { requestStore, storeRoute, userStore } from '../user-stores.js';
 
 const ENABLE_EXTENSIONS = !!getConfigValue('extensions.enabled', true, 'boolean');
 const ENABLE_EXTENSIONS_AUTO_UPDATE = !!getConfigValue('extensions.autoUpdate', true, 'boolean');
@@ -51,6 +51,40 @@ export function triggerAutoSave(handle) {
     const functionToCall = AUTOSAVE_FUNCTIONS.get(handle);
     if (functionToCall && typeof functionToCall === 'function') {
         functionToCall();
+    }
+}
+
+/**
+ * Settings as the page and backups read them: upstream's `world_info.charLore` filled in from the characters' links
+ * (no settings file holds it), when any character has extra links. The settings hashes leave it out.
+ * @param {import('../library-engine.js').LibraryEngine} lib
+ * @param {Record<string, any>} settings
+ * @returns {Promise<Record<string, any>>}
+ */
+export async function withCharLore(lib, settings) {
+    const charLore = await lib.charLore();
+    if (charLore.length === 0) return settings;
+    const [top, mid, last] = CHAR_LORE_PATH;
+    const wis = _.isPlainObject(settings[top]) ? settings[top] : {};
+    const worldInfo = _.isPlainObject(wis[mid]) ? wis[mid] : {};
+    return { ...settings, [top]: { ...wis, [mid]: { ...worldInfo, [last]: charLore } } };
+}
+
+/**
+ * Logs one line when a settings save carried a `charLore` (not stored: characters' links are changed by
+ * `/api/worldinfo/additional-books` only) that differs from the links of the characters it names.
+ * @param {import('express').Request} request
+ * @param {unknown} charLore What the save carried (undefined: none).
+ */
+async function reportIgnoredCharLore(request, charLore) {
+    if (charLore === undefined) return;
+    try {
+        const { lib } = await requestStore(request);
+        if (await lib.charLoreDiffers(charLore)) {
+            console.warn('[settings] A save carried world_info.charLore that differs from the characters\' links: it was ignored. /api/worldinfo/additional-books changes them.');
+        }
+    } catch (err) {
+        console.error('Could not compare a saved charLore with the characters\' links', err);
     }
 }
 
@@ -153,7 +187,8 @@ async function backupUserSettings(handle, preventDuplicates) {
 
     let snapshotContent;
     try {
-        snapshotContent = readAllSettingsAsJson(userDirectories);
+        const { lib } = await userStore(userDirectories, handle);
+        snapshotContent = JSON.stringify(await withCharLore(lib, JSON.parse(readAllSettingsAsJson(userDirectories))), null, 4);
     } catch (err) {
         console.error('Could not read settings for backup', err);
         return;
@@ -246,7 +281,9 @@ router.post('/save', function (request, response) {
         }
 
         // Keeps the key files the body leaves out: the client's full save has no tags, tag_map or accountStorage.
+        // Its charLore isn't stored (writeNamedSettings() leaves it out).
         writeNamedSettings(directories, request.body);
+        void reportIgnoredCharLore(request, settingsWithoutCharLore('', request.body).charLore);
         triggerAutoSave(request.user.profile.handle);
         // Key order in the reconstructed store may differ from the client's payload, so the client can't just
         // hash its own JSON locally - it must use this returned hash.
@@ -289,11 +326,14 @@ router.post('/save-partial', function (request, response) {
         }
 
         try {
+            // A charLore among the keys isn't stored (writeSettingsKeys() leaves it out).
             writeSettingsKeys(directories, keys);
         } catch (err) {
             console.error('Could not write partial settings update', err);
             return response.status(400).send({ result: 'error', error: err.message });
         }
+        const carried = Object.entries(keys).map(([key, value]) => settingsWithoutCharLore(key, value).charLore).find(x => x !== undefined);
+        void reportIgnoredCharLore(request, carried);
 
         triggerAutoSave(request.user.profile.handle);
         // Same reasoning as /save's response above: return the server's own canonical whole-store hash so the
@@ -385,11 +425,14 @@ router.post('/get', storeRoute('reading settings', async (request, response) => 
     const sysprompt = readAndParseFromDirectory(request.user.directories.sysprompt);
     const reasoning = readAndParseFromDirectory(request.user.directories.reasoning);
 
+    // The hashes are of the settings as stored, without charLore; the page gets it filled in.
     const keyHashes = {};
     seedKeyHashes(keyHashes, JSON.parse(settings));
+    const { lib } = await requestStore(request);
+    const filled = JSON.stringify(await withCharLore(lib, JSON.parse(settings)), null, 4);
 
     response.send({
-        settings,
+        settings: filled,
         settingsHash: getStringHash(settings),
         keyHashes,
         koboldai_settings,

@@ -65,6 +65,47 @@ export function setAtPath(obj, dottedPath, value) {
 }
 
 /**
+ * Where upstream's `charLore` sits in settings: each character's extra lorebook links. They are the store's, changed
+ * only by `/api/worldinfo/additional-books`: no settings write stores them, and no settings hash covers them.
+ */
+export const CHAR_LORE_PATH = Object.freeze(['world_info_settings', 'world_info', 'charLore']);
+
+/**
+ * A settings value without `charLore` (CHAR_LORE_PATH), as written or hashed at settings key `key` (a top-level key,
+ * a dotted path, or '' for the whole settings object): `value` itself when it holds none there, else a copy with it
+ * left out. `skip` when `key` is `charLore` itself or inside it. `charLore` is what it held there.
+ * @param {string} key
+ * @param {*} value
+ * @returns {{ value: *, skip: boolean, charLore: * }}
+ */
+export function settingsWithoutCharLore(key, value) {
+    const parts = key === '' ? [] : key.split('.');
+    const shared = Math.min(parts.length, CHAR_LORE_PATH.length);
+    for (let i = 0; i < shared; i++) {
+        if (parts[i] !== CHAR_LORE_PATH[i]) return { value, skip: false, charLore: undefined };
+    }
+    if (parts.length >= CHAR_LORE_PATH.length) return { value: undefined, skip: true, charLore: parts.length === CHAR_LORE_PATH.length ? value : undefined };
+    const rest = CHAR_LORE_PATH.slice(parts.length);
+    let holder = value;
+    for (const part of rest.slice(0, -1)) {
+        if (holder == null || typeof holder !== 'object' || Array.isArray(holder) || !Object.hasOwn(holder, part)) return { value, skip: false, charLore: undefined };
+        holder = holder[part];
+    }
+    const last = rest[rest.length - 1];
+    if (holder == null || typeof holder !== 'object' || Array.isArray(holder) || !Object.hasOwn(holder, last)) return { value, skip: false, charLore: undefined };
+    // A copy of each object on the way down, the rest shared.
+    const copy = { ...value };
+    let at = copy;
+    for (const part of rest.slice(0, -1)) {
+        at[part] = { ...at[part] };
+        at = at[part];
+    }
+    const charLore = at[last];
+    delete at[last];
+    return { value: copy, skip: false, charLore };
+}
+
+/**
  * Recursively hashes every dotted path in a settings-shaped object into `map`, for partial-update conflict checks.
  * A path absent from `map` means "unknown", not "hash is 0" (0 is a real hash) - callers must check presence.
  * Cycle-safe via an `ancestors` walk-stack; a stringify failure only taints that one path, not its children.

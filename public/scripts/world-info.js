@@ -2587,19 +2587,10 @@ async function displayWorldEntries(name, data, navigation = navigation_option.no
             return;
         }
 
-        if (world_info.charLore) {
-            world_info.charLore.forEach((charLore, index) => {
-                if (charLore.extraBooks?.includes(name)) {
-                    const tempCharLore = charLore.extraBooks.filter((e) => e !== name);
-                    if (tempCharLore.length === 0) {
-                        world_info.charLore.splice(index, 1);
-                    } else {
-                        charLore.extraBooks = tempCharLore;
-                    }
-                }
-            });
-
-            saveSettingsDebounced('world_info_settings');
+        // Each character's extra link to the book goes, as an action, while the book is still there to name.
+        const linking = (world_info.charLore ?? []).filter(e => e.extraBooks?.includes(name)).map(e => e.name);
+        for (const fileName of linking) {
+            await sendAuxBooksOp(fileName, 'remove', [name]);
         }
 
         // Selected world_info automatically refreshes
@@ -7418,14 +7409,16 @@ export async function charSetAuxWorlds(fileName, books) {
  * Shared by the optimistic local update and (implicitly, by construction) the server's own logic.
  * @param {Array} charLore
  * @param {string} fileName
- * @param {'add'|'set'} op
+ * @param {'add'|'set'|'remove'} op
  * @param {string[]} books
  * @returns {Array} a new charLore array
  */
 function applyAuxBooksOp(charLore, fileName, op, books) {
     const idx = charLore.findIndex(e => e.name === fileName);
     const existing = idx !== -1 && Array.isArray(charLore[idx].extraBooks) ? charLore[idx].extraBooks : [];
-    const next = op === 'add' ? [...new Set([...existing, ...books])] : [...new Set(books)];
+    const next = op === 'add' ? [...new Set([...existing, ...books])]
+        : op === 'remove' ? existing.filter(b => !books.includes(b))
+            : [...new Set(books)];
 
     const result = [...charLore];
     if (next.length === 0) {
@@ -7439,11 +7432,7 @@ function applyAuxBooksOp(charLore, fileName, op, books) {
 }
 
 /**
- * Sends the add/set as a single action to the server (one round trip: server reads the
- * character's current extraBooks, applies the op, validates each name is a real World, and
- * writes back). Updates the local cache optimistically first for instant UI feedback, then
- * reconciles with the server's own confirmed result once the response lands, or rolls back
- * and surfaces an error if the server rejects it (e.g. an unknown World name).
+ * Changes the extra books of the character being edited, or (while one is being created) those staged for it.
  * @param {string} fileName
  * @param {'add'|'set'} op
  * @param {string[]} books
@@ -7459,6 +7448,21 @@ async function updateAuxBooks(fileName, op, books) {
         return;
     }
 
+    await sendAuxBooksOp(fileName, op, books);
+}
+
+/**
+ * Sends an add/remove/set of a stored character's extra books to the server as one action (the server applies the
+ * op to the character's links, validates each name is a real World, and answers the extra books it has now). The
+ * page's `world_info.charLore` is updated optimistically first for instant UI feedback, then reconciled with the
+ * server's answer, or rolled back with an error if the server rejects it (e.g. an unknown World name). Settings
+ * saves never change a character's links: this is how they change.
+ * @param {string} fileName The character's file name without its extension (getCharaFilename()).
+ * @param {'add'|'set'|'remove'} op
+ * @param {string[]} books
+ * @returns {Promise<boolean>} Whether the server applied it.
+ */
+export async function sendAuxBooksOp(fileName, op, books) {
     const previousCharLore = world_info.charLore ?? [];
     Object.assign(world_info, { charLore: applyAuxBooksOp(previousCharLore, fileName, op, books) });
 
@@ -7472,7 +7476,7 @@ async function updateAuxBooks(fileName, op, books) {
             const data = await response.json().catch(() => ({}));
             Object.assign(world_info, { charLore: previousCharLore });
             toastr.error(data?.error || t`Failed to update additional lorebooks`);
-            return;
+            return false;
         }
         const { extraBooks } = await response.json();
 
@@ -7488,10 +7492,12 @@ async function updateAuxBooks(fileName, op, books) {
             charLore[idx] = { ...charLore[idx], extraBooks };
         }
         Object.assign(world_info, { charLore });
+        return true;
     } catch (error) {
         Object.assign(world_info, { charLore: previousCharLore });
         console.error('Failed to update additional lorebooks', error);
         toastr.error(t`Failed to update additional lorebooks`);
+        return false;
     }
 }
 
