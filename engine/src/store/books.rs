@@ -731,6 +731,25 @@ pub fn entries_page(
     ]))
 }
 
+/// Each item's place in `entity`'s list `list`, or null where the item isn't in it.
+pub fn item_places(view: &View, entity: u64, list: u64, items: &[u64]) -> Result<Js, StoreError> {
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let mut k = key::ids(key::ITEM_AT, entity, list);
+        put_u64(&mut k, *item);
+        out.push(match view.get(&k)? {
+            Some(b) => {
+                let mut at = 0;
+                let p =
+                    get_uvarint(&b, &mut at).map_err(|_| err("an item's place doesn't decode"))?;
+                Js::Num(p as f64)
+            }
+            None => Js::Null,
+        });
+    }
+    Ok(Js::Arr(out))
+}
+
 /// Each book as it resolves: `{ id, key, defined }` of the book its forwards lead to (`key` the book's key; null
 /// for an owned book), or null for no book.
 pub fn resolved(view: &View, ids: &[u64]) -> Result<Js, StoreError> {
