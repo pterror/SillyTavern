@@ -2786,13 +2786,14 @@ fn world_read_job(op: String, args: &Object) -> Result<TreeRead> {
             })
         }
         "entries" => {
-            let (book, after, limit) = (
+            let (book, after, before, limit) = (
                 req_integer(a, "book")?,
                 opt_integer(a, "after")?,
+                opt_integer(a, "before")?,
                 req_integer(a, "limit")? as usize,
             );
             Box::new(move |s| {
-                s.chat_read(|v| b::entries_page(v, book, after, limit))
+                s.chat_read(|v| b::entries_page(v, book, after, before, limit))
                     .map(JsTree)
             })
         }

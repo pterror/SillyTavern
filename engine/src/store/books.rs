@@ -232,7 +232,8 @@ fn opt_id(rec: &Record, i: usize) -> Option<u64> {
 }
 
 /// A record at `at` changed entity `e`: when it is an entry or an owned book, the book holding it, and that book's
-/// owner, changed too (their versions follow, so a page's copy of a book or card is known stale).
+/// owner, changed too (their versions follow, so a page's copy of a book or card is known stale); when it is a saved
+/// view's condition or range, its view.
 pub fn touched(view: &View, out: &mut Out, e: u64, at: Loc) -> Result<(), StoreError> {
     match entity_info(view, e)? {
         Some((kind, k, _)) => container_touched(view, out, kind, &k, at),
@@ -251,6 +252,13 @@ pub fn container_touched(
     let up = match kind {
         ENTRY => parse_entry_key(k)?.0,
         OWNED => owner_of(k)?,
+        library::CONDITION | library::RANGE => {
+            let view_key = k.split(|c| *c == b':').next().unwrap_or_default();
+            match view.get(&library::entity_key_key(library::VIEW, view_key))? {
+                Some(b) => library::parse_uvarint(&b)?,
+                None => return Ok(()),
+            }
+        }
         _ => return Ok(()),
     };
     version(view, out, up, at)?;
@@ -672,20 +680,41 @@ pub fn books_page(view: &View, after: Option<&[u8]>, limit: usize) -> Result<Js,
     ]))
 }
 
-/// Up to `limit` of a book's entries in their places, after the place `after`: `{ entries: [{ id, position }],
-/// more }`.
+/// Up to `limit` of a book's entries in their places, after the place `after`, or before the place `before`
+/// (nearest first): `{ entries: [{ id, position }], more }`.
 pub fn entries_page(
     view: &View,
     book: u64,
     after: Option<u64>,
+    before: Option<u64>,
     limit: usize,
 ) -> Result<Js, StoreError> {
     let prefix = key::ids(key::ITEM, book, ENTRIES);
-    let mut start = prefix.clone();
-    if let Some(a) = after {
-        put_u64(&mut start, a + 1);
-    }
-    let found = view.scan(&start, &key::prefix_end(&prefix), limit + 1)?;
+    let found: Vec<(Vec<u8>, Vec<u8>)> = match (after, before) {
+        (Some(_), Some(_)) => {
+            return Err(StoreError::Refused(
+                "entries: `after` and `before` together".into(),
+            ));
+        }
+        (_, Some(b)) => {
+            let mut end = prefix.clone();
+            put_u64(&mut end, b);
+            view.scan_vals_rev(&prefix, &end, limit + 1)?
+                .into_iter()
+                .map(|(k, v)| {
+                    let v = v.into_bytes(&k);
+                    (k, v)
+                })
+                .collect()
+        }
+        (a, None) => {
+            let mut start = prefix.clone();
+            if let Some(a) = a {
+                put_u64(&mut start, a + 1);
+            }
+            view.scan(&start, &key::prefix_end(&prefix), limit + 1)?
+        }
+    };
     let more = found.len() > limit;
     let mut entries = Vec::new();
     for (k, v) in found.into_iter().take(limit) {
