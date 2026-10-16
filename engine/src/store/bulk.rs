@@ -704,8 +704,8 @@ impl Loader {
     fn build_numbers(&self, staged: &Staged) -> StoreResult<(Vec<Arc<Run>>, u64)> {
         use super::kinds::key;
         use super::library::{
-            BY_NAME, Scope, host_bytes, order_prefix, parse_host, parse_uvarint, rand_key,
-            rank_host, split_order_key, uvarint,
+            BY_NAME, Scope, host_numbered, order_prefix, parse_uvarint, rand_key, rank_host,
+            split_order_key, uvarint,
         };
         let bad = || StoreError::Entry("a count key doesn't decode".into());
         let counts = key::of(key::COUNT);
@@ -834,9 +834,9 @@ impl Loader {
                     }
                     let (k, hv) = host_it.next_entry()?.ok_or_else(unhosted)?;
                     let hv = hv.settled(&k).ok_or_else(unhosted)?.into_bytes(&k);
-                    let (l, _) = parse_host(&hv)?;
+                    let numbered = host_numbered(&hk, &hv, Some(n))?;
                     sink_bytes += hk.len() + ENTRY_OVERHEAD;
-                    sink.insert(hk, Val::Put(host_bytes(l, Some(n))));
+                    sink.insert(hk, Val::Put(numbered));
                     if budget.grown(sink_bytes, sink.len(), &mut sink_next, share)? {
                         entries += sink.len() as u64;
                         spill(

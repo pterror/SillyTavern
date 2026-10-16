@@ -311,6 +311,20 @@ impl<'a> Checker<'a> {
         })
     }
 
+    /// Whether character `e` links one of the filter's lorebooks (its book, or a name resolving as it).
+    fn links_world(&self, e: u64) -> Result<bool, StoreError> {
+        let scopes: Vec<Vec<u8>> = self
+            .r
+            .worlds
+            .iter()
+            .filter_map(|s| match s {
+                Scope::World(w) => Some(w.clone()),
+                _ => None,
+            })
+            .collect();
+        books::links_any(self.view, e, &scopes)
+    }
+
     fn closed(&mut self, t: u64) -> Result<bool, StoreError> {
         if let Some(c) = self.folders.get(&t) {
             return Ok(*c);
@@ -402,12 +416,7 @@ impl<'a> Checker<'a> {
                 return Ok(false);
             }
         }
-        if kind == CHARACTER
-            && f.world.is_some()
-            && !books::link_of(self.view, e)?
-                .and_then(|(_, b)| b)
-                .is_some_and(|b| self.r.worlds.contains(&Scope::World(books::scope_bytes(b))))
-        {
+        if kind == CHARACTER && f.world.is_some() && !self.links_world(e)? {
             return Ok(false);
         }
         for i in 0..self.r.keys.len() {
@@ -1000,7 +1009,8 @@ pub struct Entity {
     pub hashes: Vec<(u64, Vec<u8>)>,
     /// A tag's `tagOrder`: None without one, Some(None) for one holding no order.
     pub tag_order: Option<Option<f64>>,
-    /// A character's lorebook link: the book it names, and the key and version of the book that resolves as.
+    /// A character's first lorebook link (`books::first_link`): the book it names, and the key and version of the
+    /// book that resolves as.
     pub link: Option<(u64, Vec<u8>, u64)>,
     /// An entry's recorded `entryIndex`.
     pub entry_index: Option<f64>,
@@ -1061,7 +1071,7 @@ pub fn entity_with(view: &View, e: u64, only: Option<&Only>) -> Result<Option<En
     }
     out.tags = tags_now(view, e)?;
     if kind == library::CHARACTER
-        && let Some((_, Some(b))) = books::link_of(view, e)?
+        && let Some(b) = books::first_link(view, e)?
     {
         let r = books::resolve(view, b)?;
         let k = library::entity_info(view, r)?
@@ -1145,14 +1155,13 @@ pub fn entities_only(
 ) -> Result<Vec<Option<Entity>>, StoreError> {
     use super::kinds::{full_text, parse_loc, parse_pos, parse_varints};
     use crate::log::format::Value;
-    // Per entity: its record, version, fav, data size, create date, lorebook link and tag order.
-    const FIXED: [u64; 7] = [
+    // Per entity: its record, version, fav, data size, create date and tag order.
+    const FIXED: [u64; 6] = [
         key::ENTITY,
         key::VERSION,
         key::FAV,
         key::DATA_SIZE,
         key::CREATE_DATE,
-        books::LINK,
         key::TAG_ORDER_REC,
     ];
     let per = FIXED.len();
@@ -1255,7 +1264,7 @@ pub fn entities_only(
         Ok(Some(Ok(positions.len() - 1)))
     };
     struct Plan {
-        fixed: [Option<usize>; 7],
+        fixed: [Option<usize>; 6],
         fields: Vec<(TextAt, Option<usize>)>,
         items: Vec<TextAt>,
     }
@@ -1267,13 +1276,13 @@ pub fn entities_only(
             plans.push(None);
             continue;
         }
-        let mut fixed = [None; 7];
+        let mut fixed = [None; 6];
         for (i, slot) in fixed.iter_mut().enumerate() {
             match i {
                 // The version is a position, not a record's place.
                 1 => {}
-                // The entity's entry and its lorebook link keep its numbers after the record's place.
-                0 | 5 => {
+                // The entity's entry keeps its number after the record's place.
+                0 => {
                     if let Some(b) = &row[i] {
                         positions.push(library::parse_host(b)?.0.pos);
                         *slot = Some(positions.len() - 1);
@@ -1341,7 +1350,7 @@ pub fn entities_only(
                 _ => {}
             }
         }
-        if let Some(r) = rec(plan.fixed[6]) {
+        if let Some(r) = rec(plan.fixed[5]) {
             ent.tag_order = Some(match r.values.get(1) {
                 Some(Value::F64(v)) => Some(*v),
                 _ => None,
@@ -1357,10 +1366,8 @@ pub fn entities_only(
         }
         ent.tags.sort_unstable();
         if kind == library::CHARACTER
-            && let Some(r) = rec(plan.fixed[5])
-            && let Some(Value::Id(b)) = r.values.get(1)
+            && let Some(b) = books::first_link(view, e)?
         {
-            let b = *b;
             let r = books::resolve(view, b)?;
             let (k, version) = match books_seen.entry(r) {
                 std::collections::hash_map::Entry::Occupied(o) => o.get().clone(),
