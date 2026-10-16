@@ -2471,6 +2471,29 @@ function sendHashQueryResponse(response, params) {
     return response.send(serializeQueryHashesBinary(params));
 }
 
+/** The saved views' entity types: their changes are told as `views-changed`, not as the library's. */
+const VIEW_TYPES = new Set([TYPE.viewList, TYPE.view, TYPE.condition, TYPE.range]);
+
+/**
+ * Whether the entity change feed between `from` and `to` holds an entity other than a saved view's.
+ * @param {import('../library-engine.js').LibraryEngine} lib
+ * @param {number} from
+ * @param {number} to
+ */
+async function changedOtherThanViews(lib, from, to) {
+    let after = BigInt(from);
+    for (;;) {
+        const page = await lib.store.chatRead('entityChanges', { after, limit: 256 });
+        const entries = page.entries.filter((/** @type {any} */ e) => Number(e.pos) <= to);
+        if (entries.some((/** @type {any} */ e) => e.gone !== null && !VIEW_TYPES.has(e.gone.kind))) return true;
+        const live = entries.filter((/** @type {any} */ e) => e.gone === null);
+        const keys = live.length ? await lib.store.libraryKeys(live.map((/** @type {any} */ e) => e.id)) : [];
+        if (keys.some((/** @type {any} */ k) => k !== null && !VIEW_TYPES.has(k.type))) return true;
+        if (!page.more || entries.length < page.entries.length || entries.length === 0) return false;
+        after = entries[entries.length - 1].pos;
+    }
+}
+
 /**
  * SSE stream of what changed for this user, so a page asks instead of polling: `{}` when characters changed (the page
  * asks `/changes`), `{ type: 'groups-changed' }` when groups or what characters and groups carry changed (it asks
@@ -2521,7 +2544,7 @@ router.get('/changes/stream', async function (request, response) {
             const nextEntity = await lib.changesEnd();
             const nextAssignment = (await lib.tags.entityChangesEnd()).seq;
             const nextTag = await lib.tags.changesSeq();
-            if (nextEntity !== entityEnd) writeChanged();
+            if (nextEntity !== entityEnd && await changedOtherThanViews(lib, entityEnd, nextEntity)) writeChanged();
             if (nextAssignment !== assignmentEnd || records.some(r => /** @type {any} */ (r).kind === 'entityCreate' && /** @type {any} */ (r).type === TYPE.group)) writeGroupsChanged();
             if (nextTag !== tagEnd) writeTagsChanged();
             entityEnd = nextEntity;

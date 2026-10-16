@@ -3,6 +3,8 @@
  * are kept on the server (/api/views). Each change is one action on one view.
  */
 
+import { contentHashOf } from './hash-utils.js';
+
 /** Translates a tagged template; the caller passes i18n's `t`, so this module stays a leaf. */
 let t = (/** @type {TemplateStringsArray} */ strings, /** @type {any[]} */ ...values) => String.raw({ raw: strings }, ...values);
 
@@ -12,7 +14,7 @@ const DRAFT_KEY = 'characterListViewDraft';
 const PAGE_SIZE = 50;
 
 /**
- * @typedef {{ id: string, name: string, view: import('./character-view.js').CharacterView, updatedAt: number }} SavedView
+ * @typedef {{ id: string, name: string, view: import('./character-view.js').CharacterView }} SavedView
  */
 
 /**
@@ -39,7 +41,7 @@ function isFolderViewId(id) {
  * @returns {SavedView}
  */
 function folderView(folder) {
-    return { id: `${FOLDER_VIEW_PREFIX}${folder.id}`, name: folder.name, view: fullView({ tags: { include: [folder.id] } }), updatedAt: 0 };
+    return { id: `${FOLDER_VIEW_PREFIX}${folder.id}`, name: folder.name, view: fullView({ tags: { include: [folder.id] } }) };
 }
 
 /** The open folders read for the picker, and where the next page starts. @type {{ id: string, name: string }[]} */
@@ -58,7 +60,8 @@ let restored = false;
 /** The views read so far, in order, and where the next page starts. @type {SavedView[]} */
 let loaded = [];
 let nextCursor = /** @type {string|null} */ (null);
-let listedVersion = /** @type {number|null} */ (null);
+/** Whether `loaded` is the first page alone, as the server answered it. */
+let firstPageOnly = false;
 let listedFilter = '';
 let filterText = '';
 
@@ -291,15 +294,15 @@ async function readFolders(more) {
 
 /** Reads the first page of views (or the next one), for the picker. @param {boolean} more */
 async function readViews(more) {
-    // The first page is asked for with the version it was read at, so an unchanged list isn't downloaded again.
-    const sameList = !more && listedFilter === filterText && nextCursor === null && listedVersion !== null;
-    const answer = await call('list', { contains: filterText, limit: PAGE_SIZE, cursor: more ? nextCursor : undefined, ifVersion: sameList ? listedVersion : undefined });
+    // The first page is asked for with the hash of the copy held, so an unchanged list isn't downloaded again.
+    const sameList = !more && listedFilter === filterText && firstPageOnly;
+    const answer = await call('list', { contains: filterText, limit: PAGE_SIZE, cursor: more ? nextCursor : undefined, known: sameList ? contentHashOf(loaded) : undefined });
     if (!answer || answer.notFound) return false;
     listedFilter = filterText;
     if (answer.unchanged) return true;
     loaded = more ? [...loaded, ...answer.views] : answer.views;
     nextCursor = answer.cursor ?? null;
-    listedVersion = answer.version;
+    firstPageOnly = !more;
     const current = loaded.find(view => view.id === currentId);
     if (current) setCurrent(current.id, current.name);
     return true;

@@ -984,7 +984,7 @@ export function readBookHere(store, name) {
  * @param {Map<string, number>} stored
  * @returns {Map<string, number>} The places that change.
  */
-function placeEntries(keys, stored) {
+export function placeEntries(keys, stored) {
     /** @type {Map<string, number>} */
     const out = new Map();
     let prev = -1;
