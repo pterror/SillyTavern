@@ -1478,6 +1478,7 @@ pub fn fold_step(view: &View, out: &mut Out) -> Result<bool, StoreError> {
             ks: view.ks,
             snap: view.snap,
             log: view.log,
+            memo: view.memo,
         };
         let mut o = Out::default();
         // The carrier upkeep for the target sees the one for the tag.
