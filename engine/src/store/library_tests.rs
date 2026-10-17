@@ -440,11 +440,47 @@ fn narrow_reads_are_whole_reads(s: &Store, ids: &[u64]) {
             .cloned()
             .chain([FieldRef::Key(b"none".to_vec())])
             .collect();
-        let only = library_read::Only {
-            fields: asked.clone(),
-            lists: vec![half as u64, 2],
-        };
-        narrow_is_whole(s, ids, &whole, &asked, &only);
+        for point in [false, true] {
+            let only = library_read::Only {
+                fields: asked.clone(),
+                lists: vec![half as u64, 2],
+                point,
+                ..Default::default()
+            };
+            narrow_is_whole(s, ids, &whole, &asked, &only);
+        }
+    }
+    // Every keyed field starting with the first one's first byte, found by its prefix alone, and with a named one.
+    let keyed: Vec<&Vec<u8>> = fields
+        .iter()
+        .filter_map(|f| match f {
+            FieldRef::Key(k) if !k.is_empty() => Some(k),
+            _ => None,
+        })
+        .collect();
+    if let Some(first) = keyed.first() {
+        let prefix = first[..1].to_vec();
+        let mut asked: Vec<FieldRef> = keyed
+            .iter()
+            .filter(|k| k.starts_with(&prefix))
+            .map(|k| FieldRef::Key(k.to_vec()))
+            .collect();
+        for named in [None, fields.first().cloned()] {
+            if let Some(f) = &named
+                && !asked.contains(f)
+            {
+                asked.push(f.clone());
+            }
+            for point in [false, true] {
+                let only = library_read::Only {
+                    fields: named.iter().cloned().collect(),
+                    prefixes: vec![prefix.clone()],
+                    point,
+                    ..Default::default()
+                };
+                narrow_is_whole(s, ids, &whole, &asked, &only);
+            }
+        }
     }
 }
 

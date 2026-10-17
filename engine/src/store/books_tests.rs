@@ -896,7 +896,7 @@ fn a_world_book_reads_whole_from_one_view() {
 }
 
 #[test]
-fn saved_view_types_are_created_and_deleted_and_a_type_above_them_is_refused() {
+fn saved_view_types_are_created_and_deleted() {
     use super::library::{CONDITION, RANGE, VIEW, VIEW_LIST};
     let dir = temp_dir("view-types");
     let s = Store::open_in(&dir, SMALL, pool()).unwrap();
@@ -946,8 +946,48 @@ fn saved_view_types_are_created_and_deleted_and_a_type_above_them_is_refused() {
             .iter()
             .all(Option::is_none)
     );
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_settings_part_changes_the_settings_holder_and_a_type_above_them_is_refused() {
+    use super::library::{SETTINGS, SETTINGS_PART};
+    let dir = temp_dir("settings-types");
+    let s = Store::open_in(&dir, SMALL, pool()).unwrap();
+    let version = |e: u64| {
+        s.library_entities(&[e]).unwrap()[0]
+            .as_ref()
+            .unwrap()
+            .version
+    };
+    s.commit_wait(vec![create(1, SETTINGS, "")]).unwrap();
+    let v = version(1);
+    s.commit_wait(vec![
+        create(2, SETTINGS_PART, "8"),
+        create(3, SETTINGS_PART, "8:main"),
+        place(2, 3, 1 << 20),
+    ])
+    .unwrap();
+    assert!(version(1) > v, "a part made and placed changes the holder");
+    let v = version(1);
+    s.commit_wait(vec![rec(
+        "textValue",
+        vec![
+            Value::Sel(0, 3),
+            Value::Field(FieldRef::Code(323)),
+            text("x"),
+            Value::Absent,
+            Value::Absent,
+        ],
+    )])
+    .unwrap();
+    assert!(version(1) > v, "a part's value changes the holder");
+    let v = version(1);
+    s.commit_wait(vec![delete(3)]).unwrap();
+    assert!(version(1) > v, "a part going changes the holder");
     assert!(matches!(
-        s.commit_wait(vec![create(5, RANGE + 1, "x")]),
+        s.commit_wait(vec![create(5, SETTINGS_PART + 1, "x")]),
         Err(StoreError::Refused(_))
     ));
     drop(s);
