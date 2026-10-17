@@ -149,6 +149,20 @@ router.post('/get', storeRoute('reading a World Info book', async (request, resp
     return response.send(file);
 }));
 
+/** A world book's id, which stays its own across renames: `{ name }` → `{ id }`. */
+router.post('/id', storeRoute('reading a World Info book\'s id', async (request, response) => {
+    const { name } = request.body ?? {};
+    if (typeof name !== 'string' || !name) {
+        return response.status(400).send({ error: 'name is required' });
+    }
+    const { lib } = await requestStore(request);
+    const found = await lib.books.find(name);
+    if (!found?.defined) {
+        return response.status(404).send({ error: `Lorebook '${name}' not found` });
+    }
+    return response.send({ id: String(found.id) });
+}));
+
 /**
  * Changes a character's lorebook links after the first (upstream's additional World Info), in one round trip: the
  * client sends the action. `characterAvatar` is the character's file name without its extension (upstream's

@@ -110,6 +110,18 @@ describe('worldinfo /edit and /get', () => {
     });
 });
 
+describe('worldinfo /id', () => {
+    test('a book keeps its id across a rename; a missing one has none', async () => {
+        await postJson('/api/worldinfo/edit', { name: 'Named', data: { entries: { 0: makeEntry(0, 'Alpha') } } });
+        const { id } = await (await postJson('/api/worldinfo/id', { name: 'Named' })).json();
+        expect(typeof id).toBe('string');
+        expect((await postJson('/api/worldinfo/rename', { name: 'Named', new_name: 'Renamed' })).status).toBe(200);
+        expect(await (await postJson('/api/worldinfo/id', { name: 'Renamed' })).json()).toEqual({ id });
+        expect((await postJson('/api/worldinfo/id', { name: 'Named' })).status).toBe(404);
+        expect((await postJson('/api/worldinfo/id', {})).status).toBe(400);
+    });
+});
+
 describe('readWorldInfoFile (upstream\'s synchronous export)', () => {
     test('reads what /get reads; a missing book is the dummy object or null', async () => {
         const data = { entries: { 0: makeEntry(0, 'Alpha') }, name: 'Sync' };
