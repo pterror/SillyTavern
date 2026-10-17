@@ -142,6 +142,50 @@ export function clearFieldDraft(storage, ref) {
 }
 
 /**
+ * Drops the drafts of every field of a thing: for a thing that is gone.
+ * @param {DraftStorage} storage
+ * @param {string} kind
+ * @param {string} id
+ */
+export function clearThingDrafts(storage, kind, id) {
+    for (const field of readIndex(storage, kind, id)) clearFieldDraft(storage, { kind, id, field });
+    try {
+        storage.removeItem(indexKey(kind, id));
+    } catch {
+        // Nothing to clear.
+    }
+}
+
+/**
+ * Drops the drafts of every thing of `kind` whose id starts with `prefix`: for things that went with what held them.
+ * Goes over the storage's keys, which browser storage bounds.
+ * @param {DraftStorage & { length: number, key: (index: number) => string|null }} storage
+ * @param {string} kind
+ * @param {string} prefix
+ */
+export function clearDraftsUnder(storage, kind, prefix) {
+    /** @type {string[]} */
+    const ids = [];
+    let count = 0;
+    try {
+        count = storage.length;
+    } catch {
+        // Browser storage may be unavailable; there is nothing in it to clear then.
+    }
+    for (let i = 0; i < count; i++) {
+        try {
+            const key = storage.key(i);
+            if (!key?.startsWith(INDEX_KEY_PREFIX)) continue;
+            const [k, id] = JSON.parse(key.slice(INDEX_KEY_PREFIX.length));
+            if (k === kind && typeof id === 'string' && id.startsWith(prefix)) ids.push(id);
+        } catch {
+            // Not an index this wrote.
+        }
+    }
+    for (const id of ids) clearThingDrafts(storage, kind, id);
+}
+
+/**
  * @param {DraftStorage} storage
  * @param {string} kind
  * @param {string} id

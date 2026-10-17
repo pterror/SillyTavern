@@ -8,6 +8,8 @@ import {
     hasFieldDrafts,
     fieldEventAction,
     bindFieldDraft,
+    clearThingDrafts,
+    clearDraftsUnder,
     revertChanges,
 } from '../public/scripts/field-drafts.js';
 
@@ -375,5 +377,40 @@ describe('revertChanges (a failed commit leaves the page\'s copy as stored)', ()
         const entry = { content: 'newer still', comment: 'c2' };
         revertChanges(entry, before, after);
         expect(entry).toEqual({ content: 'newer still', comment: 'c2' });
+    });
+});
+
+describe('drafts of things that are gone', () => {
+    /** A storage that can also be gone over, as localStorage can. */
+    function makeListedStorage() {
+        const storage = makeStorage();
+        Object.defineProperty(storage, 'length', { get: () => Object.keys(storage.state).length });
+        return Object.assign(storage, { key: (/** @type {number} */ index) => Object.keys(storage.state)[index] ?? null });
+    }
+
+    test('a deleted entry\'s drafts all go, and only its', () => {
+        const storage = makeStorage();
+        writeFieldDraft(storage, content, 'a', '');
+        writeFieldDraft(storage, comment, 'b', '');
+        writeFieldDraft(storage, { ...content, id: 'book:7:10' }, 'c', '');
+        clearThingDrafts(storage, 'world-entry', 'book:7:1');
+        expect(readFieldDraft(storage, content)).toBeNull();
+        expect(readFieldDraft(storage, comment)).toBeNull();
+        expect(hasFieldDrafts(storage, 'world-entry', 'book:7:1')).toBe(false);
+        expect(readFieldDraft(storage, { ...content, id: 'book:7:10' })?.text).toBe('c');
+    });
+
+    test('a deleted book\'s entries\' drafts all go, and no other book\'s', () => {
+        const storage = makeListedStorage();
+        writeFieldDraft(storage, content, 'a', '');
+        writeFieldDraft(storage, { ...content, id: 'book:7:2' }, 'b', '');
+        writeFieldDraft(storage, { ...content, id: 'book:70:1' }, 'c', '');
+        writeFieldDraft(storage, { ...content, kind: 'other', id: 'book:7:1' }, 'd', '');
+        storage.setItem('FieldDraftIndex:not json', 'x');
+        clearDraftsUnder(storage, 'world-entry', 'book:7:');
+        expect(readFieldDraft(storage, content)).toBeNull();
+        expect(readFieldDraft(storage, { ...content, id: 'book:7:2' })).toBeNull();
+        expect(readFieldDraft(storage, { ...content, id: 'book:70:1' })?.text).toBe('c');
+        expect(readFieldDraft(storage, { ...content, kind: 'other', id: 'book:7:1' })?.text).toBe('d');
     });
 });

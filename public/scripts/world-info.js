@@ -34,7 +34,7 @@ import { getOrCreatePersonaDescriptor, getPersonaDescriptionLorebook, setPersona
 import { characterRepository } from './character-repository.js';
 import { checkCharactersExistOrNull } from './character-existence-check.js';
 import { character_world_link, resolveCharacterWorldLink } from './character-world-link.js';
-import { bindFieldDraft, hasFieldDrafts, readFieldDraft, revertChanges, writeFieldDraft } from './field-drafts.js';
+import { bindFieldDraft, clearDraftsUnder, clearThingDrafts, hasFieldDrafts, readFieldDraft, revertChanges, writeFieldDraft } from './field-drafts.js';
 import { isUserEvent } from './live-editor/registry.js';
 
 /**
@@ -1057,6 +1057,7 @@ async function fetchBookVersion(name) {
         cache: 'no-cache',
     });
     if (!response.ok) throw new Error(`/api/worldinfo/get responded ${response.status}`);
+    noteBookId(name, response);
     return versionOf(await response.json());
 }
 
@@ -2294,6 +2295,7 @@ export async function loadWorldInfo(name) {
         const data = await response.json();
         worldInfoCache.set(name, data);
         bookVersions.set(name, versionOf(data));
+        noteBookId(name, response);
         return data;
     }
 
@@ -2569,8 +2571,6 @@ async function displayWorldEntries(name, data, navigation = navigation_option.no
     const worldEntriesList = $('#world_popup_entries_list');
     clearEntryList(worldEntriesList);
     worldEntriesList.show();
-    // Read again each time the book is shown: another tab may have renamed it and given its name to another book.
-    bookIdRequests.delete(name);
 
     if (!data || !('entries' in data)) {
         $('#world_popup_new').off('click').on('click', nullWorldInfo);
@@ -3175,7 +3175,10 @@ export function parseRegexFromString(input) {
 
 const ENTRY_DRAFT_KIND = 'world-entry';
 
-/** @type {Map<string, Promise<string|null>>} Book names to their book's id, as read from the server. */
+/** @type {Map<string, string>} Book names to their book's id, from the `X-ST-Book-Id` of the book's last read. */
+const bookIds = new Map();
+
+/** @type {Map<string, Promise<string|null>>} Reads of a book made only for its id, while on their way. */
 const bookIdRequests = new Map();
 
 /** @type {WeakMap<HTMLElement, import('./field-drafts.js').FieldDraftBinding>} The entry fields on screen. */
@@ -3184,25 +3187,65 @@ const entryFieldBindings = new WeakMap();
 /** @type {Set<string>} Books whose drafts can't be kept, so the user is told only once. */
 const draftlessBooksWarned = new Set();
 
+/** @type {Set<string>} The ids of the books deleted on this page: a book's id is never given to another. */
+const deletedBookIds = new Set();
+
+/**
+ * @param {string|null} thing
+ * @returns {boolean} Whether the book of the entry `thing` names is deleted.
+ */
+function isDraftOwnerGone(thing) {
+    const match = /^book:([^:]+):/.exec(thing ?? '');
+    return Boolean(match) && deletedBookIds.has(match[1]);
+}
+
+/** @type {WeakSet<object>} The embedded lorebooks (their editors' data) removed from their character on this page. */
+const removedEmbeddedLorebooks = new WeakSet();
+
+/**
+ * Drops the drafts of every entry of a deleted book, and keeps its fields still on screen from writing new ones.
+ * @param {string} bookId
+ */
+function forgetBookDrafts(bookId) {
+    deletedBookIds.add(bookId);
+    clearDraftsUnder(localStorage, ENTRY_DRAFT_KIND, `book:${bookId}:`);
+}
+
+/**
+ * Keeps the id a read of a book answered.
+ * @param {string} name
+ * @param {Response} response A `/api/worldinfo/get` response.
+ */
+function noteBookId(name, response) {
+    const id = response.headers.get('X-ST-Book-Id');
+    if (id) bookIds.set(name, id);
+    else bookIds.delete(name);
+}
+
 /**
  * @param {string} name
- * @returns {Promise<string|null>} The id of the book named `name`, or null when it can't be read.
+ * @returns {Promise<string|null>} The id of the book named `name`: from the page's last read of the book, else from a
+ * read made for it. null when it can't be read.
  */
 function readBookId(name) {
+    const known = bookIds.get(name);
+    if (known) return Promise.resolve(known);
     let request = bookIdRequests.get(name);
     if (!request) {
-        request = fetch('/api/worldinfo/id', {
+        request = fetch('/api/worldinfo/get', {
             method: 'POST',
             headers: getRequestHeaders(),
             body: JSON.stringify({ name }),
+            cache: 'no-cache',
         })
-            .then(response => (response.ok ? response.json() : null))
-            .then(body => (typeof body?.id === 'string' ? body.id : null))
-            .catch(() => null);
+            .then((response) => {
+                if (!response.ok) return null;
+                noteBookId(name, response);
+                return bookIds.get(name) ?? null;
+            })
+            .catch(() => null)
+            .finally(() => bookIdRequests.delete(name));
         bookIdRequests.set(name, request);
-        void request.then(id => {
-            if (id === null && bookIdRequests.get(name) === request) bookIdRequests.delete(name);
-        });
     }
     return request;
 }
@@ -3375,7 +3418,7 @@ function bindEntryField(options) {
         return entry ? options.stored(entry) : read();
     };
     /** @type {import('./field-drafts.js').FieldDraftBinding} */
-    const binding = bindFieldDraft({
+    const drafts = bindFieldDraft({
         storage: localStorage,
         ref: thing ? { kind: ENTRY_DRAFT_KIND, id: thing, field } : null,
         type,
@@ -3383,8 +3426,11 @@ function bindEntryField(options) {
         read,
         show,
         commit: text => commitEntryEdit(name, data, uid, entry => options.apply(entry, text)),
-        changed: () => showEntryFieldState(control, binding, stored, header, thing),
+        changed: () => showEntryFieldState(control, drafts, stored, header, thing),
     });
+    // Once its lorebook is deleted, nothing of the entry is committed or kept any more.
+    /** @type {import('./field-drafts.js').FieldDraftBinding} */
+    const binding = { ...drafts, handle: event => (isDraftOwnerGone(thing) || removedEmbeddedLorebooks.has(data) ? Promise.resolve(true) : drafts.handle(event)) };
     entryFieldBindings.set(element, binding);
     element.dataset.wiDraft = '';
     show(stored());
@@ -4084,7 +4130,9 @@ export async function getWorldEntry(name, data, entry) {
         const deleted = await deleteWorldInfoEntry(data, uid);
         if (!deleted) return;
         deleteWIOriginalDataValue(data, uid);
-        await saveWorldInfo(name, data);
+        // At once, so its drafts go only once the delete is stored.
+        const stored = await saveWorldInfo(name, data, true).catch(() => false);
+        if (stored === true && thing) clearThingDrafts(localStorage, ENTRY_DRAFT_KIND, thing);
         updateEditor(navigation_option.previous);
     });
     headerTemplate.find('.move_entry_button').attr('data-uid', entry.uid).attr('data-current-world', name).on('click', async function (e) {
@@ -4142,6 +4190,15 @@ export async function getWorldEntry(name, data, entry) {
             return;
         }
         const deleteOriginal = popupConfirm === POPUP_RESULT.CUSTOM1;
+        if (deleteOriginal) {
+            // The entry moves as stored, and its drafts would go with the original: what is open is committed first,
+            // and an entry that still has unsaved edits isn't moved.
+            await Promise.all(headerTemplate.find('[data-wi-draft]').get().map(element => entryFieldBindings.get(element)?.handle({ type: 'close' })));
+            if (thing && hasFieldDrafts(localStorage, ENTRY_DRAFT_KIND, thing)) {
+                toastr.warning(t`'${sourceName}' has edits that aren't saved yet, so it wasn't moved. Save or undo them, then move it.`, t`Entry not moved`);
+                return;
+            }
+        }
         await moveWorldInfoEntry(sourceWorld, selectedValue, sourceUid, { deleteOriginal });
     });
 
@@ -4906,7 +4963,11 @@ async function _save(name, data) {
 
     const result = await response.json().catch(() => ({}));
     for (const [uid, entry] of Object.entries(result.entries ?? {})) noteStoredEntry(name, uid, entry);
-    for (const uid of result.deleted ?? []) noteStoredEntry(name, uid, null);
+    const deletedBookId = bookIds.get(name);
+    for (const uid of result.deleted ?? []) {
+        noteStoredEntry(name, uid, null);
+        if (deletedBookId) clearThingDrafts(localStorage, ENTRY_DRAFT_KIND, `book:${deletedBookId}:${uid}`);
+    }
     const version = bookVersions.get(name);
     for (const [key, value] of Object.entries(result.fields ?? {})) {
         if (value === null) version?.fields.delete(key); else version?.fields.set(key, jsonHash(value));
@@ -5268,6 +5329,10 @@ async function renameWorldInfo(name, data) {
     worldInfoCache.delete(oldName);
     worldInfoCache.set(newName, cached);
     bookVersions.set(newName, versionOf(cached));
+    // A rename keeps the book's id, and so its entries' drafts.
+    const renamedId = bookIds.get(oldName);
+    bookIds.delete(oldName);
+    if (renamedId) bookIds.set(newName, renamedId);
     takeRenamedBookLinks(oldName, newName, result);
 
     // A chat's link to the book is in its metadata; only the open chat's moves.
@@ -5373,6 +5438,8 @@ async function removeWorldInfo(worldInfoName) {
     // held edits are sent after all.
     let held = null;
     let deleted = false;
+    // Read before the delete, which takes the id with the book: its entries' drafts go with it.
+    const bookId = await readBookId(worldInfoName);
     try {
         held = await holdWorldSavesUntilSettled(worldInfoName);
         deleted = await deleteWorldInfoFile(worldInfoName);
@@ -5384,6 +5451,8 @@ async function removeWorldInfo(worldInfoName) {
     if (!deleted) {
         return { deleted: false, unlinkedAvatar: '' };
     }
+    bookIds.delete(worldInfoName);
+    if (bookId) forgetBookDrafts(bookId);
     const { unlinkedAvatar } = unlinkWorldInfo(worldInfoName);
     return { deleted: true, unlinkedAvatar };
 }
@@ -7159,6 +7228,8 @@ async function removeEmbeddedLore(data) {
         // A link to a name with no World file was a link to this book; the globe shows it gone.
         setWorldInfoButtonClass(avatar);
     }
+    removedEmbeddedLorebooks.add(data);
+    clearDraftsUnder(localStorage, ENTRY_DRAFT_KIND, `card:${avatar}:`);
     embeddedLoreOwners.delete(data);
     await hideWorldEditor();
 }
@@ -7654,6 +7725,9 @@ export async function moveWorldInfoEntry(sourceName, targetName, uid, { deleteOr
         }
 
         const result = await response.json();
+
+        const sourceId = bookIds.get(sourceName);
+        if (deleteOriginal && sourceId) clearThingDrafts(localStorage, ENTRY_DRAFT_KIND, `book:${sourceId}:${uid}`);
 
         // Both books changed server-side; drop the client caches so the next load reflects the
         // server's state rather than a stale in-memory copy.

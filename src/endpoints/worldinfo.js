@@ -139,28 +139,21 @@ router.post('/list', storeRoute('reading the World Info list', async (request, r
     return response.send(await lib.books.list());
 }));
 
+/**
+ * A book as stored (the dummy `{ entries: {} }` when there is none). A book that exists also answers its id, which a
+ * rename keeps, in the `X-ST-Book-Id` header: outside the body, which is the book's own data.
+ */
 router.post('/get', storeRoute('reading a World Info book', async (request, response) => {
     if (!request.body?.name) {
         return response.sendStatus(400);
     }
 
+    const { lib } = await requestStore(request);
+    const found = await lib.books.find(request.body.name);
     const file = await readWorldInfo(request.user.directories, request.body.name, true);
 
+    if (found?.defined) response.set('X-ST-Book-Id', String(found.id));
     return response.send(file);
-}));
-
-/** A world book's id, which stays its own across renames: `{ name }` → `{ id }`. */
-router.post('/id', storeRoute('reading a World Info book\'s id', async (request, response) => {
-    const { name } = request.body ?? {};
-    if (typeof name !== 'string' || !name) {
-        return response.status(400).send({ error: 'name is required' });
-    }
-    const { lib } = await requestStore(request);
-    const found = await lib.books.find(name);
-    if (!found?.defined) {
-        return response.status(404).send({ error: `Lorebook '${name}' not found` });
-    }
-    return response.send({ id: String(found.id) });
 }));
 
 /**
