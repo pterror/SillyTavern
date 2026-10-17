@@ -856,7 +856,9 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // A character's lorebook link: the book entity it names (absent: none).
+    // Reserved: a character's one lorebook link from before a character's links were its list 4. The log's format
+    // keeps an old kind decodable so cleaning can read its records and drop them; every one is dead, and a new one is
+    // refused (`store::books::BookLink`).
     Kind {
         name: "bookLink",
         base: 224,

@@ -1738,8 +1738,6 @@ impl Store {
     /// - `books { after?, limit }`: `{ books: [{ id, key }], more }`, the defined world books in key order;
     /// - `entries { book, after?, limit }`: `{ entries: [{ id, position }], more }`, a book's entries in place order;
     /// - `resolved { ids }`: each book as its forwards resolve it, `{ id, key, defined }` or null;
-    /// - `legacyLinks { after?, limit }`: `{ links: [{ entity, book }], more }`, the characters with a `bookLink`
-    ///   (`books::BookLink`, kept until `convert-character-links.js` has run), in id order;
     /// - `multiLinks { after?, limit }`: `{ ids, more }`, the characters with 2 or more links, in id order;
     /// - `numbers { book }`: `{ lastPosition, freeKey, maxIndex }`;
     /// - `linkers { book, after?, limit }`: `{ ids, more }`, the characters linking the book itself, in id order;
@@ -2813,13 +2811,6 @@ fn world_read_job(op: String, args: &Object) -> Result<TreeRead> {
         "resolved" => {
             let ids = integers(a, "ids")?;
             Box::new(move |s| s.chat_read(|v| b::resolved(v, &ids)).map(JsTree))
-        }
-        "legacyLinks" => {
-            let (after, limit) = (opt_integer(a, "after")?, req_integer(a, "limit")? as usize);
-            Box::new(move |s| {
-                s.chat_read(|v| b::legacy_links_page(v, after, limit))
-                    .map(JsTree)
-            })
         }
         "multiLinks" => {
             let (after, limit) = (opt_integer(a, "after")?, req_integer(a, "limit")? as usize);

@@ -208,8 +208,7 @@ pub fn rand_key(scope: &Scope, kind: u64, fav: bool, n: u64) -> Vec<u8> {
 }
 
 /// The entry keeping `e`'s number in `scope`'s numbering, keyed by the pair already: the entity's own (`ENTITY`)
-/// for the whole library, its membership (`MEMBER`) for a tag, its link (`books::LINKED`) for a lorebook. A
-/// `bookLink`'s link keeps it in `books::LINK` instead (`books::world_rank`).
+/// for the whole library, its membership (`MEMBER`) for a tag, its link (`books::LINKED`) for a lorebook.
 pub fn rank_host(scope: &Scope, e: u64) -> Vec<u8> {
     match scope {
         Scope::All => key::id(key::ENTITY, e),
@@ -226,8 +225,7 @@ fn world_book(w: &[u8]) -> u64 {
 /// A host entry's value (`rank_host`, key `k`) with its number set to `n`.
 pub fn host_numbered(k: &[u8], v: &[u8], n: Option<u64>) -> Result<Vec<u8>, StoreError> {
     if k.starts_with(&key::of(books::LINKED)) {
-        let (item, _) = books::parse_linked(v)?
-            .ok_or_else(|| entry_err("a bookLink's link isn't numbered here"))?;
+        let (item, _) = books::parse_linked(v)?;
         return Ok(books::linked_bytes(item, n));
     }
     Ok(host_bytes(parse_host(v)?.0, n))
