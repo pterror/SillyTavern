@@ -254,6 +254,15 @@ pub mod key {
         TEST_ADD_MAP.key(|k| put_u64(k, id))
     }
 
+    /// Whether `k` is in a structure whose keys are each put at most once (a change feed's, keyed by the position
+    /// that put it): a delete of one put in the same unpublished layer can drop both (`derive::apply`).
+    pub fn written_once(k: &[u8]) -> bool {
+        matches!(
+            crate::keyspace::val::get_u64(k, &mut 0),
+            Some(ENTITY_CHANGE | TAG_CHANGE | ENTITY_TAG_CHANGE)
+        )
+    }
+
     pub fn of(structure: u64) -> Vec<u8> {
         let mut k = Vec::new();
         put_u64(&mut k, structure);
