@@ -110,15 +110,16 @@ describe('worldinfo /edit and /get', () => {
     });
 });
 
-describe('worldinfo /id', () => {
-    test('a book keeps its id across a rename; a missing one has none', async () => {
+describe('worldinfo /get book id', () => {
+    test('a book answers its id, which it keeps across a rename; a missing one answers none', async () => {
         await postJson('/api/worldinfo/edit', { name: 'Named', data: { entries: { 0: makeEntry(0, 'Alpha') } } });
-        const { id } = await (await postJson('/api/worldinfo/id', { name: 'Named' })).json();
-        expect(typeof id).toBe('string');
+        const first = await postJson('/api/worldinfo/get', { name: 'Named' });
+        const id = first.headers.get('X-ST-Book-Id');
+        expect(id).toMatch(/^\d+$/);
+        expect(await first.json()).toEqual({ entries: { 0: makeEntry(0, 'Alpha') } });
         expect((await postJson('/api/worldinfo/rename', { name: 'Named', new_name: 'Renamed' })).status).toBe(200);
-        expect(await (await postJson('/api/worldinfo/id', { name: 'Renamed' })).json()).toEqual({ id });
-        expect((await postJson('/api/worldinfo/id', { name: 'Named' })).status).toBe(404);
-        expect((await postJson('/api/worldinfo/id', {})).status).toBe(400);
+        expect((await postJson('/api/worldinfo/get', { name: 'Renamed' })).headers.get('X-ST-Book-Id')).toBe(id);
+        expect((await postJson('/api/worldinfo/get', { name: 'Named' })).headers.get('X-ST-Book-Id')).toBeNull();
     });
 });
 
