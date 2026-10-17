@@ -41,10 +41,6 @@ pub const VIEW_LIST: u64 = 7;
 pub const VIEW: u64 = 8;
 pub const CONDITION: u64 = 9;
 pub const RANGE: u64 = 10;
-/// A user's settings: their holder (key `''`, its version the settings version) and its parts (a list holder, a
-/// list item, a map entry or a pin), whose changes are the holder's too (`books::container_touched`).
-pub const SETTINGS: u64 = 11;
-pub const SETTINGS_PART: u64 = 12;
 
 /// Field codes the derivers read: an entity's name, a character's lorebook, a tag's folder type.
 pub const NAME: u64 = 1;
@@ -675,7 +671,7 @@ impl Deriver for EntityCreate {
             Value::F64(t) => t,
             _ => unreachable!("checked by Record::new"),
         };
-        if kind > SETTINGS_PART {
+        if kind > RANGE {
             return Err(StoreError::Refused(format!("no entity type {kind}")));
         }
         if view.get(&key::id(key::ENTITY, e))?.is_some() {

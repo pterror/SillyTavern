@@ -4,12 +4,10 @@
 
 /** Entity types: a world book (or a name a lorebook link holds that no book has), a book a character or a world
  * book owns (a card's `character_book`, a book's `originalData`), a book's entry, an unowned tree (messages whose
- * character or group is gone, keyed by the old owner key: an avatar's stem or a group's id), a user's saved views
- * (src/saved-views.js): their list, a view, a view's condition and a view's range, and a user's settings
- * (src/settings-engine.js): their holder and its parts. */
+ * character or group is gone, keyed by the old owner key: an avatar's stem or a group's id), and a user's saved views
+ * (src/saved-views.js): their list, a view, a view's condition and a view's range. */
 export const TYPE = Object.freeze({
     character: 0, group: 1, tag: 2, book: 3, ownedBook: 4, entry: 5, tree: 6, viewList: 7, view: 8, condition: 9, range: 10,
-    settings: 11, settingsPart: 12,
 });
 
 /** Field codes; the engine reads NAME, WORLD, FOLDER_TYPE and DEFINED itself. */
