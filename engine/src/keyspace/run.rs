@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 
-use super::block::{Block, BlockBuilder, Cursor, KIND_DATA, KIND_INDEX};
+use super::block::{Block, BlockBuilder, Cursor, KIND_DATA, KIND_INDEX, RevCursor};
 use super::cache::Cache;
 use super::val::Val;
 use super::{KsError, KsResult};
@@ -40,8 +40,8 @@ impl Handle {
         Val::Put(b)
     }
 
-    fn from_val(v: &Val) -> Option<Handle> {
-        let Val::Put(b) = v else { return None };
+    /// A handle from its `Val::Put` bytes.
+    fn from_bytes(b: &[u8]) -> Option<Handle> {
         let mut at = 0;
         let offset = get_uvarint(b, &mut at).ok()?;
         let len = get_uvarint(b, &mut at).ok()?;
@@ -392,7 +392,8 @@ impl Run {
     }
 
     fn child(&self, c: &Cursor) -> KsResult<Handle> {
-        Handle::from_val(&c.val().map_err(|e| self.corrupt(e))?)
+        c.put_bytes()
+            .and_then(Handle::from_bytes)
             .ok_or_else(|| self.corrupt("index entry isn't a handle".into()))
     }
 
@@ -599,21 +600,32 @@ impl Run {
         if key > self.max_key.as_slice() {
             return Ok(None);
         }
-        let mut block = self.top.clone();
-        for level in (0..self.levels).rev() {
-            let c = Cursor::seek(block, key).map_err(|e| self.corrupt(e))?;
-            if !c.valid {
-                return Ok(None);
+        SEEK_KEY.with_borrow_mut(|k| {
+            let mut block = self.top.clone();
+            for level in (0..self.levels).rev() {
+                let Some(at) = block.seek_at_least(key, k).map_err(|e| self.corrupt(e))? else {
+                    return Ok(None);
+                };
+                let h = block
+                    .put_bytes(at)
+                    .and_then(Handle::from_bytes)
+                    .ok_or_else(|| self.corrupt("index entry isn't a handle".into()))?;
+                let kind = if level == 0 { KIND_DATA } else { KIND_INDEX };
+                block = self.read_block(h, kind, Some(cache), Some(counts))?;
             }
-            let kind = if level == 0 { KIND_DATA } else { KIND_INDEX };
-            block = self.read_block(self.child(&c)?, kind, Some(cache), Some(counts))?;
-        }
-        let c = Cursor::seek(block, key).map_err(|e| self.corrupt(e))?;
-        if c.valid && c.key == key {
-            return Ok(Some(c.val().map_err(|e| self.corrupt(e))?));
-        }
-        Ok(None)
+            match block.seek_at_least(key, k).map_err(|e| self.corrupt(e))? {
+                Some(at) if k.as_slice() == key => {
+                    Ok(Some(block.value(at).map_err(|e| self.corrupt(e))?))
+                }
+                _ => Ok(None),
+            }
+        })
     }
+}
+
+thread_local! {
+    /// The key `Run::get` decodes into, kept per thread so a lookup allocates nothing for it.
+    static SEEK_KEY: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 // ---- iterating ----
@@ -748,24 +760,25 @@ impl Source for RunIter<'_> {
     }
 }
 
-/// A block's entries, decoded.
-type Decoded = Vec<(Vec<u8>, Val)>;
-
-/// A run's entries before a key, last first. Each block on the path is decoded whole, since a block reads
-/// forward only.
+/// A run's entries before a key and from a lower bound on, last first. Each level holds a reverse cursor, which
+/// decodes one restart segment's keys at a time and a value only when it is asked for; it stops at the first
+/// entry below the bound, without stepping back into the blocks before it.
 pub struct RunRevIter<'a> {
     run: Arc<Run>,
     cache: Option<&'a Cache>,
     counts: Option<&'a ReadCounts>,
-    /// One decoded block per level, top first, with the place of the current entry.
-    path: Vec<(Decoded, usize)>,
+    /// Entries below it are past the end.
+    start: Vec<u8>,
+    /// One cursor per level, top first; the last is in a data block while the iterator holds an entry.
+    path: Vec<RevCursor>,
 }
 
 impl<'a> RunRevIter<'a> {
-    /// At the last entry before `before`.
+    /// At the last entry before `before`, down to `start`.
     pub fn new(
         run: Arc<Run>,
         before: &[u8],
+        start: &[u8],
         cache: Option<&'a Cache>,
         counts: Option<&'a ReadCounts>,
     ) -> KsResult<RunRevIter<'a>> {
@@ -774,77 +787,52 @@ impl<'a> RunRevIter<'a> {
             run,
             cache,
             counts,
+            start: start.to_vec(),
         };
-        let top = it.decode(it.run.top.clone())?;
-        it.enter(top, Some(before))?;
+        let top = RevCursor::covering(it.run.top.clone(), before).map_err(|e| it.run.corrupt(e))?;
+        it.path.push(top);
+        it.descend(Some(before))?;
         Ok(it)
     }
 
-    fn decode(&self, block: Arc<super::block::Block>) -> KsResult<Vec<(Vec<u8>, Val)>> {
-        let mut c = Cursor::first(block).map_err(|e| self.run.corrupt(e))?;
-        let mut out = Vec::new();
-        while c.valid {
-            out.push((c.key.clone(), c.val().map_err(|e| self.run.corrupt(e))?));
-            c.advance().map_err(|e| self.run.corrupt(e))?;
-        }
-        Ok(out)
-    }
-
-    /// Pushes a decoded block at its last entry before `before` (its last entry without one), then descends
-    /// to the data level; steps back wherever a block holds nothing before it.
-    fn enter(&mut self, entries: Vec<(Vec<u8>, Val)>, before: Option<&[u8]>) -> KsResult<()> {
-        let data = self.path.len() as u32 == self.run.levels;
-        let at = match before {
-            // An index entry is its child's last key: the child holding the last key before `before` is the
-            // first whose last key reaches it.
-            Some(b) if !data => {
-                let i = entries.partition_point(|(k, _)| k.as_slice() < b);
-                entries.len().checked_sub(1).map(|last| i.min(last))
-            }
-            Some(b) => entries
-                .partition_point(|(k, _)| k.as_slice() < b)
-                .checked_sub(1),
-            None => entries.len().checked_sub(1),
-        };
-        match at {
-            None => {
-                self.path.push((entries, 0));
-                self.back()
-            }
-            Some(i) => {
-                self.path.push((entries, i));
-                if data {
-                    return Ok(());
-                }
-                self.down(before)
-            }
-        }
-    }
-
-    fn down(&mut self, before: Option<&[u8]>) -> KsResult<()> {
-        let level = self.run.levels - self.path.len() as u32;
-        let kind = if level == 0 { KIND_DATA } else { KIND_INDEX };
-        let (entries, i) = self.path.last().unwrap();
-        let h = Handle::from_val(&entries[*i].1)
-            .ok_or_else(|| self.run.corrupt("index entry isn't a handle".into()))?;
-        let block = self.run.read_block(h, kind, self.cache, self.counts)?;
-        let decoded = self.decode(block)?;
-        self.enter(decoded, before)
-    }
-
-    /// Drops the exhausted last block and moves its parent to the child before, or ends.
-    fn back(&mut self) -> KsResult<()> {
-        self.path.pop();
+    /// Fills the path below its last cursor, positioning each block at `before` (or at its last entry); steps
+    /// back to the child before wherever a block has nothing before it. Ends at an entry below `start`, or an
+    /// index entry whose child ends below it (an index entry is its child's last key).
+    fn descend(&mut self, mut before: Option<&[u8]>) -> KsResult<()> {
         loop {
-            let Some((_, i)) = self.path.last_mut() else {
-                return Ok(());
-            };
-            if *i == 0 {
+            let depth = self.path.len();
+            let last = self.path.last().unwrap();
+            if !last.valid {
+                // This block is done: step its parent back, or end.
                 self.path.pop();
+                let Some(parent) = self.path.last_mut() else {
+                    return Ok(());
+                };
+                parent.prev().map_err(|e| self.run.corrupt(e))?;
+                before = None;
                 continue;
             }
-            *i -= 1;
-            return self.down(None);
+            if last.key() < self.start.as_slice() {
+                self.path.clear();
+                return Ok(());
+            }
+            if depth as u32 == self.run.levels + 1 {
+                return Ok(());
+            }
+            let level = self.run.levels - depth as u32;
+            let kind = if level == 0 { KIND_DATA } else { KIND_INDEX };
+            let h = last
+                .put_bytes()
+                .and_then(Handle::from_bytes)
+                .ok_or_else(|| self.run.corrupt("index entry isn't a handle".into()))?;
+            let block = self.run.read_block(h, kind, self.cache, self.counts)?;
+            let c = match before {
+                Some(b) if level == 0 => RevCursor::before(block, b),
+                Some(b) => RevCursor::covering(block, b),
+                None => RevCursor::last(block),
+            }
+            .map_err(|e| self.run.corrupt(e))?;
+            self.path.push(c);
         }
     }
 }
@@ -854,23 +842,23 @@ impl Source for RunRevIter<'_> {
         if self.path.len() as u32 != self.run.levels + 1 {
             return None;
         }
-        self.path.last().map(|(e, i)| e[*i].0.as_slice())
+        self.path.last().map(|c| c.key())
     }
 
     fn val(&self) -> KsResult<Val> {
-        let (e, i) = self.path.last().unwrap();
-        Ok(e[*i].1.clone())
+        self.path
+            .last()
+            .unwrap()
+            .val()
+            .map_err(|e| self.run.corrupt(e))
     }
 
     fn advance(&mut self) -> KsResult<()> {
-        let Some((_, i)) = self.path.last_mut() else {
+        let Some(c) = self.path.last_mut() else {
             return Ok(());
         };
-        if *i == 0 {
-            return self.back();
-        }
-        *i -= 1;
-        Ok(())
+        c.prev().map_err(|e| self.run.corrupt(e))?;
+        self.descend(None)
     }
 }
 
