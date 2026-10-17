@@ -20,8 +20,8 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 
 use format::{
-    Ctx, FormatError, PAD, Record, TRAILER, TRAILER_LEN, decode_body, encode, get_uvarint,
-    kind_by_header, skip_body,
+    Ctx, FormatError, PAD, Record, TRAILER, TRAILER_LEN, advance_body, decode_body, encode,
+    get_uvarint, kind_by_header, skip_body,
 };
 
 /// Bits of a position holding the offset in its file.
@@ -284,6 +284,8 @@ impl LogFile {
 /// One item read from a file.
 enum Item {
     Record(Record),
+    /// A record stepped over without decoding it (`Scanner::next_item`).
+    Skipped,
     Pad,
     /// A trailer, and whether its checksum holds.
     Trailer(bool),
@@ -350,6 +352,16 @@ impl<'a> Scanner<'a> {
 
     /// The next item and its offset; None at the limit or the end of the file.
     fn next(&mut self) -> LogResult<Option<(u64, Item)>> {
+        self.next_item(true)
+    }
+
+    /// Where the next item starts.
+    fn at(&self) -> u64 {
+        self.offset
+    }
+
+    /// As `next`; a record is decoded only if `decode`, else stepped over (`Item::Skipped`), keeping the context.
+    fn next_item(&mut self, decode: bool) -> LogResult<Option<(u64, Item)>> {
         let block = self.block;
         let start = self.offset;
         if start.is_multiple_of(block) {
@@ -387,8 +399,14 @@ impl<'a> Scanner<'a> {
                                 FormatError::Invalid(format!("unknown record header {h}"))
                             })
                         })
-                        .and_then(|(kind, bits)| decode_body(kind, bits, bytes, &mut at, &mut ctx))
-                        .map(|rec| (Item::Record(rec), at))
+                        .and_then(|(kind, bits)| {
+                            if decode {
+                                decode_body(kind, bits, bytes, &mut at, &mut ctx).map(Item::Record)
+                            } else {
+                                advance_body(kind, bits, bytes, &mut at, &mut ctx).map(|()| Item::Skipped)
+                            }
+                        })
+                        .map(|item| (item, at))
                 }
             };
             match decoded {
@@ -840,7 +858,7 @@ impl Log {
             block_start(self.shared.cfg.block_size, offset),
             limit,
         );
-        while let Some((at, item)) = scanner.next()? {
+        while let Some((at, item)) = scanner.next_item(scanner.at() == offset)? {
             match item {
                 Item::Record(r) if at == offset => return Ok((r, scanner.last_len)),
                 _ if at >= offset => break,
@@ -884,7 +902,8 @@ impl Log {
             let mut scanner = Scanner::new(&self.shared.cfg, file, &reader, start, limit);
             let mut next = i;
             while next < j {
-                let Some((at, item)) = scanner.next()? else {
+                let wanted = split(positions[order[next]]).1 == scanner.at();
+                let Some((at, item)) = scanner.next_item(wanted)? else {
                     break;
                 };
                 if split(positions[order[next]]).1 < at {
@@ -929,7 +948,7 @@ impl Log {
             block_start(self.shared.cfg.block_size, offset),
             u64::MAX,
         );
-        while let Some((at, item)) = scanner.next()? {
+        while let Some((at, item)) = scanner.next_item(scanner.at() == offset)? {
             match item {
                 Item::Record(r) if at == offset => return Ok((r, scanner.last_len)),
                 _ if at >= offset => break,
