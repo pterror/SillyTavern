@@ -326,3 +326,31 @@ select.keyselect+span.select2-container .select2-selection--multiple {
     overflow-y: auto;
     overflow-x: hidden;
 }
+
+.world_entry_draft_badge {
+    font-size: calc(var(--mainFontSize) * 0.8);
+    color: var(--warning);
+    white-space: nowrap;
+}
+
+.wi_field_draft {
+    outline: 1px dashed var(--warning);
+    outline-offset: -1px;
+}
+
+.wi_draft_conflict {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding: 5px;
+    border: 1px solid var(--warning);
+    border-radius: 5px;
+}
+
+.wi_draft_conflict_value {
+    margin: 0;
+    max-height: 10em;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
