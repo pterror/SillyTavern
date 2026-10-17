@@ -140,6 +140,20 @@ pub fn wtf8_from_utf16(units: &[u16]) -> Vec<u8> {
 /// well-formed (it has a 4-byte form), so every string has exactly one encoding.
 pub fn wtf8_to_utf16(bytes: &[u8]) -> FormatResult<Vec<u16>> {
     let mut out = Vec::with_capacity(bytes.len());
+    wtf8_units(bytes, |u| out.push(u))?;
+    Ok(out)
+}
+
+/// Checks that `bytes` are well-formed WTF-8, as `wtf8_to_utf16` would, without converting them.
+pub fn check_wtf8(bytes: &[u8]) -> FormatResult<()> {
+    if bytes.is_ascii() {
+        return Ok(());
+    }
+    wtf8_units(bytes, |_| {})
+}
+
+/// Walks well-formed WTF-8, handing each UTF-16 code unit to `emit`.
+fn wtf8_units(bytes: &[u8], mut emit: impl FnMut(u16)) -> FormatResult<()> {
     let mut i = 0;
     let mut prev_lead = false;
     while i < bytes.len() {
@@ -168,8 +182,8 @@ pub fn wtf8_to_utf16(bytes: &[u8]) -> FormatResult<Vec<u16>> {
         i += len;
         if cp >= 0x10000 {
             let c = cp - 0x10000;
-            out.push(0xd800 + (c >> 10) as u16);
-            out.push(0xdc00 + (c & 0x3ff) as u16);
+            emit(0xd800 + (c >> 10) as u16);
+            emit(0xdc00 + (c & 0x3ff) as u16);
             prev_lead = false;
         } else {
             let is_trail = (0xdc00..0xe000).contains(&cp);
@@ -177,10 +191,10 @@ pub fn wtf8_to_utf16(bytes: &[u8]) -> FormatResult<Vec<u16>> {
                 return invalid("text is not WTF-8 (a surrogate pair in two parts)");
             }
             prev_lead = (0xd800..0xdc00).contains(&cp);
-            out.push(cp as u16);
+            emit(cp as u16);
         }
     }
-    Ok(out)
+    Ok(())
 }
 
 // ---- kinds ----
@@ -1107,9 +1121,18 @@ pub fn kind_by_name(name: &str) -> Option<&'static Kind> {
 
 /// The kind a record header value names, and the header's bits.
 pub fn kind_by_header(h: u64) -> Option<(&'static Kind, u64)> {
-    all_kinds()
-        .find(|k| h >= k.base && h < k.base + (1 << k.header_bits()))
-        .map(|k| (k, h - k.base))
+    // Each kind's header range, by base; built once, since every record read looks its kind up here.
+    static RANGES: std::sync::OnceLock<Vec<(u64, u64, &'static Kind)>> = std::sync::OnceLock::new();
+    let ranges = RANGES.get_or_init(|| {
+        let mut r: Vec<_> = all_kinds()
+            .map(|k| (k.base, k.base + (1 << k.header_bits()), k))
+            .collect();
+        r.sort_by_key(|&(base, _, _)| base);
+        r
+    });
+    let i = ranges.partition_point(|&(base, _, _)| base <= h).checked_sub(1)?;
+    let (base, end, k) = ranges[i];
+    (h < end).then_some((k, h - base))
 }
 
 // ---- values and records ----
@@ -1308,6 +1331,80 @@ pub fn skip_body(
     Ok(())
 }
 
+/// Steps over the record at `buf[*at..]` (its header already read), advancing `at` and the context as
+/// `decode_body` would, so the records after it in the block decode: its ids and times are read, nothing else is
+/// decoded or checked.
+pub fn advance_body(
+    kind: &'static Kind,
+    mut bits: u64,
+    buf: &[u8],
+    at: &mut usize,
+    ctx: &mut Ctx,
+) -> FormatResult<()> {
+    for slot in kind.slots {
+        let set = bits & 1 == 1;
+        if slot.ty == Ty::Bit || slot.optional {
+            bits >>= 1;
+        }
+        let sel = match slot.ty {
+            Ty::Sel(spaces) => {
+                let n = sel_bits(spaces.len());
+                let i = bits & ((1 << n) - 1);
+                bits >>= n;
+                i
+            }
+            _ => 0,
+        };
+        if slot.ty == Ty::Bit || (slot.optional && !set) {
+            continue;
+        }
+        let space = match slot.ty {
+            Ty::Id(space) => Some(space),
+            Ty::Sel(spaces) => match spaces.get(sel as usize) {
+                Some((space, _)) => Some(*space),
+                None => return invalid("no such id space"),
+            },
+            _ => None,
+        };
+        if let Some(space) = space {
+            let prev = &mut ctx.ids[space as usize];
+            let v = (*prev as i64).wrapping_add(unzigzag(get_uvarint(buf, at)?));
+            if v < 0 {
+                return invalid("negative id");
+            }
+            *prev = v as u64;
+            continue;
+        }
+        match slot.ty {
+            Ty::Time => {
+                let d = unzigzag(get_uvarint(buf, at)?);
+                ctx.time = ctx
+                    .time
+                    .checked_add(d)
+                    .ok_or_else(|| FormatError::Invalid("time overflows".into()))?;
+            }
+            Ty::UInt | Ty::Int => {
+                get_uvarint(buf, at)?;
+            }
+            Ty::F64 => {
+                get_slice(buf, at, 8)?;
+            }
+            Ty::Field => {
+                if get_uvarint(buf, at)? == 0 {
+                    let len = get_uvarint(buf, at)?;
+                    get_slice(buf, at, len)?;
+                }
+            }
+            Ty::Text | Ty::Bytes => {
+                let len = get_uvarint(buf, at)?;
+                get_slice(buf, at, len)?;
+            }
+            Ty::Id(_) | Ty::Sel(_) | Ty::Bit => unreachable!(),
+        }
+    }
+    Ok(())
+}
+
 /// Decodes the record at `buf[*at..]`, given its header value (already read), advancing `at` and the
 /// context. Every value is checked as on append.
 pub fn decode_body(
@@ -1381,7 +1478,7 @@ pub fn decode_body(
                 0 => {
                     let len = get_uvarint(buf, at)?;
                     let k = get_slice(buf, at, len)?;
-                    wtf8_to_utf16(k)?;
+                    check_wtf8(k)?;
                     Value::Field(FieldRef::Key(k.to_vec()))
                 }
                 c => Value::Field(FieldRef::Code(c)),
@@ -1389,7 +1486,7 @@ pub fn decode_body(
             Ty::Text => {
                 let len = get_uvarint(buf, at)?;
                 let b = get_slice(buf, at, len)?;
-                wtf8_to_utf16(b)?;
+                check_wtf8(b)?;
                 Value::Text(b.to_vec())
             }
             Ty::Bytes => {

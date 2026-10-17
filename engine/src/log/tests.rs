@@ -149,6 +149,26 @@ fn records_read_back_by_position_and_in_order_across_blocks_and_files() {
 }
 
 #[test]
+fn records_read_together_match_their_reads_one_by_one() {
+    let dir = temp_dir("readmany");
+    let recs = records(400);
+    let log = Log::open(&dir, SMALL).unwrap();
+    let positions: Vec<u64> = commit_all(&log, &recs).concat();
+    // Every third record, last first, with some twice: only these are decoded, the ones between stepped over.
+    let mut picked: Vec<usize> = (0..recs.len()).rev().filter(|i| i % 3 == 1).collect();
+    picked.extend([7, 7, 250]);
+    let read = log
+        .read_many(&picked.iter().map(|&i| positions[i]).collect::<Vec<_>>())
+        .unwrap();
+    for (&i, (r, len)) in picked.iter().zip(&read) {
+        assert_eq!(r, &recs[i]);
+        assert_eq!(*len, log.read_sized(positions[i]).unwrap().1);
+    }
+    log.close();
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn positions_that_are_not_record_starts_are_refused() {
     let dir = temp_dir("badpos");
     let log = Log::open(&dir, SMALL).unwrap();
