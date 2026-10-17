@@ -125,7 +125,7 @@ async function openStore(root, handle) {
             return done;
         };
         const people = libraryPeople(lib);
-        const chats = await ChatEngine.open(lib.store, people);
+        const chats = await ChatEngine.open(lib.store, people, await lib.nextIds());
         return { lib, chats, people, tokens: new TokenCache(lib.store), handle, events };
     } catch (err) {
         await lib.close();

@@ -394,6 +394,18 @@ export class LibraryEngine {
         /** Open batch imports (`beginBatch()` less `endBatch()`). */
         this.batches = 0;
         this.cardCommits = new GroupedCommits(store);
+        /** @type {Promise<import('./actor-ids.js').NextIds> | null} */
+        this.counters = null;
+    }
+
+    /**
+     * The store's id counters for messages, sessions, users and changes: one object, which every writer of the store
+     * (its chats, its world info) hands ids out of.
+     * @returns {Promise<import('./actor-ids.js').NextIds>}
+     */
+    nextIds() {
+        this.counters ??= this.store.chatRead('nextIds', {});
+        return /** @type {Promise<import('./actor-ids.js').NextIds>} */ (this.counters);
     }
 
     /**
