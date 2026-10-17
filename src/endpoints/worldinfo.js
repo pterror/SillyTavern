@@ -11,6 +11,7 @@ import { engineStoreHere, requestStore, storeRoute, userStore } from '../user-st
 import { bookExistsHere, readBookHere } from '../world-info-engine.js';
 import { bookKey } from '../world-info-keys.js';
 import { TYPE } from '../library-codes.js';
+import { sessionHeaderOf } from '../request-session.js';
 
 /**
  * World info is stored in the user's engine store (`lib.books`, `src/world-info-engine.js`); a book is found by the
@@ -196,12 +197,21 @@ router.post('/delete', storeRoute('deleting a World Info book', async (request, 
 
     const worldInfoName = request.body.name;
     const { lib } = await requestStore(request);
-    if (!(await lib.books.delete(worldInfoName))) {
+    if (!(await lib.books.delete(worldInfoName, actorOf(request)))) {
         throw new Error(`World info file ${sanitize(`${worldInfoName}.json`)} doesn't exist.`);
     }
 
     return response.sendStatus(200);
 }));
+
+/**
+ * Who a request writes as: its user, through its tab's session.
+ * @param {any} request
+ * @returns {import('../world-info-engine.js').Actor}
+ */
+function actorOf(request) {
+    return { user: request.user.profile.handle, session: sessionHeaderOf(request) ?? null };
+}
 
 /**
  * Stores a raw World Info JSON blob as a book of the given user, deriving the World's name from desiredName the same
@@ -210,9 +220,10 @@ router.post('/delete', storeRoute('deleting a World Info book', async (request, 
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {string} desiredName Filename (with or without extension) to derive the World's name from
  * @param {string} fileContents Raw World Info JSON text; must contain an `entries` key
+ * @param {import('../world-info-engine.js').Actor | null} [actor] Who imports it (none: the server itself)
  * @returns {Promise<string>} The written World's name
  */
-export async function importWorldInfoFromRaw(directories, desiredName, fileContents) {
+export async function importWorldInfoFromRaw(directories, desiredName, fileContents, actor = null) {
     const filename = `${path.parse(sanitize(desiredName)).name}.json`;
 
     const worldContent = JSON.parse(fileContents);
@@ -226,7 +237,7 @@ export async function importWorldInfoFromRaw(directories, desiredName, fileConte
         throw new Error('World file must have a name');
     }
 
-    await (await userStore(directories)).lib.books.write(worldName, worldContent);
+    await (await userStore(directories)).lib.books.write(worldName, worldContent, actor);
     return worldName;
 }
 
@@ -246,7 +257,7 @@ router.post('/import', storeRoute('importing a World Info book', async (request,
     }
 
     try {
-        const worldName = await importWorldInfoFromRaw(request.user.directories, filename, fileContents);
+        const worldName = await importWorldInfoFromRaw(request.user.directories, filename, fileContents, actorOf(request));
         return response.send({ name: worldName });
     } catch (err) {
         return response.status(400).send(err instanceof Error ? err.message : 'Is not a valid world info file');
@@ -287,7 +298,7 @@ router.post('/create', storeRoute('creating a World Info book', async (request, 
         }
     }
 
-    await lib.books.write(finalName, data ?? { entries: {} });
+    await lib.books.write(finalName, data ?? { entries: {} }, actorOf(request));
 
     return response.send({ ok: true, name: finalName });
 }));
@@ -334,7 +345,7 @@ router.post('/entries/apply', storeRoute('applying World Info changes', async (r
         }
     }
 
-    const result = await lib.books.apply(name, entryChanges, fieldChanges);
+    const result = await lib.books.apply(name, entryChanges, fieldChanges, actorOf(request));
     if (!result) {
         return response.status(404).send({ error: `Lorebook '${name}' not found` });
     }
@@ -355,7 +366,7 @@ router.post('/duplicate', storeRoute('duplicating a World Info book', async (req
     if (await lib.books.exists(newName)) {
         return response.status(409).send({ error: `World Info file '${newName}' already exists` });
     }
-    await lib.books.write(newName, book);
+    await lib.books.write(newName, book, actorOf(request));
     return response.send({ ok: true, name: newName });
 }));
 
@@ -437,7 +448,7 @@ router.post('/edit', storeRoute('saving a World Info book', async (request, resp
     }
 
     const { lib } = await requestStore(request);
-    await lib.books.write(request.body.name, request.body.data);
+    await lib.books.write(request.body.name, request.body.data, actorOf(request));
 
     return response.send({ ok: true });
 }));
@@ -463,7 +474,7 @@ router.post('/entry/transplant', storeRoute('moving a World Info entry', async (
     }
 
     const { lib } = await requestStore(request);
-    const result = await lib.books.transplant({ source: source_name, target: target_name, uid, deleteOriginal: delete_original !== false });
+    const result = await lib.books.transplant({ source: source_name, target: target_name, uid, deleteOriginal: delete_original !== false }, actorOf(request));
     if (result === 'no source') {
         return response.status(404).send({ error: `Source lorebook '${source_name}' not found` });
     }
@@ -519,7 +530,7 @@ router.post('/entry/edit', storeRoute('saving a World Info entry', async (reques
     }
 
     const { lib } = await requestStore(request);
-    const result = await lib.books.editEntry(name, uid, entryData);
+    const result = await lib.books.editEntry(name, uid, entryData, actorOf(request));
     if (result === 'missing') {
         return response.status(404).send({ error: `Lorebook '${name}' not found` });
     }

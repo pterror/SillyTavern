@@ -14,6 +14,7 @@ import { serverDirectory } from '../server-directory.js';
 import { Jimp, JimpMime } from '../jimp.js';
 import { DEFAULT_AVATAR_PATH } from '../constants.js';
 import { importWorldInfoFromRaw } from './worldinfo.js';
+import { sessionHeaderOf } from '../request-session.js';
 import { userStore } from '../user-stores.js';
 import { TYPE } from '../library-codes.js';
 import { avatarImage, writeWithAvatar } from '../character-avatars.js';
@@ -1195,7 +1196,7 @@ router.post('/importChubLorebookByPath', async (request, response) => {
         const desiredName = typeof request.body.name === 'string' && request.body.name.trim()
             ? request.body.name.trim()
             : result.fileName;
-        const worldName = await importWorldInfoFromRaw(request.user.directories, desiredName, result.buffer.toString('utf8'));
+        const worldName = await importWorldInfoFromRaw(request.user.directories, desiredName, result.buffer.toString('utf8'), { user: request.user.profile.handle, session: sessionHeaderOf(request) ?? null });
         return response.send({ name: worldName });
     } catch (error) {
         console.error('Importing Chub linked lorebook failed', error);
