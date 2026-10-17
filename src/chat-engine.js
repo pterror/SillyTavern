@@ -10,6 +10,9 @@ import { storedValues } from './entity-values.js';
 import { jsonHash } from '../public/scripts/hash-utils.js';
 import { bookKey } from './world-info-keys.js';
 import { cursorWeights, cursorWeightsOf, searchClauses } from './search-clauses.js';
+import { SPACE, actorIds, idOf } from './actor-ids.js';
+
+export { SPACE };
 
 /**
  * Chats on the engine (build path 5b): each character's or group's messages as a tree, sessions and bookmarks as
@@ -23,9 +26,6 @@ import { cursorWeights, cursorWeightsOf, searchClauses } from './search-clauses.
 
 const zstdCompress = promisify(zlib.zstdCompress);
 const zstdDecompress = promisify(zlib.zstdDecompress);
-
-/** `chatRead('ids')` spaces. */
-export const SPACE = Object.freeze({ message: 0, session: 1, user: 2 });
 
 /** The namespace of a user's deterministic session in a tree (UUID v5 of `<handle>\0<tree id>`). */
 export const SESSION_NAMESPACE = 'b3c3d5a0-6b5e-4f61-9d2e-5a0c1f7e9e21';
@@ -394,12 +394,12 @@ export class ChatEngine {
     /**
      * @param {any} store The engine's `Store`.
      * @param {People} people
-     * @param {{ message: bigint, position: bigint, user: bigint, change: bigint }} next
+     * @param {import('./actor-ids.js').NextIds} next The store's id counters, shared with its other writers.
      */
     constructor(store, people, next) {
         this.store = store;
         this.people = people;
-        this.next = { ...next };
+        this.next = next;
         /** @type {Map<string, Promise<unknown>>} */
         this.writing = new Map();
         this.now = () => Date.now();
@@ -408,9 +408,11 @@ export class ChatEngine {
     /**
      * @param {any} store
      * @param {People} people
+     * @param {import('./actor-ids.js').NextIds} [next] The store's id counters (`LibraryEngine.next`); read here when
+     * nothing else writes the store.
      */
-    static async open(store, people) {
-        return new ChatEngine(store, people, await store.chatRead('nextIds', {}));
+    static async open(store, people, next) {
+        return new ChatEngine(store, people, next ?? await store.chatRead('nextIds', {}));
     }
 
     /**
@@ -470,11 +472,7 @@ export class ChatEngine {
      * @param {object[]} records Gets the `keyMap` record of a new id.
      */
     async idOf(space, key, counter, records) {
-        const [id] = await this.store.chatRead('ids', { space, keys: [key] });
-        if (id !== null) return id;
-        const made = this.next[counter]++;
-        records.push({ kind: 'keyMap', [space === SPACE.user ? 'user' : 'session']: made, key: Buffer.from(key, 'utf8') });
-        return made;
+        return idOf(this.store, this.next, space, key, counter, records);
     }
 
     /**
@@ -483,9 +481,7 @@ export class ChatEngine {
      * @param {object[]} records
      */
     async actorIds(actor, records) {
-        const user = await this.idOf(SPACE.user, actor.user, 'user', records);
-        const session = actor.session ? await this.idOf(SPACE.session, actor.session, 'position', records) : null;
-        return { user, session };
+        return actorIds(this.store, this.next, actor, records);
     }
 
     // ---- sessions ----
