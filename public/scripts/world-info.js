@@ -3791,25 +3791,33 @@ function handleProbabilityInputHelper({ probabilityInput, data, entry, name, thi
  * @param {object} params.entry - The entry object to update.
  * @param {string} params.name - The name of the world info to save changes to.
  * @param {JQuery<HTMLElement>} params.probabilityInput - The input element for probability.
+ * @param {string|null} params.thing - What the entry's drafts are kept under.
+ * @param {JQuery<HTMLElement>} params.header - The entry's header.
  */
-function handleProbabilityToggleHelper({ probabilityToggle, data, entry, name, probabilityInput }) {
+function handleProbabilityToggleHelper({ probabilityToggle, data, entry, name, probabilityInput, thing, header }) {
     probabilityToggle.data('uid', entry.uid);
-    probabilityToggle.on('input', async function (_, { noSave = false } = {}) {
-        const uid = $(this).data('uid');
-        const value = $(this).prop('checked');
-        data.entries[uid].useProbability = value;
-        const probabilityContainer = $(this).closest('.world_entry').find('.probabilityContainer');
-        !noSave && await saveWorldInfoEntry(name, data, uid);
-        value ? probabilityContainer.show() : probabilityContainer.hide();
-        if (value && data.entries[uid].probability === null) {
-            data.entries[uid].probability = 100;
-        }
-        if (!value) {
-            data.entries[uid].probability = null;
-        }
-        probabilityInput.val(data.entries[uid].probability).trigger('input', { noSave });
+    const uid = entry.uid;
+    /** @param {any} entryData @param {boolean} value */
+    const setUseProbability = (entryData, value) => {
+        entryData.useProbability = value;
+        if (value && entryData.probability === null) entryData.probability = 100;
+        if (!value) entryData.probability = null;
+    };
+    // The toggle is hidden and the entry is shown with it on, as upstream shows it.
+    setUseProbability(data.entries[uid], true);
+    probabilityInput.val(data.entries[uid].probability ?? '');
+    bindCheckboxField({
+        control: probabilityToggle, field: 'useProbability', name, data, uid, thing, header,
+        stored: entryData => !!entryData.useProbability,
+        onShow: (value) => {
+            const probabilityContainer = probabilityToggle.closest('.world_entry').find('.probabilityContainer');
+            value ? probabilityContainer.show() : probabilityContainer.hide();
+        },
+        apply: (entryData, value) => {
+            setUseProbability(entryData, value);
+            probabilityInput.val(entryData.probability ?? '');
+        },
     });
-    probabilityToggle.prop('checked', true).trigger('input', { noSave: true });
     probabilityToggle.parent().hide();
 }
 
@@ -4189,22 +4197,25 @@ export async function getWorldEntry(name, data, entry) {
         // Probability toggle
         handleProbabilityToggleHelper({
             probabilityToggle: editTemplate.find('input[name="useProbability"]'),
-            data, entry, name,
+            data, entry, name, thing, header,
             probabilityInput: headerTemplate.find('input[name="probability"]'),
         });
 
-        // Comment toggle
+        // Comment toggle (hidden; the entry is shown with it on, as upstream shows it)
         const commentToggle = editTemplate.find('input[name="addMemo"]');
         commentToggle.data('uid', entry.uid);
-        commentToggle.on('input', async function (_, { noSave = false } = {}) {
-            const uid = $(this).data('uid');
-            const value = $(this).prop('checked');
-            const commentContainer = $(this).closest('.world_entry').find('.commentContainer');
-            data.entries[uid].addMemo = value;
-            !noSave && await saveWorldInfoEntry(name, data, uid);
-            value ? commentContainer.show() : commentContainer.hide();
+        data.entries[uid].addMemo = true;
+        bindCheckboxField({
+            control: commentToggle, field: 'addMemo', name, data, uid, thing, header,
+            stored: entryData => !!entryData.addMemo,
+            onShow: (value) => {
+                const commentContainer = commentToggle.closest('.world_entry').find('.commentContainer');
+                value ? commentContainer.show() : commentContainer.hide();
+            },
+            apply: (entryData, value) => {
+                entryData.addMemo = value;
+            },
         });
-        commentToggle.prop('checked', true).trigger('input', { noSave: true });
         commentToggle.parent().hide();
 
         // Logic AND/NOT
@@ -4221,23 +4232,27 @@ export async function getWorldEntry(name, data, entry) {
             },
         });
 
-        // Selective
+        // Selective (hidden; the entry is shown with it on, as upstream shows it)
         const selectiveInput = editTemplate.find('input[name="selective"]');
         selectiveInput.data('uid', entry.uid);
-        selectiveInput.on('input', async function (_, { noSave = false } = {}) {
-            const uid = $(this).data('uid');
-            const value = $(this).prop('checked');
-            data.entries[uid].selective = value;
-            setWIOriginalDataValue(data, uid, 'selective', data.entries[uid].selective);
-            !noSave && await saveWorldInfoEntry(name, data, uid);
-            const keysecondary = $(this).closest('.world_entry').find('.keysecondary');
-            const keysecondarytextpole = $(this).closest('.world_entry').find('.keysecondarytextpole');
-            const keyprimaryselect = $(this).closest('.world_entry').find('.keyprimaryselect');
-            const keyprimaryHeight = keyprimaryselect.outerHeight();
-            keysecondarytextpole.css('height', keyprimaryHeight + 'px');
-            value ? keysecondary.show() : keysecondary.hide();
+        data.entries[uid].selective = true;
+        setWIOriginalDataValue(data, uid, 'selective', true);
+        bindCheckboxField({
+            control: selectiveInput, field: 'selective', name, data, uid, thing, header,
+            stored: entryData => !!entryData.selective,
+            onShow: (value) => {
+                const keysecondary = selectiveInput.closest('.world_entry').find('.keysecondary');
+                const keysecondarytextpole = selectiveInput.closest('.world_entry').find('.keysecondarytextpole');
+                const keyprimaryselect = selectiveInput.closest('.world_entry').find('.keyprimaryselect');
+                const keyprimaryHeight = keyprimaryselect.outerHeight();
+                keysecondarytextpole.css('height', keyprimaryHeight + 'px');
+                value ? keysecondary.show() : keysecondary.hide();
+            },
+            apply: (entryData, value) => {
+                entryData.selective = value;
+                setWIOriginalDataValue(data, uid, 'selective', value);
+            },
         });
-        selectiveInput.prop('checked', true).trigger('input', { noSave: true });
         selectiveInput.parent().hide();
 
         // Character filter
