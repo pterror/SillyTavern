@@ -19,6 +19,15 @@ let loaded = null;
  * @returns {{ kind: 'native'|'wasm', file: string, binding: any }}
  */
 export function loadEngine({ platform = currentPlatform(), distDir = DIST_DIR } = {}) {
+    // Tests only: a scratch build (a `.node` or `.wasm` file) in place of engine/dist/, which a running server uses.
+    const override = process.env.ST_ENGINE_PATH;
+    if (override) {
+        if (!fs.existsSync(override)) throw new EngineLoadError(`ST_ENGINE_PATH names no file: ${override}`);
+        loaded = override.endsWith('.wasm')
+            ? { kind: 'wasm', file: override, binding: instantiateWasmBinding(override) }
+            : { kind: 'native', file: override, binding: createRequire(import.meta.url)(override) };
+        return loaded;
+    }
     const key = sourceKey();
     const native = platform ? path.join(distDir, nativeFileName(key, platform)) : null;
     const wasm = path.join(distDir, wasmFileName(key));
