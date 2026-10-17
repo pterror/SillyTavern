@@ -924,9 +924,8 @@ pub static KINDS: &[Kind] = &[
         internal: false,
     },
     // ---- history (`store::history`): an entity's changes, each kept with who made it and when ----
-    // Each is a change of id `id` (the state layer's id space) made at `time` through `session` by `user`, in
-    // `gesture` (the page's: from focus to blur, pointer down to up). A change with the session, field and gesture of
-    // the one before it on that field is one change with it: it takes its id and its record replaces it.
+    // Each is a change of id `id` (the state layer's id space) made at `time` through `session` by `user`; every
+    // committed write is a change of its own.
     //
     // An entity's field becomes `value` (text; with `json`, JSON text).
     Kind {
@@ -941,7 +940,6 @@ pub static KINDS: &[Kind] = &[
             req("time", Ty::Time),
             opt("session", Ty::Id(Space::Position)),
             opt("user", Ty::Id(Space::User)),
-            opt("gesture", Ty::Bytes),
         ],
         internal: false,
     },
@@ -960,7 +958,6 @@ pub static KINDS: &[Kind] = &[
             req("time", Ty::Time),
             opt("session", Ty::Id(Space::Position)),
             opt("user", Ty::Id(Space::User)),
-            opt("gesture", Ty::Bytes),
         ],
         internal: false,
     },
@@ -975,7 +972,6 @@ pub static KINDS: &[Kind] = &[
             req("time", Ty::Time),
             opt("session", Ty::Id(Space::Position)),
             opt("user", Ty::Id(Space::User)),
-            opt("gesture", Ty::Bytes),
         ],
         internal: false,
     },
@@ -992,7 +988,6 @@ pub static KINDS: &[Kind] = &[
             req("time", Ty::Time),
             opt("session", Ty::Id(Space::Position)),
             opt("user", Ty::Id(Space::User)),
-            opt("gesture", Ty::Bytes),
         ],
         internal: false,
     },

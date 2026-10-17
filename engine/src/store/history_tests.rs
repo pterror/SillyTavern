@@ -68,23 +68,16 @@ fn content() -> FieldRef {
     FieldRef::Code(CONTENT)
 }
 
-/// Who and when: session `tab` (None: none), gesture `g` (None: none).
+/// Through which session (None: none) user 1 makes a change.
 #[derive(Clone, Copy)]
 struct By {
     tab: Option<u64>,
-    gesture: Option<&'static str>,
 }
 
-const NOBODY: By = By {
-    tab: None,
-    gesture: None,
-};
+const NOBODY: By = By { tab: None };
 
-fn by(tab: u64, gesture: &'static str) -> By {
-    By {
-        tab: Some(tab),
-        gesture: Some(gesture),
-    }
+fn by(tab: u64) -> By {
+    By { tab: Some(tab) }
 }
 
 fn meta(c: u64, b: By) -> Vec<Value> {
@@ -93,8 +86,6 @@ fn meta(c: u64, b: By) -> Vec<Value> {
         Value::Time(1_700_000_000_000 + c as i64),
         b.tab.map_or(Value::Absent, Value::Id),
         Value::Id(USER),
-        b.gesture
-            .map_or(Value::Absent, |g| Value::Bytes(g.as_bytes().to_vec())),
     ]
 }
 
@@ -509,70 +500,69 @@ fn every_change_is_kept_with_who_and_when_and_current_reads_are_the_latest() {
 }
 
 #[test]
-fn a_run_of_one_sessions_gesture_on_one_field_is_one_change() {
-    let dir = temp_dir("runs");
+fn every_committed_write_is_a_change_of_its_own_with_its_session() {
+    let dir = temp_dir("own");
     let s = open(&dir);
     let f = content();
     s.commit_wait(vec![set(100, &f, LONG, false, NOBODY)])
         .unwrap();
-    // Typing in one gesture: one change, diffed from the value before the run, under the run's first id.
-    s.commit_wait(vec![edit(101, &f, end(""), 0, " t", by(TAB, "g1"))])
+    // Writes one after another through one session, through another, through none: each its own change.
+    s.commit_wait(vec![edit(101, &f, end(""), 0, " t", by(TAB))])
         .unwrap();
-    s.commit_wait(vec![edit(102, &f, end(" t"), 0, "y", by(TAB, "g1"))])
+    s.commit_wait(vec![edit(102, &f, end(" t"), 0, "y", by(TAB))])
         .unwrap();
-    s.commit_wait(vec![edit(103, &f, end(" ty"), 0, "p", by(TAB, "g1"))])
+    s.commit_wait(vec![edit(103, &f, end(" ty"), 0, "p", by(OTHER_TAB))])
         .unwrap();
-    assert_eq!(value(&s, &f), Some(long(" typ")));
-    assert_eq!(
-        changes(&s, Some(&f)),
-        vec![(101, "edit".into()), (100, "set".into())]
-    );
-    assert_eq!(at(&s, &f, 101), Some(Some(long(" typ"))));
-    // The run's earlier records are dead.
-    assert_eq!(count(&live_kinds(&s), "histEdit"), 1);
-    // Another gesture, another session, or no gesture: a change of its own.
-    s.commit_wait(vec![edit(104, &f, end(" typ"), 0, "e", by(TAB, "g2"))])
+    s.commit_wait(vec![edit(104, &f, end(" typ"), 0, "e", NOBODY)])
         .unwrap();
-    s.commit_wait(vec![edit(
-        105,
-        &f,
-        end(" type"),
-        0,
-        "d",
-        by(OTHER_TAB, "g2"),
-    )])
-    .unwrap();
-    s.commit_wait(vec![edit(106, &f, end(" typed"), 0, "!", NOBODY)])
-        .unwrap();
-    s.commit_wait(vec![edit(107, &f, end(" typed!"), 0, "!", NOBODY)])
-        .unwrap();
-    assert_eq!(value(&s, &f), Some(long(" typed!!")));
+    assert_eq!(value(&s, &f), Some(long(" type")));
     assert_eq!(
         changes(&s, Some(&f))
             .iter()
             .map(|c| c.0)
             .collect::<Vec<_>>(),
-        vec![107, 106, 105, 104, 101, 100]
+        vec![104, 103, 102, 101, 100]
     );
-    assert_eq!(count(&live_kinds(&s), "histEdit"), 5);
-    // A run reaching back to the value before it is still one change.
-    s.commit_wait(vec![edit(108, &f, end(" typed!"), 1, "?", by(TAB, "g3"))])
+    assert_eq!(at(&s, &f, 102), Some(Some(long(" ty"))));
+    assert_eq!(count(&live_kinds(&s), "histEdit"), 4);
+    let page = s
+        .chat_read(|v| history::history_page(v, ENTRY_ID, Some(&f), None, 2))
         .unwrap();
-    s.commit_wait(vec![edit(109, &f, end(" typed!"), 1, "!", by(TAB, "g3"))])
+    let Js::Arr(rows) = get(&page, "changes") else {
+        panic!()
+    };
+    assert_eq!(*get(&page, "more"), Js::Bool(true));
+    assert_eq!(*get(&rows[0], "session"), Js::Null);
+    assert_eq!(*get(&rows[1], "session"), Js::Big(OTHER_TAB));
+    assert_eq!(*get(&rows[1], "user"), Js::Big(USER));
+    let page = s
+        .chat_read(|v| history::history_page(v, ENTRY_ID, Some(&f), Some(103), 10))
         .unwrap();
-    assert_eq!(value(&s, &f), Some(long(" typed!!")));
-    assert_eq!(changes(&s, Some(&f))[0].0, 108);
-    // A run of places: one change.
+    let Js::Arr(rows) = get(&page, "changes") else {
+        panic!()
+    };
+    assert_eq!(rows.len(), 3);
+    assert_eq!(*get(&rows[0], "session"), Js::Big(TAB));
+    // An unknown session is refused.
+    assert!(refused(&s, vec![edit(105, &f, 0, 0, "x", by(99))]));
+    // Places too, merged with the item's text in its history (an edit of a short text is a full value).
     let item = library::item_field(KEYS, 1);
     s.commit_wait(vec![set(400, &item, "k", false, NOBODY)])
         .unwrap();
-    s.commit_wait(vec![place(401, KEYS, 1, Some(10), by(TAB, "drag"))])
+    s.commit_wait(vec![place(401, KEYS, 1, Some(10), by(TAB))])
         .unwrap();
-    s.commit_wait(vec![place(402, KEYS, 1, Some(20), by(TAB, "drag"))])
+    s.commit_wait(vec![place(402, KEYS, 1, Some(20), by(TAB))])
+        .unwrap();
+    s.commit_wait(vec![edit(403, &item, 1, 0, "k", by(TAB))])
         .unwrap();
     assert_eq!(
         changes(&s, Some(&item)),
-        vec![(401, "place".into()), (400, "set".into())]
+        vec![
+            (403, "set".into()),
+            (402, "place".into()),
+            (401, "place".into()),
+            (400, "set".into())
+        ]
     );
     let e = s
         .library_entities(&[ENTRY_ID])
@@ -581,12 +571,11 @@ fn a_run_of_one_sessions_gesture_on_one_field_is_one_change() {
         .unwrap()
         .unwrap();
     assert_eq!(e.items, vec![(KEYS, 1, 20)]);
-    // A run outlives a reopen as one change.
     s.close();
     drop(s);
     let s = open(&dir);
-    assert_eq!(value(&s, &f), Some(long(" typed!!")));
-    assert_eq!(at(&s, &f, 101), Some(Some(long(" typ"))));
+    assert_eq!(value(&s, &f), Some(long(" type")));
+    assert_eq!(at(&s, &f, 101), Some(Some(long(" t"))));
     drop(s);
     fs::remove_dir_all(&dir).unwrap();
 }

@@ -9,10 +9,6 @@
 //! each change from the latest full value and the edits after it, so a current read never walks history and a
 //! write walks only the head's edits.
 //!
-//! A change with the session, field and gesture of the latest change of the same part of that field is one change
-//! with it: it is written under that change's id as one record from the value before the run, and the run's earlier
-//! record dies.
-//!
 //! Forgetting removes past changes, never a field's current one. A forgotten change whose next change is an edit of
 //! it has that edit rewritten from the value before it, keeping its id, who and when. With a marker, the forget record
 //! takes the forgotten changes' place in `HIST` (one marker per field, its `MARKS` counting them). Forgetting an
@@ -198,48 +194,35 @@ struct Meta {
     time: i64,
     session: Option<u64>,
     user: Option<u64>,
-    gesture: Option<Vec<u8>>,
 }
 
-/// The slots of a kind's id, time, session, user and gesture.
-fn meta_slots(kind: &str) -> [Option<usize>; 5] {
-    match kind {
-        "histSet" | "histPlace" => [Some(4), Some(5), Some(6), Some(7), Some(8)],
-        "histEdit" => [Some(6), Some(7), Some(8), Some(9), Some(10)],
-        "histDelete" => [Some(2), Some(3), Some(4), Some(5), Some(6)],
-        "histEntityDelete" => [Some(1), Some(2), Some(3), Some(4), None],
-        "histRestore" | "histForget" => [Some(4), Some(5), Some(6), Some(7), None],
-        "histRevert" => [Some(3), Some(4), Some(5), Some(6), None],
-        _ => [None; 5],
-    }
+/// The slots of a kind's id, time, session and user.
+fn meta_slots(kind: &str) -> Option<[usize; 4]> {
+    Some(match kind {
+        "histSet" | "histPlace" | "histRestore" | "histForget" => [4, 5, 6, 7],
+        "histEdit" => [6, 7, 8, 9],
+        "histDelete" => [2, 3, 4, 5],
+        "histEntityDelete" => [1, 2, 3, 4],
+        "histRevert" => [3, 4, 5, 6],
+        _ => return None,
+    })
 }
 
 impl Meta {
     fn of(rec: &Record) -> Meta {
-        let [i, t, s, u, g] = meta_slots(rec.kind.name);
-        let opt = |i: Option<usize>| match i.map(|i| &rec.values[i]) {
-            Some(Value::Id(v)) => Some(*v),
+        let [i, t, s, u] = meta_slots(rec.kind.name).expect("a history kind");
+        let opt = |i: usize| match rec.values[i] {
+            Value::Id(v) => Some(v),
             _ => None,
         };
         Meta {
             id: opt(i),
-            time: match t.map(|t| &rec.values[t]) {
-                Some(Value::Time(t)) => *t,
+            time: match rec.values[t] {
+                Value::Time(t) => t,
                 _ => 0,
             },
             session: opt(s),
             user: opt(u),
-            gesture: match g.map(|g| &rec.values[g]) {
-                Some(Value::Bytes(b)) => Some(b.clone()),
-                _ => None,
-            },
-        }
-    }
-
-    fn with_id(&self, c: u64) -> Meta {
-        Meta {
-            id: Some(c),
-            ..self.clone()
         }
     }
 
@@ -247,14 +230,13 @@ impl Meta {
         self.id.expect("a change record has an id")
     }
 
-    /// Its values after the change's own: id, time, session, user, gesture.
-    fn values(&self) -> [Value; 5] {
+    /// Its values after the change's own: id, time, session, user.
+    fn values(&self) -> [Value; 4] {
         [
             Value::Id(self.change()),
             Value::Time(self.time),
             self.session.map_or(Value::Absent, Value::Id),
             self.user.map_or(Value::Absent, Value::Id),
-            self.gesture.clone().map_or(Value::Absent, Value::Bytes),
         ]
     }
 }
@@ -869,27 +851,8 @@ fn deleted_key(book: u64, e: u64) -> Vec<u8> {
 
 // ---- filing a change ----
 
-/// The id of the change a change of `slot`'s `part` with `m` joins: the part's latest, when it has the same session,
-/// user and gesture.
-fn run_of(
-    view: &View,
-    e: u64,
-    slot: &FieldRef,
-    part: Part,
-    m: &Meta,
-) -> Result<Option<u64>, StoreError> {
-    if m.gesture.is_none() || m.session.is_none() {
-        return Ok(None);
-    }
-    let Some((c, None)) = latest(view, e, Some(slot), part)? else {
-        return Ok(None);
-    };
-    let lm = Meta::of(&change(view, None, c)?.1);
-    Ok((lm.session == m.session && lm.user == m.user && lm.gesture == m.gesture).then_some(c))
-}
-
-/// The change record of id `c` is new, after every change of its part of its slot; or it replaces change `c`'s
-/// record of the same family and slot (a run, a rewrite), which dies. Returns whether it replaces one.
+/// The change record of id `c` is new, after every change of its part of its slot; or (a forget's rewrite of it) it
+/// replaces change `c`'s record of the same family and slot, which dies. Returns whether it replaces one.
 fn place_change(
     view: &View,
     out: &mut Out,
@@ -1048,8 +1011,8 @@ impl Deriver for ValueChange {
         true
     }
 
-    /// Checks the change against the field's value; joins it to the field's run, or writes an edit as a full value
-    /// once the edits since the last one would reach the value's size.
+    /// Checks the change against the field's value; writes an edit as a full value once the edits since the last one
+    /// would reach the value's size.
     fn prepare(&self, rec: Record, view: &View) -> Result<Record, StoreError> {
         let (e, f) = (id(&rec, 0), field(&rec, 1).clone());
         let m = Meta::of(&rec);
@@ -1094,17 +1057,6 @@ impl Deriver for ValueChange {
             return Err(refused(format!(
                 "a change of entity {e} that changes nothing"
             )));
-        }
-        if let Some(last) = run_of(view, e, &f, VALUES, &m)? {
-            let before = chain_before(view, None, e, &f, Some(last))?;
-            return Ok(value_record(
-                e,
-                &f,
-                &before.value()?,
-                before.edit_bytes(),
-                &new,
-                &m.with_id(last),
-            ));
         }
         if rec.kind.name == "histEdit" {
             if legacy_head(view, e, &f)? {
@@ -1201,7 +1153,7 @@ impl Deriver for PlaceChange {
         true
     }
 
-    /// Checks the place changes; joins it to the item's run.
+    /// Checks the place changes.
     fn prepare(&self, rec: Record, view: &View) -> Result<Record, StoreError> {
         let (e, list, item) = (id(&rec, 0), id(&rec, 1), id(&rec, 2));
         let m = Meta::of(&rec);
@@ -1225,9 +1177,6 @@ impl Deriver for PlaceChange {
             return Err(refused(format!(
                 "a change of entity {e} that changes nothing"
             )));
-        }
-        if let Some(last) = run_of(view, e, &item_field(list, item), PLACES, &m)? {
-            return Ok(place_record(e, list, item, position, &m.with_id(last)));
         }
         Ok(rec)
     }
