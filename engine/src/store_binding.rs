@@ -1749,6 +1749,8 @@ impl Store {
     ///   own) after `after` (null: after its own);
     /// - `deleted { book, after?, limit }`: `{ entries: [{ id, key, position, index }], more }`, the book's deleted
     ///   entries in id order.
+    /// - `legacyEntries { after?, limit }`: one-off support (`history::legacy_entries`), deleted with
+    ///   `src/migrations/convert-entries-to-history.js`.
     #[napi(
         ts_args_type = "op: string, args: object",
         ts_return_type = "Promise<any>"
@@ -2886,6 +2888,19 @@ fn world_read_job(op: String, args: &Object) -> Result<TreeRead> {
             };
             Box::new(move |s| {
                 s.chat_read(|v| h::history_fields(v, entity, after.clone(), limit))
+                    .map(JsTree)
+            })
+        }
+        "legacyEntries" => {
+            let limit = req_integer(a, "limit")? as usize;
+            let after = match a.get::<Unknown>("after")? {
+                Some(v) if !matches!(v.get_type()?, ValueType::Null | ValueType::Undefined) => {
+                    Some(string("after", v)?)
+                }
+                _ => None,
+            };
+            Box::new(move |s| {
+                s.chat_read(|v| h::legacy_entries(v, after.as_deref(), limit))
                     .map(JsTree)
             })
         }

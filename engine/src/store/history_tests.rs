@@ -988,6 +988,25 @@ fn a_change_over_a_value_written_before_history_takes_its_place() {
         ],
     )])
     .unwrap();
+    // The one-off finds what is written before history: the entry's text, JSON and item text, and its item's place.
+    let legacy = |s: &Store| {
+        s.chat_read(|v| history::legacy_entries(v, None, 10))
+            .unwrap()
+    };
+    let page = legacy(&s);
+    let Js::Arr(rows) = get(&page, "entries") else {
+        panic!()
+    };
+    assert_eq!(rows.len(), 1);
+    assert_eq!(*get(&rows[0], "id"), Js::Big(ENTRY_ID));
+    let Js::Arr(fields) = get(&rows[0], "fields") else {
+        panic!()
+    };
+    assert_eq!(fields.len(), 3);
+    assert_eq!(
+        *get(&rows[0], "items"),
+        Js::Arr(vec![Js::Arr(vec![Js::Num(KEYS as f64), Js::Num(0.0)])])
+    );
     let before = values(&s);
     // An edit of an old value is written as a full value; the old records die.
     s.commit_wait(vec![
@@ -1023,6 +1042,7 @@ fn a_change_over_a_value_written_before_history_takes_its_place() {
         "the entry's place in its book"
     );
     assert_eq!(count(&live, "jsonValue"), 1, "the book's definition marker");
+    assert_eq!(*get(&legacy(&s), "entries"), Js::Arr(Vec::new()));
     // The same value or place over one written before history is its first change.
     s.close();
     drop(s);
