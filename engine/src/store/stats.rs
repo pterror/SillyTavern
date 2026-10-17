@@ -468,6 +468,7 @@ impl Deriver for Counted {
             ks: view.ks,
             snap: view.snap,
             log: view.log,
+            memo: view.memo,
         };
         let after = contrib(&after_view, m)?;
         drop(after_view);

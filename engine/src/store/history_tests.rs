@@ -1075,3 +1075,72 @@ fn a_change_over_a_value_written_before_history_takes_its_place() {
     fs::remove_dir_all(&dir2).unwrap();
     fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn commits_that_read_what_they_change_stay_right_while_the_log_is_cleaned_flushed_and_merged() {
+    // A commit's job reads each published value once (`derive::Memo`): while it derives, cleaning, flushes
+    // and merges go on beside it, and every value and every change still reads as written, also reopened.
+    let dir = temp_dir("memo-cleaning");
+    let uid = FieldRef::Code(UID);
+    const N: u64 = 160;
+    // Ids `first(i) - 1 ..= first(i) + 3` are commit i's.
+    let first = |i: u64| 1000 + i * 5;
+    let check = |s: &Store| {
+        let last = N - 1;
+        assert_eq!(value(s, &content()), Some(format!("Z{last}b")));
+        assert_eq!(value(s, &uid), Some(format!("json:\"u{last}\"")));
+        for i in 0..N {
+            let c = first(i);
+            assert_eq!(at(s, &content(), c), Some(Some(format!("a{i}"))), "change {c}");
+            assert_eq!(at(s, &content(), c + 1), Some(Some(format!("a{i}b"))), "change {}", c + 1);
+            assert_eq!(at(s, &content(), c + 3), Some(Some(format!("Z{i}b"))), "change {}", c + 3);
+            if i % 2 == 1 {
+                let before = format!("Z{}b", i - 1);
+                assert_eq!(at(s, &content(), c - 1), Some(Some(format!("p{before}"))), "change {}", c - 1);
+            }
+        }
+        let n = changes(s, Some(&content())).len() as u64;
+        assert_eq!(n, N * 3 + N / 2);
+    };
+    {
+        let s = open(&dir);
+        let done = AtomicBool::new(false);
+        std::thread::scope(|t| {
+            t.spawn(|| {
+                while !done.load(Ordering::Acquire) {
+                    s.inner.ks.freeze_at(s.durable_end());
+                    s.inner.ks.wait_flushed().unwrap();
+                    s.wake_cleaner();
+                    s.clean().unwrap();
+                }
+            });
+            for i in 0..N {
+                let c = first(i);
+                let a = format!("a{i}");
+                // A value set, then edited twice in the same commit (each edit reads the one before it,
+                // unpublished), and a JSON value; every other commit also edits the value the commit before
+                // left (published, read through the job's memo) before setting it again.
+                let mut recs = vec![filler()];
+                if i % 2 == 1 {
+                    recs.push(edit(c - 1, &content(), 0, 0, "p", NOBODY));
+                }
+                recs.extend([
+                    set(c, &content(), &a, false, NOBODY),
+                    edit(c + 1, &content(), a.len() as u64, 0, "b", NOBODY),
+                    set(c + 2, &uid, &format!("\"u{i}\""), true, NOBODY),
+                    edit(c + 3, &content(), 0, 1, "Z", NOBODY),
+                ]);
+                s.commit_wait(recs).unwrap();
+            }
+            done.store(true, Ordering::Release);
+        });
+        clean(&s);
+        assert!(s.stats().cleaned_files > 0, "{:?}", s.stats());
+        check(&s);
+    }
+    {
+        let s = open(&dir);
+        check(&s);
+    }
+    fs::remove_dir_all(&dir).unwrap();
+}

@@ -987,6 +987,7 @@ impl Loader {
                     ks: &inner.ks,
                     snap: None,
                     log: &inner.log,
+                    memo: None,
                 };
                 // A tag's carriers ask, per name term and reading, for their posting blocks: keyed by the
                 // block, one `ask_slot` each. The asks are read back in key order below, joined with the
@@ -1746,6 +1747,7 @@ fn work(
                 ks: &inner.ks,
                 snap: None,
                 log: &inner.log,
+                memo: None,
             };
             let mut o = Out::default();
             deriver(rec.kind)

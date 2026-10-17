@@ -353,14 +353,15 @@ pub fn one_edit(before: &[u8], after: &[u8]) -> (u64, u64, Vec<u8>) {
 
 // ---- walking ----
 
-/// Each entry of one part of `slot` below change `end` (None: all), last first, read in batches: (change id,
-/// marker); `each` says whether to go on.
+/// Each entry of one part of `slot` below change `end` (None: all), last first, read in batches of `page`: (change
+/// id, marker); `each` says whether to go on.
 fn walk_back(
     view: &View,
     e: u64,
     slot: Option<&FieldRef>,
     part: Part,
     end: Option<u64>,
+    page: usize,
     mut each: impl FnMut(u64, Option<u64>) -> Result<bool, StoreError>,
 ) -> Result<(), StoreError> {
     let p = part_prefix(e, slot, part);
@@ -369,8 +370,8 @@ fn walk_back(
         None => key::prefix_end(&p),
     };
     loop {
-        let found = view.scan_vals_rev(&p, &to, 32)?;
-        let full = found.len() == 32;
+        let found = view.scan_vals_rev(&p, &to, page)?;
+        let full = found.len() == page;
         for (k, v) in &found {
             let (_, _, c) = parse_hist(e, k)?;
             if !each(c, marker_of(&v.clone().into_bytes(k))?)? {
@@ -392,7 +393,7 @@ fn latest(
     part: Part,
 ) -> Result<Option<(u64, Option<u64>)>, StoreError> {
     let mut last = None;
-    walk_back(view, e, slot, part, None, |c, m| {
+    walk_back(view, e, slot, part, None, 1, |c, m| {
         last = Some((c, m));
         Ok(false)
     })?;
@@ -464,7 +465,7 @@ fn chain_before(
     let mut edits = Vec::new();
     let mut base = None;
     let mut err = None;
-    walk_back(view, e, Some(f), VALUES, end, |c, marker| {
+    walk_back(view, e, Some(f), VALUES, end, 32, |c, marker| {
         if marker.is_some() {
             return Ok(true);
         }
@@ -1957,7 +1958,7 @@ pub fn history_page(
     let mut rows: Vec<(u64, Option<u64>)> = Vec::new();
     for part in [VALUES, PLACES] {
         let mut n = 0;
-        walk_back(view, e, slot, part, before, |c, marker| {
+        walk_back(view, e, slot, part, before, 32, |c, marker| {
             if upto.is_some_and(|u| c < u) {
                 return Ok(false);
             }

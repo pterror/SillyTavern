@@ -1907,6 +1907,7 @@ pub fn depth_step(view: &View, out: &mut Out) -> Result<bool, StoreError> {
             ks: view.ks,
             snap: view.snap,
             log: view.log,
+            memo: view.memo,
         };
         let mut o = Out::default();
         if message_loc(&lv, n)?.is_none() {

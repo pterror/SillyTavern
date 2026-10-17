@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use super::StoreError;
 use crate::keyspace::cache::Cache;
@@ -136,6 +136,26 @@ pub struct View<'a> {
     /// Reads of published entries go through this snapshot, when there is one (`View::with_snapshot`).
     pub(super) snap: Option<&'a Snapshot<'a>>,
     pub(super) log: &'a Log,
+    /// A commit's reads of published entries and of the log, kept for the rest of its job (`Memo`).
+    pub(super) memo: Option<&'a Memo>,
+}
+
+/// Reverse pages by range: the limit read, and what it found (all of the range if fewer).
+type RevPages = HashMap<(Vec<u8>, Vec<u8>), (usize, Vec<(Vec<u8>, Val)>)>;
+
+/// What one job's derivers have read of the published entries and the log, so each is read once per job: a
+/// record's `prepare` and its `derive`, and every record of an entity, read the same entries (its version, its
+/// book, its deletion). The published entries don't change while a job derives (it publishes after its sync) and a
+/// record never changes at its position, so nothing held here goes stale within the job; the job's own writes are
+/// in the layers, which are read first. Holds what the job read, so it is bounded by the job.
+#[derive(Default)]
+pub struct Memo {
+    /// Published values by key (None: no value).
+    vals: Mutex<HashMap<Vec<u8>, Option<Val>>>,
+    /// Published reverse pages.
+    rev: Mutex<RevPages>,
+    /// Log records by position, with their lengths.
+    records: Mutex<HashMap<u64, (Record, u64)>>,
 }
 
 impl View<'_> {
@@ -174,10 +194,7 @@ impl View<'_> {
         let vals = self.unpublished(key)?;
         let newer = fold(key, vals);
         if newer.as_ref().is_none_or(Val::is_partial) {
-            let published = match self.snap {
-                Some(s) => s.get_val(key)?,
-                None => self.ks.get_val(key)?,
-            };
+            let published = self.published_val(key)?;
             return Ok(match (newer, published) {
                 (Some(v), Some(b)) => v.over_settled(key, &b).settled(key),
                 (Some(v), None) => v.settled(key),
@@ -185,6 +202,48 @@ impl View<'_> {
             });
         }
         Ok(newer.and_then(|v| v.settled(key)))
+    }
+
+    /// The published value of `key`, read once per job.
+    fn published_val(&self, key: &[u8]) -> Result<Option<Val>, StoreError> {
+        if let Some(m) = self.memo
+            && let Some(v) = m.vals.lock().unwrap().get(key)
+        {
+            return Ok(v.clone());
+        }
+        let v = match self.snap {
+            Some(s) => s.get_val(key)?,
+            None => self.ks.get_val(key)?,
+        };
+        if let Some(m) = self.memo {
+            m.vals.lock().unwrap().insert(key.to_vec(), v.clone());
+        }
+        Ok(v)
+    }
+
+    /// The published reverse page of up to `limit` keys in `[start, end)`, read once per job: a page read before
+    /// serves a smaller limit, or any limit once it held all of the range.
+    fn published_rev(
+        &self,
+        start: &[u8],
+        end: &[u8],
+        limit: usize,
+    ) -> Result<Vec<(Vec<u8>, Val)>, StoreError> {
+        let range = (start.to_vec(), end.to_vec());
+        if let Some(m) = self.memo
+            && let Some((read, found)) = m.rev.lock().unwrap().get(&range)
+            && (limit <= *read || found.len() < *read)
+        {
+            return Ok(found.iter().take(limit).cloned().collect());
+        }
+        let found = match self.snap {
+            Some(s) => s.scan_vals_rev(start, end, limit)?,
+            None => self.ks.scan_vals_rev(start, end, limit)?,
+        };
+        if let Some(m) = self.memo {
+            m.rev.lock().unwrap().insert(range, (limit, found.clone()));
+        }
+        Ok(found)
     }
 
     /// The pairs of the map at `key` whose slots are in `[lo, hi)`, removals dropped; with `published` false,
@@ -291,6 +350,7 @@ impl View<'_> {
             ks: self.ks,
             snap: self.snap,
             log: self.log,
+            memo: self.memo,
         }
     }
 
@@ -477,10 +537,7 @@ impl View<'_> {
             }
         }
         let limit_published = limit.saturating_add(unpublished.len());
-        let published = match self.snap {
-            Some(s) => s.scan_vals_rev(start, end, limit_published)?,
-            None => self.ks.scan_vals_rev(start, end, limit_published)?,
-        };
+        let published = self.published_rev(start, end, limit_published)?;
         let mut out = Vec::new();
         let mut published = published.into_iter().peekable();
         let mut unpublished = unpublished.into_iter().rev().peekable();
@@ -553,7 +610,16 @@ impl View<'_> {
             st.records.put(pos, &r, len);
             return Ok((r, len));
         }
-        Ok(self.log.read_sized(pos)?)
+        if let Some(m) = self.memo
+            && let Some(r) = m.records.lock().unwrap().get(&pos)
+        {
+            return Ok(r.clone());
+        }
+        let r = self.log.read_sized(pos)?;
+        if let Some(m) = self.memo {
+            m.records.lock().unwrap().insert(pos, r.clone());
+        }
+        Ok(r)
     }
 }
 

@@ -51,7 +51,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, RwLock, Weak};
 
-use derive::{Layer, Loc, Out, Pending, View, apply, deriver};
+use derive::{Layer, Loc, Memo, Out, Pending, View, apply, deriver};
 use kinds::{file_of, key};
 
 use crate::keyspace::exec::Activity;
@@ -603,6 +603,7 @@ impl Store {
             ks: &self.inner.ks,
             snap: Some(&snap),
             log: &self.inner.log,
+            memo: None,
         };
         f(&view)
     }
@@ -1211,6 +1212,7 @@ impl Inner {
         &'a self,
         layers: Vec<&'a BTreeMap<Vec<u8>, Val>>,
         pending: Vec<&'a Pending>,
+        memo: Option<&'a Memo>,
     ) -> View<'a> {
         View {
             layers: layers.into_iter().map(Layer::Sorted).collect(),
@@ -1220,6 +1222,7 @@ impl Inner {
             ks: &self.ks,
             snap: None,
             log: &self.log,
+            memo,
         }
     }
 
@@ -1478,7 +1481,7 @@ impl Inner {
                     continue;
                 }
                 let mut out = Out::default();
-                let view = self.view(vec![&entries], Vec::new());
+                let view = self.view(vec![&entries], Vec::new(), None);
                 let at = Loc { pos, len };
                 let d = deriver(rec.kind);
                 match moved_from.take() {
@@ -1623,7 +1626,7 @@ impl Inner {
                     layers.push(&s.entries);
                     pending.push(&s.records);
                 }
-                let view = self.view(layers, pending);
+                let view = self.view(layers, pending, None);
                 let mut out = Out::default();
                 let r = f(&view, &mut out);
                 drop(view);
@@ -1654,6 +1657,8 @@ impl Inner {
             layers_below.push(&s.entries);
             pending_below.push(&s.records);
         }
+        // The job's reads of published entries and of the log, each read once (`Memo`).
+        let memo = Memo::default();
         let result = (|| -> StoreResult<Vec<u64>> {
             let mut positions = Vec::new();
             let step = |layout: &mut Layout,
@@ -1671,7 +1676,7 @@ impl Inner {
                     .into_iter()
                     .chain(pending_below.iter().copied())
                     .collect();
-                let view = self.view(layers, pending);
+                let view = self.view(layers, pending, Some(&memo));
                 let recs = match moved_from {
                     Some(from) => {
                         if !d.is_live(&rec, from, &view)? {
@@ -1706,7 +1711,7 @@ impl Inner {
                             .into_iter()
                             .chain(pending_below.iter().copied())
                             .collect();
-                        let view = self.view(layers, pending);
+                        let view = self.view(layers, pending, Some(&memo));
                         match moved_from {
                             Some(from) => d.repoint(&rec, from, at, &view, &mut out)?,
                             None => d.derive(&rec, at, &view, &mut out)?,
