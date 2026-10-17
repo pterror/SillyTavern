@@ -32,6 +32,7 @@ pub mod chat;
 pub mod chat_read;
 pub mod chat_search;
 pub mod derive;
+pub mod history;
 pub mod kinds;
 pub mod library;
 pub mod library_read;
@@ -519,7 +520,7 @@ impl Store {
         let moves = records.iter().any(|r| r.kind.name == "messageParent");
         let prunes = records
             .iter()
-            .any(|r| r.kind.name == "subtreeDelete" || r.kind.name == "rootStateClear");
+            .any(|r| matches!(r.kind.name, "subtreeDelete" | "rootStateClear" | "histForget"));
         if merges || moves || prunes {
             let me = Arc::downgrade(&self.inner);
             let done: CommitDone = Box::new(move |r| {
@@ -1312,8 +1313,8 @@ impl Inner {
         self.queue_depth();
     }
 
-    /// Deletes pending subtrees' messages, then pending root clears' changes, a bounded step at a time between
-    /// commits, until none waits.
+    /// Deletes pending subtrees' messages, then pending root clears' changes, then pending forgets' changes, a
+    /// bounded step at a time between commits, until none waits.
     pub(crate) fn kick_prunes(&self) {
         {
             let mut f = self.pruning.lock().unwrap();
@@ -1332,7 +1333,9 @@ impl Inner {
         let me = self.me.clone();
         self.submit(Job::Derive(
             Box::new(move |view, out| {
-                let found_one = prune::step(view, out)? || state::clear_step(view, out)?;
+                let found_one = prune::step(view, out)?
+                    || state::clear_step(view, out)?
+                    || history::forget_step(view, out)?;
                 found.store(found_one, Ordering::Relaxed);
                 Ok(())
             }),
@@ -1553,9 +1556,11 @@ impl Inner {
             }
             let pending = key::of(prune::PRUNE);
             let clears = key::of(state::ROOT_CLEAR);
-            if !matches!(self.ks.scan(&pending, &key::prefix_end(&pending), 1), Ok(f) if f.is_empty())
-                || !matches!(self.ks.scan(&clears, &key::prefix_end(&clears), 1), Ok(f) if f.is_empty())
-            {
+            let forgets = key::of(history::FORGET);
+            let waiting = |p: &[u8]| {
+                !matches!(self.ks.scan(p, &key::prefix_end(p), 1), Ok(f) if f.is_empty())
+            };
+            if waiting(&pending) || waiting(&clears) || waiting(&forgets) {
                 self.kick_prunes();
             }
             return true;
@@ -1667,7 +1672,7 @@ impl Inner {
                     .chain(pending_below.iter().copied())
                     .collect();
                 let view = self.view(layers, pending);
-                let rec = match moved_from {
+                let recs = match moved_from {
                     Some(from) => {
                         if !d.is_live(&rec, from, &view)? {
                             return Ok(None);
@@ -1678,36 +1683,40 @@ impl Inner {
                         let (mpos, mlen) = layout.record(&marker);
                         drop(view);
                         records.insert(mpos, (marker, mlen));
-                        rec
+                        vec![rec]
                     }
                     None => {
-                        let rec = d.prepare(rec, &view)?;
+                        let recs = d.expand(rec, &view)?;
                         drop(view);
-                        rec
+                        recs
                     }
                 };
-                let d = deriver(rec.kind);
-                let (pos, len) = layout.record(&rec);
-                let at = Loc { pos, len };
-                let mut out = Out::default();
-                {
-                    let layers = [&*entries]
-                        .into_iter()
-                        .chain(layers_below.iter().copied())
-                        .collect();
-                    let pending = [&*records]
-                        .into_iter()
-                        .chain(pending_below.iter().copied())
-                        .collect();
-                    let view = self.view(layers, pending);
-                    match moved_from {
-                        Some(from) => d.repoint(&rec, from, at, &view, &mut out)?,
-                        None => d.derive(&rec, at, &view, &mut out)?,
+                let mut last = None;
+                for rec in recs {
+                    let d = deriver(rec.kind);
+                    let (pos, len) = layout.record(&rec);
+                    let at = Loc { pos, len };
+                    let mut out = Out::default();
+                    {
+                        let layers = [&*entries]
+                            .into_iter()
+                            .chain(layers_below.iter().copied())
+                            .collect();
+                        let pending = [&*records]
+                            .into_iter()
+                            .chain(pending_below.iter().copied())
+                            .collect();
+                        let view = self.view(layers, pending);
+                        match moved_from {
+                            Some(from) => d.repoint(&rec, from, at, &view, &mut out)?,
+                            None => d.derive(&rec, at, &view, &mut out)?,
+                        }
                     }
+                    records.insert(pos, (rec, len));
+                    out.apply(entries);
+                    last = Some(pos);
                 }
-                records.insert(pos, (rec, len));
-                out.apply(entries);
-                Ok(Some(pos))
+                Ok(last)
             };
             match &job {
                 Job::Commit(recs, _) => {
@@ -2050,6 +2059,8 @@ mod books_tests;
 mod carriers_tests;
 #[cfg(test)]
 mod chat_tests;
+#[cfg(test)]
+mod history_tests;
 #[cfg(test)]
 mod library_search_tests;
 #[cfg(test)]

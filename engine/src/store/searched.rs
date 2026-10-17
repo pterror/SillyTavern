@@ -204,11 +204,7 @@ fn list_items(
 
 /// A JSON value's text.
 fn json_value(view: &View, e: u64, code: u64) -> Result<Option<Vec<u8>>, StoreError> {
-    let Some(b) = view.get(&key::field(key::VALUE, e, &FieldRef::Code(code)))? else {
-        return Ok(None);
-    };
-    let (rec, _) = view.record(parse_loc(&b)?.pos)?;
-    Ok(Some(bytes(&rec, 2).to_vec()))
+    super::history::json_value(view, e, &FieldRef::Code(code))
 }
 
 /// An entry's `uid` as searched, given its stored `uid` JSON and whether it has the no-`uid` marker.

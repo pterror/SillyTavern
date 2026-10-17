@@ -167,7 +167,14 @@ impl Deriver for StateRevert {
         let (c, target) = (id(rec, 0), id(rec, 1));
         new_id(view, c)?;
         check_author(id(rec, 3), VARIABLE)?;
-        if change_loc(view, target)?.is_none() || clearing(view, target)? {
+        let is_state = match change_loc(view, target)? {
+            Some(l) => matches!(
+                view.record(l.pos)?.0.kind.name,
+                "stateChange" | "stateRevert"
+            ),
+            None => false,
+        };
+        if !is_state || clearing(view, target)? {
             return Err(StoreError::Refused(format!("no change {target}")));
         }
         sessions::check_actor(view, opt_id(rec, 5), opt_id(rec, 6))?;

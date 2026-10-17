@@ -730,8 +730,14 @@ pub trait Deriver: Sync {
         Ok(rec)
     }
 
-    /// Whether `prepare` may change the record. A bulk load lays its records out before deriving any, so it
-    /// takes only kinds that it can't.
+    /// At commit only, in place of `prepare`: the records to log for this one, in order, each derived after the one
+    /// before (by default `prepare`'s one).
+    fn expand(&self, rec: Record, view: &View) -> Result<Vec<Record>, StoreError> {
+        Ok(vec![self.prepare(rec, view)?])
+    }
+
+    /// Whether `prepare` (or `expand`) may change the record. A bulk load lays its records out before deriving any,
+    /// so it takes only kinds that it can't.
     fn prepares(&self) -> bool {
         false
     }

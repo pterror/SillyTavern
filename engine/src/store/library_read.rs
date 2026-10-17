@@ -1101,6 +1101,9 @@ pub fn entity_with(view: &View, e: u64, only: Option<&Only>) -> Result<Option<En
         out.values
             .push((f, Stored::Json(super::kinds::bytes(&rec, 2).to_vec())));
     }
+    for (f, j) in super::history::json_values(view, e)? {
+        out.values.push((f, Stored::Json(j)));
+    }
     let ip = key::id(key::ITEM, e);
     // A book's entries are read by place (`books::entries_page`), not with its values.
     let from = if kind == super::books::BOOK || kind == super::books::OWNED {
@@ -1171,15 +1174,15 @@ pub fn entities_only(
         .collect();
     let got = view.get_many(&keys)?;
     let want_field = |f: &FieldRef| only.fields.iter().position(|w| w == f);
-    // Per entity and asked field: its text head and its JSON value's entry; then its list items, whose text heads
-    // are read together.
-    type Found = Vec<(Option<Vec<u8>>, Option<Vec<u8>>)>;
+    // Per entity and asked field: its text head, its JSON value's entry and its diffed JSON value's head; then its list
+    // items, whose text heads are read together.
+    type Found = Vec<(Option<Vec<u8>>, Option<Vec<u8>>, Option<Vec<u8>>)>;
     let mut found: Vec<Found> = Vec::with_capacity(ids.len());
     let mut items: Vec<Vec<(u64, u64, u64)>> = Vec::with_capacity(ids.len());
     let mut item_keys = Vec::new();
     let mut carried: Vec<Vec<u64>> = Vec::with_capacity(ids.len());
     for (n, &e) in ids.iter().enumerate() {
-        let mut fields: Found = vec![(None, None); only.fields.len()];
+        let mut fields: Found = vec![(None, None, None); only.fields.len()];
         let mut mine = Vec::new();
         let mut tags = Vec::new();
         if got[n * per].is_some() {
@@ -1200,6 +1203,14 @@ pub fn entities_only(
                 for (k, v) in view.scan(&vp, &key::prefix_end(&vp), usize::MAX)? {
                     if let Some(i) = want_field(&library::field_after(&k, key::VALUE)?) {
                         fields[i].1 = Some(v);
+                    }
+                }
+                let jp = key::id(super::history::JSON_HEAD, e);
+                for (k, v) in view.scan(&jp, &key::prefix_end(&jp), usize::MAX)? {
+                    if let Some(i) =
+                        want_field(&library::field_after(&k, super::history::JSON_HEAD)?)
+                    {
+                        fields[i].2 = Some(v);
                     }
                 }
             }
@@ -1265,7 +1276,7 @@ pub fn entities_only(
     };
     struct Plan {
         fixed: [Option<usize>; 6],
-        fields: Vec<(TextAt, Option<usize>)>,
+        fields: Vec<(TextAt, Option<usize>, TextAt)>,
         items: Vec<TextAt>,
     }
     let mut plans: Vec<Option<Plan>> = Vec::with_capacity(ids.len());
@@ -1292,14 +1303,19 @@ pub fn entities_only(
             }
         }
         let mut fields = Vec::with_capacity(only.fields.len());
-        for (t, v) in &found[n] {
+        for (t, v, j) in &found[n] {
             let t = head(t, &mut positions)?;
             let v = if t.is_none() {
                 want(v, &mut positions)?
             } else {
                 None
             };
-            fields.push((t, v));
+            let j = if t.is_none() && v.is_none() {
+                head(j, &mut positions)?
+            } else {
+                None
+            };
+            fields.push((t, v, j));
         }
         let mut its = Vec::with_capacity(items[n].len());
         for _ in 0..items[n].len() {
@@ -1394,12 +1410,18 @@ pub fn entities_only(
                 Err(()) => Ok(text_value(view, e, f)?.unwrap_or_default()),
             }
         };
-        for (f, (t, v)) in only.fields.iter().zip(plan.fields) {
+        for (f, (t, v, j)) in only.fields.iter().zip(plan.fields) {
             if let Some(t) = t {
                 ent.values.push((f.clone(), Stored::Text(text(t, f)?)));
             } else if let Some(v) = rec(v) {
                 ent.values
                     .push((f.clone(), Stored::Json(super::kinds::bytes(v, 2).to_vec())));
+            } else if let Some(j) = j {
+                let json = match j {
+                    Ok(i) => full_text(&recs[i]).to_vec(),
+                    Err(()) => super::history::json_value(view, e, f)?.unwrap_or_default(),
+                };
+                ent.values.push((f.clone(), Stored::Json(json)));
             }
         }
         for (&(list, item, position), t) in items[n].iter().zip(plan.items) {

@@ -584,6 +584,27 @@ impl Head {
         }
     }
 
+    pub(super) fn with_edits(full: Loc, size: u64, edits: u64, edit_bytes: u64) -> Head {
+        Head {
+            full,
+            size,
+            edits,
+            edit_bytes,
+        }
+    }
+
+    pub(super) fn size(&self) -> u64 {
+        self.size
+    }
+
+    pub(super) fn edits(&self) -> u64 {
+        self.edits
+    }
+
+    pub(super) fn edit_bytes(&self) -> u64 {
+        self.edit_bytes
+    }
+
     pub(super) fn bytes(&self) -> Vec<u8> {
         varints(&[
             self.full.pos,
@@ -1438,7 +1459,8 @@ pub fn deriver(kind: &str) -> Option<&'static dyn Deriver> {
             return library::deriver(other)
                 .or_else(|| super::books::deriver(other))
                 .or_else(|| super::chat::deriver(other))
-                .or_else(|| super::state::deriver(other));
+                .or_else(|| super::state::deriver(other))
+                .or_else(|| super::history::deriver(other));
         }
     })
 }
