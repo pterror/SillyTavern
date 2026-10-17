@@ -1742,6 +1742,13 @@ impl Store {
     /// - `numbers { book }`: `{ lastPosition, freeKey, maxIndex }`;
     /// - `linkers { book, after?, limit }`: `{ ids, more }`, the characters linking the book itself, in id order;
     /// - `resolving { book }`: the book and every unresolved book resolving as it.
+    /// - `history { entity, field?, before?, limit }`: `{ changes, more }`, the entity's changes of `field` (absent or
+    ///   null: its own) before change `before`, last first (`history::history_page`);
+    /// - `historyValue { entity, field, id }`: `{ json, value }` or null, the field as change `id` left it;
+    /// - `historyFields { entity, after?, limit }`: `{ fields, more }`, the fields with history (null: the entity's
+    ///   own) after `after` (null: after its own);
+    /// - `deleted { book, after?, limit }`: `{ entries: [{ id, key, position, index }], more }`, the book's deleted
+    ///   entries in id order.
     #[napi(
         ts_args_type = "op: string, args: object",
         ts_return_type = "Promise<any>"
@@ -2770,6 +2777,7 @@ fn chat_read_job(op: String, args: &Object) -> Result<TreeRead> {
 /// The job of a `worldRead`.
 fn world_read_job(op: String, args: &Object) -> Result<TreeRead> {
     use crate::store::books as b;
+    use crate::store::history as h;
     let a = &args;
     let read: TreeRead = match op.as_str() {
         "books" => {
@@ -2837,6 +2845,60 @@ fn world_read_job(op: String, args: &Object) -> Result<TreeRead> {
         "resolving" => {
             let book = req_integer(a, "book")?;
             Box::new(move |s| s.chat_read(|v| b::resolving_page(v, book)).map(JsTree))
+        }
+        "history" => {
+            let (entity, before, limit) = (
+                req_integer(a, "entity")?,
+                opt_integer(a, "before")?,
+                req_integer(a, "limit")? as usize,
+            );
+            let slot = match a.get::<Unknown>("field")? {
+                Some(v) if !matches!(v.get_type()?, ValueType::Null | ValueType::Undefined) => {
+                    Some(field_arg(v)?)
+                }
+                _ => None,
+            };
+            Box::new(move |s| {
+                s.chat_read(|v| h::history_page(v, entity, slot.as_ref(), before, limit))
+                    .map(JsTree)
+            })
+        }
+        "historyValue" => {
+            let (entity, id) = (req_integer(a, "entity")?, req_integer(a, "id")?);
+            let f = field_arg(
+                a.get::<Unknown>("field")?
+                    .ok_or_else(|| invalid("historyValue needs a field".into()))?,
+            )?;
+            Box::new(move |s| {
+                s.chat_read(|v| h::history_value(v, entity, &f, id))
+                    .map(JsTree)
+            })
+        }
+        "historyFields" => {
+            let (entity, limit) = (req_integer(a, "entity")?, req_integer(a, "limit")? as usize);
+            let after = match a.get::<Unknown>("after")? {
+                Some(v) => match v.get_type()? {
+                    ValueType::Undefined => None,
+                    ValueType::Null => Some(None),
+                    _ => Some(Some(field_arg(v)?)),
+                },
+                None => None,
+            };
+            Box::new(move |s| {
+                s.chat_read(|v| h::history_fields(v, entity, after.clone(), limit))
+                    .map(JsTree)
+            })
+        }
+        "deleted" => {
+            let (book, after, limit) = (
+                req_integer(a, "book")?,
+                opt_integer(a, "after")?,
+                req_integer(a, "limit")? as usize,
+            );
+            Box::new(move |s| {
+                s.chat_read(|v| h::deleted_page(v, book, after, limit))
+                    .map(JsTree)
+            })
         }
         other => return Err(invalid(format!("no world read {other}"))),
     };

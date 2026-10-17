@@ -923,6 +923,143 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
+    // ---- history (`store::history`): an entity's changes, each kept with who made it and when ----
+    // Each is a change of id `id` (the state layer's id space) made at `time` through `session` by `user`, in
+    // `gesture` (the page's: from focus to blur, pointer down to up). A change with the session, field and gesture of
+    // the one before it on that field is one change with it: it takes its id and its record replaces it.
+    //
+    // An entity's field becomes `value` (text; with `json`, JSON text).
+    Kind {
+        name: "histSet",
+        base: 256,
+        slots: &[
+            req("entity", Ty::Id(Space::Entity)),
+            req("field", Ty::Field),
+            req("value", Ty::Text),
+            req("json", Ty::Bit),
+            req("id", Ty::Id(Space::Change)),
+            req("time", Ty::Time),
+            opt("session", Ty::Id(Space::Position)),
+            opt("user", Ty::Id(Space::User)),
+            opt("gesture", Ty::Bytes),
+        ],
+        internal: false,
+    },
+    // An entity's field's value (text; with `json`, JSON text) has `removed` bytes at `offset` replaced by `text`.
+    Kind {
+        name: "histEdit",
+        base: 272,
+        slots: &[
+            req("entity", Ty::Id(Space::Entity)),
+            req("field", Ty::Field),
+            req("offset", Ty::UInt),
+            req("removed", Ty::UInt),
+            req("text", Ty::Text),
+            req("json", Ty::Bit),
+            req("id", Ty::Id(Space::Change)),
+            req("time", Ty::Time),
+            opt("session", Ty::Id(Space::Position)),
+            opt("user", Ty::Id(Space::User)),
+            opt("gesture", Ty::Bytes),
+        ],
+        internal: false,
+    },
+    // An entity's field's value goes.
+    Kind {
+        name: "histDelete",
+        base: 288,
+        slots: &[
+            req("entity", Ty::Id(Space::Entity)),
+            req("field", Ty::Field),
+            req("id", Ty::Id(Space::Change)),
+            req("time", Ty::Time),
+            opt("session", Ty::Id(Space::Position)),
+            opt("user", Ty::Id(Space::User)),
+            opt("gesture", Ty::Bytes),
+        ],
+        internal: false,
+    },
+    // An item of an entity's list is at `position` (absent: it leaves the list); its history is its text field's.
+    Kind {
+        name: "histPlace",
+        base: 296,
+        slots: &[
+            req("entity", Ty::Id(Space::Entity)),
+            req("list", Ty::UInt),
+            req("item", Ty::UInt),
+            opt("position", Ty::UInt),
+            req("id", Ty::Id(Space::Change)),
+            req("time", Ty::Time),
+            opt("session", Ty::Id(Space::Position)),
+            opt("user", Ty::Id(Space::User)),
+            opt("gesture", Ty::Bytes),
+        ],
+        internal: false,
+    },
+    // An entity (a world-info entry) is deleted, its history kept, so it can be restored.
+    Kind {
+        name: "histEntityDelete",
+        base: 312,
+        slots: &[
+            req("entity", Ty::Id(Space::Entity)),
+            req("id", Ty::Id(Space::Change)),
+            req("time", Ty::Time),
+            opt("session", Ty::Id(Space::Position)),
+            opt("user", Ty::Id(Space::User)),
+        ],
+        internal: false,
+    },
+    // A deleted entity comes back under the key `key` (its type and date added as `entityCreate`'s), with the values
+    // it had.
+    Kind {
+        name: "histRestore",
+        base: 316,
+        slots: &[
+            req("entity", Ty::Id(Space::Entity)),
+            req("type", Ty::UInt),
+            req("key", Ty::Text),
+            req("added", Ty::F64),
+            req("id", Ty::Id(Space::Change)),
+            req("time", Ty::Time),
+            opt("session", Ty::Id(Space::Position)),
+            opt("user", Ty::Id(Space::User)),
+        ],
+        internal: false,
+    },
+    // A field (or a list item) goes back to what it was at change `target`: written as the change that does it, a
+    // `histSet`, `histEdit`, `histDelete` or `histPlace`, never logged as itself.
+    Kind {
+        name: "histRevert",
+        base: 320,
+        slots: &[
+            req("entity", Ty::Id(Space::Entity)),
+            req("field", Ty::Field),
+            req("target", Ty::Id(Space::Change)),
+            req("id", Ty::Id(Space::Change)),
+            req("time", Ty::Time),
+            opt("session", Ty::Id(Space::Position)),
+            opt("user", Ty::Id(Space::User)),
+        ],
+        internal: false,
+    },
+    // Past changes of an entity are forgotten: change `target` of `field` (no field: of the entity itself), or (no
+    // target) every change of the entity before this one but each field's current one. With `marker`, this record
+    // takes their place as change `id`, saying who forgot them and when; without, nothing is left of them.
+    Kind {
+        name: "histForget",
+        base: 324,
+        slots: &[
+            req("entity", Ty::Id(Space::Entity)),
+            opt("field", Ty::Field),
+            opt("target", Ty::Id(Space::Change)),
+            req("marker", Ty::Bit),
+            opt("id", Ty::Id(Space::Change)),
+            req("time", Ty::Time),
+            opt("session", Ty::Id(Space::Position)),
+            opt("user", Ty::Id(Space::User)),
+        ],
+        internal: false,
+    },
 ];
 
 /// Kinds that exist only in the crate's tests and measurements (feature `measure`). Their header values are

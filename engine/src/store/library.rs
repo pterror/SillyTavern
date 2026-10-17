@@ -705,8 +705,11 @@ impl Deriver for EntityCreate {
         Ok(())
     }
 
+    /// The entity's record, or (a deleted entry's) the one its history keeps for its restore.
     fn is_live(&self, rec: &Record, pos: u64, view: &View) -> Result<bool, StoreError> {
-        live_host(view, &key::id(key::ENTITY, id(rec, 0)), pos)
+        let e = id(rec, 0);
+        Ok(live_host(view, &key::id(key::ENTITY, e), pos)?
+            || super::history::gone_at(view, e, pos)?)
     }
 
     fn repoint(
@@ -717,7 +720,9 @@ impl Deriver for EntityCreate {
         view: &View,
         out: &mut Out,
     ) -> Result<(), StoreError> {
-        repoint_host(view, out, &key::id(key::ENTITY, id(rec, 0)), from, to)
+        let e = id(rec, 0);
+        repoint_host(view, out, &key::id(key::ENTITY, e), from, to)?;
+        super::history::repoint_gone(view, out, e, from, to)
     }
 }
 
@@ -781,8 +786,11 @@ impl Deriver for EntityUpdate {
         Ok(())
     }
 
+    /// The entity's record, or (a deleted entry's) the one its history keeps for its restore.
     fn is_live(&self, rec: &Record, pos: u64, view: &View) -> Result<bool, StoreError> {
-        live_host(view, &key::id(key::ENTITY, id(rec, 0)), pos)
+        let e = id(rec, 0);
+        Ok(live_host(view, &key::id(key::ENTITY, e), pos)?
+            || super::history::gone_at(view, e, pos)?)
     }
 
     fn repoint(
@@ -793,7 +801,9 @@ impl Deriver for EntityUpdate {
         view: &View,
         out: &mut Out,
     ) -> Result<(), StoreError> {
-        repoint_host(view, out, &key::id(key::ENTITY, id(rec, 0)), from, to)
+        let e = id(rec, 0);
+        repoint_host(view, out, &key::id(key::ENTITY, e), from, to)?;
+        super::history::repoint_gone(view, out, e, from, to)
     }
 }
 
@@ -938,6 +948,15 @@ fn delete_entity(
     for (tk, _) in view.scan(&start, &end, usize::MAX)? {
         let f = field_after(&tk, key::TEXT)?;
         drop_text_unsearched(view, out, e, &f)?;
+    }
+    // A value written with its history: its records stay that history's.
+    let jp = key::id(super::history::JSON_HEAD, e);
+    for (jk, v) in view.scan(&jp, &key::prefix_end(&jp), usize::MAX)? {
+        let f = field_after(&jk, super::history::JSON_HEAD)?;
+        for n in 1..=super::kinds::Head::parse(&v)?.edits() {
+            out.del(super::history::json_edit_key(e, &f, n));
+        }
+        out.del(jk);
     }
     for s in [
         key::VALUE,
@@ -1150,13 +1169,13 @@ fn item_at_key(e: u64, list: u64, item: u64) -> Vec<u8> {
     k
 }
 
-fn place_bytes(position: u64, l: Loc) -> Vec<u8> {
+pub(super) fn place_bytes(position: u64, l: Loc) -> Vec<u8> {
     let mut b = uvarint(position);
     b.extend_from_slice(&loc_bytes(l));
     b
 }
 
-fn parse_place(b: &[u8]) -> Result<(u64, Loc), StoreError> {
+pub(super) fn parse_place(b: &[u8]) -> Result<(u64, Loc), StoreError> {
     let mut at = 0;
     let bad = || entry_err("an item place doesn't decode");
     let p = get_uvarint(b, &mut at).map_err(|_| bad())?;
