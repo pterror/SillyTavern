@@ -797,6 +797,31 @@ fn an_added_map_kinds_keys_take_added_maps_and_deletes() {
     assert_eq!(layer.get(k.bytes()), Some(&Val::Put(map_bytes(&[(4, 5)]))));
 }
 
+/// A change feed's key put and deleted in one layer leaves nothing there to flush; any other key leaves its
+/// deletion, as does a feed key deleted in a layer that didn't put it.
+#[test]
+fn a_feed_key_put_and_deleted_in_one_layer_leaves_no_deletion() {
+    use crate::keyspace::val::Val;
+    let feed = key::ids(key::ENTITY_CHANGE, 7, 1);
+    let other = key::id(key::VERSION, 1);
+    let mut layer = std::collections::BTreeMap::new();
+    let mut out = derive::Out::default();
+    out.put(feed.clone(), Vec::new());
+    out.put(other.clone(), Vec::new());
+    out.apply(&mut layer);
+    let mut out = derive::Out::default();
+    out.del(feed.clone());
+    out.del(other.clone());
+    out.del(key::ids(key::ENTITY_TAG_CHANGE, 3, 1));
+    out.apply(&mut layer);
+    assert_eq!(layer.get(&feed), None);
+    assert_eq!(layer.get(&other), Some(&Val::Del));
+    assert_eq!(
+        layer.get(&key::ids(key::ENTITY_TAG_CHANGE, 3, 1)),
+        Some(&Val::Del)
+    );
+}
+
 /// Each map value kind written unpublished, read through a view's layer over each published value its key can
 /// hold: a get and both scans give the newer value over the whole published map. A maxima map over a published
 /// map keeps the published slots it doesn't raise.

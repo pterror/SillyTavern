@@ -776,8 +776,14 @@ impl Out {
     }
 }
 
+/// Applies `v` over `layer`'s entry for `k`. A key of a structure whose keys are put at most once
+/// (`key::written_once`) that is put and deleted within the same layer never existed outside it, so the delete
+/// removes the entry rather than leaving a deletion to be flushed.
 pub fn apply(layer: &mut BTreeMap<Vec<u8>, Val>, k: Vec<u8>, v: Val) {
     match layer.get_mut(&k) {
+        Some(Val::Put(_)) if matches!(v, Val::Del) && super::kinds::key::written_once(&k) => {
+            layer.remove(&k);
+        }
         Some(old) => {
             let older = std::mem::replace(old, Val::Del);
             *old = v.over_owned(&k, older);
