@@ -1035,6 +1035,11 @@ pub fn tags_now(view: &View, e: u64) -> Result<Vec<u64>, StoreError> {
 pub struct Only {
     pub fields: Vec<FieldRef>,
     pub lists: Vec<u64>,
+    /// Also every field keyed with one of these prefixes (`FieldRef::Key`), each found by a scan of just its keys.
+    pub prefixes: Vec<Vec<u8>>,
+    /// `fields` are read by their keys, not found by a scan of every value the entity holds: a read of a few
+    /// fields of an entity holding many.
+    pub point: bool,
 }
 
 pub fn entity(view: &View, e: u64) -> Result<Option<Entity>, StoreError> {
@@ -1175,15 +1180,52 @@ pub fn entities_only(
     // are read together.
     type Found = Vec<(Option<Vec<u8>>, Option<Vec<u8>>)>;
     let mut found: Vec<Found> = Vec::with_capacity(ids.len());
+    // Per entity: the fields its prefixes found, after `only.fields` in `found`.
+    let mut extra: Vec<Vec<FieldRef>> = Vec::with_capacity(ids.len());
+    // With `point`: each asked field's text and JSON keys, read together after the loop.
+    let mut point_keys = Vec::new();
     let mut items: Vec<Vec<(u64, u64, u64)>> = Vec::with_capacity(ids.len());
     let mut item_keys = Vec::new();
     let mut carried: Vec<Vec<u64>> = Vec::with_capacity(ids.len());
     for (n, &e) in ids.iter().enumerate() {
         let mut fields: Found = vec![(None, None); only.fields.len()];
+        let mut mine_extra: Vec<FieldRef> = Vec::new();
         let mut mine = Vec::new();
         let mut tags = Vec::new();
         if got[n * per].is_some() {
-            if !only.fields.is_empty() {
+            for p in &only.prefixes {
+                for s in [key::TEXT, key::VALUE] {
+                    // `key::field`'s key without the end of its bytes: every key starting with the prefix.
+                    let mut from = key::field(s, e, &FieldRef::Key(p.clone()));
+                    from.truncate(from.len() - 2);
+                    for (k, v) in view.scan(&from, &key::prefix_end(&from), usize::MAX)? {
+                        let f = library::field_after(&k, s)?;
+                        if want_field(&f).is_some() {
+                            continue;
+                        }
+                        let i = match mine_extra.iter().position(|x| *x == f) {
+                            Some(i) => i,
+                            None => {
+                                mine_extra.push(f);
+                                fields.push((None, None));
+                                mine_extra.len() - 1
+                            }
+                        };
+                        let slot = &mut fields[only.fields.len() + i];
+                        if s == key::TEXT {
+                            slot.0 = Some(v);
+                        } else {
+                            slot.1 = Some(v);
+                        }
+                    }
+                }
+            }
+            if only.point {
+                for f in &only.fields {
+                    point_keys.push(key::field(key::TEXT, e, f));
+                    point_keys.push(key::field(key::VALUE, e, f));
+                }
+            } else if !only.fields.is_empty() {
                 let tp = key::id(key::TEXT, e);
                 // Codes below the list items' and keys; item texts are read by their lists.
                 let codes_end = key::field(key::TEXT, e, &FieldRef::Code(library::ITEM_BASE));
@@ -1217,8 +1259,22 @@ pub fn entities_only(
             tags = library::tags_of(view, e)?;
         }
         found.push(fields);
+        extra.push(mine_extra);
         items.push(mine);
         carried.push(tags);
+    }
+    if only.point && !only.fields.is_empty() {
+        let heads = view.get_many(&point_keys)?;
+        let mut at = heads.into_iter();
+        for (n, fields) in found.iter_mut().enumerate() {
+            if got[n * per].is_none() {
+                continue;
+            }
+            for slot in fields.iter_mut().take(only.fields.len()) {
+                slot.0 = at.next().flatten();
+                slot.1 = at.next().flatten();
+            }
+        }
     }
     let item_heads = view.get_many(&item_keys)?;
     // Tags as they are now: a merged one (rare) resolved on its own, the merge entries read together.
@@ -1394,7 +1450,7 @@ pub fn entities_only(
                 Err(()) => Ok(text_value(view, e, f)?.unwrap_or_default()),
             }
         };
-        for (f, (t, v)) in only.fields.iter().zip(plan.fields) {
+        for (f, (t, v)) in only.fields.iter().chain(&extra[n]).zip(plan.fields) {
             if let Some(t) = t {
                 ent.values.push((f.clone(), Stored::Text(text(t, f)?)));
             } else if let Some(v) = rec(v) {

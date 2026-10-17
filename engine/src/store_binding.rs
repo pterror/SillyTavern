@@ -1844,9 +1844,10 @@ impl Store {
     }
 
     /// Each entity with everything it holds, or null. With `only: { fields, lists }` just those values (a field
-    /// by code or key; a list's items with their texts) and no hashes.
+    /// by code or key; a list's items with their texts) and no hashes; `prefixes` adds every field keyed with one
+    /// of them, and `point` reads `fields` by their keys (`library_read::Only`).
     #[napi(
-        ts_args_type = "ids: (bigint | number)[], only?: { fields: (number | string)[], lists: number[] }",
+        ts_args_type = "ids: (bigint | number)[], only?: { fields: (number | string)[], lists: number[], prefixes?: string[], point?: boolean }",
         ts_return_type = "Promise<(object | null)[]>"
     )]
     pub fn library_entities<'env>(
@@ -1864,7 +1865,7 @@ impl Store {
 
     /// `libraryEntities` on this thread (waiting for replay): for a synchronous caller.
     #[napi(
-        ts_args_type = "ids: (bigint | number)[], only?: { fields: (number | string)[], lists: number[] }",
+        ts_args_type = "ids: (bigint | number)[], only?: { fields: (number | string)[], lists: number[], prefixes?: string[], point?: boolean }",
         ts_return_type = "(object | null)[]"
     )]
     pub fn library_entities_sync(
@@ -1915,7 +1916,19 @@ fn library_entities_args(
                 .into_iter()
                 .map(|v| integer("list", v))
                 .collect::<Result<Vec<_>>>()?;
-            Some(library_read::Only { fields, lists })
+            let prefixes = o
+                .get::<Vec<Unknown>>("prefixes")?
+                .unwrap_or_default()
+                .into_iter()
+                .map(|v| string("prefix", v))
+                .collect::<Result<Vec<_>>>()?;
+            let point = o.get::<bool>("point")?.unwrap_or(false);
+            Some(library_read::Only {
+                fields,
+                lists,
+                prefixes,
+                point,
+            })
         }
     };
     Ok((ids, only))
