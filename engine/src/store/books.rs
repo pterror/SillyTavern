@@ -213,7 +213,7 @@ fn item_at_key(book: u64, entry: u64) -> Vec<u8> {
 
 /// A record at `at` changed entity `e`: when it is an entry or an owned book, the book holding it, and that book's
 /// owner, changed too (their versions follow, so a page's copy of a book or card is known stale); when it is a saved
-/// view's condition or range, its view; when it is a settings part, the settings holder.
+/// view's condition or range, its view.
 pub fn touched(view: &View, out: &mut Out, e: u64, at: Loc) -> Result<(), StoreError> {
     match entity_info(view, e)? {
         Some((kind, k, _)) => container_touched(view, out, kind, &k, at),
@@ -235,12 +235,6 @@ pub fn container_touched(
         library::CONDITION | library::RANGE => {
             let view_key = k.split(|c| *c == b':').next().unwrap_or_default();
             match view.get(&library::entity_key_key(library::VIEW, view_key))? {
-                Some(b) => library::parse_uvarint(&b)?,
-                None => return Ok(()),
-            }
-        }
-        library::SETTINGS_PART => {
-            match view.get(&library::entity_key_key(library::SETTINGS, b""))? {
                 Some(b) => library::parse_uvarint(&b)?,
                 None => return Ok(()),
             }
