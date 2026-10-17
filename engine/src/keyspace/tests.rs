@@ -379,6 +379,60 @@ fn a_range_estimate_reads_few_blocks_and_comes_near_the_count() {
 }
 
 #[test]
+fn a_narrow_page_down_reads_few_blocks_in_each_run() {
+    let dir = temp_dir("rev-bound");
+    let ks = open_with(
+        &dir,
+        KsConfig {
+            block_size: 4096,
+            ..SMALL
+        },
+    );
+    // Even keys only, in a scattered order so every run spans the whole range: odd keys are gaps.
+    let n = 20_000u64;
+    let mut model = BTreeMap::new();
+    let mut end = 0;
+    for i in 0..n {
+        let k = key(2 * (i * 7919 % n));
+        end += 1;
+        wait_for_room(ks.pool());
+        ks.insert([(k.clone(), Val::Put(vec![2; 9]))], Some((end, 1)));
+        model.insert(k, vec![2; 9]);
+    }
+    ks.freeze_at(end);
+    ks.wait_flushed().unwrap();
+    let runs = ks.stats().runs;
+    assert!(runs > 1);
+    for a in (0..2 * n).step_by(997) {
+        for (lo, hi, limit) in [(a, a + 1, 1), (a, a + 6, 2), (a + 1, a + 2, 1), (a, a + 40, usize::MAX)] {
+            let blocks = ks.stats().blocks;
+            let got: Vec<_> = ks
+                .scan_vals_rev(&key(lo), &key(hi), limit)
+                .unwrap()
+                .into_iter()
+                .map(|(k, v)| {
+                    let b = v.into_bytes(&k);
+                    (k, b)
+                })
+                .collect();
+            let read = ks.stats().blocks - blocks;
+            let expect: Vec<_> = model
+                .range(key(lo)..key(hi))
+                .rev()
+                .take(limit)
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            assert_eq!(got, expect, "[{lo}, {hi})");
+            // Each run: its index levels below the top and the data blocks the range touches.
+            assert!(read <= 4 * runs, "[{lo}, {hi}): {read} blocks over {runs} runs");
+        }
+    }
+    ks.stop();
+    drop(ks);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn sorted_reads_give_each_key_what_a_read_of_it_gives() {
     let dir = temp_dir("sorted");
     let ks = open(&dir);

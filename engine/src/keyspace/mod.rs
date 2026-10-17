@@ -642,9 +642,13 @@ impl Keyspace {
                 sources.push(Box::new(VecSource::new(p)));
             }
             for r in runs {
+                if r.max_key.as_slice() < start {
+                    continue;
+                }
                 sources.push(Box::new(run::RunRevIter::new(
                     r.clone(),
                     &to,
+                    start,
                     Some(&self.pool.cache),
                     Some(&self.counts),
                 )?));
