@@ -44,10 +44,8 @@ pub const BOOKS: u64 = 190;
 pub const ENTRY_INDEX: u64 = 191;
 /// Per entry: its `entryIndex` record.
 pub const ENTRY_INDEX_AT: u64 = 192;
-/// Per character with a `bookLink` (`BookLink`): the record, then its number in the linked book's numbering.
-pub const LINK: u64 = 193;
 /// Per (book, character): the character links the book. The link's item, then the character's number in the book's
-/// numbering (`library::rank_host`); empty for a `bookLink`'s link, whose number is in `LINK`.
+/// numbering (`library::rank_host`).
 pub const LINKED: u64 = 194;
 /// Per unresolved book: the book it resolves as, and its `bookForward` record.
 pub const FORWARD: u64 = 195;
@@ -211,13 +209,6 @@ fn item_at_key(book: u64, entry: u64) -> Vec<u8> {
     let mut k = key::ids(key::ITEM_AT, book, ENTRIES);
     put_u64(&mut k, entry);
     k
-}
-
-fn opt_id(rec: &Record, i: usize) -> Option<u64> {
-    match rec.values[i] {
-        Value::Id(v) => Some(v),
-        _ => None,
-    }
 }
 
 /// A record at `at` changed entity `e`: when it is an entry or an owned book, the book holding it, and that book's
@@ -511,11 +502,8 @@ pub fn linked_bytes(item: u64, n: Option<u64>) -> Vec<u8> {
     b
 }
 
-/// A `LINKED` entry's item and number; None for a `bookLink`'s link (empty), whose number is in `LINK`.
-pub fn parse_linked(b: &[u8]) -> Result<Option<(u64, Option<u64>)>, StoreError> {
-    if b.is_empty() {
-        return Ok(None);
-    }
+/// A `LINKED` entry's item and number.
+pub fn parse_linked(b: &[u8]) -> Result<(u64, Option<u64>), StoreError> {
     let bad = || err("a linked entry doesn't decode");
     let mut at = 0;
     let item = get_uvarint(b, &mut at).map_err(|_| bad())?;
@@ -527,7 +515,7 @@ pub fn parse_linked(b: &[u8]) -> Result<Option<(u64, Option<u64>)>, StoreError> 
     if at != b.len() {
         return Err(bad());
     }
-    Ok(Some((item, n)))
+    Ok((item, n))
 }
 
 fn is_character(view: &View, e: u64) -> Result<bool, StoreError> {
@@ -580,15 +568,12 @@ pub fn first_link(view: &View, e: u64) -> Result<Option<u64>, StoreError> {
     }
 }
 
-/// The scopes of the books character `e` links: its links', and its `bookLink`'s.
+/// The scopes of the books character `e` links.
 pub fn worlds(view: &View, e: u64) -> Result<Vec<Vec<u8>>, StoreError> {
     let mut w: Vec<Vec<u8>> = links_of(view, e)?
         .into_iter()
         .map(|(_, b)| scope_bytes(b))
         .collect();
-    if let Some((_, Some(b))) = legacy_link(view, e)? {
-        w.push(scope_bytes(b));
-    }
     w.sort();
     w.dedup();
     Ok(w)
@@ -607,22 +592,16 @@ pub fn links_any(view: &View, e: u64, scopes: &[Vec<u8>]) -> Result<bool, StoreE
     Ok(false)
 }
 
-/// Character `e`'s number in book `b`'s numbering: in its `LINKED` entry, or (a `bookLink`'s link) in `LINK`.
+/// Character `e`'s number in book `b`'s numbering, in its `LINKED` entry.
 pub fn world_rank(view: &View, b: u64, e: u64) -> Result<Option<u64>, StoreError> {
-    let Some(v) = view.get(&key::ids(LINKED, b, e))? else {
-        return Ok(None);
-    };
-    Ok(match parse_linked(&v)? {
-        Some((_, n)) => n,
-        None => match view.get(&key::id(LINK, e))? {
-            Some(h) => library::parse_host(&h)?.1,
-            None => None,
-        },
+    Ok(match view.get(&key::ids(LINKED, b, e))? {
+        Some(v) => parse_linked(&v)?.1,
+        None => None,
     })
 }
 
-/// Sets character `e`'s number in book `b`'s numbering (None: takes it out), where `world_rank` reads it. A number
-/// for a pair with no link is an error; taking it out of a gone one does nothing.
+/// Sets character `e`'s number in book `b`'s numbering (None: takes it out). A number for a pair with no link is an
+/// error; taking it out of a gone one does nothing.
 pub fn set_world_rank(
     view: &View,
     out: &mut Out,
@@ -630,39 +609,24 @@ pub fn set_world_rank(
     e: u64,
     n: Option<u64>,
 ) -> Result<(), StoreError> {
-    let unhosted = || StoreError::Entry("a numbered entity has no entry for its scope".into());
     let lk = key::ids(LINKED, b, e);
     match library::current(view, out, &lk)? {
-        Some(v) => match parse_linked(&v)? {
-            Some((item, old)) => {
-                if old != n {
-                    out.put(lk, linked_bytes(item, n));
-                }
-                Ok(())
+        Some(v) => {
+            let (item, old) = parse_linked(&v)?;
+            if old != n {
+                out.put(lk, linked_bytes(item, n));
             }
-            None => {
-                let hk = key::id(LINK, e);
-                match library::current(view, out, &hk)? {
-                    Some(h) => {
-                        let (l, old) = library::parse_host(&h)?;
-                        if old != n {
-                            out.put(hk, library::host_bytes(l, n));
-                        }
-                        Ok(())
-                    }
-                    None if n.is_none() => Ok(()),
-                    None => Err(unhosted()),
-                }
-            }
-        },
+            Ok(())
+        }
         None if n.is_none() => Ok(()),
-        None => Err(unhosted()),
+        None => Err(StoreError::Entry(
+            "a numbered entity has no entry for its scope".into(),
+        )),
     }
 }
 
 /// Character `e`'s link of item `item` goes from naming `old` to naming `new` (None: no link): its `LINKED` entry,
-/// and its place in the books' scopes. A book it links already is refused; the book its `bookLink` names is taken
-/// over, with its number, and the `bookLink` record dies.
+/// and its place in the books' scopes. A book it links already is refused.
 fn link_changed(
     view: &View,
     out: &mut Out,
@@ -687,27 +651,13 @@ fn link_changed(
             return Err(StoreError::Refused(format!("no book {b}")));
         }
         let lk = key::ids(LINKED, b, e);
-        match view.get(&lk)? {
-            Some(v) if parse_linked(&v)?.is_some() => {
-                return Err(StoreError::Refused(format!(
-                    "character {e} links book {b} already"
-                )));
-            }
-            Some(_) => {
-                let hk = key::id(LINK, e);
-                let h = view
-                    .get(&hk)?
-                    .ok_or_else(|| err("a bookLink's linked entry without its link"))?;
-                let (l, n) = library::parse_host(&h)?;
-                dead(out, l);
-                out.del(hk);
-                out.put(lk, linked_bytes(item, n));
-            }
-            None => {
-                out.put(lk, linked_bytes(item, None));
-                after.worlds.push(scope_bytes(b));
-            }
+        if view.get(&lk)?.is_some() {
+            return Err(StoreError::Refused(format!(
+                "character {e} links book {b} already"
+            )));
         }
+        out.put(lk, linked_bytes(item, None));
+        after.worlds.push(scope_bytes(b));
     }
     after.worlds.sort();
     after.worlds.dedup();
@@ -803,108 +753,28 @@ pub fn linker_gone(view: &View, out: &mut Out, e: u64) -> Result<(), StoreError>
     for (_, b) in links_of(view, e)? {
         out.del(key::ids(LINKED, b, e));
     }
-    if let Some((l, b)) = legacy_link(view, e)? {
-        dead(out, l);
-        if let Some(b) = b {
-            out.del(key::ids(LINKED, b, e));
-        }
-        out.del(key::id(LINK, e));
-    }
     out.del(key::id(MULTI_LINK, e));
     Ok(())
 }
 
-/// The `bookLink` record of `e` (`BookLink`) and the book it names.
-pub fn legacy_link(view: &View, e: u64) -> Result<Option<(Loc, Option<u64>)>, StoreError> {
-    let Some(b) = view.get(&key::id(LINK, e))? else {
-        return Ok(None);
-    };
-    let l = library::parse_host(&b)?.0;
-    let (rec, _) = view.record(l.pos)?;
-    Ok(Some((l, opt_id(&rec, 1))))
-}
-
-/// `bookLink`: a character's one lorebook link, from before a character's links were its list `LINKS`.
-///
-/// Nothing writes it now. It derives only because the log is the store's format: records already in it stay until
-/// cleaning drops them as dead, and opening replays the log's tail past the runs, so a live one may still be met
-/// and must derive as it did (`LINK`, an empty `LINKED` entry, the book's scope). The one-off
-/// `src/migrations/convert-character-links.js` writes each live one's book as the character's first link, which
-/// takes over its `LINKED` entry and number and leaves the record dead (`link_changed`). This deriver and the record
-/// kind are deleted together with that one-off, once it has run.
+/// `bookLink`, a reserved kind: a character's one lorebook link from before a character's links were its list
+/// `LINKS`. The log's format keeps an old kind decodable, so cleaning can read its records and drop them: every one
+/// is dead, and a new one is refused.
 pub struct BookLink;
 
 impl Deriver for BookLink {
-    fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
-        let (e, book) = (id(rec, 0), opt_id(rec, 1));
-        if !is_character(view, e)? {
-            return Err(StoreError::Refused(format!("no character {e}")));
-        }
-        let prefix = key::ids(key::ITEM, e, LINKS);
-        if !view.scan(&prefix, &key::prefix_end(&prefix), 1)?.is_empty() {
-            return Err(StoreError::Refused(format!(
-                "character {e}'s links are its list; a bookLink is from before"
-            )));
-        }
-        // A bulk load derives the book in another partition, so it can't be read here.
-        if let Some(b) = book
-            && !view.is_bulk()
-            && !matches!(entity_info(view, b)?, Some((BOOK, _, _)))
-        {
-            return Err(StoreError::Refused(format!("no book {b}")));
-        }
-        let old = legacy_link(view, e)?;
-        // The link keeps the character's number in its book's numbering: a relink to another book moves it there
-        // (`library::change`), one to the same book keeps it.
-        let n = match view.get(&key::id(LINK, e))? {
-            Some(b) => library::parse_host(&b)?.1,
-            None => None,
-        };
-        let mut ob = None;
-        if let Some((l, b)) = old {
-            dead(out, l);
-            ob = b;
-            if let Some(b) = b {
-                out.del(key::ids(LINKED, b, e));
-            }
-        }
-        match book {
-            Some(b) => {
-                out.put(key::ids(LINKED, b, e), Vec::new());
-                out.put(key::id(LINK, e), library::host_bytes(at, n));
-            }
-            None => {
-                dead(out, at);
-                out.del(key::id(LINK, e));
-            }
-        }
-        library::change(view, out, e, |st| {
-            if let Some(b) = ob {
-                st.worlds.retain(|w| *w != scope_bytes(b));
-            }
-            if let Some(b) = book {
-                st.worlds.push(scope_bytes(b));
-            }
-            st.worlds.sort();
-            st.worlds.dedup();
-        })?;
-        version(view, out, e, at)?;
+    fn derive(&self, _: &Record, _: Loc, _: &View, _: &mut Out) -> Result<(), StoreError> {
+        Err(StoreError::Refused(
+            "bookLink is a reserved kind: a character's links are its list 4".into(),
+        ))
+    }
+
+    fn is_live(&self, _: &Record, _: u64, _: &View) -> Result<bool, StoreError> {
+        Ok(false)
+    }
+
+    fn repoint(&self, _: &Record, _: u64, _: Loc, _: &View, _: &mut Out) -> Result<(), StoreError> {
         Ok(())
-    }
-
-    fn is_live(&self, rec: &Record, pos: u64, view: &View) -> Result<bool, StoreError> {
-        library::live_host(view, &key::id(LINK, id(rec, 0)), pos)
-    }
-
-    fn repoint(
-        &self,
-        rec: &Record,
-        from: u64,
-        to: Loc,
-        view: &View,
-        out: &mut Out,
-    ) -> Result<(), StoreError> {
-        library::repoint_host(view, out, &key::id(LINK, id(rec, 0)), from, to)
     }
 }
 
@@ -1009,10 +879,6 @@ pub fn deriver(kind: &str) -> Option<&'static dyn Deriver> {
 // ---- reads (`Store.worldRead`) ----
 
 use super::chat_read::Js;
-
-fn big_or_null(v: Option<u64>) -> Js {
-    v.map_or(Js::Null, Js::Big)
-}
 
 /// Up to `limit` defined world books after the key `after`, in key order: `{ books: [{ id, key }], more }`.
 pub fn books_page(view: &View, after: Option<&[u8]>, limit: usize) -> Result<Js, StoreError> {
@@ -1129,32 +995,6 @@ pub fn resolved(view: &View, ids: &[u64]) -> Result<Js, StoreError> {
         });
     }
     Ok(Js::Arr(out))
-}
-
-/// Up to `limit` characters with a `bookLink` (`BookLink`) after the id `after`, in id order: `{ links: [{ entity,
-/// book }], more }`, `book` null for a link to none.
-pub fn legacy_links_page(view: &View, after: Option<u64>, limit: usize) -> Result<Js, StoreError> {
-    let prefix = key::of(LINK);
-    let start = match after {
-        Some(a) => key::id(LINK, a + 1),
-        None => prefix.clone(),
-    };
-    let found = view.scan(&start, &key::prefix_end(&prefix), limit + 1)?;
-    let more = found.len() > limit;
-    let mut links = Vec::new();
-    for (k, v) in found.into_iter().take(limit) {
-        let mut at = prefix.len();
-        let e = get_u64(&k, &mut at).ok_or_else(|| err("a link key doesn't decode"))?;
-        let (rec, _) = view.record(library::parse_host(&v)?.0.pos)?;
-        links.push(Js::Obj(vec![
-            ("entity", Js::Big(e)),
-            ("book", big_or_null(opt_id(&rec, 1))),
-        ]));
-    }
-    Ok(Js::Obj(vec![
-        ("links", Js::Arr(links)),
-        ("more", Js::Bool(more)),
-    ]))
 }
 
 /// Up to `limit` characters with 2 or more links (`MULTI_LINK`) after the id `after`, in id order: `{ ids, more }`.

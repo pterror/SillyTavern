@@ -112,7 +112,7 @@ fn index(entry: u64, book: u64, x: Option<f64>) -> Record {
     )
 }
 
-/// A `bookLink` record (`books::BookLink`): a link from before links were a list.
+/// A `bookLink` record (`books::BookLink`, a reserved kind).
 fn book_link(e: u64, book: Option<u64>) -> Record {
     rec(
         "bookLink",
@@ -498,20 +498,6 @@ fn multi(s: &Store) -> Vec<u64> {
         .collect()
 }
 
-fn legacy(s: &Store) -> Vec<(u64, Option<u64>)> {
-    let page = read(s, |v| books::legacy_links_page(v, None, 100));
-    let Js::Arr(list) = field(&page, "links") else {
-        panic!()
-    };
-    list.iter()
-        .map(|l| match (field(l, "entity"), field(l, "book")) {
-            (Js::Big(e), Js::Big(b)) => (*e, Some(*b)),
-            (Js::Big(e), Js::Null) => (*e, None),
-            _ => panic!(),
-        })
-        .collect()
-}
-
 fn listed(s: &Store) -> Vec<(u64, String)> {
     let page = read(s, |v| books::books_page(v, None, 100));
     let Js::Arr(list) = field(&page, "books") else {
@@ -693,63 +679,21 @@ fn a_characters_links_are_one_list_each_in_its_books_scope() {
 }
 
 #[test]
-fn a_book_link_replays_and_the_first_list_link_takes_it_over() {
+fn a_book_link_is_a_reserved_kind_refused_and_dead() {
+    use super::derive::Deriver;
     let dir = temp_dir("book-link");
     let s = Store::open_in(&dir, SMALL, pool()).unwrap();
-    let mut r = Vec::new();
-    for (b, k) in [(1, "a"), (2, "b")] {
-        r.push(defined(b, true));
-        r.push(create(b, BOOK, k));
-    }
-    for e in [10, 11, 12] {
-        r.extend(character(e));
-    }
+    let mut r = vec![defined(1, true), create(1, BOOK, "a")];
+    r.extend(character(10));
     s.commit_wait(r).unwrap();
-    // Links from before the list: each character in its book's scope.
-    s.commit_wait(vec![
-        book_link(10, Some(1)),
-        book_link(11, Some(1)),
-        book_link(12, Some(2)),
-        book_link(12, None),
-        book_link(12, Some(2)),
-    ])
-    .unwrap();
-    assert_eq!(
-        legacy(&s),
-        vec![(10, Some(1)), (11, Some(1)), (12, Some(2))]
-    );
-    assert_eq!(world_page(&s, "a"), vec![10, 11]);
-    assert_eq!(numbered(&s, 1), vec![10, 11]);
-    // The one-off's records: each `bookLink`'s book as the first link, more after it.
-    let mut r = link(10, 1, 100, 1);
-    r.extend(link(10, 2, 200, 2));
-    r.extend(link(11, 1, 100, 1));
-    r.extend(link(12, 1, 100, 2));
-    s.commit_wait(r).unwrap();
-    assert_eq!(legacy(&s), Vec::<(u64, Option<u64>)>::new());
-    assert_eq!(world_page(&s, "a"), vec![10, 11]);
-    assert_eq!(world_page(&s, "b"), vec![10, 12]);
-    assert_eq!(numbered(&s, 1), vec![10, 11]);
-    assert_eq!(numbered(&s, 2), vec![10, 12]);
-    assert_eq!(multi(&s), vec![10]);
-    // A `bookLink` for a character whose links are a list is refused.
     assert!(matches!(
         s.commit_wait(vec![book_link(10, Some(1))]),
         Err(StoreError::Refused(_))
     ));
-    // Replayed from the log, the same.
-    s.abandon();
-    drop(s);
-    let s = Store::open_in(&dir, SMALL, pool()).unwrap();
-    assert_eq!(legacy(&s), Vec::<(u64, Option<u64>)>::new());
-    assert_eq!(numbered(&s, 1), vec![10, 11]);
-    assert_eq!(numbered(&s, 2), vec![10, 12]);
-    // No derived entry points at a `bookLink` record: each is dead.
-    s.commit_wait(vec![unlink(10, 1), unlink(11, 1), unlink(12, 1)])
-        .unwrap();
     assert_eq!(world_page(&s, "a"), Vec::<u64>::new());
-    assert_eq!(numbered(&s, 1), Vec::<u64>::new());
-    assert_eq!(numbered(&s, 2), vec![10]);
+    // Cleaning reads an old one and drops it: none is live.
+    let old = book_link(10, Some(1));
+    assert!(!read(&s, |v| books::BookLink.is_live(&old, 0, v)));
     drop(s);
     fs::remove_dir_all(&dir).unwrap();
 }
