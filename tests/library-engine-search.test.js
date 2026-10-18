@@ -154,6 +154,24 @@ describe('library search on the engine', () => {
         }
     }, 120_000);
 
+    test('a quoted phrase finds what the same phrase under name: finds, and a tag named 10/10 is found', async () => {
+        const card = (/** @type {string} */ avatar, /** @type {string} */ name, /** @type {string} */ description) => library.writeCard({}, avatar, JSON.stringify({ spec: 'chara_card_v2', spec_version: '2.0', name, description, data: { name, description } }), { dateAdded: 1 });
+        await card('abc.png', 'a b c', '');
+        await card('alpha.png', 'Alpha Beta Gamma', '');
+        await card('other.png', 'Other', 'nothing here');
+        await library.writeTag({ id: 't-ten', name: '10/10' });
+        await library.assignTag(lib.TYPE.character, 'other.png', 't-ten', true);
+        const find = async (/** @type {string} */ s) => (/** @type {any} */ (await library.query({ search: s, sortField: 'search', limit: 10 }))).rows.map((/** @type {any} */ r) => r.id).sort();
+        for (const phrase of ['a b c', 'alpha beta gamma', 'alpha beta']) {
+            const named = await find(`name:"${phrase}"`);
+            expect(named.length).toBeGreaterThan(0);
+            expect(await find(`"${phrase}"`)).toEqual(named);
+        }
+        expect(await find('10/10')).toEqual(['other.png']);
+        expect(await find('tag:10/10')).toEqual(['other.png']);
+        expect(await find('"10/10"')).toEqual(['other.png']);
+    });
+
     test('a write is found by the next query', async () => {
         await library.writeCard({}, 'a.png', JSON.stringify({ spec: 'chara_card_v2', spec_version: '2.0', data: { name: 'Quiet', description: 'an old tower' } }), { dateAdded: 1 });
         const find = async (/** @type {string} */ s) => (/** @type {any} */ (await library.query({ search: s, sortField: 'search', limit: 5 }))).rows.map((/** @type {any} */ r) => r.id);
