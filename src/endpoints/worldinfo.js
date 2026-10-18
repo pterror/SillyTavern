@@ -8,7 +8,7 @@ import { readAllSettingsAsJson, readSettingsAtPaths, writeSettingsKeys } from '.
 import { resolveCharacterWorldLink } from '../../public/scripts/character-world-link.js';
 import { getStringHash } from '../../public/scripts/hash-utils.js';
 import { engineStoreHere, requestStore, storeRoute, userStore } from '../user-stores.js';
-import { bookExistsHere, readBookHere } from '../world-info-engine.js';
+import { MAX_UID, bookExistsHere, readBookHere } from '../world-info-engine.js';
 import { bookKey } from '../world-info-keys.js';
 import { TYPE } from '../library-codes.js';
 import { sessionHeaderOf } from '../request-session.js';
@@ -502,14 +502,17 @@ router.post('/entry/transplant', storeRoute('moving a World Info entry', async (
  * the lowest free integer uid, a bare `{ uid }` entry at the book's end. The caller fills in the entry's fields after.
  */
 router.post('/entry/create', storeRoute('creating a World Info entry', async (request, response) => {
-    const { name } = request.body ?? {};
+    const { name, uid } = request.body ?? {};
 
     if (typeof name !== 'string' || !name) {
         return response.status(400).send({ error: 'name is required' });
     }
+    if (uid !== undefined && !(Number.isInteger(uid) && uid >= 0 && uid < MAX_UID)) {
+        return response.status(400).send({ error: `uid must be an integer in [0, ${MAX_UID})` });
+    }
 
     const { lib } = await requestStore(request);
-    const result = await lib.books.createEntry(name);
+    const result = await lib.books.createEntry(name, uid);
     if (result === 'missing') {
         return response.status(404).send({ error: `Lorebook '${name}' not found` });
     }
