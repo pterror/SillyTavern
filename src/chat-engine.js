@@ -165,10 +165,6 @@ const DERIVED_METADATA = new Set(['integrity', 'main_chat', 'fork_point', '_tree
 const WORLD_INFO = 'world_info';
 const LINK = '\u0001';
 
-/** About how many records an imported chat's messages are committed in at a time (ChatEngine.importChat()): measured
- * best at 250-500 on a 10k-message chat, since a commit's cost grows faster than its size. */
-const IMPORT_COMMIT_RECORDS = 500;
-
 /**
  * A new session's UUID (v7: its time, then random bits).
  */
@@ -1855,10 +1851,6 @@ export class ChatEngine {
             let parent = null;
             let written = 0;
             for (const msg of messages) {
-                // A long chat goes in as commits of about IMPORT_COMMIT_RECORDS: a commit's cost grows faster than its
-                // size. Until the bookmark is made, the messages stored are a branch from the root no chat shows; an
-                // import again after a stop finds them as twins.
-                if (records.length >= IMPORT_COMMIT_RECORDS) await this.store.commit(records.splice(0));
                 const level = await this.level(tree, parent);
                 const { contents, selected } = alternativesOf(msg);
                 /** @type {bigint | null} */

@@ -80,6 +80,18 @@ pub enum Layer<'a> {
     Hashed(&'a HashMap<Vec<u8>, Val>, &'a [u64]),
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Unpublished entries scans on this thread have read from their layers, for the tests.
+    pub(super) static LAYER_READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Counts one unpublished entry read from a layer (`LAYER_READS`).
+fn layer_read() {
+    #[cfg(test)]
+    LAYER_READS.with(|c| c.set(c.get() + 1));
+}
+
 /// The structure a key starts with, or None for a key too short to name one.
 fn structure_of(k: &[u8]) -> Option<u64> {
     let mut at = 0;
@@ -94,8 +106,14 @@ impl<'a> Layer<'a> {
         }
     }
 
-    /// The entries in `[start, end)`, in order.
+    /// The entries in `[start, end)`, in order, all of them read.
     fn range(&self, start: &[u8], end: &[u8]) -> Vec<(&'a Vec<u8>, &'a Val)> {
+        let found = self.entries_in(start, end);
+        found.iter().for_each(|_| layer_read());
+        found
+    }
+
+    fn entries_in(&self, start: &[u8], end: &[u8]) -> Vec<(&'a Vec<u8>, &'a Val)> {
         match self {
             Layer::Sorted(m) => m
                 .range::<[u8], _>((
@@ -388,52 +406,141 @@ impl View<'_> {
         end: &[u8],
         limit: usize,
     ) -> Result<Vec<(Vec<u8>, Val)>, StoreError> {
-        let mut unpublished: BTreeMap<Vec<u8>, Val> = BTreeMap::new();
-        let mut over = |k: &Vec<u8>, v: Val| {
-            let v = match unpublished.remove(k) {
-                Some(older) => v.over(k, &older),
-                None => v,
-            };
-            unpublished.insert(k.clone(), v);
-        };
-        // Oldest first.
+        self.merged(start, end, limit, false)
+    }
+
+    /// Each unpublished source's entries in `[start, end)` in scan order (last first when `rev`), newest source
+    /// first: the layers, then a bulk load's spilled runs. A sorted layer is walked in place, so a scan reads only
+    /// as far into a commit's own entries as its page goes.
+    #[allow(clippy::type_complexity)]
+    fn unpublished_sources<'s>(
+        &'s self,
+        start: &'s [u8],
+        end: &'s [u8],
+        rev: bool,
+    ) -> Result<Vec<std::iter::Peekable<Box<dyn Iterator<Item = (Vec<u8>, Val)> + 's>>>, StoreError>
+    {
+        let mut out: Vec<Box<dyn Iterator<Item = (Vec<u8>, Val)> + 's>> = Vec::new();
+        for layer in &self.layers {
+            out.push(match layer {
+                Layer::Sorted(m) => {
+                    let r = m
+                        .range::<[u8], _>((
+                            std::ops::Bound::Included(start),
+                            std::ops::Bound::Excluded(end),
+                        ))
+                        .map(|(k, v)| {
+                            layer_read();
+                            (k.clone(), v.clone())
+                        });
+                    if rev { Box::new(r.rev()) } else { Box::new(r) }
+                }
+                // A bulk load's search layer: its keys aren't ordered, so its range is sorted here.
+                Layer::Hashed(..) => {
+                    let mut v: Vec<_> = layer
+                        .range(start, end)
+                        .into_iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect();
+                    if rev {
+                        v.reverse();
+                    }
+                    Box::new(v.into_iter())
+                }
+            });
+        }
         if let Some(st) = self.staged {
-            for r in st.runs.iter().rev() {
+            for r in &st.runs {
+                let mut v = Vec::new();
                 let mut it = RunIter::new(r.clone(), start, Some(&st.cache), Some(&st.counts))?;
                 while let Some(k) = it.key() {
                     if k >= end {
                         break;
                     }
-                    let k = k.to_vec();
-                    over(&k, it.val()?);
+                    v.push((k.to_vec(), it.val()?));
                     it.advance()?;
                 }
-            }
-        }
-        for layer in self.layers.iter().rev() {
-            for (k, v) in layer.range(start, end) {
-                over(k, v.clone());
-            }
-        }
-        // Each unpublished entry can hide at most one published one.
-        let limit_published = limit.saturating_add(unpublished.len());
-        let published = match self.snap {
-            Some(s) => s.scan_vals(start, end, limit_published)?,
-            None => self.ks.scan_vals(start, end, limit_published)?,
-        };
-        let mut out = Vec::new();
-        let mut published = published.into_iter().peekable();
-        let mut unpublished = unpublished.into_iter().peekable();
-        while out.len() < limit {
-            let next = match (published.peek(), unpublished.peek()) {
-                (None, None) => break,
-                (Some(_), None) => published.next().map(|(k, v)| (k, Some(v))),
-                (Some((pk, _)), Some((uk, _))) if pk < uk => {
-                    published.next().map(|(k, v)| (k, Some(v)))
+                if rev {
+                    v.reverse();
                 }
-                _ => {
-                    let (k, v) = unpublished.next().unwrap();
-                    let base = published.next_if(|(pk, _)| *pk == k).map(|(_, b)| b);
+                out.push(Box::new(v.into_iter()));
+            }
+        }
+        Ok(out.into_iter().map(Iterator::peekable).collect())
+    }
+
+    /// Up to `limit` keys in `[start, end)` with values (last first when `rev`), the unpublished entries over the
+    /// published. Every source is read only as far as the page needs: the unpublished ones walked in order, the
+    /// published read in pages past the last key taken, so a scan costs its page, not the commit's entries in the
+    /// range.
+    fn merged(
+        &self,
+        start: &[u8],
+        end: &[u8],
+        limit: usize,
+        rev: bool,
+    ) -> Result<Vec<(Vec<u8>, Val)>, StoreError> {
+        let mut sources = self.unpublished_sources(start, end, rev)?;
+        // The published entries not yet taken lie in `[from, to)`.
+        let (mut from, mut to) = (start.to_vec(), end.to_vec());
+        let mut published: std::collections::VecDeque<(Vec<u8>, Val)> = Default::default();
+        let mut published_done = false;
+        let page = limit.max(1);
+        let ahead = |a: &[u8], b: &[u8]| if rev { a > b } else { a < b };
+        let mut out = Vec::new();
+        while out.len() < limit {
+            if published.is_empty() && !published_done {
+                let got = if rev {
+                    self.published_rev(&from, &to, page)?
+                } else {
+                    match self.snap {
+                        Some(s) => s.scan_vals(&from, &to, page)?,
+                        None => self.ks.scan_vals(&from, &to, page)?,
+                    }
+                };
+                published_done = got.len() < page;
+                if let Some((k, _)) = got.last() {
+                    if rev {
+                        to.clone_from(k);
+                    } else {
+                        from = k.clone();
+                        from.push(0);
+                    }
+                }
+                published.extend(got);
+            }
+            // The next unpublished key in scan order.
+            let mut next: Option<Vec<u8>> = None;
+            for s in sources.iter_mut() {
+                if let Some((k, _)) = s.peek()
+                    && next.as_ref().is_none_or(|n| ahead(k, n))
+                {
+                    next = Some(k.clone());
+                }
+            }
+            let taken = match (published.front(), next) {
+                (None, None) => break,
+                (Some(_), None) => published.pop_front().map(|(k, v)| (k, Some(v))),
+                (Some((pk, _)), Some(uk)) if ahead(pk, &uk) => {
+                    published.pop_front().map(|(k, v)| (k, Some(v)))
+                }
+                (_, Some(k)) => {
+                    // Its values, newest first, folded oldest first.
+                    let mut vals = Vec::new();
+                    for s in sources.iter_mut() {
+                        if let Some((_, v)) = s.next_if(|(sk, _)| *sk == k) {
+                            vals.push(v);
+                        }
+                    }
+                    let mut vals = vals.into_iter().rev();
+                    let mut v = vals.next().expect("the key came from a source");
+                    for newer in vals {
+                        v = newer.over(&k, &v);
+                    }
+                    let base = match published.front() {
+                        Some((pk, _)) if *pk == k => published.pop_front().map(|(_, b)| b),
+                        _ => None,
+                    };
                     let v = match base {
                         Some(b) => v.over_settled(&k, &b),
                         None => v,
@@ -442,7 +549,7 @@ impl View<'_> {
                     Some((k, v))
                 }
             };
-            if let Some((k, Some(v))) = next {
+            if let Some((k, Some(v))) = taken {
                 out.push((k, v));
             }
         }
@@ -510,60 +617,7 @@ impl View<'_> {
         end: &[u8],
         limit: usize,
     ) -> Result<Vec<(Vec<u8>, Val)>, StoreError> {
-        let mut unpublished: BTreeMap<Vec<u8>, Val> = BTreeMap::new();
-        let mut over = |k: &Vec<u8>, v: Val| {
-            let v = match unpublished.remove(k) {
-                Some(older) => v.over(k, &older),
-                None => v,
-            };
-            unpublished.insert(k.clone(), v);
-        };
-        if let Some(st) = self.staged {
-            for r in st.runs.iter().rev() {
-                let mut it = RunIter::new(r.clone(), start, Some(&st.cache), Some(&st.counts))?;
-                while let Some(k) = it.key() {
-                    if k >= end {
-                        break;
-                    }
-                    let k = k.to_vec();
-                    over(&k, it.val()?);
-                    it.advance()?;
-                }
-            }
-        }
-        for layer in self.layers.iter().rev() {
-            for (k, v) in layer.range(start, end) {
-                over(k, v.clone());
-            }
-        }
-        let limit_published = limit.saturating_add(unpublished.len());
-        let published = self.published_rev(start, end, limit_published)?;
-        let mut out = Vec::new();
-        let mut published = published.into_iter().peekable();
-        let mut unpublished = unpublished.into_iter().rev().peekable();
-        while out.len() < limit {
-            let next = match (published.peek(), unpublished.peek()) {
-                (None, None) => break,
-                (Some(_), None) => published.next().map(|(k, v)| (k, Some(v))),
-                (Some((pk, _)), Some((uk, _))) if pk > uk => {
-                    published.next().map(|(k, v)| (k, Some(v)))
-                }
-                _ => {
-                    let (k, v) = unpublished.next().unwrap();
-                    let base = published.next_if(|(pk, _)| *pk == k).map(|(_, b)| b);
-                    let v = match base {
-                        Some(b) => v.over_settled(&k, &b),
-                        None => v,
-                    };
-                    let v = v.settled(&k);
-                    Some((k, v))
-                }
-            };
-            if let Some((k, Some(v))) = next {
-                out.push((k, v));
-            }
-        }
-        Ok(out)
+        self.merged(start, end, limit, true)
     }
 
     /// The records at `positions` (durable or not), in the order given; a log block is decoded once for the ones
