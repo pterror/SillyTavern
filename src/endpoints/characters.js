@@ -40,7 +40,7 @@ import { convertedFileKey } from '../library-codes.js';
 import { avatarFile, avatarImage, avatarPathOf, inAvatarLane, writeWithAvatar } from '../character-avatars.js';
 import { chatNamesOf, compatChatIdOf, compatChatIds, droppedOf, labelBaseOf, moveToChatNamed } from '../chat-request.js';
 import { requestSession } from '../request-session.js';
-import { bookmarkCompatId, sessionCompatId, storedForm } from '../chat-engine.js';
+import { bookmarkCompatId, sessionCompatId } from '../chat-engine.js';
 
 import { groupDigests, groupObjects } from './groups.js';
 // Use shallow character data for the character list
@@ -626,7 +626,7 @@ async function importFromByaf(uploadPath, { request, contentHash }, preservedFil
                 const chatText = ByafParser.getChatFromScenario(scenario, request.body.user_name, card.name, byafData.chatBackgrounds);
                 const [header, ...messages] = chatText.split('\n').map(line => tryParse(line)).filter(x => x);
                 const saved = await store.chats.importChat({
-                    tree: /** @type {bigint} */ (tree), treeSpeaker, name: chatName, messages: messages.map(storedForm), metadata: header?.chat_metadata, actor,
+                    tree: /** @type {bigint} */ (tree), treeSpeaker, name: chatName, messages, metadata: header?.chat_metadata, actor,
                 });
                 if (!saved.ok) throw new Error(`The chat "${chatName}" in the BYAF file could not be stored.`);
                 if (firstChatEnd === undefined) firstChatEnd = saved.node_ids.length ? saved.node_ids[saved.node_ids.length - 1] : null;
