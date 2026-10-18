@@ -31,14 +31,22 @@ reordering them). Each row of `settings-mapping.tsv` gets a `levels` column.
 
 No chat or character can change a reader-bound setting, and output in a shared chat never depends on a device.
 
-## Pinned statements
+## Open: a device or user statement where a chat or character states its own
 
-Any statement (a bundle statement or an override, at any level) can be marked pinned. Resolution of a field first
-walks the levels for a pinned statement, farthest first; if none states the field pinned, it walks closest first as
-usual. So a pinned statement beats every unpinned one, and among pinned statements the farther level wins, as a CSS
-user's `!important` beats an author's. A device-level background pinned on a phone shows on that phone whatever a
-chat states; a user-level pinned preset holds across every chat and character. Pinning is a field of the statement:
-kept in history, reset like any other.
+Requirement: the user can have a device (or user) statement apply even where a chat or character states its own,
+for any setting ("on this phone, my background, even in chats that set one").
+
+Diagnosis: device, tab and user (where and who) are independent of chat and character (what is being viewed); the
+single closest-first line imposes an order between them that doesn't exist, which is why this case conflicts.
+
+Rejected, with the user's reasons where given: a per-setting "ignore chat X" switch, and per-kind binary "use the
+content's X" toggles (special cases; "binary"); pinned statements as CSS `!important` (escalation, hidden
+precedence); a user-stated level order per setting ("awful ux"); "reach" (a statement overriding named closer
+levels); "the more specific statement wins" (an arbitrary rule). Recency (the latest applicable statement wins)
+has the same flaw.
+
+Until resolved, the order above applies. When the settings redesign is built, the plausible behaviours are
+prototyped in the real UI for the user to try before one is fixed.
 
 ## Device
 
