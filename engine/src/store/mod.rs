@@ -31,7 +31,6 @@ pub mod carriers;
 pub mod chat;
 pub mod chat_read;
 pub mod chat_search;
-pub mod convert_derived;
 pub mod derive;
 pub mod history;
 pub mod kinds;
@@ -858,60 +857,6 @@ impl Store {
             }),
             Box::new(move |r| done(r.map(|()| more.load(Ordering::Relaxed)))),
         ));
-    }
-
-    /// One-off (`convert_derived`): moves the old entries of up to `limit` entities or books from `from` on, in the
-    /// commit queue.
-    pub fn convert_derived_step(
-        &self,
-        from: (u64, u64),
-        limit: usize,
-        done: Box<dyn FnOnce(StoreResult<convert_derived::Step>) + Send>,
-    ) {
-        let got = Arc::new(Mutex::new(None));
-        let found = got.clone();
-        self.inner.submit(Job::Derive(
-            Box::new(move |view, out| {
-                *found.lock().unwrap() = Some(convert_derived::step(view, out, from, limit)?);
-                Ok(())
-            }),
-            Box::new(move |r| done(r.map(|()| got.lock().unwrap().take().unwrap_or_default()))),
-        ));
-    }
-
-    /// One-off (`convert_derived`): each entity's values' digest, and each book's free keys' digest, as reads find
-    /// them now.
-    pub fn convert_derived_digest(
-        &self,
-        ids: &[u64],
-        books: &[u64],
-    ) -> StoreResult<(Vec<u64>, Vec<u64>)> {
-        self.derived(|v| {
-            Ok((
-                ids.iter()
-                    .map(|&e| convert_derived::digest(v, e))
-                    .collect::<StoreResult<_>>()?,
-                books
-                    .iter()
-                    .map(|&b| convert_derived::free_digest(v, b))
-                    .collect::<StoreResult<_>>()?,
-            ))
-        })
-    }
-
-    /// One-off (`convert_derived`): whether any derived entry is still in an old form.
-    pub fn convert_derived_pending(&self) -> StoreResult<bool> {
-        self.derived(convert_derived::pending)
-    }
-
-    /// One-off (`convert_derived`): `metaValue` names by prefix.
-    pub fn convert_derived_meta_names(
-        &self,
-        prefix: &[u8],
-        after: Option<&[u8]>,
-        limit: usize,
-    ) -> StoreResult<Vec<Vec<u8>>> {
-        self.derived(|v| convert_derived::meta_names(v, prefix, after, limit))
     }
 
     /// The pair postings' mode (`search::pairs`: 0 off, building, on, deleting).
