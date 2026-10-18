@@ -19,6 +19,11 @@ const OLD_CHATS = 'message-tree.sqlite';
 
 export class OldFormatError extends Error {}
 
+/** Until src/migrations/convert-derived.js is deleted: why a store whose last close didn't flush is refused. */
+export const UNFLUSHED = 'holds derived entries in their old form and was last closed without a flush (the server ' +
+    'stopped uncleanly): this version can\'t replay its log over them. Start the previous version once and stop it ' +
+    'cleanly, which flushes, then run node src/migrations/convert-derived.js --apply';
+
 /**
  * @typedef {object} UserStore
  * @property {LibraryEngine} lib
@@ -114,6 +119,11 @@ async function openStore(root, handle) {
     if (line) throw new OldFormatError(line);
     const dir = path.join(root, STORE_DIR);
     const made = madeHere.delete(root) || !fs.existsSync(dir);
+    // Until src/migrations/convert-derived.js has run (deleted with it): opening replays the log past the last
+    // flush with this engine's derivers, which mustn't run over entries in their old form.
+    if (!made && await engineOf().Store.convertDerivedUnflushed(dir)) {
+        throw new OldFormatError(`${dir} ${UNFLUSHED}`);
+    }
     const lib = await LibraryEngine.open(engineOf(), dir);
     try {
         // Until src/migrations/convert-derived.js has run (deleted with it): reads here don't know the old forms.

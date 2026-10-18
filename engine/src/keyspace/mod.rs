@@ -379,7 +379,22 @@ fn remove(path: impl AsRef<Path>) -> io::Result<()> {
 impl Keyspace {
     /// Opens the runs in `dir` (created if missing): only each run's footer and top block are read.
     pub fn open(dir: &Path, cfg: KsConfig, pool: Arc<Pool>) -> KsResult<Arc<Keyspace>> {
-        if !dir.exists() {
+        Keyspace::open_with(dir, cfg, pool, false)
+    }
+
+    /// As `open`, writing nothing: `dir` must exist, and an unfinished or subsumed run is passed over, not
+    /// removed. For reads only; never `start`ed.
+    pub fn open_read_only(dir: &Path, cfg: KsConfig, pool: Arc<Pool>) -> KsResult<Arc<Keyspace>> {
+        Keyspace::open_with(dir, cfg, pool, true)
+    }
+
+    fn open_with(
+        dir: &Path,
+        cfg: KsConfig,
+        pool: Arc<Pool>,
+        read_only: bool,
+    ) -> KsResult<Arc<Keyspace>> {
+        if !dir.exists() && !read_only {
             fs::create_dir_all(dir)?;
             if let Some(parent) = dir.parent() {
                 sync_dir(parent)?;
@@ -391,7 +406,9 @@ impl Keyspace {
             let Some(name) = name.to_str() else { continue };
             if name.starts_with("run-") && name.ends_with(".tmp") {
                 // A run whose writing didn't finish: nothing counted on it.
-                remove(dir.join(name))?;
+                if !read_only {
+                    remove(dir.join(name))?;
+                }
             } else if let Some(range) = parse_run_name(name) {
                 found.push(range);
             }
@@ -402,7 +419,9 @@ impl Keyspace {
         let mut next = 0;
         for (lo, hi) in found {
             if hi < next {
-                remove(dir.join(run_name(lo, hi)))?;
+                if !read_only {
+                    remove(dir.join(run_name(lo, hi)))?;
+                }
                 continue;
             }
             if lo != next {

@@ -19,7 +19,9 @@ import { getConfigValue, setConfigFilePath } from '../util.js';
  *   node src/migrations/convert-derived.js --dry-run [--data-root ./data] [--handle default-user] [--config ./config.yaml]
  *   node src/migrations/convert-derived.js --apply [the same]
  *
- * Both refuse while the configured port can't be bound, and without a store. Entities and books move `STEP` at a
+ * Both refuse while the configured port can't be bound, without a store, and while the store's last close left log
+ * past its last flush over entries in an old form (the server stopped uncleanly: replaying it here would derive the
+ * previous engine's records with this one's; start the previous version once and stop it cleanly first). Entities and books move `STEP` at a
  * time in the commit queue, only what is still in an old form, so a re-run moves nothing. Each moved entity's values
  * (each book's free keys) are read the old way before its step and the new way after, and must be equal; then
  * nothing may be left in an old form, and the store is closed (flushed), reopened and checked again. Any mismatch
@@ -105,7 +107,7 @@ export async function runConvert(options) {
     const warnLine = options.warn ?? console.warn;
     const probeServer = options.probeServer ?? probeConfiguredServer;
     // Their imports read config when they load: after the config path is set.
-    const { STORE_DIR } = await import('../user-stores.js');
+    const { STORE_DIR, UNFLUSHED } = await import('../user-stores.js');
     const { LibraryEngine } = await import('../library-engine.js');
     const { TYPE } = await import('../library-codes.js');
 
@@ -124,6 +126,12 @@ export async function runConvert(options) {
         return 1;
     }
     log(`${LOG_PREFIX} (a server started with a --port override isn't seen by the probe: make sure none runs)`);
+
+    // Opening replays the log past the last flush with this engine's derivers: not over entries in an old form.
+    if (await (await options.engine()).Store.convertDerivedUnflushed(storeDir)) {
+        warnLine(`${LOG_PREFIX} REFUSED: ${storeDir} ${UNFLUSHED.replace(/, then run .*$/, ', then rerun this')}`);
+        return 1;
+    }
 
     const started = Date.now();
     /** @type {any} */

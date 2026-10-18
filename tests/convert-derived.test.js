@@ -138,6 +138,55 @@ describe('convert-derived', () => {
         await stores.closeUserStores();
     });
 
+    test('a store whose last close left log past its runs is refused untouched while they hold old forms', async () => {
+        // The fixture's store with a record committed after its last flush, as a server that crashed after the
+        // commit leaves it: a copy's log, with the commit and flushed, over the fixture's runs.
+        const later = oldUser();
+        const library = await lib.LibraryEngine.open(engine, path.join(later, 'u', 'store'));
+        const next = await library.nextIds();
+        await library.store.commit([{ kind: 'histSet', entity: BigInt(expected.ids.e0), field: 110, value: '1', json: true, id: next.change++, time: 3 }]);
+        await library.close();
+        const dataRoot = oldUser();
+        const store = path.join(dataRoot, 'u', 'store');
+        expect(await engine.Store.convertDerivedUnflushed(store)).toBe(false);
+        for (const n of fs.readdirSync(path.join(later, 'u', 'store')).filter(f => f.startsWith('log-'))) fs.copyFileSync(path.join(later, 'u', 'store', n), path.join(store, n));
+        expect(await engine.Store.convertDerivedUnflushed(store)).toBe(true);
+
+        const bytes = () => Object.fromEntries(fs.readdirSync(dataRoot, { recursive: true, encoding: 'utf8' })
+            .map(n => path.join(dataRoot, n))
+            .filter(f => fs.statSync(f).isFile())
+            .map(f => [f, fs.readFileSync(f).toString('base64')]));
+        const before = bytes();
+        for (const apply of [false, true]) {
+            const lines = [];
+            expect(await script.runConvert({ dataRoot, handle: 'u', apply, engine: async () => engine, probeServer: stopped, log: l => lines.push(l), warn: l => lines.push(l) })).toBe(1);
+            expect(lines.join('\n')).toMatch(/REFUSED: .* last closed without a flush .* Start the previous version once and stop it cleanly, which flushes, then rerun this/);
+        }
+        const stores = await import('../src/user-stores.js');
+        stores.setStoreEngine(() => engine);
+        await expect(stores.userStore({ root: path.join(dataRoot, 'u') })).rejects.toThrow(/last closed without a flush .* Start the previous version once/);
+        expect(bytes()).toEqual(before);
+    });
+
+    test('a converted store whose last close left log past its runs opens', async () => {
+        const dataRoot = oldUser();
+        expect(await script.runConvert({ dataRoot, handle: 'u', apply: true, engine: async () => engine, probeServer: stopped, ...quiet })).toBe(0);
+        const later = fs.mkdtempSync(path.join(os.tmpdir(), 'convert-derived-'));
+        dirs.push(later);
+        fs.cpSync(path.join(dataRoot, 'u'), path.join(later, 'u'), { recursive: true });
+        const library = await lib.LibraryEngine.open(engine, path.join(later, 'u', 'store'));
+        const next = await library.nextIds();
+        await library.store.commit([{ kind: 'histSet', entity: BigInt(expected.ids.e0), field: 110, value: '1', json: true, id: next.change++, time: 3 }]);
+        await library.close();
+        const store = path.join(dataRoot, 'u', 'store');
+        for (const n of fs.readdirSync(path.join(later, 'u', 'store')).filter(f => f.startsWith('log-'))) fs.copyFileSync(path.join(later, 'u', 'store', n), path.join(store, n));
+        expect(await engine.Store.convertDerivedUnflushed(store)).toBe(false);
+        const stores = await import('../src/user-stores.js');
+        stores.setStoreEngine(() => engine);
+        expect((await stores.userStore({ root: path.join(dataRoot, 'u') })).handle).toBe('u');
+        await stores.closeUserStores();
+    });
+
     test('refused while the server runs, and without a store', async () => {
         const dataRoot = oldUser();
         const running = async () => ({ running: true, lines: ['port probe 127.0.0.1:8000: in-use'] });
