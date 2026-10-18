@@ -1553,7 +1553,7 @@ function registerWorldInfoSlashCommands() {
             return '';
         }
 
-        const entry = await createWorldInfoEntry(file, data);
+        const entry = await createStoredWorldInfoEntry(file, data);
 
         if (!entry) {
             toastr.error('Failed to create a new World Info entry');
@@ -2722,7 +2722,7 @@ async function displayWorldEntries(name, data, navigation = navigation_option.no
     }
 
     $('#world_popup_new').off('click').on('click', async () => {
-        const entry = await createWorldInfoEntry(name, data);
+        const entry = await createStoredWorldInfoEntry(name, data);
         if (!entry) return;
         // A book's new entry is stored by the server as it's created; an embedded lorebook's is saved into the card.
         if (name === EMBEDDED_WORLD_NAME) await saveWorldInfoEntry(name, data, entry.uid);
@@ -4693,7 +4693,7 @@ export async function duplicateWorldInfoEntry(name, data, uid) {
     delete originalData.uid;
 
     // Create new entry and copy over data
-    const entry = await createWorldInfoEntry(name, data);
+    const entry = await createStoredWorldInfoEntry(name, data);
     if (!entry) {
         return;
     }
@@ -4799,65 +4799,145 @@ export const newWorldInfoEntryTemplate = Object.fromEntries(
 );
 
 /**
- * Creates a new world info entry from template.
+ * Creates a new world info entry from template, as upstream does: synchronously, under the lowest uid free in
+ * `data` ({@link getFreeWorldEntryUid}).
  *
- * The uid is minted server-side (POST /api/worldinfo/entry/create), not computed by scanning this
- * client's own cached copy of `data.entries` - that cache can be stale (another tab, or a concurrent
- * move/copy into the same book, may have already taken a uid this client thinks is free), and a
- * collision there would silently overwrite an existing entry on the next whole-book save. The server
- * reserves the uid in the on-disk book immediately, before returning it, so no two concurrent creates
- * against the same book can ever be handed the same uid.
- *
- * An embedded lorebook is no book on the server: it is one field of its character's card, saved whole, so its
- * entry takes the lowest uid free in `data` itself, as upstream does for every book.
- * @param {string} name Name of the WI (must already exist on disk), or {@link EMBEDDED_WORLD_NAME}
+ * In a book the server has, the entry is also stored there at once (POST /api/worldinfo/entry/create), so another
+ * page can't take its uid; the book's saves wait for that. If another page took the uid since this page loaded the
+ * book, the server gives the entry the lowest free one and it moves there ({@link moveNewEntry}) before anything of
+ * it is saved. A creation the server refuses is logged; the book's next whole save stores the entry anyway.
+ * @param {string} name Name of the WI ({@link EMBEDDED_WORLD_NAME} or none: the entry is only added to `data`)
  * @param {any} data WI data
- * @returns {Promise<object | undefined>} New entry object or undefined if failed
+ * @returns {object | undefined} New entry object or undefined if failed
  */
-export async function createWorldInfoEntry(name, data) {
-    if (!name) {
-        console.error('Couldn\'t create a new entry: no lorebook name given');
-        return;
-    }
-
-    if (name === EMBEDDED_WORLD_NAME) {
-        let uid = 0;
-        while (uid in data.entries) uid++;
-        const newEntry = { uid, ...structuredClone(newWorldInfoEntryTemplate) };
-        data.entries[uid] = newEntry;
-        return newEntry;
-    }
-
-    let result;
-    try {
-        const response = await fetch('/api/worldinfo/entry/create', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({ name }),
-        });
-
-        if (!response.ok) {
-            throw new Error(`Server responded with ${response.status}`);
-        }
-
-        result = await response.json();
-    } catch (error) {
-        console.error('Couldn\'t assign UID to a new entry', error);
-        return;
-    }
-
-    const newUid = result?.entry?.uid;
+export function createWorldInfoEntry(name, data) {
+    const newUid = getFreeWorldEntryUid(data);
 
     if (!Number.isInteger(newUid)) {
         console.error('Couldn\'t assign UID to a new entry');
         return;
     }
 
-    noteStoredEntry(name, newUid, result.entry);
     const newEntry = { uid: newUid, ...structuredClone(newWorldInfoEntryTemplate) };
     data.entries[newUid] = newEntry;
 
+    if (name && name !== EMBEDDED_WORLD_NAME && world_names?.includes(name)) {
+        newEntryCreations.set(newEntry, storeNewEntry(name, data, newEntry));
+    }
+
     return newEntry;
+}
+
+export function getFreeWorldEntryUid(data) {
+    if (!data || !('entries' in data)) {
+        return null;
+    }
+
+    const MAX_UID = 1_000_000; // <- should be safe enough :)
+    for (let uid = 0; uid < MAX_UID; uid++) {
+        if (uid in data.entries) {
+            continue;
+        }
+        return uid;
+    }
+
+    return null;
+}
+
+/**
+ * The server-side creation of each entry {@link createWorldInfoEntry} made in a book the server has: whether the
+ * server holds it.
+ * @type {WeakMap<object, Promise<boolean>>}
+ */
+const newEntryCreations = new WeakMap();
+
+/**
+ * Each book's queue of new entries being stored ({@link storeNewEntry}); the book's saves wait for it.
+ * @type {Map<string, Promise<void>>}
+ */
+const entryCreates = new Map();
+
+/**
+ * {@link createWorldInfoEntry}, then waits until the server holds the entry: for the page's own controls, which show
+ * the entry under its final uid and report a failure. A failed creation leaves no entry in `data`.
+ * @param {string} name
+ * @param {any} data
+ * @returns {Promise<object | undefined>} The entry, or undefined if it couldn't be created
+ */
+async function createStoredWorldInfoEntry(name, data) {
+    const entry = createWorldInfoEntry(name, data);
+    if (!entry) return;
+    if (await (newEntryCreations.get(entry) ?? true)) return entry;
+    if (data.entries[entry.uid] === entry) delete data.entries[entry.uid];
+}
+
+/**
+ * Stores a new entry in its book on the server, under the uid this page gave it if it's still free there. A book's
+ * new entries are stored one at a time, in the order they were made, so each one asks for the uid it has by then.
+ * @param {string} name
+ * @param {any} data
+ * @param {any} entry
+ * @returns {Promise<boolean>} Whether the server holds the entry
+ */
+function storeNewEntry(name, data, entry) {
+    const created = (entryCreates.get(name) ?? Promise.resolve()).then(async () => {
+        let result;
+        try {
+            const response = await trackWorldWrite(name, fetch('/api/worldinfo/entry/create', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ name, uid: entry.uid }),
+            }));
+            if (!response.ok) throw new Error(`Server responded with ${response.status}`);
+            result = await response.json();
+        } catch (error) {
+            console.error(`[WI] Couldn't store new entry ${entry.uid} in '${name}'`, error);
+            return false;
+        }
+        const uid = result?.entry?.uid;
+        if (!Number.isInteger(uid)) {
+            console.error(`[WI] Couldn't store new entry ${entry.uid} in '${name}': no uid in the answer`);
+            return false;
+        }
+        if (uid !== entry.uid) moveNewEntry(name, data, entry, uid);
+        noteStoredEntry(name, uid, result.entry);
+        return true;
+    });
+    const queued = created.then(() => {});
+    entryCreates.set(name, queued);
+    queued.then(() => {
+        if (entryCreates.get(name) === queued) entryCreates.delete(name);
+    });
+    return created;
+}
+
+/**
+ * Puts a new entry under the uid the server gave it, as another page took the one this page chose. An entry of this
+ * page's under that uid can only be another new one still queued (the server holds every stored uid): the two swap,
+ * and that one then asks for the freed uid. Pending single-entry saves follow their entries.
+ * @param {string} name
+ * @param {any} data
+ * @param {any} entry
+ * @param {number} uid
+ */
+function moveNewEntry(name, data, entry, uid) {
+    const from = entry.uid;
+    const other = data.entries[uid];
+    delete data.entries[from];
+    if (other && other !== entry) {
+        other.uid = from;
+        data.entries[from] = other;
+    }
+    entry.uid = uid;
+    data.entries[uid] = entry;
+    const pending = pendingEntrySaves.get(name);
+    if (pending) {
+        const had = (/** @type {number} */ u) => [pending.delete(u), pending.delete(String(u))].includes(true);
+        const [hadFrom, hadTo] = [had(from), had(uid)];
+        if (hadFrom) pending.add(uid);
+        if (hadTo) pending.add(from);
+    }
+    console.warn(`[WI] '${name}': uid ${from} was taken elsewhere meanwhile, so the new entry is ${uid}`);
 }
 
 /**
@@ -4910,6 +4990,8 @@ function refuseEmbeddedWorldName(name) {
 async function _save(name, data) {
     // This write carries the book's latest data, so a debounced save of the same book still pending is dropped.
     cancelWorldSaveDebounced(name);
+    // A new entry still being stored would otherwise be created twice, by this write and by its own creation.
+    await entryCreates.get(name);
 
     const create = () => trackWorldWrite(name, fetch('/api/worldinfo/create', {
         method: 'POST',
@@ -5140,6 +5222,9 @@ function resumeWorldSaves(name, held) {
  * and resolves false; a request that fails outright shows the same toast and rejects.
  */
 async function _saveEntry(name, uid, entryData, data) {
+    // The entry is written where the server holds it: a new one is stored first, and may have moved meanwhile.
+    await entryCreates.get(name);
+    if (Number.isInteger(entryData?.uid)) uid = entryData.uid;
     let response;
     try {
         response = await trackWorldWrite(name, fetch('/api/worldinfo/entry/edit', {

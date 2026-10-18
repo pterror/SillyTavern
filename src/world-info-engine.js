@@ -70,7 +70,7 @@ const ENTRY_LIST = new Map([['key', 0], ['keysecondary', 1], ['triggers', 2], ['
 const ENTRY_LIST_NAME = new Map([...ENTRY_LIST].map(([k, v]) => [v, k]));
 
 /** Upstream's limit on a new entry's uid (`getFreeWorldEntryUid()`). */
-const MAX_UID = 1_000_000;
+export const MAX_UID = 1_000_000;
 /** An entry's `displayIndex`, which its `entryIndex` record follows. */
 const DISPLAY_INDEX = /** @type {number} */ (ENTRY_CODE.get('displayIndex'));
 
@@ -816,23 +816,27 @@ export class WorldInfoEngine {
     }
 
     /**
-     * A new entry `{ uid }` at the end of a book, under its lowest free integer key (`/entry/create`).
+     * A new entry `{ uid }` at the end of a book (`/entry/create`): under `uid` if the page asks for one and the book
+     * has none there (the page chose it from its copy), else under the book's lowest free integer key.
      * @param {string} name
+     * @param {number} [uid] An integer in [0, MAX_UID)
      * @returns {Promise<{ entry: { uid: number } } | 'missing' | 'full'>}
      */
-    createEntry(name) {
+    createEntry(name, uid) {
         const key = bookKey(name);
         return this.lane([key], async () => {
             const found = await this.find(name);
             if (!found?.defined) return 'missing';
             const numbers = await this.store.worldRead('numbers', { book: found.id });
-            if (numbers.freeKey >= MAX_UID) return 'full';
+            const asked = uid === undefined ? null : (await this.lib.ids(TYPE.entry, [`${found.id}:${uid}`]))[0] === null ? uid : null;
+            const at = asked ?? numbers.freeKey;
+            if (at >= MAX_UID) return 'full';
             const id = this.lib.nextId++;
             await this.store.commit([
-                { kind: 'entityCreate', entity: id, type: TYPE.entry, key: `${found.id}:${numbers.freeKey}`, added: 0 },
+                { kind: 'entityCreate', entity: id, type: TYPE.entry, key: `${found.id}:${at}`, added: 0 },
                 { kind: 'itemPlace', entity: found.id, list: 0, item: id, position: (numbers.lastPosition ?? 0) + POSITION_GAP },
             ]);
-            return { entry: { uid: numbers.freeKey } };
+            return { entry: { uid: at } };
         });
     }
 

@@ -263,9 +263,21 @@ describe('worldinfo /entry/create and /entry/edit', () => {
         expect(Object.keys((await getBook('Book')).entries).sort()).toEqual(['0', '1', '2', '3']);
     });
 
-    test('create rejects a nonexistent book and a missing name', async () => {
+    test('create takes the uid the page asks for while it is free, else the lowest free one', async () => {
+        await postJson('/api/worldinfo/edit', { name: 'Book', data: { entries: { 0: makeEntry(0, 'Alpha') } } });
+        expect(await (await postJson('/api/worldinfo/entry/create', { name: 'Book', uid: 5 })).json()).toEqual({ ok: true, entry: { uid: 5 } });
+        // 5 is taken now (another page asked first): the lowest free uid instead.
+        expect(await (await postJson('/api/worldinfo/entry/create', { name: 'Book', uid: 5 })).json()).toEqual({ ok: true, entry: { uid: 1 } });
+        expect(Object.keys((await getBook('Book')).entries).sort()).toEqual(['0', '1', '5']);
+    });
+
+    test('create rejects a nonexistent book, a missing name and a uid that is no integer in range', async () => {
         expect((await postJson('/api/worldinfo/entry/create', { name: 'Ghost' })).status).toBe(404);
         expect((await postJson('/api/worldinfo/entry/create', {})).status).toBe(400);
+        await postJson('/api/worldinfo/edit', { name: 'Book', data: { entries: {} } });
+        for (const uid of [-1, 1.5, '3', 1_000_000]) {
+            expect((await postJson('/api/worldinfo/entry/create', { name: 'Book', uid })).status).toBe(400);
+        }
     });
 
     test('edit writes one entry whole and keeps its uid', async () => {
