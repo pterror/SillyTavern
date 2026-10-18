@@ -15,7 +15,8 @@ import { generateTurnOf, textCompletionQuietInput } from '../../page-writes.js';
 import { storeUserMessage, withStoredMessages } from '../../stored-messages.js';
 import { readCardContent } from '../characters.js';
 import { getGroupsByIds } from '../groups.js';
-import { persistAssistantReply } from '../../assistant-reply-persist.js';
+import { attachStoredReply, persistAssistantReply } from '../../assistant-reply-persist.js';
+import { readReplyFinishSettings } from '../../reply-reasoning.js';
 import { itemizationOf } from '../../itemization-of.js';
 import { answerSessionOnHeaders, chatContext } from '../../chat-request.js';
 import { withGenerationStop } from '../../generation-stop.js';
@@ -260,6 +261,8 @@ router.post('/generate', withGenerationStop(async function (request, response_ge
                 isSwipe, isContinue, anchorContent: continuesUserMessage ? userMessage : built.anchorContent,
                 warnings, generationStop: response_generate.locals.generationStop,
                 itemization: itemizationOf(request.body.itemization, built.itemization),
+                // How the reply is finished (its reasoning split off, see src/reply-reasoning.js).
+                finish: await readReplyFinishSettings(directories, { mainApi: 'kobold', avatar: characterAvatar, name1: built.name1, name2: built.name2 }),
             };
             // The reply's write goes through the session; one made for it is in the headers, which a
             // stream sends before the reply is stored.
@@ -423,8 +426,8 @@ router.post('/generate', withGenerationStop(async function (request, response_ge
                 // public/script.js's own `data.results[0].text` read of this exact endpoint).
                 if (pendingAssistantPersist) {
                     const generatedText = data?.results?.[0]?.text ?? '';
-                    const persisted = await persistAssistantReply(pendingAssistantPersist, generatedText);
-                    if (persisted) data.assistant_node_id = persisted.node_id;
+                    const persisted = await persistAssistantReply(pendingAssistantPersist, generatedText, { data });
+                    attachStoredReply(data, persisted);
                 }
 
                 if (warnings.length) {

@@ -38,7 +38,7 @@ function showReplyNotSaved(warning) {
             });
             const result = response.ok || response.status === 404 ? await response.json().catch(() => null) : null;
             if (result?.state === 'saved') {
-                window.dispatchEvent(new CustomEvent(REPLY_STORED_EVENT, { detail: { generationId, node_id: result.node_id, mes: result.mes } }));
+                window.dispatchEvent(new CustomEvent(REPLY_STORED_EVENT, { detail: { generationId, node_id: result.node_id, mes: result.mes, extra: result.extra } }));
                 toastr.clear(toast, { force: true });
                 toastr.success('The reply is saved now.');
                 return;

@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 
 import { forwardFetchResponse } from '../../util.js';
 import { persistAssistantReply, takeItemizationNotSaved, takeReplyNotSaved } from '../../assistant-reply-persist.js';
+import { noteReplyText } from '../../reply-reasoning.js';
 import { storedMessagesOf } from '../../stored-messages.js';
 import { generationIdFor, isGenerationStopped } from '../../generation-stop.js';
 
@@ -165,18 +166,24 @@ export function encodeControlFrame(data) {
 }
 
 /**
- * The frames that end a raw-action stream: the stored reply's node id (followed by a warnings frame when its prompt
- * itemization wasn't stored), or, when storing the reply failed, a warnings frame naming the generation so the page
- * can ask for it to be stored again.
- * @param {{node_id: string}|null} persisted
+ * The frames that end a raw-action stream: the stored reply (a `stored_reply` control frame with its node id, text and
+ * reasoning fields, which the page shows in place of what it streamed) and its node id (followed by a warnings frame
+ * when its prompt itemization wasn't stored), or, when storing the reply failed, a warnings frame naming the
+ * generation so the page can ask for it to be stored again.
+ * @param {{node_id: string, mes?: string, extra?: object}|null} persisted
  * @param {object|null|undefined} persist
  * @returns {Buffer|null}
  */
 export function encodeStoredReplyFrame(persisted, persist) {
     if (persisted) {
         const itemizationWarning = takeItemizationNotSaved(persist);
-        const nodeFrame = encodeAssistantNodeIdFrame(persisted.node_id);
-        return itemizationWarning ? Buffer.concat([nodeFrame, encodeControlFrame({ warnings: [itemizationWarning] })]) : nodeFrame;
+        const frames = [];
+        if (typeof persisted.mes === 'string') {
+            frames.push(encodeControlFrame({ stored_reply: { node_id: persisted.node_id, mes: persisted.mes, extra: persisted.extra ?? {} } }));
+        }
+        frames.push(encodeAssistantNodeIdFrame(persisted.node_id));
+        if (itemizationWarning) frames.push(encodeControlFrame({ warnings: [itemizationWarning] }));
+        return frames.length === 1 ? frames[0] : Buffer.concat(frames);
     }
     const warning = takeReplyNotSaved(persist);
     return warning ? encodeControlFrame({ warnings: [warning] }) : null;
@@ -641,6 +648,7 @@ export async function pipeLlamaCppCompactStream(upstreamResponse, response, pers
 
             if (persist && typeof data.content === 'string') {
                 accumulatedText += data.content;
+                noteReplyText(persist, accumulatedText);
             }
 
             const { bytes, index } = encodeEvent(data, lastIndex);

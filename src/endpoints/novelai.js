@@ -15,7 +15,8 @@ import { generateTurnOf, textCompletionQuietInput } from '../page-writes.js';
 import { storeUserMessage, withStoredMessages } from '../stored-messages.js';
 import { readCardContent } from './characters.js';
 import { getGroupsByIds } from './groups.js';
-import { persistAssistantReply } from '../assistant-reply-persist.js';
+import { attachStoredReply, persistAssistantReply } from '../assistant-reply-persist.js';
+import { readReplyFinishSettings } from '../reply-reasoning.js';
 import { itemizationOf } from '../itemization-of.js';
 import { answerSessionOnHeaders, chatContext } from '../chat-request.js';
 import { withGenerationStop } from '../generation-stop.js';
@@ -378,6 +379,8 @@ router.post('/generate', withGenerationStop(async function (req, res) {
                 isSwipe, isContinue, anchorContent: continuesUserMessage ? userMessage : built.anchorContent,
                 warnings, generationStop: res.locals.generationStop,
                 itemization: itemizationOf(req.body.itemization, null),
+                // How the reply is finished (its reasoning split off, see src/reply-reasoning.js).
+                finish: await readReplyFinishSettings(req.user.directories, { mainApi: 'novel', avatar: characterAvatar, name1: built.name1, name2: built.name2 }),
             };
             // The reply's write goes through the session; one made for it is in the headers, which a
             // stream sends before the reply is stored.
@@ -532,10 +535,8 @@ router.post('/generate', withGenerationStop(async function (req, res) {
             // `data.output` read of this exact endpoint).
             if (pendingAssistantPersist) {
                 const generatedText = data?.output ?? '';
-                const persisted = await persistAssistantReply(pendingAssistantPersist, generatedText);
-                if (persisted) {
-                    data.assistant_node_id = persisted.node_id;
-                }
+                const persisted = await persistAssistantReply(pendingAssistantPersist, generatedText, { data });
+                attachStoredReply(data, persisted);
             }
             if (warnings.length) {
                 data.warnings = warnings;

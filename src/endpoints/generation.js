@@ -7,7 +7,7 @@ import { retryPersistReply } from '../assistant-reply-persist.js';
  * generation. The page never writes a generated reply itself; this is how it asks again.
  * @param {string} id
  * @param {string|undefined} handle Only the user who started the generation may retry.
- * @returns {Promise<{state: 'unknown'|'saved'|'failed', node_id?: string, mes?: string, reason?: string}>}
+ * @returns {Promise<{state: 'unknown'|'saved'|'failed', node_id?: string, mes?: string, extra?: object, reason?: string}>}
  */
 export async function retryGenerationStore(id, handle) {
     const entry = generationEntryOf(id, handle);
@@ -15,7 +15,7 @@ export async function retryGenerationStore(id, handle) {
         return { state: 'unknown' };
     }
     if (entry.persisted) {
-        return { state: 'saved', node_id: entry.persisted.node_id, mes: entry.persisted.mes };
+        return { state: 'saved', node_id: entry.persisted.node_id, mes: entry.persisted.mes, extra: entry.persisted.extra };
     }
     if (!entry.unsaved) {
         return { state: 'unknown' };
@@ -24,7 +24,7 @@ export async function retryGenerationStore(id, handle) {
     if (result && 'node_id' in result) {
         entry.persisted = result;
         entry.unsaved = null;
-        return { state: 'saved', node_id: result.node_id, mes: result.mes };
+        return { state: 'saved', node_id: result.node_id, mes: result.mes, extra: result.extra };
     }
     const reason = result?.error ?? 'nothing to store';
     entry.unsaved.reason = reason;

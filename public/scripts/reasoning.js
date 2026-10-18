@@ -1597,8 +1597,28 @@ export function parseReasoningInSwipes(swipes, swipeInfoArray, duration) {
     }
 }
 
+/**
+ * Messages about to be announced as received whose reasoning the server already split off (a generated reply, as the
+ * server stored it). Their MESSAGE_RECEIVED doesn't parse them again: the page only shows what the server stored.
+ * @type {Set<number>}
+ */
+const serverFinishedReplies = new Set();
+
+/**
+ * Marks the message as a reply the server finished (stored with its reasoning split off), for the next
+ * MESSAGE_RECEIVED of it, which then leaves it as it is.
+ * @param {number} messageId
+ */
+export function markServerFinishedReply(messageId) {
+    serverFinishedReplies.add(messageId);
+}
+
 function registerReasoningAppEvents() {
     const eventHandler = (/** @type {string} */ type, /** @type {number} */ idx) => {
+        if (type === event_types.MESSAGE_RECEIVED && serverFinishedReplies.delete(idx)) {
+            console.debug('[Reasoning] The server already split the reasoning off message', idx);
+            return;
+        }
         if (!power_user.reasoning.auto_parse) {
             return;
         }

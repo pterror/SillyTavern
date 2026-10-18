@@ -319,8 +319,9 @@ import {
     Generate, stopGeneration,
     saveChat, saveChatConditional,
     isChatSaving, streamingProcessor, abortController, setAbortController, kobold_horde_model, generation_started,
-    _messageSnapshots, _snapshotMessages, _isBlankUnwrittenSwipe, finishStreamedReplyPersistence,
+    _messageSnapshots, _snapshotMessages, _isBlankUnwrittenSwipe, finishStreamedReplyPersistence, applyStoredReply,
 } from './scripts/generation.js';
+import { takeStoredReply } from './scripts/llamacpp-compact-stream.js';
 export {
     Generate, stopGeneration,
     saveChat, saveChatConditional,
@@ -4120,6 +4121,12 @@ export class StreamingProcessor {
         }
 
         if (this.type !== 'impersonate') {
+            // The reply as the server stored it (its reasoning split off) replaces what this page streamed.
+            const shown = applyStoredReply(messageId, takeStoredReply(this.assistantNodeId), { received: true });
+            if (shown) {
+                message = shown;
+                updateMessageBlock(messageId, shown);
+            }
             await eventSource.emit(event_types.MESSAGE_RECEIVED, this.messageId, this.type);
             await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, this.messageId, this.type);
         } else {
@@ -5958,12 +5965,14 @@ async function processImageAttachment(message, { imageUrls }) {
  * @property {string} [reasoning] Message reasoning
  * @property {string[]} [imageUrls] Links to images
  * @property {string?} [reasoningSignature] Encrypted signature of the reasoning text
+ * @property {{mes: string, extra?: Record<string, any>}|null} [storedReply] The reply as the server stored it (its
+ * reasoning split off), shown in place of the text and reasoning given here.
  *
  * @typedef {object} SaveReplyResult
  * @property {string} type Type of generation
  * @property {string} getMessage Generated message
  */
-export async function saveReply({ type, getMessage, fromStreaming = false, title = '', swipes = [], reasoning = '', imageUrls = [], reasoningSignature = null }) {
+export async function saveReply({ type, getMessage, fromStreaming = false, title = '', swipes = [], reasoning = '', imageUrls = [], reasoningSignature = null, storedReply = null }) {
     // Backward compatibility
     if (arguments.length > 1 && typeof arguments[0] !== 'object') {
         console.trace('saveReply called with positional arguments. Please use an object instead.');
@@ -6028,6 +6037,7 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
                 lastMessage = chat[lastMesId];
             }
             const chat_id = lastMesId;
+            applyStoredReply(chat_id, storedReply, { received: !fromStreaming });
             !fromStreaming && await eventSource.emit(event_types.MESSAGE_RECEIVED, chat_id, type);
             addOneMessage(chat[chat_id], { type: 'swipe' });
             !fromStreaming && await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, chat_id, type);
@@ -6055,6 +6065,7 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
             lastMessage = chat[lastMesId];
         }
         const chat_id = lastMesId;
+        applyStoredReply(chat_id, storedReply, { received: !fromStreaming });
         !fromStreaming && await eventSource.emit(event_types.MESSAGE_RECEIVED, chat_id, type);
         addOneMessage(chat[chat_id], { type: 'swipe' });
         !fromStreaming && await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, chat_id, type);
@@ -6080,6 +6091,7 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
         }
         // We don't know if the reasoning duration extended, so we don't update it here on purpose.
         const chat_id = lastMesId;
+        applyStoredReply(chat_id, storedReply, { received: !fromStreaming });
         !fromStreaming && await eventSource.emit(event_types.MESSAGE_RECEIVED, chat_id, type);
         addOneMessage(chat[chat_id], { type: 'swipe' });
         !fromStreaming && await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, chat_id, type);
@@ -6115,6 +6127,7 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
 
         await processImageAttachment(newMessage, { imageUrls });
         const chat_id = (chat.length - 1);
+        applyStoredReply(chat_id, storedReply, { received: !fromStreaming });
 
         !fromStreaming && await eventSource.emit(event_types.MESSAGE_RECEIVED, chat_id, type);
         addOneMessage(chat[chat_id]);

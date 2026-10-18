@@ -74,7 +74,8 @@ import { prepareOpenAIMessages } from '../../chat-completion-prepare-messages.js
 import { generateTurnOf } from '../../page-writes.js';
 import { readCardContent } from '../characters.js';
 import { getGroupsByIds } from '../groups.js';
-import { persistAssistantReply, replyTextAsPageShows, unreadableReplyWarning } from '../../assistant-reply-persist.js';
+import { attachStoredReply, persistAssistantReply, replyTextAsPageShows, unreadableReplyWarning } from '../../assistant-reply-persist.js';
+import { noteReplyReasoning, noteReplyText, readReplyFinishSettings } from '../../reply-reasoning.js';
 import { itemizationOf } from '../../itemization-of.js';
 import { answerSessionOnHeaders, chatContext } from '../../chat-request.js';
 import { storedForm } from '../../chat-engine.js';
@@ -481,8 +482,8 @@ async function sendClaudeRequest(request, response, persist, warnings = null, on
                 ? generateResponseJson.content.filter(block => block?.type === 'text').map(block => block.text).join('')
                 : '';
             if (persist) {
-                const persisted = await persistAssistantReply(persist, persistedText);
-                if (persisted) reply.assistant_node_id = persisted.node_id;
+                const persisted = await persistAssistantReply(persist, persistedText, { data: reply });
+                attachStoredReply(reply, persisted);
             }
             if (warnings?.length) reply.warnings = warnings;
 
@@ -863,8 +864,8 @@ async function sendMakerSuiteRequest(request, response, persist, warnings = null
             // exact same `!part.thought` filter this persistence needs (Gemini's own "thought"/
             // reasoning parts excluded), so no separate extraction is needed here.
             if (persist) {
-                const persisted = await persistAssistantReply(persist, responseText ?? '');
-                if (persisted) reply.assistant_node_id = persisted.node_id;
+                const persisted = await persistAssistantReply(persist, responseText ?? '', { data: reply });
+                attachStoredReply(reply, persisted);
             }
             if (warnings?.length) reply.warnings = warnings;
 
@@ -968,8 +969,8 @@ async function sendAI21Request(request, response, persist, warnings = null, onDi
             // no-op otherwise). Real, verified OpenAI-Chat-Completions-shaped body - see this
             // function's own doc comment above.
             if (persist) {
-                const persisted = await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '');
-                if (persisted) generateResponseJson.assistant_node_id = persisted.node_id;
+                const persisted = await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '', { data: generateResponseJson });
+                attachStoredReply(generateResponseJson, persisted);
             }
             if (warnings?.length) generateResponseJson.warnings = warnings;
 
@@ -1086,8 +1087,8 @@ async function sendMistralAIRequest(request, response, persist, warnings = null,
             // no-op otherwise). Standard, verified OpenAI-Chat-Completions-shaped body - see this
             // function's own doc comment above.
             if (persist) {
-                const persisted = await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '');
-                if (persisted) generateResponseJson.assistant_node_id = persisted.node_id;
+                const persisted = await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '', { data: generateResponseJson });
+                attachStoredReply(generateResponseJson, persisted);
             }
             if (warnings?.length) generateResponseJson.warnings = warnings;
 
@@ -1234,8 +1235,8 @@ async function sendCohereRequest(request, response, persist, warnings = null, on
                 const contentText = Array.isArray(generateResponseJson?.message?.content)
                     ? generateResponseJson.message.content.filter(block => block?.type === 'text').map(block => block.text ?? '').join('')
                     : '';
-                const persisted = await persistAssistantReply(persist, contentText || generateResponseJson?.message?.tool_plan || '');
-                if (persisted) generateResponseJson.assistant_node_id = persisted.node_id;
+                const persisted = await persistAssistantReply(persist, contentText || generateResponseJson?.message?.tool_plan || '', { data: generateResponseJson });
+                attachStoredReply(generateResponseJson, persisted);
             }
             if (warnings?.length) generateResponseJson.warnings = warnings;
 
@@ -1383,8 +1384,8 @@ async function sendDeepSeekRequest(request, response, persist, warnings = null, 
             // function's own doc comment above. Deliberately reads ONLY `message.content`, never
             // `message.reasoning_content`.
             if (persist) {
-                const persisted = await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '');
-                if (persisted) generateResponseJson.assistant_node_id = persisted.node_id;
+                const persisted = await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '', { data: generateResponseJson });
+                attachStoredReply(generateResponseJson, persisted);
             }
             if (warnings?.length) generateResponseJson.warnings = warnings;
 
@@ -1519,8 +1520,8 @@ async function sendXaiRequest(request, response, persist, warnings = null, onDis
             // no-op otherwise). Standard, verified OpenAI-Chat-Completions-shaped body - see this
             // function's own doc comment above.
             if (persist) {
-                const persisted = await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '');
-                if (persisted) generateResponseJson.assistant_node_id = persisted.node_id;
+                const persisted = await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '', { data: generateResponseJson });
+                attachStoredReply(generateResponseJson, persisted);
             }
             if (warnings?.length) generateResponseJson.warnings = warnings;
 
@@ -1652,8 +1653,8 @@ async function sendAimlapiRequest(request, response, persist, warnings = null, o
             // no-op otherwise). Standard, verified OpenAI-Chat-Completions-shaped body - see this
             // function's own doc comment above.
             if (persist) {
-                const persisted = await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '');
-                if (persisted) generateResponseJson.assistant_node_id = persisted.node_id;
+                const persisted = await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '', { data: generateResponseJson });
+                attachStoredReply(generateResponseJson, persisted);
             }
             if (warnings?.length) generateResponseJson.warnings = warnings;
 
@@ -1793,8 +1794,8 @@ async function sendElectronHubRequest(request, response, persist, warnings = nul
             // no-op otherwise). Standard, verified OpenAI-Chat-Completions-shaped body - see this
             // function's own doc comment above.
             if (persist) {
-                const persisted = await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '');
-                if (persisted) generateResponseJson.assistant_node_id = persisted.node_id;
+                const persisted = await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '', { data: generateResponseJson });
+                attachStoredReply(generateResponseJson, persisted);
             }
             if (warnings?.length) generateResponseJson.warnings = warnings;
 
@@ -1925,8 +1926,8 @@ async function sendChutesRequest(request, response, persist, warnings = null, on
             // no-op otherwise). Standard, verified OpenAI-Chat-Completions-shaped body - see this
             // function's own doc comment above.
             if (persist) {
-                const persisted = await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '');
-                if (persisted) generateResponseJson.assistant_node_id = persisted.node_id;
+                const persisted = await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '', { data: generateResponseJson });
+                attachStoredReply(generateResponseJson, persisted);
             }
             if (warnings?.length) generateResponseJson.warnings = warnings;
 
@@ -2038,8 +2039,8 @@ async function sendMinimaxRequest(request, response, persist, warnings = null, o
             // no-op otherwise). Standard, verified OpenAI-Chat-Completions-shaped body - see this
             // function's own doc comment above.
             if (persist) {
-                const persisted = await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '');
-                if (persisted) generateResponseJson.assistant_node_id = persisted.node_id;
+                const persisted = await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '', { data: generateResponseJson });
+                attachStoredReply(generateResponseJson, persisted);
             }
             if (warnings?.length) generateResponseJson.warnings = warnings;
 
@@ -2159,8 +2160,8 @@ async function sendAzureOpenAIRequest(request, response, persist, warnings = nul
             // no-op otherwise). Standard, verified OpenAI-Chat-Completions-shaped body - see this
             // function's own doc comment above.
             if (persist) {
-                const persisted = await persistAssistantReply(persist, json?.choices?.[0]?.message?.content ?? '');
-                if (persisted) json.assistant_node_id = persisted.node_id;
+                const persisted = await persistAssistantReply(persist, json?.choices?.[0]?.message?.content ?? '', { data: json });
+                attachStoredReply(json, persisted);
             }
             if (warnings?.length) json.warnings = warnings;
 
@@ -3154,6 +3155,7 @@ async function forwardAndPersistCompactStream(fetchResponse, response, persist, 
     function addContent(text) {
         if (!text) return;
         accumulatedText += text;
+        if (persist) noteReplyText(persist, accumulatedText);
         if (!firstContentSent) {
             firstContentSent = true;
             writer.write(encodeContent(text));
@@ -3177,6 +3179,7 @@ async function forwardAndPersistCompactStream(fetchResponse, response, persist, 
 
         const reasoningText = extractReasoning ? extractReasoning(json) : undefined;
         if (reasoningText) {
+            noteReplyReasoning(persist, reasoningText);
             flushContentBuffer();
             writer.write(encodeReasoningFrame(reasoningText));
         }
@@ -3412,6 +3415,7 @@ async function forwardAndPersistCompactStreamWithServerTools(fetchResponse, resp
             const contentDelta = delta?.content;
             if (typeof contentDelta === 'string' && contentDelta) {
                 text += contentDelta;
+                noteReplyText(persist, text);
                 writer.write(encodeContent(contentDelta));
             }
 
@@ -3494,6 +3498,7 @@ async function forwardAndPersistCompactStreamWithServerTools(fetchResponse, resp
     persist.isSwipe = false;
     persist.isContinue = false;
     if (finalText) {
+        noteReplyText(persist, finalText);
         const persisted = await persistAssistantReply(persist, finalText);
         const frame = encodeStoredReplyFrame(persisted, persist);
         if (frame) writer.write(frame);
@@ -4233,6 +4238,11 @@ router.post('/generate', withGenerationStop(async function (request, response) {
                     warnings,
                     generationStop: response.locals.generationStop,
                     itemization: itemizationOf(request.body.itemization, null),
+                    // How the reply is finished (its reasoning split off, see src/reply-reasoning.js).
+                    finish: await readReplyFinishSettings(directories, {
+                        mainApi: 'openai', source: built.settings.chat_completion_source, model: built.params?.model ?? null,
+                        avatar: characterAvatar, name1: built.name1, name2: built.name2,
+                    }),
                 };
                 // Only wired up when this request actually advertised at least one server-native
                 // tool OR at least one client-advertised tool (chunk (c) - see `built.enabledServerTools`/
@@ -4828,8 +4838,8 @@ router.post('/generate', withGenerationStop(async function (request, response) {
                 if (generatedText === null) {
                     warnings.push(unreadableReplyWarning(json, `openai|${request.body.chat_completion_source}`));
                 }
-                const persisted = await persistAssistantReply(pendingAssistantPersist, generatedText ?? '');
-                if (persisted) json.assistant_node_id = persisted.node_id;
+                const persisted = await persistAssistantReply(pendingAssistantPersist, generatedText ?? '', { data: json });
+                attachStoredReply(json, persisted);
             }
             if (warnings?.length) json.warnings = warnings;
 

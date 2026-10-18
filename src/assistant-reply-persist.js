@@ -1,5 +1,6 @@
 import { storedForm } from './chat-engine.js';
 import { recordGenerationPersisted } from './generation-stop.js';
+import { finishReply } from './reply-reasoning.js';
 
 /**
  * The reply text in a non-streaming answer, read exactly as the page's `extractMessageFromData()`
@@ -92,14 +93,18 @@ export function unreadableReplyWarning(data, key) {
  * @param {string} generatedText The full, final generated text (raw, unprocessed backend output -
  *   not run through any client-side cleanup step, matching every other cut-over type's own
  *   already-accepted standard).
- * @returns {Promise<{node_id: string, mes: string}|null>} `mes` is the node's whole stored text. `node_id` is the node the reply now lives at (the edited anchor
+ * @param {{data?: any}} [answer] A non-streamed answer, as sent to the page: the reasoning the backend sent apart
+ *   from the text is read from it (a stream notes its own, see src/reply-reasoning.js).
+ * @returns {Promise<StoredReply|null>} `mes` is the node's whole stored text, `extra` the reasoning fields stored with it
+ *   (the reply's reasoning is split off its text here, see `finishReply()`). `node_id` is the node the reply now lives at (the edited anchor
  *   for `isContinue`, the new alternative for `isSwipe`, the new child otherwise); callers send it to
  *   the page, which never stores a reply itself. `null` when there was no text, or when storing failed:
  *   a failure is kept on the generation for a retry and reported as a `reply-not-saved` warning (see
  *   `recordReplyNotSaved()`).
  */
-export async function persistAssistantReply(pending, generatedText) {
-    /** @type {{node_id: string, mes: string}|{error: string}|null} */
+export async function persistAssistantReply(pending, generatedText, answer = {}) {
+    if (pending) pending.answer = answer;
+    /** @type {StoredReply|{error: string}|null} */
     let result;
     try {
         result = await persistReply(pending, generatedText);
@@ -116,11 +121,28 @@ export async function persistAssistantReply(pending, generatedText) {
 }
 
 /**
+ * @typedef {{node_id: string, mes: string, extra: ReturnType<typeof finishReply>['extra']}} StoredReply A stored reply, as
+ * the page is sent it: its node, its text and the reasoning fields of its `extra`.
+ */
+
+/**
+ * What the page is sent of a stored reply, alongside a non-streamed answer: `assistant_node_id`, and
+ * `assistant_message` (its stored text and reasoning fields), which the page shows in place of its own copy.
+ * @param {object} body The answer sent to the page.
+ * @param {StoredReply|null} persisted
+ */
+export function attachStoredReply(body, persisted) {
+    if (!persisted || !body || typeof body !== 'object') return;
+    body.assistant_node_id = persisted.node_id;
+    body.assistant_message = { mes: persisted.mes, extra: persisted.extra };
+}
+
+/**
  * Stores a reply whose first store failed, from the text the server kept. Same modes as
  * `persistAssistantReply()`.
  * @param {object} pending
  * @param {string} generatedText
- * @returns {Promise<{node_id: string, mes: string}|{error: string}|null>}
+ * @returns {Promise<StoredReply|{error: string}|null>}
  */
 export async function retryPersistReply(pending, generatedText) {
     try {
@@ -209,7 +231,7 @@ function generationTimes(pending) {
  * Stores the reply, then the itemization of the prompt it was generated from (`pending.itemization`) at the node it
  * was stored at. An itemization that can't be stored is reported, in `pending.warnings` and to a stream through
  * `takeItemizationNotSaved()`; the reply stays stored.
- * @returns {Promise<{node_id: string, mes: string}|{error: string}|null>}
+ * @returns {Promise<StoredReply|{error: string}|null>}
  */
 async function persistReply(pending, generatedText) {
     const result = await storeReply(pending, generatedText);
@@ -237,7 +259,7 @@ export function itemizationNotSavedWarning(nodeId) {
     };
 }
 
-/** @returns {Promise<{node_id: string, mes: string}|{error: string}|null>} */
+/** @returns {Promise<StoredReply|{error: string}|null>} */
 async function storeReply(pending, generatedText) {
     const { chat, anchorNodeId, name2, isSwipe, isContinue, anchorContent } = pending;
     if (!generatedText) {
@@ -246,7 +268,8 @@ async function storeReply(pending, generatedText) {
     const { store, tree, treeSpeaker, session } = chat;
 
     const times = generationTimes(pending);
-    const replyContent = { name: name2, is_user: false, mes: generatedText, extra: {}, send_date: Date.now(), ...times };
+    const finished = finishReply(pending, generatedText, pending.answer);
+    const replyContent = { name: name2, is_user: false, mes: finished.mes, extra: { ...finished.extra }, send_date: Date.now(), ...times };
 
     if (isContinue) {
         if (!anchorContent || typeof anchorNodeId !== 'string') {
@@ -254,16 +277,16 @@ async function storeReply(pending, generatedText) {
             return { error: 'the message being continued could not be read' };
         }
 
-        const oldText = typeof anchorContent.mes === 'string' ? anchorContent.mes : '';
-        const mes = oldText + generatedText;
+        const mes = finished.mes;
+        const extra = { ...(anchorContent.extra && typeof anchorContent.extra === 'object' ? anchorContent.extra : {}), ...finished.extra };
         const edited = await store.chats.editMessages({
-            tree, treeSpeaker, edits: [{ node_id: anchorNodeId, content: storedForm({ ...anchorContent, mes, ...times }), changes: chat.replyChanges }], actor: session.actor(),
+            tree, treeSpeaker, edits: [{ node_id: anchorNodeId, content: storedForm({ ...anchorContent, mes, extra, ...times }), changes: chat.replyChanges }], actor: session.actor(),
         });
         if (edited.refused.length) {
             console.error('Failed to persist continue edit:', edited.refused[0].reason);
             return { error: String(edited.refused[0].reason ?? 'the continued message could not be written') };
         }
-        return { node_id: anchorNodeId, mes };
+        return { node_id: anchorNodeId, mes, extra: finished.extra };
     }
     let after = anchorNodeId;
     if (isSwipe) {
@@ -281,5 +304,5 @@ async function storeReply(pending, generatedText) {
         console.error('Failed to persist assistant reply:', appended.reason);
         return { error: String(appended.reason ?? (isSwipe ? 'the new swipe could not be written' : 'the reply could not be written')) };
     }
-    return { node_id: appended.node_ids[appended.node_ids.length - 1], mes: generatedText };
+    return { node_id: appended.node_ids[appended.node_ids.length - 1], mes: finished.mes, extra: finished.extra };
 }

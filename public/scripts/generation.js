@@ -46,7 +46,8 @@ import { adjustNovelInstructionPrompt, getNovelGenerationData, nai_settings, nov
 import { user_avatar, getPersonaDescriptionPosition } from './personas.js';
 import { collapseNewlines, generatedTextFiltered, persona_description_positions, playMessageSound, power_user, renderStoryString } from './power-user.js';
 import { getPresetManager } from './preset-manager.js';
-import { extractReasoningFromData, extractReasoningSignatureFromData, PromptReasoning } from './reasoning.js';
+import { extractReasoningFromData, extractReasoningSignatureFromData, markServerFinishedReply, PromptReasoning } from './reasoning.js';
+import { takeStoredReply } from './llamacpp-compact-stream.js';
 import { sendSystemMessage, system_message_types } from './system-messages.js';
 import { getTextGenGenerationData, textgenerationwebui_settings as textgen_settings } from './textgen-settings.js';
 import { getFriendlyTokenizerName, getPromptTokenCountAsync, getTokenCountAsync, saveTokenCache, showTrimEstimateWarning } from './tokenizers.js';
@@ -181,38 +182,63 @@ window.addEventListener(REPLY_STORED_EVENT, (/** @type {any} */ event) => {
         swipeInfo[selected] = { ...swipeInfo[selected], node_id: nodeId };
         updates.swipe_info = swipeInfo;
     }
-    if (typeof mes === 'string' && mes !== msg.mes) {
-        updates.mes = mes;
-        if (Array.isArray(msg.swipes)) {
-            const swipes = [...msg.swipes];
-            swipes[selected] = mes;
-            updates.swipes = swipes;
-        }
-    }
     const updated = updateMessage(mesId, updates);
-    if (updated) {
-        _messageSnapshots.set(nodeId, updated);
-        updateMessageBlock(mesId, updated);
+    const shown = typeof mes === 'string' ? applyStoredReply(mesId, { mes, extra: event.detail?.extra ?? {} }) : updated;
+    if (shown) {
+        _messageSnapshots.set(nodeId, shown);
+        updateMessageBlock(mesId, shown);
     }
 });
 
 /**
- * Puts the stored text of a stopped reply on the last message, if it differs from what is shown.
- * @param {string|null|undefined} mes
+ * Shows a generated reply as the server stored it, in place of the page's own copy: its text and the reasoning
+ * fields of its `extra` (the server splits the reasoning off the text; the page doesn't). For a reply about to be
+ * announced (MESSAGE_RECEIVED), `received` keeps the page's reasoning auto-parse off it.
+ * @param {number} mesId
+ * @param {{mes: string, extra?: Record<string, any>}|null|undefined} stored
+ * @param {{received?: boolean}} [options]
+ * @returns {ChatMessage|null} The message as now shown, or null when there was nothing to show.
  */
-function _showStoredReplyText(mes) {
-    if (typeof mes !== 'string') return;
-    const mesId = chat.length - 1;
+export function applyStoredReply(mesId, stored, { received = false } = {}) {
+    if (!stored || typeof stored.mes !== 'string') return null;
     const msg = /** @type {ChatMessage | undefined} */ (chat[mesId]);
-    if (msg == null || msg.is_user === true || msg.mes === mes) return;
+    if (msg == null || msg.is_user === true) return null;
+    const storedExtra = stored.extra && typeof stored.extra === 'object' ? stored.extra : {};
+    /** @param {Record<string, any>|undefined} base */
+    const withStored = (base) => {
+        const extra = { ...(base ?? {}), ...storedExtra };
+        // The page's copy may carry a type its own streaming display gave the reasoning; the stored reply's is the one.
+        if (!('reasoning_type' in storedExtra)) delete extra.reasoning_type;
+        return extra;
+    };
     /** @type {Partial<ChatMessage>} */
-    const updates = { mes };
+    const updates = { mes: stored.mes, extra: withStored(msg.extra) };
+    const selected = msg.swipe_id ?? 0;
     if (Array.isArray(msg.swipes)) {
         const swipes = [...msg.swipes];
-        swipes[msg.swipe_id ?? 0] = mes;
+        swipes[selected] = stored.mes;
         updates.swipes = swipes;
     }
+    const swipeInfoEntry = Array.isArray(msg.swipe_info) ? /** @type {SwipeInfo | undefined} */ (msg.swipe_info[selected]) : undefined;
+    if (swipeInfoEntry != null) {
+        const swipeInfo = [...msg.swipe_info];
+        swipeInfo[selected] = { ...swipeInfoEntry, extra: withStored(swipeInfoEntry.extra) };
+        updates.swipe_info = swipeInfo;
+    }
     const updated = updateMessage(mesId, updates);
+    if (received) markServerFinishedReply(mesId);
+    return updated ?? null;
+}
+
+/**
+ * Shows a stopped reply as the server stored it (its text and reasoning) on the last message.
+ * @param {string|null|undefined} mes
+ * @param {Record<string, any>|null|undefined} extra
+ */
+function _showStoredReplyText(mes, extra) {
+    if (typeof mes !== 'string') return;
+    const mesId = chat.length - 1;
+    const updated = applyStoredReply(mesId, { mes, extra: extra ?? {} });
     if (updated) updateMessageBlock(mesId, updated);
 }
 
@@ -239,7 +265,7 @@ export async function finishStreamedReplyPersistence({ assistantNodeId }) {
         // A stopped reply: the server stored exactly what it streamed up to the stop, which can be a
         // little more than arrived here, so the message takes the stored text.
         if (stop && isStoredNodeId(stop.node_id)) {
-            _showStoredReplyText(stop.mes);
+            _showStoredReplyText(stop.mes, stop.extra);
             _stampAssistantNodeId(stop.node_id);
         } else {
             if (!stop || stop.state === 'stopping') {
@@ -2848,10 +2874,12 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
             return getMessage;
         } else {
             // Without streaming we'll be having a full message on continuation. Treat it as a last chunk.
+            // The reply as the server stored it (its reasoning split off), shown in place of the page's copy.
+            const storedReply = data.assistant_message ?? takeStoredReply(data.assistant_node_id);
             if (originalType !== 'continue') {
-                ({ type, getMessage } = await saveReply({ type, getMessage, title, swipes, reasoning, imageUrls, reasoningSignature }));
+                ({ type, getMessage } = await saveReply({ type, getMessage, title, swipes, reasoning, imageUrls, reasoningSignature, storedReply }));
             } else {
-                ({ type, getMessage } = await saveReply({ type: 'appendFinal', getMessage, title, swipes, reasoning, imageUrls, reasoningSignature }));
+                ({ type, getMessage } = await saveReply({ type: 'appendFinal', getMessage, title, swipes, reasoning, imageUrls, reasoningSignature, storedReply }));
             }
 
             // This relies on `saveReply` having been called to add the message to the chat, so it must be last.

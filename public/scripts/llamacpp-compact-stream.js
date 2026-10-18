@@ -50,6 +50,39 @@ export const SERVER_KEEPALIVE_INTERVAL_MS = 12 * 1000;
 export const STREAM_STALL_TIMEOUT_MS = 3 * SERVER_KEEPALIVE_INTERVAL_MS;
 
 /**
+ * @typedef {{mes: string, extra: Record<string, any>}} StoredReply A generated reply as the server stored it: its text
+ * and the reasoning fields of its `extra` (the server splits the reasoning off; the page only shows it).
+ */
+
+/** Stored replies a stream ended with, by node id, until the page that streamed them takes them. */
+/** @type {Map<string, StoredReply>} */
+const storedReplies = new Map();
+const STORED_REPLIES_MAX = 16;
+
+/** @param {{node_id: string, mes: string, extra?: Record<string, any>}} reply */
+function rememberStoredReply(reply) {
+    if (typeof reply.mes !== 'string') return;
+    storedReplies.delete(reply.node_id);
+    storedReplies.set(reply.node_id, { mes: reply.mes, extra: reply.extra && typeof reply.extra === 'object' ? reply.extra : {} });
+    for (const oldest of storedReplies.keys()) {
+        if (storedReplies.size <= STORED_REPLIES_MAX) break;
+        storedReplies.delete(oldest);
+    }
+}
+
+/**
+ * The reply a stream stored at this node (its `stored_reply` frame), once.
+ * @param {string|null|undefined} nodeId
+ * @returns {StoredReply|null}
+ */
+export function takeStoredReply(nodeId) {
+    if (typeof nodeId !== 'string') return null;
+    const reply = storedReplies.get(nodeId) ?? null;
+    storedReplies.delete(nodeId);
+    return reply;
+}
+
+/**
  * @typedef {{content: string} | {index: number} | {probabilities: any} | {reasoning: string} | {assistantNodeId: string} | {toolCallDelta: any} | {image: {mimeType: string, data: string}} | {thoughtSignature: string} | {control: any}} CompactStreamEvent
  */
 
@@ -226,6 +259,8 @@ export class CompactStreamDecoder {
                         events.push({ toolCallDelta: parsed });
                     } else if (type === FRAME_TYPE_IMAGE) {
                         events.push({ image: parsed });
+                    } else if (parsed?.stored_reply && typeof parsed.stored_reply.node_id === 'string') {
+                        rememberStoredReply(parsed.stored_reply);
                     } else {
                         events.push({ control: parsed });
                     }
