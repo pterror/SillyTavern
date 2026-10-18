@@ -150,7 +150,9 @@ mod sim {
             let mut cut = 0;
             let files: Vec<_> = p.files.iter().map(|(f, l)| (f.clone(), *l)).collect();
             for (f, l) in files {
-                let Ok(meta) = std::fs::metadata(&f) else { continue };
+                let Ok(meta) = std::fs::metadata(&f) else {
+                    continue;
+                };
                 let len = meta.len();
                 if len <= l.synced {
                     continue;
@@ -168,10 +170,7 @@ mod sim {
 
     impl Drop for Faults {
         fn drop(&mut self) {
-            PLANS
-                .lock()
-                .unwrap()
-                .retain(|p| !Arc::ptr_eq(p, &self.0));
+            PLANS.lock().unwrap().retain(|p| !Arc::ptr_eq(p, &self.0));
         }
     }
 

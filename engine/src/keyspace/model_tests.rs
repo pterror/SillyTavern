@@ -408,7 +408,10 @@ fn run_seed(seed: u64, steps: u64, sim: bool) -> Outcome {
     let mut end = 0u64;
     // Snapshots held across later writes, each with the model as it was.
     for step in 0..steps {
-        let at = format!("seed {seed}{} step {step}", if sim { " (simulated)" } else { "" });
+        let at = format!(
+            "seed {seed}{} step {step}",
+            if sim { " (simulated)" } else { "" }
+        );
         if sim {
             // Background work between operations: a few of the queued steps, picked by the executor's seed.
             for _ in 0..rng.below(6) {
@@ -665,7 +668,8 @@ fn random_writes_flushes_merges_and_reopens_read_as_the_model_says() {
 }
 
 #[test]
-fn random_writes_flushes_merges_and_reopens_read_as_the_model_says_in_every_simulated_interleaving() {
+fn random_writes_flushes_merges_and_reopens_read_as_the_model_says_in_every_simulated_interleaving()
+{
     let steps: u64 = std::env::var("ST_MODEL_STEPS")
         .ok()
         .and_then(|s| s.parse().ok())
