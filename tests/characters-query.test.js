@@ -142,8 +142,7 @@ async function seedStoredCharacter(avatar, data = {}) {
 /**
  * Like seedCharacter(), but also writes a real (parseable) PNG to `directories.characters` - needed for the
  * `filter.search` tests below, since search (characters-search-index.js) reads full character data straight off
- * disk to build its index, unlike plain `/query` which never touches the filesystem. Mirrors
- * character-metadata-db.test.js's writeCardFile().
+ * disk to build its index, unlike plain `/query` which never touches the filesystem.
  * @param {string} avatar
  * @param {object} overrides Shallow-merged onto a minimal valid Spec V2 card
  */
@@ -916,7 +915,7 @@ describe('POST /api/characters/query - filter.search (design doc §5.1/§5)', ()
         // search pays, not the incremental path this test is actually about.
         await postJson('/api/characters/query', { filter: { search: 'vampire' }, page: 1, pageSize: 10 });
 
-        // The db-authoritative fav write path (character-metadata-db.js's setCharacterFav()) - deliberately never
+        // The store-authoritative fav write path - deliberately never
         // touches Vampire.png's card file, so a search index that (wrongly) rebuilt its `fav` field from the card
         // would never see this, whether by a full rebuild or an incremental catch-up.
         const updated = await user.store.lib.setFav(TYPE.character, 'Vampire.png', true);

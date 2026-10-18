@@ -4,8 +4,8 @@ import { read as readCharacterCard } from './character-card-parser.js';
 import { getCharaCardV2, convertToV2, computeContentIdentityHash } from './character-card-normalize.js';
 
 /**
- * Must stay importable from a worker_threads worker: do not import character-metadata-db.js here (its
- * module-top-level getConfigValue() calls process.exit(1) on a thread without CONFIG_PATH set) or
+ * Must stay importable from a worker_threads worker: do not import a module whose top level calls
+ * getConfigValue() (it calls process.exit(1) on a thread without CONFIG_PATH set), such as
  * endpoints/characters.js.
  */
 

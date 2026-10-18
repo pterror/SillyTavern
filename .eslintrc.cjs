@@ -157,7 +157,6 @@ module.exports = {
                 'public/scripts/generation.js',
                 'public/scripts/chat-store.js',
                 'src/message-tree-db.js',
-                'src/character-metadata-db.js',
                 'src/chat-completion-generation-input.js',
                 'src/text-completion-generation-input.js',
                 'src/endpoints/chats.js',

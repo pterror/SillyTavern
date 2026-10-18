@@ -100,7 +100,7 @@ const SCHEMA_SQL = `
 
     -- What kind of entity owns an owner id's messages, and that entity's row id in the metadata store. Written when
     -- the owner's anchor is created by a caller that knows the kind, or by the chat stats reconcile from the rows that
-    -- exist (character-metadata-db.js ownerKindFromRowsSync()); never inferred from the id alone. An owner with no row here is unknown, and its writes change no entity stats.
+    -- exist; never inferred from the id alone. An owner with no row here is unknown, and its writes change no entity stats.
     CREATE TABLE IF NOT EXISTS owners (
         owner_id TEXT PRIMARY KEY,
         kind     TEXT NOT NULL CHECK (kind IN ('character', 'group')),

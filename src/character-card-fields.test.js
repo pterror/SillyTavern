@@ -19,7 +19,7 @@ const user = await convertedUser('st-character-card-fields-test-');
 const { directories } = user;
 globalThis.DATA_ROOT = user.dataRoot;
 
-// A real base PNG to embed card JSON into, same technique tests/character-metadata-db.test.js uses.
+// A real base PNG to embed card JSON into.
 const baseImage = fs.readFileSync(path.join(__dirname, '..', 'public', 'img', 'ai4.png'));
 
 /**

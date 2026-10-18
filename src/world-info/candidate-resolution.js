@@ -270,8 +270,7 @@ async function getPersonaLore(directories, chatWorldName, personaWorldLorebook, 
  * `world_info_character_strategy` -> `worldInfoCharacterStrategy`.
  *
  * `getStringHash` is reused as-is from `public/scripts/hash-utils.js` (already the canonical
- * server-side import used throughout `src/`, e.g. `src/macro-substitution.js`,
- * `src/character-metadata-db.js`) rather than re-derived - it's the same file the client itself
+ * server-side import used throughout `src/`, e.g. `src/macro-substitution.js`) rather than re-derived - it's the same file the client itself
  * imports it from, not a separate implementation to port.
  *
  * `structuredClone` at the end is kept for exact behavioral parity with the client, even though the

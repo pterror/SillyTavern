@@ -255,8 +255,8 @@ performance:
   shallowCharactersIncludeCreatorNotes: false
   # Enables disk caching for character cards. Improves performances with large card libraries.
   useDiskCache: true
-  # Forward-looking groundwork for a not-yet-built library-wide duplicate scan (see character-metadata-db.js's
-  # content_identity_hash/import_poisoned columns): whether such a scan would be allowed to fall back to an
+  # Forward-looking groundwork for a not-yet-built library-wide duplicate scan (content identity hashes and
+  # import-poisoned flags): whether such a scan would be allowed to fall back to an
   # expensive normalized parse-and-compare for a character whose import_poisoned flag is set (its cheap indexed
   # hash can't be trusted - see that column's own doc comment). On an install with a large preexisting library
   # (most/all characters poisoned, since only characters written after this setting's introduction get a
@@ -317,13 +317,10 @@ localImport:
   #
   # With watchEnabled true (the default below), this periodic scan is a BACKSTOP, not the primary discovery
   # mechanism: fs.watch/inotify can silently drop events under a burst that overflows its ~16384-event queue,
-  # with no error reported and no way to detect it from JS (see character-metadata-db.js's header for the
-  # original finding against the characters directory) - this scan is what guarantees eventual correctness
+  # with no error reported and no way to detect it from JS - this scan is what guarantees eventual correctness
   # when that happens. A backstop for an occasional burst-drop failure should run seldom, not continuously -
   # self-pacing alone doesn't guarantee that (a small interval still lets passes run back-to-back forever) -
-  # so the default here (1 hour) is deliberately well above character-metadata-db.js's own reconciler default
-  # (5 minutes, performance.characterMetadataReconcileIntervalMs): that reconciler scans a bounded internal
-  # table, this one has to list and stat every file in a potentially 300k+-file external directory even in the
+  # so the default here (1 hour) is deliberately long: this scan has to list and stat every file in a potentially 300k+-file external directory even in the
   # cheap steady-state case (files whose mtime is unchanged since the last completed pass, tracked durably
   # across restarts, are skipped without being re-read/re-hashed - but that per-pass listing/stat cost never
   # fully disappears), so a less aggressive default cadence is warranted here, not copied verbatim.
@@ -334,8 +331,7 @@ localImport:
   scanIntervalMs: 3600000
   # Also fs.watch() each configured directory as a latency optimization on top of the periodic scan
   # above. Never required for correctness: fs.watch/inotify can silently drop events under burst load
-  # with no error reported (see character-metadata-db.js's header for the same finding against the
-  # characters directory), and isn't available on every platform/filesystem either way - the periodic
+  # with no error reported, and isn't available on every platform/filesystem either way - the periodic
   # scan above is what's actually relied on.
   watchEnabled: true
 

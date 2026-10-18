@@ -949,8 +949,7 @@ export function saveSettingsDebounced(loopCounter, ...keys) {
 const getCharactersDebounced = debounce(() => getCharacters({ keepListPosition: true }), 2000);
 
 /**
- * The warning for a queued tag move the server couldn't apply. src/character-metadata-db.js's tagMoveFailedText()
- * says the same.
+ * The warning for a queued tag move the server couldn't apply.
  * @param {{ tagId: string, tagName: string | null, anchorId: string | null, anchorName: string | null, refusedId: string, reason: string }} message
  */
 function tagMoveFailedText({ tagId, tagName, anchorId, anchorName, refusedId, reason }) {

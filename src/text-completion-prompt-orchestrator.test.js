@@ -32,8 +32,7 @@ const { tokenizers } = await import('./tokenizer-ids.js');
  * character JSON embedded in a 'chara' tEXt chunk, and writes that same card JSON into the store of the
  * test's own user directory, using this repo's own
  * character-card-parser.js write() against the repo's default placeholder avatar image
- * (public/img/ai4.png) as the base image - same technique src/character-card-fields.test.js and
- * tests/character-metadata-db.test.js use - exercising the actual character-card-fields module for
+ * (public/img/ai4.png) as the base image - same technique src/character-card-fields.test.js uses - exercising the actual character-card-fields module for
  * real, matching the task's "real integration" intent instead of piping around it.
  */
 

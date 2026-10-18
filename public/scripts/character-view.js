@@ -128,7 +128,7 @@ export function viewToQueryState(view, { includeGroups = false } = {}) {
 }
 
 /**
- * The fields a range can bound: the server's `filter.ranges` fields (character-metadata-db.js QUERY_RANGE_COLUMNS).
+ * The fields a range can bound: the server's `filter.ranges` fields (src/library-engine.js query's `ranges`).
  * `unit` says how the pill reads and writes the stored number.
  * @type {Readonly<Record<string, { unit: 'date'|'kb'|'count' }>>}
  */
