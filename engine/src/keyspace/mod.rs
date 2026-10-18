@@ -654,16 +654,20 @@ impl Keyspace {
                 )?));
             }
             let mut merge = run::MergeRev::new(sources);
-            let mut past = false;
+            // Whether the merge reached the range's start. Below a cut page's bound its buffer is unread, so the
+            // merge has reached the start only at an entry at or above the bound: one below it (a run's below the
+            // range's start too) or no entry left at all sends the pages to be read again below the bound.
+            let mut ended = false;
             while out.len() < limit {
                 let Some((k, val)) = merge.next_entry()? else {
+                    ended = bound.is_none();
                     break;
                 };
-                if k.as_slice() < start {
+                if bound.as_ref().is_some_and(|b| k < *b) {
                     break;
                 }
-                if bound.as_ref().is_some_and(|b| k < *b) {
-                    past = true;
+                if k.as_slice() < start {
+                    ended = true;
                     break;
                 }
                 if let Some(v) = val.settled(&k) {
@@ -671,7 +675,7 @@ impl Keyspace {
                 }
             }
             match bound {
-                Some(b) if past => to = b,
+                Some(b) if !ended => to = b,
                 _ => break,
             }
         }
@@ -708,16 +712,20 @@ impl Keyspace {
                 }
             }
             let mut merge = Merge::new(sources);
-            let mut past = false;
+            // Whether the merge reached the range's end. Past a cut page's bound its buffer is unread, so the merge
+            // has reached the end only at an entry at or before the bound: one past it (a run's past the range's
+            // end too) or no entry left at all sends the pages to be read again past the bound.
+            let mut ended = false;
             while out.len() < limit {
                 let Some((k, val)) = merge.next_entry()? else {
+                    ended = bound.is_none();
                     break;
                 };
-                if k.as_slice() >= end {
+                if bound.as_ref().is_some_and(|b| k > *b) {
                     break;
                 }
-                if bound.as_ref().is_some_and(|b| k > *b) {
-                    past = true;
+                if k.as_slice() >= end {
+                    ended = true;
                     break;
                 }
                 if let Some(v) = val.settled(&k) {
@@ -725,7 +733,7 @@ impl Keyspace {
                 }
             }
             match bound {
-                Some(mut b) if past => {
+                Some(mut b) if !ended => {
                     b.push(0);
                     from = b;
                 }

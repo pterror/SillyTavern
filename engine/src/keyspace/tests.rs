@@ -691,3 +691,72 @@ fn removed_maps_in_a_buffer_hide_a_runs_maps_past_a_page_in_every_scan() {
     drop(ks);
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// A buffer's entries that settle to nothing (maps removing slots they never had, as a carrier move's added maps
+/// cancelling out leave) fill its page without giving a scan anything, so the page is cut short of the scan's
+/// limit. Past the page's last key its buffer is unread: the scan reads it again from there whatever the runs hold
+/// beyond that key, whether nothing in either direction or only keys outside the range. A scan gives fewer than its
+/// limit only when the range holds no more.
+#[test]
+fn a_scan_reads_on_past_a_buffers_cut_page_whatever_the_runs_hold_beyond_it() {
+    // The run's keys, all outside the ranges scanned: past their ends, below their starts, or both.
+    for outside in [&[100u64][..], &[0, 1], &[0, 1, 100]] {
+        let dir = temp_dir("short-page");
+        let ks = open(&dir);
+        let mut end = 0;
+        for &i in outside {
+            end += 1;
+            ks.insert([(key(i), Val::Put(vec![1]))], Some((end, 1)));
+        }
+        ks.freeze_at(end);
+        ks.wait_flushed().unwrap();
+        // In the buffer: from key 10 on, a map that settles to nothing before each live one.
+        let mut live = Vec::new();
+        for i in 10..50u64 {
+            end += 1;
+            let v = if i % 2 == 0 {
+                Val::Map(vec![(1, 0)])
+            } else {
+                live.push(key(i));
+                Val::Map(vec![(2, 3)])
+            };
+            ks.insert([(key(i), v)], Some((end, 1)));
+        }
+        let names = |v: Vec<(Vec<u8>, Val)>| v.into_iter().map(|(k, _)| k).collect::<Vec<_>>();
+        let (lo, hi) = (key(5), key(60));
+        for n in [1, 2, 3, 4, 7, 8, 100] {
+            for from in [5u64, 10, 11, 12, 30, 49] {
+                let want: Vec<Vec<u8>> = live
+                    .iter()
+                    .filter(|k| **k >= key(from))
+                    .take(n)
+                    .cloned()
+                    .collect();
+                let want_rev: Vec<Vec<u8>> = live
+                    .iter()
+                    .rev()
+                    .filter(|k| **k < key(from + 1))
+                    .take(n)
+                    .cloned()
+                    .collect();
+                let snap = ks.snapshot();
+                let (f, sf) = (
+                    names(ks.scan_vals(&key(from), &hi, n).unwrap()),
+                    names(snap.scan_vals(&key(from), &hi, n).unwrap()),
+                );
+                let (r, sr) = (
+                    names(ks.scan_vals_rev(&lo, &key(from + 1), n).unwrap()),
+                    names(snap.scan_vals_rev(&lo, &key(from + 1), n).unwrap()),
+                );
+                let at = format!("{n} from {from}, run {outside:?}");
+                assert_eq!(f, want, "forward {at}");
+                assert_eq!(sf, want, "snapshot forward {at}");
+                assert_eq!(r, want_rev, "reverse {at}");
+                assert_eq!(sr, want_rev, "snapshot reverse {at}");
+            }
+        }
+        ks.stop();
+        drop(ks);
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
