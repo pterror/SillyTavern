@@ -22,6 +22,7 @@ let streamId = null;
  * @property {'stopped'|'finished'|'stopping'|'unknown'} state
  * @property {string|null} [mes] The stored message's whole text.
  * @property {string|null} [node_id] Where it is stored.
+ * @property {Record<string, any>|null} [extra] The reasoning fields stored with it.
  */
 
 /** A random v4 UUID; `crypto.randomUUID` needs a secure context, `getRandomValues` doesn't. */

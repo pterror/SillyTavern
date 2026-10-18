@@ -23,7 +23,8 @@ const STOP_WAIT_MS = 15000;
  * @property {boolean} stopped
  * @property {Array<() => void>} flushHooks Run first on a stop, to write out content held back for coalescing.
  * @property {Array<() => void|Promise<void>>} aborts Abort the upstream request.
- * @property {{mes: string, node_id: string}|null} persisted What the reply was stored as, if it was.
+ * @property {{mes: string, node_id: string, extra?: object}|null} persisted What the reply was stored as, if it was (its
+ *   text and the reasoning fields of its `extra`).
  * @property {{pending: object, text: string, reason: string, warning: object}|null} [unsaved] A reply whose store
  *   failed, kept so `POST /api/generation/store/:id` can try again.
  * @property {boolean} done
@@ -157,7 +158,7 @@ export function onGenerationStopFlush(response, fn) {
 /**
  * Records what the reply was stored as, for a stop to answer with.
  * @param {StopEntry|undefined} entry
- * @param {{mes: string, node_id: string}|null} persisted
+ * @param {{mes: string, node_id: string, extra?: object}|null} persisted
  */
 export function recordGenerationPersisted(entry, persisted) {
     if (entry && persisted) entry.persisted = persisted;
@@ -167,7 +168,7 @@ export function recordGenerationPersisted(entry, persisted) {
  * Stops a generation: flushes held-back content, aborts upstream, and waits for the route to finish.
  * @param {string} id
  * @param {string|undefined} handle The requesting user's handle; only the owner may stop it.
- * @returns {Promise<{state: 'unknown'} | {state: 'stopped'|'finished'|'stopping', mes: string|null, node_id: string|null}>}
+ * @returns {Promise<{state: 'unknown'} | {state: 'stopped'|'finished'|'stopping', mes: string|null, node_id: string|null, extra: object|null}>}
  */
 export async function stopGenerationById(id, handle) {
     const entry = entries.get(id);
@@ -198,7 +199,7 @@ export async function stopGenerationById(id, handle) {
     ]);
     clearTimeout(timer);
     const state = timedOut ? 'stopping' : (entry.stopped ? 'stopped' : 'finished');
-    return { state, mes: entry.persisted?.mes ?? null, node_id: entry.persisted?.node_id ?? null };
+    return { state, mes: entry.persisted?.mes ?? null, node_id: entry.persisted?.node_id ?? null, extra: entry.persisted?.extra ?? null };
 }
 
 /**

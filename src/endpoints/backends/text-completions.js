@@ -34,7 +34,8 @@ import { generateTurnOf, textCompletionQuietInput } from '../../page-writes.js';
 import { storeUserMessage, withStoredMessages } from '../../stored-messages.js';
 import { readCardContent } from '../characters.js';
 import { getGroupsByIds } from '../groups.js';
-import { persistAssistantReply, replyTextAsPageShows, unreadableReplyWarning } from '../../assistant-reply-persist.js';
+import { attachStoredReply, persistAssistantReply, replyTextAsPageShows, unreadableReplyWarning } from '../../assistant-reply-persist.js';
+import { noteReplyReasoning, noteReplyText, readReplyFinishSettings } from '../../reply-reasoning.js';
 import { itemizationOf } from '../../itemization-of.js';
 import { answerSessionOnHeaders, chatContext } from '../../chat-request.js';
 import { withGenerationStop, generationIdFor, isGenerationStopped, onGenerationStop, onGenerationStopFlush, stoppableController, handleGenerationStop } from '../../generation-stop.js';
@@ -120,7 +121,11 @@ async function parseOllamaStream(jsonStream, request, response, persist, warning
                 }
                 const text = json.response || '';
                 const thinking = json.thinking || '';
-                if (persist) accumulatedText += text;
+                if (thinking) noteReplyReasoning(persist, thinking);
+                if (persist) {
+                    accumulatedText += text;
+                    noteReplyText(persist, accumulatedText);
+                }
                 if (thinking) writer.write(encodeReasoningFrame(thinking));
                 if (text) writer.write(encodeContent(text));
                 partialData = '';
@@ -274,6 +279,7 @@ export async function forwardAndPersistCompactStream(fetchResponse, response, pe
 
         const reasoning = json?.choices?.[0]?.reasoning ?? json?.choices?.[0]?.thinking;
         if (reasoning) {
+            noteReplyReasoning(persist, reasoning);
             flushPendingContent();
             safeWrite(encodeReasoningFrame(reasoning));
         }
@@ -287,6 +293,7 @@ export async function forwardAndPersistCompactStream(fetchResponse, response, pe
         const chunkText = extractText(json) ?? '';
         if (chunkText) {
             text += chunkText;
+            if (persist) noteReplyText(persist, text);
             emitContent(chunkText);
         }
     };
@@ -903,6 +910,10 @@ router.post('/generate', withGenerationStop(async function (request, response) {
                     warnings,
                     generationStop: response.locals.generationStop,
                     itemization: itemizationOf(request.body.itemization, built.itemization),
+                    // How the reply is finished (its reasoning split off, see src/reply-reasoning.js).
+                    finish: await readReplyFinishSettings(request.user.directories, {
+                        mainApi: 'textgenerationwebui', source: built.backend.type, avatar: characterAvatar, name1: built.name1, name2: built.name2,
+                    }),
                 };
                 // The reply's write goes through the session; one made for it is in the headers, which a
                 // stream sends before the reply is stored.
@@ -1117,10 +1128,8 @@ router.post('/generate', withGenerationStop(async function (request, response) {
                     if (generatedText === null) {
                         warnings.push(unreadableReplyWarning(data, `textgenerationwebui|${apiType}`));
                     }
-                    const persisted = await persistAssistantReply(pendingAssistantPersist, generatedText ?? '');
-                    if (persisted) {
-                        data.assistant_node_id = persisted.node_id;
-                    }
+                    const persisted = await persistAssistantReply(pendingAssistantPersist, generatedText ?? '', { data });
+                    attachStoredReply(data, persisted);
                 }
 
                 if (warnings.length) {
