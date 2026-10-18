@@ -327,12 +327,6 @@ select.keyselect+span.select2-container .select2-selection--multiple {
     overflow-x: hidden;
 }
 
-.world_entry_draft_badge {
-    font-size: calc(var(--mainFontSize) * 0.8);
-    color: var(--warning);
-    white-space: nowrap;
-}
-
 .wi_field_draft {
     outline: 1px dashed var(--warning);
     outline-offset: -1px;

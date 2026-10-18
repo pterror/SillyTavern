@@ -3312,14 +3312,6 @@ async function commitEntryEdit(name, data, uid, apply) {
 }
 
 /**
- * @param {JQuery<HTMLElement>} header
- * @param {string|null} thing
- */
-function showEntryDraftBadge(header, thing) {
-    header.find('.world_entry_draft_badge').toggleClass('displayNone', !(thing && hasFieldDrafts(localStorage, ENTRY_DRAFT_KIND, thing)));
-}
-
-/**
  * @param {import('./field-drafts.js').FieldDraftBinding} binding
  * @param {string} stored
  * @returns {JQuery<HTMLElement>} What asks which of the two the field keeps.
@@ -3339,15 +3331,13 @@ function entryDraftConflictNotice(binding, stored) {
 }
 
 /**
- * Shows a field's state: an unsaved draft is marked, a conflict asks which to keep (the field can't be edited until
- * it's answered), and the entry's header shows whether any of its fields has an unsaved draft.
+ * Shows a field's state: an unsaved draft is marked, and a conflict asks which to keep (the field can't be edited
+ * until it's answered).
  * @param {JQuery<HTMLElement>} control
  * @param {import('./field-drafts.js').FieldDraftBinding} binding
  * @param {() => string} stored
- * @param {JQuery<HTMLElement>} header
- * @param {string|null} thing
  */
-function showEntryFieldState(control, binding, stored, header, thing) {
+function showEntryFieldState(control, binding, stored) {
     const state = binding.state();
     control.toggleClass('wi_field_draft', state === 'draft');
     control.next('.select2-container').toggleClass('wi_field_draft', state === 'draft');
@@ -3367,7 +3357,6 @@ function showEntryFieldState(control, binding, stored, header, thing) {
             control.prop('disabled', false);
         }
     }
-    showEntryDraftBadge(header, thing);
 }
 
 /**
@@ -3388,7 +3377,6 @@ function isExpandedEditorOf(element) {
  * @property {any} data
  * @property {string|number} uid
  * @property {string|null} thing What the entry's drafts are kept under, from {@link entryDraftThing}.
- * @property {JQuery<HTMLElement>} header The entry's header.
  * @property {(entry: any) => string} stored What is stored for the field, as the field shows it.
  * @property {(entry: any, text: string) => void|Promise<void>} apply Sets the entry's values from the field's text.
  * @property {() => string} [read] What the field holds; its value unless given.
@@ -3404,7 +3392,7 @@ function isExpandedEditorOf(element) {
  * @returns {import('./field-drafts.js').FieldDraftBinding|null}
  */
 function bindEntryField(options) {
-    const { control, field, type, name, data, uid, thing, header } = options;
+    const { control, field, type, name, data, uid, thing } = options;
     const element = control[0];
     if (!element) return null;
     const read = options.read ?? (() => String(control.val() ?? ''));
@@ -3426,7 +3414,7 @@ function bindEntryField(options) {
         read,
         show,
         commit: text => commitEntryEdit(name, data, uid, entry => options.apply(entry, text)),
-        changed: () => showEntryFieldState(control, drafts, stored, header, thing),
+        changed: () => showEntryFieldState(control, drafts, stored),
     });
     // Once its lorebook is deleted, nothing of the entry is committed or kept any more.
     /** @type {import('./field-drafts.js').FieldDraftBinding} */
@@ -3435,7 +3423,7 @@ function bindEntryField(options) {
     element.dataset.wiDraft = '';
     show(stored());
     binding.restore();
-    showEntryFieldState(control, binding, stored, header, thing);
+    showEntryFieldState(control, binding, stored);
 
     const event = options.event ?? 'input';
     // `noSave`: the editor's own code filling the field.
@@ -3519,7 +3507,7 @@ function enableKeysInputHelper({ template, entry, entryPropName, originalDataVal
         };
         // Each key added or removed is one edit.
         bindEntryField({
-            control: input, field: entryPropName, type: 'toggle', event: 'change', name, data, uid, thing, header,
+            control: input, field: entryPropName, type: 'toggle', event: 'change', name, data, uid, thing,
             stored: entryData => JSON.stringify(entryData[entryPropName] ?? []),
             read: () => JSON.stringify(input.select2('data').map(x => x.text)),
             show: (text) => {
@@ -3539,7 +3527,6 @@ function enableKeysInputHelper({ template, entry, entryPropName, originalDataVal
         const searchBox = () => input.next('.select2-container').find('.select2-search__field');
         const keepSearch = () => {
             writeFieldDraft(localStorage, searchRef, String(searchBox().val() ?? ''), '');
-            showEntryDraftBadge(header, thing);
         };
         const typedKey = readFieldDraft(localStorage, searchRef)?.text;
         if (typedKey) searchBox().val(typedKey);
@@ -3563,7 +3550,7 @@ function enableKeysInputHelper({ template, entry, entryPropName, originalDataVal
         template.find(`select[name="${entryPropName}"]`).hide();
         input.show();
         bindEntryField({
-            control: input, field: entryPropName, type: 'text', name, data, uid, thing, header,
+            control: input, field: entryPropName, type: 'text', name, data, uid, thing,
             stored: entryData => (entryData[entryPropName] ?? []).join(', '),
             live: (text) => {
                 input.toggleClass('empty', !splitKeywordsAndRegexes(text).length);
@@ -3588,14 +3575,13 @@ function enableKeysInputHelper({ template, entry, entryPropName, originalDataVal
  * @param {object} params.data - The data object containing entries.
  * @param {string} params.name - The name of the world info to save changes to.
  * @param {string|null} params.thing - What the entry's drafts are kept under.
- * @param {JQuery<HTMLElement>} params.header - The entry's header.
  */
-function handleMatchCheckboxHelper({ template, entry, fieldName, data, name, thing, header }) {
+function handleMatchCheckboxHelper({ template, entry, fieldName, data, name, thing }) {
     const key = originalWIDataKeyMap[fieldName];
     const checkBoxElem = template.find(`input[type="checkbox"][name="${fieldName}"]`);
     checkBoxElem.data('uid', entry.uid);
     bindCheckboxField({
-        control: checkBoxElem, field: fieldName, name, data, uid: entry.uid, thing, header,
+        control: checkBoxElem, field: fieldName, name, data, uid: entry.uid, thing,
         stored: entryData => !!entryData[fieldName],
         apply: (entryData, value) => {
             entryData[fieldName] = value;
@@ -3754,9 +3740,8 @@ function fillCharacterAndTagOptionsHelper({ characterFilter, entry }) {
  * @param {object} params.entry - The entry object to update.
  * @param {string} params.name - The name of the world info to save changes to.
  * @param {string|null} params.thing - What the entry's drafts are kept under.
- * @param {JQuery<HTMLElement>} params.header - The entry's header.
  */
-function handleCharacterFilterChangeHelper({ characterFilter, data, entry, name, thing, header }) {
+function handleCharacterFilterChangeHelper({ characterFilter, data, entry, name, thing }) {
     characterFilter.on('mousedown', function (e) {
         if (world_names.length === 0) {
             e.preventDefault();
@@ -3766,7 +3751,7 @@ function handleCharacterFilterChangeHelper({ characterFilter, data, entry, name,
     /** @param {{ names?: string[], tags?: unknown[] } | undefined} filter */
     const asText = filter => JSON.stringify({ names: [...(filter?.names ?? [])].sort(), tags: (filter?.tags ?? []).map(String).sort() });
     bindEntryField({
-        control: characterFilter, field: 'characterFilter', type: 'toggle', event: 'change', name, data, uid, thing, header,
+        control: characterFilter, field: 'characterFilter', type: 'toggle', event: 'change', name, data, uid, thing,
         stored: entryData => asText(entryData.characterFilter),
         read: () => {
             /** @type {string[]} */
@@ -3805,9 +3790,8 @@ function handleCharacterFilterChangeHelper({ characterFilter, data, entry, name,
  * @param {object} params.entry - The entry object to update.
  * @param {string} params.name - The name of the world info to save changes to.
  * @param {string|null} params.thing - What the entry's drafts are kept under.
- * @param {JQuery<HTMLElement>} params.header - The entry's header.
  */
-function handleProbabilityInputHelper({ probabilityInput, data, entry, name, thing, header }) {
+function handleProbabilityInputHelper({ probabilityInput, data, entry, name, thing }) {
     probabilityInput.data('uid', entry.uid);
     /** @param {string} text */
     const probabilityOf = text => {
@@ -3815,7 +3799,7 @@ function handleProbabilityInputHelper({ probabilityInput, data, entry, name, thi
         return !isNaN(value) ? Math.min(100, Math.max(0, value)) : null;
     };
     bindEntryField({
-        control: probabilityInput, field: 'probability', type: 'number', name, data, uid: entry.uid, thing, header,
+        control: probabilityInput, field: 'probability', type: 'number', name, data, uid: entry.uid, thing,
         stored: entryData => String(entryData.probability ?? ''),
         live: (text) => {
             const value = probabilityOf(text);
@@ -3838,9 +3822,8 @@ function handleProbabilityInputHelper({ probabilityInput, data, entry, name, thi
  * @param {string} params.name - The name of the world info to save changes to.
  * @param {JQuery<HTMLElement>} params.probabilityInput - The input element for probability.
  * @param {string|null} params.thing - What the entry's drafts are kept under.
- * @param {JQuery<HTMLElement>} params.header - The entry's header.
  */
-function handleProbabilityToggleHelper({ probabilityToggle, data, entry, name, probabilityInput, thing, header }) {
+function handleProbabilityToggleHelper({ probabilityToggle, data, entry, name, probabilityInput, thing }) {
     probabilityToggle.data('uid', entry.uid);
     const uid = entry.uid;
     /** @param {any} entryData @param {boolean} value */
@@ -3853,7 +3836,7 @@ function handleProbabilityToggleHelper({ probabilityToggle, data, entry, name, p
     setUseProbability(data.entries[uid], true);
     probabilityInput.val(data.entries[uid].probability ?? '');
     bindCheckboxField({
-        control: probabilityToggle, field: 'useProbability', name, data, uid, thing, header,
+        control: probabilityToggle, field: 'useProbability', name, data, uid, thing,
         stored: entryData => !!entryData.useProbability,
         onShow: (value) => {
             const probabilityContainer = probabilityToggle.closest('.world_entry').find('.probabilityContainer');
@@ -3876,12 +3859,11 @@ function handleProbabilityToggleHelper({ probabilityToggle, data, entry, name, p
  * @param {object} params.data - The data object containing entries.
  * @param {string} params.name - The name of the world info to save changes to.
  * @param {string|null} params.thing - What the entry's drafts are kept under.
- * @param {JQuery<HTMLElement>} params.header - The entry's header.
  */
-function handleBooleanSelectHelper({ selectElem, entry, entryKey, data, name, thing, header }) {
+function handleBooleanSelectHelper({ selectElem, entry, entryKey, data, name, thing }) {
     selectElem.data('uid', entry.uid);
     bindEntryField({
-        control: selectElem, field: entryKey, type: 'toggle', name, data, uid: entry.uid, thing, header,
+        control: selectElem, field: entryKey, type: 'toggle', name, data, uid: entry.uid, thing,
         stored: entryData => (entryData[entryKey] === null || entryData[entryKey] === undefined) ? 'null' : entryData[entryKey] ? 'true' : 'false',
         apply: (entryData, value) => {
             entryData[entryKey] = value === 'null' ? null : value === 'true';
@@ -3902,9 +3884,8 @@ function handleBooleanSelectHelper({ selectElem, entry, entryKey, data, name, th
  * @param {number} params.max - The maximum value for the number input.
  * @param {boolean} [params.clamp=false] - Whether to clamp the value within the min and max range.
  * @param {string|null} params.thing - What the entry's drafts are kept under.
- * @param {JQuery<HTMLElement>} params.header - The entry's header.
  */
-function handleNumberInputHelper({ inputElem, entry, entryKey, data, name, min, max, clamp = false, thing, header }) {
+function handleNumberInputHelper({ inputElem, entry, entryKey, data, name, min, max, clamp = false, thing }) {
     inputElem.data('uid', entry.uid);
     /** @param {string} text */
     const valueOf = (text) => {
@@ -3912,7 +3893,7 @@ function handleNumberInputHelper({ inputElem, entry, entryKey, data, name, min, 
         return clamp ? Math.min(max, Math.max(min, value)) : value;
     };
     bindEntryField({
-        control: inputElem, field: entryKey, type: 'number', name, data, uid: entry.uid, thing, header,
+        control: inputElem, field: entryKey, type: 'number', name, data, uid: entry.uid, thing,
         stored: entryData => String(entryData[entryKey] ?? (clamp ? min : '')),
         live: (text) => {
             const value = valueOf(text);
@@ -3934,16 +3915,15 @@ function handleNumberInputHelper({ inputElem, entry, entryKey, data, name, min, 
  * @param {object} params.data - The data object containing entries.
  * @param {string} params.name - The name of the world info to save changes to.
  * @param {string|null} params.thing - What the entry's drafts are kept under.
- * @param {JQuery<HTMLElement>} params.header - The entry's header.
  */
-function handleEntryStateSelectorHelper({ entryStateSelector, entry, data, name, thing, header }) {
+function handleEntryStateSelectorHelper({ entryStateSelector, entry, data, name, thing }) {
     entryStateSelector.data('uid', entry.uid);
     entryStateSelector.on('click', function (event) {
         event.stopPropagation();
     });
     const uid = entry.uid;
     bindEntryField({
-        control: entryStateSelector, field: 'entryState', type: 'toggle', name, data, uid, thing, header,
+        control: entryStateSelector, field: 'entryState', type: 'toggle', name, data, uid, thing,
         stored: entryData => entryData.constant === true ? 'constant' : entryData.vectorized === true ? 'vectorized' : 'normal',
         apply: (entryData, value) => {
             if (!['constant', 'normal', 'vectorized'].includes(value)) return;
@@ -3976,7 +3956,7 @@ function handleEntryKillSwitchHelper({ entryKillSwitch, entry, data, name, templ
     };
     const read = () => (entryKillSwitch.hasClass('fa-toggle-on') ? 'on' : 'off');
     bindEntryField({
-        control: entryKillSwitch, field: 'enabled', type: 'toggle', event: 'wi-killswitch', name, data, uid: entry.uid, thing, header: template,
+        control: entryKillSwitch, field: 'enabled', type: 'toggle', event: 'wi-killswitch', name, data, uid: entry.uid, thing,
         stored: entryData => (entryData.disable ? 'off' : 'on'),
         read,
         show: showState,
@@ -4020,7 +4000,6 @@ export async function getWorldEntry(name, data, entry) {
     headerTemplate.data('uid', entry.uid);
     headerTemplate.attr('uid', entry.uid);
     const header = headerTemplate;
-    showEntryDraftBadge(header, thing);
 
     if (typeof power_user.wi_key_input_plaintext === 'undefined') power_user.wi_key_input_plaintext = true;
 
@@ -4033,7 +4012,7 @@ export async function getWorldEntry(name, data, entry) {
 
     commentInput.data('uid', entry.uid);
     bindEntryField({
-        control: commentInput, field: 'comment', type: 'text', name, data, uid, thing, header,
+        control: commentInput, field: 'comment', type: 'text', name, data, uid, thing,
         stored: entryData => String(entryData.comment ?? ''),
         apply: (entryData, text) => {
             entryData.comment = text;
@@ -4048,7 +4027,7 @@ export async function getWorldEntry(name, data, entry) {
     const orderInput = headerTemplate.find('input[name="order"]');
     orderInput.data('uid', entry.uid);
     bindEntryField({
-        control: orderInput, field: 'order', type: 'number', name, data, uid, thing, header,
+        control: orderInput, field: 'order', type: 'number', name, data, uid, thing,
         stored: entryData => String(entryData.order ?? ''),
         apply: (entryData, text) => {
             const value = Number(text);
@@ -4060,12 +4039,12 @@ export async function getWorldEntry(name, data, entry) {
     orderInput.css('width', 'calc(3em + 15px)');
 
     // Probability
-    handleProbabilityInputHelper({ probabilityInput: headerTemplate.find('input[name="probability"]'), data, entry, name, thing, header });
+    handleProbabilityInputHelper({ probabilityInput: headerTemplate.find('input[name="probability"]'), data, entry, name, thing });
 
     // Depth
     handleNumberInputHelper({
         inputElem: headerTemplate.find('input[name="depth"]'),
-        entry, entryKey: 'depth', data, name, min: 0, max: MAX_SCAN_DEPTH, clamp: false, thing, header,
+        entry, entryKey: 'depth', data, name, min: 0, max: MAX_SCAN_DEPTH, clamp: false, thing,
     });
     headerTemplate.find('input[name="depth"]').css('width', 'calc(3em + 15px)');
 
@@ -4076,7 +4055,7 @@ export async function getWorldEntry(name, data, entry) {
     positionInput.on('click', e => e.stopPropagation());
     // The field's text is `position:role`: the at-depth options share a value and differ in their role.
     bindEntryField({
-        control: positionInput, field: 'position', type: 'toggle', name, data, uid, thing, header,
+        control: positionInput, field: 'position', type: 'toggle', name, data, uid, thing,
         stored: entryData => `${entryData.position ?? 0}:${entryData.position === world_info_position.atDepth ? String(entryData.role ?? extension_prompt_roles.SYSTEM) : ''}`,
         read: () => {
             const selected = positionInput.find(':selected');
@@ -4106,7 +4085,7 @@ export async function getWorldEntry(name, data, entry) {
     // Tri-state selector
     handleEntryStateSelectorHelper({
         entryStateSelector: headerTemplate.find('select[name="entryStateSelector"]'),
-        entry, data, name, thing, header,
+        entry, data, name, thing,
     });
 
     // Kill switch
@@ -4254,7 +4233,7 @@ export async function getWorldEntry(name, data, entry) {
         // Probability toggle
         handleProbabilityToggleHelper({
             probabilityToggle: editTemplate.find('input[name="useProbability"]'),
-            data, entry, name, thing, header,
+            data, entry, name, thing,
             probabilityInput: headerTemplate.find('input[name="probability"]'),
         });
 
@@ -4263,7 +4242,7 @@ export async function getWorldEntry(name, data, entry) {
         commentToggle.data('uid', entry.uid);
         data.entries[uid].addMemo = true;
         bindCheckboxField({
-            control: commentToggle, field: 'addMemo', name, data, uid, thing, header,
+            control: commentToggle, field: 'addMemo', name, data, uid, thing,
             stored: entryData => !!entryData.addMemo,
             onShow: (value) => {
                 const commentContainer = commentToggle.closest('.world_entry').find('.commentContainer');
@@ -4280,7 +4259,7 @@ export async function getWorldEntry(name, data, entry) {
         selectiveLogicDropdown.data('uid', entry.uid);
         selectiveLogicDropdown.on('click', e => e.stopPropagation());
         bindEntryField({
-            control: selectiveLogicDropdown, field: 'selectiveLogic', type: 'toggle', name, data, uid, thing, header,
+            control: selectiveLogicDropdown, field: 'selectiveLogic', type: 'toggle', name, data, uid, thing,
             stored: entryData => String(entryData.selectiveLogic ?? world_info_logic.AND_ANY),
             apply: (entryData, text) => {
                 const value = Number(text);
@@ -4295,7 +4274,7 @@ export async function getWorldEntry(name, data, entry) {
         data.entries[uid].selective = true;
         setWIOriginalDataValue(data, uid, 'selective', true);
         bindCheckboxField({
-            control: selectiveInput, field: 'selective', name, data, uid, thing, header,
+            control: selectiveInput, field: 'selective', name, data, uid, thing,
             stored: entryData => !!entryData.selective,
             onShow: (value) => {
                 const keysecondary = selectiveInput.closest('.world_entry').find('.keysecondary');
@@ -4317,7 +4296,7 @@ export async function getWorldEntry(name, data, entry) {
         const characterExclusionInput = editTemplate.find('input[name="character_exclusion"]');
         characterExclusionInput.data('uid', entry.uid);
         bindCheckboxField({
-            control: characterExclusionInput, field: 'character_exclusion', name, data, uid, thing, header,
+            control: characterExclusionInput, field: 'character_exclusion', name, data, uid, thing,
             stored: entryData => entryData.characterFilter?.isExclude ?? false,
             onShow: value => characterFilterLabel.text(value ? 'Exclude Character(s)' : 'Filter to Character(s)'),
             apply: async (entryData, value) => {
@@ -4348,7 +4327,7 @@ export async function getWorldEntry(name, data, entry) {
         const characterFilter = editTemplate.find('select[name="characterFilter"]');
         characterFilter.data('uid', entry.uid);
         initCharacterFilterSelect2Helper(characterFilter);
-        handleCharacterFilterChangeHelper({ characterFilter, data, entry, name, thing, header });
+        handleCharacterFilterChangeHelper({ characterFilter, data, entry, name, thing });
 
         // Content
         const counter = editTemplate.find('.world_entry_form_token_counter');
@@ -4363,7 +4342,7 @@ export async function getWorldEntry(name, data, entry) {
         contentInput.attr('id', contentInputId);
         contentInput[0].dataset.macros = ''; // active
         bindEntryField({
-            control: contentInput, field: 'content', type: 'text', name, data, uid, thing, header,
+            control: contentInput, field: 'content', type: 'text', name, data, uid, thing,
             stored: entryData => String(entryData.content ?? ''),
             apply: (entryData, text) => {
                 entryData.content = text;
@@ -4379,7 +4358,7 @@ export async function getWorldEntry(name, data, entry) {
         const outletNameInput = editTemplate.find('input[name="outletName"]');
         outletNameInput.data('uid', entry.uid);
         bindEntryField({
-            control: outletNameInput, field: 'outletName', type: 'line', name, data, uid, thing, header,
+            control: outletNameInput, field: 'outletName', type: 'line', name, data, uid, thing,
             stored: entryData => String(entryData.outletName ?? ''),
             apply: (entryData, text) => {
                 entryData.outletName = text;
@@ -4392,7 +4371,7 @@ export async function getWorldEntry(name, data, entry) {
         const scanDepthInput = editTemplate.find('input[name="scanDepth"]');
         scanDepthInput.data('uid', entry.uid);
         bindEntryField({
-            control: scanDepthInput, field: 'scanDepth', type: 'number', name, data, uid, thing, header,
+            control: scanDepthInput, field: 'scanDepth', type: 'number', name, data, uid, thing,
             stored: entryData => (entryData.scanDepth === null || entryData.scanDepth === undefined ? '' : String(entryData.scanDepth)),
             live: (text) => {
                 const value = Number(text);
@@ -4415,7 +4394,7 @@ export async function getWorldEntry(name, data, entry) {
         const groupInput = editTemplate.find('input[name="group"]');
         groupInput.data('uid', entry.uid);
         bindEntryField({
-            control: groupInput, field: 'group', type: 'line', name, data, uid, thing, header,
+            control: groupInput, field: 'group', type: 'line', name, data, uid, thing,
             stored: entryData => String(entryData.group ?? ''),
             apply: (entryData, text) => {
                 entryData.group = text.trim();
@@ -4428,7 +4407,7 @@ export async function getWorldEntry(name, data, entry) {
         const groupOverrideInput = editTemplate.find('input[name="groupOverride"]');
         groupOverrideInput.data('uid', entry.uid);
         bindCheckboxField({
-            control: groupOverrideInput, field: 'groupOverride', name, data, uid, thing, header,
+            control: groupOverrideInput, field: 'groupOverride', name, data, uid, thing,
             stored: entryData => !!entryData.groupOverride,
             apply: (entryData, value) => {
                 entryData.groupOverride = value;
@@ -4439,26 +4418,26 @@ export async function getWorldEntry(name, data, entry) {
         // Group weight
         handleNumberInputHelper({
             inputElem: editTemplate.find('input[name="groupWeight"]'),
-            entry, entryKey: 'groupWeight', data, name, min: 1, max: 10000, clamp: true, thing, header,
+            entry, entryKey: 'groupWeight', data, name, min: 1, max: 10000, clamp: true, thing,
         });
 
         // Sticky, cooldown, delay
         handleNumberInputHelper({
             inputElem: editTemplate.find('input[name="sticky"]'),
-            entry, entryKey: 'sticky', data, name, min: 1, max: 10000, clamp: false, thing, header,
+            entry, entryKey: 'sticky', data, name, min: 1, max: 10000, clamp: false, thing,
         });
         handleNumberInputHelper({
             inputElem: editTemplate.find('input[name="cooldown"]'),
-            entry, entryKey: 'cooldown', data, name, min: 1, max: 10000, clamp: false, thing, header,
+            entry, entryKey: 'cooldown', data, name, min: 1, max: 10000, clamp: false, thing,
         });
         handleNumberInputHelper({
             inputElem: editTemplate.find('input[name="delay"]'),
-            entry, entryKey: 'delay', data, name, min: 1, max: 10000, clamp: false, thing, header,
+            entry, entryKey: 'delay', data, name, min: 1, max: 10000, clamp: false, thing,
         });
 
         // Exclude/prevent recursion
-        handleMatchCheckboxHelper({ template: editTemplate, entry, fieldName: 'excludeRecursion', data, name, thing, header });
-        handleMatchCheckboxHelper({ template: editTemplate, entry, fieldName: 'preventRecursion', data, name, thing, header });
+        handleMatchCheckboxHelper({ template: editTemplate, entry, fieldName: 'excludeRecursion', data, name, thing });
+        handleMatchCheckboxHelper({ template: editTemplate, entry, fieldName: 'preventRecursion', data, name, thing });
 
         // Delay until recursion
         const delayUntilRecursionInput = editTemplate.find('input[name="delay_until_recursion"]');
@@ -4466,7 +4445,7 @@ export async function getWorldEntry(name, data, entry) {
         const delayUntilRecursionLevelInput = editTemplate.find('input[name="delayUntilRecursionLevel"]');
         delayUntilRecursionLevelInput.data('uid', entry.uid);
         bindCheckboxField({
-            control: delayUntilRecursionInput, field: 'delay_until_recursion', name, data, uid, thing, header,
+            control: delayUntilRecursionInput, field: 'delay_until_recursion', name, data, uid, thing,
             stored: entryData => !!entryData.delayUntilRecursion,
             apply: (entryData, toggled) => {
                 entryData.delayUntilRecursion = toggled ? entryData.delayUntilRecursion || true : false;
@@ -4477,7 +4456,7 @@ export async function getWorldEntry(name, data, entry) {
             if (!$(this).prop('checked')) delayUntilRecursionLevelInput.val('');
         });
         bindEntryField({
-            control: delayUntilRecursionLevelInput, field: 'delayUntilRecursionLevel', type: 'line', name, data, uid, thing, header,
+            control: delayUntilRecursionLevelInput, field: 'delayUntilRecursionLevel', type: 'line', name, data, uid, thing,
             stored: entryData => (['number', 'string'].includes(typeof entryData.delayUntilRecursion) ? String(entryData.delayUntilRecursion) : ''),
             apply: (entryData, content) => {
                 entryData.delayUntilRecursion = content === '' ? (typeof entryData.delayUntilRecursion === 'boolean' ? entryData.delayUntilRecursion : true)
@@ -4488,23 +4467,23 @@ export async function getWorldEntry(name, data, entry) {
         });
 
         // Boolean selects
-        handleBooleanSelectHelper({ selectElem: editTemplate.find('select[name="caseSensitive"]'), entry, entryKey: 'caseSensitive', data, name, thing, header });
-        handleBooleanSelectHelper({ selectElem: editTemplate.find('select[name="matchWholeWords"]'), entry, entryKey: 'matchWholeWords', data, name, thing, header });
-        handleBooleanSelectHelper({ selectElem: editTemplate.find('select[name="useGroupScoring"]'), entry, entryKey: 'useGroupScoring', data, name, thing, header });
+        handleBooleanSelectHelper({ selectElem: editTemplate.find('select[name="caseSensitive"]'), entry, entryKey: 'caseSensitive', data, name, thing });
+        handleBooleanSelectHelper({ selectElem: editTemplate.find('select[name="matchWholeWords"]'), entry, entryKey: 'matchWholeWords', data, name, thing });
+        handleBooleanSelectHelper({ selectElem: editTemplate.find('select[name="useGroupScoring"]'), entry, entryKey: 'useGroupScoring', data, name, thing });
 
         // Match checkboxes
-        handleMatchCheckboxHelper({ template: editTemplate, entry, fieldName: 'matchPersonaDescription', data, name, thing, header });
-        handleMatchCheckboxHelper({ template: editTemplate, entry, fieldName: 'matchCharacterDescription', data, name, thing, header });
-        handleMatchCheckboxHelper({ template: editTemplate, entry, fieldName: 'matchCharacterPersonality', data, name, thing, header });
-        handleMatchCheckboxHelper({ template: editTemplate, entry, fieldName: 'matchCharacterDepthPrompt', data, name, thing, header });
-        handleMatchCheckboxHelper({ template: editTemplate, entry, fieldName: 'matchScenario', data, name, thing, header });
-        handleMatchCheckboxHelper({ template: editTemplate, entry, fieldName: 'matchCreatorNotes', data, name, thing, header });
+        handleMatchCheckboxHelper({ template: editTemplate, entry, fieldName: 'matchPersonaDescription', data, name, thing });
+        handleMatchCheckboxHelper({ template: editTemplate, entry, fieldName: 'matchCharacterDescription', data, name, thing });
+        handleMatchCheckboxHelper({ template: editTemplate, entry, fieldName: 'matchCharacterPersonality', data, name, thing });
+        handleMatchCheckboxHelper({ template: editTemplate, entry, fieldName: 'matchCharacterDepthPrompt', data, name, thing });
+        handleMatchCheckboxHelper({ template: editTemplate, entry, fieldName: 'matchScenario', data, name, thing });
+        handleMatchCheckboxHelper({ template: editTemplate, entry, fieldName: 'matchCreatorNotes', data, name, thing });
 
         // Automation ID
         const automationIdInput = editTemplate.find('input[name="automationId"]');
         automationIdInput.data('uid', entry.uid);
         bindEntryField({
-            control: automationIdInput, field: 'automationId', type: 'line', name, data, uid, thing, header,
+            control: automationIdInput, field: 'automationId', type: 'line', name, data, uid, thing,
             stored: entryData => String(entryData.automationId ?? ''),
             apply: (entryData, text) => {
                 entryData.automationId = text;
@@ -4525,7 +4504,7 @@ export async function getWorldEntry(name, data, entry) {
             });
         }
         bindEntryField({
-            control: generationTypeTriggers, field: 'triggers', type: 'toggle', name, data, uid, thing, header,
+            control: generationTypeTriggers, field: 'triggers', type: 'toggle', name, data, uid, thing,
             stored: entryData => JSON.stringify(Array.isArray(entryData.triggers) ? entryData.triggers : []),
             read: () => {
                 const value = generationTypeTriggers.val();
@@ -4542,7 +4521,7 @@ export async function getWorldEntry(name, data, entry) {
         const ignoreBudgetInput = editTemplate.find('input[name="ignoreBudget"]');
         ignoreBudgetInput.data('uid', entry.uid);
         bindCheckboxField({
-            control: ignoreBudgetInput, field: 'ignoreBudget', name, data, uid, thing, header,
+            control: ignoreBudgetInput, field: 'ignoreBudget', name, data, uid, thing,
             stored: entryData => entryData.ignoreBudget ?? false,
             apply: (entryData, value) => {
                 entryData.ignoreBudget = value;
@@ -7968,6 +7947,9 @@ export function initWorldInfo() {
             showWorldEditor(worldName);
         }
     });
+    // The settings are read before this runs, and the book they restored into the selector was picked with no one
+    // listening yet: show it now.
+    $('#world_editor_select').trigger('change');
 
     const saveSettings = () => {
         saveSettingsDebounced('world_info_settings');
