@@ -363,6 +363,21 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         await store.close();
     });
 
+    test(`${kind}: an imported chat keeps every message's swipes, the shown one chosen`, async () => {
+        const { store, chats, t } = await fresh(engine);
+        const swiped = { ...msg('r1'), swipes: ['r0', 'r1', 'r2'], swipe_id: 1, swipe_info: [{ send_date: 'a', extra: { model: 'm0' } }, { send_date: 'b', extra: {} }, { send_date: 'c', extra: {} }] };
+        const imported = /** @type {any} */ (await chats.importChat({ tree: t, treeSpeaker: cara, name: 'Imported', messages: [msg('g'), msg('u1'), swiped, msg('u2')], metadata: {}, actor: a }));
+        assert.equal(imported.ok, true);
+        const loaded = (await chats.load({ tree: t, at: imported.node_ids[3], full: true })).messages;
+        assert.deepEqual(loaded.map((/** @type {any} */ m) => m.mes), ['g', 'u1', 'r1', 'u2'], 'the chat follows each message\'s shown swipe');
+        assert.deepEqual(loaded[2].swipes, ['r0', 'r1', 'r2'], 'the other swipes are its alternatives');
+        assert.equal(loaded[2].swipe_id, 1);
+        assert.equal(loaded[2].swipe_info[0].extra.model, 'm0', 'a swipe keeps its own info');
+        const at = await chats.alternatives({ node_id: imported.node_ids[2], offset: 0, limit: 10 });
+        assert.deepEqual([at?.total, at?.selected, at?.alternatives.map((/** @type {any} */ x) => x.mes)], [3, 1, ['r0', 'r1', 'r2']], 'each swipe is an alternative of its own in the tree');
+        await store.close();
+    });
+
     test(`${kind}: a load sends the text of the alternatives near the shown one; a save without a base keeps the rest`, async () => {
         const { store, chats, t, id, send, replies } = await fresh(engine);
         await send(null, ['g']);

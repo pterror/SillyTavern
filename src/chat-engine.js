@@ -1826,31 +1826,59 @@ export class ChatEngine {
     }
 
     /**
-     * Stores an imported chat: its messages from the tree's root as a branch of their own, each replying to the one
-     * before (one with a stored reply's speaker and text is that reply, as for any append), moving no session; and a
-     * bookmark labelled `name` at the last message, at the root for none;
-     * the chat's `metadata` the state there.
+     * Stores an imported chat: its messages from the tree's root as a branch of their own, each replying to the shown
+     * one before it, every message with its alternatives (upstream's `swipes`, alternativesOf(); one with a stored
+     * reply's speaker and text is that reply), moving no session; and a bookmark labelled `name` at the last message,
+     * at the root for none; the chat's `metadata` the state there.
      * @param {object} p
      * @param {bigint} p.tree
      * @param {Speaker | null} p.treeSpeaker
      * @param {string} p.name
-     * @param {Record<string, any>[]} p.messages Messages as stored today (after `sanitizeForStorage()`).
+     * @param {Record<string, any>[]} p.messages Upstream's chat messages, `swipes`, `swipe_id` and `swipe_info` included.
      * @param {Record<string, unknown>} [p.metadata] The chat's `chat_metadata`.
      * @param {Actor} p.actor The bookmark's maker, through a session.
      * @returns {Promise<{ ok: true, bookmark: bigint, name: string | null, node_ids: string[] } | { ok: false, reason: string }>}
+     * `node_ids`: each message's shown alternative.
      */
     async importChat({ tree, treeSpeaker, name, messages, metadata, actor }) {
-        const appended = messages.length
-            ? await this.appendMessages({ tree, treeSpeaker, after: null, contents: messages, actor: { user: actor.user } })
-            : { ok: true, node_ids: [] };
-        if (!appended.ok) return { ok: false, reason: appended.reason ?? 'not stored' };
-        const last = appended.node_ids.length ? appended.node_ids[appended.node_ids.length - 1] : null;
+        const shown = await this.serialized(tree, async () => {
+            const records = [];
+            const { user } = await this.actorIds({ user: actor.user }, records);
+            const now = this.now();
+            /** @type {bigint[]} */
+            const chosen = [];
+            /** @type {bigint | null} */
+            let parent = null;
+            let written = 0;
+            for (const msg of messages) {
+                const level = await this.level(tree, parent);
+                const { contents, selected } = alternativesOf(msg);
+                /** @type {bigint | null} */
+                let pick = null;
+                for (const [k, content] of contents.entries()) {
+                    let sid = level.twin(content, null);
+                    if (sid === null) {
+                        sid = this.next.message++;
+                        const time = now + written++;
+                        records.push(...messageRecords(sid, encodeMessage(content, time, await this.speakerFor(content, treeSpeaker)), { parent, owner: tree, time, session: null, user, sendKey: null }));
+                        this.keyNew(records, sid);
+                        level.add(sid, content);
+                    }
+                    if (k === selected) pick = sid;
+                }
+                parent = /** @type {bigint} */ (pick);
+                chosen.push(parent);
+            }
+            if (records.length) await this.store.commit(records);
+            return this.externalIds(chosen);
+        });
+        const last = shown.length ? shown[shown.length - 1] : null;
         if (metadata && typeof metadata === 'object' && Object.keys(metadata).length > 0) {
             await this.mergeMetadata({ tree, at: last, set: metadata, unset: [], actor });
         }
         const made = await this.createBookmark({ tree, node_id: last, name, actor });
         if (!made.ok) return made;
-        return { ok: true, bookmark: made.bookmark, name: made.name, node_ids: appended.node_ids };
+        return { ok: true, bookmark: made.bookmark, name: made.name, node_ids: shown };
     }
 
     /**

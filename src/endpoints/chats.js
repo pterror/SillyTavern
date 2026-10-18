@@ -1513,7 +1513,7 @@ async function importChatText(chat, chatText, name) {
     const lines = chatText.split('\n').map(line => tryParse(line)).filter(x => x);
     const header = lines.length && !('mes' in lines[0]) ? lines.shift() : null;
     const imported = await chat.store.chats.importChat({
-        tree: chat.tree, treeSpeaker: chat.treeSpeaker, name, messages: lines.map(storedForm), metadata: header?.chat_metadata, actor: chat.session.actor(),
+        tree: chat.tree, treeSpeaker: chat.treeSpeaker, name, messages: lines, metadata: header?.chat_metadata, actor: chat.session.actor(),
     });
     return imported.ok ? bookmarkCompatId(imported.bookmark) : null;
 }
