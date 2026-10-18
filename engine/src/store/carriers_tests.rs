@@ -598,7 +598,7 @@ fn settle(s: &Store, m: &Model, at: &str) -> Held {
             break;
         }
         assert!(std::time::Instant::now() < deadline, "{at}: never settled");
-        std::thread::sleep(std::time::Duration::from_millis(2));
+        s.inner.ks.pool().exec.pause(std::time::Duration::from_millis(2));
     }
     let h = check(s, m, at);
     assert_eq!(h.members, m.carriers, "{at}: carriers");
@@ -1173,7 +1173,7 @@ fn wait_folds(s: &Store) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while read(s).folds {
         assert!(std::time::Instant::now() < deadline, "folds never ended");
-        std::thread::sleep(std::time::Duration::from_millis(2));
+        s.inner.ks.pool().exec.pause(std::time::Duration::from_millis(2));
     }
 }
 
@@ -1199,8 +1199,35 @@ fn held_round(
 
 #[test]
 fn queries_while_carriers_move_equal_the_queries_once_everything_settles() {
+    queries_while_carriers_move_equal_the_queries_once_everything_settles_in(&pool);
+}
+
+/// A simulated store run is a function of its seed: every flush, merge, fold and move the same, step for step.
+#[test]
+fn a_simulated_store_run_replays_exactly() {
+    let run = || {
+        queries_while_carriers_move_equal_the_queries_once_everything_settles_in(&|| {
+            Pool::simulated(64 << 10, 256 << 10, 2, 2, 2)
+        })
+    };
+    assert_eq!(run(), run());
+}
+
+/// `queries_while_carriers_move_equal_the_queries_once_everything_settles` simulated: background steps run as the seed picks them (`Executor::simulated`), so an interleaving
+/// that fails replays exactly with `ST_SIM_SEED`; `ST_SIM_SEEDS` sets how many seeds run (default 4).
+#[test]
+fn queries_while_carriers_move_equal_the_queries_once_everything_settles_simulated() {
+    for seed in crate::keyspace::exec::sim_seeds(4) {
+        queries_while_carriers_move_equal_the_queries_once_everything_settles_in(&|| Pool::simulated(64 << 10, 256 << 10, 2, 2, seed));
+    }
+}
+
+/// What a run ended with: the keyspace's counters and the steps run under simulation.
+fn queries_while_carriers_move_equal_the_queries_once_everything_settles_in(
+    mk: &dyn Fn() -> Arc<Pool>,
+) -> String {
     let dir = temp_dir("queries");
-    let s = Store::open_in(&dir, SMALL, pool()).unwrap();
+    let s = Store::open_in(&dir, SMALL, mk()).unwrap();
     let mut m = Model::new(0x5eed_cafe);
     m.names = DARK_NAMES;
     m.card_names = CARD_NAMES;
@@ -1272,8 +1299,10 @@ fn queries_while_carriers_move_equal_the_queries_once_everything_settles() {
             && flown.many,
         "{flown:?}"
     );
+    let outcome = format!("{:?} {}", s.stats().ks, s.inner.ks.pool().exec.sim_steps());
     s.close();
     let _ = fs::remove_dir_all(&dir);
+    outcome
 }
 
 /// With K large (many pairs of tags without names), light tags with more carriers than a move's slice move in
