@@ -545,12 +545,13 @@ impl TailFile {
     /// group starts it. Returns the bytes written.
     pub fn write(&mut self, log: &Log, file: u64, runs: &[(u64, Vec<u8>)]) -> LogResult<u64> {
         let shared = &log.shared;
+        let path = shared.dir.join(file_name(&shared.cfg, file));
         if self.file != file || !self.exists {
             let handle = OpenOptions::new()
                 .read(true)
                 .write(true)
                 .create_new(true)
-                .open(shared.dir.join(file_name(&shared.cfg, file)))?;
+                .open(&path)?;
             sync_dir(&shared.dir)?;
             *self = TailFile {
                 file,
@@ -568,9 +569,10 @@ impl TailFile {
         let handle = self.handle.as_ref().unwrap();
         let mut bytes = 0;
         for (at, run) in runs {
-            write_all_at(handle, run, *at)?;
+            write_hooked(&path, handle, run, *at)?;
             bytes += run.len() as u64;
         }
+        crate::faults::op(crate::faults::Op::Sync, &path)?;
         handle.sync_data()?;
         // Under wasm a file descriptor belongs to the thread that opened it, and groups are written from any of
         // the engine's threads: open the file per group there.
@@ -611,6 +613,7 @@ pub struct Log {
 fn sync_dir(dir: &Path) -> io::Result<()> {
     // A new file's directory entry is durable once its directory is synced. On Windows, as in SQLite, no
     // directory is synced: NTFS journals the entry, and a directory can't be opened as a file there.
+    crate::faults::op(crate::faults::Op::SyncDir, dir)?;
     #[cfg(not(windows))]
     File::open(dir)?.sync_all()?;
     #[cfg(windows)]
@@ -714,7 +717,9 @@ impl Log {
                     }));
                 }
                 let handle = OpenOptions::new().write(true).open(&path)?;
+                crate::faults::set_len(&path, cursor.offset)?;
                 handle.set_len(cursor.offset)?;
+                crate::faults::op(crate::faults::Op::Sync, &path)?;
                 handle.sync_data()?;
             }
         }
@@ -803,6 +808,7 @@ impl Log {
             .lock()
             .unwrap()
             .retain(|(f, _)| *f != file);
+        crate::faults::op(crate::faults::Op::Remove, &self.file_path(file))?;
         match fs::remove_file(self.file_path(file)) {
             Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
             _ => Ok(()),
@@ -1300,6 +1306,17 @@ fn write_round(
     *cursor = end;
     log.set_durable(end);
     Ok(())
+}
+
+/// `write_all_at` through the fault seam (`crate::faults`): a write a test tears is written in part, then fails.
+fn write_hooked(path: &Path, file: &File, bytes: &[u8], offset: u64) -> io::Result<()> {
+    match crate::faults::write(path, offset, bytes.len())? {
+        None => write_all_at(file, bytes, offset),
+        Some(n) => {
+            write_all_at(file, &bytes[..n], offset)?;
+            Err(crate::faults::torn())
+        }
+    }
 }
 
 fn write_all_at(file: &File, bytes: &[u8], offset: u64) -> io::Result<()> {

@@ -36,6 +36,9 @@ struct Inner {
     sim: Option<Mutex<Sim>>,
 }
 
+/// More steps than any simulated test needs (about 15k per store at most), so a step loop without end fails.
+const SIM_STEP_LIMIT: u64 = 500_000;
+
 struct Sim {
     state: u64,
     steps: u64,
@@ -61,6 +64,10 @@ impl Inner {
     /// Under simulation, runs one queued step picked by the seed; false when none is queued (or not simulated).
     fn pump(&self) -> bool {
         let Some(sim) = &self.sim else { return false };
+        // Unwinding (a test's crash, a failed assertion): no more steps, so a destructor waiting on one ends.
+        if std::thread::panicking() {
+            return false;
+        }
         let task = {
             let mut q = self.queue.lock().unwrap();
             let n = q.front.len() + q.back.len();
@@ -69,6 +76,10 @@ impl Inner {
             }
             let mut s = sim.lock().unwrap();
             s.steps += 1;
+            assert!(
+                s.steps <= SIM_STEP_LIMIT,
+                "simulated engine livelock: over {SIM_STEP_LIMIT} steps on one executor"
+            );
             let back = q.front.is_empty() || (!q.back.is_empty() && s.next(32) < s.back_odds);
             let lane = if back { &mut q.back } else { &mut q.front };
             let i = s.next(lane.len());
@@ -96,6 +107,9 @@ impl Inner {
     }
 
     fn pump_or_deadlock(&self) {
+        if std::thread::panicking() {
+            return;
+        }
         assert!(
             self.pump(),
             "simulated engine deadlock: a wait with no step queued that could end it"

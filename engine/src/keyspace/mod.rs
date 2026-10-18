@@ -357,11 +357,23 @@ struct Seqs {
 }
 
 fn sync_dir(dir: &Path) -> io::Result<()> {
+    crate::faults::op(crate::faults::Op::SyncDir, dir)?;
     #[cfg(not(windows))]
     fs::File::open(dir)?.sync_all()?;
     #[cfg(windows)]
     let _ = dir;
     Ok(())
+}
+
+/// `fs::rename` and `fs::remove_file` through the fault seam (`crate::faults`).
+fn rename(from: &Path, to: &Path) -> io::Result<()> {
+    crate::faults::rename(from, to)?;
+    fs::rename(from, to)
+}
+
+fn remove(path: impl AsRef<Path>) -> io::Result<()> {
+    crate::faults::op(crate::faults::Op::Remove, path.as_ref())?;
+    fs::remove_file(path)
 }
 
 impl Keyspace {
@@ -379,7 +391,7 @@ impl Keyspace {
             let Some(name) = name.to_str() else { continue };
             if name.starts_with("run-") && name.ends_with(".tmp") {
                 // A run whose writing didn't finish: nothing counted on it.
-                fs::remove_file(dir.join(name))?;
+                remove(dir.join(name))?;
             } else if let Some(range) = parse_run_name(name) {
                 found.push(range);
             }
@@ -390,7 +402,7 @@ impl Keyspace {
         let mut next = 0;
         for (lo, hi) in found {
             if hi < next {
-                fs::remove_file(dir.join(run_name(lo, hi)))?;
+                remove(dir.join(run_name(lo, hi)))?;
                 continue;
             }
             if lo != next {
@@ -961,8 +973,11 @@ impl Keyspace {
                     let _w = self.write.lock().unwrap();
                     self.flushed_cv.notify_all();
                 }
-                // Retried after a pause; a failing disk holds one engine thread for it.
-                std::thread::sleep(std::time::Duration::from_secs(1));
+                // Retried after a pause; a failing disk holds one engine thread for it (under simulation the
+                // retry is just another step).
+                if !self.pool.exec.is_simulated() {
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                }
                 true
             }
         }
@@ -979,7 +994,7 @@ impl Keyspace {
         let name = run_name(seq, seq);
         let tmp = self.dir.join(name.replace(".run", ".tmp"));
         // Left by a flush that failed part way.
-        let _ = fs::remove_file(&tmp);
+        let _ = remove(&tmp);
         let mut w = RunWriter::create(&tmp, self.cfg.block_size)?;
         // The buffer's own entries win over the extra ones for the same key.
         let mut extra = extra.into_iter().peekable();
@@ -1000,7 +1015,7 @@ impl Keyspace {
             self.flush_unit.store(bytes, Ordering::Relaxed);
         }
         let path = self.dir.join(&name);
-        fs::rename(&tmp, &path)?;
+        rename(&tmp, &path)?;
         sync_dir(&self.dir)?;
         let run = Arc::new(Run::open(&path, seq, seq)?);
         {
@@ -1153,7 +1168,7 @@ impl Keyspace {
                 eprintln!("st-engine: merging runs failed: {e}");
                 let MergeJob { w, tmp, .. } = job;
                 drop(w);
-                let _ = fs::remove_file(&tmp);
+                let _ = remove(&tmp);
             }
         }
         // A finished merge may have made another due.
@@ -1168,7 +1183,7 @@ impl Keyspace {
     fn abandon(merging: &mut Vec<MergeJob>) {
         for MergeJob { w, tmp, .. } in merging.drain(..) {
             drop(w);
-            let _ = fs::remove_file(&tmp);
+            let _ = remove(&tmp);
         }
     }
 
@@ -1182,7 +1197,7 @@ impl Keyspace {
             sources.push(Box::new(RunIter::new(r.clone(), &[], None, None)?));
         }
         // Left by a merge that failed part way.
-        let _ = fs::remove_file(&tmp);
+        let _ = remove(&tmp);
         let w = RunWriter::create(&tmp, self.cfg.block_size)?;
         Ok(MergeJob {
             inputs,
@@ -1222,7 +1237,7 @@ impl Keyspace {
         let covered = inputs.last().unwrap().covered;
         let bytes = w.finish(covered, lo, hi)?;
         let path = self.dir.join(run_name(lo, hi));
-        fs::rename(&tmp, &path)?;
+        rename(&tmp, &path)?;
         sync_dir(&self.dir)?;
         let run = Arc::new(Run::open(&path, lo, hi)?);
         {
@@ -1261,7 +1276,7 @@ impl Keyspace {
         let seq = jobs.next_flush;
         run::restamp(path, covered, seq, seq)?;
         let dest = self.dir.join(run_name(seq, seq));
-        fs::rename(path, &dest)?;
+        rename(path, &dest)?;
         sync_dir(&self.dir)?;
         let run = Arc::new(Run::open(&dest, seq, seq)?);
         let entries = run.entries;
