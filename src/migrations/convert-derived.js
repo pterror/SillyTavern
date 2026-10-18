@@ -259,8 +259,11 @@ if (isMain) {
             ...args,
             engine: async () => {
                 // The server builds the engine for this checkout when it starts; the server is stopped here.
-                const { ensureEngine } = await import('../../engine/fetch.js');
-                await ensureEngine();
+                // A scratch build named by ST_ENGINE_PATH is loaded as is, as the server does.
+                if (!process.env.ST_ENGINE_PATH) {
+                    const { ensureEngine } = await import('../../engine/fetch.js');
+                    await ensureEngine();
+                }
                 const { loadEngine } = await import('../../engine/load.js');
                 return loadEngine().binding;
             },
