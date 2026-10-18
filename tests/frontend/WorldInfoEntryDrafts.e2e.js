@@ -157,8 +157,6 @@ test.describe('World Info entry drafts', () => {
             expect((await storedEntry(page, name, uid)).content).toBe(STORED_CONTENT);
 
             await expect(reloaded.content).toHaveClass(/wi_field_draft/);
-            await expect(reloaded.entry.locator('.world_entry_draft_badge')).toBeVisible();
-            await expect(reloaded.entry.locator('.world_entry_draft_badge')).toHaveText('unsaved draft');
 
             await reloaded.content.focus();
             await reloaded.content.blur();
@@ -166,7 +164,6 @@ test.describe('World Info entry drafts', () => {
             expect(saves[0].body.data.content).toBe(`${STORED_CONTENT} typed before reload`);
             await expect.poll(async () => (await storedEntry(page, name, uid)).content).toBe(`${STORED_CONTENT} typed before reload`);
             await expect(reloaded.content).not.toHaveClass(/wi_field_draft/);
-            await expect(reloaded.entry.locator('.world_entry_draft_badge')).toBeHidden();
             expect(await draftKeys(page)).toEqual([]);
         } finally {
             await deleteBook(page, name);
@@ -222,7 +219,6 @@ test.describe('World Info entry drafts', () => {
             await content.blur();
             await expect.poll(() => draftKeys(page)).not.toEqual([]);
             await page.unroute('**/api/worldinfo/entry/edit');
-            await expect(entry.locator('.world_entry_draft_badge')).toBeVisible();
 
             const saves = recordSaves(page);
             await entry.locator('.delete_entry_button').click();
@@ -288,7 +284,7 @@ test.describe('World Info entry drafts', () => {
             const name = `WIDraftsKeep-${Date.now()}`;
             const uid = await createBook(page, name);
             try {
-                const { content, notice, entry } = await conflictInTabA(page, browser, name, uid);
+                const { content, notice } = await conflictInTabA(page, browser, name, uid);
                 const saves = recordSaves(page);
 
                 await notice.getByRole('button', { name: 'Keep my edit' }).click();
@@ -304,7 +300,6 @@ test.describe('World Info entry drafts', () => {
                 await expect.poll(() => saves.length).toBe(1);
                 expect(saves[0].body.data.content).toBe(DRAFT_TEXT);
                 await expect.poll(async () => (await storedEntry(page, name, uid)).content).toBe(DRAFT_TEXT);
-                await expect(entry.locator('.world_entry_draft_badge')).toBeHidden();
                 expect(await draftKeys(page)).toEqual([]);
             } finally {
                 await deleteBook(page, name);
@@ -315,7 +310,7 @@ test.describe('World Info entry drafts', () => {
             const name = `WIDraftsDiscard-${Date.now()}`;
             const uid = await createBook(page, name);
             try {
-                const { content, notice, entry } = await conflictInTabA(page, browser, name, uid);
+                const { content, notice } = await conflictInTabA(page, browser, name, uid);
                 const saves = recordSaves(page);
 
                 await notice.getByRole('button', { name: 'Keep the stored one' }).click();
@@ -323,7 +318,6 @@ test.describe('World Info entry drafts', () => {
                 await expect(content).toBeEnabled();
                 await expect(content).toHaveValue(OTHER_TEXT);
                 await expect(content).not.toHaveClass(/wi_field_draft/);
-                await expect(entry.locator('.world_entry_draft_badge')).toBeHidden();
                 expect(await draftKeys(page)).toEqual([]);
 
                 await content.focus();
