@@ -1859,8 +1859,12 @@ impl Inner {
     /// One step of cleaning: hands the next batch of the file being cleaned to the commit path (and waits, by
     /// returning, for it to come back), finishes the file, or picks the next one.
     fn clean_step(&self) -> bool {
-        // A bulk load reads the log as it stands: nothing is moved meanwhile.
-        if !self.is_ready() || self.pipe.lock().unwrap().loading.is_some() {
+        // A bulk load reads the log as it stands: nothing is moved meanwhile. A store stopped by a failed write
+        // moves nothing either: each relocation would fail at once and start cleaning over, without end.
+        if !self.is_ready() || {
+            let p = self.pipe.lock().unwrap();
+            p.loading.is_some() || p.failed.is_some()
+        } {
             return false;
         }
         match self.clean_next() {
@@ -2069,6 +2073,8 @@ mod books_tests;
 mod carriers_tests;
 #[cfg(test)]
 mod chat_tests;
+#[cfg(test)]
+mod fault_tests;
 #[cfg(test)]
 mod history_tests;
 #[cfg(test)]

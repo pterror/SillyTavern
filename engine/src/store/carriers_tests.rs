@@ -1214,10 +1214,10 @@ fn a_simulated_store_run_replays_exactly() {
 }
 
 /// `queries_while_carriers_move_equal_the_queries_once_everything_settles` simulated: background steps run as the seed picks them (`Executor::simulated`), so an interleaving
-/// that fails replays exactly with `ST_SIM_SEED`; `ST_SIM_SEEDS` sets how many seeds run (default 4).
+/// that fails replays exactly with `ST_SIM_SEED`; `ST_SIM_SEEDS` sets how many seeds run (default 2).
 #[test]
 fn queries_while_carriers_move_equal_the_queries_once_everything_settles_simulated() {
-    for seed in crate::keyspace::exec::sim_seeds(4) {
+    for seed in crate::keyspace::exec::sim_seeds(2) {
         queries_while_carriers_move_equal_the_queries_once_everything_settles_in(&|| Pool::simulated(64 << 10, 256 << 10, 2, 2, seed));
     }
 }

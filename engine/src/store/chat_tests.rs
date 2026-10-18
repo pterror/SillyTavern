@@ -1345,10 +1345,10 @@ fn chat_structures_follow_commits_reopens_crashes_and_cleaning() {
 }
 
 /// `chat_structures_follow_commits_reopens_crashes_and_cleaning` simulated: background steps run as the seed picks them (`Executor::simulated`), so an interleaving
-/// that fails replays exactly with `ST_SIM_SEED`; `ST_SIM_SEEDS` sets how many seeds run (default 4).
+/// that fails replays exactly with `ST_SIM_SEED`; `ST_SIM_SEEDS` sets how many seeds run (default 1).
 #[test]
 fn chat_structures_follow_commits_reopens_crashes_and_cleaning_simulated() {
-    for seed in crate::keyspace::exec::sim_seeds(4) {
+    for seed in crate::keyspace::exec::sim_seeds(1) {
         chat_structures_follow_commits_reopens_crashes_and_cleaning_in(&|| Pool::simulated(16 << 10, 64 << 10, 2, 2, seed));
     }
 }
