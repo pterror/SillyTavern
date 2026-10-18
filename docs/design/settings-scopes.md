@@ -45,7 +45,7 @@ No chat or character can change a reader-bound setting, and output in a shared c
 
 ## Decisions
 
-1. A device does not beat a chat's background lock: the lock is the scene, as upstream. A reader-bound switch per
+1. A device does not beat a chat's background: the chat's background is the scene, as upstream. A reader-bound switch per
    device, "ignore chat backgrounds on this device", is the escape hatch.
 2. Tab-level statements stay with the session when a fresh tab takes it over (even on another device), as its chat
    position does. The tab shows what it states ("this tab: preset X") with a reset.
@@ -57,7 +57,7 @@ No chat or character can change a reader-bound setting, and output in a shared c
 - movingUI: the user's desktop and mobile layouts stay the user-level value; a device or tab may name its own layout.
 - Compat: `assemble(user, {chat, session, device})` resolves what the tab sees; `power_user` and
   `background_settings` show resolved values. Upstream writes go to the level supplying the value;
-  `chat_metadata.custom_background` stays the chat lock. An import lands at user level; upstream's localStorage
+  `chat_metadata.custom_background` (upstream's "lock background") is the chat's background statement. An import lands at user level; upstream's localStorage
   language becomes a device-level statement. `AccountStorage` (navigation locks, page sizes) is per-browser UI
   state, not settings, and stays in localStorage.
 - Cost: at most 6 levels, so O(levels) point reads per resolved slot; one localStorage read and one header per
