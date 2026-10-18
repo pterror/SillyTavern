@@ -239,6 +239,25 @@ async function runImport(store, directories) {
 }
 
 /**
+ * The bookmarks of the chat files the import stored, by upstream's chat id for them (the file's name without
+ * `.jsonl`, as `getCurrentChatId()` named the chat): one or more `b<id>`, more when files in different folders share
+ * a name.
+ * @param {string} root The user directory.
+ * @returns {Map<string, string[]>}
+ */
+export function importedChatBookmarks(root) {
+    /** @type {Map<string, string[]>} */
+    const out = new Map();
+    for (const [file, bookmark] of Object.entries(readMap(path.join(root, MAP_FILE)).chats)) {
+        const id = path.basename(file).replace(/\.jsonl$/i, '');
+        const list = out.get(id);
+        if (list) list.push(bookmark);
+        else out.set(id, [bookmark]);
+    }
+    return out;
+}
+
+/**
  * @param {string} mapPath
  * @returns {{ chats: Record<string, string> }}
  */

@@ -1,4 +1,4 @@
-import { DiffMatchPatch, DOMPurify } from '../lib.js';
+import { DiffMatchPatch, DOMPurify, localforage } from '../lib.js';
 import { getCurrentChatId, getSelectionState, reloadCurrentChat } from '../script.js';
 import { chat } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
@@ -12,7 +12,7 @@ import { isMobile } from './RossAscends-mods.js';
 import { renderTemplateAsync } from './templates.js';
 import { getTokenCountsWithTokenizer } from './tokenizers.js';
 import { renderCountBasis } from './tokenizer-notices.js';
-import { copyText } from './utils.js';
+import { copyText, escapeHtml } from './utils.js';
 
 let PromptArrayItemForRawPromptDisplay;
 let priorPromptArrayItemForRawPromptDisplay;
@@ -526,7 +526,90 @@ export function deleteItemizedPromptForMessage(messageId) {
     }
 }
 
+/** Upstream's per-chat store of itemized prompts in this browser (upstream's `promptStorage`). */
+const UPSTREAM_STORE = 'SillyTavern_Prompts';
+/** The chats one `/import-upstream` request carries, and about the most bytes. */
+const UPSTREAM_BATCH_CHATS = 200;
+const UPSTREAM_BATCH_BYTES = 4 * 1024 * 1024;
+/** localStorage key: the last warning about upstream entries left out, so the same one isn't shown on every load. */
+const UPSTREAM_WARNED_KEY = 'itemized_prompts_upstream_left_out';
+
+/**
+ * Moves the itemized prompts upstream kept in this browser onto the server's messages (src/upstream-itemizations.js),
+ * once per load, after startup: each chat's copy here goes once the server has stored its entries; a chat with
+ * entries left out keeps just those. What is left out is shown in a warning naming each chat and message.
+ */
+export async function importUpstreamItemizedPrompts() {
+    const storage = localforage.createInstance({ name: UPSTREAM_STORE });
+    /** @type {{ chat_id: string, entries: object[] }[]} */
+    const chats = [];
+    /** @type {string[]} */
+    const leftOut = [];
+    try {
+        await storage.iterate((value, chatId) => {
+            if (Array.isArray(value)) {
+                if (value.length) chats.push({ chat_id: chatId, entries: value });
+            } else {
+                leftOut.push(t`${chatId}: not upstream's format of itemized prompts, kept in this browser`);
+            }
+        });
+    } catch (error) {
+        console.warn('[itemized-prompts] reading upstream\'s itemized prompts in this browser failed', error);
+        return;
+    }
+    let batch = [];
+    let bytes = 0;
+    const send = async () => {
+        if (!batch.length) return;
+        const sent = batch;
+        batch = [];
+        bytes = 0;
+        const response = await post('import-upstream', { chats: sent });
+        if (!response.ok) {
+            leftOut.push(...sent.map(c => t`${c.chat_id}: the server couldn't store it (${response.status}), kept in this browser`));
+            return;
+        }
+        const { results } = await response.json();
+        for (const [i, r] of results.entries()) {
+            const chat = sent[i];
+            if (r.status !== 'stored') {
+                leftOut.push(t`${chat.chat_id}: ${r.why}, kept in this browser`);
+                continue;
+            }
+            if (!r.unmatched.length) {
+                await storage.removeItem(chat.chat_id);
+                continue;
+            }
+            const unplaced = new Set(r.unmatched.map((/** @type {{ entry: number }} */ u) => u.entry));
+            await storage.setItem(chat.chat_id, chat.entries.filter((_, j) => unplaced.has(j)));
+            for (const u of r.unmatched) leftOut.push(t`${chat.chat_id}, message ${String(u.mesId)}: ${u.why}, kept in this browser`);
+        }
+    };
+    for (const chat of chats) {
+        const size = JSON.stringify(chat.entries).length;
+        if (batch.length && (batch.length >= UPSTREAM_BATCH_CHATS || bytes + size > UPSTREAM_BATCH_BYTES)) await send();
+        batch.push(chat);
+        bytes += size;
+    }
+    await send();
+    if (!leftOut.length) {
+        localStorage.removeItem(UPSTREAM_WARNED_KEY);
+        return;
+    }
+    const text = leftOut.join('\n');
+    console.warn(`[itemized-prompts] upstream itemized prompts not imported:\n${text}`);
+    if (localStorage.getItem(UPSTREAM_WARNED_KEY) === text) return;
+    localStorage.setItem(UPSTREAM_WARNED_KEY, text);
+    toastr.warning(leftOut.map(line => escapeHtml(line)).join('<br>'), t`Some of upstream's itemized prompts weren't imported`, {
+        escapeHtml: false, timeOut: 0, extendedTimeOut: 0, closeButton: true,
+    });
+}
+
 export function initItemizedPrompts() {
+    eventSource.on(event_types.APP_READY, () => {
+        importUpstreamItemizedPrompts().catch(error => console.warn('[itemized-prompts] importing upstream\'s itemized prompts failed', error));
+    });
+
     registerDebugFunction('clearPrompts', 'Delete itemized prompts', 'Deletes every stored prompt breakdown.', async () => {
         await clearItemizedPrompts();
         toastr.info('Itemized prompts deleted.');

@@ -17,6 +17,7 @@ let view = null;
 jest.unstable_mockModule('../public/lib.js', () => ({
     DiffMatchPatch: jest.fn(),
     DOMPurify: { sanitize: jest.fn() },
+    localforage: { createInstance: jest.fn() },
 }));
 jest.unstable_mockModule('../public/script.js', () => ({
     getCurrentChatId: jest.fn(),
@@ -73,7 +74,7 @@ jest.unstable_mockModule('../public/scripts/tokenizers.js', () => ({
     getTokenCountsAsyncBatch: jest.fn(async (strings) => strings.map(() => 0)),
     getFriendlyTokenizerName: jest.fn(() => ({ tokenizerName: 'Llama 1/2', tokenizerKey: 'llama', tokenizerId: 3 })),
 }));
-jest.unstable_mockModule('../public/scripts/utils.js', () => ({ copyText: jest.fn() }));
+jest.unstable_mockModule('../public/scripts/utils.js', () => ({ copyText: jest.fn(), escapeHtml: jest.fn(s => s) }));
 
 /** @type {typeof import('../public/scripts/itemized-prompts.js').itemizedParams} */
 let itemizedParams;
