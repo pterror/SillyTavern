@@ -31,6 +31,15 @@ reordering them). Each row of `settings-mapping.tsv` gets a `levels` column.
 
 No chat or character can change a reader-bound setting, and output in a shared chat never depends on a device.
 
+## Pinned statements
+
+Any statement (a bundle statement or an override, at any level) can be marked pinned. Resolution of a field first
+walks the levels for a pinned statement, farthest first; if none states the field pinned, it walks closest first as
+usual. So a pinned statement beats every unpinned one, and among pinned statements the farther level wins, as a CSS
+user's `!important` beats an author's. A device-level background pinned on a phone shows on that phone whatever a
+chat states; a user-level pinned preset holds across every chat and character. Pinning is a field of the statement:
+kept in history, reset like any other.
+
 ## Device
 
 - Identity: a random UUID in localStorage (`st:device`), shared by the users of that browser, sent with each request.
