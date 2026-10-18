@@ -60,6 +60,12 @@ impl From<io::Error> for KsError {
 
 pub type KsResult<T> = Result<T, KsError>;
 
+/// A merge writes at most this many bytes of entries (keys and value payloads) per step, so a merge of any size
+/// is many short steps: it holds a thread only for a step, other merges and stores take turns between steps,
+/// and a stop is seen within one. Tests take 4 KB steps, so every test's merges run as many steps among its
+/// flushes and reads.
+pub const MERGE_STEP_BYTES: usize = if cfg!(test) { 4 << 10 } else { 4 << 20 };
+
 /// Every run is merged into the oldest once the newer runs together hold this percentage of its bytes...
 pub const SIZE_AMP_PERCENT: u64 = 25;
 /// ...or their deletions this percentage of its entries.
@@ -302,6 +308,18 @@ struct Jobs {
     flush_failures: u64,
 }
 
+/// A merge under way: its inputs (adjacent, oldest first), where it has got to, and the run it is writing. It
+/// holds a merge slot from its first step to its last.
+struct MergeJob {
+    inputs: Vec<Arc<Run>>,
+    merge: Merge<'static, RunIter<'static>>,
+    w: RunWriter,
+    tmp: PathBuf,
+    /// With the oldest run among the inputs, nothing older exists for a deletion to hide.
+    bottom: bool,
+    _slot: pool::MergeSlot,
+}
+
 pub struct Keyspace {
     cfg: KsConfig,
     dir: PathBuf,
@@ -313,6 +331,8 @@ pub struct Keyspace {
     pool: Arc<Pool>,
     flush_act: Arc<Activity>,
     merge_act: Arc<Activity>,
+    /// Merges under way, on disjoint inputs; the merge activity steps them in turn.
+    merging: Mutex<Vec<MergeJob>>,
     /// A merge into the oldest run is waiting for disk space (said once).
     short_of_room: AtomicBool,
     /// The pool wants this keyspace's buffer frozen; its flush activity does it.
@@ -418,6 +438,7 @@ impl Keyspace {
                 pool: pool.clone(),
                 flush_act: activity(Keyspace::flush_step),
                 merge_act: activity(Keyspace::merge_step),
+                merging: Mutex::new(Vec::new()),
                 short_of_room: AtomicBool::new(false),
                 freeze_requested: AtomicBool::new(false),
                 counts: ReadCounts::default(),
@@ -1010,12 +1031,24 @@ impl Keyspace {
     /// universal compaction triggers): a deletion and the versions it or a newer value hides are dropped only
     /// in a merge reaching the oldest run, so this bounds what they take. Else `fan_in` of one tier, the lowest
     /// tier first; or, past a run count no tiering leaves, the adjacent `fan_in` with the fewest bytes. Returns
-    /// them oldest first.
-    fn pick(&self) -> Option<Vec<Arc<Run>>> {
+    /// them oldest first. Runs a merge under way holds (`busy`, by uid) are left out: a pick lies within one
+    /// stretch of adjacent runs no merge holds, and the oldest run is merged into only while no merge holds it.
+    fn pick(&self, busy: &[u64]) -> Option<Vec<Arc<Run>>> {
         let delta = self.cfg.fan_in;
         let v = self.version();
-        let runs: Vec<&Arc<Run>> = v.runs.iter().rev().collect();
-        if runs.len() >= delta.max(2) {
+        let all: Vec<&Arc<Run>> = v.runs.iter().rev().collect();
+        let mut stretches: Vec<&[&Arc<Run>]> = Vec::new();
+        for s in all.split(|r| busy.contains(&r.uid)) {
+            if !s.is_empty() {
+                stretches.push(s);
+            }
+        }
+        // The stretch beginning at the oldest run, if no merge holds that run.
+        if let Some(runs) = stretches
+            .first()
+            .filter(|s| all.first().is_some_and(|o| o.uid == s[0].uid))
+            && runs.len() >= delta.max(2)
+        {
             let bottom = runs[0];
             let newer: u64 = runs[1..].iter().map(|r| r.bytes).sum();
             let dels: u64 = runs[1..].iter().map(|r| r.dels).sum();
@@ -1026,25 +1059,28 @@ impl Keyspace {
                 return Some(runs.iter().map(|r| (*r).clone()).collect());
             }
         }
-        let mut best: Option<(u32, usize)> = None;
-        let mut i = 0;
-        while i < runs.len() {
-            let t = self.tier(runs[i].bytes);
-            let mut j = i;
-            while j < runs.len() && self.tier(runs[j].bytes) == t {
-                j += 1;
+        let mut best: Option<(u32, &[&Arc<Run>])> = None;
+        for runs in &stretches {
+            let mut i = 0;
+            while i < runs.len() {
+                let t = self.tier(runs[i].bytes);
+                let mut j = i;
+                while j < runs.len() && self.tier(runs[j].bytes) == t {
+                    j += 1;
+                }
+                if j - i >= delta && best.is_none_or(|(bt, _)| t < bt) {
+                    best = Some((t, &runs[i..i + delta]));
+                }
+                i = j.max(i + 1);
             }
-            if j - i >= delta && best.is_none_or(|(bt, _)| t < bt) {
-                best = Some((t, i));
-            }
-            i = j.max(i + 1);
         }
-        if let Some((_, i)) = best {
-            return Some(runs[i..i + delta].iter().map(|r| (*r).clone()).collect());
+        if let Some((_, w)) = best {
+            return Some(w.iter().map(|r| (*r).clone()).collect());
         }
-        if runs.len() > delta * 16 {
-            return runs
-                .windows(delta)
+        if all.len() > delta * 16 {
+            return stretches
+                .iter()
+                .flat_map(|s| s.windows(delta))
                 .min_by_key(|w| w.iter().map(|r| r.bytes).sum::<u64>())
                 .map(|w| w.iter().map(|r| (*r).clone()).collect());
         }
@@ -1070,48 +1106,99 @@ impl Keyspace {
         room
     }
 
-    /// One step of the merge activity: one merge, if one is due and a slot is free.
+    /// One step of the merge activity: starts the merges that are due while slots are free, then takes the
+    /// first merge under way `MERGE_STEP_BYTES` further (to the back of the line, so merges take turns); a
+    /// finished one is put in place. Returns whether a merge is still under way or due.
     fn merge_step(&self) -> bool {
-        if self.jobs.lock().unwrap().stop || self.pick().is_none() {
+        let mut merging = self.merging.lock().unwrap();
+        if self.jobs.lock().unwrap().stop {
+            Self::abandon(&mut merging);
             return false;
         }
-        let Some(slot) = self.pool.merge_slot(&self.merge_act) else {
-            return false;
-        };
-        let Some(inputs) = self.pick() else {
-            return false;
-        };
-        let result = self.merge(&inputs);
-        drop(slot);
-        match result {
-            Ok(done) => done,
-            Err(e) => {
-                // Retried at the next flush.
-                eprintln!("st-engine: merging runs failed: {e}");
-                false
+        loop {
+            let busy: Vec<u64> = merging
+                .iter()
+                .flat_map(|j| j.inputs.iter().map(|r| r.uid))
+                .collect();
+            let Some(inputs) = self.pick(&busy) else {
+                break;
+            };
+            let Some(slot) = self.pool.merge_slot(&self.merge_act) else {
+                break;
+            };
+            match self.begin_merge(inputs, slot) {
+                Ok(job) => merging.push(job),
+                Err(e) => {
+                    // Retried at the next flush.
+                    eprintln!("st-engine: merging runs failed: {e}");
+                    break;
+                }
             }
+        }
+        if merging.is_empty() {
+            return false;
+        }
+        let mut job = merging.remove(0);
+        match self.advance_merge(&mut job) {
+            Ok(false) => merging.push(job),
+            Ok(true) => {
+                if let Err(e) = self.finish_merge(job) {
+                    eprintln!("st-engine: merging runs failed: {e}");
+                }
+            }
+            Err(e) => {
+                eprintln!("st-engine: merging runs failed: {e}");
+                let MergeJob { w, tmp, .. } = job;
+                drop(w);
+                let _ = fs::remove_file(&tmp);
+            }
+        }
+        // A finished merge may have made another due.
+        let busy: Vec<u64> = merging
+            .iter()
+            .flat_map(|j| j.inputs.iter().map(|r| r.uid))
+            .collect();
+        !merging.is_empty() || self.pick(&busy).is_some()
+    }
+
+    /// Drops every merge under way and its partial run.
+    fn abandon(merging: &mut Vec<MergeJob>) {
+        for MergeJob { w, tmp, .. } in merging.drain(..) {
+            drop(w);
+            let _ = fs::remove_file(&tmp);
         }
     }
 
-    /// Merges `inputs` (adjacent, oldest first) into one run. Returns false if stopped before the end.
-    fn merge(&self, inputs: &[Arc<Run>]) -> KsResult<bool> {
+    /// Starts merging `inputs` (adjacent, oldest first) into one run.
+    fn begin_merge(&self, inputs: Vec<Arc<Run>>, slot: pool::MergeSlot) -> KsResult<MergeJob> {
         let (lo, hi) = (inputs[0].lo, inputs.last().unwrap().hi);
-        let covered = inputs.last().unwrap().covered;
-        // With the oldest run among the inputs, nothing older exists for a deletion to hide.
         let bottom = self.version().runs.last().map(|r| r.uid) == Some(inputs[0].uid);
-        let name = run_name(lo, hi);
-        let tmp = self.dir.join(name.replace(".run", ".tmp"));
-        let mut sources: Vec<Box<dyn Source>> = Vec::new();
+        let tmp = self.dir.join(run_name(lo, hi).replace(".run", ".tmp"));
+        let mut sources = Vec::new();
         for r in inputs.iter().rev() {
             sources.push(Box::new(RunIter::new(r.clone(), &[], None, None)?));
         }
-        let mut merge = Merge::new(sources);
         // Left by a merge that failed part way.
         let _ = fs::remove_file(&tmp);
-        let mut w = RunWriter::create(&tmp, self.cfg.block_size)?;
-        let mut n = 0u64;
-        while let Some((k, v)) = merge.next_entry()? {
-            let v = if bottom {
+        let w = RunWriter::create(&tmp, self.cfg.block_size)?;
+        Ok(MergeJob {
+            inputs,
+            merge: Merge::new(sources),
+            w,
+            tmp,
+            bottom,
+            _slot: slot,
+        })
+    }
+
+    /// Writes up to `MERGE_STEP_BYTES` more of a merge's entries. Returns whether its inputs are all written.
+    fn advance_merge(&self, job: &mut MergeJob) -> KsResult<bool> {
+        let mut bytes = 0;
+        while bytes < MERGE_STEP_BYTES {
+            let Some((k, v)) = job.merge.next_entry()? else {
+                return Ok(true);
+            };
+            let v = if job.bottom {
                 match v.bottom(&k) {
                     Some(v) => v,
                     None => continue,
@@ -1119,16 +1206,19 @@ impl Keyspace {
             } else {
                 v
             };
-            w.add(&k, &v)?;
-            n += 1;
-            if n.is_multiple_of(4096) && self.jobs.lock().unwrap().stop {
-                drop(w);
-                fs::remove_file(&tmp)?;
-                return Ok(false);
-            }
+            bytes += k.len() + v.payload_len();
+            job.w.add(&k, &v)?;
         }
+        Ok(false)
+    }
+
+    /// Finishes a merge whose entries are all written and puts its run in place of its inputs.
+    fn finish_merge(&self, job: MergeJob) -> KsResult<()> {
+        let MergeJob { inputs, w, tmp, .. } = job;
+        let (lo, hi) = (inputs[0].lo, inputs.last().unwrap().hi);
+        let covered = inputs.last().unwrap().covered;
         let bytes = w.finish(covered, lo, hi)?;
-        let path = self.dir.join(&name);
+        let path = self.dir.join(run_name(lo, hi));
         fs::rename(&tmp, &path)?;
         sync_dir(&self.dir)?;
         let run = Arc::new(Run::open(&path, lo, hi)?);
@@ -1156,7 +1246,7 @@ impl Keyspace {
         self.counters
             .merge_bytes
             .fetch_add(bytes, Ordering::Relaxed);
-        Ok(true)
+        Ok(())
     }
 
     /// Puts the run file at `path` (written with `RunWriter`, on the same file system) in place as the newest
@@ -1204,7 +1294,10 @@ impl Keyspace {
         loop {
             self.flush_act.wait_idle();
             self.merge_act.wait_idle();
-            if self.version().mems.len() == 1 && self.pick().is_none() {
+            if self.version().mems.len() == 1 && {
+                let merging = self.merging.lock().unwrap();
+                merging.is_empty() && self.pick(&[]).is_none()
+            } {
                 return;
             }
             self.flush_act.kick();
@@ -1221,6 +1314,7 @@ impl Keyspace {
         self.jobs.lock().unwrap().stop = true;
         self.flush_act.wait_idle();
         self.merge_act.wait_idle();
+        Self::abandon(&mut self.merging.lock().unwrap());
     }
 
     /// Entries inserted so far: changes whenever the derived data may have.

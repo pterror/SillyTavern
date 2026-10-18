@@ -944,20 +944,23 @@ impl Source for VecSource {
     }
 }
 
-/// Merges sources, the first the newest: yields each key once, with its values folded newest first.
-pub struct Merge<'a> {
-    sources: Vec<Box<dyn Source + 'a>>,
+/// Merges sources, the first the newest: yields each key once, with its values folded newest first. A merge of
+/// one kind of source (`S`) is `Send` when that source is, so it can be kept between steps.
+pub struct Merge<'a, S: Source + ?Sized + 'a = dyn Source + 'a> {
+    sources: Vec<Box<S>>,
     /// Each source's current key with its index, least first.
     heap: BinaryHeap<Reverse<(Vec<u8>, usize)>>,
     started: bool,
+    _life: std::marker::PhantomData<&'a ()>,
 }
 
-impl<'a> Merge<'a> {
-    pub fn new(sources: Vec<Box<dyn Source + 'a>>) -> Merge<'a> {
+impl<'a, S: Source + ?Sized + 'a> Merge<'a, S> {
+    pub fn new(sources: Vec<Box<S>>) -> Merge<'a, S> {
         Merge {
             sources,
             heap: BinaryHeap::new(),
             started: false,
+            _life: std::marker::PhantomData,
         }
     }
 

@@ -33,12 +33,25 @@ pub struct Slot<'a>(&'a Slots);
 
 impl Drop for Slot<'_> {
     fn drop(&mut self) {
-        self.0.free.fetch_add(1, Ordering::AcqRel);
-        self.0.waiters.wake();
+        self.0.release();
+    }
+}
+
+/// A merge slot held across steps (a merge runs as many steps); freed when dropped.
+pub struct MergeSlot(Arc<Pool>);
+
+impl Drop for MergeSlot {
+    fn drop(&mut self) {
+        self.0.merges.release();
     }
 }
 
 impl Slots {
+    fn release(&self) {
+        self.free.fetch_add(1, Ordering::AcqRel);
+        self.waiters.wake();
+    }
+
     fn new(n: usize) -> Slots {
         Slots {
             free: AtomicUsize::new(n.max(1)),
@@ -151,8 +164,11 @@ impl Pool {
         room
     }
 
-    pub(super) fn merge_slot(&self, a: &Arc<Activity>) -> Option<Slot<'_>> {
-        self.merges.take(a)
+    /// A merge slot, or None and `a` is kicked when one frees.
+    pub(super) fn merge_slot(self: &Arc<Self>, a: &Arc<Activity>) -> Option<MergeSlot> {
+        let slot = self.merges.take(a)?;
+        std::mem::forget(slot);
+        Some(MergeSlot(self.clone()))
     }
 
     pub(super) fn flush_slot(&self, a: &Arc<Activity>) -> Option<Slot<'_>> {

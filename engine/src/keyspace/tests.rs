@@ -192,6 +192,49 @@ fn reads_merge_buffers_and_runs_through_flushes_and_merges() {
 }
 
 #[test]
+fn a_merge_runs_as_many_steps_reads_see_through_it_and_a_stop_part_way_leaves_nothing() {
+    let dir = temp_dir("steps");
+    let ks = open(&dir);
+    let mut model = BTreeMap::new();
+    let mut end = 0;
+    // Until a merge is seen part way, everything flushed: its entries hold several 4 KB steps.
+    let mut seen = false;
+    for _ in 0..40 {
+        load(&ks, 1500, &mut model, &mut end);
+        ks.freeze_at(end);
+        ks.wait_flushed().unwrap();
+        if !ks.merging.lock().unwrap().is_empty() {
+            seen = true;
+            check(&ks, &model);
+            break;
+        }
+    }
+    assert!(seen, "no merge was under way between steps");
+    ks.stop();
+    assert!(ks.merging.lock().unwrap().is_empty());
+    drop(ks);
+    let tmps = fs::read_dir(&dir)
+        .unwrap()
+        .filter(|e| {
+            e.as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp")
+        })
+        .count();
+    assert_eq!(tmps, 0, "a stopped merge left its partial run");
+    // Reopened, the abandoned merge's inputs hold everything; the merge is started again and finishes.
+    let ks = open(&dir);
+    assert_eq!(ks.covered(), end);
+    check(&ks, &model);
+    ks.wait_merged();
+    check(&ks, &model);
+    drop(ks);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn runs_left_over_from_a_merge_and_unfinished_runs_are_removed_on_open() {
     let dir = temp_dir("leftover");
     let ks = open(&dir);
