@@ -150,7 +150,9 @@ test.describe('embedded lorebook edits are saved into the card they were made on
             await expect(comment).toHaveValue('A original');
 
             const mergeBodies = recordMergeRequests(page);
+            // Typing is a draft; leaving the field commits it.
             await comment.fill('A edited after the panel moved');
+            await comment.blur();
 
             await expect.poll(() => storedEntryComments(page, avatarA), { timeout: 10000 }).toEqual(['A edited after the panel moved']);
             expect(mergeBodies.map(body => body.avatar)).toEqual([avatarA]);
@@ -175,12 +177,14 @@ test.describe('embedded lorebook edits are saved into the card they were made on
             await switchCharacterPanel(page, avatarA);
             await openEmbeddedLoreEditor(page, avatarA);
             await expect(comment).toHaveValue('A original');
+            // Typing is a draft; moving the panel on (A) and leaving the field (B) commit it.
             await comment.fill('A edit');
 
             await switchCharacterPanel(page, avatarB);
             await openEmbeddedLoreEditor(page, avatarB);
             await expect(comment).toHaveValue('B original');
             await comment.fill('B edit');
+            await comment.blur();
 
             await expect.poll(async () => [await storedEntryComments(page, avatarA), await storedEntryComments(page, avatarB)], { timeout: 10000 })
                 .toEqual([['A edit'], ['B edit']]);
@@ -218,6 +222,7 @@ test.describe('embedded lorebook edits are saved into the card they were made on
             }, avatarA);
 
             await comment.fill('A edited here');
+            await comment.blur();
 
             const popup = page.locator('dialog.popup[open]', { hasText: 'Character edited in another session' });
             await expect(popup).toBeVisible({ timeout: 10000 });
@@ -228,6 +233,25 @@ test.describe('embedded lorebook edits are saved into the card they were made on
             await expect.poll(() => storedEntryComments(page, avatarA), { timeout: 10000 }).toEqual(['A edited here']);
         } finally {
             await deleteCharacters(page, [avatarA, avatarB]);
+        }
+    });
+
+    test('a duplicated and a new entry in an embedded lorebook are saved into its card', async ({ page }) => {
+        const stamp = Date.now();
+        const avatar = await createCharacterWithEmbeddedLorebook(page, `EmbeddedLoreNewEntry-${stamp}`, 'A original');
+        try {
+            await openCharacterManagementDrawer(page);
+            await switchCharacterPanel(page, avatar);
+            await openEmbeddedLoreEditor(page, avatar);
+            await expect(page.locator('#world_popup_entries_list textarea[name="comment"]')).toHaveValue('A original');
+
+            await page.locator('#world_popup_entries_list .duplicate_entry_button').first().click();
+            await expect.poll(() => storedEntryComments(page, avatar), { timeout: 10000 }).toEqual(['A original', 'A original']);
+
+            await page.locator('#world_popup_new').click();
+            await expect.poll(async () => (await storedEntryComments(page, avatar)).length, { timeout: 10000 }).toBe(3);
+        } finally {
+            await deleteCharacters(page, [avatar]);
         }
     });
 

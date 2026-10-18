@@ -2723,7 +2723,10 @@ async function displayWorldEntries(name, data, navigation = navigation_option.no
 
     $('#world_popup_new').off('click').on('click', async () => {
         const entry = await createWorldInfoEntry(name, data);
-        if (entry) updateEditor(entry.uid);
+        if (!entry) return;
+        // A book's new entry is stored by the server as it's created; an embedded lorebook's is saved into the card.
+        if (name === EMBEDDED_WORLD_NAME) await saveWorldInfoEntry(name, data, entry.uid);
+        updateEditor(entry.uid);
     });
 
     $('#world_popup_name_button').off('click').on('click', async () => {
@@ -4804,7 +4807,10 @@ export const newWorldInfoEntryTemplate = Object.fromEntries(
  * collision there would silently overwrite an existing entry on the next whole-book save. The server
  * reserves the uid in the on-disk book immediately, before returning it, so no two concurrent creates
  * against the same book can ever be handed the same uid.
- * @param {string} name Name of the WI (must already exist on disk)
+ *
+ * An embedded lorebook is no book on the server: it is one field of its character's card, saved whole, so its
+ * entry takes the lowest uid free in `data` itself, as upstream does for every book.
+ * @param {string} name Name of the WI (must already exist on disk), or {@link EMBEDDED_WORLD_NAME}
  * @param {any} data WI data
  * @returns {Promise<object | undefined>} New entry object or undefined if failed
  */
@@ -4812,6 +4818,14 @@ export async function createWorldInfoEntry(name, data) {
     if (!name) {
         console.error('Couldn\'t create a new entry: no lorebook name given');
         return;
+    }
+
+    if (name === EMBEDDED_WORLD_NAME) {
+        let uid = 0;
+        while (uid in data.entries) uid++;
+        const newEntry = { uid, ...structuredClone(newWorldInfoEntryTemplate) };
+        data.entries[uid] = newEntry;
+        return newEntry;
     }
 
     let result;

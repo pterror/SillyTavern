@@ -16,7 +16,7 @@ if (process.env.PLAYWRIGHT_BASIC_AUTH_USER) {
 test.describe('world info character filter existence prune', () => {
     test.beforeEach(testSetup.awaitST);
 
-    test('opening and editing an entry keeps a filter name whose character exists', async ({ page }) => {
+    test('toggling an entry\'s character exclusion keeps a filter name whose character exists', async ({ page }) => {
         const worldName = `WI_FILTER_PRUNE_${Date.now()}`;
 
         await openCharacterManagementDrawer(page);
@@ -48,17 +48,20 @@ test.describe('world info character filter existence prune', () => {
             const entryRow = page.locator('#world_popup_entries_list .world_entry').first();
             await entryRow.waitFor({ state: 'attached', timeout: 10000 });
 
-            // The entry's editor, and with it the existence prune, is only built when its drawer opens.
-            const existsResponse = page.waitForResponse(response => response.url().endsWith('/api/characters/exists'));
+            // The entry's editor is only built when its drawer opens.
             await entryRow.evaluate(row => $(row).find('.inline-drawer-toggle').first().trigger('click'));
-            await existsResponse;
+            const exclusion = entryRow.locator('input[name="character_exclusion"]');
+            await expect(exclusion).toBeVisible();
 
+            // Toggling the exclusion checks the filter's names against the characters that exist, and commits at once.
+            const existsResponse = page.waitForResponse(response => response.url().endsWith('/api/characters/exists'));
             const editRequest = page.waitForRequest(request => request.url().endsWith('/api/worldinfo/entry/edit'));
-            await entryRow.evaluate(row => $(row).find('textarea[name="content"]').val('edited content').trigger('input'));
+            await exclusion.check();
+            await existsResponse;
             const saved = (await editRequest).postDataJSON();
 
             expect(saved.uid).toBe(uid);
-            expect(saved.data.content).toBe('edited content');
+            expect(saved.data.characterFilter.isExclude).toBe(true);
             expect(saved.data.characterFilter.names).toEqual([boundName]);
         } finally {
             await page.evaluate(async ({ worldName, avatar }) => {

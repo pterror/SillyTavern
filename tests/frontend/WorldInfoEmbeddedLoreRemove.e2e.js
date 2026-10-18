@@ -106,19 +106,26 @@ function recordMergeRequests(page) {
 }
 
 /**
- * Types into the first entry's title, then clicks the delete button and confirms, all inside the page so the
- * edit's debounced save is still waiting when the removal starts.
+ * Makes an edit, then clicks the delete button and confirms, all inside the page. `{ title }` types into the first
+ * entry's title: a draft, which commits when the confirmation takes the focus, before the removal starts.
+ * `{ duplicate: true }` duplicates the first entry, whose save is debounced, so it is still waiting when the
+ * removal starts.
  * @param {import('@playwright/test').Page} page
- * @param {string} text
+ * @param {{title: string} | {duplicate: true}} edit
  * @param {string} characterName The name the confirmation must name.
  * @returns {Promise<number>} Milliseconds from the edit to the confirmation.
  */
-async function editThenRemoveAndConfirm(page, text, characterName) {
-    return page.evaluate(async ({ text, characterName }) => {
+async function editThenRemoveAndConfirm(page, edit, characterName) {
+    return page.evaluate(async ({ edit, characterName }) => {
         const started = performance.now();
-        const comment = /** @type {HTMLTextAreaElement} */ (document.querySelector('#world_popup_entries_list textarea[name="comment"]'));
-        comment.value = text;
-        comment.dispatchEvent(new Event('input', { bubbles: true }));
+        if ('title' in edit) {
+            const comment = /** @type {HTMLTextAreaElement} */ (document.querySelector('#world_popup_entries_list textarea[name="comment"]'));
+            comment.focus();
+            comment.value = edit.title;
+            comment.dispatchEvent(new Event('input', { bubbles: true }));
+        } else {
+            /** @type {HTMLElement} */ (document.querySelector('#world_popup_entries_list .duplicate_entry_button')).click();
+        }
         /** @type {HTMLElement} */ (document.querySelector('#world_popup_delete')).click();
         let ok;
         while (!(ok = /** @type {HTMLElement} */ (document.querySelector('dialog[open] .popup-button-ok')))) {
@@ -131,7 +138,7 @@ async function editThenRemoveAndConfirm(page, text, characterName) {
         }
         ok.click();
         return performance.now() - started;
-    }, { text, characterName });
+    }, { edit, characterName });
 }
 
 /**
@@ -194,17 +201,20 @@ test.describe('removing an embedded lorebook acts on the card it belongs to', ()
             await expect(comment).toHaveValue('original');
 
             const mergeBodies = recordMergeRequests(page);
-            const elapsed = await editThenRemoveAndConfirm(page, 'edited just before removing', name);
+            const elapsed = await editThenRemoveAndConfirm(page, { duplicate: true }, name);
             expect(elapsed).toBeLessThan(SAVE_DEBOUNCE_MS);
 
             await expect.poll(() => storedCharacterBook(page, avatar), { timeout: 10000 }).toBeUndefined();
             // Nothing observable marks the cancelled debounce; wait out the window it would have fired in.
             // eslint-disable-next-line playwright/no-wait-for-timeout
             await page.waitForTimeout(PENDING_SAVE_WINDOW_MS);
-            // The edit would either put the lorebook back or, with its pre-removal baseline, raise a conflict.
+            // The waiting save would either put the lorebook back or, with its pre-removal baseline, raise a conflict.
             expect(mergeBodies.map(body => body.data?.character_book === '__@@UNSET@@__' ? 'removal' : 'edit')).toEqual(['removal']);
             expect(await storedCharacterBook(page, avatar)).toBeUndefined();
             await expect(page.locator('dialog[open]')).toHaveCount(0);
+            // Nor does it fire later and report edits to a lorebook that's gone as not saved. Counted once, not awaited:
+            // such a toast would be up now, and would only go by waiting for it to fade.
+            expect(await page.locator('#toast-container .toast-error').count()).toBe(0);
         } finally {
             await deleteCharacters(page, [avatar]);
         }
@@ -229,7 +239,7 @@ test.describe('removing an embedded lorebook acts on the card it belongs to', ()
                 await route.continue();
             });
 
-            const elapsed = await editThenRemoveAndConfirm(page, 'kept edit', name);
+            const elapsed = await editThenRemoveAndConfirm(page, { title: 'kept edit' }, name);
             expect(elapsed).toBeLessThan(SAVE_DEBOUNCE_MS);
 
             await expect(page.locator('#toast-container .toast-error', { hasText: `The embedded lorebook of ${name} was not removed.` })).toBeVisible();
