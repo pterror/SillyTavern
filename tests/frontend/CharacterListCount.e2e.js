@@ -62,11 +62,11 @@ async function setSearchTerm(page, term) {
     await page.locator('#character_search_bar').fill(term);
 }
 
-/** Runs what a 'search-index-updated' on /changes/stream runs. */
-async function searchIndexUpdated(page) {
+/** Re-queries the visible page, as a change to the characters does. */
+async function requeryPage(page) {
     await page.evaluate(async () => {
-        const { onSearchIndexUpdated } = await import('/scripts/character-list.js');
-        onSearchIndexUpdated();
+        const { refreshCharacterListCurrentPage } = await import('/scripts/character-list.js');
+        refreshCharacterListCurrentPage();
     });
 }
 
@@ -97,7 +97,7 @@ test.describe('character list count', () => {
     });
 
     test.describe('server-paged', () => {
-        test('when matches go down, search-index-updated brings the count down with the page', async ({ page }) => {
+        test('when matches go down, re-querying the page brings the count down with it', async ({ page }) => {
             await page.evaluate(() => {
                 window['__stub'].pageTotal = () => 50;
             });
@@ -105,7 +105,7 @@ test.describe('character list count', () => {
             await expect.poll(() => navigatorText(page)).toMatch(/\.\. 50$/);
 
             await page.evaluate(() => { window['__stub'].pageTotal = () => 3; });
-            await searchIndexUpdated(page);
+            await requeryPage(page);
 
             await expect.poll(() => navigatorText(page)).toBe('1-3 .. 3');
         });
@@ -154,18 +154,18 @@ test.describe('character list count', () => {
 
             // The same backend again: no second toast.
             const callsBefore = await page.evaluate(() => window['__stub'].calls.length);
-            await searchIndexUpdated(page);
+            await requeryPage(page);
             await expect.poll(() => page.evaluate(() => window['__stub'].calls.length)).toBeGreaterThan(callsBefore);
             await expect(indicator).toBeVisible();
             await expect(changedToasts).toHaveCount(1);
 
             await page.evaluate(() => { window['__stub'].backend = 'unavailable'; });
-            await searchIndexUpdated(page);
+            await requeryPage(page);
             await expect(indicator).toHaveClass(/\berror\b/);
             await expect(page.locator('.toast-error').filter({ hasText: 'Search backend changed' })).toHaveCount(1);
 
             await page.evaluate(() => { window['__stub'].backend = 'tantivy'; });
-            await searchIndexUpdated(page);
+            await requeryPage(page);
             await expect(indicator).toBeHidden();
             await expect(changedToasts).toHaveCount(2);
         });
@@ -177,7 +177,7 @@ test.describe('character list count', () => {
             await expect.poll(() => navigatorText(page)).toMatch(/^1-\d+ \.\. ~1200$/);
 
             await page.evaluate(() => { window['__stub'].pageTotal = () => 1200; });
-            await searchIndexUpdated(page);
+            await requeryPage(page);
 
             await expect.poll(() => navigatorText(page)).toMatch(/^1-\d+ \.\. 1200$/);
         });
