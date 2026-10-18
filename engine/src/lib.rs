@@ -10,6 +10,7 @@ static ALLOCATOR: memory::Counting<mimalloc::MiMalloc> = memory::Counting(mimall
 #[global_allocator]
 static ALLOCATOR: memory::Counting<std::alloc::System> = memory::Counting(std::alloc::System);
 
+pub mod faults;
 pub mod keyspace;
 pub mod log;
 pub mod memory;

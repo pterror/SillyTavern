@@ -241,7 +241,8 @@ impl Drop for Run {
         if self.file.on_disk() && self.obsolete.load(Ordering::Acquire) {
             #[cfg(target_family = "wasm")]
             self.file.forget();
-            let _ = fs::remove_file(&self.path);
+            let _ = crate::faults::op(crate::faults::Op::Remove, &self.path)
+                .and_then(|()| fs::remove_file(&self.path));
         }
     }
 }
@@ -286,7 +287,12 @@ impl Run {
                 .write(true)
                 .create_new(true)
                 .open(&self.path)?;
+            if let Some(n) = crate::faults::write(&self.path, 0, b.len())? {
+                f.write_all(&b[..n])?;
+                return Err(crate::faults::torn().into());
+            }
             f.write_all(b)?;
+            crate::faults::op(crate::faults::Op::Sync, &self.path)?;
             f.sync_data()?;
         }
         let _ = m.file.set(Box::new(RunFile::open(&self.path)?));
@@ -1056,6 +1062,8 @@ pub fn restamp(path: &Path, covered: u64, lo: u64, hi: u64) -> io::Result<()> {
 
 pub struct RunWriter {
     out: RunOut,
+    /// The file written, for the fault seam (`crate::faults`); none in memory.
+    path: Option<PathBuf>,
     offset: u64,
     block_size: usize,
     data: BlockBuilder,
@@ -1105,10 +1113,12 @@ enum RunOut {
 impl RunWriter {
     pub fn create(path: &Path, block_size: usize) -> io::Result<RunWriter> {
         let file = OpenOptions::new().write(true).create_new(true).open(path)?;
-        Ok(RunWriter::to(
+        let mut w = RunWriter::to(
             RunOut::File(BufWriter::with_capacity(1 << 20, file)),
             block_size,
-        ))
+        );
+        w.path = Some(path.to_path_buf());
+        Ok(w)
     }
 
     /// A writer of a run kept in memory (`finish_in_memory`), its buffer allocated for `capacity` bytes.
@@ -1119,6 +1129,7 @@ impl RunWriter {
     fn to(out: RunOut, block_size: usize) -> RunWriter {
         RunWriter {
             out,
+            path: None,
             offset: 0,
             block_size,
             data: BlockBuilder::default(),
@@ -1139,7 +1150,15 @@ impl RunWriter {
 
     fn write_block(&mut self, bytes: &[u8]) -> io::Result<Handle> {
         match &mut self.out {
-            RunOut::File(out) => out.write_all(bytes)?,
+            RunOut::File(out) => {
+                if let Some(path) = &self.path
+                    && let Some(n) = crate::faults::write(path, self.offset, bytes.len())?
+                {
+                    out.write_all(&bytes[..n])?;
+                    return Err(crate::faults::torn());
+                }
+                out.write_all(bytes)?
+            }
             RunOut::Memory(out) => out.extend_from_slice(bytes),
         }
         let h = Handle {
@@ -1253,7 +1272,13 @@ impl RunWriter {
     pub fn finish(mut self, covered: u64, lo: u64, hi: u64) -> io::Result<u64> {
         self.close(covered, lo, hi)?;
         match self.out {
-            RunOut::File(out) => out.into_inner().map_err(|e| e.into_error())?.sync_data()?,
+            RunOut::File(out) => {
+                let file = out.into_inner().map_err(|e| e.into_error())?;
+                if let Some(path) = &self.path {
+                    crate::faults::op(crate::faults::Op::Sync, path)?;
+                }
+                file.sync_data()?
+            }
             RunOut::Memory(_) => return Err(io::Error::other("a run in memory has no file")),
         }
         Ok(self.offset)
