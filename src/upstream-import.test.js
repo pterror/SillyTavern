@@ -125,7 +125,7 @@ test('what can\'t be imported is listed with why, and the rest goes in', async (
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(directories.root, MAP_FILE), 'utf8')).notImported, run.notImported);
 });
 
-test('a 10k-message chat goes in, in commits of bounded size', async () => {
+test('a 10k-message chat goes in as one import', async () => {
     /** @type {object[]} */
     const lines = [{ chat_metadata: {} }];
     for (let i = 0; i < 10_000; i++) {

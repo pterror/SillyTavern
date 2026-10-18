@@ -822,6 +822,84 @@ fn a_feed_key_put_and_deleted_in_one_layer_leaves_no_deletion() {
     );
 }
 
+/// A scan through a view reads a commit's own entries only as far as its page goes: a one-key page, either way,
+/// reads a bounded number of them however many the commit holds in the range, so a commit's cost per record
+/// doesn't grow with its size. Pages agree with a model of published entries under unpublished ones (some
+/// deleted, some over published keys).
+#[test]
+fn a_page_reads_a_commits_own_entries_only_as_far_as_it_goes() {
+    use crate::keyspace::val::Val;
+    let dir = temp_dir("page-reads");
+    let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
+    s.wait_ready().unwrap();
+    let k = |i: u32| {
+        let mut k = vec![0xfe, 0xfc];
+        k.extend_from_slice(&i.to_be_bytes());
+        k
+    };
+    let (start, end) = (vec![0xfe, 0xfc], vec![0xfe, 0xfd]);
+    // Published: every 3rd key.
+    s.inner.ks.insert(
+        (0..4000u32)
+            .step_by(3)
+            .map(|i| (k(i), Val::Put(format!("p{i}").into_bytes()))),
+        None,
+    );
+    for n in [100u32, 1600] {
+        // Unpublished: every 2nd key below n; every 10th of them a deletion.
+        let mut layer = std::collections::BTreeMap::new();
+        for i in (0..n).step_by(2) {
+            let v = if i % 10 == 0 {
+                Val::Del
+            } else {
+                Val::Put(format!("u{i}").into_bytes())
+            };
+            layer.insert(k(i), v);
+        }
+        let mut model = std::collections::BTreeMap::new();
+        for i in (0..4000u32).step_by(3) {
+            model.insert(k(i), format!("p{i}").into_bytes());
+        }
+        for (key, v) in &layer {
+            match v {
+                Val::Put(b) => model.insert(key.clone(), b.clone()),
+                _ => model.remove(key),
+            };
+        }
+        let before = derive::LAYER_READS.with(|c| c.get());
+        s.derived(|v| {
+            let v = v.with_layer(&layer);
+            for i in 0..n {
+                let back: Vec<_> = v.scan_vals_rev(&start, &k(i), 1)?;
+                let want = model.range(start.clone()..k(i)).next_back();
+                assert_eq!(
+                    back.first()
+                        .map(|(key, v)| (key.clone(), v.clone().into_bytes(key))),
+                    want.map(|(key, b)| (key.clone(), b.clone())),
+                    "n {n}: last before {i}"
+                );
+                let on: Vec<_> = v.scan_vals(&k(i), &end, 1)?;
+                let want = model.range(k(i)..end.clone()).next();
+                assert_eq!(
+                    on.first()
+                        .map(|(key, v)| (key.clone(), v.clone().into_bytes(key))),
+                    want.map(|(key, b)| (key.clone(), b.clone())),
+                    "n {n}: first from {i}"
+                );
+            }
+            Ok(())
+        })
+        .unwrap();
+        let per_page = (derive::LAYER_READS.with(|c| c.get()) - before) as f64 / f64::from(2 * n);
+        assert!(
+            per_page <= 4.0,
+            "n {n}: {per_page} layer entries read per one-key page"
+        );
+    }
+    s.close();
+    let _ = fs::remove_dir_all(&dir);
+}
+
 /// Each map value kind written unpublished, read through a view's layer over each published value its key can
 /// hold: a get and both scans give the newer value over the whole published map. A maxima map over a published
 /// map keeps the published slots it doesn't raise.
