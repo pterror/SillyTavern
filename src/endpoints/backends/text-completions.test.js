@@ -244,6 +244,23 @@ async function run() {
     assert.equal(continued.anchorNodeId, branchAfterAppend.branch.leaf_id, 'the continue anchor is the real current leaf');
     assert.equal(continued.anchorContent?.mes, 'What happens next, Rex?', 'anchorContent is the anchor\'s real, current, unmodified content (the real leaf at this point in the test, appended above) - exactly what the route\'s is_continue edit needs as "oldText"');
 
+    // --- quiet prompt: a quiet generation's instruction (`/sysgen`, generateQuietPrompt()) ends the prompt (outside
+    // instruct mode upstream appends it as is and adds no name line), and an /impersonate <prompt>'s goes in loud,
+    // before the user's name line ---
+    const quietLeafId = branchAfterAppend.branch.leaf_id;
+    const quiet = await buildRawActionTextCompletionRequest(directories, {
+        characterAvatar: avatar, chat: await chatOf(avatar, quietLeafId), nodeId: quietLeafId, type: 'quiet',
+        quiet: { quietPrompt: 'Summarize the scene in one line.' },
+        tokenizerOptions: fakeTokenizerOptions,
+    });
+    assert.ok(quiet.params.prompt.endsWith('What happens next, Rex?\nSummarize the scene in one line.'), 'the quiet prompt ends the assembled prompt');
+    const impersonated = await buildRawActionTextCompletionRequest(directories, {
+        characterAvatar: avatar, chat: await chatOf(avatar, quietLeafId), nodeId: quietLeafId, type: 'impersonate', isImpersonate: true,
+        quiet: { quietPrompt: 'Tester waves.', quietToLoud: true },
+        tokenizerOptions: fakeTokenizerOptions,
+    });
+    assert.match(impersonated.params.prompt, /\nTester waves\.\nTester:$/, 'an /impersonate prompt goes in before the user\'s name line');
+
     // --- error handling: unknown character ---
     await assert.rejects(
         async () => buildRawActionTextCompletionRequest(directories, {

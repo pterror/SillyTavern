@@ -137,6 +137,17 @@ function refreshExposed() {
 }
 
 /**
+ * Upstream's index of a character in `characters` (`getContext().characters`, {@link exposedCharacters}), as upstream
+ * passes it where it names a character by index (e.g. GROUP_MEMBER_DRAFTED's `chId`); undefined for one not exposed.
+ * @param {string|undefined} avatar
+ * @returns {number|undefined}
+ */
+export function exposedIndexOf(avatar) {
+    const index = avatar === undefined ? -1 : exposedCharacters.findIndex(c => c.avatar === avatar);
+    return index === -1 ? undefined : index;
+}
+
+/**
  * Calls `listener` whenever {@link exposedCharacters} or {@link exposedGroups} changes.
  * @param {() => void} listener
  * @returns {() => void} unsubscribe function

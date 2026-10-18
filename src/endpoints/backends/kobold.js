@@ -11,7 +11,7 @@ import { createStoredCounter, writeBack } from '../../token-count-store.js';
 import { fetchKoboldStatus, koboldCanUseTokenization, rememberRemoteTokenization } from '../../backend-status.js';
 import { resolveTextCompletionGenerationInput } from '../../text-completion-generation-input.js';
 import { assembleTextCompletionPrompt, buildItemizationBreakdown } from '../../text-completion-prompt-orchestrator.js';
-import { generateTurnOf } from '../../page-writes.js';
+import { generateTurnOf, textCompletionQuietInput } from '../../page-writes.js';
 import { storeUserMessage, withStoredMessages } from '../../stored-messages.js';
 import { readCardContent } from '../characters.js';
 import { getGroupsByIds } from '../groups.js';
@@ -219,13 +219,14 @@ router.post('/generate', withGenerationStop(async function (request, response_ge
         answerSessionOnHeaders(response_generate, chat.session);
         const turn = await generateTurnOf(response_generate, chat, request.body);
         if (!turn) return;
-        const { nodeId, userMessageText, userMessageExtra } = turn;
+        const { nodeId, userMessageText, userMessageExtra, quiet } = turn;
 
         let built;
         try {
             built = await buildRawActionKoboldRequest(directories, {
                 request, characterAvatar, groupId, chat, nodeId,
                 type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra,
+                macroExtras: textCompletionQuietInput(quiet),
             });
         } catch (error) {
             console.error('Failed to build raw-action Kobold request:', error);

@@ -539,7 +539,9 @@ async function postSetupTasks(result) {
  */
 async function loadStoreEngine() {
     try {
-        await ensureEngine();
+        // A scratch build named by ST_ENGINE_PATH (tests) is loaded as is: engine/dist/ is neither fetched into nor
+        // cleaned.
+        if (!process.env.ST_ENGINE_PATH) await ensureEngine();
         loadEngine();
         setStoreEngine(getEngine);
     } catch (err) {

@@ -85,7 +85,7 @@ import {
 import { getCharacters, showCharacterSyncFailedToast, SYNC_REQUEST_TIMEOUT_MS, queryWithSortFallback } from './character-list.js';
 import { chat, chat_metadata } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
-import { charactersStore, exposedGroups, holdCharacter, setCharacterId, setExposedGroupId, resolveCharacterRef, resolveCharacterRefPair, CHARACTER_REF_MISMATCH } from './character-store.js';
+import { charactersStore, exposedGroups, exposedIndexOf, holdCharacter, setCharacterId, setExposedGroupId, resolveCharacterRef, resolveCharacterRefPair, CHARACTER_REF_MISMATCH } from './character-store.js';
 import { eventSource, event_types } from './events.js';
 import { printTagList, createTagMapFromList, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, printTagFilters, tag_filter_type, removeEntityTags, heldTagsForIds, compareTagsForSort } from './tags.js';
 import { _setCurrentTarget } from './chat-store.js';
@@ -1271,7 +1271,8 @@ async function generateGroupWrapper(byAutoMode, type = null, params = {}) {
             if (power_user.show_group_chat_queue) {
                 printGroupMembers();
             }
-            await eventSource.emit(event_types.GROUP_MEMBER_DRAFTED, avatar);
+            // Upstream's payload: the member's index in `characters`.
+            await eventSource.emit(event_types.GROUP_MEMBER_DRAFTED, exposedIndexOf(avatar));
 
             // Wait for generation to finish
             const generateType = ['swipe', 'impersonate', 'quiet', 'continue'].includes(type) ? type : 'normal';

@@ -7173,7 +7173,7 @@ async function openCharacterConversation({ chat: requested = null, makeCurrent =
     // printMessages() -> ensureSwipes() synthesizes missing swipe shape via updateMessage(); re-snapshot so that alone doesn't queue an edit.
     _snapshotMessages();
 
-    eventSource.emit(event_types.CHAT_LOADED, { detail: { character: getCurrentCharacter() } });
+    eventSource.emit(event_types.CHAT_LOADED, { detail: { id: this_chid, character: getCurrentCharacter() } });
 
     // Focus on the textarea if not already focused on a visible text input
     delay(debounce_timeout.short).then(() => {

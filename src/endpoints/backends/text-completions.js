@@ -30,7 +30,7 @@ import { fetchTextgenStatus, rememberRemoteTokenization } from '../../backend-st
 import { rememberOpenRouterModels } from '../../openrouter-models.js';
 import { resolveTextCompletionGenerationInput } from '../../text-completion-generation-input.js';
 import { assembleTextCompletionPrompt, buildItemizationBreakdown } from '../../text-completion-prompt-orchestrator.js';
-import { generateTurnOf } from '../../page-writes.js';
+import { generateTurnOf, textCompletionQuietInput } from '../../page-writes.js';
 import { storeUserMessage, withStoredMessages } from '../../stored-messages.js';
 import { readCardContent } from '../characters.js';
 import { getGroupsByIds } from '../groups.js';
@@ -531,6 +531,7 @@ router.post('/props', async function (request, response) {
  * forwarded verbatim to `resolveTextCompletionGenerationInput()` and reused as-is for the real
  * persisted append below (the route handler is responsible for having already sanitized whatever the
  * client sent; this function does not re-validate it). Ignored when `userMessageText` is omitted.
+ * @param {import('../../page-writes.js').QuietPrompt} [params.quiet] The request's quiet prompt (quietOf()).
  * @returns {Promise<{ params: object, backend: {type: string, serverUrl: string, model: string|undefined}, anchorNodeId: string|null, anchorContent: object|null, tokenizerIdentity: string|null, tokenCountRows: import('../../token-count-store.js').PendingTokenRows, name1: string, name2: string, warnings: object[] }>}
  * `tokenizerIdentity` is the resolved tokenizer's tokenizerIdentity(), for llama.cpp from this
  * generation's own `/props` answer. `tokenCountRows` are the counts and ids this build read from or
@@ -543,7 +544,7 @@ export async function buildRawActionTextCompletionRequest(directories, {
     // `encodeLocal`/`encodeTextgenRemote`/`fetchImpl` options (see that function's JSDoc) - lets a
     // test exercise this function end-to-end without real tokenizer model files or a live backend
     // to tokenize against. Never set by the /generate route itself.
-    tokenizerOptions = {},
+    tokenizerOptions = {}, quiet = {},
 } = {}) {
     if (!characterAvatar && !groupId) {
         throw new Error('character_avatar or group_id is required');
@@ -623,7 +624,7 @@ export async function buildRawActionTextCompletionRequest(directories, {
     const orchestratorInput = await resolveTextCompletionGenerationInput(directories, {
         avatar: characterAvatar, groupId, chatContext: chat, nodeId,
         type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra,
-        countTokens, encodeTokens, countPromptTokens,
+        countTokens, encodeTokens, countPromptTokens, macroExtras: textCompletionQuietInput(quiet),
     });
 
     // `nodeId === null` goes on from the tree's root only when that is current (`loadChatHistory()`):
@@ -816,14 +817,14 @@ router.post('/generate', withGenerationStop(async function (request, response) {
             answerSessionOnHeaders(response, chat.session);
             const turn = await generateTurnOf(response, chat, request.body);
             if (!turn) return;
-            const { nodeId, userMessageText, userMessageExtra } = turn;
+            const { nodeId, userMessageText, userMessageExtra, quiet } = turn;
 
             /** @type {Awaited<ReturnType<typeof buildRawActionTextCompletionRequest>>} */
             let built;
             try {
                 built = await buildRawActionTextCompletionRequest(directories, {
                     request, characterAvatar, groupId, chat, nodeId,
-                    type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra,
+                    type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra, quiet,
                 });
             } catch (error) {
                 console.error('Failed to build raw-action text completion request:', error);

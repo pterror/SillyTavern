@@ -11,7 +11,7 @@ import { createStoredCounter, writeBack } from '../token-count-store.js';
 import { tokenizers } from '../tokenizer-ids.js';
 import { resolveTextCompletionGenerationInput } from '../text-completion-generation-input.js';
 import { assembleTextCompletionPrompt } from '../text-completion-prompt-orchestrator.js';
-import { generateTurnOf } from '../page-writes.js';
+import { generateTurnOf, textCompletionQuietInput } from '../page-writes.js';
 import { storeUserMessage, withStoredMessages } from '../stored-messages.js';
 import { readCardContent } from './characters.js';
 import { getGroupsByIds } from './groups.js';
@@ -222,7 +222,7 @@ router.post('/status', async function (req, res) {
 export async function buildRawActionNovelRequest(directories, {
     request, characterAvatar, groupId, chat, nodeId,
     type = 'normal', isImpersonate = false, isContinue = false, isSwipe = false, userMessageText, userMessageExtra,
-    tokenizerOptions = {},
+    tokenizerOptions = {}, quiet = {},
 } = {}) {
     if (!characterAvatar && !groupId) {
         throw new Error('character_avatar or group_id is required');
@@ -279,7 +279,7 @@ export async function buildRawActionNovelRequest(directories, {
         avatar: characterAvatar, groupId, mainApi: 'novel', chatContext: chat, nodeId,
         type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra,
         countTokens, encodeTokens,
-        macroExtras: { encodeTokensByType, novelTokenizerType },
+        macroExtras: { encodeTokensByType, novelTokenizerType, ...textCompletionQuietInput(quiet) },
     });
 
     // `nodeId === null` goes on from the tree's root only when that is current - see
@@ -339,13 +339,13 @@ router.post('/generate', withGenerationStop(async function (req, res) {
         answerSessionOnHeaders(res, chat.session);
         const turn = await generateTurnOf(res, chat, req.body);
         if (!turn) return;
-        const { nodeId, userMessageText, userMessageExtra } = turn;
+        const { nodeId, userMessageText, userMessageExtra, quiet } = turn;
 
         let built;
         try {
             built = await buildRawActionNovelRequest(directories, {
                 request: req, characterAvatar, groupId, chat, nodeId,
-                type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra,
+                type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra, quiet,
             });
         } catch (error) {
             console.error('Failed to build raw-action NovelAI request:', error);
