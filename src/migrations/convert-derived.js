@@ -6,12 +6,15 @@ import process from 'node:process';
 import { getConfigValue, setConfigFilePath } from '../util.js';
 
 /**
- * Moves one user's derived entries to their current form (engine/src/store/convert_derived.rs). A one-off: run once with the server stopped, then deleted with its test, the
+ * Moves one user's derived entries to their current form (engine/src/store/convert_derived.rs) and drops the
+ * conversion markers no read needs. A one-off: run once with the server stopped, then deleted with its test, the
  * engine's `convert_derived` module and its binding methods, and the server's refusal to open a store it hasn't run
  * on (src/user-stores.js).
  *
  * - Value heads: each entity field's value moves to its one head (VALUE and JSON_HEAD entries into `HEAD`).
  * - Free entry keys: each book's free intervals move from being keyed by their start to their end.
+ * - Conversion markers (`converted.characters.<file>` meta values): kept only for a file still in `characters/`
+ *   that no character has, which is the one case `/metadata/rescan` reads them for; the rest are deleted.
  *
  *   node src/migrations/convert-derived.js --dry-run [--data-root ./data] [--handle default-user] [--config ./config.yaml]
  *   node src/migrations/convert-derived.js --apply [the same]
@@ -26,6 +29,9 @@ import { getConfigValue, setConfigFilePath } from '../util.js';
 const LOG_PREFIX = '[convert-derived]';
 /** Entities or books per step. */
 const STEP = 500;
+/** Marker names read, and marker deletes committed, at a time. */
+const PAGE = 2000;
+const MARKER_PREFIX = 'converted.characters.';
 
 /**
  * @param {string} host
@@ -69,6 +75,21 @@ export async function probeConfiguredServer() {
 }
 
 /**
+ * Each page of conversion markers' names, in name order.
+ * @param {any} store
+ * @param {(names: string[]) => Promise<void>} each
+ */
+async function markerPages(store, each) {
+    let after;
+    for (;;) {
+        const names = await store.convertDerivedMetaNames(MARKER_PREFIX, after ?? null, PAGE);
+        if (names.length) await each(names);
+        if (names.length < PAGE) return;
+        after = names[names.length - 1];
+    }
+}
+
+/**
  * @param {object} options
  * @param {string} options.dataRoot
  * @param {string} options.handle
@@ -86,9 +107,11 @@ export async function runConvert(options) {
     // Their imports read config when they load: after the config path is set.
     const { STORE_DIR } = await import('../user-stores.js');
     const { LibraryEngine } = await import('../library-engine.js');
+    const { TYPE } = await import('../library-codes.js');
 
     const root = path.join(options.dataRoot, options.handle);
     const storeDir = path.join(root, STORE_DIR);
+    const charactersDir = path.join(root, 'characters');
     log(`${LOG_PREFIX} ${options.apply ? 'apply' : 'dry run'} for ${root}`);
     if (!fs.existsSync(storeDir)) {
         warnLine(`${LOG_PREFIX} REFUSED: ${storeDir} doesn't exist`);
@@ -146,6 +169,24 @@ export async function runConvert(options) {
             return 1;
         }
 
+        // ---- conversion markers ----
+        let kept = 0;
+        let dropped = 0;
+        await markerPages(lib.store, async names => {
+            const files = names.map(n => n.slice(MARKER_PREFIX.length));
+            const known = await lib.ids(TYPE.character, files);
+            const records = [];
+            for (const [i, file] of files.entries()) {
+                if (known[i] === null && fs.existsSync(path.join(charactersDir, file))) {
+                    kept++;
+                    continue;
+                }
+                dropped++;
+                records.push({ kind: 'metaValue', key: names[i] });
+            }
+            if (options.apply && records.length) await lib.store.commit(records);
+        });
+        log(`${LOG_PREFIX} conversion markers: ${kept} kept (a file in characters/ no character has), ${dropped} ${options.apply ? 'deleted' : 'to delete'}`);
         if (!options.apply) {
             log(`${LOG_PREFIX} dry run done; nothing was written`);
             return 0;
@@ -155,6 +196,14 @@ export async function runConvert(options) {
         const check = async (/** @type {string} */ when) => {
             if (await lib.store.convertDerivedPending()) {
                 warnLine(`${LOG_PREFIX} FAILED: ${when}, derived entries are still in an old form`);
+                return false;
+            }
+            let markers = 0;
+            await markerPages(lib.store, async names => {
+                markers += names.length;
+            });
+            if (markers !== kept) {
+                warnLine(`${LOG_PREFIX} FAILED: ${when}, ${markers} conversion markers are left, not ${kept}`);
                 return false;
             }
             return true;

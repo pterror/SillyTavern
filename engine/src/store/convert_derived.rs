@@ -10,6 +10,7 @@
 //! A step takes the next entities (books, for free keys) holding an old entry and moves all of each one's entries,
 //! in the commit queue, so no commit sees one half moved. Each moved entity's values (book's free intervals) are
 //! read the old way before the step and the new way after it (`digest`, `free_digest`), for the script to compare.
+//! `meta_names` lists `metaValue` names by prefix, for the script to delete the markers no read needs.
 
 use super::StoreError;
 use super::books;
@@ -18,7 +19,7 @@ use super::history;
 use super::kinds::{Cur, Head, key, parse_loc, parse_varints};
 use super::library;
 use super::library_read::{self, Stored};
-use crate::keyspace::val::get_u64;
+use crate::keyspace::val::{get_bytes, get_u64};
 use crate::log::format::{FieldRef, get_uvarint, put_uvarint};
 
 const VALUE: u64 = 62;
@@ -264,4 +265,39 @@ pub fn pending(view: &View) -> Result<bool, StoreError> {
         }
     }
     Ok(false)
+}
+
+/// Up to `limit` `metaValue` names starting with `prefix`, after `after` (exclusive) if given.
+pub fn meta_names(
+    view: &View,
+    prefix: &[u8],
+    after: Option<&[u8]>,
+    limit: usize,
+) -> Result<Vec<Vec<u8>>, StoreError> {
+    let base = key::of(key::META);
+    // A name's bytes go into its key as they are (`put_bytes` escapes only zeros), so the names starting with a
+    // prefix without zeros are one range of keys.
+    if prefix.contains(&0) {
+        return Err(StoreError::Refused(
+            "a meta prefix holds no zero byte".into(),
+        ));
+    }
+    let mut start = base.clone();
+    start.extend_from_slice(prefix);
+    let end = key::prefix_end(&start);
+    let from = match after {
+        Some(a) => {
+            let mut k = super::kinds::meta_key(a);
+            k.push(0);
+            k
+        }
+        None => start,
+    };
+    view.scan(&from, &end, limit)?
+        .into_iter()
+        .map(|(k, _)| {
+            get_bytes(&k, &mut base.len())
+                .ok_or_else(|| StoreError::Entry("a meta key doesn't decode".into()))
+        })
+        .collect()
 }

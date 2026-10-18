@@ -1,6 +1,6 @@
 // The one-off src/migrations/convert-derived.js, deleted with it. Its fixture (tests/fixtures/convert-derived/) is a
-// store an engine before the one value head per field wrote (VALUE and JSON_HEAD heads, free keys by start), and what
-// that engine read from it (expected.json).
+// store an engine before the one value head per field wrote (VALUE and JSON_HEAD heads, free keys by start,
+// conversion markers), and what that engine read from it (expected.json).
 import { describe, test, expect, beforeAll, afterEach } from '@jest/globals';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -46,7 +46,7 @@ const quiet = { log: () => {}, warn: () => {} };
 const stopped = async () => ({ running: false, lines: [] });
 const ids = Object.values(expected.ids).map(BigInt);
 
-/** What the store reads now: entities, the book, its lowest free key, old forms left. */
+/** What the store reads now: entities, the book, its lowest free key, old forms left, conversion markers left. */
 async function readUser(/** @type {string} */ dataRoot) {
     const library = await lib.LibraryEngine.open(engine, path.join(dataRoot, 'u', 'store'));
     try {
@@ -56,6 +56,7 @@ async function readUser(/** @type {string} */ dataRoot) {
             book: await library.books.read('b'),
             freeKey: (await library.store.worldRead('numbers', { book })).freeKey,
             pending: await library.store.convertDerivedPending(),
+            markers: await library.store.convertDerivedMetaNames('converted.characters.', null, 100),
         };
     } finally {
         await library.close();
@@ -68,6 +69,7 @@ describe('convert-derived', () => {
         const lines = [];
         expect(await script.runConvert({ dataRoot, handle: 'u', apply: false, engine: async () => engine, probeServer: stopped, log: l => lines.push(l), warn: l => lines.push(l) })).toBe(0);
         expect(lines.join('\n')).toMatch(/derived entries in an old form: some/);
+        expect(lines.join('\n')).toMatch(/conversion markers: 1 kept .*, 2 to delete/);
         expect((await readUser(dataRoot)).pending).toBe(true);
 
         const applied = [];
@@ -80,6 +82,8 @@ describe('convert-derived', () => {
         expect(after.entities).toEqual(expected.entities);
         expect(after.book).toEqual(expected.book);
         expect(after.freeKey).toBe(expected.freeKey);
+        // Only b.png's marker is read again: a file in characters/ no character has.
+        expect(after.markers).toEqual(['converted.characters.b.png']);
 
         // A re-run moves nothing.
         const again = [];
