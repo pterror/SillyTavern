@@ -4945,7 +4945,7 @@ export function removeMacros(str) {
  *  append/graft call (chatOpAppend()/chatOpGraft(), public/scripts/chat-store.js). Set by
  *  Generate() (public/script.js) when a raw-action generate call is about to independently
  *  persist this SAME message server-side via its own appendMessages() call
- *  (src/message-tree-db.js) - see Generate()'s own `willUseRawAction` local for the full rationale.
+ *  (src/chat-engine.js) - see Generate()'s own `willUseRawAction` local for the full rationale.
  * @returns {Promise<any>} A promise that resolves to the message when it is inserted.
  */
 export async function sendMessageAsUser(messageText, messageBias, insertAt = null, compact = false, name = name1, avatar = user_avatar, skipTreePersistence = false) {

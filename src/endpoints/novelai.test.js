@@ -267,7 +267,7 @@ async function run() {
     });
 
     const ownerId = avatar;
-    // `branchName` here is ONLY message-tree-db.js's own label/bookmark concept - a real, still-
+    // `branchName` here is ONLY the chat store's own label/bookmark concept - a real, still-
     // supported, unrelated primitive. It is NOT a raw-action request field anymore (see
     // buildRawActionNovelRequest()'s own ADDRESSING MODEL doc comment) - every raw-action call below
     // resolves and passes the real `node_id` (a leaf id from `loadBranch()`) instead.

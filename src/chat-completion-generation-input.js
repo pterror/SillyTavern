@@ -20,7 +20,7 @@ import { substituteParams } from './macro-substitution.js';
 
 /**
  * Adapter/resolver layer between REAL on-disk state (settings.json - via settings-store.js's
- * sharded reader - and the message-tree chat DB - via message-tree-db.js) and
+ * sharded reader - and the chat store - via chat-engine.js) and
  * src/chat-completion-prepare-messages.js's `prepareOpenAIMessages(input, dryRun)`, which has so far
  * only ever been fed hand-built test fixtures. This is the direct Chat Completion
  * (`main_api === 'openai'`) analog of src/text-completion-generation-input.js's
@@ -60,9 +60,9 @@ import { substituteParams } from './macro-substitution.js';
  *    `buildChatCompletionMessages(chat, context)` - this is NOT the same `{is_user, mes, name, extra}`
  *    shape text-completion-generation-input.js's `chat` uses. `buildChatCompletionMessages()` is the
  *    real, already-ported client-side `setOpenAIMessages()` port, and it takes chat history in
- *    EXACTLY message-tree-db.js's own native shape (`is_user`/`mes`/`name`/`extra`) as input and
+ *    EXACTLY the chat store's loaded message shape (`is_user`/`mes`/`name`/`extra`) as input and
  *    converts it to the `{role, content, name, ...}` shape `populateChatHistory()` needs - so this
- *    resolver reuses message-tree-db.js's `loadBranch()`/`getAncestorPath()` and the
+ *    resolver reuses the chat store's loaded path and the
  *    userMessageText-append convention VERBATIM (same shape, same node_id-omission rationale) from
  *    text-completion-generation-input.js, then runs the result through `buildChatCompletionMessages()`
  *    as the one, real conversion step - not reinvented, not skipped.
@@ -847,7 +847,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
     // `files[].size` is optional where the global `FileAttachment.size` is required. The value is
     // already server-validated (this resolver's own contract, see the `userMessageExtra` param doc
     // above), so it's cast at this one boundary rather than widening `SanitizedUserMessageExtra` itself
-    // (not this file's type to own) or fixing message-tree-db.js (not in this task's scope).
+    // (not this file's type to own) or fixing the chat store (not in this task's scope).
     /** @type {TreeChatMessage[]} */
     const chat = typeof userMessageText === 'string'
         ? [...loadedChat, { is_user: true, name: name1, mes: userMessageText, extra: /** @type {ChatMessageExtra} */ (userMessageExtra && typeof userMessageExtra === 'object' ? userMessageExtra : {}), send_date: Date.now() }]

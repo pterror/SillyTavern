@@ -22,7 +22,6 @@ beforeAll(async () => {
 
 afterEach(async () => {
     await stores.closeUserStores();
-    (await import('../src/message-tree-db.js')).disposeMessageTreeStores();
     for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 

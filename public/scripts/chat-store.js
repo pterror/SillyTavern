@@ -238,7 +238,7 @@ export function updateIn(mesId, path, value) {
 /** @type {Map<string|undefined, Promise<void>>} */
 const _openingRowInFlight = new Map();
 
-// global.d.ts's SwipeInfo (client-side) has no `name`/`is_user` - TreeSwipeInfo (src/message-tree-db.js,
+// global.d.ts's SwipeInfo (client-side) has no `name`/`is_user` - the server's swipe info (src/chat-engine.js,
 // server-side) does, and _mergeCardGreetingsIntoOpening() below reads/writes those
 // same fields on client-side swipe_info entries built from card alternatives. Real cross-file gap in
 // global.d.ts, not owned by this file - typed locally rather than editing that shared ambient declaration.
@@ -835,7 +835,7 @@ export function _markMessageSaved(mesId, nodeId) {
 }
 
 // ChatMessage (global.d.ts, client-facing) has no `swipe_speaker_default` - TreeChatMessage
-// (src/message-tree-db.js, server-side) does, and a message loaded off the tree can carry it. Real
+// (src/chat-completion-generation-input.js, server-side) does, and a message loaded off the tree can carry it. Real
 // gap in that shared ambient declaration, not owned by this file - typed locally instead.
 /** @typedef {ChatMessage & {swipe_speaker_default?: {name?: string, is_user?: boolean}}} ChatMessageWithSpeakerDefault */
 

@@ -8,7 +8,7 @@ import { resolveWorldInfoCandidates, world_info_insertion_strategy } from './wor
 
 /**
  * Adapter/resolver layer between REAL on-disk state (settings.json - via settings-store.js's
- * sharded reader - and the message-tree chat DB - via message-tree-db.js) and
+ * sharded reader - and the chat store - via chat-engine.js) and
  * src/text-completion-prompt-orchestrator.js's `assembleTextCompletionPrompt(input)`, which has so
  * far only ever been fed hand-built test fixtures.
  *
@@ -182,7 +182,7 @@ import { resolveWorldInfoCandidates, world_info_insertion_strategy } from './wor
  * UPDATE (this session): a new, OPTIONAL `userMessageText` param appends the actual raw user action
  * for this turn - "the user sent this text" - onto the resolved chat history as the newest message,
  * in the exact shape every other loaded message already uses (verified against
- * `message-tree-db.js`'s own `rowToMessage()`/`getAncestorPath()` output shape:
+ * the chat store's loaded message shape:
  * `{node_id, mes, send_date, extra, name, is_user}`): `{is_user: true, name: name1, mes:
  * userMessageText, extra: {}, send_date: Date.now()}`. `node_id` is intentionally omitted (this
  * message doesn't exist in the tree DB yet - it's the pending user input for a generation that
