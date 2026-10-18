@@ -30,6 +30,8 @@ reordering them). Each row of `settings-mapping.tsv` gets a `levels` column.
 | Capabilities run in the browser: TTS voice, speech recognition, WebLLM | the generation levels plus device |
 
 No chat or character can change a reader-bound setting, and output in a shared chat never depends on a device.
+A reader-bound switch, "ignore chat backgrounds", lets a tab, device or user skip the chat and character levels for
+the background.
 
 ## Device
 
@@ -43,12 +45,10 @@ No chat or character can change a reader-bound setting, and output in a shared c
 - All tabs of a device share its statements live, through the changes stream.
 - User settings list the devices: rename, delete, restore (a delete is a change in history).
 
-## Decisions
+## Tab statements and session takeover
 
-1. A device does not beat a chat's background: the chat's background is the scene, as upstream. A reader-bound switch per
-   device, "ignore chat backgrounds on this device", is the escape hatch.
-2. Tab-level statements stay with the session when a fresh tab takes it over (even on another device), as its chat
-   position does. The tab shows what it states ("this tab: preset X") with a reset.
+Tab-level statements stay with the session when a fresh tab takes it over (even on another device), as its chat
+position does. The tab shows what it states ("this tab: preset X") with a reset.
 
 ## Fit
 
