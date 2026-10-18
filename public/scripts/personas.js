@@ -160,11 +160,18 @@ export async function setUserAvatar(imgfile, { toastPersonaNameChange = true, na
     reloadUserAvatar();
     updatePersonaUIStates({ navigateToCurrent: navigateToCurrent });
     selectCurrentPersona({ toastPersonaNameChange: toastPersonaNameChange });
-    // Macros in the opening are substituted at draw time, so the new persona only needs a redraw.
-    if (chat[0]) updateMessageBlock(0, chat[0]);
+    await retriggerFirstMessageOnEmptyChat();
     saveSettingsDebounced('user_avatar');
     $('.zoomed_avatar[forchar]').remove();
     await eventSource.emit(event_types.PERSONA_CHANGED, user_avatar);
+}
+
+/**
+ * Retriggers the first message to reload it from the char definition (upstream's export). Macros in the opening are
+ * substituted at draw time, and a greeting isn't stored until someone replies, so a redraw is all it takes.
+ */
+export async function retriggerFirstMessageOnEmptyChat() {
+    if (chat[0]) updateMessageBlock(0, chat[0]);
 }
 
 function reloadUserAvatar(force = false) {
@@ -931,8 +938,14 @@ let connectionsListDrawId = 0;
 /**
  * Displays avatar connections for the current persona.
  * Converts connections to entities and populates the avatar list. Shows a message if no connections are found.
+ * Synchronous, as upstream's; the list is drawn once the connected characters the page doesn't hold are read.
  */
-export async function updatePersonaConnectionsAvatarList() {
+export function updatePersonaConnectionsAvatarList() {
+    void drawPersonaConnectionsAvatarList();
+}
+
+/** {@link updatePersonaConnectionsAvatarList}'s draw. */
+async function drawPersonaConnectionsAvatarList() {
     const drawId = ++connectionsListDrawId;
     /** @type {PersonaConnection[]} */
     const connections = personaStore.get(user_avatar)?.connections ?? [];

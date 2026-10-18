@@ -5,7 +5,7 @@ import { getOneCharacter } from './character-list.js';
 import { name1 } from './app-selection-state.js';
 import { chat_metadata } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
-import { charactersStore } from './character-store.js';
+import { charactersStore, resolveCharacterRef } from './character-store.js';
 import { eventSource, event_types } from './events.js';
 import { download, debounce, initScrollHeight, resetScrollHeight, parseJsonFile, extractDataFromPng, getFileBuffer, getCharaFilename, getSortableDelay, escapeRegex, PAGINATION_TEMPLATE, navigation_option, waitUntilCondition, isTrueBoolean, setValueByPath, flashHighlight, select2ModifyOptions, getSelect2OptionId, dynamicSelect2DataViaAjax, highlightRegex, select2ChoiceClickSubscribe, isFalseBoolean, getSanitizedFilename, checkOverwriteExistingData, getStringHash, parseStringArray, cancelDebounce, findCharAsync, onlyUnique, equalsIgnoreCaseAndAccents, uuidv4, normalizeArray, logSlashCommandWarn, addLongPressEvent, escapeHtml, setInfoBlock, clearInfoBlock } from './utils.js';
 import { extension_settings, getContext } from './extensions.js';
@@ -4100,7 +4100,7 @@ export async function getWorldEntry(name, data, entry) {
     // Duplicate/delete/move buttons
     headerTemplate.find('.duplicate_entry_button').data('uid', entry.uid).on('click', async function () {
         const uid = $(this).data('uid');
-        const entryDup = await duplicateWorldInfoEntry(name, data, uid);
+        const entryDup = await duplicateStoredWorldInfoEntry(name, data, uid);
         if (entryDup) {
             await saveWorldInfoEntry(name, data, entryDup.uid);
             updateEditor(entryDup.uid);
@@ -4677,28 +4677,54 @@ function createEntryInputAutocomplete(input, callback, { allowMultiple = false }
 
 
 /**
- * Duplicate a WI entry by copying all of its properties and assigning a new uid
- * @param {string} name - The name of the book
+ * Duplicate a WI entry by copying all of its properties and assigning a new uid. Synchronous, as upstream's: the copy
+ * is in `data` under its uid when it returns ({@link createWorldInfoEntry}). With the book's `name` (upstream passes
+ * `data.name`), a book the server has also stores it at once; without one, the book's next save does.
  * @param {*} data - The data of the book
  * @param {number} uid - The uid of the entry to copy in this book
- * @returns {Promise<*>} The new WI duplicated entry
+ * @param {string} [name] - The name of the book
+ * @returns {*} The new WI duplicated entry
  */
-export async function duplicateWorldInfoEntry(name, data, uid) {
+export function duplicateWorldInfoEntry(data, uid, name = data?.name) {
     if (!data || !('entries' in data) || !data.entries[uid]) {
         return;
     }
+    const entry = createWorldInfoEntry(name, data);
+    if (!entry) {
+        return;
+    }
+    Object.assign(entry, entryCopy(data.entries[uid]));
+    return entry;
+}
 
-    // Exclude uid and gather the rest of the properties
-    const originalData = structuredClone(data.entries[uid]);
-    delete originalData.uid;
+/**
+ * An entry's properties but its uid, for a duplicate.
+ * @param {any} entry
+ */
+function entryCopy(entry) {
+    const copy = structuredClone(entry);
+    delete copy.uid;
+    return copy;
+}
 
-    // Create new entry and copy over data
+/**
+ * {@link duplicateWorldInfoEntry}, then waits until the server holds the copy, as {@link createStoredWorldInfoEntry}
+ * does: for the page's own Duplicate button.
+ * @param {string} name
+ * @param {any} data
+ * @param {number} uid
+ * @returns {Promise<object | undefined>} The copy, or undefined if it couldn't be created
+ */
+async function duplicateStoredWorldInfoEntry(name, data, uid) {
+    if (!data || !('entries' in data) || !data.entries[uid]) {
+        return;
+    }
+    const copy = entryCopy(data.entries[uid]);
     const entry = await createStoredWorldInfoEntry(name, data);
     if (!entry) {
         return;
     }
-    Object.assign(entry, originalData);
-
+    Object.assign(entry, copy);
     return entry;
 }
 
@@ -7386,18 +7412,31 @@ function showCharacterWorldLink(character) {
     setWorldButtonMissing(missing ? character.data.extensions.world : null);
 }
 
-export function setWorldInfoButtonClass(avatar, forceValue = undefined) {
+/**
+ * The stored card a character reference names.
+ * @param {any} chid An index into `getContext().characters`, as upstream passes, or an avatar key
+ */
+function storedCharacterOf(chid) {
+    const avatar = resolveCharacterRef(chid)?.avatar;
+    return avatar === undefined ? undefined : charactersStore.get(avatar);
+}
+
+/**
+ * @param {number|string|undefined} chid An index into `getContext().characters`, as upstream's, or an avatar key
+ * @param {boolean} [forceValue]
+ */
+export function setWorldInfoButtonClass(chid, forceValue = undefined) {
     if (forceValue !== undefined) {
         $('#set_character_world, #world_button').toggleClass('world_set', forceValue);
         setWorldButtonMissing(null);
         return;
     }
 
-    if (avatar === undefined) {
+    if (chid === undefined) {
         return;
     }
 
-    showCharacterWorldLink(charactersStore.get(avatar));
+    showCharacterWorldLink(storedCharacterOf(chid));
 }
 
 /**
@@ -7429,14 +7468,19 @@ export function getCharacterWorldLink(character) {
     return resolveCharacterWorldLink(character, (name) => world_names.includes(name));
 }
 
-export function checkEmbeddedWorld(avatar) {
+/**
+ * @param {number|string} [chid] An index into `getContext().characters`, as upstream's, or an avatar key; none hides
+ *   the embedded-lorebook buttons
+ * @returns {boolean} Whether the character has an embedded lorebook
+ */
+export function checkEmbeddedWorld(chid) {
     $('#import_character_info, #edit_embedded_lore').hide();
 
-    if (avatar === undefined) {
+    if (chid === undefined) {
         return false;
     }
 
-    const character = charactersStore.get(avatar);
+    const character = storedCharacterOf(chid);
 
     if (character?.data?.character_book) {
         $('#import_character_info, #edit_embedded_lore').data('avatar', character?.avatar ?? null).show();
@@ -7871,12 +7915,14 @@ export async function charUpdateAddAuxWorld(characterKey, nameOrNames) {
 }
 
 /**
- * Replaces the entire list of auxiliary world books for a character.
+ * Replaces the entire list of auxiliary world books for a character. Synchronous, as upstream's: `world_info.charLore`
+ * holds the new list when it returns, and the server stores it behind it ({@link sendAuxBooksOp}, which rolls the
+ * list back with an error toast if the server refuses it).
  * @param {string} fileName - The filename of the character to update
  * @param {string[]} books - The new list of auxiliary world books to replace the existing list with
  */
-export async function charSetAuxWorlds(fileName, books) {
-    await updateAuxBooks(fileName, 'set', Array.isArray(books) ? books : []);
+export function charSetAuxWorlds(fileName, books) {
+    void updateAuxBooks(fileName, 'set', Array.isArray(books) ? books : []);
 }
 
 /**

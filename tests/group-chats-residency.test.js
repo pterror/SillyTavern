@@ -112,6 +112,7 @@ jest.unstable_mockModule('../public/script.js', () => ({
     requestChatOpen: jest.fn(),
     takeChatOpenAnswer: jest.fn((_owner, answer) => answer),
     chatOpenSendKeys: jest.fn(() => []),
+    saveChatConditional: jest.fn(async () => {}),
     sendSystemMessage: jest.fn(),
     printMessages: jest.fn(),
     substituteParams: jest.fn(),
@@ -233,6 +234,10 @@ jest.unstable_mockModule('../public/scripts/character-store.js', () => {
         characters,
         charactersStore: charactersStoreMock,
         exposedGroups: [],
+        exposedIndexOf: (avatar) => {
+            const index = characters.findIndex(c => c.avatar === avatar);
+            return index === -1 ? undefined : index;
+        },
         holdCharacter: jest.fn(character => character),
         setCharacterId: jest.fn(),
         setExposedGroupId: jest.fn(),
@@ -320,6 +325,8 @@ jest.unstable_mockModule('../public/scripts/utils.js', () => ({
 let validateGroup;
 /** @type {typeof import('../public/scripts/group-chats.js').getGroupMembers} */
 let getGroupMembers;
+/** @type {typeof import('../public/scripts/group-chats.js').getGroupMembersResolved} */
+let getGroupMembersResolved;
 /** @type {typeof import('../public/scripts/group-chats.js').groupsStore} */
 let groupsStore;
 /** @type {typeof import('../public/scripts/group-chats.js').buildGroupCandidateQuery} */
@@ -330,7 +337,7 @@ let getGroupCharacters;
 let power_user;
 
 beforeAll(async () => {
-    ({ validateGroup, getGroupMembers, groupsStore, buildGroupCandidateQuery, getGroupCharacters } = await import('../public/scripts/group-chats.js'));
+    ({ validateGroup, getGroupMembers, getGroupMembersResolved, groupsStore, buildGroupCandidateQuery, getGroupCharacters } = await import('../public/scripts/group-chats.js'));
     ({ power_user } = await import('../public/scripts/power-user.js'));
 });
 
@@ -489,8 +496,22 @@ describe('validateGroup()', () => {
 });
 
 describe('getGroupMembers()', () => {
+    test('is synchronous, as upstream\'s: one entry per member in member order, undefined for one the page doesn\'t hold', () => {
+        addResidentCharacter('alice.png', 'Alice');
+        groupsStore.create({ id: 'g5', members: ['missing.png', 'alice.png'] });
+
+        const result = getGroupMembers('g5');
+
+        expect(Array.isArray(result)).toBe(true);
+        expect(result.map(c => c?.avatar)).toEqual([undefined, 'alice.png']);
+        expect(getGroupMembers('does-not-exist')).toEqual([]);
+        expect(getManyMock).not.toHaveBeenCalled();
+    });
+});
+
+describe('getGroupMembersResolved()', () => {
     test('returns an empty resolved/unresolved split for an unknown group', async () => {
-        const result = await getGroupMembers('does-not-exist');
+        const result = await getGroupMembersResolved('does-not-exist');
         expect(result).toEqual({ resolved: [], unresolved: [] });
     });
 
@@ -499,7 +520,7 @@ describe('getGroupMembers()', () => {
         addResidentCharacter('bob.png', 'Bob');
         groupsStore.create({ id: 'g2', members: ['bob.png', 'alice.png'] });
 
-        const result = await getGroupMembers('g2');
+        const result = await getGroupMembersResolved('g2');
 
         expect(result.unresolved).toEqual([]);
         expect(result.resolved.map(c => c.avatar)).toEqual(['bob.png', 'alice.png']);
@@ -511,7 +532,7 @@ describe('getGroupMembers()', () => {
         getManyMock.mockResolvedValue(new Map()); // repository has no answer either - a true miss
         groupsStore.create({ id: 'g3', members: ['alice.png', 'missing.png'] });
 
-        const result = await getGroupMembers('g3');
+        const result = await getGroupMembersResolved('g3');
 
         expect(result.resolved.map(c => c.avatar)).toEqual(['alice.png']);
         expect(result.unresolved).toEqual(['missing.png']);
@@ -523,7 +544,7 @@ describe('getGroupMembers()', () => {
         getManyMock.mockResolvedValue(new Map([['remote.png', remote]]));
         groupsStore.create({ id: 'g4', members: ['remote.png'] });
 
-        const result = await getGroupMembers('g4');
+        const result = await getGroupMembersResolved('g4');
 
         expect(result.resolved).toEqual([remote]);
         expect(result.unresolved).toEqual([]);

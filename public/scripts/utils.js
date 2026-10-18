@@ -8,7 +8,7 @@ import {
 
 import { animation_duration, getCurrentCharacter, processDroppedFiles, user_avatar } from '../script.js';
 import { getRequestHeaders } from './request-headers.js';
-import { characters, charactersStore, resolveCharacterRef } from './character-store.js';
+import { characters, charactersStore, exposedCharacters, resolveCharacterRef } from './character-store.js';
 import { isMobile } from './RossAscends-mods.js';
 import { collapseNewlines, power_user, personaStore } from './power-user.js';
 import { debounce_timeout } from './constants.js';
@@ -1314,11 +1314,11 @@ export function getAudioDurationFromDataURL(dataUrl) {
 }
 
 /**
- * Gets the filename of the character avatar without extension
- * @param {string?} [avatar=null] - Character avatar. If not provided, uses the currently selected character
- * @param {object} [options={}] - Options arguments
- * @param {string?} [options.manualAvatarKey=null] - Manually take the following avatar key, instead of using the avatar param to determine the name
- * @returns {string?} The filename of the character avatar without extension, or null if the avatar doesn't resolve to a real character
+ * The avatar a character reference names: an index (upstream's form) resolves through `getContext().characters`, and
+ * one that misses yields undefined; an avatar key is used as given, since the page holds only some characters and
+ * can't tell here whether one exists.
+ * @param {any} ref
+ * @returns {string|undefined}
  */
 function fileNameOfCharacterRef(ref) {
     const resolved = resolveCharacterRef(ref)?.avatar;
@@ -1326,10 +1326,15 @@ function fileNameOfCharacterRef(ref) {
     return typeof ref === 'string' && ref !== '' && !/^\d+$/.test(ref) ? ref : undefined;
 }
 
-export function getCharaFilename(avatar = null, { manualAvatarKey = null } = {}) {
-    // An avatar key is used as given: the page holds only some characters, so it can't tell here whether one
-    // exists. An index (upstream's form) resolves through getContext().characters; one that misses yields undefined.
-    const fileName = manualAvatarKey ?? (avatar !== null ? fileNameOfCharacterRef(avatar) : getCurrentCharacter()?.avatar);
+/**
+ * Gets the filename of the character avatar without extension
+ * @param {string|number?} [chid=null] - Character ID (an index into `getContext().characters`), or an avatar key. If not provided, uses the current character
+ * @param {object} [options={}] - Options arguments
+ * @param {string?} [options.manualAvatarKey=null] - Manually take the following avatar key, instead of using the chid to determine the name
+ * @returns {string?} The filename of the character avatar without extension, or null if the character ID is invalid
+ */
+export function getCharaFilename(chid = null, { manualAvatarKey = null } = {}) {
+    const fileName = manualAvatarKey ?? (chid !== null ? fileNameOfCharacterRef(chid) : getCurrentCharacter()?.avatar);
 
     return fileName?.replace(/\.[^/.]+$/, '') ?? null;
 }
@@ -2818,6 +2823,19 @@ export async function findCharAsync({ name = null, allowAvatar = true, insensiti
     const { characterRepository } = await import('./character-repository.js');
     // The whole card, as findChar() returns: callers read any field, and may select it.
     return (await characterRepository.full(answer.ids[0])) ?? null;
+}
+
+/**
+ * Gets the index of a character based on the character object, in `getContext().characters` as upstream's does
+ * @param {object} char - The character object to find the index for
+ * @throws {Error} If the character is not found
+ * @returns {number} The index of the character in the characters array
+ */
+export function getCharIndex(char) {
+    if (!char) throw new Error('Character is undefined');
+    const index = exposedCharacters.findIndex(c => c.avatar === char.avatar);
+    if (index === -1) throw new Error(`Character not found: ${char.avatar}`);
+    return index;
 }
 
 /**

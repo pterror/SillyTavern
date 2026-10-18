@@ -23,7 +23,7 @@ import { getCharacters, printCharactersDebounced } from './character-list.js';
 import { chat } from './chat-state.js';
 import { setActiveCharacter, setActiveGroup } from './app-selection-state.js';
 import { getRequestHeaders } from './request-headers.js';
-import { charactersStore } from './character-store.js';
+import { charactersStore, resolveCharacterRef } from './character-store.js';
 import { characterRepository } from './character-repository.js';
 import { event_types, eventSource } from './events.js';
 import { getRegexedString, regex_placement } from './extensions/regex/engine.js';
@@ -919,14 +919,14 @@ export async function openPermanentAssistantCard() {
 
 /**
  * Assigns a character as the assistant.
- * @param {string?} avatar Character avatar filename
+ * @param {string|number?} characterId Character ID (an index into `getContext().characters`, as upstream's), or an avatar key
  */
-export function assignCharacterAsAssistant(avatar) {
-    if (avatar === undefined) {
+export function assignCharacterAsAssistant(characterId) {
+    if (characterId === undefined) {
         return;
     }
     /** @type {Character} */
-    const character = charactersStore.get(avatar);
+    const character = resolveCharacterRef(characterId);
     if (!character) {
         return;
     }

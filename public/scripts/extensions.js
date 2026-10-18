@@ -2224,26 +2224,26 @@ export const UNSET_VALUE = '__@@UNSET@@__';
 
 /**
  * Writes a field to the character's data extensions object.
- * @param {any} characterIdOrAvatar Avatar (identity) of the character, or (deprecated) its legacy positional
- *   index in the character array; anything {@link resolveCharacterRef} accepts
+ * @param {any} characterId Avatar (identity) of the character, or (deprecated) its legacy positional
+ *   index in the character array; anything {@link resolveCharacterRef} accepts. Named as upstream's param.
  * @param {string} key Field name
  * @param {any} value Field value
  * @returns {Promise<void>} When the field is written
  */
-export async function writeExtensionField(characterIdOrAvatar, key, value) {
+export async function writeExtensionField(characterId, key, value) {
     const context = getContext();
     // Truthiness, not a card check: a hit on a non-index key such as `length` must behave as it did upstream.
-    const character = resolveCharacterRef(characterIdOrAvatar);
+    const character = resolveCharacterRef(characterId);
     if (!character) {
-        console.warn('Character not found', characterIdOrAvatar);
+        console.warn('Character not found', characterId);
         return;
     }
     const isAvatarForm = typeof character.avatar === 'string' && (
-        character.avatar === characterIdOrAvatar
-        || (typeof characterIdOrAvatar === 'object' && characterIdOrAvatar !== null && character.avatar === characterIdOrAvatar.avatar)
+        character.avatar === characterId
+        || (typeof characterId === 'object' && characterId !== null && character.avatar === characterId.avatar)
     );
     if (!isAvatarForm) {
-        console.warn('writeExtensionField: called with a legacy character index; pass the character avatar instead', characterIdOrAvatar);
+        console.warn('writeExtensionField: called with a legacy character index; pass the character avatar instead', characterId);
     }
     const extensionPath = `data.extensions.${key}`;
     const isUnset = value === UNSET_VALUE;

@@ -11,6 +11,8 @@ import { MacroParser } from '../engine/MacroParser.js';
 import { MacroCstWalker } from '../engine/MacroCstWalker.js';
 
 import { ELSE_MARKER } from '../engine/MacroConstants.js';
+// Upstream's export, which now lives in MacroConstants.js.
+export { ELSE_MARKER };
 
 export function registerCoreMacros() {
     MacroRegistry.registerMacro('space', {

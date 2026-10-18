@@ -4975,7 +4975,7 @@ export async function sendMessageAsUser(messageText, messageBias, insertAt = nul
     }
 
     await populateFileAttachment(message);
-    statMesProcess(message, 'user', getCurrentCharacter(), '');
+    statMesProcess(message, 'user', exposedCharacters, this_chid, '');
     // A raw-action send asks the server to store this message and sends this ref with it, so the
     // server's answer can say which node it was stored at.
     setStoreRef(message, uuidv4());
@@ -6177,7 +6177,7 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
         item = chat[itemId];
     }
 
-    statMesProcess(item, type, getCurrentCharacter(), oldMessage);
+    statMesProcess(item, type, exposedCharacters, this_chid, oldMessage);
     return { type, getMessage };
 }
 
