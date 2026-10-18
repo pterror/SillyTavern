@@ -81,6 +81,7 @@ import {
     requestChatOpen,
     takeChatOpenAnswer,
     chatOpenSendKeys,
+    saveChatConditional,
 } from '../script.js';
 import { getCharacters, showCharacterSyncFailedToast, SYNC_REQUEST_TIMEOUT_MS, queryWithSortFallback } from './character-list.js';
 import { chat, chat_metadata } from './chat-state.js';
@@ -107,6 +108,7 @@ export {
     // Upstream's export; extensions are shown only the open group.
     exposedGroups as groups,
     saveGroupField,
+    saveGroupChat,
     generateGroupWrapper,
     deleteGroup,
     getGroupAvatar,
@@ -128,7 +130,12 @@ export { groupsStore };
  */
 function rebuildGroupsStore() {
     rebuildGroupsStoreCore();
+    storedGroupFields.clear();
+    for (const group of groups) noteStoredGroupFields(group.id, group);
     groupsStore.onChange(() => invalidateGroupsFuseIndex());
+    groupsStore.onChange(change => {
+        if (change.op === 'created') noteStoredGroupFields(change.id, change.entity);
+    });
 
     // Member lists only need reprinting when `members` itself changed, not on every groupsStore change,
     // since a full reprint resets pagination state.
@@ -188,7 +195,74 @@ async function saveGroupProperty(id, props) {
     if (!response.ok) {
         toastr.error(t`The change was not saved. Check the server console for details.`, t`Group could not be saved`);
         console.error('Group property could not be saved', response);
+        return;
     }
+    noteStoredGroupFields(id, props);
+}
+
+/**
+ * Each group's fields as the server last stored them, by group id, each as its JSON: what {@link editGroup} compares a
+ * group against, so it saves only the fields changed in place since.
+ * @type {Map<string, Map<string, string>>}
+ */
+const storedGroupFields = new Map();
+
+/**
+ * Records `fields` (field → value) as stored for group `id`.
+ * @param {string} id
+ * @param {object} fields
+ */
+function noteStoredGroupFields(id, fields) {
+    if (!storedGroupFields.has(id)) storedGroupFields.set(id, new Map());
+    const stored = storedGroupFields.get(id);
+    for (const [field, value] of Object.entries(fields)) stored.set(field, JSON.stringify(value));
+}
+
+/**
+ * Saves a group chat to the server, as upstream's does: the open chat goes whole to its group's chat, and the server
+ * stores what changed ({@link saveChatConditional}). The open chat is the only one the page holds, so a call for any
+ * other group saves nothing, with a warning.
+ * @param {string} groupId Group ID
+ * @param {boolean} shouldSaveGroup Whether to save the group after saving the chat
+ * @param {boolean} [_force=false] Kept for upstream callers: there is no integrity refusal to override
+ * @returns {Promise<void>} A promise that resolves when the group chat has been saved.
+ */
+async function saveGroupChat(groupId, shouldSaveGroup, _force = false) {
+    if (!groupsStore.has(groupId)) {
+        console.warn('Group not found', groupId);
+        return;
+    }
+    if (groupId !== selected_group) {
+        console.warn('saveGroupChat: only the open group\'s chat is held by the page; nothing was saved for', groupId);
+    } else {
+        await saveChatConditional();
+    }
+    if (shouldSaveGroup) {
+        await editGroup(groupId, false, false);
+    }
+}
+
+/**
+ * Edits a group by ID, as upstream's does: saves the group as it is in `groups` now, so a change an extension made to
+ * it in place is stored. Only the fields that differ from what the server last stored for it are sent
+ * ({@link saveGroupField}), so another session's change to any other field is kept.
+ * @param {string} id Group ID to edit
+ * @param {boolean} immediately Whether to save immediately
+ * @param {boolean} reload Whether to reload the groups after saving
+ * @returns {Promise<void>} Promise that resolves when the group is edited
+ */
+export async function editGroup(id, immediately, reload = true) {
+    const group = groupsStore.get(id);
+    if (!group) {
+        return;
+    }
+    const stored = storedGroupFields.get(id);
+    const changed = Object.fromEntries(Object.entries(group).filter(([field, value]) => stored?.get(field) !== JSON.stringify(value)));
+    if (Object.keys(changed).length === 0) {
+        if (immediately && reload) await getCharacters();
+        return;
+    }
+    return saveGroupField(id, changed, immediately, reload);
 }
 
 /**
@@ -563,13 +637,24 @@ async function openGroupConversation(groupId, { chat: requested = null, makeCurr
 }
 
 /**
- * Retrieves the members of a group, resolved and split explicitly: a non-resident member lands in
- * `unresolved` rather than becoming an `undefined` hole in the returned array.
+ * Retrieves the members of a group, as upstream's does: synchronously, one entry per member in member order, and
+ * `undefined` for a member the page doesn't hold (upstream's for a member with no character).
+ * @param {string} [groupId=selected_group] - The ID of the group to retrieve members from. Defaults to the currently selected group.
+ * @returns {Character[]} An array of character objects representing the members of the group. If the group is not found, an empty array is returned.
+ */
+export function getGroupMembers(groupId = selected_group) {
+    const group = groupsStore.get(groupId);
+    return group?.members.map(findGroupMemberCharacter) ?? [];
+}
+
+/**
+ * Retrieves the members of a group, resolved and split explicitly: a non-resident member is looked up, and one that
+ * still doesn't resolve lands in `unresolved` rather than becoming an `undefined` hole.
  * @param {string} [groupId=selected_group] - The ID of the group to retrieve members from. Defaults to the currently selected group.
  * @returns {Promise<{resolved: Character[], unresolved: string[]}>} Resolved characters (in member order) plus
  * the member entries that didn't resolve. Both are empty if the group isn't found.
  */
-export async function getGroupMembers(groupId = selected_group) {
+export async function getGroupMembersResolved(groupId = selected_group) {
     const group = groupsStore.get(groupId);
     if (!group) return { resolved: [], unresolved: [] };
     return resolveGroupMembers(group.members);
@@ -676,12 +761,23 @@ export function findGroupMemberId(arg, full = false) {
 }
 
 /**
+ * The avatar of the character a group function's `characterId` names: an index into `getContext().characters`, as
+ * upstream passes, or an avatar key, as this fork's callers do.
+ * @param {number|string|undefined} characterId
+ * @returns {string|undefined}
+ */
+function currentMemberAvatar(characterId) {
+    return resolveCharacterRef(characterId)?.avatar ?? (typeof characterId === 'string' ? characterId : undefined);
+}
+
+/**
  * Gets depth prompts for group members.
  * @param {string} groupId Group ID
- * @param {string} characterAvatar Avatar of the current character
+ * @param {number|string} characterId Current character: its index into `getContext().characters`, or its avatar
  * @returns {{depth: number, text: string, role: string}[]} Array of depth prompts
  */
-export function getGroupDepthPrompts(groupId, characterAvatar) {
+export function getGroupDepthPrompts(groupId, characterId) {
+    const characterAvatar = currentMemberAvatar(characterId);
     if (!groupId) {
         return [];
     }
@@ -724,11 +820,11 @@ export function getGroupDepthPrompts(groupId, characterAvatar) {
 /**
  * Combines group members cards into a single string. Only for groups with generation mode set to APPEND or APPEND_DISABLED.
  * @param {string} groupId Group ID
- * @param {string} characterAvatar Avatar of the current character
+ * @param {number|string} characterId Current character: its index into `getContext().characters`, or its avatar
  * @returns {{description: string, personality: string, scenario: string, mesExamples: string}} Group character cards combined
  */
-export function getGroupCharacterCards(groupId, characterAvatar) {
-    const lazy = getGroupCharacterCardsLazy(groupId, characterAvatar);
+export function getGroupCharacterCards(groupId, characterId) {
+    const lazy = getGroupCharacterCardsLazy(groupId, characterId);
     if (!lazy) return null;
 
     // Resolve all lazy fields into a plain object
@@ -744,10 +840,11 @@ export function getGroupCharacterCards(groupId, characterAvatar) {
  * Returns group character cards with lazy evaluation.
  * Each field is only processed when first accessed.
  * @param {string} groupId Group ID
- * @param {string} characterAvatar Avatar of the current character
+ * @param {number|string} characterId Current character: its index into `getContext().characters`, or its avatar
  * @returns {{description: string, personality: string, scenario: string, mesExamples: string}} Group character cards with lazy getters
  */
-export function getGroupCharacterCardsLazy(groupId, characterAvatar) {
+export function getGroupCharacterCardsLazy(groupId, characterId) {
+    const characterAvatar = currentMemberAvatar(characterId);
     const group = groupsStore.get(groupId);
 
     // If no group cards should be generated, return null so caller knows to fall back

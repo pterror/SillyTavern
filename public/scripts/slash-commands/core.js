@@ -24,17 +24,23 @@ import { textgen_types } from '../textgen-settings.js';
 import { accountStorage } from '../util/AccountStorage.js';
 import { canUseNegativeLookbehind, debounce, delay, findCharAsync, isTrueBoolean } from '../utils.js';
 
-let parserInstance;
+/**
+ * The shared parser: upstream's `parser` export of slash-commands.js. A live binding, set by {@link getParser} the
+ * first time anything needs it, and by initDefaultSlashCommands() at startup, before extensions load, so an
+ * extension that imports it gets the instance.
+ * @type {SlashCommandParser}
+ */
+export let parser;
 /**
  * Constructed lazily: a circular import back from SlashCommandParser.js means this module can
  * start evaluating while that class is still in its temporal dead zone, so `new` at module scope throws.
  * @returns {SlashCommandParser}
  */
-function getParser() {
-    if (!parserInstance) {
-        parserInstance = new SlashCommandParser();
+export function getParser() {
+    if (!parser) {
+        parser = new SlashCommandParser();
     }
-    return parserInstance;
+    return parser;
 }
 /**
  * @deprecated Use SlashCommandParser.addCommandObject() instead

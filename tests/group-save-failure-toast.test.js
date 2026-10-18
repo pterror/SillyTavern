@@ -108,6 +108,7 @@ jest.unstable_mockModule('../public/script.js', () => ({
     requestChatOpen: jest.fn(),
     takeChatOpenAnswer: jest.fn((_owner, answer) => answer),
     chatOpenSendKeys: jest.fn(() => []),
+    saveChatConditional: jest.fn(async () => {}),
     sendSystemMessage: jest.fn(),
     printMessages: jest.fn(),
     substituteParams: jest.fn(),
@@ -214,6 +215,10 @@ jest.unstable_mockModule('../public/scripts/character-store.js', () => {
         characters,
         charactersStore: charactersStoreMock,
         exposedGroups: [],
+        exposedIndexOf: (avatar) => {
+            const index = characters.findIndex(c => c.avatar === avatar);
+            return index === -1 ? undefined : index;
+        },
         holdCharacter: jest.fn(character => character),
         setCharacterId: jest.fn(),
         setExposedGroupId: jest.fn(),

@@ -615,6 +615,18 @@ export async function forkChat(mesId, { swipeId = null } = {}) {
     return openBranch(await makeBranch(mesId, { swipeId, open: true, alsoLabelShown: !selected_group }));
 }
 
+/**
+ * Updates the display of the bookmark on a chat message, as upstream's does: the message element's `bookmark_link`
+ * and its checkpoint flag's tooltip. Messages here carry no checkpoint flag, so only the attribute changes.
+ * @param {JQuery<HTMLElement>} mes - The message element
+ * @param {string?} [newBookmarkLink=null] - The new bookmark link (optional)
+ */
+export function updateBookmarkDisplay(mes, newBookmarkLink = null) {
+    newBookmarkLink && mes.attr('bookmark_link', newBookmarkLink);
+    const bookmarkFlag = mes.find('.mes_bookmark');
+    bookmarkFlag.attr('title', `Checkpoint\n${mes.attr('bookmark_link')}\n\n${bookmarkFlag.data('tooltip')}`);
+}
+
 function registerBookmarksSlashCommands() {
     /**
      * @param {string} context - used as the toast title on failure.

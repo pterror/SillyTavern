@@ -483,6 +483,49 @@ export async function promptItemize(itemizedPrompts, requestedMesId, { loadPrevi
 }
 
 
+/**
+ * Upstream's export: swaps the held itemized prompts (`itemizedPrompts`) between two messages. Useful when moving
+ * messages around in the chat. The server keeps each itemization with its reply, so a moved message keeps its own;
+ * this only renumbers the page's held copy, as upstream's does.
+ * @param {number} sourceMessageId Source message ID
+ * @param {number} targetMessageId Target message ID
+ */
+export function swapItemizedPrompts(sourceMessageId, targetMessageId) {
+    if (!Array.isArray(itemizedPrompts)) {
+        return;
+    }
+
+    const sourcePrompts = itemizedPrompts.filter(x => x.mesId === sourceMessageId);
+    const targetPrompts = itemizedPrompts.filter(x => x.mesId === targetMessageId);
+
+    sourcePrompts.forEach(prompt => {
+        prompt.mesId = targetMessageId;
+    });
+
+    targetPrompts.forEach(prompt => {
+        prompt.mesId = sourceMessageId;
+    });
+
+    itemizedPrompts.sort((a, b) => a.mesId - b.mesId);
+}
+
+/**
+ * Upstream's export: drops the held itemized prompt (`itemizedPrompts`) of a message and shifts down the later ones,
+ * as upstream's does. The server keeps each itemization with its reply, so a deleted message's goes with it.
+ * @param {number} messageId Message ID to delete itemized prompt for
+ */
+export function deleteItemizedPromptForMessage(messageId) {
+    if (!Array.isArray(itemizedPrompts)) {
+        return;
+    }
+
+    itemizedPrompts = itemizedPrompts.filter(x => x.mesId !== messageId);
+
+    for (const prompt of itemizedPrompts.filter(x => x.mesId > messageId)) {
+        prompt.mesId -= 1;
+    }
+}
+
 export function initItemizedPrompts() {
     registerDebugFunction('clearPrompts', 'Delete itemized prompts', 'Deletes every stored prompt breakdown.', async () => {
         await clearItemizedPrompts();

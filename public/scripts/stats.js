@@ -92,9 +92,22 @@ async function userStatsHandler() {
 /**
  * Handles the character stats by getting them from the server and generating the HTML report.
  *
+ * @param {Object} characters - Object containing character data (as `getContext().characters`).
+ * @param {string} this_chid - The character id: its index in `characters`.
+ */
+async function characterStatsHandler(characters, this_chid) {
+    const character = characters?.[this_chid];
+    if (!character) {
+        return;
+    }
+    await showCharacterStats(character);
+}
+
+/**
+ * {@link characterStatsHandler} for a character the page holds.
  * @param {Character} character - The character to show stats for.
  */
-async function characterStatsHandler(character) {
+async function showCharacterStats(character) {
     await getStats([character.avatar]);
     let myStats = charStats[character.avatar];
     if (myStats === undefined) {
@@ -153,16 +166,18 @@ async function recreateStats() {
 /**
  * Kept for upstream callers. The stats are counted by the server from the stored messages, so a message the page
  * processes changes nothing here.
- * @param {Object} _line
- * @param {string} _type
- * @param {Character} _character
- * @param {string} _oldMessage
+ * @param {Object} _line - Object containing message data.
+ * @param {string} _type - The type of the message processing (e.g., 'append', 'continue', 'appendFinal', 'swipe').
+ * @param {Object} _characters - Object containing character data.
+ * @param {string} _this_chid - The character id.
+ * @param {string} _oldMessage - The old message that's being processed.
  */
-async function statMesProcess(_line, _type, _character, _oldMessage) { }
+async function statMesProcess(_line, _type, _characters, _this_chid, _oldMessage) { }
 
 export function initStats() {
     $('.rm_stats_button').on('click', function () {
-        characterStatsHandler(getCurrentCharacter());
+        const character = getCurrentCharacter();
+        if (character) showCharacterStats(character);
     });
     registerDebugFunction('refreshStats', 'Refresh Stat File', 'Recreates the stats file based on existing chat files', recreateStats);
 }

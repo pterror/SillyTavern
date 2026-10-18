@@ -1,6 +1,6 @@
 import { SlashCommandParser } from '../SlashCommandParser.js';
 import { SlashCommand } from '../SlashCommand.js';
-import { findGroupMemberId, getGroupMembers, groupsStore, is_group_generating, saveGroupField, selected_group } from '../../group-chats.js';
+import { findGroupMemberId, getGroupMembersResolved, groupsStore, is_group_generating, saveGroupField, selected_group } from '../../group-chats.js';
 import { t } from '../../i18n.js';
 import { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument } from '../SlashCommandArgument.js';
 import { commonEnumProviders } from '../SlashCommandCommonEnumsProvider.js';
@@ -135,7 +135,7 @@ async function countGroupMemberCallback() {
         return '';
     }
 
-    return String((await getGroupMembers(selected_group)).resolved.length);
+    return String((await getGroupMembersResolved(selected_group)).resolved.length);
 }
 
 async function removeGroupMemberCallback(_, arg) {

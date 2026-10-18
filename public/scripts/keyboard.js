@@ -67,7 +67,11 @@ function handleNodeChange(node) {
 }
 
 /**
+ * Registers an interactable class (for example for an extension) and makes it keyboard interactable.
  * @param {string} interactableSelector - Supports class combinations chained via dots (e.g. `tag.actionable`) and sub selectors.
+ * @param {object} [options={}] - Optional settings for the interactable
+ * @param {boolean} [options.disabledByDefault=false] - Whether interactables of this class should be disabled by default
+ * @param {boolean} [options.notFocusableByDefault=false] - Whether interactables of this class should not be focusable by default
  */
 export function registerInteractableType(interactableSelector, { disabledByDefault = false, notFocusableByDefault = false } = {}) {
     interactableSelectors.push(interactableSelector);
