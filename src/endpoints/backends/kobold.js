@@ -8,7 +8,7 @@ import { TEXTGEN_TYPES } from '../../constants.js';
 import { readSettingsAtPaths } from '../../settings-store.js';
 import { resolveTokenizer, createTokenizerOutcome, sendTokenizerWarnings, tokenizerIdentity } from '../../tokenizer-resolve.js';
 import { createStoredCounter, writeBack } from '../../token-count-store.js';
-import { fetchKoboldStatus, koboldCanUseTokenization, rememberRemoteTokenization } from '../../backend-status.js';
+import { fetchKoboldStatus, koboldCanUseTokenization, lookupBackendModel, rememberRemoteTokenization } from '../../backend-status.js';
 import { resolveTextCompletionGenerationInput } from '../../text-completion-generation-input.js';
 import { assembleTextCompletionPrompt, buildItemizationBreakdown } from '../../text-completion-prompt-orchestrator.js';
 import { generateTurnOf, textCompletionQuietInput } from '../../page-writes.js';
@@ -262,7 +262,11 @@ router.post('/generate', withGenerationStop(async function (request, response_ge
                 warnings, generationStop: response_generate.locals.generationStop,
                 itemization: itemizationOf(request.body.itemization, built.itemization),
                 // How the reply is finished (its reasoning split off, see src/reply-reasoning.js).
-                finish: await readReplyFinishSettings(directories, { mainApi: 'kobold', avatar: characterAvatar, name1: built.name1, name2: built.name2 }),
+                finish: await readReplyFinishSettings(directories, {
+                    mainApi: 'kobold', avatar: characterAvatar, groupId, name1: built.name1, name2: built.name2,
+                    // The model the reply records (`extra.model`), looked up meanwhile.
+                    model: lookupBackendModel({ api: 'kobold', url: built.params?.api_server ?? '' }),
+                }),
             };
             // The reply's write goes through the session; one made for it is in the headers, which a
             // stream sends before the reply is stored.

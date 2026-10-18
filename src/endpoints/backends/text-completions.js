@@ -24,7 +24,7 @@ import { constructPrompt, getInstructStoppingSequences } from '../../instruct-te
 import { readSettingsAtPaths } from '../../settings-store.js';
 import { readPresetByName } from '../presets.js';
 import { resolveTokenizer, encodeWithTokenizer, resolveProfileTokenizerSetting, createTokenizerOutcome, sendTokenizerWarnings, tokenizerIdentity } from '../../tokenizer-resolve.js';
-import { createLlamaCppPropsCheck } from '../../llamacpp-props.js';
+import { createLlamaCppPropsCheck, llamaCppPropsModelName } from '../../llamacpp-props.js';
 import { createStoredCounter, writeBack } from '../../token-count-store.js';
 import { fetchTextgenStatus, rememberRemoteTokenization } from '../../backend-status.js';
 import { rememberOpenRouterModels } from '../../openrouter-models.js';
@@ -664,6 +664,9 @@ export async function buildRawActionTextCompletionRequest(directories, {
 
     return {
         params: assembled.generate_data, backend, anchorNodeId, anchorContent, tokenizerIdentity: identity,
+        // The model generating, as far as the server knows it without asking the backend again: the chosen one, else
+        // the one llama.cpp's /props named. The reply records it as `extra.model`.
+        model: backend.model ?? (llamaCppProps.props ? llamaCppPropsModelName(llamaCppProps.props) : undefined) ?? null,
         tokenCountRows: storedCounter.pending,
         name1: orchestratorInput.name1, name2: orchestratorInput.name2,
         warnings: sendTokenizerWarnings(tokenizerState, resolvedTokenizer, tokenizerOutcome, assembled.droppedEntries),
@@ -912,7 +915,8 @@ router.post('/generate', withGenerationStop(async function (request, response) {
                     itemization: itemizationOf(request.body.itemization, built.itemization),
                     // How the reply is finished (its reasoning split off, see src/reply-reasoning.js).
                     finish: await readReplyFinishSettings(request.user.directories, {
-                        mainApi: 'textgenerationwebui', source: built.backend.type, avatar: characterAvatar, name1: built.name1, name2: built.name2,
+                        mainApi: 'textgenerationwebui', source: built.backend.type, avatar: characterAvatar, groupId, name1: built.name1, name2: built.name2,
+                        model: built.model,
                     }),
                 };
                 // The reply's write goes through the session; one made for it is in the headers, which a
