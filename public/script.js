@@ -945,8 +945,8 @@ export function saveSettingsDebounced(loopCounter, ...keys) {
 }
 
 
-// With a search term the list isn't re-queried here; the visible page is, on 'search-index-updated'.
-const getCharactersDebounced = debounce(() => getCharacters({ skipPrint: hasActiveCharacterSearch(), keepListPosition: true }), 2000);
+// The search index changes with the commit, so a search term's page is re-queried here like any other.
+const getCharactersDebounced = debounce(() => getCharacters({ keepListPosition: true }), 2000);
 
 /**
  * The warning for a queued tag move the server couldn't apply. src/character-metadata-db.js's tagMoveFailedText()
