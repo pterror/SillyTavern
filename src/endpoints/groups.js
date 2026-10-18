@@ -9,7 +9,7 @@ import { sync as writeFileAtomicSync, default as writeFileAtomic } from 'write-f
 import { color, tryParse, writeBackpressured } from '../util.js';
 import { forbiddenRegExp } from '../middleware/validateFileName.js';
 import { groupDigestContentHash, groupDigestFavHash, groupDigestTagIdsHash, normalizeFav } from '../../public/scripts/hash-utils.js';
-import { isValidGroupId, normalizeGroupId, normalizeGroupRecord } from '../group-id.js';
+import { isValidGroupId, normalizeGroupId, normalizeGroupRecord, storedGroup } from '../group-id.js';
 import { isChatHeaderEntry } from '../chat-header.js';
 import { withGroupFilesLock } from '../group-lock.js';
 import { requestStore, userStore } from '../user-stores.js';
@@ -424,18 +424,6 @@ router.post('/batch', async (request, response) => {
 function sendGroupSaveFailed(response, id, error) {
     console.error(`Could not save group ${id}:`, error);
     return response.status(500).send({ error: 'The group could not be saved, so the change was not applied. See the server console for details.' });
-}
-
-/**
- * A group as stored: what `writeGroup()` keeps of a group object (its compat chat values, read-time keys, aren't).
- * @param {Record<string, any>} group
- */
-function storedGroup(group) {
-    normalizeGroupRecord(group);
-    const stored = { ...group, fav: normalizeFav(group.fav) };
-    delete stored.chat_id;
-    delete stored.chats;
-    return stored;
 }
 
 router.post('/create', async (request, response) => {

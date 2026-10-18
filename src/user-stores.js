@@ -6,6 +6,7 @@ import { LibraryEngine } from './library-engine.js';
 import { ChatEngine } from './chat-engine.js';
 import { libraryPeople } from './chat-people.js';
 import { TokenCache } from './token-cache-engine.js';
+import { markUpstreamImportPending } from './upstream-import.js';
 
 /**
  * Each user's engine store, `<user>/store/`: the library (characters, groups, tags, world info, search), the chats
@@ -115,7 +116,11 @@ async function openStore(root, handle) {
     const made = madeHere.delete(root) || !fs.existsSync(dir);
     const lib = await LibraryEngine.open(engineOf(), dir);
     try {
-        if (made) await lib.tags.markSeedPending();
+        if (made) {
+            await lib.tags.markSeedPending();
+            // A user directory a store is made for may be upstream's: its groups, books and chats go in once.
+            await markUpstreamImportPending(lib);
+        }
         const events = new EventEmitter();
         events.setMaxListeners(0);
         const commit = lib.store.commit.bind(lib.store);
