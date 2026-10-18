@@ -367,6 +367,33 @@ fn entries_places_free_keys_and_indexes_follow_commits_reopens_crashes_and_clean
 }
 
 #[test]
+fn entries_created_one_after_another_rewrite_one_free_entry() {
+    let dir = temp_dir("free-churn");
+    let s = Store::open_in(&dir, SMALL, pool()).unwrap();
+    s.commit_wait(vec![create(1, BOOK, "b")]).unwrap();
+    for n in 0..40u64 {
+        s.commit_wait(vec![create(10 + n, ENTRY, &format!("1:{n}"))])
+            .unwrap();
+    }
+    let n = read(&s, |v| books::book_numbers(v, 1));
+    assert_eq!(*field(&n, "freeKey"), Js::Num(40.0));
+    // The buffer holds the book's free entries: one, never a deletion.
+    let free = key::id(books::FREE, 1);
+    let v = s.inner.ks.version();
+    let held: Vec<bool> = v.mems[0]
+        .read()
+        .unwrap()
+        .iter()
+        .filter(|(k, _)| k.starts_with(&free))
+        .map(|(_, val)| matches!(val, crate::keyspace::val::Val::Del))
+        .collect();
+    assert_eq!(held, vec![false]);
+    s.close();
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn an_entry_needs_a_book_and_its_key_once() {
     let dir = temp_dir("refusals");
     let s = Store::open_in(&dir, SMALL, pool()).unwrap();

@@ -76,8 +76,11 @@ reads on top, which belong outside the core]
   can't be positions. Design: a stable sequence number per record and one index to its current position.
 - **Garbage collection.** Size-ratio and deletion-density triggers merge everything into the oldest run, in bounded
   steps (040e58c3e, 00bb4c964); the log's cleaning threshold is unchanged, and the space bound has no test.
-- **Keys built from mutable values** (library orders, free-uid ranges, session recency indexes) churn tombstones:
-  FREE holds 21× more dead keys than live (measured).
+- **Keys built from mutable values** churn: each change deletes one key and writes another. Inherent where the read
+  pages by the changing value or looks up by it (library orders by sort key; session recency indexes by last
+  activity; who is at or remembers a message), which a stable key could serve only by scanning everything; garbage
+  collection bounds what they leave. Free entry keys are keyed by their interval's end, which taking the lowest
+  free key leaves as it is (before: by start, 21× more dead keys than live, measured).
 - **Message heads** (MSG_TEXT, MSG_VALUE) are still split by kind, as entity heads were before `key::HEAD`.
 - **Search layout.** 5.5 GB live: block maxima for one-document terms, a dictionary per lorebook, stored prefixes
   (measured). Standard layouts store bounds only for terms with ≥128 documents (sourced; estimate reasoned).
