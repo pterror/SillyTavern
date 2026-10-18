@@ -6,7 +6,9 @@
 //!
 //! `ST_MODEL_SEEDS=<n>` runs n seeds from `ST_MODEL_BASE` (default 12 from 1, sized for CI); `ST_MODEL_SEED=<s>`
 //! runs seed s alone, to replay a failure; `ST_MODEL_STEPS` sets steps per seed. A failure names its seed and step.
-//! The sequence of operations is fixed by the seed; background flushes and merges still run on real threads.
+//! The sequence of operations is fixed by the seed. The simulated runs also fix the interleaving: background
+//! flushes and merges run as steps picked by the seed between operations (`Executor::simulated`), so a failure
+//! replays exactly; the threaded runs let real threads interleave as they will.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::AtomicU64;
@@ -276,7 +278,11 @@ fn wait_for_room(pool: &Pool) {
             return;
         }
         pool.request_room();
-        std::thread::sleep(std::time::Duration::from_micros(100));
+        if pool.exec.is_simulated() {
+            assert!(pool.exec.pump(), "no room and no step queued to make some");
+        } else {
+            std::thread::sleep(std::time::Duration::from_micros(100));
+        }
     }
 }
 
@@ -360,7 +366,10 @@ fn check_read(
     }
 }
 
-fn run_seed(seed: u64, steps: u64) {
+/// What a run ended with: the steps run under simulation, and every key and value at the end.
+type Outcome = (u64, Vec<(Vec<u8>, Vec<u8>)>);
+
+fn run_seed(seed: u64, steps: u64, sim: bool) -> Outcome {
     let mut rng = Rng(seed);
     let dir = temp_dir(&format!("s{seed}"));
     let keys = 40 + rng.below(400);
@@ -380,7 +389,14 @@ fn run_seed(seed: u64, steps: u64) {
     } else {
         256 << 10
     };
-    let pool = || Pool::new(buffer, 64 << 10, 4, 1, 2, 2);
+    let pool = || {
+        if sim {
+            Pool::simulated(buffer, 64 << 10, 2, 2, seed ^ 0x5eed)
+        } else {
+            Pool::new(buffer, 64 << 10, 4, 1, 2, 2)
+        }
+    };
+    let mut sim_steps = 0u64;
     let mut fresh = 0u64;
     let open = |dir: &Path| {
         let ks = Keyspace::open(dir, cfg, pool()).unwrap();
@@ -392,7 +408,13 @@ fn run_seed(seed: u64, steps: u64) {
     let mut end = 0u64;
     // Snapshots held across later writes, each with the model as it was.
     for step in 0..steps {
-        let at = format!("seed {seed} step {step}");
+        let at = format!("seed {seed}{} step {step}", if sim { " (simulated)" } else { "" });
+        if sim {
+            // Background work between operations: a few of the queued steps, picked by the executor's seed.
+            for _ in 0..rng.below(6) {
+                ks.pool().exec.pump();
+            }
+        }
         match rng.below(100) {
             0..=54 => {
                 let n = match rng.below(10) {
@@ -551,6 +573,7 @@ fn run_seed(seed: u64, steps: u64) {
                 ks.freeze_at(end);
                 ks.wait_flushed().unwrap();
                 ks.stop();
+                sim_steps += ks.pool().exec.sim_steps();
                 drop(ks);
                 ks = open(&dir);
                 assert_eq!(ks.covered(), end, "{at}: covered after reopen");
@@ -558,14 +581,17 @@ fn run_seed(seed: u64, steps: u64) {
         }
     }
     let expect = model_bytes(&model);
+    let all = ks.scan(&[7], &[8], usize::MAX).unwrap();
     assert_eq!(
-        ks.scan(&[7], &[8], usize::MAX).unwrap(),
+        all,
         expect.into_iter().collect::<Vec<_>>(),
         "seed {seed}: all at the end"
     );
     ks.stop();
+    sim_steps += ks.pool().exec.sim_steps();
     drop(ks);
     let _ = fs::remove_dir_all(&dir);
+    (sim_steps, all)
 }
 
 /// A commit's writes, oldest first, as inserts each holding a key at most once (a later write of a key goes in a
@@ -634,6 +660,27 @@ fn random_writes_flushes_merges_and_reopens_read_as_the_model_says() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(1500);
     for seed in seeds() {
-        run_seed(seed, steps);
+        run_seed(seed, steps, false);
+    }
+}
+
+#[test]
+fn random_writes_flushes_merges_and_reopens_read_as_the_model_says_in_every_simulated_interleaving() {
+    let steps: u64 = std::env::var("ST_MODEL_STEPS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1500);
+    for seed in seeds() {
+        run_seed(seed, steps, true);
+    }
+}
+
+#[test]
+fn a_simulated_seed_replays_exactly() {
+    for seed in [3, 11] {
+        let a = run_seed(seed, 400, true);
+        let b = run_seed(seed, 400, true);
+        assert!(a.0 > 0, "seed {seed}: no background step ran");
+        assert_eq!(a, b, "seed {seed}: two runs of one seed differ");
     }
 }

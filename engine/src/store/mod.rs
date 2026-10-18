@@ -546,7 +546,7 @@ impl Store {
     pub fn commit_wait(&self, records: Vec<Record>) -> StoreResult<Vec<u64>> {
         let (tx, rx) = std::sync::mpsc::channel();
         self.commit(records, Box::new(move |r| drop(tx.send(r))));
-        rx.recv().unwrap_or(Err(StoreError::Closed))
+        self.inner.ks.pool().exec.recv(&rx).unwrap_or(Err(StoreError::Closed))
     }
 
     /// While replay runs, keeps `f` to run on the replaying engine thread once it ends (however it ends) and
@@ -993,7 +993,7 @@ impl Store {
                 let _ = tx.send(r);
             }),
         ));
-        rx.recv().unwrap().unwrap();
+        self.inner.ks.pool().exec.recv(&rx).unwrap().unwrap();
     }
 
     /// Tests: holds carrier moves and re-siding (a step under way still ends), or lets them go on.
@@ -1103,7 +1103,12 @@ impl Store {
             if !c.relocating {
                 return Ok(());
             }
-            c = self.inner.clean_cv.wait(c).unwrap();
+            c = self
+                .inner
+                .ks
+                .pool()
+                .exec
+                .wait(&self.inner.clean, &self.inner.clean_cv, c);
         }
     }
 
@@ -1133,7 +1138,7 @@ impl Store {
             }
             drop(p);
             // The sync step may be waiting for room that another store's flush frees.
-            std::thread::sleep(std::time::Duration::from_millis(1));
+            i.ks.pool().exec.pause(std::time::Duration::from_millis(1));
         }
         i.clean_act.wait_idle();
         if flush && i.is_ready() {
@@ -1183,7 +1188,7 @@ impl Inner {
         let mut r = self.ready.lock().unwrap();
         loop {
             match &*r {
-                Replay::Running(_) => r = self.ready_cv.wait(r).unwrap(),
+                Replay::Running(_) => r = self.ks.pool().exec.wait(&self.ready, &self.ready_cv, r),
                 Replay::Done => return Ok(()),
                 Replay::Failed(why) => return Err(StoreError::Replay(why.clone())),
             }

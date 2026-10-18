@@ -176,7 +176,12 @@ fn forget(f: Option<&FieldRef>, target: Option<u64>, marker: Option<u64>) -> Rec
 
 /// A store with a world book (1), an entry of it (10, key `1:0`, at place 5), user 1 and sessions 7 and 8.
 fn open(dir: &std::path::Path) -> Store {
-    let s = Store::open_in(dir, SMALL, pool()).unwrap();
+    open_with(dir, pool())
+}
+
+/// `open` with the store in `pool` (a simulated one, for instance).
+fn open_with(dir: &std::path::Path, pool: Arc<Pool>) -> Store {
+    let s = Store::open_in(dir, SMALL, pool).unwrap();
     if s.derived(|v| library::entity_info(v, BOOK_ID))
         .unwrap()
         .is_none()
@@ -408,7 +413,7 @@ fn wait_forgotten(s: &Store) {
         if !s.derived(history::any_forget_pending).unwrap() {
             return;
         }
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        s.inner.ks.pool().exec.pause(std::time::Duration::from_millis(5));
     }
     panic!("a forget is still pending");
 }
@@ -1205,17 +1210,31 @@ fn random_history_reads_as_the_model_says_through_flushes_cleaning_and_reopens()
         (FieldRef::Key(b"note".to_vec()), false),
         (FieldRef::Code(UID), true),
     ];
-    for seed in seeds {
+    // Each seed twice: on real threads, and simulated, where the seed also fixes how background steps (syncs,
+    // flushes, merges, cleaning, folds) interleave with the commits and reads, so a failure replays exactly.
+    for (seed, sim) in seeds.iter().flat_map(|&s| [(s, false), (s, true)]) {
         let mut rng = Rng(seed);
-        let dir = temp_dir(&format!("random-{seed}"));
-        let mut s = open(&dir);
+        let dir = temp_dir(&format!("random-{seed}-{sim}"));
+        let mk = || {
+            if sim {
+                Pool::simulated(16 << 10, 64 << 10, 2, 2, seed ^ 0x5eed)
+            } else {
+                pool()
+            }
+        };
+        let mut s = open_with(&dir, mk());
         // Per field: its current value, and the value each of its changes left (None: no value).
         let mut cur: Vec<Option<String>> = vec![None; fields.len()];
         let mut after: Vec<Vec<(u64, Option<String>)>> = vec![Vec::new(); fields.len()];
         let mut next = 1000u64;
         let mut cleaned = 0;
         for step in 0..steps {
-            let here = format!("seed {seed} step {step}");
+            let here = format!("seed {seed}{} step {step}", if sim { " (simulated)" } else { "" });
+            if sim {
+                for _ in 0..rng.below(6) {
+                    s.inner.ks.pool().exec.pump();
+                }
+            }
             match rng.below(10) {
                 0..=5 => {
                     let mut recs = Vec::new();
@@ -1318,7 +1337,7 @@ fn random_history_reads_as_the_model_says_through_flushes_cleaning_and_reopens()
                 }
                 _ => {
                     drop(s);
-                    s = open(&dir);
+                    s = open_with(&dir, mk());
                 }
             }
         }

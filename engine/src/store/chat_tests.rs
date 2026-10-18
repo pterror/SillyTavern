@@ -457,7 +457,7 @@ impl Model {
             if !s.derived(busy).unwrap() {
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(2));
+            s.inner.ks.pool().exec.pause(std::time::Duration::from_millis(2));
         }
         s.derived(|v| {
             assert!(!busy(v)?);
@@ -1333,14 +1333,27 @@ fn workload(s: &Store, model: &mut Model, rng: &mut Rng, from: u64, n: u64) {
     }
 }
 
-fn open_with_actors(dir: &std::path::Path) -> (Store, Model) {
-    let s = Store::open_in(dir, SMALL, small_pool()).unwrap();
+fn open_with_actors(dir: &std::path::Path, pool: Arc<Pool>) -> (Store, Model) {
+    let s = Store::open_in(dir, SMALL, pool).unwrap();
     s.commit_wait(actors()).unwrap();
     (s, Model::new())
 }
 
 #[test]
 fn chat_structures_follow_commits_reopens_crashes_and_cleaning() {
+    chat_structures_follow_commits_reopens_crashes_and_cleaning_in(&small_pool);
+}
+
+/// `chat_structures_follow_commits_reopens_crashes_and_cleaning` simulated: background steps run as the seed picks them (`Executor::simulated`), so an interleaving
+/// that fails replays exactly with `ST_SIM_SEED`; `ST_SIM_SEEDS` sets how many seeds run (default 4).
+#[test]
+fn chat_structures_follow_commits_reopens_crashes_and_cleaning_simulated() {
+    for seed in crate::keyspace::exec::sim_seeds(4) {
+        chat_structures_follow_commits_reopens_crashes_and_cleaning_in(&|| Pool::simulated(16 << 10, 64 << 10, 2, 2, seed));
+    }
+}
+
+fn chat_structures_follow_commits_reopens_crashes_and_cleaning_in(mk: &dyn Fn() -> Arc<Pool>) {
     let dir = temp_dir("follow");
     // `ST_MODEL_SEED` replays another seed (long runs sweep them).
     let seed = std::env::var("ST_MODEL_SEED")
@@ -1348,18 +1361,18 @@ fn chat_structures_follow_commits_reopens_crashes_and_cleaning() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(0x9e37_79b9_7f4a_7c15);
     let mut rng = Rng(seed);
-    let (s, mut model) = open_with_actors(&dir);
+    let (s, mut model) = open_with_actors(&dir, mk());
     workload(&s, &mut model, &mut rng, 0, 1500);
     model.check(&s);
     s.close();
     drop(s);
-    let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
+    let s = Store::open_in(&dir, SMALL, mk()).unwrap();
     model.check(&s);
     // As a crash would leave it.
     workload(&s, &mut model, &mut rng, 1500, 400);
     s.abandon();
     std::mem::forget(s);
-    let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
+    let s = Store::open_in(&dir, SMALL, mk()).unwrap();
     model.check(&s);
     workload(&s, &mut model, &mut rng, 1900, 1000);
     // Values written over and over leave the files they were first in mostly dead.
@@ -1396,14 +1409,14 @@ fn chat_structures_follow_commits_reopens_crashes_and_cleaning() {
         s.inner.ks.freeze_at(s.durable_end());
         s.inner.ks.wait_flushed().unwrap();
         s.wake_cleaner();
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        s.inner.ks.pool().exec.pause(std::time::Duration::from_millis(50));
     }
     let st = s.stats();
     assert!(st.cleaned_files > 0 && st.relocated_records > 0, "{st:?}");
     model.check(&s);
     s.close();
     drop(s);
-    let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
+    let s = Store::open_in(&dir, SMALL, mk()).unwrap();
     model.check(&s);
     drop(s);
     fs::remove_dir_all(&dir).unwrap();
@@ -1412,7 +1425,7 @@ fn chat_structures_follow_commits_reopens_crashes_and_cleaning() {
 #[test]
 fn a_large_moved_subtree_gets_its_depths_in_slices_marked_meanwhile() {
     let dir = temp_dir("depth");
-    let (s, mut model) = open_with_actors(&dir);
+    let (s, mut model) = open_with_actors(&dir, small_pool());
     // A chain longer than a slice, under one opening, and a second opening to move it under a new parent.
     let n = (sessions::DEPTH_SLICE * 3) as u64;
     let mut recs = vec![append(&mut model, 1, None, 0, "root", None, None, 1)];
@@ -1477,7 +1490,7 @@ fn a_large_moved_subtree_gets_its_depths_in_slices_marked_meanwhile() {
 #[test]
 fn a_depth_rewrite_cut_off_by_a_crash_resumes_on_open() {
     let dir = temp_dir("depth-crash");
-    let (s, mut model) = open_with_actors(&dir);
+    let (s, mut model) = open_with_actors(&dir, small_pool());
     let n = (sessions::DEPTH_SLICE * 4) as u64;
     let mut recs = vec![append(&mut model, 1, None, 0, "root", None, None, 1)];
     for i in 1..n {
@@ -1526,7 +1539,7 @@ fn a_depth_rewrite_cut_off_by_a_crash_resumes_on_open() {
 #[test]
 fn deleting_messages_and_sessions_moves_what_named_them() {
     let dir = temp_dir("gone");
-    let (s, mut model) = open_with_actors(&dir);
+    let (s, mut model) = open_with_actors(&dir, small_pool());
     // Two openings; session 1 shows a reply to the first, session 2 the second opening; user 1 moved through both.
     let recs = vec![
         append(&mut model, 7, None, 1, "a", None, None, 1),
@@ -1646,7 +1659,7 @@ fn deleting_messages_and_sessions_moves_what_named_them() {
 #[test]
 fn a_users_position_set_by_no_session_is_where_they_land_until_a_session_moves() {
     let dir = temp_dir("user-position");
-    let (s, mut model) = open_with_actors(&dir);
+    let (s, mut model) = open_with_actors(&dir, small_pool());
     let recs = vec![
         append(&mut model, 7, None, 1, "a", None, Some(1), 1),
         append(&mut model, 7, Some(0), 2, "a1", None, None, 1),
@@ -1725,7 +1738,7 @@ fn a_users_position_set_by_no_session_is_where_they_land_until_a_session_moves()
 #[test]
 fn a_bookmark_outliving_the_message_it_was_made_at_leaves_nothing_when_it_goes() {
     let dir = temp_dir("stray");
-    let (s, mut model) = open_with_actors(&dir);
+    let (s, mut model) = open_with_actors(&dir, small_pool());
     // A following bookmark made at 0 moves to the reply 1; 1 moves under the other opening 2, so 0 can go while
     // the bookmark lives on.
     let recs = vec![
@@ -1772,7 +1785,7 @@ fn a_bookmark_outliving_the_message_it_was_made_at_leaves_nothing_when_it_goes()
 #[test]
 fn a_current_chat_is_per_session_and_tree_and_changes_only_by_its_records() {
     let dir = temp_dir("current");
-    let (s, mut model) = open_with_actors(&dir);
+    let (s, mut model) = open_with_actors(&dir, small_pool());
     let recs = vec![
         append(&mut model, 1, None, 1, "a", None, None, 1),
         append(&mut model, 2, None, 2, "b", None, None, 1),
@@ -1851,7 +1864,7 @@ fn a_current_chat_is_per_session_and_tree_and_changes_only_by_its_records() {
 fn conversations_are_ordered_by_the_meaningful_activity_of_the_acting_sessions_current_chat() {
     use sessions::Convo::{Bookmark, Session};
     let dir = temp_dir("convos");
-    let (s, mut model) = open_with_actors(&dir);
+    let (s, mut model) = open_with_actors(&dir, small_pool());
     let order = |s: &Store| -> Vec<sessions::Convo> {
         s.derived(|v| {
             Ok(sessions::conversations(v, None, usize::MAX)?
@@ -1966,7 +1979,7 @@ fn conversations_are_ordered_by_the_meaningful_activity_of_the_acting_sessions_c
 #[test]
 fn chat_writes_that_cant_apply_are_refused_and_write_nothing() {
     let dir = temp_dir("refuse");
-    let (s, mut model) = open_with_actors(&dir);
+    let (s, mut model) = open_with_actors(&dir, small_pool());
     let a = append(&mut model, 1, None, 10, "a", Some(vec![1; 16]), Some(1), 1);
     let b = append(&mut model, 1, Some(0), 11, "b", None, None, 1);
     let c = append(&mut model, 2, None, 12, "c", None, None, 1);
@@ -2131,7 +2144,7 @@ fn chat_writes_that_cant_apply_are_refused_and_write_nothing() {
 #[test]
 fn a_message_text_lives_in_its_append_until_replaced_and_its_search_follows() {
     let dir = temp_dir("text");
-    let (s, mut model) = open_with_actors(&dir);
+    let (s, mut model) = open_with_actors(&dir, small_pool());
     s.commit_wait(vec![append(
         &mut model,
         4,
@@ -2302,7 +2315,7 @@ fn msg_json(m: u64, code: u64, json: &str) -> Record {
 #[test]
 fn stats_count_as_today_and_place_the_owner_in_the_library() {
     let dir = temp_dir("stats");
-    let (s, _) = open_with_actors(&dir);
+    let (s, _) = open_with_actors(&dir, small_pool());
     // Two characters in the library, so the stats place them in the last-chat and chat-size orders.
     let chars: Vec<Record> = [(500, "a.png"), (501, "b.png")]
         .iter()
@@ -2457,7 +2470,7 @@ fn stats_count_as_today_and_place_the_owner_in_the_library() {
 #[test]
 fn history_steps_move_a_cursor_and_opening_choices_last_until_an_opening_is_chosen() {
     let dir = temp_dir("steps");
-    let (s, mut model) = open_with_actors(&dir);
+    let (s, mut model) = open_with_actors(&dir, small_pool());
     // Session 1 sends a, b, c in a row (history 1..3), then goes to the root of tree 2 (4).
     let recs = vec![
         append(&mut model, 1, None, 1, "a", None, Some(1), 1),
@@ -2569,7 +2582,7 @@ fn fork_rec(s: u64, from: u64, len: u64, cursor: u64) -> Record {
 #[test]
 fn a_fork_reads_its_originals_history_and_keeps_it_through_the_originals_delete() {
     let dir = temp_dir("fork");
-    let (s, mut model) = open_with_actors(&dir);
+    let (s, mut model) = open_with_actors(&dir, small_pool());
     let recs = vec![
         append(&mut model, 1, None, 1, "a", None, Some(1), 1),
         append(&mut model, 1, Some(0), 2, "b", None, Some(1), 1),
@@ -2666,7 +2679,7 @@ fn a_fork_reads_its_originals_history_and_keeps_it_through_the_originals_delete(
 #[test]
 fn a_fork_at_a_gone_entry_lands_where_a_step_back_would() {
     let dir = temp_dir("fork-gone");
-    let (s, mut model) = open_with_actors(&dir);
+    let (s, mut model) = open_with_actors(&dir, small_pool());
     let recs = vec![
         append(&mut model, 1, None, 1, "a", None, Some(1), 1),
         append(&mut model, 1, Some(0), 2, "b", None, Some(1), 1),
@@ -2740,7 +2753,7 @@ fn commit_without_slices(s: &Store, recs: Vec<Record>) {
 #[test]
 fn a_subtree_being_deleted_reads_as_deleted_and_its_delete_resumes_after_a_crash() {
     let dir = temp_dir("prune");
-    let (s, mut model) = open_with_actors(&dir);
+    let (s, mut model) = open_with_actors(&dir, small_pool());
     // An opening, a reply, and below the reply a chain longer than a slice with a side branch.
     let n = (prune::PRUNE_SLICE * 3) as u64;
     let mut recs = vec![
@@ -2997,7 +3010,7 @@ fn a_subtree_being_deleted_reads_as_deleted_and_its_delete_resumes_after_a_crash
 #[test]
 fn a_delete_beside_a_move_dooms_only_its_subtree_while_depths_are_rewritten() {
     let dir = temp_dir("prune-move");
-    let (s, mut model) = open_with_actors(&dir);
+    let (s, mut model) = open_with_actors(&dir, small_pool());
     // A chain; its tail moves up above a two-message gap that then goes, as a cut closing a gap does.
     let n = (sessions::DEPTH_SLICE * 3) as u64;
     let mut recs = vec![append(&mut model, 1, None, 0, "root", None, None, 1)];
@@ -3061,7 +3074,7 @@ fn a_delete_beside_a_move_dooms_only_its_subtree_while_depths_are_rewritten() {
 #[test]
 fn a_send_key_of_a_message_being_deleted_stores_a_new_message() {
     let dir = temp_dir("prune-send-key");
-    let (s, mut model) = open_with_actors(&dir);
+    let (s, mut model) = open_with_actors(&dir, small_pool());
     // A chain longer than a slice, its last message sent with a key.
     let n = (prune::PRUNE_SLICE * 2) as u64;
     let key = b"send-key".to_vec();
@@ -3119,7 +3132,7 @@ fn a_send_key_of_a_message_being_deleted_stores_a_new_message() {
 #[test]
 fn a_bookmark_at_a_trees_root_is_named_moves_with_a_new_opening_and_goes() {
     let dir = temp_dir("root-bookmark");
-    let (s, mut model) = open_with_actors(&dir);
+    let (s, mut model) = open_with_actors(&dir, small_pool());
     let root = |b: u64, mode: u64, tree: u64| {
         rec(
             "positionRoot",
@@ -3191,7 +3204,7 @@ fn a_bookmark_at_a_trees_root_is_named_moves_with_a_new_opening_and_goes() {
 #[test]
 fn a_moved_bookmark_takes_its_place_and_time_in_its_tree_and_keeps_where_it_was_made() {
     let dir = temp_dir("bookmark-move");
-    let (s, mut model) = open_with_actors(&dir);
+    let (s, mut model) = open_with_actors(&dir, small_pool());
     let a = append(&mut model, 7, None, 5, "a", None, None, 1);
     let b = append(&mut model, 7, Some(0), 6, "b", None, None, 1);
     let c = append(&mut model, 8, None, 7, "c", None, None, 1);
@@ -3281,7 +3294,7 @@ fn a_moved_bookmark_takes_its_place_and_time_in_its_tree_and_keeps_where_it_was_
 fn an_unowned_tree_keeps_its_messages_until_a_character_takes_its_id() {
     use super::library::{self, CHARACTER, CHAT_SIZE, LAST_CHAT, TREE};
     let dir = temp_dir("unowned");
-    let (s, mut model) = open_with_actors(&dir);
+    let (s, mut model) = open_with_actors(&dir, small_pool());
     let create = |kind: u64, key: &str| {
         rec(
             "entityCreate",

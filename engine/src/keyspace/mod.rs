@@ -862,7 +862,7 @@ impl Keyspace {
         let mut w = self.write.lock().unwrap();
         while self.version().mems.len() > self.cfg.max_frozen {
             self.flush_act.kick();
-            w = self.flushed_cv.wait(w).unwrap();
+            w = self.pool.exec.wait(&self.write, &self.flushed_cv, w);
         }
         let v = self.version();
         let newest = v.mems.get(1).map(|m| m.read().unwrap().covered);
@@ -902,7 +902,7 @@ impl Keyspace {
                 return Err(KsError::Io(io::Error::other("a flush failed")));
             }
             self.flush_act.kick();
-            w = self.flushed_cv.wait(w).unwrap();
+            w = self.pool.exec.wait(&self.write, &self.flushed_cv, w);
         }
         Ok(())
     }
@@ -1306,7 +1306,7 @@ impl Keyspace {
             self.flush_act.kick();
             self.merge_act.kick();
             // A step waiting for a slot isn't running: look again shortly.
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            self.pool.exec.pause(std::time::Duration::from_millis(10));
         }
     }
 

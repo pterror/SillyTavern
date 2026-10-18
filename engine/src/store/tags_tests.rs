@@ -237,7 +237,7 @@ fn wait_folds(s: &Store) {
             std::time::Instant::now() < deadline,
             "a fold never finished"
         );
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        s.inner.ks.pool().exec.pause(std::time::Duration::from_millis(5));
     }
 }
 
@@ -352,8 +352,21 @@ fn check(s: &Store, m: &BTreeMap<u64, T>) {
 
 #[test]
 fn tag_pages_counts_and_lookups_follow_every_change() {
+    tag_pages_counts_and_lookups_follow_every_change_in(&pool);
+}
+
+/// `tag_pages_counts_and_lookups_follow_every_change` simulated: background steps run as the seed picks them (`Executor::simulated`), so an interleaving
+/// that fails replays exactly with `ST_SIM_SEED`; `ST_SIM_SEEDS` sets how many seeds run (default 8).
+#[test]
+fn tag_pages_counts_and_lookups_follow_every_change_simulated() {
+    for seed in crate::keyspace::exec::sim_seeds(8) {
+        tag_pages_counts_and_lookups_follow_every_change_in(&|| Pool::simulated(64 << 10, 256 << 10, 2, 2, seed));
+    }
+}
+
+fn tag_pages_counts_and_lookups_follow_every_change_in(mk: &dyn Fn() -> Arc<Pool>) {
     let dir = temp_dir("model");
-    let mut s = Store::open_in(&dir, SMALL, pool()).unwrap();
+    let mut s = Store::open_in(&dir, SMALL, mk()).unwrap();
     // `ST_MODEL_SEED` replays another seed (long runs sweep them).
     let seed = std::env::var("ST_MODEL_SEED")
         .ok()
@@ -503,7 +516,7 @@ fn tag_pages_counts_and_lookups_follow_every_change() {
             if step % 100 == 99 {
                 s.close();
                 drop(s);
-                s = Store::open_in(&dir, SMALL, pool()).unwrap();
+                s = Store::open_in(&dir, SMALL, mk()).unwrap();
             }
         }
     }

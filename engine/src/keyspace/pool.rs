@@ -79,10 +79,43 @@ impl Pool {
         merges: usize,
         flushes: usize,
     ) -> Arc<Pool> {
+        Self::with_exec(
+            buffer_bytes,
+            cache_bytes,
+            Executor::new(threads, front_only),
+            merges,
+            flushes,
+        )
+    }
+
+    /// A pool whose steps run under simulation, picked by `seed` (`Executor::simulated`): for tests.
+    pub fn simulated(
+        buffer_bytes: usize,
+        cache_bytes: usize,
+        merges: usize,
+        flushes: usize,
+        seed: u64,
+    ) -> Arc<Pool> {
+        Self::with_exec(
+            buffer_bytes,
+            cache_bytes,
+            Executor::simulated(seed),
+            merges,
+            flushes,
+        )
+    }
+
+    fn with_exec(
+        buffer_bytes: usize,
+        cache_bytes: usize,
+        exec: Executor,
+        merges: usize,
+        flushes: usize,
+    ) -> Arc<Pool> {
         Arc::new(Pool {
             buffer_bytes,
             cache: Cache::new(cache_bytes),
-            exec: Executor::new(threads, front_only),
+            exec,
             active: AtomicI64::new(0),
             frozen: AtomicI64::new(0),
             stores: Mutex::new(Vec::new()),
