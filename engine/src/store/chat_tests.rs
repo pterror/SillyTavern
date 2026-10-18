@@ -1342,7 +1342,12 @@ fn open_with_actors(dir: &std::path::Path) -> (Store, Model) {
 #[test]
 fn chat_structures_follow_commits_reopens_crashes_and_cleaning() {
     let dir = temp_dir("follow");
-    let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+    // `ST_MODEL_SEED` replays another seed (long runs sweep them).
+    let seed = std::env::var("ST_MODEL_SEED")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0x9e37_79b9_7f4a_7c15);
+    let mut rng = Rng(seed);
     let (s, mut model) = open_with_actors(&dir);
     workload(&s, &mut model, &mut rng, 0, 1500);
     model.check(&s);
