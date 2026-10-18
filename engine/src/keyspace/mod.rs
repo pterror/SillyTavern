@@ -60,6 +60,29 @@ impl From<io::Error> for KsError {
 
 pub type KsResult<T> = Result<T, KsError>;
 
+/// Every run is merged into the oldest once the newer runs together hold this percentage of its bytes...
+pub const SIZE_AMP_PERCENT: u64 = 25;
+/// ...or their deletions this percentage of its entries.
+pub const DEL_PERCENT: u64 = 10;
+
+/// Free bytes on the file system holding `dir`, where they can be read.
+#[cfg(not(target_family = "wasm"))]
+fn free_bytes(dir: &Path) -> Option<u64> {
+    let dir = fs::canonicalize(dir).ok()?;
+    let disks = sysinfo::Disks::new_with_refreshed_list();
+    disks
+        .list()
+        .iter()
+        .filter(|d| dir.starts_with(d.mount_point()))
+        .max_by_key(|d| d.mount_point().as_os_str().len())
+        .map(|d| d.available_space())
+}
+
+#[cfg(target_family = "wasm")]
+fn free_bytes(_dir: &Path) -> Option<u64> {
+    None
+}
+
 /// Keys and values, in key order.
 pub type Entries = Vec<(Vec<u8>, Vec<u8>)>;
 
@@ -290,6 +313,8 @@ pub struct Keyspace {
     pool: Arc<Pool>,
     flush_act: Arc<Activity>,
     merge_act: Arc<Activity>,
+    /// A merge into the oldest run is waiting for disk space (said once).
+    short_of_room: AtomicBool,
     /// The pool wants this keyspace's buffer frozen; its flush activity does it.
     freeze_requested: AtomicBool,
     pub counts: ReadCounts,
@@ -393,6 +418,7 @@ impl Keyspace {
                 pool: pool.clone(),
                 flush_act: activity(Keyspace::flush_step),
                 merge_act: activity(Keyspace::merge_step),
+                short_of_room: AtomicBool::new(false),
                 freeze_requested: AtomicBool::new(false),
                 counts: ReadCounts::default(),
                 counters: Counters::default(),
@@ -979,12 +1005,27 @@ impl Keyspace {
         (t + 0.5).floor().max(0.0) as u32
     }
 
-    /// Picks adjacent runs to merge: `fan_in` of one tier, the lowest tier first; or, past a run count no
-    /// tiering leaves, the adjacent `fan_in` with the fewest bytes. Returns them oldest first.
+    /// Picks adjacent runs to merge. Every run into the oldest, once at least `fan_in` runs exist and the newer
+    /// runs hold `SIZE_AMP_PERCENT` of the oldest's bytes or deletions `DEL_PERCENT` of its entries (RocksDB's
+    /// universal compaction triggers): a deletion and the versions it or a newer value hides are dropped only
+    /// in a merge reaching the oldest run, so this bounds what they take. Else `fan_in` of one tier, the lowest
+    /// tier first; or, past a run count no tiering leaves, the adjacent `fan_in` with the fewest bytes. Returns
+    /// them oldest first.
     fn pick(&self) -> Option<Vec<Arc<Run>>> {
         let delta = self.cfg.fan_in;
         let v = self.version();
         let runs: Vec<&Arc<Run>> = v.runs.iter().rev().collect();
+        if runs.len() >= delta.max(2) {
+            let bottom = runs[0];
+            let newer: u64 = runs[1..].iter().map(|r| r.bytes).sum();
+            let dels: u64 = runs[1..].iter().map(|r| r.dels).sum();
+            if (newer * 100 >= bottom.bytes * SIZE_AMP_PERCENT
+                || dels * 100 >= bottom.entries * DEL_PERCENT)
+                && self.room_to_merge(bottom.bytes + newer)
+            {
+                return Some(runs.iter().map(|r| (*r).clone()).collect());
+            }
+        }
         let mut best: Option<(u32, usize)> = None;
         let mut i = 0;
         while i < runs.len() {
@@ -1008,6 +1049,25 @@ impl Keyspace {
                 .map(|w| w.iter().map(|r| (*r).clone()).collect());
         }
         None
+    }
+
+    /// Whether the keyspace's file system has room for a merge writing up to `bytes`, with a margin; true where
+    /// the free space can't be read. Said once while there isn't.
+    fn room_to_merge(&self, bytes: u64) -> bool {
+        let Some(free) = free_bytes(&self.dir) else {
+            return true;
+        };
+        let room = free >= bytes + bytes / 8 + (1 << 30);
+        if !room && !self.short_of_room.swap(true, Ordering::Relaxed) {
+            eprintln!(
+                "st-engine: a merge into the oldest run needs about {} MB free beside {}; it waits for room",
+                (bytes + bytes / 8 + (1 << 30)) >> 20,
+                self.dir.display()
+            );
+        } else if room {
+            self.short_of_room.store(false, Ordering::Relaxed);
+        }
+        room
     }
 
     /// One step of the merge activity: one merge, if one is due and a slot is free.
