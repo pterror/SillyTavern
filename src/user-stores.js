@@ -116,6 +116,10 @@ async function openStore(root, handle) {
     const made = madeHere.delete(root) || !fs.existsSync(dir);
     const lib = await LibraryEngine.open(engineOf(), dir);
     try {
+        // Until src/migrations/convert-derived.js has run (deleted with it): reads here don't know the old forms.
+        if (await lib.store.convertDerivedPending()) {
+            throw new OldFormatError(`${dir} holds derived entries in their old form: stop the server and run node src/migrations/convert-derived.js --apply`);
+        }
         if (made) {
             await lib.tags.markSeedPending();
             // A user directory a store is made for may be upstream's: its groups, books and chats go in once.

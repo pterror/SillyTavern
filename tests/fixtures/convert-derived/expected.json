@@ -1,0 +1,121 @@
+{
+ "ids": {
+  "ch": "1",
+  "book": "2",
+  "e0": "3",
+  "e2": "4",
+  "e3": "5"
+ },
+ "entities": [
+  {
+   "id": "1",
+   "type": 0,
+   "key": "a.png",
+   "added": 0,
+   "version": "22",
+   "fav": false,
+   "tags": [],
+   "values": [
+    {
+     "field": 1,
+     "text": "A"
+    },
+    {
+     "field": "ext:x",
+     "json": "{\"a\":1}"
+    }
+   ],
+   "items": [],
+   "hashes": []
+  },
+  {
+   "id": "2",
+   "type": 3,
+   "key": "b",
+   "added": 0,
+   "version": "303",
+   "fav": false,
+   "tags": [],
+   "values": [
+    {
+     "field": 41,
+     "json": ""
+    }
+   ],
+   "items": [],
+   "hashes": []
+  },
+  {
+   "id": "3",
+   "type": 5,
+   "key": "2:0",
+   "added": 0,
+   "version": "83",
+   "fav": false,
+   "tags": [],
+   "values": [
+    {
+     "field": 104,
+     "text": "A dragon sleeps."
+    },
+    {
+     "field": 110,
+     "json": "100"
+    }
+   ],
+   "items": [],
+   "hashes": []
+  },
+  {
+   "id": "4",
+   "type": 5,
+   "key": "2:2",
+   "added": 0,
+   "version": "303",
+   "fav": false,
+   "tags": [],
+   "values": [
+    {
+     "field": 104,
+     "text": "The knight keeps watch."
+    },
+    {
+     "field": 110,
+     "json": "102"
+    }
+   ],
+   "items": [],
+   "hashes": []
+  },
+  {
+   "id": "5",
+   "type": 5,
+   "key": "2:5",
+   "added": 0,
+   "version": "128",
+   "fav": false,
+   "tags": [],
+   "values": [],
+   "items": [],
+   "hashes": []
+  }
+ ],
+ "book": {
+  "entries": {
+   "0": {
+    "uid": 0,
+    "content": "A dragon sleeps.",
+    "order": 100
+   },
+   "2": {
+    "uid": 2,
+    "content": "The knight keeps watch.",
+    "order": 102
+   },
+   "5": {
+    "uid": 5
+   }
+  }
+ },
+ "freeKey": 1
+}
