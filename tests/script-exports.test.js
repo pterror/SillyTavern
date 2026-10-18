@@ -89,7 +89,7 @@ function listCommit(repo) {
 }
 
 function stageRecords(repo) {
-    git(repo, 'add', '.upstream-script-exports', '.upstream-script-signatures');
+    git(repo, 'add', '.upstream-script-exports', '.upstream-script-signatures', '.upstream-module-signatures');
 }
 
 function setUpstream(repo, commit) {
@@ -171,9 +171,10 @@ describe('script-exports: npm run merge:upstream', () => {
         const { repo, u1 } = linearRepo();
         const merged = npm(repo, 'merge:upstream');
         expect(merged.status).toBe(0);
-        expect(merged.output).toContain(`wrote .upstream-script-exports and .upstream-script-signatures from the expected commit (${u1})`);
+        expect(merged.output).toContain(`wrote .upstream-script-exports, .upstream-script-signatures and .upstream-module-signatures from the expected commit (${u1})`);
         expect(git(repo, 'diff', '--cached', '--name-only')).toContain('.upstream-script-exports');
         expect(git(repo, 'diff', '--cached', '--name-only')).toContain('.upstream-script-signatures');
+        expect(git(repo, 'diff', '--cached', '--name-only')).toContain('.upstream-module-signatures');
         const committed = hooked(repo, 'commit', '-q', '--no-edit');
         expect(committed.status).toBe(0);
         expect(git(repo, 'rev-parse', 'HEAD^2')).toBe(u1);
@@ -463,7 +464,7 @@ export { promised, reexported };
         ['an array param turned plain', 'export function arrayParam([a, b]) {}', 'export function arrayParam(pair) {}', 'arrayParam: param 1 `[]` is renamed to `pair`.'],
         ['a wrapped function with a renamed param', 'export const debounced = debounce((a, b = 0) => {}, 10);', 'export const debounced = debounce((a, c = 0) => {}, 10);', 'debounced: param 2 `b` is renamed to `c`.'],
         ['a computed key without a default in ours', 'export function noJsdocDestructured({ x }) {}', 'const K = Symbol("k");\nexport function noJsdocDestructured({ x, [K]: k }) {}', 'noJsdocDestructured: a computed property in a destructured param (BindingElement) is not a form the signature check handles.'],
-        ['an initializer the check does not classify', 'export const num = 5;', 'export const num = someValue ? 5 : 6;', 'num: the initializer (ConditionalExpression) is not a form the signature check handles.'],
+        ['an initializer the check does not classify', 'export const num = 5;', 'export const num = !someValue;', 'num: the initializer (PrefixUnaryExpression) is not a form the signature check handles.'],
     ];
 
     test.each(FAILS)('fails on %s', (_label, from, to, message) => {
@@ -522,5 +523,149 @@ export { promised, reexported };
         const result = checker(repo, 'check');
         expect(result.stderr).toBe('');
         expect(result.status).toBe(0);
+    }, TIMEOUT);
+
+    test.each([
+        ['a value from a binary expression', 'export const num = 5;', 'export const num = base + 5;'],
+        ['a value from a conditional', 'export const num = 5;', 'export const num = someValue ? 5 : 6;'],
+    ])('passes with %s (opaque, as a value may be)', (_label, from, to) => {
+        const { repo } = signatureRepo();
+        edit(repo, 'public/script.js', from, to);
+        const result = checker(repo, 'check');
+        expect(result.stderr).toBe('');
+        expect(result.status).toBe(0);
+    }, TIMEOUT);
+});
+
+describe('script-exports: public/scripts modules', () => {
+    const UPSTREAM_MODULES = {
+        'public/scripts/a.js': [
+            'export function fa(x, y) {}',
+            'export async function fb() {}',
+            'export default 0;',
+            'export * from \'./b.js\';',
+        ].join('\n'),
+        'public/scripts/b.js': 'export const fc = (z) => z;\nexport default 1;\n',
+        'public/scripts/sub/c.js': 'export function fd(chid) {}\nexport function fe(_unused) {}\n',
+    };
+
+    const EXPECTED_MODULES = [
+        'public/scripts/a.js default opaque',
+        'public/scripts/a.js fa fn x y',
+        'public/scripts/a.js fb async',
+        'public/scripts/a.js fc fn z',
+        'public/scripts/b.js default opaque',
+        'public/scripts/b.js fc fn z',
+        'public/scripts/sub/c.js fd fn chid',
+        'public/scripts/sub/c.js fe fn _unused',
+    ];
+
+    /** A repo whose upstream U0 has UPSTREAM_MODULES and a one-export script.js, with the records refreshed at U0. */
+    function moduleRepo() {
+        const repo = tempDir('modules');
+        initRepo(repo);
+        writeScript(repo, ['s']);
+        for (const [file, text] of Object.entries(UPSTREAM_MODULES)) {
+            fs.mkdirSync(path.dirname(path.join(repo, file)), { recursive: true });
+            fs.writeFileSync(path.join(repo, file), text);
+        }
+        const u0 = commitAll(repo, 'U0');
+        setUpstream(repo, u0);
+        const refreshed = checker(repo, 'refresh');
+        if (refreshed.status !== 0) throw new Error(refreshed.output);
+        commitAll(repo, 'records');
+        return { repo, u0 };
+    }
+
+    function edit(repo, file, from, to) {
+        const full = path.join(repo, file);
+        const text = fs.readFileSync(full, 'utf8');
+        if (!text.includes(from)) throw new Error(`${file} does not contain ${from}`);
+        fs.writeFileSync(full, text.replace(from, to));
+    }
+
+    test('refresh records every module\'s exports, following export *, and check passes', () => {
+        const { repo, u0 } = moduleRepo();
+        expect(fs.readFileSync(path.join(repo, '.upstream-module-signatures'), 'utf8')).toBe(`${u0}\n${EXPECTED_MODULES.join('\n')}\n`);
+        const result = checker(repo, 'check');
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain(`all ${EXPECTED_MODULES.length} of its public/scripts modules' exports`);
+    }, TIMEOUT);
+
+    test('a repo with no public/scripts records an empty module list and passes', () => {
+        const { repo } = linearRepo();
+        expect(fs.readFileSync(path.join(repo, '.upstream-module-signatures'), 'utf8')).toMatch(/^[0-9a-f]{40}\n$/);
+        expect(checker(repo, 'check').status).toBe(0);
+    }, TIMEOUT);
+
+    test('fails on a module that is gone', () => {
+        const { repo } = moduleRepo();
+        fs.rmSync(path.join(repo, 'public/scripts/sub/c.js'));
+        const result = checker(repo, 'check');
+        expect(result.status).toBe(1);
+        expect(result.stderr).toMatch(/1 module\(s\) that upstream\/staging has under public\/scripts are gone[\s\S]*\n {2}public\/scripts\/sub\/c\.js \(fd, fe\)/);
+    }, TIMEOUT);
+
+    test('fails on a dropped module export', () => {
+        const { repo } = moduleRepo();
+        edit(repo, 'public/scripts/a.js', 'export async function fb() {}', 'async function fb() {}');
+        const result = checker(repo, 'check');
+        expect(result.status).toBe(1);
+        expect(result.stderr).toMatch(/1 export\(s\) of upstream\/staging's public\/scripts modules are no longer exported[\s\S]*\n {2}public\/scripts\/a\.js: fb/);
+    }, TIMEOUT);
+
+    test('fails on a dropped export * (its names are gone from the module)', () => {
+        const { repo } = moduleRepo();
+        edit(repo, 'public/scripts/a.js', 'export * from \'./b.js\';', '');
+        const result = checker(repo, 'check');
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain('  public/scripts/a.js: fc');
+    }, TIMEOUT);
+
+    test('fails on a module export turned sync', () => {
+        const { repo } = moduleRepo();
+        edit(repo, 'public/scripts/a.js', 'export async function fb() {}', 'export function fb() {}');
+        const result = checker(repo, 'check');
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain('public/scripts/a.js#fb: upstream\'s is async; ours is sync.');
+    }, TIMEOUT);
+
+    test('fails on a renamed module param', () => {
+        const { repo } = moduleRepo();
+        edit(repo, 'public/scripts/sub/c.js', 'fd(chid)', 'fd(avatar)');
+        const result = checker(repo, 'check');
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain('public/scripts/sub/c.js#fd: param 1 `chid` is renamed to `avatar`.');
+    }, TIMEOUT);
+
+    test.each([
+        ['a name moved behind export *', 'public/scripts/a.js', 'export function fa(x, y) {}', '', 'public/scripts/b.js', 'export function fa(x, y) {}\n'],
+        ['upstream\'s name marked unused in ours', 'public/scripts/sub/c.js', 'fd(chid)', 'fd(_chid)', null, null],
+        ['a param upstream marks unused, renamed', 'public/scripts/sub/c.js', 'fe(_unused)', 'fe(name)', null, null],
+    ])('passes with %s', (_label, file, from, to, extraFile, extra) => {
+        const { repo } = moduleRepo();
+        edit(repo, file, from, to);
+        if (extraFile) fs.appendFileSync(path.join(repo, extraFile), extra);
+        const result = checker(repo, 'check');
+        expect(result.stderr).toBe('');
+        expect(result.status).toBe(0);
+    }, TIMEOUT);
+
+    test('fails when the module record names a different commit', () => {
+        const { repo, u0 } = moduleRepo();
+        const other = git(repo, 'rev-parse', 'HEAD');
+        edit(repo, '.upstream-module-signatures', u0, other);
+        const result = checker(repo, 'check');
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain(`records ${other} but`);
+    }, TIMEOUT);
+
+    test('pre-commit blocks a commit that drops a module export', () => {
+        const { repo } = moduleRepo();
+        edit(repo, 'public/scripts/b.js', 'export const fc', 'const fc');
+        git(repo, 'add', 'public/scripts/b.js');
+        const result = hooked(repo, 'commit', '-q', '-m', 'drop fc');
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain('public/scripts/b.js: fc');
     }, TIMEOUT);
 });

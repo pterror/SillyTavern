@@ -120,10 +120,11 @@ if [ "$cycle_count" -gt "$baseline" ]; then
     exit 1
 fi
 
-# Third-party extensions import from public/script.js, and they live outside this repo, so the tsc
-# check above never sees their imports. This blocks a commit whose public/script.js drops a name, or
-# changes a signature, recorded in the checked-in .upstream-script-exports and
-# .upstream-script-signatures (as staged).
+# Third-party extensions import from public/script.js and the public/scripts modules, and they live
+# outside this repo, so the tsc check above never sees their imports. This blocks a commit whose
+# public/script.js or public/scripts module drops a name, or changes a signature, recorded in the
+# checked-in .upstream-script-exports, .upstream-script-signatures and .upstream-module-signatures
+# (as staged).
 if ! command -v node >/dev/null 2>&1; then
     echo "pre-commit: node not found on PATH -- enter the project dev shell (direnv/nix develop) first" >&2
     exit 1
