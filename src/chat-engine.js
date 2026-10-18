@@ -2667,6 +2667,52 @@ export class ChatEngine {
     }
 
     /**
+     * Stores itemizations upstream kept for a chat (`mesId` its message's position on the chat's path) on the
+     * position's messages, in one commit. A message that has one already keeps it: an equal entry counts as
+     * `unchanged`, a different one is left out. Left out, with why: an entry with no position, a position past the
+     * chat's end, a later entry for a position that had one (upstream showed the first).
+     * @param {object} p
+     * @param {bigint} p.tree
+     * @param {string | null} p.at
+     * @param {Record<string, unknown>[]} p.entries
+     * @returns {Promise<{ stored: number, unchanged: number, unmatched: { entry: number, mesId: unknown, why: string }[] } | null>}
+     * `entry` the left-out entry's index in `entries`; null when the message isn't the tree's.
+     */
+    importItemizations({ tree, at, entries }) {
+        return this.serialized(tree, async () => {
+            const ids = await this.pathIds(tree, at);
+            if (!ids) return null;
+            const stored = await this.stored(ids);
+            const result = { stored: 0, unchanged: 0, unmatched: /** @type {{ entry: number, mesId: unknown, why: string }[]} */ ([]) };
+            const records = [];
+            const seen = new Set();
+            for (const [i, entry] of entries.entries()) {
+                const mesId = entry?.mesId;
+                const index = Number(mesId);
+                const leave = (/** @type {string} */ why) => result.unmatched.push({ entry: i, mesId: mesId ?? null, why });
+                if (!Number.isInteger(index) || index < 0) { leave('no message position (mesId)'); continue; }
+                if (seen.has(index)) { leave('a later entry for a message that had one (upstream showed the first)'); continue; }
+                seen.add(index);
+                const s = index < ids.length ? stored.get(ids[index]) : undefined;
+                if (!s) { leave(`past the chat's end (${ids.length} messages)`); continue; }
+                const kept = { ...entry };
+                delete kept.mesId;
+                const data = await zstdCompress(Buffer.from(JSON.stringify(kept)));
+                if (s.itemized) {
+                    const now = await this.store.chatRead('itemization', { message: s.id });
+                    if (now && Buffer.compare(Buffer.from(now.data), data) === 0) result.unchanged++;
+                    else leave('the message has another itemization already');
+                    continue;
+                }
+                records.push({ kind: 'itemization', message: s.id, raw: Boolean(kept.rawPrompt), data });
+                result.stored++;
+            }
+            if (records.length) await this.store.commit(records);
+            return result;
+        });
+    }
+
+    /**
      * Changes some fields of a message's itemization; nothing is written when they already have these values.
      * @param {object} p
      * @param {string} p.node_id

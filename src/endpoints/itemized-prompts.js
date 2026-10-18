@@ -1,6 +1,7 @@
 import express from 'express';
 
 import { chatContext, chatNamePosition } from '../chat-request.js';
+import { importUpstreamItemizations } from '../upstream-itemizations.js';
 import { requestStore } from '../user-stores.js';
 
 /**
@@ -13,6 +14,8 @@ export const router = express.Router();
 
 /** The most messages one `/set` changes. */
 const SET_MAX_ITEMS = 1000;
+/** The most chats one `/import-upstream` takes. */
+const IMPORT_MAX_CHATS = 200;
 
 /**
  * The tree the request names (`group_id`, else `avatar_url`) and the position in it its `chat` names.
@@ -122,6 +125,26 @@ router.post('/delete', async function (request, response) {
         return response.send({ removed });
     } catch (error) {
         console.error('Error deleting a chat\'s prompt itemizations:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
+/**
+ * Body `{ chats: [{ chat_id, entries }] }`: a browser's upstream itemized prompts (`SillyTavern_Prompts`), per chat id
+ * (src/upstream-itemizations.js). Answers `{ results: [{ chat_id, status, stored, unchanged, unmatched, why? }] }`, in
+ * order; the page lets a chat's copy go only once its entries are stored.
+ */
+router.post('/import-upstream', async function (request, response) {
+    try {
+        const chats = request.body?.chats;
+        if (!Array.isArray(chats) || chats.length > IMPORT_MAX_CHATS) return response.sendStatus(400);
+        for (const c of chats) {
+            if (!isPlainObject(c) || typeof c.chat_id !== 'string' || c.chat_id === '' || !Array.isArray(c.entries)) return response.sendStatus(400);
+        }
+        const results = await importUpstreamItemizations(await requestStore(request), request.user.directories.root, chats);
+        return response.send({ results });
+    } catch (error) {
+        console.error('Error importing upstream itemized prompts:', error);
         return response.status(500).send({ error: true });
     }
 });
