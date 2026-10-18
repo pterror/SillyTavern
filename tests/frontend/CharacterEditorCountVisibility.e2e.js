@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { openInfoTab, testSetup } from './frontent-test-utils.js';
+import { openInfoTab, setStackedDrawers, testSetup } from './frontent-test-utils.js';
 
 // NixOS host: the Playwright-managed Chromium download is missing system libs, so fall back
 // to the system-provided Chrome (only when explicitly pointed at it) rather than requiring a
@@ -101,6 +101,22 @@ async function switchToGpt2Tokenizer(page) {
 }
 
 /**
+ * Sets fullscreen character management through its toggle and waits until the change is saved.
+ * @param {import('@playwright/test').Page} page
+ * @param {boolean} on
+ */
+async function setGalleryFullscreen(page, on) {
+    const isOn = () => page.locator('#right-nav-panel').evaluate(el => el.classList.contains('galleryFullscreen'));
+    if (await isOn() === on) return;
+    const saved = page.waitForResponse(response => response.url().endsWith('/api/settings/save-partial')
+        && response.ok()
+        && (response.request().postData() ?? '').includes('charGalleryFullscreen'));
+    await page.locator('#galleryFullscreenToggle').evaluate(el => el.click());
+    await saved;
+    await expect.poll(isOn).toBe(on);
+}
+
+/**
  * Makes the server's /current/count and /current/tokenizer answers say the model is unknown to the map
  * (basis `unknown`, an estimate), keeping every count a plain number.
  * @param {import('@playwright/test').Page} page
@@ -160,6 +176,11 @@ test.describe('character editor counts while showing', () => {
     });
 
     test('a covering drawer closing over the editor counts a change made while it was covered', async ({ page }) => {
+        // Only stacked drawers cover a pinned right-side panel (off, the default as upstream, opening one closes the
+        // other), and only non-fullscreen character management covers all of it: fullscreen starts below the drawer
+        // bar, so the editor's top stays showing.
+        await setStackedDrawers(page, true);
+        await setGalleryFullscreen(page, false);
         const { marker } = await createCharacterAndCloseEditor(page);
         await page.locator('#charInfoDrawerIcon').click();
         await expect(page.locator('#char-info-panel')).toBeVisible();
@@ -183,6 +204,10 @@ test.describe('character editor counts while showing', () => {
         await expect(page.locator('#char-info-panel')).toBeVisible();
         await expect.poll(async () => (await countsOf(page, marker)).length, { timeout: 5000 }).toBe(before + 1);
         expect((await countsOf(page, marker)).at(-1).showing).toBe(true);
+
+        await page.locator('#charInfo_button_panel_pin').evaluate(el => el.click());
+        await setGalleryFullscreen(page, true);
+        await setStackedDrawers(page, false);
     });
 
     test('forceCharacterEditorTokenize() counts right away with the editor closed', async ({ page }) => {
