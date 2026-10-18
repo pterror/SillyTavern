@@ -1,0 +1,1088 @@
+ad29cbda62e92f145e44d7a10398a38af22ca986
+public/scripts/BulkEditOverlay.js BulkEditOverlay opaque
+public/scripts/BulkEditOverlay.js BulkEditOverlayState opaque
+public/scripts/BulkEditOverlay.js CharacterContextMenu opaque
+public/scripts/PromptManager.js INJECTION_POSITION value
+public/scripts/PromptManager.js Prompt opaque
+public/scripts/PromptManager.js PromptCollection opaque
+public/scripts/PromptManager.js PromptManager opaque
+public/scripts/PromptManager.js chatCompletionDefaultPrompts value
+public/scripts/PromptManager.js promptManagerDefaultPromptOrders value
+public/scripts/PromptManager.js registerPromptManagerMigration fn
+public/scripts/RossAscends-mods.js RA_CountCharTokens async
+public/scripts/RossAscends-mods.js autoFitSendTextAreaDebounced fn
+public/scripts/RossAscends-mods.js dragElement fn $elmnt
+public/scripts/RossAscends-mods.js favsToHotswap async
+public/scripts/RossAscends-mods.js getMessageTimeStamp fn timestamp?
+public/scripts/RossAscends-mods.js getParsedUA fn
+public/scripts/RossAscends-mods.js humanizeGenTime fn total_gen_time
+public/scripts/RossAscends-mods.js humanizedDateTime fn timestamp?
+public/scripts/RossAscends-mods.js initMovingUI async
+public/scripts/RossAscends-mods.js initRossMods fn
+public/scripts/RossAscends-mods.js isMobile fn
+public/scripts/RossAscends-mods.js shouldSendOnEnter fn
+public/scripts/a11y.js initAccessibility fn
+public/scripts/action-loader-slashcommands.js registerActionLoaderSlashCommands fn
+public/scripts/action-loader.js ActionLoaderHandle opaque
+public/scripts/action-loader.js ActionLoaderToastMode value
+public/scripts/action-loader.js createDefaultLoaderOverlay fn
+public/scripts/action-loader.js getActiveLoaderHandles fn
+public/scripts/action-loader.js getLoaderHandleById fn id
+public/scripts/action-loader.js hideActionLoader async handle?
+public/scripts/action-loader.js loader value
+public/scripts/action-loader.js showActionLoader fn options?
+public/scripts/audio-player.js AudioPlayer opaque
+public/scripts/authors-note.js NOTE_MODULE_NAME value
+public/scripts/authors-note.js initAuthorsNote fn
+public/scripts/authors-note.js metadata_keys value
+public/scripts/authors-note.js setFloatingPrompt fn
+public/scripts/authors-note.js shouldWIAddPrompt value
+public/scripts/autocomplete/AutoComplete.js AUTOCOMPLETE_SELECT_KEY value
+public/scripts/autocomplete/AutoComplete.js AUTOCOMPLETE_STATE value
+public/scripts/autocomplete/AutoComplete.js AUTOCOMPLETE_WIDTH value
+public/scripts/autocomplete/AutoComplete.js AutoComplete opaque
+public/scripts/autocomplete/AutoCompleteFuzzyScore.js AutoCompleteFuzzyScore opaque
+public/scripts/autocomplete/AutoCompleteNameResult.js AutoCompleteNameResult opaque
+public/scripts/autocomplete/AutoCompleteNameResultBase.js AutoCompleteNameResultBase opaque
+public/scripts/autocomplete/AutoCompleteOption.js AutoCompleteOption opaque
+public/scripts/autocomplete/AutoCompleteSecondaryNameResult.js AutoCompleteSecondaryNameResult opaque
+public/scripts/autocomplete/BlankAutoCompleteOption.js BlankAutoCompleteOption opaque
+public/scripts/autocomplete/EnhancedMacroAutoCompleteOption.js EnhancedMacroAutoCompleteOption opaque
+public/scripts/autocomplete/EnhancedMacroAutoCompleteOption.js MacroClosingTagAutoCompleteOption opaque
+public/scripts/autocomplete/EnhancedMacroAutoCompleteOption.js MacroFlagAutoCompleteOption opaque
+public/scripts/autocomplete/EnhancedMacroAutoCompleteOption.js SimpleAutoCompleteOption opaque
+public/scripts/autocomplete/EnhancedMacroAutoCompleteOption.js ValidVariableShorthandSymbols opaque
+public/scripts/autocomplete/EnhancedMacroAutoCompleteOption.js VariableNameAutoCompleteOption opaque
+public/scripts/autocomplete/EnhancedMacroAutoCompleteOption.js VariableOperatorAutoCompleteOption opaque
+public/scripts/autocomplete/EnhancedMacroAutoCompleteOption.js VariableOperatorDefinitions opaque
+public/scripts/autocomplete/EnhancedMacroAutoCompleteOption.js VariableShorthandAutoCompleteOption opaque
+public/scripts/autocomplete/EnhancedMacroAutoCompleteOption.js VariableShorthandDefinitions opaque
+public/scripts/autocomplete/EnhancedMacroAutoCompleteOption.js VariableShorthandType opaque
+public/scripts/autocomplete/EnhancedMacroAutoCompleteOption.js VariableValueContextAutoCompleteOption opaque
+public/scripts/autocomplete/EnhancedMacroAutoCompleteOption.js isValidVariableShorthandName fn name
+public/scripts/autocomplete/EnhancedMacroAutoCompleteOption.js parseMacroContext fn macroText cursorOffset
+public/scripts/autocomplete/MacroAutoComplete.js MACRO_AUTOCOMPLETE_ATTRIBUTE value
+public/scripts/autocomplete/MacroAutoComplete.js MACRO_AUTOCOMPLETE_MODE opaque
+public/scripts/autocomplete/MacroAutoComplete.js MACRO_AUTOCOMPLETE_MODE_ATTRIBUTE value
+public/scripts/autocomplete/MacroAutoComplete.js MACRO_AUTOCOMPLETE_STYLE opaque
+public/scripts/autocomplete/MacroAutoComplete.js MACRO_AUTOCOMPLETE_STYLE_ATTRIBUTE value
+public/scripts/autocomplete/MacroAutoComplete.js enableMacroAutoCompleteById fn elementId
+public/scripts/autocomplete/MacroAutoComplete.js initMacroAutoComplete fn
+public/scripts/autocomplete/MacroAutoComplete.js setMacroAutoComplete fn textarea options{autocompleteMode?,autocompleteStyle?}?
+public/scripts/autocomplete/MacroAutoCompleteHelper.js buildEnhancedMacroOptions fn context textUpToCursor? opts{isForced?}?
+public/scripts/autocomplete/MacroAutoCompleteHelper.js buildIfConditionOptions fn context allMacros macroInnerText
+public/scripts/autocomplete/MacroAutoCompleteHelper.js buildMacroAutoCompleteResult async text cursorPos options{isForced?,macro?,textUpToCursor?,unclosedScopes?}?
+public/scripts/autocomplete/MacroAutoCompleteHelper.js buildVariableShorthandOptions fn context opts?
+public/scripts/autocomplete/MacroAutoCompleteHelper.js findMacroAtCursor fn text cursorPos
+public/scripts/autocomplete/MacroAutoCompleteHelper.js findUnclosedScopes fn textUpToCursor
+public/scripts/autocomplete/MacroAutoCompleteHelper.js findUnclosedScopesRegex fn text
+public/scripts/autocomplete/MacroAutoCompleteHelper.js getMacroAutoCompleteAt async text cursorPos options{isForced?}?
+public/scripts/autocomplete/MacroAutoCompleteHelper.js getVariableNames fn scope
+public/scripts/autocomplete/MacroAutoCompleteOption.js MacroAutoCompleteOption opaque
+public/scripts/backgrounds.js background_settings value
+public/scripts/backgrounds.js getActiveBackgroundTab fn
+public/scripts/backgrounds.js getBackgroundPath fn fileUrl
+public/scripts/backgrounds.js getBackgrounds async
+public/scripts/backgrounds.js initBackgrounds fn
+public/scripts/backgrounds.js isCustomBackgroundUrl fn fileUrl
+public/scripts/backgrounds.js loadBackgroundSettings fn settings
+public/scripts/bookmarks.js branchChat async mesId options{swipeId?}?
+public/scripts/bookmarks.js convertSoloToGroupChat async
+public/scripts/bookmarks.js createBranch async mesId _{swipeId?}?
+public/scripts/bookmarks.js createNewBookmark async mesId options{forceName?}?
+public/scripts/bookmarks.js initBookmarks fn
+public/scripts/bookmarks.js showBookmarksButtons fn
+public/scripts/bookmarks.js updateBookmarkDisplay fn mes newBookmarkLink?
+public/scripts/browser-fixes.js applyBrowserFixes fn
+public/scripts/browser-fixes.js isFirefox fn
+public/scripts/bulk-edit.js initBulkEdit fn
+public/scripts/cfg-scale.js cfgType value
+public/scripts/cfg-scale.js getCfgPrompt fn guidanceScale isNegative quiet?
+public/scripts/cfg-scale.js getGuidanceScale fn
+public/scripts/cfg-scale.js initCfg fn
+public/scripts/cfg-scale.js metadataKeys value
+public/scripts/char-data.js default opaque
+public/scripts/chat-backups.js addChatBackupsBrowser fn
+public/scripts/chat-templates.js bindModelTemplates async power_user online_status
+public/scripts/chat-templates.js deriveTemplatesFromChatTemplate async chat_template hash
+public/scripts/chats.js addDOMPurifyHooks fn
+public/scripts/chats.js appendFileContent async message messageText
+public/scripts/chats.js decodeStyleTags fn text options{prefix}?
+public/scripts/chats.js deleteAttachment async attachment source callback confirm?
+public/scripts/chats.js deleteFileFromServer async url silent?
+public/scripts/chats.js deleteMediaFromServer async url silent?
+public/scripts/chats.js encodeStyleTags fn text
+public/scripts/chats.js formatCreatorNotes fn text avatarId
+public/scripts/chats.js getCurrentEntityId fn
+public/scripts/chats.js getDataBankAttachments fn includeDisabled?
+public/scripts/chats.js getDataBankAttachmentsForSource fn source includeDisabled?
+public/scripts/chats.js getFileAttachment async url
+public/scripts/chats.js hasPendingFileAttachment fn
+public/scripts/chats.js hideChatMessage async messageId _messageBlock
+public/scripts/chats.js hideChatMessageRange async start end unhide nameFitler?
+public/scripts/chats.js initChatUtilities fn
+public/scripts/chats.js isExternalMediaAllowed fn
+public/scripts/chats.js populateFileAttachment async message inputId?
+public/scripts/chats.js preserveNeutralChat fn
+public/scripts/chats.js registerFileConverter fn mimeType converter
+public/scripts/chats.js restoreNeutralChat fn
+public/scripts/chats.js unhideChatMessage async messageId _messageBlock
+public/scripts/chats.js uploadFileAttachment async fileName base64Data
+public/scripts/chats.js uploadFileAttachmentToServer async file target
+public/scripts/constants.js COMETAPI_IGNORE_PATTERNS value
+public/scripts/constants.js GENERATION_TYPE_TRIGGERS value
+public/scripts/constants.js IGNORE_SYMBOL opaque
+public/scripts/constants.js IMAGE_OVERSWIPE value
+public/scripts/constants.js MEDIA_DISPLAY value
+public/scripts/constants.js MEDIA_REQUEST_TYPE value
+public/scripts/constants.js MEDIA_SOURCE value
+public/scripts/constants.js MEDIA_TYPE value
+public/scripts/constants.js OVERSWIPE_BEHAVIOR value
+public/scripts/constants.js SCROLL_BEHAVIOR value
+public/scripts/constants.js SWIPE_DIRECTION value
+public/scripts/constants.js SWIPE_SOURCE value
+public/scripts/constants.js SWIPE_STATE value
+public/scripts/constants.js VIDEO_EXTENSIONS value
+public/scripts/constants.js debounce_timeout value
+public/scripts/constants.js inject_ids value
+public/scripts/custom-request.js ChatCompletionService opaque
+public/scripts/custom-request.js TextCompletionService opaque
+public/scripts/data-maid.js initDataMaid fn
+public/scripts/dom-handlers.js initDomHandlers fn
+public/scripts/dragdrop.js DragAndDropHandler opaque
+public/scripts/dynamic-styles.js initDynamicStyles fn
+public/scripts/events.js eventSource opaque
+public/scripts/events.js event_types value
+public/scripts/extensions-slashcommands.js registerExtensionSlashCommands fn
+public/scripts/extensions.js EMPTY_AUTHOR opaque
+public/scripts/extensions.js ModuleWorkerWrapper opaque
+public/scripts/extensions.js UNSET_VALUE value
+public/scripts/extensions.js cancelDebouncedMetadataSave fn
+public/scripts/extensions.js deleteExtension async extensionName shouldClean?
+public/scripts/extensions.js disableExtension async name reload?
+public/scripts/extensions.js doDailyExtensionUpdatesCheck fn
+public/scripts/extensions.js doExtrasFetch async endpoint args?
+public/scripts/extensions.js enableExtension async name reload?
+public/scripts/extensions.js extensionNames value
+public/scripts/extensions.js extensionTypes value
+public/scripts/extensions.js extension_settings value
+public/scripts/extensions.js findExtension fn name
+public/scripts/extensions.js getApiUrl fn
+public/scripts/extensions.js getAuthorFromUrl fn url
+public/scripts/extensions.js getContext fn
+public/scripts/extensions.js getExtensionManifest fn name
+public/scripts/extensions.js initExtensions async
+public/scripts/extensions.js installExtension async url global branch?
+public/scripts/extensions.js isOfficialExtension fn url
+public/scripts/extensions.js loadExtensionSettings async settings versionChanged enableAutoUpdate
+public/scripts/extensions.js modules value
+public/scripts/extensions.js openThirdPartyExtensionMenu async suggestUrl?
+public/scripts/extensions.js renderExtensionTemplate fn extensionName templateId templateData? sanitize? localize?
+public/scripts/extensions.js renderExtensionTemplateAsync fn extensionName templateId templateData? sanitize? localize?
+public/scripts/extensions.js runGenerationInterceptors async chat contextSize type
+public/scripts/extensions.js saveMetadataDebounced fn
+public/scripts/extensions.js writeExtensionField async characterId key value
+public/scripts/extensions.js writeExtensionFieldBulk async avatars key value options{filterPath?}?
+public/scripts/extensions/assets/index.js MODULE_NAME value
+public/scripts/extensions/assets/index.js init async
+public/scripts/extensions/attachments/index.js init async
+public/scripts/extensions/caption/index.js MODULE_NAME value
+public/scripts/extensions/caption/index.js init async
+public/scripts/extensions/connection-manager/index.js init async
+public/scripts/extensions/expressions/index.js MODULE_NAME value
+public/scripts/extensions/expressions/index.js getExpressionLabel async text expressionsApi? options{customPrompt?,filterAvailable?}?
+public/scripts/extensions/expressions/index.js getExpressionsList async _{filterAvailable?}?
+public/scripts/extensions/expressions/index.js init async
+public/scripts/extensions/expressions/index.js lastExpression value
+public/scripts/extensions/expressions/index.js sendExpressionCall async spriteFolderName expression options{force?,overrideSpriteFile?,vnMode?}?
+public/scripts/extensions/expressions/index.js visualNovelUpdateLayers async container
+public/scripts/extensions/gallery/index.js init async
+public/scripts/extensions/memory/index.js MODULE_NAME value
+public/scripts/extensions/memory/index.js init async
+public/scripts/extensions/quick-reply/api/QuickReplyApi.js QuickReplyApi opaque
+public/scripts/extensions/quick-reply/index.js debounceAsync fn func timeout?
+public/scripts/extensions/quick-reply/index.js debug fn ...msg
+public/scripts/extensions/quick-reply/index.js init async
+public/scripts/extensions/quick-reply/index.js log fn ...msg
+public/scripts/extensions/quick-reply/index.js quickReplyApi opaque
+public/scripts/extensions/quick-reply/index.js warn fn ...msg
+public/scripts/extensions/quick-reply/src/AutoExecuteHandler.js AutoExecuteHandler opaque
+public/scripts/extensions/quick-reply/src/QuickReply.js QuickReply opaque
+public/scripts/extensions/quick-reply/src/QuickReplyConfig.js QuickReplyConfig opaque
+public/scripts/extensions/quick-reply/src/QuickReplyContextLink.js QuickReplyContextLink opaque
+public/scripts/extensions/quick-reply/src/QuickReplySet.js QuickReplySet opaque
+public/scripts/extensions/quick-reply/src/QuickReplySetLink.js QuickReplySetLink opaque
+public/scripts/extensions/quick-reply/src/QuickReplySettings.js QuickReplySettings opaque
+public/scripts/extensions/quick-reply/src/SlashCommandHandler.js SlashCommandHandler opaque
+public/scripts/extensions/quick-reply/src/ui/ButtonUi.js ButtonUi opaque
+public/scripts/extensions/quick-reply/src/ui/SettingsUi.js SettingsUi opaque
+public/scripts/extensions/quick-reply/src/ui/ctx/ContextMenu.js ContextMenu opaque
+public/scripts/extensions/quick-reply/src/ui/ctx/MenuHeader.js MenuHeader opaque
+public/scripts/extensions/quick-reply/src/ui/ctx/MenuItem.js MenuItem opaque
+public/scripts/extensions/quick-reply/src/ui/ctx/SubMenu.js SubMenu opaque
+public/scripts/extensions/regex/engine.js RegexProvider opaque
+public/scripts/extensions/regex/engine.js SCRIPT_TYPES value
+public/scripts/extensions/regex/engine.js SCRIPT_TYPE_UNKNOWN value
+public/scripts/extensions/regex/engine.js allowPresetScripts fn apiId presetName
+public/scripts/extensions/regex/engine.js allowScopedScripts fn character
+public/scripts/extensions/regex/engine.js disallowPresetScripts fn apiId presetName
+public/scripts/extensions/regex/engine.js disallowScopedScripts fn character
+public/scripts/extensions/regex/engine.js getCurrentPresetAPI fn
+public/scripts/extensions/regex/engine.js getCurrentPresetName fn
+public/scripts/extensions/regex/engine.js getRegexScripts fn options?
+public/scripts/extensions/regex/engine.js getRegexedString fn rawString placement params{characterOverride,depth,isEdit,isMarkdown,isPrompt}?
+public/scripts/extensions/regex/engine.js getScriptsByType fn scriptType options{allowedOnly}?
+public/scripts/extensions/regex/engine.js isPresetScriptsAllowed fn apiId presetName
+public/scripts/extensions/regex/engine.js isScopedScriptsAllowed fn character
+public/scripts/extensions/regex/engine.js regex_placement value
+public/scripts/extensions/regex/engine.js runRegexScript fn regexScript rawString params{characterOverride}?
+public/scripts/extensions/regex/engine.js saveScriptsByType async scripts scriptType
+public/scripts/extensions/regex/engine.js substitute_find_regex value
+public/scripts/extensions/regex/index.js getRegexScripts fn options?
+public/scripts/extensions/regex/index.js init async
+public/scripts/extensions/shared.js ConnectionManagerRequestService opaque
+public/scripts/extensions/shared.js countWebLlmTokens async text
+public/scripts/extensions/shared.js generateWebLlmChatPrompt async messages params?
+public/scripts/extensions/shared.js getMultimodalCaption async base64Img prompt
+public/scripts/extensions/shared.js getWebLlmContextSize async
+public/scripts/extensions/shared.js isWebLlmSupported fn
+public/scripts/extensions/stable-diffusion/index.js MODULE_NAME value
+public/scripts/extensions/stable-diffusion/index.js init async
+public/scripts/extensions/token-counter/index.js init fn
+public/scripts/extensions/translate/index.js autoModeOptions value
+public/scripts/extensions/translate/index.js init async
+public/scripts/extensions/translate/index.js translate async text lang provider?
+public/scripts/extensions/tts/alltalk.js AllTalkTtsProvider opaque
+public/scripts/extensions/tts/azure.js AzureTtsProvider opaque
+public/scripts/extensions/tts/chatterbox.js ChatterboxTtsProvider opaque
+public/scripts/extensions/tts/chutes.js ChutesTtsProvider opaque
+public/scripts/extensions/tts/coqui.js CoquiTtsProvider opaque
+public/scripts/extensions/tts/cosyvoice.js CosyVoiceProvider opaque
+public/scripts/extensions/tts/edge.js EdgeTtsProvider opaque
+public/scripts/extensions/tts/electronhub.js ElectronHubTtsProvider opaque
+public/scripts/extensions/tts/elevenlabs.js ElevenLabsTtsProvider opaque
+public/scripts/extensions/tts/google-native.js GoogleNativeTtsProvider opaque
+public/scripts/extensions/tts/google-translate.js GoogleTranslateTtsProvider opaque
+public/scripts/extensions/tts/gpt-sovits-adapter.js GptSoVITSAdapterProvider opaque
+public/scripts/extensions/tts/gpt-sovits-v2.js GptSovitsV2Provider opaque
+public/scripts/extensions/tts/gsvi.js GSVITtsProvider opaque
+public/scripts/extensions/tts/index.js getCharacters fn unrestricted
+public/scripts/extensions/tts/index.js getPreviewString fn lang
+public/scripts/extensions/tts/index.js init async
+public/scripts/extensions/tts/index.js initVoiceMap async unrestricted?
+public/scripts/extensions/tts/index.js registerTtsProvider fn name provider
+public/scripts/extensions/tts/index.js sanitizeId fn input
+public/scripts/extensions/tts/index.js saveTtsProviderSettings fn
+public/scripts/extensions/tts/kokoro.js KokoroTtsProvider opaque
+public/scripts/extensions/tts/lib/kokoro.web.js KokoroTTS opaque
+public/scripts/extensions/tts/lib/kokoro.web.js TextSplitterStream opaque
+public/scripts/extensions/tts/minimax.js MiniMaxTtsProvider opaque
+public/scripts/extensions/tts/novel.js NovelTtsProvider opaque
+public/scripts/extensions/tts/openai-compatible.js OpenAICompatibleTtsProvider opaque
+public/scripts/extensions/tts/openai.js OpenAITtsProvider opaque
+public/scripts/extensions/tts/pollinations.js PollinationsTtsProvider opaque
+public/scripts/extensions/tts/sbvits2.js SBVits2TtsProvider opaque
+public/scripts/extensions/tts/silerotts.js SileroTtsProvider opaque
+public/scripts/extensions/tts/speecht5.js SpeechT5TtsProvider opaque
+public/scripts/extensions/tts/system.js SystemTtsProvider opaque
+public/scripts/extensions/tts/tts-webui.js TtsWebuiProvider opaque
+public/scripts/extensions/tts/vits.js VITSTtsProvider opaque
+public/scripts/extensions/tts/volcengine.js VolcengineTtsProvider opaque
+public/scripts/extensions/tts/xtts.js XTTSTtsProvider opaque
+public/scripts/extensions/vectors/index.js EXTENSION_PROMPT_TAG value
+public/scripts/extensions/vectors/index.js EXTENSION_PROMPT_TAG_DB value
+public/scripts/extensions/vectors/index.js init async
+public/scripts/extensions/vectors/webllm.js WebLlmVectorProvider opaque
+public/scripts/f-localStorage.js CheckLocal fn
+public/scripts/f-localStorage.js ClearLocal fn
+public/scripts/f-localStorage.js LoadLocal fn target
+public/scripts/f-localStorage.js LoadLocalBool fn target
+public/scripts/f-localStorage.js SaveLocal fn target val
+public/scripts/filters.js DEFAULT_FILTER_STATE opaque
+public/scripts/filters.js FILTER_STATES value
+public/scripts/filters.js FILTER_TYPES value
+public/scripts/filters.js FilterHelper opaque
+public/scripts/filters.js fuzzySearchCategories opaque
+public/scripts/filters.js isFilterState fn a b
+public/scripts/group-chats.js DEFAULT_AUTO_MODE_DELAY value
+public/scripts/group-chats.js createNewGroupChat async groupId
+public/scripts/group-chats.js deleteGroup async id
+public/scripts/group-chats.js deleteGroupChat async groupId chatId options{jumpToNewChat?}?
+public/scripts/group-chats.js deleteGroupChatByName async groupId chatName
+public/scripts/group-chats.js editGroup async id immediately reload?
+public/scripts/group-chats.js findGroupMemberId fn arg full?
+public/scripts/group-chats.js generateGroupWrapper async byAutoMode type? params?
+public/scripts/group-chats.js getGroupAvatar fn group
+public/scripts/group-chats.js getGroupBlock fn group
+public/scripts/group-chats.js getGroupCharacterCards fn groupId characterId
+public/scripts/group-chats.js getGroupCharacterCardsLazy fn groupId characterId
+public/scripts/group-chats.js getGroupChat async groupId reload?
+public/scripts/group-chats.js getGroupChatNames fn groupId
+public/scripts/group-chats.js getGroupDepthPrompts fn groupId characterId
+public/scripts/group-chats.js getGroupMembers fn groupId?
+public/scripts/group-chats.js getGroupNames fn
+public/scripts/group-chats.js getGroupPastChats async groupId
+public/scripts/group-chats.js getGroups async
+public/scripts/group-chats.js groupCandidatesFilter opaque
+public/scripts/group-chats.js groupMembersFilter opaque
+public/scripts/group-chats.js group_activation_strategy value
+public/scripts/group-chats.js group_generation_id value
+public/scripts/group-chats.js group_generation_mode value
+public/scripts/group-chats.js groups value
+public/scripts/group-chats.js hideMutedSprites value
+public/scripts/group-chats.js importGroupChat async formData options{refresh?}?
+public/scripts/group-chats.js is_group_automode_enabled value
+public/scripts/group-chats.js is_group_generating value
+public/scripts/group-chats.js openGroupById async groupId
+public/scripts/group-chats.js openGroupChat async groupId chatId
+public/scripts/group-chats.js openGroupId value
+public/scripts/group-chats.js regenerateGroup async
+public/scripts/group-chats.js renameGroupChat async groupId oldChatId newChatId
+public/scripts/group-chats.js renameGroupMember async oldAvatar newAvatar newName
+public/scripts/group-chats.js resetSelectedGroup fn
+public/scripts/group-chats.js saveGroupBookmarkChat async groupId name metadata mesId chatData?
+public/scripts/group-chats.js saveGroupChat async groupId shouldSaveGroup force?
+public/scripts/group-chats.js select_group_chats fn groupId skipAnimation
+public/scripts/group-chats.js selected_group value
+public/scripts/group-chats.js unshallowGroupMembers async groupId
+public/scripts/horde.js MIN_LENGTH value
+public/scripts/horde.js adjustHordeGenerationParams async max_context_length max_length
+public/scripts/horde.js checkHordeStatus async
+public/scripts/horde.js generateHorde async prompt params signal reportProgress
+public/scripts/horde.js getHordeModels async force
+public/scripts/horde.js getStatusHorde async
+public/scripts/horde.js horde_settings value
+public/scripts/horde.js initHorde fn
+public/scripts/horde.js isHordeGenerationNotAllowed fn
+public/scripts/horde.js loadHordeSettings fn settings
+public/scripts/i18n.js addLocaleData fn localeId data
+public/scripts/i18n.js applyLocale fn root?
+public/scripts/i18n.js getCurrentLocale fn
+public/scripts/i18n.js initLocales async
+public/scripts/i18n.js t fn strings ...values
+public/scripts/i18n.js translate fn text key?
+public/scripts/input-md-formatting.js initInputMarkdown fn
+public/scripts/instruct-mode.js autoSelectInstructPreset fn modelId
+public/scripts/instruct-mode.js force_output_sequence value
+public/scripts/instruct-mode.js formatInstructModeChat fn name mes isUser isNarrator forceAvatar name1 name2 forceOutputSequence customInstruct?
+public/scripts/instruct-mode.js formatInstructModeExamples fn mesExamplesArray name1 name2
+public/scripts/instruct-mode.js formatInstructModePrompt fn name isImpersonate promptBias name1 name2 isQuiet isQuietToLoud customInstruct?
+public/scripts/instruct-mode.js formatInstructModeStoryString fn storyString params{customContext?,customInstruct?}?
+public/scripts/instruct-mode.js formatInstructModeSystemPrompt fn systemPrompt _customInstruct?
+public/scripts/instruct-mode.js getInstructMacros fn env
+public/scripts/instruct-mode.js getInstructStoppingSequences fn options{customInstruct?,useStopStrings?}?
+public/scripts/instruct-mode.js instruct_presets value
+public/scripts/instruct-mode.js loadInstructMode async data
+public/scripts/instruct-mode.js names_behavior_types value
+public/scripts/instruct-mode.js selectContextPreset fn preset options{isAuto?,quiet?}?
+public/scripts/instruct-mode.js selectInstructPreset fn preset options{isAuto?,quiet?}?
+public/scripts/instruct-mode.js updateBindModelTemplatesState fn
+public/scripts/itemized-prompts.js clearItemizedPrompts async
+public/scripts/itemized-prompts.js deleteItemizedPromptForMessage fn messageId
+public/scripts/itemized-prompts.js deleteItemizedPrompts async chatId
+public/scripts/itemized-prompts.js findItemizedPromptSet fn itemizedPrompts incomingMesId
+public/scripts/itemized-prompts.js initItemizedPrompts fn
+public/scripts/itemized-prompts.js itemizedParams async itemizedPrompts thisPromptSet incomingMesId
+public/scripts/itemized-prompts.js itemizedPrompts value
+public/scripts/itemized-prompts.js loadItemizedPrompts async chatId
+public/scripts/itemized-prompts.js promptItemize async itemizedPrompts requestedMesId
+public/scripts/itemized-prompts.js replaceItemizedPromptText async mesId promptText
+public/scripts/itemized-prompts.js saveItemizedPrompts async chatId
+public/scripts/itemized-prompts.js swapItemizedPrompts fn sourceMessageId targetMessageId
+public/scripts/kai-settings.js formatKoboldUrl fn value
+public/scripts/kai-settings.js generateKoboldWithStreaming async generate_data signal
+public/scripts/kai-settings.js getKoboldGenerationData fn finalPrompt settings maxLength maxContextLength isHorde type
+public/scripts/kai-settings.js getStatusKobold async
+public/scripts/kai-settings.js initKoboldSettings fn
+public/scripts/kai-settings.js kai_flags value
+public/scripts/kai-settings.js kai_settings value
+public/scripts/kai-settings.js koboldai_setting_names opaque
+public/scripts/kai-settings.js koboldai_settings opaque
+public/scripts/kai-settings.js loadKoboldSettings fn data preset settings
+public/scripts/kai-settings.js setKoboldFlags fn koboldUnitedVersion koboldCppVersion
+public/scripts/keyboard.js CUSTOM_INTERACTABLE_CONTROL_CLASS value
+public/scripts/keyboard.js DISABLED_CONTROL_CLASS value
+public/scripts/keyboard.js INTERACTABLE_CONTROL_CLASS value
+public/scripts/keyboard.js NOT_FOCUSABLE_CONTROL_CLASS value
+public/scripts/keyboard.js initKeyboard fn
+public/scripts/keyboard.js isKeyboardInteractable fn control
+public/scripts/keyboard.js makeKeyboardInteractable fn ...interactables
+public/scripts/keyboard.js registerInteractableType fn interactableSelector options{disabledByDefault?,notFocusableByDefault?}?
+public/scripts/loader.js hideLoader async
+public/scripts/loader.js showLoader fn
+public/scripts/logit-bias.js BIAS_CACHE opaque
+public/scripts/logit-bias.js createNewLogitBiasEntry fn logitBias containerSelector
+public/scripts/logit-bias.js displayLogitBias fn logitBias containerSelector
+public/scripts/logit-bias.js getLogitBiasListResult fn biasPreset tokenizerType getBiasObject
+public/scripts/logprobs.js initLogprobs fn
+public/scripts/logprobs.js saveLogprobsForActiveMessage fn logprobs continueFrom
+public/scripts/macros.js MacrosParser opaque
+public/scripts/macros.js evaluateMacros fn content env postProcessFn
+public/scripts/macros.js getLastMessageId fn param0{exclude_swipe_in_propress?,filter?}?
+public/scripts/macros.js initMacros fn
+public/scripts/macros/definitions/chat-macros.js registerChatMacros fn
+public/scripts/macros/definitions/core-macros.js ELSE_MARKER value
+public/scripts/macros/definitions/core-macros.js registerCoreMacros fn
+public/scripts/macros/definitions/env-macros.js registerEnvMacros fn
+public/scripts/macros/definitions/instruct-macros.js registerInstructMacros fn
+public/scripts/macros/definitions/state-macros.js registerStateMacros fn
+public/scripts/macros/definitions/time-macros.js registerTimeMacros fn
+public/scripts/macros/definitions/variable-macros.js registerVariableMacros fn
+public/scripts/macros/engine/MacroBrowser.js MacroBrowser opaque
+public/scripts/macros/engine/MacroBrowser.js createAliasIndicator fn macro
+public/scripts/macros/engine/MacroBrowser.js createSourceIndicator fn macro
+public/scripts/macros/engine/MacroBrowser.js createTypeBadge fn type
+public/scripts/macros/engine/MacroBrowser.js formatMacroSignature fn macro
+public/scripts/macros/engine/MacroBrowser.js getMacrosHelp fn
+public/scripts/macros/engine/MacroBrowser.js renderMacroDetails fn macro options?
+public/scripts/macros/engine/MacroCstWalker.js MacroCstWalker opaque
+public/scripts/macros/engine/MacroDiagnostics.js createMacroRuntimeError fn options{call,def,macroName,message}
+public/scripts/macros/engine/MacroDiagnostics.js logMacroGeneralError fn options{error,message}
+public/scripts/macros/engine/MacroDiagnostics.js logMacroInternalError fn options{call,error,macroName,message}
+public/scripts/macros/engine/MacroDiagnostics.js logMacroRegisterError fn options{error?,macroName,message}
+public/scripts/macros/engine/MacroDiagnostics.js logMacroRegisterWarning fn options{error?,macroName,message}
+public/scripts/macros/engine/MacroDiagnostics.js logMacroRuntimeWarning fn options{call,def,error,macroName,message}
+public/scripts/macros/engine/MacroDiagnostics.js logMacroSyntaxWarning fn options{errors,input,phase}
+public/scripts/macros/engine/MacroDiagnostics.js onboardingExperimentalMacroEngine async ...args
+public/scripts/macros/engine/MacroDiagnostics.js onboardingExperimentalMacroEngineMutex opaque
+public/scripts/macros/engine/MacroEngine.js MacroEngine opaque
+public/scripts/macros/engine/MacroEnvBuilder.js MacroEnvBuilder opaque
+public/scripts/macros/engine/MacroEnvBuilder.js env_provider_order value
+public/scripts/macros/engine/MacroFlags.js MacroFlagDefinitions opaque
+public/scripts/macros/engine/MacroFlags.js MacroFlagType opaque
+public/scripts/macros/engine/MacroFlags.js ValidFlagSymbols opaque
+public/scripts/macros/engine/MacroFlags.js createEmptyFlags fn
+public/scripts/macros/engine/MacroFlags.js getFlagDefinition fn symbol
+public/scripts/macros/engine/MacroFlags.js hasAnyFlag fn flags
+public/scripts/macros/engine/MacroFlags.js isValidFlag fn symbol
+public/scripts/macros/engine/MacroFlags.js parseFlags fn flagSymbols
+public/scripts/macros/engine/MacroLexer.js MACRO_IDENTIFIER_PATTERN value
+public/scripts/macros/engine/MacroLexer.js MACRO_VARIABLE_SHORTHAND_PATTERN value
+public/scripts/macros/engine/MacroLexer.js MacroLexer opaque
+public/scripts/macros/engine/MacroParser.js MacroParser opaque
+public/scripts/macros/engine/MacroRegistry.js MacroCategory opaque
+public/scripts/macros/engine/MacroRegistry.js MacroRegistry opaque
+public/scripts/macros/engine/MacroRegistry.js MacroValueType opaque
+public/scripts/macros/macro-system.js MacroCategory opaque
+public/scripts/macros/macro-system.js MacroValueType opaque
+public/scripts/macros/macro-system.js initRegisterMacros fn
+public/scripts/macros/macro-system.js macros value
+public/scripts/message-formatter.js MessageFormatter opaque
+public/scripts/message-formatter.js formatting_stage value
+public/scripts/message-formatter.js hook_order value
+public/scripts/nai-settings.js adjustNovelInstructionPrompt fn prompt
+public/scripts/nai-settings.js convertNovelPreset fn data
+public/scripts/nai-settings.js generateNovelWithStreaming async generate_data signal
+public/scripts/nai-settings.js getKayraMaxContextTokens fn
+public/scripts/nai-settings.js getNovelAnlas fn
+public/scripts/nai-settings.js getNovelGenerationData fn finalPrompt settings maxLength isImpersonate isContinue _cfgValues type
+public/scripts/nai-settings.js getNovelMaxResponseTokens fn
+public/scripts/nai-settings.js getNovelTier fn
+public/scripts/nai-settings.js getNovelUnlimitedImageGeneration fn
+public/scripts/nai-settings.js getStatusNovel async
+public/scripts/nai-settings.js initNovelAISettings fn
+public/scripts/nai-settings.js loadNovelPreset fn preset
+public/scripts/nai-settings.js loadNovelSettings fn data settings
+public/scripts/nai-settings.js loadNovelSubscriptionData async
+public/scripts/nai-settings.js nai_settings value
+public/scripts/nai-settings.js novelai_setting_names opaque
+public/scripts/nai-settings.js novelai_settings opaque
+public/scripts/nai-settings.js parseNovelAILogprobs fn data
+public/scripts/nai-settings.js setNovelData fn data
+public/scripts/openai.js ChatCompletion opaque
+public/scripts/openai.js IdentifierNotFoundError opaque
+public/scripts/openai.js MINIMAX_ENDPOINT value
+public/scripts/openai.js Message opaque
+public/scripts/openai.js MessageCollection opaque
+public/scripts/openai.js POLLINATIONS_ENDPOINT value
+public/scripts/openai.js SILICONFLOW_ENDPOINT value
+public/scripts/openai.js TokenHandler opaque
+public/scripts/openai.js ZAI_ENDPOINT value
+public/scripts/openai.js chat_completion_sources value
+public/scripts/openai.js createGenerationParameters async settings model type messages options{jsonSchema?}?
+public/scripts/openai.js custom_prompt_post_processing_types value
+public/scripts/openai.js formatWorldInfo fn value _{wiFormat?}?
+public/scripts/openai.js getChatCompletionModel fn settings?
+public/scripts/openai.js getChatCompletionPreset fn settings?
+public/scripts/openai.js getPresetApplicationPromise fn
+public/scripts/openai.js getPromptPosition fn position
+public/scripts/openai.js getPromptRole fn role
+public/scripts/openai.js getStreamingReply fn data state options{chatCompletionSource?,overrideShowThoughts?}?
+public/scripts/openai.js initOpenAI fn
+public/scripts/openai.js isAudioInliningSupported fn
+public/scripts/openai.js isImageInliningSupported fn
+public/scripts/openai.js isReasoningSignatureSupported fn settings?
+public/scripts/openai.js isVideoInliningSupported fn
+public/scripts/openai.js loadOpenAISettings fn data settings
+public/scripts/openai.js loadProxyPresets fn settings
+public/scripts/openai.js model_list value
+public/scripts/openai.js oai_settings opaque
+public/scripts/openai.js openai_messages_count value
+public/scripts/openai.js openai_setting_names opaque
+public/scripts/openai.js openai_settings opaque
+public/scripts/openai.js parseExampleIntoIndividual fn messageExampleString appendNamesForGroup?
+public/scripts/openai.js prepareOpenAIMessages async content{bias,charDescription,charPersonality,cyclePrompt,extensionPrompts,jailbreakPromptOverride,messageExamples,messages,name2,quietImage,quietPrompt,scenario,systemPromptOverride,type,worldInfoAfter,worldInfoBefore} dryRun
+public/scripts/openai.js promptManager value
+public/scripts/openai.js proxies value
+public/scripts/openai.js reasoning_effort_types value
+public/scripts/openai.js selected_proxy opaque
+public/scripts/openai.js sendOpenAIRequest async type messages signal options{jsonSchema?}?
+public/scripts/openai.js setOpenAIMessageExamples fn mesExamplesArray
+public/scripts/openai.js setOpenAIMessages fn chat
+public/scripts/openai.js settingsToUpdate value
+public/scripts/openai.js setupChatCompletionPromptManager fn openAiSettings
+public/scripts/openai.js tool_reasoning_modes value
+public/scripts/openai.js tryParseStreamingError fn response decoded options{quiet?}?
+public/scripts/openai.js verbosity_levels value
+public/scripts/personas.js askForPersonaSelection async title text personas options{highlightPersonas?,okButton?,shiftClickHandler?,targetedChar?}?
+public/scripts/personas.js autoSelectPersona async name options{personaKey?}?
+public/scripts/personas.js buildPersonaAvatarList fn block personas options{empty?,highlightFavs?,interactable?}?
+public/scripts/personas.js convertCharacterToPersona async characterId?
+public/scripts/personas.js createPersona async avatarId
+public/scripts/personas.js getConnectedPersonas fn characterKey?
+public/scripts/personas.js getCurrentConnectionObj fn
+public/scripts/personas.js getOrCreatePersonaDescriptor fn
+public/scripts/personas.js getUserAvatar fn avatarImg
+public/scripts/personas.js getUserAvatars async doRender? openPageAt?
+public/scripts/personas.js initPersona async avatarId personaName personaDescription personaTitle options{depth?,lorebook?,position?,role?,silent?}?
+public/scripts/personas.js initPersonas async
+public/scripts/personas.js initUserAvatar fn avatar
+public/scripts/personas.js isPersonaConnectionLocked fn connection
+public/scripts/personas.js isPersonaLocked fn type?
+public/scripts/personas.js isPersonaPanelOpen fn
+public/scripts/personas.js persona_description_positions value
+public/scripts/personas.js personasFilter opaque
+public/scripts/personas.js retriggerFirstMessageOnEmptyChat async
+public/scripts/personas.js setPersonaDescription fn
+public/scripts/personas.js setPersonaLockState async state type?
+public/scripts/personas.js setUserAvatar async imgfile options{navigateToCurrent?,toastPersonaNameChange?}?
+public/scripts/personas.js showCharConnections async
+public/scripts/personas.js togglePersonaLock async type?
+public/scripts/personas.js updatePersonaConnectionsAvatarList fn
+public/scripts/personas.js user_avatar value
+public/scripts/popup.js POPUP_RESULT value
+public/scripts/popup.js POPUP_TYPE value
+public/scripts/popup.js Popup opaque
+public/scripts/popup.js PopupUtils opaque
+public/scripts/popup.js callGenericPopup fn content type inputValue? popupOptions?
+public/scripts/popup.js fixToastrForDialogs fn
+public/scripts/popup.js getTopmostModalLayer fn
+public/scripts/power-user.js MAX_CONTEXT_DEFAULT value
+public/scripts/power-user.js MAX_RESPONSE_DEFAULT value
+public/scripts/power-user.js addEphemeralStoppingString fn value
+public/scripts/power-user.js applyPowerUserSettings fn
+public/scripts/power-user.js applyStylePins fn
+public/scripts/power-user.js chat_styles value
+public/scripts/power-user.js collapseNewlines fn x
+public/scripts/power-user.js context_presets value
+public/scripts/power-user.js fixMarkdown fn text forDisplay
+public/scripts/power-user.js flushEphemeralStoppingStrings fn
+public/scripts/power-user.js forceCharacterEditorTokenize fn
+public/scripts/power-user.js fuzzySearchCharacters fn searchValue fuzzySearchCaches?
+public/scripts/power-user.js fuzzySearchGroups fn searchValue fuzzySearchCaches?
+public/scripts/power-user.js fuzzySearchPersonas fn data searchValue fuzzySearchCaches?
+public/scripts/power-user.js fuzzySearchTags fn searchValue fuzzySearchCaches?
+public/scripts/power-user.js fuzzySearchWorldInfo fn data searchValue fuzzySearchCaches?
+public/scripts/power-user.js generatedTextFiltered fn text
+public/scripts/power-user.js getContextSettings fn
+public/scripts/power-user.js getCustomStoppingStrings fn limit?
+public/scripts/power-user.js getThemeObject fn name
+public/scripts/power-user.js loadMovingUIState fn
+public/scripts/power-user.js loadPowerUserSettings async settings data
+public/scripts/power-user.js performFuzzySearch fn type data keys searchValue fuzzySearchCaches?
+public/scripts/power-user.js persona_description_positions value
+public/scripts/power-user.js playMessageSound fn param{force?}?
+public/scripts/power-user.js power_user value
+public/scripts/power-user.js registerDebugFunction fn functionId name description func
+public/scripts/power-user.js renderStoryString fn params options{customContextSettings?,customInstructSettings?,customStoryString?}?
+public/scripts/power-user.js resetMovableStyles fn id
+public/scripts/power-user.js send_on_enter_options value
+public/scripts/power-user.js sortEntitiesList fn entities forceSearch filterHelper?
+public/scripts/power-user.js toastPositionClasses value
+public/scripts/preset-manager.js getPresetManager fn apiId?
+public/scripts/preset-manager.js initPresetManager async
+public/scripts/reasoning.js DEFAULT_REASONING_TEMPLATE value
+public/scripts/reasoning.js PromptReasoning opaque
+public/scripts/reasoning.js ReasoningHandler opaque
+public/scripts/reasoning.js ReasoningState value
+public/scripts/reasoning.js ReasoningType value
+public/scripts/reasoning.js extractReasoningFromData fn data _{chatCompletionSource?,ignoreShowThoughts?,mainApi?,textGenType?}?
+public/scripts/reasoning.js extractReasoningSignatureFromData fn data options{chatCompletionSource?,mainApi?}?
+public/scripts/reasoning.js formatReasoning fn reasoning content template?
+public/scripts/reasoning.js getReasoningTemplateByName fn name
+public/scripts/reasoning.js initReasoning fn
+public/scripts/reasoning.js isHiddenReasoningModel fn
+public/scripts/reasoning.js loadReasoningTemplates async data
+public/scripts/reasoning.js parseReasoningFromString fn str options{strict?}? template?
+public/scripts/reasoning.js parseReasoningInSwipes fn swipes swipeInfoArray duration
+public/scripts/reasoning.js reasoning_templates value
+public/scripts/reasoning.js removeReasoningFromString fn str
+public/scripts/reasoning.js updateReasoningUI fn messageIdOrElement options{reset?}?
+public/scripts/request-compression.js compressRequest async request
+public/scripts/request-compression.js setRequestCompressionConfig fn config
+public/scripts/samplerSelect.js getActiveManualApiSamplers fn tcApiType?
+public/scripts/samplerSelect.js getAllManualApiSamplers fn tcApiType?
+public/scripts/samplerSelect.js initCustomSelectedSamplers async
+public/scripts/samplerSelect.js isSamplerManualPriorityEnabled fn tcApiType?
+public/scripts/samplerSelect.js loadApiSelectedSamplers async
+public/scripts/samplerSelect.js resetApiSelectedSamplers async tcApiType? silent?
+public/scripts/samplerSelect.js saveApiSelectedSamplers async
+public/scripts/samplerSelect.js setApiSamplersState fn samplerName state tcApiType?
+public/scripts/samplerSelect.js toggleSamplerManualPriority fn state? tcApiType?
+public/scripts/samplerSelect.js validateDisabledSamplers async redraw?
+public/scripts/scrapers.js ScraperManager opaque
+public/scripts/scrapers.js initScrapers async
+public/scripts/secrets.js SECRET_KEYS value
+public/scripts/secrets.js canViewSecrets async
+public/scripts/secrets.js checkOpenRouterAuth async
+public/scripts/secrets.js deleteSecret async key id?
+public/scripts/secrets.js findSecret async key id?
+public/scripts/secrets.js getSecretLabelById fn id
+public/scripts/secrets.js initSecrets async
+public/scripts/secrets.js readSecretState async
+public/scripts/secrets.js renameSecret async key id label
+public/scripts/secrets.js resolveSecretKey fn
+public/scripts/secrets.js rotateSecret async key id
+public/scripts/secrets.js secret_state value
+public/scripts/secrets.js updateSecretDisplay fn
+public/scripts/secrets.js writeSecret async key value label? options{allowEmpty?}?
+public/scripts/server-history.js initServerHistory fn
+public/scripts/setting-search.js initSettingsSearch fn
+public/scripts/showdown-exclusion.js markdownExclusionExt fn
+public/scripts/showdown-underscore.js markdownUnderscoreExt fn
+public/scripts/slash-commands.js COMMENT_NAME_DEFAULT value
+public/scripts/slash-commands.js CONNECT_API_MAP value
+public/scripts/slash-commands.js UNIQUE_APIS value
+public/scripts/slash-commands.js activateScriptButtons fn
+public/scripts/slash-commands.js commandsFromChatInputAbortController opaque
+public/scripts/slash-commands.js deactivateScriptButtons fn
+public/scripts/slash-commands.js executeSlashCommands async text handleParserErrors? scope? handleExecutionErrors? parserFlags? abortController? onProgress?
+public/scripts/slash-commands.js executeSlashCommandsOnChatInput async text options?
+public/scripts/slash-commands.js executeSlashCommandsWithOptions async text options?
+public/scripts/slash-commands.js generateSystemMessage async args prompt
+public/scripts/slash-commands.js getNameAndAvatarForMessage fn character name?
+public/scripts/slash-commands.js getSlashCommandsHelp fn
+public/scripts/slash-commands.js initDefaultSlashCommands fn
+public/scripts/slash-commands.js initSlashCommandAutoComplete async
+public/scripts/slash-commands.js isExecutingCommandsFromChatInput value
+public/scripts/slash-commands.js parser opaque
+public/scripts/slash-commands.js pauseScriptExecution fn
+public/scripts/slash-commands.js processChatSlashCommands fn
+public/scripts/slash-commands.js promptQuietForLoudResponse async who text
+public/scripts/slash-commands.js registerSlashCommand opaque
+public/scripts/slash-commands.js sendMessageAs async args text
+public/scripts/slash-commands.js sendNarratorMessage async args text
+public/scripts/slash-commands.js setSlashCommandAutoComplete async textarea isFloating?
+public/scripts/slash-commands.js stopScriptExecution fn
+public/scripts/slash-commands.js validateArrayArg fn arg name options{allowUndefined?}?
+public/scripts/slash-commands.js validateArrayArgString fn arg name options{allowUndefined?}?
+public/scripts/slash-commands/AbstractEventTarget.js AbstractEventTarget opaque
+public/scripts/slash-commands/SlashCommand.js SlashCommand opaque
+public/scripts/slash-commands/SlashCommandAbortController.js SlashCommandAbortController opaque
+public/scripts/slash-commands/SlashCommandAbortController.js SlashCommandAbortSignal opaque
+public/scripts/slash-commands/SlashCommandArgument.js ARGUMENT_TYPE value
+public/scripts/slash-commands/SlashCommandArgument.js SlashCommandArgument opaque
+public/scripts/slash-commands/SlashCommandArgument.js SlashCommandNamedArgument opaque
+public/scripts/slash-commands/SlashCommandAutoCompleteNameResult.js SlashCommandAutoCompleteNameResult opaque
+public/scripts/slash-commands/SlashCommandBreak.js SlashCommandBreak opaque
+public/scripts/slash-commands/SlashCommandBreakController.js SlashCommandBreakController opaque
+public/scripts/slash-commands/SlashCommandBreakPoint.js SlashCommandBreakPoint opaque
+public/scripts/slash-commands/SlashCommandBrowser.js SlashCommandBrowser opaque
+public/scripts/slash-commands/SlashCommandClosure.js SlashCommandClosure opaque
+public/scripts/slash-commands/SlashCommandClosureResult.js SlashCommandClosureResult opaque
+public/scripts/slash-commands/SlashCommandCommandAutoCompleteOption.js SlashCommandCommandAutoCompleteOption opaque
+public/scripts/slash-commands/SlashCommandCommonEnumsProvider.js commonEnumMatchProviders value
+public/scripts/slash-commands/SlashCommandCommonEnumsProvider.js commonEnumProviders value
+public/scripts/slash-commands/SlashCommandCommonEnumsProvider.js enumIcons value
+public/scripts/slash-commands/SlashCommandDebugController.js SlashCommandDebugController opaque
+public/scripts/slash-commands/SlashCommandEnumAutoCompleteOption.js SlashCommandEnumAutoCompleteOption opaque
+public/scripts/slash-commands/SlashCommandEnumValue.js SlashCommandEnumValue opaque
+public/scripts/slash-commands/SlashCommandEnumValue.js enumTypes value
+public/scripts/slash-commands/SlashCommandExecutionError.js SlashCommandExecutionError opaque
+public/scripts/slash-commands/SlashCommandExecutor.js SlashCommandExecutor opaque
+public/scripts/slash-commands/SlashCommandNamedArgumentAssignment.js SlashCommandNamedArgumentAssignment opaque
+public/scripts/slash-commands/SlashCommandNamedArgumentAutoCompleteOption.js SlashCommandNamedArgumentAutoCompleteOption opaque
+public/scripts/slash-commands/SlashCommandParser.js PARSER_FLAG value
+public/scripts/slash-commands/SlashCommandParser.js SlashCommandParser opaque
+public/scripts/slash-commands/SlashCommandParserError.js SlashCommandParserError opaque
+public/scripts/slash-commands/SlashCommandQuickReplyAutoCompleteOption.js SlashCommandQuickReplyAutoCompleteOption opaque
+public/scripts/slash-commands/SlashCommandReturnHelper.js slashCommandReturnHelper value
+public/scripts/slash-commands/SlashCommandScope.js SlashCommandScope opaque
+public/scripts/slash-commands/SlashCommandScope.js SlashCommandScopeVariableExistsError opaque
+public/scripts/slash-commands/SlashCommandScope.js SlashCommandScopeVariableNotFoundError opaque
+public/scripts/slash-commands/SlashCommandUnnamedArgumentAssignment.js SlashCommandUnnamedArgumentAssignment opaque
+public/scripts/slash-commands/SlashCommandVariableAutoCompleteOption.js SlashCommandVariableAutoCompleteOption opaque
+public/scripts/sse-stream.js SmoothEventSourceStream opaque
+public/scripts/sse-stream.js default opaque
+public/scripts/sse-stream.js getEventSourceStream fn
+public/scripts/st-context.js default opaque
+public/scripts/st-context.js getContext fn
+public/scripts/stats.js charStats value
+public/scripts/stats.js characterStatsHandler async characters this_chid
+public/scripts/stats.js getStats async
+public/scripts/stats.js initStats fn
+public/scripts/stats.js statMesProcess async line type characters this_chid oldMessage
+public/scripts/stats.js userStatsHandler async
+public/scripts/streaming-display.js StreamingDisplay opaque
+public/scripts/swipe-picker.js canJumpToSwipeForMessage fn messageId
+public/scripts/swipe-picker.js canOpenSwipePickerForMessage fn messageId
+public/scripts/swipe-picker.js initSwipePicker fn
+public/scripts/sysprompt.js checkForSystemPromptInInstructTemplate async name template
+public/scripts/sysprompt.js initSystemPrompts fn
+public/scripts/sysprompt.js loadSystemPrompts async data
+public/scripts/sysprompt.js system_prompts value
+public/scripts/system-messages.js SAFETY_CHAT value
+public/scripts/system-messages.js getSystemMessageByType fn type text? extra?
+public/scripts/system-messages.js initSystemMessages async
+public/scripts/system-messages.js sendSystemMessage fn type text? extra?
+public/scripts/system-messages.js system_message_types value
+public/scripts/system-messages.js system_messages value
+public/scripts/tags.js TAG_FOLDER_DEFAULT_TYPE value
+public/scripts/tags.js TAG_FOLDER_TYPES value
+public/scripts/tags.js addTagsToEntity fn tag entityId options{tagListOptions?,tagListSelector?}?
+public/scripts/tags.js appendTagToList fn listElement tag options{action?,isFilter?,isGeneralList?,isInactive?,removable?,removeAction?,skipExistsCheck?}?
+public/scripts/tags.js applyCharacterTagsToMessageDivs fn options{mesIds?}?
+public/scripts/tags.js applyTagsOnCharacterSelect fn chid?
+public/scripts/tags.js applyTagsOnGroupSelect fn groupId?
+public/scripts/tags.js chooseBogusFolder fn source tagId remove?
+public/scripts/tags.js compareTagsForSort fn a b counts?
+public/scripts/tags.js createTagInput fn inputSelector listSelector tagListOptions?
+public/scripts/tags.js createTagMapFromList fn listElement key
+public/scripts/tags.js filterByTagState fn entities param1{filterHidden?,globalDisplayFilters?,subForEntity?}?
+public/scripts/tags.js getTagBlock fn tag entities hidden? isUseless?
+public/scripts/tags.js getTagKeyForEntity fn entityOrKey
+public/scripts/tags.js getTagKeyForEntityElement fn element
+public/scripts/tags.js getTagsList fn key sort?
+public/scripts/tags.js importTags async character options{importSetting?}?
+public/scripts/tags.js initTags fn
+public/scripts/tags.js isBogusFolder fn tag
+public/scripts/tags.js isBogusFolderOpen fn
+public/scripts/tags.js loadTagsSettings fn settings
+public/scripts/tags.js printTagFilters fn type?
+public/scripts/tags.js printTagList fn element options{addTag?,empty?,forEntityOrKey?,inactiveTags?,sort?,tagActionSelector?,tagOptions?,tags?}?
+public/scripts/tags.js removeTagFromEntity fn tag entityId options{tagElement?,tagListSelector?}?
+public/scripts/tags.js removeTagFromMap fn tagId characterId?
+public/scripts/tags.js renameTagKey fn oldKey newKey
+public/scripts/tags.js searchCharByName fn charName? options{suppressLogging?}?
+public/scripts/tags.js sortTags fn tags counts?
+public/scripts/tags.js tag_filter_type value
+public/scripts/tags.js tag_import_setting value
+public/scripts/tags.js tag_map value
+public/scripts/tags.js tag_sort_mode value
+public/scripts/tags.js tags value
+public/scripts/templates.js renderTemplate fn templateId templateData? sanitize? localize? fullPath?
+public/scripts/templates.js renderTemplateAsync async templateId templateData? sanitize? localize? fullPath?
+public/scripts/textgen-models.js getCurrentDreamGenModelTokenizer fn
+public/scripts/textgen-models.js getCurrentOpenRouterModelTokenizer fn
+public/scripts/textgen-models.js initTextGenModels fn
+public/scripts/textgen-models.js loadAphroditeModels async data
+public/scripts/textgen-models.js loadDreamGenModels async data
+public/scripts/textgen-models.js loadFeatherlessModels async data
+public/scripts/textgen-models.js loadGenericModels fn data
+public/scripts/textgen-models.js loadInfermaticAIModels async data
+public/scripts/textgen-models.js loadLlamaCppModels async data
+public/scripts/textgen-models.js loadMancerModels async data
+public/scripts/textgen-models.js loadOllamaModels async data
+public/scripts/textgen-models.js loadOpenRouterModels async data
+public/scripts/textgen-models.js loadTabbyModels async data
+public/scripts/textgen-models.js loadTogetherAIModels async data
+public/scripts/textgen-models.js loadVllmModels async data
+public/scripts/textgen-models.js openRouterModels value
+public/scripts/textgen-models.js syncNanoGptProvidersForModel async modelId providersSelector
+public/scripts/textgen-models.js syncOpenRouterProvidersForModel async modelId providersSelector
+public/scripts/textgen-models.js updateNanoGptProvidersWarning fn providersSelector
+public/scripts/textgen-models.js updateOpenRouterProvidersWarning fn providersSelector
+public/scripts/textgen-settings.js APHRODITE_DEFAULT_ORDER value
+public/scripts/textgen-settings.js DREAMGEN_SERVER value
+public/scripts/textgen-settings.js FEATHERLESS_SERVER value
+public/scripts/textgen-settings.js INFERMATICAI_SERVER value
+public/scripts/textgen-settings.js MANCER_SERVER opaque
+public/scripts/textgen-settings.js OPENROUTER_SERVER value
+public/scripts/textgen-settings.js SERVER_INPUTS value
+public/scripts/textgen-settings.js TOGETHERAI_SERVER value
+public/scripts/textgen-settings.js createTextGenGenerationData fn settings model finalPrompt? maxTokens? isImpersonate? isContinue? cfgValues? type?
+public/scripts/textgen-settings.js formatTextGenURL fn value
+public/scripts/textgen-settings.js generateTextGenWithStreaming async generate_data signal
+public/scripts/textgen-settings.js getLogprobsNumber fn type?
+public/scripts/textgen-settings.js getTextGenGenerationData async finalPrompt maxTokens isImpersonate isContinue cfgValues type
+public/scripts/textgen-settings.js getTextGenModel fn settings?
+public/scripts/textgen-settings.js getTextGenServer fn type?
+public/scripts/textgen-settings.js initTextGenSettings fn
+public/scripts/textgen-settings.js isJsonSchemaSupported fn
+public/scripts/textgen-settings.js loadTextGenSettings async data loadedSettings
+public/scripts/textgen-settings.js parseTabbyLogprobs fn data
+public/scripts/textgen-settings.js parseTextgenLogprobs fn token logprobs
+public/scripts/textgen-settings.js replaceMacrosInList fn str
+public/scripts/textgen-settings.js setting_names value
+public/scripts/textgen-settings.js showTGSamplerControls fn apiType?
+public/scripts/textgen-settings.js textgen_types value
+public/scripts/textgen-settings.js textgenerationwebui_banned_in_macros value
+public/scripts/textgen-settings.js textgenerationwebui_preset_names value
+public/scripts/textgen-settings.js textgenerationwebui_presets value
+public/scripts/textgen-settings.js textgenerationwebui_settings value
+public/scripts/textgen-settings.js validateTextGenUrl fn
+public/scripts/tokenizers.js BYTES_PER_TOKEN value
+public/scripts/tokenizers.js CHARACTERS_PER_TOKEN_RATIO value
+public/scripts/tokenizers.js ENCODE_TOKENIZERS value
+public/scripts/tokenizers.js TEXTGEN_TOKENIZERS value
+public/scripts/tokenizers.js TOKENIZER_SUPPORTED_KEY value
+public/scripts/tokenizers.js TOKENIZER_WARNING_KEY value
+public/scripts/tokenizers.js countTokensOpenAI fn messages full?
+public/scripts/tokenizers.js countTokensOpenAIAsync async messages full?
+public/scripts/tokenizers.js decodeTextTokens fn tokenizerType ids
+public/scripts/tokenizers.js getAvailableTokenizers fn
+public/scripts/tokenizers.js getFriendlyTokenizerName fn forApi
+public/scripts/tokenizers.js getTextTokens fn tokenizerType str
+public/scripts/tokenizers.js getTokenCount fn str padding?
+public/scripts/tokenizers.js getTokenCountAsync async str padding?
+public/scripts/tokenizers.js getTokenizerBestMatch fn forApi
+public/scripts/tokenizers.js getTokenizerModel fn
+public/scripts/tokenizers.js guesstimate fn str
+public/scripts/tokenizers.js initTokenizers async
+public/scripts/tokenizers.js saveTokenCache async
+public/scripts/tokenizers.js selectTokenizer fn tokenizerId
+public/scripts/tokenizers.js tokenizers value
+public/scripts/tool-calling.js ToolManager opaque
+public/scripts/user.js accountsEnabled value
+public/scripts/user.js currentUser value
+public/scripts/user.js getCurrentUserHandle fn
+public/scripts/user.js isAdmin fn
+public/scripts/user.js setUserControls async isEnabled
+public/scripts/util/AbortReason.js AbortReason opaque
+public/scripts/util/AccountStorage.js accountStorage opaque
+public/scripts/util/SimpleMutex.js SimpleMutex opaque
+public/scripts/util/StructuredCloneMap.js StructuredCloneMap opaque
+public/scripts/util/ThemeGenerator.js deriveBackgroundName fn bgUrl
+public/scripts/util/ThemeGenerator.js extractDominantColor fn imgEl
+public/scripts/util/ThemeGenerator.js generateThemePalette fn dominantRgb
+public/scripts/util/showdown-patch.js addShowdownPatch fn showdown
+public/scripts/util/stream-fadein.js applyStreamFadeIn fn messageTextElement htmlContent
+public/scripts/util/stream-fadein.js isSegmenterSupported fn
+public/scripts/util/stream-fadein.js segmentTextInElement fn htmlElement htmlContent granularity?
+public/scripts/utils.js PAGINATION_TEMPLATE value
+public/scripts/utils.js RateLimiter opaque
+public/scripts/utils.js Stopwatch opaque
+public/scripts/utils.js addLongPressEvent fn selector callback delay?
+public/scripts/utils.js arraysEqual fn a b
+public/scripts/utils.js bufferToBase64 async buffer
+public/scripts/utils.js calculateThumbnailSize fn width height maxWidth maxHeight
+public/scripts/utils.js canUseNegativeLookbehind fn
+public/scripts/utils.js cancelDebounce fn func
+public/scripts/utils.js checkOverwriteExistingData async type existingNames name options{actionName?,deleteAction?,interactive?}?
+public/scripts/utils.js clamp fn value min max
+public/scripts/utils.js clearInfoBlock fn target options{animate?}?
+public/scripts/utils.js collapseSpaces fn s
+public/scripts/utils.js compareIgnoreCaseAndAccents fn a b comparisonFunction
+public/scripts/utils.js convertImageFile async inputFile type?
+public/scripts/utils.js convertTextToBase64 fn text
+public/scripts/utils.js convertValueType fn value type
+public/scripts/utils.js copyText fn text
+public/scripts/utils.js countOccurrences fn string character
+public/scripts/utils.js createThumbnail fn dataUrl maxWidth? maxHeight? type?
+public/scripts/utils.js createTimeout fn ms errorMessage?
+public/scripts/utils.js debounce fn func timeout?
+public/scripts/utils.js debounceAsync fn func timeout?
+public/scripts/utils.js debouncedThrottle fn func limit?
+public/scripts/utils.js deepMerge fn target source
+public/scripts/utils.js delay fn ms
+public/scripts/utils.js deleteValueByPath fn obj path
+public/scripts/utils.js download fn content fileName contentType
+public/scripts/utils.js dynamicSelect2DataViaAjax fn dataProvider
+public/scripts/utils.js ensureImageFormatSupported async file
+public/scripts/utils.js ensurePlainObject fn obj
+public/scripts/utils.js equalsIgnoreCaseAndAccents fn a b
+public/scripts/utils.js escapeHtml fn str
+public/scripts/utils.js escapeRegex fn string
+public/scripts/utils.js extractAllWords fn value
+public/scripts/utils.js extractDataFromPng fn data identifier?
+public/scripts/utils.js extractTextFromEpub async blob
+public/scripts/utils.js extractTextFromHTML async blob textSelector?
+public/scripts/utils.js extractTextFromMarkdown async blob
+public/scripts/utils.js extractTextFromOffice async blob
+public/scripts/utils.js extractTextFromPDF async blob
+public/scripts/utils.js fetchFa async
+public/scripts/utils.js fetchFaFile async name
+public/scripts/utils.js findChar fn options{allowAvatar?,filteredByTags?,insensitive?,name?,preferCurrentChar?,quiet?}?
+public/scripts/utils.js findPersona fn options{allowAvatar?,insensitive?,name?,preferCurrentPersona?,quiet?}?
+public/scripts/utils.js flashHighlight fn element timespan?
+public/scripts/utils.js formatTime fn seconds
+public/scripts/utils.js getAudioDurationFromDataURL fn dataUrl
+public/scripts/utils.js getBase64Async fn file
+public/scripts/utils.js getCharIndex fn char
+public/scripts/utils.js getCharaFilename fn chid? options{manualAvatarKey?}?
+public/scripts/utils.js getFileBuffer fn file
+public/scripts/utils.js getFileExtension fn file
+public/scripts/utils.js getFileText fn file
+public/scripts/utils.js getFreeName fn name list numberFormatter?
+public/scripts/utils.js getImageSizeFromDataURL fn dataUrl
+public/scripts/utils.js getReadableText async document textSelector?
+public/scripts/utils.js getSanitizedFilename async fileName
+public/scripts/utils.js getSelect2OptionId fn option
+public/scripts/utils.js getSortableDelay fn
+public/scripts/utils.js getStringHash fn str seed?
+public/scripts/utils.js getUniqueName fn baseName exists options{maxTries?,nameBuilder?,startIndex?}?
+public/scripts/utils.js getVideoDurationFromDataURL fn dataUrl
+public/scripts/utils.js getVideoThumbnail fn videoUrl maxWidth? maxHeight? type?
+public/scripts/utils.js hasAnimation fn control
+public/scripts/utils.js highlightRegex fn regexStr
+public/scripts/utils.js humanFileSize fn bytes si? dp?
+public/scripts/utils.js importFromExternalUrl async url options{preserveFileName?}?
+public/scripts/utils.js includesIgnoreCaseAndAccents fn text searchTerm
+public/scripts/utils.js incrementString fn str
+public/scripts/utils.js initScrollHeight async element
+public/scripts/utils.js isDataURL fn str
+public/scripts/utils.js isDigitsOnly fn str
+public/scripts/utils.js isElementInViewport fn el
+public/scripts/utils.js isExternalUrl fn url
+public/scripts/utils.js isFalseBoolean fn arg
+public/scripts/utils.js isObject fn item
+public/scripts/utils.js isOdd fn number
+public/scripts/utils.js isSameFile fn a b
+public/scripts/utils.js isSelect2ChoiceElement fn element
+public/scripts/utils.js isSubsetOf fn a b
+public/scripts/utils.js isTrueBoolean fn arg
+public/scripts/utils.js isUuid fn value
+public/scripts/utils.js isValidUrl fn value
+public/scripts/utils.js loadFileToDocument fn url type
+public/scripts/utils.js localizePagination fn container
+public/scripts/utils.js logSlashCommandWarn fn message args valueObj?
+public/scripts/utils.js navigation_option value
+public/scripts/utils.js normalizeArray fn arr
+public/scripts/utils.js onlyUnique fn value index array
+public/scripts/utils.js onlyUniqueJson fn value index array
+public/scripts/utils.js paginationDropdownChangeHandler fn event size
+public/scripts/utils.js parseJsonFile async file
+public/scripts/utils.js parseStringArray fn value
+public/scripts/utils.js promptForAvatarFile async
+public/scripts/utils.js regexFromString fn input
+public/scripts/utils.js removeFromArray fn array item
+public/scripts/utils.js renderPaginationDropdown fn pageSize sizeChangerOptions
+public/scripts/utils.js resetScrollHeight async element
+public/scripts/utils.js resolveAvatarData async input
+public/scripts/utils.js restoreCaretPosition fn element position
+public/scripts/utils.js runAfterAnimation fn control callback timeout?
+public/scripts/utils.js sanitizeSelector fn str replacement?
+public/scripts/utils.js saveBase64AsFile async base64Data subFolder fileName extension
+public/scripts/utils.js saveCaretPosition fn element
+public/scripts/utils.js select2ChoiceClickSubscribe fn control action options{buttonStyle?,closeDrawer?,openDrawer?}?
+public/scripts/utils.js select2ModifyOptions fn element items options{changeEventArgs?,select?}?
+public/scripts/utils.js setDatasetProperty fn element name value
+public/scripts/utils.js setInfoBlock fn target content type? options{animate?}?
+public/scripts/utils.js setValueByPath fn obj path value
+public/scripts/utils.js setupScrollToTop fn params{buttonId,drawerId,scrollContainerId,visibilityThreshold?}
+public/scripts/utils.js shakeElement fn targetElement distance? duration? easing?
+public/scripts/utils.js shiftDownByOne fn e i a
+public/scripts/utils.js shiftUpByOne fn e i a
+public/scripts/utils.js showFontAwesomePicker async customList?
+public/scripts/utils.js shuffle fn array
+public/scripts/utils.js sortByCssOrder fn a b
+public/scripts/utils.js sortIgnoreCaseAndAccents fn a b
+public/scripts/utils.js sortMoments fn a b
+public/scripts/utils.js splitRecursive fn input length delimiters?
+public/scripts/utils.js stringFormat fn format
+public/scripts/utils.js stringToRange fn input min max
+public/scripts/utils.js supportedImageMimeTypes opaque
+public/scripts/utils.js textValueMatcher fn params data
+public/scripts/utils.js throttle fn func limit?
+public/scripts/utils.js timestampToMoment fn timestamp
+public/scripts/utils.js toggleDrawer fn drawer expand?
+public/scripts/utils.js trimSpaces fn input
+public/scripts/utils.js trimToEndSentence fn input
+public/scripts/utils.js trimToStartSentence fn input
+public/scripts/utils.js urlContentToDataUri async url params
+public/scripts/utils.js uuidv4 fn
+public/scripts/utils.js versionCompare fn srcVersion minVersion
+public/scripts/utils.js waitUntilCondition async condition timeout? interval? options?
+public/scripts/variables.js addGlobalVariable fn name value
+public/scripts/variables.js addLocalVariable fn name value
+public/scripts/variables.js decrementGlobalVariable fn name
+public/scripts/variables.js decrementLocalVariable fn name
+public/scripts/variables.js deleteGlobalVariable fn name
+public/scripts/variables.js deleteLocalVariable fn name
+public/scripts/variables.js evalBoolean fn rule a b
+public/scripts/variables.js existsGlobalVariable fn name
+public/scripts/variables.js existsLocalVariable fn name
+public/scripts/variables.js getGlobalVariable fn name args?
+public/scripts/variables.js getLocalVariable fn name args?
+public/scripts/variables.js getVariableMacros fn
+public/scripts/variables.js incrementGlobalVariable fn name
+public/scripts/variables.js incrementLocalVariable fn name
+public/scripts/variables.js parseBooleanOperands fn args
+public/scripts/variables.js registerVariableCommands fn
+public/scripts/variables.js resolveVariable fn name scope?
+public/scripts/variables.js setGlobalVariable fn name value args?
+public/scripts/variables.js setLocalVariable fn name value args?
+public/scripts/welcome-screen.js assignCharacterAsAssistant fn characterId
+public/scripts/welcome-screen.js getPermanentAssistantAvatar fn
+public/scripts/welcome-screen.js initWelcomeScreen fn
+public/scripts/welcome-screen.js openPermanentAssistantCard async
+public/scripts/welcome-screen.js openPermanentAssistantChat async _{created?,tryCreate?}?
+public/scripts/welcome-screen.js openWelcomeScreen async param{expand?,force?}?
+public/scripts/world-info.js DEFAULT_DEPTH value
+public/scripts/world-info.js DEFAULT_WEIGHT value
+public/scripts/world-info.js MAX_SCAN_DEPTH value
+public/scripts/world-info.js METADATA_KEY value
+public/scripts/world-info.js SORT_ORDER_KEY value
+public/scripts/world-info.js assignLorebookToChat async event{altKey,shiftKey}
+public/scripts/world-info.js charSetAuxWorlds fn fileName books
+public/scripts/world-info.js charUpdateAddAuxWorld async characterKey nameOrNames
+public/scripts/world-info.js charUpdatePrimaryWorld async name
+public/scripts/world-info.js checkEmbeddedWorld fn chid
+public/scripts/world-info.js checkWorldInfo async chat maxContext isDryRun globalScanData?
+public/scripts/world-info.js convertCharacterBook fn characterBook
+public/scripts/world-info.js createNewWorldInfo async worldName options{interactive?}?
+public/scripts/world-info.js createWorldInfoEntry fn _name data
+public/scripts/world-info.js deleteWIOriginalDataValue fn data uid
+public/scripts/world-info.js deleteWorldInfo async worldInfoName
+public/scripts/world-info.js deleteWorldInfoEntry async data uid options{silent?}?
+public/scripts/world-info.js duplicateWorldInfoEntry fn data uid
+public/scripts/world-info.js getFreeWorldEntryUid fn data
+public/scripts/world-info.js getFreeWorldName fn worldName? options{stripIndex?}?
+public/scripts/world-info.js getSortedEntries async
+public/scripts/world-info.js getWorldEntry async name data entry
+public/scripts/world-info.js getWorldInfoPrompt async chat maxContext isDryRun globalScanData
+public/scripts/world-info.js getWorldInfoSettings fn
+public/scripts/world-info.js importEmbeddedWorldInfo async skipPopup?
+public/scripts/world-info.js importWorldInfo async file
+public/scripts/world-info.js initWorldInfo fn
+public/scripts/world-info.js loadWorldInfo async name
+public/scripts/world-info.js moveWorldInfoEntry async sourceName targetName uid options{deleteOriginal?}?
+public/scripts/world-info.js newWorldInfoEntryDefinition value
+public/scripts/world-info.js newWorldInfoEntryTemplate opaque
+public/scripts/world-info.js onWorldInfoChange fn args text
+public/scripts/world-info.js openWorldInfoEditor fn worldName
+public/scripts/world-info.js originalWIDataKeyMap value
+public/scripts/world-info.js parseRegexFromString fn input
+public/scripts/world-info.js reloadEditor fn file loadIfNotSelected?
+public/scripts/world-info.js saveWorldInfo async name data immediately?
+public/scripts/world-info.js scan_state value
+public/scripts/world-info.js selected_world_info value
+public/scripts/world-info.js setWIOriginalDataValue fn data uid key value
+public/scripts/world-info.js setWorldInfoButtonClass fn chid forceValue?
+public/scripts/world-info.js setWorldInfoSettings fn settings data
+public/scripts/world-info.js showWorldEditor async name
+public/scripts/world-info.js sortWorldInfoEntries fn data options{customSort?}?
+public/scripts/world-info.js splitKeywordsAndRegexes fn input
+public/scripts/world-info.js updateWorldInfoList async
+public/scripts/world-info.js updateWorldInfoSettings fn settings activeWorldInfo?
+public/scripts/world-info.js wi_anchor_position value
+public/scripts/world-info.js worldInfoCache opaque
+public/scripts/world-info.js worldInfoFilter opaque
+public/scripts/world-info.js world_info value
+public/scripts/world-info.js world_info_budget value
+public/scripts/world-info.js world_info_budget_cap value
+public/scripts/world-info.js world_info_case_sensitive value
+public/scripts/world-info.js world_info_character_strategy opaque
+public/scripts/world-info.js world_info_depth value
+public/scripts/world-info.js world_info_include_names value
+public/scripts/world-info.js world_info_insertion_strategy value
+public/scripts/world-info.js world_info_logic value
+public/scripts/world-info.js world_info_match_whole_words value
+public/scripts/world-info.js world_info_max_recursion_steps value
+public/scripts/world-info.js world_info_min_activations value
+public/scripts/world-info.js world_info_min_activations_depth_max value
+public/scripts/world-info.js world_info_overflow_alert value
+public/scripts/world-info.js world_info_position value
+public/scripts/world-info.js world_info_recursive value
+public/scripts/world-info.js world_info_use_group_scoring value
+public/scripts/world-info.js world_names opaque

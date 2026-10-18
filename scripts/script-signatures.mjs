@@ -1,6 +1,7 @@
-// Signatures of public/script.js's exports, for scripts/script-exports.mjs.
+// Signatures of public/script.js's and the public/scripts modules' exports, for scripts/script-exports.mjs.
 //
-// An upstream export's signature is recorded in `.upstream-script-signatures`, one line per export:
+// An upstream export's signature is recorded in `.upstream-script-signatures` (script.js) and
+// `.upstream-module-signatures` (the same line, after its module's path), one line per export:
 //
 //   <name> <kind> <param> <param> ...
 //
@@ -14,7 +15,10 @@
 // A param is optional when it has a default, is a rest param, or its JSDoc is `@param [x]`; a
 // property when it has a default or its JSDoc is `@param [x.prop]`.
 //
-// Names are resolved through `import` bindings to the declaring module. Variable initializers:
+// A plain param keeps upstream's name, or marks it unused (`_name`); an upstream name starting with `_`
+// is unused there and binds ours to no name.
+//
+// Names are resolved through `import` bindings and `export * from` to the declaring module. Variable initializers:
 //   arrow / function expression      fn or async, with its params
 //   literal, object or array literal value
 //   known wrapper call (table below) fn or async by what the wrapper returns, with the params of
@@ -26,6 +30,7 @@
 //   = otherName                      otherName's signature, followed through chains; opaque on a
 //                                    cycle or when it has no declaration
 //   other call, new, property read,  opaque
+//   binary or conditional expression,
 //   no initializer, class, generator
 //   let/var bound to a function      opaque, since it can be reassigned
 // Anything else fails as unhandled.
@@ -76,7 +81,7 @@ export function createAnalyzer(ts, read, label, { ours = false } = {}) {
             const { line } = sf.getLineAndCharacterOfPosition(d.start ?? 0);
             throw new SignatureError(`could not parse ${label}:${rel}:${line + 1}: ${ts.flattenDiagnosticMessageText(d.messageText, '\n')}`);
         }
-        const mod = { rel, sf, decls: new Map(), imports: new Map(), exports: new Map(), star: false };
+        const mod = { rel, sf, decls: new Map(), imports: new Map(), exports: new Map(), stars: [] };
         const exported = (node) => (ts.canHaveModifiers(node) ? ts.getModifiers(node) ?? [] : []).some(m => m.kind === ts.SyntaxKind.ExportKeyword);
         for (const statement of sf.statements) {
             if (ts.isImportDeclaration(statement)) {
@@ -94,7 +99,7 @@ export function createAnalyzer(ts, read, label, { ours = false } = {}) {
             } else if (ts.isExportDeclaration(statement)) {
                 const from = statement.moduleSpecifier ? resolveSpecifier(rel, statement.moduleSpecifier.text) : undefined;
                 if (!statement.exportClause) {
-                    mod.star = true;
+                    if (from) mod.stars.push(from);
                 } else if (ts.isNamedExports(statement.exportClause)) {
                     for (const element of statement.exportClause.elements) {
                         const local = (element.propertyName ?? element.name).text;
@@ -130,7 +135,15 @@ export function createAnalyzer(ts, read, label, { ours = false } = {}) {
         seen.add(key);
         const mod = loadModule(rel);
         const entry = mod.exports.get(name);
-        if (!entry) return null;
+        if (!entry) {
+            // `export * from` re-exports every name but `default` of its module.
+            if (name === 'default') return null;
+            for (const from of mod.stars) {
+                const resolved = resolveExport(from, name, seen);
+                if (resolved) return resolved;
+            }
+            return null;
+        }
         if (entry.from !== undefined) return entry.imported === 'default' ? null : resolveExport(entry.from, entry.imported, seen);
         return resolveLocal(mod, entry.local, seen);
     }
@@ -248,7 +261,8 @@ export function createAnalyzer(ts, read, label, { ours = false } = {}) {
             const signature = callSignature(mod, init, exportName, seen);
             return reassignable ? OPAQUE : signature;
         }
-        if (ts.isNewExpression(init) || ts.isPropertyAccessExpression(init) || ts.isElementAccessExpression(init) || ts.isClassExpression(init)) {
+        if (ts.isNewExpression(init) || ts.isPropertyAccessExpression(init) || ts.isElementAccessExpression(init) || ts.isClassExpression(init)
+            || ts.isBinaryExpression(init) || ts.isConditionalExpression(init)) {
             return OPAQUE;
         }
         return unhandled(mod, init, exportName, 'the initializer');
@@ -311,10 +325,10 @@ export function createAnalyzer(ts, read, label, { ours = false } = {}) {
     }
 
     return {
-        /** The signature of `name` as exported by public/script.js. */
-        signature(name) {
+        /** The signature of `name` as exported by module `rel` (public/script.js by default). */
+        signature(name, rel = 'public/script.js') {
             const seen = new Set();
-            return declarationSignature(resolveExport('public/script.js', name, seen), name, seen);
+            return declarationSignature(resolveExport(rel, name, seen), name, seen);
         },
     };
 }
@@ -367,24 +381,64 @@ function parseParam(token) {
     return NAME_PATTERN.test(name) ? { type: 'plain', name, optional } : null;
 }
 
-/** Parses the record file; throws SignatureError when it is malformed. */
-export function parseSignatures(text, label) {
+/** Parses one `<name> <kind> <param>...` line; `bad(why)` builds the error it throws. */
+function parseSignatureLine(line, bad) {
+    const [name, kind, ...tokens] = line.split(' ');
+    if (!name || !NAME_PATTERN.test(name)) throw bad('no export name');
+    if (!['value', 'opaque', 'fn', 'async'].includes(kind)) throw bad('the kind must be value, opaque, fn or async');
+    if ((kind === 'value' || kind === 'opaque') && tokens.length > 0) throw bad(`a ${kind} has no params`);
+    const params = tokens.map(parseParam);
+    if (params.includes(null)) throw bad('a param token is not in the record notation');
+    if (formatSignature(name, { kind, params: kind === 'fn' || kind === 'async' ? params : undefined }) !== line) throw bad('it is not in canonical form');
+    return [name, kind === 'fn' || kind === 'async' ? { kind, params } : { kind }];
+}
+
+function parseRecordHeader(text, label) {
     if (!text.endsWith('\n')) throw new SignatureError(`${label} is malformed: it must end with a newline.`);
     const [commit, ...lines] = text.slice(0, -1).split('\n');
     if (!/^[0-9a-f]{40}$/.test(commit)) {
         throw new SignatureError(`${label} is malformed: its first line must be the full upstream/staging commit hash, got ${JSON.stringify(commit)}.`);
     }
+    return { commit, lines };
+}
+
+/** Parses the record file; throws SignatureError when it is malformed. */
+export function parseSignatures(text, label) {
+    const { commit, lines } = parseRecordHeader(text, label);
     const entries = lines.map((line, i) => {
         const bad = (why) => new SignatureError(`${label}:${i + 2} is malformed: ${why}: ${JSON.stringify(line)}.`);
-        const [name, kind, ...tokens] = line.split(' ');
-        if (!name || !NAME_PATTERN.test(name)) throw bad('no export name');
-        if (!['value', 'opaque', 'fn', 'async'].includes(kind)) throw bad('the kind must be value, opaque, fn or async');
-        if ((kind === 'value' || kind === 'opaque') && tokens.length > 0) throw bad(`a ${kind} has no params`);
-        const params = tokens.map(parseParam);
-        if (params.includes(null)) throw bad('a param token is not in the record notation');
-        if (formatSignature(name, { kind, params: kind === 'fn' || kind === 'async' ? params : undefined }) !== line) throw bad('it is not in canonical form');
-        if (i > 0 && compareNames(lines[i - 1].split(' ')[0], name) >= 0) throw bad('names must be sorted and unique');
-        return [name, kind === 'fn' || kind === 'async' ? { kind, params } : { kind }];
+        const entry = parseSignatureLine(line, bad);
+        if (i > 0 && compareNames(lines[i - 1].split(' ')[0], entry[0]) >= 0) throw bad('names must be sorted and unique');
+        return entry;
+    });
+    return { text, commit, entries };
+}
+
+/** A module record line's sort key: its module, then its export name. */
+function moduleKey(rel, name) {
+    return `${rel}\0${name}`;
+}
+
+/** Formats the module record file: `<module> <name> <kind> <param>...` per export, sorted by module then name. */
+export function formatModuleSignatures(commit, entries) {
+    const sorted = [...entries].sort((a, b) => compareNames(moduleKey(a[0], a[1]), moduleKey(b[0], b[1])));
+    return [commit, ...sorted.map(([rel, name, signature]) => `${rel} ${formatSignature(name, signature)}`)].join('\n') + '\n';
+}
+
+/** Parses the module record file into `[rel, name, signature]` entries; throws SignatureError when it is malformed. */
+export function parseModuleSignatures(text, label) {
+    const { commit, lines } = parseRecordHeader(text, label);
+    let previous;
+    const entries = lines.map((line, i) => {
+        const bad = (why) => new SignatureError(`${label}:${i + 2} is malformed: ${why}: ${JSON.stringify(line)}.`);
+        const space = line.indexOf(' ');
+        const rel = space === -1 ? '' : line.slice(0, space);
+        if (!/^public\/scripts\/\S+\.js$/.test(rel)) throw bad('the first field must be a public/scripts/**.js module path');
+        const [name, signature] = parseSignatureLine(line.slice(space + 1), bad);
+        const key = moduleKey(rel, name);
+        if (previous !== undefined && compareNames(previous, key) >= 0) throw bad('entries must be sorted by module then name, and unique');
+        previous = key;
+        return [rel, name, signature];
     });
     return { text, commit, entries };
 }
@@ -427,7 +481,9 @@ export function compareSignature(name, up, ours) {
             problems.push(problem(`param ${i + 1} \`${paramToken(u)}\` is renamed to \`${paramToken(o)}\`.`));
             continue;
         }
-        if (u.type === 'plain' && u.name !== o.name) {
+        // An upstream name starting with `_` marks the param unused there, so it names no contract; ours may mark
+        // upstream's name unused the same way (`_line` for `line`).
+        if (u.type === 'plain' && u.name !== o.name && !u.name.startsWith('_') && o.name !== `_${u.name}`) {
             problems.push(problem(`param ${i + 1} \`${u.name}\` is renamed to \`${o.name}\`.`));
         }
         if (u.type === 'object') {

@@ -1,10 +1,17 @@
 #!/usr/bin/env node
-// Export parity for public/script.js against upstream/staging.
+// Export parity for public/script.js and every public/scripts module against upstream/staging.
 //
 // Third-party extensions import from public/script.js, so every name upstream/staging's script.js
 // exports must stay importable from ours. The checked-in list `.upstream-script-exports` (repo root)
 // holds those names: its first line is the upstream/staging commit the list was taken from, then one
 // export name per line, sorted.
+//
+// They import from the modules under public/scripts too (extensions.js, world-info.js, utils.js, ...), so
+// `.upstream-module-signatures` records every export of every public/scripts/**.js module at the same
+// commit, one `<module> <name> <signature>` per line (the notation of scripts/script-signatures.mjs),
+// sorted by module then name. A module's names follow `export * from` into the module it names, and
+// `export default` is recorded as `default` (presence only). `check` fails on a module that is gone, a
+// name a module no longer exports, and a signature that no longer matches, as for script.js.
 //
 // `check` compares public/script.js against the checked-in records only and reads no git history, so
 // it runs the same in every clone and has nothing to skip. It does not check that the records are up
@@ -17,10 +24,11 @@
 //   node scripts/script-exports.mjs check [--root DIR]
 //       Fails unless every name in DIR/.upstream-script-exports is an export of DIR/public/script.js
 //       (extra exports in ours are fine) with a signature compatible with the one recorded in
-//       DIR/.upstream-script-signatures. --root defaults to the current directory.
+//       DIR/.upstream-script-signatures, and every export in DIR/.upstream-module-signatures is an
+//       export of that module in DIR with a compatible signature. --root defaults to the current directory.
 //
 //   node scripts/script-exports.mjs refresh [REF]
-//       Rewrites the records from REF's public/script.js (default: the merge-base of upstream/staging
+//       Rewrites the records from REF's public/script.js and public/scripts (default: the merge-base of upstream/staging
 //       with HEAD, and with MERGE_HEAD while a merge is in progress; it asks for a REF when there is
 //       no such single commit).
 //
@@ -40,15 +48,17 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { SIGNATURES_FILE, SignatureError, compareSignature, createAnalyzer, formatSignatures, parseSignatures } from './script-signatures.mjs';
+import { SIGNATURES_FILE, SignatureError, compareSignature, createAnalyzer, formatModuleSignatures, formatSignatures, parseModuleSignatures, parseSignatures } from './script-signatures.mjs';
 
 const LIST_FILE = '.upstream-script-exports';
+const MODULE_SIGNATURES_FILE = '.upstream-module-signatures';
 const SCRIPT_FILE = 'public/script.js';
+const MODULE_DIR = 'public/scripts';
 const UPSTREAM_REF = 'upstream/staging';
 
 class CheckError extends Error {}
 
-const RECORD_FILES = `${LIST_FILE} and ${SIGNATURES_FILE}`;
+const RECORD_FILES = `${LIST_FILE}, ${SIGNATURES_FILE} and ${MODULE_SIGNATURES_FILE}`;
 
 async function loadTypeScript() {
     let ts;
@@ -124,6 +134,125 @@ function exportNames(ts, sourceText, label) {
 
 function compareNames(a, b) {
     return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/**
+ * Returns the sorted export names of module `rel` (read through `read`), for the public/scripts
+ * modules. Unlike script.js's list it also takes `export default` (as `default`), `export * as ns`
+ * and `export * from` (the target module's names but `default`, followed through further stars).
+ * Throws CheckError on a parse error or on any other export form.
+ */
+function moduleExportNames(ts, read, rel, seen = new Set()) {
+    if (seen.has(rel)) return [];
+    seen.add(rel);
+    const sourceFile = ts.createSourceFile(rel, read(rel), ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+    if (!Array.isArray(sourceFile.parseDiagnostics)) {
+        throw new CheckError(`could not confirm that ${rel} parsed: this TypeScript build exposes no parse diagnostics.`);
+    }
+    if (sourceFile.parseDiagnostics.length > 0) {
+        const d = sourceFile.parseDiagnostics[0];
+        const { line } = sourceFile.getLineAndCharacterOfPosition(d.start ?? 0);
+        throw new CheckError(`could not parse ${rel}:${line + 1}: ${ts.flattenDiagnosticMessageText(d.messageText, '\n')}`);
+    }
+    const names = new Set();
+    const unhandled = (node, what) => {
+        const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
+        throw new CheckError(`${rel}:${line + 1}: ${what} is not an export form this check handles.`);
+    };
+    for (const statement of sourceFile.statements) {
+        if (ts.isExportDeclaration(statement)) {
+            if (statement.isTypeOnly) unhandled(statement, '`export type`');
+            if (!statement.exportClause) {
+                const specifier = statement.moduleSpecifier.text;
+                if (!specifier.startsWith('./') && !specifier.startsWith('../')) unhandled(statement, '`export *` from a non-relative module');
+                const target = path.posix.join(path.posix.dirname(rel), specifier);
+                for (const name of moduleExportNames(ts, read, target, seen)) if (name !== 'default') names.add(name);
+            } else if (ts.isNamespaceExport(statement.exportClause)) {
+                names.add(statement.exportClause.name.text);
+            } else {
+                for (const element of statement.exportClause.elements) {
+                    if (element.isTypeOnly) unhandled(element, '`export { type ... }`');
+                    names.add(element.name.text);
+                }
+            }
+            continue;
+        }
+        if (ts.isExportAssignment(statement)) {
+            if (statement.isExportEquals) unhandled(statement, '`export =`');
+            names.add('default');
+            continue;
+        }
+        if (!hasModifier(ts, statement, ts.SyntaxKind.ExportKeyword)) continue;
+        if (hasModifier(ts, statement, ts.SyntaxKind.DefaultKeyword)) {
+            names.add('default');
+        } else if (ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement)) {
+            if (!statement.name) unhandled(statement, 'an unnamed exported declaration');
+            names.add(statement.name.text);
+        } else if (ts.isVariableStatement(statement)) {
+            for (const declaration of statement.declarationList.declarations) {
+                if (!ts.isIdentifier(declaration.name)) unhandled(declaration, 'a destructuring `export const/let/var`');
+                names.add(declaration.name.text);
+            }
+        } else {
+            unhandled(statement, `an exported ${ts.SyntaxKind[statement.kind]}`);
+        }
+    }
+    return [...names].sort(compareNames);
+}
+
+/** The public/scripts modules of `commit`. */
+function upstreamModules(repo, commit) {
+    return git(repo, ['ls-tree', '-r', '--name-only', commit, '--', MODULE_DIR]).split('\n')
+        .filter(rel => rel.endsWith('.js'))
+        .sort(compareNames);
+}
+
+/** The module record `refresh` writes for `commit`: every export of every public/scripts module. */
+function upstreamModuleSignatures(ts, repo, commit) {
+    const read = gitReader(repo, commit);
+    const analyzer = createAnalyzer(ts, read, commit.slice(0, 12));
+    const entries = upstreamModules(repo, commit).flatMap(rel => moduleExportNames(ts, read, rel)
+        .map(name => [rel, name, name === 'default' ? { kind: 'opaque' } : analyzer.signature(name, rel)]));
+    return formatModuleSignatures(commit, entries);
+}
+
+/** Problems with our public/scripts modules against the module record. */
+function moduleProblems(ts, root, modules, source) {
+    const read = fsReader(root);
+    const analyzer = createAnalyzer(ts, read, 'ours', { ours: true });
+    const byModule = new Map();
+    for (const [rel, name, signature] of modules.entries) {
+        if (!byModule.has(rel)) byModule.set(rel, []);
+        byModule.get(rel).push([name, signature]);
+    }
+    const goneModules = [];
+    const goneNames = [];
+    const changed = [];
+    for (const [rel, entries] of byModule) {
+        if (!fs.existsSync(path.join(root, rel))) {
+            goneModules.push(`${rel} (${entries.map(([name]) => name).join(', ')})`);
+            continue;
+        }
+        const ours = new Set(moduleExportNames(ts, read, rel));
+        for (const [name, up] of entries) {
+            if (!ours.has(name)) goneNames.push(`${rel}: ${name}`);
+            else if (name !== 'default') changed.push(...compareSignature(`${rel}#${name}`, up, analyzer.signature(name, rel)));
+        }
+    }
+    const problems = [];
+    if (goneModules.length > 0) {
+        problems.push(`${goneModules.length} module(s) that upstream/staging has under ${MODULE_DIR} are gone (${source}). Extensions import them:\n`
+            + goneModules.map(line => `  ${line}`).join('\n'));
+    }
+    if (goneNames.length > 0) {
+        problems.push(`${goneNames.length} export(s) of upstream/staging's ${MODULE_DIR} modules are no longer exported (${source}). Extensions import these:\n`
+            + goneNames.map(line => `  ${line}`).join('\n'));
+    }
+    if (changed.length > 0) {
+        problems.push(`${changed.length} export(s) of ${MODULE_DIR} modules no longer match upstream's signature (${source}). Extensions call these as upstream declares them:\n`
+            + changed.map(problem => `  ${problem}`).join('\n'));
+    }
+    return problems;
 }
 
 function formatList(commit, names) {
@@ -321,6 +450,18 @@ async function check(argv) {
     const analyzer = createAnalyzer(ts, fsReader(root), 'ours', { ours: true });
     const oursSignature = name => analyzer.signature(name);
 
+    const modulesPath = path.join(root, MODULE_SIGNATURES_FILE);
+    let modulesText;
+    try {
+        modulesText = fs.readFileSync(modulesPath, 'utf8');
+    } catch (error) {
+        throw new CheckError(`could not read ${modulesPath} (${error.code ?? error.message}).`);
+    }
+    const modules = parseModuleSignatures(modulesText, modulesPath);
+    if (modules.commit !== list.commit) {
+        throw new CheckError(`${modulesPath} records ${modules.commit} but ${listPath} records ${list.commit}; all records must describe the same upstream commit. Run 'npm run script-exports:refresh' and stage ${RECORD_FILES}.`);
+    }
+
     const problems = [];
     if (missing.length > 0) {
         problems.push(
@@ -329,11 +470,12 @@ async function check(argv) {
         );
     }
     problems.push(...signatureProblems(signatures.entries, ours, oursSignature, `${SIGNATURES_FILE}, upstream ${list.commit.slice(0, 12)}`));
+    problems.push(...moduleProblems(ts, root, modules, `${MODULE_SIGNATURES_FILE}, upstream ${list.commit.slice(0, 12)}`));
 
     if (problems.length > 0) {
         throw new CheckError(problems.join('\n\n'));
     }
-    console.log(`script-exports: ok - all ${list.names.length} upstream/staging exports (${list.commit.slice(0, 12)}) are exported by ${SCRIPT_FILE} with compatible signatures.`);
+    console.log(`script-exports: ok - all ${list.names.length} upstream/staging exports (${list.commit.slice(0, 12)}) are exported by ${SCRIPT_FILE}, and all ${modules.entries.length} of its ${MODULE_DIR} modules' exports by ours, with compatible signatures.`);
 }
 
 function toplevel() {
@@ -357,8 +499,10 @@ async function refresh(argv) {
     }
     const text = upstreamList(ts, repo, commit);
     const signatures = upstreamSignatures(ts, repo, commit);
+    const modules = upstreamModuleSignatures(ts, repo, commit);
     fs.writeFileSync(path.join(repo, LIST_FILE), text);
     fs.writeFileSync(path.join(repo, SIGNATURES_FILE), signatures);
+    fs.writeFileSync(path.join(repo, MODULE_SIGNATURES_FILE), modules);
     console.log(`script-exports: wrote ${RECORD_FILES} from ${argv[0] ?? 'the expected commit'} (${commit}), ${text.split('\n').length - 2} names.`);
 }
 
@@ -373,7 +517,7 @@ async function mergeUpstream(argv) {
     }
     if (mergeHeads(repo).length > 0) {
         await refresh([]);
-        git(repo, ['add', '--', LIST_FILE, SIGNATURES_FILE]);
+        git(repo, ['add', '--', LIST_FILE, SIGNATURES_FILE, MODULE_SIGNATURES_FILE]);
         console.log(`script-exports: staged ${RECORD_FILES}. Resolve any conflicts, then commit.`);
     }
     process.exitCode = status;
@@ -394,21 +538,24 @@ async function postMerge(argv) {
     if (before.bases && before.bases.length === now.bases.length && before.bases.every(base => now.bases.includes(base))) return;
     let committed;
     let committedSignatures;
+    let committedModules;
     try {
         committed = parseList(git(repo, ['show', `HEAD:${LIST_FILE}`]), `HEAD:${LIST_FILE}`);
         committedSignatures = git(repo, ['show', `HEAD:${SIGNATURES_FILE}`]);
+        committedModules = git(repo, ['show', `HEAD:${MODULE_SIGNATURES_FILE}`]);
     } catch {
         committed = null;
     }
     if (committed && now.bases.includes(committed.commit) && committed.text === upstreamList(ts, repo, committed.commit)
-        && committedSignatures === upstreamSignatures(ts, repo, committed.commit)) return;
+        && committedSignatures === upstreamSignatures(ts, repo, committed.commit)
+        && committedModules === upstreamModuleSignatures(ts, repo, committed.commit)) return;
     const bar = '!'.repeat(100);
     console.warn([
         bar,
         `script-exports: WARNING - this merge moved the newest ${UPSTREAM_REF} commits this branch contains`,
         `(now ${now.bases.join(', ')}), but the committed ${RECORD_FILES} were not refreshed to it.`,
         'Refreshing them is part of merging upstream; until it is done, exports upstream added are not checked:',
-        `    npm run script-exports:refresh && git add ${LIST_FILE} ${SIGNATURES_FILE}`,
+        `    npm run script-exports:refresh && git add ${LIST_FILE} ${SIGNATURES_FILE} ${MODULE_SIGNATURES_FILE}`,
         `Use 'npm run merge:upstream' to merge ${UPSTREAM_REF} with the list refreshed in the same commit.`,
         bar,
     ].join('\n'));
