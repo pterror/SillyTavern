@@ -328,9 +328,9 @@ import { substituteParams } from './macro-substitution.js';
  *   equivalent `textareaText` gap: it defaults to `''` (falling back to the chat-history-scan / the
  *   configured `userPromptBias` per `getBiasStrings()`'s own real behavior) unless a caller supplies it.
  * - `quietPrompt`/`quietImage`/`cyclePrompt`/`extensionPrompts`: none of these have a real,
- *   single-valued settings.json/chat-metadata source of truth (they are per-generation-call options,
- *   exactly like text-completion-generation-input.js's own documented `quiet_prompt`/`generationTrigger`/
- *   etc gap list) - left at their own defaults (`undefined`/`''`/`{}`) unless a caller supplies an
+ *   single-valued settings.json/chat-metadata source of truth (they are per-generation-call options) -
+ *   `quietPrompt`/`quietImage` are resolver params, taken from the generate request (page-writes.js
+ *   quietOf()); the others are left at their own defaults (`''`/`{}`) unless a caller supplies an
  *   override via `macroExtras`. `cyclePrompt` IS accepted as an explicit resolver param (mirroring
  *   `textareaText` on the text-completion side), since `populateChatHistory()`'s continue-nudge branch
  *   needs it whenever `type === 'continue'`. `injectionTable` is the ONE exception, AS OF THIS FOLLOW-UP
@@ -357,19 +357,15 @@ import { substituteParams } from './macro-substitution.js';
  *   optional resolver params added for exactly this purpose, matching
  *   `assembleTextCompletionPrompt()`'s own identical parameters' identical defaults verbatim.
  *
- * - `additionalScanInjects`: CONFIRMED NONE, left empty. src/text-completion-prompt-orchestrator.js
+ * - `additionalScanInjects`: the quiet prompt only. src/text-completion-prompt-orchestrator.js
  *   folds the quiet-prompt text and an already-due Author's Note's value into this
  *   `activateWorldInfoEntries()` option (mirroring the client's `checkWorldInfo()` scan-buffer
- *   injection of any `scan: true` extension-prompt slot). This resolver has no real analog to fold in:
- *   it does not itself resolve `quietPrompt` (left `undefined`, a documented per-generation-call-option
- *   gap - see the `quietPrompt`/... FIELD-MAPPING NOTE above) or an Author's Note value (chat-completion's
+ *   injection of any `scan: true` extension-prompt slot). This resolver folds in the `quietPrompt` param;
+ *   it has no Author's Note value (chat-completion's
  *   own author's-note-equivalent handling lives in src/chat-completion-system-prompts.js's
  *   `buildChatCompletionSystemPrompts()`, which reads it out of an `extensionPrompts` table entry
  *   (`'2_floating_prompt'`) this resolver also never populates - `extensionPrompts` defaults to `{}`
- *   here, per the same FIELD-MAPPING NOTE). Since neither source text is ever actually resolved BY THIS
- *   MODULE, there is nothing real to pass - not a lazy skip, a verified "the two inputs
- *   `additionalScanInjects` would need don't exist in this resolver's own scope" case, mirroring how
- *   the CFG FIELD-MAPPING NOTE above is a confirmed "no analog exists," not a guess.
+ *   here, per the same FIELD-MAPPING NOTE).
  *
  * `userMessageText` behaves identically to text-completion-generation-input.js's own documented
  * UPDATE section: appended onto the resolved chat history as the newest message, in the exact
@@ -769,6 +765,9 @@ async function resolveChatHistory(chat, { branchName, nodeId }) {
  * @param {string|number} [params.characterId] Overrides the PROMPT_ORDER_DUMMY_ID default - see doc comment.
  * @param {import('./chat-completion-budget.js').CountTokenAsyncFn} [params.countTokenAsyncFn] Overrides the real, internally-resolved OpenAI token counter.
  * @param {import('./chat-completion-budget.js').TokenHandler} [params.tokenHandler] Overrides the whole internally-constructed `TokenHandler`.
+ * @param {string} [params.quietPrompt] The turn's quiet prompt (upstream `Generate()`'s `quiet_prompt`): the
+ * `quietPrompt` system prompt, and scanned by world info like the client's `scan: true` QUIET_PROMPT slot.
+ * @param {string} [params.quietImage] Image inlined into the quiet-prompt message.
  * @param {object} [params.macroExtras] Shallow-merged over the resolved input object.
  * @param {import('./llamacpp-props.js').LlamaCppPropsCheck} [params.llamaCppProps] The send's `/props`
  * check for a custom URL that is llama.cpp (see ChatCompletionConnection).
@@ -787,6 +786,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
     regexScripts = [], regexExtensionEnabled = true,
     model: modelOverride, modelList, characterId = PROMPT_ORDER_DUMMY_ID,
     countTokenAsyncFn: countTokenAsyncFnOverride, tokenHandler: tokenHandlerOverride,
+    quietPrompt, quietImage,
     macroExtras = {}, llamaCppProps, tokenCountRows: tokenCountRowsParam,
 } = {}) {
     void isImpersonate; void isContinue; // Folded into `type` by the caller; kept as documented params for parity with the task's signature, matching text-completion-generation-input.js's own equivalents (which are likewise not separately re-derived from `type` there either).
@@ -1046,6 +1046,8 @@ export async function resolveChatCompletionGenerationInput(directories, {
         entryFilterContext: { trigger: generationTrigger, characterFilename: charFilename ?? undefined },
         minActivations: worldInfoSettings.world_info_min_activations ?? 0,
         minActivationsDepthMax: worldInfoSettings.world_info_min_activations_depth_max ?? 0,
+        // The quiet prompt is scanned like the client's `scan: true` QUIET_PROMPT extension-prompt slot.
+        additionalScanInjects: [quietPrompt].filter(Boolean),
     });
     // WORLD_INFO placement regex, applied per activated entry - see the REGEX SCRIPTS FIELD-MAPPING
     // NOTE above. Depth override only applies to atDepth-positioned entries, matching
@@ -1120,7 +1122,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
         rawChatLength: chat.length,
 
         // --- Generation identity/mode ---
-        type, quietPrompt: undefined, quietImage: undefined,
+        type, quietPrompt, quietImage,
         extensionPrompts: {}, cyclePrompt,
 
         // --- Chat history ---

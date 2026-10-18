@@ -93,12 +93,30 @@ export async function applyPageWrites(response, chat, body) {
 }
 
 /**
- * What a raw-action generate request generates from: stores what it carries from the page (applyPageWrites()) and
- * reads the user message it sends.
+ * A generate request's quiet prompt: upstream `Generate()`'s `quiet_prompt` (already macro-substituted by the page),
+ * `quietToLoud`, `quietName` and `quietImage`, sent as `quiet_prompt`, `quiet_to_loud`, `quiet_name`, `quiet_image`.
+ * Each is absent when the request carries none.
+ * @typedef {{ quietPrompt?: string, quietToLoud?: boolean, quietName?: string, quietImage?: string }} QuietPrompt
+ * @param {any} body The request body.
+ * @returns {QuietPrompt}
+ */
+export function quietOf(body) {
+    const text = (/** @type {unknown} */ v) => (typeof v === 'string' && v !== '' ? v : undefined);
+    return {
+        quietPrompt: text(body?.quiet_prompt),
+        quietToLoud: body?.quiet_to_loud === true ? true : undefined,
+        quietName: text(body?.quiet_name),
+        quietImage: text(body?.quiet_image),
+    };
+}
+
+/**
+ * What a raw-action generate request generates from: stores what it carries from the page (applyPageWrites()),
+ * reads the user message it sends and its quiet prompt (quietOf()).
  * @param {import('express').Response} response
  * @param {import('./chat-request.js').ChatContext} chat
  * @param {any} body The request body.
- * @returns {Promise<{ nodeId: string|null|undefined, userMessageText: string|undefined, userMessageExtra: object, userMessage: Record<string, any>|null }|null>}
+ * @returns {Promise<{ nodeId: string|null|undefined, userMessageText: string|undefined, userMessageExtra: object, userMessage: Record<string, any>|null, quiet: QuietPrompt }|null>}
  * Null when the request has been answered with a failure.
  */
 export async function generateTurnOf(response, chat, body) {
@@ -110,5 +128,17 @@ export async function generateTurnOf(response, chat, body) {
         userMessageText: sent?.text,
         userMessageExtra: sent?.extra ?? {},
         userMessage: sent?.content ?? null,
+        quiet: quietOf(body),
     };
+}
+
+/**
+ * A quiet prompt as the text-completion orchestrator's input takes it (`quiet_prompt`, `quietToLoud`, `quietName`),
+ * to merge into its resolved input; nothing for a request without one.
+ * @param {QuietPrompt} quiet
+ * @returns {Record<string, any>}
+ */
+export function textCompletionQuietInput(quiet) {
+    if (!quiet.quietPrompt) return {};
+    return { quiet_prompt: quiet.quietPrompt, quietToLoud: quiet.quietToLoud ?? false, quietName: quiet.quietName };
 }

@@ -2789,6 +2789,8 @@ const SERVER_TOOL_ROUND_LIMIT = 5;
  * `client_tools` entry (typo, or a name that lost the name-collision policy to a server tool) is
  * simply inert, never treated as "this round should abort" for a name that was never really
  * client-only to begin with.
+ * @param {import('../../page-writes.js').QuietPrompt} [params.quiet] The request's quiet prompt (quietOf()): its
+ * text and image are the turn's `quietPrompt`/`quietImage`, as upstream's `prepareOpenAIMessages()` takes them.
  * @returns {Promise<{ params: object, settings: object, anchorNodeId: string|null, anchorContent: object|null, name1: string, name2: string, enabledServerTools: import('../../server-tools.js').ServerToolRegistration[], enabledClientToolNames: Set<string>, enabledStealthClientToolNames: Set<string>, warnings: Array<{kind: string, key: string, message: string, entries?: string[]}>, tokenCountRows: import('../../token-count-store.js').PendingTokenRows }>} `warnings`: the `dropped` warning when bias entries were left out.
  * `tokenCountRows` are the message counts and bias ids this build read from or added to the token tables,
  * written back by the `/generate` route once the backend request is sent.
@@ -2807,7 +2809,7 @@ const SERVER_TOOL_ROUND_LIMIT = 5;
 export async function buildRawActionChatCompletionRequest(directories, {
     characterAvatar, groupId, ownerId, chat, nodeId,
     type = 'normal', isImpersonate = false, isContinue = false, isSwipe = false, userMessageText, userMessageExtra,
-    clientToolSchemas, stealthClientToolNames, jsonSchema = null,
+    clientToolSchemas, stealthClientToolNames, jsonSchema = null, quiet = {},
 } = {}) {
     if (!ownerId) {
         throw new Error('owner_id is required');
@@ -2878,6 +2880,7 @@ export async function buildRawActionChatCompletionRequest(directories, {
     const orchestratorInput = await resolveChatCompletionGenerationInput(directories, {
         avatar: characterAvatar, groupId, chatContext: chat, nodeId,
         type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra, llamaCppProps, tokenCountRows,
+        quietPrompt: quiet.quietPrompt, quietImage: quiet.quietImage,
         macroExtras: {
             imageInlining: mediaInliningEnabled, videoInlining: mediaInliningEnabled, audioInlining: mediaInliningEnabled,
         },
@@ -4096,7 +4099,7 @@ router.post('/generate', withGenerationStop(async function (request, response) {
             answerSessionOnHeaders(response, chat.session);
             const turn = await generateTurnOf(response, chat, request.body);
             if (!turn) return;
-            const { nodeId, userMessageText, userMessageExtra } = turn;
+            const { nodeId, userMessageText, userMessageExtra, quiet } = turn;
 
             // Chunk (c), wire step 3: `type: 'tool_result'` is NOT one of the "generation types" this
             // route otherwise dispatches on (normal/impersonate/continue/swipe/regenerate/quiet) - it
@@ -4144,6 +4147,7 @@ router.post('/generate', withGenerationStop(async function (request, response) {
                     clientToolSchemas,
                     stealthClientToolNames,
                     jsonSchema,
+                    quiet: isToolResult ? undefined : quiet,
                 });
             } catch (error) {
                 console.error('Failed to build raw-action chat completion request:', error);

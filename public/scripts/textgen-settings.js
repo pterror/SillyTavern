@@ -1238,7 +1238,9 @@ export async function generateTextGenWithStreaming(generate_data, signal) {
     reportStoredHeader(response);
     if (!response.ok) {
         tryParseStreamingError(response, await response.text());
-        throw new Error(`Got response status ${response.status}`);
+        const status = `Got response status ${response.status}`;
+        toastr.error(status, 'Text Completion API');
+        throw new Error(status);
     }
 
     // Compact wire format - originally llama.cpp-only, now also used by the general (non-Ollama)
@@ -1310,6 +1312,9 @@ export async function generateTextGenWithStreaming(generate_data, signal) {
         };
     }
 
+    // A request that failed before any stream began is answered with its error as JSON (`{ error: true, response }`,
+    // e.g. the backend refused the connection): show it.
+    tryParseStreamingError(response, await response.text());
     throw new Error('Expected X-ST-Stream-Format: compact-v1 - every streaming response from this route uses the compact binary protocol.');
 }
 
@@ -1410,8 +1415,10 @@ function tryParseStreamingError(response, decoded) {
     // `data.error` can be a boolean flag (`{ error: true, message: '...' }`, this server's own shape)
     // rather than a string or an object with its own `.message` - checking it before `data.message`
     // let a truthy `true` win over the real string sitting right next to it.
+    // `{ error: true, response }` is the route's answer for a backend request that failed (its text, or the error).
     const message = data?.error?.message || data?.message || data?.detail
-        || (typeof data?.error === 'string' ? data.error : undefined);
+        || (typeof data?.error === 'string' ? data.error : undefined)
+        || (data?.error === true && typeof data?.response === 'string' ? data.response : undefined);
 
     if (typeof message === 'string' && message) {
         toastr.error(message, 'Text Completion API');

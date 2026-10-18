@@ -4,7 +4,7 @@ import { AIHorde, ModelGenerationInputStableSamplers, ModelInterrogationFormType
 import { getVersion, delay, Cache } from '../util.js';
 import { readSecret, SECRET_KEYS } from './secrets.js';
 import { buildRawActionKoboldRequest } from './backends/kobold.js';
-import { generateTurnOf } from '../page-writes.js';
+import { generateTurnOf, textCompletionQuietInput } from '../page-writes.js';
 import { storeUserMessage } from '../stored-messages.js';
 import { persistAssistantReply } from '../assistant-reply-persist.js';
 import { itemizationOf } from '../itemization-of.js';
@@ -313,12 +313,12 @@ async function buildRawActionHordePayload(request, response) {
     answerSessionOnHeaders(response, chat.session);
     const turn = await generateTurnOf(response, chat, request.body);
     if (!turn) return null;
-    const { nodeId, userMessageText, userMessageExtra } = turn;
+    const { nodeId, userMessageText, userMessageExtra, quiet } = turn;
 
     const built = await buildRawActionKoboldRequest(directories, {
         request, characterAvatar, groupId, chat, nodeId,
         type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra,
-        macroExtras: { isHorde: true },
+        macroExtras: { isHorde: true, ...textCompletionQuietInput(quiet) },
     });
 
     // Same three-mode persistence contract as kobold.js's own raw-action branch - see that file's

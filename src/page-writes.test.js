@@ -253,6 +253,24 @@ test('the user message is stored as the page sent it, and the prompt has what th
     assert.equal((await user.store.chats.pointer(made)).at, data.assistant_node_id, 'the session is at the reply');
 });
 
+test('a quiet generation\'s prompt reaches the backend, and its answer isn\'t stored', async () => {
+    const avatar = `pw-quiet-${randomUUID()}.png`;
+    await writeCharacter(avatar, 'Rex');
+    const generate = await generateServer('A quiet answer.');
+    const answer = await generate.post({
+        owner_id: avatar, character_avatar: avatar, type: 'quiet', stream: false,
+        node_id: null,
+        opening: { refs: ['o'], messages: [{ name: 'Rex', is_user: false, mes: 'Hi.', extra: {} }] },
+        quiet_prompt: 'Describe the weather in one word.',
+    }, { [SESSION_HEADER]: 'none' });
+    const data = await answer.json();
+    generate.close();
+
+    assert.equal(answer.status, 200);
+    assert.ok(generate.seen.prompt.endsWith('Hi.\nDescribe the weather in one word.'), 'the quiet prompt ends the prompt sent to the backend');
+    assert.equal(data.assistant_node_id ?? null, null, 'a quiet answer is not stored');
+});
+
 test('a first send in a new chat with no greeting starts the chat with the user message', async () => {
     const avatar = `pw-empty-${randomUUID()}.png`;
     await writeCharacter(avatar, 'Rex');

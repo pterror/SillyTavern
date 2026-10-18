@@ -360,6 +360,26 @@ function sentUserMessageForRequest(sent) {
 }
 
 /**
+ * The quiet prompt a raw-action generate request carries (src/page-writes.js quietOf()): `Generate()`'s
+ * `quiet_prompt` as it stands after its macros and NovelAI adjustment, with `quietToLoud`, `quietName` and
+ * `quietImage`. Nothing when there is no quiet prompt.
+ * @param {string|undefined} quietPrompt
+ * @param {boolean|undefined} quietToLoud
+ * @param {string|undefined} quietName
+ * @param {string|undefined} quietImage
+ * @returns {{ quiet_prompt?: string, quiet_to_loud?: boolean, quiet_name?: string, quiet_image?: string }}
+ */
+function quietPromptRequest(quietPrompt, quietToLoud, quietName, quietImage) {
+    if (typeof quietPrompt !== 'string' || quietPrompt === '') return {};
+    return {
+        quiet_prompt: quietPrompt,
+        quiet_to_loud: quietToLoud === true ? true : undefined,
+        quiet_name: typeof quietName === 'string' && quietName !== '' ? quietName : undefined,
+        quiet_image: typeof quietImage === 'string' && quietImage !== '' ? quietImage : undefined,
+    };
+}
+
+/**
  * What a raw-action generate request generates from and carries from the page.
  * @param {string} type The generation type.
  * @param {ChatMessage|undefined} lastMessage The message the generation is for, as it was before this generation
@@ -1314,6 +1334,7 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
                 // 'koboldhorde' for the same reason as `streaming` above - out of scope here (and,
                 // for 'koboldhorde' specifically, meaningless: Horde is never streamed at all).
                 can_abort: main_api === 'kobold' ? kai_flags.can_use_streaming : undefined,
+                ...quietPromptRequest(quiet_prompt, quietToLoud, quietName, quietImage),
             };
         }
         // else: no resolvable ownerId/characterAvatar (other precondition) - fall through to the
@@ -1589,6 +1610,7 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
                 // exactly as this function received it (`JsonSchema` typedef shape), `undefined` (thus
                 // dropped by `JSON.stringify`) when this call has no schema.
                 json_schema: jsonSchema,
+                ...quietPromptRequest(quiet_prompt, quietToLoud, quietName, quietImage),
             };
         }
         // else: no resolvable ownerId/characterAvatar (other precondition) - fall through to the
@@ -2898,9 +2920,13 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
         // if the response JSON was thrown (novel|textgenerationwebui|kobold), show the error message -
         // a real, dynamic backend-error shape distinct from the `Error` branch (see this function's own
         // JSDoc @param), so genuinely not narrowable to a single static type here.
+        // The server's own refusal (`{ error: true, message }`, e.g. a request it couldn't build) is shown the same way.
         const errorResponse = /** @type {any} */ (exception);
-        if (typeof errorResponse?.error?.message === 'string') {
-            toastr.error(errorResponse.error.message, t`Text generation error`, { timeOut: 10000, extendedTimeOut: 20000 });
+        const message = typeof errorResponse?.error?.message === 'string'
+            ? errorResponse.error.message
+            : (errorResponse?.error === true && typeof errorResponse?.message === 'string' ? errorResponse.message : null);
+        if (message) {
+            toastr.error(message, t`Text generation error`, { timeOut: 10000, extendedTimeOut: 20000 });
         }
 
         unblockGeneration(type);

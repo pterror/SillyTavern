@@ -302,6 +302,16 @@ async function run() {
     assert.equal(continued.anchorNodeId, branchAfterAppend.branch.leaf_id, 'the continue anchor is the real current leaf');
     assert.equal(continued.anchorContent?.mes, 'What happens next, Rex?', 'anchorContent is the anchor\'s real, current, unmodified content (the real leaf at this point in the test, appended above) - exactly what the route\'s is_continue edit needs as "oldText"');
 
+    // --- quiet prompt: a quiet generation's instruction (`/sysgen`, generateQuietPrompt()) is the prompt's last
+    // message, a system message, as upstream's populateChatCompletion() adds its `quietPrompt` control prompt ---
+    const quietLeafId = branchAfterAppend.branch.leaf_id;
+    const quiet = await buildRawActionChatCompletionRequest(directories, {
+        characterAvatar: avatar, ownerId, chat: await chatOf(avatar, quietLeafId), nodeId: quietLeafId, type: 'quiet',
+        quiet: { quietPrompt: 'Summarize the scene in one line.' },
+    });
+    const quietLast = quiet.params.messages[quiet.params.messages.length - 1];
+    assert.deepEqual([quietLast?.role, quietLast?.content], ['system', 'Summarize the scene in one line.'], 'the quiet prompt is the last message, from the system');
+
     // --- error handling: missing owner_id ---
     await assert.rejects(
         () => buildRawActionChatCompletionRequest(directories, {
