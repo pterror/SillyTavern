@@ -1091,12 +1091,31 @@ fn commits_that_read_what_they_change_stay_right_while_the_log_is_cleaned_flushe
         assert_eq!(value(s, &uid), Some(format!("json:\"u{last}\"")));
         for i in 0..N {
             let c = first(i);
-            assert_eq!(at(s, &content(), c), Some(Some(format!("a{i}"))), "change {c}");
-            assert_eq!(at(s, &content(), c + 1), Some(Some(format!("a{i}b"))), "change {}", c + 1);
-            assert_eq!(at(s, &content(), c + 3), Some(Some(format!("Z{i}b"))), "change {}", c + 3);
+            assert_eq!(
+                at(s, &content(), c),
+                Some(Some(format!("a{i}"))),
+                "change {c}"
+            );
+            assert_eq!(
+                at(s, &content(), c + 1),
+                Some(Some(format!("a{i}b"))),
+                "change {}",
+                c + 1
+            );
+            assert_eq!(
+                at(s, &content(), c + 3),
+                Some(Some(format!("Z{i}b"))),
+                "change {}",
+                c + 3
+            );
             if i % 2 == 1 {
                 let before = format!("Z{}b", i - 1);
-                assert_eq!(at(s, &content(), c - 1), Some(Some(format!("p{before}"))), "change {}", c - 1);
+                assert_eq!(
+                    at(s, &content(), c - 1),
+                    Some(Some(format!("p{before}"))),
+                    "change {}",
+                    c - 1
+                );
             }
         }
         let n = changes(s, Some(&content())).len() as u64;
@@ -1143,4 +1162,190 @@ fn commits_that_read_what_they_change_stay_right_while_the_log_is_cleaned_flushe
         check(&s);
     }
     fs::remove_dir_all(&dir).unwrap();
+}
+
+/// SplitMix64, seeded: the randomized history test's choices.
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    }
+    fn below(&mut self, n: u64) -> u64 {
+        self.next() % n
+    }
+}
+
+/// Random commits of sets, edits (several of one field in a commit, each over the one before) and deletes of three
+/// fields, with dead records for cleaning, interleaved with flushes, merges, cleaning and reopens: every current
+/// value, every past change's value and every field's change count read as a plain model says. `ST_MODEL_SEEDS`,
+/// `ST_MODEL_SEED` and `ST_MODEL_STEPS` choose seeds and length as in the keyspace's model test.
+#[test]
+fn random_history_reads_as_the_model_says_through_flushes_cleaning_and_reopens() {
+    let seeds: Vec<u64> = match std::env::var("ST_MODEL_SEED") {
+        Ok(s) => vec![s.parse().unwrap()],
+        Err(_) => {
+            let n: u64 = std::env::var("ST_MODEL_SEEDS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(3);
+            (1..=n).collect()
+        }
+    };
+    let steps: u64 = std::env::var("ST_MODEL_STEPS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(300);
+    let fields = [
+        (FieldRef::Code(CONTENT), false),
+        (FieldRef::Key(b"note".to_vec()), false),
+        (FieldRef::Code(UID), true),
+    ];
+    for seed in seeds {
+        let mut rng = Rng(seed);
+        let dir = temp_dir(&format!("random-{seed}"));
+        let mut s = open(&dir);
+        // Per field: its current value, and the value each of its changes left (None: no value).
+        let mut cur: Vec<Option<String>> = vec![None; fields.len()];
+        let mut after: Vec<Vec<(u64, Option<String>)>> = vec![Vec::new(); fields.len()];
+        let mut next = 1000u64;
+        let mut cleaned = 0;
+        for step in 0..steps {
+            let here = format!("seed {seed} step {step}");
+            match rng.below(10) {
+                0..=5 => {
+                    let mut recs = Vec::new();
+                    if rng.below(2) == 0 {
+                        recs.push(filler());
+                    }
+                    let mut planned = cur.clone();
+                    let mut made = Vec::new();
+                    for _ in 0..1 + rng.below(5) {
+                        let fi = rng.below(fields.len() as u64) as usize;
+                        let (f, json) = &fields[fi];
+                        let c = next;
+                        let r = rng.below(10);
+                        let new = match (&planned[fi], r) {
+                            (Some(old), 0..=4) if !json => {
+                                let off = rng.below(old.len() as u64 + 1);
+                                let removed = rng.below(old.len() as u64 - off + 1).min(5);
+                                let ins: String = (0..rng.below(4))
+                                    .map(|_| (b'a' + rng.below(26) as u8) as char)
+                                    .collect();
+                                if removed == 0 && ins.is_empty() {
+                                    continue;
+                                }
+                                let mut v = old.clone();
+                                v.replace_range(off as usize..(off + removed) as usize, &ins);
+                                recs.push(edit(c, f, off, removed, &ins, NOBODY));
+                                Some(v)
+                            }
+                            (Some(_), 5) => {
+                                recs.push(del(c, f, NOBODY));
+                                None
+                            }
+                            _ => {
+                                let v = if *json {
+                                    format!("\"j{}\"", rng.below(1000))
+                                } else {
+                                    format!(
+                                        "t{}{}",
+                                        rng.below(1000),
+                                        "x".repeat(rng.below(30) as usize)
+                                    )
+                                };
+                                recs.push(set(c, f, &v, *json, NOBODY));
+                                Some(v)
+                            }
+                        };
+                        if new == planned[fi] {
+                            // A change that changes nothing is refused.
+                            recs.pop();
+                            continue;
+                        }
+                        next += 1;
+                        planned[fi] = new.clone();
+                        made.push((fi, c, new));
+                    }
+                    if made.is_empty() {
+                        continue;
+                    }
+                    s.commit_wait(recs)
+                        .unwrap_or_else(|e| panic!("{here}: commit refused: {e:?}"));
+                    cur = planned;
+                    for (fi, c, v) in made {
+                        after[fi].push((c, v));
+                    }
+                }
+                6..=7 => {
+                    for (fi, (f, json)) in fields.iter().enumerate() {
+                        let want = cur[fi].as_ref().map(|v| {
+                            if *json {
+                                format!("json:{v}")
+                            } else {
+                                v.clone()
+                            }
+                        });
+                        assert_eq!(value(&s, f), want, "{here}: current {f:?}");
+                        assert_eq!(
+                            changes(&s, Some(f)).len(),
+                            after[fi].len(),
+                            "{here}: changes of {f:?}"
+                        );
+                        if !json && !after[fi].is_empty() {
+                            let (c, v) = &after[fi][rng.below(after[fi].len() as u64) as usize];
+                            assert_eq!(
+                                at(&s, f, *c),
+                                Some(v.clone()),
+                                "{here}: {f:?} as change {c} left it"
+                            );
+                        }
+                    }
+                }
+                8 => {
+                    s.inner.ks.freeze_at(s.durable_end());
+                    s.inner.ks.wait_flushed().unwrap();
+                    s.wake_cleaner();
+                    s.clean().unwrap();
+                    cleaned += s.stats().cleaned_files;
+                    if rng.below(2) == 0 {
+                        s.inner.ks.wait_merged();
+                    }
+                }
+                _ => {
+                    drop(s);
+                    s = open(&dir);
+                }
+            }
+        }
+        for (fi, (f, json)) in fields.iter().enumerate() {
+            let want = cur[fi].as_ref().map(|v| {
+                if *json {
+                    format!("json:{v}")
+                } else {
+                    v.clone()
+                }
+            });
+            assert_eq!(value(&s, f), want, "seed {seed}: current {f:?} at the end");
+            if !json {
+                for (c, v) in &after[fi] {
+                    assert_eq!(
+                        at(&s, f, *c),
+                        Some(v.clone()),
+                        "seed {seed}: {f:?} as change {c} left it"
+                    );
+                }
+            }
+        }
+        assert!(
+            steps < 100 || cleaned > 0,
+            "seed {seed}: nothing was cleaned"
+        );
+        drop(s);
+        fs::remove_dir_all(&dir).unwrap();
+    }
 }

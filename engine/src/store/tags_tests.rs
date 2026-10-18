@@ -354,7 +354,12 @@ fn check(s: &Store, m: &BTreeMap<u64, T>) {
 fn tag_pages_counts_and_lookups_follow_every_change() {
     let dir = temp_dir("model");
     let mut s = Store::open_in(&dir, SMALL, pool()).unwrap();
-    let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+    // `ST_MODEL_SEED` replays another seed (long runs sweep them).
+    let seed = std::env::var("ST_MODEL_SEED")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0x9e37_79b9_7f4a_7c15);
+    let mut rng = Rng(seed);
     let mut m: BTreeMap<u64, T> = BTreeMap::new();
     let mut gone: BTreeMap<u64, Option<u64>> = BTreeMap::new();
     let entities: Vec<u64> = (1..=30).collect();

@@ -1210,3 +1210,7 @@ impl Drop for Keyspace {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod model_tests;
+#[cfg(test)]
+mod fuzz_tests;

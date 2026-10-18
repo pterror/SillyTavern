@@ -435,3 +435,122 @@ fn iterating_one_file_never_opens_the_next() {
     log.close();
     fs::remove_dir_all(&dir).unwrap();
 }
+
+/// SplitMix64, seeded.
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    }
+    fn below(&mut self, n: u64) -> u64 {
+        self.next() % n.max(1)
+    }
+}
+
+/// A log file of every kind of record, damaged at random (bytes flipped, overwritten, inserted, removed, the file
+/// cut), never panics: scanning it item by item, decoding or stepping over records, refuses or reads; opening it
+/// refuses or opens, and an opened log reads back to its end and by position, never an error after the open
+/// accepted it. `ST_FUZZ_SECS=<s>` runs it for s seconds (default 2); a failure names its seed.
+#[test]
+fn fuzz_damaged_log_files_never_panic_and_an_opened_log_reads_whole() {
+    let dir = temp_dir("fuzz-src");
+    let cfg = Config {
+        block_size: 256,
+        file_target: 1 << 20,
+    };
+    let log = Log::open(&dir, cfg).unwrap();
+    commit_all(&log, &records(300));
+    log.close();
+    let name = file_name(&cfg, 0);
+    let bytes = fs::read(dir.join(&name)).unwrap();
+    let secs: f64 = std::env::var("ST_FUZZ_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(2.0);
+    let until = std::time::Instant::now() + std::time::Duration::from_secs_f64(secs);
+    let copy = temp_dir("fuzz");
+    fs::create_dir_all(&copy).unwrap();
+    let (mut seed, mut n) = (0u64, 0u64);
+    while std::time::Instant::now() < until {
+        seed += 1;
+        let mut rng = Rng(seed);
+        let mut d = bytes.clone();
+        for _ in 0..1 + rng.below(4) {
+            match rng.below(6) {
+                0 | 1 if !d.is_empty() => {
+                    let i = rng.below(d.len() as u64) as usize;
+                    d[i] ^= 1 << rng.below(8);
+                }
+                2 if !d.is_empty() => {
+                    let i = rng.below(d.len() as u64) as usize;
+                    d[i] = rng.next() as u8;
+                }
+                3 => {
+                    let i = rng.below(d.len() as u64 + 1) as usize;
+                    d.insert(i, rng.next() as u8);
+                }
+                4 if !d.is_empty() => {
+                    let i = rng.below(d.len() as u64) as usize;
+                    d.remove(i);
+                }
+                _ => d.truncate(rng.below(d.len() as u64 + 1) as usize),
+            }
+        }
+        let path = copy.join(&name);
+        fs::write(&path, &d).unwrap();
+        let result = std::panic::catch_unwind(|| {
+            // Item by item, as opening and reads scan, with no group checks to stop at.
+            let lf = LogFile::new(File::open(&path).unwrap());
+            for decode in [true, false] {
+                let mut s = Scanner::new(&cfg, 0, &lf, 0, d.len() as u64);
+                let mut items = 0;
+                while let Ok(Some(_)) = s.next_item(decode) {
+                    items += 1;
+                    assert!(items < 1_000_000, "a scan didn't end");
+                }
+            }
+            // Opened: what it accepted reads back whole.
+            if let Ok(log) = Log::open(&copy, cfg) {
+                let mut from = 0;
+                let mut seen = Vec::new();
+                loop {
+                    let (batch, next) = log
+                        .iterate(from, 7)
+                        .unwrap_or_else(|e| panic!("an opened log fails to read at {from}: {e:?}"));
+                    if batch.is_empty() {
+                        assert_eq!(next, log.durable_end());
+                        break;
+                    }
+                    seen.extend(batch.into_iter().map(|(p, _)| p));
+                    from = next;
+                }
+                for p in seen {
+                    log.read(p).unwrap_or_else(|e| {
+                        panic!("an iterated record doesn't read at {p}: {e:?}")
+                    });
+                }
+                log.close();
+            }
+        });
+        if let Err(e) = result {
+            let msg = e
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()))
+                .unwrap_or_default();
+            panic!("log fuzz: seed {seed} panicked after {n} inputs: {msg}");
+        }
+        // Opening may have cut a torn tail or written a marker: start each input from a clean copy.
+        let _ = fs::remove_dir_all(&copy);
+        fs::create_dir_all(&copy).unwrap();
+        n += 1;
+    }
+    eprintln!("log fuzz: {n} inputs");
+    fs::remove_dir_all(&dir).unwrap();
+    let _ = fs::remove_dir_all(&copy);
+}
