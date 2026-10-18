@@ -1604,7 +1604,8 @@ async function run() {
         const branchAfter = await waitFor(async () => {
             const branch = await loadBranch(user.store, { avatar: ownerId }, coalesceBranch);
             const leaf = branch.messages[branch.messages.length - 1];
-            return leaf.mes === textChunks.join('') ? branch : null;
+            // Stored cleaned up as upstream's page cleans a reply up: trimmed (trim_spaces is on by default).
+            return leaf.mes === textChunks.join('').trim() ? branch : null;
         });
         assert.equal(branchAfter.messages[branchAfter.messages.length - 1].node_id, decoded.assistantNodeId);
     }

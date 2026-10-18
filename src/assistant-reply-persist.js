@@ -259,6 +259,24 @@ export function itemizationNotSavedWarning(nodeId) {
     };
 }
 
+/**
+ * The reply's `extra.api` and `extra.model` (upstream's getGeneratingApi()/getGeneratingModel()), from the settings
+ * read when the generation started; the model may come from a lookup still running then.
+ * @param {object} pending
+ * @returns {Promise<{api?: string, model?: string}>}
+ */
+async function generatedBy(pending) {
+    const finish = pending.finish;
+    if (!finish) return {};
+    let model = '';
+    try {
+        model = (await finish.model) ?? '';
+    } catch (error) {
+        console.warn('Could not tell which model generated the reply:', error);
+    }
+    return { api: finish.api, model: typeof model === 'string' ? model : String(model) };
+}
+
 /** @returns {Promise<StoredReply|{error: string}|null>} */
 async function storeReply(pending, generatedText) {
     const { chat, anchorNodeId, name2, isSwipe, isContinue, anchorContent } = pending;
@@ -269,7 +287,10 @@ async function storeReply(pending, generatedText) {
 
     const times = generationTimes(pending);
     const finished = finishReply(pending, generatedText, pending.answer);
-    const replyContent = { name: name2, is_user: false, mes: finished.mes, extra: { ...finished.extra }, send_date: Date.now(), ...times };
+    // What generated it, as upstream's saveReply() records it.
+    Object.assign(finished.extra, await generatedBy(pending));
+    const title = typeof pending.title === 'string' ? pending.title : '';
+    const replyContent = { name: name2, is_user: false, mes: finished.mes, title, extra: { ...finished.extra }, send_date: Date.now(), ...times };
 
     if (isContinue) {
         if (!anchorContent || typeof anchorNodeId !== 'string') {
@@ -280,7 +301,7 @@ async function storeReply(pending, generatedText) {
         const mes = finished.mes;
         const extra = { ...(anchorContent.extra && typeof anchorContent.extra === 'object' ? anchorContent.extra : {}), ...finished.extra };
         const edited = await store.chats.editMessages({
-            tree, treeSpeaker, edits: [{ node_id: anchorNodeId, content: storedForm({ ...anchorContent, mes, extra, ...times }), changes: chat.replyChanges }], actor: session.actor(),
+            tree, treeSpeaker, edits: [{ node_id: anchorNodeId, content: storedForm({ ...anchorContent, mes, title, extra, ...times }), changes: chat.replyChanges }], actor: session.actor(),
         });
         if (edited.refused.length) {
             console.error('Failed to persist continue edit:', edited.refused[0].reason);

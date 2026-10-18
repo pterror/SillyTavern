@@ -230,7 +230,8 @@ async function stopMidStreamCase({ label, router, settings, format, avatar }) {
         take(decoder.flush());
 
         assert.ok(stop.mes && stop.node_id, `${label}: the stop answers with the stored text and node`);
-        assert.equal(text, stop.mes, `${label}: the page's stream ends with exactly the stored text`);
+        // The stored reply is the streamed text cleaned up as upstream's page cleaned it (trimmed, trim_spaces being on).
+        assert.equal(text.trim(), stop.mes, `${label}: the page's stream ends with exactly the stored text`);
         assert.equal(nodeId, stop.node_id, `${label}: the stream's last frame names the same node`);
         const after = await shown(avatar, branch);
         const last = after[after.length - 1];
@@ -308,7 +309,7 @@ async function run() {
                 const b = await shown(avatar, branch);
                 return b.length === branch.messages.length + 2 ? b : null;
             });
-            assert.equal(after[after.length - 1].mes, full, 'the whole reply is stored after a disconnect');
+            assert.equal(after[after.length - 1].mes, full.trim(), 'the whole reply is stored (cleaned up: trimmed) after a disconnect');
         } finally {
             backend.server.close();
             await closeApp(server);

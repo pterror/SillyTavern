@@ -2013,7 +2013,7 @@ async function run() {
             assert.deepEqual(rest, { choices: [{ message: { content: claudeContent[0].text ?? '' } }], content: claudeContent }, 'the client-facing reply shape is exactly this function\'s own pre-existing (unmodified) content[0]-only wrapping');
             assert.deepEqual(assistant_message, {
                 mes: 'Rex says hello back, Claude-style.',
-                extra: { reasoning: 'The user wants a greeting back.', reasoning_duration: null, reasoning_signature: null },
+                extra: { api: 'claude', model: 'claude-test-model', reasoning: 'The user wants a greeting back.', reasoning_duration: null, reasoning_signature: null },
             }, 'the reply as stored is sent too: its thinking block is its reasoning, as upstream\'s page stored it');
             assert.equal(typeof assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
         }
@@ -4441,7 +4441,7 @@ async function run() {
         assert.equal(toolMsg.is_system, true, 'the tool-call turn is a real child of the original message');
         assert.equal(toolMsg.extra.tool_invocations[0].result, 'Sunny in Continuetown');
         assert.equal(finalMsg.is_user, false);
-        assert.equal(finalMsg.mes, ' sunny, according to the tool.', 'the final generated text is its own new node, holding just the newly generated text - not concatenated onto the original message\'s text, and not lost');
+        assert.equal(finalMsg.mes, 'sunny, according to the tool.', 'the final generated text is its own new node, holding just the newly generated text (cleaned up: trimmed) - not concatenated onto the original message\'s text, and not lost');
         assert.equal(finalMsg.name, 'Rex');
     }
 

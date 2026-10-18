@@ -4241,7 +4241,7 @@ router.post('/generate', withGenerationStop(async function (request, response) {
                     // How the reply is finished (its reasoning split off, see src/reply-reasoning.js).
                     finish: await readReplyFinishSettings(directories, {
                         mainApi: 'openai', source: built.settings.chat_completion_source, model: built.params?.model ?? null,
-                        avatar: characterAvatar, name1: built.name1, name2: built.name2,
+                        avatar: characterAvatar, groupId, name1: built.name1, name2: built.name2,
                     }),
                 };
                 // Only wired up when this request actually advertised at least one server-native

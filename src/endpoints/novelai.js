@@ -380,7 +380,10 @@ router.post('/generate', withGenerationStop(async function (req, res) {
                 warnings, generationStop: res.locals.generationStop,
                 itemization: itemizationOf(req.body.itemization, null),
                 // How the reply is finished (its reasoning split off, see src/reply-reasoning.js).
-                finish: await readReplyFinishSettings(req.user.directories, { mainApi: 'novel', avatar: characterAvatar, name1: built.name1, name2: built.name2 }),
+                finish: await readReplyFinishSettings(req.user.directories, {
+                    mainApi: 'novel', avatar: characterAvatar, groupId, name1: built.name1, name2: built.name2,
+                    model: built.params?.model ?? null,
+                }),
             };
             // The reply's write goes through the session; one made for it is in the headers, which a
             // stream sends before the reply is stored.

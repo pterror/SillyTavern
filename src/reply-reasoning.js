@@ -1,5 +1,6 @@
 import { CHAT_COMPLETION_SOURCES, TEXTGEN_TYPES } from './constants.js';
 import { substituteParams } from './macro-substitution.js';
+import { cleanUpReply } from './reply-cleanup.js';
 import { getRegexedString, regex_placement } from './regex-scripts-engine.js';
 import { readSettingsAtPaths } from './settings-store.js';
 
@@ -33,7 +34,7 @@ const REASONING_PLACEHOLDER = '​';
 const HIDDEN_REASONING_MODELS = ['gpt-4.5', 'o1', 'o3', 'gemini-2.0-flash-thinking-exp', 'gemini-2.0-pro-exp'];
 
 /**
- * @typedef {object} ReplyFinishSettings What finishing a reply needs from the user's settings, read when the
+ * @typedef {object} ReplyFinishBase What finishing a reply needs from the user's settings, read when the
  * generation starts.
  * @property {string} mainApi 'openai' | 'textgenerationwebui' | 'kobold' | 'koboldhorde' | 'novel'
  * @property {string|null} source The chat completion source (openai) or text completion type (textgenerationwebui).
@@ -48,6 +49,12 @@ const HIDDEN_REASONING_MODELS = ['gpt-4.5', 'o1', 'o3', 'gemini-2.0-flash-thinki
  * @property {object[]} regexScripts The regex scripts that apply (global, the character's if allowed, the preset's if allowed).
  * @property {boolean} regexEnabled The regex extension isn't disabled.
  * @property {{name1: string, name2: string}} macroContext
+ * @property {string} api The reply's `extra.api`, as upstream's getGeneratingApi() names it.
+ * @property {string|null|Promise<string|null>} model The reply's `extra.model` (getGeneratingModel()), or the lookup of it.
+ *
+ * And what cleaning the reply up needs (src/reply-cleanup.js): name1, name2, stoppingStringsParams, collapseNewlines,
+ * allowName1Display, allowName2Display, instruct, isGroup, groupMemberNames, disableGroupTrimming, trimSentences.
+ * @typedef {ReplyFinishBase & import('./reply-cleanup.js').ReplyCleanupSettings} ReplyFinishSettings
  */
 
 /** Settings key and selected-preset field of each API's preset (public/scripts/preset-manager.js getPresetList()). */
@@ -66,13 +73,14 @@ const PRESET_SETTINGS = {
  * @param {object} params
  * @param {string} params.mainApi
  * @param {string|null} [params.source]
- * @param {string|null} [params.model]
+ * @param {string|null|Promise<string|null>} [params.model] The model generating (a lookup of it may still be running).
  * @param {string|null} [params.avatar] The responding character's avatar.
+ * @param {string|null} [params.groupId] The group, for a group's reply.
  * @param {string} [params.name1]
  * @param {string} [params.name2]
  * @returns {Promise<ReplyFinishSettings>}
  */
-export async function readReplyFinishSettings(directories, { mainApi, source = null, model = null, avatar = null, name1 = '', name2 = '' }) {
+export async function readReplyFinishSettings(directories, { mainApi, source = null, model = null, avatar = null, groupId = null, name1 = '', name2 = '' }) {
     const preset = PRESET_SETTINGS[mainApi];
     const paths = ['power_user', 'extension_settings', 'oai_settings.show_thoughts'];
     if (preset) paths.push(`${preset.key}.${preset.name}`, `${preset.key}.extensions`);
@@ -107,6 +115,25 @@ export async function readReplyFinishSettings(directories, { mainApi, source = n
         }
     }
 
+    /** @type {string[]} */
+    const groupMemberNames = [];
+    if (groupId) {
+        try {
+            const { getGroupsByIds } = await import('./endpoints/groups.js');
+            const { readCardContent } = await import('./endpoints/characters.js');
+            const group = /** @type {any} */ ((await getGroupsByIds(directories, [groupId]))[groupId]);
+            for (const member of Array.isArray(group?.members) ? group.members : []) {
+                const raw = await readCardContent(directories, member);
+                const card = raw === undefined ? null : JSON.parse(raw);
+                const memberName = card?.name || card?.data?.name;
+                if (memberName) groupMemberNames.push(memberName);
+            }
+        } catch (error) {
+            console.warn('Could not read the group\'s members for cleaning up the reply:', error);
+        }
+    }
+    const context = powerUser.context ?? {};
+
     const prefix = typeof reasoning.prefix === 'string' ? reasoning.prefix : '<think>';
     const userPromptBias = typeof powerUser.user_prompt_bias === 'string' ? powerUser.user_prompt_bias : '';
     return {
@@ -123,6 +150,30 @@ export async function readReplyFinishSettings(directories, { mainApi, source = n
         regexScripts,
         regexEnabled,
         macroContext,
+        api: mainApi === 'openai' ? (source || 'openai') : mainApi === 'textgenerationwebui' ? (source === 'ooba' ? 'textgenerationwebui' : String(source ?? '')) : mainApi,
+        model,
+        // Cleaning the reply up (src/reply-cleanup.js); defaults are the page's (public/scripts/power-user.js).
+        name1, name2,
+        stoppingStringsParams: {
+            namesAsStopStrings: context.names_as_stop_strings !== false,
+            name1, name2,
+            isGroup: Boolean(groupId),
+            groupMemberNames: groupMemberNames.map(name => ({ name })),
+            singleLine: Boolean(powerUser.single_line),
+            instructPreset: powerUser.instruct ?? {},
+            contextSettings: context,
+            customStoppingStringsRaw: powerUser.custom_stopping_strings ?? '',
+            customStoppingStringsMacro: powerUser.custom_stopping_strings_macro !== false,
+            macroContext,
+        },
+        collapseNewlines: Boolean(powerUser.collapse_newlines),
+        allowName1Display: Boolean(powerUser.allow_name1_display),
+        allowName2Display: Boolean(powerUser.allow_name2_display),
+        instruct: powerUser.instruct ?? {},
+        isGroup: Boolean(groupId),
+        groupMemberNames,
+        disableGroupTrimming: Boolean(powerUser.disable_group_trimming),
+        trimSentences: Boolean(powerUser.trim_sentences),
     };
 }
 
@@ -340,10 +391,10 @@ function regexed(reasoning, settings) {
  * @param {object} pending The generation's `pendingAssistantPersist` (with `finish`, and `replyStream` for a stream).
  * @param {string} generatedText The text the backend generated.
  * @param {{data?: any}} [answer] A non-streamed answer, as sent to the page, to read native reasoning from.
- * @returns {{mes: string, extra: {reasoning: string, reasoning_duration: number|null, reasoning_signature: string|null, reasoning_type?: string}}}
+ * @returns {{mes: string, extra: {reasoning: string, reasoning_duration: number|null, reasoning_signature: string|null, reasoning_type?: string, api?: string, model?: string}}}
  */
 export function finishReply(pending, generatedText, answer = {}) {
-    /** @type {ReplyFinishSettings} */
+    /** @type {any} */
     const settings = pending.finish ?? {
         mainApi: '', source: null, showThoughts: false, hiddenReasoningModel: false, autoParse: false, prefix: '', suffix: '', promptPrefix: '',
         trimSpaces: false, replyBias: '', regexScripts: [], regexEnabled: false, macroContext: { name1: '', name2: '' },
@@ -360,8 +411,19 @@ export function finishReply(pending, generatedText, answer = {}) {
     const signature = streamed ? stream.signature : (answer.data !== undefined ? extractReasoningSignatureFromData(answer.data, settings) : null);
 
     const continuedPrefix = pending.isContinue ? continuedReasoningPrefix(pending) : '';
-    let mes = parseTarget(pending, generatedText);
-    /** @type {{reasoning: string, reasoning_duration: number|null, reasoning_signature: string|null, reasoning_type?: string}} */
+    let mes;
+    if (pending.finish) {
+        // Cleaned up first (cleanUpMessage()), then the reasoning split off, as upstream's page did.
+        const oldText = pending.isContinue && typeof pending.anchorContent?.mes === 'string' ? pending.anchorContent.mes : '';
+        mes = continuedPrefix + cleanUpReply(oldText + generatedText, settings, {
+            isContinue: Boolean(pending.isContinue),
+            lastIsUser: Boolean(pending.isContinue && pending.anchorContent?.is_user),
+            keepSpaces: Boolean(continuedPrefix),
+        });
+    } else {
+        mes = parseTarget(pending, generatedText);
+    }
+    /** @type {{reasoning: string, reasoning_duration: number|null, reasoning_signature: string|null, reasoning_type?: string, api?: string, model?: string}} */
     const extra = {
         reasoning: typeof anchorExtra.reasoning === 'string' ? anchorExtra.reasoning : '',
         reasoning_duration: anchorExtra.reasoning_duration ?? null,
