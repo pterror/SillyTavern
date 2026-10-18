@@ -30,8 +30,6 @@ reordering them). Each row of `settings-mapping.tsv` gets a `levels` column.
 | Capabilities run in the browser: TTS voice, speech recognition, WebLLM | the generation levels plus device |
 
 No chat or character can change a reader-bound setting, and output in a shared chat never depends on a device.
-A reader-bound switch, "ignore chat backgrounds", lets a tab, device or user skip the chat and character levels for
-the background.
 
 ## Device
 
