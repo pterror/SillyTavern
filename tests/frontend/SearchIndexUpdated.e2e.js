@@ -185,10 +185,6 @@ async function sendStreamMessage(page, message) {
     }, JSON.stringify(message));
 }
 
-function searchIndexUpdated(seq = 1) {
-    return { type: 'search-index-updated', seq };
-}
-
 // The list's own page queries: not the top-500 search, and not favsToHotswap()'s favorites-only query.
 function pageQueries(log, from = 0) {
     return log.queries.slice(from).filter(q => q.pageSize !== TOP_SEARCH_PAGE_SIZE && q.fav !== true);
@@ -212,108 +208,6 @@ async function setSearchTerm(page, log, term) {
     await waitForQuiet(log);
 }
 
-test.describe('search-index-updated on /changes/stream', () => {
-    /** @type {Awaited<ReturnType<typeof instrument>>} */
-    let log;
-
-    test.beforeEach(async ({ page }) => {
-        log = await instrument(page);
-        await testSetup.awaitST({ page });
-        await awaitAppReady(page);
-        await openCharacterManagementDrawer(page);
-        await expect.poll(() => listShowing(page)).toBe(true);
-        await waitForQuiet(log);
-    });
-
-    test('with a search term, re-queries the visible page once and not the top-500 search', async ({ page }) => {
-        await setSearchTerm(page, log, 'zq');
-        const from = log.queries.length;
-
-        await sendStreamMessage(page, searchIndexUpdated());
-        await waitForQuiet(log);
-
-        expect(pageQueries(log, from)).toEqual([{ search: 'zq', pageSize: expect.any(Number), page: 1, fav: undefined }]);
-        expect(topSearchQueries(log, from)).toEqual([]);
-    });
-
-    test('without a search term, sends nothing', async ({ page }) => {
-        const from = log.queries.length;
-
-        await sendStreamMessage(page, searchIndexUpdated());
-        await waitForQuiet(log);
-
-        expect(log.queries.slice(from)).toEqual([]);
-    });
-
-    test('with the list not showing, sends nothing; coming back fetches only the page', async ({ page }) => {
-        await setSearchTerm(page, log, 'zq');
-        await page.locator('#rm_button_create').click();
-        await expect.poll(() => listShowing(page)).toBe(false);
-        const from = log.queries.length;
-        const changesBefore = log.changes;
-
-        await sendStreamMessage(page, searchIndexUpdated());
-        await waitForQuiet(log);
-        expect(log.queries.slice(from)).toEqual([]);
-
-        await page.locator('#rm_button_back').click();
-        await expect.poll(() => listShowing(page)).toBe(true);
-        await expect.poll(() => pageQueries(log, from).length).toBe(1);
-        await waitForQuiet(log);
-
-        expect(pageQueries(log, from)).toHaveLength(1);
-        expect(topSearchQueries(log, from)).toEqual([]);
-        // Not marked dirty, so no change sync on the way back.
-        expect(log.changes).toBe(changesBefore);
-    });
-
-    test('during a page fetch, one refresh runs after it, however many arrive', async ({ page }) => {
-        await setSearchTerm(page, log, 'zq');
-        const from = log.queries.length;
-
-        log.hold = true;
-        await sendStreamMessage(page, searchIndexUpdated(1));
-        await expect.poll(() => log.held.length).toBe(1);
-        await sendStreamMessage(page, searchIndexUpdated(2));
-        await sendStreamMessage(page, searchIndexUpdated(3));
-        await sendStreamMessage(page, searchIndexUpdated(4));
-        log.hold = false;
-        log.held.splice(0).forEach(release => release());
-        await expect.poll(() => pageQueries(log, from).length).toBe(2);
-        await waitForQuiet(log);
-
-        expect(pageQueries(log, from)).toHaveLength(2);
-        expect(topSearchQueries(log, from)).toEqual([]);
-    });
-
-    test('with a sort the server rejects, re-queries the visible page in relevance order', async ({ page }) => {
-        await setSearchTerm(page, log, 'zq');
-        await page.evaluate(async () => {
-            const { power_user } = await import('/scripts/power-user.js');
-            const { printCharacters } = await import('/scripts/character-list.js');
-            const saved = power_user.sort_field;
-            power_user.sort_field = 'nonsense-e2e';
-            // Deselects "Search", so the saved sort applies.
-            $('#character_sort_order option[data-field="name"][data-order="asc"]').prop('selected', true);
-            try {
-                await printCharacters(true);
-            } finally {
-                // The pager keeps the sort it was built with.
-                power_user.sort_field = saved;
-            }
-        });
-        await waitForQuiet(log);
-        const from = log.queries.length;
-
-        await sendStreamMessage(page, searchIndexUpdated());
-        await waitForQuiet(log);
-
-        // The pager kept the fallback it settled on, so the refresh isn't rejected first.
-        expect(pageQueries(log, from)).toEqual([{ search: 'zq', pageSize: expect.any(Number), page: 1, fav: undefined }]);
-        expect(log.sortFields.slice(from)).toEqual(['search']);
-    });
-});
-
 test.describe('change message ({}) on /changes/stream', () => {
     /** @type {Awaited<ReturnType<typeof instrument>>} */
     let log;
@@ -327,7 +221,7 @@ test.describe('change message ({}) on /changes/stream', () => {
         await waitForQuiet(log);
     });
 
-    test('with a search term, syncs without any /query', async ({ page }) => {
+    test('with a search term, syncs and re-queries the visible page once, not the top-500 search', async ({ page }) => {
         await setSearchTerm(page, log, 'zq');
         const from = log.queries.length;
         const changesBefore = log.changes;
@@ -336,7 +230,8 @@ test.describe('change message ({}) on /changes/stream', () => {
         await expect.poll(() => log.changes, { timeout: CHANGE_DEBOUNCE_TIMEOUT_MS }).toBeGreaterThan(changesBefore);
         await waitForQuiet(log);
 
-        expect(log.queries.slice(from)).toEqual([]);
+        expect(pageQueries(log, from)).toEqual([{ search: 'zq', pageSize: expect.any(Number), page: 1, fav: undefined }]);
+        expect(topSearchQueries(log, from)).toEqual([]);
     });
 
     test('without a search term, syncs and reprints the page as before', async ({ page }) => {
@@ -540,14 +435,7 @@ test.describe('re-rendering the visible page keeps the list\'s scroll distance',
      */
     async function showSearchResults(page, term) {
         await setSearchTerm(page, log, term);
-        const rows = page.locator('#rm_print_characters_block .character_select');
-        // The search index takes up the new characters in the background.
-        await expect.poll(async () => {
-            if (await rows.count() >= CHARACTER_COUNT) return true;
-            await sendStreamMessage(page, searchIndexUpdated());
-            await waitForQuiet(log);
-            return false;
-        }, { timeout: 60000 }).toBe(true);
+        await expect(page.locator('#rm_print_characters_block .character_select')).toHaveCount(CHARACTER_COUNT);
     }
 
     /**
@@ -566,7 +454,7 @@ test.describe('re-rendering the visible page keeps the list\'s scroll distance',
         await awaitAppReady(page);
     });
 
-    test('on search-index-updated with a search term', async ({ page }) => {
+    test('on a change message with a search term', async ({ page }) => {
         const term = `Scrollkeep${Date.now()}`;
         await createCharacters(page, term);
         await page.reload();
@@ -577,8 +465,10 @@ test.describe('re-rendering the visible page keeps the list\'s scroll distance',
         await showSearchResults(page, term);
         await scrollList(page);
         const from = log.queries.length;
+        const changesBefore = log.changes;
 
-        await sendStreamMessage(page, searchIndexUpdated());
+        await sendStreamMessage(page, {});
+        await expect.poll(() => log.changes, { timeout: CHANGE_DEBOUNCE_TIMEOUT_MS }).toBeGreaterThan(changesBefore);
         await waitForQuiet(log);
 
         expect(pageQueries(log, from)).toHaveLength(1);
@@ -654,13 +544,7 @@ test.describe('a refresh the user didn\'t ask for keeps the list\'s page and scr
     /** Searches for `term` until the search index has taken up the characters created for it. */
     async function searchCreated(page) {
         await setSearchTerm(page, log, term);
-        const rows = page.locator('#rm_print_characters_block .character_select');
-        await expect.poll(async () => {
-            if (await rows.count() >= PAGE_SIZE) return true;
-            await sendStreamMessage(page, searchIndexUpdated());
-            await waitForQuiet(log);
-            return false;
-        }, { timeout: 60000 }).toBe(true);
+        await expect.poll(() => page.locator('#rm_print_characters_block .character_select').count()).toBeGreaterThanOrEqual(PAGE_SIZE);
     }
 
     /** Goes to page 2 and scrolls the list to SCROLLED_TO. Returns where the queries after that start. */
@@ -699,11 +583,13 @@ test.describe('a refresh the user didn\'t ask for keeps the list\'s page and scr
         });
     }
 
-    test('on search-index-updated with a search term', async ({ page }) => {
+    test('on a change message with a search term', async ({ page }) => {
         await searchCreated(page);
         const from = await toPage2Scrolled(page);
+        const changesBefore = log.changes;
 
-        await sendStreamMessage(page, searchIndexUpdated());
+        await sendStreamMessage(page, {});
+        await expect.poll(() => log.changes, { timeout: CHANGE_DEBOUNCE_TIMEOUT_MS }).toBeGreaterThan(changesBefore);
         await expect.poll(() => listPageQueries(from).length).toBeGreaterThan(0);
         await waitForQuiet(log);
 
@@ -1065,48 +951,5 @@ test.describe('the change stream reopening', () => {
 
     test('the rebuild delay doubles from 1s and stops at 60s', () => {
         expect([0, 1, 2, 3, 4, 5, 6, 7, 20].map(changeStreamRetryDelayMs)).toEqual([1000, 2000, 4000, 8000, 16000, 32000, 60000, 60000, 60000]);
-    });
-});
-
-test.describe('character-index-failed on /changes/stream', () => {
-    /** @type {Awaited<ReturnType<typeof instrument>>} */
-    let log;
-
-    test.beforeEach(async ({ page }) => {
-        log = await instrument(page);
-        await testSetup.awaitST({ page });
-        await awaitAppReady(page);
-        await openCharacterManagementDrawer(page);
-        await expect.poll(() => listShowing(page)).toBe(true);
-        await waitForQuiet(log);
-    });
-
-    const failure = { type: 'character-index-failed', id: 'Flaky.png', name: 'Flaky', error: 'SyntaxError: Unexpected token', retryInMs: 1000, keptEntry: true };
-    const warningToast = page => page.locator('.toast-warning').filter({ hasText: 'Flaky.png' });
-
-    test('shows a warning naming the card, its error and when it is retried, and syncs nothing', async ({ page }) => {
-        const changesBefore = log.changes;
-        const queriesBefore = log.queries.length;
-
-        await sendStreamMessage(page, failure);
-
-        await expect(warningToast(page)).toHaveCount(1);
-        const text = await warningToast(page).textContent();
-        expect(text).toContain('"Flaky"');
-        expect(text).toContain('SyntaxError: Unexpected token');
-        expect(text).toContain('keeps its previous search entry');
-        expect(text).toContain('1s');
-        await waitForQuiet(log);
-        expect(log.changes).toBe(changesBefore);
-        expect(log.queries.length).toBe(queriesBefore);
-    });
-
-    test('a card with no entry kept says so, and one with an empty name is named by its id', async ({ page }) => {
-        await sendStreamMessage(page, { ...failure, name: '', keptEntry: false });
-
-        await expect(warningToast(page)).toHaveCount(1);
-        const text = await warningToast(page).textContent();
-        expect(text).not.toContain('""');
-        expect(text).toContain('has no search entry');
     });
 });

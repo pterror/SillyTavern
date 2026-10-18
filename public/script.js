@@ -13,7 +13,7 @@ import {
 
 import { favsToHotswap, getMessageTimeStamp, dragElement, isMobile, initRossMods, countCharTokensWhenShown, onCharacterEditorMaybeShown } from './scripts/RossAscends-mods.js';
 import { exposedCharacters, charactersStore, this_avatar, this_chid, setCharacterId, holdCharacter, keepHeldCharacters, selectCharacterById, resolveCharacterRef, resolveCharacterRefPair, CHARACTER_REF_MISMATCH } from './scripts/character-store.js';
-import { printCharacters, printCharactersDebounced, getEntitiesList, findCharacterListPage, getOneCharacter, getCharacterSource, seedCharactersFromCache, getCharacters, showCharacterSyncFailedToast, initCharacterSearch, updateCharacterListRow, removeCharacterListRow, renameCharacterListRow, refreshCharacterListCurrentPage, hasActiveCharacterSearch, isCharacterListShowing, onSearchIndexUpdated, onCharacterListShown, entitiesFilter, characterToEntity, groupToEntity, tagToEntity, DEFAULT_PRINT_TIMEOUT } from './scripts/character-list.js';
+import { printCharacters, printCharactersDebounced, getEntitiesList, findCharacterListPage, getOneCharacter, getCharacterSource, seedCharactersFromCache, getCharacters, showCharacterSyncFailedToast, initCharacterSearch, updateCharacterListRow, removeCharacterListRow, renameCharacterListRow, refreshCharacterListCurrentPage, hasActiveCharacterSearch, isCharacterListShowing, onCharacterListShown, entitiesFilter, characterToEntity, groupToEntity, tagToEntity, DEFAULT_PRINT_TIMEOUT } from './scripts/character-list.js';
 import { onSavedViewsChanged } from './scripts/saved-views.js';
 // Re-exported for existing importers (upstream's script.js exports these too). Extensions get the characters
 // they are shown, not every character the page holds.
@@ -966,17 +966,6 @@ function tagMoveFailedText({ tagId, tagName, anchorId, anchorName, refusedId, re
     }
 }
 
-/**
- * The warning for a card the server couldn't put in its search index (src/endpoints/characters-search-index.js's
- * CharacterIndexFailure). A card whose name is empty is named by its id alone.
- * @param {{ id: string, name: string, error: string, retryInMs: number, keptEntry: boolean }} message
- */
-function characterIndexFailedText({ id, name, error, retryInMs, keptEntry }) {
-    const card = name ? `"${name}" (${id})` : id;
-    const entry = keptEntry ? 'It keeps its previous search entry, if it had one,' : 'It has no search entry';
-    return `Couldn't update the search entry of character ${card}: ${error}. ${entry} until a retry in ${Math.ceil(retryInMs / 1000)}s succeeds.`;
-}
-
 const CHANGE_STREAM_NOTICE_AFTER_MS = 10000;
 
 function onCharacterChangeMessage() {
@@ -992,7 +981,7 @@ function onCharacterChangeMessage() {
 // One SSE connection per tab, doubling as change notification and presence heartbeat - avoids exhausting the per-origin connection pool.
 function setupCharacterChangeStream() {
     if (typeof EventSource === 'undefined') return;
-    // Messages sent while the stream was down are lost, so an open that follows an error counts as both kinds of message.
+    // Messages sent while the stream was down are lost, so an open that follows an error counts as a character change and a tags change.
     let hadError = false;
     let notice = null;
     let noticeTimer = null;
@@ -1007,10 +996,6 @@ function setupCharacterChangeStream() {
     startNoticeTimer();
     onChangeStream({
         message: (message) => {
-            if (message?.type === 'search-index-updated') {
-                onSearchIndexUpdated();
-                return;
-            }
             if (message?.type === 'tag-move-failed') {
                 toastr.warning(tagMoveFailedText(message));
                 return;
@@ -1031,10 +1016,6 @@ function setupCharacterChangeStream() {
                 void onStateChanged({ tree: message.tree ?? null, at: message.at ?? null });
                 return;
             }
-            if (message?.type === 'character-index-failed') {
-                toastr.warning(characterIndexFailedText(message));
-                return;
-            }
             onCharacterChangeMessage();
         },
         open: () => {
@@ -1047,7 +1028,6 @@ function setupCharacterChangeStream() {
             if (!hadError) return;
             hadError = false;
             onCharacterChangeMessage();
-            onSearchIndexUpdated();
             onTagsChanged();
         },
         error: () => {

@@ -276,10 +276,9 @@ export function refreshCharacterListCurrentPage() {
 let keepScrollOnNextRender = false;
 
 // Page fetches of the characters list still running: printCharacters()'s page-1 probe through to the pager it
-// builds, and every pager ajaxFunction call. pagination.js drops a refresh while its own fetch runs, so a
-// search-index-updated or the list being shown arriving meanwhile waits here for the last one to settle.
+// builds, and every pager ajaxFunction call. pagination.js drops a refresh while its own fetch runs, so the list
+// being shown meanwhile waits here for the last one to settle.
 let pageFetchesInFlight = 0;
-let searchIndexRefreshPending = false;
 let shownRefreshPending = false;
 // The list filter a page kept in browser storage was drawn for, when the server's fresher answer for it came while a
 // page fetch was still running; the page is drawn again once they settle.
@@ -297,14 +296,9 @@ function pageFetchSettled() {
         refreshCharacterListCurrentPage();
         return;
     }
-    // The shown refresh re-queries the page whatever the search term, so it covers a pending search-index one.
     if (shownRefreshPending) {
         shownRefreshPending = false;
-        searchIndexRefreshPending = false;
         onCharacterListShown();
-    } else if (searchIndexRefreshPending) {
-        searchIndexRefreshPending = false;
-        onSearchIndexUpdated();
     }
 }
 
@@ -318,19 +312,6 @@ export function isCharacterListShowing() {
 // Same test as /query's hasSearch: only a non-blank term reaches the search index.
 export function hasActiveCharacterSearch() {
     return String(entitiesFilter.getFilterData(FILTER_TYPES.SEARCH) ?? '').trim().length > 0;
-}
-
-// For /changes/stream's 'search-index-updated'. Without a search term the page doesn't come from the index, so
-// there is nothing to re-query.
-export function onSearchIndexUpdated() {
-    if (!isCharacterListShowing()) return;
-    if (!hasActiveCharacterSearch()) return;
-    if (pageFetchesInFlight > 0) {
-        searchIndexRefreshPending = true;
-        return;
-    }
-    if (!serverPagedList) return;
-    refreshCharacterListCurrentPage();
 }
 
 // For the list going from hidden to showing, when no change sync is pending: re-queries the visible page with its
