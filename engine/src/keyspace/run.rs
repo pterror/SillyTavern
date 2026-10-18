@@ -7,7 +7,8 @@
 //!
 //! Footer: magic, top block offset (u64) and length (u32), index levels (u32), entries (u64), the log position
 //! the run covers (u64), the first and last flush it holds (u64 each), CRC-32C of the bytes before it (u32),
-//! zero padding; all little-endian.
+//! then the run's deletions (u32, saturating; outside the CRC, as only merge scheduling reads it, and zero in a
+//! run written before it was kept); all little-endian.
 
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
@@ -226,6 +227,8 @@ pub struct Run {
     /// The file's size.
     pub bytes: u64,
     levels: u32,
+    /// Deletions among its entries (0 when not known: a run written before they were counted).
+    pub dels: u64,
     top: Arc<Block>,
     /// The run's largest key (empty for a run with no entries).
     pub max_key: Vec<u8>,
@@ -312,6 +315,7 @@ impl Run {
             len: u64::from(u32_at(16)),
         };
         let (levels, entries, covered) = (u32_at(20), u64_at(24), u64_at(32));
+        let dels = u64::from(u32_at(60));
         if (u64_at(40), u64_at(48)) != (lo, hi) {
             return Err(corrupt("footer holds other flushes than its name".into()));
         }
@@ -340,6 +344,7 @@ impl Run {
             entries,
             bytes,
             levels,
+            dels,
             top,
             max_key,
             obsolete: AtomicBool::new(false),
@@ -1054,6 +1059,7 @@ pub struct RunWriter {
     /// Index builders, lowest level first, with the blocks each has written.
     index: Vec<(BlockBuilder, u64)>,
     entries: u64,
+    dels: u64,
 }
 
 #[cfg(test)]
@@ -1115,6 +1121,7 @@ impl RunWriter {
             data: BlockBuilder::default(),
             index: Vec::new(),
             entries: 0,
+            dels: 0,
         }
     }
 
@@ -1198,6 +1205,9 @@ impl RunWriter {
         }
         self.data.add(key, val);
         self.entries += 1;
+        if matches!(val, Val::Del) {
+            self.dels += 1;
+        }
         Ok(())
     }
 
@@ -1230,6 +1240,7 @@ impl RunWriter {
         f.extend_from_slice(&hi.to_le_bytes());
         let crc = crc32c::crc32c(&f);
         f.extend_from_slice(&crc.to_le_bytes());
+        f.extend_from_slice(&u32::try_from(self.dels).unwrap_or(u32::MAX).to_le_bytes());
         f.resize(FOOTER, 0);
         self.write_block(&f)?;
         Ok(())
