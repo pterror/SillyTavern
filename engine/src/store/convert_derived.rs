@@ -19,6 +19,7 @@ use super::history;
 use super::kinds::{Cur, Head, key, parse_loc, parse_varints};
 use super::library;
 use super::library_read::{self, Stored};
+use crate::keyspace::Keyspace;
 use crate::keyspace::val::{get_bytes, get_u64};
 use crate::log::format::{FieldRef, get_uvarint, put_uvarint};
 
@@ -262,6 +263,26 @@ pub fn pending(view: &View) -> Result<bool, StoreError> {
         let p = key::of(s);
         if !view.scan(&p, &key::prefix_end(&p), 1)?.is_empty() {
             return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Whether opening the store in `dir` would derive records over entries in an old form: its runs hold one (`pending`
+/// on the runs alone) and a whole group of records lies past the log position they cover, which replay derives (the
+/// last close wasn't clean). Reads the runs' footers and top blocks, the old forms' first keys and the log past
+/// that position; derives and writes nothing. A store whose runs hold no old form has nothing to mix with.
+pub fn unflushed_over_old(dir: &std::path::Path) -> Result<bool, StoreError> {
+    let cfg = super::StoreConfig::default();
+    let runs = dir.join("runs");
+    if !runs.is_dir() {
+        return Ok(false);
+    }
+    let ks = Keyspace::open_read_only(&runs, cfg.ks, super::global_pool())?;
+    for s in [VALUE, JSON_HEAD, FREE_BY_START] {
+        let p = key::of(s);
+        if !ks.scan(&p, &key::prefix_end(&p), 1)?.is_empty() {
+            return Ok(crate::log::group_after(dir, &cfg.log, ks.covered())?);
         }
     }
     Ok(false)

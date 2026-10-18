@@ -532,6 +532,34 @@ impl Task for OpenTask {
     }
 }
 
+/// One-off (src/migrations/convert-derived.js): `convert_derived::unflushed_over_old` for a directory no store is
+/// open on in this process (false while one is: it has replayed already).
+pub struct UnflushedTask(PathBuf);
+
+impl Task for UnflushedTask {
+    type Output = bool;
+    type JsValue = bool;
+
+    fn compute(&mut self) -> Result<bool> {
+        let at = std::path::absolute(&self.0).unwrap_or_else(|_| self.0.clone());
+        let slot = OPEN.lock().unwrap().get(&at).cloned();
+        // Held, so no open of the directory starts while it is read.
+        let held = slot.as_ref().map(|s| s.lock().unwrap());
+        if held
+            .as_ref()
+            .and_then(|h| h.upgrade())
+            .is_some_and(|s| !s.is_closed())
+        {
+            return Ok(false);
+        }
+        crate::store::convert_derived::unflushed_over_old(&self.0).map_err(store_error)
+    }
+
+    fn resolve(&mut self, _env: Env, b: bool) -> Result<bool> {
+        Ok(b)
+    }
+}
+
 pub struct ReadTask(Arc<Inner>, u64);
 
 impl Task for ReadTask {
@@ -1374,6 +1402,14 @@ impl Store {
     #[napi(ts_return_type = "Promise<Store>")]
     pub fn open(dir: String) -> AsyncTask<OpenTask> {
         AsyncTask::new(OpenTask(PathBuf::from(dir)))
+    }
+
+    /// One-off (src/migrations/convert-derived.js): whether opening the store in `dir` would derive records over
+    /// derived entries in their old form (its runs hold one, and the last close left log past them to replay).
+    /// Reads only; false while a store is open on `dir` in this process.
+    #[napi(ts_return_type = "Promise<boolean>")]
+    pub fn convert_derived_unflushed(dir: String) -> AsyncTask<UnflushedTask> {
+        AsyncTask::new(UnflushedTask(PathBuf::from(dir)))
     }
 
     /// `open` on this thread: the store open in `dir`, else opened now (returning before replay). The same store
