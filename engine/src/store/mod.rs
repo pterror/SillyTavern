@@ -904,6 +904,16 @@ impl Store {
         self.derived(convert_derived::pending)
     }
 
+    /// One-off (`convert_derived`): `metaValue` names by prefix.
+    pub fn convert_derived_meta_names(
+        &self,
+        prefix: &[u8],
+        after: Option<&[u8]>,
+        limit: usize,
+    ) -> StoreResult<Vec<Vec<u8>>> {
+        self.derived(|v| convert_derived::meta_names(v, prefix, after, limit))
+    }
+
     /// The pair postings' mode (`search::pairs`: 0 off, building, on, deleting).
     pub fn pairs_mode(&self) -> StoreResult<u64> {
         self.derived(|v| Ok(crate::search::pairs::state(v)?.0))

@@ -1582,6 +1582,31 @@ impl Store {
         derived(env, &self.store, |s| s.convert_derived_pending())
     }
 
+    /// One-off (src/migrations/convert-derived.js): up to `limit` `metaValue` names starting with `prefix`, after
+    /// `after`.
+    #[napi(ts_return_type = "Promise<string[]>")]
+    pub fn convert_derived_meta_names<'env>(
+        &self,
+        env: &'env Env,
+        prefix: String,
+        after: Option<String>,
+        limit: u32,
+    ) -> Result<Object<'env>> {
+        derived(env, &self.store, move |s| {
+            s.convert_derived_meta_names(
+                prefix.as_bytes(),
+                after.as_deref().map(str::as_bytes),
+                limit as usize,
+            )
+            .map(|names| {
+                names
+                    .into_iter()
+                    .map(|n| String::from_utf8_lossy(&n).into_owned())
+                    .collect::<Vec<_>>()
+            })
+        })
+    }
+
     /// The pair postings' mode: 0 off, 1 building, 2 on, 3 deleting.
     #[napi(ts_return_type = "Promise<number>")]
     pub fn pairs_mode<'env>(&self, env: &'env Env) -> Result<Object<'env>> {
