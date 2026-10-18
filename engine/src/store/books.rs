@@ -18,7 +18,7 @@
 
 use super::StoreError;
 use super::derive::{Deriver, Loc, Out, View};
-use super::kinds::{dead, id, key, loc_bytes, parse_loc, text_value, version};
+use super::kinds::{dead, id, key, loc_bytes, parse_loc, text_value, version, whole_json};
 use super::library::{self, entity_info, uvarint};
 use super::library_read;
 use crate::keyspace::val::{get_u64, put_bytes, put_u64};
@@ -114,9 +114,7 @@ pub fn parse_entry_key(b: &[u8]) -> Result<(u64, EntryKey), StoreError> {
 }
 
 fn is_defined(view: &View, book: u64) -> Result<bool, StoreError> {
-    Ok(view
-        .get(&key::field(key::VALUE, book, &FieldRef::Code(DEFINED)))?
-        .is_some())
+    Ok(whole_json(view, book, &FieldRef::Code(DEFINED))?.is_some())
 }
 
 fn books_key(k: &[u8]) -> Vec<u8> {

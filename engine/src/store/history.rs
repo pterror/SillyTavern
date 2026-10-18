@@ -5,7 +5,7 @@
 //! live): `histSet`, `histEdit` (a text diff, for JSON values too), `histDelete` of a field; `histPlace` of a list
 //! item; `histEntityDelete` and `histRestore` of the entity. `HIST` files an entity's changes by field (a list item's
 //! under its text field; the entity's own under none), each field's value changes and place changes apart (`Part`),
-//! by id. A field's current value is still its head (`key::TEXT`, or `JSON_HEAD` for JSON), rebuilt from `HIST` on
+//! by id. A field's current value is still its head (`key::HEAD`, text or JSON), rebuilt from `HIST` on
 //! each change from the latest full value and the edits after it, so a current read never walks history and a
 //! write walks only the head's edits.
 //!
@@ -23,8 +23,8 @@ use super::books::{self, ENTRIES, ENTRY, LINKS};
 use super::chat_read::Js;
 use super::derive::{Deriver, Loc, Out, View};
 use super::kinds::{
-    Head, Holder, apply_edit, bytes, dead, field, id, key, loc_bytes, parse_loc, parse_varints,
-    repoint_text_of, text_value, varints, version, version_gone,
+    Cur, Head, Holder, apply_edit, bytes, dead, field, id, key, loc_bytes, parse_loc,
+    parse_varints, repoint_text_of, text_of, varints, version, version_gone,
 };
 use super::library::{
     self, ITEM_BASE, LISTS, entity_info, entity_key_key, host_bytes, item_field, parse_host,
@@ -40,9 +40,8 @@ use crate::log::format::{
 /// Per (entity, field or none, part, change id): the change; or, holding a forget's id, that forget's marker in the
 /// place of the changes it forgot.
 pub const HIST: u64 = 210;
-/// Per (entity, field): its JSON value's last full value, size and edits since (`Head`). Per (entity, field, n): the
-/// n-th edit.
-pub const JSON_HEAD: u64 = 211;
+/// Per (entity, field, n): the n-th edit of a JSON value written with its history since its last full value (its
+/// head is the field's `key::HEAD`, as `Cur::Json`).
 pub const JSON_EDIT: u64 = 212;
 /// Per deleted entity: `[position, length]` of the record its entity entry pointed at, and the delete's position.
 pub const GONE: u64 = 213;
@@ -140,7 +139,7 @@ fn keep_key(e: u64, slot: Option<&FieldRef>) -> Vec<u8> {
 }
 
 fn json_key(e: u64, f: &FieldRef) -> Vec<u8> {
-    key::field(JSON_HEAD, e, f)
+    key::field(key::HEAD, e, f)
 }
 
 pub fn json_edit_key(e: u64, f: &FieldRef, n: u64) -> Vec<u8> {
@@ -524,49 +523,50 @@ fn json_of_head(view: &View, e: u64, f: &FieldRef, head: &Head) -> Result<Vec<u8
 }
 
 fn json_head(view: &View, e: u64, f: &FieldRef) -> Result<Option<Head>, StoreError> {
-    view.get(&json_key(e, f))?
-        .map(|b| Head::parse(&b))
-        .transpose()
+    Ok(match Cur::get(view, e, f)? {
+        Some(Cur::Json(h)) => Some(h),
+        _ => None,
+    })
+}
+
+/// The value entity `e`'s field `f` has by its head `cur`: whether it is JSON, and its text.
+pub(super) fn value_of(
+    view: &View,
+    e: u64,
+    f: &FieldRef,
+    cur: &Cur,
+) -> Result<(bool, Vec<u8>), StoreError> {
+    Ok(match cur {
+        Cur::Text(h) => (false, text_of(view, e, f, h)?),
+        Cur::Json(h) => (true, json_of_head(view, e, f, h)?),
+        Cur::Whole(l) => {
+            let (rec, _) = view.record(l.pos)?;
+            (true, bytes(&rec, 2).to_vec())
+        }
+    })
 }
 
 /// Entity `e`'s JSON value of `f`: a `jsonValue` record's, or a diffed one's.
 pub fn json_value(view: &View, e: u64, f: &FieldRef) -> Result<Option<Vec<u8>>, StoreError> {
-    if let Some(b) = view.get(&key::field(key::VALUE, e, f))? {
-        let (rec, _) = view.record(parse_loc(&b)?.pos)?;
-        return Ok(Some(bytes(&rec, 2).to_vec()));
+    match Cur::get(view, e, f)? {
+        Some(cur @ (Cur::Json(_) | Cur::Whole(_))) => Ok(Some(value_of(view, e, f, &cur)?.1)),
+        Some(Cur::Text(_)) | None => Ok(None),
     }
-    match json_head(view, e, f)? {
-        Some(h) => json_of_head(view, e, f, &h).map(Some),
-        None => Ok(None),
-    }
-}
-
-/// Every diffed JSON value of entity `e`: (field, JSON).
-pub fn json_values(view: &View, e: u64) -> Result<Vec<(FieldRef, Vec<u8>)>, StoreError> {
-    let p = key::id(JSON_HEAD, e);
-    let mut out = Vec::new();
-    for (k, v) in view.scan(&p, &key::prefix_end(&p), usize::MAX)? {
-        let f = library::field_after(&k, JSON_HEAD)?;
-        let h = Head::parse(&v)?;
-        out.push((f.clone(), json_of_head(view, e, &f, &h)?));
-    }
-    Ok(out)
 }
 
 /// Field `f`'s current value.
 fn current(view: &View, e: u64, f: &FieldRef) -> Result<Got, StoreError> {
-    if let Some(t) = text_value(view, e, f)? {
-        return Ok(Some((false, t)));
-    }
-    Ok(json_value(view, e, f)?.map(|j| (true, j)))
+    Cur::get(view, e, f)?
+        .map(|cur| value_of(view, e, f, &cur))
+        .transpose()
 }
 
 /// The edit bytes since the full value of field `f`'s current head.
 fn head_edit_bytes(view: &View, e: u64, f: &FieldRef) -> Result<u64, StoreError> {
-    if let Some(h) = Head::get(view, Holder::Entity(e), f)? {
-        return Ok(h.edit_bytes());
-    }
-    Ok(json_head(view, e, f)?.map_or(0, |h| h.edit_bytes()))
+    Ok(match Cur::get(view, e, f)? {
+        Some(Cur::Text(h) | Cur::Json(h)) => h.edit_bytes(),
+        Some(Cur::Whole(_)) | None => 0,
+    })
 }
 
 /// The record making field `f` `new` from `base` (whose chain has `base_bytes` of edits): an edit of it, unless the
@@ -603,21 +603,20 @@ fn set_head(
             h.edit_key(f, n)
         }
     };
-    let head_key = |is_json: bool| {
-        if is_json {
-            json_key(e, f)
-        } else {
-            h.text_key(f)
-        }
-    };
-    // The edit entries the new head finds in place: those of the old head of its kind.
+    // The edit entries the new head finds in place: those of the old head, if of its kind.
     let mut in_place: Vec<Option<Loc>> = Vec::new();
-    let olds = [
-        (false, Head::get(view, h, f)?),
-        (true, json_head(view, e, f)?),
-    ];
-    for (is_json, old) in olds {
-        let Some(old) = old else { continue };
+    let cur = Cur::get(view, e, f)?;
+    let old = match cur {
+        Some(Cur::Text(old)) => Some((false, old)),
+        Some(Cur::Json(old)) => Some((true, old)),
+        // A value written whole before (no history): its record dies with it.
+        Some(Cur::Whole(l)) => {
+            dead(out, l);
+            None
+        }
+        None => None,
+    };
+    if let Some((is_json, old)) = old {
         let kept = chain.base.is_some() && is_json == json;
         for n in 1..=old.edits() {
             let k = edit_key(is_json, n);
@@ -627,17 +626,25 @@ fn set_head(
             }
             out.del(k);
         }
-        if !kept {
-            out.del(head_key(is_json));
-        }
     }
     let Some((base, _)) = &chain.base else {
+        if cur.is_some() {
+            out.del(h.text_key(f));
+        }
         return Ok(());
     };
     let size = chain.value()?.map_or(0, |(_, v)| v.len() as u64);
     let n = chain.edits.len() as u64;
-    let head = Head::with_edits(*base, size, n, chain.edit_bytes()).bytes();
-    out.put(head_key(json), head);
+    let head = Head::with_edits(*base, size, n, chain.edit_bytes());
+    out.put(
+        h.text_key(f),
+        if json {
+            Cur::Json(head)
+        } else {
+            Cur::Text(head)
+        }
+        .bytes(),
+    );
     for (i, (l, _)) in chain.edits.iter().enumerate() {
         if in_place
             .get(i)
@@ -1093,7 +1100,7 @@ impl Deriver for ValueChange {
         };
         if head.full.pos == from {
             head.full = to;
-            out.put(json_key(e, f), head.bytes());
+            out.put(json_key(e, f), Cur::Json(head).bytes());
             return Ok(());
         }
         for n in 1..=head.edits() {
@@ -1104,7 +1111,7 @@ impl Deriver for ValueChange {
             {
                 let bytes = head.edit_bytes() - old.len + to.len;
                 let h = Head::with_edits(head.full, head.size(), head.edits(), bytes);
-                out.put(json_key(e, f), h.bytes());
+                out.put(json_key(e, f), Cur::Json(h).bytes());
                 out.put(k, loc_bytes(to));
                 return Ok(());
             }
@@ -1227,11 +1234,13 @@ impl Deriver for EntityDelete {
             deleted_key(book, e),
             varints(&[flags, place.unwrap_or(0), index.map_or(0, f64::to_bits)]),
         );
-        for s in [key::TEXT, JSON_HEAD] {
-            let p = key::id(s, e);
-            for (vk, _) in view.scan(&p, &key::prefix_end(&p), usize::MAX)? {
-                drop_head(view, out, e, &library::field_after(&vk, s)?)?;
+        // Values written with their history; a value written whole (no history) stays, as before `key::HEAD`.
+        let p = key::id(key::HEAD, e);
+        for (vk, v) in view.scan(&p, &key::prefix_end(&p), usize::MAX)? {
+            if matches!(Cur::parse(&v)?, Cur::Whole(_)) {
+                continue;
             }
+            drop_head(view, out, e, &library::field_after(&vk, key::HEAD)?)?;
         }
         let ap = key::id(key::ITEM_AT, e);
         for (ak, _) in view.scan(&ap, &key::prefix_end(&ap), usize::MAX)? {

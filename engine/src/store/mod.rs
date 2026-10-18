@@ -2068,6 +2068,8 @@ impl Hooks for StoreHooks {
 }
 
 #[cfg(test)]
+mod bench_tests;
+#[cfg(test)]
 mod books_tests;
 #[cfg(test)]
 mod carriers_tests;

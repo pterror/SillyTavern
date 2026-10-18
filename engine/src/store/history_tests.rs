@@ -742,6 +742,38 @@ fn a_deleted_entry_is_restored_with_its_values() {
 }
 
 #[test]
+fn a_value_written_whole_stays_through_a_delete_and_restore_as_before_one_head() {
+    let dir = temp_dir("restore-whole");
+    let s = open(&dir);
+    let f = FieldRef::Key(b"ext:x".to_vec());
+    s.commit_wait(vec![
+        set(100, &content(), "a dragon", false, NOBODY),
+        rec(
+            "jsonValue",
+            vec![
+                Value::Sel(0, ENTRY_ID),
+                Value::Field(f.clone()),
+                text("{\"a\":1}"),
+                Value::Absent,
+                Value::Absent,
+            ],
+        ),
+    ])
+    .unwrap();
+    let before = values(&s);
+    assert!(before.contains(&(f.clone(), "json:{\"a\":1}".into())));
+    s.commit_wait(vec![entity_delete(101)]).unwrap();
+    s.commit_wait(vec![restore(102, "1:0")]).unwrap();
+    assert_eq!(values(&s), before);
+    s.close();
+    drop(s);
+    let s = open(&dir);
+    assert_eq!(values(&s), before);
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn forgetting_one_change_leaves_a_marker_or_nothing_and_never_the_current_value() {
     let dir = temp_dir("forget-one");
     let s = open(&dir);

@@ -31,9 +31,10 @@ pub mod key {
     pub const ENTITY_CHANGE: u64 = 84;
     /// Per entity: the record holding its fav bit.
     pub const FAV: u64 = 17;
-    /// Per (entity, field): the text's last full value, size, and the edits since.
-    pub const TEXT: u64 = 18;
-    /// Per (entity, field, n): the n-th edit since the last full value.
+    /// Per (entity, field): its current value (`Cur`): a text or diffed JSON value's last full value, size and the
+    /// edits since, or a whole JSON value's record. One get reads any field, one scan all of an entity's.
+    pub const HEAD: u64 = 18;
+    /// Per (entity, field, n): the n-th edit of a text value since the last full value.
     pub const TEXT_EDIT: u64 = 19;
     /// Search (`crate::search`).
     pub const SEARCH_POSTING: u64 = 32;
@@ -128,8 +129,6 @@ pub mod key {
     pub const ITEM: u64 = 60;
     /// Per (entity, list, item): its position and `itemPlace` record.
     pub const ITEM_AT: u64 = 61;
-    /// Per (entity, field): its `jsonValue` record.
-    pub const VALUE: u64 = 62;
     /// Per tag: its `tagMerge` record.
     pub const MERGE: u64 = 63;
     /// Per (target, tag): the tag merges into the target and its carriers aren't the target's yet.
@@ -340,6 +339,82 @@ pub(super) fn parse_varints<const N: usize>(b: &[u8]) -> Result<[u64; N], StoreE
     Ok(out)
 }
 
+/// What an entity field's head (`key::HEAD`) holds, told apart by a trailing tag: a text value (`Head`, no tag),
+/// a JSON value written with its history (`Head` over `histSet`/`histEdit` records, tag 1), or a JSON value
+/// written whole (its `jsonValue` record, tag 2). A message's text head (`key::MSG_TEXT`) is always text.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum Cur {
+    Text(Head),
+    Json(Head),
+    Whole(Loc),
+}
+
+const TAG_JSON: u64 = 1;
+const TAG_WHOLE: u64 = 2;
+
+impl Cur {
+    pub(super) fn parse(b: &[u8]) -> Result<Cur, StoreError> {
+        let mut v = [0u64; 6];
+        let mut n = 0;
+        let mut at = 0;
+        while at < b.len() {
+            if n == v.len() {
+                return Err(StoreError::Entry("a value head has too many parts".into()));
+            }
+            v[n] = get_uvarint(b, &mut at)
+                .map_err(|_| StoreError::Entry("a value head doesn't decode".into()))?;
+            n += 1;
+        }
+        let head = || {
+            Head::with_edits(
+                Loc {
+                    pos: v[0],
+                    len: v[1],
+                },
+                v[2],
+                v[3],
+                v[4],
+            )
+        };
+        match (n, v[n.saturating_sub(1)]) {
+            (5, _) => Ok(Cur::Text(head())),
+            (6, TAG_JSON) => Ok(Cur::Json(head())),
+            (3, TAG_WHOLE) => Ok(Cur::Whole(Loc {
+                pos: v[0],
+                len: v[1],
+            })),
+            _ => Err(StoreError::Entry("a value head has an unknown form".into())),
+        }
+    }
+
+    pub(super) fn bytes(&self) -> Vec<u8> {
+        match self {
+            Cur::Text(h) => h.bytes(),
+            Cur::Json(h) => {
+                let mut b = h.bytes();
+                put_uvarint(&mut b, TAG_JSON);
+                b
+            }
+            Cur::Whole(l) => varints(&[l.pos, l.len, TAG_WHOLE]),
+        }
+    }
+
+    /// Entity `e`'s head of `f`.
+    pub(super) fn get(view: &View, e: u64, f: &FieldRef) -> Result<Option<Cur>, StoreError> {
+        view.get(&key::field(key::HEAD, e, f))?
+            .map(|b| Cur::parse(&b))
+            .transpose()
+    }
+}
+
+/// Entity `e`'s whole JSON value of `f`: its `jsonValue` record's place, where its head is one.
+pub(super) fn whole_json(view: &View, e: u64, f: &FieldRef) -> Result<Option<Loc>, StoreError> {
+    Ok(match Cur::get(view, e, f)? {
+        Some(Cur::Whole(l)) => Some(l),
+        _ => None,
+    })
+}
+
 pub fn loc_bytes(l: Loc) -> Vec<u8> {
     varints(&[l.pos, l.len])
 }
@@ -548,7 +623,7 @@ impl Holder {
 
     pub fn text_key(self, f: &FieldRef) -> Vec<u8> {
         match self {
-            Holder::Entity(e) => key::field(key::TEXT, e, f),
+            Holder::Entity(e) => key::field(key::HEAD, e, f),
             Holder::Message(m) => key::field(key::MSG_TEXT, m, f),
         }
     }
@@ -566,9 +641,10 @@ impl Holder {
         }
     }
 
+    /// Where (h, f)'s whole JSON value is kept: an entity's head (`Cur::Whole`), a message's `MSG_VALUE`.
     pub fn value_key(self, f: &FieldRef) -> Vec<u8> {
         match self {
-            Holder::Entity(e) => key::field(key::VALUE, e, f),
+            Holder::Entity(e) => key::field(key::HEAD, e, f),
             Holder::Message(m) => key::field(key::MSG_VALUE, m, f),
         }
     }
@@ -624,19 +700,14 @@ impl Head {
         ])
     }
 
+    /// The text head of (h, f); None where it holds no text (no value, or a JSON one).
     pub(super) fn get(view: &View, h: Holder, f: &FieldRef) -> Result<Option<Head>, StoreError> {
-        view.get(&h.text_key(f))?
-            .map(|b| Head::parse(&b))
-            .transpose()
-    }
-
-    pub(super) fn parse(b: &[u8]) -> Result<Head, StoreError> {
-        let [pos, len, size, edits, edit_bytes] = parse_varints(b)?;
-        Ok(Head {
-            full: Loc { pos, len },
-            size,
-            edits,
-            edit_bytes,
+        Ok(match view.get(&h.text_key(f))? {
+            Some(b) => match Cur::parse(&b)? {
+                Cur::Text(head) => Some(head),
+                Cur::Json(_) | Cur::Whole(_) => None,
+            },
+            None => None,
         })
     }
 }
@@ -703,14 +774,27 @@ fn materialize(view: &View, h: Holder, f: &FieldRef, head: &Head) -> Result<Vec<
     Ok(text)
 }
 
-/// The text a head entry (`Holder::text_key`) of entity `entity`'s field `f` stands for.
+/// The text a head entry (`Holder::text_key`) of entity `entity`'s field `f` stands for; None where it holds JSON.
 pub(super) fn text_of_head(
     view: &View,
     entity: u64,
     f: &FieldRef,
     head: &[u8],
+) -> Result<Option<Vec<u8>>, StoreError> {
+    match Cur::parse(head)? {
+        Cur::Text(h) => materialize(view, Holder::Entity(entity), f, &h).map(Some),
+        Cur::Json(_) | Cur::Whole(_) => Ok(None),
+    }
+}
+
+/// The text entity `entity`'s text head `head` of `f` stands for.
+pub(super) fn text_of(
+    view: &View,
+    entity: u64,
+    f: &FieldRef,
+    head: &Head,
 ) -> Result<Vec<u8>, StoreError> {
-    materialize(view, Holder::Entity(entity), f, &Head::parse(head)?)
+    materialize(view, Holder::Entity(entity), f, head)
 }
 
 pub(super) fn text_value(

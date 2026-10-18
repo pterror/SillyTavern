@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use super::StoreError;
 use super::books;
 use super::derive::View;
-use super::kinds::{key, text_value};
+use super::kinds::{Cur, Head, key, text_value};
 use super::library::{
     self, CHARACTER, CHAT_SIZE, CREATED, DATA, FOLDER_TYPE, GROUP, LAST_CHAT, Scope, count_key,
     counter, num_key, order_prefix, parse_uvarint, rand_key, rand_prefix, split_order_key,
@@ -1087,22 +1087,18 @@ pub fn entity_with(view: &View, e: u64, only: Option<&Only>) -> Result<Option<En
     if kind == books::ENTRY {
         out.entry_index = books::entry_index(view, e)?;
     }
-    let tp = key::id(key::TEXT, e);
-    for (tk, _) in view.scan(&tp, &key::prefix_end(&tp), usize::MAX)? {
-        let f = library::field_after(&tk, key::TEXT)?;
-        if let Some(t) = text_value(view, e, &f)? {
-            out.values.push((f, Stored::Text(t)));
-        }
-    }
-    let vp = key::id(key::VALUE, e);
-    for (vk, v) in view.scan(&vp, &key::prefix_end(&vp), usize::MAX)? {
-        let f = library::field_after(&vk, key::VALUE)?;
-        let (rec, _) = view.record(super::kinds::parse_loc(&v)?.pos)?;
-        out.values
-            .push((f, Stored::Json(super::kinds::bytes(&rec, 2).to_vec())));
-    }
-    for (f, j) in super::history::json_values(view, e)? {
-        out.values.push((f, Stored::Json(j)));
+    let hp = key::id(key::HEAD, e);
+    for (hk, v) in view.scan(&hp, &key::prefix_end(&hp), usize::MAX)? {
+        let f = library::field_after(&hk, key::HEAD)?;
+        let (json, value) = super::history::value_of(view, e, &f, &Cur::parse(&v)?)?;
+        out.values.push((
+            f,
+            if json {
+                Stored::Json(value)
+            } else {
+                Stored::Text(value)
+            },
+        ));
     }
     let ip = key::id(key::ITEM, e);
     // A book's entries are read by place (`books::entries_page`), not with its values.
@@ -1156,7 +1152,7 @@ pub fn entities_only(
     ids: &[u64],
     only: &Only,
 ) -> Result<Vec<Option<Entity>>, StoreError> {
-    use super::kinds::{full_text, parse_loc, parse_pos, parse_varints};
+    use super::kinds::{full_text, parse_loc, parse_pos};
     use crate::log::format::Value;
     // Per entity: its record, version, fav, data size, create date and tag order.
     const FIXED: [u64; 6] = [
@@ -1174,43 +1170,27 @@ pub fn entities_only(
         .collect();
     let got = view.get_many(&keys)?;
     let want_field = |f: &FieldRef| only.fields.iter().position(|w| w == f);
-    // Per entity and asked field: its text head, its JSON value's entry and its diffed JSON value's head; then its list
-    // items, whose text heads are read together.
-    type Found = Vec<(Option<Vec<u8>>, Option<Vec<u8>>, Option<Vec<u8>>)>;
-    let mut found: Vec<Found> = Vec::with_capacity(ids.len());
+    // Per entity and asked field: its head; then its list items, whose text heads are read together.
+    let mut found: Vec<Vec<Option<Cur>>> = Vec::with_capacity(ids.len());
     let mut items: Vec<Vec<(u64, u64, u64)>> = Vec::with_capacity(ids.len());
     let mut item_keys = Vec::new();
     let mut carried: Vec<Vec<u64>> = Vec::with_capacity(ids.len());
     for (n, &e) in ids.iter().enumerate() {
-        let mut fields: Found = vec![(None, None, None); only.fields.len()];
+        let mut fields: Vec<Option<Cur>> = vec![None; only.fields.len()];
         let mut mine = Vec::new();
         let mut tags = Vec::new();
         if got[n * per].is_some() {
             if !only.fields.is_empty() {
-                let tp = key::id(key::TEXT, e);
+                let hp = key::id(key::HEAD, e);
                 // Codes below the list items' and keys; item texts are read by their lists.
-                let codes_end = key::field(key::TEXT, e, &FieldRef::Code(library::ITEM_BASE));
-                let mut keyed = tp.clone();
+                let codes_end = key::field(key::HEAD, e, &FieldRef::Code(library::ITEM_BASE));
+                let mut keyed = hp.clone();
                 keyed.push(2);
-                for (from, to) in [(tp.clone(), codes_end), (keyed, key::prefix_end(&tp))] {
+                for (from, to) in [(hp.clone(), codes_end), (keyed, key::prefix_end(&hp))] {
                     for (k, v) in view.scan(&from, &to, usize::MAX)? {
-                        if let Some(i) = want_field(&library::field_after(&k, key::TEXT)?) {
-                            fields[i].0 = Some(v);
+                        if let Some(i) = want_field(&library::field_after(&k, key::HEAD)?) {
+                            fields[i] = Some(Cur::parse(&v)?);
                         }
-                    }
-                }
-                let vp = key::id(key::VALUE, e);
-                for (k, v) in view.scan(&vp, &key::prefix_end(&vp), usize::MAX)? {
-                    if let Some(i) = want_field(&library::field_after(&k, key::VALUE)?) {
-                        fields[i].1 = Some(v);
-                    }
-                }
-                let jp = key::id(super::history::JSON_HEAD, e);
-                for (k, v) in view.scan(&jp, &key::prefix_end(&jp), usize::MAX)? {
-                    if let Some(i) =
-                        want_field(&library::field_after(&k, super::history::JSON_HEAD)?)
-                    {
-                        fields[i].2 = Some(v);
                     }
                 }
             }
@@ -1221,7 +1201,7 @@ pub fn entities_only(
                     let position = get_u64(&ik, &mut at)
                         .ok_or_else(|| StoreError::Entry("an item key doesn't decode".into()))?;
                     let item = parse_uvarint(&v)?;
-                    item_keys.push(key::field(key::TEXT, e, &library::item_field(list, item)));
+                    item_keys.push(key::field(key::HEAD, e, &library::item_field(list, item)));
                     mine.push((list, item, position));
                 }
             }
@@ -1263,21 +1243,25 @@ pub fn entities_only(
                 None => None,
             })
         };
-    // A text head: Some(Ok(record index)) without edits, Some(Err(())) with edits, None for no text.
-    type TextAt = Option<Result<usize, ()>>;
-    let head = |b: &Option<Vec<u8>>, positions: &mut Vec<u64>| -> Result<TextAt, StoreError> {
-        let Some(b) = b else { return Ok(None) };
-        let [pos, _len, _size, edits, _bytes] = parse_varints::<5>(b)?;
-        if edits > 0 {
-            return Ok(Some(Err(())));
+    // A head's full value: Ok(record index) without edits, Err(()) with edits (read on its own).
+    type At = Result<usize, ()>;
+    let head = |h: &Head, positions: &mut Vec<u64>| -> At {
+        if h.edits() > 0 {
+            return Err(());
         }
-        positions.push(pos);
-        Ok(Some(Ok(positions.len() - 1)))
+        positions.push(h.full.pos);
+        Ok(positions.len() - 1)
     };
+    // A field's value: text, JSON with its history, or whole JSON (its record's index).
+    enum Field {
+        Text(At),
+        Json(At),
+        Whole(usize),
+    }
     struct Plan {
         fixed: [Option<usize>; 6],
-        fields: Vec<(TextAt, Option<usize>, TextAt)>,
-        items: Vec<TextAt>,
+        fields: Vec<Option<Field>>,
+        items: Vec<Option<At>>,
     }
     let mut plans: Vec<Option<Plan>> = Vec::with_capacity(ids.len());
     let mut item_at = 0;
@@ -1303,23 +1287,24 @@ pub fn entities_only(
             }
         }
         let mut fields = Vec::with_capacity(only.fields.len());
-        for (t, v, j) in &found[n] {
-            let t = head(t, &mut positions)?;
-            let v = if t.is_none() {
-                want(v, &mut positions)?
-            } else {
-                None
-            };
-            let j = if t.is_none() && v.is_none() {
-                head(j, &mut positions)?
-            } else {
-                None
-            };
-            fields.push((t, v, j));
+        for cur in &found[n] {
+            fields.push(cur.map(|cur| match cur {
+                Cur::Text(h) => Field::Text(head(&h, &mut positions)),
+                Cur::Json(h) => Field::Json(head(&h, &mut positions)),
+                Cur::Whole(l) => {
+                    positions.push(l.pos);
+                    Field::Whole(positions.len() - 1)
+                }
+            }));
         }
         let mut its = Vec::with_capacity(items[n].len());
         for _ in 0..items[n].len() {
-            its.push(head(&item_heads[item_at], &mut positions)?);
+            its.push(
+                match item_heads[item_at].as_deref().map(Cur::parse).transpose()? {
+                    Some(Cur::Text(h)) => Some(head(&h, &mut positions)),
+                    _ => None,
+                },
+            );
             item_at += 1;
         }
         plans.push(Some(Plan {
@@ -1410,19 +1395,17 @@ pub fn entities_only(
                 Err(()) => Ok(text_value(view, e, f)?.unwrap_or_default()),
             }
         };
-        for (f, (t, v, j)) in only.fields.iter().zip(plan.fields) {
-            if let Some(t) = t {
-                ent.values.push((f.clone(), Stored::Text(text(t, f)?)));
-            } else if let Some(v) = rec(v) {
-                ent.values
-                    .push((f.clone(), Stored::Json(super::kinds::bytes(v, 2).to_vec())));
-            } else if let Some(j) = j {
-                let json = match j {
+        for (f, field) in only.fields.iter().zip(plan.fields) {
+            let stored = match field {
+                None => continue,
+                Some(Field::Text(t)) => Stored::Text(text(t, f)?),
+                Some(Field::Whole(i)) => Stored::Json(super::kinds::bytes(&recs[i], 2).to_vec()),
+                Some(Field::Json(j)) => Stored::Json(match j {
                     Ok(i) => full_text(&recs[i]).to_vec(),
                     Err(()) => super::history::json_value(view, e, f)?.unwrap_or_default(),
-                };
-                ent.values.push((f.clone(), Stored::Json(json)));
-            }
+                }),
+            };
+            ent.values.push((f.clone(), stored));
         }
         for (&(list, item, position), t) in items[n].iter().zip(plan.items) {
             ent.items.push((list, item, position));
