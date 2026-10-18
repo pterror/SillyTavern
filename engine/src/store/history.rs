@@ -561,17 +561,6 @@ fn current(view: &View, e: u64, f: &FieldRef) -> Result<Got, StoreError> {
     Ok(json_value(view, e, f)?.map(|j| (true, j)))
 }
 
-/// Whether field `f`'s current value is a head written before history (`textValue`, `textEdit`, `jsonValue`).
-fn legacy_head(view: &View, e: u64, f: &FieldRef) -> Result<bool, StoreError> {
-    if view.get(&key::field(key::VALUE, e, f))?.is_some() {
-        return Ok(true);
-    }
-    match Head::get(view, Holder::Entity(e), f)? {
-        Some(h) => Ok(view.record(h.full.pos)?.0.kind.name != "histSet"),
-        None => Ok(false),
-    }
-}
-
 /// The edit bytes since the full value of field `f`'s current head.
 fn head_edit_bytes(view: &View, e: u64, f: &FieldRef) -> Result<u64, StoreError> {
     if let Some(h) = Head::get(view, Holder::Entity(e), f)? {
@@ -597,8 +586,7 @@ fn value_record(e: u64, f: &FieldRef, base: &Got, base_bytes: u64, new: &Got, m:
     set_record(e, f, *json, v.clone(), m)
 }
 
-/// Field `f`'s head (text or JSON) becomes `chain`'s, writing only the edit entries that change; the records of a head
-/// written before history die.
+/// Field `f`'s head (text or JSON) becomes `chain`'s, writing only the edit entries that change.
 fn set_head(
     view: &View,
     out: &mut Out,
@@ -630,30 +618,18 @@ fn set_head(
     ];
     for (is_json, old) in olds {
         let Some(old) = old else { continue };
-        let legacy = !is_json && view.record(old.full.pos)?.0.kind.name != "histSet";
-        let kept = chain.base.is_some() && is_json == json && !legacy;
-        if legacy {
-            dead(out, old.full);
-        }
+        let kept = chain.base.is_some() && is_json == json;
         for n in 1..=old.edits() {
             let k = edit_key(is_json, n);
             if kept && n as usize <= chain.edits.len() {
                 in_place.push(view.get(&k)?.map(|b| parse_loc(&b)).transpose()?);
                 continue;
             }
-            if legacy && let Some(b) = view.get(&k)? {
-                dead(out, parse_loc(&b)?);
-            }
             out.del(k);
         }
         if !kept {
             out.del(head_key(is_json));
         }
-    }
-    let vk = key::field(key::VALUE, e, f);
-    if let Some(b) = view.get(&vk)? {
-        dead(out, parse_loc(&b)?);
-        out.del(vk);
     }
     let Some((base, _)) = &chain.base else {
         return Ok(());
@@ -676,7 +652,7 @@ fn set_head(
     Ok(())
 }
 
-/// Removes field `f`'s head, as its entity goes; the records of a head written before history die.
+/// Removes field `f`'s head, as its entity goes.
 fn drop_head(view: &View, out: &mut Out, e: u64, f: &FieldRef) -> Result<(), StoreError> {
     let none = Chain {
         base: None,
@@ -760,8 +736,7 @@ fn latest_place(
     Ok(Some((l, opt_uint(&r, 3))))
 }
 
-/// Item (`list`, `item`) of entity `e` is placed as `latest` says (None: no place change, so none); a place
-/// written before history dies.
+/// Item (`list`, `item`) of entity `e` is placed as `latest` says (None: no place change, so none).
 fn set_place(
     view: &View,
     out: &mut Out,
@@ -786,10 +761,7 @@ fn set_place(
             None => {}
         }
     }
-    if let Some((p, l)) = was {
-        if view.record(l.pos)?.0.kind.name == "itemPlace" {
-            dead(out, l);
-        }
+    if let Some((p, _)) = was {
         out.del(item_key(e, list, p));
     }
     match new {
@@ -1053,17 +1025,12 @@ impl Deriver for ValueChange {
                 Some((json, v))
             }
         };
-        // Over a value written before history, the same value is its first change.
-        if new == cur && !legacy_head(view, e, &f)? {
+        if new == cur {
             return Err(refused(format!(
                 "a change of entity {e} that changes nothing"
             )));
         }
         if rec.kind.name == "histEdit" {
-            if legacy_head(view, e, &f)? {
-                let (json, v) = new.expect("an edit's value");
-                return Ok(set_record(e, &f, json, v, &m));
-            }
             let bytes = head_edit_bytes(view, e, &f)?;
             return Ok(value_record(e, &f, &cur, bytes, &new, &m));
         }
@@ -1170,11 +1137,7 @@ impl Deriver for PlaceChange {
             .get(&item_at_key(e, list, item))?
             .map(|b| parse_place(&b))
             .transpose()?;
-        let legacy = match now {
-            Some((_, l)) => view.record(l.pos)?.0.kind.name == "itemPlace",
-            None => false,
-        };
-        if now.map(|(p, _)| p) == position && !legacy {
+        if now.map(|(p, _)| p) == position {
             return Err(refused(format!(
                 "a change of entity {e} that changes nothing"
             )));
@@ -1264,18 +1227,14 @@ impl Deriver for EntityDelete {
             deleted_key(book, e),
             varints(&[flags, place.unwrap_or(0), index.map_or(0, f64::to_bits)]),
         );
-        for s in [key::TEXT, JSON_HEAD, key::VALUE] {
+        for s in [key::TEXT, JSON_HEAD] {
             let p = key::id(s, e);
             for (vk, _) in view.scan(&p, &key::prefix_end(&p), usize::MAX)? {
                 drop_head(view, out, e, &library::field_after(&vk, s)?)?;
             }
         }
         let ap = key::id(key::ITEM_AT, e);
-        for (ak, v) in view.scan(&ap, &key::prefix_end(&ap), usize::MAX)? {
-            let (_, l) = parse_place(&v)?;
-            if view.record(l.pos)?.0.kind.name == "itemPlace" {
-                dead(out, l);
-            }
+        for (ak, _) in view.scan(&ap, &key::prefix_end(&ap), usize::MAX)? {
             out.del(ak);
         }
         let ip = key::id(key::ITEM, e);
@@ -2095,66 +2054,4 @@ pub fn deriver(kind: &str) -> Option<&'static dyn Deriver> {
         "histForget" => &Forget,
         _ => return None,
     })
-}
-
-/// One-off support, deleted with `src/migrations/convert-entries-to-history.js`: up to `limit` world-info entries
-/// after the key `after`, in key order, and for each the values and places it holds as written before history (a
-/// `textValue`/`textEdit` head, a `jsonValue`, an `itemPlace`): `{ entries: [{ id, fields: [code | key], items:
-/// [[list, item]] }], last, more }` (`last`: the key of the last entry looked at; entries with neither are left out).
-pub fn legacy_entries(view: &View, after: Option<&[u8]>, limit: usize) -> Result<Js, StoreError> {
-    let p = key::id(key::ENTITY_KEY, ENTRY);
-    let start = match after {
-        Some(a) => {
-            let mut k = entity_key_key(ENTRY, a);
-            k.push(0);
-            k
-        }
-        None => p.clone(),
-    };
-    let found = view.scan(&start, &key::prefix_end(&p), limit + 1)?;
-    let more = found.len() > limit;
-    let mut rows = Vec::new();
-    let mut last = Js::Null;
-    for (k, v) in found.into_iter().take(limit) {
-        let mut at = p.len();
-        last = Js::Text(
-            get_bytes(&k, &mut at).ok_or_else(|| corrupt("an entity key doesn't decode"))?,
-        );
-        let e = parse_uvarint(&v)?;
-        let mut fields = Vec::new();
-        let tp = key::id(key::TEXT, e);
-        for (tk, h) in view.scan(&tp, &key::prefix_end(&tp), usize::MAX)? {
-            if view.record(Head::parse(&h)?.full.pos)?.0.kind.name != "histSet" {
-                fields.push(field_js(&Some(library::field_after(&tk, key::TEXT)?)));
-            }
-        }
-        let vp = key::id(key::VALUE, e);
-        for (vk, _) in view.scan(&vp, &key::prefix_end(&vp), usize::MAX)? {
-            fields.push(field_js(&Some(library::field_after(&vk, key::VALUE)?)));
-        }
-        let mut items = Vec::new();
-        let ap = key::id(key::ITEM_AT, e);
-        for (ak, pv) in view.scan(&ap, &key::prefix_end(&ap), usize::MAX)? {
-            let (_, l) = parse_place(&pv)?;
-            if view.record(l.pos)?.0.kind.name == "itemPlace" {
-                let mut at = ap.len();
-                let bad = || corrupt("an item key doesn't decode");
-                let list = get_u64(&ak, &mut at).ok_or_else(bad)?;
-                let item = get_u64(&ak, &mut at).ok_or_else(bad)?;
-                items.push(Js::Arr(vec![Js::Num(list as f64), Js::Num(item as f64)]));
-            }
-        }
-        if !fields.is_empty() || !items.is_empty() {
-            rows.push(Js::Obj(vec![
-                ("id", Js::Big(e)),
-                ("fields", Js::Arr(fields)),
-                ("items", Js::Arr(items)),
-            ]));
-        }
-    }
-    Ok(Js::Obj(vec![
-        ("entries", Js::Arr(rows)),
-        ("last", last),
-        ("more", Js::Bool(more)),
-    ]))
 }
