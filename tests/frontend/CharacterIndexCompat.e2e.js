@@ -527,22 +527,25 @@ test.describe('positional character parameters (#1-#8)', () => {
             const index = (await openGroupOf(page, [current, target])).indices[target];
             await expectIndexNames(page, index, target);
 
-            // The current chat is the tab's session; naming a chat moves the session there.
+            // Naming a chat moves the tab to that bookmark and makes it the current chat, whose compat id (`b<id>`)
+            // the character's `chat` then holds, locally and as stored.
             const calls = [[names[0], index], [names[1], Number(index)], [names[2], target]];
+            const seen = new Set();
             for (const [newName, ref] of calls) {
-                const { local, session, shown } = await page.evaluate(async ({ ref, newName, avatar }) => {
+                const { local, shown } = await page.evaluate(async ({ ref, newName, avatar }) => {
                     const { updateRemoteChatName } = await import('/script.js');
-                    const { tabSession } = await import('/scripts/tab-session.js');
                     await updateRemoteChatName(ref, newName);
                     // @ts-ignore
                     const context = SillyTavern.getContext();
                     const response = await fetch('/api/chats/open', { method: 'POST', headers: context.getRequestHeaders(), body: JSON.stringify({ avatar_url: avatar }) });
                     const opened = await response.json();
-                    return { local: context.getCharacterByAvatar(avatar).chat, session: tabSession(), shown: opened.messages.at(-1)?.mes };
+                    return { local: context.getCharacterByAvatar(avatar).chat, shown: opened.messages.at(-1)?.mes };
                 }, { ref, newName, avatar: target });
                 expect(shown).toBe(`message in ${newName}`);
-                expect(local).toBe(session);
-                expect((await fetchStoredCharacter(page, target)).body.chat).toBe(session);
+                expect(local).toMatch(/^b\d+$/);
+                expect(seen.has(local)).toBe(false);
+                seen.add(local);
+                expect((await fetchStoredCharacter(page, target)).body.chat).toBe(local);
             }
         } finally {
             await deleteCharacters(page, [current, target]);
@@ -617,7 +620,7 @@ test.describe('#10 Generate force_chid', () => {
      * Calls Generate with these options and reports the members drafted and whether it threw.
      * @param {import('@playwright/test').Page} page
      * @param {object} options
-     * @returns {Promise<{drafted: string[], error: null|{name: string, message: string}}>}
+     * @returns {Promise<{drafted: number[], error: null|{name: string, message: string}}>}
      */
     async function generateWith(page, options) {
         return page.evaluate(async (options) => {
@@ -642,9 +645,11 @@ test.describe('#10 Generate force_chid', () => {
         const { first, second, secondIndex, groupId } = await setUpGroup(page);
         try {
             const warnings = collectWarnings(page);
-            expect(await generateWith(page, { force_chid: Number(secondIndex) })).toEqual({ drafted: [second], error: null });
-            expect(await generateWith(page, { force_avatar: second })).toEqual({ drafted: [second], error: null });
-            expect(await generateWith(page, { force_chid: Number(secondIndex), force_avatar: second })).toEqual({ drafted: [second], error: null });
+            // GROUP_MEMBER_DRAFTED carries the member's index in `characters`, as upstream's does.
+            const drafted = [Number(secondIndex)];
+            expect(await generateWith(page, { force_chid: Number(secondIndex) })).toEqual({ drafted, error: null });
+            expect(await generateWith(page, { force_avatar: second })).toEqual({ drafted, error: null });
+            expect(await generateWith(page, { force_chid: Number(secondIndex), force_avatar: second })).toEqual({ drafted, error: null });
             expect(warnings.filter(text => text.includes(PAIR_MISMATCH_WARNING))).toEqual([]);
         } finally {
             await tearDownGroup(page, groupId, [first, second]);
@@ -652,14 +657,15 @@ test.describe('#10 Generate force_chid', () => {
     });
 
     test('in a group, a string or null force_chid is ignored', async ({ page }) => {
-        const { first, second, secondIndex, groupId } = await setUpGroup(page);
+        const { first, second, firstIndex, secondIndex, groupId } = await setUpGroup(page);
         try {
             const warnings = collectWarnings(page);
+            const drafted = [Number(firstIndex)];
             // `getContext().characterId` is an index string: force_chid takes numbers only, so force_avatar decides.
-            expect(await generateWith(page, { force_chid: secondIndex, force_avatar: first })).toEqual({ drafted: [first], error: null });
-            expect(await generateWith(page, { force_chid: second, force_avatar: first })).toEqual({ drafted: [first], error: null });
-            expect(await generateWith(page, { force_chid: String(MISSING_INDEX), force_avatar: first })).toEqual({ drafted: [first], error: null });
-            expect(await generateWith(page, { force_chid: null, force_avatar: first })).toEqual({ drafted: [first], error: null });
+            expect(await generateWith(page, { force_chid: secondIndex, force_avatar: first })).toEqual({ drafted, error: null });
+            expect(await generateWith(page, { force_chid: second, force_avatar: first })).toEqual({ drafted, error: null });
+            expect(await generateWith(page, { force_chid: String(MISSING_INDEX), force_avatar: first })).toEqual({ drafted, error: null });
+            expect(await generateWith(page, { force_chid: null, force_avatar: first })).toEqual({ drafted, error: null });
             expect(warnings.filter(text => text.includes(PAIR_MISMATCH_WARNING))).toEqual([]);
         } finally {
             await tearDownGroup(page, groupId, [first, second]);
@@ -1926,6 +1932,13 @@ test.describe('getEntitiesList (step 10)', () => {
                 } else {
                     held.push(route);
                 }
+            });
+            // Pages seen before are kept in browser storage and drawn before the server answers: with none kept,
+            // nothing can render while /query is held. A delete waits for this page's connections to close (the
+            // reload), and the reloaded page's opens wait for the delete.
+            await page.evaluate(async () => {
+                const names = (await indexedDB.databases()).map(db => db.name).filter(name => name?.startsWith('SillyTavern_QueryCache_'));
+                for (const name of names) indexedDB.deleteDatabase(name);
             });
             await page.reload();
             await expect.poll(() => held.length, { timeout: 60000 }).toBeGreaterThan(0);
