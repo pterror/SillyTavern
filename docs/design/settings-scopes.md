@@ -31,22 +31,14 @@ reordering them). Each row of `settings-mapping.tsv` gets a `levels` column.
 
 No chat or character can change a reader-bound setting, and output in a shared chat never depends on a device.
 
-## Open: a device or user statement where a chat or character states its own
+## The order is a setting
 
-Requirement: the user can have a device (or user) statement apply even where a chat or character states its own,
-for any setting ("on this phone, my background, even in chats that set one").
-
-Diagnosis: device, tab and user (where and who) are independent of chat and character (what is being viewed); the
-single closest-first line imposes an order between them that doesn't exist, which is why this case conflicts.
-
-Rejected, with the user's reasons where given: a per-setting "ignore chat X" switch, and per-kind binary "use the
-content's X" toggles (special cases; "binary"); pinned statements as CSS `!important` (escalation, hidden
-precedence); a user-stated level order per setting ("awful ux"); "reach" (a statement overriding named closer
-levels); "the more specific statement wins" (an arbitrary rule). Recency (the latest applicable statement wins)
-has the same flaw.
-
-Until resolved, the order above applies. When the settings redesign is built, the plausible behaviours are
-prototyped in the real UI for the user to try before one is fixed.
+The order of the levels is itself a setting, resolved through the cascade like any other: the order above is its
+default; it can be stated at any level, and per setting the way any field is overridden. "On this phone, my
+settings win over chats" is a device-level statement of the order; "my preset over characters' presets" is a
+user-level statement of the order for presets. Resolving a field first resolves the order that applies to it
+(from the default order, so this doesn't recurse), then walks the levels in that order. Nothing else is added: the
+order is shown, edited, kept in history and reset like every other value.
 
 ## Device
 
