@@ -299,8 +299,7 @@ describe('scanDirectory (unit: direct directories fixture, no boot wiring)', () 
             // One more than the cap - MAX_LAST_SEEN_MTIME_ENTRIES's own doc comment is explicit that this is
             // impractical to prove by actually scanning that many real files, so this exercises the exported LRU
             // helper local-import-scan.js's hot path itself goes through (markProcessed(), the cache-miss
-            // fallback) directly, the same way character-metadata-db.js's own randomSortCache eviction is an
-            // untested-but-analogous pattern this one deliberately mirrors.
+            // fallback) directly.
             for (let i = 0; i < localImportScan.MAX_LAST_SEEN_MTIME_ENTRIES + 1; i++) {
                 localImportScan.touchLastSeenMtime(state, `file-${i}.json`, i);
             }

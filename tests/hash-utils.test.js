@@ -46,7 +46,7 @@ describe('bucketOf', () => {
 });
 
 describe('combineDigest/digestsEqual - the anti-entropy state-digest primitive shared by ' +
-    'character-metadata-db.js (server) and tags.js (client), see this module\'s own header', () => {
+    'the server and tags.js (client), see this module\'s own header', () => {
     test('an empty digest equals another independently-created empty digest', () => {
         expect(digestsEqual(emptyDigest(), emptyDigest())).toBe(true);
     });

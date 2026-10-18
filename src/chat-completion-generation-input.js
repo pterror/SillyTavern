@@ -125,7 +125,7 @@ import { substituteParams } from './macro-substitution.js';
  *      - `entryFilterContext` is populated with the real `{ trigger, characterFilename }` this resolver
  *        already has on hand (the same `charFilename` derived from `avatar` used for `characterExtraBooks`
  *        lookup above) - `characterTags` has no resolvable source in this module (would need
- *        src/character-metadata-db.js's `queryCharacters()`, the same heavier subsystem `characterId`'s
+ *        the library's character query, the same heavier subsystem `characterId`'s
  *        own FIELD-MAPPING NOTE above already declined to depend on) and is left at its own default
  *        (`[]`, i.e. "no known tags").
  *      - `isDryRun` reuses this resolver's own `dryRun` parameter - previously accepted for interface
@@ -215,8 +215,8 @@ import { substituteParams } from './macro-substitution.js';
  * - `characterId`: JUDGMENT CALL. The client's real `character.id` is a RESIDENT, in-memory array
  *   index (`characters.findIndex(...)`) into the client's currently-loaded character list - there is
  *   no equivalent stable, on-disk-derivable value without depending on
- *   src/character-metadata-db.js's `queryCharacters()` (a genuinely separate, heavier subsystem: a
- *   SQLite-backed character index, out of scope for this resolver to depend on for a single id field).
+ *   the library's character query (a genuinely separate, heavier subsystem: the store's character
+ *   index, out of scope for this resolver to depend on for a single id field).
  *   So `characterId` defaults to the PROMPT_ORDER_DUMMY_ID (`100000`, matching
  *   `PromptManager.js`'s own `configuration.promptOrder.dummyId` - the "no per-character order
  *   configured, use the global/default order" sentinel, which is also exactly what a fresh

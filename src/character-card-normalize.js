@@ -8,8 +8,8 @@ export { computeContentIdentityHash, stripInstallLocalFields } from './card-iden
 /**
  * Normalizes an arbitrary parsed character JSON object (V1 or V2) into Spec V2 shape.
  *
- * Kept in its own module (not characters.js) so character-metadata-db.js can import it without creating an
- * import cycle with characters.js.
+ * Kept in its own module (not characters.js) so the library and import code can use it without an import cycle
+ * with characters.js.
  * @param {boolean} hoistDate Will set the create_date field to the current date if it's missing
  */
 export function getCharaCardV2(jsonObject, directories, hoistDate = true) {
@@ -72,7 +72,7 @@ export function unsetPrivateFields(char) {
 
 /**
  * Deletes fav/data.extensions.fav/chat outright (unlike unsetPrivateFields(), which resets them rather than
- * removing the keys). Used on import only: character-metadata-db.js is the authoritative record of per-install
+ * removing the keys). Used on import only: the store is the authoritative record of per-install
  * fav/chat state, so the card itself doesn't need to carry placeholder values for it.
  */
 export function omitInstallLocalFields(char) {

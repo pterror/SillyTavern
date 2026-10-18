@@ -9,7 +9,7 @@ import express from 'express';
 import { setConfigFilePath } from '../util.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// character-metadata-db.js/message-tree-db.js (both imported transitively by chats.js) read
+// Modules imported transitively by chats.js read
 // process-wide config at import time - the config path must be set before that import chain runs,
 // same as every other route-level test file in this directory (see e.g. groups.test.js's own comment).
 setConfigFilePath(path.join(__dirname, '..', '..', 'config.yaml'));

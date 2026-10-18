@@ -3,13 +3,18 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
+import { oldStoreOracle } from './util/old-store-oracle.js';
+
 /**
  * Tags on the engine (src/library-engine.js, src/library-engine-tags.js) against the old store's answers for the
- * same writes.
+ * same writes. The old store is gone; its answers are recorded (tests/fixtures/old-store/library-engine-tags/,
+ * see tests/util/old-store-oracle.js).
  */
 
-/** @type {typeof import('../src/character-metadata-db.js')} */
+/** @type {any} */
 let metadataDb;
+/** @type {Awaited<ReturnType<typeof oldStoreOracle>>} */
+let oracle;
 /** @type {typeof import('../src/library-engine.js')} */
 let lib;
 /** @type {any} */
@@ -22,12 +27,14 @@ let library;
 beforeAll(async () => {
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
-    metadataDb = await import('../src/character-metadata-db.js');
+    oracle = await oldStoreOracle('library-engine-tags', 'character-metadata-db.js', () => directories);
+    metadataDb = oracle.store;
     lib = await import('../src/library-engine.js');
     engine = (await import('../engine/load.js')).loadEngine().binding;
 });
 
 beforeEach(async () => {
+    oracle.begin(String(expect.getState().currentTestName));
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-library-engine-tags-test-'));
     directories = {
         root: tempDir,
@@ -43,6 +50,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+    oracle.end();
     await library.close();
     metadataDb.disposeMetadataStores();
     fs.rmSync(directories.root, { recursive: true, force: true });

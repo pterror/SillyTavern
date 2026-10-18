@@ -1034,7 +1034,7 @@ describe('isServerQueryableSort()', () => {
     // It answers "should the caller even attempt /query for this field", which is true for essentially
     // everything - real column names, made-up ones, 'random' - the server's own 400 invalid-sort-field response
     // is what actually decides support now (see isInvalidSortFieldError() below).
-    test('accepts every column /query can actually sort by (src/character-metadata-db.js QUERYABLE_SORT_COLUMNS)', () => {
+    test('accepts every column /query can actually sort by', () => {
         for (const field of ['name', 'date_last_chat', 'chat_size', 'fav', 'create_date', 'data_size']) {
             expect(isServerQueryableSort(field)).toBe(true);
         }

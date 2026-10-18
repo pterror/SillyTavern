@@ -378,8 +378,7 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
 
     try {
         // Hash/classify/identity-hash, and for png/json the eventual write, all run in the worker off the main
-        // thread. Every sqlite call stays on this thread (no WAL/busy_timeout configured for worker access,
-        // and character-metadata-db.js's batch-import buffer is single-writer, not thread-safe).
+        // thread. Every store call stays on this thread.
         const pipelineResult = await ensureWorkerPool().runPipeline(sourcePath, format, directories, allowIdentityFallback);
 
         // Re-stat after the worker's read (not the pre-dispatch stat above): a file still being streamed onto

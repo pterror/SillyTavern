@@ -20,9 +20,8 @@ let baseUrl;
 let directories;
 
 /**
- * Mounts the real characters.js router, mirroring characters-query.test.js's setup - `/changes`
- * (character-metadata-db.js's getChangesSince()) is a read over the same phase-1 metadata store `/query` reads,
- * so the same seeding approach (upsertCharacterFromWrite(), the real write-path hook) applies.
+ * Mounts the real characters.js router, mirroring characters-query.test.js's setup - `/changes` is a read over
+ * the same store `/query` reads, so the same seeding approach applies.
  */
 beforeAll(async () => {
     const { setConfigFilePath } = await import('../src/util.js');
@@ -68,8 +67,7 @@ async function postJson(urlPath, body) {
 /**
  * Same seeding shape as characters-query.test.js's seedCharacter() - writes a row through the real
  * upsertCharacterFromWrite() write-path hook (the one characters.js's real create/edit routes call), which is
- * also the path that logs a `changes` row (writeRowSync() does this unconditionally - see that function's own
- * doc comment in character-metadata-db.js).
+ * also the path that records a change.
  * @param {string} avatar
  * @param {object} overrides
  */
