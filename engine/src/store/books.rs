@@ -53,9 +53,10 @@ pub const FORWARD: u64 = 195;
 pub const FORWARDED: u64 = 196;
 /// Per character with 2 or more placed links: nothing.
 pub const MULTI_LINK: u64 = 209;
-/// Per (book, start): integer entry keys from `start` up to the value (exclusive; `u64::MAX`: no end) are free. A
-/// book with none has every integer key free.
-pub const FREE: u64 = 197;
+/// Per (book, end): integer entry keys from the value up to `end` (exclusive; `u64::MAX`: no end) are free. A book
+/// with none has every integer key free. Keyed by the end, which taking the lowest free key leaves as it is: entries
+/// created one after another rewrite one entry, not a delete and a new key each.
+pub const FREE: u64 = 218;
 
 /// The largest integer entry key: JavaScript's safe integers.
 pub const MAX_INT_KEY: u64 = (1 << 53) - 1;
@@ -256,33 +257,38 @@ pub fn owner_of(k: &[u8]) -> Result<u64, StoreError> {
 
 // ---- free integer keys ----
 
-fn free_key(book: u64, start: u64) -> Vec<u8> {
-    key::ids(FREE, book, start)
+fn free_key(book: u64, end: u64) -> Vec<u8> {
+    key::ids(FREE, book, end)
 }
 
+/// A free interval's (start, end).
 fn parse_free(k: &[u8], v: &[u8], book: u64) -> Result<(u64, u64), StoreError> {
     let mut at = key::id(FREE, book).len();
-    let start = get_u64(k, &mut at).ok_or_else(|| err("a free key doesn't decode"))?;
+    let end = get_u64(k, &mut at).ok_or_else(|| err("a free key doesn't decode"))?;
     let mut at = 0;
-    let end = get_uvarint(v, &mut at).map_err(|_| err("a free end doesn't decode"))?;
+    let start = get_uvarint(v, &mut at).map_err(|_| err("a free start doesn't decode"))?;
     Ok((start, end))
+}
+
+/// The first free interval ending after `n`.
+fn free_after(view: &View, book: u64, n: u64) -> Result<Option<(u64, u64)>, StoreError> {
+    let from = free_key(book, n.saturating_add(1));
+    let found = view.scan(&from, &key::prefix_end(&key::id(FREE, book)), 1)?;
+    found
+        .into_iter()
+        .next()
+        .map(|(k, v)| parse_free(&k, &v, book))
+        .transpose()
 }
 
 /// The free interval holding `n`, if any.
 fn free_holding(view: &View, book: u64, n: u64) -> Result<Option<(u64, u64)>, StoreError> {
-    let start = key::id(FREE, book);
-    let end = free_key(book, n.saturating_add(1));
-    let found = view.scan_vals_rev(&start, &end, 1)?;
-    let Some((k, v)) = found.into_iter().next() else {
-        return Ok(None);
-    };
-    let (s, e) = parse_free(&k, &v.into_bytes(&k), book)?;
-    Ok((n < e).then_some((s, e)))
+    Ok(free_after(view, book, n)?.filter(|&(s, _)| s <= n))
 }
 
 fn put_free(out: &mut Out, book: u64, s: u64, e: u64) {
     if s < e {
-        out.put(free_key(book, s), uvarint(e));
+        out.put(free_key(book, e), uvarint(s));
     }
 }
 
@@ -302,28 +308,30 @@ fn take_free(view: &View, out: &mut Out, book: u64, n: u64) -> Result<(), StoreE
     } else {
         (0, u64::MAX)
     };
-    out.del(free_key(book, s));
+    // What is left above `n` keeps the interval's key; below it, a new one ends at `n`.
+    if n + 1 < e {
+        put_free(out, book, n + 1, e);
+    } else if any {
+        out.del(free_key(book, e));
+    }
     put_free(out, book, s, n);
-    put_free(out, book, n + 1, e);
     Ok(())
 }
 
 fn give_free(view: &View, out: &mut Out, book: u64, n: u64) -> Result<(), StoreError> {
-    let (mut s, mut e) = (n, n + 1);
+    let mut s = n;
     if n > 0
-        && let Some((ps, pe)) = free_holding(view, book, n - 1)?
-        && pe == n
+        && let Some(v) = view.get(&free_key(book, n))?
     {
-        out.del(free_key(book, ps));
-        s = ps;
-    }
-    let nk = free_key(book, n + 1);
-    if let Some(v) = view.get(&nk)? {
         let mut at = 0;
-        e = get_uvarint(&v, &mut at).map_err(|_| err("a free end doesn't decode"))?;
-        out.del(nk);
+        s = get_uvarint(&v, &mut at).map_err(|_| err("a free start doesn't decode"))?;
+        out.del(free_key(book, n));
     }
-    put_free(out, book, s, e);
+    // The interval starting right after `n` takes it in, keeping its key.
+    match free_after(view, book, n)? {
+        Some((ns, ne)) if ns == n + 1 => put_free(out, book, s, ne),
+        _ => put_free(out, book, s, n + 1),
+    }
     Ok(())
 }
 
