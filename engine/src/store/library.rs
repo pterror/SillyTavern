@@ -18,8 +18,8 @@ use super::StoreError;
 use super::books;
 use super::derive::{Deriver, Loc, Out, View};
 use super::kinds::{
-    Holder, bytes, dead, drop_text, drop_text_of, drop_text_unsearched, field, id, key, loc_bytes,
-    parse_loc, text_value, version,
+    Cur, Holder, bytes, dead, drop_text, drop_text_of, drop_text_unsearched, field, id, key,
+    loc_bytes, parse_loc, text_value, version, whole_json,
 };
 use super::searched;
 use super::tags;
@@ -942,29 +942,29 @@ fn delete_entity(
             out.map(key::member_block(*tag, e), vec![(key::member_slot(e), 0)]);
         }
     }
-    // Text values (list items' included), then the rest of what the entity holds.
-    let start = key::id(key::TEXT, e);
+    // Values (list items' texts included), then the rest of what the entity holds.
+    let start = key::id(key::HEAD, e);
     let end = key::prefix_end(&start);
-    for (tk, _) in view.scan(&start, &end, usize::MAX)? {
-        let f = field_after(&tk, key::TEXT)?;
-        drop_text_unsearched(view, out, e, &f)?;
-    }
-    // A value written with its history: its records stay that history's.
-    let jp = key::id(super::history::JSON_HEAD, e);
-    for (jk, v) in view.scan(&jp, &key::prefix_end(&jp), usize::MAX)? {
-        let f = field_after(&jk, super::history::JSON_HEAD)?;
-        for n in 1..=super::kinds::Head::parse(&v)?.edits() {
-            out.del(super::history::json_edit_key(e, &f, n));
+    for (hk, v) in view.scan(&start, &end, usize::MAX)? {
+        let f = field_after(&hk, key::HEAD)?;
+        match Cur::parse(&v)? {
+            Cur::Text(_) => {
+                drop_text_unsearched(view, out, e, &f)?;
+            }
+            // A value written with its history: its records stay that history's.
+            Cur::Json(h) => {
+                for n in 1..=h.edits() {
+                    out.del(super::history::json_edit_key(e, &f, n));
+                }
+                out.del(hk);
+            }
+            Cur::Whole(l) => {
+                dead(out, l);
+                out.del(hk);
+            }
         }
-        out.del(jk);
     }
-    for s in [
-        key::VALUE,
-        key::ITEM_AT,
-        key::DATA_SIZE,
-        key::CREATE_DATE,
-        key::FAV,
-    ] {
+    for s in [key::ITEM_AT, key::DATA_SIZE, key::CREATE_DATE, key::FAV] {
         if s == key::ITEM_AT {
             let p = key::id(s, e);
             let pend = key::prefix_end(&p);
@@ -1057,11 +1057,8 @@ impl Deriver for JsonValue {
             text_changed(view, out, e, f, None)?;
         }
         searched::json_written(view, out, e, f, Some(bytes(rec, 2)))?;
-        let k = key::field(key::VALUE, e, f);
-        if let Some(b) = view.get(&k)? {
-            dead(out, parse_loc(&b)?);
-        }
-        out.put(k, loc_bytes(at));
+        drop_json(view, out, e, f)?;
+        out.put(h.value_key(f), Cur::Whole(at).bytes());
         version(view, out, e, at)?;
         books::touched(view, out, e, at)?;
         books::field_written(view, out, e, f, true)?;
@@ -1073,7 +1070,10 @@ impl Deriver for JsonValue {
     }
 
     fn is_live(&self, rec: &Record, pos: u64, view: &View) -> Result<bool, StoreError> {
-        live_at(view, &Holder::of(rec, 0).value_key(field(rec, 1)), pos)
+        Ok(match Holder::of(rec, 0) {
+            Holder::Entity(e) => whole_json(view, e, field(rec, 1))?.is_some_and(|l| l.pos == pos),
+            h => live_at(view, &h.value_key(field(rec, 1)), pos)?,
+        })
     }
 
     fn repoint(
@@ -1084,28 +1084,47 @@ impl Deriver for JsonValue {
         view: &View,
         out: &mut Out,
     ) -> Result<(), StoreError> {
-        repoint_at(
-            view,
-            out,
-            &Holder::of(rec, 0).value_key(field(rec, 1)),
-            from,
-            to,
-        )
+        let (h, f) = (Holder::of(rec, 0), field(rec, 1));
+        match h {
+            Holder::Entity(e) => {
+                if whole_json(view, e, f)?.is_some_and(|l| l.pos == from) {
+                    out.put(h.value_key(f), Cur::Whole(to).bytes());
+                }
+                Ok(())
+            }
+            Holder::Message(_) => repoint_at(view, out, &h.value_key(f), from, to),
+        }
     }
 }
 
-/// Clears a value of `json` kind from (e, f) before a text value takes its place.
+/// Clears a JSON value from (e, f) before another value takes its place or the field goes: a whole value's record
+/// dies; a value written with its history keeps its records (they are that history's), its edit entries go.
 pub fn drop_json(view: &View, out: &mut Out, e: u64, f: &FieldRef) -> Result<(), StoreError> {
     drop_json_of(view, out, Holder::Entity(e), f)
 }
 
 pub fn drop_json_of(view: &View, out: &mut Out, h: Holder, f: &FieldRef) -> Result<(), StoreError> {
     let k = h.value_key(f);
-    if let Some(b) = view.get(&k)? {
-        dead(out, parse_loc(&b)?);
-        out.del(k);
-        if let Holder::Message(m) = h {
-            super::chat::shape_add(out, m, -super::chat::SHAPE_EXTRA);
+    match h {
+        Holder::Entity(e) => match Cur::get(view, e, f)? {
+            Some(Cur::Whole(l)) => {
+                dead(out, l);
+                out.del(k);
+            }
+            Some(Cur::Json(head)) => {
+                for n in 1..=head.edits() {
+                    out.del(super::history::json_edit_key(e, f, n));
+                }
+                out.del(k);
+            }
+            Some(Cur::Text(_)) | None => {}
+        },
+        Holder::Message(m) => {
+            if let Some(b) = view.get(&k)? {
+                dead(out, parse_loc(&b)?);
+                out.del(k);
+                super::chat::shape_add(out, m, -super::chat::SHAPE_EXTRA);
+            }
         }
     }
     Ok(())

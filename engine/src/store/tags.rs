@@ -20,7 +20,9 @@
 
 use super::StoreError;
 use super::derive::{Loc, Out, View};
-use super::kinds::{bytes, dead, id, key, loc_bytes, parse_loc, parse_pos, pos_bytes, text_value};
+use super::kinds::{
+    bytes, dead, id, key, loc_bytes, parse_loc, parse_pos, pos_bytes, text_value, whole_json,
+};
 use super::library::{TAG, counter, entity_info, num_key, parse_uvarint, uvarint};
 use crate::keyspace::val::{get_bytes, get_u64, put_bytes, put_u64};
 use crate::log::format::{FieldRef, Record, Value};
@@ -268,9 +270,9 @@ fn place_from_values(view: &View, tag: u64) -> Result<Place, StoreError> {
 }
 
 fn json_value(view: &View, e: u64, f: &FieldRef) -> Result<Option<Vec<u8>>, StoreError> {
-    match view.get(&key::field(key::VALUE, e, f))? {
-        Some(b) => {
-            let (r, _) = view.record(parse_loc(&b)?.pos)?;
+    match whole_json(view, e, f)? {
+        Some(l) => {
+            let (r, _) = view.record(l.pos)?;
             Ok(Some(bytes(&r, 2).to_vec()))
         }
         None => Ok(None),
@@ -423,9 +425,7 @@ pub fn field_written(
 pub const DEFINED: u64 = 41;
 
 pub fn has_marker(view: &View, tag: u64) -> Result<bool, StoreError> {
-    Ok(view
-        .get(&key::field(key::VALUE, tag, &FieldRef::Code(DEFINED)))?
-        .is_some())
+    Ok(whole_json(view, tag, &FieldRef::Code(DEFINED))?.is_some())
 }
 
 /// A tag entity's definition marker was written (`on`, not yet in `view`) or removed (still in `view`): its
@@ -457,10 +457,7 @@ fn defined(view: &View, out: &mut Out, tag: u64, at: Loc, on: bool) -> Result<()
 /// A tag entity comes to be (`entityCreate` of type `TAG`, its values already in `view`), or gets its definition:
 /// with its definition marker, it is placed.
 pub fn created(view: &View, out: &mut Out, tag: u64, at: Loc) -> Result<(), StoreError> {
-    if view
-        .get(&key::field(key::VALUE, tag, &FieldRef::Code(DEFINED)))?
-        .is_none()
-    {
+    if !has_marker(view, tag)? {
         return Ok(());
     }
     placed(view, out, tag, at)
@@ -498,9 +495,7 @@ pub fn deleted(view: &View, out: &mut Out, tag: u64, k: &[u8], at: Loc) -> Resul
     out.put(gk, uvarint(tag));
     out.put(key::id(key::TAG_GONE_ID, tag), k.to_vec());
     // A defined tag's name goes on standing for it (for the tag its merges lead to), the latest deleted one's.
-    if view
-        .get(&key::field(key::VALUE, tag, &FieldRef::Code(DEFINED)))?
-        .is_some()
+    if has_marker(view, tag)?
         && let Some(name) = text_value(view, tag, &FieldRef::Code(super::library::NAME))?
     {
         let mut nk = key::of(key::TAG_GONE_NAME);

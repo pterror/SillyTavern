@@ -886,6 +886,79 @@ fn a_merged_tags_carriers_read_as_the_targets_before_and_after_the_fold() {
 }
 
 #[test]
+fn a_field_has_one_head_whatever_kind_of_value_it_holds() {
+    use super::library_read::Stored;
+    let dir = temp_dir("one-head");
+    let s = Store::open_in(&dir, SMALL, pool()).unwrap();
+    let f = FieldRef::Key(b"ext:x".to_vec());
+    let json = |s: &str| {
+        rec(
+            "jsonValue",
+            vec![
+                Value::Sel(0, 1),
+                Value::Field(f.clone()),
+                text(s),
+                Value::Absent,
+                Value::Absent,
+            ],
+        )
+    };
+    let txt = |s: &str| {
+        rec(
+            "textValue",
+            vec![
+                Value::Sel(0, 1),
+                Value::Field(f.clone()),
+                text(s),
+                Value::Absent,
+                Value::Absent,
+            ],
+        )
+    };
+    let heads = |s: &Store| {
+        s.derived(|v| {
+            let p = key::id(key::HEAD, 1);
+            Ok(v.scan(&p, &key::prefix_end(&p), usize::MAX)?.len())
+        })
+        .unwrap()
+    };
+    let value = |s: &Store| {
+        let e = s.library_entities(&[1]).unwrap()[0].clone().unwrap();
+        narrow_reads_are_whole_reads(s, &[1]);
+        e.values.into_iter().find(|(g, _)| *g == f).map(|(_, v)| v)
+    };
+    s.commit_wait(vec![create(1, CHARACTER, "a.png", 5), txt("one")])
+        .unwrap();
+    assert_eq!(value(&s), Some(Stored::Text(b"one".to_vec())));
+    s.commit_wait(vec![json("{\"a\":1}")]).unwrap();
+    assert_eq!(value(&s), Some(Stored::Json(b"{\"a\":1}".to_vec())));
+    assert_eq!(heads(&s), 1);
+    s.commit_wait(vec![txt("two")]).unwrap();
+    assert_eq!(value(&s), Some(Stored::Text(b"two".to_vec())));
+    assert_eq!(heads(&s), 1);
+    s.commit_wait(vec![json("[1]"), json("[2]")]).unwrap();
+    s.close();
+    drop(s);
+    let s = Store::open_in(&dir, SMALL, pool()).unwrap();
+    assert_eq!(value(&s), Some(Stored::Json(b"[2]".to_vec())));
+    s.commit_wait(vec![rec(
+        "valueDelete",
+        vec![
+            Value::Sel(0, 1),
+            Value::Field(f.clone()),
+            Value::Absent,
+            Value::Absent,
+        ],
+    )])
+    .unwrap();
+    assert_eq!(value(&s), None);
+    assert_eq!(heads(&s), 0);
+    s.close();
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn an_entity_key_is_taken_once_and_deleting_frees_everything_it_held() {
     let dir = temp_dir("delete");
     let s = Store::open_in(&dir, SMALL, pool()).unwrap();
@@ -953,8 +1026,7 @@ fn an_entity_key_is_taken_once_and_deleting_frees_everything_it_held() {
             let mut n = 0;
             for st in [
                 key::ENTITY,
-                key::TEXT,
-                key::VALUE,
+                key::HEAD,
                 key::ITEM,
                 key::ITEM_AT,
                 key::FAV,

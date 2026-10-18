@@ -74,13 +74,11 @@ reads on top, which belong outside the core]
 - **No block compression.** The same data takes 10.5 GB in RocksDB with LZ4/ZSTD against 18.1 GB here (measured).
 - **Record identity is unstable under cleaning.** Positions change when records move; change ids and feed cursors
   can't be positions. Design: a stable sequence number per record and one index to its current position.
-- **Garbage collection.** Merges are size-tiered only and rarely reach the oldest run, so deletions and old
-  versions stay (35% of runs dead, measured). Size-ratio and deletion-density triggers are built but not committed:
-  full merges must first run in bounded steps.
-- **Three current-value heads** (TEXT, JSON_HEAD, VALUE) where one typed head would do; together ~33% of history's
-  derived writes (measured).
+- **Garbage collection.** Size-ratio and deletion-density triggers merge everything into the oldest run, in bounded
+  steps (040e58c3e, 00bb4c964); the log's cleaning threshold is unchanged, and the space bound has no test.
 - **Keys built from mutable values** (library orders, free-uid ranges, session recency indexes) churn tombstones:
   FREE holds 21× more dead keys than live (measured).
+- **Message heads** (MSG_TEXT, MSG_VALUE) are still split by kind, as entity heads were before `key::HEAD`.
 - **Search layout.** 5.5 GB live: block maxima for one-document terms, a dictionary per lorebook, stored prefixes
   (measured). Standard layouts store bounds only for terms with ≥128 documents (sourced; estimate reasoned).
 - **The boundary.** History, books, library and tags logic live in `src/store/` beside the core, and `bulk.rs`

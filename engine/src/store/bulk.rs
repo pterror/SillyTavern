@@ -1006,7 +1006,7 @@ impl Loader {
                 let blocks = key::of(key::MEMBER_BLOCK);
                 let mut block_it = staged_merge(staged, &blocks)?;
                 let mut place_it = staged_merge(staged, &places)?;
-                let mut text_it = staged_merge(staged, &key::of(key::TEXT))?;
+                let mut text_it = staged_merge(staged, &key::of(key::HEAD))?;
                 let mut it = staged_merge(staged, &members)?;
                 while let Some((mk, v)) = it.next_entry()?.filter(|(k, _)| *k < members_end) {
                     let c = count_of(&mk, v)?;
@@ -1038,7 +1038,8 @@ impl Loader {
                                 tag,
                                 &name_field,
                                 &v.into_bytes(&k),
-                            )?;
+                            )?
+                            .unwrap_or_default();
                         }
                     }
                     let terms = name_terms(&name);

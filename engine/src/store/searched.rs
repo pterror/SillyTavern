@@ -187,16 +187,17 @@ fn list_items(
     list: u64,
     but: Option<u64>,
 ) -> Result<Vec<Vec<u8>>, StoreError> {
-    let start = key::field(key::TEXT, e, &FieldRef::Code(ITEM_BASE));
-    let end = key::prefix_end(&key::id(key::TEXT, e));
+    let start = key::field(key::HEAD, e, &FieldRef::Code(ITEM_BASE));
+    let end = key::prefix_end(&key::id(key::HEAD, e));
     let mut out = Vec::new();
     for (k, _) in view.scan(&start, &end, usize::MAX)? {
-        let f = library::field_after(&k, key::TEXT)?;
+        let f = library::field_after(&k, key::HEAD)?;
         if let Some((l, item)) = item_of(&f)
             && l == list
             && Some(item) != but
+            && let Some(t) = text_value(view, e, &f)?
         {
-            out.push(text_value(view, e, &f)?.unwrap_or_default());
+            out.push(t);
         }
     }
     Ok(out)
