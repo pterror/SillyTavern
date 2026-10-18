@@ -66,8 +66,11 @@ pub type KsResult<T> = Result<T, KsError>;
 /// flushes and reads.
 pub const MERGE_STEP_BYTES: usize = if cfg!(test) { 4 << 10 } else { 4 << 20 };
 
-/// Every run is merged into the oldest once the newer runs together hold this percentage of its bytes...
-pub const SIZE_AMP_PERCENT: u64 = 25;
+/// Every run is merged into the oldest once the newer runs together hold this percentage of its bytes... A
+/// merge into the oldest rewrites (1 + p) of its bytes per p of newer bytes: 3 per byte flushed at 50%, 5 at
+/// 25%; over a whole entries-to-history conversion of a real store (27M records) neither fired again after the
+/// first, so 50% is chosen for the lower write cost.
+pub const SIZE_AMP_PERCENT: u64 = 50;
 /// ...or their deletions this percentage of its entries.
 pub const DEL_PERCENT: u64 = 10;
 
