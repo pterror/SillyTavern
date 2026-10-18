@@ -986,7 +986,7 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
     // operations on two different nodes that cannot dedupe via nodeIdentityKey() the way a plain
     // new-message/new-reply turn does, and would have corrupted/duplicated the tree.
     // Now fixed server-side: both route handlers (text-completions.js and chat-completions.js) persist
-    // the reply via `editMessage()` (src/message-tree-db.js) when `is_continue` is set - splicing
+    // the reply as an edit of the anchor (src/chat-engine.js) when `is_continue` is set - splicing
     // `oldText + newText` into a full copy of the anchor's own current content and replacing the whole
     // stored node in place, never creating a new node. `oldText` is the anchor's real, current `.mes`
     // (see those files' own `anchorContent` doc comments) - investigated and confirmed FAITHFUL to what
@@ -1042,7 +1042,7 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
     // this raw action is always the branch leaf - i.e. the message BEING swiped/regenerated itself -
     // so a plain `appendMessages()` call would have chained the new reply as a CHILD *after* that
     // message, not as a SIBLING under its parent (an actual swipe/regenerate is a sibling
-    // alternative - see `addAlternatives()`/`selectDefaultChild()` in src/message-tree-db.js). That's
+    // alternative - see src/chat-engine.js). That's
     // now fixed server-side too: both route handlers (text-completions.js and chat-completions.js) now
     // persist the reply via `addAlternatives()` (creating the sibling alongside the swiped/regenerated
     // node under ITS real parent, resolved internally) followed by `selectDefaultChild()` (making the
@@ -1373,8 +1373,8 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
     // (identically-worded) JUDGMENT CALL #1 above: the client's saveReply({type:'appendFinal'}) edits the existing
     // leaf node's text in place, but the server's appendMessages() call (keyed off `anchorNodeId`, which for
     // chat-completion's raw action is ALSO just the branch leaf - see buildRawActionChatCompletionRequest()'s Step
-    // 2) used to always append a brand-new CHILD node instead. Now fixed identically: `editMessage()`
-    // (src/message-tree-db.js) splices `oldText + newText` into the anchor's own current content and replaces the
+    // 2) used to always append a brand-new CHILD node instead. Now fixed identically: the chat store
+    // (src/chat-engine.js) splices `oldText + newText` into the anchor's own current content and replaces the
     // whole stored node in place when `is_continue` is set - see that route handler's own comment on this branch,
     // and the text-completion cutover's own JUDGMENT CALL #1 above for the full `continue_mag`/reasoning-round-trip/
     // `continueUserTextConflict` investigation this is based on (identical for both backends - chat-completion's own

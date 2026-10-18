@@ -1,4 +1,6 @@
-// Chats on the engine answer as the old tree store does (build path 5b), where an old answer exists.
+// Chats on the engine answer as the old tree store does (build path 5b), where an old answer exists. The old store
+// (message-tree-db.js, itemization-store.js) is gone; its answers are recorded (tests/fixtures/old-store/chat-engine/,
+// see tests/util/old-store-oracle.js).
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -6,12 +8,23 @@ import path from 'node:path';
 import { after, test } from 'node:test';
 
 import { loadEngine } from '../engine/load.js';
+import { oldStoreOracle } from '../tests/util/old-store-oracle.js';
 
-const tree = await import('./message-tree-db.js');
+const oracles = [await oldStoreOracle('chat-engine/message-tree', 'message-tree-db.js', () => directories, { files: false })];
+const tree = oracles[0].store;
 const { AUTHOR, ChatEngine, MODE, defaultSessionKey, newSessionKey } = await import('./chat-engine.js');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'chat-engine-test-'));
 const directories = { root };
+
+/** A test whose old store calls answer as recorded. */
+function testAgainstOld(/** @type {string} */ name, /** @type {() => Promise<void>} */ fn) {
+    test(name, async () => {
+        for (const o of oracles) o.begin(name);
+        await fn();
+        for (const o of oracles) o.end();
+    });
+}
 after(() => {
     tree.disposeMessageTreeStores();
     fs.rmSync(root, { recursive: true, force: true });
@@ -83,7 +96,7 @@ async function withLinksAsLabels(chats, t, messages) {
 }
 
 for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm: loadEngine({ platform: null }).binding })) {
-    test(`${kind}: a conversation built both ways loads the same`, async () => {
+    testAgainstOld(`${kind}: a conversation built both ways loads the same`, async () => {
         const owner = `cara-${kind}`;
         const store = await engine.Store.open(path.join(root, `engine-${kind}`));
         const chats = await ChatEngine.open(store, people);
@@ -311,7 +324,7 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         await store.close();
     });
 
-    test(`${kind}: openings and alternatives answer as the old store's`, async () => {
+    testAgainstOld(`${kind}: openings and alternatives answer as the old store's`, async () => {
         const owner = `ivy-${kind}`;
         const store = await engine.Store.open(path.join(root, `engine-openings-${kind}`));
         const chats = await ChatEngine.open(store, ivyPeople);
@@ -430,7 +443,8 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
     });
 }
 
-const itemizations = await import('./itemization-store.js');
+oracles.push(await oldStoreOracle('chat-engine/itemization', 'itemization-store.js', () => directories, { files: false }));
+const itemizations = oracles[1].store;
 const cara2 = { id: 4n, name: 'Cara Two', avatar: 'cara2.png' };
 const groupPeople = {
     speakers: async ids => new Map(ids.flatMap(id => [cara, ivy, cara2].filter(c => c.id === id).map(c => [id, c]))),
@@ -438,7 +452,7 @@ const groupPeople = {
 };
 
 for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm: loadEngine({ platform: null }).binding })) {
-    test(`${kind}: a group's send keys, itemizations and a member's messages answer as the old store's`, async () => {
+    testAgainstOld(`${kind}: a group's send keys, itemizations and a member's messages answer as the old store's`, async () => {
         const owner = `group-${kind}`;
         const store = await engine.Store.open(path.join(root, `engine-group-${kind}`));
         const chats = await ChatEngine.open(store, groupPeople);
@@ -504,7 +518,7 @@ function normalizedGroup(messages, mapped) {
 }
 
 for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm: loadEngine({ platform: null }).binding })) {
-    test(`${kind}: a whole chat saved is stored as the old store stores it`, async () => {
+    testAgainstOld(`${kind}: a whole chat saved is stored as the old store stores it`, async () => {
         const owner = `save-${kind}`;
         const store = await engine.Store.open(path.join(root, `engine-save-${kind}`));
         const chats = await ChatEngine.open(store, people);
@@ -579,7 +593,7 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         await store.close();
     });
 
-    test(`${kind}: every message's id is a UUID, new ones included; a decimal names nothing`, async () => {
+    testAgainstOld(`${kind}: every message's id is a UUID, new ones included; a decimal names nothing`, async () => {
         const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
         const dir = path.join(root, `engine-uuid-${kind}`);
         let store = await engine.Store.open(dir);

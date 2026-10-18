@@ -20,11 +20,11 @@ let priorPromptArrayItemForRawPromptDisplay;
 /**
  * The itemizations the page holds, each with its message's position in the chat as `mesId`: the one whose "Prompt"
  * view is open, or what upstream's `loadItemizedPrompts()` was last asked for. The server keeps one per reply
- * (src/itemization-store.js) and records it when it stores the reply; nothing else in the page keeps them.
+ * (src/chat-engine.js, recordItemization()) and records it when it stores the reply; nothing else in the page keeps them.
  */
 export let itemizedPrompts = [];
 
-/** `extra` key the server sets on a loaded message whose node has an itemization (message-tree-db.js). */
+/** `extra` key the server sets on a loaded message whose node has an itemization (src/chat-engine.js). */
 export const ITEMIZED_PROMPT_FLAG = 'has_itemized_prompt';
 
 /**

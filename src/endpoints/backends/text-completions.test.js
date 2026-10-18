@@ -188,7 +188,7 @@ async function run() {
     });
 
     const ownerId = avatar;
-    // `branchName` here is ONLY message-tree-db.js's own label/bookmark concept (saveChatToTree()'s
+    // `branchName` here is ONLY the chat store's own label/bookmark concept (saveChatToTree()'s
     // `chatName` param, loadBranch()'s lookup key) - a real, still-supported, unrelated primitive.
     // It is NOT a raw-action request field anymore (see buildRawActionTextCompletionRequest()'s own
     // ADDRESSING MODEL doc comment) - every raw-action call below resolves and passes the real
@@ -1316,7 +1316,7 @@ async function run() {
     // non-streaming swipe case (e) above - proving persistAssistantReply() drives the streaming
     // path through the exact same shared branching, not a re-implementation of it.
     // Uses its own DISTINCT preceding message text (not reused from any other branch in this file) -
-    // message-tree-db.js structurally SHARES nodes across different branches for the same owner
+    // the chat store structurally SHARES nodes across different branches for the same owner
     // whenever their preceding content is byte-identical (a real, intentional git-like DAG feature),
     // and `addAlternatives()`/`selectDefaultChild()` mutate a "which sibling is the default" pointer
     // on the shared PARENT itself - so reusing another swipe test's exact text here would make this
@@ -1769,7 +1769,7 @@ async function run() {
 
     // (i-10) ROUTE-LEVEL: a garbage-shaped user message `extra` (unexpected top-level field, a
     // non-string url, an out-of-enum media type) doesn't crash the request: the prompt reads it through
-    // sanitizeUserMessageExtra()'s allowlist (message-tree-db.js), and the message is stored as sent.
+    // sanitizeUserMessageExtra()'s allowlist (user-message-extra.js), and the message is stored as sent.
     {
         const fakeBackend = await startFakeBackend((_req, res) => {
             res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -1926,7 +1926,7 @@ async function run() {
 
     // NOTE: a dedicated test for the "continue/swipe on an empty chat" guard (see
     // buildRawActionTextCompletionRequest()'s own `if ((isContinue || isSwipe) && ...chat.length
-    // === 0)` check) is deliberately NOT included here - message-tree-db.js's own invariants make a
+    // === 0)` check) is deliberately NOT included here - the chat store's own invariants make a
     // real EMPTY labeled branch/node impossible to construct through its public API (a branch label
     // can only attach to a real message node created by at least one actual saveChatToTree()/
     // appendMessages() call - see saveChatToTree()'s `else if (firstId)` gate, which never labels

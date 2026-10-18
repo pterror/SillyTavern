@@ -246,7 +246,7 @@ async function run() {
     });
 
     const ownerId = avatar;
-    // `branchName` here is ONLY message-tree-db.js's own label/bookmark concept - a real, still-
+    // `branchName` here is ONLY the chat store's own label/bookmark concept - a real, still-
     // supported, unrelated primitive. It is NOT a raw-action request field anymore (see
     // buildRawActionChatCompletionRequest()'s own ADDRESSING MODEL doc comment) - every raw-action
     // call below resolves and passes the real `node_id` (a leaf id from `loadBranch()`) instead.
@@ -1866,7 +1866,7 @@ async function run() {
     // alternative (addAlternatives() + selectDefaultChild()), exactly like the non-streaming swipe
     // case (e) above - proving persistAssistantReply() drives the streaming path through the exact
     // same shared branching, not a re-implementation of it. Uses its own DISTINCT preceding message
-    // text - see (e)'s/(f)'s own reasoning for why (message-tree-db.js structurally shares nodes
+    // text - see (e)'s/(f)'s own reasoning for why (the chat store structurally shares nodes
     // across branches for the same owner whenever their preceding content is byte-identical).
     {
         const streamSwipeBranch = 'stream-swipe-chat';
@@ -3147,7 +3147,7 @@ async function run() {
     }
 
     // --- route-level: a garbage-shaped user message `extra` doesn't crash the request: the prompt
-    // reads it through sanitizeUserMessageExtra()'s allowlist (message-tree-db.js), and the message
+    // reads it through sanitizeUserMessageExtra()'s allowlist (user-message-extra.js), and the message
     // is stored as sent. ---
     {
         const fakeBackend = await startFakeBackend((_req, res) => {
