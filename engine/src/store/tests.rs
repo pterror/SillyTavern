@@ -292,60 +292,6 @@ fn reads_before_replay_ends_wait_for_it() {
     fs::remove_dir_all(&dir).unwrap();
 }
 
-#[test]
-fn a_whole_group_past_the_runs_is_found_without_writing() {
-    let dir = temp_dir("group-after");
-    let past_runs = || {
-        let ks = Keyspace::open_read_only(&dir.join("runs"), SMALL.ks, small_pool()).unwrap();
-        log::group_after(&dir, &SMALL.log, ks.covered()).unwrap()
-    };
-    let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
-    s.commit_wait(vec![fav(5, true)]).unwrap();
-    s.close();
-    drop(s);
-    assert!(!past_runs(), "a clean close leaves nothing to replay");
-    let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
-    s.commit_wait(vec![fav(6, true)]).unwrap();
-    s.abandon();
-    std::mem::forget(s);
-    let bytes = |d: &Path| {
-        let mut all: Vec<(PathBuf, Vec<u8>)> = walk(d)
-            .into_iter()
-            .map(|p| (p.clone(), fs::read(p).unwrap()))
-            .collect();
-        all.sort();
-        all
-    };
-    let before = bytes(&dir);
-    assert!(past_runs(), "a crash leaves the commit to replay");
-    assert_eq!(bytes(&dir), before, "reading it writes nothing");
-    // Torn, the last group isn't whole: opening cuts it.
-    let last = *log_files(&dir).last().unwrap();
-    let path = dir.join(log::file_name(&SMALL.log, last));
-    let len = fs::metadata(&path).unwrap().len();
-    fs::OpenOptions::new()
-        .write(true)
-        .open(&path)
-        .unwrap()
-        .set_len(len - 1)
-        .unwrap();
-    assert!(!past_runs());
-    fs::remove_dir_all(&dir).unwrap();
-}
-
-fn walk(dir: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    for e in fs::read_dir(dir).unwrap() {
-        let p = e.unwrap().path();
-        if p.is_dir() {
-            out.extend(walk(&p));
-        } else {
-            out.push(p);
-        }
-    }
-    out
-}
-
 fn log_files(dir: &Path) -> Vec<u64> {
     let mut files: Vec<u64> = fs::read_dir(dir)
         .unwrap()

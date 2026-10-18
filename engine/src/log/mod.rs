@@ -202,40 +202,6 @@ fn split(pos: u64) -> (u64, u64) {
     (pos >> FILE_SHIFT, pos & ((1 << FILE_SHIFT) - 1))
 }
 
-/// Whether a whole group (records and a trailer whose checksum holds) starts at or after `from`, a group
-/// boundary of the log in `dir`: its files are read from `from`'s upward, and nothing is written. A torn last group,
-/// which opening the log cuts, isn't one.
-pub fn group_after(dir: &Path, cfg: &Config, from: u64) -> LogResult<bool> {
-    let (mut file, offset) = split(from);
-    let mut scan_from = block_start(cfg.block_size, offset);
-    loop {
-        let handle = match File::open(dir.join(file_name(cfg, file))) {
-            Ok(h) => h,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
-            Err(e) => return Err(e.into()),
-        };
-        let len = handle.metadata()?.len();
-        let reader = LogFile::new(handle);
-        let mut scanner = Scanner::new(cfg, file, &reader, scan_from, len);
-        let mut records = false;
-        loop {
-            match scanner.next_item(false) {
-                Ok(Some((at, _))) if position(file, at) < from => {}
-                Ok(Some((_, Item::Record(_) | Item::Skipped))) => records = true,
-                Ok(Some((_, Item::Trailer(true)))) if records => return Ok(true),
-                Ok(Some((_, Item::Trailer(false)))) | Err(LogError::Format { .. }) => {
-                    return Ok(false);
-                }
-                Ok(Some(_)) => {}
-                Ok(None) => break,
-                Err(e) => return Err(e),
-            }
-        }
-        file += 1;
-        scan_from = 0;
-    }
-}
-
 pub fn file_name(cfg: &Config, file: u64) -> String {
     format!("log-{:016x}.blk", position(file, 0) / cfg.block_size)
 }

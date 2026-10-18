@@ -475,25 +475,6 @@ pub struct Store {
     store: Arc<Inner>,
 }
 
-/// One-off (src/migrations/convert-derived.js): a step's outcome.
-#[napi(object)]
-pub struct ConvertDerivedStep {
-    pub moved: Vec<f64>,
-    pub before: Vec<String>,
-    pub books: Vec<f64>,
-    pub books_before: Vec<String>,
-    pub entries: f64,
-    pub conflicts: Vec<String>,
-    pub next: Option<Vec<f64>>,
-}
-
-/// One-off (src/migrations/convert-derived.js): digests as reads find them now.
-#[napi(object)]
-pub struct ConvertDerivedDigest {
-    pub entities: Vec<String>,
-    pub books: Vec<String>,
-}
-
 /// The stores open in this process, by directory: every open of a directory (`open`, `openSync`) until the store
 /// is closed is the same store.
 /// A directory's open store, while one is.
@@ -529,34 +510,6 @@ impl Task for OpenTask {
 
     fn resolve(&mut self, _env: Env, store: Arc<Inner>) -> Result<Store> {
         Ok(Store { store })
-    }
-}
-
-/// One-off (src/migrations/convert-derived.js): `convert_derived::unflushed_over_old` for a directory no store is
-/// open on in this process (false while one is: it has replayed already).
-pub struct UnflushedTask(PathBuf);
-
-impl Task for UnflushedTask {
-    type Output = bool;
-    type JsValue = bool;
-
-    fn compute(&mut self) -> Result<bool> {
-        let at = std::path::absolute(&self.0).unwrap_or_else(|_| self.0.clone());
-        let slot = OPEN.lock().unwrap().get(&at).cloned();
-        // Held, so no open of the directory starts while it is read.
-        let held = slot.as_ref().map(|s| s.lock().unwrap());
-        if held
-            .as_ref()
-            .and_then(|h| h.upgrade())
-            .is_some_and(|s| !s.is_closed())
-        {
-            return Ok(false);
-        }
-        crate::store::convert_derived::unflushed_over_old(&self.0).map_err(store_error)
-    }
-
-    fn resolve(&mut self, _env: Env, b: bool) -> Result<bool> {
-        Ok(b)
     }
 }
 
@@ -1404,14 +1357,6 @@ impl Store {
         AsyncTask::new(OpenTask(PathBuf::from(dir)))
     }
 
-    /// One-off (src/migrations/convert-derived.js): whether opening the store in `dir` would derive records over
-    /// derived entries in their old form (its runs hold one, and the last close left log past them to replay).
-    /// Reads only; false while a store is open on `dir` in this process.
-    #[napi(ts_return_type = "Promise<boolean>")]
-    pub fn convert_derived_unflushed(dir: String) -> AsyncTask<UnflushedTask> {
-        AsyncTask::new(UnflushedTask(PathBuf::from(dir)))
-    }
-
     /// `open` on this thread: the store open in `dir`, else opened now (returning before replay). The same store
     /// `open` gives for `dir` until it is closed.
     #[napi]
@@ -1543,104 +1488,6 @@ impl Store {
             Err(e) => deferred.reject(store_error(e)),
         }));
         Ok(promise)
-    }
-
-    /// One-off (src/migrations/convert-derived.js): moves the old entries of up to `limit` entities or books from
-    /// `from` (`[structure, id]`, `[0, 0]` at first) on; resolves with the entities and books moved and their digests
-    /// read the old way, the entries moved, what was left for a conflict, and where to go on (null: done).
-    #[napi(
-        ts_return_type = "Promise<{ moved: number[], before: string[], books: number[], booksBefore: string[], entries: number, conflicts: string[], next: number[] | null }>"
-    )]
-    pub fn convert_derived_step<'env>(
-        &self,
-        env: &'env Env,
-        from: Vec<f64>,
-        limit: u32,
-    ) -> Result<Object<'env>> {
-        let from = match from.as_slice() {
-            [s, e] => (*s as u64, *e as u64),
-            _ => return Err(invalid("from must be [structure, id]".into())),
-        };
-        let (deferred, promise) = env.create_deferred()?;
-        self.store.convert_derived_step(
-            from,
-            limit as usize,
-            Box::new(move |r| match r {
-                Ok(st) => deferred.resolve(move |_| {
-                    let hex = |v: &[(u64, u64)]| -> (Vec<f64>, Vec<String>) {
-                        (
-                            v.iter().map(|(e, _)| *e as f64).collect(),
-                            v.iter().map(|(_, d)| format!("{d:016x}")).collect(),
-                        )
-                    };
-                    let (moved, before) = hex(&st.moved);
-                    let (books, books_before) = hex(&st.books);
-                    Ok(ConvertDerivedStep {
-                        moved,
-                        before,
-                        books,
-                        books_before,
-                        entries: st.entries as f64,
-                        conflicts: st.conflicts,
-                        next: st.next.map(|(s, e)| vec![s as f64, e as f64]),
-                    })
-                }),
-                Err(e) => deferred.reject(store_error(e)),
-            }),
-        );
-        Ok(promise)
-    }
-
-    /// One-off (src/migrations/convert-derived.js): each entity's values' digest and each book's free keys' digest,
-    /// as reads find them now.
-    #[napi(ts_return_type = "Promise<{ entities: string[], books: string[] }>")]
-    pub fn convert_derived_digest<'env>(
-        &self,
-        env: &'env Env,
-        ids: Vec<f64>,
-        books: Vec<f64>,
-    ) -> Result<Object<'env>> {
-        let ids: Vec<u64> = ids.into_iter().map(|e| e as u64).collect();
-        let books: Vec<u64> = books.into_iter().map(|e| e as u64).collect();
-        derived(env, &self.store, move |s| {
-            let hex = |d: Vec<u64>| d.into_iter().map(|d| format!("{d:016x}")).collect();
-            s.convert_derived_digest(&ids, &books)
-                .map(|(e, b)| ConvertDerivedDigest {
-                    entities: hex(e),
-                    books: hex(b),
-                })
-        })
-    }
-
-    /// One-off (src/migrations/convert-derived.js): whether any derived entry is still in an old form.
-    #[napi(ts_return_type = "Promise<boolean>")]
-    pub fn convert_derived_pending<'env>(&self, env: &'env Env) -> Result<Object<'env>> {
-        derived(env, &self.store, |s| s.convert_derived_pending())
-    }
-
-    /// One-off (src/migrations/convert-derived.js): up to `limit` `metaValue` names starting with `prefix`, after
-    /// `after`.
-    #[napi(ts_return_type = "Promise<string[]>")]
-    pub fn convert_derived_meta_names<'env>(
-        &self,
-        env: &'env Env,
-        prefix: String,
-        after: Option<String>,
-        limit: u32,
-    ) -> Result<Object<'env>> {
-        derived(env, &self.store, move |s| {
-            s.convert_derived_meta_names(
-                prefix.as_bytes(),
-                after.as_deref().map(str::as_bytes),
-                limit as usize,
-            )
-            .map(|names| {
-                names
-                    .into_iter()
-                    .map(|n| String::from_utf8_lossy(&n).into_owned())
-                    .collect::<Vec<_>>()
-            })
-        })
     }
 
     /// The pair postings' mode: 0 off, 1 building, 2 on, 3 deleting.
