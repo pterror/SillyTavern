@@ -1,3 +1,5 @@
+import { normalizeFav } from '../public/scripts/hash-utils.js';
+
 // A group id is all digits (`String(Date.now())` at /create). Legacy group files store it as a number, which is
 // the same id. A valid id passes sanitize-filename unchanged, so `<id>.json` is always the group's own file.
 const GROUP_ID_PATTERN = /^\d+$/;
@@ -54,4 +56,16 @@ export function normalizeGroupRecord(group) {
 export function tagEntityTypeOf(id) {
     if (typeof id !== 'string' || id === '') return null;
     return id.endsWith('.png') ? 'character' : 'group';
+}
+
+/**
+ * A group as stored: what `writeGroup()` keeps of a group object (its compat chat values, read-time keys, aren't).
+ * @param {Record<string, any>} group
+ */
+export function storedGroup(group) {
+    normalizeGroupRecord(group);
+    const stored = { ...group, fav: normalizeFav(group.fav) };
+    delete stored.chat_id;
+    delete stored.chats;
+    return stored;
 }

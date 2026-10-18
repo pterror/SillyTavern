@@ -80,6 +80,7 @@ import { migrateFlatSecrets } from './endpoints/secrets.js';
 import { wasBrowserRecentlyConnected } from './browser-presence.js';
 import { ensureEngine, EngineFetchError } from '../engine/fetch.js';
 import { loadEngine, getEngine, EngineLoadError } from '../engine/load.js';
+import { resumeUpstreamImport } from './upstream-import.js';
 
 // Work around a node v20.0.0, v20.1.0, and v20.2.0 bug. The issue was fixed in v20.3.0.
 // https://github.com/nodejs/node/issues/47822#issuecomment-1564708870
@@ -524,10 +525,15 @@ async function postSetupTasks(result) {
 
     // Not awaited. Opens each user's store and resumes what a stop left under way (a tag reorder pass, the pair
     // postings' build or delete), in small batches; a bulk action a stop cut short is reported and its list dropped.
-    // Each user's characters/ is then rescanned in batches and watched for dropped PNGs.
+    // Each user's characters/ is then rescanned in batches and watched for dropped PNGs; a new store's upstream
+    // groups, books and chats are imported after it (src/upstream-import.js).
     resumeStoreWork(await getUserDirectoriesList(), async (store, directories) => {
         await dropStoppedRuns(store.lib);
-        startDroppedWatch(/** @type {import('./users.js').UserDirectoryList} */ (directories));
+        const userDirectories = /** @type {import('./users.js').UserDirectoryList} */ (directories);
+        // A new store's upstream groups, books and chats go in after the characters' rescan, which their chats need.
+        startDroppedWatch(userDirectories).first
+            .then(() => resumeUpstreamImport(store, userDirectories))
+            .catch(err => console.error(color.red('[upstream-import] Importing the upstream data failed:'), err));
     })
         .catch(err => console.error(color.red('[user-stores] Resuming the stores\' work failed:'), err));
 }
