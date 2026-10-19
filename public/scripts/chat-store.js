@@ -1,7 +1,7 @@
 // Writer side of the chat store: writes should go through the named actions below rather than
 // mutating `chat` directly and asking for a whole-conversation save.
 
-import { cardToGreetingsModel, getCurrentCharacter, getCurrentChatId, isStoredNodeId, isProvisionalNodeId, provisionalNodeId, redisplayChat, updateViewMessageIds, refreshSwipeButtons, updateMessageBlock, _messageSnapshots } from '../script.js';
+import { cardToGreetingsModel, getCurrentCharacter, getCurrentChatId, isStoredNodeId, isProvisionalNodeId, provisionalNodeId, redisplayChat, updateViewMessageIds, refreshSwipeButtons, updateMessageBlock, _messageSnapshots, markStoredAs, isAsStored, forgetStored, isReplyGenerating } from '../script.js';
 import { chat, chat_metadata } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { charactersStore } from './character-store.js';
@@ -29,7 +29,8 @@ function _chatAt(i) {
     return chat[i];
 }
 
-// Freezes obj and all nested objects/arrays, so no nested mutation can bypass updateMessage().
+// Freezes obj and all nested objects/arrays. Messages in `chat` aren't frozen (upstream's code, extensions included,
+// changes them in place); the stored copies the compat save compares them with are.
 /**
  * @template T
  * @param {T} obj
@@ -150,7 +151,6 @@ export function adoptStored(stored) {
 function _adoptOpeningRow(mesId, realId) {
     const current = chat[mesId];
     const provisional = current.node_id;
-    const wasClean = _messageSnapshots.get(provisional) === current;
     const at = current.swipe_id ?? 0;
     /** @type {Partial<ChatMessage>} */
     const updates = { node_id: realId };
@@ -160,14 +160,15 @@ function _adoptOpeningRow(mesId, realId) {
         updates.swipe_info = swipeInfo;
     }
     updateMessage(mesId, updates);
-    _messageSnapshots.delete(provisional);
-    if (wasClean) _messageSnapshots.set(realId, chat[mesId]);
+    forgetStored([provisional]);
+    // The row was made from the greeting as shown (openingForRequest()): that is what is stored there now.
+    markStoredAs(realId, chat[mesId]);
     if (mesId === 0 && (selected_group == null || selected_group === '')) _setCurrentTarget(getCurrentChatId() ?? '', null);
 }
 
 setStoredAdopter(adoptStored);
 
-// The only write path for messages; mutating a frozen message directly throws TypeError.
+// The app's write path for messages: a new object in place of the old one (upstream's code may also change one in place).
 /**
  * @param {number} mesId
  * @param {Partial<ChatMessage>} updates
@@ -176,7 +177,7 @@ setStoredAdopter(adoptStored);
 export function updateMessage(mesId, updates) {
     const old = _chatAt(mesId);
     if (!old) return old;
-    const result = deepFreeze({ ...old, ...updates });
+    const result = { ...old, ...updates };
     _carryStoreRef(old, result);
     chat[mesId] = result;
     return result;
@@ -191,9 +192,9 @@ export function updateMessage(mesId, updates) {
 export function setUnstoredExtra(mesId, values) {
     const old = _chatAt(mesId);
     if (!old) return;
-    const wasClean = old.node_id != null && _messageSnapshots.get(old.node_id) === old;
+    const wasClean = isAsStored(old);
     const updated = updateMessage(mesId, { extra: { ...(old.extra ?? {}), ...values } });
-    if (wasClean && updated) _messageSnapshots.set(old.node_id, updated);
+    if (wasClean && updated && old.node_id != null) markStoredAs(old.node_id, updated);
 }
 
 // Write path for nested fields; updateMessage() only shallow-merges, so writing through `extra`
@@ -227,7 +228,7 @@ export function updateIn(mesId, path, value) {
         return copy;
     };
 
-    const result = /** @type {ChatMessage} */ (deepFreeze(rebuild(old, 0)));
+    const result = /** @type {ChatMessage} */ (rebuild(old, 0));
     _carryStoreRef(old, result);
     chat[mesId] = result;
     return result;
@@ -576,7 +577,7 @@ export async function _mergeCardGreetingsIntoOpening({ greetingEdit = null, gree
     if (landAt < 0 && !isStoredNodeId(current.node_id)) {
         if ((head.total ?? 0) > 0) return;
         // No greeting left to open on, the same as loading a chat for a card with none.
-        _messageSnapshots.delete(current.node_id);
+        forgetStored([current.node_id]);
         chat.splice(0, chat.length);
         await redisplayChat();
         return;
@@ -598,15 +599,15 @@ export async function _mergeCardGreetingsIntoOpening({ greetingEdit = null, gree
     }
 
     // Reading isn't an edit — following the card shouldn't mint a row.
-    const wasClean = _messageSnapshots.get(current.node_id) === current;
+    const wasClean = isAsStored(current);
     updateMessage(0, updates);
     if (updates.node_id != null && updates.node_id !== current.node_id) {
-        _messageSnapshots.delete(current.node_id);
+        forgetStored([current.node_id]);
     }
     // updateMessage() above may have replaced chat[0] - re-read rather than reuse `current`.
     const updated = _chatAt(0);
     if ((wasClean || updates.node_id != null) && updated?.node_id != null && updated.node_id !== '') {
-        _messageSnapshots.set(updated.node_id, updated);
+        markStoredAs(updated.node_id, updated);
     }
     // Refresh the message block too, not just swipe buttons, or the edit appears to do nothing.
     if (updates.mes !== undefined && updated) {
@@ -645,7 +646,9 @@ export async function _restoreContinuation(mesId, { redraw = true } = {}) {
     const following = payload?.messages ?? [];
     if (!following.length && chat.length === mesId + 1) return false;
 
-    chat.splice(mesId + 1, chat.length - (mesId + 1), ...following);
+    const replaced = chat.splice(mesId + 1, chat.length - (mesId + 1), ...following);
+    forgetStored(replaced.map(m => m.node_id));
+    for (const m of following) if (isStoredNodeId(m?.node_id)) markStoredAs(m.node_id, m);
     if (redraw) {
         await redisplayChat({ startIndex: mesId });
         updateViewMessageIds();
@@ -830,7 +833,7 @@ async function _chatOpPostAnswering(path, body, answered) {
 export function _markMessageSaved(mesId, nodeId) {
     const live = mesId < chat.length ? chat[mesId] : null;
     if (live?.node_id != null && live.node_id !== '' && live.node_id === nodeId) {
-        _messageSnapshots.set(live.node_id, live);
+        markStoredAs(live.node_id, live);
     }
 }
 
@@ -858,8 +861,21 @@ function _messageContent(msg, text = msg.mes) {
 // Never sends an edit that would empty a message — the route refuses it outright with a 409.
 // A card greeting with no row yet is saved as a new stored opening with the edited text; the card's own
 // greeting is untouched and is offered again among the openings.
+/**
+ * Says that a message a reply is still being generated into (its node not known yet) wasn't changed: an edit of it
+ * would land on the node it named before, or be overwritten by the reply.
+ * @param {number} mesId
+ */
+function _refuseGenerating(mesId) {
+    toastr.warning(t`Message #${mesId} is still being generated, so the change to it wasn't saved.`, t`Not saved yet`, { preventDuplicates: true });
+}
+
 /** @param {number} mesId */
 export async function chatOpEdit(mesId) {
+    if (isReplyGenerating(mesId)) {
+        _refuseGenerating(mesId);
+        return false;
+    }
     const msg = _chatAt(mesId);
     if (isProvisionalNodeId(msg?.node_id)) {
         if (!isStoredNodeId(await ensureOpeningRow(mesId))) return false;
@@ -893,6 +909,10 @@ export async function chatOpEditMany(mesIds, silent = false) {
     /** @type {{node_id: string, content: Partial<ChatMessageWithSpeakerDefault>, _mesId: number}[]} */
     const edits = [];
     for (const mesId of mesIds) {
+        if (isReplyGenerating(mesId)) {
+            _refuseGenerating(mesId);
+            continue;
+        }
         const msg = _chatAt(mesId);
         if (!isStoredNodeId(msg?.node_id)) continue;
         if (typeof msg.mes === 'string' && msg.mes.length === 0) continue;
@@ -1074,14 +1094,96 @@ export async function chatOpCut(firstMesId, lastMesId, { ask = false } = {}) {
     if (!ticket) return false;
     const answer = await _applyConfirmed('/api/chats/message/cut', body, ticket, ask);
     if (!answer) return false;
-    const copied = answer.copied && typeof answer.copied === 'object' ? answer.copied : {};
-    for (let i = to + 1; i < chat.length; i++) {
-        const copy = copied[chat[i]?.node_id];
-        if (typeof copy !== 'string') continue;
-        updateMessage(i, { node_id: copy });
-        _markMessageSaved(i, copy);
-    }
+    // The cut messages leave the chat: they are no longer the page's.
+    forgetStored(chat.slice(from, to + 1).map(m => m.node_id));
+    _takeCopies(answer.copied, to + 1);
     return true;
+}
+
+/**
+ * The chat's messages from `from` on that the server now shows a copy of (a cut's `copied`: a later message other
+ * branches shared) take their copies' ids, as stored as they were (a change not stored yet stays one).
+ * @param {unknown} copied
+ * @param {number} from
+ */
+function _takeCopies(copied, from) {
+    if (!copied || typeof copied !== 'object') return;
+    const copies = /** @type {Record<string, unknown>} */ (copied);
+    for (let i = from; i < chat.length; i++) {
+        const old = chat[i]?.node_id;
+        const copy = old == null ? undefined : copies[old];
+        if (typeof copy !== 'string' || old == null) continue;
+        const stored = _messageSnapshots.get(old);
+        /** @type {Partial<ChatMessage>} */
+        const updates = { node_id: copy };
+        const at = chat[i].swipe_id ?? 0;
+        if (Array.isArray(chat[i].swipe_info) && chat[i].swipe_info[at]?.node_id === old) {
+            const swipeInfo = [...chat[i].swipe_info];
+            swipeInfo[at] = { ...swipeInfo[at], node_id: copy };
+            updates.swipe_info = swipeInfo;
+        }
+        updateMessage(i, updates);
+        forgetStored([old]);
+        if (stored !== undefined) {
+            const storedInfo = Array.isArray(stored.swipe_info) ? [...stored.swipe_info] : undefined;
+            if (storedInfo && storedInfo[at]?.node_id === old) storedInfo[at] = { ...storedInfo[at], node_id: copy };
+            markStoredAs(copy, { ...stored, node_id: copy, ...(storedInfo ? { swipe_info: storedInfo } : {}) });
+        }
+    }
+}
+
+/**
+ * Cuts the stored messages `nodeIds` out of this chat's path (upstream's delete of messages the page no longer holds,
+ * found by the compat save): each run of adjacent ones on the server's path is one cut, the last first. What else
+ * that drops (bookmarks, state changes) is applied and shown as a warning; the chat's messages the path now shows a
+ * copy of take their copies' ids.
+ * @param {string[]} nodeIds
+ * @returns {Promise<{ not_on_path: string[], refused: { node_id: string, reason: string }[] }>} `not_on_path`: those
+ * the session's path doesn't hold (already gone from it), cut nowhere.
+ */
+export async function chatOpCutNamed(nodeIds) {
+    const answer = await _chatOpPostAnswering('/api/chats/message/cut-many', { node_ids: nodeIds }, [409]);
+    if (answer?.drops && hasDrops(answer.drops)) warnDropped(answer.drops, t);
+    forgetStored(nodeIds);
+    _takeCopies(answer?.copied, 0);
+    return {
+        not_on_path: Array.isArray(answer?.not_on_path) ? answer.not_on_path : [],
+        refused: Array.isArray(answer?.refused) ? answer.refused : [],
+    };
+}
+
+/**
+ * Edits stored messages by their node ids in one request, each by a patch: the fields it sets (each replaced whole)
+ * and those it unsets, the rest of the message as stored.
+ * @param {{ node_id: string, patch?: Record<string, unknown>, unset?: string[] }[]} edits
+ * @returns {Promise<{ node_id: string, reason: string }[]>} The edits refused.
+ */
+export async function chatOpPatch(edits) {
+    if (!edits.length) return [];
+    const answer = await _chatOpPostAnswering('/api/chats/message/edit-batch', { edits }, [409]);
+    return Array.isArray(answer?.refused) ? answer.refused : [];
+}
+
+/**
+ * Adds an alternative beside the stored message `siblingNodeId` (another reply of its parent), shown to no one.
+ * @param {string} siblingNodeId
+ * @param {Record<string, unknown>} content
+ * @returns {Promise<string|null>} Its node id (an existing one when that alternative is there already).
+ */
+export async function chatOpAddAlternativeBeside(siblingNodeId, content) {
+    const created = await _chatOpPost('/api/chats/message/alternative', { sibling_node_id: siblingNodeId, contents: [content] });
+    return created?.node_ids?.[0] ?? null;
+}
+
+/**
+ * Bookmarks the stored message `nodeId` with `label`, not opened.
+ * @param {string} nodeId
+ * @param {string} label
+ * @returns {Promise<string|null>} The bookmark's compat chat id, or null when it was refused.
+ */
+export async function chatOpBookmarkNode(nodeId, label) {
+    const answer = await _chatOpPostAnswering('/api/chats/bookmark', { node_id: nodeId, label }, [409]);
+    return answer?.ok === true && typeof answer.id === 'string' ? answer.id : null;
 }
 
 // Swaps two adjacent on-path messages. Which one is "upper" (closer to the start) is determined by

@@ -1,14 +1,10 @@
 import {
     getCurrentCharacter,
     getSelectionState,
-    saveChat,
     system_message_types,
-    syncSwipeToMes,
     openCharacterChat,
     getThumbnailUrl,
-    saveChatConditional,
     getChatLabelBase,
-    getCurrentChatDetails,
     updateMessage,
     hydrateSwipes,
     switchToNode,
@@ -30,7 +26,6 @@ import {
     groupsStore,
     openGroupById,
     openGroupChat,
-    saveGroupBookmarkChat,
     selected_group,
 } from './group-chats.js';
 import { loader } from './action-loader.js';
@@ -164,32 +159,6 @@ async function saveBookmarkMenu() {
     return await createNewBookmark(chat.length - 1);
 }
 
-/**
- * Builds the branch chat snapshot, optionally selecting a specific swipe for the target message.
- * @param {number} mesId
- * @param {{swipeId?: number|null}} [options={}]
- * @returns {ChatMessage[]|null}
- */
-async function getBranchChatSnapshot(mesId, { swipeId = null } = {}) {
-    if (swipeId !== null) {
-        // The snapshot is cloned from the live chat, so the alternative has to be in hand BEFORE the
-        // clone - a hole would make syncSwipeToMes bail and the branch silently fail to be created.
-        await hydrateSwipes(Number(mesId), { index: Number(swipeId) });
-    }
-
-    const snapshot = structuredClone(chat.slice(0, Number(mesId) + 1));
-
-    if (swipeId === null) {
-        return snapshot;
-    }
-
-    if (!syncSwipeToMes(null, swipeId, snapshot[mesId])) {
-        return null;
-    }
-
-    return snapshot;
-}
-
 /** The tree owner for /api/chats/label while a group is open: its own id, never getCurrentCharacter() - see chat-store.js's _currentOwner() for why a mid-generation "current character" is the wrong owner for a group. */
 function _labelOwner() {
     return selected_group ? { group_id: selected_group } : { avatar_url: getCurrentCharacter()?.avatar };
@@ -274,9 +243,6 @@ async function makeBranch(mesId, { swipeId = null, open = false, alsoLabelShown 
     }
 
     const lastMes = chat[mesId];
-    // The chat branched from, by its id (`main_chat` leads back to it), and what the user sees it as.
-    const mainChatName = (getCurrentChatDetails()).sessionName;
-    const labelBase = getChatLabelBase();
     const selectedSwipeId = swipeId === null ? null : Number(swipeId);
 
     if (selectedSwipeId !== null && (!Number.isInteger(selectedSwipeId) || selectedSwipeId < 0 || selectedSwipeId >= (lastMes?.swipes?.length ?? 0))) {
@@ -319,33 +285,9 @@ async function makeBranch(mesId, { swipeId = null, open = false, alsoLabelShown 
         return answer;
     }
 
-    // Legacy JSONL path: copy the chat prefix into a new file. Uniqueness is minted server-side (same
-    // "<name> - Branch #N" scheme /api/chats/label's unique:true already uses for the tree path above),
-    // not by asserting a name uniquified against a client-fetched chat list.
-    const newMetadata = { main_chat: mainChatName };
-
-    const branchChatSnapshot = await getBranchChatSnapshot(mesId, { swipeId: selectedSwipeId });
-    if (!branchChatSnapshot) {
-        toastr.warning('Could not prepare the selected swipe for branching.', 'Branch creation failed');
-        return;
-    }
-
-    const name = selected_group
-        ? await saveGroupBookmarkChat(selected_group, labelBase, newMetadata, mesId, branchChatSnapshot, { unique: true })
-        : await saveChat({ chatName: labelBase, withMetadata: newMetadata, mesId, chatData: branchChatSnapshot, unique: true });
-
-    if (!name) {
-        console.error('Could not create the branch.');
-        toastr.error('Could not create the branch.', 'Branch creation failed');
-        return;
-    }
-
-    const extra = typeof lastMes.extra === 'object' ? { ...lastMes.extra } : {};
-    const branches = Array.isArray(extra.branches) ? [...extra.branches] : [];
-    if (!branches.includes(name)) branches.push(name);
-    extra.branches = branches;
-    updateMessage(mesId, { extra });
-    return { id: name, label: labelBase };
+    // A message the server hasn't stored yet (a reply still arriving, a send not stored) has no node to branch at.
+    toastr.warning('That message isn\'t saved yet. Try again once it is.', 'Branch creation failed');
+    return;
 }
 
 /**
@@ -397,24 +339,9 @@ export async function createNewBookmark(mesId, { forceName = null } = {}) {
         return answer.id;
     }
 
-    // Legacy JSONL path. `integrity` isn't set here - the server mints and rotates it on every
-    // successful save regardless of what's sent, same as the already-fixed getChat()/getGroupChat() fills.
-    const mainChat = selected_group ? groupsStore.get(selected_group)?.chat_id : getCurrentCharacter().chat;
-    const newMetadata = { main_chat: mainChat };
-
-    if (selected_group) {
-        await saveGroupBookmarkChat(selected_group, name, newMetadata, mesId);
-    } else {
-        await saveChat({ chatName: name, withMetadata: newMetadata, mesId });
-    }
-
-    const extra = typeof lastMes.extra === 'object' ? { ...lastMes.extra } : {};
-    extra.bookmark_link = name;
-    updateMessage(mesId, { extra });
-
-    await saveChatConditional();
-    toastr.success('Bookmarked. It shows up in the chat list.', 'Bookmark', { timeOut: 10000 });
-    return name;
+    // A message the server hasn't stored yet (a reply still arriving, a send not stored) has no node to bookmark.
+    toastr.warning('That message isn\'t saved yet. Try again once it is.', 'Bookmark');
+    return null;
 }
 
 

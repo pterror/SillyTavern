@@ -240,36 +240,27 @@ function makeMessage({ swipe_id = 0, branches = undefined } = {}) {
     };
 }
 
-describe('createBranch() - legacy (non-tree) chat', () => {
-    test('records the new branch name on the forked message as a flat list', async () => {
+describe('createBranch() on a message the server hasn\'t stored', () => {
+    // A branch is a bookmark at a stored message: one with no node (a reply still arriving, a send not stored) has
+    // none, so nothing is made and the user is told; no whole chat is saved in its place.
+    test('makes no branch, saves nothing and says why', async () => {
         setChat([makeMessage({ swipe_id: 2 })]);
+        global.toastr.warning.mockClear();
 
         const name = await bookmarks.createBranch(0);
 
-        expect(name).toBe('current-chat - Branch #1');
-        expect(chatState.chat[0].extra.branches).toEqual(['current-chat - Branch #1']);
+        expect(name).toBeUndefined();
+        expect(chatState.chat[0].extra.branches).toBeUndefined();
+        expect(saveChatMock).not.toHaveBeenCalled();
+        expect(global.fetch).not.toHaveBeenCalled();
+        expect(global.toastr.warning).toHaveBeenCalledWith(expect.stringContaining('isn\'t saved yet'), 'Branch creation failed');
     });
 
-    test('forking a non-active swipe appends to the same list', async () => {
-        setChat([makeMessage({ swipe_id: 0, branches: ['already-there - Branch #1'] })]);
+    test('a swipe of it makes none either', async () => {
+        setChat([makeMessage({ swipe_id: 0 })]);
         chatState.chat[0].swipes = ['hello', 'alt swipe'];
-        // getExistingChatNames() reads real chat files on disk (via this fetch), not extra.branches -
-        // mocked so the new branch's generated name avoids the one already on disk.
-        global.fetch.mockResolvedValue({ ok: true, json: async () => [{ file_name: 'current-chat - Branch #1.jsonl' }] });
 
-        const name = await bookmarks.createBranch(0, { swipeId: 1 });
-
-        expect(name).toBe('current-chat - Branch #2');
-        expect(chatState.chat[0].extra.branches).toEqual(['already-there - Branch #1', 'current-chat - Branch #2']);
-    });
-
-    test('records the origin chat on the new branch\'s own metadata', async () => {
-        setChat([makeMessage(), makeMessage({ swipe_id: 3 })]);
-
-        await bookmarks.createBranch(1);
-
-        expect(saveChatMock).toHaveBeenCalledTimes(1);
-        const { withMetadata } = saveChatMock.mock.calls[0][0];
-        expect(withMetadata).toEqual({ main_chat: 'current-chat' });
+        expect(await bookmarks.createBranch(0, { swipeId: 1 })).toBeUndefined();
+        expect(saveChatMock).not.toHaveBeenCalled();
     });
 });

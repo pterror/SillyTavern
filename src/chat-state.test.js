@@ -59,14 +59,6 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         assert.deepEqual(await state(), { note: 'x' });
     });
 
-    test(`${kind}: a whole chat's save removes the variables its metadata lacks, as upstream's does`, async () => {
-        const { chats, t, at, state } = await open(engine);
-        await chats.mergeMetadata({ tree: t, at, set: { variables: { hp: 3, mp: 1 } }, unset: [], actor: tabA });
-        const loaded = await chats.load({ tree: t, at, session: tabA.session });
-        const header = { user_name: 'unused', character_name: 'unused', chat_metadata: { ...loaded.metadata, variables: { hp: 4 } } };
-        await chats.saveChat({ tree: t, treeSpeaker: cara, chat: [header, ...loaded.messages], actor: tabA });
-        assert.deepEqual(await state(), { variables: { hp: 4 } });
-    });
 
     test(`${kind}: a reply's state changes are part of it when it is generated again`, async () => {
         const { chats, t, at } = await open(engine);

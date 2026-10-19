@@ -1,6 +1,6 @@
 import { SlashCommandParser } from '../SlashCommandParser.js';
 import { SlashCommand } from '../SlashCommand.js';
-import { Generate, addOneMessage, chatElement, chatOpAddAlternative, chatOpAppend, chatOpEdit, chatOpGraft, comment_avatar, default_avatar, deleteSwipe, extractMessageBias, getCurrentCharacter, getThumbnailUrl, is_send_press, neutralCharacterName, refreshSwipeButtons, reloadCurrentChat, saveChatConditional, sendMessageAsUser, setCharacterName, substituteParams, swipe, system_message_types, updateMessage, updateMessageElement, updateSwipeCounter } from '../../../script.js';
+import { Generate, addOneMessage, chatElement, chatOpAddAlternative, chatOpAppend, chatOpEdit, chatOpGraft, comment_avatar, default_avatar, deleteSwipe, extractMessageBias, getCurrentCharacter, getThumbnailUrl, is_send_press, neutralCharacterName, refreshSwipeButtons, reloadCurrentChat, saveMetadata, sendMessageAsUser, setCharacterName, substituteParams, swipe, system_message_types, updateMessage, updateMessageElement, updateSwipeCounter } from '../../../script.js';
 import { chat, chat_metadata } from '../../chat-state.js';
 import { setActiveCharacter, setActiveGroup } from '../../app-selection-state.js';
 import { charactersStore, setCharacterId } from '../../character-store.js';
@@ -180,8 +180,7 @@ async function askCharacter(args, text) {
         // Only force the new avatar if the character name matches
         const lastMessage = chat[chat.length - 1];
         if (lastMessage && lastMessage?.name === name) {
-            lastMessage.force_avatar = force_avatar;
-            lastMessage.original_avatar = original_avatar;
+            updateMessage(chat.length - 1, { force_avatar, original_avatar });
         }
     };
 
@@ -196,7 +195,11 @@ async function askCharacter(args, text) {
         console.error('Error running /ask command', error);
     } finally {
         if (getCurrentCharacter()?.avatar === prevAvatar) {
-            await saveChatConditional();
+            // The reply is stored by the server; the avatar it is shown with is an edit of it.
+            const last = chat.length - 1;
+            if (chat[last]?.name === name && chat[last]?.force_avatar === force_avatar) {
+                await chatOpEdit(last).catch(error => console.error('/ask: the reply\'s avatar was not saved', error));
+            }
         } else {
             toastr.error(t`It is strongly recommended to reload the page.`, t`Something went wrong`);
         }
@@ -435,7 +438,7 @@ async function setNarratorName(_, text) {
     const name = text || NARRATOR_NAME_DEFAULT;
     chat_metadata[NARRATOR_NAME_KEY] = name;
     toastr.info(t`System narrator name set to ${name}`);
-    await saveChatConditional();
+    await saveMetadata();
     return '';
 }
 

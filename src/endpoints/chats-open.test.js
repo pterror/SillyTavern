@@ -69,7 +69,7 @@ const message = (mes, extra = {}) => ({ name: 'Rex', is_user: false, mes, send_d
  * @param {Record<string, any>[]} chat
  * @returns {Promise<string>} The tab's session.
  */
-async function saveChat(owner, name, chat) {
+async function saveWholeChat(owner, name, chat) {
     const tab = newSessionKey();
     const res = await fetch(`${base}/api/chats/${owner.group ? 'group/save' : 'save'}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json', [SESSION_HEADER]: tab },
@@ -110,8 +110,8 @@ test('a card nobody has chatted with opens on its greeting, writing only the las
 test('a character opens on its current chat, a named one, or a new one', async () => {
     await writeCharacter('Rex.png', 'Rex', 'Hi.');
     const owner = { avatar: 'Rex.png' };
-    const older = await saveChat(owner, 'older', [{ chat_metadata: { note: 'old' } }, message('Hi, before.'), message('older reply')]);
-    const newer = await saveChat(owner, 'newer', [{ chat_metadata: { note: 'new' } }, message('Hi.'), message('newer reply')]);
+    const older = await saveWholeChat(owner, 'older', [{ chat_metadata: { note: 'old' } }, message('Hi, before.'), message('older reply')]);
+    const newer = await saveWholeChat(owner, 'newer', [{ chat_metadata: { note: 'new' } }, message('Hi.'), message('newer reply')]);
 
     const tree = await treeOf(user.store, owner);
     const onPointer = await open({ avatar_url: 'Rex.png' }, older);
@@ -170,7 +170,7 @@ test('a group opens on its current chat, or a named one, made current only when 
     const c1 = newSessionKey();
     await user.store.chats.newChat({ tree: await treeOf(user.store, { group: 'g1' }), actor: { user: 'u', session: c1 }, group: true });
     await user.store.chats.nameSession({ session: c1, name: 'c1', actor: { user: 'u', session: c1 } });
-    await saveChat({ group: 'g1' }, 'c2', [{ chat_metadata: {} }, message('group says')]);
+    await saveWholeChat({ group: 'g1' }, 'c2', [{ chat_metadata: {} }, message('group says')]);
     const groupTree = await treeOf(user.store, { group: 'g1' });
     const current = await open({ group_id: 'g1' }, c1);
     // No current chat: the session's conversation in the tree, named or not; its names start from the session's label.

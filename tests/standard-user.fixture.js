@@ -85,17 +85,28 @@ export async function buildStandardUser({ directories, store, handle = 'u' }) {
         if (r && r.ok === false) throw new Error(`buildStandardUser: ${r.reason}`);
         return r;
     };
+    /**
+     * A chat (`[header, ...messages]`) stored from the tree's root as the session's conversation, the session at its
+     * end: each message's node in `assigned_node_ids`.
+     * @param {{ tree: bigint, treeSpeaker: any, actor: { user: string, session: string } }} who
+     * @param {any[]} chat
+     */
+    const storeConversation = async (who, chat) => {
+        const imported = ok(await chats.importChat({ ...who, name: null, messages: chat.slice(1), metadata: chat[0]?.chat_metadata, bookmark: false }));
+        ok(await chats.goTo({ ...who, node_id: imported.node_ids[imported.node_ids.length - 1] ?? null }));
+        return { assigned_node_ids: imported.node_ids.map((/** @type {string} */ node_id, /** @type {number} */ index) => ({ index, node_id })) };
+    };
 
     // Alice: a chat with swipes, metadata with variables and a lorebook, a fork, two bookmarks sharing a label, an
     // itemization, a send key and a chat with no name.
     const alice = await treeOf({ avatar: 'Alice.png' });
-    const saved = ok(await chats.saveChat({ ...alice, force: true, chat: [
+    const saved = await storeConversation(alice, [
         header({}),
         msg('Alice', false, 'Hi!', { original_avatar: 'Alice.png' }),
         msg('You', true, 'Hello.', { extra: { token_count: 3 } }),
         { ...msg('Alice', false, 'How are you?'), swipes: ['How are you?', 'What brings you?'], swipe_id: 1, swipe_info: [{}, {}] },
         msg('You', true, 'Fine \ud800 thanks.'),
-    ] }));
+    ]);
     const ids = saved.assigned_node_ids.map((/** @type {any} */ a) => a.node_id);
     ok(await chats.mergeMetadata({ ...alice, at: ids[0], set: { note_prompt: 'Be brief.', world_info: 'Lore A' }, unset: [], variables: { set: { hp: 3 } } }));
     const sent = ok(await chats.appendMessages({ ...alice, after: ids[3], contents: [msg('Alice', false, 'Good to hear.'), msg('You', true, 'Bye.')], sendKeys: [null, '0190a1b2-0000-7000-8000-0000000000aa'] })).node_ids;
@@ -113,18 +124,18 @@ export async function buildStandardUser({ directories, store, handle = 'u' }) {
 
     // Bob: a checkpoint, and his card greeting chosen.
     const bob = await treeOf({ avatar: 'Bob.png' });
-    const bobChat = ok(await chats.saveChat({ ...bob, force: true, chat: [header({}), msg('Bob', false, 'Bob here.'), msg('You', true, 'Hi Bob.')] }));
+    const bobChat = await storeConversation(bob, [header({}), msg('Bob', false, 'Bob here.'), msg('You', true, 'Hi Bob.')]);
     const bobEnd = bobChat.assigned_node_ids[bobChat.assigned_node_ids.length - 1].node_id;
     ok(await chats.createBookmark({ ...bob, node_id: bobEnd, name: 'Bob - Checkpoint #1', mode: MODE.pinned }));
     ok(await chats.chooseCardGreeting({ ...bob, index: 0 }));
 
     // The group: a chat, a second bookmark where it ends, and one at the root.
     const party = await treeOf({ group: groupId });
-    const partyChat = ok(await chats.saveChat({ ...party, force: true, chat: [
+    const partyChat = await storeConversation(party, [
         header({}),
         msg('Alice', false, 'Group hello.', { original_avatar: 'Alice.png', force_avatar: '/thumbnail?type=avatar&file=Alice.png' }),
         msg('You', true, 'Hey all.'),
-    ] }));
+    ]);
     ok(await chats.mergeMetadata({ ...party, at: partyChat.assigned_node_ids[0].node_id, set: { note_prompt: 'Group note.' }, unset: [] }));
     const partyEnd = partyChat.assigned_node_ids[partyChat.assigned_node_ids.length - 1].node_id;
     ok(await chats.createBookmark({ ...party, node_id: null, name: 'Dropped empty' }));
@@ -135,12 +146,12 @@ export async function buildStandardUser({ directories, store, handle = 'u' }) {
     // A second group: a greeting, then a chat with swipes whose first message is another greeting.
     const damaged = await treeOf({ group: damagedId });
     ok(await chats.addOpenings({ ...damaged, contents: [{ name: 'Alice', is_user: false, mes: 'm2b', send_date: 'd2', extra: {} }] }));
-    const c1 = ok(await chats.saveChat({ ...damaged, force: true, chat: [
+    const c1 = await storeConversation(damaged, [
         header({}),
         { name: 'Alice', is_user: false, mes: 'm1b', send_date: 'd1', extra: {}, swipes: ['m1a', 'm1b'], swipe_id: 1 },
         { name: 'Alice', is_user: false, mes: 'm2a', send_date: 'd2', extra: {}, swipes: ['m2a', 'm2b'], swipe_id: 0 },
         { name: 'You', is_user: true, mes: 'm3', send_date: 'd3', extra: {}, swipes: ['m3'], swipe_id: 0 },
-    ] }));
+    ]);
     ok(await chats.createBookmark({ ...damaged, node_id: c1.assigned_node_ids[c1.assigned_node_ids.length - 1].node_id, name: 'c1' }));
 }
 

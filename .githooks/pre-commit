@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Blocks commits that introduce dangling import/export references (Cannot find name / no exported
-# member / declared but not exported), new circular-import growth, or a public/script.js that no
-# longer exports every name upstream/staging's does (scripts/script-exports.mjs).
+# member / declared but not exported), new circular-import growth, app code calling upstream's
+# whole-chat save (eslint's noAppChatSave rule), or a public/script.js that no longer exports every
+# name upstream/staging's does (scripts/script-exports.mjs).
 #
 # Every check runs against the tree this commit will record (the index git hands the hook, which is
 # GIT_INDEX_FILE's for `commit -a`, `commit <paths>` and caller-supplied temp indexes), checked out
@@ -117,6 +118,34 @@ if [ "$cycle_count" -gt "$baseline" ]; then
     echo "pre-commit: blocked -- import/no-cycle count in the staged snapshot went from $baseline to $cycle_count" >&2
     echo "" >&2
     echo "This commit appears to introduce a new circular import. Circular imports have caused real TDZ crashes here (ReferenceError: Cannot access '<name>' before initialization) -- run 'npm run lint:cycles' to see the cycle paths and either break the cycle or, if this is intentional/a false positive, raise .oxlint-cycle-baseline to $cycle_count." >&2
+    exit 1
+fi
+
+# App code never calls upstream's whole-chat save (saveChat()/saveChatConditional()/saveChatDebounced(), and
+# getContext().saveChat()): those are kept for third-party extensions only (public/scripts/chat-compat-save.js), and
+# app code sends the node-addressed action for what it changed. .eslintrc.cjs's noAppChatSave rule says so; this runs
+# eslint on the staged snapshot and blocks on that rule. (The rest of eslint isn't gated here: the tree isn't
+# lint-clean yet.) eslint's exit code 2 is a crash, never a pass.
+eslint_version="$(npx eslint --version 2>&1 || true)"
+if ! printf '%s\n' "$eslint_version" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+'; then
+    echo "pre-commit: blocked -- 'npx eslint --version' did not return a real eslint version:" >&2
+    printf '%s\n' "$eslint_version" >&2
+    exit 1
+fi
+set +e
+eslint_output="$(npx eslint --format unix "src/**/*.js" "public/**/*.js" 2>&1)"
+eslint_status=$?
+set -e
+if [ "$eslint_status" -ge 2 ]; then
+    echo "pre-commit: blocked -- eslint failed to run on the staged snapshot:" >&2
+    printf '%s\n' "$eslint_output" | tail -20 >&2
+    exit 1
+fi
+whole_saves="$(printf '%s\n' "$eslint_output" | grep 'upstream-compat entry points' || true)"
+if [ -n "$whole_saves" ]; then
+    echo "pre-commit: blocked -- app code calls upstream's whole-chat save, kept for third-party extensions only:" >&2
+    echo "" >&2
+    printf '%s\n' "$whole_saves" | sed "s#^$snap_tree/##" >&2
     exit 1
 fi
 

@@ -10,8 +10,6 @@ import {
     setEditedMessageId,
     getFirstDisplayedMessageId,
     showMoreMessages,
-    saveChatConditional,
-    isChatSaveScheduled,
     setAnimationDuration,
     ANIMATION_DURATION_DEFAULT,
     doNewChat,
@@ -22,6 +20,7 @@ import {
     deleteMessage,
     settingsReady,
     getMessageDeletionStartId,
+    flushScheduledChatSave,
 } from '../script.js';
 import { printCharactersDebounced, printCharacters, entitiesFilter, resetCharacterListPositionOnNextPrint } from './character-list.js';
 import { chat } from './chat-state.js';
@@ -4243,11 +4242,8 @@ jQuery(() => {
     $('#reload_chat').on('click', async function () {
         const currentChatId = getCurrentChatId();
         if (currentChatId !== undefined && currentChatId !== null) {
-            // Reloading is a pure read of the persisted chat - only flush a save first if there's
-            // actually something unsaved that the reload would otherwise discard.
-            if (isChatSaveScheduled()) {
-                await saveChatConditional();
-            }
+            // Reloading reads what the server stores: a save an extension asked for (saveChatDebounced()) goes first.
+            await flushScheduledChatSave();
             await reloadCurrentChat();
         }
     });

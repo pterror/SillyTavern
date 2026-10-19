@@ -5,8 +5,8 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
 
-// Upstream's saveChat(), as an extension calls it after changing `chat` directly: the whole chat goes to
-// /api/chats/save in one request, and the server stores what changed, so a reload shows the same chat.
+// Upstream's saveChat(), as an extension calls it after changing `chat` directly: what changed goes to the server as
+// actions addressed by node id (never the chat itself to /api/chats/save), so a reload shows the same chat.
 
 /** @param {import('@playwright/test').Page} page @param {string} name */
 async function createCharacter(page, name) {
@@ -69,7 +69,8 @@ test('an extension\'s changes to chat and chat metadata are stored by saveChat()
         context.chatMetadata.compat_key = 'stored';
         await context.saveChat();
     });
-    expect(saves).toEqual(['/api/chats/save']);
+    expect(saves).not.toContain('/api/chats/save');
+    expect(saves).toEqual(expect.arrayContaining(['/api/chats/message/edit-batch', '/api/chats/message/append', '/api/chats/metadata']));
     const before = await chatState(page);
     expect(before).toEqual({ messages: ['Hello, changed.', 'Pushed by an extension.'], key: 'stored' });
 
