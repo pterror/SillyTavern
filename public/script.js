@@ -4127,6 +4127,10 @@ export class StreamingProcessor {
                 message = shown;
                 updateMessageBlock(messageId, shown);
             }
+            // The reply as the server stored it, before its handlers change anything.
+            if (isStoredNodeId(chat[messageId]?.node_id) && chat[messageId].node_id === this.assistantNodeId) {
+                markStoredAs(chat[messageId].node_id, chat[messageId]);
+            }
             await eventSource.emit(event_types.MESSAGE_RECEIVED, this.messageId, this.type);
             await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, this.messageId, this.type);
         } else {
@@ -4147,6 +4151,9 @@ export class StreamingProcessor {
         // be typechecked under strict null checks with the rest of that invariant-critical cluster -
         // see that function's own comment for the assistantNodeId-vs-heal reasoning.
         await finishStreamedReplyPersistence({ assistantNodeId: this.assistantNodeId });
+        // Where upstream saved the chat after a reply: the reply is on its node and its handlers have run, so a change
+        // an extension made in place there (MESSAGE_RECEIVED, ...) is stored; nothing is sent when nothing differs.
+        await storePageChatChanges();
 
         playMessageSound();
     }
@@ -6041,6 +6048,7 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
             const chat_id = lastMesId;
             if (storedNodeId !== null) stampReplyNode(chat_id, storedNodeId);
             applyStoredReply(chat_id, storedReply, { received: !fromStreaming });
+            if (storedNodeId !== null) markStoredAs(storedNodeId, chat[chat_id]);
             !fromStreaming && await eventSource.emit(event_types.MESSAGE_RECEIVED, chat_id, type);
             addOneMessage(chat[chat_id], { type: 'swipe' });
             !fromStreaming && await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, chat_id, type);
@@ -6070,6 +6078,7 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
         const chat_id = lastMesId;
         if (storedNodeId !== null) stampReplyNode(chat_id, storedNodeId);
         applyStoredReply(chat_id, storedReply, { received: !fromStreaming });
+        if (storedNodeId !== null) markStoredAs(storedNodeId, chat[chat_id]);
         !fromStreaming && await eventSource.emit(event_types.MESSAGE_RECEIVED, chat_id, type);
         addOneMessage(chat[chat_id], { type: 'swipe' });
         !fromStreaming && await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, chat_id, type);
@@ -6097,6 +6106,7 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
         const chat_id = lastMesId;
         if (storedNodeId !== null) stampReplyNode(chat_id, storedNodeId);
         applyStoredReply(chat_id, storedReply, { received: !fromStreaming });
+        if (storedNodeId !== null) markStoredAs(storedNodeId, chat[chat_id]);
         !fromStreaming && await eventSource.emit(event_types.MESSAGE_RECEIVED, chat_id, type);
         addOneMessage(chat[chat_id], { type: 'swipe' });
         !fromStreaming && await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, chat_id, type);
@@ -6134,6 +6144,7 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
         const chat_id = (chat.length - 1);
         if (storedNodeId !== null) stampReplyNode(chat_id, storedNodeId);
         applyStoredReply(chat_id, storedReply, { received: !fromStreaming });
+        if (storedNodeId !== null) markStoredAs(storedNodeId, chat[chat_id]);
 
         !fromStreaming && await eventSource.emit(event_types.MESSAGE_RECEIVED, chat_id, type);
         addOneMessage(chat[chat_id]);

@@ -13,7 +13,7 @@ import {
     removeDepthPrompts, removeLastMessage, removeMacros, resolveClientToolHandoffLoop,
     saveReply, sendGenerationRequest, sendMessageAsUser, sendStreamingRequest,
     setCharacterName, setExtensionPrompt, setGenerationProgress, setInContextMessages, setSendButtonState,
-    showStopButton, StreamingProcessor, substituteParams, swipe,
+    showStopButton, storePageChatChanges, StreamingProcessor, substituteParams, swipe,
     triggerAutoContinue, unblockGeneration, unshallowCharacter, updateMessageBlock, updateMessageItemizedPromptButton,
 } from '../script.js';
 import { chat, chat_metadata } from './chat-state.js';
@@ -203,9 +203,12 @@ export function stampReplyNode(mesId, nodeId) {
         if (replyItemizationSent) newSwipeInfo[selected].extra = { ...newSwipeInfo[selected].extra, [ITEMIZED_PROMPT_FLAG]: true };
         updates.swipe_info = newSwipeInfo;
     }
+    // Stamped once already (before the reply's events): what is stored there was recorded then, and a change the
+    // reply's handlers made in place since is the page's to store (the compat save after the generation).
+    const already = msg.node_id === nodeId;
     updateMessage(mesId, updates);
     const stamped = /** @type {ChatMessage | undefined} */ (chat[mesId]);
-    if (isStoredNodeId(stamped?.node_id)) {
+    if (!already && isStoredNodeId(stamped?.node_id)) {
         markStoredAs(stamped.node_id, stamped);
     }
     if (stamped) updateMessageItemizedPromptButton(stamped, { messageId: mesId });
@@ -3020,6 +3023,9 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
             return await swipe(/** @type {SwipeEvent} */ (/** @type {unknown} */ (null)), SWIPE_DIRECTION.RIGHT, { source: SWIPE_SOURCE.AUTO_SWIPE, repeated: true, forceMesId: chat.length - 1 });
         }
 
+        // Where upstream saved the chat after a reply: the reply is on its node and its handlers have run, so a change
+        // an extension made in place there (MESSAGE_RECEIVED, ...) is stored; nothing is sent when nothing differs.
+        await storePageChatChanges();
         saveTokenCache();
         unblockGeneration(type);
         streamingProcessor = null;
