@@ -20,7 +20,7 @@ import {
     deleteMessage,
     settingsReady,
     getMessageDeletionStartId,
-    flushScheduledChatSave,
+    storePageChatChanges,
 } from '../script.js';
 import { printCharactersDebounced, printCharacters, entitiesFilter, resetCharacterListPositionOnNextPrint } from './character-list.js';
 import { chat } from './chat-state.js';
@@ -4242,8 +4242,9 @@ jQuery(() => {
     $('#reload_chat').on('click', async function () {
         const currentChatId = getCurrentChatId();
         if (currentChatId !== undefined && currentChatId !== null) {
-            // Reloading reads what the server stores: a save an extension asked for (saveChatDebounced()) goes first.
-            await flushScheduledChatSave();
+            // Reloading shows what the server stores: what the page holds that differs from it (an extension's change
+            // to `chat` in place) is stored first, as upstream saved the chat here.
+            await storePageChatChanges();
             await reloadCurrentChat();
         }
     });

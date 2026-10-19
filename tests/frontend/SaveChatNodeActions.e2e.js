@@ -223,3 +223,38 @@ test('what saveChat() can\'t address is refused with a warning naming it, and no
     expect(warning).toContain('message #3');
     expect(await stored(page, avatar, 2)).toMatchObject({ opensOn: ['Hello.', 'U1', 'C1'], alternatives: ['C1'] });
 });
+
+test('a change an extension made in place without asking for a save is stored by /forcesave and before a reload', async ({ page }) => {
+    await testSetup.awaitST({ page });
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const avatar = await createCharacter(page, `NodeForce-${stamp}`);
+    await openCharacter(page, avatar);
+    await page.evaluate(async () => {
+        const { ensureOpeningRow } = await import('/scripts/chat-store.js');
+        await ensureOpeningRow(0);
+        // @ts-ignore
+        const context = SillyTavern.getContext();
+        context.chat.push({ name: 'User', is_user: true, is_system: false, mes: 'U1', send_date: new Date().toISOString(), extra: {} });
+        await context.saveChat();
+    });
+    expect(await stored(page, avatar, 1)).toMatchObject({ opensOn: ['Hello.', 'U1'] });
+
+    // Changed in place, no save asked for: /forcesave stores it.
+    await page.evaluate(async () => {
+        // @ts-ignore
+        const context = SillyTavern.getContext();
+        context.chat[1].mes = 'U1, forced';
+        await context.executeSlashCommandsWithOptions('/forcesave');
+    });
+    expect(await stored(page, avatar, 1)).toMatchObject({ opensOn: ['Hello.', 'U1, forced'] });
+
+    // Changed again, then the chat reloaded (its button): stored first, so the reload shows it.
+    await page.evaluate(() => {
+        // @ts-ignore
+        SillyTavern.getContext().chat[1].mes = 'U1, before the reload';
+        // @ts-ignore
+        $('#reload_chat').trigger('click');
+    });
+    await expect.poll(() => stored(page, avatar, 1), { timeout: 10000 }).toMatchObject({ opensOn: ['Hello.', 'U1, before the reload'] });
+    await expect.poll(() => shown(page), { timeout: 10000 }).toEqual(['Hello.', 'U1, before the reload']);
+});
