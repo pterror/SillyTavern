@@ -298,6 +298,10 @@ function alternativesOf(msg) {
     const rawSel = Number.isInteger(msg.swipe_id) ? msg.swipe_id : 0;
     const rawInfo = Array.isArray(msg.swipe_info) ? msg.swipe_info : [];
     const kept = [];
+    const slotId = (/** @type {any} */ info) => (info && typeof info === 'object' && info.node_id != null ? info.node_id : null);
+    // The message's id stands for the shown slot only when no other slot is that message: a slot without an id beside
+    // the one that has it (a swipe not stored yet) is a new alternative, never an overwrite of its sibling.
+    const claimedElsewhere = msg.node_id != null && rawInfo.some((info, i) => i !== rawSel && slotId(info) === msg.node_id);
     for (let i = 0; i < rawSwipes.length; i++) {
         if (typeof rawSwipes[i] !== 'string') continue;
         const info = rawInfo[i];
@@ -305,7 +309,7 @@ function alternativesOf(msg) {
             text: i === rawSel && typeof msg.mes === 'string' ? msg.mes : rawSwipes[i],
             info,
             wasSelected: i === rawSel,
-            nodeId: info && typeof info === 'object' && info.node_id != null ? info.node_id : (i === rawSel ? msg.node_id ?? null : null),
+            nodeId: slotId(info) ?? (i === rawSel && !claimedElsewhere ? msg.node_id ?? null : null),
         });
     }
     if (kept.length === 0) return single;

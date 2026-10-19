@@ -313,6 +313,29 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         await store.close();
     });
 
+    test(`${kind}: a shown slot without an id beside the slot that is the message is a new alternative, not an edit of it`, async () => {
+        // An overswipe's slot the server hasn't stored yet: the message still names b1, which its first slot is.
+        const { store, chats, t, id, send, replies } = await fresh(engine);
+        await send(null, ['g']);
+        await send('g', ['u1', 'b1']);
+        const loaded = (await chats.load({ tree: t, at: id.b1 })).messages;
+        const last = loaded[loaded.length - 1];
+        const pending = {
+            ...last, mes: 'b2 partial', swipe_id: 1, swipes: [last.mes, 'b2 partial'],
+            swipe_info: [{ send_date: last.send_date, extra: {}, node_id: id.b1 }, { send_date: last.send_date, extra: {} }],
+        };
+        const saved = await chats.saveChat({ tree: t, treeSpeaker: cara, chat: [{ chat_metadata: {} }, ...loaded.slice(0, -1), pending], actor: a });
+        assert.equal(saved.ok, true);
+        assert.deepEqual(await replies('u1'), ['b1', 'b2 partial']);
+
+        // With no other slot naming it, the message's id is still the shown slot's: an edit of b1 (a base that knew
+        // nothing else, so nothing is deleted).
+        const lone = { ...last, mes: 'b1 edited', swipes: ['b1 edited'], swipe_info: [{ send_date: last.send_date, extra: {} }] };
+        await chats.saveChat({ tree: t, treeSpeaker: cara, chat: [{ chat_metadata: {} }, ...loaded.slice(0, -1), lone], actor: a, base: [] });
+        assert.deepEqual(await replies('u1'), ['b1 edited', 'b2 partial']);
+        await store.close();
+    });
+
     test(`${kind}: bookmark labels may repeat; a route's chat id names a bookmark by b<id>, a session by its UUID, a label only when one has it`, async () => {
         const { store, chats, t, id, send } = await fresh(engine);
         assert.equal((await chats.openingAlternatives({ tree: t, actor: a })).has_saved_chats, false);
