@@ -330,9 +330,9 @@ export {
 // Upstream's whole-chat save, kept for extensions (chat-compat-save.js): the app's own code sends the action for what it
 // changed instead. Re-exported for upstream's importers.
 import {
-    saveChat, saveChatConditional, saveChatDebounced, cancelDebouncedChatSave, isChatSaveScheduled, flushScheduledChatSave, isChatSaving,
+    saveChat, saveChatConditional, saveChatDebounced, cancelDebouncedChatSave, isChatSaveScheduled, storePageChatChanges, isChatSaving,
 } from './scripts/chat-compat-save.js';
-export { saveChat, saveChatConditional, saveChatDebounced, cancelDebouncedChatSave, isChatSaveScheduled, flushScheduledChatSave, isChatSaving };
+export { saveChat, saveChatConditional, saveChatDebounced, cancelDebouncedChatSave, isChatSaveScheduled, storePageChatChanges, isChatSaving };
 import { MacroEngine } from './scripts/macros/engine/MacroEngine.js';
 import { addChatBackupsBrowser } from './scripts/chat-backups.js';
 import { onboardingExperimentalMacroEngine } from './scripts/macros/engine/MacroDiagnostics.js';
@@ -13922,8 +13922,9 @@ jQuery(async function () {
     $(document).on('click', '.exportChatButton, .exportRawChatButton', async function (e) {
         e.stopPropagation();
         const format = $(this).data('format') || 'txt';
-        // Exporting reads what the server stores: a save an extension asked for (saveChatDebounced()) goes first.
-        await flushScheduledChatSave();
+        // Exporting reads what the server stores: what the page holds that differs from it (an extension's change to
+        // `chat` in place) is stored first, as upstream saved the chat here.
+        await storePageChatChanges();
         const block = $(this).closest('.select_chat_block_wrapper').find('.select_chat_block');
         const chatId = block.attr('file_name');
         const filename = block.attr('chat_label') || chatId;

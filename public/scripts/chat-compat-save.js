@@ -639,6 +639,16 @@ export async function saveChatConditional(_options = {}) {
 }
 
 /**
+ * Stores what the page holds that differs from what is stored, before something reads the stored chat (an export, a
+ * reload) or the user asks for it (/forcesave): upstream saved the whole chat there, so a change an extension made to
+ * `chat` in place, without asking for a save, is stored as upstream's would be. The same node-addressed actions as
+ * saveChatConditional(); nothing is sent when nothing differs.
+ */
+export async function storePageChatChanges() {
+    await saveChatConditional();
+}
+
+/**
  * Cancels the debounced chat save if it is currently pending.
  */
 export function cancelDebouncedChatSave() {
@@ -679,16 +689,6 @@ async function runScheduledSave() {
         return;
     }
     await saveChatConditional();
-}
-
-/**
- * Runs a save an extension scheduled (saveChatDebounced()) now, when one is, before something reads what the server
- * stores (an export, a reload).
- */
-export async function flushScheduledChatSave() {
-    if (!isChatSaveScheduled()) return;
-    cancelDebouncedChatSave();
-    await runScheduledSave();
 }
 
 /**

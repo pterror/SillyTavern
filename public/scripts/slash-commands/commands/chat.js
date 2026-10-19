@@ -1,6 +1,6 @@
 import { SlashCommandParser } from '../SlashCommandParser.js';
 import { SlashCommand } from '../SlashCommand.js';
-import { closeCurrentChat, displayPastChats, flushScheduledChatSave, getCurrentChatDetails, getCurrentChatId, getFirstDisplayedMessageId, newAssistantChat, reloadCurrentChat, renameChat, saveMetadata, saveSettings, showMoreMessages } from '../../../script.js';
+import { closeCurrentChat, displayPastChats, getCurrentChatDetails, getCurrentChatId, getFirstDisplayedMessageId, newAssistantChat, reloadCurrentChat, renameChat, saveSettings, showMoreMessages, storePageChatChanges } from '../../../script.js';
 import { chat } from '../../chat-state.js';
 import { eventSource, event_types } from '../../events.js';
 import { debounce_timeout } from '../../constants.js';
@@ -115,10 +115,9 @@ export function registerChatCommands() {
         name: 'forcesave',
         callback: async function () {
             await saveSettings();
-            // Every change of the chat is stored when it is made; what may still wait is a save an extension asked
-            // for (saveChatDebounced()) and the chat's metadata.
-            await flushScheduledChatSave();
-            await saveMetadata();
+            // What the page holds that differs from what is stored (an extension's change to `chat` in place, the
+            // chat's metadata) is stored, as upstream's /forcesave saves the whole chat.
+            await storePageChatChanges();
             toastr.success(t`Chat and settings saved.`);
             return '';
         },
