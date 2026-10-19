@@ -217,122 +217,31 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         await store.close();
     });
 
-    test(`${kind}: a whole chat saved without some shown messages cuts them from this path, listing what that drops`, async () => {
-        const { store, chats, t, id, send, shown, replies } = await fresh(engine);
-        await send(null, ['g']);
-        await send('g', ['u1', 'b1', 'u2', 'b2']);
-        await chats.createBookmark({ tree: t, node_id: id.b2, name: 'end', mode: MODE.pinned, actor: a });
-        const loaded = async () => (await chats.load({ tree: t, at: (await chats.pointer(a.session))?.at ?? null })).messages;
-        // A middle message gone (upstream's deleteMessage(1)): cut from the path; the rest follows the message before.
-        const whole = await loaded();
-        const middle = await chats.saveChat({ tree: t, treeSpeaker: cara, chat: [{ chat_metadata: {} }, ...whole.filter(m => m.mes !== 'u1')], actor: a });
-        assert.equal(middle.ok, true);
-        assert.equal(middle.dropped, undefined);
-        assert.deepEqual(await shown(a), ['g', 'b1', 'u2', 'b2']);
-        assert.deepEqual(await replies('g'), ['b1']);
-        // The tail gone (`/del 2`): the pinned bookmark at b2 goes with it, and the answer names it.
-        const now = await loaded();
-        const tail = await chats.saveChat({ tree: t, treeSpeaker: cara, chat: [{ chat_metadata: {} }, ...now.slice(0, 2)], actor: a });
-        assert.deepEqual(tail.dropped?.bookmarks.map(x => x.name), ['end']);
-        assert.deepEqual(await shown(a), ['g', 'b1']);
-        assert.deepEqual(await replies('b1'), []);
-        // Another chat's array (not holding this path's opening) cuts nothing.
-        await chats.saveChat({ tree: t, treeSpeaker: cara, chat: [{ chat_metadata: {} }, msg('other')], actor: b });
-        assert.deepEqual(await shown(a), ['g', 'b1']);
-        await store.close();
-    });
-
-    test(`${kind}: a save with the page's base deletes only what the page knew and left out`, async () => {
-        const { store, chats, t, id, send, shown, replies } = await fresh(engine);
-        await send(null, ['g']);
-        await send('g', ['u1', 'b1']);
-        const loaded = async () => (await chats.load({ tree: t, at: (await chats.pointer(a.session))?.at ?? null })).messages;
-        const baseOf = (/** @type {any[]} */ ms) => ms.map(m => ({ id: m.node_id, alternatives: (m.swipe_info ?? []).map((/** @type {any} */ i) => i.node_id) }));
-        const save = (/** @type {any[]} */ ms, /** @type {any} */ base, actor = a) => chats.saveChat({ tree: t, treeSpeaker: cara, chat: [{ chat_metadata: {} }, ...ms], actor, base });
-        // Tab 1 loads g u1 b1; tab 2, on the same session, sends u2 b2 below b1.
-        const tab1 = await loaded();
-        await send('b1', ['u2', 'b2']);
-        // Tab 1 deletes b1 (upstream's deleteMessage): b1 is cut, the messages tab 1 never saw stay.
-        const cut = await save(tab1.slice(0, 2), baseOf(tab1));
-        assert.equal(cut.ok, true);
-        assert.equal(cut.deletes_refused, undefined);
-        assert.deepEqual(await replies('u1'), ['u2']);
-        assert.deepEqual(await replies('u2'), ['b2']);
-        // A save whose base doesn't hold a shown message deletes nothing of it.
-        await chats.goTo({ tree: t, node_id: id.b2, actor: a });
-        const now = await loaded();
-        const unseen = await save(now.slice(0, 2), baseOf(now.slice(0, 2)));
-        assert.equal(unseen.ok, true);
-        assert.deepEqual(await replies('u2'), ['b2']);
-        // An id the base names that resolves to nothing is refused and said so.
-        const ghost = await save(now.slice(0, 2), [...baseOf(now.slice(0, 2)), { id: 'no-such-message' }]);
-        assert.deepEqual(ghost.ok && ghost.deletes_refused, [{ node_id: 'no-such-message', reason: 'unresolved' }]);
-
-        // Swipes: b3 with alternatives b3x (nothing below) and b3y (a reply tab 1 never saw).
-        await send('u2', ['b3']);
-        await send('u2', ['b3x'], b);
-        await send('u2', ['b3y', 'u9'], b);
-        await chats.goTo({ tree: t, node_id: id.b3, actor: a });
-        const swipes = await loaded();
-        const last = swipes[swipes.length - 1];
-        assert.deepEqual(last.swipe_info.map((/** @type {any} */ i) => i.node_id).sort(), [id.b2, id.b3, id.b3x, id.b3y].sort());
-        const keep = last.swipe_info.map((/** @type {any} */ i, /** @type {number} */ k) => k).filter((/** @type {number} */ k) => [id.b2, id.b3].includes(last.swipe_info[k].node_id));
-        const without = { ...last, swipes: keep.map((/** @type {number} */ k) => last.swipes[k]), swipe_info: keep.map((/** @type {number} */ k) => last.swipe_info[k]), swipe_id: keep.findIndex((/** @type {number} */ k) => last.swipe_info[k].node_id === id.b3) };
-        const swiped = await save([...swipes.slice(0, -1), without], baseOf(swipes));
-        assert.equal(swiped.ok, true);
-        assert.deepEqual(swiped.ok && swiped.deletes_refused, [{ node_id: id.b3y, reason: 'replied since' }]);
-        assert.deepEqual((await replies('u2')).sort(), ['b2', 'b3', 'b3y']);
-        assert.deepEqual(await replies('b3y'), ['u9']);
-
-        // The session moved off the page's path by another tab: the cut applies to the path the page knew.
-        const page = await loaded();
-        await chats.goTo({ tree: t, node_id: id.u9, actor: a });
-        const off = await save(page.slice(0, -1), baseOf(page));
-        assert.equal(off.ok, true);
-        assert.deepEqual((await replies('u2')).sort(), ['b2', 'b3y']);
-        assert.deepEqual(await shown(a), ['g', 'u1', 'u2']);
-
-        // A malformed base is refused whole.
-        assert.deepEqual(await save(page.slice(0, 2), [{ id: 1 }]), { ok: false, reason: 'bad base' });
-        await store.close();
-    });
-
-    test(`${kind}: a save with no base deletes the alternatives it lacks of the messages it holds (upstream's whole replace)`, async () => {
+    test(`${kind}: an edit by patch sets only the fields it names, by the message's own id; one changing nothing writes nothing`, async () => {
         const { store, chats, t, id, send, replies } = await fresh(engine);
         await send(null, ['g']);
         await send('g', ['u1', 'b1']);
-        await send('u1', ['b1x', 'u5'], b);
-        await chats.goTo({ tree: t, node_id: id.b1, actor: a });
-        const loaded = (await chats.load({ tree: t, at: id.b1 })).messages;
-        const last = loaded[loaded.length - 1];
-        const kept = last.swipe_info.findIndex((/** @type {any} */ i) => i.node_id === id.b1);
-        const without = { ...last, swipes: [last.swipes[kept]], swipe_info: [last.swipe_info[kept]], swipe_id: 0 };
-        const saved = await chats.saveChat({ tree: t, treeSpeaker: cara, chat: [{ chat_metadata: {} }, ...loaded.slice(0, -1), without], actor: a });
-        assert.equal(saved.ok, true);
-        assert.deepEqual(await replies('u1'), ['b1']);
-        await store.close();
-    });
-
-    test(`${kind}: a shown slot without an id beside the slot that is the message is a new alternative, not an edit of it`, async () => {
-        // An overswipe's slot the server hasn't stored yet: the message still names b1, which its first slot is.
-        const { store, chats, t, id, send, replies } = await fresh(engine);
-        await send(null, ['g']);
-        await send('g', ['u1', 'b1']);
-        const loaded = (await chats.load({ tree: t, at: id.b1 })).messages;
-        const last = loaded[loaded.length - 1];
-        const pending = {
-            ...last, mes: 'b2 partial', swipe_id: 1, swipes: [last.mes, 'b2 partial'],
-            swipe_info: [{ send_date: last.send_date, extra: {}, node_id: id.b1 }, { send_date: last.send_date, extra: {} }],
-        };
-        const saved = await chats.saveChat({ tree: t, treeSpeaker: cara, chat: [{ chat_metadata: {} }, ...loaded.slice(0, -1), pending], actor: a });
-        assert.equal(saved.ok, true);
-        assert.deepEqual(await replies('u1'), ['b1', 'b2 partial']);
-
-        // With no other slot naming it, the message's id is still the shown slot's: an edit of b1 (a base that knew
-        // nothing else, so nothing is deleted).
-        const lone = { ...last, mes: 'b1 edited', swipes: ['b1 edited'], swipe_info: [{ send_date: last.send_date, extra: {} }] };
-        await chats.saveChat({ tree: t, treeSpeaker: cara, chat: [{ chat_metadata: {} }, ...loaded.slice(0, -1), lone], actor: a, base: [] });
-        assert.deepEqual(await replies('u1'), ['b1 edited', 'b2 partial']);
+        await send('u1', ['b1x'], b);
+        const [stored] = await chats.decoded([(await chats.stored([(await chats.messageIds([id.b1x]))[0]])).values().next().value]);
+        // The other alternative's text and extra, by its own id; its other fields as stored.
+        const patched = await chats.editMessages({ tree: t, treeSpeaker: cara, edits: [{ node_id: id.b1x, patch: { mes: 'b1x edited', extra: { note: 1 } } }], actor: a });
+        assert.deepEqual(patched, { ok: true, applied: 1, refused: [] });
+        assert.deepEqual((await replies('u1')).sort(), ['b1', 'b1x edited']);
+        const [after] = await chats.decoded([(await chats.stored([(await chats.messageIds([id.b1x]))[0]])).values().next().value]);
+        assert.deepEqual(after, { ...stored, mes: 'b1x edited', extra: { note: 1 } });
+        // A field unset goes; a patch changing nothing writes nothing.
+        await chats.editMessages({ tree: t, treeSpeaker: cara, edits: [{ node_id: id.b1x, unset: ['extra'] }], actor: a });
+        const [unset] = await chats.decoded([(await chats.stored([(await chats.messageIds([id.b1x]))[0]])).values().next().value]);
+        assert.equal(unset.extra, undefined);
+        const before = await store.chatRead('nextIds', {});
+        const same = await chats.editMessages({ tree: t, treeSpeaker: cara, edits: [{ node_id: id.b1x, patch: { mes: 'b1x edited' } }], actor: a });
+        assert.deepEqual(same, { ok: true, applied: 1, refused: [] });
+        assert.deepEqual(await store.chatRead('nextIds', {}), before);
+        // Blanking stored text, an unknown id, or an edit stating nothing is refused.
+        const refused = await chats.editMessages({ tree: t, treeSpeaker: cara, edits: [
+            { node_id: id.b1, patch: { mes: '' } }, { node_id: 'no-such-message', patch: { mes: 'x' } }, { node_id: id.b1 },
+        ], actor: a });
+        assert.deepEqual(refused.refused.map((/** @type {any} */ r) => r.reason), ['refused to blank stored text', 'unknown node', 'no content']);
         await store.close();
     });
 
@@ -401,8 +310,8 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         await store.close();
     });
 
-    test(`${kind}: a load sends the text of the alternatives near the shown one; a save without a base keeps the rest`, async () => {
-        const { store, chats, t, id, send, replies } = await fresh(engine);
+    test(`${kind}: a load sends the text of the alternatives near the shown one`, async () => {
+        const { store, chats, t, id, send } = await fresh(engine);
         await send(null, ['g']);
         const texts = Array.from({ length: 20 }, (_, i) => `r${i}`);
         for (const text of texts) await send('g', [text]);
@@ -415,22 +324,6 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         assert.deepEqual(reply.swipe_info.map((/** @type {any} */ x) => x?.node_id ?? null), texts.map((x, i) => (i >= 7 && i <= 17 ? id[x] : null)));
         assert.deepEqual((await chats.load({ tree: t, at: id.r12, full: true })).messages[1].swipes, texts);
 
-        // A caller deletes r9 (sent) and saves the whole chat back: only r9 goes, the holes stay.
-        const at = reply.swipes.indexOf('r9');
-        const without = { ...reply, swipes: reply.swipes.filter((/** @type {any} */ _, i) => i !== at), swipe_info: reply.swipe_info.filter((/** @type {any} */ _, i) => i !== at), swipe_id: 11 };
-        const saved = await chats.saveChat({ tree: t, treeSpeaker: cara, chat: [{ chat_metadata: {} }, loaded[0], without], actor: a });
-        assert.equal(saved.ok, true);
-        assert.deepEqual(await replies('g'), texts.filter(x => x !== 'r9'));
-
-        // Ids sent out of the stored order place no hole: nothing unsent is deleted, each is refused.
-        const again = (await chats.load({ tree: t, at: id.r12 })).messages[1];
-        const swapped = structuredClone(again);
-        const [x, y] = [swapped.swipes.indexOf('r10'), swapped.swipes.indexOf('r11')];
-        [swapped.swipe_info[x], swapped.swipe_info[y]] = [swapped.swipe_info[y], swapped.swipe_info[x]];
-        [swapped.swipes[x], swapped.swipes[y]] = [swapped.swipes[y], swapped.swipes[x]];
-        const refused = await chats.saveChat({ tree: t, treeSpeaker: cara, chat: [{ chat_metadata: {} }, loaded[0], swapped], actor: a });
-        assert.deepEqual(refused.deletes_refused?.map((/** @type {any} */ r) => r.reason), Array(8).fill('not loaded'));
-        assert.deepEqual(await replies('g'), texts.filter(x => x !== 'r9'));
         await store.close();
     });
 }

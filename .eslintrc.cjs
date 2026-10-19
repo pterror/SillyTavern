@@ -6,6 +6,22 @@ const noWholeFormCharacterSave = {
     message: 'saveCharacterDebounced/createOrEditCharacter are upstream-compat exports for third-party extensions only - save the field you changed with saveCharacterField()/saveCharacterFieldDebounced() (script.js), or the greeting/chat/avatar path for it.',
 };
 
+// Upstream's whole-chat save (saveChat(), saveChatConditional(), saveChatDebounced(), getContext().saveChat()) is
+// kept only for third-party extensions, which change `chat[]` themselves and then ask for a save
+// (public/scripts/chat-compat-save.js turns that into node-addressed actions). App code knows what it changed and sends
+// that action itself. Listed in every no-restricted-syntax block covering app code (a later matching block replaces an
+// earlier one's list); only the module that defines them is exempt (the last override below).
+const noAppChatSave = [
+    {
+        selector: 'CallExpression[callee.name=/^saveChat(Conditional|Debounced)?$/]',
+        message: 'saveChat()/saveChatConditional()/saveChatDebounced() are upstream-compat entry points for third-party extensions only (public/scripts/chat-compat-save.js). Send the node-addressed action for what you changed: chatOpEdit()/chatOpEditMany()/chatOpPatch()/chatOpAppend()/chatOpGraft()/chatOpCut()/chatOpAddAlternative()/chatOpSelect() (chat-store.js), saveMetadata() (metadata-store.js) for chat metadata.',
+    },
+    {
+        selector: 'CallExpression[callee.property.name=/^saveChat(Conditional|Debounced)?$/]',
+        message: 'getContext().saveChat() and the other whole-chat saves are upstream-compat entry points for third-party extensions only (public/scripts/chat-compat-save.js). Send the node-addressed action for what you changed: context.editMessage()/editMessages()/appendMessage(), or chatOpEdit()/chatOpPatch()/chatOpAppend()/chatOpCut()/... (chat-store.js), saveMetadata() for chat metadata.',
+    },
+];
+
 module.exports = {
     root: true,
     extends: [
@@ -88,6 +104,7 @@ module.exports = {
                         message: "openai.js was renamed to chat-completion-settings.js (it covers every Chat Completion provider, not just OpenAI) - import from there instead. The old path is kept only as a back-compat shim for third-party extensions.",
                     },
                     noWholeFormCharacterSave,
+                    ...noAppChatSave,
                 ],
             },
         },
@@ -105,37 +122,41 @@ module.exports = {
                         message: 'this_chid is a back-compat shim for third-party extensions/upstream parity only - use this_avatar/getCurrentCharacter()/charactersStore instead.',
                     },
                     noWholeFormCharacterSave,
+                    ...noAppChatSave,
                 ],
             },
         },
         {
-            // saveChatConditional()/saveChatDebounced() dispatch to _saveTreeChat()'s diff-based
-            // persistence, which has no idea what actually happened. A real user action knows what it
-            // did - call the matching chatOp*() directly (chat-store.js) instead of asking the whole
-            // chat to be diffed. Silence with an inline eslint-disable comment ONLY for a call that's
-            // a documented fallback after a direct op already failed/doesn't apply, not as a shortcut.
+            // script.js: the whole-chat saves, as for all app code (see noAppChatSave above).
             files: ['public/script.js'],
             rules: {
-                'no-restricted-syntax': ['error',
-                    {
-                        selector: "CallExpression[callee.name=/^saveChat(Conditional|Debounced)$/]",
-                        message: 'Call the specific chatOp*() for this action instead (public/scripts/chat-store.js) - see this rule\'s own comment in .eslintrc.cjs.',
-                    },
-                ],
+                'no-restricted-syntax': ['error', ...noAppChatSave],
             },
         },
         {
-            // Same rationale as the block above, for bundled (first-party-maintained) extensions -
-            // context.saveChat() is the getContext() equivalent of saveChatConditional(). Real
-            // third-party extensions are excluded from lint entirely (see ignorePatterns below), so
-            // this only applies to extensions we actually maintain and can migrate to
-            // context.editMessage()/editMessages()/appendMessage().
+            // Bundled (first-party-maintained) extensions are app code too. Real third-party extensions are excluded
+            // from lint entirely (see ignorePatterns below).
             files: ['public/scripts/extensions/**/*.js'],
+            rules: {
+                'no-restricted-syntax': ['error', noWholeFormCharacterSave, ...noAppChatSave],
+            },
+        },
+        {
+            // Server code: no whole-chat save either (the engine's is gone; a route answering upstream's array stores
+            // only what it names by id).
+            files: ['src/**/*.js'],
+            rules: {
+                'no-restricted-syntax': ['error', ...noAppChatSave],
+            },
+        },
+        {
+            // The one module that defines the whole-chat saves (and so calls them, as upstream's call each other).
+            files: ['public/scripts/chat-compat-save.js'],
             rules: {
                 'no-restricted-syntax': ['error',
                     {
-                        selector: "CallExpression[callee.property.name='saveChat']",
-                        message: 'Use context.editMessage()/editMessages()/appendMessage() for this action instead - see this rule\'s own comment in .eslintrc.cjs.',
+                        selector: "ImportSpecifier[imported.name='this_chid']",
+                        message: 'this_chid is a back-compat shim for third-party extensions/upstream parity only - use this_avatar/getCurrentCharacter()/charactersStore instead.',
                     },
                     noWholeFormCharacterSave,
                 ],

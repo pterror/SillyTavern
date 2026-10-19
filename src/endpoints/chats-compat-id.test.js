@@ -152,9 +152,9 @@ test('a reply on a pinned current bookmark keeps the id and the draft; the bookm
     assert.ok((await user.store.chats.changeBookmark({ tree, bookmark: id.slice(1), change: { mode: MODE.pinned } })).ok);
     const draftKey = buildDraftStorageKey({ type: 'character', id: 'dot.png', chatId: id });
 
-    // The reply is saved under the id the page holds: the tab's own conversation, past the pinned bookmark.
-    const replied = await saveAs('dot.png', tab, id, [message(false, 'Hi.'), message(true, 'One.'), message(false, 'Two.')]);
-    assert.equal(replied.file_name, id);
+    // The reply is stored after the message it answers: the tab's own conversation goes on past the pinned bookmark.
+    const replied = await postJson('/api/chats/message/append', { avatar_url: 'dot.png', after_node_id: pinnedAt, messages: [message(false, 'Two.')] }, tab);
+    assert.equal(replied.status, 200);
     assert.equal(await openedId('dot.png', tab), id);
     assert.equal(buildDraftStorageKey({ type: 'character', id: 'dot.png', chatId: await openedId('dot.png', tab) }), draftKey);
     // This tab reads its conversation by the id; anyone else reads the pinned bookmark where it is.

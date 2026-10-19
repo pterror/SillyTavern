@@ -522,66 +522,166 @@ async function chatListOf(chat, { withMetadata = false } = {}) {
 }
 
 /**
- * Stores a whole chat (upstream's `/save` and `/group/save`) through the request's session, at the chat `name`
- * names: the request's own conversation (its compat chat id, or its session's UUID) is the session's (made by the
- * save when it has no key yet); another bookmark (`resolveChatName()`: its `b<id>`, or a label only it has) is the
- * session's place first and becomes its current chat (a following bookmark follows the save's appends; a pinned one
- * stays); another session is what the save acts as, this tab's current chat unchanged; a name naming nothing, or any
- * name with `unique`, is a new bookmark labelled so at the chat's last message, not opened. No name: the session's
- * own conversation. Answers what `/save` sends, `file_name` the compat chat id of the chat saved.
+ * The node-addressed changes a whole chat array states (upstream's `/save`): each message's shown alternative by its
+ * `node_id`, its whole content as the array has it; each other alternative by its `swipe_info[k].node_id`, its text
+ * (`swipes[k]`) and the `send_date`, `gen_started`, `gen_finished` and `extra` its `swipe_info[k]` holds. What names
+ * no stored message, or names one ambiguously, is answered in `notSaved` and changes nothing: a message or alternative
+ * without an id (the array can't say where it goes), a shown alternative whose `swipe_info` names another message than
+ * `node_id`, an id named twice. An alternative not loaded (a `null` in `swipes`) is not part of the array.
+ * @param {any[]} messages The array's messages (without its header).
+ * @returns {{ edits: { edit: { node_id: string, content?: Record<string, any>, patch?: Record<string, any> }, where: { index: number, swipe?: number } }[], notSaved: { index: number, swipe?: number, reason: string }[] }}
+ */
+export function compatChatEdits(messages) {
+    /** @type {{ edit: { node_id: string, content?: Record<string, any>, patch?: Record<string, any> }, where: { index: number, swipe?: number } }[]} */
+    const edits = [];
+    /** @type {{ index: number, swipe?: number, reason: string }[]} */
+    const notSaved = [];
+    const named = new Set();
+    const idOf = (/** @type {unknown} */ v) => (v === null || v === undefined || v === '' ? null : String(v));
+    const add = (/** @type {string} */ nodeId, /** @type {Record<string, any>} */ edit, /** @type {{ index: number, swipe?: number }} */ where) => {
+        if (named.has(nodeId)) {
+            notSaved.push({ ...where, reason: 'named twice' });
+            return;
+        }
+        named.add(nodeId);
+        edits.push({ edit: { node_id: nodeId, ...edit }, where });
+    };
+    for (const [index, msg] of messages.entries()) {
+        if (!msg || typeof msg !== 'object') {
+            notSaved.push({ index, reason: 'not a message' });
+            continue;
+        }
+        const swipes = Array.isArray(msg.swipes) ? msg.swipes : null;
+        const info = Array.isArray(msg.swipe_info) ? msg.swipe_info : [];
+        const shown = Number.isInteger(msg.swipe_id) ? msg.swipe_id : 0;
+        const id = idOf(msg.node_id);
+        const shownSlot = swipes ? idOf(info[shown]?.node_id) : null;
+        if (id === null) notSaved.push({ index, reason: 'no id' });
+        else if (shownSlot !== null && shownSlot !== id) notSaved.push({ index, reason: 'the shown swipe names another message' });
+        else add(id, { content: storedForm(msg) }, { index });
+        if (!swipes) continue;
+        for (let k = 0; k < swipes.length; k++) {
+            if (k === shown || typeof swipes[k] !== 'string') continue;
+            const slot = info[k] && typeof info[k] === 'object' ? info[k] : {};
+            const slotId = idOf(slot.node_id);
+            if (slotId === null) {
+                notSaved.push({ index, swipe: k, reason: 'no id' });
+                continue;
+            }
+            /** @type {Record<string, any>} */
+            const patch = { mes: swipes[k] };
+            for (const key of ['send_date', 'gen_started', 'gen_finished']) if (slot[key] !== undefined) patch[key] = slot[key];
+            if (slot.extra && typeof slot.extra === 'object' && !Array.isArray(slot.extra)) patch.extra = slot.extra;
+            add(slotId, { patch }, { index, swipe: k });
+        }
+    }
+    return { edits, notSaved };
+}
+
+/**
+ * Stores a whole chat array (upstream's `/save` and `/group/save`, and `trySaveChat()`) at the chat `name` names, as
+ * node-addressed changes only: the messages and alternatives it names by id are edited where they differ
+ * (`compatChatEdits()`), and its header's `chat_metadata` is the state at the chat's last message (keys and variables
+ * it lacks removed), as upstream's save replaces the file. Nothing else is guessed: what has no id or names one
+ * ambiguously is answered in `not_saved`, and a message of the chat the array leaves out is not deleted (answered in
+ * `not_deleted`). A chat that holds nothing yet takes the array whole, as upstream writes a new file: a name naming
+ * nothing (or any name with `unique`) is a new chat labelled so, the request's session put at its end (not moved
+ * with `unique`: a branch made beside the chat); the request's own conversation, empty, is stored and the session put
+ * at its end. No name: the request's own conversation. A header
+ * whose `integrity` isn't the request's session is refused unless `force` (a chat the save makes isn't checked).
+ * Answers what `/save` sends: `file_name` the compat chat id of the chat saved.
  * @param {import('express').Request} request
  * @param {import('express').Response} response
  * @param {import('../chat-request.js').ChatContext} chat
  * @param {string} name
  * @param {any[]} chatData
+ * @returns {Promise<{ status: number, body: Record<string, any> }>}
  */
-async function saveWholeChat(request, response, chat, name, chatData) {
+async function saveCompatChat(request, response, chat, name, chatData) {
     const { chats } = chat.store;
-    let actor = chat.session.actor();
-    /** @type {string | null} The label of the bookmark the save makes at its end. */
-    let newBookmark = null;
-    // Upstream's integrity check passes a chat file that doesn't exist yet: a save that makes its chat isn't checked.
-    let force = request.body.force === true;
+    const actor = chat.session.actor();
+    if (chatData.length === 0) return { status: 200, body: { ok: true, file_name: name || await compatChatIdOf(chat) } };
+    const header = chatData[0] && typeof chatData[0] === 'object' ? chatData[0] : {};
+    const metadata = header.chat_metadata && typeof header.chat_metadata === 'object' && !Array.isArray(header.chat_metadata) ? { ...header.chat_metadata } : {};
+    const messages = chatData.slice(1);
     const own = chat.session.reader().session;
-    /** @type {string} */
-    let used = name;
-    const found = name === '' || name === own || request.body.unique === true ? null : await chats.resolveChatName({ tree: chat.tree, name });
-    if (name !== '' && (name === own || (found !== null && await isOwnChat(chat, found)))) {
-        used = '';
-        if (await chats.sessionId(own ?? undefined) === null) force = true;
-    } else if (name !== '') {
-        if (found === null) {
-            newBookmark = name;
-            force = true;
-        } else if ('bookmark' in found) {
-            used = bookmarkCompatId(found.bookmark);
-            await openChatNamed(chat, used);
-        } else {
-            actor = { user: actor.user, session: found.session };
-            used = sessionCompatId(found.session, chat.tree);
-        }
+    const unique = request.body.unique === true;
+    const found = name === '' || name === own || unique ? null : await chats.resolveChatName({ tree: chat.tree, name });
+    const isOwn = name === '' || name === own || (found !== null && await isOwnChat(chat, found));
+
+    if (!isOwn && found === null) {
+        const imported = await chats.importChat({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, name, messages, metadata, actor });
+        if (!imported.ok) return { status: 400, body: { error: imported.reason } };
+        // Upstream's page saves a chat it just made under that chat's new name: the session goes on there. A branch
+        // (`unique`) is made beside it.
+        if (!unique) await chats.goTo({ tree: chat.tree, node_id: imported.node_ids[imported.node_ids.length - 1] ?? null, actor });
+        chat.session.answer(response, { moved: !unique });
+        return {
+            status: 200,
+            body: {
+                ok: true, integrity: actor.session, file_name: bookmarkCompatId(/** @type {bigint} */ (imported.bookmark)),
+                assigned_node_ids: imported.node_ids.map((node_id, index) => ({ index, node_id })),
+            },
+        };
     }
-    const base = Array.isArray(request.body.base) ? request.body.base : undefined;
-    const saved = await chats.saveChat({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, chat: chatData, actor, force, base });
-    chat.session.answer(response, { moved: true });
-    if ('empty' in saved) return { status: 200, body: { ok: true, file_name: used || await compatChatIdOf(chat) } };
-    if (!saved.ok) return { status: 400, body: { error: saved.reason } };
-    if (saved.dropped) console.warn(`[chats/save] A save of "${name}" dropped:`, JSON.stringify(saved.dropped));
-    if (saved.deletes_refused) console.warn(`[chats/save] A save of "${name}" refused deletes:`, JSON.stringify(saved.deletes_refused));
-    if (newBookmark !== null) {
-        const at = await chats.landingOf(chat.tree, actor);
-        const made = await chats.createBookmark({ tree: chat.tree, node_id: at, name: newBookmark, actor });
-        if (made.ok) used = bookmarkCompatId(made.bookmark);
+
+    const incoming = metadata.integrity;
+    const unstored = isOwn && await chats.sessionId(own ?? undefined) === null;
+    if (request.body.force !== true && !unstored && typeof incoming === 'string' && incoming !== actor.session) {
+        return { status: 400, body: { error: 'integrity' } };
     }
+    const at = isOwn ? await chats.landingOf(chat.tree, actor) : await chatNamePosition(chat, name);
+    if (at === undefined) return { status: 400, body: { error: 'not_found' } };
+    const fileName = isOwn ? await compatChatIdOf(chat)
+        : found !== null && 'bookmark' in found ? bookmarkCompatId(found.bookmark) : sessionCompatId(String(found?.session), chat.tree);
+
+    if (at === null && isOwn && messages.length > 0) {
+        const imported = await chats.importChat({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, name: null, messages, metadata, actor, bookmark: false });
+        if (!imported.ok) return { status: 400, body: { error: imported.reason } };
+        const last = imported.node_ids.length ? imported.node_ids[imported.node_ids.length - 1] : null;
+        await chats.goTo({ tree: chat.tree, node_id: last, actor });
+        chat.session.answer(response, { moved: true });
+        return {
+            status: 200,
+            body: {
+                ok: true, integrity: actor.session, file_name: await compatChatIdOf(chat),
+                assigned_node_ids: imported.node_ids.map((node_id, index) => ({ index, node_id })),
+            },
+        };
+    }
+
+    const { edits, notSaved } = compatChatEdits(messages);
+    if (edits.length) {
+        const result = await chats.editMessages({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, edits: edits.map(e => e.edit), actor });
+        const where = new Map(edits.map(e => [e.edit.node_id, e.where]));
+        for (const r of result.refused) notSaved.push({ ...(where.get(r.node_id) ?? { index: -1 }), reason: r.reason });
+    }
+    const sent = new Set();
+    for (const m of messages) {
+        if (m?.node_id != null) sent.add(String(m.node_id));
+        for (const info of Array.isArray(m?.swipe_info) ? m.swipe_info : []) if (info?.node_id != null) sent.add(String(info.node_id));
+    }
+    const loaded = at === null ? null : await chats.load({ tree: chat.tree, at, session: actor.session });
+    const notDeleted = (loaded?.messages ?? []).map(m => String(m.node_id)).filter(id => !sent.has(id));
+
+    // A whole chat's save replaces its metadata, as upstream's does: a key or variable it lacks is removed.
+    const there = await chats.stateAt({ tree: chat.tree, at, session: actor.session });
+    const current = there && 'state' in there ? there.state : {};
+    const unset = Object.keys(current).filter(k => !Object.hasOwn(metadata, k));
+    const had = current.variables && typeof current.variables === 'object' ? Object.keys(current.variables) : [];
+    const sentVariables = metadata.variables && typeof metadata.variables === 'object' && !Array.isArray(metadata.variables) ? metadata.variables : null;
+    const variables = { unset: sentVariables ? had.filter(v => !Object.hasOwn(sentVariables, v)) : [] };
+    await chats.mergeMetadata({ tree: chat.tree, at, set: metadata, unset, variables, actor });
+    chat.session.answer(response);
+
+    if (notSaved.length) console.warn(`[chats/save] A save of "${name}" left out what it names by no id or ambiguously:`, JSON.stringify(notSaved));
+    if (notDeleted.length) console.warn(`[chats/save] A save of "${name}" leaves out messages of the chat, which aren't deleted:`, JSON.stringify(notDeleted));
     return {
         status: 200,
         body: {
-            ok: true,
-            integrity: saved.integrity,
-            assigned_node_ids: saved.assigned_node_ids,
-            file_name: used || await compatChatIdOf(chat),
-            ...(saved.dropped ? { dropped: saved.dropped } : {}),
-            ...(saved.deletes_refused ? { deletes_refused: saved.deletes_refused } : {}),
+            ok: true, integrity: actor.session, file_name: fileName,
+            ...(notSaved.length ? { not_saved: notSaved } : {}),
+            ...(notDeleted.length ? { not_deleted: notDeleted } : {}),
         },
     };
 }
@@ -607,7 +707,7 @@ export async function trySaveChat(chatData, filePath, skipIntegrityCheck = false
     if (!chat) throw new Error(`No chat to save at "${filePath}"`);
     /** @type {any} */
     const response = { setHeader() {}, headersSent: false };
-    const { status, body } = await saveWholeChat(request, response, chat, file.name, chatData);
+    const { status, body } = await saveCompatChat(request, response, chat, file.name, chatData);
     if (status === 400 && body.error === 'integrity') {
         throw new Error(`Chat integrity check failed for "${filePath}". The expected integrity slug was "${chatData[0]?.chat_metadata?.integrity}".`);
     }
@@ -622,7 +722,7 @@ router.post('/save', validateAvatarUrlMiddleware, async function (request, respo
         }
         const chat = await chatOf(request, { avatar_url: request.body.avatar_url });
         if (!chat) return response.status(404).send({ error: 'not_found' });
-        const { status, body } = await saveWholeChat(request, response, chat, chatName(request.body.file_name), chatData);
+        const { status, body } = await saveCompatChat(request, response, chat, chatName(request.body.file_name), chatData);
         return response.status(status).send(body);
     } catch (error) {
         console.error(error);
@@ -1142,14 +1242,17 @@ router.post('/ancestry', async function (request, response) {
     }
 });
 
-/** Edits one message's content. */
+/**
+ * Edits one message: its whole `content`, or a `patch` of the fields it sets and those it `unset`s (the rest as
+ * stored). An edit that changes nothing writes nothing.
+ */
 router.post('/message/edit', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const nodeId = String(request.body.node_id || '');
         if (!nodeId) return response.status(400).send({ error: 'node_id is required' });
         const chat = await chatOf(request);
         if (!chat) return response.status(409).send({ ok: false, reason: 'unknown chat' });
-        const result = await chat.store.chats.editMessages({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, edits: [{ node_id: nodeId, content: request.body.content }], actor: chat.session.actor() });
+        const result = await chat.store.chats.editMessages({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, edits: [{ node_id: nodeId, content: request.body.content, patch: request.body.patch, unset: request.body.unset }], actor: chat.session.actor() });
         const refused = result.refused[0];
         return refused ? response.status(409).send({ ok: false, ...refused }) : response.send({ ok: true });
     } catch (error) {
@@ -1346,6 +1449,26 @@ router.post('/message/cut', validateAvatarUrlMiddleware, async function (request
         const result = await chat.store.chats.cutFromPath({ tree: chat.tree, first, last, actor: chat.session.actor(), preview, confirm: request.body.confirm });
         chat.session.answer(response, { moved: result.ok && !preview });
         return response.status(result.ok ? 200 : 409).send(result);
+    } catch (error) {
+        console.error('Error cutting messages:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
+/**
+ * Cuts the messages `node_ids` names out of the request's session's path (a page's compat save: messages it held and
+ * no longer does), each run of them adjacent on the path one cut, applied whatever else it drops (answered in
+ * `drops`). Answers `not_on_path` (the ids the path doesn't hold: cut nowhere), `refused`, and `copied` (as /cut).
+ */
+router.post('/message/cut-many', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const nodeIds = Array.isArray(request.body.node_ids) ? request.body.node_ids.filter(id => typeof id === 'string' && id !== '') : null;
+        if (!nodeIds) return response.status(400).send({ error: 'node_ids is required' });
+        const chat = await chatOf(request);
+        if (!chat) return response.status(409).send({ ok: false, reason: 'unknown chat' });
+        const result = await chat.store.chats.cutNamed({ tree: chat.tree, actor: chat.session.actor(), node_ids: nodeIds });
+        chat.session.answer(response, { moved: true });
+        return response.send(result);
     } catch (error) {
         console.error('Error cutting messages:', error);
         return response.status(500).send({ error: true });
@@ -1708,15 +1831,15 @@ router.post('/group/delete', async (request, response) => {
 
 /**
  * Fills in `extra.gen_id` for character messages missing one before a group chat is stored: group regeneration and
- * swipe tracking need one on every character message. A message that has one keeps it; the value only needs to be
- * unique within this save.
+ * swipe tracking need one on every character message. A message that has one keeps it, and a stored one (it has a
+ * `node_id`) is left as it is stored; the value only needs to be unique within this save.
  * @param {any[]} chatData Chat array as posted to /group/save, i.e. [header, ...messages].
  */
 function assignMissingGenIds(chatData) {
     const baseId = Date.now();
     for (let index = 1; index < chatData.length; index++) {
         const message = chatData[index];
-        if (!message || typeof message !== 'object' || message.is_user === true || message.is_system === true) {
+        if (!message || typeof message !== 'object' || message.is_user === true || message.is_system === true || message.node_id != null) {
             continue;
         }
         if (message.extra && typeof message.extra === 'object' && message.extra.gen_id !== undefined) {
@@ -1745,7 +1868,7 @@ router.post('/group/save', async function (request, response) {
             console.error(`Refusing to save group chat "${name}": no group claims it.`);
             return response.status(400).send({ error: 'unknown_group' });
         }
-        const { status, body } = await saveWholeChat(request, response, chat, name, chatData);
+        const { status, body } = await saveCompatChat(request, response, chat, name, chatData);
         const { file_name: chatId, ...rest } = /** @type {any} */ (body);
         return response.status(status).send(chatId === undefined ? rest : { ...rest, chat_id: chatId });
     } catch (error) {

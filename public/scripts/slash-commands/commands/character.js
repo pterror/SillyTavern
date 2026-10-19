@@ -1,6 +1,6 @@
 import { SlashCommandParser } from '../SlashCommandParser.js';
 import { SlashCommand } from '../SlashCommand.js';
-import { Generate, deleteCharacter, duplicateCharacter, getCurrentCharacter, getThumbnailUrl, is_send_press, reloadCurrentChat, renameCharacter, saveChatConditional, selectCharacterByAvatar, select_selected_character } from '../../../script.js';
+import { Generate, deleteCharacter, duplicateCharacter, getCurrentCharacter, getThumbnailUrl, is_send_press, reloadCurrentChat, renameCharacter, chatOpCut, selectCharacterByAvatar, select_selected_character } from '../../../script.js';
 import { getCharacters, getOneCharacter } from '../../character-list.js';
 import { chat } from '../../chat-state.js';
 import { getRequestHeaders } from '../../request-headers.js';
@@ -477,30 +477,39 @@ async function deleteMessagesByNameCallback(_, name) {
     const character = await findCharAsync({ name: name });
     name = character?.name || name;
 
-    const messagesToDelete = [];
-    chat.forEach((value) => {
+    /** @type {number[]} */
+    const indices = [];
+    chat.forEach((value, index) => {
         if (value.name === name) {
-            messagesToDelete.push(value);
+            indices.push(index);
         }
     });
 
-    if (!messagesToDelete.length) {
+    if (!indices.length) {
         console.debug('/delname: Nothing to delete');
         return;
     }
 
-    for (const message of messagesToDelete) {
-        const index = chat.indexOf(message);
-        if (index !== -1) {
-            console.debug(`/delname: Deleting message #${index}`, message);
-            chat.splice(index, 1);
-        }
+    // Each run of adjacent messages is cut from the chat, the last run first so the earlier indices still hold.
+    /** @type {[number, number][]} */
+    const runs = [];
+    for (const index of indices) {
+        if (runs.length && runs[runs.length - 1][1] === index - 1) runs[runs.length - 1][1] = index;
+        else runs.push([index, index]);
+    }
+    let deleted = 0;
+    for (const [first, last] of runs.reverse()) {
+        console.debug(`/delname: Deleting messages #${first}-#${last}`);
+        const cut = await chatOpCut(first, last).catch(error => {
+            console.error('/delname: the messages were not deleted', error);
+            return false;
+        });
+        if (cut !== false) deleted += last - first + 1;
     }
 
-    await saveChatConditional();
     await reloadCurrentChat();
 
-    toastr.info(t`Deleted ${messagesToDelete.length} messages from ${name}`);
+    toastr.info(t`Deleted ${deleted} messages from ${name}`);
     return '';
 }
 

@@ -228,8 +228,8 @@ test('POST /api/chats/group/save with unique:true makes a new bookmark of the gr
     // one string here (createBranch()'s/createNewBookmark()'s group case, "one action, one request")
     // should have nothing left to do but update its own in-memory mirror.
     const groupOnDisk = await groupOf(app, 'group-1', tab2);
-    // Newest first; the save made the bookmark without opening it, so the tab's own conversation is listed too.
-    assert.deepEqual(groupOnDisk.chats, [`s${tab2}.${await treeOf(user.store, { group: 'group-1' })}`, data.chat_id, first.data.chat_id]);
+    // Newest first; the save made the bookmark without opening it or moving the tab, which has no conversation of its own.
+    assert.deepEqual(groupOnDisk.chats, [data.chat_id, first.data.chat_id]);
     // Every other field on the descriptor must survive untouched - registration re-reads and rewrites
     // the FULL descriptor (not the shallow {id, chats} view resolveGroupOwner() hands the route), or it
     // would silently wipe the rest of the group's config.
@@ -271,25 +271,27 @@ test('POST /api/chats/group/save with an already-registered id does not rewrite 
     assert.equal(await stored(), before);
 });
 
-test('a whole save to a bookmark\'s name opens it: a following bookmark follows the save\'s appends, and is never moved otherwise', async () => {
+test('a whole save to a bookmark\'s name edits what it names by id and its metadata; it appends, deletes and moves nothing, and answers what it left out', async () => {
     const app = buildTestApp();
     const [tab] = await writeGroupFixture('group-6', ['Moving Chat']);
     const save = (chat, from) => postJson(app, '/api/chats/group/save', { id: 'Moving Chat', group_id: 'group-6', chat }, from);
+    const [seed] = (await chatNamed({ group: 'group-6' }, 'Moving Chat', tab)).messages;
 
-    // The chat continued: the bookmark follows to its new end.
-    assert.equal((await save([chatHeader(), userMsg('seed'), charMsg('more')], tab)).status, 200);
-    assert.deepEqual((await chatNamed({ group: 'group-6' }, 'Moving Chat', tab)).messages.map(m => m.mes), ['seed', 'more']);
-
-    // Another tab saves a different conversation under the name: it is that tab's current chat, so loading the name
-    // there shows what it saved (its conversation); the bookmark itself isn't moved, so others see it where it was.
+    // The stored message is edited by its id; a message without one isn't stored: the array can't say where it goes.
     const other = newSessionKey();
-    const saved = await save([chatHeader(), userMsg('elsewhere')], other);
+    const saved = await save([chatHeader({ note_prompt: 'kept' }), { ...seed, mes: 'seed, edited' }, charMsg('more')], other);
     assert.equal(saved.status, 200);
     assert.match(saved.data.chat_id, /^b\d+$/);
-    const get = (from) => postJson(app, '/api/chats/group/get', { id: saved.data.chat_id, group_id: 'group-6' }, from);
-    assert.deepEqual((await get(other)).data.map(m => m.mes).slice(1), ['elsewhere']);
-    assert.deepEqual((await get(tab)).data.map(m => m.mes).slice(1), ['seed', 'more']);
-    assert.deepEqual((await chatNamed({ group: 'group-6' }, 'Moving Chat', other)).messages.map(m => m.mes), ['seed', 'more']);
+    assert.deepEqual(saved.data.not_saved, [{ index: 1, reason: 'no id' }]);
+    const shown = await chatNamed({ group: 'group-6' }, 'Moving Chat', tab);
+    assert.deepEqual(shown.messages.map(m => m.mes), ['seed, edited']);
+    assert.equal(shown.messages[0].node_id, seed.node_id);
+    assert.equal(shown.metadata.note_prompt, 'kept');
+
+    // A save leaving the message out doesn't delete it.
+    const without = await save([chatHeader({ note_prompt: 'kept' })], other);
+    assert.deepEqual(without.data.not_deleted, [seed.node_id]);
+    assert.deepEqual((await chatNamed({ group: 'group-6' }, 'Moving Chat', tab)).messages.map(m => m.mes), ['seed, edited']);
     assert.deepEqual(await bookmarkNames({ group: 'group-6' }), ['Moving Chat']);
 });
 

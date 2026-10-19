@@ -182,8 +182,9 @@ export function getContext() {
         extensionPrompts: extension_prompts,
         setExtensionPrompt,
         updateChatMetadata,
-        // Upstream's whole-chat save: the server stores what an extension changed in `chat[]` directly.
-        saveChat: () => saveChatConditional(),
+        // Upstream's whole-chat save: what an extension changed in `chat[]` directly goes to the server as actions
+        // addressed by node id (chat-compat-save.js).
+        saveChat: saveChatConditional,
         editMessage: chatOpEdit,
         editMessages: chatOpEditMany,
         appendMessage: chatOpAppend,

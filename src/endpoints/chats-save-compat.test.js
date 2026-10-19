@@ -13,9 +13,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // chats.js's import chain reads process-wide config at import time, so the config path is set first.
 setConfigFilePath(path.join(__dirname, '..', '..', 'config.yaml'));
 
-// Upstream's whole-chat save (/api/chats/save) stores what changed in the array: an edited message, a message added
-// without an id; it names the chat by its name or by a message on it, leaves unchanged metadata unwritten, and puts a
-// character with no current chat on an unnamed chat it saves.
+// Upstream's whole-chat save (/api/chats/save), for code that still posts a chat array: it stores only what the
+// array names by id (a message, an alternative) and the chat's metadata; what it can't address (no id, an ambiguous
+// one) is answered as not saved, never guessed. A chat that holds nothing takes the array whole, as a new file.
 const { router: chatsRouter } = await import('./chats.js');
 const { newSessionKey } = await import('../chat-engine.js');
 const { SESSION_HEADER } = await import('../request-session.js');
@@ -63,7 +63,7 @@ async function writeCharacter(avatar, name) {
 
 const header = metadata => ({ chat_metadata: metadata, user_name: 'User', character_name: 'Pia' });
 
-test('an edited message and a message added without an id are stored; unchanged metadata keeps its integrity', async () => {
+test('an edited message is stored on its id; a message added without an id is answered as not saved, not guessed', async () => {
     await writeCharacter('pia.png', 'Pia');
     const tab = newSessionKey();
     const saved = await postJson('/api/chats/save', {
@@ -79,11 +79,45 @@ test('an edited message and a message added without an id are stored; unchanged 
         chat: [header({ note_prompt: 'x', integrity }), { ...first, mes: 'One, edited.' }, { name: 'Narrator', is_user: false, mes: 'Added.', send_date: 'x', extra: {} }],
     }, tab);
     assert.equal(status, 200);
-    assert.equal(data.integrity, integrity, 'unchanged metadata isn\'t written');
-    assert.deepEqual(data.assigned_node_ids.map(a => a.index), [1]);
+    assert.equal(data.integrity, integrity);
+    assert.deepEqual(data.not_saved, [{ index: 1, reason: 'no id' }]);
     const after = { messages: await sessionPath(user.store, { avatar: 'pia.png' }, tab) };
-    assert.deepEqual(after.messages.map(m => m.mes), ['One, edited.', 'Added.']);
+    assert.deepEqual(after.messages.map(m => m.mes), ['One, edited.']);
     assert.equal(after.messages[0].node_id, first.node_id, 'the edit landed on the same message');
+});
+
+test('an alternative is edited by its own id; one whose shown slot names another message, or with no id, is not saved', async () => {
+    await writeCharacter('rho.png', 'Rho');
+    const tab = newSessionKey();
+    await postJson('/api/chats/save', {
+        avatar_url: 'rho.png', file_name: '',
+        chat: [header({}), { name: 'Rho', is_user: false, mes: 'A.', send_date: 'x', extra: {}, swipes: ['A.', 'B.'], swipe_id: 0, swipe_info: [{}, {}] }],
+    }, tab);
+    const [loaded] = await sessionPath(user.store, { avatar: 'rho.png' }, tab);
+    assert.deepEqual(loaded.swipes, ['A.', 'B.']);
+    const otherId = loaded.swipe_info[1].node_id;
+
+    // The other alternative's text and extra, by its id; the shown one untouched; a third slot without an id left out.
+    const edited = await postJson('/api/chats/save', {
+        avatar_url: 'rho.png', file_name: '',
+        chat: [header({}), {
+            ...loaded, swipes: ['A.', 'B, edited.', 'C.'],
+            swipe_info: [loaded.swipe_info[0], { ...loaded.swipe_info[1], extra: { note: 1 } }, { send_date: 'x', extra: {} }],
+        }],
+    }, tab);
+    assert.equal(edited.status, 200);
+    assert.deepEqual(edited.data.not_saved, [{ index: 0, swipe: 2, reason: 'no id' }]);
+    const alternatives = await user.store.chats.alternatives({ node_id: otherId });
+    assert.deepEqual(alternatives.alternatives.map(a => a.mes), ['A.', 'B, edited.']);
+    assert.equal(alternatives.alternatives[1].extra.note, 1);
+
+    // The shown slot names the other alternative while `node_id` names the first: which one is meant can't be told.
+    const ambiguous = await postJson('/api/chats/save', {
+        avatar_url: 'rho.png', file_name: '',
+        chat: [header({}), { ...loaded, mes: 'Which?', swipe_id: 1 }],
+    }, tab);
+    assert.deepEqual(ambiguous.data.not_saved, [{ index: 0, reason: 'the shown swipe names another message' }]);
+    assert.deepEqual((await user.store.chats.alternatives({ node_id: otherId })).alternatives.map(a => a.mes), ['A.', 'B, edited.']);
 });
 
 test('an unnamed save is the tab\'s session; a save named by a message id makes a bookmark of that name there', async () => {

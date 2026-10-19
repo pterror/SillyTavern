@@ -104,11 +104,13 @@ jest.unstable_mockModule('../public/scripts/character-repository.js', () => ({
     isInvalidSortFieldError: (error) => error instanceof CharacterQueryError && error.reason === 'invalid-sort-field',
 }));
 
+// group-chats.js re-exports upstream's saveGroupChat() from the compat save, whose own imports aren't mocked here.
+jest.unstable_mockModule('../public/scripts/chat-compat-save.js', () => ({ saveGroupChat: jest.fn() }));
 jest.unstable_mockModule('../public/script.js', () => ({
+    _snapshotMessages: jest.fn(),
     requestChatOpen: jest.fn(),
     takeChatOpenAnswer: jest.fn((_owner, answer) => answer),
     chatOpenSendKeys: jest.fn(() => []),
-    saveChatConditional: jest.fn(async () => {}),
     sendSystemMessage: jest.fn(),
     printMessages: jest.fn(),
     substituteParams: jest.fn(),
@@ -126,7 +128,7 @@ jest.unstable_mockModule('../public/script.js', () => ({
     online_status: '',
     talkativeness_default: 50,
     selectRightMenuWithAnimation: jest.fn(),
-    deleteLastMessage: jest.fn(),
+    dropLastMessage: jest.fn(),
     showSwipeButtons: jest.fn(),
     hideSwipeButtons: jest.fn(),
     updateChatMetadata: jest.fn(),

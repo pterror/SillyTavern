@@ -49,7 +49,7 @@ import {
     online_status,
     talkativeness_default,
     selectRightMenuWithAnimation,
-    deleteLastMessage,
+    dropLastMessage,
     showSwipeButtons,
     hideSwipeButtons,
     updateChatMetadata,
@@ -81,7 +81,7 @@ import {
     requestChatOpen,
     takeChatOpenAnswer,
     chatOpenSendKeys,
-    saveChatConditional,
+    _snapshotMessages,
 } from '../script.js';
 import { getCharacters, showCharacterSyncFailedToast, SYNC_REQUEST_TIMEOUT_MS, queryWithSortFallback } from './character-list.js';
 import { chat, chat_metadata } from './chat-state.js';
@@ -97,6 +97,8 @@ import { POPUP_TYPE, Popup, callGenericPopup } from './popup.js';
 import { t } from './i18n.js';
 import { accountStorage } from './util/AccountStorage.js';
 import { compressRequest } from './request-compression.js';
+// Upstream's save of a group's chat, kept for extensions with the rest of the compat save.
+import { saveGroupChat } from './chat-compat-save.js';
 
 export {
     selected_group,
@@ -216,30 +218,6 @@ function noteStoredGroupFields(id, fields) {
     if (!storedGroupFields.has(id)) storedGroupFields.set(id, new Map());
     const stored = storedGroupFields.get(id);
     for (const [field, value] of Object.entries(fields)) stored.set(field, JSON.stringify(value));
-}
-
-/**
- * Saves a group chat to the server, as upstream's does: the open chat goes whole to its group's chat, and the server
- * stores what changed ({@link saveChatConditional}). The open chat is the only one the page holds, so a call for any
- * other group saves nothing, with a warning.
- * @param {string} groupId Group ID
- * @param {boolean} shouldSaveGroup Whether to save the group after saving the chat
- * @param {boolean} [_force=false] Kept for upstream callers: there is no integrity refusal to override
- * @returns {Promise<void>} A promise that resolves when the group chat has been saved.
- */
-async function saveGroupChat(groupId, shouldSaveGroup, _force = false) {
-    if (!groupsStore.has(groupId)) {
-        console.warn('Group not found', groupId);
-        return;
-    }
-    if (groupId !== selected_group) {
-        console.warn('saveGroupChat: only the open group\'s chat is held by the page; nothing was saved for', groupId);
-    } else {
-        await saveChatConditional();
-    }
-    if (shouldSaveGroup) {
-        await editGroup(groupId, false, false);
-    }
 }
 
 /**
@@ -364,7 +342,7 @@ async function regenerateGroup() {
             break;
         }
 
-        await deleteLastMessage();
+        await dropLastMessage();
     }
 
     const abortController = new AbortController();
@@ -625,6 +603,8 @@ async function openGroupConversation(groupId, { chat: requested = null, makeCurr
         chatElement.find('.mes').remove();
         await printMessages();
     }
+    // What the page now holds is what is stored (the compat save compares against it).
+    _snapshotMessages();
 
     updateChatMetadata(metadata, true);
 

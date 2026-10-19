@@ -296,7 +296,7 @@ import { reportStoredHeader } from './scripts/stored-report.js';
 export { messageFormatting };
 // Lives in chat-store.js, the only module allowed to write messages; re-exported for existing importers.
 import {
-    updateMessage, updateIn, deepFreeze,
+    updateMessage, updateIn,
     ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpCut, chatOpSelect, chatOpGraft, chatOpSwapAdjacent, chatOpReadyAlternativeDelete, chatOpDeleteAlternativeNode,
     _mergeCardGreetingsIntoOpening, _restoreContinuation, _isBlankSlot, _setCurrentTarget, setStoreRef, storeRefOf, adoptStored, chatOpAppendAfter, setSendStoredListener,
     openingForRequest, setUnstoredExtra,
@@ -317,17 +317,22 @@ export { switchToNode };
 // Lives in generation.js, isolated so it can be typechecked under strict null checks; re-exported for existing importers.
 import {
     Generate, stopGeneration,
-    saveChat, saveChatConditional,
-    isChatSaving, streamingProcessor, abortController, setAbortController, kobold_horde_model, generation_started,
-    _messageSnapshots, _snapshotMessages, _isBlankUnwrittenSwipe, finishStreamedReplyPersistence, applyStoredReply,
+    streamingProcessor, abortController, setAbortController, kobold_horde_model, generation_started,
+    _messageSnapshots, _snapshotMessages, markStoredAs, isAsStored, forgetStored, _isBlankUnwrittenSwipe, finishStreamedReplyPersistence, applyStoredReply,
+    stampReplyNode, beginSwipeReply, isReplyGenerating,
 } from './scripts/generation.js';
 import { takeStoredReply } from './scripts/llamacpp-compact-stream.js';
 export {
     Generate, stopGeneration,
-    saveChat, saveChatConditional,
-    isChatSaving, streamingProcessor,
-    _messageSnapshots,
+    streamingProcessor,
+    _messageSnapshots, _snapshotMessages, markStoredAs, isAsStored, forgetStored, isReplyGenerating,
 };
+// Upstream's whole-chat save, kept for extensions (chat-compat-save.js): the app's own code sends the action for what it
+// changed instead. Re-exported for upstream's importers.
+import {
+    saveChat, saveChatConditional, saveChatDebounced, cancelDebouncedChatSave, isChatSaveScheduled, flushScheduledChatSave, isChatSaving,
+} from './scripts/chat-compat-save.js';
+export { saveChat, saveChatConditional, saveChatDebounced, cancelDebouncedChatSave, isChatSaveScheduled, flushScheduledChatSave, isChatSaving };
 import { MacroEngine } from './scripts/macros/engine/MacroEngine.js';
 import { addChatBackupsBrowser } from './scripts/chat-backups.js';
 import { onboardingExperimentalMacroEngine } from './scripts/macros/engine/MacroDiagnostics.js';
@@ -452,7 +457,6 @@ export let name2 = systemUserName;
  * @type {import('./scripts/constants.js').SWIPE_STATE}
  */
 export let swipeState = SWIPE_STATE.NONE;
-let chatSaveTimeout;
 let importFlashTimeout;
 let firstRun = false;
 export let settingsReady = false;
@@ -1923,28 +1927,6 @@ export function scrollOnMediaLoad() {
 }
 
 /**
- * Cancels the debounced chat save if it is currently pending.
- */
-export function cancelDebouncedChatSave() {
-    if (chatSaveTimeout) {
-        clearTimeout(chatSaveTimeout);
-        chatSaveTimeout = null;
-    }
-}
-
-/**
- * True when a debounced chat save is currently queued, i.e. some chat-mutating action has happened
- * since the last save and hasn't been flushed to the server yet. Every mutating code path either
- * saves immediately (saveChatConditional()) or schedules one via saveChatDebounced() - so when this
- * is false, whatever is on screen is already exactly what the server has, and pure-read actions
- * (reloading the current chat, exporting it) have nothing to gain by forcing another save first.
- * @returns {boolean} Whether a chat save is currently scheduled.
- */
-export function isChatSaveScheduled() {
-    return !!chatSaveTimeout;
-}
-
-/**
  * Visually removes all chat message elements.
  * @param {object} [options] Options
  * @param {boolean} [options.clearData=false] Optionally clear the chat array's contents.
@@ -1967,6 +1949,16 @@ export async function clearChat({ clearData = false } = {}) {
         chat.length = 0;
         _messageSnapshots.clear();
     }
+}
+
+/**
+ * The app's own removal of the last message from the page (a placeholder, a turn the view lets go of): whatever the
+ * tree stored of it stays there, so the page no longer counts it as a message it holds (the compat save never takes it
+ * for one an extension deleted).
+ */
+export async function dropLastMessage() {
+    forgetStored([chat[chat.length - 1]?.node_id]);
+    await deleteLastMessage();
 }
 
 export async function deleteLastMessage() {
@@ -4116,6 +4108,14 @@ export class StreamingProcessor {
             message = chat[messageId];
         }
 
+        // The reply's node, when the server said where it stored it, goes on the message before its events: whatever
+        // handles them (an extension's edit, the reasoning parse, an edit opened by a click) addresses the reply's own
+        // node, never the alternative an overswipe replaces.
+        if (unlockUI && this.type !== 'impersonate' && isStoredNodeId(this.assistantNodeId)) {
+            stampReplyNode(messageId, /** @type {string} */ (this.assistantNodeId));
+            message = chat[messageId];
+        }
+
         if (unlockUI) {
             this.markUIGenStopped();
         }
@@ -5967,12 +5967,14 @@ async function processImageAttachment(message, { imageUrls }) {
  * @property {string?} [reasoningSignature] Encrypted signature of the reasoning text
  * @property {{mes: string, extra?: Record<string, any>}|null} [storedReply] The reply as the server stored it (its
  * reasoning split off), shown in place of the text and reasoning given here.
+ * @property {string|null} [storedNodeId] The node the server stored the reply at: the message takes it before its
+ * events are emitted.
  *
  * @typedef {object} SaveReplyResult
  * @property {string} type Type of generation
  * @property {string} getMessage Generated message
  */
-export async function saveReply({ type, getMessage, fromStreaming = false, title = '', swipes = [], reasoning = '', imageUrls = [], reasoningSignature = null, storedReply = null }) {
+export async function saveReply({ type, getMessage, fromStreaming = false, title = '', swipes = [], reasoning = '', imageUrls = [], reasoningSignature = null, storedReply = null, storedNodeId = null }) {
     // Backward compatibility
     if (arguments.length > 1 && typeof arguments[0] !== 'object') {
         console.trace('saveReply called with positional arguments. Please use an object instead.');
@@ -6037,6 +6039,7 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
                 lastMessage = chat[lastMesId];
             }
             const chat_id = lastMesId;
+            if (storedNodeId !== null) stampReplyNode(chat_id, storedNodeId);
             applyStoredReply(chat_id, storedReply, { received: !fromStreaming });
             !fromStreaming && await eventSource.emit(event_types.MESSAGE_RECEIVED, chat_id, type);
             addOneMessage(chat[chat_id], { type: 'swipe' });
@@ -6065,6 +6068,7 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
             lastMessage = chat[lastMesId];
         }
         const chat_id = lastMesId;
+        if (storedNodeId !== null) stampReplyNode(chat_id, storedNodeId);
         applyStoredReply(chat_id, storedReply, { received: !fromStreaming });
         !fromStreaming && await eventSource.emit(event_types.MESSAGE_RECEIVED, chat_id, type);
         addOneMessage(chat[chat_id], { type: 'swipe' });
@@ -6091,6 +6095,7 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
         }
         // We don't know if the reasoning duration extended, so we don't update it here on purpose.
         const chat_id = lastMesId;
+        if (storedNodeId !== null) stampReplyNode(chat_id, storedNodeId);
         applyStoredReply(chat_id, storedReply, { received: !fromStreaming });
         !fromStreaming && await eventSource.emit(event_types.MESSAGE_RECEIVED, chat_id, type);
         addOneMessage(chat[chat_id], { type: 'swipe' });
@@ -6127,6 +6132,7 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
 
         await processImageAttachment(newMessage, { imageUrls });
         const chat_id = (chat.length - 1);
+        if (storedNodeId !== null) stampReplyNode(chat_id, storedNodeId);
         applyStoredReply(chat_id, storedReply, { received: !fromStreaming });
 
         !fromStreaming && await eventSource.emit(event_types.MESSAGE_RECEIVED, chat_id, type);
@@ -6281,10 +6287,10 @@ export function ensureSwipes(message, mesId = undefined) {
         mesId ??= chat.indexOf(message);
         if (mesId >= 0) {
             // Backfilling missing swipe arrays isn't an edit; restore the snapshot so it doesn't read as changed.
-            const wasClean = _messageSnapshots.get(message.node_id) === message;
+            const wasClean = isAsStored(message);
             updateMessage(mesId, updates);
             if (wasClean && chat[mesId]?.node_id) {
-                _messageSnapshots.set(chat[mesId].node_id, chat[mesId]);
+                markStoredAs(chat[mesId].node_id, chat[mesId]);
             }
         } else if (!Object.isFrozen(message)) {
             // Not in the chat array and not frozen (e.g., newly created message) — mutate directly
@@ -6383,7 +6389,7 @@ export async function hydrateSwipes(mesId, { index = null, all = false } = {}) {
     }
 
     // Filling holes isn't an edit, so a clean message should stay clean afterward.
-    const wasClean = _messageSnapshots.get(message.node_id) === message;
+    const wasClean = isAsStored(message);
 
     if (!message.node_id) {
         return false;
@@ -6459,7 +6465,7 @@ export async function hydrateSwipes(mesId, { index = null, all = false } = {}) {
 
     // Hydrating only fills in what was already stored, so it does not make the message unsaved.
     if (wasClean && chat[mesId]?.node_id) {
-        _messageSnapshots.set(chat[mesId].node_id, chat[mesId]);
+        markStoredAs(chat[mesId].node_id, chat[mesId]);
     }
 
     return all ? true : typeof chat[mesId].swipes[index] === 'string';
@@ -6836,28 +6842,6 @@ export async function renameCharacter(name = null, { silent = false, renameChats
     return true;
 }
 
-export function saveChatDebounced() {
-    const avatar = this_avatar;
-    const selectedGroup = selected_group;
-
-    cancelDebouncedChatSave();
-
-    chatSaveTimeout = setTimeout(async () => {
-        if (selectedGroup !== selected_group) {
-            console.warn('Chat save timeout triggered, but group changed. Aborting.');
-            return;
-        }
-
-        if (avatar !== this_avatar) {
-            console.warn('Chat save timeout triggered, but the selected character changed. Aborting.');
-            return;
-        }
-
-        // eslint-disable-next-line no-restricted-syntax -- this IS saveChatDebounced()'s own definition.
-        await saveChatConditional();
-    }, DEFAULT_SAVE_EDIT_TIMEOUT);
-}
-
 /**
  * Processes the avatar image from the input element, allowing the user to crop it if necessary.
  * @param {HTMLInputElement} input - The input element containing the avatar file.
@@ -7153,10 +7137,6 @@ async function openCharacterConversation({ chat: requested = null, makeCurrent =
     setFormBaseline('#selected_chat_pole', String($('#selected_chat_pole').val()));
     chat.splice(0, chat.length, ...answer.messages);
     chat.forEach(ensureMessageMediaIsArray);
-    // Messages are immutable values, replaced only via updateMessage().
-    for (let i = 0; i < chat.length; i++) {
-        chat[i] = deepFreeze(chat[i]);
-    }
     _snapshotMessages();
     const openings = { openings: answer.openings, card_openings: answer.card_openings };
     if (chat.length) await _mergeCardGreetingsIntoOpening({ openings });
@@ -8210,6 +8190,11 @@ export async function messageEdit(editMessageId) {
         return;
     }
 
+    if (isReplyGenerating(editMessageId)) {
+        toastr.info(t`This message is still being generated. Edit it once it is done.`, t`Not editable yet`, { preventDuplicates: true });
+        return;
+    }
+
     const messageElement = chatElement.find(`.mes[mesid="${editMessageId}"]`);
     if (messageElement.length === 0) {
         console.warn(`Message element with id ${editMessageId} not found in DOM.`);
@@ -8392,6 +8377,12 @@ async function messageEditMove(sourceId, targetId) {
 async function messageEditDone(div) {
     if (!(this_edit_mes_id >= 0)) {
         console.trace('this_edit_mes_id cannot be blank when calling messageEditDone.');
+        return;
+    }
+
+    // A message a reply is being generated into isn't the user's to change yet: the editor stays open with the text.
+    if (isReplyGenerating(Number(this_edit_mes_id))) {
+        toastr.warning(t`This message is still being generated, so the edit wasn't saved. Press Done again once it is.`, t`Not saved yet`, { preventDuplicates: true });
         return;
     }
 
@@ -12501,13 +12492,26 @@ export async function swipe(event, direction, { source, repeated, message = chat
                 // Truncates rather than deletes: what followed belonged to the previous alternative and comes back on swiping back to it.
                 // Also makes the generation target the right message - every part of the generate path answers "which message is this for" with chat.length - 1.
                 if (chat.length > mesId + 1) {
-                    chat.splice(mesId + 1);
+                    forgetStored(chat.splice(mesId + 1).map(m => m.node_id));
                     await redisplayChat({ startIndex: mesId + 1 });
                     updateViewMessageIds();
                 }
 
-                //Regenerate the message
-                updateMessage(mesId, clearMessageData(chat[mesId]));
+                // The new slot is shown with no node of its own until the server stores the reply: the message names
+                // none meanwhile (an edit of it is refused, never sent to the alternative swiped from), which keeps
+                // its id in its own slot and is what the reply goes beside (beginSwipeReply()).
+                const swipedFrom = chat[mesId].node_id;
+                /** @type {Partial<ChatMessage>} */
+                const inFlight = { ...clearMessageData(chat[mesId]), node_id: undefined };
+                if (isStoredNodeId(swipedFrom)) {
+                    const swipeInfo = [...(chat[mesId].swipe_info ?? [])];
+                    if (swipeInfo[originalSwipeId] && !isStoredNodeId(swipeInfo[originalSwipeId].node_id)) {
+                        swipeInfo[originalSwipeId] = { ...swipeInfo[originalSwipeId], node_id: swipedFrom };
+                        inFlight.swipe_info = swipeInfo;
+                    }
+                    beginSwipeReply(mesId, swipedFrom);
+                }
+                updateMessage(mesId, inFlight);
                 let run_generate = true;
                 //Generate.
                 await animateSwipe(run_generate);
@@ -12527,7 +12531,7 @@ export async function swipe(event, direction, { source, repeated, message = chat
 
                 // Truncates the view, not the tree - typing here appends under this node, forking; leaving the blank slot restores the old continuation.
                 if (chat.length > mesId + 1) {
-                    chat.splice(mesId + 1);
+                    forgetStored(chat.splice(mesId + 1).map(m => m.node_id));
                     await redisplayChat({ startIndex: mesId });
                     updateViewMessageIds();
                 }
@@ -13918,12 +13922,8 @@ jQuery(async function () {
     $(document).on('click', '.exportChatButton, .exportRawChatButton', async function (e) {
         e.stopPropagation();
         const format = $(this).data('format') || 'txt';
-        // Exporting is a pure read of the currently-displayed chat - only flush a save first if
-        // there's actually something unsaved that the export would otherwise miss.
-        if (isChatSaveScheduled()) {
-            // eslint-disable-next-line no-restricted-syntax -- flushes whatever a debounced generic save already had pending; not a new op.
-            await saveChatConditional();
-        }
+        // Exporting reads what the server stores: a save an extension asked for (saveChatDebounced()) goes first.
+        await flushScheduledChatSave();
         const block = $(this).closest('.select_chat_block_wrapper').find('.select_chat_block');
         const chatId = block.attr('file_name');
         const filename = block.attr('chat_label') || chatId;
