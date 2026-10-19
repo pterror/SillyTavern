@@ -101,12 +101,62 @@ function savedBase() {
 }
 
 export function _snapshotMessages() {
+    // The reply being generated isn't stored as the page has it: its message keeps the snapshot it had.
+    const pending = pendingReplyIndex();
+    const pendingNode = pending >= 0 ? chat[pending]?.node_id : undefined;
+    const kept = isStoredNodeId(pendingNode) ? _messageSnapshots.get(/** @type {string} */ (pendingNode)) : undefined;
     _messageSnapshots.clear();
-    for (const msg of chat) {
+    for (const [i, msg] of chat.entries()) {
+        if (i === pending) continue;
         if (isStoredNodeId(msg.node_id)) {
             _messageSnapshots.set(msg.node_id, msg);
         }
     }
+    if (kept !== undefined) _messageSnapshots.set(/** @type {string} */ (pendingNode), kept);
+}
+
+/**
+ * The reply a generation is producing, from its request until the page takes the node the server stored it at
+ * (`_stampAssistantNodeId()`) or learns it wasn't stored (`_markReplyNotSaved()`): where it is in `chat`, the node
+ * the message there named when the generation started (the alternative a swipe replaces, the message a continue
+ * lengthens; null for a new reply), and the stored node once the server said. Until then the page's copy of that
+ * message isn't what is stored, and a whole-chat save must not write it (`storableMessages()`).
+ * @typedef {{ index: number, anchor: string | null, nodeId: string | null }} ReplyInFlight
+ */
+/** @type {ReplyInFlight | null} */
+let replyInFlight = null;
+
+/**
+ * Where the reply being generated is in `chat`, or -1 when none is (or its message is no longer the one it was).
+ * @returns {number}
+ */
+function pendingReplyIndex() {
+    if (replyInFlight === null) return -1;
+    const message = /** @type {ChatMessage | undefined} */ (chat[replyInFlight.index]);
+    if (message == null || message.is_user === true) return -1;
+    const named = isStoredNodeId(message.node_id) ? message.node_id : null;
+    return named === replyInFlight.anchor ? replyInFlight.index : -1;
+}
+
+/**
+ * The reply being generated as a whole-chat save may send it: as stored once the server said where (the page's copy
+ * on that node); before that, a replaced or lengthened message as it was last stored, and a new reply not at all
+ * (null).
+ * @param {ChatMessage} message
+ * @returns {ChatMessage | null}
+ */
+function pendingReplyAsStored(message) {
+    const nodeId = replyInFlight?.nodeId ?? null;
+    if (nodeId !== null) {
+        const selected = message.swipe_id ?? 0;
+        const swipeInfo = Array.isArray(message.swipe_info) ? [...message.swipe_info] : undefined;
+        const entry = swipeInfo ? /** @type {SwipeInfo | undefined} */ (swipeInfo[selected]) : undefined;
+        if (swipeInfo && entry != null) swipeInfo[selected] = { ...entry, node_id: nodeId };
+        return /** @type {ChatMessage} */ ({ ...message, node_id: nodeId, ...(swipeInfo ? { swipe_info: swipeInfo } : {}) });
+    }
+    const anchor = replyInFlight?.anchor ?? null;
+    const stored = anchor === null ? undefined : _messageSnapshots.get(anchor);
+    return stored === undefined ? null : /** @type {ChatMessage} */ (stored);
 }
 
 // Stamps a server-persisted assistant_node_id onto the just-saved reply and marks it clean in
@@ -118,6 +168,7 @@ let replyItemizationSent = false;
 
 function _stampAssistantNodeId(nodeId) {
     if (!nodeId) return;
+    replyInFlight = null;
     const mesId = chat.length - 1;
     // `chat.length - 1` is `-1` for an empty chat, and TS's array element type (no
     // noUncheckedIndexedAccess) doesn't know that - cast explicitly so the out-of-bounds guard
@@ -156,6 +207,7 @@ window.addEventListener(REPLY_NOT_SAVED_EVENT, (/** @type {any} */ event) => {
 // the server said so. Nothing on the page writes it (rawActionWritesFor() and a compat chat save stop at it), and a
 // send after it is refused until the server stores it (REPLY_STORED_EVENT below).
 function _markReplyNotSaved() {
+    replyInFlight = null;
     const generationId = notSavedGenerationId;
     notSavedGenerationId = null;
     if (generationId == null) return;
@@ -493,9 +545,12 @@ function rawActionWritesFor(type, lastMessage, lastMessageIndex, atStart) {
 export async function Generate(type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, force_avatar, signal, quietImage, quietName, jsonSchema = null, depth = 0 } = {}, dryRun = false) {
     /** @type {PendingSend[]} */
     const pendingSends = [];
+    const replyBefore = replyInFlight;
     try {
         return await generateOnce(type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, force_avatar, signal, quietImage, quietName, jsonSchema, depth }, dryRun, pendingSends);
     } finally {
+        // A generation that ended without its reply settling (an error, a stop with nothing stored) leaves nothing in flight.
+        if (replyInFlight !== replyBefore) replyInFlight = null;
         settlePendingSends(pendingSends);
     }
 }
@@ -2615,6 +2670,11 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
         replyItemizationSent = rawAction !== null && type !== 'quiet' && !isImpersonate;
         if (rawAction !== null && replyItemizationSent) {
             rawAction.itemization = additionalPromptStuff;
+            // The server stores this reply; until the page has its node, the page's copy isn't what is stored.
+            const onMessage = type === 'swipe' || isContinue;
+            const index = onMessage ? chat.length - 1 : chat.length;
+            const named = onMessage ? chat[index]?.node_id : null;
+            replyInFlight = { index, anchor: isStoredNodeId(named) ? /** @type {string} */ (named) : null, nodeId: null };
         }
 
         if (isStreamingEnabled() && type !== 'quiet') {
@@ -2745,6 +2805,7 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
             }
 
             if (isStreamFinished) {
+                if (replyInFlight !== null && isStoredNodeId(streamingProcessor.assistantNodeId)) replyInFlight.nodeId = streamingProcessor.assistantNodeId;
                 await streamingProcessor.onFinishStreaming(streamingProcessor.messageId, getMessage);
                 streamingProcessor = null;
                 triggerAutoContinue(messageChunk, isImpersonate);
@@ -2876,6 +2937,7 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
             // Without streaming we'll be having a full message on continuation. Treat it as a last chunk.
             // The reply as the server stored it (its reasoning split off), shown in place of the page's copy.
             const storedReply = data.assistant_message ?? takeStoredReply(data.assistant_node_id);
+            if (replyInFlight !== null && isStoredNodeId(data.assistant_node_id)) replyInFlight.nodeId = data.assistant_node_id;
             if (originalType !== 'continue') {
                 ({ type, getMessage } = await saveReply({ type, getMessage, title, swipes, reasoning, imageUrls, reasoningSignature, storedReply }));
             } else {
@@ -2984,11 +3046,19 @@ export function stopGeneration() {
 /**
  * The messages of a chat a compat save sends: up to, not including, a message the page must not write (a reply the
  * server couldn't store, which it stores on retry; a send that wasn't stored, kept until saved again or discarded).
- * Each message without a stored id gets a ref, so the save's answer can be taken on (adoptStored()).
+ * The reply being generated is the server's to store: its message goes as stored (`pendingReplyAsStored()`), and a
+ * new reply the server hasn't stored yet ends the chat there. Each message without a stored id gets a ref, so the
+ * save's answer can be taken on (adoptStored()).
  * @param {ChatMessage[]} messages
  * @returns {ChatMessage[]}
  */
 function storableMessages(messages) {
+    const pending = pendingReplyIndex();
+    const at = pending < 0 ? -1 : messages.indexOf(chat[pending]);
+    if (at >= 0) {
+        const asStored = pendingReplyAsStored(messages[at]);
+        messages = asStored === null ? messages.slice(0, at) : messages.map((m, i) => (i === at ? asStored : m));
+    }
     let end = messages.findIndex(message => typeof message.extra?.reply_not_saved === 'string' || isFailedSend(message));
     if (end < 0) end = messages.length;
     if (end < messages.length) {
