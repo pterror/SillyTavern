@@ -324,14 +324,20 @@ body.charListGrid #rm_print_characters_block .ch_additional_info {
 
 /* Fullscreen chub.ai-style character grid, reusing the sidebar list's own DOM (layout-only, no second render
    path). Scoped to data-active-menu="rm_characters_block" so switching to the single-character edit view
-   drops back to the normal sidebar layout instead of applying to a view it wasn't designed for. */
-body.charGalleryView #right-nav-panel.galleryFullscreen[data-active-menu="rm_characters_block"].fillRight.openDrawer {
+   drops back to the normal sidebar layout instead of applying to a view it wasn't designed for.
+   Its place and width hold while it closes too: dropping to sidebar width as the close starts would reflow the grid
+   into one column and move the list's scroll position, so reopening wouldn't come back where it was. Only the height
+   depends on being open, for the slide. */
+body.charGalleryView #right-nav-panel.galleryFullscreen[data-active-menu="rm_characters_block"].fillRight {
     left: var(--drawerBarLeft);
     right: var(--drawerBarRight);
     width: var(--besideDrawerBarWidth);
     max-width: var(--besideDrawerBarWidth);
     margin: 0;
     top: var(--drawerBarTop);
+}
+
+body.charGalleryView #right-nav-panel.galleryFullscreen[data-active-menu="rm_characters_block"].fillRight.openDrawer {
     height: calc(100vh - var(--drawerBarTop) - var(--drawerBarBottom));
     height: calc(100dvh - var(--drawerBarTop) - var(--drawerBarBottom));
     max-height: calc(100vh - var(--drawerBarTop) - var(--drawerBarBottom));
@@ -349,14 +355,17 @@ body.charGalleryView #right-nav-panel.galleryFullscreen[data-active-menu="rm_cha
 }
 
 /* Same fullscreen pattern as the character list above, but for #char-info-panel (a separate .fillRight
-   drawer) - capped at Chat Width Max. */
-#char-info-panel.charInfoFullscreen[data-active-menu="rm_ch_create_block"].fillRight.openDrawer {
+   drawer) - capped at Chat Width Max. Like it, it keeps its place and width while closing. */
+#char-info-panel.charInfoFullscreen[data-active-menu="rm_ch_create_block"].fillRight {
     left: var(--drawerBarLeft);
     right: var(--drawerBarRight);
     width: min(var(--besideDrawerBarWidth), var(--chatWidthMax, 120ch));
     max-width: min(var(--besideDrawerBarWidth), var(--chatWidthMax, 120ch));
     margin: 0 auto;
     top: var(--drawerBarTop);
+}
+
+#char-info-panel.charInfoFullscreen[data-active-menu="rm_ch_create_block"].fillRight.openDrawer {
     height: calc(100vh - var(--drawerBarTop) - var(--drawerBarBottom));
     height: calc(100dvh - var(--drawerBarTop) - var(--drawerBarBottom));
     max-height: calc(100vh - var(--drawerBarTop) - var(--drawerBarBottom));

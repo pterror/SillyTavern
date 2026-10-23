@@ -6,9 +6,11 @@
  * clicks either, so a click lands on what is visible there.
  *
  * Layers are found by what they are, never by a list of ids, so extensions' own drawers and windows take part:
- * - ordered layers: the chat (#sheld), every top-bar drawer, every floating window (#movingDivs' children,
- *   draggables on <body> such as zoomed avatars). Clicking, tapping or typing in one brings it forward; a floating
- *   window also comes forward when it appears.
+ * - ordered layers: the chat (#sheld), every drawer (any .drawer-content, wherever it sits: the top bar's, the prompt
+ *   manager's popup, an extension's), every floating window (#movingDivs' children, draggables on <body> such as
+ *   zoomed avatars). Clicking, tapping or typing in one brings it forward. Any layer but the chat that appears without
+ *   having been brought forward while hidden (opened by code that doesn't front it) comes forward by itself, so no
+ *   drawer or window can open under the layers already shown.
  * - floating lists (autocomplete menus, select2 dropdowns, the hold-Ctrl hotkey list): above every ordered layer
  *   while shown.
  *
@@ -21,13 +23,15 @@ import { setHoles, uncoveredPieces, unionArea } from './util/underlay-clip.js';
 
 /** The top-bar drawers. They share #top-settings-holder's stacking context, so z-index alone orders their painting. */
 export const STACK_DRAWER_SELECTOR = '#top-settings-holder > .drawer > .drawer-content';
-/** Floating windows: ordered, and brought forward when they appear. */
+/** Every drawer, wherever it is in the page: being a drawer is what makes it a layer, not where it was put. */
+const DRAWER_SELECTOR = '.drawer-content';
+/** Floating windows. */
 const FLOATING_SELECTOR = '#movingDivs > *, body > .draggable';
 /** The chat. Ordered like any layer; it starts at the bottom. */
 const CHAT_ID = 'sheld';
 /** Floating lists and the hold-Ctrl hotkey list: above every ordered layer while shown. */
 const LIST_SELECTOR = '.ui-menu, .select2-container--open > .select2-dropdown, .hotkeyOverlay';
-const ORDERED_SELECTOR = `#${CHAT_ID}, ${STACK_DRAWER_SELECTOR}, ${FLOATING_SELECTOR}`;
+const ORDERED_SELECTOR = `#${CHAT_ID}, ${DRAWER_SELECTOR}, ${FLOATING_SELECTOR}`;
 /** An edit in progress: a character info field, or a chat message or its reasoning. */
 const EDITING_SELECTOR = '.field_editing, #curEditTextarea, .reasoning_edit_textarea';
 const HOLE_SOURCE = 'drawer-stack';
@@ -38,8 +42,10 @@ const MAX_ORDER = 1000;
 
 /** @type {Set<HTMLElement>} Layers that currently have this module's holes or the covered class. */
 const cut = new Set();
-/** @type {WeakSet<HTMLElement>} Floating windows shown at the last update, to tell when one appears. */
+/** @type {WeakSet<HTMLElement>} Layers shown at the last update, to tell when one appears. */
 const wasShown = new WeakSet();
+/** @type {WeakMap<HTMLElement, number>} Each hidden layer's order when last seen hidden. */
+const hiddenOrder = new WeakMap();
 /** @type {() => void} */
 let onVisibilityChanged = () => {};
 /** @type {(el: HTMLElement) => void} */
@@ -196,9 +202,11 @@ function isFullscreenDrawer(el, box, chatBox) {
 }
 
 /**
- * Cuts the union of `covers` out of `el`. A fullscreen drawer whose visible part falls apart into separate pieces
- * (a column down its middle leaving two strips) is hidden whole instead. Only fullscreen drawers get this, to keep the
- * extra work off every other layer; it can widen later.
+ * Cuts the union of `covers` out of `el`. A fullscreen drawer that any one layer above it splits apart (a column down
+ * its middle leaving two strips) is hidden whole instead. Each cover is tested on its own, not their union: the union
+ * depends on which other layers happen to be above it too (picking a character opens character info over the right
+ * strip before the chat comes forward; the chat icon fronts the chat alone), and the same chat over the same drawer
+ * must hide it however it got there. Only fullscreen drawers get this, to keep the extra work off every other layer.
  * @param {HTMLElement} el
  * @param {DOMRect} box Its box
  * @param {DOMRect[]} covers
@@ -211,7 +219,7 @@ function cutLayer(el, box, covers, hideIfSplit) {
     if (rects.length === 0) return clearLayer(el);
     setHoles(el, HOLE_SOURCE, rects);
     const covered = unionArea(rects) >= box.width * box.height - 0.5
-        || (!!hideIfSplit && uncoveredPieces(box.width, box.height, [...rects, ...holesIn(box, hideIfSplit)]) > 1);
+        || (!!hideIfSplit && isSplitByOne(box, rects, holesIn(box, hideIfSplit)));
     const before = el.classList.contains('stackCovered');
     el.classList.toggle('stackCovered', covered);
     el.dataset.stackCut = 'true';
@@ -220,14 +228,32 @@ function cutLayer(el, box, covers, hideIfSplit) {
 }
 
 /**
- * Floating windows that were hidden at the last update and are shown now come forward.
+ * @param {DOMRect} box
+ * @param {Rect[]} rects The covers' parts inside it, its own coordinates
+ * @param {Rect[]} alsoHidden What else hides parts of it (the drawer bar)
+ * @returns {boolean} Whether some single cover leaves its visible part in more than one piece.
+ */
+function isSplitByOne(box, rects, alsoHidden) {
+    return rects.some(r => uncoveredPieces(box.width, box.height, [r, ...alsoHidden]) > 1);
+}
+
+/**
+ * A layer (any but the chat) that was hidden at the last update and is shown now comes forward, unless something
+ * already brought it forward while it was hidden (the app fronts a drawer as it opens it; raising it again here
+ * could put it over a drawer fronted after it). Whoever opened it, it never appears under what is already shown.
  * @param {HTMLElement[]} ordered
  */
-function raiseAppearedWindows(ordered) {
-    for (const el of ordered.filter(el => el.matches(FLOATING_SELECTOR))) {
+function raiseAppearedLayers(ordered) {
+    for (const el of ordered) {
+        if (el.id === CHAT_ID) continue;
         const shown = isShown(el);
-        if (shown && !wasShown.has(el)) raiseDrawer(el);
-        if (shown) wasShown.add(el); else wasShown.delete(el);
+        if (shown && !wasShown.has(el) && hiddenOrder.get(el) === drawerOrder(el)) raiseDrawer(el);
+        if (shown) {
+            wasShown.add(el);
+        } else {
+            wasShown.delete(el);
+            hiddenOrder.set(el, drawerOrder(el));
+        }
     }
 }
 
@@ -249,7 +275,7 @@ function keepEditedLayersInFront(ordered) {
  */
 export function updateDrawerStack() {
     const ordered = orderedLayers();
-    raiseAppearedWindows(ordered);
+    raiseAppearedLayers(ordered);
     keepEditedLayersInFront(ordered);
     let changed = false;
     if (!stackOn()) {
@@ -396,12 +422,12 @@ export function drawerLayersChanged() {
     drawerStackChanged();
 }
 
-/** Watches each top-bar drawer's own class: the one way an extension's code opens or closes a drawer without ours. */
+/** Watches each drawer's own class: the one way other code (an extension's, the prompt manager's) opens or closes a drawer without ours. */
 let classWatcher = /** @type {MutationObserver | null} */ (null);
 function observeDrawerClasses() {
     if (!classWatcher) return;
     classWatcher.disconnect();
-    for (const el of orderedLayers().filter(el => el.matches(STACK_DRAWER_SELECTOR))) {
+    for (const el of orderedLayers().filter(el => el.matches(DRAWER_SELECTOR))) {
         classWatcher.observe(el, { attributes: true, attributeFilter: ['class'] });
     }
 }
@@ -427,8 +453,8 @@ export function initDrawerStack(visibilityChanged, front) {
     document.addEventListener('pointerdown', onUserInput, true);
     document.addEventListener('keydown', onUserInput, true);
     window.addEventListener('resize', drawerStackChanged);
-    for (const el of /** @type {HTMLElement[]} */ ([...document.querySelectorAll(FLOATING_SELECTOR)])) {
-        if (isShown(el)) wasShown.add(el);
+    for (const el of orderedLayers()) {
+        if (isShown(el)) wasShown.add(el); else hiddenOrder.set(el, drawerOrder(el));
     }
     updateDrawerStack();
 }
