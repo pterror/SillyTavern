@@ -887,6 +887,8 @@ export async function chatOpEdit(mesId) {
 
     await _chatOpPost('/api/chats/message/edit', { node_id: msg.node_id, content: _messageContent(msg) });
     _markMessageSaved(mesId, msg.node_id);
+    // A character's opening edited to a card greeting's text is that greeting now: the card-only one is dropped.
+    if (mesId === 0 && (selected_group == null || selected_group === '')) await _mergeCardGreetingsIntoOpening();
     return true;
 }
 
