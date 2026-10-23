@@ -19,7 +19,9 @@ import crypto from 'node:crypto';
  *   `fav` is never set by splitCard(); assembleCard() reads it.
  * - The character's name is the one the app shows and sorts by, getCharaCardV2(card).name: `data.name` when the card
  *   has `spec` and a `data` object with a `name` key, the top-level `name` otherwise. `name:data` or `name:top` in
- *   `extra` says which key it came from, so it goes back there. The other key, when the card has it, is `mirror:name`
+ *   `extra` says which key it came from, so it goes back there. A name that isn't a string is stored as itself there
+ *   too (`data:name` or `top:name`), and the name column holds the text upstream sorts and finds it by (nameText()),
+ *   which is the one value coerced, and only for the column. The other key, when the card has it, is `mirror:name`
  *   when equal and is otherwise stored as itself (`data:name` or `top:name`, a string included).
  * - `card`: the known V2/V3 scalar fields of `data` (CARD_COLUMNS), each only when it has its column's type; the
  *   card table holds them as typed columns.
@@ -160,6 +162,17 @@ export function cardNameSource(card) {
 }
 
 /**
+ * The text a card's name is shown, sorted and found by, as upstream makes it: its character list passes the name
+ * through DOMPurify.sanitize(), which gives '' for a falsy value and the value's string for any other.
+ * @param {unknown} value
+ * @returns {string}
+ */
+export function nameText(value) {
+    if (typeof value === 'string') return value;
+    return value ? String(value) : '';
+}
+
+/**
  * @param {unknown} card A parsed card.
  * @returns {CardParts}
  */
@@ -183,8 +196,8 @@ export function splitCard(card) {
     const otherName = nameAt[nameFrom === 'data' ? 'top' : 'data'];
     if (name.found) {
         parts.extra.push({ path: `name:${nameFrom}`, value: null });
-        if (typeof name.value === 'string') parts.columns.name = name.value;
-        else parts.extra.push({ path: `${nameFrom}:name`, value: JSON.stringify(name.value) ?? 'null' });
+        parts.columns.name = nameText(name.value);
+        if (typeof name.value !== 'string') parts.extra.push({ path: `${nameFrom}:name`, value: JSON.stringify(name.value) ?? 'null' });
     }
     if (otherName.found) {
         if (name.found && jsonEqual(name.value, otherName.value)) parts.extra.push({ path: 'mirror:name', value: null });
@@ -297,8 +310,11 @@ export function assembleCard(parts) {
     const nameFrom = parts.extra.some(row => row.path === 'name:data') ? 'data' : parts.extra.some(row => row.path === 'name:top') ? 'top' : null;
     if (columns.name !== undefined) {
         if (nameFrom === null) throw new TypeError('assembleCard(): columns.name is set but no name:data or name:top says which key it belongs to');
-        if (nameFrom === 'data') ensureData().name = columns.name;
-        else card.name = columns.name;
+        // A name that isn't a string was put back as itself above (`data:name` or `top:name`); the column holds only
+        // its text.
+        const asItself = parts.extra.some(row => row.path === `${nameFrom}:name`);
+        if (!asItself && nameFrom === 'data') ensureData().name = columns.name;
+        else if (!asItself) card.name = columns.name;
     }
     if (data !== undefined) card.data = data;
     for (const { path } of parts.extra) {

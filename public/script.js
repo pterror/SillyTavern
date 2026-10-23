@@ -10469,8 +10469,10 @@ function renderGreetingPager() {
     const { greetings, index } = greetingPagerState;
     setFieldValue('greeting_field', greetings[index] ?? '');
     autosizeTextareas(document.getElementById('greeting_field'));
-    $('.greeting-pager-input').val(index + 1);
+    $('.greeting-pager-input').val(index + 1).css('--greeting-pager-digits', String(String(greetings.length).length));
     $('.greeting-pager-total').text(`/${greetings.length}`);
+    // The one blank slot shown with no greetings is nothing to delete.
+    $('.greeting-pager-delete').toggleClass('disabled', greetings.length === 1 && greetings[0] === '');
     // .val() above doesn't fire a native input event, so the token counter needs an explicit nudge.
     countCharTokensWhenShown();
 }
@@ -10571,6 +10573,56 @@ async function commitGreetingFieldValue(value) {
         console.error('Greeting add failed', { avatar, position: target.position, status: result.status, reason: result.reason });
         toastr.error(t`Failed to save the new greeting. It's still shown here - confirm it again to retry.`, t`Greeting not saved`);
         return false;
+    });
+}
+
+/**
+ * Deletes the greeting the pager shows, once the user confirms; the pager stays at its position (clamped). A New
+ * Greeting slot no add has saved yet is just dropped. In create mode the greeting goes from `create_save`.
+ */
+async function deleteGreetingPagerGreeting() {
+    const { greetings, committed, index, defaultIndex, hashes } = greetingPagerState;
+    if (greetings.length === 1 && greetings[0] === '') return;
+    // The greeting shown when asked: if it has changed by the time the delete is sent, the server refuses it.
+    const expectedHash = hashes[index];
+    if (committed[index] === false && menu_type !== 'create') {
+        greetings.splice(index, 1);
+        committed.splice(index, 1);
+        greetingPagerState.index = Math.min(index, greetings.length - 1);
+        renderGreetingPager();
+        return;
+    }
+
+    const label = index === defaultIndex ? 'the default greeting' : 'this greeting';
+    const confirm = await callGenericPopup(t`Are you sure you want to delete ${label}?`, POPUP_TYPE.CONFIRM);
+    if (!confirm) return;
+
+    if (menu_type === 'create') {
+        const remaining = greetings.filter((_, i) => i !== index);
+        const remainingDefault = reindexDefaultAfterRemoval(defaultIndex, index);
+        const fields = greetingsModelToCardFields({ greetings: remaining, defaultIndex: remainingDefault });
+        create_save.first_message = fields.firstMes;
+        create_save.alternate_greetings = stripEmptyAlternateGreetings(fields.alternateGreetings, 'greeting pager delete (create mode)');
+        if (!create_save.extensions) create_save.extensions = {};
+        create_save.extensions[GREETING_DEFAULT_POSITION_KEY] = fields.greetingDefaultPosition;
+        setGreetingPagerGreetings(remaining, remainingDefault, remaining.map(hashGreetingText));
+        return;
+    }
+
+    const avatar = $('.open_alternate_greetings').data('avatar');
+    const character = avatar ? charactersStore.get(avatar) : null;
+    if (!character) return;
+    if (!Number.isFinite(expectedHash)) return;
+    await queueGreetingSave(avatar, async () => {
+        const result = await postGreetingOp('delete', { avatar_url: avatar, position: index, expected_hash: expectedHash });
+        if (result.ok) {
+            applyGreetingOpSuccess(character, result);
+            return;
+        }
+        console.error('Greeting delete failed', { avatar, position: index, status: result.status, reason: result.reason });
+        toastr.error(result.status === 409
+            ? t`This character was changed in another session, so the greeting was not deleted. Reopen the character to see the current version.`
+            : t`Failed to delete the greeting.`, t`Greeting not deleted`);
     });
 }
 
@@ -13909,6 +13961,13 @@ jQuery(async function () {
         beginEdit('greeting_field');
     });
 
+    $('.greeting-pager-delete').on('click', function () {
+        if (blockWhileFieldEditing()) {
+            return;
+        }
+        void deleteGreetingPagerGreeting();
+    });
+
     function jumpGreetingPager() {
         const requested = parseInt(String($('.greeting-pager-input').val()), 10);
         if (Number.isNaN(requested)) {
@@ -13948,6 +14007,10 @@ jQuery(async function () {
                 body: JSON.stringify({ avatar: character.avatar, fav: newState }),
             });
             if (!response.ok) throw new Error(String(response.status));
+            // Shown on the list row as soon as it's stored, not once the re-reads below are back.
+            character.fav = newState;
+            if (character.data?.extensions) character.data.extensions.fav = newState;
+            updateCharacterListRow(character.avatar);
             await getOneCharacter(character.avatar);
             printCharactersDebounced();
             favsToHotswap();
