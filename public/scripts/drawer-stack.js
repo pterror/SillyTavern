@@ -240,14 +240,16 @@ function isSplitByOne(box, rects, alsoHidden) {
 /**
  * A layer (any but the chat) that was hidden at the last update and is shown now comes forward, unless something
  * already brought it forward while it was hidden (the app fronts a drawer as it opens it; raising it again here
- * could put it over a drawer fronted after it). Whoever opened it, it never appears under what is already shown.
+ * could put it over a drawer fronted after it). A layer never seen hidden (added to the page shown, as the expanded
+ * editor is) has no such record and comes forward too. Whoever opened it, it never appears under what is already shown.
  * @param {HTMLElement[]} ordered
  */
 function raiseAppearedLayers(ordered) {
     for (const el of ordered) {
         if (el.id === CHAT_ID) continue;
         const shown = isShown(el);
-        if (shown && !wasShown.has(el) && hiddenOrder.get(el) === drawerOrder(el)) raiseDrawer(el);
+        const frontedWhileHidden = hiddenOrder.has(el) && hiddenOrder.get(el) !== drawerOrder(el);
+        if (shown && !wasShown.has(el) && !frontedWhileHidden) raiseDrawer(el);
         if (shown) {
             wasShown.add(el);
         } else {
