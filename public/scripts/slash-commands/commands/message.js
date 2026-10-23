@@ -1,6 +1,6 @@
 import { SlashCommandParser } from '../SlashCommandParser.js';
 import { SlashCommand } from '../SlashCommand.js';
-import { Generate, addOneMessage, chatElement, chatOpAddAlternative, chatOpAppend, chatOpEdit, chatOpGraft, comment_avatar, default_avatar, deleteSwipe, extractMessageBias, getCurrentCharacter, getThumbnailUrl, is_send_press, neutralCharacterName, refreshSwipeButtons, reloadCurrentChat, saveMetadata, sendMessageAsUser, setCharacterName, substituteParams, swipe, system_message_types, updateMessage, updateMessageElement, updateSwipeCounter } from '../../../script.js';
+import { Generate, addOneMessage, chatElement, chatOpAddAlternative, chatOpEdit, comment_avatar, default_avatar, deleteSwipe, extractMessageBias, getCurrentCharacter, getThumbnailUrl, is_send_press, neutralCharacterName, refreshSwipeButtons, reloadCurrentChat, saveMetadata, sendMessageAsUser, setCharacterName, storeSentMessage, substituteParams, swipe, system_message_types, updateMessage, updateMessageElement, updateSwipeCounter } from '../../../script.js';
 import { chat, chat_metadata } from '../../chat-state.js';
 import { setActiveCharacter, setActiveGroup } from '../../app-selection-state.js';
 import { charactersStore, setCharacterId } from '../../character-store.js';
@@ -586,8 +586,7 @@ async function sendCommentMessage(args, text) {
         chat.splice(insertAt, 0, message);
         // Mid-chain insert is a graft, not a diff-engine-visible change — see sendMessageAsUser()'s
         // own insertAt branch for the same reasoning.
-        await chatOpGraft(insertAt).catch(error =>
-            console.error('Could not save the inserted message:', error));
+        await storeSentMessage(insertAt, { graft: true });
         await eventSource.emit(event_types.MESSAGE_SENT, insertAt);
         await reloadCurrentChat();
         await eventSource.emit(event_types.USER_MESSAGE_RENDERED, insertAt);
@@ -597,8 +596,7 @@ async function sendCommentMessage(args, text) {
         await eventSource.emit(event_types.MESSAGE_SENT, (chat.length - 1));
         addOneMessage(message);
         await eventSource.emit(event_types.USER_MESSAGE_RENDERED, (chat.length - 1));
-        await chatOpAppend(newIndex).catch(error =>
-            console.error('Could not save the new message:', error));
+        await storeSentMessage(newIndex);
     }
 
     return await slashCommandReturnHelper.doReturn(args.return ?? 'none', message, { objectToStringFunc: x => x.mes });

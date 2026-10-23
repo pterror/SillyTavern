@@ -3,6 +3,7 @@ import fetch from 'node-fetch';
 import { TEXTGEN_TYPES } from './constants.js';
 import { setAdditionalHeadersByType } from './additional-headers.js';
 import { trimV1 } from './util.js';
+import { logBackendFailure } from './backend-unreachable.js';
 
 /**
  * llama.cpp's `GET /props` (llama.cpp server README, "GET `/props`: Get server global properties"),
@@ -72,7 +73,7 @@ export async function fetchLlamaCppProps(backend) {
         const props = await reply.json();
         return props && typeof props === 'object' && !Array.isArray(props) ? props : null;
     } catch (error) {
-        console.warn(`llama.cpp /props at ${backend.url} failed: ${error}`);
+        logBackendFailure(backend.url, error, () => console.warn(`llama.cpp /props at ${backend.url} failed: ${error}`));
         return null;
     }
 }

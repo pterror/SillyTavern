@@ -175,7 +175,16 @@ export { TOKENIZER_TYPE_KEYS };
  */
 
 /** A remote tokenizer answered with an HTTP error, a network error or a reply without token ids. */
-export class TokenizerFailure extends Error {}
+export class TokenizerFailure extends Error {
+    /**
+     * @param {string} message
+     * @param {boolean} [unreachable] The backend couldn't be reached, which is already logged.
+     */
+    constructor(message, unreachable = false) {
+        super(message);
+        this.unreachable = unreachable;
+    }
+}
 
 /**
  * Token ids from one `tokenizers` type, with no fallback: a remote failure throws a
@@ -277,7 +286,7 @@ function remoteIds(result, apiType, options) {
         }
         return result.ids;
     }
-    throw new TokenizerFailure(`The ${apiType ?? 'text completion'} backend's tokenizer failed`);
+    throw new TokenizerFailure(`The ${apiType ?? 'text completion'} backend's tokenizer failed`, result?.unreachable === true);
 }
 
 /**
@@ -602,7 +611,7 @@ export async function encodeWithTokenizer(resolved, text, options = {}) {
         if (answeredOut) answeredOut.tokenizer = resolved;
         return ids;
     } catch (error) {
-        console.warn(`Tokenizer ${resolved.name} failed:`, error.message);
+        if (!error?.unreachable) console.warn(`Tokenizer ${resolved.name} failed:`, error.message);
     }
     const copyCanAnswer = !(options.promptStart && isLlamaCppTokenizer(resolved, options));
     if (resolved.kind === 'remote' && resolved.localCopy && copyCanAnswer) {

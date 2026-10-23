@@ -5,6 +5,7 @@ import { mergeObjectWithYaml, trimV1 } from './util.js';
 import { readSettingsAtPaths } from './settings-store.js';
 import { readSecret, SECRET_KEYS } from './endpoints/secrets.js';
 import { fetchTextgenStatus, knownModelName } from './backend-status.js';
+import { logBackendFailure } from './backend-unreachable.js';
 
 /**
  * Whether a chat-completion custom URL is llama.cpp, so its counts go through llama.cpp's own
@@ -154,7 +155,7 @@ export async function lookupCustomLlamaCppModel(endpoint) {
         const status = await fetchTextgenStatus(trimV1(endpoint.url), TEXTGEN_TYPES.LLAMACPP, { headers: { 'Content-Type': 'application/json', ...endpoint.headers } });
         return status.ok ? knownModelName(status.result) : null;
     } catch (error) {
-        console.warn(`Model lookup failed for the custom llama.cpp URL: ${error}`);
+        logBackendFailure(endpoint.url, error, () => console.warn(`Model lookup failed for the custom llama.cpp URL: ${error}`));
         return null;
     }
 }

@@ -26,7 +26,7 @@ import { readPresetByName } from '../presets.js';
 import { resolveTokenizer, encodeWithTokenizer, resolveProfileTokenizerSetting, createTokenizerOutcome, sendTokenizerWarnings, tokenizerIdentity } from '../../tokenizer-resolve.js';
 import { createLlamaCppPropsCheck, llamaCppPropsModelName } from '../../llamacpp-props.js';
 import { createStoredCounter, writeBack } from '../../token-count-store.js';
-import { fetchTextgenStatus, rememberRemoteTokenization } from '../../backend-status.js';
+import { fetchTextgenStatus, lookupBackendModel, rememberRemoteTokenization } from '../../backend-status.js';
 import { rememberOpenRouterModels } from '../../openrouter-models.js';
 import { resolveTextCompletionGenerationInput } from '../../text-completion-generation-input.js';
 import { assembleTextCompletionPrompt, buildItemizationBreakdown } from '../../text-completion-prompt-orchestrator.js';
@@ -38,6 +38,7 @@ import { attachStoredReply, persistAssistantReply, replyTextAsPageShows, unreada
 import { noteReplyReasoning, noteReplyText, readReplyFinishSettings } from '../../reply-reasoning.js';
 import { itemizationOf } from '../../itemization-of.js';
 import { answerSessionOnHeaders, chatContext } from '../../chat-request.js';
+import { logBackendFailure } from '../../backend-unreachable.js';
 import { withGenerationStop, generationIdFor, isGenerationStopped, onGenerationStop, onGenerationStopFlush, stoppableController, handleGenerationStop } from '../../generation-stop.js';
 
 export const router = express.Router();
@@ -407,7 +408,7 @@ router.post('/status', async function (request, response) {
 
         return response.send({ result: status.result, data: status.data });
     } catch (error) {
-        console.error(error);
+        logBackendFailure(request.body.api_server, error, () => console.error(error));
         return response.sendStatus(500);
     }
 });
@@ -443,7 +444,7 @@ router.post('/props', async function (request, response) {
         props.chat_template_hash = createHash('sha256').update(props.chat_template).digest('hex');
         return response.send(props);
     } catch (error) {
-        console.error(error);
+        logBackendFailure(request.body.api_server, error, () => console.error(error));
         return response.sendStatus(500);
     }
 });
@@ -664,9 +665,12 @@ export async function buildRawActionTextCompletionRequest(directories, {
 
     return {
         params: assembled.generate_data, backend, anchorNodeId, anchorContent, tokenizerIdentity: identity,
-        // The model generating, as far as the server knows it without asking the backend again: the chosen one, else
-        // the one llama.cpp's /props named. The reply records it as `extra.model`.
-        model: backend.model ?? (llamaCppProps.props ? llamaCppPropsModelName(llamaCppProps.props) : undefined) ?? null,
+        // The model generating: the chosen one, else the one llama.cpp's /props named, else (a backend with no model
+        // chosen, e.g. KoboldCpp) the one its status lookup names, as upstream's getGeneratingModel() reads it, looked up
+        // meanwhile. The reply records it as `extra.model`.
+        model: backend.model
+            ?? (llamaCppProps.props ? llamaCppPropsModelName(llamaCppProps.props) : undefined)
+            ?? lookupBackendModel({ api: 'textgenerationwebui', type: backend.type, url: backend.serverUrl, directories }),
         tokenCountRows: storedCounter.pending,
         name1: orchestratorInput.name1, name2: orchestratorInput.name2,
         warnings: sendTokenizerWarnings(tokenizerState, resolvedTokenizer, tokenizerOutcome, assembled.droppedEntries),
@@ -1154,7 +1158,7 @@ router.post('/generate', withGenerationStop(async function (request, response) {
         const status = error?.status ?? error?.code ?? 'UNKNOWN';
         const text = error?.error ?? error?.statusText ?? error?.message ?? 'Unknown error on /generate endpoint';
         let value = { error: true, status: status, response: text };
-        if (!isGenerationStopped(response)) console.error('Endpoint error:', error);
+        if (!isGenerationStopped(response)) logBackendFailure(request.body?.api_server, error, () => console.error('Endpoint error:', error));
 
         return !response.headersSent
             ? response.send(value)
