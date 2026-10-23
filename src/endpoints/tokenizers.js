@@ -21,6 +21,7 @@ import { setAdditionalHeaders } from '../additional-headers.js';
 import { DOWNLOAD_RETRY_MS, isDownloadBackedOff, recordDownloadFailure, clearDownloadFailure } from '../tokenizer-sources.js';
 import { loadRegistryTokenizer, loadTokenizerFile, loadTokenizerFunctions } from '../tokenizer-loader.js';
 import { getConfigValue, isValidUrl, trimV1 } from '../util.js';
+import { unreachableCode, warnBackendUnreachable } from '../backend-unreachable.js';
 
 /**
  * @typedef { (req: import('express').Request, res: import('express').Response) => Promise<any> } TokenizationHandler
@@ -1598,7 +1599,8 @@ router.post('/remote/kobold/count', async function (request, response) {
  * @param {boolean} [llamaCpp.addSpecial] Sends `add_special: true`: BOS goes in as it does for a generation's prompt.
  * @param {boolean} [llamaCpp.withPieces] Sends `with_pieces: true` and answers each token's `piece` in `pieces`.
  * @param {Record<string, string>} [llamaCpp.headers] Sent in place of the textgen type's own headers.
- * @returns {Promise<{count: number, ids: number[], pieces?: Array<string|number[]>}|{error: true}>}
+ * @returns {Promise<{count: number, ids: number[], pieces?: Array<string|number[]>}|{error: true, unreachable?: true}>} `unreachable`:
+ * the backend couldn't be reached, which is already logged.
  */
 export async function encodeViaTextgenAPI(request, text, baseUrl, model, apiType, llamaCpp = {}) {
     try {
@@ -1672,6 +1674,11 @@ export async function encodeViaTextgenAPI(request, text, baseUrl, model, apiType
 
         return { count, ids };
     } catch (error) {
+        const code = unreachableCode(error);
+        if (code) {
+            warnBackendUnreachable(baseUrl, code);
+            return { error: true, unreachable: true };
+        }
         console.error(error);
         return { error: true };
     }

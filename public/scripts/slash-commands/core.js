@@ -1,5 +1,5 @@
 import { SlashCommandParser } from './SlashCommandParser.js';
-import { addOneMessage, chatOpAppend, chatOpGraft, default_avatar, extractMessageBias, generateQuietPrompt, getCurrentCharacter, getThumbnailUrl, name2, neutralCharacterName, reloadCurrentChat, removeMacros, setExtensionPrompt, substituteParams, system_avatar, system_message_types } from '../../script.js';
+import { addOneMessage, default_avatar, extractMessageBias, generateQuietPrompt, getCurrentCharacter, getThumbnailUrl, name2, neutralCharacterName, reloadCurrentChat, removeMacros, setExtensionPrompt, storeSentMessage, substituteParams, system_avatar, system_message_types } from '../../script.js';
 import { name1 } from '../app-selection-state.js';
 import { chat, chat_metadata } from '../chat-state.js';
 import { eventSource, event_types } from '../events.js';
@@ -271,8 +271,7 @@ export async function sendMessageAs(args, text) {
         chat.splice(insertAt, 0, message);
         // Mid-chain insert is a graft, not a diff-engine-visible change — see sendMessageAsUser()'s
         // own insertAt branch for the same reasoning.
-        await chatOpGraft(insertAt).catch(error =>
-            console.error('Could not save the inserted message:', error));
+        await storeSentMessage(insertAt, { graft: true });
         await eventSource.emit(event_types.MESSAGE_RECEIVED, insertAt, 'command');
         await reloadCurrentChat();
         await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, insertAt, 'command');
@@ -282,8 +281,7 @@ export async function sendMessageAs(args, text) {
         await eventSource.emit(event_types.MESSAGE_RECEIVED, (chat.length - 1), 'command');
         addOneMessage(message);
         await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, (chat.length - 1), 'command');
-        await chatOpAppend(newIndex).catch(error =>
-            console.error('Could not save the new message:', error));
+        await storeSentMessage(newIndex);
     }
 
     return await slashCommandReturnHelper.doReturn(args.return ?? 'none', message, { objectToStringFunc: x => x.mes });
@@ -327,8 +325,7 @@ export async function sendNarratorMessage(args, text) {
         chat.splice(insertAt, 0, message);
         // Mid-chain insert is a graft, not a diff-engine-visible change — see sendMessageAsUser()'s
         // own insertAt branch for the same reasoning.
-        await chatOpGraft(insertAt).catch(error =>
-            console.error('Could not save the inserted message:', error));
+        await storeSentMessage(insertAt, { graft: true });
         await eventSource.emit(event_types.MESSAGE_SENT, insertAt);
         await reloadCurrentChat();
         await eventSource.emit(event_types.USER_MESSAGE_RENDERED, insertAt);
@@ -338,8 +335,7 @@ export async function sendNarratorMessage(args, text) {
         await eventSource.emit(event_types.MESSAGE_SENT, (chat.length - 1));
         addOneMessage(message);
         await eventSource.emit(event_types.USER_MESSAGE_RENDERED, (chat.length - 1));
-        await chatOpAppend(newIndex).catch(error =>
-            console.error('Could not save the new message:', error));
+        await storeSentMessage(newIndex);
     }
 
     return await slashCommandReturnHelper.doReturn(args.return ?? 'none', message, { objectToStringFunc: x => x.mes });
@@ -384,8 +380,7 @@ export async function promptQuietForLoudResponse(who, text) {
     await eventSource.emit(event_types.MESSAGE_SENT, (chat.length - 1));
     addOneMessage(message);
     await eventSource.emit(event_types.USER_MESSAGE_RENDERED, (chat.length - 1));
-    await chatOpAppend(newIndex).catch(error =>
-        console.error('Could not save the new message:', error));
+    await storeSentMessage(newIndex);
 }
 
 export function processChatSlashCommands() {

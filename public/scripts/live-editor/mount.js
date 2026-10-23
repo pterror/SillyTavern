@@ -139,6 +139,9 @@ export function mountLiveEditor(textarea, options = {}) {
         textarea.dispatchEvent(copy);
         if (copy.defaultPrevented) {
             event.preventDefault();
+            // Stopped here, not only at view.dom: what handled the copy may take the editor away (Ctrl+Enter ending an
+            // edit) before the original gets there, and code outside would see the key a second time.
+            event.stopPropagation();
             return true;
         }
         return false;

@@ -2094,8 +2094,8 @@ let queuedSend = null;
 
 /**
  * Sends what is in the input, as the Send button and Enter do. In the gap after a reply, while the previous
- * send still holds the lock, the send is queued instead of dropped: the button shows "send queued", a click on
- * it cancels, Enter leaves it queued, and a chat change cancels it with a toast.
+ * send still holds the lock, or while a swipe is under way, the send is queued instead of dropped: the button
+ * shows "send queued", a click on it cancels, Enter leaves it queued, and a chat change cancels it with a toast.
  * @param {'button'|'enter'} source
  */
 export async function requestTextareaSend(source) {
@@ -2103,7 +2103,8 @@ export async function requestTextareaSend(source) {
         if (source === 'button') cancelQueuedSend();
         return;
     }
-    const inGap = userInputGenerateMutex.isBusy && !isGenerating() && $('#send_but').is(':visible');
+    // A swipe under way (its slide, or the alternative it generates) would drop the send too: it waits for the swipe.
+    const inGap = (userInputGenerateMutex.isBusy && !isGenerating() || swipeState === SWIPE_STATE.SWIPING) && $('#send_but').is(':visible');
     if (!inGap) {
         await userInputGenerateMutex.update();
         return;
@@ -5030,6 +5031,27 @@ export async function sendMessageAsUser(messageText, messageBias, insertAt = nul
     }
 
     return message;
+}
+
+/**
+ * Stores a message a slash command put on the chat (`/sendas`, `/sys`, `/comment`, a quiet-to-loud reply) as
+ * sendMessageAsUser() stores the user's: it is kept as a send until the server has it, and one the server didn't
+ * store is shown as not saved (failed-sends.js) instead of looking sent.
+ * @param {number} index The message's place in `chat`, where it is already shown.
+ * @param {object} [options]
+ * @param {boolean} [options.graft] Put between the messages around it, not at the end.
+ */
+export async function storeSentMessage(index, { graft = false } = {}) {
+    const message = chat[index];
+    if (!message) return;
+    if (storeRefOf(message) === undefined) setStoreRef(message, uuidv4());
+    const key = storeRefOf(message);
+    const kind = graft ? 'graft' : 'append';
+    recordSend({ key, kind });
+    const nodeId = graft
+        ? await chatOpGraft(index, { silent: true }).catch(() => null)
+        : (await chatOpAppend(index, undefined, { silent: true }).catch(() => []))[0];
+    if (!isStoredNodeId(nodeId)) keepFailedSend({ key, kind });
 }
 
 /**

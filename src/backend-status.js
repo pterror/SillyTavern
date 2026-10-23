@@ -3,6 +3,7 @@ import fetch from 'node-fetch';
 import { TEXTGEN_TYPES } from './constants.js';
 import { setAdditionalHeadersByType } from './additional-headers.js';
 import { trimV1 } from './util.js';
+import { logBackendFailure } from './backend-unreachable.js';
 
 /**
  * Whether a backend's own tokenizer can be used, per `(api, type, url)`. One entry per backend
@@ -286,7 +287,7 @@ export async function lookupBackendModel(backend) {
             return knownModelName(await fetchKoboldModel(cleanStatusUrl('kobold', backend.url)));
         }
     } catch (error) {
-        console.warn(`Model lookup failed for ${backend.api} ${backend.type ?? ''}: ${error}`);
+        logBackendFailure(backend.url, error, () => console.warn(`Model lookup failed for ${backend.api} ${backend.type ?? ''}: ${error}`));
     }
     return null;
 }
