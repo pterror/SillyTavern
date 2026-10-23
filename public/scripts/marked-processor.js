@@ -58,6 +58,14 @@ function escapeHtmlText(text) {
 
 /** @type {import('marked').MarkedExtension} */
 const literalTagsExt = {
+    // A line holding only a tag (an example message's `<START>`) is text like any other line, so it doesn't start an
+    // HTML block that runs to the next blank line with the markdown and line breaks after it unread. Returning
+    // nothing (not false) skips marked's own HTML block rule; the block tags htmlBlockExt keeps whole aren't affected.
+    tokenizer: {
+        html() {
+            return undefined;
+        },
+    },
     renderer: {
         html({ text }) {
             return escapeHtmlText(text);

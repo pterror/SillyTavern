@@ -181,6 +181,13 @@ describe('renderMarkdownLiteralTags', () => {
         const input = '<div markdown="0">\n\n**x**\n</div>';
         expect(renderMarkdownLiteralTags(input).trim()).toBe(escape(input));
     });
+
+    // ED4: example messages start with `<START>` on its own line.
+    test('a line holding only another tag is text: the lines after it are markdown, with their line breaks', () => {
+        const input = '<START>\n{{user}}: Hi *there*\n{{char}}: Hello';
+        expect(renderMarkdownLiteralTags(input).trim())
+            .toBe(`<p>${escape('<START>')}<br>{{user}}: Hi <em>there</em><br>{{char}}: Hello</p>`);
+    });
 });
 
 describe('messageFormatting', () => {

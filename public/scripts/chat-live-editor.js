@@ -64,7 +64,8 @@ function chatEditorOptions(chatDeps, target) {
         // A reasoning block's own class also draws its box (border, padding), which the edit box doesn't have; the
         // chat box keeps its own text look.
         contentClass: isReasoning || isChatBox ? '' : 'mes_text',
-        editorClass: isChatBox ? 'live-toolbar-when-focused' : '',
+        // Without chat's text class, the editor's own classes give its quotes chat's look.
+        editorClass: isChatBox ? 'live-toolbar-when-focused live-chat-text' : isReasoning ? 'live-chat-text live-reasoning-text' : '',
         // {{char}} is the speaker only where a character speaks.
         macros: { evaluate: text => (fillsMacros() ? evaluateSafeMacro(text, substituteParams, isUser ? {} : { name2Override: nameNow() }) : null) },
         formatting: { uploadImage },

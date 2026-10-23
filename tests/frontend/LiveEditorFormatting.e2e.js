@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { testSetup } from './frontent-test-utils.js';
+import { awaitLoaderGone, testSetup } from './frontent-test-utils.js';
 
 /**
  * Mounts an editor with the toolbar on a `.mdHotkeys` textarea, as the app's fields are, focused at the end.
@@ -50,6 +50,7 @@ const value = (/** @type {import('@playwright/test').Page} */ page) => page.loca
 
 test.describe('live editor toolbar and keys', () => {
     test.beforeEach(testSetup.awaitST);
+    test.beforeEach(({ page }) => awaitLoaderGone(page));
     test.afterEach(async ({ page }) => {
         await page.evaluate(async () => {
             // @ts-ignore

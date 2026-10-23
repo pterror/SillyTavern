@@ -1,14 +1,14 @@
 // Macros in the editor: filled in where the cursor isn't, and a dropdown of macros while typing one.
 
-import { state as cmState, view as cmView, language as cmLanguage, autocomplete as cmAutocomplete } from '../../live-editor-lib.js';
+import { state as cmState, view as cmView, autocomplete as cmAutocomplete } from '../../live-editor-lib.js';
 import { renderField } from './render.js';
+import { topLevelMacroSpans } from '../safe-macros.js';
 import { getMacroAutoCompleteAt } from '../autocomplete/MacroAutoCompleteHelper.js';
 import { shouldActivateMacroAutocomplete, MACRO_AUTOCOMPLETE_MODE } from '../autocomplete/MacroAutoComplete.js';
 import { t } from '../i18n.js';
 
 const { Facet } = cmState;
 const { Decoration, WidgetType, ViewPlugin } = cmView;
-const { syntaxTree } = cmLanguage;
 const { autocompletion } = cmAutocomplete;
 
 /**
@@ -72,26 +72,28 @@ const macroValues = ViewPlugin.fromClass(class {
         const { evaluate } = state.facet(macroOptions);
         /** @type {import('@codemirror/state').Range<import('@codemirror/view').Decoration>[]} */
         const ranges = [];
-        const tree = syntaxTree(state);
         for (const unit of editing) {
-            tree.iterate({
-                from: unit.from,
-                to: unit.to,
-                enter: (node) => {
-                    if (node.name !== 'Macro') return true;
-                    const inSelection = state.selection.ranges.some(r => r.from <= node.to && r.to >= node.from);
-                    if (inSelection) return false;
-                    const text = state.doc.sliceString(node.from, node.to);
-                    let value = null;
-                    try {
-                        value = evaluate(text);
-                    } catch (error) {
-                        console.warn('Macro could not be filled in', text, error);
-                    }
-                    ranges.push(Decoration.replace({ widget: new MacroWidget(value ?? text, value !== null) }).range(node.from, node.to));
-                    return false;
-                },
-            });
+            // Found in the text, not the syntax tree: macros are filled in before the text is read as markdown, so
+            // one in code, in HTML or after a backslash is filled in too, as the preview shows it.
+            for (const span of topLevelMacroSpans(state.doc.sliceString(unit.from, unit.to))) {
+                const from = unit.from + span.start;
+                const to = unit.from + span.end;
+                const inSelection = state.selection.ranges.some(r => r.from <= to && r.to >= from);
+                if (inSelection) continue;
+                const text = state.doc.sliceString(from, to);
+                // A decoration from a plugin can't take a line break away: a macro across lines is styled as written.
+                if (text.includes('\n')) {
+                    ranges.push(Decoration.mark({ class: 'macro-raw' }).range(from, to));
+                    continue;
+                }
+                let value = null;
+                try {
+                    value = evaluate(text);
+                } catch (error) {
+                    console.warn('Macro could not be filled in', text, error);
+                }
+                ranges.push(Decoration.replace({ widget: new MacroWidget(value ?? text, value !== null) }).range(from, to));
+            }
         }
         return Decoration.set(ranges, true);
     }

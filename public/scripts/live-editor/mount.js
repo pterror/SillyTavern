@@ -8,7 +8,15 @@ import { liveSearch } from './search.js';
 
 const { EditorState, Compartment, Annotation, Prec } = cmState;
 const { EditorView, placeholder: placeholderExtension, keymap } = cmView;
-const { history, historyKeymap, defaultKeymap } = cmCommands;
+const { history, historyKeymap, defaultKeymap, deleteCharForward } = cmCommands;
+
+/**
+ * Shift+Delete as in a text box: with a selection the browser cuts it; with none it deletes forward. Left to the
+ * browser, it cuts with nothing selected too, and CodeMirror then cuts the whole line: in a field of one paragraph,
+ * all of it.
+ * @type {import('@codemirror/view').Command}
+ */
+const shiftDelete = view => view.state.selection.ranges.every(range => range.empty) && deleteCharForward(view);
 
 /**
  * @typedef {object} LiveEditorOptions
@@ -52,7 +60,7 @@ const STOPPED = [...FORWARDED, 'input', 'beforeinput', 'focusin', 'focusout', 'c
 /** What the editor takes from the textarea's own look (inline style, classes, theme CSS by id), so it looks the same. */
 const COPIED_STYLE = [
     'font-family', 'font-size', 'font-weight', 'font-style', 'line-height', 'letter-spacing', 'word-spacing',
-    'word-break', 'overflow-wrap', 'color', 'background-color', 'background-image', 'transition', 'border-top',
+    'word-break', 'overflow-wrap', 'color', 'caret-color', 'background-color', 'background-image', 'transition', 'border-top',
     'border-right', 'border-bottom', 'border-left', 'border-radius', 'max-height', 'text-align',
 ];
 const COPIED_CONTENT_STYLE = ['padding-top', 'padding-right', 'padding-bottom', 'padding-left'];
@@ -186,7 +194,7 @@ export function mountLiveEditor(textarea, options = {}) {
                 compartments.search.of(options.search === false ? [] : liveSearch(options.search || {})),
                 compartments.sync.of([]),
                 history(),
-                keymap.of([...defaultKeymap, ...historyKeymap]),
+                keymap.of([{ key: 'Shift-Delete', run: shiftDelete }, ...defaultKeymap, ...historyKeymap]),
                 EditorView.lineWrapping,
                 EditorView.editorAttributes.of({ class: options.editorClass ? `live-editor ${options.editorClass}` : 'live-editor' }),
                 // First, so listeners on the textarea get every event before the editor's own handlers.

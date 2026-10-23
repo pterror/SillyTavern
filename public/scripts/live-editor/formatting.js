@@ -1,13 +1,14 @@
 // The editor's toolbar and formatting keys. The keys insert the same characters as the app's markdown hotkeys
 // (input-md-formatting.js) do in a plain textarea.
 
-import { state as cmState, view as cmView } from '../../live-editor-lib.js';
+import { state as cmState, view as cmView, language as cmLanguage } from '../../live-editor-lib.js';
 import { t } from '../i18n.js';
 import { power_user } from '../power-user.js';
 import { hasPresets, showPresets } from './search.js';
 
 const { EditorSelection, Facet } = cmState;
 const { keymap, showPanel } = cmView;
+const { ensureSyntaxTree, syntaxTree } = cmLanguage;
 
 /**
  * @typedef {object} FormattingOptions
@@ -21,29 +22,64 @@ const formattingOptions = Facet.define({
 });
 
 /**
- * Wraps the selection in `chars`, or unwraps it when it's already wrapped; with no selection, the word around the
- * cursor, or an empty pair at the cursor. The rules of the app's textarea markdown hotkeys.
+ * The innermost `nodeName` (marked with one of `marks`) that holds the whole range, read from the syntax tree, so
+ * italics aren't mistaken for half of bold (`**x**` holds `*x*`) and the marks are found wherever the cursor is in it.
+ * @param {import('@codemirror/state').EditorState} state
+ * @param {number} from
+ * @param {number} to
+ * @param {string} nodeName
+ * @param {string[]} marks
+ * @returns {{ open: { from: number, to: number }, close: { from: number, to: number } } | null}
+ */
+function formattingAround(state, from, to, nodeName, marks) {
+    const tree = ensureSyntaxTree(state, to, 50) ?? syntaxTree(state);
+    for (let node = tree.resolveInner(from, 1); node; node = node.parent) {
+        if (node.name !== nodeName || node.from > from || node.to < to) continue;
+        const open = node.firstChild;
+        const close = node.lastChild;
+        if (!open || !close || open.from === close.from || !open.name.endsWith('Mark') || !close.name.endsWith('Mark')) continue;
+        const mark = state.sliceDoc(open.from, open.to);
+        if (marks.includes(mark) && state.sliceDoc(close.from, close.to) === mark) {
+            return { open: { from: open.from, to: open.to }, close: { from: close.from, to: close.to } };
+        }
+    }
+    return null;
+}
+
+/**
+ * Wraps the selection in `chars`, or unwraps the formatting it's in when it's already that formatting; with no
+ * selection, the word around the cursor, or an empty pair at the cursor. The app's textarea markdown hotkeys wrap
+ * the same way; whether the text already has the formatting is read from the syntax tree.
  * @param {string} chars
- * @param {number} margin How far outside the selection to look for formatting already there.
+ * @param {string} nodeName The syntax node of this formatting.
+ * @param {string[]} [marks] The marks that make it (`*` and `_` both make italics); `chars` by default.
  * @returns {import('@codemirror/view').Command}
  */
-function toggleWrap(chars, margin) {
+function toggleWrap(chars, nodeName, marks = [chars]) {
     return (view) => {
         const { state } = view;
         const doc = state.doc.toString();
         const transaction = state.changeByRange((range) => {
             let { from, to } = range;
+            const existing = formattingAround(state, from, to, nodeName, marks);
+            if (existing) {
+                const { open, close } = existing;
+                const openLength = open.to - open.from;
+                // Where a position ends up once both marks are gone.
+                const map = (/** @type {number} */ pos) => {
+                    if (pos <= open.from) return pos;
+                    if (pos <= open.to) return open.from;
+                    if (pos <= close.from) return pos - openLength;
+                    if (pos <= close.to) return close.from - openLength;
+                    return pos - openLength - (close.to - close.from);
+                };
+                return {
+                    changes: [{ from: open.from, to: open.to }, { from: close.from, to: close.to }],
+                    range: EditorSelection.range(map(range.anchor), map(range.head)),
+                };
+            }
             if (from !== to) {
                 const selected = doc.slice(from, to);
-                const around = doc.slice(Math.max(0, from - margin), to + margin).trim();
-                if (around === chars + selected + chars) {
-                    const start = Math.max(0, from - chars.length);
-                    const end = Math.min(doc.length, to + chars.length);
-                    return {
-                        changes: { from: start, to: end, insert: selected },
-                        range: EditorSelection.range(start, start + selected.length),
-                    };
-                }
                 let text = selected;
                 let space = '';
                 if (text.endsWith(' ')) {
@@ -64,15 +100,6 @@ function toggleWrap(chars, margin) {
                 while (start > 0 && !/[ \n]/.test(doc[start - 1])) start--;
                 while (end < doc.length && !/[ \n]/.test(doc[end])) end++;
                 const found = doc.slice(start, end);
-                const unwrapped = found.startsWith(chars) && found.endsWith(chars) && found.length >= chars.length * 2
-                    ? found.slice(chars.length, found.length - chars.length)
-                    : null;
-                if (unwrapped !== null) {
-                    return {
-                        changes: { from: start, to: end, insert: unwrapped },
-                        range: EditorSelection.cursor(Math.max(start, from - chars.length)),
-                    };
-                }
                 return {
                     changes: { from: start, to: end, insert: chars + found + chars },
                     range: EditorSelection.cursor(from + chars.length),
@@ -97,11 +124,11 @@ const whenHotkeysOn = command => (view) => {
     return (hotkeysEnabled ? hotkeysEnabled() : power_user.enable_md_hotkeys) ? command(view) : false;
 };
 
-const bold = toggleWrap('**', 2);
-const italic = toggleWrap('*', 1);
-const underline = toggleWrap('__', 2);
-const code = toggleWrap('`', 1);
-const strikethrough = toggleWrap('~~', 2);
+const bold = toggleWrap('**', 'StrongEmphasis');
+const italic = toggleWrap('*', 'Emphasis', ['*', '_']);
+const underline = toggleWrap('__', 'StrongEmphasis');
+const code = toggleWrap('`', 'InlineCode');
+const strikethrough = toggleWrap('~~', 'Strikethrough');
 
 /** @type {import('@codemirror/view').Command} */
 function link(view) {

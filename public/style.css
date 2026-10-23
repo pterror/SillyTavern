@@ -1657,16 +1657,20 @@ textarea.autoSetHeight {
     min-height: calc(attr(rows type(<number>), 2) * 1lh + 2 * (var(--field-padding-block) + var(--field-border-width)));
 }
 
-.macro_preview_content .macro-substituted {
+/* The live editor shows a field's macros as its preview does. */
+.macro_preview_content .macro-substituted,
+.cm-editor.live-editor .macro-substituted {
     color: var(--SmartThemeMacroColor);
 }
 
 /* A macro the preview doesn't run (it has side effects or randomness), shown as written. */
-.macro_preview_content .macro-raw {
+.macro_preview_content .macro-raw,
+.cm-editor.live-editor .macro-raw {
     color: var(--SmartThemeMacroColor);
     opacity: 0.6;
 }
 
+/* No height cap of its own: a long preview scrolls with the drawer it's in. */
 .macro_preview_content {
     width: 100%;
     background-color: var(--black30a);
@@ -1677,8 +1681,6 @@ textarea.autoSetHeight {
     font-family: var(--mainFontFamily);
     padding: 5px 10px;
     margin: 2px 0;
-    max-height: 90vh;
-    max-height: 90dvh;
     word-break: break-word;
     overflow-y: auto;
 }
@@ -1913,10 +1915,6 @@ textarea.autoSetHeight {
     .helpPanel.helpNavOpen .helpContent {
         display: none;
     }
-}
-
-.char_info_tab_panel.maximized .field_preview {
-    max-height: none;
 }
 
 .char_info_tab_panel_placeholder {
@@ -7323,6 +7321,11 @@ textarea.live-editor-textarea {
     line-height: inherit;
 }
 
+/* The cursor has the text box's caret color (copied onto the editor), not CodeMirror's black. */
+.cm-editor.live-editor .cm-content {
+    caret-color: inherit;
+}
+
 /* A tab switch was refused because this field is being edited: its confirm and cancel buttons draw the eye. */
 @keyframes field_edit_attention {
     0%, 100% { transform: scale(1); filter: none; }
@@ -7361,9 +7364,30 @@ textarea.live-editor-textarea {
     opacity: 0.7;
 }
 
-/* A block away from the cursor, drawn as chat draws it. */
+/* A block away from the cursor, drawn as chat draws it: the newlines between the render's elements are whitespace
+ * there, not line breaks as in the editor's text (they'd open gaps between list items). */
 .cm-editor.live-editor .live-unit {
     cursor: text;
+    white-space: normal;
+}
+
+/* Quoted dialogue in an editor of chat text that doesn't have chat's text classes (the chat box, a reasoning block):
+ * chat's quote color, and no quote marks added around the typed ones. */
+.cm-editor.live-chat-text q {
+    color: var(--SmartThemeQuoteColor);
+}
+
+.cm-editor.live-chat-text.live-reasoning-text q {
+    color: hsl(from var(--SmartThemeQuoteColor) h calc(s * var(--reasoning-saturation)) l);
+}
+
+.cm-editor.live-chat-text font[color] q {
+    color: inherit;
+}
+
+.cm-editor.live-chat-text q::before,
+.cm-editor.live-chat-text q::after {
+    content: '';
 }
 
 .cm-editor.live-editor .live-image img {
@@ -7420,6 +7444,76 @@ textarea.live-editor-textarea {
     background: var(--black30a);
     border: 1px solid var(--SmartThemeBorderColor);
     border-radius: 5px;
+}
+
+/* Find and replace's buttons look like the app's. */
+.cm-editor.live-editor .cm-search .cm-button {
+    background-image: none;
+    background-color: var(--SmartThemeBlurTintColor);
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 5px;
+    padding: 2px 8px;
+    cursor: pointer;
+}
+
+.cm-editor.live-editor .cm-search .cm-button:hover {
+    background-color: var(--white30a);
+}
+
+/* The app's checkboxes are blocks: each is kept on the line of its label. */
+.cm-editor.live-editor .cm-search label {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-inline-end: 8px;
+    cursor: pointer;
+}
+
+.cm-editor.live-editor .cm-search label input[type="checkbox"] {
+    margin: 0;
+}
+
+.cm-editor.live-editor .cm-search button[name="close"] {
+    color: inherit;
+    opacity: 0.7;
+    cursor: pointer;
+}
+
+.cm-editor.live-editor .cm-search button[name="close"]:hover {
+    opacity: 1;
+}
+
+/* The macro suggestions look like the app's own suggestion list (--ac-* follow the STscript style setting). */
+.cm-editor.live-editor .cm-tooltip.cm-tooltip-autocomplete,
+.cm-editor.live-editor .cm-tooltip.cm-completionInfo {
+    background: var(--ac-style-color-background, rgba(32 32 32 / 1));
+    backdrop-filter: blur(var(--SmartThemeBlurStrength));
+    border: 1px solid var(--ac-style-color-border, rgba(69 69 69 / 1));
+    border-radius: 3px;
+    color: var(--ac-style-color-text, rgba(204 204 204 / 1));
+}
+
+.cm-editor.live-editor .cm-tooltip-autocomplete > ul {
+    font-family: inherit;
+}
+
+.cm-editor.live-editor .cm-tooltip.cm-tooltip-autocomplete > ul > li:hover {
+    background: var(--ac-style-color-hoveredBackground, rgba(43 45 46 / 1));
+    color: var(--ac-style-color-hoveredText, rgba(204 204 204 / 1));
+}
+
+.cm-editor.live-editor .cm-tooltip.cm-tooltip-autocomplete > ul > li[aria-selected] {
+    background: var(--ac-style-color-selectedBackground, rgba(32 57 92 / 1));
+    color: var(--ac-style-color-selectedText, rgba(255 255 255 / 1));
+}
+
+.cm-editor.live-editor .cm-completionMatchedText {
+    text-decoration: none;
+    color: var(--ac-style-color-matchedText, rgba(108 171 251 / 1));
+}
+
+.cm-editor.live-editor .cm-completionDetail {
+    opacity: 0.7;
 }
 
 .cm-editor.live-editor .live-presets {
