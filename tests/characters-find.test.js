@@ -118,6 +118,20 @@ describe('POST /api/characters/find', () => {
         expect((await find({ tags: ['New'] })).body).toEqual({ ids: ['a.png'], capped: false });
     });
 
+    test('a name that is not a string is found and sorted as the string upstream makes of it, the card kept as it is', async () => {
+        await user.store.lib.writeCard(directories, 'n.png', JSON.stringify({ spec: 'chara_card_v2', data: { name: 42 } }));
+        await user.store.lib.writeCard(directories, 'f.png', JSON.stringify({ name: false }));
+        await seedCharacter('a.png', '5');
+        await seedCharacter('b.png', 'B');
+
+        expect((await find({ name: '42', allowAvatar: false })).body).toEqual({ ids: ['n.png'], capped: false });
+        expect((await find({ name: '42', allowAvatar: false, insensitive: false })).body).toEqual({ ids: ['n.png'], capped: false });
+        const page = await user.store.lib.query({ sortField: 'name', sortOrder: 'asc', limit: 10, wantRows: false, wantHashes: true, includeGroups: false });
+        // false is '' to upstream (DOMPurify.sanitize), so it sorts first.
+        expect(page.hashRows.map(r => r.id)).toEqual(['f.png', 'n.png', 'a.png', 'b.png']);
+        expect(await user.store.lib.cards(['n.png', 'f.png'])).toEqual([{ spec: 'chara_card_v2', data: { name: 42 } }, { name: false }]);
+    });
+
     test('no name and no tags is the first character', async () => {
         await seedCharacter('b.png', 'B');
         await seedCharacter('a.png', 'A');

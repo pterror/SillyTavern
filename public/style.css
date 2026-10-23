@@ -1717,8 +1717,9 @@ textarea.autoSetHeight {
     opacity: 0.5;
 }
 
-/* A default only: :where() keeps the specificity at a bare `img`, so any other rule still wins. */
-:where(#char-info-panel) img {
+/* A default only: :where() keeps the specificity at a bare `img`, so any other rule still wins. Not for avatars,
+   which are sized: a percentage max-width lets a shrinkable flex parent (.avatar) collapse them to nothing. */
+:where(#char-info-panel) img:where(:not(.avatar img)) {
     max-width: 100%;
 }
 
@@ -4252,7 +4253,8 @@ grammarly-extension {
     border: 1px solid var(--SmartThemeBorderColor);
     border-radius: 5px;
     font-family: var(--mainFontFamily);
-    width: 2.5em;
+    /* Room for every digit of the greeting count (set by the pager), plus the spin buttons. */
+    width: calc(var(--greeting-pager-digits, 1) * 1ch + 2.5em);
     text-align: center;
     padding: 1px 2px;
     margin: 0;

@@ -32,8 +32,8 @@ const CHAT_ID = 'sheld';
 /** Floating lists and the hold-Ctrl hotkey list: above every ordered layer while shown. */
 const LIST_SELECTOR = '.ui-menu, .select2-container--open > .select2-dropdown, .hotkeyOverlay';
 const ORDERED_SELECTOR = `#${CHAT_ID}, ${DRAWER_SELECTOR}, ${FLOATING_SELECTOR}`;
-/** An edit in progress: a character info field, or a chat message or its reasoning. */
-const EDITING_SELECTOR = '.field_editing, #curEditTextarea, .reasoning_edit_textarea';
+/** An edit in progress: a character info field (not one confirmed and saving), or a chat message or its reasoning. */
+const EDITING_SELECTOR = '.field_editing:not(.field_edit_saving), #curEditTextarea, .reasoning_edit_textarea';
 const HOLE_SOURCE = 'drawer-stack';
 /** Past this, the ordered layers are renumbered from 1, keeping the numbers small. */
 const MAX_ORDER = 1000;

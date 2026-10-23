@@ -7,7 +7,7 @@ import { setConfigFilePath } from '../src/util.js';
 // store), so the config path is set before it is imported.
 setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
 const { getCharaCardV2 } = await import('../src/character-card-normalize.js');
-import { splitCard, assembleCard, canonicalCardHash, canonicalJson, cardWithStoredFav } from '../src/character-card-storage.js';
+import { splitCard, assembleCard, canonicalCardHash, canonicalJson, cardWithStoredFav, nameText } from '../src/character-card-storage.js';
 
 /** Splits `card` and assembles it back with `fav` as the stored favourite flag. */
 function roundTrip(card, fav = false) {
@@ -157,10 +157,13 @@ describe('character card storage', () => {
         expect(splitCard(v1Mirrored).extra.some(r => r.path === 'mirror:name')).toBe(true);
         expect(roundTrip(v1Mirrored)).toEqual(v1Mirrored);
 
-        // A non-string name stays where it is, as itself; no name at all stores nothing.
+        // A non-string name stays where it is, as itself, and the column holds upstream's text of it; no name at all
+        // stores nothing.
         const oddName = { spec: 'chara_card_v2', data: { name: 5 } };
-        expect(splitCard(oddName).columns.name).toBeUndefined();
+        expect(splitCard(oddName).columns.name).toBe('5');
         expect(roundTrip(oddName)).toEqual(oddName);
+        expect(splitCard({ name: null }).columns.name).toBe('');
+        expect(roundTrip({ name: null, data: { name: null } })).toEqual({ name: null, data: { name: null } });
         expect(splitCard({ data: {} }).extra.some(r => r.path.startsWith('name:'))).toBe(false);
         expectLossless({ spec: 'x', name: 'n' });
         expectLossless({ spec: 'x', data: 'not an object', name: 'n' });
@@ -235,7 +238,7 @@ describe('character card storage', () => {
             expectLossless(card);
             const parts = splitCard(card);
             const normalizedName = getCharaCardV2(structuredClone(card), {}, false).name;
-            expect(parts.columns.name).toBe(typeof normalizedName === 'string' ? normalizedName : undefined);
+            expect(parts.columns.name).toBe(normalizedName === undefined ? undefined : nameText(normalizedName));
             expect(canonicalJson(card)).toBe(before);
         }
         warn.mockRestore();

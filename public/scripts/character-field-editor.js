@@ -529,6 +529,10 @@ async function confirmEdit() {
     }
     const edit = activeEdit;
     edit.saving = true;
+    // Confirmed, the field no longer holds its drawer in front (drawer-stack.js): a drawer brought forward while
+    // it saves goes over it. A failed save puts it back in front, its edit going on.
+    getPanel(edit.id).addClass('field_edit_saving');
+    drawerStackChanged();
     cancelAutoSave();
     if (autoSaveInFlight) {
         await autoSaveInFlight;
@@ -537,9 +541,12 @@ async function confirmEdit() {
     const value = String(getTextarea(edit.id).val() ?? '');
     const saved = await FIELDS[edit.id].save()(value);
     edit.saving = false;
+    getPanel(edit.id).removeClass('field_edit_saving');
     if (saved) edit.original = value;
     if (saved && activeEdit === edit) {
         endEdit();
+    } else {
+        drawerStackChanged();
     }
     if (saved) forgetDraft(edit.id);
 }
