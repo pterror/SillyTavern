@@ -1,8 +1,8 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
-// After a paste that could have gone in more than one way, a small button at the end of the paste shows how it went
-// in and switches it: keep formatting (markdown), keep as HTML, text only.
+// A paste goes in as text. After a paste that could have gone in more than one way, a small button at the end of the
+// paste shows how it went in and switches it: text only, keep formatting (markdown), keep as HTML.
 
 const HTML = '<p>Hello <b>bold</b> and <i>it</i>.</p>';
 const PLAIN = 'Hello bold and it.';
@@ -72,10 +72,10 @@ test.describe('the paste picker', () => {
         const editor = testEditor(page);
         await paste(page, editor, { 'text/html': HTML, 'text/plain': PLAIN });
         await refocus(page);
-        expect(await value(page)).toBe('Before ' + MARKDOWN);
+        expect(await value(page)).toBe('Before ' + PLAIN);
         const picker = editor.locator('.live-paste-picker');
         await expect(picker).toBeVisible();
-        await expect(picker.locator('.live-paste-picker-toggle')).toContainText('Keep formatting');
+        await expect(picker.locator('.live-paste-picker-toggle')).toContainText('Text only');
         // It sits below the end of the paste.
         const end = await page.evaluate(() => {
             // @ts-ignore
@@ -86,10 +86,10 @@ test.describe('the paste picker', () => {
         expect(box.y).toBeGreaterThanOrEqual(end.top);
 
         await picker.locator('.live-paste-picker-toggle').click();
-        await expect(picker.locator('.live-paste-picker-item')).toHaveText(['Keep formatting', 'Keep as HTML', 'Text only']);
-        await picker.locator('.live-paste-picker-item[data-mode="plain"]').click();
-        expect(await value(page)).toBe('Before ' + PLAIN);
-        await expect(picker.locator('.live-paste-picker-toggle')).toContainText('Text only');
+        await expect(picker.locator('.live-paste-picker-item')).toHaveText(['Text only', 'Keep formatting', 'Keep as HTML']);
+        await picker.locator('.live-paste-picker-item[data-mode="markdown"]').click();
+        expect(await value(page)).toBe('Before ' + MARKDOWN);
+        await expect(picker.locator('.live-paste-picker-toggle')).toContainText('Keep formatting');
 
         await picker.locator('.live-paste-picker-toggle').click();
         await picker.locator('.live-paste-picker-item[data-mode="html"]').click();
@@ -106,21 +106,21 @@ test.describe('the paste picker', () => {
         await paste(page, editor, { 'text/html': HTML, 'text/plain': PLAIN });
         await refocus(page);
         await page.keyboard.press('Control+Alt+v');
+        expect(await value(page)).toBe(MARKDOWN);
+        await page.keyboard.press('Control+Alt+v');
         expect(await value(page)).toContain('<b>bold</b>');
         await page.keyboard.press('Control+Alt+v');
         expect(await value(page)).toBe(PLAIN);
-        await page.keyboard.press('Control+Alt+v');
-        expect(await value(page)).toBe(MARKDOWN);
-        await expect(editor.locator('.live-paste-picker-toggle')).toContainText('Keep formatting');
-
-        await page.keyboard.press('Control+z');
-        expect(await value(page)).toBe(PLAIN);
         await expect(editor.locator('.live-paste-picker-toggle')).toContainText('Text only');
+
         await page.keyboard.press('Control+z');
         expect(await value(page)).toContain('<b>bold</b>');
         await expect(editor.locator('.live-paste-picker-toggle')).toContainText('Keep as HTML');
+        await page.keyboard.press('Control+z');
+        expect(await value(page)).toBe(MARKDOWN);
+        await expect(editor.locator('.live-paste-picker-toggle')).toContainText('Keep formatting');
         await page.keyboard.press('Control+y');
-        expect(await value(page)).toBe(PLAIN);
+        expect(await value(page)).toContain('<b>bold</b>');
     });
 
     test('Escape closes the list, then puts the picker away; the paste stays', async ({ page }) => {
@@ -136,7 +136,7 @@ test.describe('the paste picker', () => {
         await expect(editor.locator('.live-paste-picker')).toBeVisible();
         await page.keyboard.press('Escape');
         await expect(editor.locator('.live-paste-picker')).toHaveCount(0);
-        expect(await value(page)).toBe(MARKDOWN);
+        expect(await value(page)).toBe(PLAIN);
         // Undo after putting it away still takes the paste back, not the picker.
         await page.keyboard.press('Control+z');
         expect(await value(page)).toBe('');
@@ -148,7 +148,7 @@ test.describe('the paste picker', () => {
         await paste(page, editor, { 'text/html': HTML, 'text/plain': PLAIN });
         await refocus(page);
         await page.keyboard.type(' more');
-        expect(await value(page)).toBe(MARKDOWN + ' more');
+        expect(await value(page)).toBe(PLAIN + ' more');
         await expect(editor.locator('.live-paste-picker')).toHaveCount(0);
     });
 
@@ -164,7 +164,7 @@ test.describe('the paste picker', () => {
         await expect(editor.locator('.live-paste-picker')).toBeVisible();
         await refocus(page);
         await page.keyboard.type('X');
-        expect(await value(page)).toBe('XStart. ' + MARKDOWN);
+        expect(await value(page)).toBe('XStart. ' + PLAIN);
         await expect(editor.locator('.live-paste-picker')).toHaveCount(0);
     });
 
@@ -177,14 +177,14 @@ test.describe('the paste picker', () => {
         await expect(editor.locator('.live-paste-picker')).toHaveCount(0);
     });
 
-    test('a pasted link can go in as a link or as text', async ({ page }) => {
+    test('a pasted link can go in as text or as a link', async ({ page }) => {
         await mount(page);
         const editor = testEditor(page);
         await paste(page, editor, { 'text/plain': 'https://example.com/a', 'text/html': '<a href="https://example.com/a">https://example.com/a</a>' });
         await refocus(page);
-        expect(await value(page)).toBe('<https://example.com/a>');
-        await page.keyboard.press('Control+Alt+v');
         expect(await value(page)).toBe('https://example.com/a');
+        await page.keyboard.press('Control+Alt+v');
+        expect(await value(page)).toBe('<https://example.com/a>');
     });
 });
 
@@ -201,7 +201,8 @@ test.describe('the paste picker in the app', () => {
         await editor.locator('.cm-content').click();
         await paste(page, editor, { 'text/html': HTML, 'text/plain': PLAIN });
         const read = () => page.evaluate(() => /** @type {HTMLTextAreaElement} */ (document.getElementById('send_textarea')).value);
-        expect(await read()).toBe(MARKDOWN);
+        expect(await read()).toBe(PLAIN);
+        await page.keyboard.press('Control+Alt+v');
         await page.keyboard.press('Control+Alt+v');
         expect(await read()).toContain('<b>bold</b>');
         await page.keyboard.press('Escape');
@@ -235,10 +236,9 @@ test.describe('the paste picker in the app', () => {
         await page.keyboard.press('Control+End');
         await paste(page, editor, { 'text/html': HTML, 'text/plain': PLAIN });
         const read = () => page.locator('#curEditTextarea').inputValue();
-        expect(await read()).toBe('Edit me.' + MARKDOWN);
-        await page.keyboard.press('Control+Alt+v');
-        await page.keyboard.press('Control+Alt+v');
         expect(await read()).toBe('Edit me.' + PLAIN);
+        await page.keyboard.press('Control+Alt+v');
+        expect(await read()).toBe('Edit me.' + MARKDOWN);
         await page.keyboard.press('Escape');
         await expect(editor.locator('.live-paste-picker')).toHaveCount(0);
         // The edit is still open: that Escape was the picker's.

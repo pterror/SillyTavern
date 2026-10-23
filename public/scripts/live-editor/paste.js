@@ -1,6 +1,6 @@
-// Paste: copied HTML comes in as markdown where markdown can say it, as HTML where it can't, and as plain text when
-// there's no HTML or it can't be read. After a paste that could have gone in more than one way, a small button at
-// its end shows how it went in and switches it to another way.
+// Paste: what's copied comes in as plain text, as a text box pastes it. After a paste that could have gone in more
+// than one way, a small button at its end shows how it went in and switches it to another way: copied HTML as markdown
+// where markdown can say it and as HTML where it can't, or kept as HTML; a bare URL as an autolink.
 
 import { state as cmState, view as cmView, commands as cmCommands } from '../../live-editor-lib.js';
 import { DOMPurify } from '../../lib.js';
@@ -194,8 +194,8 @@ const bareUrl = /^(?:https?:\/\/|www\.)\S+$/i;
 
 /** @typedef {'markdown' | 'html' | 'plain'} PasteMode */
 
-/** The ways a paste can go in, in the order the picker lists and the key cycles them. */
-const PASTE_MODES = /** @type {PasteMode[]} */ (['markdown', 'html', 'plain']);
+/** The ways a paste can go in, in the order the picker lists and the key cycles them; the first is how it goes in. */
+const PASTE_MODES = /** @type {PasteMode[]} */ (['plain', 'markdown', 'html']);
 
 /** @param {PasteMode} mode */
 const modeLabel = (mode) => ({
@@ -398,7 +398,7 @@ export function livePaste() {
                 if (bareUrl.test(plain.trim()) && !/\n/.test(plain.trim())) {
                     event.preventDefault();
                     const autolink = `<${plain.trim()}>`;
-                    insert(view, autolink, choiceFor({ markdown: autolink, plain: plain.trim() }, 'markdown'));
+                    insert(view, plain.trim(), choiceFor({ markdown: autolink, plain: plain.trim() }, 'plain'));
                     return true;
                 }
                 const html = data.getData('text/html');
@@ -413,7 +413,11 @@ export function livePaste() {
                 if (!text) return false;
                 event.preventDefault();
                 const sanitized = DOMPurify.sanitize(html, { WHOLE_DOCUMENT: false }).trim();
-                insert(view, text, choiceFor({ markdown: text, html: sanitized, plain }, 'markdown'));
+                // As text, as a text box pastes (as markdown only when nothing came as text); the picker puts the
+                // formatting in instead.
+                const mode = plain ? 'plain' : 'markdown';
+                const texts = { markdown: text, html: sanitized, plain };
+                insert(view, texts[mode], choiceFor(texts, mode));
                 return true;
             },
         }),

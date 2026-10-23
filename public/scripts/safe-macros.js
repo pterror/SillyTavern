@@ -52,7 +52,7 @@ function macroName(inner) {
  * @param {string} text
  * @returns {{ start: number, end: number }[]} `end` is exclusive.
  */
-function topLevelMacroSpans(text) {
+export function topLevelMacroSpans(text) {
     /** @type {{ start: number, end: number }[]} */
     const spans = [];
     let depth = 0;

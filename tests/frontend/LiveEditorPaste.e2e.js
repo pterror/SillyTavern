@@ -35,6 +35,17 @@ async function paste(page, data) {
 
 const value = (/** @type {import('@playwright/test').Page} */ page) => page.locator('#liveEditorTestTextarea').inputValue();
 
+/**
+ * Switches the paste just made to another way it can go in, with the paste picker.
+ * @param {import('@playwright/test').Page} page
+ * @param {'markdown'|'html'|'plain'} mode
+ */
+async function switchPaste(page, mode) {
+    const picker = page.locator('#liveEditorTestHost .live-paste-picker');
+    await picker.locator('.live-paste-picker-toggle').click();
+    await picker.locator(`.live-paste-picker-item[data-mode="${mode}"]`).click();
+}
+
 test.describe('live editor paste', () => {
     test.beforeEach(testSetup.awaitST);
     test.beforeEach(async ({ page }) => mountEmpty(page));
@@ -46,11 +57,13 @@ test.describe('live editor paste', () => {
         });
     });
 
-    test('copied HTML comes in as markdown', async ({ page }) => {
+    test('copied HTML comes in as text, and as markdown when picked', async ({ page }) => {
         await paste(page, {
             'text/html': '<h2>Title</h2><p>Hello <b>bold</b> and <i>it</i>, a <a href="https://x.com/a">link</a>.</p><ul><li>one</li><li>two</li></ul><blockquote><p>quoted</p></blockquote>',
             'text/plain': 'Title Hello bold and it, a link. one two quoted',
         });
+        expect(await value(page)).toBe('Title Hello bold and it, a link. one two quoted');
+        await switchPaste(page, 'markdown');
         expect(await value(page)).toBe('## Title\n\nHello **bold** and *it*, a [link](https://x.com/a).\n\n- one\n- two\n\n> quoted');
     });
 
@@ -59,6 +72,7 @@ test.describe('live editor paste', () => {
             'text/html': '<p>x <u>under</u> 2*3</p><table><tr><td>a</td></tr></table>',
             'text/plain': 'x under 2*3 a',
         });
+        await switchPaste(page, 'markdown');
         const text = await value(page);
         expect(text).toContain('x <u>under</u> 2\\*3');
         expect(text).toContain('<table>');
@@ -71,8 +85,10 @@ test.describe('live editor paste', () => {
         expect(await value(page)).toBe('');
     });
 
-    test('a bare URL becomes an autolink', async ({ page }) => {
+    test('a bare URL goes in as it is, and as an autolink when picked', async ({ page }) => {
         await paste(page, { 'text/plain': 'https://example.com/a_b', 'text/html': '<a href="https://example.com/a_b">https://example.com/a_b</a>' });
+        expect(await value(page)).toBe('https://example.com/a_b');
+        await switchPaste(page, 'markdown');
         expect(await value(page)).toBe('<https://example.com/a_b>');
     });
 });

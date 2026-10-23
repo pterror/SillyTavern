@@ -4,6 +4,7 @@ import { refreshCharInfoTabDimming } from './char-info-tab-dimming.js';
 import { keepViewState, openEditorLayer } from './editor-layer.js';
 import { evaluateSafeMacro, insertSafeMacroSpans, substituteSafeMacros } from './safe-macros.js';
 import { EDITOR_ESCAPE_TAKERS, isEditorEvent, isUserEvent, mountLiveEditor } from './live-editor/registry.js';
+import { renderedOffset, sourcePosition } from './live-editor/positions.js';
 import { drawerStackChanged } from './drawer-stack.js';
 
 // A leaf module: everything it needs from the rest of the app is passed to initCharacterFieldEditor()
@@ -254,8 +255,10 @@ function matchPreviewText(id) {
 /**
  * Puts a field in edit mode and focuses its textarea, unless {@link blockFieldEditStart} blocks it.
  * @param {string} id Textarea id.
+ * @param {number} [at] Where in the text the cursor goes (where the preview was clicked); the start by default. The
+ *   page doesn't scroll for it beyond bringing the cursor into view.
  */
-export function beginEdit(id) {
+export function beginEdit(id, at = 0) {
     if (activeEdit?.id === id) {
         return;
     }
@@ -270,7 +273,11 @@ export function beginEdit(id) {
     // Nothing may cover the field being edited.
     drawerStackChanged();
     deps.onEditStart?.(id);
-    textarea.trigger('focus');
+    // Focusing scrolls to the cursor by default, which, in a text box sized differently from the editor that takes
+    // its place, lands anywhere; the editor brings its cursor into view once it's mounted.
+    const element = textarea[0];
+    element.setSelectionRange(at, at);
+    element.focus({ preventScroll: true });
     void mountFieldEditor(id);
 }
 
@@ -305,7 +312,10 @@ async function mountFieldEditor(id) {
             return;
         }
         holder.editor = editor;
-        if (document.activeElement === textarea) editor.takeFocus();
+        if (document.activeElement === textarea) {
+            editor.takeFocus();
+            editor.view.dispatch({ selection: editor.view.state.selection, scrollIntoView: true });
+        }
     } catch (error) {
         console.error('The editor could not be loaded; the field stays a plain text box', error);
     }
@@ -758,6 +768,17 @@ function isOnLightboxImage(target) {
     return target instanceof HTMLImageElement && !target.closest('[data-result]');
 }
 
+/**
+ * Starts editing a preview's field with the cursor where the preview was clicked.
+ * @param {HTMLElement} preview
+ * @param {MouseEvent} event
+ */
+function beginEditAtClick(preview, event) {
+    const id = String($(preview).attr('data-for'));
+    const text = String(getTextarea(id).val() ?? '');
+    beginEdit(id, text ? sourcePosition(text, renderedOffset(preview, event)) : 0);
+}
+
 /** @param {CharacterFieldEditorDeps} dependencies */
 export function initCharacterFieldEditor(dependencies) {
     deps = dependencies;
@@ -795,14 +816,14 @@ export function initCharacterFieldEditor(dependencies) {
 
     $(document).on('dblclick', '.field_preview', function (event) {
         if (isOnLink(event.target, this) || isOnLightboxImage(event.target)) return;
-        beginEdit(String($(this).attr('data-for')));
+        beginEditAtClick(this, event.originalEvent);
     });
 
     $(document).on('click', '.field_preview', function (event) {
         if (!deps.power_user.click_to_edit) return;
         if (isOnLink(event.target, this)) return;
         if (window.getSelection().toString()) return;
-        beginEdit(String($(this).attr('data-for')));
+        beginEditAtClick(this, event.originalEvent);
     });
 
     for (const id of Object.keys(FIELDS)) {

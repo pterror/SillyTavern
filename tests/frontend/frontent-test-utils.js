@@ -49,6 +49,15 @@ export const testSetup = {
 };
 
 /**
+ * Waits until the loading overlay is gone. It's a popup that holds focus, and it can still be closing after the
+ * preloader is gone: focus given to anything before it's removed is lost.
+ * @param {import('@playwright/test').Page} page
+ */
+export async function awaitLoaderGone(page) {
+    await page.waitForFunction('document.getElementById("loader") === null', { timeout: 0 });
+}
+
+/**
  * Opens the character management drawer unless it is already open (a fresh data root starts with it closed).
  * @param {import('@playwright/test').Page} page
  */
