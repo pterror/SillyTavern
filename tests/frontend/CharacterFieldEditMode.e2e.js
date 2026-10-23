@@ -974,7 +974,35 @@ test.describe('character field edit mode', () => {
             });
         });
 
-        for (const id of ['description_textarea', 'system_prompt_textarea', 'post_history_instructions_textarea', 'personality_textarea', 'scenario_pole', 'depth_prompt_prompt', 'mes_example_textarea']) {
+        test('Description renders markdown and the card\'s custom HTML, sanitized as upstream sanitizes card text', async ({ page }) => {
+            const field = FIELDS.find(x => x.id === 'description_textarea');
+            const text = [
+                '<div class="sheet" style="color: rgb(255, 0, 0)"><b>bold</b> in a box</div>',
+                '',
+                '**strong** and `<i>code</i>`',
+                '',
+                '<style>.sheet { border-top: 3px solid rgb(0, 128, 0); }</style>',
+                '<img src="x" onerror="window.__descriptionXss = true">',
+                '<script>window.__descriptionXss = true;</script>',
+            ].join('\n');
+            await withCharacter(page, field, text, async () => {
+                await openInfoTab(page, field.tab);
+                const preview = fieldLocators(page, field.id).preview;
+                const box = preview.locator('div.custom-sheet');
+                await expect(box).toHaveCSS('color', 'rgb(255, 0, 0)');
+                await expect(box.locator('b')).toHaveText('bold');
+                await expect(preview).not.toContainText('<b>');
+                await expect(preview.locator('strong')).toHaveText('strong');
+                await expect(preview.locator('code')).toHaveText('<i>code</i>');
+                // The card's <style> is kept to the description's own preview.
+                await expect(box).toHaveCSS('border-top-width', '3px');
+                expect(await page.evaluate(() => [...document.querySelectorAll('style')].some(s => s.textContent.includes('#description_preview .custom-sheet')))).toBe(true);
+                await expect(preview.locator('script')).toHaveCount(0);
+                expect(await page.evaluate(() => /** @type {any} */ (window).__descriptionXss)).toBeUndefined();
+            });
+        });
+
+        for (const id of ['system_prompt_textarea', 'post_history_instructions_textarea', 'personality_textarea', 'scenario_pole', 'depth_prompt_prompt', 'mes_example_textarea']) {
             test(`${id} renders markdown with raw HTML tags shown literally`, async ({ page }) => {
                 const field = FIELDS.find(x => x.id === id);
                 const text = '<b>literal</b> and **strong** and `<i>code</i>`\n\n> quoted';

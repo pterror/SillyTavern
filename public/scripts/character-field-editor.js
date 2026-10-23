@@ -59,7 +59,9 @@ export function insertMacroSpans(html, values) {
  * @typedef {object} CharacterFieldEditorDeps
  * @property {(content: string, options: object) => string} substituteParams
  * @property {(mes: string, chName: string, isSystem: boolean, isUser: boolean, messageId: number) => string} messageFormatting
- * @property {(text: string) => string} formatCreatorNotes Renders Creator's Notes for the character loaded in the editor.
+ * @property {(text: string, styleScope?: string) => string} formatCreatorNotes Renders Creator's Notes for the character
+ * loaded in the editor, as upstream does (markdown with the card's HTML, sanitized); `styleScope` is the selector of the
+ * element it's shown in, which the card's `<style>` rules are kept to (Creator's Notes' own preview when left out).
  * @property {{ auto_save_msg_edits: boolean, click_to_edit: boolean }} power_user
  * @property {(strings: TemplateStringsArray, ...values: any[]) => string} t
  * @property {number} autoSaveTimeout Milliseconds of typing pause before an autosave.
@@ -107,7 +109,8 @@ function renderGreetingPreview(text) {
 /** @type {Record<string, EditableField>} Keyed by textarea id. */
 const FIELDS = {
     creator_notes_textarea: { save: () => deps.saveCreatorNotesField, render: text => deps.formatCreatorNotes(text) },
-    description_textarea: { save: () => deps.saveDescriptionField, render: renderLiteralTagsPreview },
+    // The description shows the card's HTML, rendered as upstream renders card text (Creator's Notes).
+    description_textarea: { save: () => deps.saveDescriptionField, render: text => deps.formatCreatorNotes(text, '#description_preview') },
     greeting_field: { save: () => deps.saveGreetingField, render: renderGreetingPreview },
     system_prompt_textarea: { save: () => deps.saveSystemPromptField, render: renderLiteralTagsPreview },
     post_history_instructions_textarea: { save: () => deps.savePostHistoryInstructionsField, render: renderLiteralTagsPreview },

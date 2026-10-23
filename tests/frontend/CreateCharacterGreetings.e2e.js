@@ -70,4 +70,91 @@ test.describe('creating a character with greetings', () => {
             await deleteCharacter(page, avatar);
         }
     });
+
+    test('tags picked in the create form are stored with the new character and shown on it', async ({ page }) => {
+        const s = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+        await openCharacterManagementDrawer(page);
+        await page.locator('#rm_button_create').click();
+        await page.locator('#character_name_pole').fill(`Tagged-${s}`);
+        await page.locator('#tagInput').click();
+        await page.locator('#tagInput').fill(`tag-${s}`);
+        await page.locator('.ui-autocomplete:visible li').first().click();
+        const tag = page.locator('#tagList .tag', { hasText: `tag-${s}` });
+        await expect(tag).toHaveCount(1);
+        const tagId = await tag.getAttribute('id');
+
+        const createRequest = page.waitForRequest(request => new URL(request.url()).pathname === '/api/characters/create');
+        const createResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/api/characters/create');
+        await page.evaluate(() => {
+            // @ts-ignore
+            $('#create_button').click();
+        });
+        expect((await createRequest).postData()).toContain(tagId);
+        const avatar = await (await createResponse).text();
+        try {
+            await expect(page.locator(`.character_select[data-avatar="${avatar}"] .tag`, { hasText: `tag-${s}` }).first()).toBeVisible({ timeout: 10000 });
+            await page.reload();
+            await testSetup.awaitST({ page });
+            await openCharacterManagementDrawer(page);
+            await expect(page.locator(`.character_select[data-avatar="${avatar}"] .tag`, { hasText: `tag-${s}` }).first()).toBeVisible({ timeout: 10000 });
+        } finally {
+            await deleteCharacter(page, avatar);
+        }
+    });
+
+    test('the first greeting is added in the inline editor: in the create form with New greeting, and once created', async ({ page }) => {
+        const s = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+        await openCharacterManagementDrawer(page);
+        await page.locator('#rm_button_create').click();
+        await page.locator('#character_name_pole').fill(`InlineFirst-${s}`);
+        await openInfoTab(page, 'greeting');
+        // New greeting on an empty list writes the first greeting, not a second one after a blank.
+        await page.locator('.greeting-pager-add').click();
+        await page.locator('#charInfoTab_greeting .cm-content').click();
+        await page.keyboard.type(`First ${s}`);
+        await page.locator('.field_edit_done[data-for="greeting_field"]').click();
+        await expect(page.locator('.greeting-pager-total')).toHaveText('/1');
+        const createResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/api/characters/create');
+        await page.evaluate(() => {
+            // @ts-ignore
+            $('#create_button').click();
+        });
+        const avatar = await (await createResponse).text();
+        // The create shows the list with the new character; the next create starts once it has.
+        await expect(page.locator(`.character_select[data-avatar="${avatar}"]`)).toBeVisible({ timeout: 10000 });
+        // A character created with no greeting gets its first one in the inline editor.
+        const createResponse2 = page.waitForResponse(response => new URL(response.url()).pathname === '/api/characters/create');
+        await openCharacterManagementDrawer(page);
+        await page.locator('#rm_button_create').click();
+        await page.locator('#character_name_pole').fill(`InlineLater-${s}`);
+        await page.evaluate(() => {
+            // @ts-ignore
+            $('#create_button').click();
+        });
+        const avatar2 = await (await createResponse2).text();
+        try {
+            const first = await fetchStoredCharacter(page, avatar);
+            expect(first.data.first_mes).toBe(`First ${s}`);
+            expect(first.data.alternate_greetings).toEqual([]);
+
+            await page.evaluate(async (avatar) => {
+                // @ts-ignore
+                await SillyTavern.getContext().getCharacters();
+                const { selectCharacterByAvatar } = await import('/script.js');
+                await selectCharacterByAvatar(avatar);
+            }, avatar2);
+            await expect(page.locator('#avatar_url_pole')).toHaveValue(avatar2, { timeout: 10000 });
+            await openCharacterManagementDrawer(page);
+            await openInfoTab(page, 'greeting');
+            await page.locator('.field_edit_toggle[data-for="greeting_field"]').click();
+            await page.locator('#charInfoTab_greeting .cm-content').click();
+            await page.keyboard.type(`Later ${s}`);
+            await page.locator('.field_edit_done[data-for="greeting_field"]').click();
+            await expect(page.locator('#charInfoTab_greeting')).not.toHaveClass(/field_editing/, { timeout: 10000 });
+            await expect.poll(async () => (await fetchStoredCharacter(page, avatar2)).data.first_mes, { timeout: 10000 }).toBe(`Later ${s}`);
+        } finally {
+            await deleteCharacter(page, avatar);
+            await deleteCharacter(page, avatar2);
+        }
+    });
 });

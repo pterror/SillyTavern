@@ -653,12 +653,14 @@ async function migrateAllowGlobalStylesToDb() {
  * @param {object} [options]
  * @param {boolean} [options.safeMacros=false] Evaluate only macros safe to run on every redraw (no side effects or
  * randomness), leaving the rest as written; for previews.
+ * @param {string} [options.styleScope='#creator_notes_preview'] Selector of the element the HTML is shown in: unless
+ * the character's styles are allowed everywhere, its `<style>` rules apply only inside it.
  * @returns {string} Formatted HTML text
  */
-export function formatCreatorNotes(text, avatarId, { safeMacros = false } = {}) {
+export function formatCreatorNotes(text, avatarId, { safeMacros = false, styleScope = '#creator_notes_preview' } = {}) {
     const preference = new StylesPreference(avatarId);
     const sanitizeStyles = !preference.get();
-    const decodeStyleParam = { prefix: sanitizeStyles ? '#creator_notes_preview ' : '' };
+    const decodeStyleParam = { prefix: sanitizeStyles ? `${styleScope} ` : '' };
     /** @type {DOMPurify.Config} */
     const config = {
         RETURN_DOM: false,

@@ -860,6 +860,21 @@ router.post('/create', getFileNameValidationFunction('file_name'), async functio
                 fs.unlinkSync(uploadPath);
             }
         }
+        // The tags picked in the create form, assigned as part of the create (the character has no key to assign to before).
+        const tagIds = [request.body.tag_ids ?? []].flat().filter(id => typeof id === 'string' && id !== '');
+        if (tagIds.length > 0) {
+            const { lib } = await requestStore(request);
+            const unassigned = [];
+            for (const tagId of tagIds) {
+                const result = await lib.tags.assign(avatarName, tagId).catch((error) => {
+                    console.error(`[characters/create] Assigning tag ${tagId} to ${avatarName} failed:`, error);
+                    return null;
+                });
+                if (result?.result !== 'ok') unassigned.push(tagId);
+            }
+            // The character is created either way; the page names the tags it didn't get.
+            if (unassigned.length > 0) response.setHeader('X-Unassigned-Tag-Ids', JSON.stringify(unassigned));
+        }
         return response.send(avatarName);
     } catch (err) {
         console.error(err);

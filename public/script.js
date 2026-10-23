@@ -185,7 +185,7 @@ import {
     chooseBogusFolder,
     loadTagsSettings,
     reindexTagAssignments,
-    createTagMapFromList,
+    tagsStore,
     importTags,
     mergeServerTagDefinitions,
     initTags,
@@ -1409,7 +1409,7 @@ async function firstLoadInit() {
     initCharacterFieldEditor({
         substituteParams,
         messageFormatting,
-        formatCreatorNotes: text => formatCreatorNotes(text, menu_type === 'create' ? '' : getCurrentCharacter()?.avatar, { safeMacros: true }),
+        formatCreatorNotes: (text, styleScope) => formatCreatorNotes(text, menu_type === 'create' ? '' : getCurrentCharacter()?.avatar, { safeMacros: true, styleScope }),
         power_user,
         t,
         autoSaveTimeout: DEFAULT_SAVE_EDIT_TIMEOUT,
@@ -8074,6 +8074,13 @@ function applyMessageEdit(div) {
         mes = chat[mesId];
     }
 
+    // An opening edited to one of the card's greetings is that greeting, as the card has it (macros unfilled, as
+    // every card greeting is shown and stored), so it stays one alternative with it instead of becoming another.
+    const cardGreeting = cardGreetingOfEditedOpening(mesId, mes, String(text));
+    if (cardGreeting !== null) {
+        return finishMessageEdit(mesBlock, mesId, mes, cardGreeting, '');
+    }
+
     let regexPlacement;
     if (mes?.is_user) {
         regexPlacement = regex_placement.USER_INPUT;
@@ -8104,6 +8111,37 @@ function applyMessageEdit(div) {
         text = removeMacros(text);
     }
 
+    return finishMessageEdit(mesBlock, mesId, mes, text, bias);
+}
+
+/**
+ * The card greeting an edit of a character chat's opening is: the one whose text is the edited text (with spaces
+ * trimmed off both, when edits are trimmed). Null for any other message, or text no greeting has.
+ * @param {number} mesId
+ * @param {ChatMessage} mes
+ * @param {string} text The edited text, as typed.
+ * @returns {string|null} The greeting's text, as the card has it.
+ */
+function cardGreetingOfEditedOpening(mesId, mes, text) {
+    if (mesId !== 0 || mes.is_user || mes.is_system || (selected_group != null && selected_group !== '')) return null;
+    const character = getCurrentCharacter();
+    if (!character) return null;
+    const same = power_user.trim_spaces
+        ? (/** @type {string} */ greeting) => greeting.trim() === text.trim()
+        : (/** @type {string} */ greeting) => greeting === text;
+    const greeting = cardToGreetingsModel(character).greetings.find(g => typeof g === 'string' && g !== '' && same(g));
+    return greeting ?? null;
+}
+
+/**
+ * Writes an edited message's final text (and bias) into the chat.
+ * @param {JQuery<HTMLElement>} mesBlock
+ * @param {number} mesId
+ * @param {ChatMessage} mes
+ * @param {string} text
+ * @param {string} bias
+ */
+function finishMessageEdit(mesBlock, mesId, mes, text, bias) {
     const editUpdates = { mes: text };
     if (mes.swipe_id !== undefined) {
         ensureSwipes(mes, mesId);
@@ -10174,7 +10212,7 @@ const greetingPagerState = {
     greetings: [''],
     defaultIndex: 0,
     hashes: [],
-    committed: [true],
+    committed: [false],
     index: 0,
 };
 
@@ -10396,7 +10434,8 @@ function setGreetingPagerGreetings(greetings, defaultIndex, hashes) {
     greetingPagerState.greetings = greetings.length > 0 ? greetings.slice() : [''];
     greetingPagerState.defaultIndex = greetings.length > 0 ? defaultIndex : 0;
     greetingPagerState.hashes = greetings.length > 0 ? hashes.slice() : [];
-    greetingPagerState.committed = greetingPagerState.greetings.map(() => true);
+    // With no greetings, the one blank slot shown is a new greeting still to be added, not a stored one to edit.
+    greetingPagerState.committed = greetings.length > 0 ? greetingPagerState.greetings.map(() => true) : [false];
     greetingPagerState.index = Math.max(0, Math.min(greetingPagerState.index, greetingPagerState.greetings.length - 1));
     renderGreetingPager();
     $('#firstmessage_textarea').val(greetings.length > 0 && defaultIndex !== null ? greetings[defaultIndex] ?? '' : '');
@@ -10487,12 +10526,23 @@ async function commitGreetingFieldValue(value) {
             return true;
         }
         if (value === '') return false;
-        const result = await postGreetingOp('add', { avatar_url: avatar, position: target.position, expected_length: greetingPagerState.hashes.length, text: value });
+        const expectedLength = greetingPagerState.hashes.length;
+        const result = await postGreetingOp('add', { avatar_url: avatar, position: target.position, expected_length: expectedLength, text: value });
         if (result.ok) {
             applyGreetingOpSuccess(character, result);
             if (edit && greetingPagerEdit === edit) {
                 edit.committed = true;
                 edit.hash = result.hashes[target.position];
+            }
+            // The first greeting a character gets is its default, as in create mode.
+            if (expectedLength === 0 && result.defaultPosition === null) {
+                const made = await postGreetingOp('default/set', { avatar_url: avatar, position: target.position, expected_hash: result.hashes[target.position] });
+                if (made.ok) {
+                    applyGreetingOpSuccess(character, made);
+                } else {
+                    console.error('Making the first greeting the default failed', { avatar, status: made.status, reason: made.reason });
+                    toastr.warning(t`The greeting was added, but couldn't be made the default greeting.`, t`Default not set`);
+                }
             }
             return true;
         }
@@ -11338,6 +11388,10 @@ async function createSaveToFormData(jsonData) {
     formData.set('creator', create_save.creator);
     formData.set('character_version', create_save.character_version);
     formData.set('tags', create_save.tags);
+    // The tags picked in the form's tag list, assigned by the create itself: the new character has no key to assign them to before.
+    for (const tagId of $('#tagList').find('.tag').map((_, el) => $(el).attr('id')).get()) {
+        if (tagId) formData.append('tag_ids', tagId);
+    }
     formData.set('talkativeness', String(create_save.talkativeness));
     formData.set('world', create_save.world);
     formData.set('depth_prompt_prompt', create_save.depth_prompt_prompt);
@@ -11353,6 +11407,23 @@ async function createSaveToFormData(jsonData) {
         formData.set('avatar', await ensureImageFormatSupported(avatarFile));
     }
     return formData;
+}
+
+/**
+ * Names the picked tags the create couldn't assign (the server lists their ids), so none goes missing silently.
+ * @param {string|null} header The create response's `X-Unassigned-Tag-Ids`.
+ */
+function warnUnassignedCreateTags(header) {
+    if (!header) return;
+    let ids = [];
+    try {
+        ids = JSON.parse(header);
+    } catch {
+        return;
+    }
+    if (!Array.isArray(ids) || ids.length === 0) return;
+    const names = ids.map(id => tagsStore.get(id)?.name ?? id);
+    toastr.warning(t`The character was created without these tags:` + ` ${names.join(', ')}`, t`Tags not added`);
 }
 
 /**
@@ -11451,7 +11522,7 @@ export async function createCharacterFromCreateSave({ jsonData } = {}) {
         }
 
         console.log(`new avatar id: ${avatarId}`);
-        createTagMapFromList('#tagList', avatarId);
+        warnUnassignedCreateTags(fetchResult.headers.get('X-Unassigned-Tag-Ids'));
         // select_rm_info() below does its own real, targeted lookup+page-navigation for 'char_create' (see
         // its own body) - no separate list refresh needed here first.
         await getCharacters({ silent: true, skipPrint: true });
@@ -13803,6 +13874,11 @@ jQuery(async function () {
         }
         const { greetings, committed, index } = greetingPagerState;
         greetings[index] = String($('#greeting_field').val());
+        // The slot shown is already a new, blank greeting (as with no greetings at all): that's the one to write.
+        if (committed[index] === false && greetings[index] === '') {
+            beginEdit('greeting_field');
+            return;
+        }
         const newIndex = greetings.length;
         greetings.push('');
         committed[newIndex] = false;

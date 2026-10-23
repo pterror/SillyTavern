@@ -146,3 +146,45 @@ test.describe('hiding messages that include a card greeting with no row', () => 
         expect(reloaded.node_id.startsWith('card:')).toBe(false);
     });
 });
+
+test.describe('editing the opening to a card greeting\'s text', () => {
+    test.beforeEach(testSetup.awaitST);
+
+    /** @param {import('@playwright/test').Page} page @param {string} text */
+    async function editOpening(page, text) {
+        await page.locator('#chat .mes[mesid="0"] .mes_edit').click();
+        await page.locator('#curEditTextarea').fill(text);
+        await page.locator('#chat .mes[mesid="0"] .mes_edit_done').click();
+    }
+
+    test('a greeting with macros, typed as the card has it, is that greeting, not another alternative', async ({ page }) => {
+        const s = stamp();
+        const g = [`Hi {{user}} ${s}`, `Bye {{char}} ${s}`, `Two ${s}`];
+        const avatar = await createCharacter(page, `DedupeMacro-${s}`, g);
+        await openCharacter(page, avatar);
+        await editOpening(page, g[1]);
+        await expect.poll(() => storedOpenings(page, avatar), { timeout: 10000 }).toEqual([
+            { stored: true, mes: g[1] },
+            { stored: false, mes: g[0] },
+            { stored: false, mes: g[2] },
+        ]);
+        await expect.poll(async () => (await opening(page)).swipes, { timeout: 10000 }).toEqual([g[1], g[0], g[2]]);
+    });
+
+    test('a stored opening edited to a card greeting\'s text becomes that greeting in the open chat too', async ({ page }) => {
+        const s = stamp();
+        const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`];
+        const avatar = await createCharacter(page, `DedupeStored-${s}`, g);
+        await openCharacter(page, avatar);
+        await editOpening(page, `Own ${s}`);
+        await expect.poll(async () => (await opening(page)).swipes, { timeout: 10000 }).toEqual([`Own ${s}`, g[0], g[1], g[2]]);
+        await editOpening(page, g[1]);
+        await expect.poll(() => storedOpenings(page, avatar), { timeout: 10000 }).toEqual([
+            { stored: true, mes: g[1] },
+            { stored: false, mes: g[0] },
+            { stored: false, mes: g[2] },
+        ]);
+        await expect.poll(async () => (await opening(page)).swipes, { timeout: 10000 }).toEqual([g[1], g[0], g[2]]);
+        expect((await opening(page)).mes).toBe(g[1]);
+    });
+});
