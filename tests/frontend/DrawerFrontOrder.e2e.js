@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { testSetup, setStackedDrawers, findCharacterAvatarByName, chatBox } from './frontent-test-utils.js';
+import { testSetup, setStackedDrawers, awaitPowerUserSettingStored, findCharacterAvatarByName, chatBox } from './frontent-test-utils.js';
 
 async function awaitAppReady(page) {
     await page.evaluate(() => new Promise(resolve => {
@@ -9,18 +9,15 @@ async function awaitAppReady(page) {
 }
 
 /**
- * Clicks a control (through its own handler; it may be styled out of view) and waits until the server has saved
- * the given power_user key.
+ * Clicks a control (through its own handler; it may be styled out of view) and waits until the server holds the
+ * page's value of the given power_user key.
  * @param {import('@playwright/test').Page} page
  * @param {string} key
  * @param {() => Promise<void>} change
  */
 async function changeAndAwaitSave(page, key, change) {
-    const saved = page.waitForResponse(response => response.url().endsWith('/api/settings/save-partial')
-        && response.ok()
-        && (response.request().postData() ?? '').includes(key));
     await change();
-    await saved;
+    await awaitPowerUserSettingStored(page, key);
 }
 
 /**
