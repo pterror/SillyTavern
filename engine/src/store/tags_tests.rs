@@ -1014,3 +1014,27 @@ fn part_counts_after_a_crash_before_install_are_not_doubled() {
     }
     let _ = fs::remove_dir_all(&committed);
 }
+
+/// One commit assigning many tags to one character: each assignment's cost stays flat, not growing with the tags
+/// the character carries already.
+#[test]
+#[ignore]
+fn bench_many_tags_on_one_character() {
+    let dir = temp_dir("bench-many");
+    let s = Store::open_in(&dir, StoreConfig::default(), pool()).unwrap();
+    let n = 1500u64;
+    let mut defs = Vec::new();
+    for t in 1..=n {
+        defs.push(set(t, NAME, &format!("t{t}")));
+        defs.push(mark(t));
+        defs.push(create(t, TAG, &format!("t{t}")));
+    }
+    defs.push(set(10_000, NAME, "c"));
+    defs.push(create(10_000, CHARACTER, "c.png"));
+    s.commit_wait(defs).unwrap();
+    let started = std::time::Instant::now();
+    s.commit_wait((1..=n).map(|t| assign(10_000, t, true)).collect()).unwrap();
+    eprintln!("BENCH {n} assignments in one commit: {:?}", started.elapsed());
+    s.close();
+    let _ = fs::remove_dir_all(&dir);
+}

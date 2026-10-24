@@ -431,19 +431,9 @@ pub fn changed(
         }
     }
     if delta > 0 {
-        let raised = raised_terms(view, entity, tag)?;
-        for (kind, term) in name_terms(&name) {
-            if !raised.contains(&(kind, term.clone())) {
-                raise_tagged(
-                    view,
-                    out,
-                    Scope::LIBRARY,
-                    &term,
-                    kind == TermKind::Gram,
-                    &[entity],
-                )?;
-            }
-        }
+        // Raised for each term of the name, but where another tag has the entity raised for it already: read off
+        // the term's own counts, not off every tag the entity carries (assigning n tags one by one was n²).
+        raise_gained(view, out, tag, &name_terms(&name), &[entity])?;
     }
     Ok(())
 }
@@ -478,25 +468,6 @@ pub fn carried_terms(view: &View, entity: u64) -> Result<BTreeSet<Term>, StoreEr
     let mut out = BTreeSet::new();
     for tag in tags_of(view, entity)? {
         out.extend(name_terms(&indexed_name(view, tag)?));
-    }
-    Ok(out)
-}
-
-/// The name terms `entity`'s tags other than `except` have its block's maxima raised for: a tag's indexed name's
-/// that the name its map holds `entity` by (`mapped_at`) holds too. A move raises a carrier for its target name's
-/// terms as its cursor passes it, so before the cursor the mapped name's are the raised ones; a query bounds
-/// the rest (`search::query::Unraised`). Counting a tag by its indexed name alone could leave a carrier two moving
-/// tags both gain a term at raised by neither.
-fn raised_terms(view: &View, entity: u64, except: u64) -> Result<BTreeSet<Term>, StoreError> {
-    let mut out = BTreeSet::new();
-    for tag in tags_of(view, entity)? {
-        if tag == except {
-            continue;
-        }
-        let m = tag_map(view, tag)?;
-        let indexed = indexed_name(view, tag)?;
-        let by = name_terms(mapped_at(&m, &indexed, entity).1);
-        out.extend(name_terms(&indexed).intersection(&by).cloned());
     }
     Ok(out)
 }
