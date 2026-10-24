@@ -141,6 +141,32 @@ test.describe('the chat box with the live editor', () => {
         });
     });
 
+    test('the toolbar goes above the whole send form, over the bars extensions put above the chat box', async ({ page }) => {
+        await testSetup.awaitST({ page });
+        await openChat(page);
+        await expect(chatBoxEditor(page)).toHaveCount(1, { timeout: 10000 });
+        // As the quick replies bar and other extensions' bars do: the form's first child.
+        await page.evaluate(() => {
+            const bar = document.createElement('div');
+            bar.id = 'testExtensionBar';
+            bar.style.cssText = 'width: 100%; height: 40px';
+            document.getElementById('send_form').prepend(bar);
+        });
+        await chatBoxEditor(page).locator('.cm-content').click();
+        const toolbar = chatBoxEditor(page).locator('.cm-panels-top');
+        await expect(toolbar).toBeVisible();
+        const place = () => page.evaluate(() => ({
+            toolbarBottom: Math.round(document.querySelector('#send_form .cm-panels-top').getBoundingClientRect().bottom),
+            formTop: Math.round(document.getElementById('send_form').getBoundingClientRect().top),
+        }));
+        await expect.poll(async () => { const p = await place(); return p.toolbarBottom - p.formTop; }).toBe(0);
+        // A bar that grows lifts it further.
+        await page.evaluate(() => { document.getElementById('testExtensionBar').style.height = '90px'; });
+        await expect.poll(async () => { const p = await place(); return p.toolbarBottom - p.formTop; }).toBe(0);
+        await page.evaluate(() => document.getElementById('testExtensionBar').remove());
+        await expect.poll(async () => { const p = await place(); return p.toolbarBottom - p.formTop; }).toBe(0);
+    });
+
     test('Shift+Enter adds a line instead of sending', async ({ page }) => {
         await testSetup.awaitST({ page });
         await openChat(page);
