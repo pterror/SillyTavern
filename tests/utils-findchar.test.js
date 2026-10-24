@@ -47,6 +47,7 @@ jest.unstable_mockModule('../public/scripts/request-headers.js', () => ({
 
 jest.unstable_mockModule('../public/scripts/character-store.js', () => ({
     characters,
+    exposedCharacters: characters,
     charactersStore: charactersStoreMock,
     resolveCharacterRef: jest.fn(() => undefined),
 }));

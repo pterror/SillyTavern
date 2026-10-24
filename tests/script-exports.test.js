@@ -11,7 +11,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const COPIED = ['.githooks', 'scripts/script-exports.mjs', 'scripts/script-signatures.mjs', 'package.json', 'tsconfig.precommit.json', '.oxlintrc.json'];
+const COPIED = ['.githooks', 'scripts/script-exports.mjs', 'scripts/script-signatures.mjs', 'package.json', 'tsconfig.precommit.json', '.oxlintrc.json', '.eslintrc.cjs'];
 const TIMEOUT = 120_000;
 
 // A clean git environment: no inherited hook state (GIT_DIR, GIT_INDEX_FILE, ...) and no user or
