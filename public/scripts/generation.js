@@ -11,7 +11,7 @@ import {
     menu_type, name2, online_status,
     parseAndSaveLogprobs, parseMesExamples, parseTokenCounts, pingServer, processCommands,
     removeDepthPrompts, removeLastMessage, removeMacros, resolveClientToolHandoffLoop,
-    saveReply, sendGenerationRequest, sendMessageAsUser, sendStreamingRequest,
+    saveReply, sendGenerationRequest, sendMessageAsUser, sendStreamingRequest, storeSentMessage,
     setCharacterName, setExtensionPrompt, setGenerationProgress, setInContextMessages, setSendButtonState,
     showStopButton, storePageChatChanges, StreamingProcessor, substituteParams, swipe,
     triggerAutoContinue, unblockGeneration, unshallowCharacter, updateMessageBlock, updateMessageItemizedPromptButton,
@@ -378,15 +378,22 @@ export async function finishStreamedReplyPersistence({ assistantNodeId }) {
  */
 
 /**
- * Settles the sends a generate request carried: one the server didn't store is shown as a failed send
+ * Settles the sends a generate request carried. One the server didn't store (the request failed before it did, or
+ * never went out: no model to generate with, a backend refusing it on the page) is stored as any sent message is:
+ * a message sent is kept whether or not a reply can be made. By its send key, so a send the server did store after
+ * all isn't stored twice. One that can't be stored either, or is no longer on the chat, is shown as a failed send
  * (failed-sends.js).
  * @param {PendingSend[]} pendingSends
  */
-function settlePendingSends(pendingSends) {
+async function settlePendingSends(pendingSends) {
     for (const pending of pendingSends) {
-        if (!wasSendStored(pending.key)) {
+        if (wasSendStored(pending.key)) continue;
+        const index = chat.findIndex(message => storeRefOf(message) === pending.key);
+        if (index === -1) {
             keepFailedSend({ key: pending.key, kind: 'append', message: pending.message });
+            continue;
         }
+        await storeSentMessage(index);
     }
 }
 
@@ -574,7 +581,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         // A generation that ended without its reply settling (an error, a stop with nothing stored) leaves nothing in flight.
         if (replyInFlight !== replyBefore) replyInFlight = null;
         swipeAnchor = null;
-        settlePendingSends(pendingSends);
+        await settlePendingSends(pendingSends);
     }
 }
 
