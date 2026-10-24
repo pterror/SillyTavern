@@ -2509,6 +2509,9 @@ function clearEntryList($list) {
     // The editor is closing or showing something else: a commit point for every field in it.
     $list.find('[data-wi-draft]').each(function () {
         void entryFieldBindings.get(this)?.handle({ type: 'close' });
+        // Taken down from here: what clearing it fires (select2's destroy fires `change` on a picker whose options
+        // are gone) is not an edit, and would commit an empty field over the stored one.
+        entryFieldBindings.delete(this);
     });
 
     // Unsubscribe from toggle events, so that mass open won't create new drawers
@@ -3429,20 +3432,21 @@ function bindEntryField(options) {
     showEntryFieldState(control, binding, stored);
 
     const event = options.event ?? 'input';
-    // `noSave`: the editor's own code filling the field.
+    // `noSave`: the editor's own code filling the field. A field being taken down (its binding gone) edits nothing.
+    const live = () => entryFieldBindings.get(element) === binding;
     control.on(event, function (e, arg) {
-        if (arg?.noSave) return;
+        if (arg?.noSave || !live()) return;
         options.live?.(read());
         const user = isUserEvent(e.originalEvent) || document.activeElement === element || isExpandedEditorOf(element);
         void binding.handle({ type: event === 'change' ? 'change' : 'input', user });
     });
     if (type !== 'toggle') {
         control.on('change', (_e, arg) => {
-            if (arg?.noSave) return;
+            if (arg?.noSave || !live()) return;
             void binding.handle({ type: 'change' });
         });
-        control.on('focusout', () => void binding.handle({ type: 'blur' }));
-        control.on('keydown', e => void binding.handle({ type: 'keydown', key: e.key, shiftKey: e.shiftKey, isComposing: e.originalEvent?.isComposing }));
+        control.on('focusout', () => live() && void binding.handle({ type: 'blur' }));
+        control.on('keydown', e => live() && void binding.handle({ type: 'keydown', key: e.key, shiftKey: e.shiftKey, isComposing: e.originalEvent?.isComposing }));
     }
     return binding;
 }
