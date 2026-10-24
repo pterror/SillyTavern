@@ -57,6 +57,50 @@ test.describe('card fields edit in the live editor', () => {
         await expect.poll(async () => (await stored(page, avatar)).description).toBe('Old *text*. New **bold**.');
     });
 
+    test('double-clicking a word in the preview starts the edit in that word, past markup and list numbers', async ({ page }) => {
+        const description = '1. First *item* here\n2. Second **item** with the target word\n\n> the target again';
+        await createAndOpen(page, { description });
+        await openInfoTab(page, 'description');
+        const preview = page.locator('.field_preview[data-for="description_textarea"]');
+        await expect(preview.locator('li')).toHaveCount(2);
+        await expect(preview.locator('li').nth(1)).toBeVisible();
+        // The panel moves while its tags and token count load above the preview: a point in it is measured once it
+        // has stayed put.
+        const top = () => preview.evaluate(el => Math.round(el.getBoundingClientRect().top));
+        const seen = [];
+        await expect.poll(async () => {
+            seen.push(await top());
+            return seen.length >= 3 && seen.slice(-3).every(v => v === seen.at(-1));
+        }, { intervals: [250], timeout: 15000 }).toBe(true);
+        for (const k of [0, 1]) {
+            const point = await preview.evaluate((el, k) => {
+                const found = [];
+                const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+                for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+                    let i = -1;
+                    while ((i = String(n.textContent).indexOf('target', i + 1)) >= 0) found.push({ n, i });
+                }
+                const range = document.createRange();
+                range.setStart(found[k].n, found[k].i + 3);
+                range.setEnd(found[k].n, found[k].i + 4);
+                const b = range.getBoundingClientRect();
+                return { x: b.left + 1, y: b.top + b.height / 2 };
+            }, k);
+            await page.mouse.dblclick(point.x, point.y);
+            const editor = page.locator('#charInfoTab_description .cm-editor');
+            await expect(editor).toBeVisible();
+            // A double click selects the word; the edit starts with the caret where it was clicked.
+            const head = await page.evaluate(async () => {
+                const lib = await import('/live-editor-lib.js');
+                const view = lib.view.EditorView.findFromDOM(/** @type {HTMLElement} */ (document.querySelector('#charInfoTab_description .cm-editor')));
+                return view?.state.selection.main.head;
+            });
+            expect(head).toBe([...description.matchAll(/target/g)][k].index + 3);
+            await page.locator('.field_edit_cancel[data-for="description_textarea"]').click();
+            await expect(editor).toHaveCount(0);
+        }
+    });
+
     test('Escape with the macro suggestions open closes them and keeps editing', async ({ page }) => {
         await createAndOpen(page, { scenario: 'x' });
         await openInfoTab(page, 'scenario');
