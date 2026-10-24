@@ -6731,6 +6731,42 @@ export function setSendButtonState(value) {
 }
 
 /**
+ * Turns the character's name at the top of its info into a text box: Enter, or leaving it, renames the character
+ * (renameCharacter(), which asks whether past chats follow); Escape leaves the name as it was.
+ */
+function beginInlineCharacterRename() {
+    if (getSelectionState().type !== 'character' || blockWhileFieldEditing()) return;
+    const heading = $('#rm_button_selected_ch h2');
+    if (heading.find('input').length) return;
+    const current = getCurrentCharacter().name;
+    const input = $('<input type="text" class="text_pole character_rename_input" autocomplete="off">').val(current);
+    input.attr('aria-label', t`Character name`);
+    heading.empty().append(input);
+    input.trigger('focus').trigger('select');
+    let done = false;
+    const finish = async (/** @type {boolean} */ rename) => {
+        if (done) return;
+        done = true;
+        const value = String(input.val() ?? '').trim();
+        heading.text(current);
+        if (rename && value && value !== current) await renameCharacter(value);
+    };
+    input.on('keydown', (event) => {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            void finish(true);
+        } else if (event.key === 'Escape') {
+            event.preventDefault();
+            event.stopPropagation();
+            void finish(false);
+        }
+    });
+    input.on('blur', () => void finish(true));
+    // Clicks in the box are the box's: not the heading's (which switches the panel's tab).
+    input.on('click dblclick mousedown', event => event.stopPropagation());
+}
+
+/**
  * Renames the currently selected character, updating relevant references and optionally renaming past chats.
  *
  * If no name is provided, a popup prompts for a new name. If the new name matches the current name,
@@ -9137,7 +9173,6 @@ export function select_selected_character(chid, { switchMenu = true } = {}) {
 
     $('#name_div').removeClass('displayBlock');
     $('#name_div').addClass('displayNone');
-    $('#renameCharButton').css('display', '');
 
     $('#form_create').attr('actiontype', 'editcharacter');
 
@@ -9217,7 +9252,6 @@ function select_rm_create({ switchMenu = true } = {}) {
     $('#character_book_json').val('');
     $('#avatar_div').css('display', 'flex');
     $('#avatar_load_preview').attr('src', default_avatar);
-    $('#renameCharButton').css('display', 'none');
     $('#name_div').removeClass('displayNone');
     $('#name_div').addClass('displayBlock');
     $('.open_alternate_greetings').data('avatar', null);
@@ -14088,7 +14122,13 @@ jQuery(async function () {
         }, true);
     }
 
-    /* $("#renameCharButton").on('click', renameCharacter); */
+    // The character's name at the top of its info renames it in place: the pen, or a double click on the name.
+    const nameHeading = document.querySelector('#rm_button_selected_ch h2');
+    const showRenameButton = () => $('#character_rename_inline').toggle(getSelectionState().type === 'character' && Boolean(nameHeading?.textContent));
+    if (nameHeading) new MutationObserver(showRenameButton).observe(nameHeading, { childList: true, characterData: true, subtree: true });
+    eventSource.on(event_types.CHAT_CHANGED, showRenameButton);
+    $(document).on('click', '#character_rename_inline', () => beginInlineCharacterRename());
+    $(document).on('dblclick', '#rm_button_selected_ch h2', () => beginInlineCharacterRename());
 
     $(document).on('click', '.renameChatButton', async function (e) {
         e.stopPropagation();
@@ -15078,9 +15118,6 @@ jQuery(async function () {
                 break;
             case 'set_chat_character_settings':
                 await setCharacterSettingsOverrides();
-                break;
-            case 'renameCharButton':
-                await renameCharacter();
                 break;
             case 'import_character_info':
                 await importEmbeddedWorldInfo();
