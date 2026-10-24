@@ -993,6 +993,26 @@ function hitAt(page, point) {
     }, point);
 }
 
+/**
+ * @param {import('@playwright/test').Page} page
+ * @returns {Promise<{ x: number, y: number }>} A point where the chat shows and nothing there takes a click of its own
+ * (the welcome screen's buttons and recent chats are left alone), clear of the extension window.
+ */
+function chatBackgroundPoint(page) {
+    return page.evaluate(() => {
+        const box = document.getElementById('sheld').getBoundingClientRect();
+        for (let gy = 1; gy < 10; gy++) {
+            for (let gx = 9; gx > 0; gx--) {
+                const x = box.left + box.width * gx / 10;
+                const y = box.top + box.height * gy / 10;
+                const hit = document.elementFromPoint(x, y);
+                if (hit?.closest('#sheld') && !hit.closest('.welcomePanel, button, a, input, textarea, select, label, [role="button"], .interactable, [contenteditable]')) return { x, y };
+            }
+        }
+        throw new Error('no plain point in the chat');
+    });
+}
+
 test.describe('Layers found by what they are', () => {
     test.beforeEach(testSetup.awaitST);
 
@@ -1009,8 +1029,8 @@ test.describe('Layers found by what they are', () => {
         await expect.poll(() => hitAt(page, point)).toBe('extWindow');
         await expect.poll(async () => (await stackState(page)).cutWrong).toEqual([]);
 
-        const sheld = await page.locator('#sheld').boundingBox();
-        await page.mouse.click(sheld.x + sheld.width / 2, sheld.y + sheld.height / 2);
+        const plain = await chatBackgroundPoint(page);
+        await page.mouse.click(plain.x, plain.y);
         await expect.poll(() => hitAt(page, point)).toBe('sheld');
         await expect.poll(async () => (await stackState(page)).layers.at(-1)).toBe('sheld');
         await expect.poll(async () => (await stackState(page)).cutWrong).toEqual([]);
@@ -1021,8 +1041,8 @@ test.describe('Layers found by what they are', () => {
     test('a button in a back layer still gets its click, and its layer comes forward', async ({ page }) => {
         await addExtensionWindow(page);
         const point = await overlapPoint(page);
-        const sheld = await page.locator('#sheld').boundingBox();
-        await page.mouse.click(sheld.x + sheld.width / 2, sheld.y + sheld.height / 2);
+        const plain = await chatBackgroundPoint(page);
+        await page.mouse.click(plain.x, plain.y);
         await expect.poll(() => hitAt(page, point)).toBe('sheld');
 
         await page.locator('#extWindowButton').click();
