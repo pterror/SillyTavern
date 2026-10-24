@@ -1,4 +1,4 @@
-import { getCurrentCharacter, getCurrentChatId, getSelectionState, messageFormatting, reloadCurrentChat, saveSettingsDebounced } from '../../../script.js';
+import { getCurrentCharacter, getCurrentChatId, getSelectionState, messageFormatting, redisplayChat, saveSettingsDebounced } from '../../../script.js';
 import { eventSource, event_types } from '../../events.js';
 import { extension_settings, renderExtensionTemplateAsync } from '../../extensions.js';
 import { selected_group } from '../../group-chats.js';
@@ -387,7 +387,7 @@ class RegexPresetManager {
         }
 
         await loadRegexScripts();
-        await reloadCurrentChat();
+        await redrawChat();
     }
 
     /**
@@ -500,14 +500,23 @@ function setMoveButtonsVisibility() {
 }
 
 /**
+ * Draws the open chat's messages again with the scripts as they are now: display-only scripts apply as a message is
+ * drawn, so nothing is read from the server and the chat isn't opened again.
+ */
+async function redrawChat() {
+    if (getCurrentChatId()) await redisplayChat();
+}
+
+/**
  * Saves a regex script to the extension settings or character data.
  * @param {import('../../char-data.js').RegexScriptData} regexScript
  * @param {number} existingScriptIndex Index of the existing script
  * @param {SCRIPT_TYPES} scriptType Type of the script
  * @param {boolean} [saveSettings=true] Whether to save the settings immediately
+ * @param {{ redrawList?: boolean }} [options] `redrawList`: draw the script lists again (a toggle's row shows itself)
  * @returns {Promise<void>}
  */
-async function saveRegexScript(regexScript, existingScriptIndex, scriptType, saveSettings = true) {
+async function saveRegexScript(regexScript, existingScriptIndex, scriptType, saveSettings = true, { redrawList = true } = {}) {
     const array = getScriptsByType(scriptType);
 
     if (!regexScript.id) {
@@ -548,13 +557,8 @@ async function saveRegexScript(regexScript, existingScriptIndex, scriptType, sav
 
     if (saveSettings) {
         saveSettingsDebounced('extension_settings');
-        await loadRegexScripts();
-
-        // Reload the current chat to undo previous markdown
-        const currentChatId = getCurrentChatId();
-        if (currentChatId) {
-            await reloadCurrentChat();
-        }
+        if (redrawList) await loadRegexScripts();
+        await redrawChat();
     }
 
     const debuggerPopup = $('#regex_debugger_popup');
@@ -638,7 +642,6 @@ async function loadRegexScripts() {
     function renderScript(container, script, scriptType, index) {
         // Have to clone here
         const scriptHtml = scriptTemplate.clone();
-        const save = () => saveRegexScript(script, index, scriptType);
 
         if (!script.id) {
             script.id = uuidv4();
@@ -649,7 +652,8 @@ async function loadRegexScripts() {
         scriptHtml.find('.disable_regex').prop('checked', script.disabled ?? false)
             .on('input', async function () {
                 script.disabled = !!$(this).prop('checked');
-                await save();
+                // The row already shows the change: the list isn't drawn again, only the chat.
+                await saveRegexScript(script, index, scriptType, true, { redrawList: false });
             });
         scriptHtml.find('.regex-toggle-on').on('click', function () {
             scriptHtml.find('.disable_regex').prop('checked', true).trigger('input');
@@ -704,7 +708,7 @@ async function loadRegexScripts() {
                 return;
             }
             await deleteRegexScript(script.id, scriptType);
-            await reloadCurrentChat();
+            await redrawChat();
         });
         scriptHtml.find('.regex_bulk_checkbox').on('change', function () {
             setMoveButtonsVisibility();
@@ -1599,7 +1603,7 @@ async function checkCharEmbeddedRegexScripts() {
 
                     if (result) {
                         allowScopedScripts(character);
-                        await reloadCurrentChat();
+                        await redrawChat();
                     }
                 }
             }
@@ -1621,7 +1625,7 @@ function notifyReloadCurrentChat(presetName) {
         {
             timeOut: 5000,
             escapeHtml: false,
-            onclick: reloadCurrentChat,
+            onclick: redrawChat,
         });
 }
 
@@ -1641,9 +1645,7 @@ async function checkPresetEmbeddedRegexScripts() {
 
                 if (result) {
                     allowPresetScripts(apiId, name);
-                    if (getCurrentChatId()) {
-                        await reloadCurrentChat();
-                    }
+                    await redrawChat();
                 }
             }
         } else if (getCurrentChatId() && scripts.filter(script => !script.disabled).length > 0) {
@@ -1794,11 +1796,7 @@ export async function init() {
         saveSettingsDebounced('extension_settings');
         await loadRegexScripts();
 
-        // Reload the current chat to undo previous markdown
-        const currentChatId = getCurrentChatId();
-        if (currentChatId) {
-            await reloadCurrentChat();
-        }
+        await redrawChat();
     }
 
     /**
@@ -1818,11 +1816,7 @@ export async function init() {
         saveSettingsDebounced('extension_settings');
         await loadRegexScripts();
 
-        // Reload the current chat to undo previous markdown
-        const currentChatId = getCurrentChatId();
-        if (currentChatId) {
-            await reloadCurrentChat();
-        }
+        await redrawChat();
     }
 
     $('#bulk_regex_move_to_global').on('click', async () => {
@@ -1872,7 +1866,7 @@ export async function init() {
         }
         saveSettingsDebounced('extension_settings');
         await loadRegexScripts();
-        await reloadCurrentChat();
+        await redrawChat();
     });
 
     $('#bulk_export_regex').on('click', async function () {
@@ -1923,7 +1917,7 @@ export async function init() {
                 await setter(newScripts);
                 saveSettingsDebounced('extension_settings');
 
-                await reloadCurrentChat();
+                await redrawChat();
                 await loadRegexScripts();
             },
         });
@@ -1950,7 +1944,7 @@ export async function init() {
         }
 
         saveSettingsDebounced('extension_settings');
-        reloadCurrentChat();
+        void redrawChat();
     });
 
     $('#regex_preset_toggle').on('input', function () {
@@ -1964,7 +1958,7 @@ export async function init() {
         }
 
         saveSettingsDebounced('extension_settings');
-        reloadCurrentChat();
+        void redrawChat();
     });
 
     await loadRegexScripts();
