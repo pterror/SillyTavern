@@ -257,7 +257,13 @@ test.describe('Tag restore stores the backup\'s tag definitions', () => {
         await page.reload();
         await loadApp(page);
         await holdCharacters(page, [card]);
-        expect(await pageTagsNamed(page, name)).toEqual([{ id, color: 'rgba(17, 34, 51, 1)' }]);
+        // A tag's definition is read when something shows it (holding a character doesn't): read as the page reads one.
+        const read = await page.evaluate(async (id) => {
+            const { readTagsForIds } = await import('/scripts/tags.js');
+            const tag = (await readTagsForIds([id]))?.tags.get(id);
+            return tag ? { id: tag.id, name: tag.name, color: tag.color } : null;
+        }, id);
+        expect(read).toEqual({ id, name, color: 'rgba(17, 34, 51, 1)' });
         expect(await residentTagsOf(page, card)).toEqual([id]);
         expect(wholeListSaves).toEqual([]);
     });
