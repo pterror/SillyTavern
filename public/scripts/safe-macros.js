@@ -137,20 +137,35 @@ export function substituteSafeMacrosAsText(text, substituteParams, options = {})
  * @param {string} text
  * @param {(content: string, options: object) => string} substituteParams The app's substituteParams.
  * @param {object} [options] Extra substituteParams options.
- * @returns {{ text: string, values: string[], raws: string[] }}
+ * @returns {{ text: string, values: string[], categories: (string | undefined)[], raws: string[] }} Each value with
+ * the category of the macro it is from.
  */
 export function substituteSafeMacros(text, substituteParams, options = {}) {
     const { masked, raws } = maskUnsafeMacros(text);
     /** @type {string[]} */
     const values = [];
+    /** @type {(string | undefined)[]} */
+    const categories = [];
     const substituted = substituteParams(masked, {
         ...options,
-        postProcessFn: value => {
+        postProcessFn: (/** @type {string} */ value, /** @type {{ category?: string } | undefined} */ macro) => {
             values.push(String(value));
+            categories.push(macro?.category);
             return `${VALUE_START}${values.length - 1}${PLACEHOLDER_END}`;
         },
     });
-    return { text: substituted, values, raws };
+    return { text: substituted, values, categories, raws };
+}
+
+/**
+ * A preview's span for a macro's value, marked with the macro's category so it has that category's color.
+ * @param {string} value
+ * @param {string | undefined} category
+ * @returns {string}
+ */
+export function macroValueSpan(value, category) {
+    const marked = category ? ` data-macro-category="${escapeHtmlText(category)}"` : '';
+    return `<span class="macro-substituted"${marked}>${escapeHtmlText(value)}</span>`;
 }
 
 /** @param {string} text @returns {string} */
@@ -169,10 +184,11 @@ function escapeHtmlText(text) {
  * @param {string} html
  * @param {string[]} values
  * @param {string[]} raws
+ * @param {(string | undefined)[]} [categories] The category of each value's macro.
  * @returns {string}
  */
-export function insertSafeMacroSpans(html, values, raws) {
+export function insertSafeMacroSpans(html, values, raws, categories = []) {
     return html
-        .replace(VALUE_REGEX, (_, index) => `<span class="macro-substituted">${escapeHtmlText(values[Number(index)] ?? '')}</span>`)
+        .replace(VALUE_REGEX, (_, index) => macroValueSpan(values[Number(index)] ?? '', categories[Number(index)]))
         .replace(RAW_REGEX, (_, index) => `<span class="macro-raw">${escapeHtmlText(raws[Number(index)] ?? '')}</span>`);
 }

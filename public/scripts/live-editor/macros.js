@@ -3,6 +3,7 @@
 import { state as cmState, view as cmView, autocomplete as cmAutocomplete } from '../../live-editor-lib.js';
 import { topLevelMacroSpans } from '../safe-macros.js';
 import { getMacroAutoCompleteAt } from '../autocomplete/MacroAutoCompleteHelper.js';
+import { macros as macroSystem } from '../macros/macro-system.js';
 import { shouldActivateMacroAutocomplete, MACRO_AUTOCOMPLETE_MODE } from '../autocomplete/MacroAutoComplete.js';
 import { t } from '../i18n.js';
 
@@ -24,23 +25,37 @@ const macroOptions = Facet.define({
 const SHOWN_VALUE_LENGTH = 24;
 
 /**
+ * A macro's category in the registry, from its text: the color it is drawn in goes by it.
+ * @param {string} macroText One whole `{{…}}`.
+ * @returns {string | undefined}
+ */
+function macroCategory(macroText) {
+    const inner = macroText.slice(2).trimStart();
+    // Flags before the name (`{{!user}}`, `{{#if …}}`); the comment macro is named `//`.
+    const name = inner.startsWith('//') ? '//' : /^[^a-zA-Z]{0,3}([a-zA-Z][\w-]*)/.exec(inner)?.[1];
+    return name ? macroSystem.registry.getPrimaryMacro(name)?.category : undefined;
+}
+
+/**
  * The mark a macro is drawn with. What is sent in its place is drawn by the mark's own span (CSS generated content
  * from these attributes), not by a widget: it is no position in the text, and it never breaks across lines or away
  * from the macro, so a click on it lands on the macro, on the line it is drawn on.
  * @param {string | null} value The macro's value, or null when it only runs when sent.
+ * @param {string | undefined} category Its category, for its color.
  */
-function macroMark(value) {
+function macroMark(value, category) {
+    const categoryAttribute = category ? { 'data-macro-category': category } : {};
     if (value === null) {
         return Decoration.mark({
             class: 'macro-source macro-later',
-            attributes: { 'data-sent-label': t`filled in when sent`, title: t`This macro is filled in when the message is sent.` },
+            attributes: { ...categoryAttribute, 'data-sent-label': t`filled in when sent`, title: t`This macro is filled in when the message is sent.` },
         });
     }
     const flat = value.replace(/\s+/g, ' ');
     const shown = flat.length > SHOWN_VALUE_LENGTH ? `${flat.slice(0, SHOWN_VALUE_LENGTH - 1)}…` : flat;
     return Decoration.mark({
         class: 'macro-source',
-        attributes: { 'data-sent-label': t`sent as`, 'data-sent-value': shown, title: t`Sent as: ${value}` },
+        attributes: { ...categoryAttribute, 'data-sent-label': t`sent as`, 'data-sent-value': shown, title: t`Sent as: ${value}` },
     });
 }
 
@@ -86,7 +101,7 @@ const macroValues = ViewPlugin.fromClass(class {
                 } catch (error) {
                     console.warn('Macro could not be filled in', text, error);
                 }
-                ranges.push(macroMark(value).range(from, to));
+                ranges.push(macroMark(value, macroCategory(text)).range(from, to));
             }
         }
         return Decoration.set(ranges, true);

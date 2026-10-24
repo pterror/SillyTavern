@@ -19,7 +19,14 @@ import { getStringHash } from '/scripts/utils.js';
  * @property {string|null} [groupOverride]
  * @property {boolean} [replaceCharacterCard]
  * @property {Record<string, import('./MacroEnv.types.js').DynamicMacroValue>|null} [dynamicMacros]
- * @property {(value: string) => string} [postProcessFn]
+ * @property {(value: string, macro?: MacroIdentity) => string} [postProcessFn] Run on each macro's value; given which
+ * macro it is.
+ */
+
+/**
+ * @typedef {object} MacroIdentity Which macro a value is from.
+ * @property {string} name
+ * @property {string} [category] Its category in the registry (MacroCategory), if it is registered.
  */
 
 /**
