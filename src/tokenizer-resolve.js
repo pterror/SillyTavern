@@ -427,14 +427,16 @@ export async function resolveTokenizer(state, deps = {}) {
     }
 
     const backend = { api, type, url, directories: deps.directories };
-    const props = api === 'textgenerationwebui' && type === TEXTGEN_TYPES.LLAMACPP && deps.llamaCppProps
+    // No URL set: there is no backend to ask, for its model or its tokenizer; the model setting alone picks one.
+    const reachable = Boolean(url);
+    const props = reachable && api === 'textgenerationwebui' && type === TEXTGEN_TYPES.LLAMACPP && deps.llamaCppProps
         ? await deps.llamaCppProps.ask(textgenLlamaCppBackend(url, state.model ?? '', deps.directories))
         : undefined;
     const propsName = state.model ? undefined : llamaCppPropsModelName(props);
-    const model = state.model || (propsName !== undefined ? propsName : await lookupBackendModel(backend));
+    const model = state.model || (propsName !== undefined ? propsName : reachable ? await lookupBackendModel(backend) : null);
     const local = describeMapEntry(await selectModelResult(api, model, state, deps), api, registry);
 
-    if (await hasRemoteTokenizer(backend, TEXTGEN_TOKENIZERS)) {
+    if (reachable && await hasRemoteTokenizer(backend, TEXTGEN_TOKENIZERS)) {
         const id = api === 'kobold' ? tokenizers.API_KOBOLD : tokenizers.API_TEXTGENERATIONWEBUI;
         return { kind: 'remote', id, name: TOKENIZER_NAMES[id], basis: 'remote', localCopy: local };
     }

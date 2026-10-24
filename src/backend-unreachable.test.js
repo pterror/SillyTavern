@@ -15,7 +15,7 @@ const { TEXTGEN_TYPES } = await import('./constants.js');
 const { fetchLlamaCppProps } = await import('./llamacpp-props.js');
 const { lookupBackendModel } = await import('./backend-status.js');
 const { lookupCustomLlamaCppModel } = await import('./custom-llamacpp.js');
-const { encodeWithTokenizer } = await import('./tokenizer-resolve.js');
+const { encodeWithTokenizer, resolveTokenizer } = await import('./tokenizer-resolve.js');
 
 /** @returns {Promise<string>} The URL of a port nothing listens on. */
 function closedPortUrl() {
@@ -66,4 +66,18 @@ test('a llama.cpp that isn\'t running is logged once, in one line, with no stack
     assert.equal(lines.length, 1, `expected one line, got:\n${lines.join('\n')}`);
     assert.match(lines[0], new RegExp(url.replace(/[.:/]/g, '\\$&')));
     assert.match(lines[0], /ECONNREFUSED|isn't running|not running|reach/i);
+});
+
+test('with no URL set nothing is asked and nothing is logged', async () => {
+    const lines = await consoleLinesOf(async () => {
+        assert.equal(await fetchLlamaCppProps({ url: '' }), null);
+        for (const type of [TEXTGEN_TYPES.LLAMACPP, TEXTGEN_TYPES.OOBA]) {
+            assert.equal(await lookupBackendModel({ api: 'textgenerationwebui', type, url: '' }), null);
+        }
+        for (const type of [TEXTGEN_TYPES.LLAMACPP, TEXTGEN_TYPES.OOBA]) {
+            const resolved = await resolveTokenizer({ api: 'textgenerationwebui', type, url: '', model: '' });
+            assert.notEqual(resolved.kind, 'remote');
+        }
+    });
+    assert.deepEqual(lines, []);
 });

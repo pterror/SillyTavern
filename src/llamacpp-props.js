@@ -60,6 +60,8 @@ export function clearLlamaCppPropsMemory() {
  * @returns {Promise<object|null>} The parsed reply; null for a failed request or a reply that isn't a JSON object.
  */
 export async function fetchLlamaCppProps(backend) {
+    // No URL set: there is no backend to ask, which isn't a failure.
+    if (!backend.url) return null;
     let url = `${trimV1(backend.url)}/props`;
     if (backend.model) {
         url += `?model=${encodeURIComponent(backend.model)}`;

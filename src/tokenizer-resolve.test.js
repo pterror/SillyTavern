@@ -455,11 +455,18 @@ await check('OpenRouter and DreamGen resolve through the map like any textgen mo
 
 await check('API_CURRENT on a backend with a remote tokenizer -> remote, no local copy for an unmapped model', async () => {
     const resolved = await resolveTokenizer({
-        api: TEXTGEN, type: TEXTGEN_TYPES.KOBOLDCPP, model: 'unknown-model', tokenizerSetting: tokenizers.API_CURRENT,
+        api: TEXTGEN, type: TEXTGEN_TYPES.KOBOLDCPP, url: 'http://127.0.0.1:5001', model: 'unknown-model', tokenizerSetting: tokenizers.API_CURRENT,
     });
     assert.equal(resolved.kind, 'remote');
     assert.equal(resolved.id, tokenizers.API_TEXTGENERATIONWEBUI);
     assert.equal(resolved.localCopy, null);
+});
+
+await check('a backend with a remote tokenizer but no URL set: no remote, the model setting alone picks one', async () => {
+    const resolved = await resolveTokenizer({
+        api: TEXTGEN, type: TEXTGEN_TYPES.KOBOLDCPP, url: '', model: 'unknown-model', tokenizerSetting: tokenizers.API_CURRENT,
+    });
+    assert.notEqual(resolved.kind, 'remote');
 });
 
 await check('an unrecognized api, or textgen with nothing set -> estimate', async () => {

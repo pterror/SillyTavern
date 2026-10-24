@@ -275,6 +275,8 @@ export function knownModelName(name) {
  * @returns {Promise<string|null>} null when unknown, including a failed lookup
  */
 export async function lookupBackendModel(backend) {
+    // No URL set: there is no backend to ask, which isn't a failure.
+    if (!backend.url) return null;
     try {
         if (backend.api === 'textgenerationwebui') {
             const status = await fetchTextgenStatusFor(backend);
