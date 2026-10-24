@@ -1323,7 +1323,12 @@ function applyChatWidth(type) {
     $('#chat_width_slider_counter').val(power_user.chat_width);
 }
 
+/** @param {string} [type] Which color to apply; every one when left out. */
 function applyThemeColor(type) {
+    if (type === undefined) {
+        for (const picker of themeColorPickers) applyThemeColor(picker.type);
+        return;
+    }
     if (type === 'main') {
         document.documentElement.style.setProperty('--SmartThemeBodyColor', power_user.main_text_color);
         const color = power_user.main_text_color.split('(')[1].split(')')[0].split(',');
