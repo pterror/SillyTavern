@@ -75,7 +75,8 @@ test.describe('saved views pin their first page', () => {
             await new Promise(resolve => waiting.push(resolve));
             await route.continue();
         });
-        await loadApp(page);
+        // Only the splash is waited for: APP_READY waits for the characters, whose query is the one held back.
+        await testSetup.awaitST({ page });
         await openCharacterManagementDrawer(page);
         await expect(page.locator('#character_view_picker .view_picker_name')).toHaveText(`Pinned view ${stamp}`);
         await expect(row(page, avatar)).toBeVisible();

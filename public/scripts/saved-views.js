@@ -11,6 +11,8 @@ let t = (/** @type {TemplateStringsArray} */ strings, /** @type {any[]} */ ...va
 const CURRENT_ID_KEY = 'characterListViewId';
 const CURRENT_NAME_KEY = 'characterListViewName';
 const DRAFT_KEY = 'characterListViewDraft';
+/** The view in use as it was last applied, so a reload shows it before the server is asked. */
+const KEPT_VIEW_KEY = 'characterListViewKept';
 const PAGE_SIZE = 50;
 
 /**
@@ -57,6 +59,10 @@ let appliedView = null;
 let pendingSwitch = null;
 /** Set once the view in use has been read back after the page loaded; until then there is nothing to compare with. */
 let restored = false;
+/** The view applied from browser storage as the page loaded, before the server was asked; null when none was. */
+let keptApplied = /** @type {SavedView|null} */ (null);
+/** The unsaved changes as the page loaded: read before the kept view is applied, which clears them. */
+let draftAtLoad = /** @type {{ id: string|null, view: object } | null} */ (null);
 /** The views read so far, in order, and where the next page starts. @type {SavedView[]} */
 let loaded = [];
 let nextCursor = /** @type {string|null} */ (null);
@@ -165,7 +171,16 @@ function setCurrent(id, name) {
     currentId = id;
     safeSet(CURRENT_ID_KEY, id);
     safeSet(CURRENT_NAME_KEY, id ? name : null);
+    keepCurrentView(name);
     drawPicker(name);
+}
+
+/**
+ * Keeps the saved view in use, as applied, in browser storage, so a reload shows it before the server is asked.
+ * @param {string} [name]
+ */
+function keepCurrentView(name = safeGet(CURRENT_NAME_KEY) ?? '') {
+    safeSet(KEPT_VIEW_KEY, currentId && appliedView ? JSON.stringify({ id: currentId, name, view: appliedView }) : null);
 }
 
 /** @param {string} [name] */
@@ -608,6 +623,7 @@ export async function onSavedViewsChanged() {
     if (appliedView && !deps.sameView(appliedView, saved)) {
         const unchanged = deps.sameView(appliedView, deps.getView());
         appliedView = saved;
+        keepCurrentView(answer.name);
         deps.pinView(answer.id, saved);
         // Unsaved changes stay on screen, now measured against the new version.
         if (unchanged) deps.setView(saved);
@@ -655,8 +671,34 @@ export function initSavedViews({ before, getView, setView, sameView, headers, st
     before.before(picker);
     // A change made through the filter helper is only seen when the list is drawn; keep it if the page goes first.
     window.addEventListener('pagehide', () => refreshSavedViewState());
-    currentId = safeGet(CURRENT_ID_KEY);
     drawPicker();
+}
+
+/**
+ * Shows the view in use as last applied, once the account's storage is read and before the list is first drawn: the
+ * server is asked for it afterwards (restoreCurrentView()), and what changed there follows.
+ */
+export function applyKeptView() {
+    if (!deps) return;
+    currentId = safeGet(CURRENT_ID_KEY);
+    draftAtLoad = readDraft();
+    const kept = readKeptView();
+    if (kept && kept.id === currentId) {
+        keptApplied = kept;
+        applyView(kept);
+    } else {
+        drawPicker();
+    }
+}
+
+/** @returns {SavedView|null} The view kept by `applyView()`. */
+function readKeptView() {
+    try {
+        const kept = JSON.parse(safeGet(KEPT_VIEW_KEY) ?? 'null');
+        return kept && typeof kept.id === 'string' && kept.view && typeof kept.view === 'object' ? kept : null;
+    } catch {
+        return null;
+    }
 }
 
 /**
@@ -665,8 +707,16 @@ export function initSavedViews({ before, getView, setView, sameView, headers, st
  */
 export async function restoreCurrentView() {
     if (!deps) return;
-    // Read before the view is applied: applying it draws a list with no changes, which clears the draft.
-    const draft = readDraft();
+    // Read before the view is applied: applying it draws a list with no changes, which clears the draft. A view kept
+    // in browser storage was applied as the page loaded, so the draft was read then.
+    const draft = keptApplied ? draftAtLoad : readDraft();
+    // The server's copy of the view applied from browser storage: applied again only when it differs.
+    const showing = keptApplied;
+    keptApplied = null;
+    const apply = (/** @type {SavedView} */ saved) => {
+        if (showing && showing.id === saved.id && showing.name === saved.name && deps.sameView(fullView(showing.view), fullView(saved.view))) return;
+        applyView(saved);
+    };
     if (isFolderViewId(currentId)) {
         const folder = await deps.folders.get(currentId.slice(FOLDER_VIEW_PREFIX.length));
         if (folder === undefined) {
@@ -675,7 +725,7 @@ export async function restoreCurrentView() {
         }
         restored = true;
         if (folder === null) setCurrent(null, t`All characters`);
-        else applyView(folderView(folder));
+        else apply(folderView(folder));
     } else if (currentId) {
         const answer = await call('get', { id: currentId });
         if (!answer) {
@@ -684,9 +734,9 @@ export async function restoreCurrentView() {
         }
         restored = true;
         if (answer.notFound) {
-            setCurrent(null, t`All characters`);
+            applyView(null);
         } else {
-            applyView(answer);
+            apply(answer);
         }
     }
     restored = true;
