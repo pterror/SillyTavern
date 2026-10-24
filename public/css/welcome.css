@@ -212,7 +212,8 @@ body.big-avatars .welcomeRecent .recentChatList .recentChat .chatMessageContaine
     font-size: calc(var(--mainFontSize) * 0.95);
 }
 
-.welcomeRecent .recentChatList .recentChat.hidden {
+.welcomeRecent .recentChatList .recentChat.hidden,
+.welcomeRecent .recentChatList .loadOlderChats.hidden {
     display: none;
 }
 

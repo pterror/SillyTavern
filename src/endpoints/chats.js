@@ -2087,12 +2087,15 @@ router.post('/session/fork', async function (request, response) {
  * Upstream's recent chats: the conversations (a bookmark, or a session's where it has no current chat) by their last
  * meaningful activity, the most recent first, one row per compat chat id; first the pinned chats (`pinned`:
  * `{ file_name, avatar | group }`, resolved by name in their character's or group's tree). `max` bounds the unpinned
- * ones.
+ * ones. With `paged`, the answer is `{ chats, next }`: `next` (null at the end) sent back as `before` gives the page
+ * after, which has no pinned chats.
  */
 router.post('/recent', async function (request, response) {
     try {
+        const paged = request.body.paged === true;
+        const before = typeof request.body.before === 'string' && /^\d+$/.test(request.body.before) ? BigInt(request.body.before) : undefined;
         /** @type {{ file_name?: string, avatar?: string, group?: string }[]} */
-        const pinnedChats = Array.isArray(request.body.pinned) ? request.body.pinned : [];
+        const pinnedChats = Array.isArray(request.body.pinned) && before === undefined ? request.body.pinned : [];
         const max = Math.min(RECENT_MAX, Math.max(0, parseInt(request.body.max ?? RECENT_MAX) || 0));
         const withMetadata = !!request.body.metadata;
         const store = await requestStore(request);
@@ -2128,13 +2131,17 @@ router.post('/recent', async function (request, response) {
             const row = (await chatListOf(chat, { withMetadata })).find(r => r.file_id === id);
             if (row) pinned.push(info(row, owner, row.file_id));
         }
-        const recent = await chats.recentConversations({ limit: max, withMetadata });
+        const recent = await chats.recentConversations({ limit: max, withMetadata, ...(before === undefined ? {} : { before }) });
         const rows = [];
         for (const r of recent.rows) {
             const owner = await ownerOf(r.tree);
             if (!owner) continue;
             if (pinned.some(p => p.file_name === `${r.id}.jsonl` && (p.group ?? p.avatar) === (owner.group ?? owner.avatar))) continue;
             rows.push(info(r, owner, r.id));
+        }
+        if (paged) {
+            const last = recent.rows.length ? recent.rows[recent.rows.length - 1] : null;
+            return response.send({ chats: [...pinned, ...rows], next: recent.more && last !== null ? String(last.position) : null });
         }
         return response.send([...pinned, ...rows]);
     } catch (error) {

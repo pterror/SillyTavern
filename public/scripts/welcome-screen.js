@@ -238,6 +238,7 @@ export async function openWelcomeScreen({ force = false, expand = false } = {}) 
     }
 
     const recentChats = await getRecentChats();
+    shownRecentChats = recentChats;
     const chatAfterFetch = getCurrentChatId();
     if (chatAfterFetch !== currentChatId) {
         console.debug('Chat changed while fetching recent chats.');
@@ -305,12 +306,27 @@ function sendWelcomePrompt() {
     addOneMessage(message, { scroll: false });
 }
 
+/** The recent chats the welcome panel shows, oldest last. @type {RecentChat[]} */
+let shownRecentChats = [];
+/** Where the next page of older recent chats starts (`/api/chats/recent`'s `next`); null when there is none. */
+let recentChatsNext = null;
+
+/** Adds the next page of older chats to the welcome panel's recent chats, and draws it again where it is. */
+async function loadOlderRecentChats() {
+    if (recentChatsNext === null) return;
+    const older = await getRecentChats({ before: recentChatsNext });
+    const known = new Set(shownRecentChats.map(c => `${c.avatar}|${c.group}|${c.chat_name}`));
+    shownRecentChats = [...shownRecentChats, ...older.filter(c => !known.has(`${c.avatar}|${c.group}|${c.chat_name}`))];
+    await sendWelcomePanel(shownRecentChats, true, { replace: true });
+}
+
 /**
  * Sends the welcome panel to the chat.
  * @param {RecentChat[]} chats List of recent chats
  * @param {boolean} [expand=false] If true, expands the recent chats section
+ * @param {{ replace?: boolean }} [options] `replace`: draw it again where it is
  */
-async function sendWelcomePanel(chats, expand = false) {
+async function sendWelcomePanel(chats, expand = false, { replace = false } = {}) {
     try {
         const chatElement = document.getElementById('chat');
         const sendTextArea = document.getElementById('send_textarea');
@@ -323,6 +339,8 @@ async function sendWelcomePanel(chats, expand = false) {
             empty: !chats.length,
             version: displayVersion,
             more: chats.some(chat => chat.hidden),
+            older: recentChatsNext !== null,
+            olderHidden: chats.some(chat => chat.hidden),
         };
         const template = await renderTemplateAsync('welcomePanel', templateData);
         const fragment = document.createRange().createContextualFragment(template);
@@ -364,7 +382,7 @@ async function sendWelcomePanel(chats, expand = false) {
                 }
             });
         });
-        const hiddenChats = fragment.querySelectorAll('.recentChat.hidden');
+        const hiddenChats = fragment.querySelectorAll('.recentChat.hidden, .loadOlderChats.hidden');
         fragment.querySelectorAll('button.showMoreChats').forEach((button) => {
             const showRecentChatsTitle = t`Show more recent chats`;
             const hideRecentChatsTitle = t`Show less recent chats`;
@@ -378,6 +396,9 @@ async function sendWelcomePanel(chats, expand = false) {
                 button.classList.toggle('rotated', !rotate);
                 button.setAttribute('title', rotate ? showRecentChatsTitle : hideRecentChatsTitle);
             });
+        });
+        fragment.querySelectorAll('button.loadOlderChats').forEach((button) => {
+            button.addEventListener('click', () => void loadOlderRecentChats());
         });
         fragment.querySelectorAll('button.openTemporaryChat').forEach((button) => {
             button.addEventListener('click', async () => {
@@ -457,7 +478,10 @@ async function sendWelcomePanel(chats, expand = false) {
                 await refreshWelcomeScreen({ flashChat: recentChat });
             });
         });
-        chatElement.append(fragment.firstChild);
+        // Drawn again in place (older chats loaded), else added.
+        const drawn = chatElement.querySelector('.welcomePanel');
+        if (drawn && replace) drawn.replaceWith(fragment.firstChild);
+        else chatElement.append(fragment.firstChild);
         if (expand) {
             chatElement.querySelectorAll('button.showMoreChats').forEach((button) => {
                 if (button instanceof HTMLButtonElement) {
@@ -765,22 +789,30 @@ async function openRecentChatsSettingsPopup() {
  * @property {boolean} hidden Chat will be hidden by default
  * @property {boolean} pinned Indicates if the chat is pinned
  */
-async function getRecentChats() {
+/**
+ * A page of recent chats, the most recent first; the page after it is remembered (`recentChatsNext`).
+ * @param {{ before?: string | null }} [options] `before`: where the page starts (a page's `next`); null for the first
+ * @returns {Promise<RecentChat[]>}
+ */
+async function getRecentChats({ before = null } = {}) {
     const settings = getRecentChatsSettings();
     const response = await fetch('/api/chats/recent', {
         method: 'POST',
         headers: getRequestHeaders(),
-        body: JSON.stringify({ max: settings.maxDisplayed, pinned: PinnedChatsManager.getAll() }),
+        body: JSON.stringify({ max: settings.maxDisplayed, pinned: PinnedChatsManager.getAll(), paged: true, ...(before === null ? {} : { before }) }),
         cache: 'no-cache',
     });
 
     if (!response.ok) {
         console.warn('Failed to fetch recent character chats');
+        recentChatsNext = null;
         return [];
     }
 
+    const answer = await response.json();
+    recentChatsNext = typeof answer?.next === 'string' ? answer.next : null;
     /** @type {RecentChat[]} */
-    const data = await response.json();
+    const data = Array.isArray(answer?.chats) ? answer.chats : [];
 
     if (!Array.isArray(data) || data.length === 0) {
         return [];
@@ -822,7 +854,8 @@ async function getRecentChats() {
         chat.display_name = chat.label ?? chat.char_name;
         chat.char_thumbnail = character ? getThumbnailUrl('avatar', character.avatar) : system_avatar;
         chat.is_group = !!group;
-        chat.hidden = index >= settings.collapsedDisplayed;
+        // A page of older chats comes in shown: the user asked for it.
+        chat.hidden = before === null && index >= settings.collapsedDisplayed;
         chat.avatar = chat.avatar || '';
         chat.group = chat.group || '';
         chat.pinned = PinnedChatsManager.isPinned(chat);
