@@ -62,3 +62,32 @@ test('applying a theme stores its colors and its other settings', async ({ page 
         for (const key of ['theme', 'main_text_color', 'blur_strength']) await awaitPowerUserSettingStored(page, key);
     }
 });
+
+test('stored colors are shown after a reload', async ({ page }) => {
+    await testSetup.awaitST({ page });
+    const before = await page.evaluate(() => {
+        // @ts-ignore
+        return SillyTavern.getContext().powerUserSettings.main_text_color;
+    });
+    const color = 'rgba(12, 34, 56, 1)';
+    await page.evaluate((color) => {
+        // @ts-ignore
+        const { powerUserSettings, saveSettingsDebounced } = SillyTavern.getContext();
+        powerUserSettings.main_text_color = color;
+        saveSettingsDebounced('power_user.main_text_color');
+    }, color);
+    await awaitPowerUserSettingStored(page, 'main_text_color');
+    try {
+        await page.reload();
+        await testSetup.awaitST({ page });
+        expect(await page.evaluate(() => document.documentElement.style.getPropertyValue('--SmartThemeBodyColor'))).toBe(color);
+    } finally {
+        await page.evaluate((color) => {
+            // @ts-ignore
+            const { powerUserSettings, saveSettingsDebounced } = SillyTavern.getContext();
+            powerUserSettings.main_text_color = color;
+            saveSettingsDebounced('power_user.main_text_color');
+        }, before);
+        await awaitPowerUserSettingStored(page, 'main_text_color');
+    }
+});
