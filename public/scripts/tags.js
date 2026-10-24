@@ -6996,6 +6996,19 @@ export function initTags() {
     $(document).on('click', '#rm_button_create', onCharacterCreateClick);
     $(document).on('click', '#rm_button_group_chats', onGroupCreateClick);
     $(document).on('click', '.tag_remove', onTagRemoveClick);
+    // A tag whose name is cut short shows the whole name on hover; a tag with a title of its own keeps that.
+    $(document).on('mouseenter', '.tag', function () {
+        const name = this.querySelector('.tag_name');
+        if (!(name instanceof HTMLElement) || name.classList.length > 1) return;
+        const cut = name.scrollWidth > name.clientWidth;
+        if (cut && !this.hasAttribute('title')) {
+            this.setAttribute('title', name.textContent ?? '');
+            this.dataset.titleFromName = '';
+        } else if (!cut && this.dataset.titleFromName !== undefined) {
+            this.removeAttribute('title');
+            delete this.dataset.titleFromName;
+        }
+    });
     $(document).on('input', '.tag_input', onTagInput);
     $(document).on('click', '.tags_view', function (event) {
         // 1. Prevent the label from toggling the checkbox
