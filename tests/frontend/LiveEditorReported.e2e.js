@@ -8,7 +8,7 @@ import { awaitLoaderGone, testSetup, openInfoTab } from './frontent-test-utils.j
  * at the end.
  * @param {import('@playwright/test').Page} page
  * @param {string} value
- * @param {{ textareaStyle?: string, contentClass?: string, className?: string }} [options]
+ * @param {{ textareaStyle?: string, contentClass?: string, className?: string, placeholder?: string }} [options]
  */
 async function mount(page, value, options = {}) {
     await page.evaluate(async ({ value, options }) => {
@@ -24,6 +24,7 @@ async function mount(page, value, options = {}) {
         textarea.className = options.className ?? '';
         textarea.value = value;
         if (options.textareaStyle) textarea.style.cssText = options.textareaStyle;
+        if (options.placeholder) textarea.placeholder = options.placeholder;
         host.append(textarea);
         document.body.append(host);
         const editor = await registry.mountLiveEditor(textarea, {
@@ -114,8 +115,18 @@ test.describe('live editor: reported problems', () => {
     test('ED5: the cursor has the text box\'s text color', async ({ page }) => {
         await mount(page, 'plain **bold**', { textareaStyle: 'color: rgb(10, 200, 30)' });
         await expect(page.locator('#liveEditorTestHost strong')).toBeVisible();
-        expect(await styleOf(page.locator('#liveEditorTestHost .cm-content'), 'caret-color')).toBe('rgb(10, 200, 30)');
-        expect(await styleOf(page.locator('#liveEditorTestHost strong'), 'caret-color')).toBe('rgb(10, 200, 30)');
+        await expect(page.locator('#liveEditorTestHost .cm-cursor')).toHaveCount(1);
+        expect(await styleOf(page.locator('#liveEditorTestHost .cm-cursor'), 'border-left-color')).toBe('rgb(10, 200, 30)');
+    });
+
+    test('CH28: in an empty field the cursor is on the placeholder\'s line', async ({ page }) => {
+        await mount(page, '', { placeholder: 'Type a message, or /? for help' });
+        const cursor = page.locator('#liveEditorTestHost .cm-cursor');
+        await expect(cursor).toHaveCount(1);
+        const line = await page.locator('#liveEditorTestHost .cm-line').boundingBox();
+        const drawn = await cursor.boundingBox();
+        expect(Math.abs(drawn.y - line.y)).toBeLessThanOrEqual(2);
+        expect(drawn.y + drawn.height).toBeLessThanOrEqual(line.y + line.height + 2);
     });
 
     test('ED9: list items in a rendered block sit without gaps, as in chat', async ({ page }) => {

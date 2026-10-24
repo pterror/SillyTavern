@@ -7,7 +7,7 @@ import { livePaste } from './paste.js';
 import { liveSearch } from './search.js';
 
 const { EditorState, Compartment, Annotation, Prec } = cmState;
-const { EditorView, placeholder: placeholderExtension, keymap } = cmView;
+const { EditorView, placeholder: placeholderExtension, keymap, drawSelection } = cmView;
 const { history, historyKeymap, defaultKeymap, deleteCharForward } = cmCommands;
 
 /**
@@ -196,6 +196,9 @@ export function mountLiveEditor(textarea, options = {}) {
                 history(),
                 keymap.of([{ key: 'Shift-Delete', run: shiftDelete }, ...defaultKeymap, ...historyKeymap]),
                 EditorView.lineWrapping,
+                // The editor draws its cursor where it measures the text (the browser's own lands above a lone
+                // placeholder in Firefox).
+                drawSelection(),
                 EditorView.editorAttributes.of({ class: options.editorClass ? `live-editor ${options.editorClass}` : 'live-editor' }),
                 // First, so listeners on the textarea get every event before the editor's own handlers.
                 Prec.highest(EditorView.domEventHandlers(forwardHandlers)),
@@ -325,7 +328,9 @@ function initialSelection(textarea) {
 function readLook(textarea) {
     const style = getComputedStyle(textarea);
     const read = (/** @type {string[]} */ props) => Object.fromEntries(props.map(p => [p, style.getPropertyValue(p)]));
-    return { editor: read(COPIED_STYLE), content: read(COPIED_CONTENT_STYLE) };
+    const caret = style.getPropertyValue('caret-color');
+    const editor = { ...read(COPIED_STYLE), '--live-caret-color': !caret || caret === 'auto' ? style.getPropertyValue('color') : caret };
+    return { editor, content: read(COPIED_CONTENT_STYLE) };
 }
 
 /**
