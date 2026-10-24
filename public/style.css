@@ -1669,27 +1669,30 @@ textarea.autoSetHeight {
 }
 
 /* The live editor shows a macro as written, then what is sent in its place, which isn't part of the text. */
-.cm-editor.live-editor .macro-source {
+/* Every part of a macro is the macro color, whatever styling (italics, quotes) the text around it gets. */
+.cm-editor.live-editor .macro-source,
+.cm-editor.live-editor .macro-source * {
     color: var(--SmartThemeMacroColor);
 }
 
-.cm-editor.live-editor .macro-value {
+/* What is sent in the macro's place. Led by a word joiner and unbreakable, so no line break comes between the two or
+   inside it (macros.js caps how much of a value it shows). */
+.cm-editor.live-editor .macro-source::after {
+    content: '\2060' attr(data-sent-label) '\00a0' attr(data-sent-value);
+    white-space: nowrap;
     margin-inline-start: 0.3em;
     padding: 0 0.35em;
     border-radius: 0.6em;
     background-color: color-mix(in srgb, var(--SmartThemeMacroColor) 18%, transparent);
     color: var(--SmartThemeMacroColor);
     font-size: 0.85em;
-    user-select: none;
-    white-space: pre-wrap;
+    font-style: normal;
+    font-weight: normal;
+    text-decoration: none;
 }
 
-.cm-editor.live-editor .macro-value::before {
-    content: '\2192\00a0';
-    opacity: 0.7;
-}
-
-.cm-editor.live-editor .macro-value-later {
+.cm-editor.live-editor .macro-source.macro-later::after {
+    content: '\2060' attr(data-sent-label);
     font-style: italic;
     opacity: 0.7;
 }
