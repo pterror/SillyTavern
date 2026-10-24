@@ -16,7 +16,7 @@ import { requestStore, userStore } from '../user-stores.js';
 import { TYPE } from '../library-engine.js';
 import { requestSession } from '../request-session.js';
 import { droppedOf, moveToChatNamed } from '../chat-request.js';
-import { bookmarkCompatId, sessionCompatId } from '../chat-engine.js';
+import { sessionCompatId } from '../chat-engine.js';
 
 export const router = express.Router();
 
@@ -296,7 +296,8 @@ async function groupChats(store, request, tree, acted) {
     let after;
     for (;;) {
         const page = await store.chats.chatList({ tree, session: session.reader().session ?? undefined, after, limit: 500 });
-        chats.push(...page.rows.map(r => (r.bookmark != null ? bookmarkCompatId(r.bookmark) : sessionCompatId(String(r.session), tree))));
+        const ids = await store.chats.bookmarkChatIds(tree, page.rows.flatMap(r => (r.bookmark != null ? [r.bookmark] : [])));
+        chats.push(...page.rows.map(r => (r.bookmark != null ? /** @type {string} */ (ids.get(String(r.bookmark))) : sessionCompatId(String(r.session), tree))));
         if (!page.more || page.rows.length === 0) break;
         after = page.rows[page.rows.length - 1].position;
     }

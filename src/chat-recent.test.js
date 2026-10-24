@@ -8,7 +8,7 @@ import { after, test } from 'node:test';
 
 import { loadEngine } from '../engine/load.js';
 
-const { ChatEngine, bookmarkCompatId, sessionCompatId } = await import('./chat-engine.js');
+const { ChatEngine, sessionCompatId } = await import('./chat-engine.js');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'chat-recent-test-'));
 after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -69,7 +69,8 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         // The next act in it gives the bookmark its row: titled by its label, at the message it follows to.
         const reply = await send(1n, one, 'one-reply');
         const rows = (await chats.recentConversations({ limit: 10 })).rows;
-        assert.deepEqual(rows.map((/** @type {any} */ r) => r.id), [bookmarkCompatId(made.bookmark), s(a, 3n), s(b, 2n)]);
+        // A bookmark's chat id is its label, which no other bookmark of the tree has.
+        assert.deepEqual(rows.map((/** @type {any} */ r) => r.id), ['Mark', s(a, 3n), s(b, 2n)]);
         assert.equal(rows[0].name, 'Mark');
         assert.equal(rows[0].at, reply);
         assert.equal(rows[0].last_mes, 'one-reply');
@@ -79,9 +80,9 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         // Another session using the same bookmark: still one row, moved up by that session's act.
         await chats.setCurrentChat({ tree: 1n, bookmark: String(made.bookmark), actor: b });
         await send(2n, two, 'two-reply', b);
-        assert.deepEqual(await ids({ limit: 10 }), [s(b, 2n), bookmarkCompatId(made.bookmark), s(a, 3n)]);
+        assert.deepEqual(await ids({ limit: 10 }), [s(b, 2n), 'Mark', s(a, 3n)]);
         await send(1n, reply, 'one-again', b);
-        assert.deepEqual(await ids({ limit: 10 }), [bookmarkCompatId(made.bookmark), s(b, 2n), s(a, 3n)]);
+        assert.deepEqual(await ids({ limit: 10 }), ['Mark', s(b, 2n), s(a, 3n)]);
 
         // A deleted bookmark and a deleted session leave the list.
         assert.deepEqual(await chats.changeBookmark({ tree: 1n, bookmark: String(made.bookmark), change: { delete: true } }), { ok: true });

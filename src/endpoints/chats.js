@@ -23,7 +23,7 @@ import { storedMessagesOf } from '../stored-messages.js';
 import { engineStoreHere, requestStore } from '../user-stores.js';
 import { chatContext, chatNamePosition, compatChatIdOf, isOwnChat, labelBaseOf, openChatNamed } from '../chat-request.js';
 import { SESSION_GONE_HEADER } from '../request-session.js';
-import { bookmarkCompatId, loadSync, resolveChatNameSync, sessionCompatId, storedForm, treeOfChatIdSync } from '../chat-engine.js';
+import { loadSync, resolveChatNameSync, sessionCompatId, storedForm, treeOfChatIdSync } from '../chat-engine.js';
 import { TYPE } from '../library-engine.js';
 import { USER_DIRECTORY_TEMPLATE } from '../constants.js';
 
@@ -515,7 +515,8 @@ async function chatListOf(chat, { withMetadata = false } = {}) {
     let after;
     for (;;) {
         const page = await chat.store.chats.chatList({ tree: chat.tree, session: chat.session.reader().session ?? undefined, after, limit: 500, withMetadata });
-        rows.push(...page.rows.map(r => ({ ...r, file_id: r.bookmark != null ? bookmarkCompatId(r.bookmark) : sessionCompatId(String(r.session), chat.tree), label: r.name ?? null })));
+        const ids = await chat.store.chats.bookmarkChatIds(chat.tree, page.rows.flatMap(r => (r.bookmark != null ? [r.bookmark] : [])));
+        rows.push(...page.rows.map(r => ({ ...r, file_id: r.bookmark != null ? /** @type {string} */ (ids.get(String(r.bookmark))) : sessionCompatId(String(r.session), chat.tree), label: r.name ?? null })));
         if (!page.more || page.rows.length === 0) return rows;
         after = page.rows[page.rows.length - 1].position;
     }
@@ -620,7 +621,7 @@ async function saveCompatChat(request, response, chat, name, chatData) {
         return {
             status: 200,
             body: {
-                ok: true, integrity: actor.session, file_name: bookmarkCompatId(/** @type {bigint} */ (imported.bookmark)),
+                ok: true, integrity: actor.session, file_name: await chats.bookmarkChatId(chat.tree, /** @type {bigint} */ (imported.bookmark)),
                 assigned_node_ids: imported.node_ids.map((node_id, index) => ({ index, node_id })),
             },
         };
@@ -634,7 +635,7 @@ async function saveCompatChat(request, response, chat, name, chatData) {
     const at = isOwn ? await chats.landingOf(chat.tree, actor) : await chatNamePosition(chat, name);
     if (at === undefined) return { status: 400, body: { error: 'not_found' } };
     const fileName = isOwn ? await compatChatIdOf(chat)
-        : found !== null && 'bookmark' in found ? bookmarkCompatId(found.bookmark) : sessionCompatId(String(found?.session), chat.tree);
+        : found !== null && 'bookmark' in found ? await chats.bookmarkChatId(chat.tree, found.bookmark) : sessionCompatId(String(found?.session), chat.tree);
 
     if (at === null && isOwn && messages.length > 0) {
         const imported = await chats.importChat({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, name: null, messages, metadata, actor, bookmark: false });
@@ -1040,11 +1041,11 @@ router.post('/bookmark', validateAvatarUrlMiddleware, async function (request, r
         if (!made.ok || made.name === null) return response.status(409).send({ ok: false, reason: made.ok ? 'no name' : made.reason });
         const chats = request.body.group_id ? (await chatListOf(chat)).map(r => r.file_id) : undefined;
         const opened = request.body.open === true
-            ? (await openChatAnswer(request, response, { avatar_url: request.body.avatar_url, group_id: request.body.group_id, chat: bookmarkCompatId(made.bookmark), make_current: true, send_keys: request.body.send_keys })).answer
+            ? (await openChatAnswer(request, response, { avatar_url: request.body.avatar_url, group_id: request.body.group_id, chat: await chat.store.chats.bookmarkChatId(chat.tree, made.bookmark), make_current: true, send_keys: request.body.send_keys })).answer
             : undefined;
         chat.session.answer(response, { moved: !!nodeId });
         // `id` is the bookmark's compat chat id (what upstream code passes back as the chat's name); `label` its label.
-        return response.send({ ok: true, node_id: nodeId, id: bookmarkCompatId(made.bookmark), label: made.name, chats, opened, stored: storedMessagesOf(response) ?? undefined });
+        return response.send({ ok: true, node_id: nodeId, id: await chat.store.chats.bookmarkChatId(chat.tree, made.bookmark), label: made.name, chats, opened, stored: storedMessagesOf(response) ?? undefined });
     } catch (error) {
         console.error('Error bookmarking a message:', error);
         return response.status(500).send({ error: true });
@@ -1109,8 +1110,8 @@ router.post('/rename', validateAvatarUrlMiddleware, async function (request, res
             ? await chats.changeBookmark({ tree: chat.tree, bookmark: String(found.bookmark), change: { name: newName } })
             : await chats.nameSession({ session: found.session, name: newName, actor: chat.session.actor() });
         if (!renamed.ok) return response.status(400).send({ error: true });
-        // A label changes, not the chat: upstream code goes on with the name it is answered, the same compat id.
-        const id = 'bookmark' in found ? bookmarkCompatId(found.bookmark) : 'derived' in found ? sessionCompatId(found.session, chat.tree) : found.session;
+        // Upstream code goes on with the name it is answered: a bookmark's chat id after the rename (its new label).
+        const id = 'bookmark' in found ? await chats.bookmarkChatId(chat.tree, found.bookmark) : 'derived' in found ? sessionCompatId(found.session, chat.tree) : found.session;
         return response.send({ ok: true, sanitizedFileName: id, label: newName });
     } catch (error) {
         console.error('Error renaming chat file:', error);
@@ -1211,7 +1212,7 @@ router.post('/fork', validateAvatarUrlMiddleware, async function (request, respo
         if (!chat) return response.sendStatus(400);
         const made = await chat.store.chats.createBookmark({ tree: chat.tree, node_id: String(node_id), name: String(branch_name), actor: chat.session.actor() });
         if (made.ok) {
-            const id = bookmarkCompatId(made.bookmark);
+            const id = await chat.store.chats.bookmarkChatId(chat.tree, made.bookmark);
             await openChatNamed(chat, id);
             chat.session.answer(response, { moved: true });
             return response.send({ ok: true, id, name: made.name, chat: id, label_base: await labelBaseOf(chat) });
@@ -1683,7 +1684,7 @@ router.post('/export', validateAvatarUrlMiddleware, async function (request, res
  * @param {import('../chat-request.js').ChatContext} chat
  * @param {string} chatText jsonl: a header line, then one message per line.
  * @param {string} name
- * @returns {Promise<string | null>} The bookmark's compat chat id (`b<id>`); null when it couldn't be stored.
+ * @returns {Promise<string | null>} The bookmark's compat chat id (its label, or `b<id>`); null when it couldn't be stored.
  */
 async function importChatText(chat, chatText, name) {
     const lines = chatText.split('\n').map(line => tryParse(line)).filter(x => x);
@@ -1691,7 +1692,7 @@ async function importChatText(chat, chatText, name) {
     const imported = await chat.store.chats.importChat({
         tree: chat.tree, treeSpeaker: chat.treeSpeaker, name, messages: lines, metadata: header?.chat_metadata, actor: chat.session.actor(),
     });
-    return imported.ok ? bookmarkCompatId(imported.bookmark) : null;
+    return imported.ok ? chat.store.chats.bookmarkChatId(chat.tree, /** @type {bigint} */ (imported.bookmark)) : null;
 }
 
 router.post('/group/import', async function (request, response) {
@@ -1951,8 +1952,9 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
         }
         const chat = await chatOf(request);
         if (!chat) return response.send(limit === undefined ? [] : { results: [], cursor: null, exact: true });
-        const row = (/** @type {Record<string, any>} */ r) => {
-            const id = r.bookmark != null ? bookmarkCompatId(r.bookmark) : sessionCompatId(String(r.session), chat.tree);
+        /** @param {Record<string, any>} r @param {Map<string, string>} ids */
+        const row = (r, ids) => {
+            const id = r.bookmark != null ? /** @type {string} */ (ids.get(String(r.bookmark))) : sessionCompatId(String(r.session), chat.tree);
             return {
                 node_id: r.at,
                 file_name: id,
@@ -1963,19 +1965,23 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
                 preview_message: getPreviewMessage(r.last_mes ?? undefined),
             };
         };
+        const rowsOf = async (/** @type {Record<string, any>[]} */ rows) => {
+            const ids = await chat.store.chats.bookmarkChatIds(chat.tree, rows.flatMap(r => (r.bookmark != null ? [r.bookmark] : [])));
+            return rows.map(r => row(r, ids));
+        };
         const search = typeof query === 'string' ? query : '';
         const session = chat.session.reader().session ?? undefined;
         if (limit !== undefined) {
             const after = typeof request.body.cursor === 'string' && /^\d+:\d+$/.test(request.body.cursor) ? request.body.cursor : undefined;
             const scanCursor = typeof request.body.scan_cursor === 'string' && /^m\d+$/.test(request.body.scan_cursor) ? request.body.scan_cursor : undefined;
             const page = await chat.store.chats.searchChatList({ tree: chat.tree, search, session, after, limit, scanCursor });
-            return response.send({ results: page.rows.map(row), cursor: page.more && page.next !== undefined ? page.next : null, scan_cursor: page.scanCursor ?? null, exact: page.exact });
+            return response.send({ results: await rowsOf(page.rows), cursor: page.more && page.next !== undefined ? page.next : null, scan_cursor: page.scanCursor ?? null, exact: page.exact });
         }
         const results = [];
         // An item whose path holds scan matches in two reads comes once.
         const seen = new Set();
-        const add = (/** @type {any[]} */ rows) => {
-            for (const r of rows.map(row)) {
+        const add = async (/** @type {any[]} */ rows) => {
+            for (const r of await rowsOf(rows)) {
                 if (!seen.has(r.file_name)) {
                     seen.add(r.file_name);
                     results.push(r);
@@ -1988,7 +1994,7 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
         let scanCursor;
         for (;;) {
             const page = await chat.store.chats.searchChatList({ tree: chat.tree, search, session, after, limit: SEARCH_PAGE_MAX });
-            add(page.rows);
+            await add(page.rows);
             scanCursor ??= page.scanCursor;
             if (!page.more || page.next === undefined) break;
             after = page.next;
@@ -1996,7 +2002,7 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
         // Upstream's callers get every match: the scan goes on until it has read the owner's messages.
         while (scanCursor !== undefined) {
             const page = await chat.store.chats.searchChatList({ tree: chat.tree, search, session, limit: SEARCH_PAGE_MAX, scanCursor });
-            add(page.rows);
+            await add(page.rows);
             scanCursor = page.scanCursor;
         }
         return response.send(results);
@@ -2118,7 +2124,7 @@ router.post('/recent', async function (request, response) {
             // A pin holds a chat id, or an old chat name (a label, resolved in its own tree while one bookmark has it).
             const found = await chat.store.chats.resolveChatName({ tree: chat.tree, name: chatName(pin.file_name) });
             if (!found) continue;
-            const id = 'bookmark' in found ? bookmarkCompatId(found.bookmark) : sessionCompatId(found.session, chat.tree);
+            const id = 'bookmark' in found ? await chat.store.chats.bookmarkChatId(chat.tree, found.bookmark) : sessionCompatId(found.session, chat.tree);
             const row = (await chatListOf(chat, { withMetadata })).find(r => r.file_id === id);
             if (row) pinned.push(info(row, owner, row.file_id));
         }

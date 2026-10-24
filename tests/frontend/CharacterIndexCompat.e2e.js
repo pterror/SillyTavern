@@ -527,8 +527,8 @@ test.describe('positional character parameters (#1-#8)', () => {
             const index = (await openGroupOf(page, [current, target])).indices[target];
             await expectIndexNames(page, index, target);
 
-            // Naming a chat moves the tab to that bookmark and makes it the current chat, whose compat id (`b<id>`)
-            // the character's `chat` then holds, locally and as stored.
+            // Naming a chat moves the tab to that bookmark and makes it the current chat, whose compat id (its label,
+            // the name the chat was saved under) the character's `chat` then holds, locally and as stored.
             const calls = [[names[0], index], [names[1], Number(index)], [names[2], target]];
             const seen = new Set();
             for (const [newName, ref] of calls) {
@@ -542,7 +542,7 @@ test.describe('positional character parameters (#1-#8)', () => {
                     return { local: context.getCharacterByAvatar(avatar).chat, shown: opened.messages.at(-1)?.mes };
                 }, { ref, newName, avatar: target });
                 expect(shown).toBe(`message in ${newName}`);
-                expect(local).toMatch(/^b\d+$/);
+                expect(local).toBe(newName);
                 expect(seen.has(local)).toBe(false);
                 seen.add(local);
                 expect((await fetchStoredCharacter(page, target)).body.chat).toBe(local);

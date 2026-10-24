@@ -85,7 +85,7 @@ test('recent chats are the conversations by last activity, one row each', async 
         const { forkChat } = await import('/scripts/bookmarks.js');
         return forkChat(1);
     });
-    expect(name).toMatch(/^b\d+$/);
+    expect(name).toMatch(/ - Branch #1$/);
     await page.evaluate(async ({ avatar }) => {
         // @ts-ignore
         const context = SillyTavern.getContext();
