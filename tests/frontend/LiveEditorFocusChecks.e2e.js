@@ -14,12 +14,31 @@ test.describe('focus checks with a live editor mounted', () => {
     });
 
     test('Enter in the chat box\'s editor does what it does in the plain chat box', async ({ page }) => {
+        // The page puts its own editor on the chat box once idle: it is taken off, so the first pass is the plain box.
+        await expect(page.locator('#send_form .cm-editor')).toHaveCount(1, { timeout: 30000 });
+        await page.evaluate(async () => {
+            const { unmountChatEditor } = await import('/scripts/chat-live-editor.js');
+            unmountChatEditor(/** @type {HTMLTextAreaElement} */ (document.getElementById('send_textarea')));
+        });
+        await expect(page.locator('#send_form .cm-editor')).toHaveCount(0);
+        // What a send then does depends on the backend (here none is set up, and a send that can't be stored keeps the
+        // next one back): what Enter does is start one, with the text as typed.
+        await page.evaluate(async () => {
+            const { userInputGenerateMutex } = await import('/script.js');
+            const send = userInputGenerateMutex.callback;
+            window['__sendsStarted'] = [];
+            userInputGenerateMutex.callback = (...args) => {
+                window['__sendsStarted'].push(/** @type {HTMLTextAreaElement} */ (document.getElementById('send_textarea')).value);
+                return send(...args);
+            };
+        });
         const pressEnterAfter = async (/** @type {boolean} */ withEditor) => {
             await page.evaluate(async (withEditor) => {
                 const { power_user } = await import('/scripts/power-user.js');
                 power_user.send_on_enter = 1;
                 const textarea = /** @type {HTMLTextAreaElement} */ (document.getElementById('send_textarea'));
                 textarea.value = '';
+                window['__sendsStarted'] = [];
                 if (withEditor) {
                     const registry = await import('/scripts/live-editor/registry.js');
                     const editor = await registry.mountLiveEditor(textarea, { formatting: false, search: false });
@@ -32,27 +51,19 @@ test.describe('focus checks with a live editor mounted', () => {
             }, withEditor);
             await page.keyboard.type('hello');
             await page.keyboard.press('Enter');
-            // A send (with no chat open, it makes one and tries to generate) has ended before the box is read, so the
-            // next Enter isn't one the app drops while busy.
-            await page.waitForTimeout(300);
-            await expect(page.locator('#send_but')).toBeVisible({ timeout: 30000 });
-            const result = await page.evaluate(() => ({
-                text: /** @type {HTMLTextAreaElement} */ (document.getElementById('send_textarea')).value,
-                // @ts-ignore
-                messages: SillyTavern.getContext().chat.length,
-            }));
+            // The send has ended before the next pass: the button shows all along, so it is the send's own lock.
+            await expect.poll(() => page.evaluate(async () => (await import('/script.js')).userInputGenerateMutex.isBusy), { timeout: 30000 }).toBe(false);
+            const sends = await page.evaluate(() => window['__sendsStarted']);
             await page.evaluate(() => {
                 // @ts-ignore
                 window.liveEditorTest?.editor.destroy();
                 // @ts-ignore
                 window.liveEditorTest = null;
             });
-            return result;
+            return sends;
         };
-        const plain = await pressEnterAfter(false);
-        const edited = await pressEnterAfter(true);
-        expect(edited.text).not.toContain('\n');
-        expect(edited.text).toBe(plain.text);
+        expect(await pressEnterAfter(false)).toEqual(['hello']);
+        expect(await pressEnterAfter(true)).toEqual(['hello']);
     });
 
     test('a message being edited in an editor keeps the chat where it was as it grows', async ({ page }) => {
