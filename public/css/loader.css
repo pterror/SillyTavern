@@ -16,6 +16,24 @@
     opacity: 1;
 }
 
+/* The loading overlay (a transparent popup): the whole screen, as #preloader. */
+.popup.loader_popup {
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
+    width: 100dvw;
+    height: 100dvh;
+    max-width: none;
+    max-height: none;
+    margin: 0;
+    padding: 0;
+    border-radius: 0;
+}
+
+.popup.loader_popup .popup-body {
+    max-height: none;
+}
+
 #load-spinner {
     --spinner-size: 2em;
     transition: all var(--animation-duration-2x) ease-out;

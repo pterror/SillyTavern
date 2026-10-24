@@ -329,9 +329,9 @@ function showOverlay(customContent = null) {
         allowEscapeClose: false,
         transparent: true,
         animation: 'none',
-        wide: true,
-        large: true,
     });
+    // It covers the whole screen, as the preloader it takes over from does.
+    loaderPopup.dlg.classList.add('loader_popup');
 
     // No close button, loaders are not closable
     loaderPopup.closeButton.style.display = 'none';

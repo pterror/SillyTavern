@@ -188,3 +188,90 @@ export async function findCharacterAvatarByName(page, name) {
 export function chatBox(page) {
     return page.locator('#send_form .cm-editor .cm-content').or(page.locator('#send_textarea:not(.live-editor-textarea)'));
 }
+
+/**
+ * With stacked drawers on, the sampled points where a layer shows wrongly: inside its own (rounded) box, it must show
+ * exactly where no layer above it covers it, with that layer's own rounded corners. A point counts as showing when a
+ * click there would land on the layer with every other layer let through. Points within 2px of an edge are skipped.
+ * @param {import('@playwright/test').Page} page
+ * @param {object} [options]
+ * @param {string} [options.layers] The ordered layers, bottom first by when brought forward (the chat lowest)
+ * @param {string} [options.overlays] What sits above every ordered layer, in html order, while shown
+ * @param {number} [options.step] Distance between sampled points
+ * @returns {Promise<string[]>} One line per wrong point, `x,y: layer shows under a cover | cut where uncovered`
+ */
+export function stackMismatches(page, {
+    layers = '#sheld, .drawer-content, #movingDivs > *, body > .draggable',
+    overlays = '',
+    step = 17,
+} = {}) {
+    return page.evaluate(async ({ layers, overlays, step }) => {
+        const { drawerOrder } = await import('/scripts/drawer-stack.js');
+        const shown = (/** @type {HTMLElement} */ el) => getComputedStyle(el).display !== 'none'
+            && getComputedStyle(el).visibility !== 'hidden' && el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0;
+        const ordered = /** @type {HTMLElement[]} */ ([...document.querySelectorAll(layers)]).filter(shown)
+            .sort((a, b) => drawerOrder(a) - drawerOrder(b) || Number(b.id === 'sheld') - Number(a.id === 'sheld'));
+        const all = [...ordered, ...(overlays ? /** @type {HTMLElement[]} */ ([...document.querySelectorAll(overlays)]).filter(shown) : [])];
+        /** Signed distance from the point to the element's rounded border box, negative inside. */
+        const distance = (/** @type {HTMLElement} */ el, x, y) => {
+            const r = el.getBoundingClientRect();
+            const style = getComputedStyle(el);
+            const radius = (/** @type {string} */ value) => Math.min(parseFloat(value) || 0, r.width / 2, r.height / 2);
+            const corners = [
+                [radius(style.borderTopLeftRadius), r.left, r.top, 1, 1],
+                [radius(style.borderTopRightRadius), r.right, r.top, -1, 1],
+                [radius(style.borderBottomRightRadius), r.right, r.bottom, -1, -1],
+                [radius(style.borderBottomLeftRadius), r.left, r.bottom, 1, -1],
+            ];
+            for (const [rad, cx, cy, dx, dy] of corners) {
+                const ox = cx + dx * rad;
+                const oy = cy + dy * rad;
+                if (rad > 0 && (x - ox) * dx < 0 && (y - oy) * dy < 0) return Math.hypot(x - ox, y - oy) - rad;
+            }
+            return Math.max(r.left - x, x - r.right, r.top - y, y - r.bottom);
+        };
+        /**
+         * Whether the layer's clip (an evenodd polygon in its own coordinates, or none) leaves the point: what is
+         * painted, for when hit testing can't tell (a modal dialog makes the rest of the page inert).
+         */
+        const inClip = (/** @type {HTMLElement} */ el, x, y) => {
+            const clip = el.style.clipPath;
+            if (!clip) return true;
+            const r = el.getBoundingClientRect();
+            const points = clip.replace(/^polygon\(evenodd,\s*/, '').replace(/\)$/, '').split(',').map(pair => pair.trim().split(/\s+/)
+                .map((v, axis) => (v.endsWith('%') ? parseFloat(v) / 100 * (axis ? r.height : r.width) : parseFloat(v))));
+            const [px, py] = [x - r.left, y - r.top];
+            let inside = false;
+            for (let a = 0, b = points.length - 1; a < points.length; b = a++) {
+                const [ax, ay] = points[a];
+                const [bx, by] = points[b];
+                if ((ay > py) !== (by > py) && px < (bx - ax) * (py - ay) / (by - ay) + ax) inside = !inside;
+            }
+            return inside;
+        };
+        const modal = document.querySelector('dialog:modal');
+        const inTopLayer = (/** @type {HTMLElement} */ el) => el.matches('dialog, [popover]');
+        const blockers = [...all, document.getElementById('top-bar'), document.getElementById('top-settings-holder')].filter(Boolean);
+        const out = [];
+        for (const [i, layer] of all.entries()) {
+            // A layer inside another is cut with it, so it doesn't cover it; unless it is in the top layer.
+            const above = all.slice(i + 1).filter(other => !other.contains(layer) && (!layer.contains(other) || inTopLayer(other)));
+            const saved = blockers.map(el => el.style.pointerEvents);
+            blockers.forEach(el => { if (el !== layer && !el.contains(layer)) el.style.pointerEvents = 'none'; });
+            layer.style.pointerEvents = 'auto';
+            for (let x = 3; x < innerWidth; x += step) {
+                for (let y = 3; y < innerHeight; y += step) {
+                    const own = distance(layer, x, y);
+                    if (own > -2 || above.some(other => Math.abs(distance(other, x, y)) < 2)) continue;
+                    const covered = above.some(other => distance(other, x, y) < 0);
+                    const shows = modal && !modal.contains(layer)
+                        ? !layer.classList.contains('stackCovered') && inClip(layer, x, y)
+                        : layer.contains(document.elementFromPoint(x, y));
+                    if (shows === covered) out.push(`${x},${y}: ${layer.id || layer.className} ${shows ? 'shows under a cover' : 'cut where uncovered'}`);
+                }
+            }
+            blockers.forEach((el, j) => { el.style.pointerEvents = saved[j]; });
+        }
+        return out;
+    }, { layers, overlays, step });
+}

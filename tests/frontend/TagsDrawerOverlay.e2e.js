@@ -228,11 +228,20 @@ async function rowCutUnderSuggestions(page) {
         if (!clip) {
             return false;
         }
-        // After the outer square, each hole is five points: four corners and back to the first.
+        // After the outer square, each hole (or rounded corner given back) is its points, then back to 0 0. Others can be
+        // there too: whatever else covers character info (a toast).
         const points = clip.replace(/^polygon\(evenodd,\s*/, '').replace(/\)$/, '').split(',').slice(5)
             .map(p => p.trim().split(/\s+/).map(parseFloat));
         const holes = [];
-        for (let k = 0; k + 4 < points.length + 1; k += 5) holes.push([points[k][0], points[k][1], points[k + 2][0], points[k + 2][1]]);
+        let group = [];
+        for (const [x, y] of points) {
+            if (x === 0 && y === 0) {
+                if (group.length >= 4) holes.push([group[0][0], group[0][1], group[2][0], group[2][1]]);
+                group = [];
+            } else {
+                group.push([x, y]);
+            }
+        }
         return holes.some(hole => hole.every((v, n) => Math.abs(v - expected[n]) < 1)) ? true : null;
     });
 }

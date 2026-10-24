@@ -305,7 +305,8 @@ function stackState(page) {
             .sort((a, b) => order(a) - order(b)
                 || Number(b.id === 'sheld') - Number(a.id === 'sheld')
                 || (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1));
-        const lists = [...document.querySelectorAll('.ui-menu, .select2-container--open > .select2-dropdown')].filter(shown);
+        // Above every ordered layer: the dropdown lists, and toasts (their container paints nothing, the toasts do).
+        const lists = [...document.querySelectorAll('.ui-menu, .select2-container--open > .select2-dropdown, #toast-container > .toast')].filter(shown);
         const layers = [...ordered, ...lists];
         const name = el => el.id || String(el.className).split(' ')[0] || el.tagName;
         const cutWrong = [];
@@ -355,7 +356,15 @@ async function expectStackCut(page, step, frontId, alsoVisible = []) {
     const summarize = async () => {
         const stack = await stackState(page);
         const { visible } = await drawerOverlapState(page);
-        const frontCut = await page.locator(`#${frontId}`).evaluate(el => el.dataset.stackCut === 'true' || !el.checkVisibility({ visibilityProperty: true }));
+        // Cut by a layer, not by an overlay over it (a toast): whether each cut is where something covers it is cutWrong's.
+        const frontCut = await page.locator(`#${frontId}`).evaluate(el => {
+            if (!el.checkVisibility({ visibilityProperty: true })) return true;
+            const box = el.getBoundingClientRect();
+            const overlaid = [...document.querySelectorAll('.ui-menu, .select2-container--open > .select2-dropdown, #toast-container > .toast')]
+                .map(o => o.getBoundingClientRect())
+                .some(o => o.width > 0 && o.left < box.right && o.right > box.left && o.top < box.bottom && o.bottom > box.top);
+            return el.dataset.stackCut === 'true' && !overlaid;
+        });
         return {
             frontmost: stack.frontmost,
             frontCut,

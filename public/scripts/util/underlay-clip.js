@@ -3,7 +3,13 @@
  * is one source; an element covered by several sources gets all their holes at once.
  */
 
-/** @typedef {{top: number, right: number, bottom: number, left: number}} Rect */
+/**
+ * A box; `radii` rounds its corners (top left, top right, bottom right, bottom left), each [horizontal, vertical].
+ * @typedef {{top: number, right: number, bottom: number, left: number, radii?: [number, number][]}} Rect
+ */
+
+/** Straight segments drawn for each rounded corner. */
+const ARC_STEPS = 8;
 
 /** @type {Map<HTMLElement, Map<string, Rect | Rect[]>>} element -> source -> holes, in the element's own coordinates */
 const holes = new Map();
@@ -39,6 +45,35 @@ function disjointRects(rects) {
     return out;
 }
 
+/**
+ * The parts of the holes' rounded corners that stay uncut: between each corner of a hole's box and its arc, as
+ * polygons from the corner along the arc. A corner whose square reaches another hole stays square: there the shape's
+ * corner isn't the hole's own.
+ * @param {Rect[]} rects
+ * @returns {number[][][]} Each polygon's points, [x, y]
+ */
+function roundedCorners(rects) {
+    const out = [];
+    for (const r of rects) {
+        if (!r.radii) continue;
+        const corners = [[r.left, r.top, 1, 1], [r.right, r.top, -1, 1], [r.right, r.bottom, -1, -1], [r.left, r.bottom, 1, -1]];
+        for (const [i, [x, y, dx, dy]] of corners.entries()) {
+            const [rx, ry] = r.radii[i];
+            if (!(rx > 0 && ry > 0)) continue;
+            const square = { left: Math.min(x, x + dx * rx), right: Math.max(x, x + dx * rx), top: Math.min(y, y + dy * ry), bottom: Math.max(y, y + dy * ry) };
+            const touches = rects.some(o => o !== r && o.left < square.right && o.right > square.left && o.top < square.bottom && o.bottom > square.top);
+            if (touches) continue;
+            const points = [[x, y]];
+            for (let step = 0; step <= ARC_STEPS; step++) {
+                const angle = step / ARC_STEPS * Math.PI / 2;
+                points.push([x + dx * rx * (1 - Math.cos(angle)), y + dy * ry * (1 - Math.sin(angle))]);
+            }
+            out.push(points);
+        }
+    }
+    return out;
+}
+
 /** @param {HTMLElement} el */
 function apply(el) {
     const own = holes.get(el);
@@ -54,8 +89,12 @@ function apply(el) {
     // Each hole is reached from the corner and the path goes back to it along the same line, so the links between
     // holes enclose no area. Going straight from one hole to the next would draw diagonal edges, and evenodd would
     // cut the triangles between them.
-    const cut = disjointRects(rects)
-        .map(r => `${r.left}px ${r.top}px, ${r.right}px ${r.top}px, ${r.right}px ${r.bottom}px, ${r.left}px ${r.bottom}px, ${r.left}px ${r.top}px, 0 0`)
+    // A rounded corner lies inside exactly one hole, so drawing it again uncuts it.
+    const cut = [
+        ...disjointRects(rects).map(r => [[r.left, r.top], [r.right, r.top], [r.right, r.bottom], [r.left, r.bottom]]),
+        ...roundedCorners(rects),
+    ]
+        .map(points => [...points, points[0]].map(([x, y]) => `${x}px ${y}px`).join(', ') + ', 0 0')
         .join(', ');
     const clipPath = `polygon(evenodd, 0 0, 100% 0, 100% 100%, 0 100%, 0 0, ${cut})`;
     // Rewriting an unchanged value would still wake observers of the style attribute.
