@@ -274,6 +274,8 @@ export function refreshCharacterListCurrentPage() {
 // Set by refreshCharacterListCurrentPage() for the re-render it starts: that render keeps the list's scroll
 // distance as it is then, instead of printCharacters()'s afterRender restoring the one saved when it built the pager.
 let keepScrollOnNextRender = false;
+/** @type {'top' | 'bottom' | number | null} Where a page turn the user made leaves the list scrolled. */
+let pageTurnScroll = null;
 
 // Page fetches of the characters list still running: printCharacters()'s page-1 probe through to the pager it
 // builds, and every pager ajaxFunction call. pagination.js drops a refresh while its own fetch runs, so the list
@@ -482,10 +484,30 @@ export async function printCharacters(fullRefresh = false) {
             accountStorage.setItem(storageKey, e.target.value);
             paginationDropdownChangeHandler(e, size);
         },
+        // A page turned: the next page from the list's bottom starts at its top, the previous one from the top at
+        // its bottom; otherwise the list keeps where it was scrolled when the page was turned.
+        beforePaging: function (/** @type {number} */ pageNumber) {
+            const list = $(listId).get(0);
+            if (!list) return;
+            const atTop = list.scrollTop <= 1;
+            const atBottom = list.scrollTop + list.clientHeight >= list.scrollHeight - 1;
+            const current = saveCharactersPage || 1;
+            pageTurnScroll = pageNumber > current && atBottom ? 'top'
+                : pageNumber < current && atTop ? 'bottom'
+                    : list.scrollTop;
+        },
         afterPaging: function (e) {
             saveCharactersPage = e;
         },
         afterRender: function () {
+            if (pageTurnScroll !== null) {
+                const list = $(listId).get(0);
+                const to = pageTurnScroll === 'top' ? 0 : pageTurnScroll === 'bottom' ? (list?.scrollHeight ?? 0) : pageTurnScroll;
+                pageTurnScroll = null;
+                keepScrollOnNextRender = false;
+                $(listId).scrollTop(to);
+                return;
+            }
             if (keepScrollOnNextRender) {
                 keepScrollOnNextRender = false;
                 return;
