@@ -6,8 +6,8 @@ import { getMacroAutoCompleteAt } from '../autocomplete/MacroAutoCompleteHelper.
 import { shouldActivateMacroAutocomplete, MACRO_AUTOCOMPLETE_MODE } from '../autocomplete/MacroAutoComplete.js';
 import { t } from '../i18n.js';
 
-const { Facet } = cmState;
-const { Decoration, WidgetType, ViewPlugin } = cmView;
+const { Facet, Prec } = cmState;
+const { Decoration, ViewPlugin } = cmView;
 const { autocompletion } = cmAutocomplete;
 
 /**
@@ -20,32 +20,28 @@ const macroOptions = Facet.define({
     combine: values => values[0] ?? { evaluate: () => null },
 });
 
-class MacroValueWidget extends WidgetType {
-    /**
-     * @param {string | null} value The macro's value, or null when it only runs when sent.
-     */
-    constructor(value) {
-        super();
-        this.value = value;
-    }
+// The most of a value the badge shows; the title has all of it.
+const SHOWN_VALUE_LENGTH = 24;
 
-    /** @param {MacroValueWidget} other */
-    eq(other) {
-        return other.value === this.value;
+/**
+ * The mark a macro is drawn with. What is sent in its place is drawn by the mark's own span (CSS generated content
+ * from these attributes), not by a widget: it is no position in the text, and it never breaks across lines or away
+ * from the macro, so a click on it lands on the macro, on the line it is drawn on.
+ * @param {string | null} value The macro's value, or null when it only runs when sent.
+ */
+function macroMark(value) {
+    if (value === null) {
+        return Decoration.mark({
+            class: 'macro-source macro-later',
+            attributes: { 'data-sent-label': t`filled in when sent`, title: t`This macro is filled in when the message is sent.` },
+        });
     }
-
-    toDOM() {
-        const span = document.createElement('span');
-        span.className = this.value === null ? 'macro-value macro-value-later' : 'macro-value';
-        span.textContent = this.value === null ? t`filled in when sent` : this.value;
-        span.title = this.value === null ? t`This macro is filled in when the message is sent.` : t`Sent as this`;
-        span.setAttribute('aria-hidden', 'true');
-        return span;
-    }
-
-    ignoreEvent() {
-        return false;
-    }
+    const flat = value.replace(/\s+/g, ' ');
+    const shown = flat.length > SHOWN_VALUE_LENGTH ? `${flat.slice(0, SHOWN_VALUE_LENGTH - 1)}…` : flat;
+    return Decoration.mark({
+        class: 'macro-source',
+        attributes: { 'data-sent-label': t`sent as`, 'data-sent-value': shown, title: t`Sent as: ${value}` },
+    });
 }
 
 /**
@@ -90,8 +86,7 @@ const macroValues = ViewPlugin.fromClass(class {
                 } catch (error) {
                     console.warn('Macro could not be filled in', text, error);
                 }
-                ranges.push(Decoration.mark({ class: 'macro-source' }).range(from, to));
-                ranges.push(Decoration.widget({ widget: new MacroValueWidget(value), side: 1 }).range(to));
+                ranges.push(macroMark(value).range(from, to));
             }
         }
         return Decoration.set(ranges, true);
@@ -157,7 +152,9 @@ async function macroCompletions(context) {
 export function liveMacros(options) {
     return [
         macroOptions.of(options),
-        macroValues,
+        // Highest, so a macro's span wraps the styling inside it rather than being cut into pieces by it: its value is
+        // drawn once, after the whole macro.
+        Prec.highest(macroValues),
         // No delay before Enter takes a suggestion, as with the app's own suggestion lists.
         autocompletion({ override: [macroCompletions], icons: false, closeOnBlur: true, interactionDelay: 0 }),
     ];

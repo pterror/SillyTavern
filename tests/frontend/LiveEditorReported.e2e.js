@@ -123,6 +123,8 @@ test.describe('live editor: reported problems', () => {
         await mount(page, '', { placeholder: 'Type a message, or /? for help' });
         const cursor = page.locator('#liveEditorTestHost .cm-cursor');
         await expect(cursor).toHaveCount(1);
+        // Read in the blink's shown half: hidden, it has no box.
+        await expect(cursor).toBeVisible();
         const line = await page.locator('#liveEditorTestHost .cm-line').boundingBox();
         const drawn = await cursor.boundingBox();
         expect(Math.abs(drawn.y - line.y)).toBeLessThanOrEqual(2);
@@ -246,7 +248,6 @@ test.describe('live editor: reported problems', () => {
     test('ED20: every macro shows its value and is highlighted the same, in code and HTML too, as in the preview', async ({ page }) => {
         await mount(page, 'a {{char}} `{{char}}` <b>{{char}}</b>\n\n<div>{{char}}</div>\n\n```\n{{char}}\n```\n\nend');
         const sources = page.locator('#liveEditorTestHost .cm-line .macro-source');
-        const filled = page.locator('#liveEditorTestHost .cm-line .macro-value');
         // Wherever the cursor is, every macro shows as written with its value beside it.
         for (const line of [1, 3, 9, 6]) {
             await page.evaluate((line) => {
@@ -255,12 +256,11 @@ test.describe('live editor: reported problems', () => {
                 view.dispatch({ selection: { anchor: view.state.doc.line(line).from } });
             }, line);
             await expect(sources).toHaveCount(5);
-            await expect(filled).toHaveCount(5);
-            await expect(filled.first()).toHaveText('Testchar');
+            for (const source of await sources.all()) await expect(source).toHaveAttribute('data-sent-value', 'Testchar');
         }
         const macroColor = await probeStyle(page, '<div class="macro_preview_content"><span class="macro-substituted">x</span></div>', 'span', 'color');
         expect(await styleOf(sources.first(), 'color')).toBe(macroColor);
-        expect(await styleOf(filled.first(), 'color')).toBe(macroColor);
+        expect(await sources.first().evaluate(el => getComputedStyle(el, '::after').color)).toBe(macroColor);
     });
 
     test('ED21: the macro suggestions have the look of the app\'s own suggestion list', async ({ page }) => {
