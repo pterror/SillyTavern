@@ -101,3 +101,31 @@ test('recent chats are the conversations by last activity, one row each', async 
     expect(rows.map((/** @type {any} */ r) => r.file_name)).toContain(`${name}.jsonl`);
     expect(rows.filter((/** @type {any} */ r) => r.file_name === `${name}.jsonl`)).toHaveLength(1);
 });
+
+test('past the most recent ones, older chats load a page at a time, in order', async ({ page }) => {
+    await testSetup.awaitST({ page });
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const avatars = [];
+    for (let i = 0; i < 5; i++) {
+        const avatar = await createCharacter(page, `Older${i}-${stamp}`);
+        avatars.push(avatar);
+        await speak(page, avatar, `said ${i}`);
+    }
+    await page.evaluate(async () => {
+        const { accountStorage } = await import('/scripts/util/AccountStorage.js');
+        accountStorage.setItem('recentChatsSettings', JSON.stringify({ maxDisplayed: 2, collapsedDisplayed: 1 }));
+        await (await import('/script.js')).closeCurrentChat();
+    });
+    const names = () => page.locator('#chat .welcomePanel .recentChat:not(.hidden)').evaluateAll(els => els.map(el => el.getAttribute('data-avatar')));
+    const older = page.locator('#chat .welcomePanel button.loadOlderChats');
+    await expect(page.locator('#chat .welcomePanel .recentChat')).toHaveCount(2, { timeout: 15000 });
+    await expect(older).toBeHidden();
+    await page.locator('#chat .welcomePanel button.showMoreChats').click();
+    await expect(older).toBeVisible();
+    expect(await names()).toEqual([avatars[4], avatars[3]]);
+
+    await older.click();
+    await expect.poll(names).toEqual([avatars[4], avatars[3], avatars[2], avatars[1]]);
+    await older.click();
+    await expect.poll(async () => (await names()).slice(0, 5)).toEqual([avatars[4], avatars[3], avatars[2], avatars[1], avatars[0]]);
+});

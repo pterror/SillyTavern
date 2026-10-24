@@ -91,6 +91,12 @@
             </div>
             {{/with}}
         {{/each}}
+        {{#if older}}
+            <button class="menu_button menu_button_icon loadOlderChats {{#if olderHidden}}hidden{{/if}}" title="Load older chats" data-i18n="[title]Load older chats">
+                <small class="fa-solid fa-clock-rotate-left fa-fw"></small>
+                <small data-i18n="Older chats">Older chats</small>
+            </button>
+        {{/if}}
         {{#if more}}
             <button class="menu_button menu_button_icon showMoreChats">
                 <small class="fa-solid fa-chevron-down fa-fw fa-1x"></small>
