@@ -7,8 +7,9 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
 }
 
 // A sent message the server didn't store stays on screen marked as not saved, with a notice that doesn't
-// fade, and is kept (also across a reload, where it was) until it is saved again or discarded. A retry
-// carries the send's key, so a send the server had stored after all isn't stored twice.
+// fade, and is kept (also across a reload, where it was) until it is saved again or discarded. One the generate
+// request didn't store is stored by the page itself first; only one that can't be stored that way either is not
+// saved. Each store carries the send's key, so a send the server had stored after all isn't stored twice.
 
 const MODEL = 'failed-send-model';
 const REPLY = 'Aye, at dawn.';
@@ -124,8 +125,9 @@ test.describe('a send the server did not store', () => {
         await openCharacter(page, avatar);
         await connectLlamaCpp(page, mock.url);
 
-        // The generate request never reaches the server.
+        // Neither the generate request nor the page's own store of the message reaches the server.
         await page.route('**/api/backends/text-completions/generate', route => route.abort('connectionreset'));
+        await page.route('**/api/chats/message/append', route => route.abort('connectionreset'));
         const text = `When do we leave ${stamp}?`;
         await chatBox(page).fill(text);
         await page.locator('#send_but').click();
@@ -135,6 +137,7 @@ test.describe('a send the server did not store', () => {
         await expect(page.locator('#chat .mes.failed_send .mes_text')).toContainText(text);
         // A new send is refused until it is saved or discarded.
         await page.unroute('**/api/backends/text-completions/generate');
+        await page.unroute('**/api/chats/message/append');
         await chatBox(page).fill('And then?');
         await page.locator('#send_but').click();
         await expect(page.locator('.toast-error', { hasText: 'isn\'t saved yet' })).toBeVisible();
@@ -158,7 +161,7 @@ test.describe('a send the server did not store', () => {
         await expect(page.locator('#chat .mes.failed_send')).toHaveCount(0);
     });
 
-    test('stored after all, its retry lands on the stored message', async ({ page }) => {
+    test('stored after all, the page\'s own store of it lands on the stored message: no notice, the message once', async ({ page }) => {
         await testSetup.awaitST({ page });
         const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
         const avatar = await createCharacter(page, `FailedSendStored-${stamp}`);
@@ -171,14 +174,16 @@ test.describe('a send the server did not store', () => {
             await route.abort('connectionreset');
         });
         const text = `Stored after all ${stamp}`;
+        const appended = page.waitForResponse(response => new URL(response.url()).pathname === '/api/chats/message/append');
         await chatBox(page).fill(text);
         await page.locator('#send_but').click();
-        await expect(notice(page, 'Message not saved')).toBeVisible({ timeout: 15000 });
+        expect((await appended).ok()).toBe(true);
         await page.unroute('**/api/backends/text-completions/generate');
-
-        await notice(page, 'Message not saved').getByRole('button', { name: 'Save it again' }).click();
+        await expect(page.locator('#chat .mes.failed_send')).toHaveCount(0);
         await expect(notice(page, 'Message not saved')).toHaveCount(0);
-        // The chat is read again: the message once, with the reply the server stored after it.
+
+        // The chat as stored: the message once, with the reply the server stored after it.
+        await reopen(page, avatar);
         await expect.poll(async () => (await chatState(page)).map(m => m.mes)).toEqual(['Hello.', text, REPLY]);
     });
 
@@ -234,11 +239,13 @@ test.describe('a send the server did not store', () => {
         await connectLlamaCpp(page, mock.url);
 
         await page.route('**/api/backends/text-completions/generate', route => route.abort('connectionreset'));
+        await page.route('**/api/chats/message/append', route => route.abort('connectionreset'));
         const text = `Late message ${stamp}`;
         await chatBox(page).fill(text);
         await page.locator('#send_but').click();
         await expect(notice(page, 'Message not saved')).toBeVisible({ timeout: 15000 });
         await page.unroute('**/api/backends/text-completions/generate');
+        await page.unroute('**/api/chats/message/append');
 
         // Meanwhile someone else adds a message after the greeting.
         const greetingNode = await page.evaluate(async (avatar) => {
