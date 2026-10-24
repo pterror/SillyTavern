@@ -287,6 +287,28 @@ describe('an editor field', () => {
         expect(readFieldDraft(field.storage, content)).toBeNull();
     });
 
+    test('the commit sent after one on its way has what the field held when asked, though it reads empty by then', async () => {
+        const { field, binding, typeText } = makeField();
+        /** @type {() => void} */
+        let release = () => {};
+        const gate = new Promise(resolve => { release = () => resolve(undefined); });
+        const commit = field.commit.getMockImplementation();
+        field.commit.mockImplementationOnce(async (text) => {
+            await gate;
+            return commit?.(text);
+        });
+        await typeText('first');
+        const first = binding.handle({ type: 'blur' });
+        await typeText('second');
+        const second = binding.handle({ type: 'blur' });
+        // The field is taken down before the second commit goes (its options removed, a box emptied).
+        field.value = '';
+        release();
+        await Promise.all([first, second]);
+        expect(field.commit.mock.calls.map(call => call[0])).toEqual(['first', 'second']);
+        expect(field.stored).toBe('second');
+    });
+
     test('a failed commit stays a draft and is sent again at the next commit point', async () => {
         const { field, binding, typeText } = makeField();
         field.fail = true;

@@ -275,8 +275,9 @@ export function fieldEventAction(type, event) {
  */
 
 /**
- * Binds one field to its draft: typing keeps the draft, a commit point sends it as one action. Two commit points
- * while one commit is on its way send one more commit after it, with what the field holds then.
+ * Binds one field to its draft: typing keeps the draft, a commit point sends it as one action. Commit points while one
+ * commit is on its way send one more commit after it, with what the field held at the last of them (not what it holds
+ * when that commit goes: by then the field may be taken down, and read empty).
  * @param {object} options
  * @param {DraftStorage} options.storage
  * @param {DraftRef|null} options.ref
@@ -293,16 +294,20 @@ export function bindFieldDraft({ storage, ref, type, stored, read, show, commit,
     let conflict = null;
     /** @type {Promise<boolean>|null} */
     let inFlight = null;
-    let again = false;
+    /** What the field held at the last commit point while a commit was on its way; null when there was none. */
+    let again = /** @type {string|null} */ (null);
 
-    /** @returns {Promise<boolean>} */
-    async function commitNow() {
+    /**
+     * @param {string} [held] What the field held when this commit was asked for; read now when not given.
+     * @returns {Promise<boolean>}
+     */
+    async function commitNow(held) {
         if (conflict) return false;
         if (inFlight) {
-            again = true;
+            again = held ?? read();
             return inFlight;
         }
-        const text = read();
+        const text = held ?? read();
         const base = stored();
         if (text === base) {
             if (readFieldDraft(storage, ref)?.text === text) clearFieldDraft(storage, ref);
@@ -317,9 +322,10 @@ export function bindFieldDraft({ storage, ref, type, stored, read, show, commit,
             inFlight = null;
             changed();
         }
-        if (again) {
-            again = false;
-            return commitNow();
+        if (again !== null) {
+            const next = again;
+            again = null;
+            return commitNow(next);
         }
         return confirmed;
     }

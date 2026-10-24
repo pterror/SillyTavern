@@ -248,6 +248,7 @@ test.describe('tag names are looked up on the server', () => {
     test('a lorebook entry\'s character filter finds a tag the page doesn\'t hold, and shows its name when opened again', async ({ page }) => {
         const stamp = `${Date.now()}`;
         const worldName = `TagNamesWI_${stamp}`;
+        page.on('console', m => { if (m.text().startsWith('PROBE')) console.log(m.text().slice(0, 500)); });
         await createUnheldTags(page, [{ id: `lore-${stamp}`, name: `Lore Tag ${stamp}` }]);
 
         await page.evaluate(async (worldName) => {
@@ -267,9 +268,16 @@ test.describe('tag names are looked up on the server', () => {
             }, worldName);
             const entryRow = page.locator('#world_popup_entries_list .world_entry').first();
             await entryRow.waitFor({ state: 'attached', timeout: 10000 });
-            await entryRow.evaluate(row => $(row).find('.inline-drawer-toggle').first().trigger('click'));
-            const filter = entryRow.locator('select[name="characterFilter"]');
-            await filter.waitFor({ state: 'attached' });
+            // Opened only when closed (opening its book again needn't draw it again, and a click would close it), and
+            // again if the book is drawn again meanwhile: until it is open with its character filter's box drawn.
+            await expect(async () => {
+                const open = await entryRow.evaluate(row => {
+                    if (!$(row).find('.inline-drawer-content').first().is(':visible')) $(row).find('.inline-drawer-toggle').first().trigger('click');
+                    return $(row).find('.inline-drawer-content').first().is(':visible');
+                });
+                expect(open).toBe(true);
+                await expect(entryRow.locator('select[name="characterFilter"] + .select2-container')).toBeVisible({ timeout: 1000 });
+            }).toPass({ timeout: 10000 });
             return entryRow;
         };
 
@@ -285,10 +293,19 @@ test.describe('tag names are looked up on the server', () => {
 
             // Picking it from the search didn't make the page hold it.
             expect(await page.evaluate(async id => (await import('/scripts/tags.js')).tagsStore.getAll().some(tag => tag.id === id), `lore-${stamp}`)).toBe(false);
+            console.log('PROBE ---- reopen');
             const again = await openEntry();
             const choices = again.locator('select[name="characterFilter"] + .select2-container .select2-selection__choice');
             await expect(choices).toHaveCount(1);
             await expect(choices).toContainText(`[Tag] Lore Tag ${stamp}`);
+            // Drawing the book again (its old entry taken down) commits nothing: the stored filter keeps the tag.
+            await page.waitForTimeout(500);
+            const stored = await page.evaluate(async (worldName) => {
+                // @ts-ignore
+                const response = await fetch('/api/worldinfo/get', { method: 'POST', headers: SillyTavern.getContext().getRequestHeaders(), body: JSON.stringify({ name: worldName }) });
+                return Object.values((await response.json()).entries).map((/** @type {any} */ e) => e.characterFilter?.tags ?? []);
+            }, worldName);
+            expect(stored).toEqual([[`lore-${stamp}`]]);
         } finally {
             await page.evaluate(async (worldName) => {
                 const { deleteWorldInfo } = await import('./scripts/world-info.js');
