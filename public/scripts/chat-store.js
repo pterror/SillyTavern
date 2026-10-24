@@ -667,19 +667,6 @@ async function _takeStateFrom(answer) {
     takeServerState(answer.chat_metadata);
 }
 
-/**
- * Whether a given slot on a message is a blank nobody has typed into yet.
- * @param {ChatMessage|null|undefined} message
- * @param {number} at
- * @returns {boolean}
- */
-export function _isBlankSlot(message, at) {
-    if (!Array.isArray(message?.swipes)) return false;
-    if (typeof message.swipes[at] !== 'string' || message.swipes[at].length > 0) return false;
-    const nodeId = message.swipe_info?.[at]?.node_id;
-    return nodeId == null || nodeId === '';
-}
-
 // Named actions for writes a chat can make — prefer these over _saveTreeChat's snapshot-diff guessing.
 
 /** @typedef {Error & {status: number}} HttpError */
@@ -890,6 +877,61 @@ export async function chatOpEdit(mesId) {
     // A character's opening edited to a card greeting's text is that greeting now: the card-only one is dropped.
     if (mesId === 0 && (selected_group == null || selected_group === '')) await _mergeCardGreetingsIntoOpening();
     return true;
+}
+
+/**
+ * Whether the message shows a slot no node is stored for: the one an overswipe opens for a new alternative (or a
+ * reply that wasn't stored). The message names no node then, nor does its slot.
+ * @param {ChatMessage|null|undefined} message
+ * @returns {boolean}
+ */
+export function isComposedSlot(message) {
+    if (!message || !Array.isArray(message.swipes) || message.node_id != null) return false;
+    const slotNode = message.swipe_info?.[message.swipe_id ?? 0]?.node_id;
+    return slotNode == null || slotNode === '';
+}
+
+/**
+ * Stores the alternative written into a slot no node is stored for (isComposedSlot()) and moves the chat onto it:
+ * after the stored message before it, or as an opening of its own. Nothing is stored for an empty one.
+ * @param {number} mesId
+ * @returns {Promise<string|null>} Its node id; null when nothing was stored.
+ */
+export async function chatOpStoreComposed(mesId) {
+    const msg = _chatAt(mesId);
+    if (!isComposedSlot(msg) || typeof msg.mes !== 'string' || msg.mes.length === 0) return null;
+
+    /** @type {string|null} */
+    let nodeId = null;
+    if (mesId === 0) {
+        // An opening follows nothing: it is stored as a card greeting is when first changed, and the chat moves onto it.
+        updateMessage(0, { node_id: provisionalNodeId(msg.name, msg.mes) });
+        nodeId = await ensureOpeningRow(0);
+        if (nodeId === null) updateMessage(0, { node_id: undefined });
+    } else {
+        /** @type {string|null} */
+        let after = null;
+        for (let i = mesId - 1; i >= 0; i--) {
+            if (isProvisionalNodeId(_chatAt(i)?.node_id)) await ensureOpeningRow(i);
+            const id = _chatAt(i)?.node_id;
+            if (isStoredNodeId(id)) { after = id; break; }
+        }
+        if (after === null) return null;
+        // No send key: the alternative swiped from may carry one, and this is not that message.
+        const result = await _chatOpPost('/api/chats/message/append', { after_node_id: after, messages: [_messageContent(msg)], send_keys: [null] });
+        nodeId = result.node_ids?.[0] ?? null;
+        if (isStoredNodeId(nodeId)) updateMessage(mesId, { node_id: nodeId });
+    }
+    if (!isStoredNodeId(nodeId)) return null;
+
+    const stored = /** @type {ChatMessage} */ (_chatAt(mesId));
+    const at = stored.swipe_id ?? 0;
+    const swipeInfo = [...(stored.swipe_info ?? [])];
+    swipeInfo[at] = { ...(swipeInfo[at] ?? {}), node_id: nodeId };
+    updateMessage(mesId, { swipe_info: swipeInfo });
+    _markMessageSaved(mesId, nodeId);
+    if (mesId === 0 && (selected_group == null || selected_group === '')) await _mergeCardGreetingsIntoOpening();
+    return nodeId;
 }
 
 // Batches edits across messages into a single request instead of N round trips that could end up

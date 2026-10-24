@@ -318,16 +318,6 @@ function _showStoredReplyText(mes, extra) {
     if (updated) updateMessageBlock(mesId, updated);
 }
 
-// Overswiping opens an empty slot to type into; nothing exists for it yet, so there is nothing to save, and
-// trying anyway means asking the server to blank the row the message still names, which it refuses.
-/** @param {ChatMessage} message */
-export function _isBlankUnwrittenSwipe(message) {
-    if (!Array.isArray(message.swipes)) return false;
-    const at = message.swipe_id ?? 0;
-    if (typeof message.swipes[at] !== 'string' || message.swipes[at].length > 0) return false;
-    return !isStoredNodeId(message.swipe_info?.[at]?.node_id);
-}
-
 // Extracted from StreamingProcessor.onFinishStreaming() (script.js), which still runs the rest of that
 // method (finalizeIntermediaryMessage(), the auto-swipe check, playMessageSound()) - this is just its
 // save/persist decision, so the DOM-coupled class can stay in script.js while this invariant-critical
