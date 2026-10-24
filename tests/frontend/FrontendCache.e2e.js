@@ -40,12 +40,13 @@ async function loadAndRecord(page) {
     await page.waitForTimeout(3000);
     await session.detach();
 
-    // User data (avatars, backgrounds, thumbnails) and API calls aren't frontend files. `img/five.png` is the
-    // system avatar: an upstream export written as-is into messages and the DOM, so it keeps revalidating.
+    // User data (avatars, backgrounds, thumbnails) and API calls aren't frontend files. `img/five.png` (the system
+    // avatar) and `img/ai4.png` (`default_avatar`, a character's with none) are upstream exports written as-is into
+    // messages and the DOM, so they keep revalidating.
     const userData = /^\/(?:api|characters|backgrounds|thumbnail|User%20Avatars|user)(?:\/|$)/;
     const frontend = [...seen.values()].filter(({ url }) => {
         const { pathname } = new URL(url);
-        return url.startsWith('http') && !userData.test(pathname) && !['/csrf-token', '/version', '/img/five.png'].includes(pathname);
+        return url.startsWith('http') && !userData.test(pathname) && !['/csrf-token', '/version', '/img/five.png', '/img/ai4.png'].includes(pathname);
     });
     return {
         network: frontend.filter(entry => !entry.cached).map(entry => new URL(entry.url).pathname + new URL(entry.url).search),
