@@ -8,6 +8,18 @@ import { addLongPressEvent, clamp, copyText, timestampToMoment } from './utils.j
 import { deleteSwipe, ensureSwipes, hydrateSwipes, isMessageSwipeable, isSwipingAllowed, swipe, syncMesToSwipe } from '/script.js';
 import { chat } from '/scripts/chat-state.js';
 
+/** Swipes shown at once; the rest are a page away. */
+const SWIPES_PER_PAGE = 50;
+
+/**
+ * @param {string} query What was typed in the picker's search
+ * @returns {(text: string) => boolean} Whether a swipe's text has every word of it, in any case.
+ */
+function swipeMatcher(query) {
+    const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+    return text => words.every(word => text.toLowerCase().includes(word));
+}
+
 /**
  * Returns whether a swipe picker can be opened for the message.
  * Unlike message swiping, this supports historical AI messages for inspection and branching.
@@ -75,11 +87,49 @@ async function openSwipePicker(messageId) {
     description.classList.add('margin0', 'justifyLeft');
     description.textContent = t`Swipe Selection`;
     header.appendChild(description);
+
+    const searchInput = document.createElement('input');
+    searchInput.type = 'search';
+    searchInput.classList.add('text_pole', 'swipe_picker_search', 'flex1', 'margin0');
+    searchInput.placeholder = t`Search swipes`;
+    searchInput.setAttribute('data-i18n', '[placeholder]Search swipes');
+    header.appendChild(searchInput);
     wrapper.appendChild(header);
 
     const listContainer = document.createElement('div');
     listContainer.classList.add('swipe_picker_div', 'flex1', 'marginTop10');
     wrapper.appendChild(listContainer);
+
+    const pager = document.createElement('div');
+    pager.classList.add('swipe_picker_pager', 'flex-container', 'alignItemsCenter', 'justifyCenter', 'gap10px', 'marginTop10');
+    const previousPage = document.createElement('div');
+    previousPage.classList.add('menu_button', 'fa-solid', 'fa-chevron-left', 'swipe_picker_previous');
+    previousPage.title = t`Previous page`;
+    previousPage.setAttribute('data-i18n', '[title]Previous page');
+    const pageLabel = document.createElement('span');
+    pageLabel.classList.add('swipe_picker_page');
+    const nextPage = document.createElement('div');
+    nextPage.classList.add('menu_button', 'fa-solid', 'fa-chevron-right', 'swipe_picker_next');
+    nextPage.title = t`Next page`;
+    nextPage.setAttribute('data-i18n', '[title]Next page');
+    pager.append(previousPage, pageLabel, nextPage);
+    wrapper.appendChild(pager);
+
+    /** What the search asks for, and which page of the swipes it leaves is shown. */
+    let query = '';
+    let page = 0;
+
+    /** @returns {number[]} The swipes the search leaves, in order. */
+    function shownSwipeIds() {
+        const matches = swipeMatcher(query);
+        return message.swipes.map((swipe, index) => index).filter(index => matches(String(message.swipes[index] ?? '')));
+    }
+
+    /** @param {number} swipeId @returns {number} The page a swipe is on, among those the search leaves; -1 if left out. */
+    function pageOf(swipeId) {
+        const index = shownSwipeIds().indexOf(swipeId);
+        return index === -1 ? -1 : Math.floor(index / SWIPES_PER_PAGE);
+    }
 
     /** @type {Popup} */
     let popup;
@@ -132,8 +182,17 @@ async function openSwipePicker(messageId) {
     async function renderSwipeList() {
         // Deleting a swipe replaces the message too, and this re-runs afterwards.
         message = chat[messageId];
-        const swipeBlocks = await Promise.all(message.swipes.map(async (swipe, index) => {
-            const swipeText = String(swipe ?? '');
+        const shown = shownSwipeIds();
+        const pages = Math.max(1, Math.ceil(shown.length / SWIPES_PER_PAGE));
+        page = clamp(page, 0, pages - 1);
+        // The swipe Go jumps to is always one in view: the first the search leaves if it hides the selected one.
+        if (shown.length && !shown.includes(selectedSwipeId)) selectedSwipeId = shown[page * SWIPES_PER_PAGE];
+        pager.style.display = pages > 1 ? '' : 'none';
+        pageLabel.textContent = t`Page ${page + 1} of ${pages}`;
+        previousPage.classList.toggle('disabled', page === 0);
+        nextPage.classList.toggle('disabled', page === pages - 1);
+        const swipeBlocks = await Promise.all(shown.slice(page * SWIPES_PER_PAGE, (page + 1) * SWIPES_PER_PAGE).map(async (index) => {
+            const swipeText = String(message.swipes[index] ?? '');
             const template = $('#past_chat_template .select_chat_block_wrapper').clone();
             const block = template.find('.select_chat_block');
             block.removeClass('select_chat_block').addClass('swipe_picker_block');
@@ -274,10 +333,43 @@ async function openSwipePicker(messageId) {
         if (swipeBlocks.length === 0) {
             const empty = document.createElement('div');
             empty.classList.add('textAlignCenter', 'opacity50p', 'padding10');
-            empty.textContent = t`No swipes available.`;
+            empty.textContent = query ? t`No swipe has that text.` : t`No swipes available.`;
             listContainer.replaceChildren(empty);
         }
     }
+
+    /**
+     * Shows a swipe selected: on its page, with the search cleared if it hides it.
+     * @param {number} swipeId
+     */
+    async function showSwipe(swipeId) {
+        if (pageOf(swipeId) === -1) {
+            query = '';
+            searchInput.value = '';
+        }
+        selectedSwipeId = swipeId;
+        page = pageOf(swipeId);
+        await renderSwipeList();
+        scrollToSelectedSwipe();
+    }
+
+    searchInput.addEventListener('input', async () => {
+        query = searchInput.value;
+        page = 0;
+        await renderSwipeList();
+        listContainer.scrollTop = 0;
+    });
+    previousPage.addEventListener('click', async () => {
+        if (page === 0) return;
+        page--;
+        await renderSwipeList();
+        listContainer.scrollTop = 0;
+    });
+    nextPage.addEventListener('click', async () => {
+        page++;
+        await renderSwipeList();
+        listContainer.scrollTop = 0;
+    });
 
     popup = new Popup(wrapper, POPUP_TYPE.CONFIRM, '', {
         okButton: canJumpToSwipe ? t`Go` : false,
@@ -358,8 +450,7 @@ async function openSwipePicker(messageId) {
                 return;
             }
 
-            setSelectedSwipe(nextSwipeId - 1);
-            scrollToSelectedSwipe();
+            void showSwipe(nextSwipeId - 1);
         });
 
         swipeIdInput.addEventListener('blur', function () {
@@ -367,6 +458,7 @@ async function openSwipePicker(messageId) {
         });
     }
 
+    page = pageOf(selectedSwipeId);
     await renderSwipeList();
 
     const popupResult = await popup.show();
