@@ -14,13 +14,13 @@ import { chat, chat_metadata } from './chat-state.js';
 import { charactersStore, this_avatar } from './character-store.js';
 import {
     _restoreContinuation, chatOpAddAlternativeBeside, chatOpAppendAfter, chatOpBookmarkNode, chatOpCutNamed, chatOpDeleteAlternativeNode,
-    chatOpEdit, chatOpGraft, chatOpPatch, chatOpReadyAlternativeDelete, chatOpSelect, ensureOpeningRow, storeRefOf, updateMessage,
+    chatOpEdit, chatOpGraft, chatOpPatch, chatOpReadyAlternativeDelete, chatOpSelect, contentOf, ensureOpeningRow, extraOf, patchOf,
+    storeRefOf, updateMessage,
 } from './chat-store.js';
 import { isFailedSend } from './failed-sends.js';
 import { _messageSnapshots, markStoredAs, replyInFlightIndex, streamingProcessor } from './generation.js';
 import { editGroup, groupsStore, selected_group } from './group-chats.js';
 import { t } from './i18n.js';
-import { ITEMIZED_PROMPT_FLAG } from './itemized-prompts.js';
 import { saveMetadata } from './metadata-store.js';
 import { isProvisionalNodeId, isStoredNodeId, provisionalNodeId } from './node-identity.js';
 import { saveTokenCache } from './tokenizers.js';
@@ -33,8 +33,6 @@ export let isChatSaving = false;
 /** @type {ReturnType<typeof setTimeout>|null} */
 let chatSaveTimeout = null;
 
-/** Extra fields reads derive, never stored as a message's own. */
-const DERIVED_EXTRA = ['branches', 'bookmark_link', ITEMIZED_PROMPT_FLAG, 'token_count'];
 /** An alternative's own fields upstream keeps in its `swipe_info` entry, besides its text and `extra`. */
 const SLOT_FIELDS = ['send_date', 'gen_started', 'gen_finished'];
 /** Chat metadata keys the server derives: a named save never states them. */
@@ -50,28 +48,6 @@ function warnNotSaved(notSaved, title) {
     toastr.warning(notSaved.map(x => escapeHtml(x)).join('<br>'), title, { escapeHtml: false, timeOut: 15000, preventDuplicates: true });
 }
 
-/**
- * @param {unknown} extra
- * @returns {Record<string, unknown>}
- */
-function extraOf(extra) {
-    const own = extra && typeof extra === 'object' && !Array.isArray(extra) ? { ...extra } : {};
-    for (const key of DERIVED_EXTRA) delete own[key];
-    return own;
-}
-
-/**
- * A message's own fields, as stored for the alternative it shows: without its id, its swipes and what reads derive.
- * @param {ChatMessage} message
- * @returns {Record<string, any>}
- */
-function contentOf(message) {
-    /** @type {Record<string, any>} */
-    const content = { ...message };
-    for (const key of ['node_id', 'swipes', 'swipe_id', 'swipe_info', 'swipe_speaker_default']) delete content[key];
-    if ('extra' in content) content.extra = extraOf(content.extra);
-    return JSON.parse(JSON.stringify(content));
-}
 
 /**
  * The alternative at slot `k` of a message other than the one it shows, as upstream keeps it: its text, and its
@@ -116,24 +92,6 @@ function newAlternativeOf(message, k) {
     return { ...content, ...slotOf(message, k) };
 }
 
-/**
- * What differs from `before` in `now`: the fields to set and those to unset; null when nothing does.
- * @param {Record<string, any>} before
- * @param {Record<string, any>} now
- * @returns {{ patch: Record<string, any>, unset: string[] } | null}
- */
-function patchOf(before, now) {
-    /** @type {Record<string, any>} */
-    const patch = {};
-    /** @type {string[]} */
-    const unset = [];
-    for (const key of new Set([...Object.keys(before), ...Object.keys(now)])) {
-        if (JSON.stringify(before[key]) === JSON.stringify(now[key])) continue;
-        if (now[key] === undefined) unset.push(key);
-        else patch[key] = now[key];
-    }
-    return Object.keys(patch).length > 0 || unset.length > 0 ? { patch, unset } : null;
-}
 
 /**
  * @param {ChatMessage} message
