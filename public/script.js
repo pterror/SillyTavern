@@ -12247,8 +12247,6 @@ export async function swipe(event, direction, { source, repeated, message = chat
     // Reassigned after loadFromSwipeId() below, which can redraw the DOM out from under mesId.
     let thisMesDiv = chatElement.children('.mes').filter(`[mesid="${mesId}"]`);
     let thisMesText = thisMesDiv.find('.mes_block .mes_text');
-    const thisMesDivHeight = thisMesDiv[0]?.scrollHeight;
-    const thisMesTextHeight = thisMesText[0]?.scrollHeight;
     if (![thisMesDiv.length, thisMesText.length].every(num => num > 0)) {
         console.error(`Message #${mesId}'s DOM element is not valid.`);
         return;
@@ -12538,34 +12536,11 @@ export async function swipe(event, direction, { source, repeated, message = chat
         return chatElement.scrollTop() + overflow;
     }
 
-    function expandNewMessage(thisMesDiv) {
-        //Only scroll if the view is not near the bottom.
-        const is_animation_scroll = (chatElement.scrollTop() >= (chatElement.prop('scrollHeight') - chatElement.outerHeight()) - 10);
-
-        let new_height = thisMesDivHeight - (thisMesTextHeight - thisMesText[0].scrollHeight);
-        if (new_height < 103) new_height = 103;
-
-        //Keep the swipe buttons at the same height when scrolling is finished.
-
-        /** @param {number|null} target */
-        const applyScrollPin = target => {
-            if (is_animation_scroll && target !== null) chatElement.scrollTop(target);
-        };
-
-        // thisMesDiv only drives the height tween; the scroll pin is a separate, always-live concern (getMessageBottomHeight()).
-        //Expand new message.
-        thisMesDiv.animate({ height: new_height + 'px' }, {
-            duration: 0, //used to be 100 //Disabled on Cohee's request. https://github.com/SillyTavern/SillyTavern/pull/4610/files#r2408731744
-            queue: false,
-            progress: function (animation, progress, remainingMs) {
-                applyScrollPin(getMessageBottomHeight());
-            },
-            complete: function () {
-                thisMesDiv.css('height', 'auto');
-                //Correct height auto offset.
-                applyScrollPin(getMessageBottomHeight());
-            },
-        });
+    /**
+     * @returns {boolean} Whether the chat is scrolled to its end.
+     */
+    function isChatAtBottom() {
+        return chatElement.scrollTop() >= (chatElement.prop('scrollHeight') - chatElement.outerHeight()) - 10;
     }
 
     /**
@@ -12579,6 +12554,8 @@ export async function swipe(event, direction, { source, repeated, message = chat
             await animateSwipeTransition(mesId, { xEnd: `${swipeRange}px`, duration: swipeDuration });
         }
 
+        // Read before the new alternative is drawn: a chat at its end stays at it, keeping the swipe buttons in place.
+        const wasAtBottom = isChatAtBottom();
 
         if (run_generate) {
             await updateSwipeCounter(mesId);
@@ -12592,15 +12569,14 @@ export async function swipe(event, direction, { source, repeated, message = chat
             //console.log('showing previously generated swipe candidate, or "..."');
             //console.log('onclick right swipe calling addOneMessage');
 
-            // Scrolling here raced with expandNewMessage()'s own scroll pin, causing a visible double-jump; expandNewMessage() is now the single source of truth for scroll position during a swipe.
             //The swipe buttons will be refreshed in endSwipe(), refreshing them now will cause flickering.
             addOneMessage(chat[mesId], { type: 'swipe', forceId: mesId, scroll: false, showSwipes: false });
             await redrawSwipedContinuation();
         }
 
-        //Animate expanding to the new message height.
-        thisMesDiv.css('height', thisMesDivHeight);
-        expandNewMessage(thisMesDiv);
+        // The one place a swipe sets the scroll position, from the layout just drawn.
+        const pinned = wasAtBottom ? getMessageBottomHeight() : null;
+        if (pinned !== null) chatElement.scrollTop(pinned);
 
         if (run_generate) {
             appendMediaToMessage(chat[mesId], thisMesDiv);
