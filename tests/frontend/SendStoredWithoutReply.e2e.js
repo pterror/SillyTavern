@@ -1,12 +1,11 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, chatBox } from './frontent-test-utils.js';
 
-// A message sent when no reply can be made (here Horde, with no model to generate with: the request carrying the
-// message never goes out) is stored all the same, as upstream keeps it: it is there after a reload, once, and the
+// A message sent when no reply can be made (here Horde with no model chosen, as the seed has it: the request carrying
+// the message never goes out) is stored all the same, as upstream keeps it: it is there after a reload, once, and the
 // page doesn't say it couldn't be saved.
 
 test('a message sent with no model to reply is stored, once', async ({ page }) => {
-    await page.route(/aihorde\.net/, route => route.abort());
     await testSetup.awaitST({ page });
     // Tests on this data root before may have picked another API.
     if (!(await page.locator('#main_api').isVisible())) await page.locator('#API-status-top').click();
