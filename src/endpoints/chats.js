@@ -580,11 +580,12 @@ export function compatChatEdits(messages) {
 
 /**
  * Stores a whole chat array (upstream's `/save` and `/group/save`, and `trySaveChat()`) at the chat `name` names, as
- * node-addressed changes only: the messages and alternatives it names by id are edited where they differ
- * (`compatChatEdits()`), and its header's `chat_metadata` is the state at the chat's last message (keys and variables
- * it lacks removed), as upstream's save replaces the file. Nothing else is guessed: what has no id or names one
- * ambiguously is answered in `not_saved`, and a message of the chat the array leaves out is not deleted (answered in
- * `not_deleted`). A chat that holds nothing yet takes the array whole, as upstream writes a new file: a name naming
+ * node-addressed changes: the messages and alternatives it names by id are edited where they differ
+ * (`compatChatEdits()`), a message with no id is stored where the array has it (`placeNewMessages()`), and its
+ * header's `chat_metadata` is the state at the chat's last message (keys and variables it lacks removed), as
+ * upstream's save replaces the file. What names an id ambiguously, an alternative with no id, or a message with no
+ * stored message before it is answered in `not_saved`; a message of the chat the array leaves out is not deleted
+ * (answered in `not_deleted`). A chat that holds nothing yet takes the array whole, as upstream writes a new file: a name naming
  * nothing (or any name with `unique`) is a new chat labelled so, the request's session put at its end (not moved
  * with `unique`: a branch made beside the chat); the request's own conversation, empty, is stored and the session put
  * at its end. No name: the request's own conversation. A header
@@ -650,12 +651,16 @@ async function saveCompatChat(request, response, chat, name, chatData) {
         };
     }
 
-    const { edits, notSaved } = compatChatEdits(messages);
+    const { edits, notSaved: refusedEdits } = compatChatEdits(messages);
     if (edits.length) {
         const result = await chats.editMessages({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, edits: edits.map(e => e.edit), actor });
         const where = new Map(edits.map(e => [e.edit.node_id, e.where]));
-        for (const r of result.refused) notSaved.push({ ...(where.get(r.node_id) ?? { index: -1 }), reason: r.reason });
+        for (const r of result.refused) refusedEdits.push({ ...(where.get(r.node_id) ?? { index: -1 }), reason: r.reason });
     }
+    // A message with no id goes where the array has it: after the stored message before it, appended when nothing
+    // stored follows, grafted before the stored message after it otherwise (as the page's own save places them).
+    const placed = await placeNewMessages(chat, messages, actor);
+    const notSaved = [...refusedEdits.filter(n => n.swipe !== undefined || n.reason !== 'no id'), ...placed.notSaved];
     const sent = new Set();
     for (const m of messages) {
         if (m?.node_id != null) sent.add(String(m.node_id));
@@ -672,7 +677,7 @@ async function saveCompatChat(request, response, chat, name, chatData) {
     const sentVariables = metadata.variables && typeof metadata.variables === 'object' && !Array.isArray(metadata.variables) ? metadata.variables : null;
     const variables = { unset: sentVariables ? had.filter(v => !Object.hasOwn(sentVariables, v)) : [] };
     await chats.mergeMetadata({ tree: chat.tree, at, set: metadata, unset, variables, actor });
-    chat.session.answer(response);
+    chat.session.answer(response, { moved: placed.moved });
 
     if (notSaved.length) console.warn(`[chats/save] A save of "${name}" left out what it names by no id or ambiguously:`, JSON.stringify(notSaved));
     if (notDeleted.length) console.warn(`[chats/save] A save of "${name}" leaves out messages of the chat, which aren't deleted:`, JSON.stringify(notDeleted));
@@ -684,6 +689,54 @@ async function saveCompatChat(request, response, chat, name, chatData) {
             ...(notDeleted.length ? { not_deleted: notDeleted } : {}),
         },
     };
+}
+
+/**
+ * Stores the messages of a whole chat array that have no id, each run of them where the array has it: after the
+ * message before the run (which must name a stored message), appended when no message with an id follows the run,
+ * grafted one by one before the one that does otherwise. A run with no message before it can't be placed.
+ * @param {import('../chat-request.js').ChatContext} chat
+ * @param {any[]} messages The array's messages (without its header).
+ * @param {object} actor
+ * @returns {Promise<{ moved: boolean, notSaved: { index: number, reason: string }[] }>}
+ */
+async function placeNewMessages(chat, messages, actor) {
+    const { chats } = chat.store;
+    const idOf = (/** @type {any} */ m) => (m && typeof m === 'object' && m.node_id !== null && m.node_id !== undefined && m.node_id !== '' ? String(m.node_id) : null);
+    /** @type {{ index: number, reason: string }[]} */
+    const notSaved = [];
+    let moved = false;
+    for (let i = 0; i < messages.length;) {
+        if (idOf(messages[i]) !== null || !messages[i] || typeof messages[i] !== 'object') {
+            i++;
+            continue;
+        }
+        let end = i;
+        while (end < messages.length && idOf(messages[end]) === null && messages[end] && typeof messages[end] === 'object') end++;
+        const run = messages.slice(i, end);
+        const after = i > 0 ? idOf(messages[i - 1]) : null;
+        const before = end < messages.length ? idOf(messages[end]) : null;
+        const refuse = (/** @type {string} */ reason) => run.forEach((_, k) => notSaved.push({ index: i + k, reason }));
+        if (after === null) {
+            refuse('no stored message before it');
+        } else if (before === null) {
+            const added = await chats.appendMessages({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, after, contents: run.map(storedForm), actor });
+            if (added.ok) moved = true;
+            else refuse(added.reason ?? 'not stored');
+        } else {
+            let anchor = after;
+            for (const [k, m] of run.entries()) {
+                const grafted = await chats.graftMessage({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, after: anchor, before, content: storedForm(m), actor });
+                if (!grafted.ok) {
+                    run.slice(k).forEach((_, j) => notSaved.push({ index: i + k + j, reason: grafted.reason ?? 'not stored' }));
+                    break;
+                }
+                anchor = grafted.node_id;
+            }
+        }
+        i = end;
+    }
+    return { moved, notSaved };
 }
 
 /**
