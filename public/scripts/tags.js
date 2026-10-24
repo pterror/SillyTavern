@@ -1016,6 +1016,14 @@ function exposedTagKeys() {
     ];
 }
 
+/**
+ * Sends what an extension changed in the exported `tags` and `tag_map` now, rather than when the queued check runs:
+ * before something reads the server's copy over the page's (a characters sync), so the change counts as this tab's.
+ */
+export function takeInExtensionTagWrites() {
+    takeInTagExportWrites();
+}
+
 function takeInTagExportWrites() {
     tagExportTakeInQueued = false;
     takeInTagsExportWrites();

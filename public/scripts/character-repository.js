@@ -814,7 +814,7 @@ export class CharacterRepository {
 
         for (const hr of hashRows) {
             const entry = cachedEntries.get(hr.id);
-            if (entry && hr.version !== null && entry.hashes.version === hr.version) {
+            if (entry && hr.version !== null && entry.hashes.version === hr.version && entry.hashes.tagIds === hr.tagIdsHash) {
                 result.set(hr.id, { avatar: hr.id, ...projectCachedCharacter(entry.character), ...liveFieldsFromHashRow(hr), shallow: true });
             } else {
                 staleRows.push(hr);
@@ -832,7 +832,7 @@ export class CharacterRepository {
                 const merged = { ...partial, ...liveFieldsFromHashRow(hr), avatar: hr.id, shallow: true };
                 result.set(hr.id, merged);
                 // Fetched after the version was read, so it is at least that version: a later change moves the version on.
-                if (hr.version !== null) toCache.push({ avatar: hr.id, character: merged, version: hr.version });
+                if (hr.version !== null) toCache.push({ avatar: hr.id, character: merged, version: hr.version, tagIds: hr.tagIdsHash });
             }
             if (toCache.length > 0) {
                 await saveCachedCharacters(toCache);

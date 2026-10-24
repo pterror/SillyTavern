@@ -1463,10 +1463,13 @@ export class LibraryEngine {
         // A group deleted between the two reads is gone, as one deleted before the first.
         const entities = pageEntities.filter(e => e.type !== TYPE.group || groupOf.has(e.id));
         const groupTags = new Map((await this.tagKeys(groups)).map((t, i) => [groups[i].id, t]));
+        // A character's version doesn't move when its tags do: its tags' digest goes with its rows too.
+        const pageCharacters = entities.filter(e => e.type !== TYPE.group);
+        const characterTags = wantHashes ? new Map((await this.tagKeys(pageCharacters)).map((t, i) => [pageCharacters[i].id, t])) : new Map();
         const stats = await this.chatStats(entities.map(e => e.id));
         const statsOf = (/** @type {bigint} */ id) => stats.get(id) ?? { date_last_chat: 0, chat_size: 0 };
         if (wantHashes) {
-            const hashRows = entities.map(e => this.hashRow(groupOf.get(e.id) ?? e, groupTags.get(e.id) ?? [], statsOf(e.id)));
+            const hashRows = entities.map(e => this.hashRow(groupOf.get(e.id) ?? e, groupTags.get(e.id) ?? characterTags.get(e.id) ?? [], statsOf(e.id)));
             return { ...out, rows: undefined, hashRows, ...(await hiddenOf(hashRows.length)) };
         }
         if (!wantRows) return { ...out, rows: undefined, hashRows: undefined, ...(await hiddenOf(0)) };
@@ -1489,7 +1492,7 @@ export class LibraryEngine {
      * A hash-mode row: a character's cache key is its version, the position of its latest record; a group's are
      * the digests of what `groups()` answers for it.
      * @param {StoredEntity} e
-     * @param {string[]} tagKeys A group's tag keys.
+     * @param {string[]} tagKeys The tag keys the character or group carries.
      * @param {{ date_last_chat: number, chat_size: number }} stats
      */
     hashRow(e, tagKeys, stats) {
@@ -1513,6 +1516,9 @@ export class LibraryEngine {
             row.favHash = groupDigestFavHash(group) >>> 0;
             row.tagIdsHash = groupDigestTagIdsHash(group) >>> 0;
             row.contentHash = groupDigestContentHash(group) >>> 0;
+        } else {
+            // Its version doesn't change with its tags, so a copy kept at the same version has to match these too.
+            row.tagIdsHash = groupDigestTagIdsHash({ tag_ids: tagKeys }) >>> 0;
         }
         return row;
     }
