@@ -1,3 +1,5 @@
+import { expect } from '@playwright/test';
+
 export const testSetup = {
     /**
      * Navigates to the home page without waiting for SillyTavern to load.
@@ -80,6 +82,23 @@ export async function openInfoTab(page, tab) {
 }
 
 /**
+ * Waits until the server holds the page's value of a `power_user` setting. Not a save request: a change and its
+ * undoing within one save's debounce window send nothing, the server having the value already.
+ * @param {import('@playwright/test').Page} page
+ * @param {string} key The setting's key in `power_user`
+ */
+export async function awaitPowerUserSettingStored(page, key) {
+    await expect.poll(() => page.evaluate(async (key) => {
+        // @ts-ignore
+        const context = SillyTavern.getContext();
+        const response = await fetch('/api/settings/get', { method: 'POST', headers: context.getRequestHeaders(), body: '{}' });
+        const { settings } = await response.json();
+        const stored = (typeof settings === 'string' ? JSON.parse(settings) : settings)?.power_user?.[key];
+        return JSON.stringify(stored) === JSON.stringify(context.powerUserSettings[key]);
+    }, key), { timeout: 15000 }).toBe(true);
+}
+
+/**
  * Turns the Stacked Drawers setting on or off through its checkbox (styled out of view in the closed User Settings
  * drawer) and waits until the change is applied and saved, so it survives a reload.
  * @param {import('@playwright/test').Page} page
@@ -88,11 +107,8 @@ export async function openInfoTab(page, tab) {
 export async function setStackedDrawers(page, on) {
     const checkbox = page.locator('#stackedDrawers');
     if (await checkbox.isChecked() === on) return;
-    const saved = page.waitForResponse(response => response.url().endsWith('/api/settings/save-partial')
-        && response.ok()
-        && (response.request().postData() ?? '').includes('stacked_drawers'));
     await checkbox.evaluate(el => el.click());
-    await saved;
+    await awaitPowerUserSettingStored(page, 'stacked_drawers');
     await page.waitForFunction(expected => document.body.classList.contains('stackedDrawers') === expected, on);
 }
 
@@ -105,14 +121,11 @@ export async function setStackedDrawers(page, on) {
 export async function setDrawerBarPosition(page, value) {
     const select = page.locator('#drawer_bar_position');
     if (await select.inputValue() === value) return;
-    const saved = page.waitForResponse(response => response.url().endsWith('/api/settings/save-partial')
-        && response.ok()
-        && (response.request().postData() ?? '').includes('drawer_bar_position'));
     await select.evaluate((el, v) => {
         el.value = v;
         el.dispatchEvent(new Event('change', { bubbles: true }));
     }, value);
-    await saved;
+    await awaitPowerUserSettingStored(page, 'drawer_bar_position');
     await page.waitForFunction(v => ['bottom', 'left', 'right'].every(position => {
         const bodyClass = `drawerBar${position[0].toUpperCase()}${position.slice(1)}`;
         return document.body.classList.contains(bodyClass) === (v === position);
@@ -128,14 +141,11 @@ export async function setDrawerBarPosition(page, value) {
 export async function setDrawerBarMobilePosition(page, value) {
     const select = page.locator('#drawer_bar_position_mobile');
     if (await select.inputValue() === value) return;
-    const saved = page.waitForResponse(response => response.url().endsWith('/api/settings/save-partial')
-        && response.ok()
-        && (response.request().postData() ?? '').includes('drawer_bar_position_mobile'));
     await select.evaluate((el, v) => {
         el.value = v;
         el.dispatchEvent(new Event('change', { bubbles: true }));
     }, value);
-    await saved;
+    await awaitPowerUserSettingStored(page, 'drawer_bar_position_mobile');
     await page.waitForFunction(v => document.body.classList.contains('drawerBarMobileBottom') === (v === 'bottom'), value);
 }
 
