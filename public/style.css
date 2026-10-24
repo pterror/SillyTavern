@@ -7365,7 +7365,15 @@ textarea.live-editor-textarea {
 }
 
 .cm-editor.live-editor .live-html {
-    opacity: 0.7;
+    opacity: 0.55;
+}
+
+/* An HTML block as chat draws it, under its source. */
+.cm-editor.live-editor .live-html-render {
+    cursor: default;
+    white-space: normal;
+    padding: 2px 0 4px;
+    user-select: none;
 }
 
 /* Quoted dialogue in an editor of chat text that doesn't have chat's text classes (the chat box, a reasoning block):
