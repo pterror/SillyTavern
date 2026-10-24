@@ -133,7 +133,7 @@ if ! printf '%s\n' "$eslint_version" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+'; then
     exit 1
 fi
 set +e
-eslint_output="$(npx eslint --format unix "src/**/*.js" "public/**/*.js" 2>&1)"
+eslint_output="$(npx eslint --no-error-on-unmatched-pattern --format unix "src/**/*.js" "public/**/*.js" 2>&1)"
 eslint_status=$?
 set -e
 if [ "$eslint_status" -ge 2 ]; then
