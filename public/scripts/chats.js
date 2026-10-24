@@ -1995,6 +1995,21 @@ export function registerFileConverter(mimeType, converter) {
     converters[mimeType] = converter;
 }
 
+/**
+ * Audio and video in what messages, previews and editors show start at the user's volume (`power_user.media_volume`),
+ * once each, before they play: media events don't bubble, so they are caught on their way down.
+ */
+export function initMessageMediaVolume() {
+    const startAtUserVolume = (/** @type {Event} */ event) => {
+        const media = event.target;
+        if (!(media instanceof HTMLMediaElement) || media.dataset.userVolume !== undefined) return;
+        if (!media.closest('.mes_text, .mes_reasoning, .mes_media_wrapper, .field_preview, .cm-editor, .image_lightbox')) return;
+        media.dataset.userVolume = '';
+        media.volume = Math.max(0, Math.min(100, Number(power_user.media_volume) || 0)) / 100;
+    };
+    for (const type of ['loadstart', 'loadedmetadata', 'play']) document.addEventListener(type, startAtUserVolume, true);
+}
+
 export function addDOMPurifyHooks() {
     DOMPurify.addHook('afterSanitizeAttributes', function (node) {
         if ('target' in node) {
@@ -2033,6 +2048,11 @@ export function addDOMPurifyHooks() {
     DOMPurify.addHook('uponSanitizeElement', (node, _, config) => {
         if (!config.MESSAGE_SANITIZE) {
             return;
+        }
+
+        // Audio and video in a message wait to be played, unless the user lets them start by themselves.
+        if (node instanceof HTMLMediaElement && !power_user.media_autoplay) {
+            node.removeAttribute('autoplay');
         }
 
         if (node instanceof HTMLUnknownElement) {

@@ -236,7 +236,7 @@ import { getBackgrounds, initBackgrounds, loadBackgroundSettings, background_set
 import { loader } from './scripts/action-loader.js';
 import { BulkEditOverlay } from './scripts/BulkEditOverlay.js';
 import { initTextGenModels } from './scripts/textgen-models.js';
-import { hasPendingFileAttachment, populateFileAttachment, isExternalMediaAllowed, preserveNeutralChat, restoreNeutralChat, formatCreatorNotes, initChatUtilities, addDOMPurifyHooks, showMediaLightbox } from './scripts/chats.js';
+import { hasPendingFileAttachment, populateFileAttachment, isExternalMediaAllowed, preserveNeutralChat, restoreNeutralChat, formatCreatorNotes, initChatUtilities, addDOMPurifyHooks, initMessageMediaVolume, showMediaLightbox } from './scripts/chats.js';
 import { getFocusedField, getMountedTextarea } from './scripts/live-editor/registry.js';
 import { initChatBoxEditor, initChatLiveEditor, mountChatEditor, unmountChatEditor } from './scripts/chat-live-editor.js';
 import { beginEdit, blockFieldEditStart, blockWhileFieldEditing, initCharacterFieldEditor, isFieldInEdit, setFieldValue } from './scripts/character-field-editor.js';
@@ -1393,6 +1393,7 @@ async function firstLoadInit() {
     initLibraryShims();
     addShowdownPatch(showdown);
     addDOMPurifyHooks();
+    initMessageMediaVolume();
     reloadMarkdownProcessor();
     applyBrowserFixes();
 
@@ -2597,7 +2598,9 @@ export function appendMediaToMessage(mes, messageElement, scrollBehavior = SCROL
             }
         }));
 
-        new AudioPlayer(audio.get(0), template.get(0));
+        // An attachment starts at the user's volume too (initMessageMediaVolume()).
+        audio.get(0).dataset.userVolume = '';
+        new AudioPlayer(audio.get(0), template.get(0), { volume: Math.max(0, Math.min(100, Number(power_user.media_volume) || 0)) / 100 });
 
         mediaBlocks.push(template);
         return template;
