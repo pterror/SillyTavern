@@ -19,9 +19,10 @@ test.describe('Character Gallery View', () => {
         await page.locator('#rightNavDrawerIcon').click();
         await expect(page.locator('#rm_print_characters_block .character_select').first()).toBeVisible();
 
-        // Panel goes fullscreen when the character list is the active sub-view.
-        const panelBox = await page.locator('#right-nav-panel').boundingBox();
+        // Panel goes fullscreen when the character list is the active sub-view, once it has slid open.
         const viewport = page.viewportSize();
+        await expect.poll(async () => (await page.locator('#right-nav-panel').boundingBox()).height).toBeGreaterThan(viewport.height * 0.8);
+        const panelBox = await page.locator('#right-nav-panel').boundingBox();
         expect(Math.abs(panelBox.width - viewport.width)).toBeLessThanOrEqual(2);
         expect(panelBox.x).toBeLessThanOrEqual(2);
         expect(panelBox.height).toBeGreaterThan(viewport.height * 0.8);
