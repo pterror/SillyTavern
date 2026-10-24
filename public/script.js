@@ -7021,7 +7021,7 @@ export function buildAvatarList(block, entities, { templateId = 'inline_avatar_t
         }
         // loading="lazy": avoids a request storm when this list is the whole library (group member/candidate pickers).
         avatarTemplate.find('img').attr('src', this_avatar).attr('loading', 'lazy').attr('alt', entity.item.name);
-        avatarTemplate.attr('title', `[Character] ${entity.item.name}\nFile: ${entity.item.avatar}`);
+        avatarTemplate.attr('title', `${entity.item.name}\nFile: ${entity.item.avatar}`);
         if (highlightFavs) {
             const isFav = normalizeFav(entity.item.fav);
             avatarTemplate.toggleClass('is_fav', isFav);
@@ -7036,11 +7036,11 @@ export function buildAvatarList(block, entities, { templateId = 'inline_avatar_t
             avatarTemplate.empty();
             avatarTemplate.append(grpTemplate.children());
             avatarTemplate.attr({ 'data-grid': id });
-            avatarTemplate.attr('title', `[Group] ${entity.item.name}`);
+            avatarTemplate.attr('title', entity.item.name);
         } else if (entity.type === 'persona') {
             avatarTemplate.attr({ 'data-pid': id });
             avatarTemplate.find('img').attr('src', getThumbnailUrl('persona', entity.item.avatar));
-            avatarTemplate.attr('title', `[Persona] ${entity.item.name}\nFile: ${entity.item.avatar}`);
+            avatarTemplate.attr('title', `${entity.item.name}\nFile: ${entity.item.avatar}`);
         }
 
         if (interactable) {
