@@ -1254,6 +1254,21 @@ function seedSettingsHashes(value, key = '') {
     const { value: hashed, skip } = settingsWithoutCharLore(key, value);
     if (!skip) seedKeyHashes(serverKeyHashes, hashed, key);
 }
+
+/**
+ * @param {string} key A settings key, dotted for a sub-field
+ * @param {any} value Its value on the page
+ * @returns {boolean} Whether the server's copy of the key is known to hash as this value does.
+ */
+function isSettingUnchangedOnServer(key, value) {
+    const { value: hashed, skip } = settingsWithoutCharLore(key, value);
+    if (skip || !(key in serverKeyHashes)) return false;
+    try {
+        return getStringHash(JSON.stringify(hashed, null, 4)) === serverKeyHashes[key];
+    } catch {
+        return false;
+    }
+}
 // Kind and count of the pending debounced save window (see scheduleSettingsSave()); reset when the window runs or is cancelled.
 /** @type {{ full: boolean, count: any }} */
 let _settingsSaveWindow = { full: false, count: 0 };
@@ -7962,6 +7977,12 @@ async function performSave({ full }) {
             } else if (key in payload && payload[key] !== undefined) {
                 partialPayload[key] = payload[key];
             }
+        }
+        // A key set to the value the server already has isn't sent: loading the settings into the page sets
+        // controls whose handlers ask for a save (a color picker given its color, a context size clamped to
+        // what it already is), and that is no change.
+        for (const key of Object.keys(partialPayload)) {
+            if (isSettingUnchangedOnServer(key, partialPayload[key])) delete partialPayload[key];
         }
 
         if (Object.keys(partialPayload).length === 0) {
