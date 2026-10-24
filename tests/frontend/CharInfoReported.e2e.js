@@ -200,3 +200,23 @@ test.describe('character info avatar', () => {
         expect(box?.height).toBe(size.height);
     });
 });
+
+test.describe('character info field previews', () => {
+    test.beforeEach(testSetup.awaitST);
+
+    test('CL29: every field preview has the text look of a chat message', async ({ page }) => {
+        await createAndOpen(page, ['First paragraph.\n\nSecond paragraph.']);
+        await expect(page.locator('#chat .mes[mesid="0"] .mes_text p')).toHaveCount(2);
+        const look = (/** @type {Element} */ el) => {
+            const style = getComputedStyle(el);
+            return { lineHeight: style.lineHeight, fontWeight: style.fontWeight, fontSize: style.fontSize };
+        };
+        const chat = await page.locator('#chat .mes[mesid="0"] .mes_text').evaluate(look);
+        const previews = await page.locator('.field_preview').evaluateAll((els, chat) => els.map(el => {
+            const style = getComputedStyle(el);
+            return { for: el.getAttribute('data-for'), same: style.lineHeight === chat.lineHeight && style.fontWeight === chat.fontWeight && style.fontSize === chat.fontSize };
+        }), chat);
+        expect(previews.length).toBeGreaterThan(5);
+        expect(previews.filter(p => !p.same)).toEqual([]);
+    });
+});
