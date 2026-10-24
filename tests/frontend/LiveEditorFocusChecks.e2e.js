@@ -32,7 +32,10 @@ test.describe('focus checks with a live editor mounted', () => {
             }, withEditor);
             await page.keyboard.type('hello');
             await page.keyboard.press('Enter');
-            await page.waitForTimeout(500);
+            // A send (with no chat open, it makes one and tries to generate) has ended before the box is read, so the
+            // next Enter isn't one the app drops while busy.
+            await page.waitForTimeout(300);
+            await expect(page.locator('#send_but')).toBeVisible({ timeout: 30000 });
             const result = await page.evaluate(() => ({
                 text: /** @type {HTMLTextAreaElement} */ (document.getElementById('send_textarea')).value,
                 // @ts-ignore
