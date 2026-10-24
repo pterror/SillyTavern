@@ -45,8 +45,13 @@ test('a page turned from the list\'s end starts at the other end; from the middl
     await showOwnCharacters(page, 60, 25);
     expect((await scroll(page)).max).toBeGreaterThan(100);
 
-    // From the bottom, the next page starts at its top.
-    await scrollTo(page, 'bottom');
+    // From the bottom, the next page starts at its top. Scrolled again until it stays there: rows still loading
+    // their avatars make the list taller.
+    await expect.poll(async () => {
+        await scrollTo(page, 'bottom');
+        const s = await scroll(page);
+        return s.top === s.max;
+    }).toBe(true);
     const before = await firstName(page);
     await page.locator('#rm_print_characters_pagination .paginationjs-next').click();
     await expect.poll(() => firstName(page)).not.toBe(before);

@@ -93,7 +93,8 @@ test.describe('kept character list pages', () => {
 
         const held = await holdPageQueries(page);
         await page.reload();
-        await loadApp(page);
+        // Only the app's start is waited for: APP_READY waits for the characters, whose query is held.
+        await testSetup.awaitST({ page });
         await openCharacterManagementDrawer(page);
         await expect(rowName(page, avatar)).toHaveText(`Kept${stamp}`);
         const ours = held.seen.filter(request => request.search === `Kept${stamp}`);
@@ -118,7 +119,8 @@ test.describe('kept character list pages', () => {
         const later = await created.text();
 
         const held = await holdPageQueries(page);
-        await loadApp(page);
+        // Only the app's start is waited for: APP_READY waits for the characters, whose query is held.
+        await testSetup.awaitST({ page });
         await openCharacterManagementDrawer(page);
         await expect(rowName(page, first)).toHaveText(`Swap${stamp} First`);
         await expect(rowName(page, later)).toHaveCount(0);
