@@ -187,6 +187,41 @@ test.describe('tag changes from another tab', () => {
         }
     });
 
+    test('a tag merged in another tab reaches a character held here whose tag this tab never read', async ({ page, browser }) => {
+        const { other, close } = await openOtherTab(browser);
+        try {
+            const from = 'tag-other-tabs-unread-from';
+            const into = 'tag-other-tabs-unread-into';
+            await loadApp(page);
+            // The character list draws its rows, and reads their tags' definitions, even with its drawer closed:
+            // searched for nothing, it draws none.
+            await page.evaluate(() => {
+                // @ts-ignore
+                $('#character_search_bar').val('no character is named this').trigger('input');
+            });
+            const avatar = await createCharacter(other, 'TagOtherTabsUnread');
+            await api(other, '/api/tags/create', tagBody(from, 1002));
+            await api(other, '/api/tags/create', tagBody(into, 1003));
+            await api(other, '/api/tags/assign', { id: avatar, tagId: from });
+
+            await holdCharacters(page, [avatar]);
+            const heldIds = () => page.evaluate(async (avatar) => {
+                const { charactersStore } = await import('/scripts/character-store.js');
+                return charactersStore.get(avatar)?.tag_ids ?? null;
+            }, avatar);
+            await expect.poll(heldIds, { timeout: 15000 }).toEqual([from]);
+            expect(await heldTag(page, from)).toBeNull();
+
+            // The merge itself says what the character carries now; the assignment feed, which follows once the
+            // server has moved the tag's carriers, is cut off so it can't be what tells this tab.
+            await page.route('**/api/tags/assignment-changes', route => route.fulfill({ status: 500 }));
+            await api(other, '/api/tags/delete', { id: from, mergeInto: into });
+            await expect.poll(heldIds, { timeout: 15000 }).toEqual([into]);
+        } finally {
+            await close();
+        }
+    });
+
     test('this tab\'s own create and edit are not applied a second time', async ({ page }) => {
         await loadApp(page);
         await openTagManagement(page);

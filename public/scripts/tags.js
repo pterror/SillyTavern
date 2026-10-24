@@ -5099,8 +5099,10 @@ async function takeInTagChanges() {
         const changedTags = Array.isArray(page.tags) ? page.tags : [];
         const removed = Array.isArray(page.removed) ? page.removed : [];
         const { sortOrderChanged } = takeInServerTagDefinitions(changedTags);
+        // Every removal, not only those of tags this tab holds a definition of: a character or group it holds can
+        // carry a tag whose definition it never read (nothing drew it), and a merge gives it the target.
         const drops = removed
-            .filter(removal => typeof removal?.id === 'string' && tagsStore.has(removal.id))
+            .filter(removal => typeof removal?.id === 'string')
             .map(({ id, mergedInto }) => ({ id, replaceWithId: typeof mergedInto === 'string' ? mergedInto : undefined }));
         await dropTagsLocally(drops);
         if (sortOrderChanged) redrawAfterTagSortOrderChange();
