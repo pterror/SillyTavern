@@ -103,6 +103,8 @@ test('recent chats are the conversations by last activity, one row each', async 
 });
 
 test('past the most recent ones, older chats load a page at a time, in order', async ({ page }) => {
+    // Five characters are made and each opened to speak in.
+    test.setTimeout(120000);
     await testSetup.awaitST({ page });
     const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
     const avatars = [];
