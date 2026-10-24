@@ -78,4 +78,17 @@ describe('upstream\'s chats.js exports on the engine', () => {
         expect(after[after.length - 1].mes).toBe('Saved through trySaveChat.');
         await expect(chats.trySaveChat(changed, path.join(user.directories.chats, 'Nobody', 'x.jsonl'), true, 'u', 'Nobody', user.directories.backups)).rejects.toThrow();
     });
+
+    test('trySaveChat stores a message with no id where the array has it: between the two around it', async () => {
+        const [name] = await namesOf({ avatar: 'Alice.png' });
+        const before = chats.getChatData(characterChat(name));
+        expect(before.length).toBeGreaterThan(3);
+        const changed = structuredClone(before);
+        changed.splice(2, 0, { name: 'You', is_user: true, is_system: false, send_date: '2025-01-02T00:00:00.000Z', mes: 'Spliced in.', extra: {} });
+        await chats.trySaveChat(changed, characterChat(name), true, 'u', 'Alice', user.directories.backups);
+        const after = chats.getChatData(characterChat(name));
+        expect(after.map(m => m.mes)).toEqual(changed.map(m => m.mes));
+        expect(after[1].node_id).toBe(before[1].node_id);
+        expect(after[3].node_id).toBe(before[2].node_id);
+    });
 });
