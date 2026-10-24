@@ -298,7 +298,7 @@ export { messageFormatting };
 import {
     updateMessage, updateIn,
     ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpCut, chatOpSelect, chatOpGraft, chatOpSwapAdjacent, chatOpReadyAlternativeDelete, chatOpDeleteAlternativeNode,
-    _mergeCardGreetingsIntoOpening, _restoreContinuation, _isBlankSlot, _setCurrentTarget, setStoreRef, storeRefOf, adoptStored, chatOpAppendAfter, setSendStoredListener,
+    _mergeCardGreetingsIntoOpening, isComposedSlot, chatOpStoreComposed, _setCurrentTarget, setStoreRef, storeRefOf, adoptStored, chatOpAppendAfter, setSendStoredListener,
     openingForRequest, setUnstoredExtra,
 } from './scripts/chat-store.js';
 export {
@@ -318,7 +318,7 @@ export { switchToNode };
 import {
     Generate, stopGeneration,
     streamingProcessor, abortController, setAbortController, kobold_horde_model, generation_started,
-    _messageSnapshots, _snapshotMessages, markStoredAs, isAsStored, forgetStored, _isBlankUnwrittenSwipe, finishStreamedReplyPersistence, applyStoredReply,
+    _messageSnapshots, _snapshotMessages, markStoredAs, isAsStored, forgetStored, finishStreamedReplyPersistence, applyStoredReply,
     stampReplyNode, beginSwipeReply, isReplyGenerating,
 } from './scripts/generation.js';
 import { takeStoredReply } from './scripts/llamacpp-compact-stream.js';
@@ -2173,10 +2173,10 @@ export async function sendTextareaMessage() {
     if (swipeState !== SWIPE_STATE.NONE) return; // don't proceed if mid-swipe.
     if (is_send_press) return;
 
-    // Overswiping opens a blank slot with nothing written yet; SWIPE_STATE.EDITING is never actually set for it.
+    // An overswipe's slot is stored by its own Done; a message sent meanwhile would follow nothing stored.
     const lastIndex = chat.length - 1;
-    if (lastIndex >= 0 && _isBlankUnwrittenSwipe(chat[lastIndex])) {
-        toastr.warning(t`Write something in the message first, or cancel the edit.`, t`Nothing to send`);
+    if (lastIndex >= 0 && lastIndex === Number(this_edit_mes_id) && isComposedSlot(chat[lastIndex])) {
+        toastr.warning(t`Press Done to keep the new alternative, or cancel it, first.`, t`Not sent`);
         return;
     }
     if (isExecutingCommandsFromChatInput) return;
@@ -6283,7 +6283,7 @@ export function ensureSwipes(message, mesId = undefined) {
     let swipeInfoDirty = !Array.isArray(message.swipe_info);
 
     // A tree-backed message can have null holes (unfetched alternatives) among its swipes - left alone here, belongs to hydrateSwipes() instead.
-    const hasHoles = !!message.node_id;
+    const hasHoles = !!message.node_id || (Array.isArray(message.swipe_info) && message.swipe_info.some(info => isStoredNodeId(info?.node_id)));
 
     for (let i = 0; i < swipes.length; i++) {
         const isHole = hasHoles && swipes[i] === null;
@@ -8212,6 +8212,8 @@ function openMessageDelete(fromSlashCommand, deleteToolCalls = true) {
 // A single shared debounce instance is fine: only one message is ever in edit mode at a time
 // (this_edit_mes_id). messageEditDone() cancels this before its own save to avoid a double write.
 const messageEditAutoSaveDebounced = debounce((mesId) => {
+    // An overswipe's slot is stored once, by Done.
+    if (isComposedSlot(chat[mesId])) return;
     chatOpEdit(mesId).catch(error =>
         console.error('Could not save the edited message:', error));
 }, DEFAULT_SAVE_EDIT_TIMEOUT);
@@ -8331,29 +8333,31 @@ export async function messageEdit(editMessageId) {
 }
 
 /**
+ * Gives up the slot an overswipe opened on message mesId (isComposedSlot()), stored nowhere: it goes, and the message
+ * is back on the alternative before it, with what follows that alternative.
+ * @param {number} mesId
+ * @returns {Promise<boolean>} Whether there was such a slot.
+ */
+async function leaveComposedSlot(mesId) {
+    const message = chat[mesId];
+    if (!isComposedSlot(message) || message.swipes.length < 2) return false;
+    const at = message.swipe_id ?? 0;
+    const back = Math.max(0, at - 1);
+    const swipes = message.swipes.filter((_, i) => i !== at);
+    const swipeInfo = Array.isArray(message.swipe_info) ? message.swipe_info.filter((_, i) => i !== at) : undefined;
+    updateMessage(mesId, { swipes, ...(swipeInfo ? { swipe_info: swipeInfo } : {}), swipe_id: back });
+    syncSwipeToMes(mesId, back);
+    await switchToAlternativePath(mesId, back);
+    return true;
+}
+
+/**
  * Close the open message editor.
  * This deletes the user's unsaved changes.
  * @param {number} [messageId=this_edit_mes_id]
  */
 async function messageEditCancel(messageId = this_edit_mes_id) {
-    // Cancelling an overswipe's untyped blank slot removes it rather than leaving an empty alternative behind; anything stored stays.
-    const editing = chat[messageId];
-    if (_isBlankUnwrittenSwipe(editing) && Array.isArray(editing.swipes) && editing.swipes.length > 1) {
-        const at = editing.swipe_id ?? 0;
-        if (at === editing.swipes.length - 1) {
-            const swipes = editing.swipes.slice(0, -1);
-            const swipeInfo = Array.isArray(editing.swipe_info) ? editing.swipe_info.slice(0, -1) : undefined;
-            const back = Math.max(0, at - 1);
-            updateMessage(messageId, {
-                swipes,
-                ...(swipeInfo ? { swipe_info: swipeInfo } : {}),
-                swipe_id: back,
-            });
-            syncSwipeToMes(messageId, back);
-            // The blank truncated the view; giving up on it puts back what followed.
-            await _restoreContinuation(messageId);
-        }
-    }
+    await leaveComposedSlot(messageId);
 
     let text = chat[messageId].mes;
     let thisMesDiv;
@@ -8457,7 +8461,13 @@ async function messageEditDone(div) {
         return;
     }
 
+    const composed = isComposedSlot(chat[this_edit_mes_id]);
     let { mesBlock, text, mes, bias } = applyMessageEdit(div);
+    // Nothing written in an overswipe's slot: it is given up, as by Cancel.
+    if (composed && !String(chat[this_edit_mes_id]?.mes ?? '').length) {
+        await messageEditCancel(this_edit_mes_id);
+        return;
+    }
 
     await eventSource.emit(event_types.MESSAGE_EDITED, this_edit_mes_id);
     text = chat[this_edit_mes_id]?.mes ?? text;
@@ -8495,7 +8505,12 @@ async function messageEditDone(div) {
     // Says the edit directly rather than letting the fallback save infer it from a snapshot diff.
     // chatOpEdit() already retries transient failures itself (chat-store.js's _chatOpPost).
     try {
-        await chatOpEdit(editedMesId);
+        if (composed && isComposedSlot(chat[editedMesId])) {
+            if (await chatOpStoreComposed(editedMesId) === null) throw new Error('The new alternative was not stored.');
+            refreshSwipeButtons(true);
+        } else {
+            await chatOpEdit(editedMesId);
+        }
     } catch (error) {
         console.error('Could not save the edited message:', error);
         toastr.error(t`Could not save the edited message. Check your connection and try again.`, t`Save failed`);
@@ -12345,9 +12360,16 @@ export async function swipe(event, direction, { source, repeated, message = chat
      * @param {number} newSwipeId
      */
     async function loadFromSwipeId(mesId, newSwipeId) {
-        // Leaving a blank slot means the truncation it caused is over, so what followed comes back. Checked before the switch, since the slot stops being current afterwards.
-        const leavingBlank = _isBlankSlot(chat[mesId], chat[mesId]?.swipe_id ?? 0)
-            && newSwipeId !== (chat[mesId]?.swipe_id ?? 0);
+        // The message names the node its shown slot names. The slot left keeps the node (a message with one
+        // alternative arrives with no ids in its slots), so swiping back to it finds it again.
+        // The slot left is the one shown when the swipe began; an overswipe has moved swipe_id onto its new slot already.
+        const leaving = chat[mesId];
+        const leftAt = originalSwipeId;
+        if (leftAt !== newSwipeId && leaving?.node_id != null && leaving.swipe_info?.[leftAt] && leaving.swipe_info[leftAt].node_id == null) {
+            const swipeInfo = [...leaving.swipe_info];
+            swipeInfo[leftAt] = { ...swipeInfo[leftAt], node_id: leaving.node_id };
+            updateMessage(mesId, { swipe_info: swipeInfo });
+        }
 
         // A wide fork point arrives with most alternatives as holes; fetch this one first so the swipe never lands on empty.
         await hydrateSwipes(mesId, { index: newSwipeId });
@@ -12368,13 +12390,11 @@ export async function swipe(event, direction, { source, repeated, message = chat
         // Moving to a different alternative means adopting its node and loading what follows it. Only the data moves
         // here; the screen changes in animateSwipe(), between the slide-out and the slide-in.
         const switched = await switchToAlternativePath(mesId, newSwipeId, { redraw: false });
-
-        // Swiping back onto the same slot doesn't change node, so the switch above is a no-op - restore explicitly.
-        const restored = leavingBlank && !switched
-            ? await _restoreContinuation(mesId, { redraw: false })
-            : false;
-        if (switched || restored) {
+        if (switched) {
             continuationChanged = true;
+        } else if (chat[mesId].swipe_info?.[newSwipeId] && chat[mesId].swipe_info[newSwipeId].node_id == null) {
+            // A slot no node is stored for yet (isComposedSlot()): an edit of it must not reach the alternative left.
+            updateMessage(mesId, { node_id: undefined });
         }
         return true;
     }
@@ -12674,7 +12694,8 @@ export async function swipe(event, direction, { source, repeated, message = chat
                 await endSwipe();
                 return;
             } else if (overswipe == OVERSWIPE_BEHAVIOR.EDIT_GENERATE) {
-                //Create a new, empty swipe and open the editor for the user to fill in, instead of generating.
+                // A new, empty slot for the user to write a new alternative into, instead of generating. It names no
+                // node (isComposedSlot()) until Done stores it (chatOpStoreComposed()); cancelling drops it.
                 const newSwipes = [...chat[mesId].swipes, ''];
                 const newSwipeInfo = [...(chat[mesId].swipe_info || []), {
                     send_date: getMessageTimeStamp(),
@@ -12685,7 +12706,7 @@ export async function swipe(event, direction, { source, repeated, message = chat
                 updateMessage(mesId, { swipes: newSwipes, swipe_info: newSwipeInfo });
                 await standardSwipe(newSwipeId);
 
-                // Truncates the view, not the tree - typing here appends under this node, forking; leaving the blank slot restores the old continuation.
+                // Truncates the view, not the tree: what followed belongs to the alternative swiped from.
                 if (chat.length > mesId + 1) {
                     forgetStored(chat.splice(mesId + 1).map(m => m.node_id));
                     await redisplayChat({ startIndex: mesId });
@@ -14530,6 +14551,12 @@ jQuery(async function () {
         const mesElement = $(this).closest('.mes');
         const mesId = Number(mesElement.attr('mesid'));
         const message = chat[mesId];
+
+        // An overswipe's slot is a new alternative already: saving it is storing it, beside no other new one.
+        if (isComposedSlot(message)) {
+            await messageEditDone($(this));
+            return;
+        }
 
         // Needs a row to sit alongside. A file-backed chat has no nodes to fork between.
         if (!message?.node_id) {
