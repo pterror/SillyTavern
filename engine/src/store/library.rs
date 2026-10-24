@@ -14,6 +14,8 @@
 //! A tag merged into another stays in the orders until its carriers are moved: readers of the target take the
 //! merged tags' orders too (`MERGED_INTO`), and `FOLD` lists the tags whose carriers wait to move.
 
+use std::collections::BTreeSet;
+
 use super::StoreError;
 use super::books;
 use super::derive::{Deriver, Loc, Out, View};
@@ -409,14 +411,21 @@ pub fn state(view: &View, e: u64) -> Result<Option<State>, StoreError> {
 }
 
 fn state_of(view: &View, e: u64, kind: u64, added: f64) -> Result<Option<State>, StoreError> {
+    let Some(mut st) = place_of(view, e, kind, added)? else {
+        return Ok(None);
+    };
+    st.tags = tags_of(view, e)?;
+    if kind == CHARACTER {
+        st.worlds = books::worlds(view, e)?;
+    }
+    Ok(Some(st))
+}
+
+/// What places a character or group in each order (its kind, fav, name and sort numbers), with no scopes read.
+fn place_of(view: &View, e: u64, kind: u64, added: f64) -> Result<Option<State>, StoreError> {
     if kind != CHARACTER && kind != GROUP {
         return Ok(None);
     }
-    let worlds = if kind == CHARACTER {
-        books::worlds(view, e)?
-    } else {
-        Vec::new()
-    };
     let mut nums = [None; 5];
     for (sort, n) in (CREATED..SORTS).zip(nums.iter_mut()) {
         *n = sort_num(view, e, kind, Some(added), sort)?;
@@ -426,9 +435,22 @@ fn state_of(view: &View, e: u64, kind: u64, added: f64) -> Result<Option<State>,
         fav: fav_of(view, e)?,
         name: folded_name(view, e)?,
         nums,
-        tags: tags_of(view, e)?,
-        worlds,
+        tags: Vec::new(),
+        worlds: Vec::new(),
     }))
+}
+
+/// `e` joins (`joined`) or leaves one scope, its place in the orders the same: only that scope's orders and
+/// numbering change, so the scopes it is in otherwise aren't read.
+pub fn scope_changed(view: &View, out: &mut Out, e: u64, scope: &Scope, joined: bool) -> Result<(), StoreError> {
+    let Some((kind, _, added)) = entity_info(view, e)? else {
+        return Ok(());
+    };
+    let Some(st) = place_of(view, e, kind, added)? else {
+        return Ok(());
+    };
+    let (o, n) = if joined { (None, Some(&st)) } else { (Some(&st), None) };
+    reposition_scope(view, out, e, scope, o, n)
 }
 
 fn folded_name(view: &View, e: u64) -> Result<Vec<u8>, StoreError> {
@@ -502,51 +524,67 @@ pub fn reposition(
     old: Option<&State>,
     new: Option<&State>,
 ) -> Result<(), StoreError> {
-    let mut scopes: Vec<Scope> = Vec::new();
-    for st in [old, new].into_iter().flatten() {
-        for s in st.scopes() {
-            if !scopes.contains(&s) {
-                scopes.push(s);
-            }
-        }
+    let in_old: BTreeSet<Scope> = old.map(State::scopes).unwrap_or_default().into_iter().collect();
+    let in_new: BTreeSet<Scope> = new.map(State::scopes).unwrap_or_default().into_iter().collect();
+    // The keys and numbering don't depend on which scopes the entity is in: when its place in the orders is the same,
+    // a scope it stays in is left as it is, and only the ones it joins or leaves change (one tag assigned is one scope,
+    // not every scope the entity is in).
+    let same_place = match (old, new) {
+        (Some(o), Some(n)) => o.kind == n.kind && o.fav == n.fav && (0..SORTS).all(|sort| o.sort_key(sort) == n.sort_key(sort)),
+        _ => false,
+    };
+    let scopes: Vec<&Scope> = if same_place {
+        in_old.symmetric_difference(&in_new).collect()
+    } else {
+        in_old.union(&in_new).collect()
+    };
+    for s in scopes {
+        reposition_scope(view, out, e, s, old.filter(|_| in_old.contains(s)), new.filter(|_| in_new.contains(s)))?;
     }
-    let ev = uvarint(e);
-    for s in &scopes {
-        let o = old.filter(|st| st.scopes().contains(s));
-        let n = new.filter(|st| st.scopes().contains(s));
-        for sort in 0..SORTS {
-            let ok = o.map(|st| order_key(s, sort, st, e));
-            let nk = n.map(|st| order_key(s, sort, st, e));
-            if ok == nk {
-                continue;
-            }
-            if let Some(ok) = ok {
-                out.del(ok);
-            }
-            if let Some(nk) = nk {
-                out.put(nk, Vec::new());
-            }
-        }
-        let op = o.map(|st| (st.kind, st.fav));
-        let np = n.map(|st| (st.kind, st.fav));
-        if op == np {
+    Ok(())
+}
+
+/// `reposition()` in one scope: `old` and `new` are the entity's state where it was or is in the scope.
+fn reposition_scope(
+    view: &View,
+    out: &mut Out,
+    e: u64,
+    s: &Scope,
+    o: Option<&State>,
+    n: Option<&State>,
+) -> Result<(), StoreError> {
+    for sort in 0..SORTS {
+        let ok = o.map(|st| order_key(s, sort, st, e));
+        let nk = n.map(|st| order_key(s, sort, st, e));
+        if ok == nk {
             continue;
         }
-        if let Some((kind, fav)) = op {
-            out.add(count_key(s, kind, fav), -1);
-            if !view.is_bulk() {
-                unnumber(view, out, s, kind, fav, e)?;
-            }
+        if let Some(ok) = ok {
+            out.del(ok);
         }
-        if let Some((kind, fav)) = np {
-            let ck = count_key(s, kind, fav);
-            if !view.is_bulk() {
-                let n = counter(view, &ck)?;
-                out.put(rand_key(s, kind, fav, n as u64), ev.clone());
-                set_rank(view, out, s, e, Some(n as u64))?;
-            }
-            out.add(ck, 1);
+        if let Some(nk) = nk {
+            out.put(nk, Vec::new());
         }
+    }
+    let op = o.map(|st| (st.kind, st.fav));
+    let np = n.map(|st| (st.kind, st.fav));
+    if op == np {
+        return Ok(());
+    }
+    if let Some((kind, fav)) = op {
+        out.add(count_key(s, kind, fav), -1);
+        if !view.is_bulk() {
+            unnumber(view, out, s, kind, fav, e)?;
+        }
+    }
+    if let Some((kind, fav)) = np {
+        let ck = count_key(s, kind, fav);
+        if !view.is_bulk() {
+            let n = counter(view, &ck)?;
+            out.put(rand_key(s, kind, fav, n as u64), uvarint(e));
+            set_rank(view, out, s, e, Some(n as u64))?;
+        }
+        out.add(ck, 1);
     }
     Ok(())
 }

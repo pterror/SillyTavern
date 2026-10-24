@@ -1340,10 +1340,7 @@ impl Deriver for TagAssign {
             } else {
                 // The membership first: the tag's numbering keeps the entity's number in it.
                 assign(out, entity, tag, at, false, None);
-                library::change(view, out, entity, |st| {
-                    st.tags.push(tag);
-                    st.tags.sort_unstable();
-                })?;
+                library::scope_changed(view, out, entity, &library::Scope::Tag(tag), true)?;
                 tags::carriers_changed(view, out, tag, 1)?;
                 super::carriers::changed(view, out, tag, entity, 1)?;
                 tags::entity_touched(view, out, entity, at)?;
@@ -1355,7 +1352,7 @@ impl Deriver for TagAssign {
             if unassign(view, out, entity, raw)? {
                 tags::carriers_changed(view, out, raw, -1)?;
                 super::carriers::changed(view, out, raw, entity, -1)?;
-                library::change(view, out, entity, |st| st.tags.retain(|t| *t != raw))?;
+                library::scope_changed(view, out, entity, &library::Scope::Tag(raw), false)?;
                 tags::entity_touched(view, out, entity, at)?;
             }
         }
