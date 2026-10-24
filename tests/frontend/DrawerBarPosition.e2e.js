@@ -799,16 +799,20 @@ for (const [layout, viewport, setPosition] of /** @type {const} */ ([
     });
 }
 
+// The file is asked for with its content hash (`?stv=`), which a glob ending in the name doesn't match.
+const MOBILE_STYLES = /\/css\/mobile-styles\.css(\?|$)/;
+
 /**
  * Serves mobile-styles.css with its iOS-only block applying, as on iOS: Chromium doesn't match its condition,
  * `@supports (-webkit-touch-callout: none)`. Takes effect from the next page load.
  * @param {import('@playwright/test').Page} page
  */
 function forceIosCss(page) {
-    return page.route('**/css/mobile-styles.css', async route => {
+    return page.route(MOBILE_STYLES, async route => {
         const response = await route.fetch();
         const css = (await response.text()).replace('@supports (-webkit-touch-callout: none)', '@supports (display: block)');
-        await route.fulfill({ response, body: css });
+        // Not kept: a hashed url is cached for good, and the page loaded after unrouting must get the real file.
+        await route.fulfill({ response, body: css, headers: { ...response.headers(), 'cache-control': 'no-store' } });
     });
 }
 
@@ -909,7 +913,8 @@ const IOS_BEFORE = {
 
 /**
  * Expects each of the chat and the drawers in `layout` to be on screen, from the top edge unless the bar is there,
- * and clear of a bar at `position`. At the top, a sidebar beside the bar may start at the top edge.
+ * and clear of a bar at `position`. At the top or bottom, a sidebar beside the bar (the bar is the chat's width) may
+ * reach that edge.
  * @param {Record<string, { top: number, bottom: number, left: number, width: number, height: number }>} layout
  * @param {'top'|'bottom'|'left'|'right'} position
  */
@@ -917,9 +922,9 @@ function expectClearOfBar(layout, position) {
     const bar = layout['#top-settings-holder'];
     for (const selector of ['#sheld', ...IOS_DRAWERS.map(([, drawer]) => drawer)]) {
         const r = layout[selector];
+        const beside = r.left + r.width <= bar.left + 0.5 || r.left >= bar.left + bar.width - 0.5;
         expect(r.height, selector).toBeGreaterThan(0);
         if (position === 'top') {
-            const beside = r.left + r.width <= bar.left + 0.5 || r.left >= bar.left + bar.width - 0.5;
             if (!beside) expect(r.top, selector).toBeGreaterThanOrEqual(bar.bottom - 0.5);
         } else {
             expect(r.top, selector).toBeCloseTo(0, 1);
@@ -927,7 +932,7 @@ function expectClearOfBar(layout, position) {
         expect(r.left, selector).toBeGreaterThanOrEqual(0);
         expect(r.left + r.width, selector).toBeLessThanOrEqual(IPAD_VIEWPORT.width + 0.5);
         expect(r.bottom, selector).toBeLessThanOrEqual(IPAD_VIEWPORT.height + 0.5);
-        if (position === 'bottom') expect(r.bottom, selector).toBeLessThanOrEqual(bar.top + 0.5);
+        if (position === 'bottom' && !beside) expect(r.bottom, selector).toBeLessThanOrEqual(bar.top + 0.5);
         if (position === 'left') expect(r.left, selector).toBeGreaterThanOrEqual(bar.left + bar.width - 0.5);
         if (position === 'right') expect(r.left + r.width, selector).toBeLessThanOrEqual(bar.left + 0.5);
     }
@@ -962,7 +967,7 @@ test.describe('Drawer bar position, iOS, desktop layout', () => {
         expectSameLayout(pick(onIos, Object.keys(IOS_BEFORE.desktopTop)), IOS_BEFORE.desktopTop);
         expectClearOfBar(onIos, 'top');
 
-        await page.unroute('**/css/mobile-styles.css');
+        await page.unroute(MOBILE_STYLES);
         await reloadST(page);
         expect(await iosCssApplies(page)).toBe(false);
         expectSameLayout(pick(onIos, drawers), pick(await iosLayout(page, true), drawers));
@@ -974,7 +979,7 @@ test.describe('Drawer bar position, iOS, desktop layout', () => {
             const onIos = await iosLayout(page, true);
             expectClearOfBar(onIos, position);
 
-            await page.unroute('**/css/mobile-styles.css');
+            await page.unroute(MOBILE_STYLES);
             await reloadST(page);
             expect(await iosCssApplies(page)).toBe(false);
             expectSameLayout(onIos, await iosLayout(page, true));
