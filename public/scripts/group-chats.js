@@ -1084,7 +1084,7 @@ export function getGroupBlock(group) {
     const template = $('#group_list_template .group_select').clone();
     template.data('id', group.id);
     template.attr('data-grid', group.id);
-    template.find('.ch_name').text(group.name).attr('title', `[Group] ${group.name}`);
+    template.find('.ch_name').text(group.name).attr('title', group.name);
     template.find('.group_fav_icon').css('display', 'none');
     const isFav = normalizeFav(group.fav);
     template.addClass(isFav ? 'is_fav' : '');
@@ -1148,7 +1148,10 @@ function getGroupAvatar(group) {
         return $(`<div class="avatar"><img src="${default_avatar}" loading="lazy"></div>`);
     }
     if (isValidImageUrl(group.avatar_url)) {
-        return $(`<div class="avatar" title="[Group] ${group.name}"><img src="${group.avatar_url}" loading="lazy"></div>`);
+        // Built, not written as HTML: a name's quotes would end the attribute.
+        const avatar = $('<div class="avatar"><img loading="lazy"></div>').attr('title', group.name);
+        avatar.find('img').attr('src', group.avatar_url);
+        return avatar;
     }
 
     const memberAvatars = [];
@@ -1175,7 +1178,7 @@ function getGroupAvatar(group) {
             groupAvatar.find(`.img_${i + 1}`).attr('src', memberAvatars[i]).attr('loading', 'lazy');
         }
 
-        groupAvatar.attr('title', `[Group] ${group.name}`);
+        groupAvatar.attr('title', group.name);
         return groupAvatar;
     }
 
@@ -1187,7 +1190,7 @@ function getGroupAvatar(group) {
     // default avatar
     const groupAvatar = $('#group_avatars_template .collage_1').clone();
     groupAvatar.find('.img_1').attr('src', group.avatar_url || system_avatar).attr('loading', 'lazy');
-    groupAvatar.attr('title', `[Group] ${group.name}`);
+    groupAvatar.attr('title', group.name);
     return groupAvatar;
 }
 

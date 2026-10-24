@@ -122,8 +122,8 @@ function renderCharacterBlock(template, item, id) {
     template.attr({ 'data-avatar': item.avatar });
     // loading="lazy": avoids a request storm when a large library renders hundreds of cards at once.
     template.find('img').attr('src', this_avatar).attr('loading', 'lazy').attr('alt', item.name);
-    template.find('.avatar').attr('title', `[Character] ${item.name}\nFile: ${item.avatar}`);
-    template.find('.ch_name').text(item.name).attr('title', `[Character] ${item.name}`);
+    template.find('.avatar').attr('title', `${item.name}\nFile: ${item.avatar}`);
+    template.find('.ch_name').text(item.name).attr('title', item.name);
     template.find('.ch_avatar_url').text(power_user.show_card_avatar_urls ? item.avatar : '');
     template.find('.ch_fav_icon').css('display', 'none');
     const isFav = normalizeFav(item.fav);
