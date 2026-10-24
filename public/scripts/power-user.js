@@ -162,6 +162,10 @@ export const power_user = {
     play_message_sound: false,
     play_sound_unfocused: true,
     auto_save_msg_edits: false,
+    /** The volume audio and video in messages start at, 0 to 100. */
+    media_volume: 50,
+    /** Whether audio and video in messages may start playing by themselves. */
+    media_autoplay: false,
     confirm_message_delete: true,
 
     sort_field: 'name',
@@ -2033,6 +2037,9 @@ export async function loadPowerUserSettings(settings, data) {
     $('#hold_recent_characters_count').val(clampRecentCharacterCount(power_user.hold_recent_characters_count));
     applyHoldRecentCharacters();
     $('#auto_save_msg_edits').prop('checked', power_user.auto_save_msg_edits);
+    $('#media_volume').val(power_user.media_volume);
+    $('#media_volume_counter').val(power_user.media_volume);
+    $('#media_autoplay').prop('checked', power_user.media_autoplay);
     $('#allow_name1_display').prop('checked', power_user.allow_name1_display);
     $('#allow_name2_display').prop('checked', power_user.allow_name2_display);
     //$("#removeXML").prop("checked", power_user.removeXML);
@@ -4134,6 +4141,17 @@ jQuery(() => {
     $('#play_sound_unfocused').on('input', function () {
         power_user.play_sound_unfocused = !!$(this).prop('checked');
         saveSettingsDebounced('power_user.play_sound_unfocused');
+    });
+
+    $('#media_volume').on('input', function () {
+        power_user.media_volume = Math.max(0, Math.min(100, Number($(this).val()) || 0));
+        $('#media_volume_counter').val(power_user.media_volume);
+        saveSettingsDebounced('power_user.media_volume');
+    });
+
+    $('#media_autoplay').on('input', function () {
+        power_user.media_autoplay = !!$(this).prop('checked');
+        saveSettingsDebounced('power_user.media_autoplay');
     });
 
     $('#auto_save_msg_edits').on('input', function () {

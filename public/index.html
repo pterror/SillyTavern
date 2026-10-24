@@ -5525,6 +5525,21 @@
                         </div>
                     </div>
                     <div name="UserSettingsThirdColumn" id="power-user-options-block" class="flex-container wide100p flex1">
+                        <div name="MessageSound" id="message_sound_settings">
+                            <h4 data-i18n="Sound in messages">Sound in messages</h4>
+                            <div class="flex-container alignitemscenter">
+                                <small class="flexGrow">
+                                    <i class="fa-solid fa-volume-high"></i>
+                                    <span data-i18n="Volume audio and video in messages start at">Volume audio and video in messages start at</span>
+                                </small>
+                                <input class="neo-range-slider" type="range" id="media_volume" name="media_volume" min="0" max="100" step="1">
+                                <input class="neo-range-input" type="number" min="0" max="100" step="1" data-for="media_volume" id="media_volume_counter">
+                            </div>
+                            <label class="checkbox_label" for="media_autoplay">
+                                <input id="media_autoplay" type="checkbox" />
+                                <small data-i18n="Let audio and video in messages play by themselves">Let audio and video in messages play by themselves</small>
+                            </label>
+                        </div>
                         <div id="power-user-option-checkboxes" class="advanced-setting">
 
                             <div name="ChatMessageHandlingToggles">
