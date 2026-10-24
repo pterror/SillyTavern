@@ -36,6 +36,8 @@ export const testSetup = {
             }
         }
         await page.waitForFunction('document.getElementById("preloader") === null', { timeout: 0 });
+        // The loading overlay holds focus until it's removed; anything focused before then loses it.
+        await awaitLoaderGone(page);
     },
 
     /**
