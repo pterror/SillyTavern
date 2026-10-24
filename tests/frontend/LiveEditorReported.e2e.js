@@ -129,11 +129,11 @@ test.describe('live editor: reported problems', () => {
         expect(drawn.y + drawn.height).toBeLessThanOrEqual(line.y + line.height + 2);
     });
 
-    test('ED9: list items in a rendered block sit without gaps, as in chat', async ({ page }) => {
+    test('ED9: list items sit without gaps', async ({ page }) => {
         await mount(page, '- one\n- two\n- three\n\nAfter');
         await select(page, 0);
         await page.locator('#liveEditorTestHost .cm-content').evaluate(el => /** @type {HTMLElement} */ (el).blur());
-        const items = page.locator('#liveEditorTestHost .live-unit li');
+        const items = page.locator('#liveEditorTestHost .cm-line').filter({ hasText: /^- / });
         await expect(items).toHaveCount(3);
         const boxes = await items.evaluateAll(els => els.map(el => el.getBoundingClientRect()).map(r => ({ top: r.top, bottom: r.bottom })));
         expect(boxes[1].top - boxes[0].bottom).toBeLessThan(1);
@@ -247,8 +247,8 @@ test.describe('live editor: reported problems', () => {
         await mount(page, 'a {{char}} `{{char}}` <b>{{char}}</b>\n\n<div>{{char}}</div>\n\n```\n{{char}}\n```\n\nend');
         const lines = page.locator('#liveEditorTestHost .cm-line');
         const filled = page.locator('#liveEditorTestHost .cm-line .macro-substituted');
-        // The cursor at the start of a line of each block in turn, away from its macros: they're all filled in.
-        for (const [line, count] of [[1, 3], [3, 1], [7, 1]]) {
+        // With the cursor away from every macro, all of them are filled in; one the cursor is at shows as written.
+        for (const [line, count] of [[1, 5], [3, 5], [9, 5], [6, 4]]) {
             await page.evaluate((line) => {
                 // @ts-ignore
                 const { view } = window.liveEditorTest.editor;
@@ -256,7 +256,7 @@ test.describe('live editor: reported problems', () => {
             }, line);
             await expect(filled).toHaveCount(count);
             await expect(filled.first()).toHaveText('Testchar');
-            expect((await lines.allTextContents()).join('\n')).not.toContain('{{char}}');
+            expect((await lines.allTextContents()).join('\n').split('{{char}}').length - 1).toBe(5 - count);
         }
         const macroColor = await probeStyle(page, '<div class="macro_preview_content"><span class="macro-substituted">x</span></div>', 'span', 'color');
         expect(await styleOf(filled.first(), 'color')).toBe(macroColor);

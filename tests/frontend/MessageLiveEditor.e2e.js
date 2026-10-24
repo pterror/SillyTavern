@@ -58,14 +58,15 @@ test.describe('message edits in the live editor', () => {
         expect((await storedMessage(page, id)).mes).toBe('Old *text*. New **bold**.');
     });
 
-    test('off the line being edited, the text is drawn as the message is', async ({ page }) => {
+    test('the text is styled as the message is, its markup shown dimmed', async ({ page }) => {
         await setAutoSave(page, false);
         const id = await chatWithUserMessage(page, 'First **strong** line.\n\nSecond line.');
         const mes = page.locator(`#chat .mes[mesid="${id}"]`);
         await mes.locator('.mes_edit').click();
         await expect(mes.locator('.cm-editor')).toBeVisible();
         await page.keyboard.press('Control+End');
-        await expect(mes.locator('.cm-editor strong')).toHaveText('strong');
+        await expect(mes.locator('.cm-editor strong')).toHaveText('**strong**');
+        expect(await mes.locator('.cm-editor strong .live-syntax').first().evaluate(el => Number(getComputedStyle(el).opacity))).toBeLessThan(1);
         await mes.locator('.mes_edit_cancel').click();
     });
 

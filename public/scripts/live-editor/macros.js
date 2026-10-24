@@ -1,7 +1,6 @@
 // Macros in the editor: filled in where the cursor isn't, and a dropdown of macros while typing one.
 
 import { state as cmState, view as cmView, autocomplete as cmAutocomplete } from '../../live-editor-lib.js';
-import { renderField } from './render.js';
 import { topLevelMacroSpans } from '../safe-macros.js';
 import { getMacroAutoCompleteAt } from '../autocomplete/MacroAutoCompleteHelper.js';
 import { shouldActivateMacroAutocomplete, MACRO_AUTOCOMPLETE_MODE } from '../autocomplete/MacroAutoComplete.js';
@@ -46,7 +45,7 @@ class MacroWidget extends WidgetType {
 }
 
 /**
- * In the blocks being edited, each macro the selection isn't in shows its value (or, if it only runs when sent, stays
+ * Each macro the selection isn't in shows its value (or, if it only runs when sent, stays
  * as written in its own style); the one being typed in shows as written.
  */
 const macroValues = ViewPlugin.fromClass(class {
@@ -60,7 +59,7 @@ const macroValues = ViewPlugin.fromClass(class {
         // While an IME composes, the values only move with the text; they're worked out again when it ends.
         if (update.view.composing) {
             this.decorations = this.decorations.map(update.changes);
-        } else if (update.docChanged || update.selectionSet || update.state.field(renderField) !== update.startState.field(renderField)) {
+        } else if (update.docChanged || update.selectionSet || update.viewportChanged) {
             this.decorations = this.build(update.view);
         }
     }
@@ -68,11 +67,12 @@ const macroValues = ViewPlugin.fromClass(class {
     /** @param {import('@codemirror/view').EditorView} view */
     build(view) {
         const state = view.state;
-        const { editing } = state.field(renderField);
         const { evaluate } = state.facet(macroOptions);
         /** @type {import('@codemirror/state').Range<import('@codemirror/view').Decoration>[]} */
         const ranges = [];
-        for (const unit of editing) {
+        // Whole lines, so a macro is never cut by the edge of what's shown.
+        for (const visible of view.visibleRanges) {
+            const unit = { from: state.doc.lineAt(visible.from).from, to: state.doc.lineAt(visible.to).to };
             // Found in the text, not the syntax tree: macros are filled in before the text is read as markdown, so
             // one in code, in HTML or after a backslash is filled in too, as the preview shows it.
             for (const span of topLevelMacroSpans(state.doc.sliceString(unit.from, unit.to))) {

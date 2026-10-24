@@ -7346,11 +7346,6 @@ textarea.live-editor-textarea {
     animation: field_edit_attention 0.8s ease-in-out;
 }
 
-/* The block being edited: syntax shows only on the lines the selection is on. */
-.cm-editor.live-editor .live-line:not(.live-cursor-line) .live-syntax {
-    display: none;
-}
-
 .cm-editor.live-editor .live-syntax {
     opacity: 0.55;
 }
@@ -7371,13 +7366,6 @@ textarea.live-editor-textarea {
 
 .cm-editor.live-editor .live-html {
     opacity: 0.7;
-}
-
-/* A block away from the cursor, drawn as chat draws it: the newlines between the render's elements are whitespace
- * there, not line breaks as in the editor's text (they'd open gaps between list items). */
-.cm-editor.live-editor .live-unit {
-    cursor: text;
-    white-space: normal;
 }
 
 /* Quoted dialogue in an editor of chat text that doesn't have chat's text classes (the chat box, a reasoning block):
@@ -7404,9 +7392,22 @@ textarea.live-editor-textarea {
     vertical-align: middle;
 }
 
-/* The chat box's toolbar shows only while the user is in the chat box. */
+/* The chat box's toolbar shows only while the user is in the chat box, over the chat above it: taking room in the
+ * box would move the text when focus comes in, between a click's press and its release. */
 .cm-editor.live-editor.live-toolbar-when-focused:not(:focus-within) .cm-panels-top {
     display: none;
+}
+
+.cm-editor.live-editor.live-toolbar-when-focused .cm-panels-top {
+    position: absolute;
+    top: auto;
+    bottom: 100%;
+    left: 0;
+    right: 0;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 10px 10px 0 0;
+    background-color: var(--SmartThemeBlurTintColor);
+    backdrop-filter: blur(var(--SmartThemeBlurStrength));
 }
 
 .cm-editor.live-editor .cm-panels-top {

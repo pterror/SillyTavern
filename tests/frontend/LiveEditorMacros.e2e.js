@@ -39,9 +39,9 @@ test.describe('live editor macros', () => {
         });
     });
 
-    test('in the block being edited, macros are filled in except the one the cursor is in; ones that only run when sent stay as written', async ({ page }) => {
+    test('macros are filled in except the one the cursor is in; ones that only run when sent stay as written', async ({ page }) => {
         await mountWithMacros(page, 'Hello {{char}} and {{random::a::b}}.');
-        await page.locator('#liveEditorTestHost .live-unit').click();
+        await page.locator('#liveEditorTestHost .cm-line').first().click();
         await page.evaluate(() => {
             // @ts-ignore
             const { editor } = window.liveEditorTest;
@@ -59,7 +59,7 @@ test.describe('live editor macros', () => {
 
     test('typing a macro shows the app\'s macro suggestions with the highlighted one\'s current value', async ({ page }) => {
         await mountWithMacros(page, 'x');
-        await page.locator('#liveEditorTestHost .live-unit').click();
+        await page.locator('#liveEditorTestHost .cm-line').first().click();
         await page.keyboard.press('End');
         await page.keyboard.type(' {{cha');
         const list = page.locator('#liveEditorTestHost .cm-tooltip-autocomplete');
