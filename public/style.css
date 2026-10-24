@@ -3204,6 +3204,12 @@ input[type="file"] {
     display: none;
 }
 
+#rm_button_selected_ch .character_rename_input {
+    width: 100%;
+    margin: 0;
+    font-size: inherit;
+}
+
 .selected-right-tab {
     filter: brightness(150%);
 }
