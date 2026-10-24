@@ -63,6 +63,8 @@ let restored = false;
 let keptApplied = /** @type {SavedView|null} */ (null);
 /** The unsaved changes as the page loaded: read before the kept view is applied, which clears them. */
 let draftAtLoad = /** @type {{ id: string|null, view: object } | null} */ (null);
+/** Whether `draftAtLoad` was put back as the page loaded. */
+let draftShownAtLoad = false;
 /** The views read so far, in order, and where the next page starts. @type {SavedView[]} */
 let loaded = [];
 let nextCursor = /** @type {string|null} */ (null);
@@ -689,6 +691,11 @@ export function applyKeptView() {
     } else {
         drawPicker();
     }
+    // Its unsaved changes go back on at once too (a search typed and left, on "All characters" as on a view).
+    if (draftAtLoad && draftAtLoad.id === currentId) {
+        draftShownAtLoad = true;
+        deps.setView(fullView(draftAtLoad.view));
+    }
 }
 
 /** @returns {SavedView|null} The view kept by `applyView()`. */
@@ -709,12 +716,16 @@ export async function restoreCurrentView() {
     if (!deps) return;
     // Read before the view is applied: applying it draws a list with no changes, which clears the draft. A view kept
     // in browser storage was applied as the page loaded, so the draft was read then.
-    const draft = keptApplied ? draftAtLoad : readDraft();
-    // The server's copy of the view applied from browser storage: applied again only when it differs.
+    const draft = keptApplied || draftShownAtLoad ? draftAtLoad : readDraft();
+    // The server's copy of the view applied from browser storage: applied again only when it differs, which draws
+    // the list with no changes, so its unsaved changes go back on after.
     const showing = keptApplied;
     keptApplied = null;
+    let reapplied = !draftShownAtLoad;
+    draftShownAtLoad = false;
     const apply = (/** @type {SavedView} */ saved) => {
         if (showing && showing.id === saved.id && showing.name === saved.name && deps.sameView(fullView(showing.view), fullView(saved.view))) return;
+        reapplied = true;
         applyView(saved);
     };
     if (isFolderViewId(currentId)) {
@@ -734,13 +745,14 @@ export async function restoreCurrentView() {
         }
         restored = true;
         if (answer.notFound) {
+            reapplied = true;
             applyView(null);
         } else {
             apply(answer);
         }
     }
     restored = true;
-    if (draft && draft.id === currentId) deps.setView(fullView(draft.view));
+    if (reapplied && draft && draft.id === currentId) deps.setView(fullView(draft.view));
     refreshSavedViewState();
 }
 
