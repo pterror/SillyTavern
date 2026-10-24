@@ -156,6 +156,47 @@ test.describe('generation as upstream extensions see it', () => {
         expect(mock.state.prompts.at(-1)).toContain('Describe the weather in one word.');
     });
 
+    test('/sysgen in instruct mode sends its instruction in the template\'s turns', async ({ page }) => {
+        await testSetup.awaitST({ page });
+        const avatar = await createCharacter(page, `SysgenInstruct-${stamp()}`);
+        await openCharacter(page, avatar);
+        await connectLlamaCpp(page, mock.url, false);
+        // Gemma 2's sequences, as default/content/presets/instruct/Gemma 2.json has them.
+        await page.evaluate(async () => {
+            // @ts-ignore
+            Object.assign(SillyTavern.getContext().powerUserSettings.instruct, {
+                enabled: true, preset: 'Gemma 2', wrap: true, macro: true, names_behavior: 'force',
+                input_sequence: '<start_of_turn>user', output_sequence: '<start_of_turn>model', system_sequence: '<start_of_turn>system',
+                input_suffix: '<end_of_turn>\n', output_suffix: '<end_of_turn>\n', system_suffix: '<end_of_turn>\n',
+                stop_sequence: '<end_of_turn>', system_same_as_user: true, last_output_sequence: '', first_output_sequence: '',
+                last_system_sequence: '', first_input_sequence: '', last_input_sequence: '', user_alignment_message: '',
+                story_string_prefix: '<start_of_turn>user', story_string_suffix: '<end_of_turn>\n', skip_examples: false,
+                sequences_as_stop_strings: true, activation_regex: '',
+            });
+            const { saveSettings } = await import('/script.js');
+            await saveSettings();
+        });
+        try {
+            const before = mock.state.prompts.length;
+            await page.evaluate(async () => {
+                // @ts-ignore
+                await SillyTavern.getContext().executeSlashCommandsWithOptions('/sysgen Describe the weather in one word.');
+            });
+            await expect.poll(() => mock.state.prompts.length).toBeGreaterThan(before);
+            const prompt = mock.state.prompts.at(-1);
+            // The instruction is a turn of its own, and the prompt ends opening the model's.
+            expect(prompt).toMatch(/<start_of_turn>(user|system)\n[^<]*Describe the weather in one word\.[^<]*<end_of_turn>/);
+            expect(prompt.trimEnd()).toMatch(/<start_of_turn>model(\n.*)?$/);
+        } finally {
+            await page.evaluate(async () => {
+                // @ts-ignore
+                SillyTavern.getContext().powerUserSettings.instruct.enabled = false;
+                const { saveSettings } = await import('/script.js');
+                await saveSettings();
+            });
+        }
+    });
+
     test('GROUP_MEMBER_DRAFTED carries the member\'s index in `characters`', async ({ page }) => {
         await testSetup.awaitST({ page });
         const avatar = await createCharacter(page, `Drafted-${stamp()}`);
