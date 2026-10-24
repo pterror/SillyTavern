@@ -128,6 +128,17 @@ test.describe('live editor rendering', () => {
         expect(await tops()).toEqual(before);
     });
 
+    test('an <img> shows its image, self-closing or not, in a line or on its own, and the tag stays, dimmed', async ({ page }) => {
+        const tags = ['<img src="/img/ai4.png" width="20" alt="a">', '<img src="/img/ai4.png" width="20" alt="b"/>', '<img src="/img/ai4.png" width="20" alt="c" />', '<img src="/img/ai4.png" width="20" alt="d" onerror="alert(1)">'];
+        await mountRendered(page, `in ${tags[0]} a line\n\n${tags[1]}\n\nalso ${tags[2]} in one\n\n${tags[3]}`);
+        const shown = page.locator('#liveEditorTestHost :is(.live-image, .live-html-render) img');
+        await expect(shown).toHaveCount(4);
+        expect(await shown.evaluateAll(els => els.map(el => el.getAttribute('alt')).sort())).toEqual(['a', 'b', 'c', 'd']);
+        expect(await shown.evaluateAll(els => els.some(el => el.hasAttribute('onerror')))).toBe(false);
+        const dimmed = await page.locator('#liveEditorTestHost .live-html').evaluateAll(els => els.map(el => el.textContent));
+        expect(dimmed).toEqual(tags);
+    });
+
     test('typing updates the field as written', async ({ page }) => {
         await mountRendered(page, 'One.\n\nTwo.');
         await page.locator('#liveEditorTestHost .cm-line').nth(2).click();

@@ -188,6 +188,28 @@ const KeptHtmlBlocks = {
     }],
 };
 
+// ---- A line holding only a self-closing tag (`<img src="a.png" />`) starts an HTML block, as in marked: CommonMark's
+// seventh kind of HTML block allows `/>`, and @lezer/markdown's rule for it leaves that out. Like that rule's, the block
+// runs to the next blank line and doesn't interrupt a paragraph. ----
+
+const selfClosingTagLine = /^<(?!(?:script|pre|style)\b)[a-z][\w-]*(?:\s+[a-z:_][\w.:-]*(?:\s*=\s*(?:[^\s"'=<>`]+|'[^']*'|"[^"]*"))?)*\s*\/>\s*$/i;
+
+/** @type {import('@lezer/markdown').MarkdownConfig} */
+const SelfClosingHtmlBlocks = {
+    parseBlock: [{
+        name: 'SelfClosingHTMLBlock',
+        parse(cx, line) {
+            if (line.next !== 60 || !selfClosingTagLine.test(line.text.slice(line.pos))) return false;
+            const from = cx.lineStart + line.pos;
+            let to = cx.lineStart + line.text.length;
+            while (cx.nextLine() && line.next !== -1) to = cx.lineStart + line.text.length;
+            cx.addElement(cx.elt('HTMLBlock', from, to));
+            return true;
+        },
+        before: 'HTMLBlock',
+    }],
+};
+
 // ---- Image sizes, as marked-processor.js's `imageSizeExt`: `![alt](url =WxH)` and `[id]: url =WxH`. ----
 
 const IMAGE_SIZE_UNITS = ['px', '%', 'em', 'rem', 'vw', 'vh', 'ch', 'ex', 'pt', 'pc', 'cm', 'mm', 'in'];
@@ -400,7 +422,7 @@ export function chatMarkdownExtensions(options = {}) {
         TaskList,
         MarkedStrikethrough,
         MarkedAutolink,
-        ...(options.encodeTags ? [] : [KeptHtmlBlocks]),
+        ...(options.encodeTags ? [] : [KeptHtmlBlocks, SelfClosingHtmlBlocks]),
         ImageSizes,
         Macros,
         ...(options.emojis ? [emojiShortcodes(options.emojis)] : []),

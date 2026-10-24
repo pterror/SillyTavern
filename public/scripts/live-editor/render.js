@@ -97,8 +97,9 @@ class ImageWidget extends WidgetType {
     toDOM() {
         const span = document.createElement('span');
         span.className = 'live-image';
-        // The render wraps a lone image in a paragraph; only the image is drawn here.
-        span.innerHTML = this.html.trim().replace(/^<p>([\s\S]*)<\/p>$/, '$1');
+        // The render wraps a lone image in a paragraph; only the image is drawn here. Sanitized here too: a field's
+        // render may leave that to whoever shows it.
+        span.innerHTML = DOMPurify.sanitize(this.html.trim().replace(/^<p>([\s\S]*)<\/p>$/, '$1'));
         return span;
     }
 }
@@ -241,6 +242,10 @@ const textStyle = ViewPlugin.fromClass(class {
                         const tag = state.doc.sliceString(node.from, node.to);
                         const match = /^<(\/?)([a-z][a-z0-9]*)\b[^>]*?(\/?)>$/i.exec(tag);
                         const name = match?.[2].toLowerCase();
+                        if (match && name === 'img' && !match[1]) {
+                            // Drawn after its tag, as a markdown image is.
+                            ranges.push(Decoration.widget({ widget: new ImageWidget(render(tag)), side: 1 }).range(node.to));
+                        }
                         if (match && name && INLINE_HTML.has(name) && !match[3]) {
                             if (!match[1]) {
                                 open.push({ name, tag, to: node.to });

@@ -24,7 +24,7 @@ const BLOCK_NAMES = {
     ATXHeading1: 'heading', ATXHeading2: 'heading', ATXHeading3: 'heading', ATXHeading4: 'heading',
     ATXHeading5: 'heading', ATXHeading6: 'heading', SetextHeading1: 'heading', SetextHeading2: 'heading',
     FencedCode: 'code', CodeBlock: 'code', Blockquote: 'blockquote', BulletList: 'list', OrderedList: 'list',
-    Table: 'table', HorizontalRule: 'hr', HTMLBlock: 'html', Paragraph: 'paragraph',
+    Table: 'table', HorizontalRule: 'hr', HTMLBlock: 'html', CommentBlock: 'html', Paragraph: 'paragraph',
 };
 const INLINE_NAMES = {
     Emphasis: 'em', StrongEmphasis: 'strong', Strikethrough: 'del', InlineCode: 'codespan', Link: 'link',
@@ -168,6 +168,7 @@ const CORPUS = {
     'strong around emphasis around code': '**a *b `c`* d**',
     'list items with emphasis': '- *a*\n- **b**',
     'inline html':'a <span>b</span> c',
+    'a line holding only a tag, self-closing or not, is an HTML block': '<img src="a.png" width="40">\n\n<img src="a.png" />\nnext line\n\n<span>x</span>\n\n<!-- note -->\n\ntext\n<img src="b.png" />\n\n> <br/>\n\nend',
     'emoji': 'hi :smile: and :notanemoji: and `:smile:`',
     'sized image': '![a](b.png =100x200) and ![c](d.png =50%x* "title")',
     'sized definition': '![a][r]\n\n[r]: x.png =10x10',
