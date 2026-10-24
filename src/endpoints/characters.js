@@ -40,7 +40,7 @@ import { convertedFileKey } from '../library-codes.js';
 import { avatarFile, avatarImage, avatarPathOf, inAvatarLane, writeWithAvatar } from '../character-avatars.js';
 import { chatNamesOf, compatChatIdOf, compatChatIds, droppedOf, labelBaseOf, moveToChatNamed } from '../chat-request.js';
 import { requestSession } from '../request-session.js';
-import { bookmarkCompatId, sessionCompatId } from '../chat-engine.js';
+import { sessionCompatId } from '../chat-engine.js';
 
 import { groupDigests, groupObjects } from './groups.js';
 // Use shallow character data for the character list
@@ -2836,7 +2836,8 @@ router.post('/chats', validateAvatarUrlMiddleware, async function (request, resp
             if (!page.more || page.rows.length === 0) break;
             after = page.rows[page.rows.length - 1].position;
         }
-        const named = rows.map(r => ({ ...r, file_id: r.bookmark != null ? bookmarkCompatId(r.bookmark) : sessionCompatId(String(r.session), tree) }));
+        const ids = await store.chats.bookmarkChatIds(tree, rows.flatMap(r => (r.bookmark != null ? [r.bookmark] : [])));
+        const named = rows.map(r => ({ ...r, file_id: r.bookmark != null ? /** @type {string} */ (ids.get(String(r.bookmark))) : sessionCompatId(String(r.session), tree) }));
         if (request.body.simple) {
             return response.send(named.map(r => ({ file_name: `${r.file_id}.jsonl`, file_id: r.file_id, label: r.name ?? null })));
         }

@@ -68,6 +68,16 @@ function alternativeWindow(count, shown, full) {
     return [Math.max(0, at - ALTERNATIVE_WINDOW), Math.min(count, at + ALTERNATIVE_WINDOW + 1)];
 }
 const BOOKMARK_COMPAT_ID = /^b(0|[1-9][0-9]*)$/;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Whether a bookmark's label can be its chat id: upstream names a chat by its file name, and a label is that name
+ * here. It can't be when it reads as another kind of chat id (`resolveChatName()` reads those first) or is empty.
+ * @param {string} label
+ */
+function readsAsLabel(label) {
+    return label.trim() !== '' && !BOOKMARK_COMPAT_ID.test(label) && sessionCompatOf(label) === null && !UUID.test(label);
+}
 
 /**
  * A bookmark's compat chat id: `b<id>`, a prefix no message id has, so a message id never names a bookmark.
@@ -504,15 +514,59 @@ export class ChatEngine {
     }
 
     /**
+     * The chat id upstream's routes give each of these bookmarks of `tree`, by the bookmark's id as a string: in a
+     * character's tree its label when no other bookmark of the tree has it and it reads as no other kind of id
+     * (`readsAsLabel()`), as upstream names a chat by its file name; else, and in a group's tree, its `b<id>`.
+     * @param {bigint} tree
+     * @param {(bigint | number | string)[]} bookmarks
+     * @returns {Promise<Map<string, string>>}
+     */
+    async bookmarkChatIds(tree, bookmarks) {
+        const ids = [...new Set(bookmarks.map(b => BigInt(b)))];
+        /** @type {Map<string, string>} */
+        const out = new Map();
+        if (ids.length === 0) return out;
+        // A group's chat id names its group too (a group route may give no group id) and a label is free text, so a
+        // group's chats keep their ids; upstream's group chat ids aren't names either.
+        if (!(await this.people.speakers([tree])).has(tree)) {
+            for (const id of ids) out.set(String(id), bookmarkCompatId(id));
+            return out;
+        }
+        const rows = await this.store.chatRead('bookmarks', { ids });
+        /** @type {Map<string, bigint[]>} */
+        const named = new Map();
+        for (const [i, id] of ids.entries()) {
+            const label = rows[i]?.name;
+            let chatId = bookmarkCompatId(id);
+            if (typeof label === 'string' && readsAsLabel(label)) {
+                if (!named.has(label)) named.set(label, await this.store.chatRead('bookmarksNamed', { tree, name: label }));
+                const same = /** @type {bigint[]} */ (named.get(label));
+                if (same.length === 1 && same[0] === id) chatId = label;
+            }
+            out.set(String(id), chatId);
+        }
+        return out;
+    }
+
+    /**
+     * @param {bigint} tree
+     * @param {bigint | number | string} bookmark
+     * @returns {Promise<string>} `bookmarkChatIds()` of one bookmark.
+     */
+    async bookmarkChatId(tree, bookmark) {
+        return /** @type {string} */ ((await this.bookmarkChatIds(tree, [bookmark])).get(String(BigInt(bookmark))));
+    }
+
+    /**
      * Upstream's compat chat id of a session's conversation in a tree (`getCurrentChatId()`, `characters[].chat`,
-     * `group.chat_id`): its current chat's `b<id>`, else `s<UUID>.<tree>`.
+     * `group.chat_id`): its current chat's id (`bookmarkChatIds()`), else `s<UUID>.<tree>`.
      * @param {string | null | undefined} session The session's UUID, when it has one stored or made.
      * @param {string} identifier The UUID the conversation is named by (the session's, or the caller's deterministic one).
      * @param {bigint} tree
      */
     async compatChatId(session, identifier, tree) {
         const current = await this.currentChat(session, tree);
-        return current === null ? sessionCompatId(identifier, tree) : bookmarkCompatId(current);
+        return current === null ? sessionCompatId(identifier, tree) : this.bookmarkChatId(tree, current);
     }
 
     /**
@@ -2780,7 +2834,7 @@ export class ChatEngine {
             }
             const [row] = await this.listRows(e.tree, [{ bookmark: e.bookmark, session: e.bookmark === null ? e.session : null, at }], withMetadata);
             if (row.bookmark === null && row.session === null) continue;
-            rows.push({ ...row, position: e.position, id: e.bookmark === null ? sessionCompatId(row.session, e.tree) : bookmarkCompatId(e.bookmark), name: e.bookmark === null ? null : row.name });
+            rows.push({ ...row, position: e.position, id: e.bookmark === null ? sessionCompatId(row.session, e.tree) : await this.bookmarkChatId(e.tree, e.bookmark), name: e.bookmark === null ? null : row.name });
         }
         return { rows, more: page.length > limit };
     }

@@ -1,6 +1,5 @@
 import { requestStore } from './user-stores.js';
 import { requestSession } from './request-session.js';
-import { bookmarkCompatId } from './chat-engine.js';
 import { FIELD } from './library-codes.js';
 
 /**
@@ -245,7 +244,8 @@ export async function chatNamesOf(store, tree) {
     let after;
     for (;;) {
         const page = await store.chats.bookmarks({ tree, after, limit: 500 });
-        for (const b of page.rows) names.push(bookmarkCompatId(b.id));
+        const ids = await store.chats.bookmarkChatIds(tree, page.rows.map((/** @type {any} */ b) => b.id));
+        for (const b of page.rows) names.push(/** @type {string} */ (ids.get(String(b.id))));
         if (!page.more) return names;
         after = page.rows[page.rows.length - 1].id;
     }

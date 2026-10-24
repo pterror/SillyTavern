@@ -85,8 +85,9 @@ test('a fork is one request and opens the branch with the chat\'s metadata', asy
         const { forkChat } = await import('/scripts/bookmarks.js');
         return forkChat(1);
     });
-    // The fork's compat chat id; the tab's session moves there and the fork is its current chat.
-    expect(name).toMatch(/^b\d+$/);
+    // The fork's compat chat id, its label (as upstream names a chat by its file name); the tab's session moves there
+    // and the fork is its current chat.
+    expect(name).toMatch(/ - Branch #1$/);
     expect(requests).toEqual(['/api/chats/bookmark']);
 
     const state = await page.evaluate(async () => {

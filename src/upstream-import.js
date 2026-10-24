@@ -178,6 +178,7 @@ async function runImport(store, directories) {
             report.notImported.push({ file: where, why: `the chat couldn't be stored (${imported.reason})` });
             return;
         }
+        // Internal: read back by the itemization import (bookmarkIdOf()), so the bookmark's id, not its chat id.
         map.chats[where] = bookmarkCompatId(imported.bookmark);
         report.imported[kind]++;
         report.imported.messages += parsed.messages.length;
