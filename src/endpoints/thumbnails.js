@@ -24,6 +24,9 @@ const thumbnailsEnabled = !!getConfigValue('thumbnails.enabled', true, 'boolean'
 const quality = Math.min(100, Math.max(1, parseInt(getConfigValue('thumbnails.quality', 95, 'number'))));
 const pngFormat = String(getConfigValue('thumbnails.format', 'jpg')).toLowerCase().trim() === 'png';
 
+/** Originals that didn't decode as an image, by path: the `mtimeMs:size` they had then. Tried again once changed. */
+const undecodable = new Map();
+
 /**
  * @typedef {'bg' | 'avatar' | 'persona'} ThumbnailType
  */
@@ -196,10 +199,8 @@ export async function generateThumbnail(directories, type, file, forceGenerate =
         const result = await processSingleImage(file, pathToOriginalFile, thumbnailFolder, type);
         if (result.success) {
             return { path: pathToCachedFile, aspectRatio: result.aspectRatio ?? null, resolution: result.resolution ?? null };
-        } else {
-            console.error(`[generateThumbnail] Failed to process image ${file}:`, result.error);
-            return { path: null, aspectRatio: null, resolution: null };
         }
+        return { path: null, aspectRatio: null, resolution: null };
     } catch (error) {
         console.error(`[generateThumbnail] Unexpected error processing ${file}:`, error);
         return { path: null, aspectRatio: null, resolution: null };
@@ -218,8 +219,21 @@ async function processSingleImage(file, pathToOriginalFile, thumbnailFolder, typ
     const pathToCachedFile = path.join(thumbnailFolder, file);
 
     try {
+        const stat = fs.statSync(pathToOriginalFile);
+        const version = `${stat.mtimeMs}:${stat.size}`;
+        if (undecodable.get(pathToOriginalFile) === version) {
+            return { success: false, filename: file, error: 'not a readable image' };
+        }
         const fileBuffer = fs.readFileSync(pathToOriginalFile);
-        const image = await Jimp.read(fileBuffer);
+        let image;
+        try {
+            image = await Jimp.read(fileBuffer);
+        } catch (error) {
+            // Said once per version of the file: it is asked for on every list draw.
+            undecodable.set(pathToOriginalFile, version);
+            console.warn(`[Thumbnails] No thumbnail for ${file}, not a readable image: ${error.message}`);
+            return { success: false, filename: file, error: error.message };
+        }
 
         // Calculate aspect ratio from original image dimensions
         const originalWidth = image.bitmap.width;
