@@ -973,8 +973,6 @@ function tagMoveFailedText({ tagId, tagName, anchorId, anchorName, refusedId, re
 const CHANGE_STREAM_NOTICE_AFTER_MS = 10000;
 
 function onCharacterChangeMessage() {
-    // Wherever a held character's tags are shown, not only in the list.
-    onEntityTagsChanged();
     if (isCharacterListShowing()) {
         getCharactersDebounced();
     } else {
@@ -1020,7 +1018,8 @@ function setupCharacterChangeStream() {
                 void onStateChanged({ tree: message.tree ?? null, at: message.at ?? null });
                 return;
             }
-            onCharacterChangeMessage();
+            // `{}`: characters changed. Their tags changing is 'groups-changed'.
+            if (message !== null && typeof message === 'object' && message.type === undefined) onCharacterChangeMessage();
         },
         open: () => {
             clearTimeout(noticeTimer);
@@ -1032,6 +1031,7 @@ function setupCharacterChangeStream() {
             if (!hadError) return;
             hadError = false;
             onCharacterChangeMessage();
+            onEntityTagsChanged();
             onTagsChanged();
         },
         error: () => {

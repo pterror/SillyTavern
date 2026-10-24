@@ -145,6 +145,31 @@ test.describe('tag assignments changed in another tab', () => {
         }
     });
 
+    test('a character edited elsewhere, with no tag changed, is not asked about', async ({ page, browser }) => {
+        const { other, close } = await openOtherTab(browser);
+        try {
+            const avatar = await createCharacter(other, 'TagAssignOtherTabsPlainEdit');
+            await loadApp(page);
+            await openCharacterManagementDrawer(page);
+            await holdCharacters(page, [avatar]);
+            await page.waitForTimeout(STREAM_SETTLE_MS);
+            const asked = [];
+            const listReads = [];
+            page.on('request', (request) => {
+                const path = new URL(request.url()).pathname;
+                if (path === '/api/tags/assignment-changes') asked.push(path);
+                else if (path.startsWith('/api/characters/') && path !== '/api/characters/merge-attributes') listReads.push(path);
+            });
+            await api(other, '/api/characters/merge-attributes', { avatar, description: 'edited elsewhere', data: { description: 'edited elsewhere' } });
+            // The change reached this tab: the showing list is read again.
+            await expect.poll(() => listReads.length, { timeout: 15000 }).toBeGreaterThan(0);
+            await page.waitForTimeout(STREAM_SETTLE_MS);
+            expect(asked).toEqual([]);
+        } finally {
+            await close();
+        }
+    });
+
     test('a group held here gains and loses the tag, with the list hidden', async ({ page, browser }) => {
         const { other, close } = await openOtherTab(browser);
         try {
