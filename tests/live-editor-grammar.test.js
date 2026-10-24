@@ -146,6 +146,7 @@ const CORPUS = {
     'nested emphasis keeps spaces': '*a **b** a*',
     'unclosed star': 'a * b and *c',
     'strikethrough both lengths': 'a ~one~ b ~~two~~ c ~~~three~~~',
+    'strikethrough flanks as marked': '"Hey~" she said. "Hi~" and "a~" b "~c" and x ~"y"~ z and (~p~) and a~b~c',
     'code spans': 'use `x *y*` and ``a`b``',
     'links': 'a [link](http://x.com "t") and ![img](a.png) and [ref][r]\n\n[r]: http://r.com',
     'autolinks': 'see https://example.com/a_b_ and www.site.com. and mail a@b.co',

@@ -53,6 +53,7 @@ const MarkedAutolink = {
 
 // ---- Strikethrough, as marked's `del`: `~text~` and `~~text~~`. ----
 
+const STRIKE_PUNCTUATION = /(?!~)[\p{P}\p{S}]/u;
 const StrikeOne = { resolve: 'Strikethrough', mark: 'StrikethroughMark' };
 const StrikeTwo = { resolve: 'Strikethrough', mark: 'StrikethroughMark' };
 
@@ -70,10 +71,16 @@ const MarkedStrikethrough = {
             while (cx.char(end) === 126) end++;
             const length = end - pos;
             if (length > 2) return -1;
+            // Flanking as marked's delLDelim/delRDelim: whitespace or punctuation (where `~` doesn't count) on one side
+            // only lets a run open or close from the other; `Hey~" she said. "Hi~` has no strikethrough.
             const before = cx.slice(pos - 1, pos);
             const after = cx.slice(end, end + 1);
-            const canOpen = after !== '' && !/\s|~/.test(after);
-            const canClose = before !== '' && !/\s|~/.test(before);
+            const spaceBefore = before === '' || /\s/u.test(before);
+            const spaceAfter = after === '' || /\s/u.test(after);
+            const punctBefore = STRIKE_PUNCTUATION.test(before);
+            const punctAfter = STRIKE_PUNCTUATION.test(after);
+            const canOpen = !spaceAfter && after !== '~' && (!punctAfter || spaceBefore || punctBefore);
+            const canClose = !spaceBefore && before !== '~' && (!punctBefore || spaceAfter || punctAfter);
             return cx.addDelimiter(length === 1 ? StrikeOne : StrikeTwo, pos, end, canOpen, canClose);
         },
         after: 'Emphasis',
