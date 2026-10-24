@@ -35,8 +35,11 @@ body.stackedDrawers #chat-button {
     opacity: 1;
 }
 
+/* Hidden whole: a descendant transitioning its own visibility (anything with `transition: all`) would stay visible
+   while it does, so nothing is painted or clicked outside an empty clip either. */
 body.stackedDrawers .stackCovered {
     visibility: hidden;
+    clip-path: inset(50%) !important;
     transition: visibility 0s !important;
 }
 

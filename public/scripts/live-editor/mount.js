@@ -5,6 +5,7 @@ import { liveMacros } from './macros.js';
 import { liveFormatting } from './formatting.js';
 import { livePaste } from './paste.js';
 import { liveSearch } from './search.js';
+import { OVERLAYS_CHANGED_EVENT } from '../drawer-stack.js';
 
 const { EditorState, Compartment, Annotation, Prec } = cmState;
 const { EditorView, placeholder: placeholderExtension, keymap, drawSelection } = cmView;
@@ -169,6 +170,16 @@ export function mountLiveEditor(textarea, options = {}) {
         }),
     ];
 
+    // Its tooltips (macro suggestions, the paste picker) float over the page from inside it, where nothing outside
+    // watches: the page is told when they come or go.
+    let hadTooltip = false;
+    const tellTooltips = EditorView.updateListener.of((update) => {
+        const hasTooltip = update.view.dom.querySelector(':scope > .cm-tooltip') !== null;
+        if (hasTooltip === hadTooltip) return;
+        hadTooltip = hasTooltip;
+        update.view.dom.dispatchEvent(new Event(OVERLAYS_CHANGED_EVENT, { bubbles: true }));
+    });
+
     const sync = EditorView.updateListener.of((update) => {
         if (update.docChanged && !update.transactions.some(tr => tr.annotation(fromTextarea))) {
             textareaValue.set.call(textarea, update.state.doc.toString());
@@ -204,6 +215,7 @@ export function mountLiveEditor(textarea, options = {}) {
                 Prec.highest(EditorView.domEventHandlers(forwardHandlers)),
                 sync,
                 keepChatScroll,
+                tellTooltips,
                 placeholderSlot.of(textarea.placeholder ? placeholderExtension(textarea.placeholder) : []),
                 EditorState.readOnly.of(textarea.readOnly),
                 EditorView.editable.of(!textarea.disabled),
