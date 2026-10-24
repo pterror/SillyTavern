@@ -1657,17 +1657,41 @@ textarea.autoSetHeight {
     min-height: calc(attr(rows type(<number>), 2) * 1lh + 2 * (var(--field-padding-block) + var(--field-border-width)));
 }
 
-/* The live editor shows a field's macros as its preview does. */
-.macro_preview_content .macro-substituted,
-.cm-editor.live-editor .macro-substituted {
+/* A field's preview shows each macro's value. */
+.macro_preview_content .macro-substituted {
     color: var(--SmartThemeMacroColor);
 }
 
 /* A macro the preview doesn't run (it has side effects or randomness), shown as written. */
-.macro_preview_content .macro-raw,
-.cm-editor.live-editor .macro-raw {
+.macro_preview_content .macro-raw {
     color: var(--SmartThemeMacroColor);
     opacity: 0.6;
+}
+
+/* The live editor shows a macro as written, then what is sent in its place, which isn't part of the text. */
+.cm-editor.live-editor .macro-source {
+    color: var(--SmartThemeMacroColor);
+}
+
+.cm-editor.live-editor .macro-value {
+    margin-inline-start: 0.3em;
+    padding: 0 0.35em;
+    border-radius: 0.6em;
+    background-color: color-mix(in srgb, var(--SmartThemeMacroColor) 18%, transparent);
+    color: var(--SmartThemeMacroColor);
+    font-size: 0.85em;
+    user-select: none;
+    white-space: pre-wrap;
+}
+
+.cm-editor.live-editor .macro-value::before {
+    content: '\2192\00a0';
+    opacity: 0.7;
+}
+
+.cm-editor.live-editor .macro-value-later {
+    font-style: italic;
+    opacity: 0.7;
 }
 
 /* No height cap of its own: a long preview scrolls with the drawer it's in. */

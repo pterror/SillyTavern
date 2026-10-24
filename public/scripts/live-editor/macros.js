@@ -1,4 +1,4 @@
-// Macros in the editor: filled in where the cursor isn't, and a dropdown of macros while typing one.
+// Macros in the editor: each as written, with what is sent in its place beside it, and a dropdown of macros while typing one.
 
 import { state as cmState, view as cmView, autocomplete as cmAutocomplete } from '../../live-editor-lib.js';
 import { topLevelMacroSpans } from '../safe-macros.js';
@@ -20,33 +20,38 @@ const macroOptions = Facet.define({
     combine: values => values[0] ?? { evaluate: () => null },
 });
 
-class MacroWidget extends WidgetType {
+class MacroValueWidget extends WidgetType {
     /**
-     * @param {string} text
-     * @param {boolean} filled Whether `text` is the macro's value; otherwise the macro as written.
+     * @param {string | null} value The macro's value, or null when it only runs when sent.
      */
-    constructor(text, filled) {
+    constructor(value) {
         super();
-        this.text = text;
-        this.filled = filled;
+        this.value = value;
     }
 
-    /** @param {MacroWidget} other */
+    /** @param {MacroValueWidget} other */
     eq(other) {
-        return other.text === this.text && other.filled === this.filled;
+        return other.value === this.value;
     }
 
     toDOM() {
         const span = document.createElement('span');
-        span.className = this.filled ? 'macro-substituted' : 'macro-raw';
-        span.textContent = this.text;
+        span.className = this.value === null ? 'macro-value macro-value-later' : 'macro-value';
+        span.textContent = this.value === null ? t`filled in when sent` : this.value;
+        span.title = this.value === null ? t`This macro is filled in when the message is sent.` : t`Sent as this`;
+        span.setAttribute('aria-hidden', 'true');
         return span;
+    }
+
+    ignoreEvent() {
+        return false;
     }
 }
 
 /**
- * Each macro the selection isn't in shows its value (or, if it only runs when sent, stays
- * as written in its own style); the one being typed in shows as written.
+ * Each macro shows as written, styled as a macro, followed by what is sent in its place (or, if it only runs when
+ * sent, a note saying so). Neither depends on the selection: the text is never swapped for its value, so selecting
+ * across a macro moves nothing.
  */
 const macroValues = ViewPlugin.fromClass(class {
     /** @param {import('@codemirror/view').EditorView} view */
@@ -59,7 +64,7 @@ const macroValues = ViewPlugin.fromClass(class {
         // While an IME composes, the values only move with the text; they're worked out again when it ends.
         if (update.view.composing) {
             this.decorations = this.decorations.map(update.changes);
-        } else if (update.docChanged || update.selectionSet || update.viewportChanged) {
+        } else if (update.docChanged || update.viewportChanged) {
             this.decorations = this.build(update.view);
         }
     }
@@ -78,21 +83,15 @@ const macroValues = ViewPlugin.fromClass(class {
             for (const span of topLevelMacroSpans(state.doc.sliceString(unit.from, unit.to))) {
                 const from = unit.from + span.start;
                 const to = unit.from + span.end;
-                const inSelection = state.selection.ranges.some(r => r.from <= to && r.to >= from);
-                if (inSelection) continue;
                 const text = state.doc.sliceString(from, to);
-                // A decoration from a plugin can't take a line break away: a macro across lines is styled as written.
-                if (text.includes('\n')) {
-                    ranges.push(Decoration.mark({ class: 'macro-raw' }).range(from, to));
-                    continue;
-                }
                 let value = null;
                 try {
                     value = evaluate(text);
                 } catch (error) {
                     console.warn('Macro could not be filled in', text, error);
                 }
-                ranges.push(Decoration.replace({ widget: new MacroWidget(value ?? text, value !== null) }).range(from, to));
+                ranges.push(Decoration.mark({ class: 'macro-source' }).range(from, to));
+                ranges.push(Decoration.widget({ widget: new MacroValueWidget(value), side: 1 }).range(to));
             }
         }
         return Decoration.set(ranges, true);
