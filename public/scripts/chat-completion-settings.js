@@ -6998,12 +6998,17 @@ export function initOpenAI() {
     });
 
     $('#openai_max_context').on('input', function () {
-        oai_settings.openai_max_context = Number($(this).val());
+        const newMaxContext = Number($(this).val());
+        // A model change re-applies the context size it clamped; don't persist a no-op.
+        const maxContextChanged = newMaxContext !== oai_settings.openai_max_context;
+        oai_settings.openai_max_context = newMaxContext;
         $('#openai_max_context_counter').val(`${$(this).val()}`);
         calculateOpenRouterCost();
         calculateElectronHubCost();
         calculateChutesCost();
-        saveSettingsDebounced('oai_settings');
+        if (maxContextChanged) {
+            saveSettingsDebounced('oai_settings');
+        }
     });
 
     $('#openai_max_tokens').on('input', function () {

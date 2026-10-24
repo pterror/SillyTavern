@@ -1449,6 +1449,21 @@ function showMediaDisplayReloadPrompt() {
     );
 }
 
+/** The theme's color settings, each with its picker and the colors it applies. */
+const themeColorPickers = [
+    { key: 'main_text_color', selector: '#main-text-color-picker', type: 'main' },
+    { key: 'italics_text_color', selector: '#italics-color-picker', type: 'italics' },
+    { key: 'underline_text_color', selector: '#underline-color-picker', type: 'underline' },
+    { key: 'quote_text_color', selector: '#quote-color-picker', type: 'quote' },
+    { key: 'macro_text_color', selector: '#macro-color-picker', type: 'macro' },
+    { key: 'blur_tint_color', selector: '#blur-tint-color-picker', type: 'blurTint' },
+    { key: 'chat_tint_color', selector: '#chat-tint-color-picker', type: 'chatTint' },
+    { key: 'user_mes_blur_tint_color', selector: '#user-mes-blur-tint-color-picker', type: 'userMesBlurTint' },
+    { key: 'bot_mes_blur_tint_color', selector: '#bot-mes-blur-tint-color-picker', type: 'botMesBlurTint' },
+    { key: 'shadow_color', selector: '#shadow-color-picker', type: 'shadow' },
+    { key: 'border_color', selector: '#border-color-picker', type: 'border' },
+];
+
 function applyTheme(name) {
     const theme = themes.find(x => x.name == name);
 
@@ -1457,17 +1472,7 @@ function applyTheme(name) {
     }
 
     const themeProperties = [
-        { key: 'main_text_color', selector: '#main-text-color-picker', type: 'main' },
-        { key: 'italics_text_color', selector: '#italics-color-picker', type: 'italics' },
-        { key: 'underline_text_color', selector: '#underline-color-picker', type: 'underline' },
-        { key: 'quote_text_color', selector: '#quote-color-picker', type: 'quote' },
-        { key: 'macro_text_color', selector: '#macro-color-picker', type: 'macro' },
-        { key: 'blur_tint_color', selector: '#blur-tint-color-picker', type: 'blurTint' },
-        { key: 'chat_tint_color', selector: '#chat-tint-color-picker', type: 'chatTint' },
-        { key: 'user_mes_blur_tint_color', selector: '#user-mes-blur-tint-color-picker', type: 'userMesBlurTint' },
-        { key: 'bot_mes_blur_tint_color', selector: '#bot-mes-blur-tint-color-picker', type: 'botMesBlurTint' },
-        { key: 'shadow_color', selector: '#shadow-color-picker', type: 'shadow' },
-        { key: 'border_color', selector: '#border-color-picker', type: 'border' },
+        ...themeColorPickers,
         {
             key: 'blur_strength',
             action: () => {
@@ -1679,6 +1684,7 @@ function applyTheme(name) {
         },
     ];
 
+    const changedKeys = [];
     for (const { key, selector, type, action } of themeProperties) {
         if (theme[key] !== undefined) {
             const oldValue = power_user[key];
@@ -1687,10 +1693,12 @@ function applyTheme(name) {
             if (selector) $(selector).attr('color', newValue);
             if (type) applyThemeColor(type);
             if (action) action(oldValue, newValue);
+            if (oldValue !== newValue) changedKeys.push(`power_user.${key}`);
         } else {
             console.debug(`Empty theme key: ${key}`);
         }
     }
+    if (changedKeys.length) saveSettingsDebounced(...changedKeys);
 
     console.log('theme applied: ' + name);
 }
@@ -2103,17 +2111,9 @@ export async function loadPowerUserSettings(settings, data) {
     $('#shadow_width').val(power_user.shadow_width);
     $('#shadow_width_counter').val(power_user.shadow_width);
 
-    $('#main-text-color-picker').attr('color', power_user.main_text_color);
-    $('#italics-color-picker').attr('color', power_user.italics_text_color);
-    $('#underline-color-picker').attr('color', power_user.underline_text_color);
-    $('#quote-color-picker').attr('color', power_user.quote_text_color);
-    $('#macro-color-picker').attr('color', power_user.macro_text_color);
-    $('#blur-tint-color-picker').attr('color', power_user.blur_tint_color);
-    $('#chat-tint-color-picker').attr('color', power_user.chat_tint_color);
-    $('#user-mes-blur-tint-color-picker').attr('color', power_user.user_mes_blur_tint_color);
-    $('#bot-mes-blur-tint-color-picker').attr('color', power_user.bot_mes_blur_tint_color);
-    $('#shadow-color-picker').attr('color', power_user.shadow_color);
-    $('#border-color-picker').attr('color', power_user.border_color);
+    for (const { key, selector } of themeColorPickers) {
+        $(selector).attr('color', power_user[key]);
+    }
     $('#reduced_motion').prop('checked', power_user.reduced_motion);
     $('#auto-connect-checkbox').prop('checked', power_user.auto_connect);
     $('#auto-load-chat-checkbox').prop('checked', power_user.auto_load_chat);
@@ -4021,71 +4021,15 @@ jQuery(() => {
         saveSettingsDebounced('power_user.shadow_width');
     });
 
-    $('#main-text-color-picker').on('change', (/** @type {ColorPickerEvent} */ evt) => {
-        power_user.main_text_color = evt.detail.rgba;
-        applyThemeColor('main');
-        saveSettingsDebounced('power_user.main_text_color');
-    });
-
-    $('#italics-color-picker').on('change', (/** @type {ColorPickerEvent} */ evt) => {
-        power_user.italics_text_color = evt.detail.rgba;
-        applyThemeColor('italics');
-        saveSettingsDebounced('power_user.italics_text_color');
-    });
-
-    $('#underline-color-picker').on('change', (/** @type {ColorPickerEvent} */ evt) => {
-        power_user.underline_text_color = evt.detail.rgba;
-        applyThemeColor('underline');
-        saveSettingsDebounced('power_user.underline_text_color');
-    });
-
-    $('#quote-color-picker').on('change', (/** @type {ColorPickerEvent} */ evt) => {
-        power_user.quote_text_color = evt.detail.rgba;
-        applyThemeColor('quote');
-        saveSettingsDebounced('power_user.quote_text_color');
-    });
-
-    $('#macro-color-picker').on('change', (/** @type {ColorPickerEvent} */ evt) => {
-        power_user.macro_text_color = evt.detail.rgba;
-        applyThemeColor('macro');
-        saveSettingsDebounced('power_user.macro_text_color');
-    });
-
-    $('#blur-tint-color-picker').on('change', (/** @type {ColorPickerEvent} */ evt) => {
-        power_user.blur_tint_color = evt.detail.rgba;
-        applyThemeColor('blurTint');
-        saveSettingsDebounced('power_user.blur_tint_color');
-    });
-
-    $('#chat-tint-color-picker').on('change', (/** @type {ColorPickerEvent} */ evt) => {
-        power_user.chat_tint_color = evt.detail.rgba;
-        applyThemeColor('chatTint');
-        saveSettingsDebounced('power_user.chat_tint_color');
-    });
-
-    $('#user-mes-blur-tint-color-picker').on('change', (/** @type {ColorPickerEvent} */ evt) => {
-        power_user.user_mes_blur_tint_color = evt.detail.rgba;
-        applyThemeColor('userMesBlurTint');
-        saveSettingsDebounced('power_user.user_mes_blur_tint_color');
-    });
-
-    $('#bot-mes-blur-tint-color-picker').on('change', (/** @type {ColorPickerEvent} */ evt) => {
-        power_user.bot_mes_blur_tint_color = evt.detail.rgba;
-        applyThemeColor('botMesBlurTint');
-        saveSettingsDebounced('power_user.bot_mes_blur_tint_color');
-    });
-
-    $('#shadow-color-picker').on('change', (/** @type {ColorPickerEvent} */ evt) => {
-        power_user.shadow_color = evt.detail.rgba;
-        applyThemeColor('shadow');
-        saveSettingsDebounced('power_user.shadow_color');
-    });
-
-    $('#border-color-picker').on('change', (/** @type {ColorPickerEvent} */ evt) => {
-        power_user.border_color = evt.detail.rgba;
-        applyThemeColor('border');
-        saveSettingsDebounced('power_user.border_color');
-    });
+    for (const { key, selector, type } of themeColorPickers) {
+        $(selector).on('change', (/** @type {ColorPickerEvent} */ evt) => {
+            // Setting a picker's color (loading the settings, applying a theme) fires this too; only a new color is a change.
+            if (evt.detail.rgba === power_user[key]) return;
+            power_user[key] = evt.detail.rgba;
+            applyThemeColor(type);
+            saveSettingsDebounced(`power_user.${key}`);
+        });
+    }
 
     $('#themes').on('change', function () {
         const themeSelected = String($(this).find(':selected').val());
