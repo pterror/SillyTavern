@@ -199,7 +199,7 @@ test.describe('the chat box with the live editor', () => {
         await page.keyboard.press('Escape');
         await page.keyboard.press('Shift+Enter');
         await page.keyboard.type('next');
-        await expect(chatBoxEditor(page).locator('.macro-substituted')).toHaveText(user);
+        await expect(chatBoxEditor(page).locator('.macro-value')).toHaveText(user);
         await clearChatBox(page);
     });
 
@@ -226,7 +226,7 @@ test.describe('the chat box with the live editor', () => {
         await expect.poll(() => chatBoxValue(page)).toBe('Hi {{user}}\n*said* 你好');
         await page.keyboard.type('!');
         await expect.poll(() => chatBoxValue(page)).toBe('Hi {{user}}\n*said* 你好!');
-        await expect(chatBoxEditor(page).locator('.macro-substituted')).toHaveText(user);
+        await expect(chatBoxEditor(page).locator('.macro-value')).toHaveText(user);
         expect(errors).toEqual([]);
         await clearChatBox(page);
     });

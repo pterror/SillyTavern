@@ -243,22 +243,23 @@ test.describe('live editor: reported problems', () => {
         expect(await value(page)).toBe('Hello **bold**.');
     });
 
-    test('ED20: every macro is filled in and highlighted the same, in code and HTML too, as in the preview', async ({ page }) => {
+    test('ED20: every macro shows its value and is highlighted the same, in code and HTML too, as in the preview', async ({ page }) => {
         await mount(page, 'a {{char}} `{{char}}` <b>{{char}}</b>\n\n<div>{{char}}</div>\n\n```\n{{char}}\n```\n\nend');
-        const lines = page.locator('#liveEditorTestHost .cm-line');
-        const filled = page.locator('#liveEditorTestHost .cm-line .macro-substituted');
-        // With the cursor away from every macro, all of them are filled in; one the cursor is at shows as written.
-        for (const [line, count] of [[1, 5], [3, 5], [9, 5], [6, 4]]) {
+        const sources = page.locator('#liveEditorTestHost .cm-line .macro-source');
+        const filled = page.locator('#liveEditorTestHost .cm-line .macro-value');
+        // Wherever the cursor is, every macro shows as written with its value beside it.
+        for (const line of [1, 3, 9, 6]) {
             await page.evaluate((line) => {
                 // @ts-ignore
                 const { view } = window.liveEditorTest.editor;
                 view.dispatch({ selection: { anchor: view.state.doc.line(line).from } });
             }, line);
-            await expect(filled).toHaveCount(count);
+            await expect(sources).toHaveCount(5);
+            await expect(filled).toHaveCount(5);
             await expect(filled.first()).toHaveText('Testchar');
-            expect((await lines.allTextContents()).join('\n').split('{{char}}').length - 1).toBe(5 - count);
         }
         const macroColor = await probeStyle(page, '<div class="macro_preview_content"><span class="macro-substituted">x</span></div>', 'span', 'color');
+        expect(await styleOf(sources.first(), 'color')).toBe(macroColor);
         expect(await styleOf(filled.first(), 'color')).toBe(macroColor);
     });
 
