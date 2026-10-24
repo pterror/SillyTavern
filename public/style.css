@@ -7323,9 +7323,16 @@ textarea.live-editor-textarea {
     line-height: inherit;
 }
 
-/* The cursor has the text box's caret color (copied onto the editor), not CodeMirror's black. */
-.cm-editor.live-editor .cm-content {
-    caret-color: inherit;
+/* The cursor has the text box's caret color (copied onto the editor), not CodeMirror's black; a selection has the
+ * system's selection color, as the text box's has. */
+.cm-editor.live-editor .cm-cursor,
+.cm-editor.live-editor .cm-dropCursor {
+    border-left-color: var(--live-caret-color, currentColor);
+}
+
+.cm-editor.live-editor > .cm-scroller > .cm-selectionLayer .cm-selectionBackground,
+.cm-editor.live-editor.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground {
+    background: color-mix(in srgb, Highlight 55%, transparent);
 }
 
 /* A tab switch was refused because this field is being edited: its confirm and cancel buttons draw the eye. */
