@@ -12,7 +12,7 @@ import { FILTER_STATES, FILTER_TYPES, FilterHelper, isFilterState } from './filt
 import { characterRepository, buildCharacterQuery, isInvalidSortFieldError, normalizeQueryRow, parseQueryTotal } from './character-repository.js';
 import { cleanRanges, parseSearchText, sameView, serializeSearchText, viewToQueryState } from './character-view.js';
 import { initViewPills, makeSearchGuide } from './character-view-pills.js';
-import { initSavedViews, refreshSavedViewState, restoreCurrentView } from './saved-views.js';
+import { applyKeptView, initSavedViews, refreshSavedViewState, restoreCurrentView } from './saved-views.js';
 import { initFolderSwitcher, refreshFolderSwitcher } from './folder-switcher.js';
 import { getRandomSortSeed } from './random-sort.js';
 import { t } from './i18n.js';
@@ -1688,6 +1688,8 @@ export function initCharacterSearch() {
         }
     });
 
+    // The account's storage holds the view in use: read once settings are, before the list is first drawn.
+    eventSource.on(event_types.SETTINGS_LOADED, () => applyKeptView());
     eventSource.on(event_types.APP_READY, () => {
         void restoreCurrentView();
         const isVisible = accountStorage.getItem(storageKey) === 'true';
