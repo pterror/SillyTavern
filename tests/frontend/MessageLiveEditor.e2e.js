@@ -163,3 +163,52 @@ test.describe('message edits in the live editor', () => {
         await mes.locator('.mes_edit_cancel').click();
     });
 });
+
+test.describe('an edit sends only what changed', () => {
+    test.beforeEach(testSetup.awaitST);
+
+    /** The message as the server stores it, read by its node. */
+    const serverCopy = (/** @type {import('@playwright/test').Page} */ page, /** @type {string} */ nodeId) => page.evaluate(async (nodeId) => {
+        // @ts-ignore
+        const ctx = SillyTavern.getContext();
+        const response = await fetch('/api/chats/alternatives', { method: 'POST', headers: ctx.getRequestHeaders(), body: JSON.stringify({ node_id: nodeId }) });
+        return (await response.json()).alternatives.find((/** @type {any} */ a) => a.node_id === nodeId || a.id === nodeId) ?? (await response.json()).alternatives[0];
+    }, nodeId);
+
+    test('a field another writer changed survives this tab\'s edit of the text; Done with no change sends nothing', async ({ page }) => {
+        await setAutoSave(page, false);
+        const id = await chatWithUserMessage(page, 'Before.');
+        // @ts-ignore
+        const nodeId = await page.evaluate((id) => SillyTavern.getContext().chat[id].node_id, id);
+        // Another writer sets a field this tab's copy doesn't have.
+        await page.evaluate(async (nodeId) => {
+            // @ts-ignore
+            const ctx = SillyTavern.getContext();
+            const avatar_url = ctx.characters[ctx.characterId].avatar;
+            const response = await fetch('/api/chats/message/edit', { method: 'POST', headers: ctx.getRequestHeaders(), body: JSON.stringify({ avatar_url, node_id: nodeId, patch: { extra: { note: 'set elsewhere' } } }) });
+            if (!response.ok) throw new Error(`edit -> ${response.status} ${await response.text()}`);
+        }, nodeId);
+
+        const edits = [];
+        page.on('request', request => { if (new URL(request.url()).pathname === '/api/chats/message/edit') edits.push(request.postDataJSON()); });
+        const mes = page.locator(`#chat .mes[mesid="${id}"]`);
+        await mes.locator('.mes_edit').click();
+        await expect(mes.locator('.cm-editor')).toBeVisible();
+        await page.keyboard.press('Control+End');
+        await page.keyboard.type(' After.');
+        await mes.locator('.mes_edit_done').click();
+        await expect.poll(() => edits.length).toBe(1);
+        expect(edits[0]).toMatchObject({ node_id: nodeId, patch: { mes: 'Before. After.' } });
+        expect(Object.keys(edits[0].patch).filter(k => !k.startsWith('extra.'))).toEqual(['mes']);
+
+        await mes.locator('.mes_edit').click();
+        await expect(mes.locator('.cm-editor')).toBeVisible();
+        await mes.locator('.mes_edit_done').click();
+        await page.waitForTimeout(1000);
+        expect(edits.length).toBe(1);
+
+        const stored = await serverCopy(page, nodeId);
+        expect(stored.mes).toBe('Before. After.');
+        expect(stored.extra?.note).toBe('set elsewhere');
+    });
+});

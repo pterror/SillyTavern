@@ -13,6 +13,7 @@ import { t } from './i18n.js';
 import { uuidv4 } from './utils.js';
 import { setStoredAdopter } from './stored-report.js';
 import { askToDrop, confirmOf, hasDrops, warnDropped } from './edit-drops.js';
+import { ITEMIZED_PROMPT_FLAG } from './itemized-prompts.js';
 
 // Without `noUncheckedIndexedAccess` (a project-wide tsconfig flag, out of scope to flip here since
 // it's shared by all 10 chat-strict files), `chat[i]` types as always-`ChatMessage`, never
@@ -848,6 +849,72 @@ function _messageContent(msg, text = msg.mes) {
 // Never sends an edit that would empty a message — the route refuses it outright with a 409.
 // A card greeting with no row yet is saved as a new stored opening with the edited text; the card's own
 // greeting is untouched and is offered again among the openings.
+/** Extra fields reads derive, never stored as a message's own. */
+const DERIVED_EXTRA = ['branches', 'bookmark_link', ITEMIZED_PROMPT_FLAG, 'token_count'];
+
+/**
+ * @param {unknown} extra
+ * @returns {Record<string, unknown>}
+ */
+export function extraOf(extra) {
+    const own = extra && typeof extra === 'object' && !Array.isArray(extra) ? { ...extra } : {};
+    for (const key of DERIVED_EXTRA) delete own[key];
+    return own;
+}
+
+/**
+ * A message's own fields, as stored for the alternative it shows: without its id, its swipes and what reads derive.
+ * @param {ChatMessage} message
+ * @returns {Record<string, any>}
+ */
+export function contentOf(message) {
+    /** @type {Record<string, any>} */
+    const content = { ...message };
+    for (const key of ['node_id', 'swipes', 'swipe_id', 'swipe_info', 'swipe_speaker_default']) delete content[key];
+    if ('extra' in content) content.extra = extraOf(content.extra);
+    return JSON.parse(JSON.stringify(content));
+}
+
+/**
+ * What differs from `before` in `now`: the fields to set and those to unset; null when nothing does. `extra`, where
+ * extensions and the app keep a message's own data, differs key by key (`extra.<key>`), so a key set elsewhere since
+ * the page read the message is kept.
+ * @param {Record<string, any>} before
+ * @param {Record<string, any>} now
+ * @returns {{ patch: Record<string, any>, unset: string[] } | null}
+ */
+export function patchOf(before, now) {
+    /** @type {Record<string, any>} */
+    const patch = {};
+    /** @type {string[]} */
+    const unset = [];
+    const isMap = (/** @type {unknown} */ v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+    const differ = (/** @type {Record<string, any>} */ a, /** @type {Record<string, any>} */ b, /** @type {string} */ prefix) => {
+        for (const key of new Set([...Object.keys(a), ...Object.keys(b)])) {
+            if (JSON.stringify(a[key]) === JSON.stringify(b[key])) continue;
+            if (prefix === '' && key === 'extra' && isMap(a[key]) && isMap(b[key])) differ(a[key], b[key], 'extra.');
+            else if (b[key] === undefined) unset.push(prefix + key);
+            else patch[prefix + key] = b[key];
+        }
+    };
+    differ(before, now, '');
+    return Object.keys(patch).length > 0 || unset.length > 0 ? { patch, unset } : null;
+}
+
+/**
+ * The edit of a stored message, addressed by its node: what differs from the copy last stored, or its whole content
+ * when the page holds no stored copy; null when nothing differs, so nothing is written.
+ * @param {ChatMessage} msg
+ * @returns {{ node_id: string, patch?: Record<string, any>, unset?: string[], content?: Record<string, any> } | null}
+ */
+function _editOf(msg) {
+    const nodeId = /** @type {string} */ (msg.node_id);
+    const stored = _messageSnapshots.get(nodeId);
+    if (stored === undefined) return { node_id: nodeId, content: _messageContent(msg) };
+    const change = patchOf(contentOf(stored), contentOf(msg));
+    return change === null ? null : { node_id: nodeId, ...change };
+}
+
 /**
  * Says that a message a reply is still being generated into (its node not known yet) wasn't changed: an edit of it
  * would land on the node it named before, or be overwritten by the reply.
@@ -872,7 +939,9 @@ export async function chatOpEdit(mesId) {
     if (!isStoredNodeId(msg?.node_id)) return false;
     if (typeof msg.mes === 'string' && msg.mes.length === 0) return false;
 
-    await _chatOpPost('/api/chats/message/edit', { node_id: msg.node_id, content: _messageContent(msg) });
+    // Only what the user changed: a field the page's copy has stale never overwrites the stored one.
+    const edit = _editOf(msg);
+    if (edit !== null) await _chatOpPost('/api/chats/message/edit', edit);
     _markMessageSaved(mesId, msg.node_id);
     // A character's opening edited to a card greeting's text is that greeting now: the card-only one is dropped.
     if (mesId === 0 && (selected_group == null || selected_group === '')) await _mergeCardGreetingsIntoOpening();
@@ -960,12 +1029,13 @@ export async function chatOpEditMany(mesIds, silent = false) {
         const msg = _chatAt(mesId);
         if (!isStoredNodeId(msg?.node_id)) continue;
         if (typeof msg.mes === 'string' && msg.mes.length === 0) continue;
-        edits.push({ node_id: msg.node_id, content: _messageContent(msg), _mesId: mesId });
+        const edit = _editOf(msg);
+        if (edit !== null) edits.push({ ...edit, _mesId: mesId });
     }
     if (!edits.length) return 0;
 
     const result = await _chatOpPost('/api/chats/message/edit-batch', {
-        edits: edits.map(({ node_id, content }) => ({ node_id, content })),
+        edits: edits.map(({ _mesId, ...edit }) => edit),
     }, silent);
 
     // Only mark accepted edits saved — a partial refusal shouldn't mark everything saved.

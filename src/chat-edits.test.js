@@ -229,6 +229,13 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         assert.deepEqual((await replies('u1')).sort(), ['b1', 'b1x edited']);
         const [after] = await chats.decoded([(await chats.stored([(await chats.messageIds([id.b1x]))[0]])).values().next().value]);
         assert.deepEqual(after, { ...stored, mes: 'b1x edited', extra: { note: 1 } });
+        // `extra.<key>` sets or removes one key of extra, keeping the others.
+        await chats.editMessages({ tree: t, treeSpeaker: cara, edits: [{ node_id: id.b1x, patch: { 'extra.bias': 'b' }, unset: ['extra.missing'] }], actor: a });
+        const [keyed] = await chats.decoded([(await chats.stored([(await chats.messageIds([id.b1x]))[0]])).values().next().value]);
+        assert.deepEqual(keyed.extra, { note: 1, bias: 'b' });
+        await chats.editMessages({ tree: t, treeSpeaker: cara, edits: [{ node_id: id.b1x, unset: ['extra.bias'] }], actor: a });
+        const [unkeyed] = await chats.decoded([(await chats.stored([(await chats.messageIds([id.b1x]))[0]])).values().next().value]);
+        assert.deepEqual(unkeyed.extra, { note: 1 });
         // A field unset goes; a patch changing nothing writes nothing.
         await chats.editMessages({ tree: t, treeSpeaker: cara, edits: [{ node_id: id.b1x, unset: ['extra'] }], actor: a });
         const [unset] = await chats.decoded([(await chats.stored([(await chats.messageIds([id.b1x]))[0]])).values().next().value]);

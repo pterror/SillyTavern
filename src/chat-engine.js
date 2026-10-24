@@ -204,7 +204,8 @@ function producedChanges(ops, state) {
 
 /**
  * What an edit (`editMessages()`) turns a stored message into: its `content`, or the message as stored with its
- * `patch` fields replaced and its `unset` fields removed; null when it states neither.
+ * `patch` fields replaced and its `unset` fields removed (`extra.<key>` one key of `extra`); null when it states
+ * neither.
  * @param {Record<string, any>} now The message as stored.
  * @param {{ content?: unknown, patch?: unknown, unset?: unknown }} edit
  * @returns {Record<string, any> | null}
@@ -214,8 +215,18 @@ function patchedContent(now, edit) {
     const patch = edit.patch && typeof edit.patch === 'object' && !Array.isArray(edit.patch) ? edit.patch : null;
     const unset = Array.isArray(edit.unset) ? edit.unset.filter(k => typeof k === 'string') : [];
     if (patch === null && unset.length === 0) return null;
-    const next = { ...now, ...(patch ?? {}) };
-    for (const k of unset) delete next[k];
+    // `extra.<key>` sets or removes one key of `extra`, keeping the others.
+    const inExtra = (/** @type {string} */ k) => k.startsWith('extra.') && k.length > 6;
+    const next = { ...now };
+    for (const [k, v] of Object.entries(patch ?? {})) if (!inExtra(k)) next[k] = v;
+    for (const k of unset) if (!inExtra(k)) delete next[k];
+    const extraKeys = [...Object.keys(patch ?? {}), ...unset].filter(inExtra);
+    if (extraKeys.length) {
+        const extra = next.extra && typeof next.extra === 'object' && !Array.isArray(next.extra) ? { ...next.extra } : {};
+        for (const [k, v] of Object.entries(patch ?? {})) if (inExtra(k)) extra[k.slice(6)] = v;
+        for (const k of unset) if (inExtra(k)) delete extra[k.slice(6)];
+        next.extra = extra;
+    }
     return storedForm(next);
 }
 
