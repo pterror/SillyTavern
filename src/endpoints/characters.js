@@ -2255,7 +2255,7 @@ async function runQuery(request, body, { compat = true } = {}) {
         includeGroups: includeGroups && group !== false,
         // Upstream's "N hidden": every character, and every group when the list holds groups, whichever the filter keeps.
         hiddenKinds: { characters: true, groups: includeGroups },
-        includeCreatorNotes: shallowCharactersIncludeCreatorNotes,
+        includeCreatorNotes: shallowCharactersIncludeCreatorNotes(),
         ...(searchTerm ? { search: searchTerm } : {}),
     });
     if (result === 'invalid-cursor') {

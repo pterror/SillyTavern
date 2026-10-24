@@ -1,8 +1,14 @@
 import { getConfigValue } from './util.js';
 import { shallowCharacterData } from '../public/scripts/hash-utils.js';
 
-// Whether the shallow character response includes creator_notes (matches upstream SillyTavern's shallow response)
-export const shallowCharactersIncludeCreatorNotes = !!getConfigValue('performance.shallowCharactersIncludeCreatorNotes', false, 'boolean');
+/**
+ * Whether the shallow character response includes creator_notes (matches upstream SillyTavern's shallow response).
+ * Read when asked, not on import: importing this module needs no config.
+ * @returns {boolean}
+ */
+export function shallowCharactersIncludeCreatorNotes() {
+    return !!getConfigValue('performance.shallowCharactersIncludeCreatorNotes', false, 'boolean');
+}
 
 /**
  * Calculate the total string length of the data object.
@@ -32,6 +38,6 @@ export function toShallow(character) {
         data_size: character.data_size,
         tags: character.tags,
         tag_ids: character.tag_ids,
-        data: shallowCharacterData(character, shallowCharactersIncludeCreatorNotes),
+        data: shallowCharacterData(character, shallowCharactersIncludeCreatorNotes()),
     };
 }
