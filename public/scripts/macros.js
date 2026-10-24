@@ -575,11 +575,22 @@ function getOutletPrompt(key) {
 }
 
 /**
+ * Which macro a match of the legacy macros is: its name as the registry knows it, and its category there.
+ * @param {string} match The text a legacy macro's regex matched (`{{user}}`, `{{random::a::b}}`, `<USER>`).
+ * @returns {import('./macros/engine/MacroEnvBuilder.js').MacroIdentity}
+ */
+function legacyMacroIdentity(match) {
+    const legacyTag = /^<(USER|BOT|CHAR|CHARIFNOTGROUP|GROUP)>$/i.exec(match)?.[1].toLowerCase();
+    const name = legacyTag === 'bot' ? 'char' : legacyTag ?? (/^\{\{\s*([^\s:}]+)/.exec(match)?.[1] ?? '');
+    return { name, category: macroSystem.registry.getPrimaryMacro(name)?.category };
+}
+
+/**
  * Substitutes {{macro}} parameters in a string.
  * @param {string} content - The string to substitute parameters in.
  * @param {EnvObject} env - Map of macro names to the values they'll be substituted with. If the param
  * values are functions, those functions will be called and their return values are used.
- * @param {function(string): string} postProcessFn - Function to run on the macro value before replacing it.
+ * @param {(value: string, macro?: import('./macros/engine/MacroEnvBuilder.js').MacroIdentity) => string} postProcessFn - Function to run on the macro value before replacing it, given which macro it is.
  * @returns {string} The string with substituted parameters.
  */
 export function evaluateMacros(content, env, postProcessFn) {
@@ -680,7 +691,7 @@ export function evaluateMacros(content, env, postProcessFn) {
         }
 
         try {
-            content = content.replace(macro.regex, (...args) => postProcessFn(macro.replace(...args)));
+            content = content.replace(macro.regex, (...args) => postProcessFn(macro.replace(...args), legacyMacroIdentity(args[0])));
         } catch (e) {
             console.warn(`Macro content can't be replaced: ${macro.regex} in ${content}`, e);
         }

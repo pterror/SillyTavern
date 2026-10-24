@@ -670,7 +670,7 @@ export function formatCreatorNotes(text, avatarId, { safeMacros = false, styleSc
         ADD_TAGS: ['custom-style'],
     };
 
-    const { text: substituted, values, raws } = safeMacros
+    const { text: substituted, values, categories, raws } = safeMacros
         ? substituteSafeMacros(text, substituteParams)
         : { ...substituteMacrosWithPlaceholders(text, substituteParams), raws: [] };
     let html = renderMarkdown(substituted);
@@ -678,7 +678,7 @@ export function formatCreatorNotes(text, avatarId, { safeMacros = false, styleSc
     html = DOMPurify.sanitize(html, config);
     html = decodeStyleTags(html, decodeStyleParam);
 
-    return safeMacros ? insertSafeMacroSpans(html, values, raws) : insertMacroSpans(html, values);
+    return safeMacros ? insertSafeMacroSpans(html, values, raws, categories) : insertMacroSpans(html, values, categories);
 }
 
 async function openGlobalStylesPreferenceDialog() {

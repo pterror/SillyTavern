@@ -1657,9 +1657,31 @@ textarea.autoSetHeight {
     min-height: calc(attr(rows type(<number>), 2) * 1lh + 2 * (var(--field-padding-block) + var(--field-border-width)));
 }
 
+/* Each category of macro (macros/engine/MacroRegistry.js) has its own color, turned round the color wheel from the
+   theme's macro color: names in it, the others spread around it. A macro of no known category has the macro color. */
+[data-macro-category="character"] {
+    --macro-color: hsl(from var(--SmartThemeMacroColor) calc(h + 50) s l);
+}
+
+[data-macro-category="chat"] {
+    --macro-color: hsl(from var(--SmartThemeMacroColor) calc(h + 100) s l);
+}
+
+[data-macro-category="time"] {
+    --macro-color: hsl(from var(--SmartThemeMacroColor) calc(h + 160) s l);
+}
+
+[data-macro-category="random"] {
+    --macro-color: hsl(from var(--SmartThemeMacroColor) calc(h + 220) s l);
+}
+
+[data-macro-category="variable"] {
+    --macro-color: hsl(from var(--SmartThemeMacroColor) calc(h + 280) s l);
+}
+
 /* A field's preview shows each macro's value. */
 .macro_preview_content .macro-substituted {
-    color: var(--SmartThemeMacroColor);
+    color: var(--macro-color, var(--SmartThemeMacroColor));
 }
 
 /* A macro the preview doesn't run (it has side effects or randomness), shown as written. */
@@ -1672,7 +1694,7 @@ textarea.autoSetHeight {
 /* Every part of a macro is the macro color, whatever styling (italics, quotes) the text around it gets. */
 .cm-editor.live-editor .macro-source,
 .cm-editor.live-editor .macro-source * {
-    color: var(--SmartThemeMacroColor);
+    color: var(--macro-color, var(--SmartThemeMacroColor));
 }
 
 /* What is sent in the macro's place. Led by a word joiner and unbreakable, so no line break comes between the two or
@@ -1683,8 +1705,8 @@ textarea.autoSetHeight {
     margin-inline-start: 0.3em;
     padding: 0 0.35em;
     border-radius: 0.6em;
-    background-color: color-mix(in srgb, var(--SmartThemeMacroColor) 18%, transparent);
-    color: var(--SmartThemeMacroColor);
+    background-color: color-mix(in srgb, var(--macro-color, var(--SmartThemeMacroColor)) 18%, transparent);
+    color: var(--macro-color, var(--SmartThemeMacroColor));
     font-size: 0.85em;
     font-style: normal;
     font-weight: normal;

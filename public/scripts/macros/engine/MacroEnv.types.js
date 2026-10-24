@@ -38,7 +38,7 @@
 /**
  * @typedef {Object} MacroEnvFunctions
  * @property {() => string} [original]
- * @property {(text: string) => string} postProcess
+ * @property {(text: string, macro?: import('./MacroEnvBuilder.js').MacroIdentity) => string} postProcess
  */
 
 /**

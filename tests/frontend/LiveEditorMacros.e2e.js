@@ -104,6 +104,42 @@ test.describe('live editor macros', () => {
         expect(misses).toEqual([0, []]);
     });
 
+    test('each category of macro has its own color, the same in the editor and in a preview of its value', async ({ page }) => {
+        const macros = ['{{user}}', '{{char}}', '{{description}}', '{{lastMessageId}}', '{{time}}', '{{random::a::b}}', '{{getvar::x}}'];
+        await mountWithMacros(page, macros.join(' '));
+        const sources = page.locator('#liveEditorTestHost .cm-line .macro-source');
+        await expect(sources).toHaveCount(macros.length);
+        const editor = await sources.evaluateAll(els => els.map(el => [el.dataset.macroCategory ?? null, getComputedStyle(el).color]));
+        expect(editor.map(([category]) => category)).toEqual(['names', 'names', 'character', 'chat', 'time', 'random', 'variable']);
+        const colors = editor.map(([, color]) => color);
+        // Names have the theme's macro color; every other category its own.
+        const macroColor = await page.evaluate(() => {
+            const probe = document.createElement('span');
+            probe.style.color = 'var(--SmartThemeMacroColor)';
+            document.body.append(probe);
+            const color = getComputedStyle(probe).color;
+            probe.remove();
+            return color;
+        });
+        expect(colors[0]).toBe(macroColor);
+        expect(colors[1]).toBe(macroColor);
+        expect(new Set(colors.slice(1)).size).toBe(6);
+        // A preview marks each value with its macro's category, so it has the same color.
+        const preview = await page.evaluate(async () => {
+            const { substituteSafeMacros, insertSafeMacroSpans } = await import('/scripts/safe-macros.js');
+            const { substituteParams } = await import('/script.js');
+            const { text, values, raws, categories } = substituteSafeMacros('{{user}} {{description}} {{time}} {{getvar::x}}', substituteParams);
+            const holder = document.createElement('div');
+            holder.className = 'macro_preview_content';
+            holder.innerHTML = insertSafeMacroSpans(text, values, raws, categories);
+            document.body.append(holder);
+            const found = [...holder.querySelectorAll('.macro-substituted')].map(el => [/** @type {HTMLElement} */ (el).dataset.macroCategory ?? null, getComputedStyle(el).color]);
+            holder.remove();
+            return found;
+        });
+        expect(preview).toEqual([['names', colors[0]], ['character', colors[2]], ['time', colors[4]], ['variable', colors[6]]]);
+    });
+
     test('typing a macro shows the app\'s macro suggestions with the highlighted one\'s current value', async ({ page }) => {
         await mountWithMacros(page, 'x');
         await page.locator('#liveEditorTestHost .cm-line').first().click();

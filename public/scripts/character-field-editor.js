@@ -2,7 +2,7 @@ import { DOMPurify, showdown } from '../lib.js';
 import { renderMarkdownLiteralTags } from './marked-processor.js';
 import { refreshCharInfoTabDimming } from './char-info-tab-dimming.js';
 import { keepViewState, openEditorLayer } from './editor-layer.js';
-import { evaluateSafeMacro, insertSafeMacroSpans, substituteSafeMacros } from './safe-macros.js';
+import { evaluateSafeMacro, insertSafeMacroSpans, macroValueSpan, substituteSafeMacros } from './safe-macros.js';
 import { EDITOR_ESCAPE_TAKERS, isEditorEvent, isUserEvent, mountLiveEditor } from './live-editor/registry.js';
 import { renderedOffset, sourcePosition } from './live-editor/positions.js';
 import { drawerStackChanged } from './drawer-stack.js';
@@ -14,35 +14,29 @@ const PLACEHOLDER_START = '';
 const PLACEHOLDER_END = '';
 const PLACEHOLDER_REGEX = new RegExp(`${PLACEHOLDER_START}(\\d+)${PLACEHOLDER_END}`, 'g');
 
-/** @param {string} text @returns {string} */
-function escapeHtmlText(text) {
-    return text
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#039;');
-}
-
 /**
  * Substitutes macros, leaving a placeholder where each substituted value goes, so the text can be rendered
  * before {@link insertMacroSpans} puts the values back.
  * @param {string} text
  * @param {(content: string, options: object) => string} substituteParams The app's substituteParams.
  * @param {object} [options] Extra substituteParams options.
- * @returns {{ text: string, values: string[] }}
+ * @returns {{ text: string, values: string[], categories: (string | undefined)[] }} Each value with the category of
+ * the macro it is from.
  */
 export function substituteMacrosWithPlaceholders(text, substituteParams, options = {}) {
     /** @type {string[]} */
     const values = [];
+    /** @type {(string | undefined)[]} */
+    const categories = [];
     const substituted = substituteParams(text, {
         ...options,
-        postProcessFn: value => {
+        postProcessFn: (/** @type {string} */ value, /** @type {{ category?: string } | undefined} */ macro) => {
             values.push(String(value));
+            categories.push(macro?.category);
             return `${PLACEHOLDER_START}${values.length - 1}${PLACEHOLDER_END}`;
         },
     });
-    return { text: substituted, values };
+    return { text: substituted, values, categories };
 }
 
 /**
@@ -50,10 +44,11 @@ export function substituteMacrosWithPlaceholders(text, substituteParams, options
  * holding each value as literal text.
  * @param {string} html
  * @param {string[]} values
+ * @param {(string | undefined)[]} [categories] The category of each value's macro.
  * @returns {string}
  */
-export function insertMacroSpans(html, values) {
-    return html.replace(PLACEHOLDER_REGEX, (_, index) => `<span class="macro-substituted">${escapeHtmlText(values[Number(index)] ?? '')}</span>`);
+export function insertMacroSpans(html, values, categories = []) {
+    return html.replace(PLACEHOLDER_REGEX, (_, index) => macroValueSpan(values[Number(index)] ?? '', categories[Number(index)]));
 }
 
 /**
@@ -88,17 +83,17 @@ let deps = null;
 
 /** @param {string} text @returns {string} */
 function renderLiteralTagsPreview(text) {
-    const { text: substituted, values, raws } = substituteSafeMacros(text, deps.substituteParams);
+    const { text: substituted, values, categories, raws } = substituteSafeMacros(text, deps.substituteParams);
     const html = DOMPurify.sanitize(renderMarkdownLiteralTags(substituted));
-    return insertSafeMacroSpans(html, values, raws);
+    return insertSafeMacroSpans(html, values, raws, categories);
 }
 
 /** @param {string} text @returns {string} */
 function renderGreetingPreview(text) {
     const name = String($('#character_name_pole').val() ?? '');
-    const { text: substituted, values, raws } = substituteSafeMacros(text, deps.substituteParams, { name2Override: name });
+    const { text: substituted, values, categories, raws } = substituteSafeMacros(text, deps.substituteParams, { name2Override: name });
     const html = deps.messageFormatting(substituted, name, false, false, 0);
-    return insertSafeMacroSpans(html, values, raws);
+    return insertSafeMacroSpans(html, values, raws, categories);
 }
 
 /**
