@@ -6,7 +6,7 @@ import { power_user, sortEntitiesList } from './power-user.js';
 import { applyCharacterRowFields, characterRowFieldHashes, normalizeFav } from './hash-utils.js';
 import { debounce, delay, PAGINATION_TEMPLATE, localizePagination, renderPaginationDropdown, paginationDropdownChangeHandler } from './utils.js';
 import { debounce_timeout } from './constants.js';
-import { filterByTagState, printTagFilters, printTagList, tag_filter_type, compareTagsForSort, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, heldTagsForIds, searchTagsByName, readTagsForIds, registerFolderCaseHandlers } from './tags.js';
+import { filterByTagState, printTagFilters, printTagList, tag_filter_type, compareTagsForSort, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, heldTagsForIds, searchTagsByName, readTagsForIds, registerFolderCaseHandlers, takeInExtensionTagWrites } from './tags.js';
 import { tagFetchStamp, isFetchedTagIdsCurrent } from './tag-fetch-stamps.js';
 import { FILTER_STATES, FILTER_TYPES, FilterHelper, isFilterState } from './filters.js';
 import { characterRepository, buildCharacterQuery, isInvalidSortFieldError, normalizeQueryRow, parseQueryTotal } from './character-repository.js';
@@ -1465,14 +1465,21 @@ function applyCharacterUpdates({ updates }, fetchStamp) {
  */
 async function readHeldAgainInFull(avatars) {
     if (avatars.length === 0) return;
+    const fetchStamp = tagFetchStamp();
     const full = await characterRepository.readFull(avatars);
     for (const [avatar, character] of full) {
-        if (charactersStore.has(avatar)) charactersStore.update(avatar, character);
+        if (!charactersStore.has(avatar)) continue;
+        // A tag change of this tab's not stored when the read began keeps its tag ids over the server's older ones.
+        if (!isFetchedTagIdsCurrent(avatar, fetchStamp)) delete character.tag_ids;
+        charactersStore.update(avatar, character);
     }
 }
 
 async function syncCharacters({ silent = false, silentGroups = false, skipPrint = false, keepListPosition = false } = {}) {
     let lastError;
+    // An extension's write to tag_map just before this sync (upstream's code reloads the characters right after one)
+    // is this tab's change: its tag ids are kept over the server's copy, which may not have it yet.
+    takeInExtensionTagWrites();
     const fetchStamp = tagFetchStamp();
     /** @type {DeltaProgress} */
     const progress = { updates: new Map(), changed: false, full: false };

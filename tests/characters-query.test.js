@@ -701,7 +701,7 @@ function hashResponseToken(buffer) {
         offset += 1;
         offset += 2 + view.getUint16(offset, true);
         // A group's three digests, or a character's version.
-        offset += (isGroup ? 4 + 4 + 4 : 8) + 8 + 8 + 8 + 8 + 8;
+        offset += (isGroup ? 4 + 4 + 4 : 8 + 4) + 8 + 8 + 8 + 8 + 8;
         offset += 2 + view.getUint16(offset, true);
     }
     const tokenLen = view.getUint16(offset, true); offset += 2;

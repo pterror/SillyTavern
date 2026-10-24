@@ -2401,7 +2401,7 @@ const HASH_QUERY_SEARCH_BACKEND_CODES = { tantivy: 1, native: 2, wasm: 3, unavai
  * total(8, float64, meaningful only if hasTotal) + rowCount(2, uint16).
  *
  * Per row: flags(1) [bit0=isGroup, bit1=hasCreateDate] + idLen(2) + id(idLen, utf8) + the row's cache key: for a
- * character its version(8, float64), for a group favHash(4) + tagIdsHash(4) + contentHash(4); then
+ * character its version(8, float64) + tagIdsHash(4), for a group favHash(4) + tagIdsHash(4) + contentHash(4); then
  * date_added(8, float64) + create_date(8, float64, 0 if !hasCreateDate) +
  * date_last_chat(8, float64) + chat_size(8, float64) + data_size(8, float64) + chatLen(2) +
  * chat(chatLen, utf8, omitted if chatLen is 0).
@@ -2425,7 +2425,7 @@ export function serializeQueryHashesBinary({ seq, token, total, approxTotal, has
     for (const row of hashRows) {
         const idBytes = Buffer.byteLength(row.id, 'utf8');
         const chatBytes = row.chat ? Buffer.byteLength(row.chat, 'utf8') : 0;
-        totalSize += 1 + 2 + idBytes + (row.isGroup ? 4 + 4 + 4 : 8) + 8 + 8 + 8 + 8 + 8 + 2 + chatBytes;
+        totalSize += 1 + 2 + idBytes + (row.isGroup ? 4 + 4 + 4 : 8 + 4) + 8 + 8 + 8 + 8 + 8 + 2 + chatBytes;
     }
     totalSize += 2 + tokenBytes; // trailer
     if (hasCursor) totalSize += 2 + cursorBytes;
@@ -2456,6 +2456,7 @@ export function serializeQueryHashesBinary({ seq, token, total, approxTotal, has
             buf.writeUInt32LE(row.contentHash >>> 0, offset); offset += 4;
         } else {
             buf.writeDoubleLE(row.version, offset); offset += 8;
+            buf.writeUInt32LE(row.tagIdsHash >>> 0, offset); offset += 4;
         }
 
         buf.writeDoubleLE(row.date_added ?? 0, offset); offset += 8;

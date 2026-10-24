@@ -36,8 +36,8 @@ async function getCachedEntriesByIdsFake(ids) {
 }
 
 async function saveCachedCharactersFake(entries) {
-    for (const { avatar, character, version } of entries) {
-        cacheRecords.set(avatar, structuredClone({ character, hashes: { version: typeof version === 'number' ? version : null, v: CHARACTER_HASH_VERSION } }));
+    for (const { avatar, character, version, tagIds } of entries) {
+        cacheRecords.set(avatar, structuredClone({ character, hashes: { version: typeof version === 'number' ? version : null, tagIds: typeof tagIds === 'number' ? tagIds : null, v: CHARACTER_HASH_VERSION } }));
     }
     return [];
 }
@@ -75,7 +75,7 @@ function encodeQueryHashes({ seq, token, total, approxTotal, hashRows, searchBac
     for (const row of hashRows) {
         const idBytes = Buffer.byteLength(row.id, 'utf8');
         const chatBytes = row.chat ? Buffer.byteLength(row.chat, 'utf8') : 0;
-        totalSize += 1 + 2 + idBytes + (row.isGroup ? 4 + 4 + 4 : 8) + 8 + 8 + 8 + 8 + 8 + 2 + chatBytes;
+        totalSize += 1 + 2 + idBytes + (row.isGroup ? 4 + 4 + 4 : 8 + 4) + 8 + 8 + 8 + 8 + 8 + 2 + chatBytes;
     }
     const tokenBytes = token ? Buffer.byteLength(token, 'utf8') : 0;
     totalSize += 2 + tokenBytes;
@@ -106,6 +106,7 @@ function encodeQueryHashes({ seq, token, total, approxTotal, hashRows, searchBac
             buf.writeUInt32LE(row.contentHash >>> 0, offset); offset += 4;
         } else {
             buf.writeDoubleLE(row.version, offset); offset += 8;
+            buf.writeUInt32LE((row.tagIdsHash ?? 0) >>> 0, offset); offset += 4;
         }
 
         buf.writeDoubleLE(row.date_added ?? 0, offset); offset += 8;
@@ -260,7 +261,7 @@ function hashModeGroup(group) {
 }
 
 async function cacheCharacters(...characters) {
-    await saveCachedCharactersFake(characters.map(character => ({ avatar: character.avatar, character, version: server.versions.get(character.avatar) })));
+    await saveCachedCharactersFake(characters.map(character => ({ avatar: character.avatar, character, version: server.versions.get(character.avatar), tagIds: 0 })));
 }
 
 function fetchedUrls() {

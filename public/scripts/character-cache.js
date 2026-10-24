@@ -196,7 +196,8 @@ export async function readCachedCharactersByIds(ids) {
     return result;
 }
 
-// A record whose `hashes.version` is the server's version for the character can be used as-is with zero refetch.
+// A record whose `hashes.version` and `hashes.tagIds` are the server's for the character can be used as-is with zero
+// refetch.
 export async function getCachedEntriesByIds(ids) {
     const store = getCharacterCacheStore();
     const result = new Map();
@@ -216,8 +217,9 @@ export async function getCachedEntriesByIds(ids) {
 
 /**
  * Callers must pass already fully processed character objects - reads return cache hits as-is, unprocessed.
- * @param {{avatar: string, character: object, version?: number}[]} entries `version`: the server's version of the
- *   character the record was read at, when the caller knows it; a record without one never counts as current.
+ * @param {{avatar: string, character: object, version?: number, tagIds?: number}[]} entries `version`: the server's
+ *   version of the character the record was read at, when the caller knows it, and `tagIds` its tags' digest then (the
+ *   version doesn't move with the tags); a record without them never counts as current.
  * @returns {Promise<string[]>} avatars whose write failed
  */
 export async function saveCachedCharacters(entries) {
@@ -227,9 +229,9 @@ export async function saveCachedCharacters(entries) {
     const SAVE_BATCH = 500;
     for (let i = 0; i < entries.length; i += SAVE_BATCH) {
         const batch = entries.slice(i, i + SAVE_BATCH);
-        await Promise.all(batch.map(({ avatar, character: given, version }) => {
+        await Promise.all(batch.map(({ avatar, character: given, version, tagIds }) => {
             const character = { ...given, tag_ids: normalizeTagIds(given.tag_ids) };
-            const hashes = { version: typeof version === 'number' ? version : null, v: HASH_VERSION };
+            const hashes = { version: typeof version === 'number' ? version : null, tagIds: typeof tagIds === 'number' ? tagIds : null, v: HASH_VERSION };
             // Never mutates the caller's (possibly still-live) object.
             const { toStore, dedup } = computeDedupSplit(character);
             return store.setItem(avatar, { character: toStore, hashes, dedup, dedupV: DEDUP_VERSION }).catch(error => {

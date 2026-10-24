@@ -40,7 +40,8 @@ export function deserializeQueryHashesBinary(buffer) {
         const idLen = view.getUint16(offset, true); offset += 2;
         const id = decoder.decode(new Uint8Array(buffer, offset, idLen)); offset += idLen;
 
-        // A character's cache key is its version; a group's, its three digests.
+        // A character's cache key is its version and its tags' digest (its version doesn't move with its tags); a
+        // group's, its three digests.
         let version = null, favHash = 0, tagIdsHash = 0, contentHash = 0;
         if (isGroup) {
             favHash = view.getUint32(offset, true); offset += 4;
@@ -48,6 +49,7 @@ export function deserializeQueryHashesBinary(buffer) {
             contentHash = view.getUint32(offset, true); offset += 4;
         } else {
             version = view.getFloat64(offset, true); offset += 8;
+            tagIdsHash = view.getUint32(offset, true); offset += 4;
         }
 
         const date_added = view.getFloat64(offset, true); offset += 8;
