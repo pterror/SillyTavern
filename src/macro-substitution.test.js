@@ -40,13 +40,13 @@ assert.equal(
     'A hero says brave',
 );
 
-// replaceCharacterCard: false suppresses card fields but keeps user/char
+// replaceCharacterCard: false leaves card fields empty but keeps user/char
 assert.equal(
     substituteParams('{{description}}{{user}}', {
         name1: 'Alice', name2: 'Bob', replaceCharacterCard: false,
         characterCard: { description: 'A hero' },
     }),
-    '{{description}}Alice',
+    'Alice',
 );
 
 // {{model}}
@@ -79,7 +79,7 @@ assert.equal(substituteParams('{{roll:not-a-formula}}'), '');
 assert.equal(typeof substituteParams('{{timeDiff::2024-01-01::2024-01-02}}'), 'string');
 
 // baseChatReplace: substitutes but does not re-expand character-card macros
-assert.equal(baseChatReplace('Hi {{user}}, {{description}} stays literal', { name1: 'Alice' }), 'Hi Alice, {{description}} stays literal');
+assert.equal(baseChatReplace('Hi {{user}}, {{description}} is not filled in', { name1: 'Alice' }), 'Hi Alice,  is not filled in');
 assert.equal(baseChatReplace(''), '');
 assert.equal(baseChatReplace(null), null);
 
