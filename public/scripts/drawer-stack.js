@@ -25,6 +25,7 @@
  * and going) and popovers opening and closing.
  */
 import { setHoles, uncoveredPieces, unionArea } from './util/underlay-clip.js';
+import { accountStorage } from './util/AccountStorage.js';
 
 /** The top-bar drawers. They share #top-settings-holder's stacking context, so z-index alone orders their painting. */
 export const STACK_DRAWER_SELECTOR = '#top-settings-holder > .drawer > .drawer-content';
@@ -49,6 +50,10 @@ const EDITING_SELECTOR = '.field_editing:not(.field_edit_saving), #curEditTextar
 const HOLE_SOURCE = 'drawer-stack';
 /** Past this, the ordered layers are renumbered from 1, keeping the numbers small. */
 const MAX_ORDER = 1000;
+/** accountStorage key of the layers' order, bottom to top, by id: a reload puts the layers it brings back in it. */
+const SAVED_ORDER_KEY = 'DrawerOrder';
+/** Startup brings layers forward before the saved order is put back; saving waits until then. */
+let savedOrderRestored = false;
 
 /** @typedef {import('./util/underlay-clip.js').Rect} Rect */
 
@@ -160,6 +165,34 @@ export function raiseDrawer(el) {
         next = others.filter(other => drawerOrder(other) > 0).length + 1;
     }
     el.style.setProperty('--drawerOrder', String(next));
+    if (savedOrderRestored) saveOrder();
+}
+
+/** Saves the order of the layers brought forward, bottom to top, by id. */
+function saveOrder() {
+    const order = orderedLayers().filter(el => el.id && drawerOrder(el) > 0).sort(compareOrder).map(el => el.id);
+    accountStorage.setItem(SAVED_ORDER_KEY, JSON.stringify(order));
+}
+
+/**
+ * Puts the shown layers (the chat and the panels a reload reopened) back in the order they were last in, then saves
+ * the order from here on. A shown layer the saved order doesn't name goes under the ones it does, html order between
+ * them.
+ */
+export function restoreLayerOrder() {
+    let saved = [];
+    try {
+        saved = JSON.parse(accountStorage.getItem(SAVED_ORDER_KEY) ?? '[]');
+    } catch {
+        saved = [];
+    }
+    if (!Array.isArray(saved)) saved = [];
+    orderedLayers().filter(el => el.id && isShown(el))
+        .map((el, i) => ({ el, place: saved.indexOf(el.id), i }))
+        .sort((a, b) => a.place - b.place || a.i - b.i)
+        .forEach(({ el }) => raiseDrawer(el));
+    savedOrderRestored = true;
+    saveOrder();
 }
 
 /**
