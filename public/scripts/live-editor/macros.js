@@ -3,7 +3,7 @@
 
 import { state as cmState, view as cmView, autocomplete as cmAutocomplete } from '../../live-editor-lib.js';
 import { topLevelMacroSpans } from '../safe-macros.js';
-import { macroPill, macroPillContent } from '../macro-pill.js';
+import { macroColorAttributes, macroPersonCard, macroPill, macroPillContent } from '../macro-pill.js';
 import { getMacroAutoCompleteAt } from '../autocomplete/MacroAutoCompleteHelper.js';
 import { macroCategory } from '../macros/macro-system.js';
 import { shouldActivateMacroAutocomplete, MACRO_AUTOCOMPLETE_MODE } from '../autocomplete/MacroAutoComplete.js';
@@ -17,6 +17,8 @@ const { autocompletion } = cmAutocomplete;
  * @typedef {object} MacroOptions
  * @property {(macroText: string) => string | null} evaluate A macro's value, or null when it only runs when sent
  * (side effects or randomness), so it stays as written.
+ * @property {(macroName: string) => import('../macro-pill.js').MacroPerson | null} [person] Who a mention
+ * ({{user}}, {{char}}) names here, for its card.
  */
 
 const macroOptions = Facet.define({
@@ -128,8 +130,14 @@ class MacroPillWidget extends WidgetType {
     }
 }
 
-/** A macro shown as written: the source opened, or every macro while the source is shown. */
-const sourceMark = Decoration.mark({ class: 'macro-source' });
+/**
+ * A macro shown as written (the source opened, or every macro while the source is shown), in its color.
+ * @param {string} macroText
+ */
+function sourceMark(macroText) {
+    const name = macroNameOf(macroText);
+    return Decoration.mark({ class: 'macro-source', attributes: macroColorAttributes(name, name ? macroCategory(name) : undefined) });
+}
 
 /**
  * Holds a pill to the characters either side of it, so a line never wraps right before or after it. CodeMirror reads
@@ -181,7 +189,7 @@ const macroPills = ViewPlugin.fromClass(class {
                 const from = unit.from + span.start;
                 const to = unit.from + span.end;
                 if (asWritten || (opened && opened.from <= from && to <= opened.to)) {
-                    marks.push(sourceMark.range(from, to));
+                    marks.push(sourceMark(state.doc.sliceString(from, to)).range(from, to));
                 } else {
                     pills.push(Decoration.replace({ widget: new MacroPillWidget(shownMacro(state, state.doc.sliceString(from, to))) }).range(from, to));
                     const line = state.doc.lineAt(from);
@@ -199,7 +207,8 @@ const macroPills = ViewPlugin.fromClass(class {
 });
 
 /**
- * The tooltip saying what a macro is and what is sent in its place.
+ * A macro's tooltip: its source, and a note when the pill doesn't say it all; for a mention, a card of who it names.
+ * Centered above the macro (CodeMirror keeps it inside the window).
  * @param {import('@codemirror/state').EditorState} state
  * @param {{ from: number, to: number }} macro
  * @returns {import('@codemirror/view').Tooltip}
@@ -210,15 +219,41 @@ function macroTooltip(state, macro) {
         pos: macro.from,
         end: macro.to,
         above: true,
-        create: () => {
+        create: (view) => {
             const dom = document.createElement('div');
             dom.className = 'live-macro-tooltip';
-            const code = document.createElement('code');
-            code.textContent = source;
-            const text = document.createElement('div');
-            text.textContent = macroPillContent(shownMacro(state, source), t).tooltip;
-            dom.append(code, text);
-            return { dom };
+            const shown = shownMacro(state, source);
+            for (const [attribute, value] of Object.entries(macroColorAttributes(shown.name, shown.category))) dom.setAttribute(attribute, value);
+            const { kind, note } = macroPillContent(shown, t, true);
+            const person = kind === 'mention' && shown.name ? state.facet(macroOptions).person?.(shown.name) : null;
+            if (person) {
+                dom.append(macroPersonCard(person, source));
+            } else {
+                const code = document.createElement('code');
+                code.textContent = source;
+                dom.append(code);
+                if (note) {
+                    const text = document.createElement('div');
+                    text.textContent = note;
+                    dom.append(text);
+                }
+            }
+            return {
+                dom,
+                // A point centered over the macro (its pill's box, or its text opened as written), as far left as half
+                // the tooltip's width.
+                getCoords: () => {
+                    const pill = [...view.contentDOM.querySelectorAll('.macro-pill')].find(el => view.posAtDOM(el) === macro.from);
+                    const start = view.coordsAtPos(macro.from, 1);
+                    const end = view.coordsAtPos(macro.to, -1);
+                    const box = pill?.getBoundingClientRect()
+                        ?? (start && end && start.top === end.top ? { left: start.left, right: end.right, top: start.top, bottom: start.bottom } : start);
+                    if (!box) return { left: 0, right: 0, top: 0, bottom: 0 };
+                    const left = (box.left + box.right) / 2 - dom.getBoundingClientRect().width / 2;
+                    // `right` is the macro's own: CodeMirror hides a tooltip whose anchor is out of the editor's view.
+                    return { left, right: Math.max(left, box.right), top: box.top, bottom: box.bottom };
+                },
+            };
         },
     };
 }

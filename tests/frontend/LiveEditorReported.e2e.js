@@ -257,7 +257,7 @@ test.describe('live editor: reported problems', () => {
             }, line);
             await expect(pills).toHaveText(Array(5).fill('@Testchar'));
         }
-        const macroColor = await probeStyle(page, '<div class="macro_preview_content"><span class="macro-pill" data-macro-category="names">x</span></div>', 'span', 'color');
+        const macroColor = await probeStyle(page, '<div class="macro_preview_content"><span class="macro-pill" data-macro-name="char">x</span></div>', 'span', 'color');
         for (const pill of await pills.all()) expect(await styleOf(pill, 'color')).toBe(macroColor);
     });
 

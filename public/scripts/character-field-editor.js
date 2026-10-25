@@ -20,6 +20,8 @@ import { drawerStackChanged } from './drawer-stack.js';
  * element it's shown in, which the card's `<style>` rules are kept to (Creator's Notes' own preview when left out).
  * @property {{ auto_save_msg_edits: boolean, click_to_edit: boolean }} power_user
  * @property {(strings: TemplateStringsArray, ...values: any[]) => string} t
+ * @property {(macroName: string) => import('./macro-pill.js').MacroPerson | null} macroPerson Who a mention names in
+ * the character's fields: {{char}} being the character in the editor.
  * @property {number} autoSaveTimeout Milliseconds of typing pause before an autosave.
  * @property {(value: string) => Promise<boolean>} saveCreatorNotesField
  * @property {(value: string) => Promise<boolean>} saveDescriptionField
@@ -258,7 +260,10 @@ async function mountFieldEditor(id) {
             render: FIELDS[id].render,
             grammar: { emojis: showdown.helper.emojis, dialogueQuotes: isGreeting },
             contentClass: [...(preview?.classList ?? [])].filter(c => PREVIEW_TEXT_CLASSES.has(c)).join(' '),
-            macros: { evaluate: text => evaluateSafeMacro(text, deps.substituteParams, isGreeting ? { name2Override: characterName() } : {}) },
+            macros: {
+                evaluate: text => evaluateSafeMacro(text, deps.substituteParams, isGreeting ? { name2Override: characterName() } : {}),
+                person: macroName => deps.macroPerson(macroName),
+            },
             formatting: { uploadImage: deps.uploadImage },
             search: { context: () => ({ characterName: characterName() }) },
         });

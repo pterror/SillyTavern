@@ -15,6 +15,8 @@ import { drawerStackChanged } from './drawer-stack.js';
  * @property {(file: File) => Promise<string>} uploadImage
  * @property {() => string} userName The user's name, as a message they send renders with it.
  * @property {() => number} nextMessageId The id the chat box's message gets when it's sent.
+ * @property {(macroName: string, characterName: string) => import('./macro-pill.js').MacroPerson | null} macroPerson
+ * Who a mention names, {{char}} being the character of that name.
  */
 
 /** @type {ChatEditorDeps | null} */
@@ -49,7 +51,7 @@ function chatEditorOptions(chatDeps, target) {
     const messageIdNow = () => (typeof target.messageId === 'function' ? target.messageId() : target.messageId);
     const isReasoning = Boolean(target.isReasoning);
     const isChatBox = Boolean(target.isChatBox);
-    const { messageFormatting, substituteParams, power_user, uploadImage } = chatDeps;
+    const { messageFormatting, substituteParams, power_user, uploadImage, macroPerson } = chatDeps;
     // messageFormatting fills in macros only on the first message of a character (not reasoning); a reasoning edit
     // fills them in when it's saved, and the chat box's text when it's sent. Elsewhere the text renders with its
     // macros as written.
@@ -67,7 +69,10 @@ function chatEditorOptions(chatDeps, target) {
         // Without chat's text class, the editor's own classes give its quotes chat's look.
         editorClass: isChatBox ? 'live-chat-text' : isReasoning ? 'live-chat-text live-reasoning-text' : '',
         // {{char}} is the speaker only where a character speaks.
-        macros: { evaluate: text => (fillsMacros() ? evaluateSafeMacro(text, substituteParams, isUser ? {} : { name2Override: nameNow() }) : null) },
+        macros: {
+            evaluate: text => (fillsMacros() ? evaluateSafeMacro(text, substituteParams, isUser ? {} : { name2Override: nameNow() }) : null),
+            person: macroName => macroPerson(macroName, isUser ? '' : nameNow()),
+        },
         formatting: { uploadImage },
         search: { context: () => ({ characterName: nameNow() }) },
     };

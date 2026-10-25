@@ -1,30 +1,57 @@
 // How a macro is shown wherever it is shown (the live editor, a field's preview): as a pill holding what is sent in its
 // place, never as its `{{…}}` text, so nothing on screen reads as if the braces were sent. The source is in its tooltip.
-// A leaf module: the app's translation is passed in and the macro registry gives its categories
-// (setMacroCategories()), so importing it never adds an import cycle.
+// A leaf module: the app's translation is passed in and the macro registry tells it about the macros
+// (setMacroRegistry()), so importing it never adds an import cycle.
 
 import { insertMacroPlaceholders } from './safe-macros.js';
 
 /** @typedef {(strings: TemplateStringsArray, ...values: any[]) => string} Translate */
 
-/** @type {(name: string) => string | undefined} A macro's category, by its name: the registry's, once it is loaded. */
-let categoryOf = () => undefined;
+/**
+ * @typedef {object} MacroRegistryView What the pills need of the macro registry.
+ * @property {(name: string) => string | undefined} categoryOf A macro's category, by its name.
+ * @property {() => { name: string, category: string | undefined }[]} list Every macro a user may write.
+ */
+
+/** @type {MacroRegistryView} The registry's, once it is loaded. */
+let registry = { categoryOf: () => undefined, list: () => [] };
 
 /**
- * Called by the macro registry: how a macro's category is found from its name.
- * @param {(name: string) => string | undefined} lookup
+ * Called by the macro registry as it loads.
+ * @param {MacroRegistryView} view
  */
-export function setMacroCategories(lookup) {
-    categoryOf = lookup;
+export function setMacroRegistry(view) {
+    registry = view;
+}
+
+/** @returns {{ name: string, category: string | undefined }[]} Every macro a user may write. */
+export function registeredMacros() {
+    return registry.list();
+}
+
+/**
+ * The attributes of an element showing a macro (a pill, the macro opened as written, its tooltip): its name gives it
+ * the macro's color (macro-colors.js, style.css), its category its icon.
+ * @param {string | undefined} name
+ * @param {string | undefined} category
+ * @returns {Record<string, string>}
+ */
+export function macroColorAttributes(name, category) {
+    category ??= name ? registry.categoryOf(name) : undefined;
+    return {
+        ...(category ? { 'data-macro-category': category } : {}),
+        ...(name ? { 'data-macro-name': name } : {}),
+    };
 }
 
 /** The most of a value or a macro's description a pill in the editor shows; its tooltip has all of it. */
 const SHOWN_LENGTH = 24;
-/** The most of a value a tooltip shows. */
+/** The most of a shortened value its tooltip shows. */
 const TOOLTIP_VALUE_LENGTH = 200;
 
-/** Each category's icon (macros/engine/MacroRegistry.js MacroCategory). Names are mentions: `@` instead. */
+/** Each category's icon (macros/engine/MacroRegistry.js MacroCategory). One person's name is a mention: `@` instead. */
 const CATEGORY_ICONS = Object.freeze({
+    names: 'fa-user',
     character: 'fa-id-card',
     chat: 'fa-comments',
     time: 'fa-clock',
@@ -63,25 +90,26 @@ function describe(source) {
 }
 
 /**
- * What a pill says, and what its tooltip says. `compact`: a value is shortened (the editor's pills); a name never is.
+ * What a pill says, and the note its tooltip adds under the macro's source ('' when the pill says it all).
+ * `compact`: a value is shortened (the editor's pills), its note then the whole of it; a name never is.
  * @param {MacroShown} macro
  * @param {Translate} t
  * @param {boolean} [compact]
- * @returns {{ kind: 'mention' | 'value' | 'empty' | 'later', label: string, icon: string | null, tooltip: string }}
+ * @returns {{ kind: 'mention' | 'value' | 'empty' | 'later', label: string, icon: string | null, note: string }}
  */
 export function macroPillContent({ source, name, category, value }, t, compact = false) {
     const icon = CATEGORY_ICONS[/** @type {keyof typeof CATEGORY_ICONS} */ (category)] ?? DEFAULT_ICON;
     if (value === null) {
-        return { kind: 'later', label: shorten(describe(source), SHOWN_LENGTH), icon, tooltip: t`${source} is filled in when the message is sent. The model never sees ${source}.` };
+        return { kind: 'later', label: shorten(describe(source), SHOWN_LENGTH), icon, note: t`Filled in when sent` };
     }
     if (value.trim() === '') {
-        return { kind: 'empty', label: shorten(describe(source), SHOWN_LENGTH), icon, tooltip: t`${source} sends nothing in its place.` };
+        return { kind: 'empty', label: shorten(describe(source), SHOWN_LENGTH), icon, note: t`Sends nothing` };
     }
-    const tooltip = t`${source} is replaced by “${shorten(value, TOOLTIP_VALUE_LENGTH)}” before sending. The model never sees ${source}.`;
     if (MENTIONS.has(name?.toLowerCase() ?? '')) {
-        return { kind: 'mention', label: `@${value}`, icon: null, tooltip };
+        return { kind: 'mention', label: `@${value}`, icon: null, note: '' };
     }
-    return { kind: 'value', label: compact ? shorten(value, SHOWN_LENGTH) : value, icon, tooltip };
+    const label = compact ? shorten(value, SHOWN_LENGTH) : value;
+    return { kind: 'value', label, icon, note: label === value ? '' : shorten(value, TOOLTIP_VALUE_LENGTH) };
 }
 
 /**
@@ -91,13 +119,12 @@ export function macroPillContent({ source, name, category, value }, t, compact =
  * @returns {HTMLElement}
  */
 export function macroPill(macro, { t, compact = false }) {
-    macro = { ...macro, category: macro.category ?? (macro.name ? categoryOf(macro.name) : undefined) };
-    const { kind, label, icon, tooltip } = macroPillContent(macro, t, compact);
+    macro = { ...macro, category: macro.category ?? (macro.name ? registry.categoryOf(macro.name) : undefined) };
+    const { kind, label, icon, note } = macroPillContent(macro, t, compact);
     const pill = document.createElement('span');
     pill.className = `macro-pill macro-pill-${kind}`;
-    if (macro.category) pill.dataset.macroCategory = macro.category;
-    if (macro.name) pill.dataset.macroName = macro.name;
-    if (!compact) pill.title = tooltip;
+    for (const [attribute, value] of Object.entries(macroColorAttributes(macro.name, macro.category))) pill.setAttribute(attribute, value);
+    if (!compact) pill.title = note ? `${macro.source}\n${note}` : macro.source;
     if (icon) {
         const i = document.createElement('i');
         i.className = `macro-pill-icon fa-solid ${icon}`;
@@ -106,6 +133,47 @@ export function macroPill(macro, { t, compact = false }) {
     }
     pill.append(label);
     return pill;
+}
+
+/**
+ * @typedef {object} MacroPerson Who a mention ({{user}}, {{char}}) names.
+ * @property {string} name
+ * @property {string} avatarUrl
+ * @property {string} about Their description (the persona's, the character's).
+ */
+
+/** The most of who a mention names' description its card shows. */
+const ABOUT_LENGTH = 240;
+
+/**
+ * A mention's card: who it names, with their avatar and description, and the macro it is written as.
+ * @param {MacroPerson} person
+ * @param {string} source
+ * @returns {HTMLElement}
+ */
+export function macroPersonCard(person, source) {
+    const card = document.createElement('div');
+    card.className = 'macro-person-card';
+    const avatar = document.createElement('img');
+    avatar.className = 'macro-person-avatar';
+    avatar.src = person.avatarUrl;
+    avatar.alt = '';
+    const text = document.createElement('div');
+    text.className = 'macro-person-text';
+    const name = document.createElement('div');
+    name.className = 'macro-person-name';
+    name.textContent = person.name;
+    const code = document.createElement('code');
+    code.textContent = source;
+    text.append(name, code);
+    if (person.about.trim()) {
+        const about = document.createElement('div');
+        about.className = 'macro-person-about';
+        about.textContent = shorten(person.about, ABOUT_LENGTH);
+        text.append(about);
+    }
+    card.append(avatar, text);
+    return card;
 }
 
 /**
