@@ -49,7 +49,7 @@ const SHOWN_LENGTH = 24;
 /** The most of a shortened value its tooltip shows. */
 const TOOLTIP_VALUE_LENGTH = 200;
 
-/** Each category's icon (macros/engine/MacroRegistry.js MacroCategory). One person's name is a mention: `@` instead. */
+/** Each category's icon (macros/engine/MacroRegistry.js MacroCategory). One person's name has none: its card says who. */
 const CATEGORY_ICONS = Object.freeze({
     names: 'fa-user',
     character: 'fa-id-card',
@@ -61,7 +61,7 @@ const CATEGORY_ICONS = Object.freeze({
     prompts: 'fa-scroll',
 });
 const DEFAULT_ICON = 'fa-code';
-/** The macros that are one person's name: shown as a mention of them. */
+/** The macros that are one person's name: their pill is the name alone, their tooltip a card of the person. */
 const MENTIONS = new Set(['user', 'char', 'charifnotgroup']);
 
 /**
@@ -106,7 +106,7 @@ export function macroPillContent({ source, name, category, value }, t, compact =
         return { kind: 'empty', label: shorten(describe(source), SHOWN_LENGTH), icon, note: t`Sends nothing` };
     }
     if (MENTIONS.has(name?.toLowerCase() ?? '')) {
-        return { kind: 'mention', label: `@${value}`, icon: null, note: '' };
+        return { kind: 'mention', label: value, icon: null, note: '' };
     }
     const label = compact ? shorten(value, SHOWN_LENGTH) : value;
     return { kind: 'value', label, icon, note: label === value ? '' : shorten(value, TOOLTIP_VALUE_LENGTH) };

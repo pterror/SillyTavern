@@ -874,7 +874,7 @@ test.describe('character field edit mode', () => {
                     await openInfoTab(page, field.tab);
                     const pills = fieldLocators(page, field.id).preview.locator('span.macro-pill');
                     await expect(pills).toHaveCount(1);
-                    await expect(pills).toHaveText(`@${name}`);
+                    await expect(pills).toHaveText(name);
                     await expect(pills).toHaveAttribute('title', '{{char}}');
                 });
             });
@@ -1031,7 +1031,7 @@ test.describe('character field edit mode', () => {
                 await withCharacter(page, field, text, async (_avatar, name) => {
                     await openInfoTab(page, field.tab);
                     const preview = fieldLocators(page, field.id).preview;
-                    await expect(preview.locator('.macro-pill-mention')).toHaveText(`@${name}`);
+                    await expect(preview.locator('.macro-pill-mention')).toHaveText(name);
                     // Each is a pill saying it is filled in when sent, its source in its title.
                     expect(await preview.locator('.macro-pill-later').evaluateAll(els => els.map(el => el.title.replace('\nFilled in when sent', '')))).toEqual([
                         `{{setvar::${key}::set}}`,
@@ -1099,7 +1099,7 @@ test.describe('character field edit mode', () => {
             await withCharacter(page, field, '[{{char}}] {{random::aa::bb}}', async (_avatar, name) => {
                 await openInfoTab(page, field.tab);
                 const preview = fieldLocators(page, field.id).preview;
-                await expect(preview.locator('.macro-pill-mention')).toHaveText(`@${name}`);
+                await expect(preview.locator('.macro-pill-mention')).toHaveText(name);
                 await expect(preview.locator('.macro-pill-later')).toHaveText(['random · aa · bb']);
             });
         });

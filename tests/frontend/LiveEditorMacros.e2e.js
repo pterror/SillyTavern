@@ -50,8 +50,8 @@ test.describe('live editor macros', () => {
                 // @ts-ignore
                 window.liveEditorTest.editor.view.dispatch({ selection: { anchor } });
             }, anchor);
-            // A name is a mention of who it is; one worked out only when sent, or sending nothing, says what it is.
-            await expect(pills).toHaveText(['@Testchar', 'random · a · b', '//note']);
+            // A name is the name alone; one worked out only when sent, or sending nothing, says what it is.
+            await expect(pills).toHaveText(['Testchar', 'random · a · b', '//note']);
             expect(await pills.evaluateAll(els => els.map(el => el.className))).toEqual(['macro-pill macro-pill-mention', 'macro-pill macro-pill-later', 'macro-pill macro-pill-empty']);
             expect(await page.locator('#liveEditorTestHost .cm-content').textContent()).not.toContain('{{');
         }
@@ -131,7 +131,7 @@ test.describe('live editor macros', () => {
         await page.keyboard.press('Backspace');
         await page.keyboard.press('End');
         await expect(page.locator('#liveEditorTestHost .macro-source')).toHaveCount(0);
-        await expect(page.locator('#liveEditorTestHost .macro-pill')).toHaveText(['@Testchar', /^@/]);
+        await expect(page.locator('#liveEditorTestHost .macro-pill')).toHaveText(['Testchar', /./]);
         await page.keyboard.press('Control+Shift+M');
         await expect(page.locator('#liveEditorTestHost .macro-source')).toHaveText(['{{char}}', '{{user}}']);
         await expect(page.locator('#liveEditorTestHost .macro-pill')).toHaveCount(0);
