@@ -417,7 +417,6 @@ router.post('/get', storeRoute('reading settings', async (request, response) => 
     const world_names = (await (await requestStore(request)).lib.books.list()).map(book => book.file_id);
 
     const themes = readAndParseFromDirectory(request.user.directories.themes);
-    const movingUIPresets = readAndParseFromDirectory(request.user.directories.movingUI);
     const quickReplyPresets = readAndParseFromDirectory(request.user.directories.quickreplies);
 
     const instruct = readAndParseFromDirectory(request.user.directories.instruct);
@@ -445,7 +444,6 @@ router.post('/get', storeRoute('reading settings', async (request, response) => 
         textgenerationwebui_presets,
         textgenerationwebui_preset_names,
         themes,
-        movingUIPresets,
         quickReplyPresets,
         instruct,
         context,

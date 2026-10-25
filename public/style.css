@@ -246,10 +246,6 @@ body {
     min-height: 40px;
 }
 
-body.movingUI ::-webkit-scrollbar-thumb:vertical {
-    border-top: 20px solid transparent;
-}
-
 ::-webkit-scrollbar-thumb:horizontal {
     background-color: var(--grey7070a);
     box-shadow: inset 0 0 0 1px var(--black50a);
@@ -6514,11 +6510,7 @@ body:has(.drawer-content.open) #top-settings-holder:has(.drawer-content.openDraw
     }
 }
 
-body.movingUI .inline-drawer-maximize {
-    display: none;
-}
-
-body:not(.movingUI) .drawer-content.maximized {
+.drawer-content.maximized {
     width: var(--sheldWidth) !important;
     top: var(--drawerBarTop) !important;
     margin: 0 auto !important;

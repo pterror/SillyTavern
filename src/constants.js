@@ -32,7 +32,6 @@ export const USER_DIRECTORY_TEMPLATE = Object.freeze({
     openAI_Settings: 'OpenAI Settings',
     textGen_Settings: 'TextGen Settings',
     themes: 'themes',
-    movingUI: 'movingUI',
     extensions: 'extensions',
     instruct: 'instruct',
     context: 'context',

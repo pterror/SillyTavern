@@ -1,6 +1,5 @@
 import { animation_duration } from '../../../../../script.js';
 import { dragElement } from '../../../../RossAscends-mods.js';
-import { loadMovingUIState } from '../../../../power-user.js';
 import { QuickReplySettings } from '../QuickReplySettings.js';
 
 export class ButtonUi {
@@ -32,7 +31,6 @@ export class ButtonUi {
         if (!this.settings.isEnabled) return;
         if (this.settings.isPopout) {
             document.body.append(this.render());
-            loadMovingUIState();
             $(this.render()).fadeIn(animation_duration);
             dragElement($(this.render()));
         } else {

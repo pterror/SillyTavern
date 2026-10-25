@@ -28,7 +28,7 @@ import { setActiveCharacter, setActiveGroup } from './app-selection-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { characters, charactersStore, setCharacterId, setRecentCharacters, getRecentCharacters, holdCharacter } from './character-store.js';
 import { eventSource, event_types } from './events.js';
-import { isMobile, initMovingUI, favsToHotswap, countCharTokensWhenShown, onCharacterEditorMaybeShown, onStackedDrawersChanged } from './RossAscends-mods.js';
+import { isMobile, favsToHotswap, countCharTokensWhenShown, onCharacterEditorMaybeShown, onStackedDrawersChanged } from './RossAscends-mods.js';
 import { drawerStackChanged } from './drawer-stack.js';
 import {
     resetSelectedGroup,
@@ -49,7 +49,7 @@ import { getTagsList, tag_import_setting, tag_sort_mode, tagsStore, getHeldAssig
 import { tokenizers } from './tokenizers.js';
 import { renderTemplateAsync } from './templates.js';
 
-import { debounce, delay, download, getFileText, getSanitizedFilename, getStringHash, isTrueBoolean, onlyUnique, resetScrollHeight, sortMoments, stringToRange, timestampToMoment } from './utils.js';
+import { debounce, delay, download, getFileText, getSanitizedFilename, getStringHash, isTrueBoolean, resetScrollHeight, sortMoments, stringToRange, timestampToMoment } from './utils.js';
 import { normalizeFav } from './hash-utils.js';
 import { compareByRandomSeed, getRandomSortSeed, mintRandomSortSeed, rerollRandomSortSeed } from './random-sort.js';
 import { characterRepository, buildCharacterQuery } from './character-repository.js';
@@ -195,9 +195,6 @@ export const power_user = {
     drawer_bar_position: 'top',
     drawer_bar_position_mobile: 'top',
     forceMobileView: false,
-    movingUI: false,
-    movingUIState: {},
-    movingUIPreset: '',
     noShadows: false,
     theme: 'Default (Dark) 1.7.1',
 
@@ -561,7 +558,6 @@ installPersonaCompatProxies();
 // #endregion
 
 let themes = [];
-let movingUIPresets = [];
 /** @type {ContextSettings[]} */
 export let context_presets = [];
 
@@ -1213,25 +1209,6 @@ function switchSpoilerMode() {
     }
 }
 
-function switchMovingUI() {
-    $('.drawer-content.maximized').each(function () {
-        $(this).find('.inline-drawer-maximize').trigger('click');
-    });
-    $('body').toggleClass('movingUI', power_user.movingUI);
-    if (power_user.movingUI === true) {
-        initMovingUI();
-        if (power_user.movingUIState) {
-            loadMovingUIState();
-        }
-    } else {
-        if (Object.keys(power_user.movingUIState).length !== 0) {
-            power_user.movingUIState = {};
-            resetMovablePanels();
-            saveSettingsDebounced('power_user.movingUIState');
-        }
-    }
-}
-
 function applyNoShadows() {
     $('body').toggleClass('noShadows', power_user.noShadows);
     $('#noShadowsmode').prop('checked', power_user.noShadows);
@@ -1711,22 +1688,6 @@ function applyTheme(name) {
     console.log('theme applied: ' + name);
 }
 
-async function applyMovingUIPreset(name) {
-    await resetMovablePanels('quiet');
-    const movingUIPreset = movingUIPresets.find(x => x.name == name);
-
-    if (!movingUIPreset) {
-        return;
-    }
-
-    power_user.movingUIState = movingUIPreset.movingUIState;
-
-
-    console.log('MovingUI Preset applied: ' + name);
-    loadMovingUIState();
-    saveSettingsDebounced('power_user.movingUIState');
-}
-
 /**
  * Register a function to be executed when the debug menu is opened.
  * @param {string} functionId Unique ID for the function.
@@ -1753,7 +1714,6 @@ export function applyPowerUserSettings() {
     applyBlurStrength();
     applyShadowWidth();
     applyCustomCSS();
-    switchMovingUI();
     applyNoShadows();
     switchHotswap();
     switchTimer();
@@ -1943,10 +1903,6 @@ export async function loadPowerUserSettings(settings, data) {
         themes = data.themes;
     }
 
-    if (data.movingUIPresets !== undefined) {
-        movingUIPresets = data.movingUIPresets;
-    }
-
 
     if (data.context !== undefined) {
         context_presets = data.context;
@@ -2039,7 +1995,6 @@ export async function loadPowerUserSettings(settings, data) {
     $('#fast_ui_mode').prop('checked', power_user.fast_ui_mode);
     $('#waifuMode').prop('checked', power_user.waifuMode);
     $('#forceMobileView').prop('checked', power_user.forceMobileView);
-    $('#movingUImode').prop('checked', power_user.movingUI);
     $('#noShadowsmode').prop('checked', power_user.noShadows);
     $('#start_reply_with').text(power_user.user_prompt_bias);
     $('#chat-show-reply-prefix-checkbox').prop('checked', power_user.show_user_prompt_bias);
@@ -2142,14 +2097,6 @@ export async function loadPowerUserSettings(settings, data) {
         $('#themes').append(option);
     }
 
-    for (const movingUIPreset of movingUIPresets) {
-        const option = document.createElement('option');
-        option.value = movingUIPreset.name;
-        option.innerText = movingUIPreset.name;
-        option.selected = movingUIPreset.name == power_user.movingUIPreset;
-        $('#movingUIPresets').append(option);
-    }
-
 
     $(`#character_sort_order option[data-order="${power_user.sort_order}"][data-field="${power_user.sort_field}"]`).prop('selected', true);
     updateRandomSortRerollVisibility();
@@ -2167,7 +2114,6 @@ export async function loadPowerUserSettings(settings, data) {
     applyDrawerBarMobilePosition();
     switchForceMobileView();
     switchSpoilerMode();
-    loadMovingUIState();
     loadCharListState();
     toggleMDHotkeyIconDisplay();
     applyToastrPosition();
@@ -2212,30 +2158,10 @@ function loadCharListState() {
     }
 }
 
-export function loadMovingUIState() {
-    if (!isMobile()
-        && power_user.movingUIState
-        && power_user.movingUI === true) {
-        console.debug('loading movingUI state');
-        for (var elmntName of Object.keys(power_user.movingUIState)) {
-            var elmntState = power_user.movingUIState[elmntName];
-            try {
-                var elmnt = $('#' + $.escapeSelector(elmntName));
-                if (elmnt.length) {
-                    console.debug(`loading state for ${elmntName}`);
-                    elmnt.css(elmntState);
-                } else {
-                    console.debug(`skipping ${elmntName} because it doesn't exist in the DOM`);
-                }
-            } catch (err) {
-                console.debug(`error occurred while processing ${elmntName}: ${err}`);
-            }
-        }
-    } else {
-        console.debug('skipping movingUI state load');
-        return;
-    }
-}
+/**
+ * Upstream's MovingUI panel layouts, removed here; kept as an export because extensions import it. Does nothing.
+ */
+export function loadMovingUIState() {}
 
 function loadMaxContextUnlocked() {
     $('#max_context_unlocked').prop('checked', power_user.max_context_unlocked);
@@ -3123,45 +3049,6 @@ function getNewTheme(parsed) {
     return theme;
 }
 
-async function saveMovingUI() {
-    const popupResult = await callGenericPopup('Enter a name for the MovingUI Preset:', POPUP_TYPE.INPUT);
-
-    if (!popupResult) {
-        return;
-    }
-
-    const name = await getSanitizedFilename(String(popupResult));
-
-    const response = await fetch('/api/moving-ui/save-from-settings', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({ name }),
-    });
-
-    if (response.ok) {
-        const { preset: movingUIPreset } = await response.json();
-        const movingUIPresetIndex = movingUIPresets.findIndex(x => x.name == name);
-
-        if (movingUIPresetIndex == -1) {
-            movingUIPresets.push(movingUIPreset);
-            const option = document.createElement('option');
-            option.selected = true;
-            option.value = name;
-            option.innerText = name;
-            $('#movingUIPresets').append(option);
-        } else {
-            movingUIPresets[movingUIPresetIndex] = movingUIPreset;
-            $(`#movingUIPresets option[value="${name}"]`).prop('selected', true);
-        }
-
-        power_user.movingUIPreset = name;
-        saveSettingsDebounced('power_user.movingUIPreset');
-    } else {
-        toastr.error('Failed to save MovingUI state.');
-        console.error('MovingUI could not be saved', response);
-    }
-}
-
 /**
  * Resets the movable styles of the given element to their unset values.
  * @param {string} id Element ID
@@ -3176,79 +3063,6 @@ export function resetMovableStyles(id) {
             panel.style[style] = '';
         });
     }
-}
-
-async function resetMovablePanels(type) {
-    const panelIds = [
-        'sheld',
-        'left-nav-panel',
-        'right-nav-panel',
-        'WorldInfo',
-        'floatingPrompt',
-        'expression-holder',
-        'groupMemberListPopout',
-        'summaryExtensionPopout',
-        'gallery',
-        'logprobsViewer',
-        'cfgConfig',
-    ];
-
-    /**
-     * @type {HTMLElement[]} Generic panels that don't have a known ID
-     */
-    const draggedElements = Array.from(document.querySelectorAll('[data-dragged]'));
-    const allDraggable = panelIds.map(id => document.getElementById(id)).concat(draggedElements).filter(onlyUnique);
-
-    const panelStyles = ['top', 'left', 'right', 'bottom', 'height', 'width', 'margin'];
-    allDraggable.forEach((panel) => {
-        if (panel) {
-            $(panel).addClass('resizing');
-            panelStyles.forEach((style) => {
-                panel.style[style] = '';
-            });
-        }
-    });
-
-    /**
-     * @type {HTMLElement[]} Zoomed avatars that are currently being resized
-     */
-    const zoomedAvatars = Array.from(document.querySelectorAll('.zoomed_avatar'));
-    if (zoomedAvatars.length > 0) {
-        zoomedAvatars.forEach((avatar) => {
-            avatar.classList.add('resizing');
-            panelStyles.forEach((style) => {
-                avatar.style[style] = '';
-            });
-        });
-    }
-
-    $('[data-dragged="true"]').removeAttr('data-dragged');
-    await delay(50);
-
-    power_user.movingUIState = {};
-
-    //if user manually resets panels, deselect the current preset
-    if (type !== 'quiet' && type !== 'resize') {
-        power_user.movingUIPreset = 'Default';
-        $('#movingUIPresets option[value="Default"]').prop('selected', true);
-    }
-
-    saveSettingsDebounced('power_user.movingUIState', 'power_user.movingUIPreset');
-    await eventSource.emit(event_types.MOVABLE_PANELS_RESET);
-
-    eventSource.once(event_types.SETTINGS_UPDATED, () => {
-        $('.resizing').removeClass('resizing');
-        //if happening as part of preset application, do it quietly.
-        if (type === 'quiet') {
-            return;
-            //if happening due to resize, tell user.
-        } else if (type === 'resize') {
-            toastr.warning('Panel positions reset due to zoom/resize');
-            //if happening due to manual button press
-        } else {
-            toastr.success('Panel positions reset');
-        }
-    });
 }
 
 /**
@@ -3424,11 +3238,6 @@ async function doDelMode(args, text) {
     return doMesCut(args, range);
 }
 
-function doResetPanels() {
-    $('#movingUIreset').trigger('click');
-    return '';
-}
-
 async function setAvgBG(args) {
     const nameOverride = args?.name ? String(args.name).trim() : '';
     const bgOverride = args?.bg ? String(args.bg).trim() : '';
@@ -3513,30 +3322,6 @@ async function setThemeCallback(_, themeName) {
     applyTheme(theme.name);
     $('#themes').val(theme.name);
     saveSettingsDebounced('power_user.theme');
-    return '';
-}
-
-async function setmovingUIPreset(_, text) {
-    // @ts-ignore
-    const fuse = new Fuse(movingUIPresets, {
-        keys: [
-            { name: 'name', weight: 1 },
-        ],
-    });
-
-    const results = fuse.search(text);
-    console.debug('movingUI preset fuzzy search results for ' + text, results);
-    const preset = results[0]?.item;
-
-    if (!preset) {
-        toastr.warning(`Could not find preset with name: ${text}`);
-        return;
-    }
-
-    power_user.movingUIPreset = preset.name;
-    applyMovingUIPreset(preset.name);
-    $('#movingUIPresets').val(preset.name);
-    saveSettingsDebounced('power_user.movingUIPreset');
     return '';
 }
 
@@ -3686,13 +3471,9 @@ jQuery(() => {
         const winHeight = window.innerHeight;
         const originalWidth = winWidth * zoomLevel;
         const originalHeight = winHeight * zoomLevel;
-        console.debug(`Window resize: ${coreTruthWinWidth}x${coreTruthWinHeight} -> ${window.innerWidth}x${window.innerHeight}`);
         console.debug(`Zoom: ${zoomLevel}, X:${winWidth}, Y:${winHeight}, original: ${originalWidth}x${originalHeight} `);
         return zoomLevel;
     });
-
-    var coreTruthWinWidth = window.innerWidth;
-    var coreTruthWinHeight = window.innerHeight;
 
     $(window).on('resize', async () => {
         adjustAutocompleteDebounced();
@@ -3703,50 +3484,6 @@ jQuery(() => {
         }
 
         reportZoomLevelDebounced();
-
-        //attempt to scale movingUI elements naturally across window resizing/zooms
-        //this will still break if the zoom level causes mobile styles to come into play.
-        const scaleY = parseFloat(Number(window.innerHeight / coreTruthWinHeight).toFixed(4));
-        const scaleX = parseFloat(Number(window.innerWidth / coreTruthWinWidth).toFixed(4));
-
-        if (Object.keys(power_user.movingUIState).length > 0) {
-            for (var elmntName of Object.keys(power_user.movingUIState)) {
-                var elmntState = power_user.movingUIState[elmntName];
-                var oldHeight = elmntState.height;
-                var oldWidth = elmntState.width;
-                var oldLeft = elmntState.left;
-                var oldTop = elmntState.top;
-                var oldBottom = elmntState.bottom;
-                var oldRight = elmntState.right;
-                var newHeight, newWidth, newTop, newBottom, newLeft, newRight;
-
-                newHeight = Number(oldHeight * scaleY).toFixed(0);
-                newWidth = Number(oldWidth * scaleX).toFixed(0);
-                newLeft = Number(oldLeft * scaleX).toFixed(0);
-                newTop = Number(oldTop * scaleY).toFixed(0);
-                newBottom = Number(oldBottom * scaleY).toFixed(0);
-                newRight = Number(oldRight * scaleX).toFixed(0);
-                try {
-                    var elmnt = $('#' + $.escapeSelector(elmntName));
-                    if (elmnt.length) {
-                        elmnt.css('height', newHeight);
-                        elmnt.css('width', newWidth);
-                        elmnt.css('inset', `${newTop}px ${newRight}px ${newBottom}px ${newLeft}px`);
-                        power_user.movingUIState[elmntName].height = newHeight;
-                        power_user.movingUIState[elmntName].width = newWidth;
-                        power_user.movingUIState[elmntName].top = newTop;
-                        power_user.movingUIState[elmntName].bottom = newBottom;
-                        power_user.movingUIState[elmntName].left = newLeft;
-                        power_user.movingUIState[elmntName].right = newRight;
-                    }
-                } catch (err) {
-                    console.log(`error occurred while processing ${elmntName}: ${err}`);
-                }
-            }
-            saveSettingsDebounced('power_user.movingUIState');
-        }
-        coreTruthWinWidth = window.innerWidth;
-        coreTruthWinHeight = window.innerHeight;
     });
 
     // Settings that go to settings.json
@@ -3904,19 +3641,11 @@ jQuery(() => {
         applyCustomCSS();
     });
 
-    $('#movingUImode').on('change', function () {
-        power_user.movingUI = $(this).prop('checked');
-        switchMovingUI();
-        saveSettingsDebounced('power_user.movingUI');
-    });
-
     $('#noShadowsmode').on('change', function () {
         power_user.noShadows = $(this).prop('checked');
         applyNoShadows();
         saveSettingsDebounced('power_user.noShadows');
     });
-
-    $('#movingUIreset').on('click', resetMovablePanels);
 
     $('#avatar_style').on('change', function () {
         const value = $(this).find(':selected').val();
@@ -4047,18 +3776,9 @@ jQuery(() => {
         saveSettingsDebounced('power_user.theme');
     });
 
-    $('#movingUIPresets').on('change', async function () {
-        console.log('saw MUI preset change');
-        const movingUIPresetSelected = String($(this).find(':selected').val());
-        power_user.movingUIPreset = movingUIPresetSelected;
-        applyMovingUIPreset(movingUIPresetSelected);
-        saveSettingsDebounced('power_user.movingUIPreset');
-    });
-
     $('#ui-preset-save-button').on('click', () => saveTheme());
     $('#ui-preset-update-button').on('click', () => updateTheme());
     $('#ui-preset-delete-button').on('click', () => deleteTheme());
-    $('#movingui-preset-save-button').on('click', saveMovingUI);
 
     $('#never_resize_avatars').on('input', function () {
         power_user.never_resize_avatars = !!$(this).prop('checked');
@@ -4550,7 +4270,7 @@ jQuery(() => {
         power_user.stscript.autocomplete.font.scale = Number(value);
         document.body.style.setProperty('--ac-font-scale', value.toString());
         // Only the autocomplete box itself needs to react to this - a real window resize dispatch here also
-        // fires unrelated resize-listeners (favorites hotswap refetch, movingUI rescale, zoom report), so call
+        // fires unrelated resize-listeners (favorites hotswap refetch, zoom report), so call
         // the one thing this change actually affects directly instead of faking a resize.
         adjustAutocompleteDebounced();
         saveSettingsDebounced('power_user.stscript.autocomplete.font.scale');
@@ -4813,12 +4533,6 @@ jQuery(() => {
         aliases: [],
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
-        name: 'resetpanels',
-        callback: doResetPanels,
-        helpString: 'resets UI panels to original state',
-        aliases: ['resetui'],
-    }));
-    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'bgcol',
         callback: setAvgBG,
         namedArgumentList: [
@@ -4961,19 +4675,6 @@ jQuery(() => {
                 </ul>
             </div>
         `,
-    }));
-    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
-        name: 'movingui',
-        callback: setmovingUIPreset,
-        unnamedArgumentList: [
-            SlashCommandArgument.fromProps({
-                description: 'name',
-                typeList: [ARGUMENT_TYPE.STRING],
-                isRequired: true,
-                enumProvider: () => movingUIPresets.map(preset => new SlashCommandEnumValue(preset.name)),
-            }),
-        ],
-        helpString: 'activates a movingUI preset by name',
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'stop-strings',

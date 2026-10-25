@@ -93,7 +93,6 @@ const STORAGE_KEYS = {
  * @property {string} openAI_Settings - The directory where the OpenAI settings are stored
  * @property {string} textGen_Settings - The directory where the TextGen settings are stored
  * @property {string} themes - The directory where the themes are stored
- * @property {string} movingUI - The directory where the moving UI data is stored
  * @property {string} extensions - The directory where the extensions are stored
  * @property {string} instruct - The directory where the instruct templates is stored
  * @property {string} context - The directory where the context templates is stored
@@ -300,11 +299,6 @@ export async function migrateUserData() {
         {
             old: path.join(publicDirectory, 'KoboldAI Settings'),
             new: userDirectories.koboldAI_Settings,
-            file: false,
-        },
-        {
-            old: path.join(publicDirectory, 'movingUI'),
-            new: userDirectories.movingUI,
             file: false,
         },
         {

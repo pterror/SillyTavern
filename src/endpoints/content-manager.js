@@ -55,7 +55,6 @@ export const CONTENT_TYPES = {
     TEXTGEN_PRESET: 'textgen_preset',
     INSTRUCT: 'instruct',
     CONTEXT: 'context',
-    MOVING_UI: 'moving_ui',
     QUICK_REPLIES: 'quick_replies',
     SYSPROMPT: 'sysprompt',
     REASONING: 'reasoning',
@@ -417,8 +416,6 @@ export function getUserTargetByType(type, directories) {
             return directories.instruct;
         case CONTENT_TYPES.CONTEXT:
             return directories.context;
-        case CONTENT_TYPES.MOVING_UI:
-            return directories.movingUI;
         case CONTENT_TYPES.QUICK_REPLIES:
             return directories.quickreplies;
         case CONTENT_TYPES.SYSPROMPT:

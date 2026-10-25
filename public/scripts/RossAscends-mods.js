@@ -23,7 +23,6 @@ import { active_character, active_group, setActiveCharacter, setActiveGroup } fr
 import { main_api, max_context } from './generation-params.js';
 import { getRequestHeaders } from './request-headers.js';
 import { charactersStore } from './character-store.js';
-import { eventSource } from './events.js';
 
 import {
     power_user,
@@ -557,192 +556,51 @@ function saveUserInput() {
 }
 const saveUserInputDebounced = debounce(saveUserInput);
 
+/**
+ * Lets a floating window be dragged by its header (`#<id>header`, grabbed by its `.drag-grabber`), kept inside the
+ * window. Where it was dragged isn't kept.
+ * @param {JQuery<HTMLElement>} $elmnt
+ */
 export function dragElement($elmnt) {
-    let actionType = null; // "drag" or "resize"
-    let isMouseDown = false;
-
-    let pos1 = 0, pos2 = 0, pos3 = 0, pos4 = 0;
-    let height, width, top, left, right, bottom,
-        maxX, maxY, winHeight, winWidth;
-
     const elmntName = $elmnt.attr('id');
-    const elmntNameEscaped = $.escapeSelector(elmntName);
-    const $elmntHeader = $(`#${elmntNameEscaped}header`);
-
-    // Helper: Save position/size to state and emit events
-    function savePositionAndSize() {
-        if (!power_user.movingUIState[elmntName]) power_user.movingUIState[elmntName] = {};
-        power_user.movingUIState[elmntName].top = top;
-        power_user.movingUIState[elmntName].left = left;
-        power_user.movingUIState[elmntName].right = right;
-        power_user.movingUIState[elmntName].bottom = bottom;
-        power_user.movingUIState[elmntName].margin = 'unset';
-        if (actionType === 'resize') {
-            power_user.movingUIState[elmntName].width = width;
-            power_user.movingUIState[elmntName].height = height;
-            eventSource.emit('resizeUI', elmntName);
-        }
-        saveSettingsDebounced('power_user.movingUIState');
-    }
-
-    // Helper: Clamp element within viewport
-    function clampToViewport() {
-        if (top <= 0) $elmnt.css('top', '0px');
-        else if (maxY >= winHeight) $elmnt.css('top', winHeight - maxY + top - 1 + 'px');
-        if (left <= 0) $elmnt.css('left', '0px');
-        else if (maxX >= winWidth) $elmnt.css('left', winWidth - maxX + left - 1 + 'px');
-    }
-
-    const observer = new MutationObserver((mutations) => {
-        const $target = $(mutations[0].target);
-        if (
-            !$target.is(':visible') ||
-            $target.hasClass('resizing') ||
-            $target.height() < 50 ||
-            $target.width() < 50 ||
-            power_user.movingUI === false ||
-            isMobile() ||
-            !isMouseDown
-        ) {
-            observer.disconnect();
-            return;
-        }
-
-        const element = /** @type {HTMLElement} */ ($target[0]);
-        drawerStackChanged();
-        const style = getComputedStyle(element);
-        height = parseInt(style.height);
-        width = parseInt(style.width);
-        top = parseInt(style.top);
-        left = parseInt(style.left);
-        right = parseInt(style.right);
-        bottom = parseInt(style.bottom);
-        maxX = width + left;
-        maxY = height + top;
-        winWidth = window.innerWidth;
-        winHeight = window.innerHeight;
-
-        if (!power_user.movingUIState[elmntName]) power_user.movingUIState[elmntName] = {};
-
-        if (actionType === 'resize') {
-            let containerAspectRatio = height / width;
-            if ($elmnt.attr('id').startsWith('zoomFor_')) {
-                const zoomedAvatarImage = $elmnt.find('.zoomed_avatar_img');
-                const imgHeight = zoomedAvatarImage.height();
-                const imgWidth = zoomedAvatarImage.width();
-                const imageAspectRatio = imgHeight / imgWidth;
-                if (containerAspectRatio !== imageAspectRatio) {
-                    $elmnt.css('width', $elmnt.width());
-                    $elmnt.css('height', $elmnt.width() * imageAspectRatio);
-                }
-                if (top + $elmnt.height() >= winHeight) {
-                    $elmnt.css('height', winHeight - top - 1 + 'px');
-                    $elmnt.css('width', (winHeight - top - 1) / imageAspectRatio + 'px');
-                }
-                if (left + $elmnt.width() >= winWidth) {
-                    $elmnt.css('width', winWidth - left - 1 + 'px');
-                    $elmnt.css('height', (winWidth - left - 1) * imageAspectRatio + 'px');
-                }
-            } else {
-                if (top + $elmnt.height() >= winHeight) $elmnt.css('height', winHeight - top - 1 + 'px');
-                if (left + $elmnt.width() >= winWidth) $elmnt.css('width', winWidth - left - 1 + 'px');
-            }
-            $elmnt.css({ left, top });
-            $elmnt.off('mouseup').on('mouseup', () => {
-                if (
-                    power_user.movingUIState[elmntName].width === $elmnt.width() &&
-                    power_user.movingUIState[elmntName].height === $elmnt.height()
-                ) return;
-                savePositionAndSize();
-                observer.disconnect();
-            });
-        } else if (actionType === 'drag') {
-            clampToViewport();
-        }
-
-        savePositionAndSize();
-    });
-
-    function dragMouseDown(e) {
-        if (e) {
-            actionType = 'drag';
-            isMouseDown = true;
-            e.preventDefault();
-            pos3 = e.clientX;
-            pos4 = e.clientY;
-        }
-        $(document).on('mouseup', closeDragElement);
-        $(document).on('mousemove', elementDrag);
-    }
+    const $elmntHeader = $(`#${$.escapeSelector(elmntName)}header`);
+    let lastX = 0, lastY = 0;
 
     function elementDrag(e) {
-        if (!power_user.movingUIState[elmntName]) power_user.movingUIState[elmntName] = {};
         e.preventDefault();
-        pos1 = pos3 - e.clientX;
-        pos2 = pos4 - e.clientY;
-        pos3 = e.clientX;
-        pos4 = e.clientY;
+        const dx = e.clientX - lastX;
+        const dy = e.clientY - lastY;
+        lastX = e.clientX;
+        lastY = e.clientY;
+        const offset = $elmnt.offset();
+        const left = Math.min(Math.max(0, offset.left + dx), window.innerWidth - $elmnt.outerWidth());
+        const top = Math.min(Math.max(0, offset.top + dy), window.innerHeight - $elmnt.outerHeight());
+        $elmnt.css({ left: `${left}px`, top: `${top}px`, margin: 'unset' });
         $elmnt.attr('data-dragged', 'true');
-        $elmnt.css('left', ($elmnt.offset().left - pos1) + 'px');
-        $elmnt.css('top', ($elmnt.offset().top - pos2) + 'px');
-        $elmnt.css('margin', 'unset');
-        $elmnt.css('height', height);
-        $elmnt.css('width', width);
         drawerStackChanged();
     }
 
     function closeDragElement() {
-        isMouseDown = false;
-        actionType = null;
         $(document).off('mouseup', closeDragElement);
         $(document).off('mousemove', elementDrag);
         $elmnt.attr('data-dragged', 'false');
-        observer.disconnect();
-        savePositionAndSize();
     }
 
-    if ($elmntHeader.length) {
-        $elmntHeader.off('mousedown').on('mousedown', (e) => {
-            if ($(e.target).hasClass('drag-grabber')) {
-                actionType = 'drag';
-                isMouseDown = true;
-                observer.observe($elmnt[0], { attributes: true, attributeFilter: ['style'] });
-                dragMouseDown(e);
-            }
-        });
-    }
-
-    $elmnt.off('mousedown').on('mousedown', (e) => {
-        const rect = $elmnt[0].getBoundingClientRect();
-        const resizeMargin = 16;
-        const isNearRight = e.clientX > rect.right - resizeMargin;
-        const isNearBottom = e.clientY > rect.bottom - resizeMargin;
-        if (isNearRight && isNearBottom) {
-            actionType = 'resize';
-            isMouseDown = true;
-            observer.observe($elmnt[0], { attributes: true, attributeFilter: ['style'] });
-        }
-    });
-
-    $elmnt.off('mouseup').on('mouseup', () => {
-        isMouseDown = false;
-        actionType = null;
-        observer.disconnect();
+    $elmntHeader.off('mousedown').on('mousedown', (e) => {
+        if (!$(e.target).hasClass('drag-grabber')) return;
+        e.preventDefault();
+        lastX = e.clientX;
+        lastY = e.clientY;
+        $(document).on('mouseup', closeDragElement);
+        $(document).on('mousemove', elementDrag);
     });
 }
 
-export async function initMovingUI() {
-    if (!isMobile() && power_user.movingUI === true) {
-        console.debug('START MOVING UI');
-        dragElement($('#sheld'));
-        dragElement($('#left-nav-panel'));
-        dragElement($('#right-nav-panel'));
-        dragElement($('#WorldInfo'));
-        dragElement($('#floatingPrompt'));
-        dragElement($('#logprobsViewer'));
-        dragElement($('#cfgConfig'));
-    }
-}
+/**
+ * Upstream's MovingUI (dragging the main panels), removed here; kept as an export because extensions import it. Does
+ * nothing.
+ */
+export async function initMovingUI() {}
 
 /**@type {HTMLTextAreaElement} */
 const sendTextArea = document.querySelector('#send_textarea');
