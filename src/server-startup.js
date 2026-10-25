@@ -7,7 +7,6 @@ import { color, urlHostnameToIPv6, getHasIP } from './util.js';
 import { router as userDataRouter } from './users.js';
 import { router as usersPrivateRouter } from './endpoints/users-private.js';
 import { router as usersAdminRouter } from './endpoints/users-admin.js';
-import { router as movingUIRouter } from './endpoints/moving-ui.js';
 import { router as imagesRouter } from './endpoints/images.js';
 import { router as quickRepliesRouter } from './endpoints/quick-replies.js';
 import { router as editorPresetsRouter } from './endpoints/editor-presets.js';
@@ -136,7 +135,6 @@ export function redirectDeprecatedEndpoints(app) {
     redirect('/uploadimage', '/api/images/upload');
     redirect('/listimgfiles/:folder', '/api/images/list/:folder');
     redirect('/api/content/import', '/api/content/importURL');
-    redirect('/savemovingui', '/api/moving-ui/save');
     redirect('/api/serpapi/search', '/api/search/serpapi');
     redirect('/api/serpapi/visit', '/api/search/visit');
     redirect('/api/serpapi/transcript', '/api/search/transcript');
@@ -150,7 +148,6 @@ export function setupPrivateEndpoints(app) {
     app.use('/', userDataRouter);
     app.use('/api/users', usersPrivateRouter);
     app.use('/api/users', usersAdminRouter);
-    app.use('/api/moving-ui', movingUIRouter);
     app.use('/api/images', imagesRouter);
     app.use('/api/quick-replies', quickRepliesRouter);
     app.use('/api/editor-presets', editorPresetsRouter);

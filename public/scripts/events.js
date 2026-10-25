@@ -29,6 +29,7 @@ export const event_types = {
     SETTINGS_LOADED: 'settings_loaded',
     SETTINGS_UPDATED: 'settings_updated',
     GROUP_UPDATED: 'group_updated',
+    /** Upstream's MovingUI panel reset, removed here: never sent; kept for extensions that listen for it. */
     MOVABLE_PANELS_RESET: 'movable_panels_reset',
     SETTINGS_LOADED_BEFORE: 'settings_loaded_before',
     SETTINGS_LOADED_AFTER: 'settings_loaded_after',

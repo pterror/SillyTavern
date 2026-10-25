@@ -18,7 +18,7 @@ import {
 } from '../../../script.js';
 import { eventSource, event_types } from '../../events.js';
 import { is_group_generating, selected_group } from '../../group-chats.js';
-import { loadMovingUIState, power_user } from '../../power-user.js';
+import { power_user } from '../../power-user.js';
 import { dragElement } from '../../RossAscends-mods.js';
 import { getTextTokens, getTokenCountAsync, tokenizers } from '../../tokenizers.js';
 import { debounce_timeout } from '../../constants.js';
@@ -1070,7 +1070,6 @@ function doPopout(e) {
         setMemoryContext(prevSummaryBoxContents, false); //paste prev summary box contents into popout box
         setupListeners();
         loadSettings();
-        loadMovingUIState();
 
         dragElement(newElement);
 

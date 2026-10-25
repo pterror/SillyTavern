@@ -84,7 +84,6 @@ import {
     power_user,
     persona_description_positions,
     personaStore,
-    loadMovingUIState,
     getCustomStoppingStrings,
     MAX_CONTEXT_DEFAULT,
     MAX_RESPONSE_DEFAULT,
@@ -14994,16 +14993,13 @@ jQuery(async function () {
             }
         }
 
-        // Remove existing zoomed avatars for characters that are not the clicked character when moving UI is not enabled
-        if (!power_user.movingUI) {
-            $('.zoomed_avatar').each(function () {
-                const currentForChar = $(this).attr('forChar');
-                if (currentForChar !== charname && typeof currentForChar !== 'undefined') {
-                    console.debug(`Removing zoomed avatar for character: ${currentForChar}`);
-                    $(this).remove();
-                }
-            });
-        }
+        // One zoomed avatar at a time: another character's goes.
+        $('.zoomed_avatar').each(function () {
+            const currentForChar = $(this).attr('forChar');
+            if (currentForChar !== charname && typeof currentForChar !== 'undefined') {
+                $(this).remove();
+            }
+        });
 
         const avatarSrc = (isDataURL(thumbURL) || /^\/?img\/(?:.+)/.test(thumbURL)) ? thumbURL : charsPath + targetAvatarImg;
         if ($(`.zoomed_avatar[forChar="${charname}"]`).length) {
@@ -15038,7 +15034,6 @@ jQuery(async function () {
                 zoomedAvatarImgElement.attr('src', avatarSrc);
                 zoomedAvatarImgElement.attr('data-izoomify-url', avatarSrc);
             }
-            loadMovingUIState();
             $(`.zoomed_avatar[forChar="${charname}"]`).css('display', 'flex');
             dragElement(newElement);
 

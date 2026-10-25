@@ -48,7 +48,6 @@ jest.unstable_mockModule('../public/lib.js', () => ({ Fuse: class {} }));
 
 jest.unstable_mockModule('../public/scripts/power-user.js', () => ({
     power_user: { sort_order: 'asc', sort_field: 'name' },
-    loadMovingUIState: jest.fn(),
     sortEntitiesList: jest.fn(),
     invalidateGroupsFuseIndex: jest.fn(),
 }));

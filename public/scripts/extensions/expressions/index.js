@@ -6,7 +6,7 @@ import { charactersStore } from '../../character-store.js';
 import { eventSource, event_types } from '../../events.js';
 import { dragElement, isMobile } from '../../RossAscends-mods.js';
 import { getContext, getApiUrl, modules, extension_settings, ModuleWorkerWrapper, doExtrasFetch, renderExtensionTemplateAsync } from '../../extensions.js';
-import { loadMovingUIState, performFuzzySearch, power_user } from '../../power-user.js';
+import { performFuzzySearch, power_user } from '../../power-user.js';
 import { onlyUnique, debounce, getCharaFilename, trimToEndSentence, trimToStartSentence, waitUntilCondition, findChar, findCharAsync, isFalseBoolean, includesIgnoreCaseAndAccents } from '../../utils.js';
 import { hideMutedSprites, selected_group } from '../../group-chats.js';
 import { isJsonSchemaSupported } from '../../textgen-settings.js';
@@ -377,15 +377,9 @@ export async function visualNovelUpdateLayers(container) {
 
     images.forEach((current, index) => {
         const element = $(current);
-        const elementID = element.attr('id');
 
         // skip repositioning of dragged elements
-        if (element.data('dragged')
-            || (power_user.movingUIState[elementID]
-                && (typeof power_user.movingUIState[elementID] === 'object')
-                && Object.keys(power_user.movingUIState[elementID]).length > 0)) {
-            loadMovingUIState();
-            //currentPosition += imagesWidth[index];
+        if (element.data('dragged')) {
             return;
         }
 
@@ -2387,7 +2381,6 @@ export async function init() {
             </div>
         </div>`;
         $('body').append(html);
-        loadMovingUIState();
     }
     function addVisualNovelMode() {
         const html = `
@@ -2491,7 +2484,6 @@ export async function init() {
 
         updateFunction({ newChat: true });
     });
-    eventSource.on(event_types.MOVABLE_PANELS_RESET, updateVisualNovelModeDebounced);
     eventSource.on(event_types.GROUP_UPDATED, updateVisualNovelModeDebounced);
 
     const localEnumProviders = {

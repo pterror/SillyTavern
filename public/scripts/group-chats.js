@@ -25,7 +25,7 @@ import {
 import { normalizeFav } from './hash-utils.js';
 import { bringChatForward } from './drawer-stack.js';
 import { RA_CountCharTokens, dragElement, favsToHotswap, getMessageTimeStamp } from './RossAscends-mods.js';
-import { power_user, loadMovingUIState, sortEntitiesList, invalidateGroupsFuseIndex } from './power-user.js';
+import { power_user, sortEntitiesList, invalidateGroupsFuseIndex } from './power-user.js';
 import { debounce_timeout } from './constants.js';
 import { getRandomSortSeed, compareByRandomSeed } from './random-sort.js';
 import { characterRepository, buildCharacterQuery } from './character-repository.js';
@@ -2848,7 +2848,6 @@ function doCurMemberListPopout() {
         newElement.find('.group_pagination').empty();
 
         $('#movingDivs').append(newElement);
-        loadMovingUIState();
         $('#groupMemberListPopout').fadeIn(animation_duration);
         dragElement(newElement);
         $('#groupMemberListPopoutClose').off('click').on('click', function () {

@@ -9,7 +9,6 @@ import { eventSource, event_types } from '../../events.js';
 import { selected_group } from '../../group-chats.js';
 import { groups } from '../../group-store.js';
 import { loadFileToDocument, delay, getBase64Async, getSanitizedFilename, saveBase64AsFile, getFileExtension, getVideoThumbnail, clamp } from '../../utils.js';
-import { loadMovingUIState } from '../../power-user.js';
 import { dragElement } from '../../RossAscends-mods.js';
 import { SlashCommandParser } from '../../slash-commands/SlashCommandParser.js';
 import { SlashCommand } from '../../slash-commands/SlashCommand.js';
@@ -528,7 +527,6 @@ async function makeMovable(url) {
 
     $('#movingDivs').append(newElement);
 
-    loadMovingUIState();
     $(`.draggable[forChar="${id}"]`).css('display', 'block');
     dragElement(newElement);
     newElement.transition({
@@ -659,7 +657,6 @@ function makeDragImg(id, url) {
     const appendedElement = document.getElementById(uniqueId);
     if (appendedElement) {
         var elmntName = $(appendedElement);
-        loadMovingUIState();
         dragElement(elmntName);
 
         $(`#${uniqueId} img`).on('dragstart', (e) => {
