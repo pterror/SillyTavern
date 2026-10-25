@@ -847,6 +847,16 @@ hr {
     min-height: 100px;
     min-width: 100px;
     width: var(--sheldWidth);
+    backdrop-filter: blur(var(--SmartThemeBlurStrength));
+    -webkit-backdrop-filter: blur(var(--SmartThemeBlurStrength));
+}
+
+/* A layer paints its own blur. A blurring box inside one is drawn on a layer of its own, which Firefox doesn't clip
+   by the cut the drawer stack puts on the layer, so what's inside would show through whatever covers it. The top
+   layer (dialogs, popovers) is outside every layer's cut and keeps its blur. */
+:is(#sheld, .drawer-content, #movingDivs > *, body > .draggable) :not(dialog, [popover], :is(dialog, [popover]) *) {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
 }
 
 .drag-grabber {
@@ -926,9 +936,7 @@ body .panelControlBar {
     /*     border-bottom: 1px solid var(--SmartThemeBorderColor);
     border-left: 1px solid var(--SmartThemeBorderColor);
     border-right: 1px solid var(--SmartThemeBorderColor); */
-    backdrop-filter: blur(var(--SmartThemeBlurStrength));
     background-color: var(--SmartThemeChatTintColor);
-    -webkit-backdrop-filter: blur(var(--SmartThemeBlurStrength));
     text-shadow: 0px 0px calc(var(--shadowWidth) * 1px) var(--SmartThemeShadowColor);
     flex-direction: column;
     z-index: 30;
@@ -958,7 +966,6 @@ body .panelControlBar {
     border: 1px solid var(--SmartThemeBorderColor);
     border-radius: 0 0 10px 10px;
     background-color: var(--SmartThemeBlurTintColor);
-    backdrop-filter: blur(var(--SmartThemeBlurStrength));
 }
 
 /* #send_form.no-connection {

@@ -50,6 +50,22 @@ test.describe('stacked drawers', () => {
         await expectOccludes(page, 'dialog[open]', '#sheld');
     });
 
+    test('a layer blurs what is behind it itself; nothing inside it outside the top layer blurs', async ({ page }) => {
+        // Firefox draws a blurring box on a layer of its own and doesn't clip it by its ancestor's cut.
+        const found = await page.evaluate(() => {
+            document.body.classList.remove('no-blur');
+            const blurs = (/** @type {Element} */ el) => getComputedStyle(el).backdropFilter !== 'none';
+            const layers = [...document.querySelectorAll('#sheld, .drawer-content, #movingDivs > *, body > .draggable')];
+            return {
+                sheld: blurs(document.getElementById('sheld')),
+                inside: layers.flatMap(layer => [...layer.querySelectorAll('*')])
+                    .filter(el => !el.closest('dialog, [popover]') && blurs(el))
+                    .map(el => el.id || el.className),
+            };
+        });
+        expect(found).toEqual({ sheld: true, inside: [] });
+    });
+
     test('the talkativeness popover cuts character info under it', async ({ page }) => {
         await page.locator('#talkativeness_button').click();
         await expect(page.locator('#talkativeness_div')).toBeVisible();
