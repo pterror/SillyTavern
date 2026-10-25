@@ -313,10 +313,11 @@ function mentionCompletions(context) {
     const at = context.state.sliceDoc(typed.from, typed.to).lastIndexOf('@') + typed.from;
     const { person } = context.state.facet(macroOptions);
     const options = MENTIONABLE.map((macro, index) => {
-        const name = person?.(macro)?.name || macro;
+        const who = person?.(macro);
         return {
-            label: name,
+            label: who?.name || macro,
             detail: `{{${macro}}}`,
+            avatarUrl: who?.avatarUrl,
             boost: -index,
             apply: (/** @type {import('@codemirror/view').EditorView} */ view, /** @type {any} */ _completion, /** @type {number} */ _from, /** @type {number} */ to) => {
                 const insert = `{{${macro}}}`;
@@ -326,6 +327,19 @@ function mentionCompletions(context) {
     });
     return { from: at + 1, options, filter: true };
 }
+
+/** A mention's avatar in the "@" list, before its name; nothing for other suggestions. */
+const mentionAvatar = {
+    position: 20,
+    render: (/** @type {{ avatarUrl?: string }} */ completion) => {
+        if (!completion.avatarUrl) return null;
+        const img = document.createElement('img');
+        img.className = 'live-mention-avatar';
+        img.src = completion.avatarUrl;
+        img.alt = '';
+        return img;
+    },
+};
 
 /**
  * The app's macro suggestions as a CodeMirror completion source: the same options, details and argument hints as
@@ -395,6 +409,6 @@ export function liveMacros(options) {
         openOnDoubleClick,
         keymap.of([{ key: 'Mod-Shift-m', run: toggleMacroSource }]),
         // No delay before Enter takes a suggestion, as with the app's own suggestion lists.
-        autocompletion({ override: [macroCompletions, mentionCompletions], icons: false, closeOnBlur: true, interactionDelay: 0 }),
+        autocompletion({ override: [macroCompletions, mentionCompletions], icons: false, closeOnBlur: true, interactionDelay: 0, addToOptions: [mentionAvatar] }),
     ];
 }

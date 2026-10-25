@@ -128,6 +128,9 @@ test.describe('live editor macros', () => {
         await page.keyboard.type(' @');
         const list = page.locator('#liveEditorTestHost .cm-tooltip-autocomplete li');
         await expect(list).toHaveText(['Person user{{user}}', 'Person char{{char}}']);
+        // Each with its avatar, as a mention list shows them.
+        await expect(list.locator('img.live-mention-avatar')).toHaveCount(2);
+        await expect(list.first().locator('img.live-mention-avatar')).toHaveAttribute('src', '/img/ai4.png');
         await page.keyboard.type('ch');
         await expect(list).toHaveText(['Person char{{char}}']);
         await page.keyboard.press('Enter');
