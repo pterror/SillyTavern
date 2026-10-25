@@ -8,7 +8,7 @@ import { MacroEngine } from './MacroEngine.js';
 import { parseFlags, createEmptyFlags, MacroFlagType } from './MacroFlags.js';
 import { MacroParser } from './MacroParser.js';
 import { MacroRegistry } from './MacroRegistry.js';
-import { isFalseBoolean } from '/scripts/utils.js';
+import { isFalseBoolean } from '../../util/string-args.js';
 
 /**
  * @typedef {Object} MacroCall

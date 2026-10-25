@@ -2,20 +2,17 @@ import { MacroEngine } from './engine/MacroEngine.js';
 import { MacroRegistry, MacroCategory, MacroValueType } from './engine/MacroRegistry.js';
 import { MacroLexer } from './engine/MacroLexer.js';
 import { MacroParser } from './engine/MacroParser.js';
+import { chevrotain, moment, seedrandom, droll } from '../../lib.js';
+import { timestampToMoment } from '../utils.js';
+import { initMacroEngine, registerBuiltinMacros } from './macro-engine-init.js';
 import { MacroCstWalker } from './engine/MacroCstWalker.js';
 import { MacroEnvBuilder } from './engine/MacroEnvBuilder.js';
 import { setMacroRegistry } from '../macro-pill.js';
 import { refreshMacroColors, setMacroList } from '../macro-colors.js';
 
-import { registerCoreMacros } from './definitions/core-macros.js';
-import { registerEnvMacros } from './definitions/env-macros.js';
-import { registerStateMacros } from './definitions/state-macros.js';
-import { registerChatMacros } from './definitions/chat-macros.js';
-import { registerTimeMacros } from './definitions/time-macros.js';
-import { registerVariableMacros } from './definitions/variable-macros.js';
-import { registerInstructMacros } from './definitions/instruct-macros.js';
-
 export { MacroCategory, MacroValueType };
+
+initMacroEngine({ chevrotain, moment, seedrandom, droll, timestampToMoment });
 
 /** @typedef {import('./engine/MacroRegistry.js').MacroDefinitionOptions} MacroDefinitionOptions */
 /** @typedef {import('./engine/MacroRegistry.js').MacroDefinition} MacroDefinition */
@@ -46,8 +43,6 @@ export const macros = {
     registerAlias: MacroRegistry.registerMacroAlias.bind(MacroRegistry),
 };
 
-let macrosRegistered = false;
-
 /**
  * A macro's category in the registry (MacroCategory), by its name; undefined when no macro has that name.
  * @param {string} name
@@ -65,14 +60,5 @@ setMacroList(() => MacroRegistry.getAllMacros().map(macro => ({ name: macro.name
 MacroRegistry.onChange(refreshMacroColors);
 
 export function initRegisterMacros() {
-    if (macrosRegistered) return;
-    macrosRegistered = true;
-
-    registerCoreMacros();
-    registerEnvMacros();
-    registerStateMacros();
-    registerChatMacros();
-    registerTimeMacros();
-    registerVariableMacros();
-    registerInstructMacros();
+    registerBuiltinMacros();
 }

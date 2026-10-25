@@ -14,196 +14,56 @@ import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
 import { slashCommandReturnHelper } from './slash-commands/SlashCommandReturnHelper.js';
 import { SlashCommandScope } from './slash-commands/SlashCommandScope.js';
 import { isFalseBoolean, convertValueType, isTrueBoolean } from './utils.js';
+import { createVariableScope } from './variable-store.js';
 
 /** @typedef {import('./slash-commands/SlashCommandParser.js').NamedArguments} NamedArguments */
 /** @typedef {import('./slash-commands/SlashCommand.js').UnnamedArguments} UnnamedArguments */
 
 const MAX_LOOPS = 100;
 
+/** The chat's variables (its metadata's), the same store the macros use (variable-store.js). */
+export const localVariables = createVariableScope(() => (chat_metadata.variables ??= {}), { changed: saveMetadataDebounced, convert: convertValueType });
+/** The global variables, kept in the extension settings. */
+export const globalVariables = createVariableScope(() => (extension_settings.variables.global ??= {}), { changed: () => saveSettingsDebounced('extension_settings'), convert: convertValueType });
+
 export function getLocalVariable(name, args = {}) {
-    if (!chat_metadata.variables) {
-        chat_metadata.variables = {};
-    }
-
-    let localVariable = chat_metadata?.variables[args.key ?? name];
-    if (args.index !== undefined) {
-        try {
-            localVariable = JSON.parse(localVariable);
-            const numIndex = Number(args.index);
-            if (Number.isNaN(numIndex)) {
-                localVariable = localVariable[args.index];
-            } else {
-                localVariable = localVariable[Number(args.index)];
-            }
-            if (typeof localVariable == 'object') {
-                localVariable = JSON.stringify(localVariable);
-            }
-        } catch {
-        }
-    }
-
-    return (localVariable?.trim?.() === '' || isNaN(Number(localVariable))) ? (localVariable || '') : Number(localVariable);
+    return localVariables.get(name, args);
 }
 
 export function setLocalVariable(name, value, args = {}) {
-    if (!name) {
-        throw new Error('Variable name cannot be empty or undefined.');
-    }
-
-    if (!chat_metadata.variables) {
-        chat_metadata.variables = {};
-    }
-
-    if (args.index !== undefined) {
-        try {
-            let localVariable = JSON.parse(chat_metadata.variables[name] ?? 'null');
-            const numIndex = Number(args.index);
-            if (Number.isNaN(numIndex)) {
-                if (localVariable === null) {
-                    localVariable = {};
-                }
-                localVariable[args.index] = convertValueType(value, args.as);
-            } else {
-                if (localVariable === null) {
-                    localVariable = [];
-                }
-                localVariable[numIndex] = convertValueType(value, args.as);
-            }
-            chat_metadata.variables[name] = JSON.stringify(localVariable);
-        } catch {
-        }
-    } else {
-        chat_metadata.variables[name] = value;
-    }
-    saveMetadataDebounced();
-    return value;
+    return localVariables.set(name, value, args);
 }
 
 export function getGlobalVariable(name, args = {}) {
-    let globalVariable = extension_settings.variables.global[args.key ?? name];
-    if (args.index !== undefined) {
-        try {
-            globalVariable = JSON.parse(globalVariable);
-            const numIndex = Number(args.index);
-            if (Number.isNaN(numIndex)) {
-                globalVariable = globalVariable[args.index];
-            } else {
-                globalVariable = globalVariable[Number(args.index)];
-            }
-            if (typeof globalVariable == 'object') {
-                globalVariable = JSON.stringify(globalVariable);
-            }
-        } catch {
-        }
-    }
-
-    return (globalVariable?.trim?.() === '' || isNaN(Number(globalVariable))) ? (globalVariable || '') : Number(globalVariable);
+    return globalVariables.get(name, args);
 }
 
 export function setGlobalVariable(name, value, args = {}) {
-    if (!name) {
-        throw new Error('Variable name cannot be empty or undefined.');
-    }
-
-    if (args.index !== undefined) {
-        try {
-            let globalVariable = JSON.parse(extension_settings.variables.global[name] ?? 'null');
-            const numIndex = Number(args.index);
-            if (Number.isNaN(numIndex)) {
-                if (globalVariable === null) {
-                    globalVariable = {};
-                }
-                globalVariable[args.index] = convertValueType(value, args.as);
-            } else {
-                if (globalVariable === null) {
-                    globalVariable = [];
-                }
-                globalVariable[numIndex] = convertValueType(value, args.as);
-            }
-            extension_settings.variables.global[name] = JSON.stringify(globalVariable);
-        } catch {
-        }
-    } else {
-        extension_settings.variables.global[name] = value;
-    }
-    saveSettingsDebounced('extension_settings');
-    return value;
+    return globalVariables.set(name, value, args);
 }
 
 export function addLocalVariable(name, value) {
-    const currentValue = getLocalVariable(name) || 0;
-    try {
-        const parsedValue = JSON.parse(currentValue);
-        if (Array.isArray(parsedValue)) {
-            parsedValue.push(value);
-            setLocalVariable(name, JSON.stringify(parsedValue));
-            return parsedValue;
-        }
-    } catch {
-        // ignore non-array values
-    }
-    const increment = Number(value);
-
-    if (isNaN(increment) || isNaN(Number(currentValue))) {
-        const stringValue = String(currentValue || '') + value;
-        setLocalVariable(name, stringValue);
-        return stringValue;
-    }
-
-    const newValue = Number(currentValue) + increment;
-
-    if (isNaN(newValue)) {
-        return '';
-    }
-
-    setLocalVariable(name, newValue);
-    return newValue;
+    return localVariables.add(name, value);
 }
 
 export function addGlobalVariable(name, value) {
-    const currentValue = getGlobalVariable(name) || 0;
-    try {
-        const parsedValue = JSON.parse(currentValue);
-        if (Array.isArray(parsedValue)) {
-            parsedValue.push(value);
-            setGlobalVariable(name, JSON.stringify(parsedValue));
-            return parsedValue;
-        }
-    } catch {
-        // ignore non-array values
-    }
-    const increment = Number(value);
-
-    if (isNaN(increment) || isNaN(Number(currentValue))) {
-        const stringValue = String(currentValue || '') + value;
-        setGlobalVariable(name, stringValue);
-        return stringValue;
-    }
-
-    const newValue = Number(currentValue) + increment;
-
-    if (isNaN(newValue)) {
-        return '';
-    }
-
-    setGlobalVariable(name, newValue);
-    return newValue;
+    return globalVariables.add(name, value);
 }
 
 export function incrementLocalVariable(name) {
-    return addLocalVariable(name, 1);
+    return localVariables.inc(name);
 }
 
 export function incrementGlobalVariable(name) {
-    return addGlobalVariable(name, 1);
+    return globalVariables.inc(name);
 }
 
 export function decrementLocalVariable(name) {
-    return addLocalVariable(name, -1);
+    return localVariables.dec(name);
 }
 
 export function decrementGlobalVariable(name) {
-    return addGlobalVariable(name, -1);
+    return globalVariables.dec(name);
 }
 
 /**
@@ -395,7 +255,7 @@ async function ifCallback(args, value) {
  * @returns {boolean} True if the local variable exists, false otherwise
  */
 export function existsLocalVariable(name) {
-    return chat_metadata.variables && chat_metadata.variables[name] !== undefined;
+    return localVariables.has(name);
 }
 
 /**
@@ -404,7 +264,7 @@ export function existsLocalVariable(name) {
  * @returns {boolean} True if the global variable exists, false otherwise
  */
 export function existsGlobalVariable(name) {
-    return extension_settings.variables.global && extension_settings.variables.global[name] !== undefined;
+    return globalVariables.has(name);
 }
 
 /**
@@ -565,14 +425,7 @@ async function executeSubCommands(command, scope = null, parserFlags = null, abo
  * @returns {string} Empty string
  */
 export function deleteLocalVariable(name) {
-    if (!existsLocalVariable(name)) {
-        console.warn(`The local variable "${name}" does not exist.`);
-        return '';
-    }
-
-    delete chat_metadata.variables[name];
-    saveMetadataDebounced();
-    return '';
+    return localVariables.del(name);
 }
 
 /**
@@ -581,14 +434,7 @@ export function deleteLocalVariable(name) {
  * @returns {string} Empty string
  */
 export function deleteGlobalVariable(name) {
-    if (!existsGlobalVariable(name)) {
-        console.warn(`The global variable "${name}" does not exist.`);
-        return '';
-    }
-
-    delete extension_settings.variables.global[name];
-    saveSettingsDebounced('extension_settings');
-    return '';
+    return globalVariables.del(name);
 }
 
 /**

@@ -19,6 +19,7 @@ import { groupsStore, selected_group } from './group-chats.js';
 import { getCurrentLocale, t } from './i18n.js';
 import { importWorldInfo, updateWorldInfoList, charUpdateAddAuxWorld } from './world-info.js';
 import { getStringHash } from './hash-utils.js';
+import { escapeRegex, isFalseBoolean, isTrueBoolean } from './util/string-args.js';
 import { assetUrl } from './asset-url.js';
 
 export const shiftUpByOne = (e, i, a) => a[i] = e + 1;
@@ -522,6 +523,7 @@ export async function parseJsonFile(file) {
  * @returns {number} The hash code.
  */
 export { getStringHash } from './hash-utils.js';
+export { escapeRegex, isFalseBoolean, isTrueBoolean };
 
 /**
  * Copy text to clipboard. Use navigator.clipboard.writeText if available, otherwise use document.execCommand.
@@ -984,24 +986,6 @@ export function countOccurrences(string, character) {
 }
 
 /**
- * Checks if a string is "true" value.
- * @param {string} arg String to check
- * @returns {boolean} True if the string is true, false otherwise.
- */
-export function isTrueBoolean(arg) {
-    return ['on', 'true', '1'].includes(arg?.trim()?.toLowerCase());
-}
-
-/**
- * Checks if a string is "false" value.
- * @param {string} arg String to check
- * @returns {boolean} True if the string is false, false otherwise.
- */
-export function isFalseBoolean(arg) {
-    return ['off', 'false', '0'].includes(arg?.trim()?.toLowerCase());
-}
-
-/**
  * Parses an array either as a comma-separated string or as a JSON array.
  * @param {string} value String to parse
  * @returns {string[]} The parsed array.
@@ -1360,16 +1344,6 @@ export function extractAllWords(value) {
     return words;
 }
 
-/**
- * Escapes a string for use in a regular expression.
- * @param {string} string The string to escape.
- * @returns {string} The escaped string.
- * @example
- * escapeRegex('^Hello$'); // '\\^Hello\\$'
- */
-export function escapeRegex(string) {
-    return string.replace(/[/\-\\^$*+?.()|[\]{}]/g, '\\$&');
-}
 
 /**
  * Instantiates a regular expression from a string.

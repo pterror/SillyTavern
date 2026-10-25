@@ -1,6 +1,4 @@
-import { chat } from '../../chat-state.js';
-import { moment } from '../../../lib.js';
-import { timestampToMoment } from '../../utils.js';
+import { moment, timestampToMoment } from '../engine/MacroLibraries.js';
 import { MacroRegistry, MacroCategory, MacroValueType } from '../engine/MacroRegistry.js';
 
 /**
@@ -87,7 +85,7 @@ export function registerTimeMacros() {
         category: MacroCategory.TIME,
         description: 'Human-readable duration since the last user message.',
         returns: 'Human-readable duration since the last user message.',
-        handler: () => getTimeSinceLastMessage(),
+        handler: ({ env }) => getTimeSinceLastMessage(env.state.chat),
     });
 
     // Time difference between two values
@@ -118,7 +116,8 @@ export function registerTimeMacros() {
     });
 }
 
-function getTimeSinceLastMessage() {
+/** @param {import('../engine/MacroEnv.types.js').MacroChatMessage[]} [chat] */
+function getTimeSinceLastMessage(chat) {
     const now = moment();
 
     if (Array.isArray(chat) && chat.length > 0) {

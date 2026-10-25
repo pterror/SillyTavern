@@ -3,7 +3,7 @@
 /** @typedef {import('chevrotain').ILexingError} ILexingError */
 /** @typedef {import('chevrotain').IRecognitionException} IRecognitionException */
 
-import { SimpleMutex } from '/scripts/util/SimpleMutex.js';
+import { SimpleMutex } from '../../util/SimpleMutex.js';
 
 /**
  * @typedef {Object} MacroErrorContext
