@@ -122,6 +122,11 @@ export function isFieldInEdit(id) {
     return activeEdit?.id === id;
 }
 
+/** @returns {boolean} Whether a field is being edited: in edit mode, its edit not yet confirmed and saving. */
+export function isFieldBeingEdited() {
+    return activeEdit !== null && !activeEdit.saving;
+}
+
 /**
  * Blocks whatever the caller was about to do while a field is in edit mode.
  * @returns {boolean} True when blocked; the caller returns without acting.

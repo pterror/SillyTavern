@@ -102,4 +102,33 @@ test.describe('A drawer brought forward after a field edit goes over character i
         await expect.poll(() => isCut(info)).toBe(true);
         expect(await isCut(page.locator('#right-nav-panel'))).toBe(false);
     });
+
+    test('while a field is being edited, character management does not open: it is for picking a character, which the edit refuses', async ({ page }) => {
+        await setStackedDrawers(page, true);
+        await openNewCharacter(page);
+        const panel = page.locator('.char_info_tab_panel', { has: page.locator('#description_textarea') });
+        await page.locator('#charInfoTabs .tab-title', { has: page.locator('input[value="description"]') }).click();
+        await page.locator('.field_edit_toggle[data-for="description_textarea"]').click();
+        await expect(panel).toHaveClass(/\bfield_editing\b/);
+
+        await page.locator('#rightNavDrawerIcon').click();
+        await expect(panel).toHaveClass(/\bfield_edit_attention\b/);
+        await expect(page.locator('#right-nav-panel')).toHaveClass(/closedDrawer/);
+        await expect(panel).toHaveClass(/\bfield_editing\b/);
+    });
+
+    test('character management open under a field being edited closes on its icon', async ({ page }) => {
+        await setStackedDrawers(page, true);
+        await openNewCharacter(page);
+        await page.locator('#rightNavDrawerIcon').click();
+        await expect(page.locator('#right-nav-panel')).toHaveClass(/openDrawer/);
+        const panel = page.locator('.char_info_tab_panel', { has: page.locator('#description_textarea') });
+        await page.locator('#charInfoTabs .tab-title', { has: page.locator('input[value="description"]') }).click();
+        await page.locator('.field_edit_toggle[data-for="description_textarea"]').click();
+        await expect(panel).toHaveClass(/\bfield_editing\b/);
+
+        await page.locator('#rightNavDrawerIcon').click();
+        await expect(page.locator('#right-nav-panel')).toHaveClass(/closedDrawer/);
+        await expect(panel).toHaveClass(/\bfield_editing\b/);
+    });
 });
