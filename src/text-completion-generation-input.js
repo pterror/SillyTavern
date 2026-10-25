@@ -5,7 +5,7 @@ import { readCardContent, readExtraBooks } from './endpoints/characters.js';
 import { getGroupsByIds } from './endpoints/groups.js';
 import { extension_prompt_types, extension_prompt_roles } from './extension-prompt-table.js';
 import { resolveWorldInfoCandidates, world_info_insertion_strategy } from './world-info/candidate-resolution.js';
-import { chatStateBefore, generationMacroFacts } from './macro-facts.js';
+import { variablesBefore, generationMacroFacts } from './macro-facts.js';
 
 /**
  * Adapter/resolver layer between REAL on-disk state (settings.json - via settings-store.js's
@@ -540,7 +540,7 @@ export async function resolveTextCompletionGenerationInput(directories, {
         await resolveChatHistory(chatContext, { branchName, nodeId });
     const chatMetadata = chatMetadataOverride ?? loadedChatMetadata;
     // What it holds before any macro runs, to tell what the macros changed.
-    const stateBefore = chatStateBefore(chatMetadata);
+    const stateBefore = variablesBefore(chatMetadata, extensionSettings.variables?.global ?? {});
 
     const { name2, groupMemberNames, character } = await resolveName2AndGroupMemberNames(directories, { avatar, groupId });
     const name1 = (username != null && username !== '') ? username : 'User';
@@ -609,7 +609,7 @@ export async function resolveTextCompletionGenerationInput(directories, {
         chatResolutionAmbiguous: Boolean(chatResolutionAmbiguous),
         personaDescription: activePersona.description,
         chatMetadata, chat, textareaText,
-        chatStateBefore: stateBefore,
+        variablesBefore: stateBefore,
         userPromptBias: powerUser.user_prompt_bias,
         alwaysForceName2: Boolean(powerUser.always_force_name2),
 

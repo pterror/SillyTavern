@@ -2993,7 +2993,7 @@ export async function buildRawActionChatCompletionRequest(directories, {
     return {
         params: generate_data, settings, anchorNodeId, anchorContent, name1: orchestratorInput.macroContext.name1, name2: orchestratorInput.name2, enabledServerTools, enabledClientToolNames, enabledStealthClientToolNames, warnings, tokenCountRows,
         // The chat variables the prompt's macros changed, for the route to store (storeMacroVariables()).
-        macroVariables: macroVariableChanges(orchestratorInput.macroContext.chatMetadata, orchestratorInput.chatStateBefore),
+        macroVariables: macroVariableChanges(orchestratorInput.macroContext.chatMetadata, orchestratorInput.macroContext.globalVariables, orchestratorInput.variablesBefore),
     };
 }
 

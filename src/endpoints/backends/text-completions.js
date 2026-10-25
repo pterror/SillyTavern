@@ -668,7 +668,7 @@ export async function buildRawActionTextCompletionRequest(directories, {
     return {
         params: assembled.generate_data, backend, anchorNodeId, anchorContent, tokenizerIdentity: identity,
         // The chat variables the prompt's macros changed, for the route to store (storeMacroVariables()).
-        macroVariables: macroVariableChanges(orchestratorInput.chatMetadata, orchestratorInput.chatStateBefore),
+        macroVariables: macroVariableChanges(orchestratorInput.chatMetadata, orchestratorInput.macroFacts.globalVariables, orchestratorInput.variablesBefore),
         // The model generating: the chosen one, else the one llama.cpp's /props named, else (a backend with no model
         // chosen, e.g. KoboldCpp) the one its status lookup names, as upstream's getGeneratingModel() reads it, looked up
         // meanwhile. The reply records it as `extra.model`.

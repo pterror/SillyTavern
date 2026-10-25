@@ -166,7 +166,7 @@ export async function buildRawActionKoboldRequest(directories, {
         name1: orchestratorInput.name1, name2: orchestratorInput.name2,
         warnings: sendTokenizerWarnings(tokenizerState, resolvedTokenizer, tokenizerOutcome, assembled.droppedEntries),
         // The chat variables the prompt's macros changed, for the route to store (storeMacroVariables()).
-        macroVariables: macroVariableChanges(orchestratorInput.chatMetadata, orchestratorInput.chatStateBefore),
+        macroVariables: macroVariableChanges(orchestratorInput.chatMetadata, orchestratorInput.macroFacts.globalVariables, orchestratorInput.variablesBefore),
         // The server's part of the reply's stored prompt itemization (itemizationOf()).
         itemization: buildItemizationBreakdown(assembled),
     };

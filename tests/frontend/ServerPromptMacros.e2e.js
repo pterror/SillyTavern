@@ -57,7 +57,7 @@ test('a server-built prompt fills in variables, settings and the page\'s facts',
     expect(prompt).toContain(expected);
 });
 
-test('a chat variable a server-built prompt\'s macros set is stored, and the page takes it on', async ({ page }) => {
+test('variables a server-built prompt\'s macros set are kept: the chat\'s stored, the global ones by the page', async ({ page }) => {
     await connectLlamaCpp(page, llama.url);
     const avatar = await page.evaluate(async () => {
         // @ts-ignore
@@ -65,7 +65,7 @@ test('a chat variable a server-built prompt\'s macros set is stored, and the pag
         const form = new FormData();
         form.set('ch_name', `Macro setvar ${Date.now()}`);
         form.set('first_mes', 'Hello.');
-        form.set('description', 'Weather{{setvar::weather::rainy}} counted {{incvar::turns}}.');
+        form.set('description', 'Weather{{setvar::weather::rainy}} counted {{incvar::turns}}{{setglobalvar::season::autumn}}.');
         const response = await fetch('/api/characters/create', { method: 'POST', headers: context.getRequestHeaders({ omitContentType: true }), body: form });
         return (await response.text()).trim();
     });
@@ -77,12 +77,19 @@ test('a chat variable a server-built prompt\'s macros set is stored, and the pag
 
     const variables = () => page.evaluate(async () => {
         const { chat_metadata } = await import('/scripts/chat-state.js');
-        return { weather: chat_metadata.variables?.weather, turns: chat_metadata.variables?.turns };
+        // @ts-ignore
+        const season = SillyTavern.getContext().variables.global.get('season');
+        return { weather: chat_metadata.variables?.weather, turns: chat_metadata.variables?.turns, season };
     });
-    await expect.poll(variables, { timeout: 10000 }).toEqual({ weather: 'rainy', turns: 1 });
+    await expect.poll(variables, { timeout: 10000 }).toEqual({ weather: 'rainy', turns: 1, season: 'autumn' });
+    // The settings save is debounced.
+    await page.evaluate(async () => {
+        const { saveSettings } = await import('/script.js');
+        await saveSettings();
+    });
     // Stored: the chat opened again has them.
     await page.reload();
     await testSetup.awaitST({ page });
     await openCharacter(page, avatar);
-    await expect.poll(variables, { timeout: 10000 }).toEqual({ weather: 'rainy', turns: 1 });
+    await expect.poll(variables, { timeout: 10000 }).toEqual({ weather: 'rainy', turns: 1, season: 'autumn' });
 });
