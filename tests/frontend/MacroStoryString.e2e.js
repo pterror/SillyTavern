@@ -22,12 +22,11 @@ test.describe('MacroStoryString', () => {
         }
     });
 
-    test('should produce equivalent story strings with new macro engine', async ({ page }) => {
+    test('should produce equivalent story strings with the macro engine', async ({ page }) => {
         const output = await page.evaluate(async ([defaultContextPresets]) => {
             const { substituteParams, extension_prompt_types } = await import('./script.js');
-            const { power_user, renderStoryString } = await import('./scripts/power-user.js');
+            const { renderStoryString } = await import('./scripts/power-user.js');
 
-            power_user.experimental_macro_engine = true;
 
             const context = {
                 description: 'character description',

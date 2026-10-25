@@ -682,123 +682,12 @@ function selectMatchingContextTemplate(name) {
 }
 
 /**
- * Replaces instruct mode macros in the given input string.
- * @param {Object<string, *>} env - Map of macro names to the values they'll be substituted with. If the param
- * values are functions, those functions will be called and their return values are used.
- * @returns {import('./macros.js').Macro[]} Macro objects.
+ * @deprecated The macro engine registers the instruct macros itself (macros/definitions/instruct-macros.js).
+ * @param {Object<string, *>} _env
+ * @returns {{ regex: RegExp, replace: (substring: string, ...args: any[]) => string }[]} None.
  */
-export function getInstructMacros(env) {
-    /** @type {{ key: string,value: string, enabled: boolean }[]} */
-    const instructMacros = [
-        // Instruct template macros
-        {
-            key: 'instructStoryStringPrefix',
-            value: power_user.instruct.story_string_prefix,
-            enabled: power_user.instruct.enabled,
-        },
-        {
-            key: 'instructStoryStringSuffix',
-            value: power_user.instruct.story_string_suffix,
-            enabled: power_user.instruct.enabled,
-        },
-        {
-            key: 'instructInput|instructUserPrefix',
-            value: power_user.instruct.input_sequence,
-            enabled: power_user.instruct.enabled,
-        },
-        {
-            key: 'instructUserSuffix',
-            value: power_user.instruct.input_suffix,
-            enabled: power_user.instruct.enabled,
-        },
-        {
-            key: 'instructOutput|instructAssistantPrefix',
-            value: power_user.instruct.output_sequence,
-            enabled: power_user.instruct.enabled,
-        },
-        {
-            key: 'instructSeparator|instructAssistantSuffix',
-            value: power_user.instruct.output_suffix,
-            enabled: power_user.instruct.enabled,
-        },
-        {
-            key: 'instructSystemPrefix',
-            value: power_user.instruct.system_sequence,
-            enabled: power_user.instruct.enabled,
-        },
-        {
-            key: 'instructSystemSuffix',
-            value: power_user.instruct.system_suffix,
-            enabled: power_user.instruct.enabled,
-        },
-        {
-            key: 'instructFirstOutput|instructFirstAssistantPrefix',
-            value: power_user.instruct.first_output_sequence || power_user.instruct.output_sequence,
-            enabled: power_user.instruct.enabled,
-        },
-        {
-            key: 'instructLastOutput|instructLastAssistantPrefix',
-            value: power_user.instruct.last_output_sequence || power_user.instruct.output_sequence,
-            enabled: power_user.instruct.enabled,
-        },
-        {
-            key: 'instructStop',
-            value: power_user.instruct.stop_sequence,
-            enabled: power_user.instruct.enabled,
-        },
-        {
-            key: 'instructUserFiller',
-            value: power_user.instruct.user_alignment_message,
-            enabled: power_user.instruct.enabled,
-        },
-        {
-            key: 'instructSystemInstructionPrefix',
-            value: power_user.instruct.last_system_sequence,
-            enabled: power_user.instruct.enabled,
-        },
-        {
-            key: 'instructFirstInput|instructFirstUserPrefix',
-            value: power_user.instruct.first_input_sequence || power_user.instruct.input_sequence,
-            enabled: power_user.instruct.enabled,
-        },
-        {
-            key: 'instructLastInput|instructLastUserPrefix',
-            value: power_user.instruct.last_input_sequence || power_user.instruct.input_sequence,
-            enabled: power_user.instruct.enabled,
-        },
-        // System prompt macros
-        {
-            key: 'systemPrompt',
-            value: power_user.prefer_character_prompt && env.charPrompt ? env.charPrompt : power_user.sysprompt.content,
-            enabled: power_user.sysprompt.enabled,
-        },
-        {
-            key: 'defaultSystemPrompt|instructSystem|instructSystemPrompt',
-            value: power_user.sysprompt.content,
-            enabled: power_user.sysprompt.enabled,
-        },
-        // Context template macros
-        {
-            key: 'chatSeparator',
-            value: power_user.context.example_separator,
-            enabled: true,
-        },
-        {
-            key: 'chatStart',
-            value: power_user.context.chat_start,
-            enabled: true,
-        },
-    ];
-
-    const macros = [];
-
-    for (const { key, value, enabled } of instructMacros) {
-        const regex = new RegExp(`{{(${key})}}`, 'gi');
-        const replace = () => enabled ? value : '';
-        macros.push({ regex, replace });
-    }
-
-    return macros;
+export function getInstructMacros(_env) {
+    return [];
 }
 
 jQuery(() => {

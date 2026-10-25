@@ -26,7 +26,6 @@ import { macros as macroSystem } from '../macros/macro-system.js';
 import { MacroFlagDefinitions, MacroFlagType } from '../macros/engine/MacroFlags.js';
 import { MacroParser } from '../macros/engine/MacroParser.js';
 import { MacroCstWalker } from '../macros/engine/MacroCstWalker.js';
-import { onboardingExperimentalMacroEngine } from '../macros/engine/MacroDiagnostics.js';
 import { extension_settings } from '../extensions.js';
 
 /** @typedef {import('./EnhancedMacroAutoCompleteOption.js').MacroAutoCompleteContext} MacroAutoCompleteContext */
@@ -953,8 +952,6 @@ export async function buildMacroAutoCompleteResult(text, cursorPos, {
                     scopedMacroName: scopedMacro.name,
                 };
 
-                await onboardingExperimentalMacroEngine('scoped macros');
-
                 const macroDef = macroSystem.registry.getPrimaryMacro(scopedMacro.name);
                 if (macroDef) {
                     const scopedOption = new EnhancedMacroAutoCompleteOption(macroDef, scopedContext);
@@ -1104,8 +1101,6 @@ export async function buildMacroAutoCompleteResult(text, cursorPos, {
             const macroNameStart = trimmedCondition.indexOf(conditionAfterInversion);
             resultStart = conditionStartInText + macroNameStart;
         }
-
-        await onboardingExperimentalMacroEngine('{{if}} macro');
 
         return new AutoCompleteNameResult(
             resultIdentifier,
