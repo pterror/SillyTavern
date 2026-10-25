@@ -40,6 +40,7 @@ import { itemizationOf } from '../../itemization-of.js';
 import { answerSessionOnHeaders, chatContext } from '../../chat-request.js';
 import { logBackendFailure } from '../../backend-unreachable.js';
 import { withGenerationStop, generationIdFor, isGenerationStopped, onGenerationStop, onGenerationStopFlush, stoppableController, handleGenerationStop } from '../../generation-stop.js';
+import { macroVariableChanges, storeMacroVariables } from '../../macro-facts.js';
 
 export const router = express.Router();
 
@@ -666,6 +667,8 @@ export async function buildRawActionTextCompletionRequest(directories, {
 
     return {
         params: assembled.generate_data, backend, anchorNodeId, anchorContent, tokenizerIdentity: identity,
+        // The chat variables the prompt's macros changed, for the route to store (storeMacroVariables()).
+        macroVariables: macroVariableChanges(orchestratorInput.chatMetadata, orchestratorInput.chatStateBefore),
         // The model generating: the chosen one, else the one llama.cpp's /props named, else (a backend with no model
         // chosen, e.g. KoboldCpp) the one its status lookup names, as upstream's getGeneratingModel() reads it, looked up
         // meanwhile. The reply records it as `extra.model`.
@@ -883,6 +886,8 @@ router.post('/generate', withGenerationStop(async function (request, response) {
                 if (!userNodeId) return;
                 replyAnchorNodeId = userNodeId;
             }
+            // What the prompt's macros changed of the chat's variables, kept with the page's own chat metadata.
+            await storeMacroVariables(response, chat, nodeId, built.macroVariables);
 
             // Stash what's needed to persist the ASSISTANT's reply once the (non-streaming)
             // response is known - read only by the non-streaming response branch below, guarded by

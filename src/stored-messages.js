@@ -2,10 +2,11 @@ import { storedForm } from './chat-engine.js';
 import { sanitizeUserMessageExtra } from './user-message-extra.js';
 
 /**
- * @typedef {{ ref: string, node_id: string, integrity?: string | null, metadata_not_saved?: true }} StoredMessage
+ * @typedef {{ ref: string, node_id: string, integrity?: string | null, metadata_not_saved?: true, state_changed?: true }} StoredMessage
  * Something the server stored for a request under the ref the page sent for it: a message at `node_id`, or (with
  * `integrity`) chat metadata keys at `node_id` ('': the tree's root), `integrity` the session's UUID; with
- * `metadata_not_saved`, chat metadata keys it couldn't store there.
+ * `metadata_not_saved`, chat metadata keys it couldn't store there; with `state_changed`, a change of the chat's
+ * state at `node_id` the page didn't send (what the prompt's macros changed of its variables).
  */
 
 /**

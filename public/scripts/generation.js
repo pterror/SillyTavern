@@ -55,7 +55,7 @@ import { showTokenizerWarnings, REPLY_NOT_SAVED_EVENT, REPLY_STORED_EVENT } from
 import { shiftDownByOne, shiftUpByOne, uuidv4 } from './utils.js';
 import { stopServerGenerations, takeStreamStopResult } from './generation-stop.js';
 import { getWorldInfoPrompt, wi_anchor_position, world_info_include_names } from './world-info.js';
-import { pageMacroFacts } from './macros/engine/MacroEnvBuilder.js';
+import { pageMacroFacts, variablesCopy, withScratchVariables } from './macros/engine/MacroEnvBuilder.js';
 
 /** @type {StreamingProcessor|null} */
 export let streamingProcessor = null;
@@ -915,6 +915,10 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
     // `promptReasoning`/`description`/etc. now live here instead of a few hundred lines further down
     // (see the "Hoisted locals for the prompt-assembly block below" comment for the smaller set that
     // remains genuinely deferred).
+    // When the server builds the prompt, its macros are evaluated there: what this page evaluates for extensions
+    // (the depth prompts, the interceptors' chat) changes no variable, or {{setvar}}/{{incvar}} would run twice.
+    const variables = willUseRawAction ? variablesCopy() : null;
+    const evaluateHere = (/** @type {() => any} */ fn) => (variables ? withScratchVariables(variables, fn) : fn());
     let {
         description,
         personality,
@@ -925,7 +929,7 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
         jailbreak,
         charDepthPrompt,
         creatorNotes,
-    } = getCharacterCardFields();
+    } = evaluateHere(() => getCharacterCardFields());
 
     // Depth prompt (character-specific A/N)
     removeDepthPrompts();
@@ -934,7 +938,7 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
     // first param as plain `{string}`. Both branches of that function's own `if (!groupId) return [];`
     // guard already handle a falsy id correctly, so this is only a missing type on the variable, not a
     // real null-safety gap.
-    const groupDepthPrompts = getGroupDepthPrompts(/** @type {string} */ (selected_group), /** @type {string} */ (getCurrentCharacter()?.avatar));
+    const groupDepthPrompts = evaluateHere(() => getGroupDepthPrompts(/** @type {string} */ (selected_group), /** @type {string} */ (getCurrentCharacter()?.avatar)));
     // Cross-file note: extension_settings.note (extensions.js) is typed from its object-literal
     // initializer, which never lists `allowWIScan` even though authors-note.js reads/writes it on the
     // same object at runtime (`extension_settings.note.allowWIScan = ...`) - a real gap in that
@@ -959,7 +963,7 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
     }
 
     // Kept local, not written back onto chat[0] - that would make the save path see an untouched greeting as user-edited.
-    const substitutedFirstMessage = chat.length ? substituteParams(chat[0].mes ?? '') : null;
+    const substitutedFirstMessage = chat.length ? evaluateHere(() => substituteParams(chat[0].mes ?? '')) : null;
 
     // Collect messages with usable content
     let coreChat = chat.filter(x => !isSystemChatItem(x) || (canUseTools && Array.isArray(x.extra?.tool_invocations)));

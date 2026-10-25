@@ -2,7 +2,7 @@ import { getCurrentCharacter } from '../script.js';
 import { chat, chat_metadata } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { selected_group } from './group-chats.js';
-import { setMetadataStoredListener } from './chat-store.js';
+import { setMetadataStoredListener, setStateChangedListener } from './chat-store.js';
 import { delay } from './utils.js';
 import { t } from './i18n.js';
 import { isStoredNodeId } from './node-identity.js';
@@ -84,6 +84,9 @@ export function noteMetadataStored(metadata) {
 export function noteMetadataSent(ref, changes) {
     _sentMetadataChanges.set(ref, changes);
 }
+
+// Read again where the page is: the messages the answer stored have their ids by now.
+setStateChangedListener(() => void onStateChanged({ tree: null, at: null }));
 
 setMetadataStoredListener(({ ref, node_id: at, integrity, notSaved }) => {
     const changes = _sentMetadataChanges.get(ref);

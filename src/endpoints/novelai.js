@@ -21,6 +21,7 @@ import { itemizationOf } from '../itemization-of.js';
 import { answerSessionOnHeaders, chatContext } from '../chat-request.js';
 import { withGenerationStop } from '../generation-stop.js';
 import { forwardAndPersistCompactStream } from './backends/text-completions.js';
+import { macroVariableChanges, storeMacroVariables } from '../macro-facts.js';
 
 const API_NOVELAI = 'https://api.novelai.net';
 const TEXT_NOVELAI = 'https://text.novelai.net';
@@ -304,6 +305,8 @@ export async function buildRawActionNovelRequest(directories, {
         params: assembled.generate_data, anchorNodeId, anchorContent, tokenCountRows: storedCounter.pending,
         name1: orchestratorInput.name1, name2: orchestratorInput.name2,
         warnings: sendTokenizerWarnings(tokenizerState, resolvedTokenizer, tokenizerOutcome, assembled.droppedEntries),
+        // The chat variables the prompt's macros changed, for the route to store (storeMacroVariables()).
+        macroVariables: macroVariableChanges(orchestratorInput.chatMetadata, orchestratorInput.chatStateBefore),
     };
 }
 
@@ -371,6 +374,8 @@ router.post('/generate', withGenerationStop(async function (req, res) {
             if (!userNodeId) return;
             replyAnchorNodeId = userNodeId;
         }
+        // What the prompt's macros changed of the chat's variables, kept with the page's own chat metadata.
+        await storeMacroVariables(res, chat, nodeId, built.macroVariables);
         // A continue sent with text in the box stores that text as the user's message first, and the page then
         // continues that message, as upstream does: the reply is stored as an edit of it.
         const continuesUserMessage = isContinue && replyAnchorNodeId !== built.anchorNodeId;
