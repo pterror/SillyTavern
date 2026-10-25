@@ -12,6 +12,7 @@ import { formatInstructModeExamples } from '../../instruct-mode.js';
 import { isMobile } from '../../RossAscends-mods.js';
 import { extensionNames, extension_settings } from '../../extensions.js';
 import { localVariables, globalVariables } from '../../variables.js';
+import { createVariableScope } from '../../variable-store.js';
 import { inject_ids } from '../../constants.js';
 import { textgenerationwebui_banned_in_macros } from '../../textgen-settings.js';
 import { eventSource, event_types } from '../../events.js';
@@ -30,6 +31,37 @@ eventSource.on(event_types.GENERATION_STARTED, (type, _params, isDryRun) => {
 eventSource.on(event_types.CHAT_CHANGED, () => {
     lastGenerationType = '';
 });
+
+/** Variables the macros use instead of the chat's and the global ones, while set (withScratchVariables()). */
+let scratchVariables = /** @type {{ local: import('./MacroEnv.types.js').MacroVariableScope, global: import('./MacroEnv.types.js').MacroVariableScope } | null} */ (null);
+
+/**
+ * A copy of the chat's and the global variables, for macros evaluated on the page while the server builds the
+ * prompt: what they set stays in the copy, so only the server's evaluation changes the variables.
+ * @returns {{ local: import('./MacroEnv.types.js').MacroVariableScope, global: import('./MacroEnv.types.js').MacroVariableScope }}
+ */
+export function variablesCopy() {
+    const local = structuredClone(chat_metadata.variables ?? {});
+    const global = structuredClone(extension_settings.variables?.global ?? {});
+    return { local: createVariableScope(() => local), global: createVariableScope(() => global) };
+}
+
+/**
+ * Runs `fn` with the macros reading and writing `variables` (variablesCopy()) instead of the real ones.
+ * @template T
+ * @param {ReturnType<typeof variablesCopy>} variables
+ * @param {() => T} fn
+ * @returns {T}
+ */
+export function withScratchVariables(variables, fn) {
+    const before = scratchVariables;
+    scratchVariables = variables;
+    try {
+        return fn();
+    } finally {
+        scratchVariables = before;
+    }
+}
 
 /**
  * The dialogue examples as the prompt has them: formatted for instruct mode when it is on.
@@ -66,7 +98,7 @@ function pageState() {
         get chat() { return chat; },
         get chatMetadata() { return chat_metadata; },
         get chatId() { return getCurrentChatId(); },
-        variables: { local: localVariables, global: globalVariables },
+        get variables() { return scratchVariables ?? { local: localVariables, global: globalVariables }; },
         get input() { return /** @type {HTMLTextAreaElement} */ (document.querySelector('#send_textarea'))?.value ?? ''; },
         get firstDisplayedMessageId() {
             const mesId = Number(document.querySelector('#chat .mes')?.getAttribute('mesid'));

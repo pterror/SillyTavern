@@ -91,6 +91,7 @@ import { getCookieSecret } from '../../users.js';
 import { fetchGoogleModels, GoogleModelsHttpError } from './google-models.js';
 import { encodeContent, encodeIndexFrame, encodeReasoningFrame, encodeStoredReplyFrame, encodeToolCallDeltaFrame, encodeControlFrame, createGenerationRecord, createResumableWriter, detachFromResponse, handleGenerationResume, writeStoredMessagesFrame } from './llamacpp-compact-stream.js';
 import { withGenerationStop, generationIdFor, isGenerationStopped, onGenerationStopFlush, stoppableController, handleGenerationStop } from '../../generation-stop.js';
+import { macroVariableChanges, storeMacroVariables } from '../../macro-facts.js';
 
 const API_OPENAI = 'https://api.openai.com/v1';
 const API_CLAUDE = 'https://api.anthropic.com/v1';
@@ -2989,7 +2990,11 @@ export async function buildRawActionChatCompletionRequest(directories, {
     const warnings = await chatCompletionSendWarnings(settings.chat_completion_source, orchestratorInput.model, droppedBiasEntries, orchestratorInput.tokenizerOutcome,
         chatCompletionConnection(settings, directories, orchestratorInput.macroContext, llamaCppProps));
 
-    return { params: generate_data, settings, anchorNodeId, anchorContent, name1: orchestratorInput.macroContext.name1, name2: orchestratorInput.name2, enabledServerTools, enabledClientToolNames, enabledStealthClientToolNames, warnings, tokenCountRows };
+    return {
+        params: generate_data, settings, anchorNodeId, anchorContent, name1: orchestratorInput.macroContext.name1, name2: orchestratorInput.name2, enabledServerTools, enabledClientToolNames, enabledStealthClientToolNames, warnings, tokenCountRows,
+        // The chat variables the prompt's macros changed, for the route to store (storeMacroVariables()).
+        macroVariables: macroVariableChanges(orchestratorInput.macroContext.chatMetadata, orchestratorInput.chatStateBefore),
+    };
 }
 
 /**
@@ -4204,6 +4209,8 @@ router.post('/generate', withGenerationStop(async function (request, response) {
                 if (!userNodeId) return;
                 replyAnchorNodeId = userNodeId;
             }
+            // What the prompt's macros changed of the chat's variables, kept with the page's own chat metadata.
+            await storeMacroVariables(response, chat, nodeId, built.macroVariables);
 
             // Stash what's needed to persist the ASSISTANT's reply once a (streaming or
             // non-streaming) response is known - read both by the default/legacy-dispatch-block below

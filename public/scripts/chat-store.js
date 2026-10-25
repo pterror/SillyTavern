@@ -91,6 +91,17 @@ export function setSendStoredListener(listener) {
 
 /** @type {(entry: { ref: string, node_id: string, integrity: string|null, notSaved?: true }) => void} */
 let _metadataStoredListener = () => {};
+/** Told when an answer says the chat's state changed in a way the page didn't send. */
+let _stateChangedListener = () => {};
+
+/**
+ * Sets what is told when an answer says the server changed the chat's state (`state_changed`), once the messages it
+ * stored have their ids.
+ * @param {() => void} listener
+ */
+export function setStateChangedListener(listener) {
+    _stateChangedListener = listener;
+}
 
 /** Refs of the metadata a group chat's greetings were stored with (ensureOpeningRow()), until the answer comes. */
 const _openingMetadataRefs = new Set();
@@ -113,8 +124,13 @@ export function setMetadataStoredListener(listener) {
  */
 export function adoptStored(stored) {
     if (!Array.isArray(stored)) return;
+    let stateChanged = false;
     for (const entry of stored) {
         if (typeof entry?.ref !== 'string') continue;
+        if (entry.state_changed === true) {
+            stateChanged = true;
+            continue;
+        }
         if (entry.metadata_not_saved === true) {
             _openingMetadataRefs.delete(entry.ref);
             _metadataStoredListener({ ref: entry.ref, node_id: typeof entry.node_id === 'string' ? entry.node_id : '', integrity: null, notSaved: true });
@@ -141,6 +157,7 @@ export function adoptStored(stored) {
             break;
         }
     }
+    if (stateChanged) _stateChangedListener();
 }
 
 /**
