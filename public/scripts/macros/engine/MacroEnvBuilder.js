@@ -10,7 +10,7 @@ import { main_api } from '../../generation-params.js';
 import { power_user } from '../../power-user.js';
 import { formatInstructModeExamples } from '../../instruct-mode.js';
 import { isMobile } from '../../RossAscends-mods.js';
-import { findExtension } from '../../extensions.js';
+import { extensionNames, extension_settings } from '../../extensions.js';
 import { localVariables, globalVariables } from '../../variables.js';
 import { inject_ids } from '../../constants.js';
 import { textgenerationwebui_banned_in_macros } from '../../textgen-settings.js';
@@ -48,6 +48,16 @@ function formatMesExamples(raw, user, char) {
 }
 
 /**
+ * What only the page knows of what the macros read, sent with a generation the server builds the prompt of
+ * (src/macro-facts.js).
+ * @returns {import('../../../../src/macro-facts.js').PageMacroFacts}
+ */
+export function pageMacroFacts() {
+    const { chatId, input, firstDisplayedMessageId, isMobile, extensions } = pageState();
+    return { chatId, input, firstDisplayedMessageId, isMobile, extensions };
+}
+
+/**
  * What the macros read of the page, each read when a macro reads it.
  * @returns {import('./MacroEnv.types.js').MacroEnvState}
  */
@@ -70,7 +80,7 @@ function pageState() {
         outlet: key => extension_prompts[inject_ids.CUSTOM_WI_OUTLET(key)]?.value ?? '',
         get isMobile() { return isMobile(); },
         get lastGenerationType() { return lastGenerationType; },
-        hasExtension: name => !!findExtension(name)?.enabled,
+        get extensions() { return { names: extensionNames, disabled: extension_settings.disabledExtensions }; },
         get instruct() { return power_user.instruct; },
         get sysprompt() { return power_user.sysprompt; },
         get context() { return power_user.context; },

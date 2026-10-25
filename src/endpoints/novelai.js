@@ -211,6 +211,7 @@ router.post('/status', async function (req, res) {
  * @param {boolean} [params.isContinue]
  * @param {boolean} [params.isSwipe]
  * @param {string} [params.userMessageText]
+ * @param {import('../macro-facts.js').PageMacroFacts} [params.pageFacts] What only the page knows, for the macros.
  * @param {object} [params.userMessageExtra] Already-SERVER-VALIDATED `extra` (see
  * `sanitizeUserMessageExtra()` in user-message-extra.js) for the new user message being appended -
  * identical contract to buildRawActionTextCompletionRequest()'s own equivalent param. NovelAI has no
@@ -222,7 +223,7 @@ router.post('/status', async function (req, res) {
  */
 export async function buildRawActionNovelRequest(directories, {
     request, characterAvatar, groupId, chat, nodeId,
-    type = 'normal', isImpersonate = false, isContinue = false, isSwipe = false, userMessageText, userMessageExtra,
+    type = 'normal', isImpersonate = false, isContinue = false, isSwipe = false, userMessageText, userMessageExtra, pageFacts = {},
     tokenizerOptions = {}, quiet = {},
 } = {}) {
     if (!characterAvatar && !groupId) {
@@ -278,7 +279,7 @@ export async function buildRawActionNovelRequest(directories, {
 
     const orchestratorInput = await resolveTextCompletionGenerationInput(directories, {
         avatar: characterAvatar, groupId, mainApi: 'novel', chatContext: chat, nodeId,
-        type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra,
+        type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra, pageFacts,
         countTokens, encodeTokens,
         macroExtras: { encodeTokensByType, novelTokenizerType, ...textCompletionQuietInput(quiet) },
     });
@@ -340,13 +341,13 @@ router.post('/generate', withGenerationStop(async function (req, res) {
         answerSessionOnHeaders(res, chat.session);
         const turn = await generateTurnOf(res, chat, req.body);
         if (!turn) return;
-        const { nodeId, userMessageText, userMessageExtra, quiet } = turn;
+        const { nodeId, userMessageText, userMessageExtra, quiet, pageFacts } = turn;
 
         let built;
         try {
             built = await buildRawActionNovelRequest(directories, {
                 request: req, characterAvatar, groupId, chat, nodeId,
-                type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra, quiet,
+                type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra, quiet, pageFacts,
             });
         } catch (error) {
             console.error('Failed to build raw-action NovelAI request:', error);

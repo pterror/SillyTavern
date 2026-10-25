@@ -55,6 +55,7 @@ import { showTokenizerWarnings, REPLY_NOT_SAVED_EVENT, REPLY_STORED_EVENT } from
 import { shiftDownByOne, shiftUpByOne, uuidv4 } from './utils.js';
 import { stopServerGenerations, takeStreamStopResult } from './generation-stop.js';
 import { getWorldInfoPrompt, wi_anchor_position, world_info_include_names } from './world-info.js';
+import { pageMacroFacts } from './macros/engine/MacroEnvBuilder.js';
 
 /** @type {StreamingProcessor|null} */
 export let streamingProcessor = null;
@@ -1408,6 +1409,8 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
                 user_message: sentMessage,
                 // The server echoes this with the node it stores the user message at (`stored`).
                 user_message_ref: sentMessage !== undefined ? storeRefOf(sentUserMessage) : undefined,
+                // What only the page knows of what the macros read.
+                macro_facts: pageMacroFacts(),
                 // Kobold-only: mirrors the EXACT real condition getKoboldGenerationData() (public/
                 // scripts/kai-settings.js) and its server-side port createKoboldGenerationData()
                 // (src/kobold-generation-data.js) both use for their own `streaming` field -
@@ -1715,6 +1718,8 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
                 user_message: sentMessage,
                 // The server echoes this with the node it stores the user message at (`stored`).
                 user_message_ref: sentMessage !== undefined ? storeRefOf(sentUserMessage) : undefined,
+                // What only the page knows of what the macros read.
+                macro_facts: pageMacroFacts(),
                 // Chunk (c) - see this block's own comment on `clientToolsPayload` immediately above.
                 client_tools: clientToolsPayload,
                 // THIS TASK - see this block's own comment on `stealthToolNamesPayload` immediately above.

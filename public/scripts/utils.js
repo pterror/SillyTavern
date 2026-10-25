@@ -19,7 +19,7 @@ import { groupsStore, selected_group } from './group-chats.js';
 import { getCurrentLocale, t } from './i18n.js';
 import { importWorldInfo, updateWorldInfoList, charUpdateAddAuxWorld } from './world-info.js';
 import { getStringHash } from './hash-utils.js';
-import { escapeRegex, isFalseBoolean, isTrueBoolean } from './util/string-args.js';
+import { compareIgnoreCaseAndAccents, equalsIgnoreCaseAndAccents, escapeRegex, isFalseBoolean, isTrueBoolean } from './util/string-args.js';
 import { assetUrl } from './asset-url.js';
 
 export const shiftUpByOne = (e, i, a) => a[i] = e + 1;
@@ -523,7 +523,7 @@ export async function parseJsonFile(file) {
  * @returns {number} The hash code.
  */
 export { getStringHash } from './hash-utils.js';
-export { escapeRegex, isFalseBoolean, isTrueBoolean };
+export { compareIgnoreCaseAndAccents, equalsIgnoreCaseAndAccents, escapeRegex, isFalseBoolean, isTrueBoolean };
 
 /**
  * Copy text to clipboard. Use navigator.clipboard.writeText if available, otherwise use document.execCommand.
@@ -2196,26 +2196,6 @@ export function runAfterAnimation(control, callback, timeout = 500) {
 }
 
 /**
- * A common base function for case-insensitive and accent-insensitive string comparisons.
- *
- * @param {string} a - The first string to compare.
- * @param {string} b - The second string to compare.
- * @param {(a:string,b:string)=>T} comparisonFunction - The function to use for the comparison.
- * @returns {T} - The result of the comparison.
- * @template T
- */
-export function compareIgnoreCaseAndAccents(a, b, comparisonFunction) {
-    if (!a || !b) return comparisonFunction(a, b); // Return the comparison result if either string is empty
-
-    // Normalize and remove diacritics, then convert to lower case
-    const normalizedA = a.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
-    const normalizedB = b.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
-
-    // Check if the normalized strings are equal
-    return comparisonFunction(normalizedA, normalizedB);
-}
-
-/**
  * Performs a case-insensitive and accent-insensitive substring search.
  * This function normalizes the strings to remove diacritical marks and converts them to lowercase to ensure the search is insensitive to case and accents.
  *
@@ -2225,18 +2205,6 @@ export function compareIgnoreCaseAndAccents(a, b, comparisonFunction) {
  */
 export function includesIgnoreCaseAndAccents(text, searchTerm) {
     return compareIgnoreCaseAndAccents(text, searchTerm, (a, b) => a?.includes(b) === true);
-}
-
-/**
- * Performs a case-insensitive and accent-insensitive equality check.
- * This function normalizes the strings to remove diacritical marks and converts them to lowercase to ensure the search is insensitive to case and accents.
- *
- * @param {string} a - The first string to compare
- * @param {string} b - The second string to compare
- * @returns {boolean} true if the strings are equal, otherwise returns false
- */
-export function equalsIgnoreCaseAndAccents(a, b) {
-    return compareIgnoreCaseAndAccents(a, b, (a, b) => a === b);
 }
 
 /**

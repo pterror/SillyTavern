@@ -97,7 +97,7 @@ async function loadCharacter(directories, avatar) {
  * @param {object} chatMetadata
  * @returns {Promise<{description: string, personality: string, scenario: string, mesExamples: string}|null>}
  */
-async function computeGroupCards(directories, group, characterAvatar, chatMetadata) {
+async function computeGroupCards(directories, group, characterAvatar, chatMetadata, macroContext) {
     if (!group || !group.generation_mode || !Array.isArray(group.members) || !group.members.length) {
         return null;
     }
@@ -122,7 +122,7 @@ async function computeGroupCards(directories, group, characterAvatar, chatMetada
         if (!value) return '';
         value = value.replace(/<FIELDNAME>/gi, fieldName);
         value = trim ? value.trim() : value;
-        return baseChatReplace(value, { name2: characterName });
+        return baseChatReplace(value, { ...macroContext, name2: characterName });
     }
 
     /** Mirrors group-chats.js's inner replaceAndPrepareForJoin(). */
@@ -162,9 +162,9 @@ async function computeGroupCards(directories, group, characterAvatar, chatMetada
 
     // The chat_metadata override wins over the collected value - same short-circuit as the client's
     // lazy `() => baseChatReplace(x?.trim()) || collectField(...)` getters.
-    const scenario = baseChatReplace(scenarioOverride.trim())
+    const scenario = baseChatReplace(scenarioOverride.trim(), macroContext)
         || await collectField('Scenario', c => c.scenario);
-    const mesExamples = baseChatReplace(mesExamplesOverride.trim())
+    const mesExamples = baseChatReplace(mesExamplesOverride.trim(), macroContext)
         || await collectField('Example Messages', c => c.mes_example, x => (!x.startsWith('<START>') ? `<START>\n${x}` : x));
 
     return { description, personality, scenario, mesExamples };
@@ -187,9 +187,10 @@ async function computeGroupCards(directories, group, characterAvatar, chatMetada
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} groupId
  * @param {string} characterAvatar Avatar of the "current" character (exempts it from disabled-member filtering)
+ * @param {import('./macro-substitution.js').SubstituteParamsContext} [macroContext] What the macros read besides the member's name.
  * @returns {Promise<{text: string, depth: number, role: number}[]>}
  */
-export async function getGroupCharacterDepthPrompts(directories, groupId, characterAvatar) {
+export async function getGroupCharacterDepthPrompts(directories, groupId, characterAvatar, macroContext = {}) {
     if (!groupId) return [];
     const group = (await getGroupsByIds(directories, [groupId]))[groupId] ?? null;
     if (!group || !Array.isArray(group.members) || !group.members.length) return [];
@@ -205,7 +206,7 @@ export async function getGroupCharacterDepthPrompts(directories, groupId, charac
         if (!character) continue;
         if (disabledMembers.includes(member) && characterAvatar !== member) continue;
 
-        const depthPromptText = baseChatReplace(character.data?.extensions?.depth_prompt?.prompt?.trim(), { name2: character.name }) || '';
+        const depthPromptText = baseChatReplace(character.data?.extensions?.depth_prompt?.prompt?.trim(), { ...macroContext, name2: character.name }) || '';
         const depthPromptDepth = character.data?.extensions?.depth_prompt?.depth ?? DEPTH_PROMPT_DEPTH_DEFAULT;
         const depthPromptRole = getExtensionPromptRoleByName(character.data?.extensions?.depth_prompt?.role ?? 'system');
 
@@ -229,6 +230,8 @@ export async function getGroupCharacterDepthPrompts(directories, groupId, charac
  * @param {boolean} [options.preferCharacterJailbreak] Mirrors `power_user.prefer_character_jailbreak`.
  * @param {string} [options.personaDescription] Mirrors the active persona's personaStore `description` field.
  * @param {object} [options.chatMetadata] Mirrors the client's `chat_metadata` global.
+ * @param {import('./macro-substitution.js').SubstituteParamsContext} [options.macroContext] What the macros in the
+ * fields read besides the character's name (the user's, the chat, the settings).
  * @returns {Promise<CharacterCardFields & {charDepthPromptDepth: number, charDepthPromptRole: number}>}
  * `charDepthPromptDepth`/`charDepthPromptRole` are resolved ADDITIVELY on top of the
  * `CharacterCardFields` shape (they are NOT part of that shared typedef, since macro-substitution.js
@@ -250,15 +253,16 @@ export async function getCharacterCardFields(directories, options = {}) {
         preferCharacterJailbreak = false,
         personaDescription,
         chatMetadata = {},
+        macroContext = {},
     } = options;
 
     const character = await loadCharacter(directories, avatar);
     const useGroupCards = Boolean(groupId) && Boolean(character);
     const group = useGroupCards ? ((await getGroupsByIds(directories, [groupId]))[groupId] ?? null) : null;
-    const groupCards = group ? await computeGroupCards(directories, group, avatar, chatMetadata) : null;
+    const groupCards = group ? await computeGroupCards(directories, group, avatar, chatMetadata, macroContext) : null;
 
     const name2 = character?.name || undefined;
-    const names = { name2 };
+    const names = { ...macroContext, name2 };
 
     const persona = baseChatReplace(personaDescription?.trim(), names);
 

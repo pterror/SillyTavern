@@ -1,4 +1,5 @@
 import { readSettingsAtPaths } from './settings-store.js';
+import { generationMacroFacts } from './macro-facts.js';
 import { loadChatHistory } from './chat-request.js';
 import { readCardContent, readExtraBooks } from './endpoints/characters.js';
 import { getGroupsByIds } from './endpoints/groups.js';
@@ -769,6 +770,7 @@ async function resolveChatHistory(chat, { branchName, nodeId }) {
  * `quietPrompt` system prompt, and scanned by world info like the client's `scan: true` QUIET_PROMPT slot.
  * @param {string} [params.quietImage] Image inlined into the quiet-prompt message.
  * @param {object} [params.macroExtras] Shallow-merged over the resolved input object.
+ * @param {import('./macro-facts.js').PageMacroFacts} [params.pageFacts] What only the page knows, for the macros.
  * @param {import('./llamacpp-props.js').LlamaCppPropsCheck} [params.llamaCppProps] The send's `/props`
  * check for a custom URL that is llama.cpp (see ChatCompletionConnection).
  * @param {import('./token-count-store.js').PendingTokenRows} [params.tokenCountRows] Where the default
@@ -787,7 +789,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
     model: modelOverride, modelList, characterId = PROMPT_ORDER_DUMMY_ID,
     countTokenAsyncFn: countTokenAsyncFnOverride, tokenHandler: tokenHandlerOverride,
     quietPrompt, quietImage,
-    macroExtras = {}, llamaCppProps, tokenCountRows: tokenCountRowsParam,
+    macroExtras = {}, llamaCppProps, tokenCountRows: tokenCountRowsParam, pageFacts = {},
 } = {}) {
     void isImpersonate; void isContinue; // Folded into `type` by the caller; kept as documented params for parity with the task's signature, matching text-completion-generation-input.js's own equivalents (which are likewise not separately re-derived from `type` there either).
     // `isSwipe` IS read (see `promptChat` below) - unlike isImpersonate/isContinue, it drives real
@@ -806,16 +808,18 @@ export async function resolveChatCompletionGenerationInput(directories, {
         oai_settings: oaiSettings = /** @type {OaiSettingsShape} */ ({}),
         power_user: powerUser = /** @type {PowerUserSettingsShape} */ ({}),
         world_info_settings: worldInfoSettings = /** @type {WorldInfoSettingsShape} */ ({}),
+        extension_settings: extensionSettings = {},
         username,
         user_avatar: userAvatar,
     } = /** @type {{
         oai_settings?: OaiSettingsShape,
         power_user?: PowerUserSettingsShape,
         world_info_settings?: WorldInfoSettingsShape,
+        extension_settings?: Record<string, any>,
         username?: string,
         user_avatar?: string,
     }} */ (readSettingsAtPaths(directories, [
-            'oai_settings', 'power_user', 'world_info_settings', 'username', 'user_avatar',
+            'oai_settings', 'power_user', 'world_info_settings', 'extension_settings', 'username', 'user_avatar',
         ]));
     // The client's getWorldInfoSettings() (public/scripts/world-info.js) nests the real selection
     // object under world_info_settings.world_info, and world_info_character_strategy alongside it -
@@ -885,6 +889,10 @@ export async function resolveChatCompletionGenerationInput(directories, {
         mes: await appendFileAttachments(msg.extra ?? null, msg.mes ?? '', { directories }),
     })));
 
+    const macroFacts = generationMacroFacts({
+        powerUser, extensionSettings, mainApi: 'openai', type, pageFacts,
+        maxContext: oaiSettings.openai_max_context ?? 4095, maxResponse: oaiSettings.openai_max_tokens ?? 300,
+    });
     const fields = await getCharacterCardFields(directories, {
         avatar,
         groupId,
@@ -892,6 +900,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
         preferCharacterJailbreak: Boolean(powerUser.prefer_character_jailbreak),
         personaDescription: activePersona.description,
         chatMetadata,
+        macroContext: { ...macroFacts, name1, isGroup, groupMembers: groupMemberNames, chat: promptChat, chatMetadata },
     });
 
     // Real world-info CANDIDATE resolution - see doc comment decision 4 for the full real ACTIVATION
@@ -942,7 +951,8 @@ export async function resolveChatCompletionGenerationInput(directories, {
     // "neither file is a target of this task" boundary as `messages` below.
     /** @type {SubstituteParamsContext} */
     const macroContext = {
-        name1, name2, isGroup, model: model ?? undefined,
+        ...macroFacts,
+        name1, name2, isGroup, groupMembers: groupMemberNames, model: model ?? undefined,
         characterCard: fields,
         chat: /** @type {import('./macro-substitution.js').ChatMessage[]} */ (promptChat), chatMetadata,
     };

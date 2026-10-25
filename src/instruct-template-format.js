@@ -42,9 +42,10 @@ const extension_prompt_types = { IN_PROMPT: 0, IN_CHAT: 1 };
  * @param {string} name2
  * @param {number|undefined} forceOutputSequence One of force_output_sequence, or undefined
  * @param {InstructSettings} instructPreset
+ * @param {import('./macro-substitution.js').SubstituteParamsContext} [macroContext] What the macros read besides the names.
  * @returns {string}
  */
-export function formatInstructModeChat(name, mes, isUser, isNarrator, isGroup, forceAvatar, name1, name2, forceOutputSequence, instructPreset) {
+export function formatInstructModeChat(name, mes, isUser, isNarrator, isGroup, forceAvatar, name1, name2, forceOutputSequence, instructPreset, macroContext = {}) {
     const instruct = structuredClone(instructPreset);
     let includeNames = isNarrator ? false : instruct.names_behavior === names_behavior_types.ALWAYS;
 
@@ -76,9 +77,9 @@ export function formatInstructModeChat(name, mes, isUser, isNarrator, isGroup, f
     let suffix = getSuffix() || '';
 
     if (instruct.macro) {
-        prefix = substituteParams(prefix, { name1, name2 });
+        prefix = substituteParams(prefix, { ...macroContext, name1, name2 });
         prefix = prefix.replace(/{{name}}/gi, name || 'System');
-        suffix = substituteParams(suffix, { name1, name2 });
+        suffix = substituteParams(suffix, { ...macroContext, name1, name2 });
         suffix = suffix.replace(/{{name}}/gi, name || 'System');
     }
 
@@ -100,9 +101,10 @@ export function formatInstructModeChat(name, mes, isUser, isNarrator, isGroup, f
  * @param {boolean} isQuietToLoud
  * @param {boolean} isGroup
  * @param {InstructSettings} instructPreset
+ * @param {import('./macro-substitution.js').SubstituteParamsContext} [macroContext] What the macros read besides the names.
  * @returns {string}
  */
-export function formatInstructModePrompt(name, isImpersonate, promptBias, name1, name2, isQuiet, isQuietToLoud, isGroup, instructPreset) {
+export function formatInstructModePrompt(name, isImpersonate, promptBias, name1, name2, isQuiet, isQuietToLoud, isGroup, instructPreset, macroContext = {}) {
     const instruct = structuredClone(instructPreset);
     const includeNames = name && (instruct.names_behavior === names_behavior_types.ALWAYS || (!!isGroup && instruct.names_behavior === names_behavior_types.FORCE)) && !(isQuiet && !isQuietToLoud);
 
@@ -129,7 +131,7 @@ export function formatInstructModePrompt(name, isImpersonate, promptBias, name1,
     }
 
     if (instruct.macro) {
-        sequence = substituteParams(sequence, { name1, name2 });
+        sequence = substituteParams(sequence, { ...macroContext, name1, name2 });
         sequence = sequence.replace(/{{name}}/gi, name || 'System');
     }
 
@@ -157,25 +159,25 @@ export function formatInstructModePrompt(name, isImpersonate, promptBias, name1,
  * explicitly instead. Pass the same name1/name2 you'd use elsewhere for this generation.
  * @param {string} storyString
  * @param {InstructSettings} instructPreset
- * @param {{story_string_position?: number, name1?: string, name2?: string}} [contextSettings]
+ * @param {{story_string_position?: number, name1?: string, name2?: string, macroContext?: import('./macro-substitution.js').SubstituteParamsContext}} [contextSettings]
  * @returns {string}
  */
 export function formatInstructModeStoryString(storyString, instructPreset, contextSettings = {}) {
     if (!storyString) return '';
 
     const instruct = structuredClone(instructPreset);
-    const { name1, name2 } = contextSettings;
+    const { name1, name2, macroContext = {} } = contextSettings;
     const storyStringPosition = contextSettings.story_string_position ?? extension_prompt_types.IN_PROMPT;
     const applySequences = storyStringPosition !== extension_prompt_types.IN_CHAT;
     const separator = instruct.wrap ? '\n' : '';
 
     if (applySequences && instruct.story_string_prefix) {
-        const prefix = substituteParams(instruct.story_string_prefix, { name1, name2 }).replace(/{{name}}/gi, 'System');
+        const prefix = substituteParams(instruct.story_string_prefix, { ...macroContext, name1, name2 }).replace(/{{name}}/gi, 'System');
         storyString = prefix + separator + storyString;
     }
 
     if (applySequences && instruct.story_string_suffix) {
-        const suffix = substituteParams(instruct.story_string_suffix, { name1, name2 });
+        const suffix = substituteParams(instruct.story_string_suffix, { ...macroContext, name1, name2 });
         storyString = storyString + suffix;
     }
 
@@ -188,10 +190,10 @@ const onlyUnique = (value, index, array) => array.indexOf(value) === index;
  * Port of public/scripts/instruct-mode.js's getInstructStoppingSequences().
  * @param {InstructSettings} instructPreset
  * @param {{use_stop_strings?: boolean, chat_start?: string, example_separator?: string}} contextSettings
- * @param {{name1?: string, name2?: string}} [names]
+ * @param {{name1?: string, name2?: string, macroContext?: import('./macro-substitution.js').SubstituteParamsContext}} [names]
  * @returns {string[]}
  */
-export function getInstructStoppingSequences(instructPreset, contextSettings, { name1 = '', name2 = '' } = {}) {
+export function getInstructStoppingSequences(instructPreset, contextSettings, { name1 = '', name2 = '', macroContext = {} } = {}) {
     const instruct = structuredClone(instructPreset);
     const result = [];
 
@@ -200,7 +202,7 @@ export function getInstructStoppingSequences(instructPreset, contextSettings, { 
         if (sequence.trim().length === 0) return;
         const wrap = (s) => instruct.wrap ? '\n' + s : s;
         const wrappedSequence = wrap(sequence);
-        const stopString = instruct.macro ? substituteParams(wrappedSequence, { name1, name2 }) : wrappedSequence;
+        const stopString = instruct.macro ? substituteParams(wrappedSequence, { ...macroContext, name1, name2 }) : wrappedSequence;
         result.push(stopString);
     };
 
@@ -222,10 +224,10 @@ export function getInstructStoppingSequences(instructPreset, contextSettings, { 
 
     if (contextSettings?.use_stop_strings) {
         if (contextSettings.chat_start) {
-            result.push(`\n${substituteParams(contextSettings.chat_start, { name1, name2 })}`);
+            result.push(`\n${substituteParams(contextSettings.chat_start, { ...macroContext, name1, name2 })}`);
         }
         if (contextSettings.example_separator) {
-            result.push(`\n${substituteParams(contextSettings.example_separator, { name1, name2 })}`);
+            result.push(`\n${substituteParams(contextSettings.example_separator, { ...macroContext, name1, name2 })}`);
         }
     }
 
