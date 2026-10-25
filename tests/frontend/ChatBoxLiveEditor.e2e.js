@@ -1,8 +1,8 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
-// The chat box gets the live editor once the page is idle after loading, only while it doesn't have focus, and its
-// toolbar shows only while the user is in it.
+// The chat box gets the live editor once the page is idle after loading, only while it doesn't have focus. Its toolbar
+// is always shown, in its own row, so focusing it moves nothing.
 
 /** @param {import('@playwright/test').Page} page */
 async function openChat(page) {
@@ -47,24 +47,23 @@ async function holdEditorCode(page) {
 }
 
 test.describe('the chat box with the live editor', () => {
-    test('it has the editor while unfocused, its toolbar only shows while the user is in it, and typing reaches the text box', async ({ page }) => {
+    test('it has the editor while unfocused, its toolbar is always shown, focusing moves nothing, and typing reaches the text box', async ({ page }) => {
         await testSetup.awaitST({ page });
         await openChat(page);
         const editor = chatBoxEditor(page);
         await expect(editor).toHaveCount(1, { timeout: 10000 });
         await expect(page.locator('#send_textarea')).toHaveClass(/live-editor-textarea/);
-        // Opening a chat puts focus in the chat box once it has loaded, which can land after a click; away from the
-        // chat box, the toolbar is hidden.
-        await expect(async () => {
-            await page.locator('#chat .mes[mesid="0"] .mes_text').click();
-            await expect(editor.locator('.live-toolbar')).toBeHidden({ timeout: 1000 });
-        }).toPass();
+        await page.locator('#chat .mes[mesid="0"] .mes_text').click();
+        await expect(editor.locator('.live-toolbar')).toBeVisible();
+        const textTop = () => editor.locator('.cm-line').first().evaluate(el => Math.round(el.getBoundingClientRect().top));
+        const before = await textTop();
         await editor.locator('.cm-content').click();
         await expect(editor.locator('.live-toolbar')).toBeVisible();
+        expect(await textTop()).toBe(before);
         await page.keyboard.type('Hello *there*');
         expect(await chatBoxValue(page)).toBe('Hello *there*');
         await page.locator('#chat .mes[mesid="0"] .mes_text').click();
-        await expect(editor.locator('.live-toolbar')).toBeHidden();
+        await expect(editor.locator('.live-toolbar')).toBeVisible();
         await expect(editor).toHaveCount(1);
         expect(await chatBoxValue(page)).toBe('Hello *there*');
         await clearChatBox(page);
@@ -141,7 +140,7 @@ test.describe('the chat box with the live editor', () => {
         });
     });
 
-    test('the toolbar goes above the whole send form, over the bars extensions put above the chat box', async ({ page }) => {
+    test('the toolbar is a row of the send form, under the bars extensions put above the chat box, covering nothing', async ({ page }) => {
         await testSetup.awaitST({ page });
         await openChat(page);
         await expect(chatBoxEditor(page)).toHaveCount(1, { timeout: 10000 });
@@ -153,18 +152,23 @@ test.describe('the chat box with the live editor', () => {
             document.getElementById('send_form').prepend(bar);
         });
         await chatBoxEditor(page).locator('.cm-content').click();
-        const toolbar = chatBoxEditor(page).locator('.cm-panels-top');
-        await expect(toolbar).toBeVisible();
-        const place = () => page.evaluate(() => ({
-            toolbarBottom: Math.round(document.querySelector('#send_form .cm-panels-top').getBoundingClientRect().bottom),
-            formTop: Math.round(document.getElementById('send_form').getBoundingClientRect().top),
-        }));
-        await expect.poll(async () => { const p = await place(); return p.toolbarBottom - p.formTop; }).toBe(0);
-        // A bar that grows lifts it further.
+        await expect(chatBoxEditor(page).locator('.cm-panels-top')).toBeVisible();
+        const place = () => page.evaluate(() => {
+            const box = (/** @type {string} */ selector) => document.querySelector(selector).getBoundingClientRect();
+            const toolbar = box('#send_form .cm-panels-top');
+            return {
+                // At or under the bar, at or above the text, inside the form, and the chat ends above the form.
+                underBar: toolbar.top >= box('#testExtensionBar').bottom - 0.5,
+                aboveText: toolbar.bottom <= box('#send_form .cm-content').top + 0.5,
+                inForm: toolbar.top >= box('#send_form').top - 0.5,
+                chatClear: box('#chat').bottom <= box('#send_form').top + 0.5,
+            };
+        });
+        const clear = { underBar: true, aboveText: true, inForm: true, chatClear: true };
+        await expect.poll(place).toEqual(clear);
         await page.evaluate(() => { document.getElementById('testExtensionBar').style.height = '90px'; });
-        await expect.poll(async () => { const p = await place(); return p.toolbarBottom - p.formTop; }).toBe(0);
+        await expect.poll(place).toEqual(clear);
         await page.evaluate(() => document.getElementById('testExtensionBar').remove());
-        await expect.poll(async () => { const p = await place(); return p.toolbarBottom - p.formTop; }).toBe(0);
     });
 
     test('Shift+Enter adds a line instead of sending', async ({ page }) => {
