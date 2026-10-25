@@ -209,7 +209,7 @@ class MacroEngine {
             const result = MacroRegistry.executeMacro(call, { defOverride });
 
             try {
-                return call.env.functions.postProcess(result, { name, category: (defOverride ?? MacroRegistry.getMacro(name))?.category });
+                return call.env.functions.postProcess(result, { name, category: (defOverride ?? MacroRegistry.getMacro(name))?.category, source: raw });
             } catch (error) {
                 logMacroInternalError({ message: `Macro "${name}" postProcess function failed.`, call, error });
                 return result;

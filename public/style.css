@@ -1679,44 +1679,62 @@ textarea.autoSetHeight {
     --macro-color: hsl(from var(--SmartThemeMacroColor) calc(h + 280) s l);
 }
 
-/* A field's preview shows each macro's value. */
-.macro_preview_content .macro-substituted {
-    color: var(--macro-color, var(--SmartThemeMacroColor));
-}
-
-/* A macro the preview doesn't run (it has side effects or randomness), shown as written. */
-.macro_preview_content .macro-raw {
-    color: var(--SmartThemeMacroColor);
-    opacity: 0.6;
-}
-
-/* The live editor shows a macro as written, then what is sent in its place, which isn't part of the text. */
-/* Every part of a macro is the macro color, whatever styling (italics, quotes) the text around it gets. */
-.cm-editor.live-editor .macro-source,
-.cm-editor.live-editor .macro-source * {
-    color: var(--macro-color, var(--SmartThemeMacroColor));
-}
-
-/* What is sent in the macro's place. Led by a word joiner and unbreakable, so no line break comes between the two or
-   inside it (macros.js caps how much of a value it shows). */
-.cm-editor.live-editor .macro-source::after {
-    content: '\2060' attr(data-sent-label) '\00a0' attr(data-sent-value);
-    white-space: nowrap;
-    margin-inline-start: 0.3em;
+/* A macro is shown as a pill holding what is sent in its place (macro-pill.js), never as its {{…}} text. In the editor
+   it is unbreakable (its value shortened); in a preview a long value wraps, each line its own piece of pill. */
+.macro-pill {
     padding: 0 0.35em;
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+    border: 1px solid transparent;
     border-radius: 0.6em;
     background-color: color-mix(in srgb, var(--macro-color, var(--SmartThemeMacroColor)) 18%, transparent);
     color: var(--macro-color, var(--SmartThemeMacroColor));
-    font-size: 0.85em;
     font-style: normal;
     font-weight: normal;
     text-decoration: none;
 }
 
-.cm-editor.live-editor .macro-source.macro-later::after {
-    content: '\2060' attr(data-sent-label);
+.cm-editor.live-editor .macro-pill,
+.cm-editor.live-editor .macro-pill-glue {
+    white-space: nowrap;
+}
+
+.macro-pill-icon {
+    margin-inline-end: 0.3em;
+    font-size: 0.8em;
+}
+
+/* Worked out only when sent, or sending nothing: what it is, not a value. */
+.macro-pill-later,
+.macro-pill-empty {
+    border-style: dashed;
+    border-color: color-mix(in srgb, var(--macro-color, var(--SmartThemeMacroColor)) 60%, transparent);
+    background-color: transparent;
+}
+
+.macro-pill-later {
     font-style: italic;
-    opacity: 0.7;
+}
+
+/* A macro opened for editing, or every macro while the editor shows them as written: in the macro's color, whatever
+   styling (italics, quotes) the text around it gets. */
+.cm-editor.live-editor .macro-source,
+.cm-editor.live-editor .macro-source * {
+    color: var(--macro-color, var(--SmartThemeMacroColor));
+}
+
+.live-macro-tooltip {
+    padding: 0.3em 0.5em;
+    max-width: 30em;
+    font-size: calc(var(--mainFontSize) * 0.85);
+}
+
+.live-macro-tooltip code {
+    display: block;
+    margin-bottom: 0.2em;
+    padding: 0;
+    background: none;
+    color: var(--SmartThemeMacroColor);
 }
 
 /* No height cap of its own: a long preview scrolls with the drawer it's in. */
@@ -7540,7 +7558,8 @@ textarea.live-editor-textarea {
 
 /* The macro suggestions look like the app's own suggestion list (--ac-* follow the STscript style setting). */
 .cm-editor.live-editor .cm-tooltip.cm-tooltip-autocomplete,
-.cm-editor.live-editor .cm-tooltip.cm-completionInfo {
+.cm-editor.live-editor .cm-tooltip.cm-completionInfo,
+.cm-editor.live-editor .cm-tooltip:has(> .live-macro-tooltip) {
     background: var(--ac-style-color-background, rgba(32 32 32 / 1));
     backdrop-filter: blur(var(--SmartThemeBlurStrength));
     border: 1px solid var(--ac-style-color-border, rgba(69 69 69 / 1));

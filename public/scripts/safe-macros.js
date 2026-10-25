@@ -131,64 +131,73 @@ export function substituteSafeMacrosAsText(text, substituteParams, options = {})
 }
 
 /**
- * Evaluates only the macros that are safe to run on every redraw of a preview. Every other macro is left as written.
- * Values and raw macros come back as placeholders, so the text can be rendered before {@link insertSafeMacroSpans}
- * puts them back.
+ * @typedef {import('./macro-pill.js').MacroShown} MacroShown
+ */
+
+/**
+ * A macro's placeholder in text being rendered: survives markdown and sanitizing, and {@link insertMacroPlaceholders}
+ * puts what shows the macro in its place.
+ * @param {number} index
+ */
+function macroPlaceholder(index) {
+    return `${VALUE_START}${index}${PLACEHOLDER_END}`;
+}
+
+/**
+ * @param {object} options substituteParams options
+ * @param {MacroShown[]} macros Gets each evaluated macro.
+ */
+function collecting(options, macros) {
+    return {
+        ...options,
+        postProcessFn: (/** @type {string} */ value, /** @type {import('./macros/engine/MacroEnvBuilder.js').MacroIdentity | undefined} */ macro) => {
+            macros.push({ source: macro?.source ?? '', name: macro?.name, category: macro?.category, value: String(value) });
+            return macroPlaceholder(macros.length - 1);
+        },
+    };
+}
+
+/**
+ * Evaluates every macro, leaving a placeholder where each goes, so the text can be rendered before
+ * {@link insertMacroPlaceholders} puts them back.
  * @param {string} text
  * @param {(content: string, options: object) => string} substituteParams The app's substituteParams.
  * @param {object} [options] Extra substituteParams options.
- * @returns {{ text: string, values: string[], categories: (string | undefined)[], raws: string[] }} Each value with
- * the category of the macro it is from.
+ * @returns {{ text: string, macros: MacroShown[] }}
+ */
+export function substituteMacros(text, substituteParams, options = {}) {
+    /** @type {MacroShown[]} */
+    const macros = [];
+    return { text: substituteParams(text, collecting(options, macros)), macros };
+}
+
+/**
+ * Evaluates only the macros that are safe to run on every redraw of a preview; every other macro is kept as written,
+ * with no value (null). Each comes back as a placeholder, so the text can be rendered before
+ * {@link insertMacroPlaceholders} puts them back.
+ * @param {string} text
+ * @param {(content: string, options: object) => string} substituteParams The app's substituteParams.
+ * @param {object} [options] Extra substituteParams options.
+ * @returns {{ text: string, macros: MacroShown[] }}
  */
 export function substituteSafeMacros(text, substituteParams, options = {}) {
     const { masked, raws } = maskUnsafeMacros(text);
-    /** @type {string[]} */
-    const values = [];
-    /** @type {(string | undefined)[]} */
-    const categories = [];
-    const substituted = substituteParams(masked, {
-        ...options,
-        postProcessFn: (/** @type {string} */ value, /** @type {{ category?: string } | undefined} */ macro) => {
-            values.push(String(value));
-            categories.push(macro?.category);
-            return `${VALUE_START}${values.length - 1}${PLACEHOLDER_END}`;
-        },
-    });
-    return { text: substituted, values, categories, raws };
+    /** @type {MacroShown[]} */
+    const macros = [];
+    const substituted = substituteParams(masked, collecting(options, macros));
+    const evaluated = macros.length;
+    for (const source of raws) {
+        macros.push({ source, name: macroName(source.slice(2)) ?? undefined, value: null });
+    }
+    return { text: substituted.replace(RAW_REGEX, (_, index) => macroPlaceholder(evaluated + Number(index))), macros };
 }
 
 /**
- * A preview's span for a macro's value, marked with the macro's category so it has that category's color.
- * @param {string} value
- * @param {string | undefined} category
- * @returns {string}
- */
-export function macroValueSpan(value, category) {
-    const marked = category ? ` data-macro-category="${escapeHtmlText(category)}"` : '';
-    return `<span class="macro-substituted"${marked}>${escapeHtmlText(value)}</span>`;
-}
-
-/** @param {string} text @returns {string} */
-function escapeHtmlText(text) {
-    return text
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#039;');
-}
-
-/**
- * Replaces the placeholders from {@link substituteSafeMacros}: values with `.macro-substituted` spans, macros that
- * weren't evaluated with `.macro-raw` spans holding them as written.
+ * Puts what `render` gives for each macro in place of its placeholder.
  * @param {string} html
- * @param {string[]} values
- * @param {string[]} raws
- * @param {(string | undefined)[]} [categories] The category of each value's macro.
+ * @param {(index: number) => string} render
  * @returns {string}
  */
-export function insertSafeMacroSpans(html, values, raws, categories = []) {
-    return html
-        .replace(VALUE_REGEX, (_, index) => macroValueSpan(values[Number(index)] ?? '', categories[Number(index)]))
-        .replace(RAW_REGEX, (_, index) => `<span class="macro-raw">${escapeHtmlText(raws[Number(index)] ?? '')}</span>`);
+export function insertMacroPlaceholders(html, render) {
+    return html.replace(VALUE_REGEX, (_, index) => render(Number(index)));
 }

@@ -9,7 +9,7 @@ import { getInstructMacros } from './instruct-mode.js';
 import { getVariableMacros } from './variables.js';
 import { isMobile } from './RossAscends-mods.js';
 import { inject_ids } from './constants.js';
-import { initRegisterMacros, macros as macroSystem } from './macros/macro-system.js';
+import { initRegisterMacros, macroCategory, macros as macroSystem } from './macros/macro-system.js';
 import { power_user } from './power-user.js';
 
 /**
@@ -582,7 +582,7 @@ function getOutletPrompt(key) {
 function legacyMacroIdentity(match) {
     const legacyTag = /^<(USER|BOT|CHAR|CHARIFNOTGROUP|GROUP)>$/i.exec(match)?.[1].toLowerCase();
     const name = legacyTag === 'bot' ? 'char' : legacyTag ?? (/^\{\{\s*([^\s:}]+)/.exec(match)?.[1] ?? '');
-    return { name, category: macroSystem.registry.getPrimaryMacro(name)?.category };
+    return { name, category: macroCategory(name), source: match };
 }
 
 /**
