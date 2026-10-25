@@ -69,7 +69,7 @@ test.describe('live editor macros', () => {
         // Away from the pills, so no hover tooltip shows.
         await page.mouse.move(0, 0);
         await page.keyboard.press('Home');
-        const tooltip = page.locator('#liveEditorTestHost .live-macro-tooltip');
+        const tooltip = page.locator('.macro-tooltip:popover-open');
         // Where the user put the cursor: not where it was placed for them.
         await expect(tooltip).toHaveCount(0);
         for (let i = 0; i < 6; i++) await page.keyboard.press('ArrowRight');
@@ -92,7 +92,7 @@ test.describe('live editor macros', () => {
 
     test('a mention\'s tooltip is a card of who it names; another macro\'s adds a note only when the pill doesn\'t say it all', async ({ page }) => {
         await mountWithMacros(page, 'A {{char}} b {{random::x::y}} c {{//note}} d', { person: true });
-        const tooltip = page.locator('#liveEditorTestHost .live-macro-tooltip');
+        const tooltip = page.locator('.macro-tooltip:popover-open');
         await page.locator('#liveEditorTestHost .cm-content').click();
         // Away from the pills, so no hover tooltip shows.
         await page.mouse.move(0, 0);
@@ -114,11 +114,47 @@ test.describe('live editor macros', () => {
         await mountWithMacros(page, `${'word '.repeat(13)}{{random::a long first choice::a long second choice}}`);
         await page.locator('#liveEditorTestHost .cm-content').click();
         await page.keyboard.press('End');
-        const tooltip = page.locator('#liveEditorTestHost .live-macro-tooltip');
+        const tooltip = page.locator('.macro-tooltip:popover-open');
         await expect(tooltip).toBeVisible();
         const box = await tooltip.boundingBox();
         expect(box.x).toBeGreaterThanOrEqual(0);
         expect(box.x + box.width).toBeLessThanOrEqual(640);
+    });
+
+    test('a pill in rendered text and one in the editor show the same tooltip on hover, in the top layer', async ({ page }) => {
+        await mountWithMacros(page, 'In the editor {{char}} and {{random::x::y}}.', { person: true });
+        await page.evaluate(async () => {
+            const { insertMacroPills } = await import('/scripts/macro-pill.js');
+            const { substituteSafeMacros } = await import('/scripts/safe-macros.js');
+            const { substituteParams } = await import('/script.js');
+            const { text, macros } = substituteSafeMacros('Rendered {{char}} and {{random::x::y}}.', substituteParams, { name2Override: 'Testchar' });
+            const preview = document.createElement('div');
+            preview.id = 'renderedPillTest';
+            // Clipped by what holds it, as a drawer clips its preview: the tooltip isn't.
+            preview.style.cssText = 'overflow:hidden;height:1.6em;margin-top:220px';
+            preview.innerHTML = insertMacroPills(text, macros, s => s.join(''),
+                name => ({ name: `Person ${name}`, avatarUrl: '/img/ai4.png', about: `About ${name}.` }));
+            document.getElementById('liveEditorTestHost').append(preview);
+        });
+        const tooltip = page.locator('.macro-tooltip:popover-open');
+        const shown = async (/** @type {import('@playwright/test').Locator} */ pill) => {
+            await pill.hover();
+            await expect(tooltip).toBeVisible();
+            const box = await tooltip.boundingBox();
+            const pillBox = await pill.boundingBox();
+            expect(box.y + box.height).toBeLessThanOrEqual(pillBox.y + 1);
+            const content = await tooltip.evaluate(el => el.innerHTML);
+            await page.mouse.move(0, 0);
+            await expect(tooltip).toHaveCount(0);
+            return content;
+        };
+        const editor = page.locator('#liveEditorTestHost .cm-content .macro-pill');
+        const rendered = page.locator('#renderedPillTest .macro-pill');
+        expect(await shown(rendered.nth(0))).toEqual(await shown(editor.nth(0)));
+        expect(await shown(rendered.nth(1))).toEqual(await shown(editor.nth(1)));
+        await rendered.nth(1).hover();
+        await expect(tooltip).toHaveText('{{random::x::y}}Filled in when sent');
+        expect(await rendered.nth(1).getAttribute('title')).toBeNull();
     });
 
     test('"@" offers who can be mentioned by name, and picking one puts in its macro', async ({ page }) => {

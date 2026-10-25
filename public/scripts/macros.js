@@ -3,6 +3,7 @@ import { substituteParams } from '../script.js';
 import { chat } from './chat-state.js';
 import { uuidv4 } from './utils.js';
 import { initRegisterMacros, macros as macroSystem } from './macros/macro-system.js';
+import { initMacroTooltips } from './macro-tooltip.js';
 
 // Register any macro that you want to leave in the compiled story string
 Handlebars.registerHelper('trim', () => '{{trim}}');
@@ -231,4 +232,5 @@ export function evaluateMacros(content, env, postProcessFn) {
 
 export function initMacros() {
     initRegisterMacros();
+    initMacroTooltips();
 }

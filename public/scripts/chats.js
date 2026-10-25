@@ -23,6 +23,7 @@ import {
     getMediaDisplay,
     chatElement,
     updateIn,
+    macroPerson,
 } from '../script.js';
 import { renderMarkdown } from './marked-processor.js';
 import { substituteMacros, substituteSafeMacros, substituteSafeMacrosAsText } from './safe-macros.js';
@@ -676,7 +677,7 @@ export function formatCreatorNotes(text, avatarId, { safeMacros = false, styleSc
     html = DOMPurify.sanitize(html, config);
     html = decodeStyleTags(html, decodeStyleParam);
 
-    return insertMacroPills(html, macros, t);
+    return insertMacroPills(html, macros, t, macroName => macroPerson(macroName, { avatar: avatarId }));
 }
 
 async function openGlobalStylesPreferenceDialog() {
