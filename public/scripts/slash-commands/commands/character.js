@@ -1048,7 +1048,7 @@ export function registerCharacterCommands() {
                 'silent', t`Hide any blocking popups. (if false, the name is optional. If not supplied, a popup asking for it will appear)`, [ARGUMENT_TYPE.BOOLEAN], false, false, 'true',
             ),
             new SlashCommandNamedArgument(
-                'chats', t`Rename char in all previous chats`, [ARGUMENT_TYPE.BOOLEAN], false, false, '<null>',
+                'chats', t`Show the new name on past messages too; false keeps the old name on messages sent before the rename`, [ARGUMENT_TYPE.BOOLEAN], false, false, 'true',
             ),
         ],
         unnamedArgumentList: [

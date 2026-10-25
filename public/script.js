@@ -6620,7 +6620,7 @@ export function setSendButtonState(value) {
 
 /**
  * Turns the character's name at the top of its info into a text box: Enter, or leaving it, renames the character
- * (renameCharacter(), which asks whether past chats follow); Escape leaves the name as it was.
+ * (renameCharacter()); Escape leaves the name as it was.
  */
 function beginInlineCharacterRename() {
     if (getSelectionState().type !== 'character' || blockWhileFieldEditing()) return;
@@ -6655,19 +6655,19 @@ function beginInlineCharacterRename() {
 }
 
 /**
- * Renames the currently selected character, updating relevant references and optionally renaming past chats.
+ * Renames the currently selected character, updating relevant references. Its messages in every chat show the new
+ * name; with `renameChats: false`, a message sent before the rename keeps the name the character had then. Its
+ * sprites need nothing: their folder is named by its avatar, which a rename keeps.
  *
  * If no name is provided, a popup prompts for a new name. If the new name matches the current name,
- * the renaming process is aborted. The function sends a request to the server to rename the character
- * and handles updates to other related fields such as tags, lore, and author notes.
+ * the renaming process is aborted.
  *
  * If the renaming is successful, the character list is reloaded and the renamed character is selected.
- * Optionally, past chats can be renamed to reflect the new character name.
  *
  * @param {string?} [name=null] - The new name for the character. If not provided, a popup will prompt for it.
  * @param {object} [options] - Additional options.
  * @param {boolean} [options.silent=false] - If true, suppresses popups and warnings.
- * @param {boolean?} [options.renameChats=null] - If true, renames past chats to reflect the new character name.
+ * @param {boolean?} [options.renameChats=null] - False keeps the old name on messages sent before the rename.
  * @returns {Promise<boolean>} - Returns true if the character was successfully renamed, false otherwise.
  */
 
@@ -6696,18 +6696,8 @@ export async function renameCharacter(name = null, { silent = false, renameChats
         return false;
     }
 
-    // Asked first, so renaming is one request that also renames the past chats when wanted.
-    const renamePastChatsConfirm = renameChats !== null
-        ? renameChats
-        : silent
-            ? false
-            : await Popup.show.confirm(
-                t`Rename character`,
-                `<p>${t`Past chats contain the old character name. Would you like to update the character name in previous chats as well?`}</p>
-                <i><b>${t`Sprites folder (if any) should be renamed manually.`}</b></i>`,
-            ) == POPUP_RESULT.AFFIRMATIVE;
-
-    const body = JSON.stringify({ avatar_url: oldAvatar, new_name: newValue, rename_past_chats: renamePastChatsConfirm });
+    const renamePastChats = renameChats ?? true;
+    const body = JSON.stringify({ avatar_url: oldAvatar, new_name: newValue, rename_past_chats: renamePastChats });
     const response = await fetch('/api/characters/rename', {
         method: 'POST',
         headers: getRequestHeaders(),
@@ -6774,7 +6764,7 @@ export async function renameCharacter(name = null, { silent = false, renameChats
                     throw new Error('New character not selected');
                 }
 
-                if (renamePastChatsConfirm) {
+                if (renamePastChats) {
                     await reloadCurrentChat();
                     toastr.success(t`Character renamed and past chats updated!`, t`Rename Character`);
                 } else {
