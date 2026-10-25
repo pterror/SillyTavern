@@ -4,6 +4,7 @@
 import { state as cmState, view as cmView, language as cmLanguage } from '../../live-editor-lib.js';
 import { t } from '../i18n.js';
 import { power_user } from '../power-user.js';
+import { hasLiveMacros, toggleMacroSource } from './macros.js';
 import { hasPresets, showPresets } from './search.js';
 
 const { EditorSelection, Facet } = cmState;
@@ -277,6 +278,9 @@ function toolbarPanel(view) {
     button('fa-code', t`Code (Ctrl+K)`, code);
     if (view.state.facet(formattingOptions).uploadImage) {
         button('fa-image', t`Image`, insertImage);
+    }
+    if (hasLiveMacros(view.state)) {
+        button('fa-file-code', t`Show macros as written (Ctrl+Shift+M)`, toggleMacroSource);
     }
     if (hasPresets(view.state)) {
         button('fa-wand-magic-sparkles', t`Find and replace presets`, v => showPresets(v));

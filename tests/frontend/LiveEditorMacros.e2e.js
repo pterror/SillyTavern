@@ -39,45 +39,68 @@ test.describe('live editor macros', () => {
         });
     });
 
-    test('each macro shows as written with what is sent beside it, wherever the cursor is; one that only runs when sent says so', async ({ page }) => {
-        await mountWithMacros(page, 'Hello {{char}} and {{random::a::b}}.');
-        const sources = page.locator('#liveEditorTestHost .cm-line .macro-source');
+    test('each macro is a pill holding what is sent in its place, wherever the cursor is; its braces are never on screen', async ({ page }) => {
+        await mountWithMacros(page, 'Hello {{char}} and {{random::a::b}} and {{//note}}.');
+        const pills = page.locator('#liveEditorTestHost .cm-line .macro-pill');
         for (const anchor of [0, 9, 30]) {
             await page.evaluate((anchor) => {
                 // @ts-ignore
                 window.liveEditorTest.editor.view.dispatch({ selection: { anchor } });
             }, anchor);
-            await expect(sources).toHaveText(['{{char}}', '{{random::a::b}}']);
-            expect(await sources.evaluateAll(els => els.map(el => getComputedStyle(el, '::after').content))).toEqual(['"⁠sent as Testchar"', '"⁠filled in when sent"']);
+            // A name is a mention of who it is; one worked out only when sent, or sending nothing, says what it is.
+            await expect(pills).toHaveText(['@Testchar', 'random · a · b', '//note']);
+            expect(await pills.evaluateAll(els => els.map(el => el.className))).toEqual(['macro-pill macro-pill-mention', 'macro-pill macro-pill-later', 'macro-pill macro-pill-empty']);
+            expect(await page.locator('#liveEditorTestHost .cm-content').textContent()).not.toContain('{{');
         }
-        // What is sent beside a macro isn't part of the text.
-        await expect(page.locator('#liveEditorTestTextarea')).toHaveValue('Hello {{char}} and {{random::a::b}}.');
+        await expect(page.locator('#liveEditorTestTextarea')).toHaveValue('Hello {{char}} and {{random::a::b}} and {{//note}}.');
     });
 
-    test('a drag held between a macro\'s end and its value\'s end changes nothing on the line', async ({ page }) => {
-        await mountWithMacros(page, 'Hello {{char}} and more text after it.');
-        const source = await page.locator('#liveEditorTestHost .macro-source').boundingBox();
-        const y = source.y + source.height / 2;
-        await page.evaluate(() => {
+    test('a pill is one step for the cursor and one Backspace; beside it, a tooltip above it shows its source', async ({ page }) => {
+        await mountWithMacros(page, 'Hello {{char}} there.');
+        const view = () => page.evaluate(() => {
             // @ts-ignore
-            window.__lineChanges = 0;
-            // @ts-ignore
-            new MutationObserver(records => { window.__lineChanges += records.length; })
-                .observe(document.querySelector('#liveEditorTestHost .cm-content'), { childList: true, subtree: true, characterData: true });
+            const { view } = window.liveEditorTest.editor;
+            return { head: view.state.selection.main.head, doc: view.state.doc.toString() };
         });
-        await page.mouse.move(source.x - 20, y);
-        await page.mouse.down();
-        await page.mouse.move(source.x + source.width + 2, y, { steps: 5 });
-        // Onto what is sent, drawn at the end of the macro's span.
-        await page.mouse.move(source.x + source.width - 5, y, { steps: 5 });
-        await page.waitForTimeout(300);
-        await page.mouse.up();
-        // @ts-ignore
-        expect(await page.evaluate(() => window.__lineChanges)).toBe(0);
-        await expect(page.locator('#liveEditorTestHost .macro-source')).toHaveText('{{char}}');
+        await page.locator('#liveEditorTestHost .cm-content').click();
+        await page.keyboard.press('Home');
+        const tooltip = page.locator('#liveEditorTestHost .live-macro-tooltip');
+        // Where the user put the cursor: not where it was placed for them.
+        await expect(tooltip).toHaveCount(0);
+        for (let i = 0; i < 6; i++) await page.keyboard.press('ArrowRight');
+        await expect(tooltip.locator('code')).toHaveText('{{char}}');
+        await expect(tooltip).toContainText('replaced by “Testchar”');
+        // Above the pill.
+        const pill = await page.locator('#liveEditorTestHost .macro-pill').boundingBox();
+        expect((await tooltip.boundingBox()).y + (await tooltip.boundingBox()).height).toBeLessThanOrEqual(pill.y + 1);
+        await page.keyboard.press('ArrowRight');
+        expect((await view()).head).toBe(14);
+        await page.keyboard.press('ArrowRight');
+        await expect(tooltip).toHaveCount(0);
+        await page.keyboard.press('ArrowLeft');
+        await page.keyboard.press('Backspace');
+        expect(await view()).toEqual({ head: 6, doc: 'Hello  there.' });
     });
 
-    test('a macro and what is sent beside it stay on one line, and a click on it puts the cursor on that line', async ({ page }) => {
+    test('a double click opens a pill\'s source for editing until the cursor leaves it; Ctrl+Shift+M shows every macro as written', async ({ page }) => {
+        await mountWithMacros(page, 'Hello {{char}} there, {{user}}.');
+        await page.locator('#liveEditorTestHost .macro-pill').first().dblclick();
+        await expect(page.locator('#liveEditorTestHost .macro-source')).toHaveText(['{{char}}']);
+        await expect(page.locator('#liveEditorTestHost .macro-pill')).toHaveCount(1);
+        await page.keyboard.type('!');
+        await expect(page.locator('#liveEditorTestTextarea')).toHaveValue('Hello {{char!}} there, {{user}}.');
+        await page.keyboard.press('Backspace');
+        await page.keyboard.press('End');
+        await expect(page.locator('#liveEditorTestHost .macro-source')).toHaveCount(0);
+        await expect(page.locator('#liveEditorTestHost .macro-pill')).toHaveText(['@Testchar', /^@/]);
+        await page.keyboard.press('Control+Shift+M');
+        await expect(page.locator('#liveEditorTestHost .macro-source')).toHaveText(['{{char}}', '{{user}}']);
+        await expect(page.locator('#liveEditorTestHost .macro-pill')).toHaveCount(0);
+        await page.keyboard.press('Control+Shift+M');
+        await expect(page.locator('#liveEditorTestHost .macro-pill')).toHaveCount(2);
+    });
+
+    test('a click at the start of a paragraph\'s last line puts the cursor on that line, wherever a pill falls', async ({ page }) => {
         // The macro at every offset across the editor's width, so one of them falls where a line wraps.
         const lines = Array.from({ length: 60 }, (_, i) => `${'w'.repeat(i)} ${'word '.repeat(9)}{{char}} at the end.`);
         await mountWithMacros(page, lines.join('\n\n'));
@@ -91,12 +114,12 @@ test.describe('live editor macros', () => {
                 view.dispatch({ effects: view.constructor.scrollIntoView(line.to, { y: 'center' }) });
                 await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
                 const last = view.coordsAtPos(line.to, -1);
-                // Clicks along the start of the paragraph's last line, where what is sent lands when the line wraps
-                // right after the macro.
+                // Clicks along the start of the paragraph's last line, where a pill lands when the line wraps at it.
                 for (const dx of [3, 20, 40, 60]) {
                     const pos = view.posAtCoords({ x: left + dx, y: last.top + 5 });
                     const caret = view.coordsAtPos(pos, 1);
-                    if (caret.top !== last.top) out.push(`line ${n} +${dx}: cursor at ${Math.round(caret.top)}, clicked ${Math.round(last.top)}`);
+                    // Beside a pill the cursor takes the pill's box, a pixel off the text's: the same line within half a line.
+                    if (Math.abs(caret.top - last.top) > 8) out.push(`line ${n} +${dx}: cursor at ${Math.round(caret.top)}, clicked ${Math.round(last.top)}`);
                 }
             }
             return [out.length, out.slice(0, 5)];
@@ -104,12 +127,12 @@ test.describe('live editor macros', () => {
         expect(misses).toEqual([0, []]);
     });
 
-    test('each category of macro has its own color, the same in the editor and in a preview of its value', async ({ page }) => {
+    test('each category of macro has its own color, the same in the editor and in a preview', async ({ page }) => {
         const macros = ['{{user}}', '{{char}}', '{{description}}', '{{lastMessageId}}', '{{time}}', '{{random::a::b}}', '{{getvar::x}}'];
         await mountWithMacros(page, macros.join(' '));
-        const sources = page.locator('#liveEditorTestHost .cm-line .macro-source');
-        await expect(sources).toHaveCount(macros.length);
-        const editor = await sources.evaluateAll(els => els.map(el => [el.dataset.macroCategory ?? null, getComputedStyle(el).color]));
+        const pills = page.locator('#liveEditorTestHost .cm-line .macro-pill');
+        await expect(pills).toHaveCount(macros.length);
+        const editor = await pills.evaluateAll(els => els.map(el => [el.dataset.macroCategory ?? null, getComputedStyle(el).color]));
         expect(editor.map(([category]) => category)).toEqual(['names', 'names', 'character', 'chat', 'time', 'random', 'variable']);
         const colors = editor.map(([, color]) => color);
         // Names have the theme's macro color; every other category its own.
@@ -124,20 +147,22 @@ test.describe('live editor macros', () => {
         expect(colors[0]).toBe(macroColor);
         expect(colors[1]).toBe(macroColor);
         expect(new Set(colors.slice(1)).size).toBe(6);
-        // A preview marks each value with its macro's category, so it has the same color.
+        // A preview draws the same pills, so they have the same colors.
         const preview = await page.evaluate(async () => {
-            const { substituteSafeMacros, insertSafeMacroSpans } = await import('/scripts/safe-macros.js');
+            const { substituteSafeMacros } = await import('/scripts/safe-macros.js');
+            const { insertMacroPills } = await import('/scripts/macro-pill.js');
+            const { t } = await import('/scripts/i18n.js');
             const { substituteParams } = await import('/script.js');
-            const { text, values, raws, categories } = substituteSafeMacros('{{user}} {{description}} {{time}} {{getvar::x}}', substituteParams);
+            const { text, macros } = substituteSafeMacros('{{user}} {{description}} {{time}} {{getvar::x}} {{random::a::b}}', substituteParams);
             const holder = document.createElement('div');
             holder.className = 'macro_preview_content';
-            holder.innerHTML = insertSafeMacroSpans(text, values, raws, categories);
+            holder.innerHTML = insertMacroPills(text, macros, t);
             document.body.append(holder);
-            const found = [...holder.querySelectorAll('.macro-substituted')].map(el => [/** @type {HTMLElement} */ (el).dataset.macroCategory ?? null, getComputedStyle(el).color]);
+            const found = [...holder.querySelectorAll('.macro-pill')].map(el => [/** @type {HTMLElement} */ (el).dataset.macroCategory ?? null, getComputedStyle(el).color]);
             holder.remove();
             return found;
         });
-        expect(preview).toEqual([['names', colors[0]], ['character', colors[2]], ['time', colors[4]], ['variable', colors[6]]]);
+        expect(preview).toEqual([['names', colors[0]], ['character', colors[2]], ['time', colors[4]], ['variable', colors[6]], ['random', colors[5]]]);
     });
 
     test('typing a macro shows the app\'s macro suggestions with the highlighted one\'s current value', async ({ page }) => {

@@ -247,20 +247,18 @@ test.describe('live editor: reported problems', () => {
 
     test('ED20: every macro shows its value and is highlighted the same, in code and HTML too, as in the preview', async ({ page }) => {
         await mount(page, 'a {{char}} `{{char}}` <b>{{char}}</b>\n\n<div>{{char}}</div>\n\n```\n{{char}}\n```\n\nend');
-        const sources = page.locator('#liveEditorTestHost .cm-line .macro-source');
-        // Wherever the cursor is, every macro shows as written with its value beside it.
+        const pills = page.locator('#liveEditorTestHost .cm-line .macro-pill');
+        // Wherever the cursor is, every macro is a pill holding its value.
         for (const line of [1, 3, 9, 6]) {
             await page.evaluate((line) => {
                 // @ts-ignore
                 const { view } = window.liveEditorTest.editor;
                 view.dispatch({ selection: { anchor: view.state.doc.line(line).from } });
             }, line);
-            await expect(sources).toHaveCount(5);
-            for (const source of await sources.all()) await expect(source).toHaveAttribute('data-sent-value', 'Testchar');
+            await expect(pills).toHaveText(Array(5).fill('@Testchar'));
         }
-        const macroColor = await probeStyle(page, '<div class="macro_preview_content"><span class="macro-substituted">x</span></div>', 'span', 'color');
-        expect(await styleOf(sources.first(), 'color')).toBe(macroColor);
-        expect(await sources.first().evaluate(el => getComputedStyle(el, '::after').color)).toBe(macroColor);
+        const macroColor = await probeStyle(page, '<div class="macro_preview_content"><span class="macro-pill" data-macro-category="names">x</span></div>', 'span', 'color');
+        for (const pill of await pills.all()) expect(await styleOf(pill, 'color')).toBe(macroColor);
     });
 
     test('ED21: the macro suggestions have the look of the app\'s own suggestion list', async ({ page }) => {

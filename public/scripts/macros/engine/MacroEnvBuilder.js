@@ -27,6 +27,7 @@ import { getStringHash } from '/scripts/utils.js';
  * @typedef {object} MacroIdentity Which macro a value is from.
  * @property {string} name
  * @property {string} [category] Its category in the registry (MacroCategory), if it is registered.
+ * @property {string} [source] Its text as written, `{{…}}` (macros nested in it already filled in).
  */
 
 /**

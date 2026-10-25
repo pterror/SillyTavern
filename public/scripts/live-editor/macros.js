@@ -1,14 +1,16 @@
-// Macros in the editor: each as written, with what is sent in its place beside it, and a dropdown of macros while typing one.
+// Macros in the editor: each as a pill holding what is sent in its place (macro-pill.js), its source in a tooltip, and
+// a dropdown of macros while typing one.
 
 import { state as cmState, view as cmView, autocomplete as cmAutocomplete } from '../../live-editor-lib.js';
 import { topLevelMacroSpans } from '../safe-macros.js';
+import { macroPill, macroPillContent } from '../macro-pill.js';
 import { getMacroAutoCompleteAt } from '../autocomplete/MacroAutoCompleteHelper.js';
-import { macros as macroSystem } from '../macros/macro-system.js';
+import { macroCategory } from '../macros/macro-system.js';
 import { shouldActivateMacroAutocomplete, MACRO_AUTOCOMPLETE_MODE } from '../autocomplete/MacroAutoComplete.js';
 import { t } from '../i18n.js';
 
-const { Facet, Prec } = cmState;
-const { Decoration, ViewPlugin } = cmView;
+const { Facet, Prec, StateField, StateEffect } = cmState;
+const { Decoration, ViewPlugin, WidgetType, EditorView, showTooltip, hoverTooltip, keymap } = cmView;
 const { autocompletion } = cmAutocomplete;
 
 /**
@@ -21,71 +23,155 @@ const macroOptions = Facet.define({
     combine: values => values[0] ?? { evaluate: () => null },
 });
 
-// The most of a value the badge shows; the title has all of it.
-const SHOWN_VALUE_LENGTH = 24;
-
 /**
- * A macro's category in the registry, from its text: the color it is drawn in goes by it.
+ * A macro's name, from its text: flags before it (`{{!user}}`, `{{#if …}}`) are skipped; the comment macro is `//`.
  * @param {string} macroText One whole `{{…}}`.
  * @returns {string | undefined}
  */
-function macroCategory(macroText) {
+function macroNameOf(macroText) {
     const inner = macroText.slice(2).trimStart();
-    // Flags before the name (`{{!user}}`, `{{#if …}}`); the comment macro is named `//`.
-    const name = inner.startsWith('//') ? '//' : /^[^a-zA-Z]{0,3}([a-zA-Z][\w-]*)/.exec(inner)?.[1];
-    return name ? macroSystem.registry.getPrimaryMacro(name)?.category : undefined;
+    return inner.startsWith('//') ? '//' : /^[^a-zA-Z]{0,3}([a-zA-Z][\w-]*)/.exec(inner)?.[1];
 }
 
 /**
- * The mark a macro is drawn with. What is sent in its place is drawn by the mark's own span (CSS generated content
- * from these attributes), not by a widget: it is no position in the text, and it never breaks across lines or away
- * from the macro, so a click on it lands on the macro, on the line it is drawn on.
- * @param {string | null} value The macro's value, or null when it only runs when sent.
- * @param {string | undefined} category Its category, for its color.
+ * A macro as its pill shows it.
+ * @param {import('@codemirror/state').EditorState} state
+ * @param {string} source
+ * @returns {import('../macro-pill.js').MacroShown}
  */
-function macroMark(value, category) {
-    const categoryAttribute = category ? { 'data-macro-category': category } : {};
-    if (value === null) {
-        return Decoration.mark({
-            class: 'macro-source macro-later',
-            attributes: { ...categoryAttribute, 'data-sent-label': t`filled in when sent`, title: t`This macro is filled in when the message is sent.` },
-        });
+function shownMacro(state, source) {
+    const name = macroNameOf(source);
+    let value = null;
+    try {
+        value = state.facet(macroOptions).evaluate(source);
+    } catch (error) {
+        console.warn('Macro could not be filled in', source, error);
     }
-    const flat = value.replace(/\s+/g, ' ');
-    const shown = flat.length > SHOWN_VALUE_LENGTH ? `${flat.slice(0, SHOWN_VALUE_LENGTH - 1)}…` : flat;
-    return Decoration.mark({
-        class: 'macro-source',
-        attributes: { ...categoryAttribute, 'data-sent-label': t`sent as`, 'data-sent-value': shown, title: t`Sent as: ${value}` },
-    });
+    return { source, name, category: name ? macroCategory(name) : undefined, value };
 }
 
 /**
- * Each macro shows as written, styled as a macro, followed by what is sent in its place (or, if it only runs when
- * sent, a note saying so). Neither depends on the selection: the text is never swapped for its value, so selecting
- * across a macro moves nothing.
+ * The macros on the line holding `pos`.
+ * @param {import('@codemirror/state').EditorState} state
+ * @param {number} pos
+ * @returns {{ from: number, to: number }[]}
  */
-const macroValues = ViewPlugin.fromClass(class {
+function macrosOnLine(state, pos) {
+    const line = state.doc.lineAt(pos);
+    return topLevelMacroSpans(line.text).map(span => ({ from: line.from + span.start, to: line.from + span.end }));
+}
+
+/** Opens a macro's source for editing (`{from, to}`), or closes it (null). */
+const openSource = StateEffect.define();
+
+/** The macro whose source is open for editing: shown as written until the cursor leaves it. */
+const openedMacro = StateField.define({
+    /** @returns {{ from: number, to: number } | null} */
+    create: () => null,
+    update(opened, tr) {
+        for (const effect of tr.effects) {
+            if (effect.is(openSource)) return effect.value;
+        }
+        if (!opened) return opened;
+        const from = tr.changes.mapPos(opened.from, -1);
+        const to = tr.changes.mapPos(opened.to, 1);
+        const head = tr.state.selection.main.head;
+        return head < from || head > to ? null : { from, to };
+    },
+});
+
+/** Turns showing every macro as written on or off. */
+const toggleSource = StateEffect.define();
+
+/** Every macro shown as written, for working on macros. */
+const showingSource = StateField.define({
+    create: () => false,
+    update: (on, tr) => tr.effects.reduce((value, effect) => (effect.is(toggleSource) ? !value : value), on),
+});
+
+/**
+ * Shows every macro as written, or as pills again.
+ * @param {import('@codemirror/view').EditorView} view
+ */
+export function toggleMacroSource(view) {
+    view.dispatch({ effects: [toggleSource.of(null), openSource.of(null)] });
+    return true;
+}
+
+/**
+ * @param {import('@codemirror/state').EditorState} state
+ * @returns {boolean} Whether the editor shows macros (so it has the toggle for them).
+ */
+export function hasLiveMacros(state) {
+    return state.field(showingSource, false) !== undefined;
+}
+
+class MacroPillWidget extends WidgetType {
+    /** @param {import('../macro-pill.js').MacroShown} macro */
+    constructor(macro) {
+        super();
+        this.macro = macro;
+    }
+
+    /** @param {MacroPillWidget} other */
+    eq(other) {
+        return other.macro.source === this.macro.source && other.macro.value === this.macro.value && other.macro.category === this.macro.category;
+    }
+
+    toDOM() {
+        return macroPill(this.macro, { t, compact: true });
+    }
+
+    // A click on a pill puts the cursor beside it, as on a character.
+    ignoreEvent() {
+        return false;
+    }
+}
+
+/** A macro shown as written: the source opened, or every macro while the source is shown. */
+const sourceMark = Decoration.mark({ class: 'macro-source' });
+
+/**
+ * Holds a pill to the characters either side of it, so a line never wraps right before or after it. CodeMirror reads
+ * where a cursor beside a widget is from the zero-width spacer it puts next to the widget; a wrap between the two left
+ * the cursor drawn at the end of the line above, and a click before a pill starting a line landed there.
+ */
+const pillGlue = Decoration.mark({ class: 'macro-pill-glue' });
+
+/**
+ * Each macro is a pill holding what is sent in its place: the text reads as it is sent, and `{{…}}` is never on
+ * screen as if it were sent. A pill is one step for the cursor and one Backspace. Its source shows in a tooltip above
+ * it while the cursor is beside it, and on hover; a double click opens it for editing.
+ */
+const macroPills = ViewPlugin.fromClass(class {
     /** @param {import('@codemirror/view').EditorView} view */
     constructor(view) {
-        this.decorations = this.build(view);
+        this.build(view);
     }
 
     /** @param {import('@codemirror/view').ViewUpdate} update */
     update(update) {
-        // While an IME composes, the values only move with the text; they're worked out again when it ends.
+        // While an IME composes, the pills only move with the text; they're worked out again when it ends.
         if (update.view.composing) {
+            this.pills = this.pills.map(update.changes);
+            this.marks = this.marks.map(update.changes);
             this.decorations = this.decorations.map(update.changes);
-        } else if (update.docChanged || update.viewportChanged) {
-            this.decorations = this.build(update.view);
+        } else if (update.docChanged || update.viewportChanged
+            || update.startState.field(openedMacro) !== update.state.field(openedMacro)
+            || update.startState.field(showingSource) !== update.state.field(showingSource)) {
+            this.build(update.view);
         }
     }
 
     /** @param {import('@codemirror/view').EditorView} view */
     build(view) {
         const state = view.state;
-        const { evaluate } = state.facet(macroOptions);
+        const opened = state.field(openedMacro);
+        const asWritten = state.field(showingSource);
         /** @type {import('@codemirror/state').Range<import('@codemirror/view').Decoration>[]} */
-        const ranges = [];
+        const pills = [];
+        /** @type {import('@codemirror/state').Range<import('@codemirror/view').Decoration>[]} */
+        const marks = [];
         // Whole lines, so a macro is never cut by the edge of what's shown.
         for (const visible of view.visibleRanges) {
             const unit = { from: state.doc.lineAt(visible.from).from, to: state.doc.lineAt(visible.to).to };
@@ -94,19 +180,89 @@ const macroValues = ViewPlugin.fromClass(class {
             for (const span of topLevelMacroSpans(state.doc.sliceString(unit.from, unit.to))) {
                 const from = unit.from + span.start;
                 const to = unit.from + span.end;
-                const text = state.doc.sliceString(from, to);
-                let value = null;
-                try {
-                    value = evaluate(text);
-                } catch (error) {
-                    console.warn('Macro could not be filled in', text, error);
+                if (asWritten || (opened && opened.from <= from && to <= opened.to)) {
+                    marks.push(sourceMark.range(from, to));
+                } else {
+                    pills.push(Decoration.replace({ widget: new MacroPillWidget(shownMacro(state, state.doc.sliceString(from, to))) }).range(from, to));
+                    const line = state.doc.lineAt(from);
+                    marks.push(pillGlue.range(Math.max(line.from, from - 1), Math.min(line.to, to + 1)));
                 }
-                ranges.push(macroMark(value, macroCategory(text)).range(from, to));
             }
         }
-        return Decoration.set(ranges, true);
+        this.pills = Decoration.set(pills, true);
+        this.marks = Decoration.set(marks, true);
+        this.decorations = Decoration.set([...pills, ...marks], true);
     }
-}, { decorations: plugin => plugin.decorations });
+}, {
+    decorations: plugin => plugin.decorations,
+    provide: plugin => EditorView.atomicRanges.of(view => view.plugin(plugin)?.pills ?? Decoration.none),
+});
+
+/**
+ * The tooltip saying what a macro is and what is sent in its place.
+ * @param {import('@codemirror/state').EditorState} state
+ * @param {{ from: number, to: number }} macro
+ * @returns {import('@codemirror/view').Tooltip}
+ */
+function macroTooltip(state, macro) {
+    const source = state.doc.sliceString(macro.from, macro.to);
+    return {
+        pos: macro.from,
+        end: macro.to,
+        above: true,
+        create: () => {
+            const dom = document.createElement('div');
+            dom.className = 'live-macro-tooltip';
+            const code = document.createElement('code');
+            code.textContent = source;
+            const text = document.createElement('div');
+            text.textContent = macroPillContent(shownMacro(state, source), t).tooltip;
+            dom.append(code, text);
+            return { dom };
+        },
+    };
+}
+
+/**
+ * While the cursor is beside a pill, or inside a macro opened for editing, after the user put it there (a click, the
+ * arrow keys, typing): its tooltip, above it. Not where an edit starts: it would cover what is above the field.
+ */
+const cursorTooltip = StateField.define({
+    /** @returns {import('@codemirror/view').Tooltip | null} */
+    create: () => null,
+    update(shown, tr) {
+        if (!tr.docChanged && !tr.selection && !tr.effects.length) return shown;
+        if (!tr.isUserEvent('select') && !tr.isUserEvent('input') && !tr.isUserEvent('delete')) return null;
+        const state = tr.state;
+        const selection = state.selection.main;
+        if (!selection.empty || state.field(showingSource)) return null;
+        const head = selection.head;
+        const macro = macrosOnLine(state, head).find(m => m.from <= head && head <= m.to);
+        return macro ? macroTooltip(state, macro) : null;
+    },
+    provide: field => showTooltip.from(field),
+});
+
+/** On hover over a pill: its tooltip. */
+const hoverMacro = hoverTooltip((view, pos) => {
+    if (view.state.field(showingSource)) return null;
+    const macro = macrosOnLine(view.state, pos).find(m => m.from <= pos && pos <= m.to);
+    return macro ? macroTooltip(view.state, macro) : null;
+}, { hoverTime: 300 });
+
+/** A double click on a pill opens its source for editing, the cursor before its closing braces. */
+const openOnDoubleClick = EditorView.domEventHandlers({
+    dblclick(event, view) {
+        const pill = event.target instanceof Element ? event.target.closest('.macro-pill') : null;
+        if (!pill) return false;
+        const pos = view.posAtDOM(pill);
+        const macro = macrosOnLine(view.state, pos).find(m => m.from === pos);
+        if (!macro) return false;
+        view.dispatch({ effects: openSource.of(macro), selection: { anchor: macro.to - 2 } });
+        event.preventDefault();
+        return true;
+    },
+});
 
 /**
  * The app's macro suggestions as a CodeMirror completion source: the same options, details and argument hints as
@@ -167,9 +323,14 @@ async function macroCompletions(context) {
 export function liveMacros(options) {
     return [
         macroOptions.of(options),
-        // Highest, so a macro's span wraps the styling inside it rather than being cut into pieces by it: its value is
-        // drawn once, after the whole macro.
-        Prec.highest(macroValues),
+        openedMacro,
+        showingSource,
+        // Highest, so a macro opened as written is one span over the styling inside it, in the macro's color.
+        Prec.highest(macroPills),
+        cursorTooltip,
+        hoverMacro,
+        openOnDoubleClick,
+        keymap.of([{ key: 'Mod-Shift-m', run: toggleMacroSource }]),
         // No delay before Enter takes a suggestion, as with the app's own suggestion lists.
         autocompletion({ override: [macroCompletions], icons: false, closeOnBlur: true, interactionDelay: 0 }),
     ];

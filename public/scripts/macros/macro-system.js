@@ -4,6 +4,7 @@ import { MacroLexer } from './engine/MacroLexer.js';
 import { MacroParser } from './engine/MacroParser.js';
 import { MacroCstWalker } from './engine/MacroCstWalker.js';
 import { MacroEnvBuilder } from './engine/MacroEnvBuilder.js';
+import { setMacroCategories } from '../macro-pill.js';
 
 import { registerCoreMacros } from './definitions/core-macros.js';
 import { registerEnvMacros } from './definitions/env-macros.js';
@@ -45,6 +46,17 @@ export const macros = {
 };
 
 let macrosRegistered = false;
+
+/**
+ * A macro's category in the registry (MacroCategory), by its name; undefined when no macro has that name.
+ * @param {string} name
+ * @returns {string | undefined}
+ */
+export function macroCategory(name) {
+    return MacroRegistry.getPrimaryMacro(name)?.category;
+}
+
+setMacroCategories(macroCategory);
 
 export function initRegisterMacros() {
     if (macrosRegistered) return;

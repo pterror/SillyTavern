@@ -25,8 +25,8 @@ import {
     updateIn,
 } from '../script.js';
 import { renderMarkdown } from './marked-processor.js';
-import { insertMacroSpans, substituteMacrosWithPlaceholders } from './character-field-editor.js';
-import { insertSafeMacroSpans, substituteSafeMacros, substituteSafeMacrosAsText } from './safe-macros.js';
+import { substituteMacros, substituteSafeMacros, substituteSafeMacrosAsText } from './safe-macros.js';
+import { insertMacroPills } from './macro-pill.js';
 import { initImageLightbox, onLightboxImageClick } from './image-lightbox.js';
 import { openEditorLayer } from './editor-layer.js';
 import { chat, chat_metadata } from './chat-state.js';
@@ -670,15 +670,13 @@ export function formatCreatorNotes(text, avatarId, { safeMacros = false, styleSc
         ADD_TAGS: ['custom-style'],
     };
 
-    const { text: substituted, values, categories, raws } = safeMacros
-        ? substituteSafeMacros(text, substituteParams)
-        : { ...substituteMacrosWithPlaceholders(text, substituteParams), raws: [] };
+    const { text: substituted, macros } = (safeMacros ? substituteSafeMacros : substituteMacros)(text, substituteParams);
     let html = renderMarkdown(substituted);
     html = encodeStyleTags(html);
     html = DOMPurify.sanitize(html, config);
     html = decodeStyleTags(html, decodeStyleParam);
 
-    return safeMacros ? insertSafeMacroSpans(html, values, raws, categories) : insertMacroSpans(html, values, categories);
+    return insertMacroPills(html, macros, t);
 }
 
 async function openGlobalStylesPreferenceDialog() {
