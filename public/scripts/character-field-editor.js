@@ -47,7 +47,7 @@ let deps = null;
 function renderLiteralTagsPreview(text) {
     const { text: substituted, macros } = substituteSafeMacros(text, deps.substituteParams);
     const html = DOMPurify.sanitize(renderMarkdownLiteralTags(substituted));
-    return insertMacroPills(html, macros, deps.t);
+    return insertMacroPills(html, macros, deps.t, deps.macroPerson);
 }
 
 /** @param {string} text @returns {string} */
@@ -55,7 +55,7 @@ function renderGreetingPreview(text) {
     const name = String($('#character_name_pole').val() ?? '');
     const { text: substituted, macros } = substituteSafeMacros(text, deps.substituteParams, { name2Override: name });
     const html = deps.messageFormatting(substituted, name, false, false, 0);
-    return insertMacroPills(html, macros, deps.t);
+    return insertMacroPills(html, macros, deps.t, deps.macroPerson);
 }
 
 /**

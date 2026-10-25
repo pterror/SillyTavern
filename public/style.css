@@ -1661,7 +1661,7 @@ textarea.autoSetHeight {
 
 /* A macro's color (macro-colors.js): as light as the text, with the theme's chroma and the macro's own hue, or the
    whole color it was given. The theme's stylesheet (#macro-colors-style) gives them by the macro's name. */
-:where(.macro-pill, .macro-source, .live-macro-tooltip) {
+:where(.macro-pill, .macro-source, .macro-tooltip) {
     --macro-color: oklch(from var(--SmartThemeBodyColor) l var(--macro-chroma, 0.14) var(--macro-hue, 250));
 }
 
@@ -1709,10 +1709,15 @@ textarea.autoSetHeight {
     color: var(--macro-color);
 }
 
-.live-macro-tooltip {
+/* A macro's tooltip (macro-tooltip.js), placed by its script; the pointer goes through it to what is under it. */
+.macro-tooltip {
+    position: fixed;
+    inset: auto;
+    margin: 0;
     padding: 0.3em 0.5em;
-    max-width: 30em;
+    max-width: min(30em, calc(100vw - 8px));
     font-size: calc(var(--mainFontSize) * 0.85);
+    pointer-events: none;
 }
 
 .live-mention-avatar {
@@ -1770,7 +1775,7 @@ textarea.autoSetHeight {
     color: var(--macro-color);
 }
 
-.live-macro-tooltip code {
+.macro-tooltip code {
     display: block;
     margin-bottom: 0.2em;
     padding: 0;
@@ -7651,10 +7656,11 @@ textarea.live-editor-textarea {
     opacity: 1;
 }
 
-/* The macro suggestions look like the app's own suggestion list (--ac-* follow the STscript style setting). */
+/* The macro suggestions and a macro's tooltip look like the app's own suggestion list (--ac-* follow the STscript style
+   setting). */
 .cm-editor.live-editor .cm-tooltip.cm-tooltip-autocomplete,
 .cm-editor.live-editor .cm-tooltip.cm-completionInfo,
-.cm-editor.live-editor .cm-tooltip.live-macro-tooltip {
+.macro-tooltip {
     background: var(--ac-style-color-background, rgba(32 32 32 / 1));
     backdrop-filter: blur(var(--SmartThemeBlurStrength));
     border: 1px solid var(--ac-style-color-border, rgba(69 69 69 / 1));

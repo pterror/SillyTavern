@@ -1,16 +1,17 @@
-// Macros in the editor: each as a pill holding what is sent in its place (macro-pill.js), its source in a tooltip, and
-// a dropdown of macros while typing one.
+// Macros in the editor: each as a pill holding what is sent in its place (macro-pill.js), its source in its tooltip
+// (macro-tooltip.js), and a dropdown of macros while typing one.
 
 import { state as cmState, view as cmView, autocomplete as cmAutocomplete } from '../../live-editor-lib.js';
 import { topLevelMacroSpans } from '../safe-macros.js';
-import { macroColorAttributes, macroPersonCard, macroPill, macroPillContent } from '../macro-pill.js';
+import { macroColorAttributes, macroPill, macroTooltipAttributes } from '../macro-pill.js';
+import { setMacroBesideCursor } from '../macro-tooltip.js';
 import { getMacroAutoCompleteAt } from '../autocomplete/MacroAutoCompleteHelper.js';
 import { macroCategory } from '../macros/macro-system.js';
 import { shouldActivateMacroAutocomplete, MACRO_AUTOCOMPLETE_MODE } from '../autocomplete/MacroAutoComplete.js';
 import { t } from '../i18n.js';
 
 const { Facet, Prec, StateField, StateEffect } = cmState;
-const { Decoration, ViewPlugin, WidgetType, EditorView, showTooltip, hoverTooltip, keymap } = cmView;
+const { Decoration, ViewPlugin, WidgetType, EditorView, keymap } = cmView;
 const { autocompletion } = cmAutocomplete;
 
 /**
@@ -50,6 +51,15 @@ function shownMacro(state, source) {
         console.warn('Macro could not be filled in', source, error);
     }
     return { source, name, category: name ? macroCategory(name) : undefined, value };
+}
+
+/**
+ * Who a mention names here, for its tooltip.
+ * @param {import('@codemirror/state').EditorState} state
+ * @param {import('../macro-pill.js').MacroShown} shown
+ */
+function personOf(state, shown) {
+    return shown.name ? state.facet(macroOptions).person?.(shown.name) ?? null : null;
 }
 
 /**
@@ -109,19 +119,24 @@ export function hasLiveMacros(state) {
 }
 
 class MacroPillWidget extends WidgetType {
-    /** @param {import('../macro-pill.js').MacroShown} macro */
-    constructor(macro) {
+    /**
+     * @param {import('../macro-pill.js').MacroShown} macro
+     * @param {import('../macro-pill.js').MacroPerson | null} person
+     */
+    constructor(macro, person) {
         super();
         this.macro = macro;
+        this.person = person;
     }
 
     /** @param {MacroPillWidget} other */
     eq(other) {
-        return other.macro.source === this.macro.source && other.macro.value === this.macro.value && other.macro.category === this.macro.category;
+        return other.macro.source === this.macro.source && other.macro.value === this.macro.value && other.macro.category === this.macro.category
+            && JSON.stringify(other.person) === JSON.stringify(this.person);
     }
 
     toDOM() {
-        return macroPill(this.macro, { t, compact: true });
+        return macroPill(this.macro, { t, compact: true, person: this.person });
     }
 
     // A click on a pill puts the cursor beside it, as on a character.
@@ -131,12 +146,19 @@ class MacroPillWidget extends WidgetType {
 }
 
 /**
- * A macro shown as written (the source opened, or every macro while the source is shown), in its color.
+ * A macro shown as written, in its color: every macro while the source is shown; the macro opened for editing, with
+ * its tooltip (the source shown says it all otherwise).
+ * @param {import('@codemirror/state').EditorState} state
  * @param {string} macroText
+ * @param {boolean} opened
  */
-function sourceMark(macroText) {
-    const name = macroNameOf(macroText);
-    return Decoration.mark({ class: 'macro-source', attributes: macroColorAttributes(name, name ? macroCategory(name) : undefined) });
+function sourceMark(state, macroText, opened) {
+    if (!opened) {
+        const name = macroNameOf(macroText);
+        return Decoration.mark({ class: 'macro-source', attributes: macroColorAttributes(name, name ? macroCategory(name) : undefined) });
+    }
+    const shown = shownMacro(state, macroText);
+    return Decoration.mark({ class: 'macro-source', attributes: macroTooltipAttributes(shown, { t, compact: true, person: personOf(state, shown) }) });
 }
 
 /**
@@ -188,10 +210,12 @@ const macroPills = ViewPlugin.fromClass(class {
             for (const span of topLevelMacroSpans(state.doc.sliceString(unit.from, unit.to))) {
                 const from = unit.from + span.start;
                 const to = unit.from + span.end;
+                const text = state.doc.sliceString(from, to);
                 if (asWritten || (opened && opened.from <= from && to <= opened.to)) {
-                    marks.push(sourceMark(state.doc.sliceString(from, to)).range(from, to));
+                    marks.push(sourceMark(state, text, !asWritten).range(from, to));
                 } else {
-                    pills.push(Decoration.replace({ widget: new MacroPillWidget(shownMacro(state, state.doc.sliceString(from, to))) }).range(from, to));
+                    const shown = shownMacro(state, text);
+                    pills.push(Decoration.replace({ widget: new MacroPillWidget(shown, personOf(state, shown)) }).range(from, to));
                     const line = state.doc.lineAt(from);
                     marks.push(pillGlue.range(Math.max(line.from, from - 1), Math.min(line.to, to + 1)));
                 }
@@ -207,83 +231,61 @@ const macroPills = ViewPlugin.fromClass(class {
 });
 
 /**
- * A macro's tooltip: its source, and a note when the pill doesn't say it all; for a mention, a card of who it names.
- * Centered above the macro (CodeMirror keeps it inside the window).
- * @param {import('@codemirror/state').EditorState} state
- * @param {{ from: number, to: number }} macro
- * @returns {import('@codemirror/view').Tooltip}
+ * The macro the cursor is beside (a pill), or inside (a macro opened for editing), after the user put it there (a
+ * click, the arrow keys, typing). Not where an edit starts: its tooltip would cover what is above the field.
  */
-function macroTooltip(state, macro) {
-    const source = state.doc.sliceString(macro.from, macro.to);
-    return {
-        pos: macro.from,
-        end: macro.to,
-        above: true,
-        create: (view) => {
-            const dom = document.createElement('div');
-            dom.className = 'live-macro-tooltip';
-            const shown = shownMacro(state, source);
-            for (const [attribute, value] of Object.entries(macroColorAttributes(shown.name, shown.category))) dom.setAttribute(attribute, value);
-            const { kind, note } = macroPillContent(shown, t, true);
-            const person = kind === 'mention' && shown.name ? state.facet(macroOptions).person?.(shown.name) : null;
-            if (person) {
-                dom.append(macroPersonCard(person, source));
-            } else {
-                const code = document.createElement('code');
-                code.textContent = source;
-                dom.append(code);
-                if (note) {
-                    const text = document.createElement('div');
-                    text.textContent = note;
-                    dom.append(text);
-                }
-            }
-            return {
-                dom,
-                // A point centered over the macro (its pill's box, or its text opened as written), as far left as half
-                // the tooltip's width.
-                getCoords: () => {
-                    const pill = [...view.contentDOM.querySelectorAll('.macro-pill')].find(el => view.posAtDOM(el) === macro.from);
-                    const start = view.coordsAtPos(macro.from, 1);
-                    const end = view.coordsAtPos(macro.to, -1);
-                    const box = pill?.getBoundingClientRect()
-                        ?? (start && end && start.top === end.top ? { left: start.left, right: end.right, top: start.top, bottom: start.bottom } : start);
-                    if (!box) return { left: 0, right: 0, top: 0, bottom: 0 };
-                    const left = (box.left + box.right) / 2 - dom.getBoundingClientRect().width / 2;
-                    // `right` is the macro's own: CodeMirror hides a tooltip whose anchor is out of the editor's view.
-                    return { left, right: Math.max(left, box.right), top: box.top, bottom: box.bottom };
-                },
-            };
-        },
-    };
-}
-
-/**
- * While the cursor is beside a pill, or inside a macro opened for editing, after the user put it there (a click, the
- * arrow keys, typing): its tooltip, above it. Not where an edit starts: it would cover what is above the field.
- */
-const cursorTooltip = StateField.define({
-    /** @returns {import('@codemirror/view').Tooltip | null} */
+const cursorMacro = StateField.define({
+    /** @returns {{ from: number, to: number } | null} */
     create: () => null,
-    update(shown, tr) {
-        if (!tr.docChanged && !tr.selection && !tr.effects.length) return shown;
+    update(macro, tr) {
+        if (!tr.docChanged && !tr.selection && !tr.effects.length) return macro;
         if (!tr.isUserEvent('select') && !tr.isUserEvent('input') && !tr.isUserEvent('delete')) return null;
         const state = tr.state;
         const selection = state.selection.main;
         if (!selection.empty || state.field(showingSource)) return null;
         const head = selection.head;
-        const macro = macrosOnLine(state, head).find(m => m.from <= head && head <= m.to);
-        return macro ? macroTooltip(state, macro) : null;
+        return macrosOnLine(state, head).find(m => m.from <= head && head <= m.to) ?? null;
     },
-    provide: field => showTooltip.from(field),
 });
 
-/** On hover over a pill: its tooltip. */
-const hoverMacro = hoverTooltip((view, pos) => {
-    if (view.state.field(showingSource)) return null;
-    const macro = macrosOnLine(view.state, pos).find(m => m.from <= pos && pos <= m.to);
-    return macro ? macroTooltip(view.state, macro) : null;
-}, { hoverTime: 300 });
+/**
+ * What shows the macro at `macro` in the editor: its pill, or its source opened for editing.
+ * @param {import('@codemirror/view').EditorView} view
+ * @param {{ from: number, to: number } | null} macro
+ * @returns {Element | null}
+ */
+function macroElement(view, macro) {
+    if (!macro) return null;
+    const pill = [...view.contentDOM.querySelectorAll('.macro-pill')].find(el => view.posAtDOM(el) === macro.from);
+    if (pill) return pill;
+    return [...view.contentDOM.querySelectorAll('.macro-source[data-macro-source]')].find((el) => {
+        const pos = view.posAtDOM(el);
+        return macro.from <= pos && pos <= macro.to;
+    }) ?? null;
+}
+
+/** While the cursor is beside a macro, its tooltip. */
+const cursorTooltip = ViewPlugin.fromClass(class {
+    /** @param {import('@codemirror/view').EditorView} view */
+    constructor(view) {
+        this.view = view;
+    }
+
+    /** @param {import('@codemirror/view').ViewUpdate} update */
+    update(update) {
+        const macro = update.state.field(cursorMacro);
+        if (!macro && !update.startState.field(cursorMacro)) return;
+        // Once the editor has drawn: a pill is drawn anew when the text around it changes.
+        update.view.requestMeasure({
+            read: view => macroElement(view, view.state.field(cursorMacro)),
+            write: el => setMacroBesideCursor(this, el),
+        });
+    }
+
+    destroy() {
+        setMacroBesideCursor(this, null);
+    }
+});
 
 /** A double click on a pill opens its source for editing, the cursor before its closing braces. */
 const openOnDoubleClick = EditorView.domEventHandlers({
@@ -404,8 +406,8 @@ export function liveMacros(options) {
         showingSource,
         // Highest, so a macro opened as written is one span over the styling inside it, in the macro's color.
         Prec.highest(macroPills),
+        cursorMacro,
         cursorTooltip,
-        hoverMacro,
         openOnDoubleClick,
         keymap.of([{ key: 'Mod-Shift-m', run: toggleMacroSource }]),
         // No delay before Enter takes a suggestion, as with the app's own suggestion lists.

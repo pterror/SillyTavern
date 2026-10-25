@@ -1,5 +1,6 @@
 // How a macro is shown wherever it is shown (the live editor, a field's preview): as a pill holding what is sent in its
-// place, never as its `{{…}}` text, so nothing on screen reads as if the braces were sent. The source is in its tooltip.
+// place, never as its `{{…}}` text, so nothing on screen reads as if the braces were sent. The source is in its tooltip
+// (macro-tooltip.js), drawn from the attributes the pill carries (macroTooltipAttributes()).
 // A leaf module: the app's translation is passed in and the macro registry tells it about the macros
 // (setMacroRegistry()), so importing it never adds an import cycle.
 
@@ -48,6 +49,8 @@ export function macroColorAttributes(name, category) {
 const SHOWN_LENGTH = 24;
 /** The most of a shortened value its tooltip shows. */
 const TOOLTIP_VALUE_LENGTH = 200;
+/** The most of who a mention names' description its card shows. */
+const ABOUT_LENGTH = 240;
 
 /** Each category's icon (macros/engine/MacroRegistry.js MacroCategory). One person's name has none: its card says who. */
 const CATEGORY_ICONS = Object.freeze({
@@ -113,18 +116,34 @@ export function macroPillContent({ source, name, category, value }, t, compact =
 }
 
 /**
- * A macro's pill. The editor's is `compact` (macroPillContent()) and has no title: it shows its own tooltip.
+ * The attributes an element showing a macro (its pill, its source opened as written) carries for its tooltip
+ * (macro-tooltip.js): its source, the note under it, who a mention names. And its color's (macroColorAttributes()).
  * @param {MacroShown} macro
- * @param {{ t: Translate, compact?: boolean }} options
+ * @param {{ t: Translate, compact?: boolean, person?: MacroPerson | null }} options
+ * @returns {Record<string, string>}
+ */
+export function macroTooltipAttributes(macro, { t, compact = false, person = null }) {
+    const { kind, note } = macroPillContent(macro, t, compact);
+    return {
+        ...macroColorAttributes(macro.name, macro.category),
+        'data-macro-source': macro.source,
+        ...(note ? { 'data-macro-note': note } : {}),
+        ...(kind === 'mention' && person ? { 'data-macro-person': JSON.stringify({ ...person, about: shorten(person.about, ABOUT_LENGTH) }) } : {}),
+    };
+}
+
+/**
+ * A macro's pill; the editor's is `compact` (macroPillContent()).
+ * @param {MacroShown} macro
+ * @param {{ t: Translate, compact?: boolean, person?: MacroPerson | null }} options `person`: who a mention names.
  * @returns {HTMLElement}
  */
-export function macroPill(macro, { t, compact = false }) {
+export function macroPill(macro, { t, compact = false, person = null }) {
     macro = { ...macro, category: macro.category ?? (macro.name ? registry.categoryOf(macro.name) : undefined) };
-    const { kind, label, icon, note } = macroPillContent(macro, t, compact);
+    const { kind, label, icon } = macroPillContent(macro, t, compact);
     const pill = document.createElement('span');
     pill.className = `macro-pill macro-pill-${kind}`;
-    for (const [attribute, value] of Object.entries(macroColorAttributes(macro.name, macro.category))) pill.setAttribute(attribute, value);
-    if (!compact) pill.title = note ? `${macro.source}\n${note}` : macro.source;
+    for (const [attribute, value] of Object.entries(macroTooltipAttributes(macro, { t, compact, person }))) pill.setAttribute(attribute, value);
     if (icon) {
         const i = document.createElement('i');
         i.className = `macro-pill-icon fa-solid ${icon}`;
@@ -141,9 +160,6 @@ export function macroPill(macro, { t, compact = false }) {
  * @property {string} avatarUrl
  * @property {string} about Their description (the persona's, the character's).
  */
-
-/** The most of who a mention names' description its card shows. */
-const ABOUT_LENGTH = 240;
 
 /**
  * A mention's card: who it names, with their avatar and description, and the macro it is written as.
@@ -169,7 +185,7 @@ export function macroPersonCard(person, source) {
     if (person.about.trim()) {
         const about = document.createElement('div');
         about.className = 'macro-person-about';
-        about.textContent = shorten(person.about, ABOUT_LENGTH);
+        about.textContent = person.about;
         text.append(about);
     }
     card.append(avatar, text);
@@ -181,8 +197,13 @@ export function macroPersonCard(person, source) {
  * @param {string} html
  * @param {MacroShown[]} macros
  * @param {Translate} t
+ * @param {(macroName: string) => MacroPerson | null} [person] Who a mention names here, for its tooltip.
  * @returns {string}
  */
-export function insertMacroPills(html, macros, t) {
-    return insertMacroPlaceholders(html, index => (macros[index] ? macroPill(macros[index], { t }).outerHTML : ''));
+export function insertMacroPills(html, macros, t, person) {
+    return insertMacroPlaceholders(html, (index) => {
+        const macro = macros[index];
+        if (!macro) return '';
+        return macroPill(macro, { t, person: macro.name ? person?.(macro.name) : null }).outerHTML;
+    });
 }

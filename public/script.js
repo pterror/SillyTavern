@@ -6878,7 +6878,7 @@ export function setThumbnailVersion(type, file, version) {
  * @param {{ avatar?: string, name?: string }} character
  * @returns {import('./scripts/macro-pill.js').MacroPerson | null}
  */
-function macroPerson(macroName, { avatar, name } = {}) {
+export function macroPerson(macroName, { avatar, name } = {}) {
     const which = macroName.toLowerCase();
     if (which === 'user') {
         return { name: name1, avatarUrl: getThumbnailUrl('persona', user_avatar), about: getPersonaDescription() };
