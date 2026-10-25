@@ -1712,6 +1712,15 @@ textarea.autoSetHeight {
     font-size: calc(var(--mainFontSize) * 0.85);
 }
 
+.live-mention-avatar {
+    width: 1.4em;
+    height: 1.4em;
+    margin-inline-end: 0.4em;
+    border-radius: 50%;
+    object-fit: cover;
+    vertical-align: middle;
+}
+
 .macro-person-card {
     display: flex;
     gap: 0.6em;
