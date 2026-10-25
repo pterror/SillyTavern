@@ -255,7 +255,7 @@ test.describe('live editor: reported problems', () => {
                 const { view } = window.liveEditorTest.editor;
                 view.dispatch({ selection: { anchor: view.state.doc.line(line).from } });
             }, line);
-            await expect(pills).toHaveText(Array(5).fill('@Testchar'));
+            await expect(pills).toHaveText(Array(5).fill('Testchar'));
         }
         const macroColor = await probeStyle(page, '<div class="macro_preview_content"><span class="macro-pill" data-macro-name="char">x</span></div>', 'span', 'color');
         for (const pill of await pills.all()) expect(await styleOf(pill, 'color')).toBe(macroColor);
