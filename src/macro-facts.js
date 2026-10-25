@@ -71,42 +71,56 @@ export function generationMacroFacts({ powerUser, extensionSettings, mainApi, ty
 }
 
 /**
- * The chat's state before the prompt is built, to tell what its macros changed ({{setvar}} and its kin).
+ * @typedef {{ set: Record<string, unknown>, unset: string[] }} VariableChanges Variables set and removed by name.
+ * @typedef {{ chat: Map<string, string>, global: Map<string, string> }} VariablesBefore
+ */
+
+/**
+ * The chat's state and the global variables before the prompt is built, to tell what its macros changed
+ * ({{setvar}}, {{setglobalvar}} and their kin).
  * @param {Record<string, any>} chatMetadata
- * @returns {Map<string, string>}
+ * @param {Record<string, any>} globalVariables
+ * @returns {VariablesBefore}
  */
-export function chatStateBefore(chatMetadata) {
-    return baselineOf(chatMetadata);
+export function variablesBefore(chatMetadata, globalVariables) {
+    return { chat: baselineOf(chatMetadata), global: baselineOf({ variables: globalVariables }) };
 }
 
+/** @param {VariableChanges | undefined} changes */
+const anyChange = changes => (changes && (Object.keys(changes.set).length || changes.unset.length) ? changes : null);
+
 /**
- * The chat variables the prompt's macros set and removed.
+ * The chat variables and the global ones the prompt's macros set and removed.
  * @param {Record<string, any>} chatMetadata The chat's state, as the macros left it.
- * @param {Map<string, string>} before chatStateBefore()
- * @returns {{ set: Record<string, unknown>, unset: string[] } | null} Null when they changed none.
+ * @param {Record<string, any>} globalVariables The global variables, as the macros left them.
+ * @param {VariablesBefore} before variablesBefore()
+ * @returns {{ chat: VariableChanges | null, global: VariableChanges | null }}
  */
-export function macroVariableChanges(chatMetadata, before) {
-    const variables = metadataChanges(chatMetadata, before)?.variables;
-    return variables && (Object.keys(variables.set).length || variables.unset.length) ? variables : null;
+export function macroVariableChanges(chatMetadata, globalVariables, before) {
+    return {
+        chat: anyChange(metadataChanges(chatMetadata, before.chat)?.variables),
+        global: anyChange(metadataChanges({ variables: globalVariables }, before.global)?.variables),
+    };
 }
 
 /**
- * Stores the chat variables a prompt's macros changed where the request's own chat metadata goes (the message the
- * send follows, applyPageWrites()), so the page and other tabs take them on as they do any change of the chat's state.
+ * Keeps the variables a prompt's macros changed. The chat's are stored where the request's own chat metadata goes
+ * (the message the send follows, applyPageWrites()); the global ones are the page's to save, with its settings. The
+ * answer's `stored` list says so: it reaches the page whichever way it answers, and the changes stream's notice of
+ * the chat's state may come before the page knows the messages this request stored.
  * @param {import('express').Response} response The generate request's, whose answer tells the page.
  * @param {import('./chat-request.js').ChatContext} chat
  * @param {string|null|undefined} at The message the send follows (null: the tree's root).
- * @param {{ set: Record<string, unknown>, unset: string[] } | null} variables macroVariableChanges()
+ * @param {{ chat: VariableChanges | null, global: VariableChanges | null }} changes macroVariableChanges()
  */
-export async function storeMacroVariables(response, chat, at, variables) {
-    if (!variables) return;
+export async function storeMacroVariables(response, chat, at, { chat: chatVariables, global }) {
+    if (global) recordStored(response, { ref: 'macro-global-variables', node_id: '', global_variables: global });
+    if (!chatVariables) return;
     const actor = chat.session.actor();
-    const merged = await chat.store.chats.mergeMetadata({ tree: chat.tree, at: at || null, set: {}, unset: [], variables, actor });
+    const merged = await chat.store.chats.mergeMetadata({ tree: chat.tree, at: at || null, set: {}, unset: [], variables: chatVariables, actor });
     if (!merged.ok) {
         console.warn('The chat variables the prompt\'s macros changed could not be stored:', merged.reason);
         return;
     }
-    // The answer's `stored` reaches the page whichever way it answers; the changes stream's notice may come before
-    // the page knows the messages this request stored.
     recordStored(response, { ref: 'macro-variables', node_id: at || '', state_changed: true });
 }

@@ -94,6 +94,16 @@ let _metadataStoredListener = () => {};
 /** Told when an answer says the chat's state changed in a way the page didn't send. */
 let _stateChangedListener = () => {};
 
+/** Told the global variables a server-built prompt's macros changed (`global_variables`), for the page to keep. */
+let _globalVariablesListener = (/** @type {{ set: Record<string, unknown>, unset: string[] }} */ _changes) => {};
+
+/**
+ * @param {(changes: { set: Record<string, unknown>, unset: string[] }) => void} listener
+ */
+export function setGlobalVariablesListener(listener) {
+    _globalVariablesListener = listener;
+}
+
 /**
  * Sets what is told when an answer says the server changed the chat's state (`state_changed`), once the messages it
  * stored have their ids.
@@ -129,6 +139,10 @@ export function adoptStored(stored) {
         if (typeof entry?.ref !== 'string') continue;
         if (entry.state_changed === true) {
             stateChanged = true;
+            continue;
+        }
+        if (entry.global_variables && typeof entry.global_variables === 'object') {
+            _globalVariablesListener(entry.global_variables);
             continue;
         }
         if (entry.metadata_not_saved === true) {

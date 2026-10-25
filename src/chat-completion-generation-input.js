@@ -1,5 +1,5 @@
 import { readSettingsAtPaths } from './settings-store.js';
-import { chatStateBefore, generationMacroFacts } from './macro-facts.js';
+import { variablesBefore, generationMacroFacts } from './macro-facts.js';
 import { loadChatHistory } from './chat-request.js';
 import { readCardContent, readExtraBooks } from './endpoints/characters.js';
 import { getGroupsByIds } from './endpoints/groups.js';
@@ -835,7 +835,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
         await resolveChatHistory(chatContext, { branchName, nodeId });
     const chatMetadata = chatMetadataOverride ?? loadedChatMetadata;
     // What it holds before any macro runs, to tell what the macros changed.
-    const stateBefore = chatStateBefore(chatMetadata);
+    const stateBefore = variablesBefore(chatMetadata, extensionSettings.variables?.global ?? {});
 
     const { name2, groupMemberNames, hasCharacter } = await resolveCharacterName2(directories, { avatar, groupId });
     const name1 = (username != null && username !== '') ? username : 'User';
@@ -1105,8 +1105,8 @@ export async function resolveChatCompletionGenerationInput(directories, {
         resolvedNodeId,
         // No message was named and the root isn't current (loadChatHistory()): the caller refuses, not guesses.
         chatResolutionAmbiguous: Boolean(chatResolutionAmbiguous),
-        // The chat's state before any macro ran (macroVariableChanges()).
-        chatStateBefore: stateBefore,
+        // The variables before any macro ran (macroVariableChanges()).
+        variablesBefore: stateBefore,
 
         // --- Character/persona resolution (getCharacterCardFields() - see doc comment decision 1) ---
         name2, hasActiveCharacter: hasCharacter,

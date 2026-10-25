@@ -15,6 +15,7 @@ import { slashCommandReturnHelper } from './slash-commands/SlashCommandReturnHel
 import { SlashCommandScope } from './slash-commands/SlashCommandScope.js';
 import { isFalseBoolean, convertValueType, isTrueBoolean } from './utils.js';
 import { createVariableScope } from './variable-store.js';
+import { setGlobalVariablesListener } from './chat-store.js';
 
 /** @typedef {import('./slash-commands/SlashCommandParser.js').NamedArguments} NamedArguments */
 /** @typedef {import('./slash-commands/SlashCommand.js').UnnamedArguments} UnnamedArguments */
@@ -25,6 +26,14 @@ const MAX_LOOPS = 100;
 export const localVariables = createVariableScope(() => (chat_metadata.variables ??= {}), { changed: saveMetadataDebounced, convert: convertValueType });
 /** The global variables, kept in the extension settings. */
 export const globalVariables = createVariableScope(() => (extension_settings.variables.global ??= {}), { changed: () => saveSettingsDebounced('extension_settings'), convert: convertValueType });
+
+// What a prompt the server built set and removed of them: kept, and saved with the settings.
+setGlobalVariablesListener(({ set, unset }) => {
+    const values = (extension_settings.variables.global ??= {});
+    for (const [name, value] of Object.entries(set ?? {})) values[name] = value;
+    for (const name of Array.isArray(unset) ? unset : []) delete values[name];
+    saveSettingsDebounced('extension_settings');
+});
 
 export function getLocalVariable(name, args = {}) {
     return localVariables.get(name, args);
