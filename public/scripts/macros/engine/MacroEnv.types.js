@@ -74,7 +74,7 @@
  * @property {(key: string) => string} [outlet] A world info outlet's text.
  * @property {boolean} [isMobile]
  * @property {string} [lastGenerationType]
- * @property {(name: string) => boolean} [hasExtension] Whether that extension is enabled.
+ * @property {{ names: string[], disabled: string[] }} [extensions] The extensions there are, and those turned off.
  * @property {Record<string, any>} [instruct] The instruct template, when instruct mode is on.
  * @property {{ enabled?: boolean, content?: string }} [sysprompt]
  * @property {Record<string, any>} [context] The context template.

@@ -5,6 +5,7 @@ import { readCardContent, readExtraBooks } from './endpoints/characters.js';
 import { getGroupsByIds } from './endpoints/groups.js';
 import { extension_prompt_types, extension_prompt_roles } from './extension-prompt-table.js';
 import { resolveWorldInfoCandidates, world_info_insertion_strategy } from './world-info/candidate-resolution.js';
+import { generationMacroFacts } from './macro-facts.js';
 
 /**
  * Adapter/resolver layer between REAL on-disk state (settings.json - via settings-store.js's
@@ -473,6 +474,7 @@ async function resolveChatHistory(chat, { branchName, nodeId }) {
  * prompt, as the backend counts that prompt. Defaults to `countTokens`.
  * @param {number} [params.amountGen] Overrides settings.amount_gen when given.
  * @param {object} [params.macroExtras] Shallow-merged over the resolved input object.
+ * @param {import('./macro-facts.js').PageMacroFacts} [params.pageFacts] What only the page knows, for the macros.
  * @returns {Promise<import('./text-completion-prompt-orchestrator.js').AssembleTextCompletionPromptInput>}
  */
 export async function resolveTextCompletionGenerationInput(directories, {
@@ -480,6 +482,7 @@ export async function resolveTextCompletionGenerationInput(directories, {
     type, isImpersonate = false, isContinue = false, isSwipe = false,
     textareaText = '', chatMetadata: chatMetadataOverride, userMessageText, userMessageExtra,
     worldInfoCandidates: worldInfoCandidatesOverride, countTokens, encodeTokens, countPromptTokens, amountGen, macroExtras = {},
+    pageFacts = {},
 } = {}) {
     if (typeof countTokens !== 'function') {
         throw new Error('resolveTextCompletionGenerationInput: countTokens is required (real tokenizer resolution is caller-owned - see module doc comment)');
@@ -591,6 +594,10 @@ export async function resolveTextCompletionGenerationInput(directories, {
         // --- Generation identity/mode ---
         type, isImpersonate, isContinue, isSwipe, isGroup,
         name1, name2,
+        macroFacts: generationMacroFacts({
+            powerUser, extensionSettings, mainApi, type, pageFacts,
+            maxContext: settingsMaxContext ?? 8192, maxResponse: amountGen ?? settingsAmountGen ?? 0,
+        }),
 
         // --- Character/persona/chat resolution ---
         directories, avatar, groupId,

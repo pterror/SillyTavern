@@ -149,7 +149,7 @@ export function getBiasStrings({ textareaText, type, chat = [], userPromptBias =
  * @param {FormatMessageHistoryItemContext} context
  * @returns {string}
  */
-export function formatMessageHistoryItem(chatItem, isInstruct, forceOutputSequence, { isGroup = false, name1, name2, instructPreset }) {
+export function formatMessageHistoryItem(chatItem, isInstruct, forceOutputSequence, { isGroup = false, name1, name2, instructPreset, macroContext = {} }) {
     const isNarratorType = chatItem?.extra?.type === system_message_types.NARRATOR;
     const characterName = chatItem?.name ? chatItem.name : name2;
     const itemName = chatItem.is_user ? chatItem.name : characterName;
@@ -165,7 +165,7 @@ export function formatMessageHistoryItem(chatItem, isInstruct, forceOutputSequen
     let textResult = chatItem?.name && shouldPrependName ? `${itemName}: ${chatItem.mes}\n` : `${chatItem.mes}\n`;
 
     if (isInstruct) {
-        textResult = formatInstructModeChat(itemName, chatItem.mes, chatItem.is_user, isNarratorType, isGroup, chatItem.force_avatar, name1, name2, forceOutputSequence, instructPreset);
+        textResult = formatInstructModeChat(itemName, chatItem.mes, chatItem.is_user, isNarratorType, isGroup, chatItem.force_avatar, name1, name2, forceOutputSequence, instructPreset, macroContext);
     }
 
     return textResult;
@@ -215,6 +215,7 @@ export function modifyLastPromptLine(lastMesString, {
     isContinue,
     isGroup = false,
     instructPreset,
+    macroContext = {},
 }) {
     //#########QUIET PROMPT STUFF PT2##############
 
@@ -223,7 +224,7 @@ export function modifyLastPromptLine(lastMesString, {
         // here name1 is forced for all quiet prompts..why?
         const name = name1;
         //checks if we are in instruct, if so, formats the chat as such, otherwise just adds the quiet prompt
-        const quietAppend = isInstruct ? formatInstructModeChat(name, quiet_prompt, false, true, isGroup, '', name1, name2, false, instructPreset) : `\n${quiet_prompt}`;
+        const quietAppend = isInstruct ? formatInstructModeChat(name, quiet_prompt, false, true, isGroup, '', name1, name2, false, instructPreset, macroContext) : `\n${quiet_prompt}`;
 
         //This begins to fix quietPrompts (particularly /sysgen) for instruct
         //previously instruct input sequence was being appended to the last chat message w/o '\n'
@@ -251,7 +252,7 @@ export function modifyLastPromptLine(lastMesString, {
     if (isInstruct && !isContinue) {
         const name = (quiet_prompt && !quietToLoud && !isImpersonate) ? (quietName ?? 'System') : (isImpersonate ? name1 : name2);
         const isQuiet = Boolean(quiet_prompt) && type == 'quiet';
-        lastMesString += formatInstructModePrompt(name, isImpersonate, promptBias, name1, name2, isQuiet, quietToLoud, isGroup, instructPreset);
+        lastMesString += formatInstructModePrompt(name, isImpersonate, promptBias, name1, name2, isQuiet, quietToLoud, isGroup, instructPreset, macroContext);
     }
 
     // Get non-instruct impersonation line

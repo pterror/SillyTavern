@@ -446,6 +446,8 @@ function parseMesExamplesBlocks(examplesStr, isInstruct, exampleSeparator = '') 
  *   common case.
  * @property {boolean} [consoleLogPrompts] Equivalent of power_user.console_log_prompts, forwarded to
  *   createNovelGenerationData() (logs the raw NovelAI prompt when true).
+ * @property {import('./macro-substitution.js').SubstituteParamsContext} [macroFacts] What the macros read besides the
+ *   names, the card and the chat (src/macro-facts.js).
  */
 
 /**
@@ -484,6 +486,7 @@ export async function assembleTextCompletionPrompt(input) {
         bannedTokensRaw = '', globalBannedTokensRaw = '', sendBannedTokens = false, logitBiasEntries = [],
         settings = {}, model,
         koboldFlags = {}, isHorde = false, apiServer, novelDataTier, presetOrder, consoleLogPrompts = false,
+        macroFacts = {},
     } = input;
 
     if (typeof countTokens !== 'function') throw new Error('assembleTextCompletionPrompt: countTokens is required');
@@ -500,7 +503,7 @@ export async function assembleTextCompletionPrompt(input) {
     // Built before character-card fields are resolved (matching the task's stage ordering) - the
     // macro context used here has no `characterCard` yet, same as any macro usage that happens to
     // run before the client's own character-card fields are in scope.
-    const baseMacroContext = { name1, name2, isGroup, chat, chatMetadata, bannedWordsSink };
+    const baseMacroContext = { ...macroFacts, name1, name2, isGroup, groupMembers: groupMemberNames, chat, chatMetadata, bannedWordsSink };
     const { messageBias, promptBias, isUserPromptBias } = getBiasStrings({
         textareaText, type, chat, userPromptBias, macroContext: baseMacroContext,
     });
@@ -508,6 +511,7 @@ export async function assembleTextCompletionPrompt(input) {
     // ---- Step 2: character-card fields ---------------------------------------------------------
     const fields = await getCharacterCardFields(directories, {
         avatar, groupId, preferCharacterPrompt, preferCharacterJailbreak, personaDescription, chatMetadata,
+        macroContext: baseMacroContext,
     });
 
     // Full macro context, now including the resolved character card (field-name mapping: this
@@ -744,7 +748,7 @@ export async function assembleTextCompletionPrompt(input) {
     // Fold in message-example (EM) world-info entries, mirroring public/script.js ~5715-5729.
     for (const example of worldInfoExamples) {
         if (!example.content || example.content.length === 0) continue;
-        const formattedExample = baseChatReplace(example.content);
+        const formattedExample = baseChatReplace(example.content, macroContext);
         const cleanedExample = parseMesExamplesBlocks(formattedExample, isInstruct, exampleSeparator);
         if (example.position === wi_anchor_position.before) {
             mesExamplesArray.unshift(...cleanedExample);
@@ -772,7 +776,7 @@ export async function assembleTextCompletionPrompt(input) {
         beforeScenarioAnchor: effectiveBeforeScenarioAnchor, afterScenarioAnchor: effectiveAfterScenarioAnchor,
         mesExamplesArray, mesExamplesRawArray, isInstruct, sysPromptEnabled, sysPromptContent, preferCharacterPrompt,
         personaDescriptionPosition, storyStringTemplate, storyStringPosition, storyStringDepth, storyStringRole,
-        instructPreset, contextSettings, stripExamples, mainApi,
+        instructPreset, contextSettings, stripExamples, mainApi, macroContext,
     });
     const { system, combinedStoryString, storyStringInjection } = storyStringResult;
     mesExamplesArray = storyStringResult.mesExamplesArray;
@@ -835,7 +839,7 @@ export async function assembleTextCompletionPrompt(input) {
     // the resolved text is non-empty, matching the general "don't write empty entries" pattern the
     // other three sources above already follow.
     const groupCharacterDepthPrompts = isGroup && hasCharacterOrGroup
-        ? await getGroupCharacterDepthPrompts(directories, groupId, avatar)
+        ? await getGroupCharacterDepthPrompts(directories, groupId, avatar, baseMacroContext)
         : [];
     if (groupCharacterDepthPrompts.length > 0) {
         groupCharacterDepthPrompts.forEach((depthPrompt, index) => {
@@ -892,7 +896,7 @@ export async function assembleTextCompletionPrompt(input) {
 
     const modifyLastPromptLineParams = {
         quiet_prompt, name1, name2, isInstruct, quietToLoud, type, quietName, isImpersonate, promptBias,
-        chat, force_name2, isContinue, isGroup, instructPreset,
+        chat, force_name2, isContinue, isGroup, instructPreset, macroContext,
     };
 
     // examplesString/chatString mirror the client's Generate()-local vars of the same name (used

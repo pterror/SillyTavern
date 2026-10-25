@@ -15,6 +15,7 @@ import { debounce_timeout } from './constants.js';
 import { accountStorage } from './util/AccountStorage.js';
 import { SimpleMutex } from './util/SimpleMutex.js';
 import { assetUrl, fetchAsset } from './asset-url.js';
+import { findExtensionIn } from './util/string-args.js';
 
 export {
     getContext,
@@ -537,12 +538,7 @@ export async function disableExtension(name, reload = true) {
  * @returns {{name: string, enabled: boolean}|null} Object with name and enabled properties, or null if not found
  */
 export function findExtension(name) {
-    const internalExtensionName = extensionNames.find(extName => {
-        return equalsIgnoreCaseAndAccents(extName, name) || equalsIgnoreCaseAndAccents(extName, `third-party/${name}`);
-    });
-    if (!internalExtensionName) return null;
-    const isEnabled = !extension_settings.disabledExtensions.includes(internalExtensionName);
-    return { name: internalExtensionName, enabled: isEnabled };
+    return findExtensionIn({ names: extensionNames, disabled: extension_settings.disabledExtensions }, name);
 }
 
 /**

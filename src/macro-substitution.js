@@ -71,7 +71,7 @@ import { parseTimestamp } from './timestamps.js';
  * @property {Record<string, string>} [outlets] World info outlets' text by key, for {{outlet}}
  * @property {boolean} [isMobile] {{isMobile}}
  * @property {string} [lastGenerationType] {{lastGenerationType}}
- * @property {string[]} [enabledExtensions] Names of the enabled extensions, for {{hasExtension}}
+ * @property {{ names: string[], disabled: string[] }} [extensions] The extensions there are, and those turned off, for {{hasExtension}}
  * @property {Record<string, any>} [instruct] The instruct template, for the instruct macros
  * @property {{ enabled?: boolean, content?: string }} [sysprompt] The system prompt, for {{systemPrompt}}
  * @property {Record<string, any>} [contextTemplate] The context template, for {{chatStart}}/{{exampleSeparator}}
@@ -178,7 +178,7 @@ function buildEnv(content, context) {
             outlet: key => context.outlets?.[key] ?? '',
             isMobile: context.isMobile,
             lastGenerationType: context.lastGenerationType,
-            hasExtension: name => !!context.enabledExtensions?.includes(name),
+            extensions: context.extensions,
             instruct: context.instruct,
             sysprompt: context.sysprompt,
             context: context.contextTemplate,
@@ -206,11 +206,11 @@ export function substituteParams(content, context = {}) {
  * macros (so a card field can't recursively re-trigger itself), for resolving one raw card field
  * before it's placed into a SubstituteParamsContext.characterCard.
  * @param {string} value
- * @param {{name1?: string, name2?: string}} [names]
+ * @param {SubstituteParamsContext} [context] Everything else the macros read.
  * @returns {string}
  */
-export function baseChatReplace(value, { name1, name2 } = {}) {
+export function baseChatReplace(value, context = {}) {
     if (typeof value !== 'string' || value.length === 0) return value;
-    value = substituteParams(value, { name1, name2, replaceCharacterCard: false });
+    value = substituteParams(value, { ...context, replaceCharacterCard: false });
     return value.replace(/\r/g, '');
 }

@@ -146,7 +146,7 @@ export function getStoppingStrings({
         }
     }
 
-    result.push(...getInstructStoppingSequences(instructPreset, contextSettings, { name1, name2 }));
+    result.push(...getInstructStoppingSequences(instructPreset, contextSettings, { name1, name2, macroContext }));
     result.push(...getCustomStoppingStrings(customStoppingStringsParams));
 
     if (singleLine) {

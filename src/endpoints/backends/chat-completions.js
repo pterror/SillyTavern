@@ -2751,6 +2751,7 @@ const SERVER_TOOL_ROUND_LIMIT = 5;
  * @param {boolean} [params.isSwipe]
  * @param {string} [params.userMessageText] The literal text the user typed this turn. Omit for
  * generation types that don't add a new message (continue/swipe).
+ * @param {import('../../macro-facts.js').PageMacroFacts} [params.pageFacts] What only the page knows, for the macros.
  * @param {object} [params.userMessageExtra] Already-SERVER-VALIDATED `extra` (see
  * `sanitizeUserMessageExtra()` in user-message-extra.js) for the new user message being appended -
  * forwarded verbatim to `resolveChatCompletionGenerationInput()`; the caller (route handler below) is
@@ -2809,7 +2810,7 @@ const SERVER_TOOL_ROUND_LIMIT = 5;
  */
 export async function buildRawActionChatCompletionRequest(directories, {
     characterAvatar, groupId, ownerId, chat, nodeId,
-    type = 'normal', isImpersonate = false, isContinue = false, isSwipe = false, userMessageText, userMessageExtra,
+    type = 'normal', isImpersonate = false, isContinue = false, isSwipe = false, userMessageText, userMessageExtra, pageFacts = {},
     clientToolSchemas, stealthClientToolNames, jsonSchema = null, quiet = {},
 } = {}) {
     if (!ownerId) {
@@ -2880,7 +2881,7 @@ export async function buildRawActionChatCompletionRequest(directories, {
     const tokenCountRows = { counts: [], ids: [] };
     const orchestratorInput = await resolveChatCompletionGenerationInput(directories, {
         avatar: characterAvatar, groupId, chatContext: chat, nodeId,
-        type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra, llamaCppProps, tokenCountRows,
+        type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra, pageFacts, llamaCppProps, tokenCountRows,
         quietPrompt: quiet.quietPrompt, quietImage: quiet.quietImage,
         macroExtras: {
             imageInlining: mediaInliningEnabled, videoInlining: mediaInliningEnabled, audioInlining: mediaInliningEnabled,
@@ -4104,7 +4105,7 @@ router.post('/generate', withGenerationStop(async function (request, response) {
             answerSessionOnHeaders(response, chat.session);
             const turn = await generateTurnOf(response, chat, request.body);
             if (!turn) return;
-            const { nodeId, userMessageText, userMessageExtra, quiet } = turn;
+            const { nodeId, userMessageText, userMessageExtra, quiet, pageFacts } = turn;
 
             // Chunk (c), wire step 3: `type: 'tool_result'` is NOT one of the "generation types" this
             // route otherwise dispatches on (normal/impersonate/continue/swipe/regenerate/quiet) - it
@@ -4149,6 +4150,7 @@ router.post('/generate', withGenerationStop(async function (request, response) {
                     type: isToolResult ? 'normal' : type, isImpersonate, isContinue, isSwipe,
                     userMessageText: isToolResult ? undefined : userMessageText,
                     userMessageExtra: isToolResult ? undefined : userMessageExtra,
+                    pageFacts,
                     clientToolSchemas,
                     stealthClientToolNames,
                     jsonSchema,

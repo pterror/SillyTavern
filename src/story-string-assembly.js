@@ -74,6 +74,7 @@ export const persona_description_positions = {
  *  caller-supplied override) - the user-editable Handlebars template.
  * @property {number} [storyStringPosition] One of extension_prompt_types, defaults to IN_PROMPT.
  * @property {import('./instruct-template-format.js').InstructSettings} [instructSettings] Equivalent of power_user.instruct.
+ * @property {import('./macro-substitution.js').SubstituteParamsContext} [macroContext] What the macros read besides the names.
  */
 
 /**
@@ -83,13 +84,13 @@ export const persona_description_positions = {
  * @param {RenderStoryStringOptions} options
  * @returns {string} The rendered story string.
  */
-export function renderStoryString(storyStringParams, { storyStringTemplate, storyStringPosition = extension_prompt_types.IN_PROMPT, instructSettings = {} } = {}) {
+export function renderStoryString(storyStringParams, { storyStringTemplate, storyStringPosition = extension_prompt_types.IN_PROMPT, instructSettings = {}, macroContext = {} } = {}) {
     const compiledTemplate = Handlebars.compile(storyStringTemplate ?? '', { noEscape: true });
 
     let output = compiledTemplate(storyStringParams);
 
     // substitute {{macro}} params that are not defined in the story string
-    output = substituteParams(output, { name1: storyStringParams.user, name2: storyStringParams.char });
+    output = substituteParams(output, { ...macroContext, name1: storyStringParams.user, name2: storyStringParams.char });
 
     // remove leading newlines
     output = output.replace(/^\n+/, '');
@@ -143,6 +144,7 @@ export function renderStoryString(storyStringParams, { storyStringTemplate, stor
  * @property {object} [contextSettings] Equivalent of power_user.context - only story_string_position is read
  *  from it by formatInstructModeStoryString(); name1/name2 are added internally for that call.
  * @property {boolean} [stripExamples] Equivalent of power_user.strip_examples.
+ * @property {import('./macro-substitution.js').SubstituteParamsContext} [macroContext] What the macros read besides the names.
  * @property {string} mainApi Equivalent of main_api - when 'openai', system-prompt resolution and
  *  the in-chat story-string injection are both skipped, matching the client's `main_api !== 'openai'` guards.
  */
@@ -191,6 +193,7 @@ export function assembleStoryString({
     contextSettings = {},
     stripExamples = false,
     mainApi,
+    macroContext = {},
 } = {}) {
     // Prepare the system prompt for Text Completion APIs. Skipped entirely for OpenAI (Chat
     // Completion) - `system` passes through unmodified, matching the client's
@@ -198,9 +201,9 @@ export function assembleStoryString({
     if (mainApi !== 'openai') {
         if (sysPromptEnabled) {
             system = preferCharacterPrompt && system
-                ? substituteParams(system, { original: sysPromptContent ?? '' })
-                : baseChatReplace(sysPromptContent, { name1, name2 });
-            system = isInstruct ? substituteParams(system, { original: sysPromptContent ?? '' }) : system;
+                ? substituteParams(system, { ...macroContext, original: sysPromptContent ?? '' })
+                : baseChatReplace(sysPromptContent, { ...macroContext, name1, name2 });
+            system = isInstruct ? substituteParams(system, { ...macroContext, original: sysPromptContent ?? '' }) : system;
         } else {
             // Nullify if it's not enabled
             system = '';
@@ -226,9 +229,9 @@ export function assembleStoryString({
     };
 
     // Render the story string and combine with injections
-    const storyString = renderStoryString(storyStringParams, { storyStringTemplate, storyStringPosition, instructSettings: instructPreset });
+    const storyString = renderStoryString(storyStringParams, { storyStringTemplate, storyStringPosition, instructSettings: instructPreset, macroContext });
     let combinedStoryString = isInstruct
-        ? formatInstructModeStoryString(storyString, instructPreset, { ...contextSettings, name1, name2 })
+        ? formatInstructModeStoryString(storyString, instructPreset, { ...contextSettings, name1, name2, macroContext })
         : storyString;
 
     // Inject the story string as an in-chat prompt (if needed), instead of setExtensionPrompt()
