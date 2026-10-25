@@ -13,7 +13,7 @@ import {
     substituteParams,
     requestTextareaSend,
     doNavbarIconClick,
-    frontDrawer,
+    restoreDrawerOrder,
     keepOneRightPanelOpen,
     readSavedPanelOpenStates,
     isSwipingAllowed,
@@ -892,7 +892,6 @@ export function initRossMods() {
             { panel: LeftNavPanel, icon: LeftNavDrawerIcon, pin: LPanelPin, lockKey: 'LNavLockOn' },
             { panel: WorldInfo, icon: WIDrawerIcon, pin: WIPanelPin, lockKey: 'WINavLockOn' },
         ];
-        const reopened = [];
         // With stacked drawers off, the two right-side pins act as one; if they differ, pinned wins.
         const rightPanelPinned = ['NavLockOn', 'CharInfoNavLockOn'].some(key => accountStorage.getItem(key) === 'true');
         for (const { panel, icon, pin, lockKey } of pinnable) {
@@ -906,17 +905,11 @@ export function initRossMods() {
             if (wasOpen[panel.id]) {
                 $(panel).addClass('openDrawer').removeClass('closedDrawer');
                 $(icon).addClass('openIcon').removeClass('closedIcon');
-                reopened.push(panel);
             }
         }
-
-        // Fronted .fillRight panels first (the one last in front goes on top of the other), then the rest in list order.
-        const savedFront = accountStorage.getItem('FillRightFront');
-        const fillRightFirst = el => Number(!el.classList.contains('fillRight'));
-        reopened.sort((x, y) => fillRightFirst(x) - fillRightFirst(y) || Number(x.id === savedFront) - Number(y.id === savedFront));
-        reopened.forEach(el => frontDrawer(el.id));
-        keepOneRightPanelOpen();
     }
+    restoreDrawerOrder();
+    keepOneRightPanelOpen();
 
     var chatbarInFocus = false;
     $('#send_textarea').on('focus', function () {

@@ -256,7 +256,7 @@ import { initDynamicStyles } from './scripts/dynamic-styles.js';
 import { initInputMarkdown } from './scripts/input-md-formatting.js';
 import { autosizeTextareas, initAutosizeTextareas } from './scripts/autosize-textareas.js';
 import { AbortReason } from './scripts/util/AbortReason.js';
-import { initDrawerStack, isDrawerCovered, frontmostOf, raiseDrawer, drawerStackChanged, bringChatForward } from './scripts/drawer-stack.js';
+import { initDrawerStack, isDrawerCovered, frontmostOf, raiseDrawer, drawerStackChanged, bringChatForward, restoreLayerOrder } from './scripts/drawer-stack.js';
 import { initSystemPrompts } from './scripts/sysprompt.js';
 import { registerExtensionSlashCommands as initExtensionSlashCommands } from './scripts/extensions-slashcommands.js';
 import { ToolManager } from './scripts/tool-calling.js';
@@ -8863,11 +8863,14 @@ function onCharacterListMaybeShown() {
 export function frontDrawer(contentId) {
     const content = document.getElementById(contentId);
     if (content) raiseDrawer(content);
-    if (content?.classList.contains('fillRight')) {
-        accountStorage.setItem('FillRightFront', contentId);
-    }
     onDrawersChanged();
     autosizeTextareas(document.getElementById(contentId) ?? document);
+}
+
+/** Puts the layers a reload brought back (the chat and the reopened panels) in the order they were last in. */
+export function restoreDrawerOrder() {
+    restoreLayerOrder();
+    onDrawersChanged();
 }
 
 function closeDrawerContent(content) {

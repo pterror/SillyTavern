@@ -197,6 +197,37 @@ test.describe('Drawer front order', () => {
         await expect(page.locator('#char-info-panel')).toBeVisible();
     });
 
+    test('a reload keeps the chat and pinned character management in the order they were in', async ({ page }) => {
+        // Fullscreen, it covers the chat whole.
+        await setFullscreen(page, { id: 'right-nav-panel', fullscreen: true });
+        await page.locator('#rightNavDrawerIcon').click();
+        await setPin(page, '#rm_button_panel_pin', true);
+        await expect(page.locator('#right-nav-panel')).toBeVisible();
+        // Which of the two is hit in the middle of where they overlap.
+        const frontOfOverlap = () => page.evaluate(() => {
+            const a = document.getElementById('sheld').getBoundingClientRect();
+            const b = document.getElementById('right-nav-panel').getBoundingClientRect();
+            const x = (Math.max(a.left, b.left) + Math.min(a.right, b.right)) / 2;
+            const y = (Math.max(a.top, b.top) + Math.min(a.bottom, b.bottom)) / 2;
+            const hit = document.elementFromPoint(x, y);
+            return hit?.closest('#sheld') ? 'chat' : hit?.closest('#right-nav-panel') ? 'character management' : String(hit?.id);
+        });
+        await expect.poll(frontOfOverlap).toBe('character management');
+
+        await page.locator('#chatDrawerIcon').click();
+        await expect.poll(frontOfOverlap).toBe('chat');
+        await page.reload();
+        await awaitAppReady(page);
+        await expect(page.locator('#right-nav-panel')).toHaveClass(/openDrawer/);
+        await expect.poll(frontOfOverlap).toBe('chat');
+
+        await page.locator('#rightNavDrawerIcon').click();
+        await expect.poll(frontOfOverlap).toBe('character management');
+        await page.reload();
+        await awaitAppReady(page);
+        await expect.poll(frontOfOverlap).toBe('character management');
+    });
+
     test('pinned character management closed before reload stays closed', async ({ page }) => {
         await page.locator('#rightNavDrawerIcon').click();
         await setPin(page, '#rm_button_panel_pin', true);
