@@ -121,6 +121,24 @@ test.describe('live editor macros', () => {
         expect(box.x + box.width).toBeLessThanOrEqual(640);
     });
 
+    test('"@" offers who can be mentioned by name, and picking one puts in its macro', async ({ page }) => {
+        await mountWithMacros(page, 'Hi', { person: true });
+        await page.locator('#liveEditorTestHost .cm-content').click();
+        await page.keyboard.press('End');
+        await page.keyboard.type(' @');
+        const list = page.locator('#liveEditorTestHost .cm-tooltip-autocomplete li');
+        await expect(list).toHaveText(['Person user{{user}}', 'Person char{{char}}']);
+        await page.keyboard.type('ch');
+        await expect(list).toHaveText(['Person char{{char}}']);
+        await page.keyboard.press('Enter');
+        await expect(page.locator('#liveEditorTestTextarea')).toHaveValue('Hi {{char}}');
+        await expect(page.locator('#liveEditorTestHost .macro-pill')).toHaveText(['Testchar']);
+        // Inside a word (an address), "@" is only a character.
+        await page.keyboard.type(' a@');
+        await page.waitForTimeout(300);
+        await expect(list).toHaveCount(0);
+    });
+
     test('a double click opens a pill\'s source for editing until the cursor leaves it; Ctrl+Shift+M shows every macro as written', async ({ page }) => {
         await mountWithMacros(page, 'Hello {{char}} there, {{user}}.');
         await page.locator('#liveEditorTestHost .macro-pill').first().dblclick();
