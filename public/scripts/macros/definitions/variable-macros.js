@@ -5,8 +5,6 @@ import { MacroRegistry, MacroCategory, MacroValueType } from '../engine/MacroReg
  * variables (e.g. {{setvar}}, {{getvar}}, {{incvar}}, etc.).
  */
 export function registerVariableMacros() {
-    const ctx = SillyTavern.getContext();
-
     MacroRegistry.registerMacro('setvar', {
         category: MacroCategory.VARIABLE,
         unnamedArgs: [
@@ -24,8 +22,8 @@ export function registerVariableMacros() {
         description: 'Sets a local variable to the given value.',
         returns: '',
         exampleUsage: ['{{setvar::myvar::foo}}', '{{setvar::myintvar::3}}'],
-        handler: ({ unnamedArgs: [name, value] }) => {
-            ctx.variables.local.set(name, value);
+        handler: ({ env, unnamedArgs: [name, value] }) => {
+            env.state.variables.local.set(name, value);
             return '';
         },
     });
@@ -47,8 +45,8 @@ export function registerVariableMacros() {
         description: 'Adds a value to an existing local variable (numeric or string append). If the variable does not exist, it will be created.',
         returns: '',
         exampleUsage: ['{{addvar::mystrvar::foo}}', '{{addvar::myintvar::3}}'],
-        handler: ({ unnamedArgs: [name, value] }) => {
-            ctx.variables.local.add(name, value);
+        handler: ({ env, unnamedArgs: [name, value] }) => {
+            env.state.variables.local.add(name, value);
             return '';
         },
     });
@@ -66,8 +64,8 @@ export function registerVariableMacros() {
         returns: 'The new value of the local variable.',
         returnType: MacroValueType.NUMBER,
         exampleUsage: ['{{incvar::myintvar}}', '{{incvar some-local-int-var}}'],
-        handler: ({ unnamedArgs: [name], normalize }) => {
-            const result = ctx.variables.local.inc(name);
+        handler: ({ env, unnamedArgs: [name], normalize }) => {
+            const result = env.state.variables.local.inc(name);
             return normalize(result);
         },
     });
@@ -85,8 +83,8 @@ export function registerVariableMacros() {
         returns: 'The new value of the local variable.',
         returnType: MacroValueType.NUMBER,
         exampleUsage: ['{{decvar::myintvar}}', '{{decvar some-local-int-var}}'],
-        handler: ({ unnamedArgs: [name], normalize }) => {
-            const result = ctx.variables.local.dec(name);
+        handler: ({ env, unnamedArgs: [name], normalize }) => {
+            const result = env.state.variables.local.dec(name);
             return normalize(result);
         },
     });
@@ -104,8 +102,8 @@ export function registerVariableMacros() {
         returns: 'The value of the local variable.',
         returnType: [MacroValueType.STRING, MacroValueType.NUMBER],
         exampleUsage: ['{{getvar::myvar}}', '{{getvar myintvar}}'],
-        handler: ({ unnamedArgs: [name], normalize }) => {
-            const result = ctx.variables.local.get(name);
+        handler: ({ env, unnamedArgs: [name], normalize }) => {
+            const result = env.state.variables.local.get(name);
             return normalize(result);
         },
     });
@@ -124,8 +122,8 @@ export function registerVariableMacros() {
         returns: '"true" if the variable exists, "false" otherwise.',
         returnType: MacroValueType.STRING,
         exampleUsage: ['{{hasvar::myvar}}', '{{hasvar some-local-var}}'],
-        handler: ({ unnamedArgs: [name] }) => {
-            return ctx.variables.local.has(name) ? 'true' : 'false';
+        handler: ({ env, unnamedArgs: [name] }) => {
+            return env.state.variables.local.has(name) ? 'true' : 'false';
         },
     });
 
@@ -142,8 +140,8 @@ export function registerVariableMacros() {
         description: 'Deletes a local variable.',
         returns: '',
         exampleUsage: ['{{deletevar::myvar}}', '{{deletevar some-local-var}}'],
-        handler: ({ unnamedArgs: [name] }) => {
-            ctx.variables.local.del(name);
+        handler: ({ env, unnamedArgs: [name] }) => {
+            env.state.variables.local.del(name);
             return '';
         },
     });
@@ -171,8 +169,8 @@ export function registerVariableMacros() {
         description: 'Sets a value at a specific key or index in a local object or array. If the variable does not exist, it will be created based on the type of the key.',
         returns: '',
         exampleUsage: ['{{setvarkey::myarray::0::foo}}', '{{setvarkey::myobj::uniquekey::somevalue}}'],
-        handler: ({ unnamedArgs: [name, key, value] }) => {
-            ctx.variables.local.set(name, value, { index: key });
+        handler: ({ env, unnamedArgs: [name, key, value] }) => {
+            env.state.variables.local.set(name, value, { index: key });
             return '';
         },
     });
@@ -196,8 +194,8 @@ export function registerVariableMacros() {
         returns: 'The value at the specified key or index in the local object or array variable.',
         returnType: [MacroValueType.STRING, MacroValueType.NUMBER],
         exampleUsage: ['{{getvarkey::myarray::0}}', '{{getvarkey::myobj::uniquekey}}'],
-        handler: ({ unnamedArgs: [name, key], normalize }) => {
-            const result = ctx.variables.local.get(name, { index: key });
+        handler: ({ env, unnamedArgs: [name, key], normalize }) => {
+            const result = env.state.variables.local.get(name, { index: key });
             return normalize(result);
         },
     });
@@ -219,8 +217,8 @@ export function registerVariableMacros() {
         description: 'Sets a global variable to the given value.',
         returns: '',
         exampleUsage: ['{{setglobalvar::myvar::foo}}', '{{setglobalvar::myintvar::3}}'],
-        handler: ({ unnamedArgs: [name, value] }) => {
-            ctx.variables.global.set(name, value);
+        handler: ({ env, unnamedArgs: [name, value] }) => {
+            env.state.variables.global.set(name, value);
             return '';
         },
     });
@@ -242,8 +240,8 @@ export function registerVariableMacros() {
         description: 'Adds a value to an existing global variable (numeric or string append). If the variable does not exist, it will be created.',
         returns: '',
         exampleUsage: ['{{addglobalvar::mystrvar::foo}}', '{{addglobalvar::myintvar::3}}'],
-        handler: ({ unnamedArgs: [name, value] }) => {
-            ctx.variables.global.add(name, value);
+        handler: ({ env, unnamedArgs: [name, value] }) => {
+            env.state.variables.global.add(name, value);
             return '';
         },
     });
@@ -261,8 +259,8 @@ export function registerVariableMacros() {
         returns: 'The new value of the global variable.',
         returnType: MacroValueType.NUMBER,
         exampleUsage: ['{{incglobalvar::myintvar}}', '{{incglobalvar some-global-int-var}}'],
-        handler: ({ unnamedArgs: [name], normalize }) => {
-            const result = ctx.variables.global.inc(name);
+        handler: ({ env, unnamedArgs: [name], normalize }) => {
+            const result = env.state.variables.global.inc(name);
             return normalize(result);
         },
     });
@@ -280,8 +278,8 @@ export function registerVariableMacros() {
         returns: 'The new value of the global variable.',
         returnType: MacroValueType.NUMBER,
         exampleUsage: ['{{decglobalvar::myintvar}}', '{{decglobalvar some-global-int-var}}'],
-        handler: ({ unnamedArgs: [name], normalize }) => {
-            const result = ctx.variables.global.dec(name);
+        handler: ({ env, unnamedArgs: [name], normalize }) => {
+            const result = env.state.variables.global.dec(name);
             return normalize(result);
         },
     });
@@ -299,8 +297,8 @@ export function registerVariableMacros() {
         returns: 'The value of the global variable.',
         returnType: [MacroValueType.STRING, MacroValueType.NUMBER],
         exampleUsage: ['{{getglobalvar::myvar}}', '{{getglobalvar myintvar}}'],
-        handler: ({ unnamedArgs: [name], normalize }) => {
-            const result = ctx.variables.global.get(name);
+        handler: ({ env, unnamedArgs: [name], normalize }) => {
+            const result = env.state.variables.global.get(name);
             return normalize(result);
         },
     });
@@ -319,8 +317,8 @@ export function registerVariableMacros() {
         returns: '"true" if the variable exists, "false" otherwise.',
         returnType: MacroValueType.STRING,
         exampleUsage: ['{{hasglobalvar::myvar}}', '{{hasglobalvar some-global-var}}'],
-        handler: ({ unnamedArgs: [name] }) => {
-            return ctx.variables.global.has(name) ? 'true' : 'false';
+        handler: ({ env, unnamedArgs: [name] }) => {
+            return env.state.variables.global.has(name) ? 'true' : 'false';
         },
     });
 
@@ -337,8 +335,8 @@ export function registerVariableMacros() {
         description: 'Deletes a global variable.',
         returns: '',
         exampleUsage: ['{{deleteglobalvar::myvar}}', '{{deleteglobalvar some-global-var}}'],
-        handler: ({ unnamedArgs: [name] }) => {
-            ctx.variables.global.del(name);
+        handler: ({ env, unnamedArgs: [name] }) => {
+            env.state.variables.global.del(name);
             return '';
         },
     });
@@ -366,8 +364,8 @@ export function registerVariableMacros() {
         description: 'Sets a value at a specific key or index in a global object or array variable. If the variable does not exist, it will be created based on the type of the key.',
         returns: '',
         exampleUsage: ['{{setglobalvarkey::myarray::0::foo}}', '{{setglobalvarkey::myobj::uniquekey::bar}}'],
-        handler: ({ unnamedArgs: [name, key, value] }) => {
-            ctx.variables.global.set(name, value, { index: key });
+        handler: ({ env, unnamedArgs: [name, key, value] }) => {
+            env.state.variables.global.set(name, value, { index: key });
             return '';
         },
     });
@@ -391,8 +389,8 @@ export function registerVariableMacros() {
         returns: 'The value at the specified key or index in the global object or array variable.',
         returnType: [MacroValueType.STRING, MacroValueType.NUMBER],
         exampleUsage: ['{{getglobalvarkey::myarray::0}}', '{{getglobalvarkey::myobj::uniquekey}}'],
-        handler: ({ unnamedArgs: [name, key], normalize }) => {
-            const result = ctx.variables.global.get(name, { index: key });
+        handler: ({ env, unnamedArgs: [name, key], normalize }) => {
+            const result = env.state.variables.global.get(name, { index: key });
             return normalize(result);
         },
     });

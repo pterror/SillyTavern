@@ -5,7 +5,7 @@
 
 import { MACRO_IDENTIFIER_PATTERN } from './MacroLexer.js';
 
-import { isFalseBoolean, isTrueBoolean } from '../../utils.js';
+import { isFalseBoolean, isTrueBoolean } from '../../util/string-args.js';
 import { MacroEngine } from './MacroEngine.js';
 import { createMacroRuntimeError, logMacroRegisterError, logMacroRegisterWarning, logMacroRuntimeWarning } from './MacroDiagnostics.js';
 

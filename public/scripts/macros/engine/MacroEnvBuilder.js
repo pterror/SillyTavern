@@ -1,12 +1,82 @@
-import { name2, getCharacterCardFieldsLazy, getGeneratingModel } from '../../../script.js';
+import {
+    name2, getCharacterCardFieldsLazy, getGeneratingModel, getCurrentChatId, getMaxPromptTokens, getMaxContextTokens,
+    getMaxResponseTokens, extension_prompts, parseMesExamples,
+} from '../../../script.js';
 import { name1 } from '../../app-selection-state.js';
 import { charactersStore } from '../../character-store.js';
 import { groupsStore, selected_group } from '../../../scripts/group-chats.js';
+import { chat, chat_metadata } from '../../chat-state.js';
+import { main_api } from '../../generation-params.js';
+import { power_user } from '../../power-user.js';
+import { formatInstructModeExamples } from '../../instruct-mode.js';
+import { isMobile } from '../../RossAscends-mods.js';
+import { findExtension } from '../../extensions.js';
+import { localVariables, globalVariables } from '../../variables.js';
+import { inject_ids } from '../../constants.js';
+import { textgenerationwebui_banned_in_macros } from '../../textgen-settings.js';
+import { eventSource, event_types } from '../../events.js';
 import { logMacroGeneralError } from './MacroDiagnostics.js';
-import { getStringHash } from '/scripts/utils.js';
+import { getStringHash } from '../../hash-utils.js';
 /**
- * Constructs the MacroEnv object passed to macro handlers, independent of the legacy regex macro system.
+ * Constructs the MacroEnv object passed to macro handlers on the page, from the page's state. The server builds its
+ * own from a request's (src/macro-substitution.js).
  */
+
+/** The type of the last generation queued, for {{lastGenerationType}}; forgotten when the chat changes. */
+let lastGenerationType = '';
+eventSource.on(event_types.GENERATION_STARTED, (type, _params, isDryRun) => {
+    if (!isDryRun) lastGenerationType = type || 'normal';
+});
+eventSource.on(event_types.CHAT_CHANGED, () => {
+    lastGenerationType = '';
+});
+
+/**
+ * The dialogue examples as the prompt has them: formatted for instruct mode when it is on.
+ * @param {string} raw
+ * @param {string} user
+ * @param {string} char
+ */
+function formatMesExamples(raw, user, char) {
+    if (!raw) return '';
+    const isInstruct = !!power_user?.instruct?.enabled && main_api !== 'openai';
+    const parsed = parseMesExamples(raw, isInstruct);
+    if (!Array.isArray(parsed) || parsed.length === 0) return '';
+    if (!isInstruct) return parsed.join('');
+    const formatted = formatInstructModeExamples(parsed, user, char);
+    return Array.isArray(formatted) ? formatted.join('') : '';
+}
+
+/**
+ * What the macros read of the page, each read when a macro reads it.
+ * @returns {import('./MacroEnv.types.js').MacroEnvState}
+ */
+function pageState() {
+    return {
+        get chat() { return chat; },
+        get chatMetadata() { return chat_metadata; },
+        get chatId() { return getCurrentChatId(); },
+        variables: { local: localVariables, global: globalVariables },
+        get input() { return /** @type {HTMLTextAreaElement} */ (document.querySelector('#send_textarea'))?.value ?? ''; },
+        get firstDisplayedMessageId() {
+            const mesId = Number(document.querySelector('#chat .mes')?.getAttribute('mesid'));
+            return !Number.isNaN(mesId) && mesId >= 0 ? mesId : null;
+        },
+        get maxPromptTokens() { return getMaxPromptTokens(); },
+        get maxContextTokens() { return getMaxContextTokens(); },
+        get maxResponseTokens() { return getMaxResponseTokens(); },
+        get mainApi() { return main_api; },
+        get bannedWords() { return main_api === 'textgenerationwebui' ? textgenerationwebui_banned_in_macros : undefined; },
+        outlet: key => extension_prompts[inject_ids.CUSTOM_WI_OUTLET(key)]?.value ?? '',
+        get isMobile() { return isMobile(); },
+        get lastGenerationType() { return lastGenerationType; },
+        hasExtension: name => !!findExtension(name)?.enabled,
+        get instruct() { return power_user.instruct; },
+        get sysprompt() { return power_user.sysprompt; },
+        get context() { return power_user.context; },
+        get preferCharacterPrompt() { return !!power_user.prefer_character_prompt; },
+    };
+}
 
 /** @typedef {import('./MacroEnv.types.js').MacroEnv} MacroEnv */
 
@@ -91,6 +161,7 @@ class MacroEnvBuilder {
             character: {},
             system: { model: '' },
             functions: { postProcess: (x) => x },
+            state: pageState(),
             dynamicMacros: {},
             extra: {},
         };
@@ -106,6 +177,7 @@ class MacroEnvBuilder {
                     ['scenario', 'scenario'],
                     ['persona', 'persona'],
                     ['mesExamplesRaw', 'mesExamples'],
+                    ['mesExamples', 'mesExamples'],
                     ['version', 'version'],
                     ['charDepthPrompt', 'charDepthPrompt'],
                     ['creatorNotes', 'creatorNotes'],
@@ -119,6 +191,9 @@ class MacroEnvBuilder {
                             // alternateGreetings should default to [] instead of ''
                             if (envKey === 'alternateGreetings') {
                                 return Array.isArray(value) ? value : [];
+                            }
+                            if (envKey === 'mesExamples') {
+                                return formatMesExamples(value || '', env.names.user, env.names.char);
                             }
                             return value || '';
                         },

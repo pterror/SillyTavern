@@ -1,10 +1,6 @@
-import { seedrandom, droll } from '../../../lib.js';
-import { getMaxPromptTokens, getMaxContextTokens, getMaxResponseTokens, extension_prompts, getCurrentChatId } from '../../../script.js';
-import { main_api } from '../../generation-params.js';
-import { chat_metadata } from '../../chat-state.js';
-import { getStringHash, isFalseBoolean } from '../../utils.js';
-import { textgenerationwebui_banned_in_macros } from '../../textgen-settings.js';
-import { inject_ids } from '../../constants.js';
+import { seedrandom, droll } from '../engine/MacroLibraries.js';
+import { getStringHash } from '../../hash-utils.js';
+import { isFalseBoolean } from '../../util/string-args.js';
 import { MacroRegistry, MacroCategory, MacroValueType } from '../engine/MacroRegistry.js';
 import { MACRO_VARIABLE_SHORTHAND_PATTERN } from '../engine/MacroLexer.js';
 import { MacroParser } from '../engine/MacroParser.js';
@@ -188,7 +184,7 @@ export function registerCoreMacros() {
         category: MacroCategory.UTILITY,
         description: 'Current text from the send textarea.',
         returns: 'Current text from the send textarea.',
-        handler: () => (/** @type {HTMLTextAreaElement} */(document.querySelector('#send_textarea')))?.value ?? '',
+        handler: ({ env }) => env.state.input ?? '',
     });
 
     MacroRegistry.registerMacro('maxPrompt', {
@@ -197,7 +193,7 @@ export function registerCoreMacros() {
         description: 'Maximum prompt context size.',
         returns: 'Maximum prompt context size.',
         returnType: MacroValueType.INTEGER,
-        handler: () => String(getMaxPromptTokens()),
+        handler: ({ env }) => String(env.state.maxPromptTokens ?? ''),
     });
 
     MacroRegistry.registerMacro('maxContext', {
@@ -206,7 +202,7 @@ export function registerCoreMacros() {
         description: 'Maximum context token limit.',
         returns: 'Maximum context token limit.',
         returnType: MacroValueType.INTEGER,
-        handler: () => String(getMaxContextTokens()),
+        handler: ({ env }) => String(env.state.maxContextTokens ?? ''),
     });
 
     MacroRegistry.registerMacro('maxResponse', {
@@ -215,7 +211,7 @@ export function registerCoreMacros() {
         description: 'Maximum response token limit.',
         returns: 'Maximum response token limit.',
         returnType: MacroValueType.INTEGER,
-        handler: () => String(getMaxResponseTokens()),
+        handler: ({ env }) => String(env.state.maxResponseTokens ?? ''),
     });
 
     MacroRegistry.registerMacro('reverse', {
@@ -323,11 +319,11 @@ export function registerCoreMacros() {
             }
 
             // Keep in sync with registerTestablePick() if this hashing logic changes
-            const chatIdHash = getChatIdHash();
+            const chatIdHash = getChatIdHash(env);
             const rawContentHash = env.contentHash;
             // globalOffset differentiates otherwise-identical macros at different positions in the document
             const offset = globalOffset;
-            const rerollSeed = chat_metadata.pick_reroll_seed || null;
+            const rerollSeed = env.state.chatMetadata?.pick_reroll_seed || null;
 
             const combinedSeedString = [chatIdHash, rawContentHash, offset, rerollSeed].filter(it => it !== null).join('-');
             const finalSeed = getStringHash(combinedSeedString);
@@ -362,12 +358,9 @@ export function registerCoreMacros() {
         description: 'Bans a word for Text Completion backend. (Strips quotes surrounding the banned word, if present)',
         returns: '',
         exampleUsage: ['{{banned::delve}}'],
-        handler: ({ unnamedArgs: [bannedWord] }) => {
-            bannedWord = bannedWord.replace(/^"|"$/g, '');
-            if (main_api === 'textgenerationwebui') {
-                console.log('Found banned word in macros: ' + bannedWord);
-                textgenerationwebui_banned_in_macros.push(bannedWord);
-            }
+        // The env has where the words go only when the request bans words (text completion).
+        handler: ({ unnamedArgs: [bannedWord], env }) => {
+            env.state.bannedWords?.push(bannedWord.replace(/^"|"$/g, ''));
             return '';
         },
     });
@@ -385,22 +378,23 @@ export function registerCoreMacros() {
         description: 'Returns the world info outlet prompt for a given outlet key.',
         returns: 'World info outlet prompt.',
         exampleUsage: ['{{outlet::character-achievements}}'],
-        handler: ({ unnamedArgs: [outlet] }) => {
+        handler: ({ unnamedArgs: [outlet], env }) => {
             if (!outlet) return '';
-            const value = extension_prompts[inject_ids.CUSTOM_WI_OUTLET(outlet)]?.value;
-            return value || '';
+            return env.state.outlet?.(outlet) || '';
         },
     });
 }
 
-function getChatIdHash() {
-    const cachedIdHash = chat_metadata.chat_id_hash;
+/** @param {import('../engine/MacroEnv.types.js').MacroEnv} env */
+function getChatIdHash(env) {
+    const metadata = env.state.chatMetadata;
+    const cachedIdHash = metadata?.chat_id_hash;
     if (typeof cachedIdHash === 'number') {
         return cachedIdHash;
     }
 
-    const chatId = chat_metadata.main_chat ?? getCurrentChatId();
+    const chatId = metadata?.main_chat ?? env.state.chatId ?? '';
     const chatIdHash = getStringHash(chatId);
-    chat_metadata.chat_id_hash = chatIdHash;
+    if (metadata) metadata.chat_id_hash = chatIdHash;
     return chatIdHash;
 }
