@@ -25,7 +25,7 @@ export function initChatLiveEditor(chatEditorDeps) {
     deps = chatEditorDeps;
 }
 
-/** @type {Map<HTMLTextAreaElement, { editor: import('./live-editor/mount.js').LiveEditor | null, ended: boolean, toolbarLift?: ResizeObserver | null }>} */
+/** @type {Map<HTMLTextAreaElement, { editor: import('./live-editor/mount.js').LiveEditor | null, ended: boolean }>} */
 const editors = new Map();
 
 /**
@@ -65,7 +65,7 @@ function chatEditorOptions(chatDeps, target) {
         // chat box keeps its own text look.
         contentClass: isReasoning || isChatBox ? '' : 'mes_text',
         // Without chat's text class, the editor's own classes give its quotes chat's look.
-        editorClass: isChatBox ? 'live-toolbar-when-focused live-chat-text' : isReasoning ? 'live-chat-text live-reasoning-text' : '',
+        editorClass: isChatBox ? 'live-chat-text' : isReasoning ? 'live-chat-text live-reasoning-text' : '',
         // {{char}} is the speaker only where a character speaks.
         macros: { evaluate: text => (fillsMacros() ? evaluateSafeMacro(text, substituteParams, isUser ? {} : { name2Override: nameNow() }) : null) },
         formatting: { uploadImage },
@@ -109,7 +109,6 @@ export function unmountChatEditor(textarea) {
     const holder = editors.get(textarea);
     if (!holder) return;
     holder.ended = true;
-    holder.toolbarLift?.disconnect();
     holder.editor?.destroy();
     editors.delete(textarea);
     // The edit box goes after this; the stack looks again on the next frame.
@@ -121,25 +120,6 @@ export function takeDetachedEditorsAway() {
     for (const textarea of [...editors.keys()]) {
         if (!textarea.isConnected) unmountChatEditor(textarea);
     }
-}
-
-/**
- * The chat box's toolbar goes over the chat, above the whole send form: extensions put their bars (quick replies and
- * others) at the top of the form, above the chat box. The toolbar is placed from the editor, so the form's top is
- * given to it as how far above the editor's top it is, kept as bars come and go.
- * @param {HTMLElement} editorDom
- * @returns {ResizeObserver | null}
- */
-function liftToolbarOverSendForm(editorDom) {
-    const form = editorDom.closest('#send_form');
-    if (!form) return null;
-    // The toolbar is placed from the editor's padding box, inside its border.
-    const lift = () => editorDom.style.setProperty('--live-toolbar-lift', `${Math.max(0, editorDom.getBoundingClientRect().top + editorDom.clientTop - form.getBoundingClientRect().top)}px`);
-    const observer = new ResizeObserver(lift);
-    observer.observe(form);
-    observer.observe(editorDom);
-    lift();
-    return observer;
 }
 
 /**
@@ -168,7 +148,7 @@ export function initChatBoxEditor(textarea) {
                         messageId: deps.nextMessageId,
                         isChatBox: true,
                     }));
-                    editors.set(textarea, { editor, ended: false, toolbarLift: liftToolbarOverSendForm(editor.view.dom) });
+                    editors.set(textarea, { editor, ended: false });
                 } catch (error) {
                     console.error('The editor could not be put on the chat box; it stays a plain text box', error);
                 }

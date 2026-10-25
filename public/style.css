@@ -7455,25 +7455,6 @@ textarea.live-editor-textarea {
     vertical-align: middle;
 }
 
-/* The chat box's toolbar shows only while the user is in the chat box, over the chat above the send form (lifted past
- * the bars extensions put above the chat box, chat-live-editor.js): taking room in the box would move the text when
- * focus comes in, between a click's press and its release. */
-.cm-editor.live-editor.live-toolbar-when-focused:not(:focus-within) .cm-panels-top {
-    display: none;
-}
-
-.cm-editor.live-editor.live-toolbar-when-focused .cm-panels-top {
-    position: absolute;
-    top: auto;
-    bottom: calc(100% + var(--live-toolbar-lift, 0px));
-    left: 0;
-    right: 0;
-    border: 1px solid var(--SmartThemeBorderColor);
-    border-radius: 10px 10px 0 0;
-    background-color: var(--SmartThemeBlurTintColor);
-    backdrop-filter: blur(var(--SmartThemeBlurStrength));
-}
-
 .cm-editor.live-editor .cm-panels-top {
     background: transparent;
     border-bottom: 1px solid var(--SmartThemeBorderColor);
