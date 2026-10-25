@@ -1,6 +1,5 @@
 import { substituteParams } from '../../script.js';
-import { power_user } from '../power-user.js';
-import { delay, escapeRegex, uuidv4 } from '../utils.js';
+import { delay, uuidv4 } from '../utils.js';
 import { SlashCommand } from './SlashCommand.js';
 import { SlashCommandAbortController } from './SlashCommandAbortController.js';
 import { SlashCommandBreak } from './SlashCommandBreak.js';
@@ -149,67 +148,14 @@ export class SlashCommandClosure {
      * @returns {string|SlashCommandClosure|(string|SlashCommandClosure)[]}
      */
     substituteParams(text, scope = null) {
-        let isList = false;
-        let listValues = [];
         scope = scope ?? this.scope;
-        const escapeMacro = (it, isAnchored = false) => {
-            const regexText = escapeRegex(it.key.replace(/\*/g, '~~~WILDCARD~~~'))
-                .replaceAll('~~~WILDCARD~~~', '(?:(?:(?!(?:::|}})).)*)')
-            ;
-            if (isAnchored) {
-                return `^${regexText}$`;
-            }
-            return regexText;
-        };
         const macroList = scope.macroList.toSorted((a, b) => {
             if (a.key.includes('*') && !b.key.includes('*')) return 1;
             if (!a.key.includes('*') && b.key.includes('*')) return -1;
             if (a.key.includes('*') && b.key.includes('*')) return b.key.indexOf('*') - a.key.indexOf('*');
             return 0;
         });
-        if (power_user.experimental_macro_engine) {
-            return this.substituteWithMacroEngine(text, scope, macroList);
-        }
-        const macros = macroList.map(it => escapeMacro(it)).join('|');
-        const re = new RegExp(`(?<pipe>{{pipe}})|(?:{{var::(?<var>[^\\s]+?)(?:::(?<varIndex>(?!}}).+))?}})|(?:{{(?<macro>${macros})}})`);
-        let done = '';
-        let remaining = text;
-        while (re.test(remaining)) {
-            const match = re.exec(remaining);
-            const before = substituteParams(remaining.slice(0, match.index));
-            const after = remaining.slice(match.index + match[0].length);
-            const replacer = match.groups.pipe ? scope.pipe : match.groups.var ? scope.getVariable(match.groups.var, match.groups.index) : macroList.find(it => it.key == match.groups.macro || new RegExp(escapeMacro(it, true)).test(match.groups.macro))?.value;
-            if (replacer instanceof SlashCommandClosure) {
-                replacer.abortController = this.abortController;
-                replacer.breakController = this.breakController;
-                replacer.scope.parent = this.scope;
-                if (this.debugController && !replacer.debugController) {
-                    replacer.debugController = this.debugController;
-                }
-                isList = true;
-                if (match.index > 0) {
-                    listValues.push(before);
-                }
-                listValues.push(replacer);
-                if (match.index + match[0].length + 1 < remaining.length) {
-                    const rest = this.substituteParams(after, scope);
-                    listValues.push(...(Array.isArray(rest) ? rest : [rest]));
-                }
-                break;
-            } else {
-                done = `${done}${before}${replacer}`;
-                remaining = after;
-            }
-        }
-        if (!isList) {
-            text = `${done}${substituteParams(remaining)}`;
-        }
-
-        if (isList) {
-            if (listValues.length > 1) return listValues;
-            return listValues[0];
-        }
-        return text;
+        return this.substituteWithMacroEngine(text, scope, macroList);
     }
 
     getCopy() {

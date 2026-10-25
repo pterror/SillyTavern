@@ -8,9 +8,7 @@ test.describe('MacroSlashCommands', () => {
         test('should bypass REPLACE_GETVAR', async ({ page }) => {
             const output = await page.evaluate(async () => {
                 const { executeSlashCommandsWithOptions } = await import('./scripts/slash-commands.js');
-                const { power_user } = await import('./scripts/power-user.js');
 
-                power_user.experimental_macro_engine = true;
 
                 return (await executeSlashCommandsWithOptions('/parser-flag REPLACE_GETVAR || /setvar key=x \\{\\{lastMessageId}} || /pass {{getvar::x}}')).pipe;
             });
@@ -23,9 +21,7 @@ test.describe('MacroSlashCommands', () => {
         test('should support {{pipe}} macro', async ({ page }) => {
             const output = await page.evaluate(async () => {
                 const { executeSlashCommandsWithOptions } = await import('./scripts/slash-commands.js');
-                const { power_user } = await import('./scripts/power-user.js');
 
-                power_user.experimental_macro_engine = true;
 
                 return (await executeSlashCommandsWithOptions('/pass Hello World || /pass {{pipe}}')).pipe;
             });
@@ -38,9 +34,7 @@ test.describe('MacroSlashCommands', () => {
         test('should support {{var::key}} macro', async ({ page }) => {
             const output = await page.evaluate(async () => {
                 const { executeSlashCommandsWithOptions } = await import('./scripts/slash-commands.js');
-                const { power_user } = await import('./scripts/power-user.js');
 
-                power_user.experimental_macro_engine = true;
 
                 return (await executeSlashCommandsWithOptions('/let key=greeting Hello || /pass {{var::greeting}}')).pipe;
             });
@@ -51,9 +45,7 @@ test.describe('MacroSlashCommands', () => {
         test('should support {{var::key::index}} macro', async ({ page }) => {
             const output = await page.evaluate(async () => {
                 const { executeSlashCommandsWithOptions } = await import('./scripts/slash-commands.js');
-                const { power_user } = await import('./scripts/power-user.js');
 
-                power_user.experimental_macro_engine = true;
 
                 return (await executeSlashCommandsWithOptions('/let key=list ["item1","item2","item3"] || /pass {{var::list::1}}')).pipe;
             });
@@ -64,9 +56,7 @@ test.describe('MacroSlashCommands', () => {
         test('should not fail on unknown variable keys', async ({ page }) => {
             const output = await page.evaluate(async () => {
                 const { executeSlashCommandsWithOptions } = await import('./scripts/slash-commands.js');
-                const { power_user } = await import('./scripts/power-user.js');
 
-                power_user.experimental_macro_engine = true;
                 return (await executeSlashCommandsWithOptions('/pass {{var::unknownKey}}')).pipe;
             });
 
@@ -76,9 +66,7 @@ test.describe('MacroSlashCommands', () => {
         test('should not fail on out-of-bounds variable index', async ({ page }) => {
             const output = await page.evaluate(async () => {
                 const { executeSlashCommandsWithOptions } = await import('./scripts/slash-commands.js');
-                const { power_user } = await import('./scripts/power-user.js');
 
-                power_user.experimental_macro_engine = true;
 
                 return (await executeSlashCommandsWithOptions('/let key=test {"key":"value"} || /pass {{var::test::error}}')).pipe;
             });
@@ -91,9 +79,7 @@ test.describe('MacroSlashCommands', () => {
         test('should support {{arg}} macro with plain value', async ({ page }) => {
             const output = await page.evaluate(async () => {
                 const { executeSlashCommandsWithOptions } = await import('./scripts/slash-commands.js');
-                const { power_user } = await import('./scripts/power-user.js');
 
-                power_user.experimental_macro_engine = true;
 
                 return (await executeSlashCommandsWithOptions('/qr-arg hello world || /pass {{arg::hello}}')).pipe;
             });
@@ -104,9 +90,7 @@ test.describe('MacroSlashCommands', () => {
         test('should support {{arg}} macro with closure value', async ({ page }) => {
             const output = await page.evaluate(async () => {
                 const { executeSlashCommandsWithOptions } = await import('./scripts/slash-commands.js');
-                const { power_user } = await import('./scripts/power-user.js');
 
-                power_user.experimental_macro_engine = true;
 
                 return (await executeSlashCommandsWithOptions('/qr-arg x {: /echo test :} || /echo {{arg::x}}')).pipe;
             });
@@ -117,9 +101,7 @@ test.describe('MacroSlashCommands', () => {
         test('should support mixed type {{arg}} macro values', async ({ page }) => {
             const output = await page.evaluate(async () => {
                 const { executeSlashCommandsWithOptions } = await import('./scripts/slash-commands.js');
-                const { power_user } = await import('./scripts/power-user.js');
 
-                power_user.experimental_macro_engine = true;
 
                 return (await executeSlashCommandsWithOptions('/qr-arg a simple || /qr-arg b {: /echo closure :} || /echo {{arg::a}} and {{arg::b}}')).pipe;
             });
@@ -130,9 +112,7 @@ test.describe('MacroSlashCommands', () => {
         test('should support wildcard {{arg}} macro', async ({ page }) => {
             const output = await page.evaluate(async () => {
                 const { executeSlashCommandsWithOptions } = await import('./scripts/slash-commands.js');
-                const { power_user } = await import('./scripts/power-user.js');
 
-                power_user.experimental_macro_engine = true;
 
                 return (await executeSlashCommandsWithOptions('/qr-arg * wildcard || /pass {{arg::any}}')).pipe;
             });
@@ -145,9 +125,7 @@ test.describe('MacroSlashCommands', () => {
         test('should support {{timesIndex}} in /times command', async ({ page }) => {
             const output = await page.evaluate(async () => {
                 const { executeSlashCommandsWithOptions } = await import('./scripts/slash-commands.js');
-                const { power_user } = await import('./scripts/power-user.js');
 
-                power_user.experimental_macro_engine = true;
 
                 return (await executeSlashCommandsWithOptions('/times 1 {: /pass {{timesIndex}} :}')).pipe;
             });
@@ -159,9 +137,7 @@ test.describe('MacroSlashCommands', () => {
             const output = await page.evaluate(async () => {
                 const { executeSlashCommandsWithOptions } = await import('./scripts/slash-commands.js');
                 const { SlashCommandScope } = await import('./scripts/slash-commands/SlashCommandScope.js');
-                const { power_user } = await import('./scripts/power-user.js');
 
-                power_user.experimental_macro_engine = true;
 
                 // Create a custom scope with a macro
                 const customScope = new SlashCommandScope(null);

@@ -145,7 +145,7 @@ export class SlashCommandParser {
         // add dummy commands for help strings / autocomplete
         if (!Object.keys(this.commands).includes('parser-flag')) {
             const help = {};
-            help[PARSER_FLAG.REPLACE_GETVAR] = 'Replace all {{getvar::}} and {{getglobalvar::}} macros with scoped variables to avoid double macro substitution.';
+            help[PARSER_FLAG.REPLACE_GETVAR] = 'Has no effect: the macro engine never substitutes macros in a variable\'s value.';
             help[PARSER_FLAG.STRICT_ESCAPING] = 'Allows to escape all delimiters with backslash, and allows escaping of backslashes.';
             SlashCommandParser.addCommandObjectUnsafe(SlashCommand.fromProps({ name: 'parser-flag',
                 unnamedArgumentList: [
@@ -642,66 +642,6 @@ export class SlashCommandParser {
             }
             return false;
         }
-    }
-
-    replaceGetvar(value) {
-        // Not needed with the new parser.
-        if (power_user.experimental_macro_engine) {
-            return value;
-        }
-        return value.replace(/{{(get(?:global)?var)::([^}]+)}}/gi, (match, cmd, name, idx) => {
-            name = name.trim();
-            cmd = cmd.toLowerCase();
-            const startIdx = this.index - value.length + idx;
-            const endIdx = this.index - value.length + idx + match.length;
-            // store pipe
-            const pipeName = `_PARSER_PIPE_${uuidv4()}`;
-            const storePipe = new SlashCommandExecutor(startIdx); {
-                storePipe.end = endIdx;
-                storePipe.command = this.commands.let;
-                storePipe.name = 'let';
-                const nameAss = new SlashCommandUnnamedArgumentAssignment();
-                nameAss.value = pipeName;
-                const valAss = new SlashCommandUnnamedArgumentAssignment();
-                valAss.value = '{{pipe}}';
-                storePipe.unnamedArgumentList = [nameAss, valAss];
-                this.closure.executorList.push(storePipe);
-            }
-            // getvar / getglobalvar
-            const getvar = new SlashCommandExecutor(startIdx); {
-                getvar.end = endIdx;
-                getvar.command = this.commands[cmd];
-                getvar.name = cmd;
-                const nameAss = new SlashCommandUnnamedArgumentAssignment();
-                nameAss.value = name;
-                getvar.unnamedArgumentList = [nameAss];
-                this.closure.executorList.push(getvar);
-            }
-            // set to temp scoped var
-            const varName = `_PARSER_VAR_${uuidv4()}`;
-            const setvar = new SlashCommandExecutor(startIdx); {
-                setvar.end = endIdx;
-                setvar.command = this.commands.let;
-                setvar.name = 'let';
-                const nameAss = new SlashCommandUnnamedArgumentAssignment();
-                nameAss.value = varName;
-                const valAss = new SlashCommandUnnamedArgumentAssignment();
-                valAss.value = '{{pipe}}';
-                setvar.unnamedArgumentList = [nameAss, valAss];
-                this.closure.executorList.push(setvar);
-            }
-            // return pipe
-            const returnPipe = new SlashCommandExecutor(startIdx); {
-                returnPipe.end = endIdx;
-                returnPipe.command = this.commands.return;
-                returnPipe.name = 'return';
-                const varAss = new SlashCommandUnnamedArgumentAssignment();
-                varAss.value = `{{var::${pipeName}}}`;
-                returnPipe.unnamedArgumentList = [varAss];
-                this.closure.executorList.push(returnPipe);
-            }
-            return `{{var::${varName}}}`;
-        });
     }
 
 
@@ -1222,9 +1162,6 @@ export class SlashCommandParser {
         }
         this.indexMacros(this.index - value.length, value);
         value = value.trim();
-        if (this.flags[PARSER_FLAG.REPLACE_GETVAR]) {
-            value = this.replaceGetvar(value);
-        }
         assignment.value = value;
         return [assignment];
     }
@@ -1248,9 +1185,6 @@ export class SlashCommandParser {
         let value = '';
         while (!this.testQuotedValueEnd()) value += this.take(); // take all chars until closing quote
         this.take(); // discard closing quote
-        if (this.flags[PARSER_FLAG.REPLACE_GETVAR]) {
-            value = this.replaceGetvar(value);
-        }
         this.indexMacros(this.index - value.length, value);
         return value;
     }
@@ -1266,9 +1200,6 @@ export class SlashCommandParser {
         let value = this.take(); // take the already tested opening bracket
         while (!this.testListValueEnd()) value += this.take(); // take all chars until closing bracket
         value += this.take(); // take closing bracket
-        if (this.flags[PARSER_FLAG.REPLACE_GETVAR]) {
-            value = this.replaceGetvar(value);
-        }
         this.indexMacros(this.index - value.length, value);
         return value;
     }
@@ -1283,9 +1214,6 @@ export class SlashCommandParser {
     parseValue() {
         let value = this.jumpedEscapeSequence ? this.take() : ''; // take the first, already tested, char if it is an escaped one
         while (!this.testValueEnd()) value += this.take(); // take all chars until value end
-        if (this.flags[PARSER_FLAG.REPLACE_GETVAR]) {
-            value = this.replaceGetvar(value);
-        }
         this.indexMacros(this.index - value.length, value);
         return value;
     }

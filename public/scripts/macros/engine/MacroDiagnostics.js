@@ -3,10 +3,6 @@
 /** @typedef {import('chevrotain').ILexingError} ILexingError */
 /** @typedef {import('chevrotain').IRecognitionException} IRecognitionException */
 
-import { t } from '/scripts/i18n.js';
-import { Popup, POPUP_RESULT } from '/scripts/popup.js';
-import { power_user } from '/scripts/power-user.js';
-import { accountStorage } from '/scripts/util/AccountStorage.js';
 import { SimpleMutex } from '/scripts/util/SimpleMutex.js';
 
 /**
@@ -21,32 +17,11 @@ import { SimpleMutex } from '/scripts/util/SimpleMutex.js';
 /** @typedef {MacroErrorContext & { message: string, error?: any }} MacroLogOptions */
 
 
-// Mutex prevents the popup from showing more than once under parallel, unawaited calls.
-export const onboardingExperimentalMacroEngineMutex = new SimpleMutex(onboardingExperimentalMacroEngineUnsafe);
+// Kept for extensions: the engine is the only one, so there is nothing to offer.
+export const onboardingExperimentalMacroEngineMutex = new SimpleMutex(async () => {});
 
+/** @deprecated The macro engine is always on; does nothing. */
 export const onboardingExperimentalMacroEngine = onboardingExperimentalMacroEngineMutex.update.bind(onboardingExperimentalMacroEngineMutex);
-
-async function onboardingExperimentalMacroEngineUnsafe(feature = null) {
-    if (power_user.experimental_macro_engine) return;
-
-    const shown = accountStorage.getItem('slash_command_experimental_engine_warning_shown');
-    if (shown === 'true') return;
-
-    const result = await Popup.show.confirm(t`Experimental Macro Engine`, `
-        <p>${t`You are using experimental macro features that require the new macro engine.`}</p>
-        ${feature ? `<div class="info-block hint">
-                <span>${t`Recognized Feature: `}<strong>${feature}</strong></span>
-            </div>` : ''}
-        <p>${t`For more information on the new macro engine, visit the <br />${`<a href="https://docs.sillytavern.app/usage/core-concepts/macros/">${t`Macro Documentation`}</a>`}.`}</p>
-        <p>${t`You can enable the engine any time under:<br />${t`User Settings`} → ${t`Experimental Macro Engine`}`}</p>
-        <p>${t`Would you like to enable it now?`}</p>`);
-    if (result == POPUP_RESULT.AFFIRMATIVE) {
-        power_user.experimental_macro_engine = true;
-        $('#experimental_macro_engine').prop('checked', power_user.experimental_macro_engine).trigger('input');
-    }
-
-    accountStorage.setItem('slash_command_experimental_engine_warning_shown', 'true');
-}
 
 /**
  * Caught by MacroEngine and logged as a runtime warning, leaving the macro raw in the evaluated text.

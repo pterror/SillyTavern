@@ -1,40 +1,32 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
-// Tests for the deprecated MacrosParser shim to ensure it continues to work
-// both with the legacy regex macro system (feature flag disabled) and with
-// the new macro engine (feature flag enabled).
+// Tests for the deprecated MacrosParser shim: what it registers is in the macro engine's registry.
 
 test.describe('MacrosParser (legacy shim)', () => {
     test.beforeEach(testSetup.awaitST);
 
-    test('should resolve macros via legacy evaluateMacros when experimental engine is disabled', async ({ page }) => {
+    test('the deprecated evaluateMacros resolves registered macros and its env through the engine', async ({ page }) => {
         const output = await page.evaluate(async () => {
             const { MacrosParser, evaluateMacros } = await import('./scripts/macros.js');
-            const { power_user } = await import('./scripts/power-user.js');
-
-            power_user.experimental_macro_engine = false;
 
             MacrosParser.registerMacro('legacyParserTest', 'LEGACY_OK', 'Legacy parser test');
 
-            const env = {};
-            const result = evaluateMacros('Value: {{legacyParserTest}}.', env, (x) => x);
+            const env = { envValue: 'ENV_OK', envFunction: (nonce) => typeof nonce === 'string' ? 'FN_OK' : 'NO_NONCE' };
+            const result = evaluateMacros('Value: {{legacyParserTest}} {{envValue}} {{envFunction}} {{newline}}.', env, (x) => `[${x}]`);
 
             MacrosParser.unregisterMacro('legacyParserTest');
 
             return result;
         });
 
-        expect(output).toBe('Value: LEGACY_OK.');
+        expect(output).toBe('Value: [LEGACY_OK] [ENV_OK] [FN_OK] [\n].');
     });
 
-    test('should resolve macros via new engine when experimental engine is enabled', async ({ page }) => {
+    test('a macro it registers is resolved by substituteParams', async ({ page }) => {
         const output = await page.evaluate(async () => {
             const { MacrosParser } = await import('./scripts/macros.js');
             const { substituteParams } = await import('./script.js');
-            const { power_user } = await import('./scripts/power-user.js');
-
-            power_user.experimental_macro_engine = true;
 
             MacrosParser.registerMacro('engineParserTest', 'ENGINE_OK', 'Engine parser test');
 

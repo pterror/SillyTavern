@@ -18,7 +18,6 @@ import {
     extension_prompt_types,
     extension_prompt_roles,
     deleteMessage,
-    settingsReady,
     getMessageDeletionStartId,
     storePageChatChanges,
 } from '../script.js';
@@ -322,7 +321,6 @@ export const power_user = {
     custom_stopping_strings_macro: true,
     fuzzy_search: false,
     encode_tags: false,
-    experimental_macro_engine: true,
     servers: [],
     bogus_folders: false,
     zoomed_avatar_magnification: false,
@@ -1970,7 +1968,6 @@ export async function loadPowerUserSettings(settings, data) {
     $('#persona_allow_multi_connections').prop('checked', power_user.persona_allow_multi_connections);
     $('#persona_auto_lock').prop('checked', power_user.persona_auto_lock);
     $('#encode_tags').prop('checked', power_user.encode_tags);
-    $('#experimental_macro_engine').prop('checked', power_user.experimental_macro_engine);
     $('#example_messages_behavior').val(getExampleMessagesBehavior());
     $(`#example_messages_behavior option[value="${getExampleMessagesBehavior()}"]`).prop('selected', true);
     $('#instruct_derived').parent().find('i').toggleClass('toggleEnabled', !!power_user.instruct_derived);
@@ -2043,7 +2040,6 @@ export async function loadPowerUserSettings(settings, data) {
     document.body.setAttribute('data-stscript-style', power_user.stscript.autocomplete.style);
     $('#stscript_autocomplete_select').val(power_user.stscript.autocomplete.select ?? (AUTOCOMPLETE_SELECT_KEY.TAB + AUTOCOMPLETE_SELECT_KEY.ENTER));
     $('#stscript_parser_flag_strict_escaping').prop('checked', power_user.stscript.parser.flags[PARSER_FLAG.STRICT_ESCAPING] ?? false);
-    $('#stscript_parser_flag_replace_getvar').prop('checked', power_user.stscript.parser.flags[PARSER_FLAG.REPLACE_GETVAR] ?? false);
     $('#stscript_autocomplete_font_scale').val(power_user.stscript.autocomplete.font.scale ?? defaultStscript.autocomplete.font.scale);
     $('#stscript_autocomplete_font_scale_counter').val(power_user.stscript.autocomplete.font.scale ?? defaultStscript.autocomplete.font.scale);
     document.body.style.setProperty('--ac-font-scale', power_user.stscript.autocomplete.font.scale ?? defaultStscript.autocomplete.font.scale.toString());
@@ -4167,28 +4163,6 @@ jQuery(() => {
         saveSettingsDebounced('power_user.encode_tags');
     });
 
-    $('#experimental_macro_engine').on('input', function () {
-        power_user.experimental_macro_engine = !!$(this).prop('checked');
-        saveSettingsDebounced('power_user.experimental_macro_engine');
-
-        // Check if the app is ready before showing the toast
-        if (!settingsReady) {
-            return;
-        }
-
-        eventSource.once(event_types.SETTINGS_UPDATED, function () {
-            toastr.warning(
-                t`Click here to reload.`,
-                t`Toggling the Experimental Macro Engine requires a reload.`,
-                {
-                    onclick: () => window.location.reload(),
-                    timeOut: 10000,
-                    preventDuplicates: true,
-                },
-            );
-        });
-    });
-
     $('#disable_group_trimming').on('input', function () {
         power_user.disable_group_trimming = !!$(this).prop('checked');
         saveSettingsDebounced('power_user.disable_group_trimming');
@@ -4311,12 +4285,6 @@ jQuery(() => {
     $('#stscript_parser_flag_strict_escaping').on('click', function () {
         const value = $(this).prop('checked');
         power_user.stscript.parser.flags[PARSER_FLAG.STRICT_ESCAPING] = value;
-        saveSettingsDebounced('power_user.stscript.parser.flags');
-    });
-
-    $('#stscript_parser_flag_replace_getvar').on('click', function () {
-        const value = $(this).prop('checked');
-        power_user.stscript.parser.flags[PARSER_FLAG.REPLACE_GETVAR] = value;
         saveSettingsDebounced('power_user.stscript.parser.flags');
     });
 
