@@ -273,6 +273,7 @@ function getGroupValue(ctx, { currentChar = null, includeMuted = false, filterOu
             .filter(c => !!c && typeof c.name === 'string')
             .filter(c => !filterOutChar || c.name !== currentChar)
             .map(c => c.name)
+            .concat(includeUser ? [includeUser] : [])
             .join(', ')
         : '';
 

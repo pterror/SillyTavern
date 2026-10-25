@@ -175,14 +175,14 @@ import {
     // branch 3: no original, groupMembers non-empty.
     const prompt = { content: '[{{original}}] group=[{{group}}]' };
     const prepared = preparePrompt(prompt, { groupMemberNames: ['Alice', 'Bob'] });
-    // {{original}} macro isn't even registered when `original` isn't a string, so it's left untouched.
-    assert.equal(prepared.content, '[{{original}}] group=[Alice, Bob]');
+    // With no `original` given, {{original}} sends nothing.
+    assert.equal(prepared.content, '[] group=[Alice, Bob]');
 }
 {
     // branch 4: no original, no group members.
     const prompt = { content: '[{{original}}] group=[{{group}}]' };
     const prepared = preparePrompt(prompt, {});
-    assert.equal(prepared.content, '[{{original}}] group=[]');
+    assert.equal(prepared.content, '[] group=[]');
 }
 {
     // macroContext is merged through in every branch (e.g. name1/name2 for {{user}}/{{char}}).

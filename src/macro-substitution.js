@@ -1,39 +1,21 @@
+import * as chevrotain from 'chevrotain';
 import moment from 'moment';
 import droll from 'droll';
 import seedrandom from 'seedrandom';
 
 import { getStringHash } from '../public/scripts/hash-utils.js';
+import { initMacroEngine, registerBuiltinMacros } from '../public/scripts/macros/macro-engine-init.js';
+import { MacroEngine } from '../public/scripts/macros/engine/MacroEngine.js';
+import { createVariableScope } from '../public/scripts/variable-store.js';
+import { parseTimestamp } from './timestamps.js';
 
 /**
- * Server-side port of the client's legacy macro engine (public/script.js's substituteParamsLegacy
- * plus public/scripts/macros.js's evaluateMacros, with power_user.experimental_macro_engine off -
- * that is the only engine active by default, so it's the only one ported here).
+ * The server's macro substitution: the macro engine the page runs (public/scripts/macros/), with the env built from
+ * what the caller passes. Nothing is read from a global: the caller resolves the request's facts (the chat, its
+ * variables, the settings) and passes them in. A fact left out reads as empty.
  *
- * Unlike the client, this takes every piece of context explicitly instead of reading globals
- * (chat store, DOM, power_user settings) - the caller resolves those from its own request context
- * and passes them in. Values that only exist as live client state (what's currently typed, what's
- * currently scrolled into view) are NOT a reason to leave the macro unported - they're just a
- * context field the caller supplies as a raw fact, same as name1/name2. Only genuinely absent
- * server capabilities are left unported below.
- *
- * Deliberately NOT ported (each needs real infrastructure that doesn't exist yet, not just a
- * context value - listed so a future pass knows exactly what's missing, not guessing):
- * - {{maxPrompt}}/{{maxPromptTokens}}/{{maxContext}}/{{maxContextTokens}}/{{maxResponse}}/
- *   {{maxResponseTokens}} - depend on the live prompt-budget calculation, which isn't ported yet
- *   (that's the larger prompt-assembly effort this module is a prerequisite for, not a peer of).
- * - {{outlet::key}} - reads content injected by other parts of prompt assembly (world info,
- *   author's note, etc.) at the point they run; depends on that same larger prompt-assembly effort
- *   for there to be anything to read.
- * - Instruct-sequence macros (public/scripts/instruct-mode.js's getInstructMacros, e.g.
- *   {{instructSystemPrompt}}) - lets message/persona text reference the *current* instruct
- *   template's own sequences. Narrow, rarely-used cross-reference; not ported.
- * - MacrosParser-registered macros - extensions register these via a client-side JS API at
- *   runtime; there's no server-side extension execution model to run that code, not merely a
- *   missing context value. `dynamicMacros` is the escape hatch for a caller that has already
- *   resolved specific extension macros itself.
- * - {{banned "..."}} macro-variant array output (RA_CountCharTokens/textgenerationwebui_banned_in_macros) -
- *   the macro itself resolves to '' (ported below); collecting the found words into the request's
- *   actual token-ban list is the caller's job once that request-building code exists server-side.
+ * Macros an extension registers on the page (MacrosParser) aren't here: they run in the page. `dynamicMacros` is for
+ * a caller that has resolved some itself.
  */
 
 /**
@@ -49,6 +31,8 @@ import { getStringHash } from '../public/scripts/hash-utils.js';
  * @property {string} [charVersion]
  * @property {string} [charDepthPrompt]
  * @property {string} [creatorNotes]
+ * @property {string} [firstMessage]
+ * @property {string[]} [alternateGreetings]
  */
 
 /**
@@ -79,283 +63,134 @@ import { getStringHash } from '../public/scripts/hash-utils.js';
  * @property {string} [chatId] Stable per-chat identifier, for {{pick}}'s repeatable-but-unique seed
  * @property {string} [currentInput] Raw, not-yet-sent text currently in the user's message box, for {{input}}
  * @property {number|null} [firstDisplayedMessageId] Id of the message currently scrolled into view, for {{firstDisplayedMessageId}}
- * @property {string[]} [bannedWordsSink] Array to push into for every {{banned "word"}} macro found (mirrors the client's ban-list side effect without a module-level global)
- * @property {Record<string, string | (() => string)>} [dynamicMacros] Extra macros, checked after the built-in environment (same precedence as the client's additionalMacro)
- * @property {(value: string) => string} [postProcessFn] Mirrors public/scripts/macros.js's evaluateMacros() third argument (as used via public/script.js's substituteParamsExtended): applied to EVERY individual macro's substituted value - built-in env macros, dynamicMacros, and the pre-/post-env special-cased ones alike - right before it's spliced into the result. Not a whole-string post-process. Defaults to identity when absent, so existing callers are unaffected.
+ * @property {string[]} [bannedWordsSink] Where {{banned}} puts each word it bans; given only for a request that bans words (text completion)
+ * @property {number} [maxPromptTokens] {{maxPrompt}}
+ * @property {number} [maxContextTokens] {{maxContext}}
+ * @property {number} [maxResponseTokens] {{maxResponse}}
+ * @property {string} [mainApi] The API generating (main_api)
+ * @property {Record<string, string>} [outlets] World info outlets' text by key, for {{outlet}}
+ * @property {boolean} [isMobile] {{isMobile}}
+ * @property {string} [lastGenerationType] {{lastGenerationType}}
+ * @property {string[]} [enabledExtensions] Names of the enabled extensions, for {{hasExtension}}
+ * @property {Record<string, any>} [instruct] The instruct template, for the instruct macros
+ * @property {{ enabled?: boolean, content?: string }} [sysprompt] The system prompt, for {{systemPrompt}}
+ * @property {Record<string, any>} [contextTemplate] The context template, for {{chatStart}}/{{exampleSeparator}}
+ * @property {boolean} [preferCharacterPrompt] {{systemPrompt}} gives the character's main prompt when it has one
+ * @property {Record<string, string | ((...args: any[]) => string)>} [dynamicMacros] Extra macros, checked before the registered ones (lower-case names match any case)
+ * @property {(value: string, macro?: object) => string} [postProcessFn] Applied to every macro's value before it's put in its place; not a whole-string post-process
  */
 
-function escapeRegexLiteral(str) {
-    return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
+initMacroEngine({
+    chevrotain,
+    moment,
+    seedrandom,
+    droll,
+    timestampToMoment: (timestamp) => {
+        const ms = parseTimestamp(timestamp);
+        return ms ? moment(ms) : moment.invalid();
+    },
+});
+registerBuiltinMacros();
 
-function buildEnvironment(context) {
-    const {
-        name1 = '',
-        name2 = '',
-        original,
-        group,
-        groupMembers,
-        groupDisabledMembers = [],
-        isGroup = false,
-        model = '',
-        replaceCharacterCard = true,
-        characterCard = {},
-        dynamicMacros = {},
-    } = context;
-
-    const environment = {};
-
-    if (typeof original === 'string') {
-        let originalSubstituted = false;
-        environment.original = () => {
-            if (originalSubstituted) return '';
-            originalSubstituted = true;
-            return original;
-        };
-    }
-
-    const getGroupValue = (includeMuted) => {
-        if (typeof group === 'string') return group;
-        if (isGroup) {
-            const isMuted = (m) => includeMuted ? true : !groupDisabledMembers.includes(m);
-            return Array.isArray(groupMembers) ? groupMembers.filter(isMuted).join(', ') : '';
-        }
-        return name2;
-    };
-
-    const getNotCharValue = () => {
-        if (!isGroup) return name1;
-        if (!Array.isArray(groupMembers)) return name1;
-        const otherMembers = groupMembers.filter(n => n !== name2);
-        otherMembers.push(name1);
-        return otherMembers.join(', ');
-    };
-
-    if (replaceCharacterCard) {
-        environment.charPrompt = characterCard.system || '';
-        environment.charInstruction = environment.charJailbreak = characterCard.jailbreak || '';
-        environment.description = characterCard.description || '';
-        environment.personality = characterCard.personality || '';
-        environment.scenario = characterCard.scenario || '';
-        environment.persona = characterCard.persona || '';
-        environment.mesExamples = characterCard.mesExamples || '';
-        environment.mesExamplesRaw = characterCard.mesExamplesRaw || '';
-        environment.charVersion = characterCard.charVersion || '';
-        environment.char_version = characterCard.charVersion || '';
-        environment.charDepthPrompt = characterCard.charDepthPrompt || '';
-        environment.creatorNotes = characterCard.creatorNotes || '';
-    }
-
-    // Must be assigned last, so they win when they also appear inside e.g. {{description}} - matches client order.
-    environment.user = name1;
-    environment.char = name2;
-    environment.group = environment.charIfNotGroup = getGroupValue(true);
-    environment.groupNotMuted = getGroupValue(false);
-    environment.notChar = getNotCharValue();
-    environment.model = model;
-
-    if (dynamicMacros && typeof dynamicMacros === 'object') {
-        Object.assign(environment, dynamicMacros);
-    }
-
-    return environment;
-}
-
-/** Mirrors public/scripts/macros.js's getLastMessageId(). */
-function getLastMessageId(chat, { excludeSwipeInProgress = true, filter = null } = {}) {
-    for (let i = (chat?.length ?? 0) - 1; i >= 0; i--) {
-        const message = chat[i];
-        if (excludeSwipeInProgress && message.swipes && message.swipe_id >= message.swipes.length) {
-            continue;
-        }
-        if (!filter || filter(message)) {
-            return i;
-        }
-    }
-    return null;
-}
-
-/** Mirrors public/scripts/macros.js's getTimeSinceLastMessage(). */
-function getTimeSinceLastMessage(chat) {
-    const now = moment();
-    if (Array.isArray(chat) && chat.length > 0) {
-        let lastMessage;
-        let takeNext = false;
-        for (let i = chat.length - 1; i >= 0; i--) {
-            const message = chat[i];
-            if (message.is_system) continue;
-            if (message.is_user && takeNext) {
-                lastMessage = message;
-                break;
-            }
-            takeNext = true;
-        }
-        if (lastMessage?.send_date) {
-            const lastMessageDate = moment(lastMessage.send_date);
-            return moment.duration(now.diff(lastMessageDate)).humanize();
-        }
-    }
-    return 'just now';
-}
-
-/** Mirrors public/scripts/variables.js's get*Variable/set*Variable/add*Variable (macro-call shape only - no index/key/as args, which only the slash-command form exposes). */
-function buildVariableMacros(chatMetadata, globalVariables) {
-    if (chatMetadata && !chatMetadata.variables) chatMetadata.variables = {};
-
-    const asValue = (raw) => (raw?.trim?.() === '' || isNaN(Number(raw))) ? (raw || '') : Number(raw);
-    const getLocal = (name) => chatMetadata ? asValue(chatMetadata.variables[name]) : '';
-    const setLocal = (name, value) => { if (chatMetadata) chatMetadata.variables[name] = value; return value; };
-    const getGlobal = (name) => globalVariables ? asValue(globalVariables[name]) : '';
-    const setGlobal = (name, value) => { if (globalVariables) globalVariables[name] = value; return value; };
-
-    const add = (getter, setter, name, value) => {
-        const currentValue = getter(name) || 0;
-        try {
-            const parsedValue = JSON.parse(currentValue);
-            if (Array.isArray(parsedValue)) {
-                parsedValue.push(value);
-                setter(name, JSON.stringify(parsedValue));
-                return parsedValue;
-            }
-        } catch { /* not an array */ }
-        const increment = Number(value);
-        if (isNaN(increment) || isNaN(Number(currentValue))) {
-            const stringValue = String(currentValue || '') + value;
-            setter(name, stringValue);
-            return stringValue;
-        }
-        const newValue = Number(currentValue) + increment;
-        if (isNaN(newValue)) return '';
-        setter(name, newValue);
-        return newValue;
-    };
-
-    return [
-        { regex: /{{setvar::([^:]+)::([^}]*)}}/gi, replace: (_, name, value) => { setLocal(name.trim(), value); return ''; } },
-        { regex: /{{addvar::([^:]+)::([^}]+)}}/gi, replace: (_, name, value) => { add(getLocal, setLocal, name.trim(), value); return ''; } },
-        { regex: /{{incvar::([^}]+)}}/gi, replace: (_, name) => add(getLocal, setLocal, name.trim(), 1) },
-        { regex: /{{decvar::([^}]+)}}/gi, replace: (_, name) => add(getLocal, setLocal, name.trim(), -1) },
-        { regex: /{{getvar::([^}]+)}}/gi, replace: (_, name) => getLocal(name.trim()) },
-        { regex: /{{setglobalvar::([^:]+)::([^}]*)}}/gi, replace: (_, name, value) => { setGlobal(name.trim(), value); return ''; } },
-        { regex: /{{addglobalvar::([^:]+)::([^}]+)}}/gi, replace: (_, name, value) => { add(getGlobal, setGlobal, name.trim(), value); return ''; } },
-        { regex: /{{incglobalvar::([^}]+)}}/gi, replace: (_, name) => add(getGlobal, setGlobal, name.trim(), 1) },
-        { regex: /{{decglobalvar::([^}]+)}}/gi, replace: (_, name) => add(getGlobal, setGlobal, name.trim(), -1) },
-        { regex: /{{getglobalvar::([^}]+)}}/gi, replace: (_, name) => getGlobal(name.trim()) },
-    ];
-}
-
-/** Mirrors public/scripts/macros.js's getRandomReplaceMacro()/getPickReplaceMacro(). */
-function splitMacroList(listString) {
-    return listString.includes('::')
-        ? listString.split('::')
-        : listString.replace(/\\,/g, '##�COMMA�##').split(',').map(item => item.trim().replace(/##�COMMA�##/g, ','));
-}
-
-function evaluateMacros(content, env, context) {
-    if (!content) return '';
-
-    const { chat, chatMetadata, globalVariables, chatId, currentInput, firstDisplayedMessageId, bannedWordsSink, postProcessFn } = context;
-    const applyPostProcess = typeof postProcessFn === 'function' ? postProcessFn : (x => x);
-    const rawContent = content;
-
-    const preEnvMacros = [
-        { regex: /<USER>/gi, replace: () => typeof env.user === 'function' ? env.user() : env.user },
-        { regex: /<BOT>/gi, replace: () => typeof env.char === 'function' ? env.char() : env.char },
-        { regex: /<CHAR>/gi, replace: () => typeof env.char === 'function' ? env.char() : env.char },
-        { regex: /<CHARIFNOTGROUP>/gi, replace: () => typeof env.group === 'function' ? env.group() : env.group },
-        { regex: /<GROUP>/gi, replace: () => typeof env.group === 'function' ? env.group() : env.group },
-        ...buildVariableMacros(chatMetadata, globalVariables),
-        { regex: /{{newline}}/gi, replace: () => '\n' },
-        { regex: /(?:\r?\n)*{{trim}}(?:\r?\n)*/gi, replace: () => '' },
-        { regex: /{{noop}}/gi, replace: () => '' },
-        { regex: /{{input}}/gi, replace: () => currentInput ?? '' },
-    ];
-
-    const postEnvMacros = [
-        { regex: /{{lastMessage}}/gi, replace: () => { const mid = getLastMessageId(chat); return chat?.[mid]?.mes ?? ''; } },
-        { regex: /{{lastMessageId}}/gi, replace: () => String(getLastMessageId(chat) ?? '') },
-        { regex: /{{lastUserMessage}}/gi, replace: () => { const mid = getLastMessageId(chat, { filter: m => m.is_user && !m.is_system }); return chat?.[mid]?.mes ?? ''; } },
-        { regex: /{{lastCharMessage}}/gi, replace: () => { const mid = getLastMessageId(chat, { filter: m => !m.is_user && !m.is_system }); return chat?.[mid]?.mes ?? ''; } },
-        { regex: /{{firstIncludedMessageId}}/gi, replace: () => String(chatMetadata?.lastInContextMessageId ?? '') },
-        { regex: /{{firstDisplayedMessageId}}/gi, replace: () => String(firstDisplayedMessageId ?? '') },
-        { regex: /{{lastSwipeId}}/gi, replace: () => { const mid = getLastMessageId(chat, { excludeSwipeInProgress: false }); return String(chat?.[mid]?.swipes?.length ?? ''); } },
-        { regex: /{{currentSwipeId}}/gi, replace: () => { const mid = getLastMessageId(chat, { excludeSwipeInProgress: false }); const swipeId = chat?.[mid]?.swipe_id; return swipeId != null ? String(swipeId + 1) : ''; } },
-        { regex: /{{allChatRange}}/gi, replace: () => !chat || chat.length === 0 ? '' : `0-${chat.length - 1}` },
-        { regex: /{{reverse:(.+?)}}/gi, replace: (_, str) => Array.from(str).reverse().join('') },
-        { regex: /\{\{\/\/([\s\S]*?)\}\}/gm, replace: () => '' },
-        { regex: /{{time}}/gi, replace: () => moment().format('LT') },
-        { regex: /{{date}}/gi, replace: () => moment().format('LL') },
-        { regex: /{{weekday}}/gi, replace: () => moment().format('dddd') },
-        { regex: /{{isotime}}/gi, replace: () => moment().format('HH:mm') },
-        { regex: /{{isodate}}/gi, replace: () => moment().format('YYYY-MM-DD') },
-        { regex: /{{datetimeformat +([^}]*)}}/gi, replace: (_, format) => moment().format(format) },
-        { regex: /{{idle_duration}}/gi, replace: () => getTimeSinceLastMessage(chat) },
-        { regex: /{{time_UTC([-+]\d+)}}/gi, replace: (_, offset) => moment().utc().utcOffset(parseInt(offset, 10)).format('LT') },
-        { regex: /{{banned "(.*)"}}/gi, replace: (_, word) => { bannedWordsSink?.push(word); return ''; } },
-        {
-            regex: /{{timeDiff::(.*?)::(.*?)}}/gi, replace: (_match, matchPart1, matchPart2) => {
-                const time1 = moment(matchPart1);
-                const time2 = moment(matchPart2);
-                return moment.duration(time1.diff(time2)).humanize(true);
-            },
-        },
-        {
-            regex: /{{roll[ : ]([^}]+)}}/gi, replace: (_match, matchValue) => {
-                let formula = matchValue.trim();
-                if (/^\d+$/.test(formula)) formula = `1d${formula}`;
-                if (!droll.validate(formula)) return '';
-                const result = droll.roll(formula);
-                return result === false ? '' : String(result.total);
-            },
-        },
-        {
-            regex: /{{random\s?::?([^}]+)}}/gi, replace: (_match, listString) => {
-                const list = splitMacroList(listString);
-                if (list.length === 0) return '';
-                const rng = seedrandom('added entropy.', { entropy: true });
-                return list[Math.floor(rng() * list.length)];
-            },
-        },
-        {
-            regex: /{{pick\s?::?([^}]+)}}/gi, replace: (_match, listString, offset) => {
-                const list = splitMacroList(listString);
-                if (list.length === 0) return '';
-                const chatIdHash = getStringHash(chatId ?? '');
-                const rawContentHash = getStringHash(rawContent);
-                const combinedSeedString = `${chatIdHash}-${rawContentHash}-${offset}`;
-                const rng = seedrandom(getStringHash(combinedSeedString));
-                return list[Math.floor(rng() * list.length)];
-            },
-        },
-    ];
-
-    const envMacros = [];
-    for (const varName in env) {
-        if (!Object.hasOwn(env, varName)) continue;
-        const envRegex = new RegExp(`{{${escapeRegexLiteral(varName)}}}`, 'gi');
-        const envReplace = () => {
-            const param = env[varName];
-            return typeof param === 'function' ? param() : param;
-        };
-        envMacros.push({ regex: envRegex, replace: envReplace });
-    }
-
-    const macros = [...preEnvMacros, ...envMacros, ...postEnvMacros];
-
-    for (const macro of macros) {
-        if (!content) break;
-        if (!macro.regex.source.startsWith('<') && !content.includes('{{')) break;
-        try {
-            content = content.replace(macro.regex, (...args) => applyPostProcess(macro.replace(...args)));
-        } catch { /* skip malformed macro syntax, same as client */ }
-    }
-
-    return content;
+/**
+ * {{group}} and its kin, as the page's MacroEnvBuilder makes them.
+ * @param {SubstituteParamsContext} context
+ * @param {{ includeMuted?: boolean, filterOutChar?: boolean }} options
+ */
+function groupValue({ name1 = '', name2 = '', group, groupMembers, groupDisabledMembers = [], isGroup = false }, { includeMuted = false, filterOutChar = false }) {
+    if (typeof group === 'string') return group;
+    if (!isGroup) return filterOutChar ? name1 : name2;
+    if (!Array.isArray(groupMembers)) return '';
+    // Everyone but the one speaking is the others and the user.
+    return groupMembers
+        .filter(name => includeMuted || !groupDisabledMembers.includes(name))
+        .filter(name => !filterOutChar || name !== name2)
+        .concat(filterOutChar ? [name1] : [])
+        .join(', ');
 }
 
 /**
- * Substitutes {{macro}}/<TAG> parameters in a string. See the module doc comment for exactly
- * which macros from the client's legacy engine are and are not covered.
+ * @param {string} content
+ * @param {SubstituteParamsContext} context
+ * @returns {import('../public/scripts/macros/engine/MacroEnv.types.js').MacroEnv}
+ */
+function buildEnv(content, context) {
+    const { name1 = '', name2 = '', original, model = '', replaceCharacterCard = true, characterCard = {}, dynamicMacros, postProcessFn } = context;
+    const chatMetadata = /** @type {Record<string, any> | undefined} */ (context.chatMetadata);
+    const localVariables = chatMetadata ?? {};
+    const globalVariables = /** @type {Record<string, any>} */ (context.globalVariables ?? {});
+
+    /** @type {import('../public/scripts/macros/engine/MacroEnv.types.js').MacroEnvCharacter} */
+    const character = replaceCharacterCard ? {
+        charPrompt: characterCard.system || '',
+        charInstruction: characterCard.jailbreak || '',
+        description: characterCard.description || '',
+        personality: characterCard.personality || '',
+        scenario: characterCard.scenario || '',
+        persona: characterCard.persona || '',
+        mesExamplesRaw: characterCard.mesExamplesRaw || '',
+        mesExamples: characterCard.mesExamples || '',
+        version: characterCard.charVersion || '',
+        charDepthPrompt: characterCard.charDepthPrompt || '',
+        creatorNotes: characterCard.creatorNotes || '',
+        firstMessage: characterCard.firstMessage || '',
+        alternateGreetings: Array.isArray(characterCard.alternateGreetings) ? characterCard.alternateGreetings : [],
+    } : {};
+
+    let originalUsed = false;
+    return {
+        content,
+        contentHash: getStringHash(content),
+        names: {
+            user: name1,
+            char: name2,
+            group: groupValue(context, { includeMuted: true }),
+            groupNotMuted: groupValue(context, { includeMuted: false }),
+            notChar: groupValue(context, { filterOutChar: true }),
+        },
+        character,
+        system: { model },
+        functions: {
+            ...(typeof original === 'string' ? {
+                original: () => {
+                    if (originalUsed) return '';
+                    originalUsed = true;
+                    return original;
+                },
+            } : {}),
+            postProcess: typeof postProcessFn === 'function' ? postProcessFn : (x => x),
+        },
+        state: {
+            chat: context.chat,
+            chatMetadata,
+            chatId: context.chatId,
+            variables: {
+                local: createVariableScope(() => (localVariables.variables ??= {})),
+                global: createVariableScope(() => globalVariables),
+            },
+            input: context.currentInput,
+            firstDisplayedMessageId: context.firstDisplayedMessageId,
+            maxPromptTokens: context.maxPromptTokens,
+            maxContextTokens: context.maxContextTokens,
+            maxResponseTokens: context.maxResponseTokens,
+            mainApi: context.mainApi,
+            bannedWords: context.bannedWordsSink,
+            outlet: key => context.outlets?.[key] ?? '',
+            isMobile: context.isMobile,
+            lastGenerationType: context.lastGenerationType,
+            hasExtension: name => !!context.enabledExtensions?.includes(name),
+            instruct: context.instruct,
+            sysprompt: context.sysprompt,
+            context: context.contextTemplate,
+            preferCharacterPrompt: context.preferCharacterPrompt,
+        },
+        dynamicMacros: Object.fromEntries(Object.entries(dynamicMacros ?? {}).map(([key, value]) => [key.toLowerCase(), value])),
+        extra: {},
+    };
+}
+
+/**
+ * Substitutes the macros in a string, as the page does.
  * @param {string} content
  * @param {SubstituteParamsContext} [context]
  * @returns {string}
@@ -363,8 +198,7 @@ function evaluateMacros(content, env, context) {
 export function substituteParams(content, context = {}) {
     if (!content) return '';
     if (typeof content !== 'string') content = String(content);
-    const environment = buildEnvironment(context);
-    return evaluateMacros(content, environment, context);
+    return MacroEngine.evaluate(content, buildEnv(content, context));
 }
 
 /**
