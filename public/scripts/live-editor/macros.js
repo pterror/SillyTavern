@@ -299,6 +299,34 @@ const openOnDoubleClick = EditorView.domEventHandlers({
     },
 });
 
+/** The macros "@" offers: one person's name each. */
+const MENTIONABLE = ['user', 'char'];
+
+/**
+ * "@" at the start of a word offers who can be mentioned ({{user}}, {{char}}) by their names here; picking one puts
+ * its macro in place of the "@" and what was typed after it.
+ * @param {import('@codemirror/autocomplete').CompletionContext} context
+ */
+function mentionCompletions(context) {
+    const typed = context.matchBefore(/(?:^|[\s(["'*_])@[^\s@]*$/u);
+    if (!typed) return null;
+    const at = context.state.sliceDoc(typed.from, typed.to).lastIndexOf('@') + typed.from;
+    const { person } = context.state.facet(macroOptions);
+    const options = MENTIONABLE.map((macro, index) => {
+        const name = person?.(macro)?.name || macro;
+        return {
+            label: name,
+            detail: `{{${macro}}}`,
+            boost: -index,
+            apply: (/** @type {import('@codemirror/view').EditorView} */ view, /** @type {any} */ _completion, /** @type {number} */ _from, /** @type {number} */ to) => {
+                const insert = `{{${macro}}}`;
+                view.dispatch({ changes: { from: at, to, insert }, selection: { anchor: at + insert.length }, userEvent: 'input.complete' });
+            },
+        };
+    });
+    return { from: at + 1, options, filter: true };
+}
+
 /**
  * The app's macro suggestions as a CodeMirror completion source: the same options, details and argument hints as
  * the macro autocomplete elsewhere, always on in the editor (Ctrl+Space shows them anywhere), and the highlighted
@@ -367,6 +395,6 @@ export function liveMacros(options) {
         openOnDoubleClick,
         keymap.of([{ key: 'Mod-Shift-m', run: toggleMacroSource }]),
         // No delay before Enter takes a suggestion, as with the app's own suggestion lists.
-        autocompletion({ override: [macroCompletions], icons: false, closeOnBlur: true, interactionDelay: 0 }),
+        autocompletion({ override: [macroCompletions, mentionCompletions], icons: false, closeOnBlur: true, interactionDelay: 0 }),
     ];
 }
