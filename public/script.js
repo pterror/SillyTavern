@@ -238,7 +238,7 @@ import { initTextGenModels } from './scripts/textgen-models.js';
 import { hasPendingFileAttachment, populateFileAttachment, isExternalMediaAllowed, preserveNeutralChat, restoreNeutralChat, formatCreatorNotes, initChatUtilities, addDOMPurifyHooks, initMessageMediaVolume, showMediaLightbox } from './scripts/chats.js';
 import { getFocusedField, getMountedTextarea } from './scripts/live-editor/registry.js';
 import { initChatBoxEditor, initChatLiveEditor, mountChatEditor, unmountChatEditor } from './scripts/chat-live-editor.js';
-import { beginEdit, blockFieldEditStart, blockWhileFieldEditing, initCharacterFieldEditor, isFieldInEdit, setFieldValue } from './scripts/character-field-editor.js';
+import { beginEdit, blockFieldEditStart, blockWhileFieldEditing, initCharacterFieldEditor, isFieldBeingEdited, isFieldInEdit, setFieldValue } from './scripts/character-field-editor.js';
 import { initCharInfoTabDimming, refreshCharInfoTabDimming } from './scripts/char-info-tab-dimming.js';
 import { getFormBaseline, setFormBaseline } from './scripts/character-form-baseline.js';
 import { initPresetManager } from './scripts/preset-manager.js';
@@ -13507,8 +13507,15 @@ export async function doNavbarIconClick() {
     const drawer = $(this).parent().find('.drawer-content');
     const drawerWasOpenAlready = $(this).parent().find('.drawer-content').hasClass('openDrawer');
     const targetDrawerID = $(this).parent().find('.drawer-content').attr('id');
+    // Character management is for picking a character, which an edit in progress refuses: it doesn't open, and an
+    // open one closes even when covered (the edited layer stays on top, so it can't be brought forward).
+    const pickingRefused = targetDrawerID === 'right-nav-panel' && isFieldBeingEdited();
 
     if (!drawerWasOpenAlready) {
+        if (pickingRefused) {
+            blockWhileFieldEditing();
+            return;
+        }
         const closedCount = closeUnpinnedDrawersFor(drawer[0]);
         if (closedCount && animation_duration) {
             await delay(animation_duration);
@@ -13529,7 +13536,7 @@ export async function doNavbarIconClick() {
     } else if (drawerWasOpenAlready) {
         // Open but partly or wholly under another drawer (only with stacked drawers on): the click brings it forward
         // rather than closing it.
-        if (isDrawerCovered(drawer[0])) {
+        if (!pickingRefused && isDrawerCovered(drawer[0])) {
             bringOpenDrawerForward(drawer[0]);
             return;
         }
