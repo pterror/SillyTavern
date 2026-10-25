@@ -179,12 +179,27 @@ class MacroRegistry {
     /** @type {Map<string, MacroDefinition>} */
     #macros;
 
+    /** @type {Set<() => void>} Called after a macro is registered or unregistered. */
+    #changeListeners = new Set();
+
     /**
      * @private
      */
     constructor() {
         /** @type {Map<string, MacroDefinition>} */
         this.#macros = new Map();
+    }
+
+    /**
+     * Calls `listener` after each macro registered or unregistered from here on.
+     * @param {() => void} listener
+     */
+    onChange(listener) {
+        this.#changeListeners.add(listener);
+    }
+
+    #changed() {
+        for (const listener of this.#changeListeners) listener();
     }
 
     /**
@@ -304,6 +319,7 @@ class MacroRegistry {
         } : definition;
 
         this.#macros.set(nameKey, entry);
+        this.#changed();
     }
 
     /**
@@ -315,7 +331,9 @@ class MacroRegistry {
     unregisterMacro(name) {
         if (typeof name !== 'string' || !name.trim()) throw new Error('Macro name must be a non-empty string');
         name = name.trim();
-        return this.#macros.delete(name.toLowerCase());
+        const removed = this.#macros.delete(name.toLowerCase());
+        if (removed) this.#changed();
+        return removed;
     }
 
     /**

@@ -4,7 +4,8 @@ import { MacroLexer } from './engine/MacroLexer.js';
 import { MacroParser } from './engine/MacroParser.js';
 import { MacroCstWalker } from './engine/MacroCstWalker.js';
 import { MacroEnvBuilder } from './engine/MacroEnvBuilder.js';
-import { setMacroCategories } from '../macro-pill.js';
+import { setMacroRegistry } from '../macro-pill.js';
+import { refreshMacroColors, setMacroList } from '../macro-colors.js';
 
 import { registerCoreMacros } from './definitions/core-macros.js';
 import { registerEnvMacros } from './definitions/env-macros.js';
@@ -56,7 +57,12 @@ export function macroCategory(name) {
     return MacroRegistry.getPrimaryMacro(name)?.category;
 }
 
-setMacroCategories(macroCategory);
+setMacroRegistry({
+    categoryOf: macroCategory,
+    list: () => MacroRegistry.getAllMacros({ excludeAliases: true }).map(macro => ({ name: macro.name, category: macro.category })),
+});
+setMacroList(() => MacroRegistry.getAllMacros().map(macro => ({ name: macro.name, aliasOf: macro.aliasOf })));
+MacroRegistry.onChange(refreshMacroColors);
 
 export function initRegisterMacros() {
     if (macrosRegistered) return;

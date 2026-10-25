@@ -8,8 +8,32 @@ import { liveSearch } from './search.js';
 import { OVERLAYS_CHANGED_EVENT } from '../drawer-stack.js';
 
 const { EditorState, Compartment, Annotation, Prec } = cmState;
-const { EditorView, placeholder: placeholderExtension, keymap, drawSelection } = cmView;
+const { EditorView, placeholder: placeholderExtension, keymap, drawSelection, tooltips } = cmView;
 const { history, historyKeymap, defaultKeymap, deleteCharForward } = cmCommands;
+
+/**
+ * Where the editor's tooltips may go: the part of the window that what holds the editor doesn't clip (the chat column
+ * cuts off what overflows it). CodeMirror keeps a tooltip inside this.
+ * @param {import('@codemirror/view').EditorView} view
+ * @returns {{ left: number, right: number, top: number, bottom: number }}
+ */
+function unclippedSpace(view) {
+    let space = { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
+    for (let el = view.dom.parentElement; el && el !== document.body; el = el.parentElement) {
+        const style = getComputedStyle(el);
+        const clipsX = style.overflowX !== 'visible';
+        const clipsY = style.overflowY !== 'visible';
+        if (!clipsX && !clipsY) continue;
+        const box = el.getBoundingClientRect();
+        space = {
+            left: clipsX ? Math.max(space.left, box.left) : space.left,
+            right: clipsX ? Math.min(space.right, box.right) : space.right,
+            top: clipsY ? Math.max(space.top, box.top) : space.top,
+            bottom: clipsY ? Math.min(space.bottom, box.bottom) : space.bottom,
+        };
+    }
+    return space;
+}
 
 /**
  * Shift+Delete as in a text box: with a selection the browser cuts it; with none it deletes forward. Left to the
@@ -207,6 +231,7 @@ export function mountLiveEditor(textarea, options = {}) {
                 history(),
                 keymap.of([{ key: 'Shift-Delete', run: shiftDelete }, ...defaultKeymap, ...historyKeymap]),
                 EditorView.lineWrapping,
+                tooltips({ tooltipSpace: unclippedSpace }),
                 // The editor draws its cursor where it measures the text (the browser's own lands above a lone
                 // placeholder in Firefox).
                 drawSelection(),

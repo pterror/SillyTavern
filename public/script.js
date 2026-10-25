@@ -246,6 +246,8 @@ import { initPresetManager } from './scripts/preset-manager.js';
 import { evaluateMacros, getLastMessageId, initMacros } from './scripts/macros.js';
 import { currentUser, setUserControls } from './scripts/user.js';
 import { POPUP_RESULT, POPUP_TYPE, Popup, callGenericPopup, fixToastrForDialogs } from './scripts/popup.js';
+import { initMacroColorsEditor } from './scripts/macro-colors-editor.js';
+import { applyMacroColors, macroColorsOf } from './scripts/macro-colors.js';
 import { renderTemplate, renderTemplateAsync } from './scripts/templates.js';
 import { assetUrl } from './scripts/asset-url.js';
 import { initScrapers } from './scripts/scrapers.js';
@@ -1413,6 +1415,7 @@ async function firstLoadInit() {
         formatCreatorNotes: (text, styleScope) => formatCreatorNotes(text, menu_type === 'create' ? '' : getCurrentCharacter()?.avatar, { safeMacros: true, styleScope }),
         power_user,
         t,
+        macroPerson: macroName => macroPerson(macroName, { avatar: menu_type === 'create' ? '' : getEditorCharacterAvatar(), name: String($('#character_name_pole').val() ?? '') }),
         autoSaveTimeout: DEFAULT_SAVE_EDIT_TIMEOUT,
         saveCreatorNotesField,
         saveDescriptionField,
@@ -1436,8 +1439,19 @@ async function firstLoadInit() {
         uploadImage: uploadEditorImage,
         userName: () => name1,
         nextMessageId: () => chat.length,
+        macroPerson: (macroName, characterName) => macroPerson(macroName, { name: characterName }),
     });
     initChatBoxEditor(/** @type {HTMLTextAreaElement} */ (document.getElementById('send_textarea')));
+    initMacroColorsEditor({
+        getColors: () => macroColorsOf(power_user.macro_colors),
+        setColors: (colors) => {
+            power_user.macro_colors = colors;
+            applyMacroColors(colors);
+            saveSettingsDebounced('power_user.macro_colors');
+        },
+        t,
+        showPopup: content => callGenericPopup(content, POPUP_TYPE.TEXT, '', { wide: true, allowVerticalScrolling: true }),
+    }, document.getElementById('macro_colors_button'));
     initCharInfoTabDimming(() => greetingPagerState.greetings.some((greeting, i) => i !== greetingPagerState.index && greeting !== ''));
     initDefaultSlashCommands();
     initTextGenModels();
@@ -6984,6 +6998,26 @@ const thumbnailVersionCache = new Map();
 export function setThumbnailVersion(type, file, version) {
     if (version === null || version === undefined || version === '') return;
     thumbnailVersionCache.set(`${type}:${file}`, String(version));
+}
+
+/**
+ * Who a mention macro names, for its card: {{user}} the active persona; {{char}} the character with that avatar, else
+ * the one of that name, else the character open.
+ * @param {string} macroName
+ * @param {{ avatar?: string, name?: string }} character
+ * @returns {import('./scripts/macro-pill.js').MacroPerson | null}
+ */
+function macroPerson(macroName, { avatar, name } = {}) {
+    const which = macroName.toLowerCase();
+    if (which === 'user') {
+        return { name: name1, avatarUrl: getThumbnailUrl('persona', user_avatar), about: getPersonaDescription() };
+    }
+    if (which !== 'char' && which !== 'charifnotgroup') return null;
+    const found = (avatar ? charactersStore.get(avatar) : undefined)
+        ?? (name ? exposedCharacters.find(c => c?.name === name) : undefined)
+        ?? getCurrentCharacter();
+    if (!found) return null;
+    return { name: name || found.name, avatarUrl: getThumbnailUrl('avatar', found.avatar), about: String(found.description ?? found.data?.description ?? '') };
 }
 
 /**

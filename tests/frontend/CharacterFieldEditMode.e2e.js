@@ -875,7 +875,7 @@ test.describe('character field edit mode', () => {
                     const pills = fieldLocators(page, field.id).preview.locator('span.macro-pill');
                     await expect(pills).toHaveCount(1);
                     await expect(pills).toHaveText(`@${name}`);
-                    await expect(pills).toHaveAttribute('title', /^\{\{char\}\} is replaced by/);
+                    await expect(pills).toHaveAttribute('title', '{{char}}');
                 });
             });
 
@@ -1033,7 +1033,7 @@ test.describe('character field edit mode', () => {
                     const preview = fieldLocators(page, field.id).preview;
                     await expect(preview.locator('.macro-pill-mention')).toHaveText(`@${name}`);
                     // Each is a pill saying it is filled in when sent, its source in its title.
-                    expect(await preview.locator('.macro-pill-later').evaluateAll(els => els.map(el => el.title.slice(0, el.title.indexOf(' is filled in'))))).toEqual([
+                    expect(await preview.locator('.macro-pill-later').evaluateAll(els => els.map(el => el.title.replace('\nFilled in when sent', '')))).toEqual([
                         `{{setvar::${key}::set}}`,
                         `{{incvar::${key}n}}`,
                         '{{random::aa::bb}}',

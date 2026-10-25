@@ -105,7 +105,6 @@
     --SmartThemeEmColor: rgb(145, 145, 145);
     --SmartThemeUnderlineColor: rgb(188, 231, 207);
     --SmartThemeQuoteColor: rgb(225, 138, 36);
-    --SmartThemeMacroColor: rgb(53, 138, 217);
     /* --SmartThemeFastUIBGColor: rgba(0, 0, 0, 0.9); */
     --SmartThemeBlurTintColor: rgba(23, 23, 23, 1);
     --SmartThemeChatTintColor: rgba(23, 23, 23, 1);
@@ -1657,26 +1656,10 @@ textarea.autoSetHeight {
     min-height: calc(attr(rows type(<number>), 2) * 1lh + 2 * (var(--field-padding-block) + var(--field-border-width)));
 }
 
-/* Each category of macro (macros/engine/MacroRegistry.js) has its own color, turned round the color wheel from the
-   theme's macro color: names in it, the others spread around it. A macro of no known category has the macro color. */
-[data-macro-category="character"] {
-    --macro-color: hsl(from var(--SmartThemeMacroColor) calc(h + 50) s l);
-}
-
-[data-macro-category="chat"] {
-    --macro-color: hsl(from var(--SmartThemeMacroColor) calc(h + 100) s l);
-}
-
-[data-macro-category="time"] {
-    --macro-color: hsl(from var(--SmartThemeMacroColor) calc(h + 160) s l);
-}
-
-[data-macro-category="random"] {
-    --macro-color: hsl(from var(--SmartThemeMacroColor) calc(h + 220) s l);
-}
-
-[data-macro-category="variable"] {
-    --macro-color: hsl(from var(--SmartThemeMacroColor) calc(h + 280) s l);
+/* A macro's color (macro-colors.js): as light as the text, with the theme's chroma and the macro's own hue, or the
+   whole color it was given. The theme's stylesheet (#macro-colors-style) gives them by the macro's name. */
+:where(.macro-pill, .macro-source, .live-macro-tooltip) {
+    --macro-color: oklch(from var(--SmartThemeBodyColor) l var(--macro-chroma, 0.14) var(--macro-hue, 250));
 }
 
 /* A macro is shown as a pill holding what is sent in its place (macro-pill.js), never as its {{…}} text. In the editor
@@ -1687,8 +1670,8 @@ textarea.autoSetHeight {
     -webkit-box-decoration-break: clone;
     border: 1px solid transparent;
     border-radius: 0.6em;
-    background-color: color-mix(in srgb, var(--macro-color, var(--SmartThemeMacroColor)) 18%, transparent);
-    color: var(--macro-color, var(--SmartThemeMacroColor));
+    background-color: color-mix(in srgb, var(--macro-color) 18%, transparent);
+    color: var(--macro-color);
     font-style: normal;
     font-weight: normal;
     text-decoration: none;
@@ -1708,7 +1691,7 @@ textarea.autoSetHeight {
 .macro-pill-later,
 .macro-pill-empty {
     border-style: dashed;
-    border-color: color-mix(in srgb, var(--macro-color, var(--SmartThemeMacroColor)) 60%, transparent);
+    border-color: color-mix(in srgb, var(--macro-color) 60%, transparent);
     background-color: transparent;
 }
 
@@ -1720,7 +1703,7 @@ textarea.autoSetHeight {
    styling (italics, quotes) the text around it gets. */
 .cm-editor.live-editor .macro-source,
 .cm-editor.live-editor .macro-source * {
-    color: var(--macro-color, var(--SmartThemeMacroColor));
+    color: var(--macro-color);
 }
 
 .live-macro-tooltip {
@@ -1729,12 +1712,116 @@ textarea.autoSetHeight {
     font-size: calc(var(--mainFontSize) * 0.85);
 }
 
+.macro-person-card {
+    display: flex;
+    gap: 0.6em;
+    align-items: flex-start;
+    width: 22em;
+    max-width: 100%;
+    white-space: normal;
+}
+
+.macro-person-avatar {
+    width: 3em;
+    height: 3em;
+    border-radius: 50%;
+    object-fit: cover;
+    flex: none;
+}
+
+.macro-person-text {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1em;
+    min-width: 0;
+}
+
+.macro-person-name {
+    font-weight: bold;
+    color: var(--macro-color);
+}
+
+.macro-person-about {
+    opacity: 0.8;
+    display: -webkit-box;
+    -webkit-line-clamp: 4;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.macro-person-card code {
+    margin: 0;
+    padding: 0;
+    border: none;
+    background: none;
+    font-size: 0.85em;
+    color: var(--macro-color);
+}
+
 .live-macro-tooltip code {
     display: block;
     margin-bottom: 0.2em;
     padding: 0;
+    border: none;
     background: none;
-    color: var(--SmartThemeMacroColor);
+    color: var(--macro-color);
+}
+
+.macro-colors-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    text-align: start;
+}
+
+.macro-colors-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: end;
+    gap: 12px;
+}
+
+.macro-colors-controls label {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.macro-colors-list h4 {
+    margin: 10px 0 4px;
+}
+
+.macro-colors-row {
+    display: grid;
+    grid-template-columns: minmax(8em, 1fr) minmax(6em, 2fr) auto auto;
+    align-items: center;
+    gap: 8px;
+    padding: 2px 0;
+}
+
+.macro-colors-row .macro-pill {
+    justify-self: start;
+}
+
+.macro-colors-controls .menu_button {
+    white-space: nowrap;
+}
+
+/* A hue slider shows the hues it picks from, at the macros' lightness and chroma. */
+input[type="range"].macro-colors-hue {
+    height: 0.6em;
+    border-radius: 0.3em;
+    background-size: 100% 100%;
+    filter: none;
+    background-image: linear-gradient(to right in oklch longer hue, oklch(from var(--SmartThemeBodyColor) l var(--macro-chroma, 0.14) 0), oklch(from var(--SmartThemeBodyColor) l var(--macro-chroma, 0.14) 359.9));
+}
+
+.macro-colors-row input[type="color"] {
+    width: 2em;
+    height: 1.6em;
+    padding: 0;
+    border: none;
+    background: none;
 }
 
 /* No height cap of its own: a long preview scrolls with the drawer it's in. */
@@ -7559,7 +7646,7 @@ textarea.live-editor-textarea {
 /* The macro suggestions look like the app's own suggestion list (--ac-* follow the STscript style setting). */
 .cm-editor.live-editor .cm-tooltip.cm-tooltip-autocomplete,
 .cm-editor.live-editor .cm-tooltip.cm-completionInfo,
-.cm-editor.live-editor .cm-tooltip:has(> .live-macro-tooltip) {
+.cm-editor.live-editor .cm-tooltip.live-macro-tooltip {
     background: var(--ac-style-color-background, rgba(32 32 32 / 1));
     backdrop-filter: blur(var(--SmartThemeBlurStrength));
     border: 1px solid var(--ac-style-color-border, rgba(69 69 69 / 1));
