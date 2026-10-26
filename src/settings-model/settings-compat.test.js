@@ -2,9 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { isDeepStrictEqual } from 'node:util';
 
-import { DEAD_PATHS, DERIVED_PATHS, applyWrites, assemble, importUpstream, routeSave, unitOfPath } from './settings-compat.js';
+import { DEAD_PATHS, applyWrites, assemble, importUpstream, lostLeaves, routeSave, unitOfPath } from './settings-compat.js';
 
 const CONTENT = path.join(import.meta.dirname, '../../default/content');
 const SHIPPED = JSON.parse(fs.readFileSync(path.join(CONTENT, 'settings.json'), 'utf8'));
@@ -26,17 +25,6 @@ function keys() {
 }
 
 /**
- * Every leaf of an object (arrays whole), by its keys.
- * @param {unknown} value
- * @param {string[]} [prefix]
- * @returns {[string[], unknown][]}
- */
-function leaves(value, prefix = []) {
-    if (!value || typeof value !== 'object' || Array.isArray(value) || (prefix.length && Object.keys(value).length === 0)) return [[prefix, value]];
-    return Object.entries(value).flatMap(([key, inner]) => leaves(inner, [...prefix, key]));
-}
-
-/**
  * @param {Record<string, any>} object
  * @param {string | string[]} path Dotted, or its keys.
  */
@@ -44,15 +32,6 @@ function at(object, path) {
     const keys = Array.isArray(path) ? path : path.split('.');
     return keys.reduce((value, key) => (value && typeof value === 'object' ? value[key] : undefined), object);
 }
-
-/**
- * The two-way translation's documented losses (the settings model §2.4), each a path and why.
- * @type {Record<string, string>}
- */
-const LOSSY = {
-    // §2.4.12: the current and the default persona are one user-level persona, the default, else the current.
-    'power_user.default_persona': 'user-level persona',
-};
 
 /**
  * Imports and assembles, through JSON as the store holds it.
@@ -65,16 +44,12 @@ function roundTrip(settings) {
 }
 
 /**
- * The leaves of `settings` that `back` doesn't give back, less the dead and derived ones.
+ * The leaves of `settings` that `back` doesn't give back, as text.
  * @param {Record<string, any>} settings
  * @param {Record<string, any>} back
  */
 function lost(settings, back) {
-    const skipped = [...DEAD_PATHS, ...DERIVED_PATHS, ...Object.keys(LOSSY)];
-    return leaves(settings)
-        .filter(([keys]) => !skipped.some(p => keys.join('.') === p || keys.join('.').startsWith(`${p}.`)))
-        .filter(([keys, value]) => !isDeepStrictEqual(at(back, keys), value)) // §2.4.7: key order is the model's
-        .map(([keys, value]) => `${keys.join('.')}: ${JSON.stringify(value)?.slice(0, 80)} → ${JSON.stringify(at(back, keys))?.slice(0, 80)}`);
+    return lostLeaves(settings, back).map(l => `${l.path.join('.')}: ${JSON.stringify(l.before)?.slice(0, 80)} → ${JSON.stringify(l.after)?.slice(0, 80)}`);
 }
 
 test('the shipped settings come back as they came, but what is dead or derived', () => {

@@ -758,3 +758,41 @@ export function applyWrites(model, writes) {
     }
     return next;
 }
+
+/**
+ * The two-way translation's documented losses (§2.4) at a path: why a value there may come back otherwise.
+ * @type {Readonly<Record<string, string>>}
+ */
+export const DOCUMENTED_LOSSES = Object.freeze({
+    // §2.4.12: the current and the default persona are one user-level persona, the default, else the current.
+    'power_user.default_persona': 'the current and the default persona are one user-level persona',
+});
+
+/**
+ * The leaves of upstream settings that `back` (assembled) doesn't give back as they were, less the dead, derived and
+ * documented-lossy paths and the keys other stores own; key order aside (§2.4.7).
+ * @param {Record<string, any>} settings
+ * @param {Record<string, any>} back
+ * @returns {{ path: string[], before: unknown, after: unknown }[]}
+ */
+export function lostLeaves(settings, back) {
+    const skipped = [...DEAD_PATHS, ...DERIVED_PATHS, ...Object.keys(DOCUMENTED_LOSSES), ...ELSEWHERE];
+    /** @type {{ path: string[], before: unknown, after: unknown }[]} */
+    const lost = [];
+    /**
+     * @param {unknown} value
+     * @param {string[]} keys
+     */
+    const walk = (value, keys) => {
+        const dotted = keys.join('.');
+        if (keys.length && skipped.some(p => dotted === p || dotted.startsWith(`${p}.`))) return;
+        if (value && typeof value === 'object' && !Array.isArray(value) && (keys.length === 0 || Object.keys(value).length > 0)) {
+            for (const [key, inner] of Object.entries(value)) walk(inner, [...keys, key]);
+            return;
+        }
+        const after = keys.reduce((v, key) => (v && typeof v === 'object' ? v[key] : undefined), /** @type {any} */ (back));
+        if (!canonicalSame(after, value)) lost.push({ path: keys, before: value, after });
+    };
+    walk(settings, []);
+    return lost;
+}

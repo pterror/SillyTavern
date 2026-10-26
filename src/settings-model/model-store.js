@@ -9,11 +9,18 @@ import { NO_PLACEHOLDER, PART_LISTS, REF_LISTS, REF_VALUES, refKey } from './ref
  * - A list of texts is text items; a list of parts (refs.js PART_LISTS) holds each part's entity as its item. An
  *   empty list, which has no items to be, is the value `list:<n>` (`[]`), so it reads back as one.
  * - A ref (refs.js REF_VALUES, REF_LISTS) is stored as the named entity's id; a name naming nothing gets a
- *   placeholder entity keyed by it (an unresolved ref, as a book link's), so it resolves once that entity exists.
+ *   placeholder entity keyed by it (an unresolved ref, as a book link's), so it resolves once that entity exists. A
+ *   placeholder has no DEFINED value, and reads as no entity.
  */
 
 /** The value stating an empty list: `<prefix><list number>`. */
 const EMPTY_LIST = 'list:';
+
+/**
+ * The value every entity written has: one without is a placeholder (a ref's name naming nothing yet), which reads
+ * as no entity and no catalog entry.
+ */
+const DEFINED = 'model:defined';
 
 /**
  * @typedef {import('./entity-draft.js').EntityDraft} EntityDraft
@@ -114,7 +121,7 @@ export async function writeDrafts(lib, drafts, { actor = null, warnings = [], re
         const id = /** @type {bigint} */ (ids.get(idKey(d.type, d.key)));
         const was = stored.get(idKey(d.type, d.key)) ?? null;
         /** @type {Map<number | string, { text?: string, json?: string }>} */
-        const values = new Map();
+        const values = new Map([[DEFINED, { text: '' }]]);
         for (const [field, raw] of Object.entries(d.values)) {
             const refType = REF_VALUES[d.type]?.[field];
             const value = refType !== undefined ? refText(refType, raw) : raw;
@@ -168,7 +175,15 @@ export async function readDraft(lib, type, key) {
     const [id] = await lib.ids(type, [key]);
     if (id === null) return null;
     const [entity] = await lib.entities([id]);
-    return entity ? draftOf(lib, entity) : null;
+    return entity && isDefined(entity) ? draftOf(lib, entity) : null;
+}
+
+/**
+ * Whether an entity was written as one (not a placeholder).
+ * @param {StoredEntity} entity
+ */
+function isDefined(entity) {
+    return entity.values.some(v => v.field === DEFINED);
 }
 
 /**
@@ -194,6 +209,7 @@ async function draftOf(lib, entity) {
             continue;
         }
         const value = v.text !== undefined ? v.text : JSON.parse(/** @type {string} */ (v.json));
+        if (v.field === DEFINED) continue;
         if (typeof v.field === 'string' && v.field.startsWith(EMPTY_LIST)) {
             emptyLists.push(Number(v.field.slice(EMPTY_LIST.length)));
             continue;
@@ -218,7 +234,7 @@ async function draftOf(lib, entity) {
     for (const [list, items] of Object.entries(byList)) {
         if (parts[list] !== undefined) {
             const partEntities = await lib.entities(items.map(i => BigInt(i.item)));
-            lists[list] = await Promise.all(partEntities.filter(Boolean).map(e => draftOf(lib, /** @type {StoredEntity} */ (e))));
+            lists[list] = await Promise.all(partEntities.filter(e => e && isDefined(e)).map(e => draftOf(lib, /** @type {StoredEntity} */ (e))));
             continue;
         }
         const texts = items.map(i => itemTexts.get(itemField(Number(list), i.item)) ?? '');
@@ -247,11 +263,12 @@ export async function keysOf(lib, ids) {
  * @param {LibraryEngine} lib
  * @param {number} type
  * @param {{ after?: string | null, limit: number }} page
- * @returns {Promise<{ drafts: EntityDraft[], more: boolean }>}
+ * @returns {Promise<{ drafts: EntityDraft[], more: boolean, last: string | null }>} `last`: the key to go on after.
  */
 export async function readCatalog(lib, type, { after = null, limit }) {
     const { entities, more } = await lib.store.libraryOfType(type, after, limit);
     const stored = await lib.entities(entities.map(e => e.id));
-    const drafts = await Promise.all(stored.filter(Boolean).map(e => draftOf(lib, /** @type {StoredEntity} */ (e))));
-    return { drafts, more };
+    const drafts = await Promise.all(stored.filter(e => e && isDefined(e)).map(e => draftOf(lib, /** @type {StoredEntity} */ (e))));
+    // `after` goes on from the last entity listed, a placeholder too.
+    return { drafts, more, last: entities.length ? entities[entities.length - 1].key : after };
 }

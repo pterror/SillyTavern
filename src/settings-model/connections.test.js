@@ -27,7 +27,7 @@ function filled(settings) {
         kai_settings: { api_server: '', ...settings.kai_settings },
         nai_settings: settings.nai_settings,
         horde_settings: settings.horde_settings,
-        extras: { apiUrl: 'http://localhost:5100', autoConnect: false },
+        extras: { apiUrl: 'http://localhost:5100', apiKey: '', autoConnect: false },
     };
 }
 

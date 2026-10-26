@@ -42,8 +42,10 @@ export function bundleDraftsFromFiles(directories, connections, newKey) {
     const made = [];
     /** @type {string[]} */
     const warnings = [];
+    // §2.4.8: a file that isn't JSON is listed, and left as it is.
+    const skipped = (/** @type {string} */ file) => warnings.push(`${file} isn't valid JSON; left as it is, not imported`);
     for (const api of PRESET_APIS) {
-        for (const { name, file } of listBundleFiles(directories, PRESET_GROUP[api], { order: 'locale' })) {
+        for (const { name, file } of listBundleFiles(directories, PRESET_GROUP[api], { order: 'locale', skipped })) {
             const from = presetFromUpstream(api, name, file);
             warnings.push(...from.warnings);
             if (from.connection) {
@@ -59,10 +61,10 @@ export function bundleDraftsFromFiles(directories, connections, newKey) {
         }
     }
     for (const kind of TEMPLATE_KINDS) {
-        for (const { name, file } of listBundleFiles(directories, `template.${kind}`)) bundles.push(templateFromUpstream(kind, name, file));
+        for (const { name, file } of listBundleFiles(directories, `template.${kind}`, { skipped })) bundles.push(templateFromUpstream(kind, name, file));
     }
-    for (const { name, file } of listBundleFiles(directories, 'theme')) bundles.push(themeFromUpstream(name, file));
-    for (const { name, file } of listBundleFiles(directories, 'quickReplies')) {
+    for (const { name, file } of listBundleFiles(directories, 'theme', { skipped })) bundles.push(themeFromUpstream(name, file));
+    for (const { name, file } of listBundleFiles(directories, 'quickReplies', { skipped })) {
         const set = quickReplySetFromUpstream(String(file?.name ?? name), file);
         warnings.push(...set.warnings);
         bundles.push(set.set);
@@ -83,22 +85,22 @@ export async function bundleFileFromStore(lib, group, name, connections) {
     if (group.startsWith('preset.')) {
         const api = group.slice('preset.'.length);
         const preset = await readDraft(lib, TYPE.samplerPreset, `${api}:${name}`);
-        if (!preset || Object.keys(preset.values).length === 0 && !preset.lists) return undefined;
+        if (!preset) return undefined;
         const ref = preset.values[CONNECTION_REF];
         const chosen = typeof ref === 'string' ? connections.find(c => c.key === ref) : undefined;
         return presetToUpstream(preset, api === 'openai' && chosen ? chatConnectionsToUpstream(connections.filter(c => String(c.values.type).startsWith('openai:')), chosen) : null);
     }
     if (group.startsWith('template.')) {
         const template = await readDraft(lib, TYPE.template, `${group.slice('template.'.length)}:${name}`);
-        return template && Object.keys(template.values).length ? templateToUpstream(template) : undefined;
+        return template ? templateToUpstream(template) : undefined;
     }
     if (group === 'theme') {
         const theme = await readDraft(lib, TYPE.theme, name);
-        return theme && Object.keys(theme.values).length ? themeToUpstream(theme) : undefined;
+        return theme ? themeToUpstream(theme) : undefined;
     }
     if (group === 'quickReplies') {
         const set = await readDraft(lib, TYPE.quickReplySet, name);
-        return set && Object.keys(set.values).length ? quickReplySetToUpstream(set) : undefined;
+        return set ? quickReplySetToUpstream(set) : undefined;
     }
     return undefined;
 }
