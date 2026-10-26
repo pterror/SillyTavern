@@ -25,6 +25,8 @@ function world() {
     };
     const models: Record<string, ModelRecord[]> = {};
     const writes: { owner: ChatOwner | null; range: LevelRange; path: string; value: unknown }[] = [];
+    /** How many entries each write had. */
+    const batches: number[] = [];
     const nest = (flat: Record<string, unknown>) => {
         const out: Record<string, unknown> = {};
         for (const [path, value] of Object.entries(flat)) {
@@ -48,10 +50,13 @@ function world() {
             }
             return { settings: nest(flat), sources };
         },
-        async writeAt(_user, owner, range, path, value) {
-            writes.push({ owner, range, path, value });
-            if (value === undefined) delete levels[range.to][path];
-            else levels[range.to][path] = value;
+        async write(_user, owner, range, entries) {
+            batches.push(entries.length);
+            for (const [path, value] of entries) {
+                writes.push({ owner, range, path, value });
+                if (value === undefined) delete levels[range.to][path];
+                else levels[range.to][path] = value;
+            }
         },
         ownerOf: async (_user, chat) => ({ avatar: `${chat.tree}.png` }),
         models: (_user, source) => models[source] ?? [],
@@ -66,7 +71,7 @@ function world() {
     });
     const view = (session?: string) => area.views['settings']!(context(session)) as Promise<SettingsView>;
     const act = (type: string, payload: unknown, session?: string) => area.actions[type]!(context(session), payload);
-    return { levels, writes, models, view, act };
+    return { levels, writes, batches, models, view, act };
 }
 
 test("the view: each field's value over the range, the level it comes from, and the API that decides what shows", async () => {
@@ -196,4 +201,51 @@ test("a field no level states is the app's default", async () => {
     const view = await w.view();
     expect(view.values['oai_settings.wi_format']).toBe('{0}');
     expect(view.sources['oai_settings.wi_format']).toBeUndefined();
+});
+
+test("top K's off value and mirostat's modes follow the text backend; the stored value isn't changed", async () => {
+    const w = world();
+    w.levels.user['textgenerationwebui_settings.type'] = 'aphrodite';
+    let view = await w.view();
+    expect(view.ranges['top_k_textgenerationwebui']).toMatchObject({ min: -1 });
+    expect(view.ranges['mirostat_mode_textgenerationwebui']).toMatchObject({ step: 2 });
+    expect(await w.act('settings.set', { path: 'textgenerationwebui_settings.mirostat_mode', value: 1 })).toMatchObject(
+        {
+            refused: expect.any(String),
+        },
+    );
+    w.levels.user['textgenerationwebui_settings.type'] = 'llamacpp';
+    view = await w.view();
+    expect(view.ranges['top_k_textgenerationwebui']).toMatchObject({ min: 0 });
+});
+
+test('neutralize writes every sampler at once, top K off as the backend takes it', async () => {
+    const w = world();
+    w.levels.user['textgenerationwebui_settings.type'] = 'vllm';
+    expect(await w.act('settings.neutralize', {})).toEqual({ changed: ['settings'] });
+    expect(w.batches).toEqual([expect.any(Number)]);
+    expect(w.batches[0]).toBeGreaterThan(40);
+    expect(w.levels.user['textgenerationwebui_settings.top_k']).toBe(-1);
+    expect(w.levels.user['textgenerationwebui_settings.temp']).toBe(1);
+});
+
+test("the sampler select is the user's, by backend; the view shows the backend's", async () => {
+    const w = world();
+    w.levels.user['textgenerationwebui_settings.type'] = 'ooba';
+    expect((await w.view()).samplers).toEqual({ manual: false, shown: [] });
+    await w.act('settings.samplers', { manual: true, shown: ['temp', 'top_p'] });
+    expect((await w.view()).samplers).toEqual({ manual: true, shown: ['temp', 'top_p'] });
+    // Another backend has its own.
+    w.levels.user['textgenerationwebui_settings.type'] = 'tabby';
+    expect((await w.view()).samplers).toEqual({ manual: false, shown: [] });
+    // The browser's old copy is taken only where there's none.
+    await w.act('settings.samplers.import', {
+        ooba: { manual: false, shown: ['min_p'] },
+        tabby: { manual: true, shown: ['min_p', 'no_such_sampler'] },
+    });
+    expect((await w.view()).samplers).toEqual({ manual: true, shown: ['min_p'] });
+    w.levels.user['textgenerationwebui_settings.type'] = 'ooba';
+    expect((await w.view()).samplers).toEqual({ manual: true, shown: ['temp', 'top_p'] });
+    await w.act('settings.samplers.reset', {});
+    expect((await w.view()).samplers).toEqual({ manual: false, shown: [] });
 });

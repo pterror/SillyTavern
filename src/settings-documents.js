@@ -22,6 +22,7 @@ import path from 'node:path';
  *   A save of settings shown by view(): each change written to the range's top level (a bundle's field or selection)
  *   or the user's.
  * @property {(context: { avatar?: string | null, groupId?: string | null }, range: { from: string, to: string }, path: string, value: unknown) => Promise<void>} writeAt
+ * @property {(context: { avatar?: string | null, groupId?: string | null }, range: { from: string, to: string }, entries: [string, unknown][]) => Promise<void>} writeAll
  *   Writes one path where an edit over the range goes (undefined: takes it away).
  * @property {(holder: string, change: { bundles?: Record<string, string | null>, set?: Record<string, unknown>, delete?: string[] }) => Promise<void>} writeLevel
  *   Changes a character's (`character:<avatar>`) or group's (`group:<id>`) statements: bundles stated (null: none),

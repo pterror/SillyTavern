@@ -30,6 +30,8 @@ function viewOf(over: Partial<SettingsView> = {}): SettingsView {
         counts: { user: 1, character: 3 },
         ranges: {},
         api: { main: 'openai', source: 'openai', textgen: '' },
+        zen: false,
+        samplers: { manual: false, shown: [] },
         ...over,
     };
 }
