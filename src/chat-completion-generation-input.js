@@ -3,21 +3,27 @@ import { apiTokenLimits, generationMacroFacts, variablesBefore } from './macro-f
 import { loadChatHistory } from './chat-request.js';
 import { readExtraBooks } from './endpoints/characters.js';
 import { resolveSpeakers } from './macro-scope.js';
-import { getCharacterCardFields } from './character-card-fields.js';
+import { getCharacterCardFields, getGroupCharacterDepthPrompts } from './character-card-fields.js';
 import { buildChatCompletionMessages, buildChatCompletionMessageExamples, character_names_behavior } from './chat-completion-messages.js';
 import { TokenHandler } from './chat-completion-budget.js';
 import { chat_completion_sources } from './chat-completion-tool-capabilities.js';
 import { resolveWorldInfoCandidates, world_info_insertion_strategy } from './world-info/candidate-resolution.js';
 import { activateWorldInfoEntries } from './world-info/activation.js';
 import { bucketActivatedEntries, world_info_position } from './world-info/result-bucketing.js';
-import { setExtensionPrompt, extension_prompt_types } from './extension-prompt-table.js';
+import { createExtensionPromptTable } from './extension-prompt-table.js';
+import { addDepthInjections, addNoteAndPersona, addPageInjections } from './prompt-injections.js';
+import { resolveAuthorsNote } from './authors-note.js';
+import { persona_description_defaults, persona_description_positions } from '../public/scripts/constants.js';
+import { GLOBAL_PROMPT_ORDER_ID, promptOrdersWithDefault, promptsWithDefaults } from '../public/scripts/prompt-manager-defaults.js';
+import { chatCompletionSettingsWithDefaults } from '../public/scripts/chat-completion-defaults.js';
 import { getRegexedString, regex_placement } from './regex-scripts-engine.js';
 import { countChatCompletionMessages } from './endpoints/tokenizers.js';
 import { resolveTokenizer, createTokenizerOutcome, tokenizerIdentity } from './tokenizer-resolve.js';
 import { createStoredCounter } from './token-count-store.js';
-import { getBiasStrings } from './prompt-line-formatting.js';
+import { formatMessageHistoryItem, getBiasStrings } from './prompt-line-formatting.js';
 import { appendFileAttachments } from './file-attachment-inline.js';
 import { substituteParams } from './macro-substitution.js';
+import { exampleBlocks } from './example-blocks.js';
 
 /**
  * Adapter/resolver layer between REAL on-disk state (settings.json - via settings-store.js's
@@ -178,9 +184,10 @@ import { substituteParams } from './macro-substitution.js';
  *   resolve from the active persona's own record in `power_user.persona_data` (keyed by
  *   `user_avatar`), not a flat `power_user.persona_description*` field - matching the client's own
  *   personaStore, which is that same `power_user.persona_data`.
- * - `oai_settings.prompts`/`.prompt_order` are real, present-by-default arrays (verified directly -
- *   `prompt_order` ships one entry keyed `character_id: 100000`, the client's own
- *   `configuration.promptOrder.dummyId` "no per-character order configured" sentinel).
+ * - `oai_settings.prompts`/`.prompt_order` are taken as the prompt manager takes them
+ *   (public/scripts/prompt-manager-defaults.js): the default prompts added where missing, the default order under
+ *   GLOBAL_PROMPT_ORDER_ID (100001) when none is saved there yet. The shipped settings' entry keyed 100000 is an
+ *   older order the chat completion prompt manager doesn't use.
  * - Several fields referenced by `prepareOpenAIMessages()`'s own doc comment/typedef are ABSENT from
  *   the shipped default settings.json entirely (only populated once a user actually touches the
  *   control client-side) - exactly the same pattern text-completion-generation-input.js already
@@ -218,10 +225,8 @@ import { substituteParams } from './macro-substitution.js';
  *   no equivalent stable, on-disk-derivable value without depending on
  *   the library's character query (a genuinely separate, heavier subsystem: the store's character
  *   index, out of scope for this resolver to depend on for a single id field).
- *   So `characterId` defaults to the PROMPT_ORDER_DUMMY_ID (`100000`, matching
- *   `PromptManager.js`'s own `configuration.promptOrder.dummyId` - the "no per-character order
- *   configured, use the global/default order" sentinel, which is also exactly what a fresh
- *   settings.json's own single `prompt_order` entry is keyed with) - the common case for a
+ *   So `characterId` defaults to the PROMPT_ORDER_DUMMY_ID (GLOBAL_PROMPT_ORDER_ID, 100001: the chat
+ *   completion prompt manager's `configuration.promptOrder.dummyId`, its global order) - the common case for a
  *   single-character chat with no character-specific prompt-manager order override. A caller that
  *   knows the real numeric id (e.g. has already resolved it via `queryCharacters()` itself) may pass
  *   an explicit `characterId` override.
@@ -486,8 +491,8 @@ import { substituteParams } from './macro-substitution.js';
  * @property {number} [world_info_character_strategy]
  */
 
-/** Mirrors PromptManager.js's `configuration.promptOrder.dummyId` - see FIELD-MAPPING NOTES above. */
-const PROMPT_ORDER_DUMMY_ID = 100000;
+/** The prompt order chat completion uses for everyone (the prompt manager's `configuration.promptOrder.dummyId`). */
+const PROMPT_ORDER_DUMMY_ID = GLOBAL_PROMPT_ORDER_ID;
 
 // Mirrored from public/scripts/chat-completion-settings.js's settings-defaults object (~line 420-510)
 // - see FIELD-MAPPING NOTES above for exactly why these fields need a code default at all (absent from
@@ -588,27 +593,6 @@ function isTextOnlyMessage(message) {
     return !!message && typeof message === 'object' && message.role !== 'tool'
         && Object.entries(message).every(([key, value]) => value === undefined
             || (TEXT_ONLY_MESSAGE_KEYS.has(key) && typeof value === 'string'));
-}
-
-/**
- * Narrow, faithful port of public/script.js's `parseMesExamples(examplesStr, isInstruct)`, RESTRICTED
- * to the `main_api === 'openai'` branch (this resolver is chat-completion-only, so `isInstruct` is
- * always false and `blockHeading` is always `'<START>\n'` - the client's own ternary
- * `(main_api === 'openai' || isInstruct) ? '<START>\n' : exampleSeparator` collapses to its first
- * branch unconditionally here, so `exampleSeparator`/`power_user.context.example_separator` is never
- * consulted and is not a parameter of this function).
- * @param {string} examplesStr `getCharacterCardFields()`'s own `mesExamples` output.
- * @returns {string[]} One raw example-block string per `<START>`-delimited block, ready for
- * `buildChatCompletionMessageExamples()`.
- */
-export function parseMesExamplesForChatCompletion(examplesStr) {
-    if (!examplesStr || examplesStr.length === 0 || examplesStr === '<START>') {
-        return [];
-    }
-    if (!examplesStr.startsWith('<START>')) {
-        examplesStr = '<START>\n' + examplesStr.trim();
-    }
-    return examplesStr.split(/<START>/gi).slice(1).map(block => `<START>\n${block.trim()}\n`);
 }
 
 /**
@@ -716,7 +700,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
     // (OaiSettingsShape/PowerUserSettingsShape/etc. above), the boundary-local cast this task's own
     // instructions call for.
     const {
-        oai_settings: oaiSettings = /** @type {OaiSettingsShape} */ ({}),
+        oai_settings: savedOaiSettings = /** @type {OaiSettingsShape} */ ({}),
         power_user: powerUser = /** @type {PowerUserSettingsShape} */ ({}),
         world_info_settings: worldInfoSettings = /** @type {WorldInfoSettingsShape} */ ({}),
         extension_settings: extensionSettings = {},
@@ -732,6 +716,8 @@ export async function resolveChatCompletionGenerationInput(directories, {
     }} */ (readSettingsAtPaths(directories, [
             'oai_settings', 'power_user', 'world_info_settings', 'extension_settings', 'username', 'user_avatar',
         ]));
+    // As the page loads them (loadOpenAISettings()): older settings migrated, a missing one its default.
+    const oaiSettings = /** @type {OaiSettingsShape} */ (chatCompletionSettingsWithDefaults(savedOaiSettings));
     // The client's getWorldInfoSettings() (public/scripts/world-info.js) nests the real selection
     // object under world_info_settings.world_info, and world_info_character_strategy alongside it -
     // there is no separate top-level `world_info`/`world_info_character_strategy` settings key on disk.
@@ -887,11 +873,6 @@ export async function resolveChatCompletionGenerationInput(directories, {
         mediaDisplaySetting: powerUser.media_display,
     });
 
-    const messageExamples = buildChatCompletionMessageExamples(
-        parseMesExamplesForChatCompletion(fields.mesExamples ?? ''),
-        { isGroup, name1, name2, appendNamesForGroup: true },
-    );
-
     // Real bias-string resolution - see the `bias` FIELD-MAPPING NOTE above. `prepareOpenAIMessages()`
     // has no internal getBiasStrings() call of its own, so (like world-info activation, decision 4
     // above) this resolver calls it directly, reusing its own already-built `chat`/`macroContext`.
@@ -943,6 +924,9 @@ export async function resolveChatCompletionGenerationInput(directories, {
     // is deliberately bypassed here.
     /** @type {(text: string) => Promise<number>} */
     const countTokensForWorldInfo = async (text) => tokenHandler.countTokenAsyncFn([{ content: text }]);
+    // The author's note, scanned for lorebook keys when its settings say so (public/script.js's Generate()).
+    const noteSettings = extensionSettings.note ?? {};
+    const authorsNote = resolveAuthorsNote({ chatMetadata, noteSettings, chat: promptChat, avatar, hasCharacterOrGroup: Boolean(avatar) || Boolean(groupId) });
     const { activatedEntries } = await activateWorldInfoEntries(worldInfoCandidates, chatForWI, {
         maxContext: oaiSettings.openai_max_context ?? 4095,
         budgetPercent: worldInfoSettings.world_info_budget ?? 25,
@@ -964,7 +948,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
         minActivations: worldInfoSettings.world_info_min_activations ?? 0,
         minActivationsDepthMax: worldInfoSettings.world_info_min_activations_depth_max ?? 0,
         // The quiet prompt is scanned like the client's `scan: true` QUIET_PROMPT extension-prompt slot.
-        additionalScanInjects: [quietPrompt].filter(Boolean),
+        additionalScanInjects: [quietPrompt, authorsNote.disabled === false && authorsNote.scan ? authorsNote.value : ''].filter(Boolean),
     });
     // WORLD_INFO placement regex, applied per activated entry - see the REGEX SCRIPTS FIELD-MAPPING
     // NOTE above. Depth override only applies to atDepth-positioned entries, matching
@@ -977,7 +961,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
     // (src/world-info/result-bucketing.js, also not a target file) requires as `WIActivatedEntry[]`.
     // Boundary cast, not a guess: same real underlying entries, a documented type gap in those two
     // (non-target) files.
-    const { worldInfoBefore, worldInfoAfter, worldInfoDepth: worldInfoDepthEntries } = bucketActivatedEntries(/** @type {WIActivatedEntry[]} */ (/** @type {unknown} */ (activatedEntries)), {
+    const { worldInfoBefore, worldInfoAfter, worldInfoExamples, worldInfoDepth: worldInfoDepthEntries, anBefore, anAfter } = bucketActivatedEntries(/** @type {WIActivatedEntry[]} */ (/** @type {unknown} */ (activatedEntries)), {
         resolveContent: (entry) => {
             const regexDepth = entry.position === world_info_position.atDepth ? (entry.depth ?? WI_DEFAULT_DEPTH) : null;
             return getRegexedString(entry.content, regex_placement.WORLD_INFO, regexScripts, {
@@ -986,24 +970,38 @@ export async function resolveChatCompletionGenerationInput(directories, {
         },
     });
 
-    // Real @Depth world-info injection - see doc comment decision 4. Faithful, verified port of
-    // src/text-completion-prompt-orchestrator.js's own Step 7.5 "1. World-info @Depth entries" loop
-    // (same key format/position/depth/scan/role), writing into THIS pipeline's own `injectionTable`
-    // (consumed by src/chat-completion-injection-prompts.js's `populateInjectionPrompts()` via
-    // src/chat-completion-populate.js) instead of that orchestrator's separate `extensionPromptTable`.
-    /** @type {ExtensionPromptTable} */
-    const injectionTable = {};
-    for (const depthEntry of worldInfoDepthEntries) {
-        setExtensionPrompt(
-            injectionTable,
-            `wi_depth_${depthEntry.depth}_${depthEntry.role}`,
-            depthEntry.entries.join('\n'),
-            extension_prompt_types.IN_CHAT,
-            depthEntry.depth,
-            false,
-            depthEntry.role,
-        );
+    // What a continue continues (public/script.js's Generate(): `cyclePrompt`): the last message as a prompt line, a
+    // space after it (the continue postfix) unless it ends in one.
+    let continued = cyclePrompt;
+    if (type === 'continue' && !continued && chat.length > 0) {
+        continued = formatMessageHistoryItem(chat[chat.length - 1], false, false, { isGroup, name1, name2, macroContext });
+        if (!continued.endsWith(' ')) continued += oaiSettings.continue_postfix ?? '';
     }
+
+    // The card's example blocks with the lorebook's example-message entries (src/example-blocks.js).
+    const messageExamples = buildChatCompletionMessageExamples(
+        exampleBlocks(fields.mesExamples ?? '', worldInfoExamples, { mainApi: 'openai', macroContext }),
+        { isGroup, name1, name2, appendNamesForGroup: true },
+    );
+
+    // What the prompt has injected besides its own parts, as the page's table holds it (src/prompt-injections.js):
+    // the page's extensions' injections, the author's note, the persona's description around it or in the chat, and
+    // what goes in the chat at a depth. The page builds the system prompts and the chat's injections from it alike.
+    const injectionTable = createExtensionPromptTable();
+    addPageInjections(injectionTable, pageInjections);
+    addNoteAndPersona(injectionTable, {
+        authorsNote, anBefore, anAfter,
+        personaDescription: typeof activePersona.description === 'string' ? activePersona.description : '',
+        personaDescriptionPosition: activePersona.position ?? persona_description_positions.IN_PROMPT,
+        personaDescriptionDepth: activePersona.depth ?? persona_description_defaults.depth,
+        personaDescriptionRole: activePersona.role ?? persona_description_defaults.role,
+    });
+    addDepthInjections(injectionTable, {
+        worldInfoDepthEntries,
+        groupDepthPrompts: isGroup && avatar != null ? await getGroupCharacterDepthPrompts(directories, groupId, avatar, macroContext) : [],
+        characterDepthPrompt: { text: fields.charDepthPrompt ?? '', depth: fields.charDepthPromptDepth, role: fields.charDepthPromptRole },
+        depthPromptScan: Boolean(noteSettings.allowWIScan),
+    });
 
     const resolved = {
         // The message the history ends at (null: the tree's root), for the caller to generate from.
@@ -1042,7 +1040,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
 
         // --- Generation identity/mode ---
         type, quietPrompt, quietImage,
-        extensionPrompts: {}, cyclePrompt,
+        extensionPrompts: injectionTable, cyclePrompt: continued,
 
         // --- Chat history ---
         messages, messageExamples,
@@ -1066,8 +1064,9 @@ export async function resolveChatCompletionGenerationInput(directories, {
         impersonationPrompt: oaiSettings.impersonation_prompt ?? '',
 
         // --- Prompt manager ---
-        prompts: Array.isArray(oaiSettings.prompts) ? oaiSettings.prompts : [],
-        promptOrder: Array.isArray(oaiSettings.prompt_order) ? oaiSettings.prompt_order : [],
+        // As the prompt manager uses them: every default prompt there, and the default order when there's none yet.
+        prompts: promptsWithDefaults(oaiSettings.prompts),
+        promptOrder: promptOrdersWithDefault(oaiSettings.prompt_order, characterId),
         characterId,
         macroContext,
 
@@ -1094,7 +1093,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
         injectionTable,
 
         historyOptions: {
-            type, cyclePrompt, isGroup,
+            type, cyclePrompt: continued, isGroup,
             newChatPrompt: oaiSettings.new_chat_prompt ?? '',
             newGroupChatPrompt: oaiSettings.new_group_chat_prompt ?? '',
             continuePrefill: Boolean(oaiSettings.continue_prefill ?? false),

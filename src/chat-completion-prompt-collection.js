@@ -13,7 +13,7 @@ import { substituteParams } from './macro-substitution.js';
  *   `[{ name, system_prompt, role, content, identifier }, ...]`.
  * - `oai_settings.prompt_order` is an array of per-character order lists:
  *   `[{ character_id, order: [{identifier, enabled}, ...] }, ...]`.
- *   `character_id: 100000` is the "dummy id" used for the global/non-per-character ordering strategy
+ *   `character_id: 100001` (GLOBAL_PROMPT_ORDER_ID) is the "dummy id" used for the global/non-per-character ordering strategy
  *   (see `PromptManager.js`'s `configuration.promptOrder.dummyId`) - it is just an ordinary entry from
  *   this module's point of view, since every lookup here only ever compares `String(character_id)`.
  *
