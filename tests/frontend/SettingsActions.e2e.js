@@ -1,5 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
+import { startOpenAICompat } from './openai-mock-server.js';
 
 // The settings area's actions against the real server and settings document (packages/server-ui/src/settings.ts):
 // the panel isn't on the new page yet, so these go through /api/ui/action as the page's client will.
@@ -54,5 +55,31 @@ test.describe('settings actions', () => {
         const answer = await act(page, 'settings.set', { path: 'oai_settings.top_p_openai', value: 0.9 });
         expect(answer.ok).toBe(true);
         expect(settingsOf(answer).sources['oai_settings.top_p_openai']).toBe('user');
+    });
+
+    test('a model list the source answers decides its model\'s limits', async ({ page }) => {
+        const mock = await startOpenAICompat({ models: [{ id: 'mock-m', max_context_length: 20000 }] });
+        try {
+            await page.evaluate(async () => {
+                // @ts-ignore
+                const headers = SillyTavern.getContext().getRequestHeaders();
+                const keys = { main_api: 'openai', 'oai_settings.chat_completion_source': 'mistralai', 'oai_settings.mistralai_model': 'mock-m' };
+                const response = await fetch('/api/settings/save-partial', { method: 'POST', headers, body: JSON.stringify({ keys }) });
+                if (!response.ok) throw new Error(`seeding the source failed: ${response.status}`);
+            });
+            // No list yet: Mistral's fallback.
+            expect(settingsOf(await act(page, 'view.open', { key: 'settings' })).ranges.openai_max_context.max).toBe(32767);
+            await page.evaluate(async (url) => {
+                // @ts-ignore
+                const headers = SillyTavern.getContext().getRequestHeaders();
+                const body = JSON.stringify({ chat_completion_source: 'mistralai', reverse_proxy: url });
+                const response = await fetch('/api/backends/chat-completions/status', { method: 'POST', headers, body });
+                if (!response.ok) throw new Error(`status failed: ${response.status}`);
+            }, mock.url);
+            expect(settingsOf(await act(page, 'view.open', { key: 'settings' })).ranges.openai_max_context.max).toBe(20000);
+            expect(await act(page, 'settings.set', { path: 'oai_settings.openai_max_context', value: 25000 })).toMatchObject({ ok: false });
+        } finally {
+            await mock.close();
+        }
     });
 });

@@ -216,6 +216,37 @@ export const SETTINGS_VIEWS = ['settings'];
  */
 const contextOf = owner => ({ avatar: owner && 'avatar' in owner ? owner.avatar : null, groupId: owner && 'group' in owner ? owner.group : null });
 
+/**
+ * Each user's chat completion model lists, by source, as the status route last answered them: the limits a model
+ * has (packages/server-ui/src/model-limits.ts) come from them. Memory only; after a restart they're the name tables'
+ * until the page connects again.
+ * @type {Map<string, Map<string, readonly Record<string, unknown>[]>>}
+ */
+const modelLists = new Map();
+
+/**
+ * Remembers the model list a chat completion status answer carries, and pushes the settings view (its limits).
+ * @param {import('express').Request} request
+ * @param {import('express').Response} response
+ * @param {import('express').NextFunction} next
+ */
+export function rememberModelLists(request, response, next) {
+    const source = request.body?.chat_completion_source;
+    if (!request.user || typeof source !== 'string') return next();
+    const json = response.json.bind(response);
+    response.json = body => {
+        if (response.statusCode < 400 && Array.isArray(body?.data)) {
+            const user = uiUser(request);
+            const lists = modelLists.get(user.handle) ?? new Map();
+            lists.set(source, body.data);
+            modelLists.set(user.handle, lists);
+            response.on('finish', () => ui.changed(user, SETTINGS_VIEWS).catch(error => console.error('[ui] not pushed:', error)));
+        }
+        return json(body);
+    };
+    next();
+}
+
 /** @type {import('@st/server-ui/settings').Ports} */
 const settingsPorts = {
     async view(user, owner, range) {
@@ -234,6 +265,7 @@ const settingsPorts = {
         if (!key) return null;
         return key.type === TYPE.group ? { group: key.key } : { avatar: key.key };
     },
+    models: (user, source) => modelLists.get(user.handle)?.get(source) ?? [],
 };
 
 export const ui = createUi([backgroundsArea(backgroundPorts), settingsArea(settingsPorts)], {

@@ -3,11 +3,12 @@
 import http from 'node:http';
 
 /**
- * Answers every chat completion with `reply`, whole or streamed in one piece, and logs every request.
- * @param {{ model?: string, reply?: string }} [options]
+ * Answers every chat completion with `reply`, whole or streamed in one piece, and logs every request. The model
+ * list is `models`, or `model` alone.
+ * @param {{ model?: string, reply?: string, models?: object[] }} [options]
  * @returns {Promise<{ url: string, log: { url: string, body: any }[], close: () => Promise<void> }>}
  */
-export function startOpenAICompat({ model = 'mock-chat-model', reply = 'Mock reply.' } = {}) {
+export function startOpenAICompat({ model = 'mock-chat-model', reply = 'Mock reply.', models = [{ id: model, object: 'model' }] } = {}) {
     /** @type {{ url: string, body: any }[]} */
     const log = [];
     const server = http.createServer((req, res) => {
@@ -20,7 +21,7 @@ export function startOpenAICompat({ model = 'mock-chat-model', reply = 'Mock rep
             const path = (req.url ?? '').split('?')[0];
             if (path.endsWith('/models')) {
                 res.writeHead(200, { 'Content-Type': 'application/json' });
-                return res.end(JSON.stringify({ object: 'list', data: [{ id: model, object: 'model' }] }));
+                return res.end(JSON.stringify({ object: 'list', data: models }));
             }
             if (path.endsWith('/chat/completions')) {
                 if (/** @type {any} */ (body).stream) {
