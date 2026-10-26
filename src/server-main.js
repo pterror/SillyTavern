@@ -54,7 +54,6 @@ import hostWhitelistMiddleware from './middleware/hostWhitelist.js';
 import userCssMiddleware from './middleware/userCss.js';
 import { FrontendAssets, frontendAssetMiddleware } from './frontend-assets.js';
 import getPublicLibConfig from '../webpack.config.js';
-import isDocker from 'is-docker';
 import compressionMiddleware from './middleware/compression.js';
 import { serveUi, ENTRY as UI_ENTRY } from '@st/serve-ui';
 import {
@@ -435,9 +434,8 @@ async function preSetupTasks() {
     await webpackMiddleware.runWebpackCompiler({ pruneCache: true });
     __mark('runWebpackCompiler');
 
-    // Same place as webpack's output: the data root, or the image's dist in Docker.
-    const uiOutDir = isDocker() ? path.resolve(process.cwd(), 'dist', '_ui') : path.join(globalThis.DATA_ROOT, '_ui');
-    servedUi = await serveUi({ outDir: uiOutDir, dev: process.env.ST_UI_DEV === '1' });
+    // The new page's build for this source: the one there, else its release's (built here only for unreleased source).
+    servedUi = await serveUi({ dev: process.env.ST_UI_DEV === '1' });
     __mark('serveUi');
 }
 

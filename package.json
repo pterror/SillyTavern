@@ -109,7 +109,6 @@
         "tokenizers": "^0.23.2",
         "url-join": "^5.0.0",
         "vectra": "^0.2.2",
-        "vite": "8.3.4",
         "wavefile": "^11.0.0",
         "webpack": "^5.105.4",
         "write-file-atomic": "^5.0.1",
@@ -160,7 +159,8 @@
         "plugins:install": "node plugins install",
         "postinstall": "patch-package && node scripts/patch-web-tokenizers.cjs",
         "check:packages": "vp check packages",
-        "test:packages": "vp test run"
+        "test:packages": "vp test run",
+        "build:ui": "node scripts/build-ui.mjs"
     },
     "bin": {
         "sillytavern": "./src/server-global.js"
@@ -206,7 +206,8 @@
         "eslint-plugin-playwright": "^2.3.0",
         "oxlint": "^1.79.0",
         "typescript": "^5.9.3",
-        "vite-plus": "1.1.0"
+        "vite-plus": "1.1.0",
+        "vite": "8.3.4"
     },
     "workspaces": [
         "packages/*"
