@@ -1,13 +1,13 @@
 import fs from 'node:fs';
+import { pageSettingsHash } from '../settings-hash.js';
 import path from 'node:path';
 
 import express from 'express';
 import sanitize from 'sanitize-filename';
 import _ from 'lodash';
-import { readAllSettingsAsJson, writeSettingsKeys } from '../settings-store.js';
+import { readAllSettings, writeSettingsKeys } from '../settings-store.js';
 import { readUserSettings } from '../settings-reads.js';
 import { resolveCharacterWorldLink } from '../../public/scripts/character-world-link.js';
-import { getStringHash } from '../../public/scripts/hash-utils.js';
 import { engineStoreHere, requestStore, storeRoute, userStore } from '../user-stores.js';
 import { MAX_UID, bookExistsHere, readBookHere } from '../world-info-engine.js';
 import { bookKey } from '../world-info-keys.js';
@@ -434,7 +434,7 @@ router.post('/rename', storeRoute('renaming a World Info book', async (request, 
         characters_updated: keys.filter(Boolean).map((/** @type {any} */ k) => k.key),
         characters_failed: [],
         settings,
-        ...(Object.keys(settings).length ? { settings_hash: getStringHash(readAllSettingsAsJson(directories)) } : {}),
+        ...(Object.keys(settings).length ? { settings_hash: pageSettingsHash(readAllSettings(directories)) } : {}),
     });
 }));
 

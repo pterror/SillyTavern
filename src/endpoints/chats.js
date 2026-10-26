@@ -15,15 +15,16 @@ import {
     formatBytes,
 } from '../util.js';
 import { triggerAutoSave } from './settings.js';
-import { readAllSettingsAsJson, writeSettingsKeys } from '../settings-store.js';
+import { readAllSettings, writeSettingsKeys } from '../settings-store.js';
 import { readUserSettings } from '../settings-reads.js';
-import { getStringHash } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel } from '../greeting-list.js';
 import { applyPageWrites } from '../page-writes.js';
 import { storedMessagesOf } from '../stored-messages.js';
 import { engineStoreHere, requestStore } from '../user-stores.js';
 import { chatContext, chatNamePosition, compatChatIdOf, isOwnChat, labelBaseOf, openChatNamed } from '../chat-request.js';
-import { SESSION_GONE_HEADER } from '../request-session.js';
+import { SESSION_GONE_HEADER, sessionHeaderOf } from '../request-session.js';
+import { ui, uiUser } from '../ui-wiring.js';
+import { pageSettingsHash } from '../settings-hash.js';
 import { loadSync, resolveChatNameSync, sessionCompatId, storedForm, treeOfChatIdSync } from '../chat-engine.js';
 import { TYPE } from '../library-engine.js';
 import { USER_DIRECTORY_TEMPLATE } from '../constants.js';
@@ -897,7 +898,7 @@ async function recordLastOpened(request, opened) {
     }
     await writeSettingsKeys(directories, stored);
     triggerAutoSave(request.user.profile.handle, request.user.directories);
-    return { ...stored, settings_hash: getStringHash(readAllSettingsAsJson(directories)) };
+    return { ...stored, settings_hash: pageSettingsHash(readAllSettings(directories)) };
 }
 
 /**
@@ -974,7 +975,12 @@ async function openChatAnswer(request, response, body) {
     if (at === undefined) at = fresh ? null : await chats.landingOf(chat.tree, chat.session.reader());
     const loaded = at === null ? null : await chats.load({ tree: chat.tree, at, session: chat.session.reader().session });
     const metadata = loaded?.metadata ?? await chats.metadata(chat.tree, null, chat.session.reader().session);
+    // The tab shows this chat now: the new code's views that follow the chat, as they are for it, go with the answer.
+    // The tab's session is the one this request made it, if it made one (the tab takes it from the answer).
+    const tab = chat.session.reader().session ?? sessionHeaderOf(request);
+    const ui_views = typeof tab === 'string' && tab !== '' ? await ui.showChat(uiUser(request), tab, { tree: String(chat.tree) }) : [];
     const common = {
+        ui_views,
         chat: await compatChatIdOf(chat),
         label_base: await labelBaseOf(chat),
         chat_metadata: { ...metadata },

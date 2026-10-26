@@ -464,6 +464,18 @@ function reconnect() {
 }
 
 /**
+ * The new page's hold on this stream (public/scripts/new-ui.js attaches it when the new page starts): the views the
+ * server pushes, and each (re)connect.
+ * @type {{ views: (views: unknown[]) => void, connected: () => void } | null}
+ */
+let newPage = null;
+
+/** @param {{ views: (views: unknown[]) => void, connected: () => void }} handlers */
+export function attachNewPage(handlers) {
+    newPage = handlers;
+}
+
+/**
  * Takes a frame about the tab's session; false for any other.
  * @param {any} message
  */
@@ -483,8 +495,13 @@ function takeSessionFrame(message) {
             streamMissing = false;
             gotSession?.();
             gotSession = null;
+            // A (re)connected stream: the server may not know what the new page shows (it restarted).
+            newPage?.connected();
             return true;
         }
+        case 'views':
+            newPage?.views(message.views);
+            return true;
         case 'session-chats':
             setChats(message.chats ?? []);
             return true;

@@ -230,7 +230,7 @@ import {
     getPersonaDescriptionDepth,
     getPersonaDescriptionRole,
 } from './scripts/personas.js';
-import { getBackgrounds, initBackgrounds, loadBackgroundSettings, background_settings } from './scripts/backgrounds.js';
+import { startNewUi, takeViews, chatClosed } from './scripts/new-ui.js';
 import { loader } from './scripts/action-loader.js';
 import { BulkEditOverlay } from './scripts/BulkEditOverlay.js';
 import { initTextGenModels } from './scripts/textgen-models.js';
@@ -1512,9 +1512,17 @@ async function firstLoadInit() {
     setupCharacterChangeStream();
 
     setStage('Loading assets');
-    await getBackgrounds();
+    // The new page (packages/ui): the backgrounds are its.
+    startNewUi({
+        quietPrompt: prompt => generateQuietPrompt({ quietPrompt: prompt }),
+        // What this page shows, said again to the server whenever the tab's stream reconnects.
+        currentChat: () => {
+            if (selected_group != null) return { group: String(selected_group) };
+            const avatar = getCurrentCharacter()?.avatar;
+            return typeof avatar === 'string' && avatar !== '' && chat.length > 0 ? { avatar } : null;
+        },
+    });
     await initTokenizers();
-    initBackgrounds();
     initAuthorsNote();
     await initPersonas();
     await initSlashCommandAutoComplete();
@@ -6595,6 +6603,7 @@ export function resetChatState() {
     // resets chat metadata
     setChatMetadata({});
     _resetMetadataSaveSnapshot();
+    chatClosed();
 }
 
 /**
@@ -7008,6 +7017,8 @@ export async function unshallowCharacter(characterId) {
  * @property {string|null} active_group
  * @property {number} [settings_hash]
  * @property {string[]} [stored_sends] Of the send keys the request named, those the server has stored.
+ * @property {{ key: string, version: number, value: unknown }[]} [ui_views] The new page's views that follow the chat,
+ * as they are for the chat opened.
  */
 
 /** What the open chat's suggested bookmark and branch names start from, as the server last answered it. */
@@ -7077,6 +7088,8 @@ export function chatOpenSendKeys(body) {
  */
 export function takeChatOpenAnswer(body, answer) {
     takeChatLabelBase(answer);
+    // The new page's views for the chat now open (its background...).
+    takeViews(answer.ui_views);
     forgetStoredSends(chatOpenOwner(body), Array.isArray(answer.stored_sends) ? answer.stored_sends : []);
     setActiveCharacter(answer.active_character);
     setActiveGroup(answer.active_group);
@@ -7644,9 +7657,6 @@ async function applySettings(data, initLoaderHandle = null, onStageChange = null
         // Load character tags
         await loadTagsSettings();
 
-        // Load background
-        loadBackgroundSettings(settings);
-
         // Load proxy presets
         loadProxyPresets(settings);
 
@@ -7739,7 +7749,6 @@ async function applySettings(data, initLoaderHandle = null, onStageChange = null
             nai_settings: nai_settings,
             kai_settings: kai_settings,
             oai_settings: oai_settings,
-            background: background_settings,
             proxies: proxies,
             selected_proxy: selected_proxy,
         });
@@ -7848,7 +7857,6 @@ async function performSave({ full }) {
         nai_settings: nai_settings,
         kai_settings: kai_settings,
         oai_settings: oai_settings,
-        background: background_settings,
         proxies: proxies,
         selected_proxy: selected_proxy,
     };
@@ -13141,6 +13149,7 @@ export async function closeCurrentChat() {
         this_edit_mes_id = undefined;
         setChatMetadata({});
         _resetMetadataSaveSnapshot();
+        chatClosed();
         selected_button = 'characters';
         $('#rm_button_selected_ch').children('h2').text('');
         // A real close, not just switching the visible menu away - the panel's character/chat no longer applies.
@@ -13361,6 +13370,8 @@ export async function newAssistantChat({ temporary = false } = {}) {
     chat.splice(0, chat.length);
     setChatMetadata({});
     _resetMetadataSaveSnapshot();
+    // A temporary chat is no stored chat: nothing of one shows (its background...).
+    chatClosed();
     setCharacterName(neutralCharacterName);
     sendSystemMessage(system_message_types.ASSISTANT_NOTE);
 }

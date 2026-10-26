@@ -10,6 +10,7 @@ import { getConfigValue, generateTimestamp, removeOldBackups } from '../util.js'
 import { getAllUserHandles, getUserDirectories } from '../users.js';
 import { getFileNameValidationFunction } from '../middleware/validateFileName.js';
 import { CHAR_LORE_PATH, getStringHash, seedKeyHashes, setAtPath, settingsWithoutCharLore } from '../../public/scripts/hash-utils.js';
+import { SERVER_OWNED_SETTINGS, pageSettingsHash } from '../settings-hash.js';
 import {
     readAllSettings,
     valuesAtPaths,
@@ -242,6 +243,20 @@ function settingsSavedOver(request, directories) {
     return at ? at.document.view(at.context, at.range).settings : readAllSettings(directories);
 }
 
+/**
+ * A page's save with the keys the server owns as the server has them, whatever the page sent for them.
+ * @param {Record<string, unknown>} saved
+ * @param {Record<string, unknown>} current
+ */
+function withServerOwned(saved, current) {
+    const out = { ...saved };
+    for (const key of SERVER_OWNED_SETTINGS) {
+        if (Object.hasOwn(current, key)) out[key] = current[key];
+        else delete out[key];
+    }
+    return out;
+}
+
 function checkSettingsConflict(request, directories) {
     const expectedHashHeader = request.get('X-Settings-Hash');
     if (expectedHashHeader === undefined) {
@@ -253,7 +268,7 @@ function checkSettingsConflict(request, directories) {
         return { ok: true };
     }
 
-    const currentHash = getStringHash(JSON.stringify(settingsSavedOver(request, directories), null, 4));
+    const currentHash = pageSettingsHash(settingsSavedOver(request, directories));
     return { ok: currentHash === expectedHash };
 }
 
@@ -272,8 +287,9 @@ router.post('/save', async function (request, response) {
         // Keeps the key files the body leaves out: the client's full save has no tags, tag_map or accountStorage.
         // Its charLore isn't stored (writeNamedSettings() leaves it out).
         const at = savedIn(request);
-        if (at) await at.document.saveIn(at.context, at.range, /** @type {any} */ (settingsWithoutCharLore('', request.body).value));
-        else await writeNamedSettings(directories, request.body);
+        const body = withServerOwned(request.body, settingsSavedOver(request, directories));
+        if (at) await at.document.saveIn(at.context, at.range, /** @type {any} */ (settingsWithoutCharLore('', body).value));
+        else await writeNamedSettings(directories, body);
         void reportIgnoredCharLore(request, settingsWithoutCharLore('', request.body).charLore);
         triggerAutoSave(request.user.profile.handle, request.user.directories);
         // Key order in the reconstructed store may differ from the client's payload, so the client can't just
@@ -283,7 +299,7 @@ router.post('/save', async function (request, response) {
         const stored = settingsSavedOver(request, directories);
         const keyHashes = {};
         seedKeyHashes(keyHashes, stored);
-        response.send({ result: 'ok', settingsHash: getStringHash(JSON.stringify(stored, null, 4)), keyHashes });
+        response.send({ result: 'ok', settingsHash: pageSettingsHash(stored), keyHashes });
     } catch (err) {
         console.error(err);
         response.send(err);
@@ -300,13 +316,15 @@ router.post('/save-partial', async function (request, response) {
     try {
         const directories = request.user.directories;
 
-        const { keys, expectedHashes } = request.body ?? {};
-        if (typeof keys !== 'object' || keys === null || Array.isArray(keys)) {
+        const { keys: sent, expectedHashes } = request.body ?? {};
+        if (typeof sent !== 'object' || sent === null || Array.isArray(sent)) {
             return response.status(400).send({
                 result: 'error',
                 error: 'Partial update body must include a "keys" object of top-level settings keys to merge.',
             });
         }
+        // The keys the server owns aren't the page's to write.
+        const keys = Object.fromEntries(Object.entries(sent).filter(([key]) => !SERVER_OWNED_SETTINGS.has(key.split('.')[0])));
 
         if (expectedHashes && typeof expectedHashes === 'object' && !Array.isArray(expectedHashes)) {
             const paths = Object.keys(expectedHashes);
@@ -351,7 +369,7 @@ router.post('/save-partial', async function (request, response) {
         for (const top of new Set(Object.keys(keys).map(key => key.split('.')[0]))) {
             if (Object.hasOwn(stored, top)) seedKeyHashes(keyHashes, stored[top], top);
         }
-        response.send({ result: 'ok', settingsHash: getStringHash(JSON.stringify(stored, null, 4)), keyHashes });
+        response.send({ result: 'ok', settingsHash: pageSettingsHash(stored), keyHashes });
     } catch (err) {
         console.error(err);
         response.send(err);
@@ -402,7 +420,7 @@ router.post('/level', async function (request, response) {
         await document.writeLevel(`${holder.type}:${holder.id}`, change);
         const context = holder.type === 'group' ? { groupId: holder.id } : { avatar: holder.id };
         const settings = document.settingsFor(context);
-        response.send({ result: 'ok', settings, settingsHash: getStringHash(JSON.stringify(settings, null, 4)) });
+        response.send({ result: 'ok', settings, settingsHash: pageSettingsHash(settings) });
     } catch (err) {
         console.error('Could not change a level\'s settings', err);
         response.status(500).send({ error: true });
@@ -419,11 +437,11 @@ router.post('/for-context', function (request, response) {
     const context = contextOf(request.body);
     if (!document) {
         const settings = readAllSettings(directories);
-        return response.send({ settings, sources: {}, settingsHash: getStringHash(JSON.stringify(settings, null, 4)) });
+        return response.send({ settings, sources: {}, settingsHash: pageSettingsHash(settings) });
     }
     try {
         const { settings, sources } = document.view(context, rangeOf(request.body));
-        response.send({ settings, sources, settingsHash: getStringHash(JSON.stringify(settings, null, 4)) });
+        response.send({ settings, sources, settingsHash: pageSettingsHash(settings) });
     } catch (err) {
         response.status(400).send({ error: String(/** @type {Error} */ (err).message) });
     }
@@ -471,7 +489,7 @@ router.post('/toggle-extension', async function (request, response) {
         response.send({
             result: 'ok',
             disabledExtensions: nextDisabledExtensions,
-            settingsHash: getStringHash(readAllSettingsAsJson(directories)),
+            settingsHash: pageSettingsHash(readAllSettings(directories)),
         });
     } catch (err) {
         console.error(err);
@@ -518,7 +536,7 @@ router.post('/get', storeRoute('reading settings', async (request, response) => 
 
     response.send({
         settings: filled,
-        settingsHash: getStringHash(settings),
+        settingsHash: pageSettingsHash(JSON.parse(settings)),
         keyHashes,
         koboldai_settings,
         koboldai_setting_names,

@@ -56,7 +56,7 @@ import { FrontendAssets, frontendAssetMiddleware } from './frontend-assets.js';
 import getPublicLibConfig from '../webpack.config.js';
 import isDocker from 'is-docker';
 import compressionMiddleware from './middleware/compression.js';
-import { serveUi } from '@st/serve-ui';
+import { serveUi, ENTRY as UI_ENTRY } from '@st/serve-ui';
 import {
     getVersion,
     color,
@@ -230,6 +230,8 @@ const frontendAssets = new FrontendAssets({
     globalExtensionsDirectory: () => globalThis.GLOBAL_EXTENSIONS_PATH,
     userCssPath: () => path.join(globalThis.DATA_ROOT, '_css', 'user.css'),
     extensionsEnabled: () => !!getConfigValue('extensions.enabled', true, 'boolean'),
+    // The new page's entry, at the file built for it (null until it's built: before the server listens).
+    moduleAliases: () => (servedUi ? { [UI_ENTRY]: servedUi.entry() } : {}),
 });
 
 // Host index page
@@ -288,9 +290,9 @@ const webpackMiddleware = getWebpackServeMiddleware();
 app.use(frontendAssetMiddleware(frontendAssets));
 app.use(webpackMiddleware);
 // The new page (packages/ui), ready before the server listens (preSetup).
-/** @type {import('express').Router | null} */
-let uiRouter = null;
-app.use((request, response, next) => (uiRouter ? uiRouter(request, response, next) : next()));
+/** @type {import('@st/serve-ui').ServedUi | null} */
+let servedUi = null;
+app.use((request, response, next) => (servedUi ? servedUi.router(request, response, next) : next()));
 app.use(userCssMiddleware);
 app.use(express.static(path.join(serverDirectory, 'public'), {}));
 
@@ -435,7 +437,7 @@ async function preSetupTasks() {
 
     // Same place as webpack's output: the data root, or the image's dist in Docker.
     const uiOutDir = isDocker() ? path.resolve(process.cwd(), 'dist', '_ui') : path.join(globalThis.DATA_ROOT, '_ui');
-    uiRouter = await serveUi({ outDir: uiOutDir, dev: process.env.ST_UI_DEV === '1' });
+    servedUi = await serveUi({ outDir: uiOutDir, dev: process.env.ST_UI_DEV === '1' });
     __mark('serveUi');
 }
 

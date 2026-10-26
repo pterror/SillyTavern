@@ -1,10 +1,23 @@
 {
     "verbose": true,
-    "transform": {},
+    "transform": {
+        "\\.ts$": "<rootDir>/util/strip-types-transform.cjs"
+    },
     "testEnvironment": "node",
     "globalSetup": "<rootDir>/jest-global-setup.js",
     "globalTeardown": "<rootDir>/jest-global-teardown.js",
     "moduleNameMapper": {
-        "^/scripts/(.*)$": "<rootDir>/../public/scripts/$1"
-    }
+        "^/scripts/(.*)$": "<rootDir>/../public/scripts/$1",
+        "^/ui/entry\\.js$": "<rootDir>/util/ui-entry-stub.js"
+    },
+    "extensionsToTreatAsEsm": [
+        ".ts"
+    ],
+    "moduleFileExtensions": [
+        "js",
+        "mjs",
+        "cjs",
+        "json",
+        "ts"
+    ]
 }

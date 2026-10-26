@@ -166,15 +166,17 @@ fi
 
 # The new code (packages/) is held to all of it: formatting, every lint rule (the st/* rules included) and strict
 # types with no errors at all, and its tests passing. Unlike the old code, there's no baseline to stay under.
-if ! packages_output="$(npx vp check packages 2>&1)"; then
-    echo "pre-commit: blocked -- 'vp check packages' failed in the staged snapshot:" >&2
-    printf '%s\n' "$packages_output" | tail -40 >&2
-    exit 1
-fi
-if ! packages_output="$(npx vp test run 2>&1)"; then
-    echo "pre-commit: blocked -- the packages' tests failed in the staged snapshot:" >&2
-    printf '%s\n' "$packages_output" | tail -40 >&2
-    exit 1
+if [ -d packages ]; then
+    if ! packages_output="$(npx vp check packages 2>&1)"; then
+        echo "pre-commit: blocked -- 'vp check packages' failed in the staged snapshot:" >&2
+        printf '%s\n' "$packages_output" | tail -40 >&2
+        exit 1
+    fi
+    if ! packages_output="$(npx vp test run 2>&1)"; then
+        echo "pre-commit: blocked -- the packages' tests failed in the staged snapshot:" >&2
+        printf '%s\n' "$packages_output" | tail -40 >&2
+        exit 1
+    fi
 fi
 
 exit 0
