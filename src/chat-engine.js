@@ -855,11 +855,14 @@ export class ChatEngine {
      * @param {Record<string, any>[]} cardGreetings
      */
     unstoredGreetings(rows, cardGreetings) {
-        const seen = new Set(rows.map(r => identityOf(r.message)));
+        // Spaces and line breaks around the text don't show, and an edit in the chat trims them off: a greeting
+        // differing from a stored opening only by them is that opening.
+        const shownIdentity = (/** @type {Record<string, any>} */ m) => identityOf({ ...m, mes: typeof m?.mes === 'string' ? m.mes.trim() : m?.mes });
+        const seen = new Set(rows.map(r => shownIdentity(r.message)));
         const out = [];
         for (const greeting of Array.isArray(cardGreetings) ? cardGreetings : []) {
             const o = storedForm(greeting);
-            const key = identityOf(o);
+            const key = shownIdentity(o);
             if (seen.has(key)) continue;
             seen.add(key);
             out.push(o);

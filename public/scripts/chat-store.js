@@ -483,56 +483,56 @@ export async function _mergeCardGreetingsIntoOpening({ greetingEdit = null, gree
     const head = await ask({});
     if (!head) return;
     const storedCount = head.stored ?? 0;
+    const total = head.total ?? 0;
 
-    const cardOnlyCount = (head.total ?? 0) - storedCount;
+    const cardOnlyCount = total - storedCount;
     const tail = cardOnlyCount > 0 ? await ask({ offset: storedCount, limit: cardOnlyCount }) : null;
     if (cardOnlyCount > 0 && !tail) return;
-    const extras = (tail?.alternatives ?? []).filter(a => a.node_id == null || a.node_id === '');
 
     const current = _chatAt(0);
     if (current?.node_id == null || current.node_id === '' || current.node_id !== opening.node_id) return;
 
-    const swipes = Array.isArray(current.swipes) ? [...current.swipes] : [current.mes ?? ''];
-    // A hole (a swipe slot dropped in the rebuild below) is kept in swipe_info as `null`, not
-    // omitted, to keep the two arrays index-aligned - so this array's element type is nullable.
+    // The server's list, at the server's positions, as a fresh load lays it out (script.js's _openingFromTree()):
+    // the stored openings, then the card's greetings no stored opening already is. What isn't in a window read is a
+    // hole (`null`), read when swiped to, as on load.
+    /** @type {(string|null)[]} */
+    const keptSwipes = new Array(total).fill(null);
     /** @type {(SwipeInfoWithSpeaker|null)[]} */
-    const swipeInfo = Array.isArray(current.swipe_info)
-        ? [...current.swipe_info]
-        : [{ send_date: current.send_date, extra: current.extra ?? {}, node_id: current.node_id }];
+    const keptInfo = new Array(total).fill(null);
+    /** @param {OpeningsResponse|null} window @param {number} start */
+    const place = (window, start) => (window?.alternatives ?? []).forEach((alt, k) => {
+        const at = start + k;
+        if (at < 0 || at >= total) return;
+        keptSwipes[at] = alt.mes;
+        // Provisional id, not absent, for a card-only greeting — an absent id reads as a new alternative to create.
+        keptInfo[at] = {
+            send_date: alt.send_date, extra: alt.extra ?? {},
+            name: alt.name, is_user: alt.is_user,
+            node_id: alt.node_id != null && alt.node_id !== '' ? alt.node_id : provisionalNodeId(alt.name ?? speaker, alt.mes),
+        };
+    });
+    place(head, head.offset ?? 0);
+    place(tail, tail?.offset ?? storedCount);
 
-    // Stored openings come first, at the same positions as on the server, so a slot here can be
-    // addressed by the server's index; the card-only tail after them is rebuilt from the card.
-    /** @type {string[]} */
-    const keptSwipes = [];
-    /** @type {(SwipeInfoWithSpeaker|null)[]} */
-    const keptInfo = [];
-    for (let k = 0; k < storedCount; k++) {
-        const isStored = isStoredNodeId(swipeInfo[k]?.node_id) && typeof swipes[k] === 'string';
-        keptSwipes.push(isStored ? swipes[k] : null);
-        keptInfo.push(isStored ? swipeInfo[k] : null);
-    }
-
-    const known = new Set(keptSwipes.filter(x => typeof x === 'string'));
-    for (const extra of extras) {
-        if (known.has(extra.mes)) continue;
-        known.add(extra.mes);
-        keptSwipes.push(extra.mes);
-        // Provisional id, not absent — an absent id reads as a new alternative to create.
-        keptInfo.push({
-            send_date: extra.send_date, extra: extra.extra ?? {},
-            name: extra.name, is_user: extra.is_user,
-            node_id: provisionalNodeId(extra.name ?? speaker, extra.mes),
-        });
-    }
-
-    const unchanged = keptSwipes.length === swipes.length
-        && keptSwipes.every((x, k) => x === swipes[k]);
-    if (unchanged) return;
-
-    // Whatever is being shown must survive the rebuild.
+    // Whatever is being shown must survive the rebuild: a stored opening by its id, read around it when the window
+    // read didn't reach it; a card greeting by its text.
+    const swipes = Array.isArray(current.swipes) ? current.swipes : [current.mes ?? ''];
     const shownWas = current.swipe_id ?? 0;
     const shownText = Array.isArray(current.swipes) ? current.swipes[shownWas] : current.mes;
-    const shownAt = typeof shownText === 'string' ? keptSwipes.indexOf(shownText) : -1;
+    if (isStoredNodeId(current.node_id) && !openings && !keptInfo.some(info => info?.node_id === current.node_id)) {
+        const around = await ask({ around: { name: current.name, is_user: current.is_user, mes: current.mes } });
+        if (around) place(around, around.offset ?? 0);
+        if (_chatAt(0) !== current) return;
+    }
+    const shownAt = isStoredNodeId(current.node_id)
+        ? keptInfo.findIndex(info => info?.node_id === current.node_id)
+        : (typeof shownText === 'string' ? keptSwipes.indexOf(shownText) : -1);
+
+    const unchanged = keptSwipes.length === swipes.length
+        && keptSwipes.every((x, k) => x === swipes[k])
+        && keptInfo.every((info, k) => (info?.node_id ?? null) === (current.swipe_info?.[k]?.node_id ?? null))
+        && shownAt === shownWas;
+    if (unchanged) return;
 
     /**
      * Where `alt` sits in keptSwipes, filling its slot if it's a hole; -1 if it has no slot.
