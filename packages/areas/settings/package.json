@@ -1,0 +1,21 @@
+{
+    "name": "@st/settings",
+    "private": true,
+    "type": "module",
+    "exports": {
+        "./protocol": "./protocol.ts",
+        "./server": "./server.ts",
+        "./model-limits": "./model-limits.ts",
+        "./page": "./page/index.ts"
+    },
+    "dependencies": {
+        "@st/page": "*",
+        "@st/protocol": "*",
+        "@st/server-ui": "*",
+        "solid-js": "1.9.17",
+        "valibot": "1.5.0"
+    },
+    "devDependencies": {
+        "vite-plus": "1.1.0"
+    }
+}

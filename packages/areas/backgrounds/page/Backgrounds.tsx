@@ -1,13 +1,13 @@
 import { For, Show, createEffect, createMemo, createSignal } from 'solid-js';
 import type { Accessor } from 'solid-js';
-import { VIEW, CHAT_VIEW, COLUMNS, FITTINGS, SORT_ORDERS } from '@st/protocol/backgrounds';
-import type { actions } from '@st/protocol/backgrounds';
-import type { Background, BackgroundsView, ChatBackgroundsView, Folder, Ref } from '@st/protocol/backgrounds';
+import { VIEW, CHAT_VIEW, COLUMNS, FITTINGS, SORT_ORDERS } from '../protocol.ts';
+import type { actions } from '../protocol.ts';
+import type { Background, BackgroundsView, ChatBackgroundsView, Folder, Ref } from '../protocol.ts';
 import type { Payload } from '@st/protocol';
-import type { Client } from '../../client.ts';
-import { classes } from '../../classes.ts';
-import { useUi } from '../../context.ts';
-import { ask } from '../../layers/dialog.tsx';
+import type { Client } from '@st/page/client';
+import { classes } from '@st/page/classes';
+import { useUi } from '@st/page/context';
+import { ask } from '@st/page/dialog';
 
 // The backgrounds drawer: the system's backgrounds (with folders) and the open chat's, each shown from the server's
 // view. What's only this drawer's (the tab, the search, the folder open, what's ticked) is the drawer's own.

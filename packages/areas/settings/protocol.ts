@@ -1,5 +1,5 @@
 import * as v from 'valibot';
-import type { ActionSchemas } from './index.ts';
+import type { ActionSchemas } from '@st/protocol';
 
 // The settings the AI response configuration panel shows, as declarations: each field's control, label, range,
 // group and when it's shown come from here (the server validates a change against its field; the page draws the

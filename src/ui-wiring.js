@@ -3,8 +3,8 @@ import path from 'node:path';
 
 import sanitize from 'sanitize-filename';
 import { createUi } from '@st/server-ui';
-import { backgroundsArea } from '@st/server-ui/backgrounds';
-import { settingsArea } from '@st/server-ui/settings';
+import { backgroundsArea } from '@st/backgrounds/server';
+import { settingsArea } from '@st/settings/server';
 
 import { userStore } from './user-stores.js';
 import { TYPE } from './library-engine.js';
@@ -67,7 +67,7 @@ async function describe(directories, file) {
     });
 }
 
-/** @type {import('@st/server-ui/backgrounds').Ports} */
+/** @type {import('@st/backgrounds/server').Ports} */
 const backgroundPorts = {
     files: {
         async list(user) {
@@ -206,10 +206,10 @@ const backgroundPorts = {
     },
 };
 
-/** The backgrounds' views (packages/protocol/src/backgrounds.ts). */
+/** The backgrounds' views (packages/areas/backgrounds/protocol.ts). */
 export const BACKGROUND_VIEWS = ['backgrounds', 'backgrounds.chat'];
 
-/** The settings' view (packages/protocol/src/settings.ts). */
+/** The settings' view (packages/areas/settings/protocol.ts). */
 export const SETTINGS_VIEWS = ['settings'];
 
 /**
@@ -241,7 +241,7 @@ export function rememberModelLists(request, response, next) {
     next();
 }
 
-/** @type {import('@st/server-ui/settings').Ports} */
+/** @type {import('@st/settings/server').Ports} */
 const settingsPorts = {
     async view(user, owner, range) {
         const document = settingsDocumentOf(user.directories);

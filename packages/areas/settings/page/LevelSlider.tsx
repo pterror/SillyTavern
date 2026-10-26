@@ -1,7 +1,7 @@
 import { For, Show } from 'solid-js';
-import { LEVELS, VIEW } from '@st/protocol/settings';
-import type { Level, SettingsView } from '@st/protocol/settings';
-import { useUi } from '../../context.ts';
+import { LEVELS, VIEW } from '../protocol.ts';
+import type { Level, SettingsView } from '../protocol.ts';
+import { useUi } from '@st/page/context';
 
 // The levels slider over the AI response configuration panel: which levels a tab shows and edits (its fields are in
 // fields.tsx and the sections, e.g. cc.tsx).

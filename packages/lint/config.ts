@@ -46,7 +46,7 @@ export const lintConfig = {
     },
     overrides: [
         {
-            files: ['packages/ui/**', 'packages/lint/fixtures/page/**'],
+            files: ['packages/ui/**', 'packages/page/**', 'packages/areas/*/page/**', 'packages/lint/fixtures/page/**'],
             rules: {
                 'st/props-read-in-place': 'error',
                 'st/no-html-strings': 'error',
@@ -56,12 +56,12 @@ export const lintConfig = {
         },
         {
             // Tests stand in for the server (they replace fetch); they're not the page.
-            files: ['packages/ui/test/**'],
+            files: ['packages/ui/test/**', 'packages/page/test/**', 'packages/areas/*/page/**/*.test.{ts,tsx}'],
             rules: { 'no-restricted-globals': 'off' },
         },
         {
             // The client is the one place the page talks to the server (and waits to reconnect).
-            files: ['packages/ui/src/client.ts'],
+            files: ['packages/page/src/client.ts'],
             rules: {
                 'no-restricted-globals': [
                     'error',

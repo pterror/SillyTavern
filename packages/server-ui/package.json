@@ -3,10 +3,7 @@
     "private": true,
     "type": "module",
     "exports": {
-        ".": "./src/index.ts",
-        "./backgrounds": "./src/backgrounds.ts",
-        "./settings": "./src/settings.ts",
-        "./model-limits": "./src/model-limits.ts"
+        ".": "./src/index.ts"
     },
     "dependencies": {
         "@st/protocol": "*",

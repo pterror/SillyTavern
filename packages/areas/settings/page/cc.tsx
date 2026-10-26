@@ -1,8 +1,8 @@
 import { For, Show } from 'solid-js';
 import type { JSX } from 'solid-js';
-import { VIEW } from '@st/protocol/settings';
-import type { SettingsView } from '@st/protocol/settings';
-import { useUi } from '../../context.ts';
+import { VIEW } from '../protocol.ts';
+import type { SettingsView } from '../protocol.ts';
+import { useUi } from '@st/page/context';
 import { Checkbox, FieldBlock, NumberBox, Radio, Select, Slider, TextArea, UnsetButton, useField } from './fields.tsx';
 import type { FieldState } from './fields.tsx';
 

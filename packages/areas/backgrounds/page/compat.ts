@@ -1,7 +1,7 @@
 import type { Accessor } from 'solid-js';
-import { VIEW, CHAT_VIEW } from '@st/protocol/backgrounds';
-import type { BackgroundsView, ChatBackgroundsView, Fitting, SortOrder } from '@st/protocol/backgrounds';
-import type { Client } from '../../client.ts';
+import { VIEW, CHAT_VIEW } from '../protocol.ts';
+import type { BackgroundsView, ChatBackgroundsView, Fitting, SortOrder } from '../protocol.ts';
+import type { Client } from '@st/page/client';
 import { pickByModel } from './Backgrounds.tsx';
 import type { BackgroundsTab } from './Backgrounds.tsx';
 

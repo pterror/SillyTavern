@@ -1,5 +1,5 @@
 import * as v from 'valibot';
-import type { ActionSchemas } from './index.ts';
+import type { ActionSchemas } from '@st/protocol';
 
 // Backgrounds: the system's (files in the user's backgrounds folder, grouped into folders) and a chat's own (images
 // the chat lists in its state). The user has a selected background; a chat can lock one of either kind, which then

@@ -1,12 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { MODEL_SETTING, limitRecord } from '@st/server-ui/model-limits';
+import { MODEL_SETTING, limitRecord } from '@st/settings/model-limits';
 
 // Each user's chat completion model lists, by source, as the status route last answered them: a model's limits come
-// from them (packages/server-ui/src/model-limits.ts). Kept in <root>/model-lists/<source>.json, only what the limits
+// from them (packages/areas/settings/model-limits.ts). Kept in <root>/model-lists/<source>.json, only what the limits
 // read, so a restart answers the same limits before the page connects again.
 
-/** @typedef {import('@st/server-ui/model-limits').ModelRecord} ModelRecord */
+/** @typedef {import('@st/settings/model-limits').ModelRecord} ModelRecord */
 
 /** @type {Map<string, { version: number, lists: Map<string, readonly ModelRecord[]> }>} */
 const users = new Map();

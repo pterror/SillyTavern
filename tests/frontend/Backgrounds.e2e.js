@@ -1,7 +1,7 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
-// The backgrounds drawer, from the new page (packages/ui/src/areas/backgrounds): the page shows the server's view
+// The backgrounds drawer, from the new page (packages/areas/backgrounds/page): the page shows the server's view
 // and sends actions; another tab of the user sees a change without reloading; a chat's lock follows the chat.
 
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');

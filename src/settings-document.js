@@ -16,7 +16,7 @@ import { readUserModel, writeUserModel } from './settings-model/user-store.js';
 import { userConnections } from './settings-model/settings-compat.js';
 import { keyOf } from './settings-model/keys.js';
 import { serverDirectory } from './server-directory.js';
-import { withinLimits } from '@st/server-ui/model-limits';
+import { withinLimits } from '@st/settings/model-limits';
 import { SERVER_OWNED_PATHS } from './settings-hash.js';
 import { modelListOf, modelListsVersion } from './model-lists.js';
 
@@ -94,7 +94,7 @@ export function openSettingsDocument(directories, handle) {
  * @returns {Promise<import('./settings-model/settings-compat.js').BundleFiles>}
  */
 /**
- * The fields of a bundle the server owns (packages/protocol/src/settings.ts SERVER_FAMILIES): each one's settings path,
+ * The fields of a bundle the server owns (packages/areas/settings/protocol.ts SERVER_FAMILIES): each one's settings path,
  * its key in the bundle's file, and its field id in the model.
  * @param {string} group
  * @param {Record<string, unknown>} file

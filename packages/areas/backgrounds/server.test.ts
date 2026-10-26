@@ -1,8 +1,8 @@
-import type { BackgroundsView, ChatBackgroundsView } from '@st/protocol/backgrounds';
+import type { BackgroundsView, ChatBackgroundsView } from './protocol.ts';
 import { expect, test } from 'vite-plus/test';
-import { backgroundsArea, bestTitle, refOfCss } from './backgrounds.ts';
-import type { Ports, StoredOptions, SystemFile } from './backgrounds.ts';
-import type { ActionContext, ActionResult, User } from './index.ts';
+import { backgroundsArea, bestTitle, refOfCss } from './server.ts';
+import type { Ports, StoredOptions, SystemFile } from './server.ts';
+import type { ActionContext, ActionResult, User } from '@st/server-ui';
 
 const user: User = { handle: 'u', directories: { root: '/u' } };
 

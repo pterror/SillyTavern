@@ -5045,7 +5045,7 @@ async function onModelChange() {
     }
 
     // What the model allows (context size, temperature, penalties) is the server's: its settings view's ranges, and
-    // the values read within them (packages/server-ui/src/model-limits.ts).
+    // the values read within them (packages/areas/settings/model-limits.ts).
     const source = oai_settings.chat_completion_source;
     if (source === chat_completion_sources.OPENROUTER) calculateOpenRouterCost();
     if (source === chat_completion_sources.CHUTES) calculateChutesCost();
