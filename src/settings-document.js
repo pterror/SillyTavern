@@ -16,6 +16,8 @@ import { readUserModel, writeUserModel } from './settings-model/user-store.js';
 import { userConnections } from './settings-model/settings-compat.js';
 import { keyOf } from './settings-model/keys.js';
 import { serverDirectory } from './server-directory.js';
+import { withinLimits } from '@st/server-ui/model-limits';
+import { modelListOf, modelListsVersion } from './model-lists.js';
 
 /**
  * A user's settings as the model holds them (the settings model's step 10): opened once per user, they are what
@@ -290,6 +292,41 @@ async function open(directories, handle) {
         await document.replace(user);
     };
 
+    /**
+     * A context's settings over a range as the levels state them, and the level each bundle field's value comes from.
+     * @param {{ avatar?: string | null, groupId?: string | null }} context
+     * @param {{ from: string, to: string }} range
+     * @returns {{ settings: Record<string, any>, sources: Record<string, string> }}
+     */
+    const assembledView = (context, range) => {
+        const shown = new Set(levelsIn(range));
+        const closer = /** @type {[string, 'character' | 'group'][]} */ ([
+            [context.avatar ? `character:${context.avatar}` : '', 'character'],
+            [context.groupId ? `group:${context.groupId}` : '', 'group'],
+        ])
+            .filter(([key, name]) => key && shown.has(name) && current.statements.levels?.[key])
+            .map(([key, name]) => ({ level: /** @type {'character'} */ ('character'), name, ...current.statements.levels?.[key] }));
+        const whole = shown.has('preset') && shown.has('user');
+        if (closer.length === 0 && whole) return { settings: document.settings, sources: userSources() };
+        const key = `${context.avatar ?? ''}\u0000${context.groupId ?? ''}\u0000${range.from}\u0000${range.to}`;
+        let found = contexts.get(key);
+        if (!found) {
+            // The user's level as far as the range goes: its preset (bundles), its own (overrides), or both.
+            const user = {
+                level: /** @type {'user'} */ ('user'),
+                bundles: shown.has('preset') ? current.user.bundles : {},
+                overrides: shown.has('user') ? current.user.overrides : {},
+            };
+            const assembled = assemble({ ...current, user }, { bundles: allBundles, extrasApiKey: extrasKey(), levels: closer });
+            found = { settings: assembled.settings, sources: assembled.sources };
+            contexts.set(key, found);
+        }
+        return found;
+    };
+    /** Each assembled settings object within its limits, for the model lists' version it was bounded at. */
+    /** @type {WeakMap<object, { version: number, settings: Record<string, any> }>} */
+    const bounded = new WeakMap();
+
     let writing = Promise.resolve();
     let latest = 0;
     /** @type {import('./settings-documents.js').OpenSettingsDocument} */
@@ -299,29 +336,15 @@ async function open(directories, handle) {
             return document.view(context).settings;
         },
         view(context, range = FULL_RANGE) {
-            const shown = new Set(levelsIn(range));
-            const closer = /** @type {[string, 'character' | 'group'][]} */ ([
-                [context.avatar ? `character:${context.avatar}` : '', 'character'],
-                [context.groupId ? `group:${context.groupId}` : '', 'group'],
-            ])
-                .filter(([key, name]) => key && shown.has(name) && current.statements.levels?.[key])
-                .map(([key, name]) => ({ level: /** @type {'character'} */ ('character'), name, ...current.statements.levels?.[key] }));
-            const whole = shown.has('preset') && shown.has('user');
-            if (closer.length === 0 && whole) return { settings: document.settings, sources: userSources() };
-            const key = `${context.avatar ?? ''}\u0000${context.groupId ?? ''}\u0000${range.from}\u0000${range.to}`;
-            let found = contexts.get(key);
-            if (!found) {
-                // The user's level as far as the range goes: its preset (bundles), its own (overrides), or both.
-                const user = {
-                    level: /** @type {'user'} */ ('user'),
-                    bundles: shown.has('preset') ? current.user.bundles : {},
-                    overrides: shown.has('user') ? current.user.overrides : {},
-                };
-                const assembled = assemble({ ...current, user }, { bundles: allBundles, extrasApiKey: extrasKey(), levels: closer });
-                found = { settings: assembled.settings, sources: assembled.sources };
-                contexts.set(key, found);
+            const assembled = assembledView(context, range);
+            // Within what the chat completion source and model allow, as everything reads them; stored as stated.
+            const version = modelListsVersion(directories);
+            let memo = bounded.get(assembled.settings);
+            if (memo?.version !== version) {
+                memo = { version, settings: withinLimits(assembled.settings, source => modelListOf(directories, source)) };
+                bounded.set(assembled.settings, memo);
             }
-            return found;
+            return { settings: memo.settings, sources: assembled.sources };
         },
         saveIn(context, range, saved) {
             return saveInContext(context, range, saved);

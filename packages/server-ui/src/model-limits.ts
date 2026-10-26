@@ -416,3 +416,66 @@ export function limitsFor(
             );
     }
 }
+
+/** A source's model list, by source. */
+export type ModelLists = (source: string) => readonly ModelRecord[];
+
+/**
+ * What a model record says about its limits, and nothing else: what's kept of a model list (the lists are large and
+ * most of each record is the model's description and prices). Every field limitsFor reads is here.
+ */
+export function limitRecord(record: ModelRecord): ModelRecord {
+    const kept: ModelRecord = { id: record.id };
+    for (const name of [
+        'context_length',
+        'inputTokenLimit',
+        'maxTemperature',
+        'max_context_length',
+        'context_window',
+        'tokens',
+    ])
+        if (name in record) kept[name] = record[name];
+    if (Array.isArray(record['properties']))
+        kept['properties'] = (record['properties'] as { property_id?: unknown }[]).filter(
+            (p) => p?.property_id === 'context_window',
+        );
+    const info = record['info'] as { contextLength?: unknown } | undefined;
+    if (info && typeof info === 'object' && 'contextLength' in info)
+        kept['info'] = { contextLength: info.contextLength };
+    return kept;
+}
+
+/** What chat completion settings (upstream's oai_settings) allow for their source and model. */
+export function limitsOfSettings(oai: Record<string, unknown>, models: ModelLists): ModelLimits {
+    const text = (key: string) => {
+        const value = oai[key];
+        return typeof value === 'string' ? value : '';
+    };
+    const source = text('chat_completion_source');
+    const setting = MODEL_SETTING[source];
+    return limitsFor(source, setting ? text(setting) : '', oai['max_context_unlocked'] === true, models(source));
+}
+
+/**
+ * Settings with each limited value within what its source and model allow (the same object when all are). The
+ * stored values stay as they are: going back to a model that allows more gives them back.
+ */
+export function withinLimits<T extends Record<string, unknown>>(settings: T, models: ModelLists): T {
+    const oai = settings['oai_settings'];
+    if (!oai || typeof oai !== 'object' || Array.isArray(oai)) return settings;
+    const stored = oai as Record<string, unknown>;
+    const limits = limitsOfSettings(stored, models);
+    const bounded: Record<string, unknown> = { ...stored };
+    let changed = false;
+    const bound = (key: string, min: number, max: number) => {
+        const value = stored[key];
+        if (typeof value !== 'number' || (value >= min && value <= max)) return;
+        bounded[key] = Math.min(max, Math.max(min, value));
+        changed = true;
+    };
+    bound('openai_max_context', -Infinity, limits.context);
+    bound('temp_openai', -Infinity, limits.temperature);
+    bound('freq_pen_openai', limits.penalties.min, limits.penalties.max);
+    bound('pres_pen_openai', limits.penalties.min, limits.penalties.max);
+    return changed ? { ...settings, oai_settings: bounded } : settings;
+}

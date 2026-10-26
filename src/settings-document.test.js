@@ -197,3 +197,29 @@ test('a save in a context goes to the range\'s top level: the character\'s, the 
     await edit({ from: 'default', to: 'preset' }, s => { s.oai_settings.top_p_openai = 0.77; });
     assert.equal((await readBundle(directories, 'preset.openai', document.settings.oai_settings.preset_settings_openai))?.top_p, 0.77);
 });
+
+test('a value past what the model allows reads as its limit, from the model list the source last answered; the stored value stays', async () => {
+    const { settingsDocumentOf } = await import('./settings-documents.js');
+    const { readSettingsFor, readUserSettings } = await import('./settings-reads.js');
+    const { rememberModelList } = await import('./model-lists.js');
+    const directories = seedUser('limits');
+    await openSettingsDocument(directories, 'limits');
+    await settingsStore.writeSettingsKeys(directories, {
+        'oai_settings.chat_completion_source': 'mistralai',
+        'oai_settings.mistralai_model': 'm',
+        'oai_settings.openai_max_context': 30000,
+        'oai_settings.temp_openai': 1.8,
+    });
+    const document = settingsDocumentOf(directories);
+    const paths = ['oai_settings.openai_max_context', 'oai_settings.temp_openai'];
+    assert.deepEqual(readSettingsFor(directories, {}, paths), { 'oai_settings.openai_max_context': 30000, 'oai_settings.temp_openai': 1.5 });
+    assert.equal(document.settings.oai_settings.temp_openai, 1.8);
+    // The source lists the model with less: the next read is within it.
+    assert.equal(await rememberModelList(directories, 'mistralai', [{ id: 'm', max_context_length: 20000, description: 'x' }]), true);
+    assert.equal(readUserSettings(directories, paths)['oai_settings.openai_max_context'], 20000);
+    assert.equal(await rememberModelList(directories, 'mistralai', [{ id: 'm', max_context_length: 20000, description: 'y' }]), false);
+    assert.equal(document.view({}, { from: 'default', to: 'user' }).settings.oai_settings.openai_max_context, 20000);
+    assert.equal(document.settings.oai_settings.openai_max_context, 30000);
+    // Kept on disk: a restart reads the same.
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(directories.root, 'model-lists', 'mistralai.json'), 'utf8')), [{ id: 'm', max_context_length: 20000 }]);
+});
