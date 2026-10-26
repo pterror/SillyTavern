@@ -6,7 +6,8 @@ import type { ActionSchemas } from '@st/protocol';
 // panel from these). Taken from the old panel's markup and tables (public/index.html, chat-completion-defaults.js,
 // textgen-setting-names.js), which they replace.
 
-export type FieldKind = 'range' | 'number' | 'checkbox' | 'select' | 'text' | 'choice';
+/** A field's control. `json`: a text area holding JSON (the value is what it parses to; empty is null). */
+export type FieldKind = 'range' | 'number' | 'checkbox' | 'select' | 'text' | 'choice' | 'json';
 
 export type Field = {
     /** The old control's id: kept on the new one, as extensions select it by id. */
@@ -43,6 +44,76 @@ export type Field = {
 
 /** A field's range in lab mode. */
 export const LAB_RANGE = { min: -99999, max: 99999, step: 0.001 } as const;
+
+/**
+ * How a slider steps and shows its value with zen sliders on (power_user.enableZenSliders): `steps` across its range,
+ * `decimals` shown, the value shown as Off, or named `values` to step through (their first is Off, `all` is All).
+ * From the old page's CreateZenSliders (power-user.js).
+ */
+export type Zen = {
+    steps: number;
+    decimals: number;
+    off?: number;
+    values?: readonly number[];
+    /** `values` when the context is unlocked (power_user.max_context_unlocked). */
+    unlockedValues?: readonly number[];
+    /** The value shown as All (among `values`). */
+    all?: number;
+};
+
+const ZEN_DEFAULT: Zen = { steps: 20, decimals: 2 };
+const textgenZen = (ids: string[], zen: Partial<Zen>) =>
+    ids.map((id): [string, Partial<Zen>] => [`${id}_textgenerationwebui`, zen]);
+const ZEN_RULES: [string, Partial<Zen>][] = [
+    ['amount_gen', { steps: 10, decimals: 0, values: [16, 50, 100, 150, 200, 256, 300, 400, 512, 1024] }],
+    ['max_context', { steps: 15, decimals: 0 }],
+    [
+        'rep_pen_range_textgenerationwebui',
+        {
+            decimals: 0,
+            off: 0,
+            all: -1,
+            values: [0, 256, 512, 768, 1024, 2048, 4096, 8192, -1],
+            unlockedValues: [0, 256, 512, 768, 1024, 2048, 4096, 8192, 16355, 24576, 32768, 49152, 65536, -1],
+        },
+    ],
+    ...textgenZen(['mirostat_mode'], { steps: 2, decimals: 0, off: 0 }),
+    ...textgenZen(['mirostat_tau', 'top_k', 'num_beams', 'no_repeat_ngram_size'], { steps: 20, decimals: 0 }),
+    ...textgenZen(['min_length', 'dry_allowed_length', 'rep_pen_decay', 'dry_penalty_last_n', 'max_tokens_second'], {
+        decimals: 0,
+    }),
+    ...textgenZen(['eta_cutoff', 'nsigma'], { steps: 50, decimals: 1 }),
+    ...textgenZen(['epsilon_cutoff'], { steps: 20, decimals: 1 }),
+    ...textgenZen(['tfs', 'min_p', 'temp'], { steps: 20 }),
+    ...textgenZen(['mirostat_eta', 'penalty_alpha', 'length_penalty', 'min_temp', 'max_temp'], { steps: 50 }),
+    ...textgenZen(['encoder_rep_pen'], { steps: 14 }),
+    ...textgenZen(['guidance_scale'], { steps: 78 }),
+];
+const ZEN_OFF: [number, string[]][] = [
+    [
+        0,
+        ['presence_pen', 'freq_pen', 'mirostat_mode', 'mirostat_tau', 'mirostat_eta', 'min_p', 'no_repeat_ngram_size']
+            .concat(['penalty_alpha', 'length_penalty', 'epsilon_cutoff', 'nsigma', 'eta_cutoff', 'top_a', 'top_k'])
+            .concat(['smoothing_factor', 'smoothing_curve', 'skew', 'dry_multiplier', 'min_length']),
+    ],
+    [
+        1,
+        ['rep_pen', 'tfs', 'top_p', 'typical_p', 'encoder_rep_pen', 'temp', 'min_temp', 'max_temp'].concat([
+            'dynatemp_exponent',
+            'guidance_scale',
+            'rep_pen_slope',
+        ]),
+    ],
+];
+
+/** A slider's zen stepping, by its field's id. */
+export function zenOf(id: string): Zen {
+    const rules = ZEN_RULES.filter(([ruleId]) => ruleId === id).map(([, rule]) => rule);
+    const off = ZEN_OFF.find(([, ids]) => ids.some((name) => `${name}_textgenerationwebui` === id))?.[0];
+    return Object.assign({}, ZEN_DEFAULT, off === undefined ? {} : { off }, ...rules) as Zen;
+}
+
+export type SamplerSelect = { manual: boolean; shown: readonly string[] };
 
 /**
  * The families the new page shows: their fields are the server's (only the actions below write them), and the old
@@ -1288,6 +1359,16 @@ export const FIELDS: readonly Field[] = [
         samplers: ['grammar_string'],
     },
     {
+        id: 'tabby_json_schema',
+        path: 'textgenerationwebui_settings.json_schema',
+        kind: 'json',
+        label: 'JSON Schema',
+        family: 'textgen',
+        group: { id: 'json_schema_block', label: 'JSON Schema' },
+        textgen: { only: ['tabby', 'llamacpp', 'aphrodite'] },
+        samplers: ['json_schema'],
+    },
+    {
         id: 'json_schema_allow_empty_textgenerationwebui',
         path: 'textgenerationwebui_settings.json_schema_allow_empty',
         kind: 'checkbox',
@@ -1570,6 +1651,22 @@ export const FIELDS: readonly Field[] = [
     },
 ];
 
+/**
+ * The sampler select's names: what the user can show or hide (a field's samplers, and the old page's blocks it
+ * hides: logit bias and the sampler orders).
+ */
+export const SAMPLER_NAMES: readonly string[] = [
+    ...new Set([
+        ...FIELDS.flatMap((field) => (field.family === 'textgen' ? (field.samplers ?? []) : [])),
+        'logit_bias',
+        'sampler_order',
+        'sampler_priority',
+        'samplers',
+        'samplers_priorities',
+    ]),
+].sort();
+
+/** The sampler select for one text generation backend: with `manual` on, the samplers in `shown` show, the rest don't. */
 /** The settings a tab shows: its chat's, over a range of levels. */
 export const VIEW = 'settings';
 
@@ -1595,6 +1692,10 @@ export type SettingsView = {
     ranges: Record<string, Range>;
     /** What decides which fields are shown: the API, chat completion's source, text generation's backend. */
     api: { main: string; source: string; textgen: string };
+    /** Zen sliders on (power_user.enableZenSliders): sliders step as zenOf() says and show their value in the handle. */
+    zen: boolean;
+    /** The sampler select for the text generation backend now. */
+    samplers: SamplerSelect;
 };
 
 export const actions = {
@@ -1606,6 +1707,20 @@ export const actions = {
     'settings.reset': v.object({ path: v.string() }),
     /** Which levels the tab shows and edits. */
     'settings.range': v.object({ from: v.picklist(LEVELS), to: v.picklist(LEVELS) }),
+    /** Every text generation sampler to its neutral value, at the range's top level, in one write. */
+    'settings.neutralize': v.object({}),
+    /** The sampler select of the text generation backend now: what it shows, and whether that decides (`manual`). */
+    'settings.samplers': v.object({
+        manual: v.optional(v.boolean()),
+        shown: v.optional(v.array(v.picklist(SAMPLER_NAMES))),
+    }),
+    /** The sampler select back to the backend's own (nothing chosen). */
+    'settings.samplers.reset': v.object({}),
+    /**
+     * The sampler select as the old page kept it in the browser, by backend: taken for each backend the user has none
+     * for yet (once, after which the browser's copy goes).
+     */
+    'settings.samplers.import': v.record(v.string(), v.object({ manual: v.boolean(), shown: v.array(v.string()) })),
 } satisfies ActionSchemas;
 
 const byPath = new Map(FIELDS.map((field) => [field.path, field]));
@@ -1627,6 +1742,10 @@ export function refusalOf(field: Field, value: unknown, range: Range): string | 
             return typeof value === 'boolean' ? null : `${field.label}: on or off`;
         case 'text':
             return typeof value === 'string' ? null : `${field.label}: not text`;
+        case 'json':
+            return value === null || (typeof value === 'object' && !Array.isArray(value))
+                ? null
+                : `${field.label}: a JSON object, or nothing`;
         case 'select':
         case 'choice':
             return (field.options ?? []).some((option) => option.value === value)

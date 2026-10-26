@@ -248,10 +248,10 @@ const settingsPorts = {
         if (!document) return { settings: readAllSettings(directoriesOf(user)), sources: {} };
         return document.view(contextOf(owner), range);
     },
-    async writeAt(user, owner, range, path, value) {
+    async write(user, owner, range, entries) {
         const document = settingsDocumentOf(user.directories);
         if (!document) throw new Error(`The settings of ${user.handle} aren't open`);
-        await document.writeAt(contextOf(owner), range, path, value);
+        await document.writeAll(contextOf(owner), range, entries);
     },
     async ownerOf(user, chat) {
         const store = await userStore(directoriesOf(user), user.handle);

@@ -9,7 +9,6 @@ import path from 'node:path';
 /** The old tables' settings that aren't fields of the panel, and why. */
 const ELSEWHERE = {
     'oai_settings.bias_preset_selected': 'the logit bias editor',
-    'textgenerationwebui_settings.json_schema': 'the JSON schema editor (tabby_json_schema, stored as JSON)',
     'textgenerationwebui_settings.sampler_order': 'the sampler order list',
     'textgenerationwebui_settings.sampler_priority': 'the sampler order list',
     'textgenerationwebui_settings.samplers': 'the sampler order list',

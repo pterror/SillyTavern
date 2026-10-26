@@ -487,3 +487,29 @@ export function withinLimits<T extends Record<string, unknown>>(settings: T, mod
         ? settings
         : { ...settings, oai_settings: { ...stored, ...Object.fromEntries(bounded) } };
 }
+
+/**
+ * Text generation backends that turn top K off with -1 (the rest with 0) and have no mirostat mode 1 (the old page's
+ * VLLM, APHRODITE, INFERMATICAI).
+ */
+export const MINUS_ONE_BACKENDS: readonly string[] = ['vllm', 'aphrodite', 'infermaticai'];
+
+/**
+ * Text generation settings as their backend takes them: top K's off value is the backend's (-1 or 0), whichever one
+ * is stored. The old page rewrote the stored value when the backend changed; this reads it so, and stores nothing.
+ */
+export function withinBackend<T extends Record<string, unknown>>(settings: T): T {
+    const textgen: unknown = settings['textgenerationwebui_settings'];
+    if (typeof textgen !== 'object' || textgen === null || Array.isArray(textgen)) return settings;
+    const stored = textgen as Record<string, unknown>;
+    const minusOne = typeof stored['type'] === 'string' && MINUS_ONE_BACKENDS.includes(stored['type']);
+    const off = minusOne ? -1 : 0;
+    if (stored['top_k'] !== 0 && stored['top_k'] !== -1) return settings;
+    if (stored['top_k'] === off) return settings;
+    return { ...settings, textgenerationwebui_settings: { ...stored, top_k: off } };
+}
+
+/** Settings as everything reads them: within the chat completion model's limits and as the text backend takes them. */
+export function withinAllowed<T extends Record<string, unknown>>(settings: T, models: ModelLists): T {
+    return withinBackend(withinLimits(settings, models));
+}

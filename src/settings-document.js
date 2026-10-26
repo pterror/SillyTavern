@@ -16,7 +16,7 @@ import { readUserModel, writeUserModel } from './settings-model/user-store.js';
 import { userConnections } from './settings-model/settings-compat.js';
 import { keyOf } from './settings-model/keys.js';
 import { serverDirectory } from './server-directory.js';
-import { withinLimits } from '@st/settings/model-limits';
+import { withinAllowed } from '@st/settings/model-limits';
 import { SERVER_OWNED_PATHS } from './settings-hash.js';
 import { modelListOf, modelListsVersion } from './model-lists.js';
 
@@ -287,36 +287,52 @@ async function open(directories, handle) {
     };
 
     /**
-     * Writes one path where routeOf() says. `undefined` takes the path away (back to what's under it).
+     * Writes paths where routeOf() says, all in one write each place: a level's statement once, a preset's file
+     * once, the user's own settings once. A value of `undefined` takes its path away (back to what's under it).
      * @param {{ avatar?: string | null, groupId?: string | null }} context
      * @param {{ from: string, to: string }} range
-     * @param {string} path
-     * @param {unknown} value
+     * @param {[string, unknown][]} entries
      */
-    const writeAt = async (context, range, path, value) => {
-        const route = routeOf(context, range, path);
-        if (route.to === 'level') {
-            const { holder, unit } = route;
-            if (unit.kind === 'selection') await document.writeLevel(holder, { bundles: { [unit.group]: typeof value === 'string' && value ? bundleRef(unit.group, value) : null } });
-            else if (value === undefined) await document.writeLevel(holder, { delete: [unit.field] });
-            else await document.writeLevel(holder, { set: { [unit.field]: value } });
-            return;
+    const writeAll = async (context, range, entries) => {
+        /** @type {Map<string, { set: Record<string, unknown>, delete: string[], bundles: Record<string, string | null> }>} */
+        const levels = new Map();
+        /** @type {Map<string, { name: string, fields: Record<string, unknown> }>} */
+        const presets = new Map();
+        /** @type {Record<string, any> | null} */
+        let user = null;
+        for (const [path, value] of entries) {
+            const route = routeOf(context, range, path);
+            if (route.to === 'level') {
+                const change = levels.get(route.holder) ?? { set: {}, delete: [], bundles: {} };
+                const { unit } = route;
+                if (unit.kind === 'selection') change.bundles[unit.group] = typeof value === 'string' && value !== '' ? bundleRef(unit.group, value) : null;
+                else if (value === undefined) change.delete.push(unit.field);
+                else change.set[unit.field] = value;
+                levels.set(route.holder, change);
+            } else if (route.to === 'preset') {
+                const ref = current.user.bundles[route.group];
+                if (ref === undefined) continue;
+                const bundle = presets.get(route.group) ?? { name: route.group === 'theme' ? ref : ref.slice(ref.indexOf(':') + 1), fields: {} };
+                bundle.fields[route.field] = value;
+                presets.set(route.group, bundle);
+            } else {
+                user ??= structuredClone(document.settings);
+                setAtPath(user, path, structuredClone(value));
+            }
         }
-        if (route.to === 'preset') {
-            const ref = current.user.bundles[route.group];
-            if (ref === undefined) return;
-            const name = route.group === 'theme' ? ref : ref.slice(ref.indexOf(':') + 1);
-            const file = (await bundleFileFromStore(lib, route.group, name, userConnections(current))) ?? {};
-            await writeBundle(directories, route.group, name, { ...file, [route.field]: value });
+        for (const [holder, change] of levels) await document.writeLevel(holder, change);
+        for (const [group, { name, fields }] of presets) {
+            const file = (await bundleFileFromStore(lib, group, name, userConnections(current))) ?? {};
+            await writeBundle(directories, group, name, { ...file, ...fields });
+        }
+        if (presets.size > 0) {
             userBundles = await statedBundleFiles(lib, current);
             userSourcesMemo = null;
             contexts.clear();
-            return;
         }
-        const user = structuredClone(document.settings);
-        setAtPath(user, path, structuredClone(value));
-        await document.replace(user);
+        if (user) await document.replace(user);
     };
+    const writeAt = (/** @type {{ avatar?: string | null, groupId?: string | null }} */ context, /** @type {{ from: string, to: string }} */ range, /** @type {string} */ path, /** @type {unknown} */ value) => writeAll(context, range, [[path, value]]);
 
     /**
      * A context's settings over a range as the levels state them, and the level each bundle field's value comes from.
@@ -363,11 +379,11 @@ async function open(directories, handle) {
         },
         view(context, range = FULL_RANGE) {
             const assembled = assembledView(context, range);
-            // Within what the chat completion source and model allow, as everything reads them; stored as stated.
+            // Within what the chat completion model and the text backend allow, as everything reads them; stored as stated.
             const version = modelListsVersion(directories);
             let memo = bounded.get(assembled.settings);
             if (memo?.version !== version) {
-                memo = { version, settings: withinLimits(assembled.settings, source => modelListOf(directories, source)) };
+                memo = { version, settings: withinAllowed(assembled.settings, source => modelListOf(directories, source)) };
                 bounded.set(assembled.settings, memo);
             }
             return { settings: memo.settings, sources: assembled.sources };
@@ -377,6 +393,9 @@ async function open(directories, handle) {
         },
         writeAt(context, range, path, value) {
             return writeAt(context, range, path, value);
+        },
+        writeAll(context, range, entries) {
+            return writeAll(context, range, entries);
         },
         writeLevel(holder, change) {
             const run = writing.then(async () => {
