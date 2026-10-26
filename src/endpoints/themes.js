@@ -6,21 +6,9 @@ import sanitize from 'sanitize-filename';
 import { sync as writeFileAtomicSync } from 'write-file-atomic';
 
 import { readSettingsAtPaths } from '../settings-store.js';
+import { THEME_FIELDS } from '../../public/scripts/theme-fields.js';
 
 export const router = express.Router();
-
-// Mirrors the field set in public/scripts/power-user.js's getThemeObject().
-const THEME_SETTINGS_FIELDS = [
-    'blur_strength', 'main_text_color', 'italics_text_color', 'underline_text_color',
-    'quote_text_color', 'blur_tint_color', 'chat_tint_color', 'user_mes_blur_tint_color',
-    'bot_mes_blur_tint_color', 'shadow_color', 'shadow_width', 'border_color', 'font_scale',
-    'fast_ui_mode', 'waifuMode', 'stacked_drawers', 'avatar_style', 'chat_display', 'toastr_position', 'drawer_bar_position', 'drawer_bar_position_mobile', 'noShadows',
-    'chat_width', 'chat_width_max', 'timer_enabled', 'timestamps_enabled', 'timestamp_model_icon',
-    'mesIDDisplay_enabled', 'hideChatAvatars_enabled', 'message_token_count_enabled',
-    'expand_message_actions', 'enableZenSliders', 'enableLabMode', 'hotswap_enabled', 'custom_css',
-    'bogus_folders', 'zoomed_avatar_magnification', 'reduced_motion', 'compact_input_area',
-    'show_swipe_num_all_messages', 'click_to_edit', 'media_display',
-];
 
 router.post('/save', (request, response) => {
     if (!request.body || !request.body.name) {
@@ -41,11 +29,11 @@ router.post('/save-from-settings', (request, response) => {
         return response.sendStatus(400);
     }
 
-    const dottedPaths = THEME_SETTINGS_FIELDS.map(field => `power_user.${field}`);
+    const dottedPaths = THEME_FIELDS.map(field => `power_user.${field}`);
     const values = readSettingsAtPaths(request.user.directories, dottedPaths);
 
     const theme = { name };
-    for (const field of THEME_SETTINGS_FIELDS) {
+    for (const field of THEME_FIELDS) {
         theme[field] = values[`power_user.${field}`];
     }
     if (overrides && typeof overrides === 'object') {
