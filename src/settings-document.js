@@ -143,11 +143,73 @@ async function open(directories, handle) {
     let current = model;
     const extrasKey = () => readSecret(directories, SECRET_KEYS.EXTRAS) ?? undefined;
 
+    // The bundles the characters' and groups' levels state, loaded with the model, so a context resolves at once.
+    /** @type {Map<string, Record<string, unknown> | undefined>} */
+    let levelBundles = new Map();
+    const loadLevelBundles = async () => {
+        /** @type {Map<string, Record<string, unknown> | undefined>} */
+        const loaded = new Map();
+        for (const level of Object.values(current.statements.levels ?? {})) {
+            for (const [group, ref] of Object.entries(level.bundles ?? {})) {
+                const name = group === 'theme' ? ref : ref.slice(ref.indexOf(':') + 1);
+                loaded.set(`${group}\u0000${name}`, await bundleFileFromStore(lib, group, name, userConnections(current)));
+            }
+        }
+        levelBundles = loaded;
+        contexts.clear();
+    };
+    /** The settings of each context asked, until the model changes. */
+    /** @type {Map<string, Record<string, any>>} */
+    const contexts = new Map();
+    /** The user's own bundles, then the levels'. */
+    /** @type {import('./settings-model/settings-compat.js').BundleFiles} */
+    let userBundles = await statedBundleFiles(lib, current);
+    /** @type {import('./settings-model/settings-compat.js').BundleFiles} */
+    const allBundles = (group, name) => userBundles(group, name) ?? levelBundles.get(`${group}\u0000${name}`);
+    await loadLevelBundles();
+
     let writing = Promise.resolve();
     let latest = 0;
     /** @type {import('./settings-documents.js').OpenSettingsDocument} */
     const document = {
-        settings: assemble(current, { bundles: await statedBundleFiles(lib, current), extrasApiKey: extrasKey() }).settings,
+        settings: assemble(current, { bundles: userBundles, extrasApiKey: extrasKey() }).settings,
+        settingsFor(context) {
+            const levels = [context.avatar && `character:${context.avatar}`, context.groupId && `group:${context.groupId}`]
+                .filter(Boolean)
+                .map(key => current.statements.levels?.[/** @type {string} */ (key)])
+                .filter(Boolean)
+                .map(level => ({ level: /** @type {'character'} */ ('character'), ...level }));
+            if (levels.length === 0) return document.settings;
+            const key = `${context.avatar ?? ''}\u0000${context.groupId ?? ''}`;
+            let found = contexts.get(key);
+            if (!found) {
+                found = assemble(current, { bundles: allBundles, extrasApiKey: extrasKey(), levels }).settings;
+                contexts.set(key, found);
+            }
+            return found;
+        },
+        writeLevel(holder, change) {
+            const run = writing.then(async () => {
+                const levels = structuredClone(current.statements.levels ?? {});
+                const level = levels[holder] ?? {};
+                for (const [group, ref] of Object.entries(change.bundles ?? {})) {
+                    level.bundles ??= {};
+                    if (ref === null) delete level.bundles[group];
+                    else level.bundles[group] = ref;
+                }
+                for (const [field, value] of Object.entries(change.set ?? {})) (level.overrides ??= {})[field] = value;
+                for (const field of change.delete ?? []) delete level.overrides?.[field];
+                if (Object.keys(level.bundles ?? {}).length || Object.keys(level.overrides ?? {}).length) levels[holder] = level;
+                else delete levels[holder];
+                const nextModel = { ...current, statements: { ...current.statements, levels } };
+                const written = await writeUserModel(lib, handle, nextModel, { previous: current });
+                for (const warning of written.warnings) console.warn(`[settings] ${handle}: ${warning}`);
+                current = nextModel;
+                await loadLevelBundles();
+            });
+            writing = run.catch(() => {});
+            return run;
+        },
         replace(next) {
             const shown = structuredClone(next);
             document.settings = shown;
@@ -155,6 +217,8 @@ async function open(directories, handle) {
             const run = writing.then(async () => {
                 const bundles = await bundlesOf(lib, shown, userConnections(current));
                 const nextModel = importUpstream(structuredClone(shown), { bundles, newKey });
+                // The characters' and groups' statements are the model's own: upstream's settings don't carry them.
+                nextModel.statements.levels = current.statements.levels;
                 // The Extras key stays in secrets.json, its connection naming it.
                 for (const { connection, value } of nextModel.secrets) {
                     const entity = nextModel.entities.find(e => e.key === connection);
@@ -167,6 +231,8 @@ async function open(directories, handle) {
                 for (const warning of written.warnings) console.warn(`[settings] ${handle}: ${warning}`);
                 // What was written is the model now: the store isn't read back.
                 current = { ...nextModel, elsewhere: {} };
+                userBundles = bundles;
+                contexts.clear();
                 // The settings as the model gives them, unless a later write is showing its own already.
                 if (mine === latest) document.settings = assemble(current, { bundles, extrasApiKey: extrasKey() }).settings;
             });

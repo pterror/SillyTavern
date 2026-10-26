@@ -23,6 +23,7 @@ import { requestStore, storeRoute, userStore } from '../user-stores.js';
 import { listBundles } from '../bundle-store.js';
 import { settingsDocumentOf } from '../settings-documents.js';
 import { openSettingsDocument } from '../settings-document.js';
+import { bundleRef, unitOfPath } from '../settings-model/settings-compat.js';
 
 const ENABLE_EXTENSIONS = !!getConfigValue('extensions.enabled', true, 'boolean');
 const ENABLE_EXTENSIONS_AUTO_UPDATE = !!getConfigValue('extensions.autoUpdate', true, 'boolean');
@@ -316,6 +317,66 @@ router.post('/save-partial', async function (request, response) {
  * Toggles one extension's membership in extension_settings.disabledExtensions. The server owns the
  * merge so the client only ever asserts the raw fact (which extension, enabled or not).
  */
+/**
+ * A character's or group's settings (the settings model's character level): `{ holder: { type: 'character' |
+ * 'group', id }, set?: { <path>: value }, unset?: [<path>], select?: { <selection path>: name | null } }`, the
+ * paths upstream's (`oai_settings.temp_openai`, `oai_settings.preset_settings_openai`, …): an override set or
+ * removed, a bundle stated or not. Only a bundle group's fields and selections are stated at this level.
+ * Answers the settings in that holder's context.
+ */
+router.post('/level', async function (request, response) {
+    try {
+        const { directories } = request.user;
+        const document = settingsDocumentOf(directories);
+        const { holder, set = {}, unset = [], select = {} } = request.body ?? {};
+        if (!document) return response.status(409).send({ error: 'the settings aren\'t the settings model\'s' });
+        if (!holder || (holder.type !== 'character' && holder.type !== 'group') || typeof holder.id !== 'string' || !holder.id) {
+            return response.status(400).send({ error: 'holder must be { type: \'character\' | \'group\', id }' });
+        }
+        /** @type {{ bundles: Record<string, string | null>, set: Record<string, unknown>, delete: string[] }} */
+        const change = { bundles: {}, set: {}, delete: [] };
+        const fieldOf = (/** @type {string} */ path) => {
+            const unit = unitOfPath(path.split('.'));
+            return unit.kind === 'field' && unit.field.includes('/') && unit.path === path ? unit.field : null;
+        };
+        for (const [path, value] of Object.entries(set)) {
+            const field = fieldOf(path);
+            if (!field) return response.status(400).send({ error: `${path} isn't a bundle's field` });
+            change.set[field] = value;
+        }
+        for (const path of Array.isArray(unset) ? unset : []) {
+            const field = fieldOf(String(path));
+            if (!field) return response.status(400).send({ error: `${path} isn't a bundle's field` });
+            change.delete.push(field);
+        }
+        for (const [path, name] of Object.entries(select)) {
+            const unit = unitOfPath(path.split('.'));
+            if (unit.kind !== 'selection') return response.status(400).send({ error: `${path} isn't a selection` });
+            change.bundles[unit.group] = typeof name === 'string' && name ? bundleRef(unit.group, name) : null;
+        }
+        await document.writeLevel(`${holder.type}:${holder.id}`, change);
+        const context = holder.type === 'group' ? { groupId: holder.id } : { avatar: holder.id };
+        const settings = document.settingsFor(context);
+        response.send({ result: 'ok', settings, settingsHash: getStringHash(JSON.stringify(settings, null, 4)) });
+    } catch (err) {
+        console.error('Could not change a level\'s settings', err);
+        response.status(500).send({ error: true });
+    }
+});
+
+/**
+ * The settings in a context: `{ avatar?, group_id? }` → `{ settings, settingsHash }`, the speaking character's and
+ * its group's statements over the user's (the user's alone for neither, or without the settings model).
+ */
+router.post('/for-context', function (request, response) {
+    const { directories } = request.user;
+    const document = settingsDocumentOf(directories);
+    const avatar = typeof request.body?.avatar === 'string' && request.body.avatar ? request.body.avatar : null;
+    const groupId = typeof request.body?.group_id === 'string' && request.body.group_id ? request.body.group_id : null;
+    const settings = document ? document.settingsFor({ avatar, groupId }) : readAllSettings(directories);
+    response.send({ settings, settingsHash: getStringHash(JSON.stringify(settings, null, 4)) });
+});
+
 router.post('/toggle-extension', async function (request, response) {
     try {
         const directories = request.user.directories;

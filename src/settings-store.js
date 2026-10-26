@@ -120,6 +120,23 @@ function ensureMigrated(directories) {
     fs.rmSync(legacyPath, { force: true });
 }
 
+/**
+ * The values at dotted paths of a settings object, copied.
+ * @param {Record<string, any>} settings
+ * @param {string[]} dottedPaths
+ * @returns {Record<string, unknown>}
+ */
+export function valuesAtPaths(settings, dottedPaths) {
+    /** @type {Record<string, unknown>} */
+    const read = {};
+    for (const dottedPath of dottedPaths) {
+        const dot = dottedPath.indexOf('.');
+        const top = settings[dot === -1 ? dottedPath : dottedPath.slice(0, dot)];
+        setOwnProperty(read, dottedPath, structuredClone(dot === -1 ? top : getAtPath(top, dottedPath.slice(dot + 1))));
+    }
+    return read;
+}
+
 /** @param {import('./users.js').UserDirectoryList} directories */
 export function settingsExist(directories) {
     if (documentOf(directories)) return true;
@@ -163,16 +180,7 @@ export function readAllSettingsAsJson(directories) {
  */
 export function readSettingsAtPaths(directories, dottedPaths) {
     const document = documentOf(directories);
-    if (document) {
-        /** @type {Record<string, unknown>} */
-        const read = {};
-        for (const dottedPath of dottedPaths) {
-            const dot = dottedPath.indexOf('.');
-            const top = document.settings[dot === -1 ? dottedPath : dottedPath.slice(0, dot)];
-            setOwnProperty(read, dottedPath, structuredClone(dot === -1 ? top : getAtPath(top, dottedPath.slice(dot + 1))));
-        }
-        return read;
-    }
+    if (document) return valuesAtPaths(document.settings, dottedPaths);
     ensureMigrated(directories);
     const dir = settingsDirPath(directories);
     /** @type {Map<string, unknown>} */
