@@ -2,7 +2,7 @@ import { DOMPurify, showdown } from '../lib.js';
 import { renderMarkdownLiteralTags } from './marked-processor.js';
 import { refreshCharInfoTabDimming } from './char-info-tab-dimming.js';
 import { keepViewState, openEditorLayer } from './editor-layer.js';
-import { withMacroPlaceholders } from './safe-macros.js';
+import { withFilledAbout, withMacroPlaceholders } from './safe-macros.js';
 import { MacroValues } from './macro-values.js';
 import { insertMacroPills } from './macro-pill.js';
 import { EDITOR_ESCAPE_TAKERS, isEditorEvent, isUserEvent, mountLiveEditor } from './live-editor/registry.js';
@@ -54,7 +54,7 @@ let deps = null;
 function renderLiteralTagsPreview(text, valueOf) {
     const { text: placeheld, macros } = withMacroPlaceholders(text, valueOf);
     const html = DOMPurify.sanitize(renderMarkdownLiteralTags(placeheld));
-    return insertMacroPills(html, macros, deps.t, deps.macroPerson);
+    return insertMacroPills(html, macros, deps.t, name => withFilledAbout(deps.macroPerson(name), name, valueOf));
 }
 
 /** The name typed for the character, which its greeting is shown under. */
@@ -69,7 +69,7 @@ function renderGreetingPreview(text, valueOf) {
     const name = typedName();
     const { text: placeheld, macros } = withMacroPlaceholders(text, valueOf);
     const html = deps.messageFormatting(placeheld, name, false, false, 0);
-    return insertMacroPills(html, macros, deps.t, deps.macroPerson);
+    return insertMacroPills(html, macros, deps.t, name => withFilledAbout(deps.macroPerson(name), name, valueOf));
 }
 
 /**

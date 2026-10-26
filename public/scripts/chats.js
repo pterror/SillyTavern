@@ -27,7 +27,7 @@ import {
     macroPerson,
 } from '../script.js';
 import { renderMarkdown } from './marked-processor.js';
-import { withMacroPlaceholders, withMacroValues } from './safe-macros.js';
+import { withFilledAbout, withMacroPlaceholders, withMacroValues } from './safe-macros.js';
 import { fetchMacroValues, macroValuesOf } from './macro-values.js';
 import { insertMacroPills } from './macro-pill.js';
 import { initImageLightbox, onLightboxImageClick } from './image-lightbox.js';
@@ -680,7 +680,7 @@ export function formatCreatorNotes(text, avatarId, { valueOf, styleScope = '#cre
     html = DOMPurify.sanitize(html, config);
     html = decodeStyleTags(html, decodeStyleParam);
 
-    return insertMacroPills(html, macros, t, macroName => macroPerson(macroName, { avatar: avatarId }));
+    return insertMacroPills(html, macros, t, macroName => withFilledAbout(macroPerson(macroName, { avatar: avatarId }), macroName, valueOf ?? (() => undefined)));
 }
 
 async function openGlobalStylesPreferenceDialog() {

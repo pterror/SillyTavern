@@ -2,7 +2,7 @@
 // (macro-tooltip.js), and a dropdown of macros while typing one.
 
 import { state as cmState, view as cmView, autocomplete as cmAutocomplete } from '../../live-editor-lib.js';
-import { topLevelMacroSpans } from '../safe-macros.js';
+import { topLevelMacroSpans, withFilledAbout } from '../safe-macros.js';
 import { macroColorAttributes, macroPill, macroTooltipAttributes } from '../macro-pill.js';
 import { setMacroBesideCursor } from '../macro-tooltip.js';
 import { getMacroAutoCompleteAt } from '../autocomplete/MacroAutoCompleteHelper.js';
@@ -70,7 +70,9 @@ function shownMacro(state, source) {
  * @param {import('../macro-pill.js').MacroShown} shown
  */
 function personOf(state, shown) {
-    return shown.name ? state.facet(macroOptions).person?.(shown.name) ?? null : null;
+    if (!shown.name) return null;
+    const { person, values } = state.facet(macroOptions);
+    return withFilledAbout(person?.(shown.name) ?? null, shown.name, source => values.get(source));
 }
 
 /**

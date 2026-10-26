@@ -5,7 +5,7 @@
 // an import cycle.
 
 import { getRequestHeaders } from './request-headers.js';
-import { macrosIn } from './safe-macros.js';
+import { macrosIn, mentionAboutMacro } from './safe-macros.js';
 
 /** @type {() => import('../../src/macro-facts.js').PageMacroFacts} What only the page knows, sent with each request. */
 let pageMacroFacts = () => ({});
@@ -143,6 +143,8 @@ export class MacroValues {
      * @returns {Promise<boolean>} Whether a value was learned.
      */
     async wantMacros(sources) {
+        // A mention's card shows who it names' description, filled in too.
+        sources = [...sources, ...sources.map(source => mentionAboutMacro(/^\{\{\s*([^\s:{}]+)\s*\}\}$/.exec(source)?.[1] ?? '')).filter(Boolean)];
         const scope = this.currentScope();
         const { values: learned, asked } = this;
         const missing = [...new Set(sources)].filter(source => !this.values.has(source) && !this.asked.has(source));

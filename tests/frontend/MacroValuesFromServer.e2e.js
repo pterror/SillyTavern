@@ -43,6 +43,15 @@ test('a field\'s preview shows the values the server fills in; a macro run only 
     await expect(preview.locator('.macro-pill[data-macro-name="roll"]')).toHaveCount(1);
 });
 
+test('a mention\'s card shows who it names\' description with its macros filled in', async ({ page }) => {
+    await openWithDescription(page, 'I am {{char}}, feeling {{getglobalvar::mood}}.');
+    const pill = page.locator('.field_preview[data-for="description_textarea"] .macro-pill[data-macro-name="char"]');
+    await expect(pill).toHaveCount(1);
+    const name = await pill.textContent();
+    const person = JSON.parse(String(await pill.getAttribute('data-macro-person')));
+    expect(person.about).toBe(`I am ${name}, feeling sunny.`);
+});
+
 test('filled in whole, as the macro preview does, nothing a macro sets is kept', async ({ page }) => {
     await openWithDescription(page, 'Hi.');
     const values = await page.evaluate(async () => {
