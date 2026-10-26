@@ -188,7 +188,12 @@ function wheelStep(field: FieldState, input: HTMLInputElement, event: WheelEvent
  * A slider with its number box, as the old range blocks (the box's id is the old counter's); a zen slider instead
  * with zen sliders on. `look` is the old markup's: a range block's, or text generation's neo-range classes.
  */
-export function Slider(props: { field: FieldState; counterId: string; look?: 'block' | 'neo'; unlocked?: boolean }) {
+export function Slider(props: {
+    field: FieldState;
+    counterId: string;
+    look?: 'block' | 'neo' | 'neo-wide';
+    unlocked?: boolean;
+}) {
     return (
         <Show
             when={props.field.zen()}
@@ -199,12 +204,27 @@ export function Slider(props: { field: FieldState; counterId: string; look?: 'bl
     );
 }
 
-function PlainSlider(props: { field: FieldState; counterId: string; look: 'block' | 'neo' | undefined }) {
+function PlainSlider(props: { field: FieldState; counterId: string; look: 'block' | 'neo' | 'neo-wide' | undefined }) {
     const field = () => props.field;
     const send = (input: HTMLInputElement) =>
         void field().set(Number(input.value), () => (input.value = String(field().number())));
+    const counter = () => (
+        <input
+            class="neo-range-input"
+            type="number"
+            id={props.counterId}
+            attr:data-for={field().field.id}
+            ref={numeric(field())}
+            disabled={field().disabled()}
+            onChange={(event) => send(event.currentTarget)}
+            onWheel={(event) => wheelStep(field(), event.currentTarget, event)}
+        />
+    );
     return (
-        <Show when={props.look === 'neo'} fallback={<BlockSlider field={props.field} counterId={props.counterId} />}>
+        <Show
+            when={props.look === 'neo' || props.look === 'neo-wide'}
+            fallback={<BlockSlider field={props.field} counterId={props.counterId} />}
+        >
             <input
                 class="neo-range-slider"
                 type="range"
@@ -213,16 +233,11 @@ function PlainSlider(props: { field: FieldState; counterId: string; look: 'block
                 disabled={field().disabled()}
                 onChange={(event) => send(event.currentTarget)}
             />
-            <input
-                class="neo-range-input"
-                type="number"
-                id={props.counterId}
-                attr:data-for={field().field.id}
-                ref={numeric(field())}
-                disabled={field().disabled()}
-                onChange={(event) => send(event.currentTarget)}
-                onWheel={(event) => wheelStep(field(), event.currentTarget, event)}
-            />
+            <Show when={props.look === 'neo-wide'} fallback={counter()}>
+                <div attr:data-randomization-disabled="true" class="wide100p">
+                    {counter()}
+                </div>
+            </Show>
         </Show>
     );
 }

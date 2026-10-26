@@ -38,12 +38,23 @@ export type Field = {
     api?: string[];
     /** Its range follows the context or response limits (raised when the user unlocks them). */
     limits?: 'context' | 'response';
-    /** Lab mode (power_user.enableLabMode) takes its range's limits away. */
+    /** Lab mode (power_user.enableLabMode) takes its range's limits away (see labRangeOf()). */
     lab?: true;
 };
 
 /** A field's range in lab mode. */
 export const LAB_RANGE = { min: -99999, max: 99999, step: 0.001 } as const;
+
+/**
+ * A field's range in lab mode, or none where lab mode leaves it alone. The old page freed every number of the
+ * advanced settings (all of text generation's, and the fields marked `lab`), and the response length within whole
+ * tokens (switchLabMode in power-user.js).
+ */
+export function labRangeOf(field: Field): Range | undefined {
+    if (field.id === 'amount_gen') return { min: 1, max: 99999, step: 1 };
+    const numeric = field.kind === 'range' || field.kind === 'number';
+    return numeric && (field.lab === true || field.family === 'textgen') ? { ...LAB_RANGE } : undefined;
+}
 
 /**
  * How a slider steps and shows its value with zen sliders on (power_user.enableZenSliders): `steps` across its range,
@@ -122,7 +133,7 @@ export type SamplerSelect = { manual: boolean; shown: readonly string[] };
  * The families the new page shows: their fields are the server's (only the actions below write them), and the old
  * page's controls for them are gone. A family joins when its old controls go.
  */
-export const SERVER_FAMILIES: readonly Field['family'][] = ['cc', 'textgen'];
+export const SERVER_FAMILIES: readonly Field['family'][] = ['cc', 'textgen', 'common'];
 
 /** The context and response limits, by whether the user unlocked them (power_user.max_context_unlocked). */
 export const LIMITS = {
@@ -1718,6 +1729,11 @@ export const actions = {
     'settings.reset': v.object({ path: v.string() }),
     /** Which levels the tab shows and edits. */
     'settings.range': v.object({ from: v.picklist(LEVELS), to: v.picklist(LEVELS) }),
+    /**
+     * The context size to a model's (what a text backend says its model takes), unlocking the context when it's past
+     * the locked limit, in one write.
+     */
+    'settings.fitContext': v.object({ size: v.pipe(v.number(), v.integer(), v.minValue(1)) }),
     /** Every text generation sampler to its neutral value, at the range's top level, in one write. */
     'settings.neutralize': v.object({}),
     /**

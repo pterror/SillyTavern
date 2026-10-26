@@ -86,8 +86,7 @@ import {
     persona_description_positions,
     personaStore,
     getCustomStoppingStrings,
-    MAX_CONTEXT_DEFAULT,
-    MAX_RESPONSE_DEFAULT,
+    switchMaxContextSize,
     registerDebugFunction,
     flushEphemeralStoppingStrings,
     resetMovableStyles,
@@ -232,7 +231,7 @@ import {
     getPersonaDescriptionDepth,
     getPersonaDescriptionRole,
 } from './scripts/personas.js';
-import { startNewUi, takeViews, chatClosed, newUi } from './scripts/new-ui.js';
+import { startNewUi, takeViews, chatClosed, newUi, newUiStarted } from './scripts/new-ui.js';
 import { loader } from './scripts/action-loader.js';
 import { BulkEditOverlay } from './scripts/BulkEditOverlay.js';
 import { initTextGenModels } from './scripts/textgen-models.js';
@@ -1524,6 +1523,7 @@ async function firstLoadInit() {
     });
     bindChatCompletionSettings(newUi().settings);
     bindTextGenSettings(newUi().settings);
+    bindSharedSettings(newUi().settings);
     await initTokenizers();
     initAuthorsNote();
     await initPersonas();
@@ -7456,12 +7456,6 @@ export function changeMainAPI(api = null) {
         activeItem.apiPresets.css('display', 'flex');
     }
 
-    if (selectedVal === 'textgenerationwebui' || selectedVal === 'novel') {
-        console.debug('enabling amount_gen for ooba/novel');
-        activeItem.amountGenElem.find('input').prop('disabled', false);
-        activeItem.amountGenElem.css('opacity', 1.0);
-    }
-
     //custom because streaming has been moved up under response tokens, which exists inside common settings block
     if (selectedVal === 'novel') {
         $('#ai_module_block_novel').css('display', 'block');
@@ -7626,10 +7620,13 @@ async function applySettings(data, initLoaderHandle = null, onStageChange = null
         // Allow subscribers to mutate settings
         await eventSource.emit(event_types.SETTINGS_LOADED_BEFORE, settings);
 
-        //Load AI model config settings
-        setAmountGen(settings.amount_gen);
-        if (settings.max_context !== undefined)
-            setMaxContext(parseInt(settings.max_context));
+        // The response length and context size: the server's once the new page has started (they mirror its view);
+        // before, what was loaded.
+        if (!newUiStarted()) {
+            setAmountGen(settings.amount_gen);
+            if (settings.max_context !== undefined)
+                setMaxContext(parseInt(settings.max_context));
+        }
 
         swipes = settings.swipes !== undefined ? !!settings.swipes : true;  // enable swipes by default
         $('#swipes-checkbox').prop('checked', swipes); /// swipecode
@@ -7664,13 +7661,6 @@ async function applySettings(data, initLoaderHandle = null, onStageChange = null
 
         // Allow subscribers to mutate settings
         await eventSource.emit(event_types.SETTINGS_LOADED_AFTER, settings);
-
-        // Set context size after loading power user (may override the max value)
-        $('#max_context').val(max_context);
-        $('#max_context_counter').val(max_context);
-
-        $('#amount_gen').val(amount_gen);
-        $('#amount_gen_counter').val(amount_gen);
 
         //Load which API we are using
         if (settings.main_api == undefined) {
@@ -8014,24 +8004,33 @@ export async function savePartialSettings(partialSettings) {
 }
 
 /**
- * Sets the generation parameters from a preset object.
+ * Sets the response length and context size from a preset or a model's limits (upstream's; extensions call it).
+ * They're the server's: the context is fitted to the size (unlocked past the locked limit) and the length set;
+ * resolves once the server has them.
  * @param {{ genamt?: number, max_length?: number }} preset Preset object
+ * @returns {Promise<void>}
  */
 export function setGenerationParamsFromPreset(preset) {
-    const needsUnlock = (preset.max_length ?? max_context) > MAX_CONTEXT_DEFAULT || (preset.genamt ?? amount_gen) > MAX_RESPONSE_DEFAULT;
-    $('#max_context_unlocked').prop('checked', needsUnlock).trigger('change');
+    // Not async, as upstream's isn't (extensions call it without waiting); the promise is there for who waits.
+    return (async () => {
+        if (preset.max_length !== undefined) await newUi().settings.fitContext(Number(preset.max_length));
+        if (preset.genamt !== undefined) await newUi().settings.setValue('amount_gen', Number(preset.genamt));
+    })();
+}
 
-    if (preset.genamt !== undefined) {
-        setAmountGen(preset.genamt);
-        $('#amount_gen').val(amount_gen);
-        $('#amount_gen_counter').val(amount_gen);
-    }
-
-    if (preset.max_length !== undefined) {
-        setMaxContext(preset.max_length);
-        $('#max_context').val(max_context);
-        $('#max_context_counter').val(max_context);
-    }
+/**
+ * Once the new page shows the fields the text APIs share: the response length and context size this page reads
+ * (generation-params.js's variables) mirror its view, and the old settings objects' fields of them read it.
+ * @param {import('/ui/entry.js').NewUi['settings']} settings
+ */
+function bindSharedSettings(settings) {
+    settings.bind(power_user, 'power_user');
+    settings.bind(kai_settings, 'kai_settings');
+    settings.bind(nai_settings, 'nai_settings');
+    settings.mirror('amount_gen', value => setAmountGen(Number(value)));
+    settings.mirror('max_context', value => setMaxContext(Number(value)));
+    // Kobold's own rep pen range follows the unlock.
+    settings.watch(['power_user.max_context_unlocked'], () => switchMaxContextSize());
 }
 
 // Common code for message editor done and auto-save
@@ -14337,31 +14336,6 @@ jQuery(async function () {
         if (sliderLocked) {
             event.preventDefault();
         }
-    });
-
-    const sliders = [
-        {
-            sliderId: '#amount_gen',
-            counterId: '#amount_gen_counter',
-            format: (val) => `${val}`,
-            setValue: (val) => { setAmountGen(Number(val)); },
-        },
-        {
-            sliderId: '#max_context',
-            counterId: '#max_context_counter',
-            format: (val) => `${val}`,
-            setValue: (val) => { setMaxContext(Number(val)); },
-        },
-    ];
-
-    sliders.forEach(slider => {
-        $(document).on('input', slider.sliderId, function () {
-            const value = $(this).val();
-            const formattedValue = slider.format(value);
-            slider.setValue(value);
-            $(slider.counterId).val(formattedValue);
-            saveSettingsDebounced('amount_gen', 'max_context');
-        });
     });
 
     //////////////////////////////////////////////////////////////

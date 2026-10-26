@@ -87,7 +87,7 @@ import { main_api } from './generation-params.js';
 import { showTokenizerWarnings } from './tokenizer-notices.js';
 import { reportStored, reportStoredHeader } from './stored-report.js';
 import { GLOBAL_PROMPT_ORDER_ID } from './prompt-manager-defaults.js';
-import { SERVER_OWNED, newUi, newUiStarted } from './new-ui.js';
+import { SERVER_OWNED, newUi, newUiStarted } from './new-ui-page.js';
 import {
     default_main_prompt,
     default_nsfw_prompt,

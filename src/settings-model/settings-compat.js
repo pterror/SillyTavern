@@ -1,7 +1,7 @@
 import { TYPE } from '../library-codes.js';
 import { canonicalStringify } from '../../public/scripts/hash-utils.js';
 import { settingsToUpdate } from '../../public/scripts/chat-completion-defaults.js';
-import { CONTEXT_TEMPLATE_POWER_USER_KEYS, PRESET_EXCLUDED_KEYS, TEXT_PRESET_LENGTH_KEYS } from '../../public/scripts/preset-file-keys.js';
+import { CONTEXT_TEMPLATE_POWER_USER_KEYS, PRESET_EXCLUDED_KEYS, TEXT_PRESET_LENGTH_KEYS, presetLengthKeys } from '../../public/scripts/preset-file-keys.js';
 import { THEME_FIELDS } from '../../public/scripts/theme-fields.js';
 import { resolveField } from '../settings-cascade.js';
 import { biasListFromUpstream, biasListToUpstream } from './sampler-presets.js';
@@ -219,8 +219,9 @@ function bundleFields(files, group, ref) {
     if (!file) return undefined;
     /** @type {Record<string, unknown>} */
     const fields = {};
+    const lengths = presetLengthKeys(group, file);
     for (const [key, value] of Object.entries(file)) {
-        const length = group.startsWith('preset.') && group !== 'preset.openai' ? TEXT_PRESET_LENGTH_KEYS[key] : undefined;
+        const length = group.startsWith('preset.') && group !== 'preset.openai' ? lengths[key] : undefined;
         fields[length ?? `${group}/${key}`] = value;
     }
     return fields;
@@ -291,9 +292,9 @@ export function importUpstream(upstream, { bundles, newKey }) {
         }
     }
     const family = lengthFamily(settings.main_api);
-    for (const [key, setting] of Object.entries(TEXT_PRESET_LENGTH_KEYS)) {
-        const ref = family ? user.bundles[`preset.${family}`] : undefined;
-        const held = ref !== undefined ? bundles(`preset.${family}`, bundleName(`preset.${family}`, ref)) : undefined;
+    const ref = family ? user.bundles[`preset.${family}`] : undefined;
+    const held = ref !== undefined ? bundles(`preset.${family}`, bundleName(`preset.${family}`, ref)) : undefined;
+    for (const [key, setting] of Object.entries(presetLengthKeys(`preset.${family}`, held))) {
         if (!Object.hasOwn(settings, setting)) {
             if (held && Object.hasOwn(held, key)) user.overrides[setting] = APP_DEFAULT;
             continue;

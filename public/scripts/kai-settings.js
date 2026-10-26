@@ -7,7 +7,6 @@ import {
     online_status,
     abortStatusCheck,
     startStatusLoading,
-    setGenerationParamsFromPreset,
 } from '../script.js';
 import { getRequestHeaders } from './request-headers.js';
 import { eventSource, event_types } from './events.js';
@@ -150,10 +149,7 @@ function loadKoboldSettingsFromPreset(preset) {
         $(slider.counterId).val(formattedValue);
     }
 
-    if (Object.hasOwn(preset, 'streaming_kobold')) {
-        kai_settings.streaming_kobold = preset.streaming_kobold;
-        $('#streaming_kobold').prop('checked', kai_settings.streaming_kobold);
-    }
+    // streaming_kobold is the server's: selecting the preset applies it there.
     if (Object.hasOwn(preset, 'use_default_badwordsids')) {
         kai_settings.use_default_badwordsids = preset.use_default_badwordsids;
         $('#use_default_badwordsids').prop('checked', kai_settings.use_default_badwordsids);
@@ -475,12 +471,6 @@ export function initKoboldSettings() {
         }
     });
 
-    $('#streaming_kobold').on('input', function () {
-        const value = !!$(this).prop('checked');
-        kai_settings.streaming_kobold = value;
-        saveSettingsDebounced('kai_settings');
-    });
-
     $('#use_default_badwordsids').on('input', function () {
         const value = !!$(this).prop('checked');
         kai_settings.use_default_badwordsids = value;
@@ -513,8 +503,8 @@ export function initKoboldSettings() {
         if ($('#settings_preset').find(':selected').val() != 'gui') {
             kai_settings.preset_settings = $('#settings_preset').find(':selected').text();
             const preset = koboldai_settings[koboldai_setting_names[kai_settings.preset_settings]];
+            // The response length, context size and streaming are the server's: selecting the preset applies them there.
             loadKoboldSettingsFromPreset(preset);
-            setGenerationParamsFromPreset(preset);
             $('#kobold_api-settings').find('input').prop('disabled', false);
             $('#kobold_api-settings').css('opacity', 1.0);
             $('#kobold_order')

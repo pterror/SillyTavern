@@ -1,4 +1,4 @@
-import { FIELDS, rangeOf } from './protocol.ts';
+import { FIELDS, labRangeOf, rangeOf } from './protocol.ts';
 
 // What a chat completion source and model allow: the largest context, the highest temperature, and the penalties'
 // range. The old page set these on its controls when the source or model changed (chat-completion-settings.js
@@ -514,7 +514,7 @@ export function withinBackend<T extends Record<string, unknown>>(settings: T): T
 /**
  * Settings with each field whose range follows the context or response limits at most their maximum, by whether
  * the user unlocked them (power_user.max_context_unlocked). The old page lowered and saved them when the unlock
- * changed; this reads them so, and stores nothing.
+ * changed; this reads them so, and stores nothing. Lab mode's fields are left as they are.
  */
 export function withinUnlock<T extends Record<string, unknown>>(settings: T): T {
     const powerUser: unknown = settings['power_user'];
@@ -522,9 +522,14 @@ export function withinUnlock<T extends Record<string, unknown>>(settings: T): T 
         typeof powerUser === 'object' &&
         powerUser !== null &&
         (powerUser as Record<string, unknown>)['max_context_unlocked'] === true;
+    const lab =
+        typeof powerUser === 'object' &&
+        powerUser !== null &&
+        (powerUser as Record<string, unknown>)['enableLabMode'] === true;
     let out: Record<string, unknown> = settings;
     for (const field of FIELDS) {
-        if (field.limits === undefined) continue;
+        // Lab mode frees what it frees from the limits too.
+        if (field.limits === undefined || (lab && labRangeOf(field) !== undefined)) continue;
         const { max } = rangeOf(field, unlocked);
         const keys = field.path.split('.');
         const parent = keys.length === 1 ? out : out[keys[0] ?? ''];

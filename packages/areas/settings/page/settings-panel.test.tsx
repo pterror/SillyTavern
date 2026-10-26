@@ -9,6 +9,7 @@ import { UiProvider } from '@st/page/context';
 import { LevelSlider } from './LevelSlider.tsx';
 import { CcOptions, CcSamplers, CcUtility } from './cc.tsx';
 import { TgSamplers, TgTop } from './tg.tsx';
+import { CommonLengths } from './common.tsx';
 import type { Support } from './cc.tsx';
 import { isShown } from './fields.tsx';
 import { settingsCompat } from './compat.ts';
@@ -275,4 +276,20 @@ test("a JSON schema is sent parsed; text that isn't JSON isn't sent and stays", 
             payload: { path: 'textgenerationwebui_settings.json_schema', value: { type: 'object' } },
         },
     ]);
+});
+
+test("the shared lengths show for the text APIs, each API's streaming under the response length", () => {
+    const view = (main: string) =>
+        viewOf({
+            api: { main, source: 'openai', textgen: 'llamacpp' },
+            values: { amount_gen: 300, max_context: 4096, 'power_user.max_context_unlocked': false },
+        });
+    const { host, setCurrent } = mount(view('kobold'), () => <CommonLengths />);
+    expect(host.querySelector<HTMLInputElement>('#amount_gen_counter')?.value).toBe('300');
+    expect(host.querySelector('#streaming_kobold')).not.toBeNull();
+    expect(host.querySelector('#streaming_novel')).toBeNull();
+    setCurrent(view('novel'));
+    expect(host.querySelector('#streaming_novel')).not.toBeNull();
+    setCurrent(view('openai'));
+    expect(host.querySelector('#amount_gen')).toBeNull();
 });

@@ -21,8 +21,8 @@ jest.unstable_mockModule('../public/script.js', () => ({
     getRequestHeaders: jest.fn(),
     getStoppingStrings: jest.fn(),
     resultCheckStatus: jest.fn(),
+    saveSettings: jest.fn(),
     saveSettingsDebounced: jest.fn(),
-    setGenerationParamsFromPreset: jest.fn(),
     setOnlineStatus: jest.fn(),
     startStatusLoading: jest.fn(),
 }));

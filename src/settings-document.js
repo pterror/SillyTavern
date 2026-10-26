@@ -18,6 +18,8 @@ import { keyOf } from './settings-model/keys.js';
 import { serverDirectory } from './server-directory.js';
 import { withinAllowed } from '@st/settings/model-limits';
 import { SERVER_OWNED_PATHS } from './settings-hash.js';
+import { LIMITS } from '@st/settings/protocol';
+import { presetLengthKeys } from '../public/scripts/preset-file-keys.js';
 import { modelListOf, modelListsVersion } from './model-lists.js';
 
 /**
@@ -100,13 +102,22 @@ export function openSettingsDocument(directories, handle) {
  * @param {Record<string, unknown>} file
  */
 function ownedFieldsOf(group, file) {
+    // A text preset's lengths, by its file's keys for them; a text family's own settings object, by key (as the old
+    // page applied a kobold preset's streaming_kobold).
+    const lengths = group.startsWith('preset.') && group !== 'preset.openai' ? presetLengthKeys(group, file) : {};
+    const object = PRESET_OBJECTS[group];
     return SERVER_OWNED_PATHS.flatMap(path => {
         const unit = unitOfPath(path.split('.'));
-        if (unit.kind !== 'field' || !unit.field.startsWith(`${group}/`)) return [];
-        const key = unit.field.slice(group.length + 1);
-        return Object.hasOwn(file, key) ? [{ path, key, field: unit.field }] : [];
+        if (unit.kind !== 'field') return [];
+        const length = Object.entries(lengths).find(([, setting]) => setting === path)?.[0];
+        const key = unit.field.startsWith(`${group}/`) ? unit.field.slice(group.length + 1)
+            : length ?? (object !== undefined && path.startsWith(`${object}.`) ? path.slice(object.length + 1) : undefined);
+        return key !== undefined && Object.hasOwn(file, key) ? [{ path, key, field: unit.field }] : [];
     });
 }
+
+/** The settings object a text preset's own keys are of (the old page's preset loaders). */
+const PRESET_OBJECTS = Object.freeze({ 'preset.kobold': 'kai_settings', 'preset.novel': 'nai_settings' });
 
 async function bundlesOf(lib, settings, connections) {
     /** @type {Map<string, Record<string, unknown> | undefined>} */
@@ -430,10 +441,18 @@ async function open(directories, handle) {
                 // A bundle the write selects: the fields of it the server owns take its values, as the old page wrote
                 // them with the selection (only settings.set writes them now).
                 const was = new Map(selectedBundles(before).map(({ group, name }) => [group, name]));
+                const lengthsSet = new Set();
                 for (const { group, name } of selectedBundles(shown)) {
                     const file = was.get(group) === name ? undefined : bundles(group, name);
-                    for (const { path, key } of file ? ownedFieldsOf(group, file) : []) setAtPath(shown, path, structuredClone(file?.[key]));
+                    for (const { path, key } of file ? ownedFieldsOf(group, file) : []) {
+                        setAtPath(shown, path, structuredClone(file?.[key]));
+                        lengthsSet.add(path);
+                    }
                 }
+                // A selected preset's lengths past the locked limits unlock them, as the old page did when one needed it.
+                const needsUnlock = (lengthsSet.has('amount_gen') && Number(shown.amount_gen) > LIMITS.response.locked.max)
+                    || (lengthsSet.has('max_context') && Number(shown.max_context) > LIMITS.context.locked.max);
+                if (needsUnlock) setAtPath(shown, 'power_user.max_context_unlocked', true);
                 const nextModel = importUpstream(structuredClone(shown), { bundles, newKey });
                 // The characters' and groups' statements are the model's own: upstream's settings don't carry them.
                 nextModel.statements.levels = current.statements.levels;
