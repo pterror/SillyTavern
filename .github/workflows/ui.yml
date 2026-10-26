@@ -1,0 +1,64 @@
+# Builds the new page (packages/ui) and publishes it as the release ui-<first 16 hex of its source hash>
+# (packages/serve-ui), which the server downloads, so nobody running SillyTavern builds it. A source hash that
+# already has a release is not rebuilt.
+name: New page release
+
+on:
+  push:
+    paths:
+      - 'packages/ui/**'
+      - 'packages/protocol/**'
+      - 'packages/serve-ui/**'
+      - 'package-lock.json'
+      - 'scripts/build-ui.mjs'
+      - '.github/workflows/ui.yml'
+  workflow_dispatch:
+
+# One run at a time, so a second run for the same hash sees the first one's release.
+concurrency:
+  group: ui-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          key=$(node scripts/build-ui.mjs --key)
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+          # A draft is a run that failed before publishing; it is rebuilt.
+          if [ "$(gh release view "ui-$key" --json isDraft --jq .isDraft 2>/dev/null)" = "false" ]; then
+            echo "ui-$key is already released"
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.plan.outputs.build == 'true'
+        run: npm ci --include=dev --ignore-scripts --no-audit --no-fund
+      - if: steps.plan.outputs.build == 'true'
+        run: node scripts/build-ui.mjs --pack ui.json
+      # Published only once its file is attached: the server takes a release's file as the whole build.
+      - if: steps.plan.outputs.build == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          KEY: ${{ steps.plan.outputs.key }}
+        run: |
+          if gh release view "ui-$KEY" >/dev/null 2>&1; then
+            gh release delete "ui-$KEY" --yes --cleanup-tag
+          fi
+          gh release create "ui-$KEY" ui.json --draft --latest=false --target "$GITHUB_SHA" \
+            --title "new page $KEY" --notes "packages/ui built from $GITHUB_SHA."
+          gh release edit "ui-$KEY" --draft=false --latest=false

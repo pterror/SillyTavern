@@ -66,3 +66,6 @@ test-results/
 /bin
 /engine/dist/
 /engine/target/
+
+# The new page's build (packages/serve-ui): its release's, or built here
+/packages/ui/dist/
