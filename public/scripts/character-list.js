@@ -9,7 +9,7 @@ import { debounce_timeout } from './constants.js';
 import { filterByTagState, printTagFilters, printTagList, tag_filter_type, compareTagsForSort, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, heldTagsForIds, searchTagsByName, readTagsForIds, registerFolderCaseHandlers, takeInExtensionTagWrites } from './tags.js';
 import { tagFetchStamp, isFetchedTagIdsCurrent } from './tag-fetch-stamps.js';
 import { FILTER_STATES, FILTER_TYPES, FilterHelper, isFilterState } from './filters.js';
-import { characterRepository, buildCharacterQuery, isInvalidSortFieldError, normalizeQueryRow, parseQueryTotal } from './character-repository.js';
+import { characterRepository, buildCharacterQuery, isInvalidSortFieldError, normalizeQueryRow } from './character-repository.js';
 import { cleanRanges, parseSearchText, sameView, serializeSearchText, viewToQueryState } from './character-view.js';
 import { initViewPills, makeSearchGuide } from './character-view-pills.js';
 import { applyKeptView, initSavedViews, refreshSavedViewState, restoreCurrentView } from './saved-views.js';
@@ -87,19 +87,6 @@ async function getEmptyBlock() {
     };
     const emptyBlock = await renderTemplateAsync('emptyBlock', params);
     return $(emptyBlock);
-}
-
-/**
- * @param {number} hidden Number of hidden characters
- * @param {boolean} [approx] Whether `hidden` is an estimate
- */
-async function getHiddenBlock(hidden, approx = false) {
-    const shown = `${approx ? '~' : ''}${hidden}`;
-    const params = {
-        text: (hidden > 1 ? t`${shown} characters hidden.` : t`${shown} character hidden.`),
-    };
-    const hiddenBlock = await renderTemplateAsync('hiddenBlock', params);
-    return $(hiddenBlock);
 }
 
 // Order-independent equality (nullish treated as empty) - the server and the resident copy don't guarantee the
@@ -339,8 +326,8 @@ export function onCharacterListShown() {
 // Must be a string, not a function: pagination.js only enters real per-page `isAsync` mode (calling
 // `ajaxFunction` fresh on every page turn) for a string `dataSource`. The value itself is never fetched.
 const SERVER_PAGINATED_DATA_SOURCE = '/api/characters/query';
-/** @type {('rows'|'total'|'hidden')[]} */
-const PAGE_WANT = ['rows', 'total', 'hidden'];
+/** @type {('rows'|'total')[]} */
+const PAGE_WANT = ['rows', 'total'];
 
 // The entities of the rows on screen. Always reassigned, never mutated: the page callback stores pagination.js's own
 // page array here, which must not change under it.
@@ -409,8 +396,7 @@ export async function printCharacters(fullRefresh = false) {
     const pageSize = Number(accountStorage.getItem(storageKey)) || per_page_default;
     const sizeChangerOptions = [10, 25, 50, 100, 250, 500, 1000];
 
-    // getHidden gives the "N hidden" count, which comes with each page from the server.
-    function makePageCallback(getHidden) {
+    function makePageCallback() {
         return async function (/** @type {Entity[]} */ data) {
             const list = $(listId).get(0);
 
@@ -456,12 +442,6 @@ export async function printCharacters(fullRefresh = false) {
                 $(list).append(emptyBlock);
             }
             list.appendChild(fragment);
-
-            const hidden = parseQueryTotal(getHidden());
-            if (hidden.value > 0 && entitiesFilter.hasAnyFilter()) {
-                const hiddenBlock = await getHiddenBlock(hidden.value, hidden.approx);
-                $(listId).append(hiddenBlock);
-            }
             localizePagination($('#rm_print_characters_pagination'));
 
             eventSource.emit(event_types.CHARACTER_PAGE_LOADED);
@@ -543,9 +523,6 @@ export async function printCharacters(fullRefresh = false) {
         const { sort, result: firstPage } = await queryWithSortFallback(filter, wantedSort,
             trySort => characterRepository.query(filter, trySort, 1, pageSize, PAGE_WANT, { onFresh }));
 
-        // The page response's `hidden`: every entity less the rows on that page, `~`-prefixed when approximate.
-        /** @type {number|string} */
-        let pageHidden = 0;
         // Serves the already-fetched probe to ajaxFunction's first call instead of re-fetching.
         let pendingFirstPage = firstPage;
         // Whether the latest page response's `total` was `~`-prefixed (approximate).
@@ -584,7 +561,6 @@ export async function printCharacters(fullRefresh = false) {
                         const parsedTotal = Number(String(result.total ?? 0).replace(/^~/, ''));
                         saveCharactersTotal = Number.isFinite(parsedTotal) ? parsedTotal : 0;
                         pageTotalApprox = isApproxTotal(result.total);
-                        pageHidden = result.hidden ?? 0;
                         listPageContext = {
                             query: { filter, sort },
                             queryKey: JSON.stringify({ filter, sort }),
@@ -603,7 +579,7 @@ export async function printCharacters(fullRefresh = false) {
                     })
                     .finally(pageFetchSettled);
             },
-            callback: makePageCallback(() => pageHidden),
+            callback: makePageCallback(),
         });
     }
 }
