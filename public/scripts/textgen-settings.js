@@ -27,6 +27,7 @@ import { TOKENIZER_SUPPORTED_KEY, getEntryTokenIds, registerEntryTextSource, sho
 import { AbortReason } from './util/AbortReason.js';
 import { getSortableDelay, onlyUnique, arraysEqual, isObject } from './utils.js';
 import { setting_names } from './textgen-setting-names.js';
+import { textgen_connection_defaults } from './textgen-connection-defaults.js';
 import { showTokenizerWarnings } from './tokenizer-notices.js';
 import { reportStoredHeader } from './stored-report.js';
 
@@ -208,31 +209,14 @@ export const textgenerationwebui_settings = {
     spaces_between_special_tokens: true,
     speculative_ngram: false,
     type: textgen_types.OOBA,
-    mancer_model: 'mytholite',
-    togetherai_model: 'Gryphe/MythoMax-L2-13b',
-    infermaticai_model: '',
-    ollama_model: '',
-    openrouter_model: 'openrouter/auto',
-    openrouter_providers: [],
-    openrouter_quantizations: [],
-    vllm_model: '',
-    aphrodite_model: '',
-    dreamgen_model: 'lucid-v1-extra-large/text',
-    tabby_model: '',
-    llamacpp_model: '',
     sampler_order: KOBOLDCPP_ORDER,
     logit_bias: [],
     n: 1,
-    server_urls: {},
-    custom_model: '',
-    bypass_status_check: false,
-    openrouter_allow_fallbacks: true,
     xtc_threshold: 0.1,
     xtc_probability: 0,
     nsigma: 0.0,
     min_keep: 0,
-    featherless_model: '',
-    generic_model: '',
+    ...structuredClone(textgen_connection_defaults),
     extensions: {},
     adaptive_target: -0.01,
     adaptive_decay: 0.9,
