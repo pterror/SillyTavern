@@ -1,131 +1,46 @@
 import fs from 'node:fs';
-import path from 'node:path';
 
 import express from 'express';
 import _ from 'lodash';
 import sanitize from 'sanitize-filename';
-import { sync as writeFileAtomicSync } from 'write-file-atomic';
 
 import { getDefaultPresetFile, getDefaultPresets } from './content-manager.js';
-
-/**
- * Gets the folder and extension for the preset settings based on the API source ID.
- * @param {string} apiId API source ID
- * @param {import('../users.js').UserDirectoryList} directories User directories
- * @returns {{folder: string?, extension: string?}} Object containing the folder and extension for the preset settings
- */
-export function getPresetSettingsByAPI(apiId, directories) {
-    switch (apiId) {
-        case 'kobold':
-        case 'koboldhorde':
-            return { folder: directories.koboldAI_Settings, extension: '.json' };
-        case 'novel':
-            return { folder: directories.novelAI_Settings, extension: '.json' };
-        case 'textgenerationwebui':
-            return { folder: directories.textGen_Settings, extension: '.json' };
-        case 'openai':
-            return { folder: directories.openAI_Settings, extension: '.json' };
-        case 'instruct':
-            return { folder: directories.instruct, extension: '.json' };
-        case 'context':
-            return { folder: directories.context, extension: '.json' };
-        case 'sysprompt':
-            return { folder: directories.sysprompt, extension: '.json' };
-        case 'reasoning':
-            return { folder: directories.reasoning, extension: '.json' };
-        default:
-            return { folder: null, extension: null };
-    }
-}
-
-/**
- * Reads a single named preset's raw content, addressed the same way /save and /delete address it
- * (sanitized filename under the api-specific folder).
- * @param {string} apiId API source ID (see getPresetSettingsByAPI)
- * @param {string} name Preset name
- * @param {import('../users.js').UserDirectoryList} directories
- * @returns {object|null} Parsed preset content, or null if not found/invalid
- */
-export function readPresetByName(apiId, name, directories) {
-    const { folder, extension } = getPresetSettingsByAPI(apiId, directories);
-    if (!folder || !name) return null;
-    const filename = path.join(folder, sanitize(`${name}${extension}`));
-    if (!fs.existsSync(filename)) return null;
-    try {
-        return JSON.parse(fs.readFileSync(filename, 'utf-8'));
-    } catch {
-        return null;
-    }
-}
+import { bundleFilePath, bundleFolder, deleteBundleFile, groupOfApi, renameBundleFile, writeBundleFile } from '../bundle-files.js';
 
 export const router = express.Router();
 
 router.post('/save', function (request, response) {
-    const name = sanitize(request.body.name);
-    if (!request.body.preset || !name) {
+    const group = groupOfApi(request.body.apiId);
+    if (!request.body.preset || !group) {
         return response.sendStatus(400);
     }
-
-    const settings = getPresetSettingsByAPI(request.body.apiId, request.user.directories);
-    const filename = name + settings.extension;
-
-    if (!settings.folder) {
-        return response.sendStatus(400);
-    }
-
-    const fullpath = path.join(settings.folder, filename);
-    writeFileAtomicSync(fullpath, JSON.stringify(request.body.preset, null, 4), 'utf-8');
-    return response.send({ name });
+    const name = writeBundleFile(request.user.directories, group, request.body.name, request.body.preset);
+    return name ? response.send({ name }) : response.sendStatus(400);
 });
 
 router.post('/delete', function (request, response) {
-    const name = sanitize(request.body.name);
-    if (!name) {
+    const group = groupOfApi(request.body.apiId);
+    if (!group || !bundleFilePath(request.user.directories, group, request.body.name)) {
         return response.sendStatus(400);
     }
-
-    const settings = getPresetSettingsByAPI(request.body.apiId, request.user.directories);
-    const filename = name + settings.extension;
-
-    if (!settings.folder) {
-        return response.sendStatus(400);
-    }
-
-    const fullpath = path.join(settings.folder, filename);
-
-    if (fs.existsSync(fullpath)) {
-        fs.unlinkSync(fullpath);
-        return response.sendStatus(200);
-    } else {
-        return response.sendStatus(404);
-    }
+    return response.sendStatus(deleteBundleFile(request.user.directories, group, request.body.name) ? 200 : 404);
 });
 
 router.post('/rename', function (request, response) {
-    const oldName = sanitize(request.body.name);
-    const newName = sanitize(request.body.newName);
-    if (!oldName || !newName) {
+    const group = groupOfApi(request.body.apiId);
+    if (!group) {
         return response.sendStatus(400);
     }
-
-    const settings = getPresetSettingsByAPI(request.body.apiId, request.user.directories);
-    if (!settings.folder) {
-        return response.sendStatus(400);
+    switch (renameBundleFile(request.user.directories, group, request.body.name, request.body.newName)) {
+        case 'invalid':
+            return response.sendStatus(400);
+        case 'missing':
+            return response.sendStatus(404);
+        case 'taken':
+            return response.status(400).send({ error: 'A preset with the new name already exists' });
+        default:
+            return response.send({ name: sanitize(request.body.newName) });
     }
-
-    const oldPath = path.join(settings.folder, oldName + settings.extension);
-    const newPath = path.join(settings.folder, newName + settings.extension);
-
-    if (!fs.existsSync(oldPath)) {
-        return response.sendStatus(404);
-    }
-
-    if (fs.existsSync(newPath)) {
-        return response.status(400).send({ error: 'A preset with the new name already exists' });
-    }
-
-    fs.renameSync(oldPath, newPath);
-    return response.send({ name: newName });
 });
 
 /**
@@ -133,17 +48,11 @@ router.post('/rename', function (request, response) {
  * of the preset. Mirrors the settings-store /save-partial pattern.
  */
 router.post('/save-partial', function (request, response) {
-    const name = sanitize(request.body.name);
-    if (!name) {
+    const group = groupOfApi(request.body.apiId);
+    const fullpath = group ? bundleFilePath(request.user.directories, group, request.body.name) : undefined;
+    if (!fullpath) {
         return response.sendStatus(400);
     }
-
-    const settings = getPresetSettingsByAPI(request.body.apiId, request.user.directories);
-    if (!settings.folder) {
-        return response.sendStatus(400);
-    }
-
-    const fullpath = path.join(settings.folder, name + settings.extension);
     if (!fs.existsSync(fullpath)) {
         return response.sendStatus(404);
     }
@@ -169,17 +78,17 @@ router.post('/save-partial', function (request, response) {
         preset.extensions = value;
     }
 
-    writeFileAtomicSync(fullpath, JSON.stringify(preset, null, 4), 'utf-8');
+    writeBundleFile(request.user.directories, group, request.body.name, preset);
     return response.send({ ok: true });
 });
 
 router.post('/restore', function (request, response) {
     try {
-        const settings = getPresetSettingsByAPI(request.body.apiId, request.user.directories);
+        const folder = bundleFolder(request.user.directories, groupOfApi(request.body.apiId) ?? '');
         const name = sanitize(request.body.name);
         const defaultPresets = getDefaultPresets(request.user.directories);
 
-        const defaultPreset = defaultPresets.find(p => p.name === name && p.folder === settings.folder);
+        const defaultPreset = defaultPresets.find(p => p.name === name && p.folder === folder);
 
         const result = { isDefault: false, preset: {} };
 

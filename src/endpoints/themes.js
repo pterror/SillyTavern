@@ -1,11 +1,7 @@
-import path from 'node:path';
-import fs from 'node:fs';
-
 import express from 'express';
-import sanitize from 'sanitize-filename';
-import { sync as writeFileAtomicSync } from 'write-file-atomic';
 
 import { readUserSettings } from '../settings-reads.js';
+import { deleteBundleFile, writeBundleFile } from '../bundle-files.js';
 import { THEME_FIELDS } from '../../public/scripts/theme-fields.js';
 
 export const router = express.Router();
@@ -15,10 +11,7 @@ router.post('/save', (request, response) => {
         return response.sendStatus(400);
     }
 
-    const filename = path.join(request.user.directories.themes, sanitize(`${request.body.name}.json`));
-    writeFileAtomicSync(filename, JSON.stringify(request.body, null, 4), 'utf8');
-
-    return response.sendStatus(200);
+    return response.sendStatus(writeBundleFile(request.user.directories, 'theme', request.body.name, request.body) ? 200 : 400);
 });
 
 // Composes a theme from the server's own stored power_user settings, instead of trusting a
@@ -40,9 +33,9 @@ router.post('/save-from-settings', (request, response) => {
         Object.assign(theme, overrides);
     }
 
-    const filename = path.join(request.user.directories.themes, sanitize(`${name}.json`));
-    writeFileAtomicSync(filename, JSON.stringify(theme, null, 4), 'utf8');
-
+    if (!writeBundleFile(request.user.directories, 'theme', name, theme)) {
+        return response.sendStatus(400);
+    }
     return response.send({ theme });
 });
 
@@ -52,12 +45,10 @@ router.post('/delete', (request, response) => {
     }
 
     try {
-        const filename = path.join(request.user.directories.themes, sanitize(`${request.body.name}.json`));
-        if (!fs.existsSync(filename)) {
-            console.error('Theme file not found:', filename);
+        if (!deleteBundleFile(request.user.directories, 'theme', request.body.name)) {
+            console.error('Theme file not found:', request.body.name);
             return response.sendStatus(404);
         }
-        fs.unlinkSync(filename);
         return response.sendStatus(200);
     } catch (error) {
         console.error(error);

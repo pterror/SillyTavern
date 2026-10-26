@@ -22,7 +22,7 @@ import { mergeTextGenPreset } from '../../textgen-preset-merge.js';
 import { createTextGenGenerationData } from '../../textgen-generation-data.js';
 import { constructPrompt, getInstructStoppingSequences } from '../../instruct-template-format.js';
 import { readSettingsFor, settingsContextOf } from '../../settings-reads.js';
-import { readPresetByName } from '../presets.js';
+import { readBundleFile } from '../../bundle-files.js';
 import { resolveTokenizer, encodeWithTokenizer, resolveProfileTokenizerSetting, createTokenizerOutcome, sendTokenizerWarnings, tokenizerIdentity } from '../../tokenizer-resolve.js';
 import { createLlamaCppPropsCheck, llamaCppPropsModelName } from '../../llamacpp-props.js';
 import { createStoredCounter, writeBack } from '../../token-count-store.js';
@@ -757,8 +757,8 @@ router.post('/generate', withGenerationStop(async function (request, response) {
                 return response.status(400).send({ error: true, message: 'messages must be an array' });
             }
 
-            const instructPreset = profile.instruct ? readPresetByName('instruct', profile.instruct, request.user.directories) : null;
-            const contextPreset = profile.context ? readPresetByName('context', profile.context, request.user.directories) : null;
+            const instructPreset = profile.instruct ? readBundleFile(request.user.directories, 'template.instruct', profile.instruct) : null;
+            const contextPreset = profile.context ? readBundleFile(request.user.directories, 'template.context', profile.context) : null;
             const finalPrompt = instructPreset
                 ? constructPrompt(messages, instructPreset, { name1, name2, isGroup })
                 : messages.map(m => m.content).join('\n\n');
@@ -768,7 +768,7 @@ router.post('/generate', withGenerationStop(async function (request, response) {
 
             // A generation in no chat: the user's own settings.
             const { 'textgenerationwebui_settings': baseSettings, power_user: powerUser = {} } = readSettingsFor(request.user.directories, settingsContextOf({}), ['textgenerationwebui_settings', 'power_user']);
-            const preset = profile.preset ? readPresetByName('textgenerationwebui', profile.preset, request.user.directories) : null;
+            const preset = profile.preset ? readBundleFile(request.user.directories, 'preset.textgenerationwebui', profile.preset) : null;
             const settings = mergeTextGenPreset({ ...baseSettings, type: selectedApiMap.type }, preset);
 
             const apiServerUrl = profile['api-url'] || resolveServerUrl(settings);
