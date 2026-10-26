@@ -110,6 +110,11 @@ test.describe('live editor rendering', () => {
         expect(dimmed).toEqual(['<font color="red">', '</font>', '<span style="color: rgb(0, 0, 255)" onclick="alert(1)">', '</span>', '<!-- note -->']);
     });
 
+    test('HTML blocks in a row on one line are all drawn, and what follows a comment on its line', async ({ page }) => {
+        await mountRendered(page, '<div>first</div><div>second</div>\n\n<!-- note --><div>third</div>');
+        await expect(page.locator('#liveEditorTestHost .live-html-render div')).toHaveText(['first', 'second', 'third']);
+    });
+
     test('an HTML block is drawn under its source, takes no clicks, and moves nothing on focus', async ({ page }) => {
         await mountRendered(page, 'Before.\n\n<div style="color: rgb(0, 128, 0)">\nInside the block\n</div>\n\nAfter.');
         const drawn = page.locator('#liveEditorTestHost .live-html-render');

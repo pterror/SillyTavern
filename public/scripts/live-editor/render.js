@@ -277,7 +277,8 @@ const textStyle = ViewPlugin.fromClass(class {
 }, { decorations: plugin => plugin.decorations });
 
 /**
- * Each HTML block drawn under its source.
+ * Each HTML block drawn under its source; a comment's block too, for what follows the comment on its line (a comment
+ * alone renders as nothing).
  * @param {import('@codemirror/state').EditorState} state
  * @returns {import('@codemirror/view').DecorationSet}
  */
@@ -287,7 +288,7 @@ function htmlBlockRenders(state) {
     /** @type {import('@codemirror/state').Range<import('@codemirror/view').Decoration>[]} */
     const ranges = [];
     for (let node = tree.topNode.firstChild; node; node = node.nextSibling) {
-        if (node.name !== 'HTMLBlock') continue;
+        if (node.name !== 'HTMLBlock' && node.name !== 'CommentBlock') continue;
         const html = DOMPurify.sanitize(render(state.doc.sliceString(node.from, node.to)));
         if (html.trim() === '') continue;
         ranges.push(Decoration.widget({ widget: new HtmlBlockWidget(html), block: true, side: 1 }).range(state.doc.lineAt(node.to).to));
