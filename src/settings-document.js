@@ -222,42 +222,72 @@ async function open(directories, handle) {
             }
         };
         walk(shown, saved, []);
-        const top = levelsIn(range).at(-1);
-        const holder = top === 'character' && context.avatar ? `character:${context.avatar}` : top === 'group' && context.groupId ? `group:${context.groupId}` : null;
-        /** @type {{ bundles: Record<string, string | null>, set: Record<string, unknown>, delete: string[] }} */
-        const level = { bundles: {}, set: {}, delete: [] };
-        /** @type {Map<string, Record<string, unknown>>} Changes to the user's presets, by group. */
-        const presets = new Map();
+        // Each change where its route says; the user's own ones in one write.
         const user = structuredClone(document.settings);
         let userChanged = false;
-        for (const [path, unit] of units) {
+        for (const [path] of units) {
             const value = getAtPath(saved, path);
-            const bundled = unit.kind === 'selection' || (unit.kind === 'field' && unit.field.includes('/'));
-            if (bundled && holder) {
-                if (unit.kind === 'selection') level.bundles[unit.group] = typeof value === 'string' && value ? bundleRef(unit.group, value) : null;
-                else if (value === undefined) level.delete.push(unit.field);
-                else level.set[unit.field] = value;
-            } else if (bundled && top === 'preset' && unit.kind === 'field') {
-                const group = unit.field.slice(0, unit.field.indexOf('/'));
-                if (!presets.has(group)) presets.set(group, {});
-                presets.get(group)[unit.field.slice(unit.field.indexOf('/') + 1)] = value;
-            } else {
+            if (routeOf(context, range, path).to === 'user') {
                 setAtPath(user, path, structuredClone(value));
                 userChanged = true;
+            } else {
+                await writeAt(context, range, path, value);
             }
         }
-        if (holder && (Object.keys(level.bundles).length || Object.keys(level.set).length || level.delete.length)) await document.writeLevel(holder, level);
-        for (const [group, changes] of presets) {
-            const ref = current.user.bundles[group];
-            if (ref === undefined) continue;
-            const name = group === 'theme' ? ref : ref.slice(ref.indexOf(':') + 1);
-            const file = (await bundleFileFromStore(lib, group, name, userConnections(current))) ?? {};
-            await writeBundle(directories, group, name, { ...file, ...changes });
+        if (userChanged) await document.replace(user);
+    };
+
+    /**
+     * Where an edit of one path goes, for a page showing a context over a range: the range's top level when the path
+     * is a bundle's field or selection (a character's or group's statement, or the user's preset's field), else the
+     * user's own settings.
+     * @param {{ avatar?: string | null, groupId?: string | null }} context
+     * @param {{ from: string, to: string }} range
+     * @param {string} path
+     * @returns {{ to: 'level', holder: string, unit: any } | { to: 'preset', group: string, field: string } | { to: 'user' }}
+     */
+    const routeOf = (context, range, path) => {
+        const unit = unitOfPath(path.split('.'));
+        const top = levelsIn(range).at(-1);
+        const holder = top === 'character' && context.avatar ? `character:${context.avatar}` : top === 'group' && context.groupId ? `group:${context.groupId}` : null;
+        const bundled = unit.kind === 'selection' || (unit.kind === 'field' && unit.field.includes('/'));
+        if (bundled && holder) return { to: 'level', holder, unit };
+        if (bundled && top === 'preset' && unit.kind === 'field') {
+            return { to: 'preset', group: unit.field.slice(0, unit.field.indexOf('/')), field: unit.field.slice(unit.field.indexOf('/') + 1) };
+        }
+        return { to: 'user' };
+    };
+
+    /**
+     * Writes one path where routeOf() says. `undefined` takes the path away (back to what's under it).
+     * @param {{ avatar?: string | null, groupId?: string | null }} context
+     * @param {{ from: string, to: string }} range
+     * @param {string} path
+     * @param {unknown} value
+     */
+    const writeAt = async (context, range, path, value) => {
+        const route = routeOf(context, range, path);
+        if (route.to === 'level') {
+            const { holder, unit } = route;
+            if (unit.kind === 'selection') await document.writeLevel(holder, { bundles: { [unit.group]: typeof value === 'string' && value ? bundleRef(unit.group, value) : null } });
+            else if (value === undefined) await document.writeLevel(holder, { delete: [unit.field] });
+            else await document.writeLevel(holder, { set: { [unit.field]: value } });
+            return;
+        }
+        if (route.to === 'preset') {
+            const ref = current.user.bundles[route.group];
+            if (ref === undefined) return;
+            const name = route.group === 'theme' ? ref : ref.slice(ref.indexOf(':') + 1);
+            const file = (await bundleFileFromStore(lib, route.group, name, userConnections(current))) ?? {};
+            await writeBundle(directories, route.group, name, { ...file, [route.field]: value });
             userBundles = await statedBundleFiles(lib, current);
             userSourcesMemo = null;
             contexts.clear();
+            return;
         }
-        if (userChanged) await document.replace(user);
+        const user = structuredClone(document.settings);
+        setAtPath(user, path, structuredClone(value));
+        await document.replace(user);
     };
 
     let writing = Promise.resolve();
@@ -295,6 +325,9 @@ async function open(directories, handle) {
         },
         saveIn(context, range, saved) {
             return saveInContext(context, range, saved);
+        },
+        writeAt(context, range, path, value) {
+            return writeAt(context, range, path, value);
         },
         writeLevel(holder, change) {
             const run = writing.then(async () => {

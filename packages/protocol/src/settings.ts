@@ -1,3 +1,6 @@
+import * as v from 'valibot';
+import type { ActionSchemas } from './index.ts';
+
 // The settings the AI response configuration panel shows, as declarations: each field's control, label, range,
 // group and when it's shown come from here (the server validates a change against its field; the page draws the
 // panel from these). Taken from the old panel's markup and tables (public/index.html, chat-completion-defaults.js,
@@ -1554,3 +1557,66 @@ export const FIELDS: readonly Field[] = [
         api: ['novel'],
     },
 ];
+
+/** The settings a tab shows: its chat's, over a range of levels. */
+export const VIEW = 'settings';
+
+/** Where a value can come from, farthest first (the server's settings document: LEVEL_POSITIONS). */
+export const LEVELS = ['default', 'preset', 'user', 'group', 'character'] as const;
+export type Level = (typeof LEVELS)[number];
+export type LevelRange = { from: Level; to: Level };
+
+/** By default a tab shows and edits the user's own settings, as without levels. */
+export const DEFAULT_RANGE: LevelRange = { from: 'default', to: 'user' };
+
+export type SettingsView = {
+    /** The chat whose settings these are (its character's or group's levels), or none. */
+    context: { avatar: string } | { group: string } | null;
+    range: LevelRange;
+    /** Each field's value, by its path. */
+    values: Record<string, unknown>;
+    /** The level each value comes from within the range, by path; a path not here has the default's. */
+    sources: Record<string, Exclude<Level, 'default'>>;
+    /** How many fields each level sets in this chat, whatever the range (a level the range leaves out shows it). */
+    counts: Partial<Record<Level, number>>;
+    /** The range now of each field whose range follows the unlock, by its id. */
+    ranges: Record<string, Range>;
+    /** What decides which fields are shown: the API, chat completion's source, text generation's backend. */
+    api: { main: string; source: string; textgen: string };
+};
+
+export const actions = {
+    /** Sets a field at the range's top level (the server routes it: a level's statement, a preset, the user's own). */
+    'settings.set': v.object({ path: v.string(), value: v.unknown() }),
+    /** Takes a field's value away at the range's top level: what's under it shows again. */
+    'settings.unset': v.object({ path: v.string() }),
+    /** Which levels the tab shows and edits. */
+    'settings.range': v.object({ from: v.picklist(LEVELS), to: v.picklist(LEVELS) }),
+} satisfies ActionSchemas;
+
+const byPath = new Map(FIELDS.map((field) => [field.path, field]));
+
+/** The field at a path, if the panel has one there. */
+export const fieldAt = (path: string): Field | undefined => byPath.get(path);
+
+/** Why a value can't be a field's, or null when it can. `range` is the field's range now (rangeOf()). */
+export function refusalOf(field: Field, value: unknown, range: Range): string | null {
+    switch (field.kind) {
+        case 'range':
+        case 'number': {
+            if (typeof value !== 'number' || !Number.isFinite(value)) return `${field.label}: not a number`;
+            if (range.min !== undefined && value < range.min) return `${field.label}: at least ${range.min}`;
+            if (range.max !== undefined && value > range.max) return `${field.label}: at most ${range.max}`;
+            return null;
+        }
+        case 'checkbox':
+            return typeof value === 'boolean' ? null : `${field.label}: on or off`;
+        case 'text':
+            return typeof value === 'string' ? null : `${field.label}: not text`;
+        case 'select':
+        case 'choice':
+            return (field.options ?? []).some((option) => option.value === value)
+                ? null
+                : `${field.label}: not one of its choices`;
+    }
+}

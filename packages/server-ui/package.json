@@ -4,7 +4,8 @@
     "type": "module",
     "exports": {
         ".": "./src/index.ts",
-        "./backgrounds": "./src/backgrounds.ts"
+        "./backgrounds": "./src/backgrounds.ts",
+        "./settings": "./src/settings.ts"
     },
     "dependencies": {
         "@st/protocol": "*",
