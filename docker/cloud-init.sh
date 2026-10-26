@@ -49,7 +49,7 @@ if [ -z "$(swapon --show=NAME --noheadings 2>/dev/null)" ]; then
 fi
 
 # Node.js from the official prebuilt tarball - sidesteps distro package
-# managers shipping stale/incompatible versions (ST needs Node >= 22.15.1)
+# managers shipping stale/incompatible versions (ST needs Node >= 22.18.0)
 case "$(uname -m)" in
   x86_64) NODE_ARCH=x64 ;;
   aarch64) NODE_ARCH=arm64 ;;

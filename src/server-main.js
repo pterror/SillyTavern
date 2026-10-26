@@ -54,7 +54,9 @@ import hostWhitelistMiddleware from './middleware/hostWhitelist.js';
 import userCssMiddleware from './middleware/userCss.js';
 import { FrontendAssets, frontendAssetMiddleware } from './frontend-assets.js';
 import getPublicLibConfig from '../webpack.config.js';
+import isDocker from 'is-docker';
 import compressionMiddleware from './middleware/compression.js';
+import { serveUi } from '@st/serve-ui';
 import {
     getVersion,
     color,
@@ -285,6 +287,10 @@ app.get('/login', loginPageMiddleware);
 const webpackMiddleware = getWebpackServeMiddleware();
 app.use(frontendAssetMiddleware(frontendAssets));
 app.use(webpackMiddleware);
+// The new page (packages/ui), ready before the server listens (preSetup).
+/** @type {import('express').Router | null} */
+let uiRouter = null;
+app.use((request, response, next) => (uiRouter ? uiRouter(request, response, next) : next()));
 app.use(userCssMiddleware);
 app.use(express.static(path.join(serverDirectory, 'public'), {}));
 
@@ -426,6 +432,11 @@ async function preSetupTasks() {
     // Wait for frontend libs to compile
     await webpackMiddleware.runWebpackCompiler({ pruneCache: true });
     __mark('runWebpackCompiler');
+
+    // Same place as webpack's output: the data root, or the image's dist in Docker.
+    const uiOutDir = isDocker() ? path.resolve(process.cwd(), 'dist', '_ui') : path.join(globalThis.DATA_ROOT, '_ui');
+    uiRouter = await serveUi({ outDir: uiOutDir, dev: process.env.ST_UI_DEV === '1' });
+    __mark('serveUi');
 }
 
 /**

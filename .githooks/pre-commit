@@ -3,6 +3,7 @@
 # member / declared but not exported), new circular-import growth, app code calling upstream's
 # whole-chat save (eslint's noAppChatSave rule), or a public/script.js that no longer exports every
 # name upstream/staging's does (scripts/script-exports.mjs).
+# It also blocks any lint, type, format or test failure in packages/ (the new code).
 #
 # Every check runs against the tree this commit will record (the index git hands the hook, which is
 # GIT_INDEX_FILE's for `commit -a`, `commit <paths>` and caller-supplied temp indexes), checked out
@@ -160,6 +161,19 @@ if ! command -v node >/dev/null 2>&1; then
 fi
 if ! node scripts/script-exports.mjs check >/dev/null; then
     echo "pre-commit: blocked -- script.js export parity failed in the staged snapshot (see above)." >&2
+    exit 1
+fi
+
+# The new code (packages/) is held to all of it: formatting, every lint rule (the st/* rules included) and strict
+# types with no errors at all, and its tests passing. Unlike the old code, there's no baseline to stay under.
+if ! packages_output="$(npx vp check packages 2>&1)"; then
+    echo "pre-commit: blocked -- 'vp check packages' failed in the staged snapshot:" >&2
+    printf '%s\n' "$packages_output" | tail -40 >&2
+    exit 1
+fi
+if ! packages_output="$(npx vp test run 2>&1)"; then
+    echo "pre-commit: blocked -- the packages' tests failed in the staged snapshot:" >&2
+    printf '%s\n' "$packages_output" | tail -40 >&2
     exit 1
 fi
 
