@@ -1,0 +1,30 @@
+[
+  {
+    "role": "system",
+    "content": "Write Parity Bard's next reply in a fictional chat between Parity Bard and User."
+  },
+  {
+    "role": "system",
+    "content": "A travelling bard."
+  },
+  {
+    "role": "system",
+    "content": "[Start a new Chat]"
+  },
+  {
+    "role": "assistant",
+    "content": "A song for you."
+  },
+  {
+    "role": "user",
+    "content": "Sing about the sea."
+  },
+  {
+    "role": "assistant",
+    "content": "Oh, the waves they roll and"
+  },
+  {
+    "role": "system",
+    "content": "[Continue your last message without repeating its original content.]"
+  }
+]

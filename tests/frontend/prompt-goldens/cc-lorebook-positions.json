@@ -1,0 +1,58 @@
+[
+  {
+    "role": "system",
+    "content": "Write Parity Ranger's next reply in a fictional chat between Parity Ranger and User."
+  },
+  {
+    "role": "system",
+    "content": "Before the character: the forest is old."
+  },
+  {
+    "role": "system",
+    "content": "A forest ranger. Outlet: "
+  },
+  {
+    "role": "system",
+    "content": "A patrol at dusk."
+  },
+  {
+    "role": "system",
+    "content": "After the character: wolves roam here."
+  },
+  {
+    "role": "system",
+    "content": "[Example Chat]"
+  },
+  {
+    "role": "system",
+    "content": "[Example Chat]"
+  },
+  {
+    "role": "system",
+    "content": "[Start a new Chat]"
+  },
+  {
+    "role": "assistant",
+    "content": "The forest is quiet."
+  },
+  {
+    "role": "user",
+    "content": "Any tracks?"
+  },
+  {
+    "role": "system",
+    "content": "At depth two: a branch snaps."
+  },
+  {
+    "role": "assistant",
+    "content": "Fresh ones."
+  },
+  {
+    "role": "system",
+    "content": "Top of the note: the moon is full.\nStay alert.\nBottom of the note: owls call."
+  },
+  {
+    "role": "user",
+    "content": "Whose?"
+  }
+]

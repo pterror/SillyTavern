@@ -1,0 +1,34 @@
+[
+  {
+    "role": "system",
+    "content": "Write Parity Miner's next reply in a fictional chat between Parity Miner and User."
+  },
+  {
+    "role": "system",
+    "content": "A miner deep underground."
+  },
+  {
+    "role": "system",
+    "content": "[Start a new Chat]"
+  },
+  {
+    "role": "assistant",
+    "content": "Dig, dig."
+  },
+  {
+    "role": "user",
+    "content": "Found anything?"
+  },
+  {
+    "role": "system",
+    "content": "Remember: Parity Miner is tired."
+  },
+  {
+    "role": "assistant",
+    "content": "Just rocks."
+  },
+  {
+    "role": "user",
+    "content": "Keep going."
+  }
+]
