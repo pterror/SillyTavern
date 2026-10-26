@@ -2,6 +2,15 @@ import { moment, timestampToMoment } from '../engine/MacroLibraries.js';
 import { MacroRegistry, MacroCategory, MacroValueType } from '../engine/MacroRegistry.js';
 
 /**
+ * Now, in the user's time zone: where the macros run (the server) may be in another.
+ * @param {import('../engine/MacroEnv.types.js').MacroEnv} env
+ */
+function now(env) {
+    const offset = env.state.utcOffset;
+    return typeof offset === 'number' ? moment().utcOffset(offset) : moment();
+}
+
+/**
  * Registers time/date related macros and utilities.
  */
 export function registerTimeMacros() {
@@ -23,14 +32,14 @@ export function registerTimeMacros() {
         returns: 'A time string in the format HH:mm.',
         displayOverride: '{{time::[UTC±(offset)]}}',
         exampleUsage: ['{{time}}', '{{time::UTC+2}}', '{{time::UTC-7}}'],
-        handler: ({ unnamedArgs: [offsetSpec] }) => {
-            if (!offsetSpec) return moment().format('LT');
+        handler: ({ unnamedArgs: [offsetSpec], env }) => {
+            if (!offsetSpec) return now(env).format('LT');
 
             const match = /^UTC([+-]\d+)$/.exec(offsetSpec);
-            if (!match) return moment().format('LT');
+            if (!match) return now(env).format('LT');
 
             const offset = Number.parseInt(match[1], 10);
-            if (Number.isNaN(offset)) return moment().format('LT');
+            if (Number.isNaN(offset)) return now(env).format('LT');
 
             return moment().utc().utcOffset(offset).format('LT');
         },
@@ -40,28 +49,28 @@ export function registerTimeMacros() {
         category: MacroCategory.TIME,
         description: 'Current local date as a string in the local short format.',
         returns: 'Current local date in local short format.',
-        handler: () => moment().format('LL'),
+        handler: ({ env }) => now(env).format('LL'),
     });
 
     MacroRegistry.registerMacro('weekday', {
         category: MacroCategory.TIME,
         description: 'Current weekday name.',
         returns: 'Current weekday name.',
-        handler: () => moment().format('dddd'),
+        handler: ({ env }) => now(env).format('dddd'),
     });
 
     MacroRegistry.registerMacro('isotime', {
         category: MacroCategory.TIME,
         description: 'Current time in HH:mm format.',
         returns: 'Current time in HH:mm format.',
-        handler: () => moment().format('HH:mm'),
+        handler: ({ env }) => now(env).format('HH:mm'),
     });
 
     MacroRegistry.registerMacro('isodate', {
         category: MacroCategory.TIME,
         description: 'Current date in YYYY-MM-DD format.',
         returns: 'Current date in YYYY-MM-DD format.',
-        handler: () => moment().format('YYYY-MM-DD'),
+        handler: ({ env }) => now(env).format('YYYY-MM-DD'),
     });
 
     MacroRegistry.registerMacro('datetimeformat', {
@@ -77,7 +86,7 @@ export function registerTimeMacros() {
         description: 'Formats the current date/time using the given moment.js format string.',
         returns: 'Formatted date/time string.',
         exampleUsage: ['{{datetimeformat::YYYY-MM-DD HH:mm:ss}}', '{{datetimeformat::LLLL}}'],
-        handler: ({ unnamedArgs: [format] }) => moment().format(format),
+        handler: ({ unnamedArgs: [format], env }) => now(env).format(format),
     });
 
     MacroRegistry.registerMacro('idleDuration', {

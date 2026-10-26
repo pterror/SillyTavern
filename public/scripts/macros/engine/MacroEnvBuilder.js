@@ -85,8 +85,8 @@ function formatMesExamples(raw, user, char) {
  * @returns {import('../../../../src/macro-facts.js').PageMacroFacts}
  */
 export function pageMacroFacts() {
-    const { chatId, input, firstDisplayedMessageId, isMobile, extensions } = pageState();
-    return { chatId, input, firstDisplayedMessageId, isMobile, extensions };
+    const { chatId, input, firstDisplayedMessageId, isMobile, utcOffset, extensions } = pageState();
+    return { chatId, input, firstDisplayedMessageId, isMobile, utcOffset, extensions };
 }
 
 /**
@@ -111,6 +111,7 @@ function pageState() {
         get bannedWords() { return main_api === 'textgenerationwebui' ? textgenerationwebui_banned_in_macros : undefined; },
         outlet: key => extension_prompts[inject_ids.CUSTOM_WI_OUTLET(key)]?.value ?? '',
         get isMobile() { return isMobile(); },
+        get utcOffset() { return -new Date().getTimezoneOffset(); },
         get lastGenerationType() { return lastGenerationType; },
         get extensions() { return { names: extensionNames, disabled: extension_settings.disabledExtensions }; },
         get instruct() { return power_user.instruct; },

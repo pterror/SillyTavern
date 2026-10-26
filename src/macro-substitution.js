@@ -70,6 +70,7 @@ import { parseTimestamp } from './timestamps.js';
  * @property {string} [mainApi] The API generating (main_api)
  * @property {Record<string, string>} [outlets] World info outlets' text by key, for {{outlet}}
  * @property {boolean} [isMobile] {{isMobile}}
+ * @property {number} [utcOffset] The user's offset from UTC in minutes, for {{time}} and its kin; left out: the server's
  * @property {string} [lastGenerationType] {{lastGenerationType}}
  * @property {{ names: string[], disabled: string[] }} [extensions] The extensions there are, and those turned off, for {{hasExtension}}
  * @property {Record<string, any>} [instruct] The instruct template, for the instruct macros
@@ -177,6 +178,7 @@ function buildEnv(content, context) {
             bannedWords: context.bannedWordsSink,
             outlet: key => context.outlets?.[key] ?? '',
             isMobile: context.isMobile,
+            utcOffset: context.utcOffset,
             lastGenerationType: context.lastGenerationType,
             extensions: context.extensions,
             instruct: context.instruct,
