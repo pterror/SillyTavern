@@ -43,13 +43,17 @@ test('a field\'s preview shows the values the server fills in; a macro run only 
     await expect(preview.locator('.macro-pill[data-macro-name="roll"]')).toHaveCount(1);
 });
 
-test('a mention\'s card shows who it names\' description with its macros filled in', async ({ page }) => {
-    await openWithDescription(page, 'I am {{char}}, feeling {{getglobalvar::mood}}.');
+test('a mention\'s card shows who it names\' description with its macros filled in, its inline markdown rendered', async ({ page }) => {
+    await openWithDescription(page, 'I am **{{char}}**, feeling {{getglobalvar::mood}}. ![x](/img/ai4.png)');
     const pill = page.locator('.field_preview[data-for="description_textarea"] .macro-pill[data-macro-name="char"]');
     await expect(pill).toHaveCount(1);
     const name = await pill.textContent();
-    const person = JSON.parse(String(await pill.getAttribute('data-macro-person')));
-    expect(person.about).toBe(`I am ${name}, feeling sunny.`);
+    await page.locator('#charInfoTabs .tab-title', { has: page.locator('input[value="description"]') }).click();
+    await pill.hover();
+    const about = page.locator('.macro-tooltip:popover-open .macro-person-about');
+    await expect(about).toHaveText(`I am ${name}, feeling sunny.`);
+    await expect(about.locator('strong')).toHaveText(String(name));
+    await expect(about.locator('img')).toHaveCount(0);
 });
 
 test('filled in whole, as the macro preview does, nothing a macro sets is kept', async ({ page }) => {
