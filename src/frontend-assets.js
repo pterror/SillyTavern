@@ -69,8 +69,8 @@ export class FrontendAssets {
     /**
      * @param {object} options
      * @param {string} options.publicDirectory
-     * @param {() => string|undefined} options.webpackOutputDirectory
-     * @param {() => string[]} options.webpackOutputFiles File names served at the root, e.g. `lib.js`
+     * @param {() => string|undefined} options.libraryDirectory Where the libraries' build is (packages/serve-ui)
+     * @param {() => string[]} options.libraryFiles Its file names, each served at the root, e.g. `lib.js`
      * @param {() => string|undefined} options.globalExtensionsDirectory
      * @param {() => string|undefined} options.userCssPath
      * @param {() => boolean} options.extensionsEnabled
@@ -90,7 +90,7 @@ export class FrontendAssets {
     }
 
     /**
-     * Maps a url path to the file the server would answer it with, in the server's own order: webpack outputs,
+     * Maps a url path to the file the server would answer it with, in the server's own order: the libraries,
      * user.css, public/, then the user's and the global third-party extension directories.
      * @param {string} urlPath Decoded path, starting with `/`
      * @param {import('./users.js').UserDirectoryList|undefined} directories The requesting user's directories
@@ -102,8 +102,8 @@ export class FrontendAssets {
         }
 
         const parsed = path.posix.parse(urlPath);
-        if (parsed.dir === '/' && this.options.webpackOutputFiles().includes(parsed.base)) {
-            const outputDirectory = this.options.webpackOutputDirectory();
+        if (parsed.dir === '/' && this.options.libraryFiles().includes(parsed.base)) {
+            const outputDirectory = this.options.libraryDirectory();
             const filePath = outputDirectory ? path.join(outputDirectory, parsed.base) : null;
             return filePath && isFile(filePath) ? filePath : null;
         }
@@ -244,7 +244,7 @@ export class FrontendAssets {
         for (const relative of await walk(this.options.publicDirectory)) {
             urlPaths.add(`/${relative}`);
         }
-        for (const file of this.options.webpackOutputFiles()) {
+        for (const file of this.options.libraryFiles()) {
             urlPaths.add(`/${file}`);
         }
         urlPaths.add('/css/user.css');

@@ -34,18 +34,13 @@ RUN \
   chown -R node:node config data plugins public/scripts/extensions/third-party backups && \
   ln -s "./config/config.yaml" "config.yaml"
 
-# The new page's build for this source, so the container never fetches it at start: its release's, or built here
-# when the image is built before the release is (the dev dependencies only for this step).
+# The new page's and the libraries' build for this source, so the container never fetches it at start: its
+# release's, or built here when the image is built before the release is (the dev dependencies only for this step).
 RUN \
   echo "*** The new page ***" && \
   npm install --include=dev --no-save --no-audit --no-fund --loglevel=error --no-progress --ignore-scripts && \
   node scripts/build-ui.mjs --ensure && \
   npm prune --omit=dev && npm cache clean --force
-
-# Pre-compile public libraries
-RUN \
-  echo "*** Run Webpack ***" && \
-  node "./docker/build-lib.js"
 
 # Set the entrypoint script and cleanup
 RUN \

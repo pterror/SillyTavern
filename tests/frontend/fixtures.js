@@ -1,7 +1,7 @@
 // Every Playwright worker gets its own server.js on its own throwaway data root under the run root, so
 // workers can run in parallel without sharing state. Each data root starts as a copy of the seed (see
-// e2e-global-setup.js); a worker with `freshAccount` gets only the seed's webpack build, so its account
-// has not been through the first-run dialog.
+// e2e-global-setup.js); a worker with `freshAccount` starts from an empty data root, so its account has not
+// been through the first-run dialog. (The page's build is the checkout's, packages/ui/dist, shared by all.)
 import fs from 'node:fs';
 import path from 'node:path';
 import { test as base, expect } from '@playwright/test';
@@ -18,9 +18,7 @@ export const test = base.extend({
         }
         const seedRoot = path.join(runRoot, 'seed');
         const dataRoot = fs.mkdtempSync(path.join(runRoot, 'worker-'));
-        if (freshAccount) {
-            fs.cpSync(path.join(seedRoot, '_webpack'), path.join(dataRoot, '_webpack'), { recursive: true, preserveTimestamps: true });
-        } else {
+        if (!freshAccount) {
             fs.cpSync(seedRoot, dataRoot, { recursive: true, preserveTimestamps: true });
         }
 

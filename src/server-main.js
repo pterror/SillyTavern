@@ -41,7 +41,6 @@ import {
     migratePublicOverrides,
 } from './users.js';
 
-import getWebpackServeMiddleware from './middleware/webpack-serve.js';
 import basicAuthMiddleware from './middleware/basicAuth.js';
 import getWhitelistMiddleware from './middleware/whitelist.js';
 import accessLoggerMiddleware, { getAccessLogPath, migrateAccessLog } from './middleware/accessLogWriter.js';
@@ -53,7 +52,6 @@ import corsProxyMiddleware from './middleware/corsProxy.js';
 import hostWhitelistMiddleware from './middleware/hostWhitelist.js';
 import userCssMiddleware from './middleware/userCss.js';
 import { FrontendAssets, frontendAssetMiddleware } from './frontend-assets.js';
-import getPublicLibConfig from '../webpack.config.js';
 import compressionMiddleware from './middleware/compression.js';
 import { serveUi, ENTRY as UI_ENTRY } from '@st/serve-ui';
 import {
@@ -219,13 +217,11 @@ if (!cliArgs.disableCsrf) {
 }
 
 // Static files
-/** @type {import('webpack').Configuration|null} */
-let publicLibConfig = null;
-const libConfig = () => (publicLibConfig ??= getPublicLibConfig());
 const frontendAssets = new FrontendAssets({
     publicDirectory: path.join(serverDirectory, 'public'),
-    webpackOutputDirectory: () => libConfig().output?.path,
-    webpackOutputFiles: () => Object.keys(libConfig().entry ?? {}).map(name => `${name}.js`),
+    // The libraries the old page imports (/lib.js...), built with the new page (packages/serve-ui).
+    libraryDirectory: () => servedUi?.libraries.directory,
+    libraryFiles: () => servedUi?.libraries.files ?? [],
     globalExtensionsDirectory: () => globalThis.GLOBAL_EXTENSIONS_PATH,
     userCssPath: () => path.join(globalThis.DATA_ROOT, '_css', 'user.css'),
     extensionsEnabled: () => !!getConfigValue('extensions.enabled', true, 'boolean'),
@@ -285,9 +281,7 @@ app.get('/callback/:source?', (request, response) => {
 app.get('/login', loginPageMiddleware);
 
 // Host frontend assets
-const webpackMiddleware = getWebpackServeMiddleware();
 app.use(frontendAssetMiddleware(frontendAssets));
-app.use(webpackMiddleware);
 // The new page (packages/ui), ready before the server listens (preSetup).
 /** @type {import('@st/serve-ui').ServedUi | null} */
 let servedUi = null;
@@ -430,11 +424,8 @@ async function preSetupTasks() {
     // Add request proxy.
     initRequestProxy({ enabled: cliArgs.requestProxyEnabled, url: cliArgs.requestProxyUrl, bypass: cliArgs.requestProxyBypass, enableKeepAlive: cliArgs.enableKeepAlive, privateRequestFilterEnabled: requestFilterOptions.enabled });
 
-    // Wait for frontend libs to compile
-    await webpackMiddleware.runWebpackCompiler({ pruneCache: true });
-    __mark('runWebpackCompiler');
-
-    // The new page's build for this source: the one there, else its release's (built here only for unreleased source).
+    // The new page's and the libraries' build for this source: the one there, else its release's (built here only for
+    // unreleased source).
     servedUi = await serveUi({ dev: process.env.ST_UI_DEV === '1' });
     __mark('serveUi');
 }

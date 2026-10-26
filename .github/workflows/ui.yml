@@ -1,5 +1,6 @@
-# Builds the new page (packages/ui) and publishes it as the release ui-<first 16 hex of its source hash>
-# (packages/serve-ui), which the server downloads, so nobody running SillyTavern builds it. A source hash that
+# Builds the new page (packages/ui) and the libraries the old page imports (public/lib.js, public/live-editor-lib.js)
+# and publishes them as the release ui-<first 16 hex of their source hash> (packages/serve-ui), which the server
+# downloads, so nobody running SillyTavern builds them. A source hash that
 # already has a release is not rebuilt.
 name: New page release
 
@@ -9,6 +10,8 @@ on:
       - 'packages/ui/**'
       - 'packages/protocol/**'
       - 'packages/serve-ui/**'
+      - 'public/lib.js'
+      - 'public/live-editor-lib.js'
       - 'package-lock.json'
       - 'scripts/build-ui.mjs'
       - '.github/workflows/ui.yml'

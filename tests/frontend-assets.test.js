@@ -28,8 +28,8 @@ function write(file, content) {
 function makeAssets() {
     return new FrontendAssets({
         publicDirectory,
-        webpackOutputDirectory: () => path.join(root, 'webpack'),
-        webpackOutputFiles: () => ['lib.js'],
+        libraryDirectory: () => path.join(root, 'webpack'),
+        libraryFiles: () => ['lib.js'],
         globalExtensionsDirectory: () => globalExtensions,
         userCssPath: () => path.join(root, 'data', '_css', 'user.css'),
         extensionsEnabled: () => extensionsEnabled,
