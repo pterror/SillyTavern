@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 import { startLlamaCpp, connectLlamaCpp, openCharacter } from './llamacpp-mock.js';
-import { PARITY_CASES, applyChatMetadata, applyPowerUser } from './prompt-parity-cases.js';
+import { PARITY_CASES, applyChatMetadata, applyPowerUser, createLorebook } from './prompt-parity-cases.js';
 
 // The prompt sent for a chat is the prompt upstream builds for it: upstream's page built each case's prompt
 // (tests/prompt-goldens.mjs, kept in prompt-goldens/), and both the server's (what a backend is sent) and this page's
@@ -119,6 +119,7 @@ test.describe('text completion', () => {
         test(`${parityCase.name}`, async ({ page }) => {
             const expected = fs.readFileSync(path.join(goldens, `${parityCase.name}.txt`), 'utf8');
             await connectLlamaCpp(page, llama.url);
+            if (parityCase.lorebook) await page.evaluate(createLorebook, parityCase.lorebook);
             await openCard(page, parityCase.card);
             if (parityCase.powerUser) {
                 // Put back once the case is done: the cases in a worker share its server's settings.

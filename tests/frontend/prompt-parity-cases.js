@@ -9,6 +9,8 @@
  *   (`context.chat_start`).
  * @property {string[]} steps Slash commands run in the chat before the prompt is built.
  * @property {Record<string, unknown>} [chatMetadata] Chat metadata set after the steps (an author's note: `note_prompt`, …).
+ * @property {{ name: string, entries: Record<string, unknown>[] }} [lorebook] A lorebook made before the chat opens, the
+ *   chat's own (`chatMetadata.world_info` names it).
  * @property {string} [type] The generation's type.
  */
 
@@ -96,6 +98,25 @@ export const PARITY_CASES = [
         ],
     },
     {
+        name: 'tc-lorebook-positions',
+        card: { ch_name: 'Parity Ranger', first_mes: 'The forest is quiet.', description: 'A forest ranger. Outlet: {{outlet::parity-outlet}}', scenario: 'A patrol at dusk.' },
+        lorebook: {
+            name: 'Parity Forest Lore',
+            entries: [
+                { content: 'Before the character: the forest is old.', position: 0 },
+                { content: 'After the character: wolves roam here.', position: 1 },
+                { content: 'Top of the note: the moon is full.', position: 2 },
+                { content: 'Bottom of the note: owls call.', position: 3 },
+                { content: 'At depth two: a branch snaps.', position: 4, depth: 2, role: 0 },
+                { content: 'Before the examples: rangers whistle.', position: 5 },
+                { content: 'After the examples: rangers nod.', position: 6 },
+                { content: 'In the outlet: the river is cold.', position: 7, outletName: 'parity-outlet' },
+            ],
+        },
+        steps: ['/send Any tracks?', '/sendas name="Parity Ranger" Fresh ones.', '/send Whose?'],
+        chatMetadata: { world_info: 'Parity Forest Lore', note_prompt: 'Stay alert.', note_interval: 1, note_position: 1, note_depth: 1, note_role: 0 },
+    },
+    {
         name: 'tc-continue',
         card: { ch_name: 'Parity Bard', first_mes: 'A song for you.', description: 'A travelling bard.' },
         steps: ['/send Sing about the sea.', '/sendas name="Parity Bard" Oh, the waves they roll and'],
@@ -140,4 +161,24 @@ export async function applyChatMetadata(values) {
     await context.saveMetadata();
     // The page's Author's Note reads its text from its panel's field, filled from the metadata when a chat opens.
     if (typeof values.note_prompt === 'string') $('#extension_floating_prompt').val(values.note_prompt);
+}
+
+/**
+ * Makes a lorebook of constant entries (each always on), in the page. Run with page.evaluate().
+ * @param {{ name: string, entries: Record<string, unknown>[] }} book
+ */
+export async function createLorebook(book) {
+    // @ts-ignore
+    const context = SillyTavern.getContext();
+    /** @type {Record<string, unknown>} */
+    const entries = {};
+    book.entries.forEach((entry, uid) => {
+        entries[uid] = {
+            uid, key: [], keysecondary: [], comment: `Entry ${uid}`, constant: true, selective: false, disable: false,
+            order: 100, depth: 4, role: 0, probability: 100, useProbability: false, excludeRecursion: false,
+            preventRecursion: false, addMemo: true, displayIndex: uid, ...entry,
+        };
+    });
+    const response = await fetch('/api/worldinfo/edit', { method: 'POST', headers: context.getRequestHeaders(), body: JSON.stringify({ name: book.name, data: { entries } }) });
+    if (!response.ok) throw new Error(`lorebook not saved: ${response.status}`);
 }
