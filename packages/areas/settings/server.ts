@@ -205,10 +205,7 @@ export function settingsArea(ports: Ports) {
                 textgen: textAt(shown.settings, 'textgenerationwebui_settings.type'),
             },
             zen: valueAt(shown.settings, 'power_user.enableZenSliders') === true,
-            samplers: samplerSelectsOf(shown.settings)[textAt(shown.settings, 'textgenerationwebui_settings.type')] ?? {
-                manual: false,
-                shown: [],
-            },
+            samplerSelects: samplerSelectsOf(shown.settings),
         };
     };
 
@@ -274,17 +271,17 @@ export function settingsArea(ports: Ports) {
             },
             'settings.samplers': async (context, change) => {
                 const own = await ports.view(context.user, null, DEFAULT_RANGE);
-                const backend = textAt(own.settings, 'textgenerationwebui_settings.type');
+                const backend = change.backend ?? textAt(own.settings, 'textgenerationwebui_settings.type');
                 const selects = samplerSelectsOf(own.settings);
                 const now = selects[backend] ?? { manual: false, shown: [] };
                 selects[backend] = { manual: change.manual ?? now.manual, shown: change.shown ?? now.shown };
                 await ports.write(context.user, null, DEFAULT_RANGE, [[SAMPLER_SELECT, selects]]);
                 return changed;
             },
-            'settings.samplers.reset': async (context) => {
+            'settings.samplers.reset': async (context, { backend }) => {
                 const own = await ports.view(context.user, null, DEFAULT_RANGE);
                 const selects = samplerSelectsOf(own.settings);
-                delete selects[textAt(own.settings, 'textgenerationwebui_settings.type')];
+                delete selects[backend ?? textAt(own.settings, 'textgenerationwebui_settings.type')];
                 await ports.write(context.user, null, DEFAULT_RANGE, [[SAMPLER_SELECT, selects]]);
                 return changed;
             },

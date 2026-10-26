@@ -8,7 +8,17 @@ import { UiProvider } from '@st/page/context';
 import type { Ui } from '@st/page/context';
 import { AnimationOption, BackgroundLayer, Backgrounds, backgroundsCompat } from '@st/backgrounds/page';
 import type { BackgroundsTab } from '@st/backgrounds/page';
-import { CcContext, CcOptions, CcSamplers, CcUtility, LevelSlider, settingsCompat } from '@st/settings/page';
+import {
+    CcContext,
+    CcOptions,
+    CcSamplers,
+    CcUtility,
+    LevelSlider,
+    TgCfg,
+    TgSamplers,
+    TgTop,
+    settingsCompat,
+} from '@st/settings/page';
 import type { Support } from '@st/settings/page';
 import { render } from 'solid-js/web';
 import type { JSX } from 'solid-js';
@@ -37,6 +47,10 @@ export type StartOptions = {
         ccSamplers: HTMLElement;
         ccUtility: HTMLElement;
         ccOptions: HTMLElement;
+        /** The text generation fields, likewise (between them the logit bias editor, after them the sampler orders). */
+        tgTop: HTMLElement;
+        tgSamplers: HTMLElement;
+        tgCfg: HTMLElement;
     };
 };
 
@@ -55,7 +69,8 @@ export function start(options: StartOptions) {
     mount(backgroundLayer, () => <BackgroundLayer element={backgroundLayer} />);
     mount(backgroundAnimation, () => <AnimationOption />);
 
-    const { settingsLevels, ccContext, ccSamplers, ccUtility, ccOptions } = options.containers;
+    const { settingsLevels, ccContext, ccSamplers, ccUtility, ccOptions, tgTop, tgSamplers, tgCfg } =
+        options.containers;
     const [support, setSupport] = createSignal<Support>({
         functionCalling: false,
         image: false,
@@ -67,6 +82,9 @@ export function start(options: StartOptions) {
     mount(ccSamplers, () => <CcSamplers />);
     mount(ccUtility, () => <CcUtility />);
     mount(ccOptions, () => <CcOptions support={support} />);
+    mount(tgTop, () => <TgTop />);
+    mount(tgSamplers, () => <TgSamplers />);
+    mount(tgCfg, () => <TgCfg />);
 
     return {
         /** Views the server pushed on the tab's stream. */

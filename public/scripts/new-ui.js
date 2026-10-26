@@ -43,6 +43,9 @@ export function startNewUi({ quietPrompt, currentChat }) {
             ccSamplers: element('cc_sampler_fields'),
             ccUtility: element('cc_utility_fields'),
             ccOptions: element('cc_option_fields'),
+            tgTop: element('tg_top_fields'),
+            tgSamplers: element('tg_sampler_fields'),
+            tgCfg: element('tg_cfg_fields'),
         },
     });
     const page = started;

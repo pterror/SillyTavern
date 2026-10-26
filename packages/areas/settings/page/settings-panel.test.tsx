@@ -8,6 +8,7 @@ import type { Client } from '@st/page/client';
 import { UiProvider } from '@st/page/context';
 import { LevelSlider } from './LevelSlider.tsx';
 import { CcOptions, CcSamplers, CcUtility } from './cc.tsx';
+import { TgSamplers, TgTop } from './tg.tsx';
 import type { Support } from './cc.tsx';
 import { isShown } from './fields.tsx';
 import { settingsCompat } from './compat.ts';
@@ -31,7 +32,7 @@ function viewOf(over: Partial<SettingsView> = {}): SettingsView {
         ranges: {},
         api: { main: 'openai', source: 'openai', textgen: '' },
         zen: false,
-        samplers: { manual: false, shown: [] },
+        samplerSelects: {},
         ...over,
     };
 }
@@ -212,4 +213,66 @@ test('a watch runs when its paths change in the view, not for the first', () => 
     expect(runs).toBe(0);
     setCurrent(viewOf({ values: { 'oai_settings.openai_max_context': 9000 } }));
     expect(runs).toBe(1);
+});
+
+const textgen = (over: Partial<SettingsView> = {}) =>
+    viewOf({
+        api: { main: 'textgenerationwebui', source: 'openai', textgen: 'llamacpp' },
+        values: {
+            'textgenerationwebui_settings.temp': 0.7,
+            'textgenerationwebui_settings.top_a': 0,
+            'textgenerationwebui_settings.min_p': 0,
+            'textgenerationwebui_settings.json_schema': null,
+        },
+        ...over,
+    });
+
+test("a text generation field shows for its backends; the user's chosen samplers decide over that", () => {
+    const { host, setCurrent } = mount(textgen(), () => <TgSamplers />);
+    expect(host.querySelector('#temp_textgenerationwebui')).not.toBeNull();
+    // Top A isn't llama.cpp's.
+    expect(host.querySelector('#top_a_textgenerationwebui')).toBeNull();
+    setCurrent(textgen({ samplerSelects: { llamacpp: { manual: true, shown: ['top_a'] } } }));
+    expect(host.querySelector('#top_a_textgenerationwebui')).not.toBeNull();
+    expect(host.querySelector('#temp_textgenerationwebui')).toBeNull();
+    // A list that doesn't decide: the backend does.
+    setCurrent(textgen({ samplerSelects: { llamacpp: { manual: false, shown: ['top_a'] } } }));
+    expect(host.querySelector('#top_a_textgenerationwebui')).toBeNull();
+});
+
+test('with zen sliders a slider shows its value in its handle, Off at its off value', () => {
+    const { host, setCurrent } = mount(textgen({ zen: true }), () => <TgSamplers />);
+    expect(host.querySelector('#temp_textgenerationwebui_zenslider .ui-slider-handle')?.textContent).toBe('0.70');
+    expect(host.querySelector('#min_p_textgenerationwebui_zenslider .ui-slider-handle')?.textContent).toBe('Off');
+    // The old id stays, on the value it holds.
+    expect(host.querySelector<HTMLInputElement>('#temp_textgenerationwebui')?.value).toBe('0.7');
+    setCurrent(textgen({ zen: false }));
+    expect(host.querySelector('#temp_textgenerationwebui_zenslider')).toBeNull();
+    expect(host.querySelector('#temp_counter_textgenerationwebui')).not.toBeNull();
+});
+
+test('neutralize is one action', () => {
+    const { host, sent } = mount(textgen(), () => <TgTop />);
+    host.querySelector<HTMLElement>('#samplerResetButton')?.click();
+    expect(sent).toEqual([{ type: 'settings.neutralize', payload: {} }]);
+});
+
+test("a JSON schema is sent parsed; text that isn't JSON isn't sent and stays", async () => {
+    const { host, sent } = mount(textgen(), () => <TgSamplers />);
+    const area = host.querySelector<HTMLTextAreaElement>('#tabby_json_schema');
+    if (!area) throw new Error('no schema');
+    area.value = '{ "type": "object" ';
+    area.dispatchEvent(new Event('change', { bubbles: true }));
+    await settle();
+    expect(sent).toEqual([]);
+    expect(area.value).toBe('{ "type": "object" ');
+    area.value = '{ "type": "object" }';
+    area.dispatchEvent(new Event('change', { bubbles: true }));
+    await settle();
+    expect(sent).toEqual([
+        {
+            type: 'settings.set',
+            payload: { path: 'textgenerationwebui_settings.json_schema', value: { type: 'object' } },
+        },
+    ]);
 });

@@ -771,12 +771,13 @@ async function switchZenSliders() {
         $('#clickSlidersTips').hide();
         $('#pro-settings-block input[type=\'number\']').hide();
         //hide number inputs that are not 'seed' inputs
+        // The new page's fields draw their own zen sliders (packages/areas/settings/page/fields.tsx).
         $(`#textgenerationwebui_api-settings :input[type='number']:not([id^='seed']):not([id^='n_']),
-            #kobold_api-settings :input[type='number']:not([id^='seed'])`).hide();
+            #kobold_api-settings :input[type='number']:not([id^='seed'])`).not('[data-field] input').hide();
         //hide original sliders
         $(`#textgenerationwebui_api-settings input[type='range'],
             #kobold_api-settings input[type='range'],
-            #pro-settings-block input[type='range']:not(#max_context)`) //exclude max context because its creation is handled by switchMaxContext()
+            #pro-settings-block input[type='range']:not(#max_context)`).not('[data-field] input') //exclude max context because its creation is handled by switchMaxContext()
             .hide()
             .each(function () {
                 //make a zen slider for each original slider
@@ -792,10 +793,10 @@ async function switchZenSliders() {
     function revertOriginalSliders() {
         $('#pro-settings-block input[type=\'number\']').show();
         $(`#textgenerationwebui_api-settings input[type='number'],
-            #kobold_api-settings input[type='number']`).show();
+            #kobold_api-settings input[type='number']`).not('[data-field] input').show();
         $(`#textgenerationwebui_api-settings input[type='range'],
             #kobold_api-settings input[type='range'],
-            #pro-settings-block input[type='range']`).each(function () {
+            #pro-settings-block input[type='range']`).not('[data-field] input').each(function () {
             $(this).show();
         });
         $('div[id$="_zenslider"]').remove();
@@ -2178,19 +2179,12 @@ function switchMaxContextSize() {
         $('#max_context_counter'),
         $('#rep_pen_range'),
         $('#rep_pen_range_counter'),
-        $('#rep_pen_range_textgenerationwebui'),
-        $('#rep_pen_range_counter_textgenerationwebui'),
-        $('#dry_penalty_last_n_textgenerationwebui'),
-        $('#dry_penalty_last_n_counter_textgenerationwebui'),
-        $('#rep_pen_decay_textgenerationwebui'),
-        $('#rep_pen_decay_counter_textgenerationwebui'),
+        // The text generation fields' ranges and values follow the unlock on the server (the view's ranges,
+        // withinUnlock).
     ];
     const maxValue = power_user.max_context_unlocked ? MAX_CONTEXT_UNLOCKED : MAX_CONTEXT_DEFAULT;
     const minValue = power_user.max_context_unlocked ? maxContextMin : maxContextMin;
     const steps = power_user.max_context_unlocked ? unlockedMaxContextStep : maxContextStep;
-    $('#rep_pen_range_textgenerationwebui_zenslider').remove(); //unsure why, but this is necessary.
-    $('#dry_penalty_last_n_textgenerationwebui_zenslider').remove();
-    $('#rep_pen_decay_textgenerationwebui_zenslider').remove();
     for (const element of elements) {
         const id = element.attr('id');
         element.attr('max', maxValue);
@@ -2217,12 +2211,6 @@ function switchMaxContextSize() {
     if (power_user.enableZenSliders) {
         $('#max_context_zenslider').remove();
         CreateZenSliders($('#max_context'));
-        $('#rep_pen_range_textgenerationwebui_zenslider').remove();
-        CreateZenSliders($('#rep_pen_range_textgenerationwebui'));
-        $('#dry_penalty_last_n_textgenerationwebui_zenslider').remove();
-        CreateZenSliders($('#dry_penalty_last_n_textgenerationwebui'));
-        $('#rep_pen_decay_textgenerationwebui_zenslider').remove();
-        CreateZenSliders($('#rep_pen_decay_textgenerationwebui'));
     }
 }
 

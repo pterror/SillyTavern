@@ -59,13 +59,15 @@ export type Zen = {
     unlockedValues?: readonly number[];
     /** The value shown as All (among `values`). */
     all?: number;
+    /** Among `values`, where the handle sits when the stored value isn't one of them. */
+    standIn?: number;
 };
 
 const ZEN_DEFAULT: Zen = { steps: 20, decimals: 2 };
 const textgenZen = (ids: string[], zen: Partial<Zen>) =>
     ids.map((id): [string, Partial<Zen>] => [`${id}_textgenerationwebui`, zen]);
 const ZEN_RULES: [string, Partial<Zen>][] = [
-    ['amount_gen', { steps: 10, decimals: 0, values: [16, 50, 100, 150, 200, 256, 300, 400, 512, 1024] }],
+    ['amount_gen', { steps: 10, decimals: 0, values: [16, 50, 100, 150, 200, 256, 300, 400, 512, 1024], standIn: 200 }],
     ['max_context', { steps: 15, decimals: 0 }],
     [
         'rep_pen_range_textgenerationwebui',
@@ -73,6 +75,7 @@ const ZEN_RULES: [string, Partial<Zen>][] = [
             decimals: 0,
             off: 0,
             all: -1,
+            standIn: -1,
             values: [0, 256, 512, 768, 1024, 2048, 4096, 8192, -1],
             unlockedValues: [0, 256, 512, 768, 1024, 2048, 4096, 8192, 16355, 24576, 32768, 49152, 65536, -1],
         },
@@ -119,7 +122,7 @@ export type SamplerSelect = { manual: boolean; shown: readonly string[] };
  * The families the new page shows: their fields are the server's (only the actions below write them), and the old
  * page's controls for them are gone. A family joins when its old controls go.
  */
-export const SERVER_FAMILIES: readonly Field['family'][] = ['cc'];
+export const SERVER_FAMILIES: readonly Field['family'][] = ['cc', 'textgen'];
 
 /** The context and response limits, by whether the user unlocked them (power_user.max_context_unlocked). */
 export const LIMITS = {
@@ -1694,9 +1697,17 @@ export type SettingsView = {
     api: { main: string; source: string; textgen: string };
     /** Zen sliders on (power_user.enableZenSliders): sliders step as zenOf() says and show their value in the handle. */
     zen: boolean;
-    /** The sampler select for the text generation backend now. */
-    samplers: SamplerSelect;
+    /** The user's sampler selects, by text generation backend (one there's none for shows its backend's own). */
+    samplerSelects: Record<string, SamplerSelect>;
 };
+
+/** A backend's sampler select (its own samplers when the user has none); the backend now's by default. */
+export function samplerSelectOf(
+    view: Pick<SettingsView, 'samplerSelects' | 'api'>,
+    backend: string = view.api.textgen,
+): SamplerSelect {
+    return view.samplerSelects[backend] ?? { manual: false, shown: [] };
+}
 
 export const actions = {
     /** Sets a field at the range's top level (the server routes it: a level's statement, a preset, the user's own). */
@@ -1709,13 +1720,17 @@ export const actions = {
     'settings.range': v.object({ from: v.picklist(LEVELS), to: v.picklist(LEVELS) }),
     /** Every text generation sampler to its neutral value, at the range's top level, in one write. */
     'settings.neutralize': v.object({}),
-    /** The sampler select of the text generation backend now: what it shows, and whether that decides (`manual`). */
+    /**
+     * A text generation backend's sampler select (the backend now's, unless `backend` names another): what it shows,
+     * and whether that decides (`manual`).
+     */
     'settings.samplers': v.object({
+        backend: v.optional(v.string()),
         manual: v.optional(v.boolean()),
         shown: v.optional(v.array(v.picklist(SAMPLER_NAMES))),
     }),
-    /** The sampler select back to the backend's own (nothing chosen). */
-    'settings.samplers.reset': v.object({}),
+    /** A backend's sampler select back to the backend's own (nothing chosen). */
+    'settings.samplers.reset': v.object({ backend: v.optional(v.string()) }),
     /**
      * The sampler select as the old page kept it in the browser, by backend: taken for each backend the user has none
      * for yet (once, after which the browser's copy goes).
