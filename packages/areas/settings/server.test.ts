@@ -249,3 +249,14 @@ test("the sampler select is the user's, by backend; the view shows the backend's
     await w.act('settings.samplers.reset', {});
     expect(samplerSelectOf(await w.view())).toEqual({ manual: false, shown: [] });
 });
+
+test("fitting the context to a model's sets it, unlocking past the locked limit, in one write", async () => {
+    const w = world();
+    expect(await w.act('settings.fitContext', { size: 4096 })).toEqual({ changed: ['settings'] });
+    expect(w.levels.user['max_context']).toBe(4096);
+    expect(w.levels.user['power_user.max_context_unlocked']).toBeUndefined();
+    await w.act('settings.fitContext', { size: 32768 });
+    expect(w.batches.at(-1)).toBe(2);
+    expect(w.levels.user['power_user.max_context_unlocked']).toBe(true);
+    expect(await w.act('settings.fitContext', { size: 10_000_000 })).toMatchObject({ refused: expect.any(String) });
+});

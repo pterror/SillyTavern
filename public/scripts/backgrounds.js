@@ -1,4 +1,4 @@
-import { newUi } from './new-ui.js';
+import { newUi } from './new-ui-page.js';
 
 // Upstream's backgrounds module, kept for extensions that import it: the backgrounds are the new page's now
 // (packages/areas/backgrounds/page). Each name reads the new page's, which the server keeps current.

@@ -20,7 +20,7 @@ import { autoSelectInstructPreset, selectContextPreset, selectInstructPreset } f
 import { buildLogitBiasListResult, createNewLogitBiasEntry, displayLogitBias, getLogitBiasEntryTexts } from './logit-bias.js';
 
 import { power_user, registerDebugFunction } from './power-user.js';
-import { SERVER_OWNED, newUi, newUiStarted } from './new-ui.js';
+import { SERVER_OWNED, newUi, newUiStarted } from './new-ui-page.js';
 import { importBrowserSamplerSelect } from './samplerSelect.js';
 import { SECRET_KEYS, writeSecret } from './secrets.js';
 import { CompactStreamDecoder, ResumableCompactStreamReader } from './llamacpp-compact-stream.js';
@@ -277,7 +277,6 @@ async function selectPreset(name) {
         const value = preset[name];
         setSettingByName(name, value, true);
     }
-    setGenerationParamsFromPreset(preset);
     displayLogitBias(preset.logit_bias, BIAS_KEY, 'textgenerationwebui_settings');
     // Stored now, and the settings view read again, so whoever hears of the change reads the preset's values.
     await saveSettings('textgenerationwebui_settings');
@@ -659,7 +658,7 @@ async function getStatusTextgen() {
                         if (backend_max_context && typeof backend_max_context === 'number') {
                             const old_value = max_context;
                             if (max_context !== backend_max_context) {
-                                setGenerationParamsFromPreset({ max_length: backend_max_context });
+                                await setGenerationParamsFromPreset({ max_length: backend_max_context });
                             }
                             if (old_value !== max_context) {
                                 console.log(`Auto-switched max context from ${old_value} to ${max_context}`);

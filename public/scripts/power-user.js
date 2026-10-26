@@ -80,6 +80,7 @@ import { initHotkeyOverlay } from './hotkey-overlay.js';
 import { storyStringWithAnchors } from './story-string-anchors.js';
 import { THEME_FIELDS } from './theme-fields.js';
 import { CONTEXT_TEMPLATE_POWER_USER_KEYS } from './preset-file-keys.js';
+import { SERVER_OWNED, newUiStarted } from './new-ui-page.js';
 
 export const toastPositionClasses = [
     'toast-top-left',
@@ -93,10 +94,6 @@ export const toastPositionClasses = [
 export const MAX_CONTEXT_DEFAULT = 8192;
 export const MAX_RESPONSE_DEFAULT = 2048;
 const MAX_CONTEXT_UNLOCKED = 512 * 1024;
-const MAX_RESPONSE_UNLOCKED = 64 * 1024;
-const unlockedMaxContextStep = 512;
-const maxContextMin = 512;
-const maxContextStep = 64;
 
 const defaultStoryString = '{{#if system}}{{system}}\n{{/if}}{{#if description}}{{description}}\n{{/if}}{{#if personality}}{{char}}\'s personality: {{personality}}\n{{/if}}{{#if scenario}}Scenario: {{scenario}}\n{{/if}}{{#if persona}}{{persona}}\n{{/if}}';
 const defaultExampleSeparator = '***';
@@ -738,13 +735,6 @@ async function switchLabMode({ noReset = false } = {}) {
             .attr('step', '0.001');
         $('#labModeWarning').removeClass('displayNone');
         //$("#advanced-ai-config-block input[type='range']").hide()
-
-        $('#amount_gen_counter').attr('min', '1')
-            .attr('max', '99999')
-            .attr('step', '1');
-        $('#amount_gen').attr('min', '1')
-            .attr('max', '99999')
-            .attr('step', '1');
     } else if (!noReset) {
         //re apply the original sliders values to each input
         originalSliderValues.forEach(function (slider) {
@@ -1859,7 +1849,11 @@ export async function loadPowerUserSettings(settings, data) {
             settings.power_user.tag_sort_mode = settings.power_user.auto_sort_tags ? tag_sort_mode.ALPHABETICAL : tag_sort_mode.MANUAL;
             delete settings.power_user.auto_sort_tags;
         }
-        Object.assign(power_user, settings.power_user);
+        // The fields the new page shows are the server's once it has started (they read its view).
+        for (const [key, value] of Object.entries(settings.power_user)) {
+            if (newUiStarted() && SERVER_OWNED.has(`power_user.${key}`)) continue;
+            power_user[key] = value;
+        }
     }
 
     // Rebuild against whatever came back from settings.json, or the store/proxies keep pointing at stale
@@ -2164,53 +2158,21 @@ function loadCharListState() {
 export function loadMovingUIState() {}
 
 function loadMaxContextUnlocked() {
-    $('#max_context_unlocked').prop('checked', power_user.max_context_unlocked);
-    $('#max_context_unlocked').on('change', function () {
-        power_user.max_context_unlocked = !!$(this).prop('checked');
-        switchMaxContextSize();
-        saveSettingsDebounced('power_user.max_context_unlocked');
-    });
+    // The unlock is the new page's field; Kobold's own rep pen range follows it (script.js watches it too).
     switchMaxContextSize();
 }
 
-function switchMaxContextSize() {
-    const elements = [
-        $('#max_context'),
-        $('#max_context_counter'),
-        $('#rep_pen_range'),
-        $('#rep_pen_range_counter'),
-        // The text generation fields' ranges and values follow the unlock on the server (the view's ranges,
-        // withinUnlock).
-    ];
+/**
+ * Kobold's own rep pen range (this page's still) to the context limit, by the unlock. The response length, context
+ * size and text generation's ranges follow it on the server (the settings view's ranges, withinUnlock).
+ */
+export function switchMaxContextSize() {
     const maxValue = power_user.max_context_unlocked ? MAX_CONTEXT_UNLOCKED : MAX_CONTEXT_DEFAULT;
-    const minValue = power_user.max_context_unlocked ? maxContextMin : maxContextMin;
-    const steps = power_user.max_context_unlocked ? unlockedMaxContextStep : maxContextStep;
-    for (const element of elements) {
-        const id = element.attr('id');
+    for (const element of [$('#rep_pen_range'), $('#rep_pen_range_counter')]) {
         element.attr('max', maxValue);
-
-        if (typeof id === 'string' && id?.indexOf('max_context') !== -1) {
-            element.attr('min', minValue);
-            element.attr('step', steps); //only change setps for max context, because rep pen range needs step of 1 due to important values of -1 and 0
-        }
-        const value = Number(element.val());
-
-        if (value >= maxValue) {
+        if (Number(element.val()) >= maxValue) {
             element.val(maxValue).trigger('input');
         }
-    }
-
-    const maxAmountGen = power_user.max_context_unlocked ? MAX_RESPONSE_UNLOCKED : MAX_RESPONSE_DEFAULT;
-    $('#amount_gen').attr('max', maxAmountGen);
-    $('#amount_gen_counter').attr('max', maxAmountGen);
-
-    if (Number($('#amount_gen').val()) >= maxAmountGen) {
-        $('#amount_gen').val(maxAmountGen).trigger('input');
-    }
-
-    if (power_user.enableZenSliders) {
-        $('#max_context_zenslider').remove();
-        CreateZenSliders($('#max_context'));
     }
 }
 

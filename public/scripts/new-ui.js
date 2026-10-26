@@ -1,7 +1,5 @@
 import { start } from '/ui/entry.js';
-
-/** The settings paths the server owns: the new page shows them, and the old page neither writes nor saves them. */
-export { SERVER_OWNED } from '/ui/entry.js';
+import { newUi, newUiStarted, setNewUi } from './new-ui-page.js';
 import { getRequestHeaders } from './request-headers.js';
 import { attachNewPage } from './tab-session.js';
 import { translate } from './i18n.js';
@@ -15,21 +13,18 @@ import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
  * through here (and the stubs at upstream's old paths, which use it); nothing new imports old code.
  */
 
-/** @type {import('/ui/entry.js').NewUi | null} */
-let started = null;
-
 /**
  * Starts it, once the page's DOM and the old modules it calls into are ready (script.js's init).
  * @param {{ quietPrompt: (prompt: string) => Promise<string>, currentChat: () => ({ avatar: string } | { group: string } | null) }} options
  */
 export function startNewUi({ quietPrompt, currentChat }) {
-    if (started) return started;
+    if (newUiStarted()) return newUi();
     const element = (/** @type {string} */ id) => {
         const found = document.getElementById(id);
         if (!found) throw new Error(`The new page's container #${id} is missing`);
         return found;
     };
-    started = start({
+    const started = start({
         headers: () => getRequestHeaders(),
         t: (text, key) => translate(text, key ?? null),
         quietPrompt,
@@ -43,11 +38,13 @@ export function startNewUi({ quietPrompt, currentChat }) {
             ccSamplers: element('cc_sampler_fields'),
             ccUtility: element('cc_utility_fields'),
             ccOptions: element('cc_option_fields'),
+            commonLengths: element('common_length_fields'),
             tgTop: element('tg_top_fields'),
             tgSamplers: element('tg_sampler_fields'),
             tgCfg: element('tg_cfg_fields'),
         },
     });
+    setNewUi(started);
     const page = started;
     attachNewPage({ views: views => page.receive({ type: 'views', views }), connected: () => void page.reconnected() });
     const backgrounds = started.backgrounds;
@@ -78,14 +75,8 @@ export function startNewUi({ quietPrompt, currentChat }) {
     return started;
 }
 
-/** Whether script.js's init started the new page yet. */
-export const newUiStarted = () => started !== null;
-
-/** The started new page; old code calls in only after script.js's init started it. */
-export function newUi() {
-    if (!started) throw new Error('The new page is not started yet');
-    return started;
-}
+/** The started new page (new-ui-page.js's, which old modules import instead of this). */
+export { newUi, newUiStarted };
 
 /**
  * Views the server sent with an old route's answer (before the start there are none: views only follow the new
@@ -93,10 +84,10 @@ export function newUi() {
  * @param {import('/ui/entry.js').ViewFrame[] | undefined} views
  */
 export function takeViews(views) {
-    if (started && Array.isArray(views) && views.length) started.receive({ type: 'views', views });
+    if (newUiStarted() && Array.isArray(views) && views.length) newUi().receive({ type: 'views', views });
 }
 
 /** The chat closed on this page (no chat shows): the new page's views that follow the chat are read for none. */
 export function chatClosed() {
-    void started?.closeChat();
+    if (newUiStarted()) void newUi().closeChat();
 }

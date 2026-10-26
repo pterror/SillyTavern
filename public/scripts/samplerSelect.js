@@ -1,5 +1,5 @@
 import { localforage } from '../lib.js';
-import { newUi, newUiStarted } from './new-ui.js';
+import { newUi, newUiStarted } from './new-ui-page.js';
 
 // Upstream's sampler select. It's the server's now (the settings view's, per text generation backend; the popup is
 // the new page's, packages/areas/settings/page/tg.tsx); these names stay for extensions that import them, over the

@@ -3,13 +3,14 @@ import {
     getStoppingStrings,
     resultCheckStatus,
     saveSettingsDebounced,
-    setGenerationParamsFromPreset,
+    saveSettings,
     setOnlineStatus,
     startStatusLoading,
 } from '../script.js';
 import { getRequestHeaders } from './request-headers.js';
 import { event_types, eventSource } from './events.js';
-import { MAX_CONTEXT_DEFAULT, MAX_RESPONSE_DEFAULT, power_user } from './power-user.js';
+import { power_user } from './power-user.js';
+import { newUi, newUiStarted } from './new-ui-page.js';
 import { getEntryTokenIds, getTokenizerBestMatch, registerEntryTextSource, showDroppedEntries, tokenizers } from './tokenizers.js';
 import { CompactStreamDecoder } from './llamacpp-compact-stream.js';
 import {
@@ -174,15 +175,8 @@ export async function loadNovelSubscriptionData() {
 }
 
 export function loadNovelPreset(preset) {
-    if (preset.genamt === undefined) {
-        const needsUnlock = preset.max_context > MAX_CONTEXT_DEFAULT || preset.max_length > MAX_RESPONSE_DEFAULT;
-        $('#amount_gen').val(preset.max_length).trigger('input');
-        $('#max_context_unlocked').prop('checked', needsUnlock).trigger('change');
-        $('#max_context').val(preset.max_context).trigger('input');
-    } else {
-        setGenerationParamsFromPreset(preset);
-    }
-
+    // The response length and context size are the server's: selecting the preset applies them there (its own files
+    // name them max_length and max_context, presetLengthKeys()).
     nai_settings.temperature = preset.temperature;
     nai_settings.repetition_penalty = preset.repetition_penalty;
     nai_settings.repetition_penalty_range = preset.repetition_penalty_range;
@@ -251,7 +245,8 @@ export function loadNovelSettings(data, settings) {
     nai_settings.phrase_rep_pen = settings.phrase_rep_pen;
     nai_settings.mirostat_lr = settings.mirostat_lr;
     nai_settings.mirostat_tau = settings.mirostat_tau;
-    nai_settings.streaming_novel = !!settings.streaming_novel;
+    // The server's once the new page has started (its view); before, what was loaded.
+    if (!newUiStarted()) nai_settings.streaming_novel = !!settings.streaming_novel;
     nai_settings.preamble = settings.preamble || default_preamble;
     nai_settings.prefix = settings.prefix;
     nai_settings.banned_tokens = settings.banned_tokens || '';
@@ -308,7 +303,6 @@ function loadNovelSettingsUi(ui_settings) {
     $('#math1_quad_entropy_scale_counter_novel').val(Number(ui_settings.math1_quad_entropy_scale).toFixed(2));
     $(`#settings_preset_novel option[value=${novelai_setting_names[nai_settings.preset_settings_novel]}]`).prop('selected', true);
 
-    $('#streaming_novel').prop('checked', ui_settings.streaming_novel);
     sortItemsByOrder(ui_settings.order);
     displayLogitBias(ui_settings.logit_bias, BIAS_KEY, 'nai_settings');
 }
@@ -902,14 +896,10 @@ export function initNovelAISettings() {
         nai_settings.preset_settings_novel = $('#settings_preset_novel').find(':selected').text();
         const preset = novelai_settings[novelai_setting_names[nai_settings.preset_settings_novel]];
         loadNovelPreset(preset);
-        saveSettingsDebounced('nai_settings');
+        // Stored now, and the settings view read again, so whoever hears of the change reads the preset's values.
+        await saveSettings('nai_settings');
+        if (newUiStarted()) await newUi().settings.reread();
         await eventSource.emit(event_types.PRESET_CHANGED, { apiId: 'novel', name: nai_settings.preset_settings_novel });
-    });
-
-    $('#streaming_novel').on('input', function () {
-        const value = !!$(this).prop('checked');
-        nai_settings.streaming_novel = value;
-        saveSettingsDebounced('nai_settings');
     });
 
     $('#model_novel_select').on('change', function () {

@@ -13,6 +13,7 @@ import {
     CcOptions,
     CcSamplers,
     CcUtility,
+    CommonLengths,
     LevelSlider,
     TgCfg,
     TgSamplers,
@@ -47,6 +48,8 @@ export type StartOptions = {
         ccSamplers: HTMLElement;
         ccUtility: HTMLElement;
         ccOptions: HTMLElement;
+        /** The fields the text APIs share (response length, context size, streaming), before the prompt cost line. */
+        commonLengths: HTMLElement;
         /** The text generation fields, likewise (between them the logit bias editor, after them the sampler orders). */
         tgTop: HTMLElement;
         tgSamplers: HTMLElement;
@@ -69,7 +72,7 @@ export function start(options: StartOptions) {
     mount(backgroundLayer, () => <BackgroundLayer element={backgroundLayer} />);
     mount(backgroundAnimation, () => <AnimationOption />);
 
-    const { settingsLevels, ccContext, ccSamplers, ccUtility, ccOptions, tgTop, tgSamplers, tgCfg } =
+    const { settingsLevels, ccContext, ccSamplers, ccUtility, ccOptions, tgTop, tgSamplers, tgCfg, commonLengths } =
         options.containers;
     const [support, setSupport] = createSignal<Support>({
         functionCalling: false,
@@ -82,6 +85,7 @@ export function start(options: StartOptions) {
     mount(ccSamplers, () => <CcSamplers />);
     mount(ccUtility, () => <CcUtility />);
     mount(ccOptions, () => <CcOptions support={support} />);
+    mount(commonLengths, () => <CommonLengths />);
     mount(tgTop, () => <TgTop />);
     mount(tgSamplers, () => <TgSamplers />);
     mount(tgCfg, () => <TgCfg />);

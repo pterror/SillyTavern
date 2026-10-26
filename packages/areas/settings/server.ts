@@ -2,10 +2,11 @@ import {
     FIELDS,
     VIEW,
     DEFAULT_RANGE,
-    LAB_RANGE,
     LEVELS,
+    LIMITS,
     SAMPLER_NAMES,
     actions,
+    labRangeOf,
     fieldAt,
     rangeOf,
     refusalOf,
@@ -87,7 +88,10 @@ function rangesFor(settings: Record<string, unknown>, models: ModelLists) {
     ranges['top_k_textgenerationwebui'] = { min: minusOne ? -1 : 0, max: 500, step: 1 };
     ranges['mirostat_mode_textgenerationwebui'] = { min: 0, max: 2, step: minusOne ? 2 : 1 };
     if (valueAt(settings, 'power_user.enableLabMode') === true)
-        for (const field of FIELDS) if (field.lab) ranges[field.id] = { ...LAB_RANGE };
+        for (const field of FIELDS) {
+            const lab = labRangeOf(field);
+            if (lab !== undefined) ranges[field.id] = lab;
+        }
     return ranges;
 }
 
@@ -254,6 +258,17 @@ export function settingsArea(ports: Ports) {
                 await ports.write(context.user, owner, range, [
                     [path, structuredClone(valueAt(ports.defaults(), path))],
                 ]);
+                return changed;
+            },
+            'settings.fitContext': async (context, { size }) => {
+                const owner = await ownerOf(context);
+                const range = rangeOfTab(context.session);
+                if (range.to === 'default') return { refused: "The defaults can't be changed." };
+                if (size > LIMITS.context.unlocked.max)
+                    return { refused: `A context of ${size} is past the largest (${LIMITS.context.unlocked.max}).` };
+                const entries: [string, unknown][] = [['max_context', size]];
+                if (size > LIMITS.context.locked.max) entries.push(['power_user.max_context_unlocked', true]);
+                await ports.write(context.user, owner, range, entries);
                 return changed;
             },
             'settings.neutralize': async (context) => {

@@ -69,6 +69,23 @@ export function settingsCompat(client: Client) {
                 createEffect(on(key, () => run(), { defer: true }));
             });
         },
+        /** Sets a field (as its control would); resolves whether the server took it. */
+        setValue: async (path: string, value: unknown) => (await client.send('settings.set', { path, value })).ok,
+        /** The context size to a model's, unlocking past the locked limit; resolves whether the server took it. */
+        fitContext: async (size: number) => (await client.send('settings.fitContext', { size })).ok,
+        /**
+         * Keeps something of the old page (a module's variable, which can't be an accessor) at a path's value in the
+         * view: now, and whenever it changes. One way: what it's set from is the view.
+         */
+        mirror(path: string, apply: (value: unknown) => void) {
+            createRoot(() => {
+                const value = createMemo(() => view()?.values[path]);
+                createEffect(() => {
+                    const current = value();
+                    if (current !== undefined) apply(current);
+                });
+            });
+        },
         /** Reads the view again (after an old route changed what it shows), and resolves once it's here. */
         reread: () => client.reread(VIEW),
         /** Runs `run` whenever one of these paths' values changes in the view (not for the first view). */

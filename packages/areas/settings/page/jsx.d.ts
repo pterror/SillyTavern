@@ -11,6 +11,7 @@ declare module 'solid-js' {
             'data-field': string;
             'data-for': string;
             'data-level': string;
+            'data-randomization-disabled': string;
         }
     }
 }

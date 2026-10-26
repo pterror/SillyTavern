@@ -25,3 +25,17 @@ export const CONTEXT_TEMPLATE_POWER_USER_KEYS = Object.freeze(['always_force_nam
 
 /** A text API's preset file's response length and context size keys, and the settings they are. */
 export const TEXT_PRESET_LENGTH_KEYS = Object.freeze({ genamt: 'amount_gen', max_length: 'max_context' });
+
+/** NovelAI's own preset files' lengths: `max_length` is the response length there, `max_context` the context size. */
+const NOVEL_PRESET_LENGTH_KEYS = Object.freeze({ max_length: 'amount_gen', max_context: 'max_context' });
+
+/**
+ * A text preset file's length keys and the settings they are. NovelAI's own presets (no `genamt`) name them their way
+ * (as the old page's loadNovelPreset() read them); the app's own files, NovelAI's included, the common way.
+ * @param {string} group The preset's group (`preset.novel`, ...).
+ * @param {Record<string, unknown> | undefined} file
+ * @returns {Readonly<Record<string, string>>}
+ */
+export function presetLengthKeys(group, file) {
+    return group === 'preset.novel' && file && !Object.hasOwn(file, 'genamt') ? NOVEL_PRESET_LENGTH_KEYS : TEXT_PRESET_LENGTH_KEYS;
+}
