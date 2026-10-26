@@ -113,8 +113,15 @@ function matchHtmlBlock(src) {
     while ((tag = tagRegex.exec(src))) {
         depth += tag[1] ? -1 : 1;
         if (depth === 0) {
-            const lineEnd = /^[ \t]*/.exec(src.slice(tagRegex.lastIndex))?.[0] ?? '';
-            return { length: tagRegex.lastIndex + lineEnd.length, openLength: open[0].length, closeFrom: tag.index };
+            const end = tagRegex.lastIndex;
+            // marked goes on right after the closing tag: another block starting there (`<div>a</div><div>b</div>`)
+            // is one of its own, and so is text. A block here can't end in the middle of a line, so it takes the rest
+            // of its line, and the whole of a block starting there.
+            const lineRest = /^[^\n]*/.exec(src.slice(end))[0];
+            const indent = lineRest.length - lineRest.trimStart().length;
+            const next = lineRest.trim() ? matchHtmlBlock(src.slice(end + indent)) : null;
+            const length = next ? end + indent + Math.max(next.length, lineRest.length - indent) : end + lineRest.length;
+            return { length, openLength: open[0].length, closeFrom: tag.index };
         }
     }
     return null;

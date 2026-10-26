@@ -198,6 +198,12 @@ describe('nodes only the editor needs', () => {
         return found;
     };
 
+    test('an HTML block takes the rest of its line: chat renders blocks in a row each in full, so the render under it must have them all', () => {
+        expect(spans('<div>a</div><div>b</div>\n\nafter', 'HTMLBlock')).toEqual(['<div>a</div><div>b</div>']);
+        expect(spans('<p>a</p> <div>b\nc</div>\n\nafter', 'HTMLBlock')).toEqual(['<p>a</p> <div>b\nc</div>']);
+        expect(spans('<div>a</div> tail *x*\n\nafter', 'HTMLBlock')).toEqual(['<div>a</div> tail *x*']);
+    });
+
     test('macros, nested ones inside their outer macro', () => {
         expect(spans('a {{char}} {{setvar::x::{{random::1::2}}}} `{{code}}`', 'Macro')).toEqual(['{{char}}', '{{setvar::x::{{random::1::2}}}}']);
     });
