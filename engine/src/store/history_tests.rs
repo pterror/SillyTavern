@@ -1265,3 +1265,112 @@ fn random_history_reads_as_the_model_says_through_flushes_cleaning_and_reopens()
         fs::remove_dir_all(&dir).unwrap();
     }
 }
+
+#[test]
+fn a_types_entities_page_by_key_without_the_deleted() {
+    let dir = temp_dir("of-type");
+    let s = open_with(&dir, pool());
+    let mk = |e: u64, kind: u64, k: &str| {
+        rec(
+            "entityCreate",
+            vec![Value::Id(e), Value::UInt(kind), text(k), Value::F64(0.0)],
+        )
+    };
+    s.commit_wait(vec![
+        mk(50, 18, "c"),
+        mk(51, 18, "a"),
+        mk(52, 18, "b\u{0}x"),
+        mk(53, 18, "b"),
+        mk(54, 20, "a"),
+    ])
+    .unwrap();
+    let keys = |after: Option<&str>, limit: usize| {
+        let (page, more) = s
+            .library_of_type(18, after.map(|a| a.as_bytes().to_vec()), limit)
+            .unwrap();
+        let keys: Vec<String> = page
+            .into_iter()
+            .map(|(k, _)| String::from_utf8(k).unwrap())
+            .collect();
+        (keys, more)
+    };
+    assert_eq!(
+        keys(None, 10),
+        (
+            vec!["a".into(), "b".into(), "b\u{0}x".into(), "c".into()],
+            false
+        )
+    );
+    assert_eq!(keys(None, 2), (vec!["a".into(), "b".into()], true));
+    assert_eq!(
+        keys(Some("b"), 10),
+        (vec!["b\u{0}x".into(), "c".into()], false)
+    );
+    assert_eq!(keys(Some("c"), 10), (vec![], false));
+    // The entry deleted (its history keeps it, restorable) isn't listed.
+    let (entries, _) = s.library_of_type(ENTRY, None, 10).unwrap();
+    assert_eq!(entries.len(), 1);
+    s.commit_wait(vec![entity_delete(104)]).unwrap();
+    let (entries, _) = s.library_of_type(ENTRY, None, 10).unwrap();
+    assert!(entries.is_empty());
+    s.close();
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_settings_entity_is_deleted_with_its_history_and_restored_from_it() {
+    let dir = temp_dir("settings-delete");
+    let s = open_with(&dir, pool());
+    const PROXY: u64 = 60;
+    let url = FieldRef::Key(b"url".to_vec());
+    let set_url = |c: u64, v: &str| {
+        let mut vals = vec![
+            Value::Id(PROXY),
+            Value::Field(url.clone()),
+            text(v),
+            Value::Bit(false),
+        ];
+        vals.extend(meta(c, NOBODY));
+        rec("histSet", vals)
+    };
+    s.commit_wait(vec![
+        rec(
+            "entityCreate",
+            vec![Value::Id(PROXY), Value::UInt(20), text("Mine"), Value::F64(0.0)],
+        ),
+        set_url(300, "http://a"),
+    ])
+    .unwrap();
+    s.commit_wait(vec![set_url(301, "http://b")]).unwrap();
+    let mut gone = vec![Value::Id(PROXY)];
+    gone.extend(meta(302, NOBODY).into_iter().take(4));
+    s.commit_wait(vec![rec("histEntityDelete", gone)]).unwrap();
+    assert!(s.library_entities(&[PROXY]).unwrap()[0].is_none());
+    assert_eq!(s.library_ids(&[(20, b"Mine".to_vec())]).unwrap(), vec![None]);
+    assert!(s.library_of_type(20, None, 10).unwrap().0.is_empty());
+    let mut back = vec![
+        Value::Id(PROXY),
+        Value::UInt(20),
+        text("Mine"),
+        Value::F64(0.0),
+    ];
+    back.extend(meta(303, NOBODY).into_iter().take(4));
+    s.commit_wait(vec![rec("histRestore", back)]).unwrap();
+    assert_eq!(s.library_ids(&[(20, b"Mine".to_vec())]).unwrap(), vec![Some(PROXY)]);
+    let e = s.library_entities(&[PROXY]).unwrap().pop().unwrap().unwrap();
+    let value = e.values.into_iter().find(|(f, _)| *f == url).map(|(_, v)| v);
+    assert!(matches!(value, Some(Stored::Text(t)) if t == b"http://b"));
+    // A character isn't deleted this way.
+    s.commit_wait(vec![rec(
+        "entityCreate",
+        vec![Value::Id(61), Value::UInt(0), text("c.png"), Value::F64(0.0)],
+    )])
+    .unwrap();
+    let mut no = vec![Value::Id(61)];
+    no.extend(meta(304, NOBODY).into_iter().take(4));
+    assert!(s.commit_wait(vec![rec("histEntityDelete", no)]).is_err());
+    s.close();
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}

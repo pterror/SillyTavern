@@ -50,10 +50,11 @@ test('a chat completion preset: its connection keys go to the connection, its pr
     assert.deepEqual(preset.values, { temperature: 0.7, extensions: { regex: [{ id: 'x' }] } });
     assert.ok(CONNECTION_PRESET_KEYS.includes('chat_completion_source'));
     assert.deepEqual(connection, { chat_completion_source: 'openai', openai_model: 'gpt-4o' });
-    assert.deepEqual(preset.lists[0].map(part => [part.type, part.key]), [
+    assert.deepEqual(preset.lists[5].map(part => [part.type, part.key]), [
         [TYPE.chatPrompt, 'openai:Mine:main'], [TYPE.chatPrompt, 'openai:Mine:nsfw'],
     ]);
-    const order = preset.lists[1][0];
+    assert.equal(Object.hasOwn(preset.lists[5][0].values, 'identifier'), false);
+    const order = preset.lists[6][0];
     assert.equal(order.type, TYPE.chatPromptOrder);
     assert.equal(order.key, 'openai:Mine:100001');
     assert.deepEqual(order.lists, { 0: ['nsfw', 'main'], 1: ['nsfw'] });
@@ -77,7 +78,7 @@ test('a key not of the shape modeled stays a value', () => {
 test('logit bias entries are parts keyed by their ids; a missing or repeated id is kept under its place, with a warning', () => {
     const file = { logit_bias: [{ id: 'a', text: 'x', value: 5 }, { text: 'y', value: -1 }, { id: 'a', text: 'z', value: 0 }] };
     const { preset, back, warnings } = roundTrip('novel', 'N', file);
-    assert.deepEqual(preset.lists[8].map(part => [part.type, part.key]), [
+    assert.deepEqual(preset.lists[4].map(part => [part.type, part.key]), [
         [TYPE.biasEntry, 'novel:N:a'], [TYPE.biasEntry, 'novel:N:#1'], [TYPE.biasEntry, 'novel:N:#2'],
     ]);
     assert.equal(warnings.length, 2);
@@ -87,7 +88,7 @@ test('logit bias entries are parts keyed by their ids; a missing or repeated id 
 test('a prompt with no or a repeated identifier is kept under its place, with a warning', () => {
     const file = { prompts: [{ identifier: 'main' }, { name: 'none' }, { identifier: 'main', content: 'again' }] };
     const { preset, back, warnings } = roundTrip('openai', 'P', file);
-    assert.deepEqual(preset.lists[0].map(part => part.key), ['openai:P:main', 'openai:P:#1', 'openai:P:#2']);
+    assert.deepEqual(preset.lists[5].map(part => part.key), ['openai:P:main', 'openai:P:#1', 'openai:P:#2']);
     assert.equal(warnings.length, 2);
     assert.deepEqual(back, file);
 });

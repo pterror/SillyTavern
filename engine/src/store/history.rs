@@ -1199,8 +1199,8 @@ impl Deriver for PlaceChange {
     }
 }
 
-/// `histEntityDelete`: a world-info entry goes from every read, as `entityDelete` takes it; its values' records
-/// stay, as its history.
+/// `histEntityDelete`: a world-info entry or a settings entity goes from every read, as `entityDelete` takes it; its
+/// values' records stay, as its history.
 struct EntityDelete;
 
 impl Deriver for EntityDelete {
@@ -1211,29 +1211,31 @@ impl Deriver for EntityDelete {
         let Some((kind, k, _)) = entity_info(view, e)? else {
             return Err(refused(format!("no entity {e}")));
         };
-        if kind != ENTRY {
+        if !library::history_kept(kind) {
             return Err(refused(format!(
-                "entity {e} is of type {kind}: only a world-info entry is deleted with its history kept"
+                "entity {e} is of type {kind}: only a world-info entry or a settings entity is deleted with its history kept"
             )));
         }
         place_change(view, out, e, None, Family::Entity, m.change())?;
         super::searched::gone(view, out, e, kind, &k)?;
         super::tags::entity_gone(view, out, e)?;
         super::local_import::entity_gone(view, out, e)?;
-        books::touched(view, out, e, at)?;
-        let (book, _) = books::parse_entry_key(&k)?;
-        let place = view
-            .get(&item_at_key(book, ENTRIES, e))?
-            .map(|b| parse_place(&b))
-            .transpose()?
-            .map(|(p, _)| p);
-        let index = books::entry_index(view, e)?;
-        books::entry_gone(view, out, e, &k)?;
-        let flags = u64::from(place.is_some()) | (u64::from(index.is_some()) << 1);
-        out.put(
-            deleted_key(book, e),
-            varints(&[flags, place.unwrap_or(0), index.map_or(0, f64::to_bits)]),
-        );
+        if kind == ENTRY {
+            books::touched(view, out, e, at)?;
+            let (book, _) = books::parse_entry_key(&k)?;
+            let place = view
+                .get(&item_at_key(book, ENTRIES, e))?
+                .map(|b| parse_place(&b))
+                .transpose()?
+                .map(|(p, _)| p);
+            let index = books::entry_index(view, e)?;
+            books::entry_gone(view, out, e, &k)?;
+            let flags = u64::from(place.is_some()) | (u64::from(index.is_some()) << 1);
+            out.put(
+                deleted_key(book, e),
+                varints(&[flags, place.unwrap_or(0), index.map_or(0, f64::to_bits)]),
+            );
+        }
         // Values written with their history; a value written whole (no history) stays, as before `key::HEAD`.
         let p = key::id(key::HEAD, e);
         for (vk, v) in view.scan(&p, &key::prefix_end(&p), usize::MAX)? {
@@ -1284,8 +1286,9 @@ impl Deriver for EntityDelete {
     }
 }
 
-/// `histRestore`: a deleted world-info entry comes back under a key of its own book, its values its history's
-/// latest. Its record is then the entity's (as `entityCreate`'s is).
+/// `histRestore`: a deleted world-info entry comes back under a key of its own book, a settings entity under any
+/// key of its type not taken; its values its history's latest. Its record is then the entity's (as `entityCreate`'s
+/// is).
 struct Restore;
 
 impl Deriver for Restore {
@@ -1297,30 +1300,39 @@ impl Deriver for Restore {
             return Err(refused(format!("entity {e} isn't deleted")));
         };
         let (was, _) = view.record(gp)?;
-        if id(&was, 1) != kind || kind != ENTRY {
+        if id(&was, 1) != kind || !library::history_kept(kind) {
             return Err(refused(format!(
                 "entity {e} was of type {}, not {kind}",
                 id(&was, 1)
             )));
         }
-        let (book, _) = books::parse_entry_key(&k)?;
-        let (from, _) = books::parse_entry_key(bytes(&was, 2))?;
-        if book != from {
-            return Err(refused(format!("entry {e} is of book {from}, not {book}")));
-        }
+        let book = if kind == ENTRY {
+            let (book, _) = books::parse_entry_key(&k)?;
+            let (from, _) = books::parse_entry_key(bytes(&was, 2))?;
+            if book != from {
+                return Err(refused(format!("entry {e} is of book {from}, not {book}")));
+            }
+            Some(book)
+        } else {
+            None
+        };
         if view.get(&entity_key_key(kind, &k))?.is_some() {
             return Err(refused(format!(
                 "an entity of type {kind} has that key already"
             )));
         }
         place_change(view, out, e, None, Family::Entity, m.change())?;
-        books::entry_created(view, out, &k)?;
+        if kind == ENTRY {
+            books::entry_created(view, out, &k)?;
+        }
         let mut local = BTreeMap::new();
         let mut o = Out::default();
         o.put(key::id(key::ENTITY, e), host_bytes(at, None));
         o.put(entity_key_key(kind, &k), uvarint(e));
         o.del(key::id(GONE, e));
-        o.del(deleted_key(book, e));
+        if let Some(book) = book {
+            o.del(deleted_key(book, e));
+        }
         o.del(key::ids(key::ENTITY_CHANGE, deleted_at, e));
         out.entries.extend(o.entries.iter().cloned());
         o.apply(&mut local);

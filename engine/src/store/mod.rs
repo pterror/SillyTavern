@@ -734,6 +734,17 @@ impl Store {
         })
     }
 
+    /// Entities of a type in key order after `after`, at most `limit`, deleted ones left out
+    /// (`library::entities_of_type`).
+    pub fn library_of_type(
+        &self,
+        kind: u64,
+        after: Option<Vec<u8>>,
+        limit: usize,
+    ) -> StoreResult<(Vec<(Vec<u8>, u64)>, bool)> {
+        self.derived(|v| library::entities_of_type(v, kind, after.as_deref(), limit))
+    }
+
     /// One more than the highest entity id ever created.
     pub fn library_next_id(&self) -> StoreResult<u64> {
         self.derived(|v| {
