@@ -29,7 +29,8 @@ how new code is shaped.
 - `server-ui`: the server side: the area registry, `POST /api/ui/action`, the tabs and what each shows, pushes.
 - `ui`: the page (Solid, compiled by vite-plugin-solid): the client (the one module that talks to the server),
   layers, components, the upstream stubs.
-- `serve-ui`: serves `ui` at `/ui/`.
+- `serve-ui`: builds `ui` and the old page's libraries (`/lib.js`, `/live-editor-lib.js`), takes their build from
+  CI's release for the source (built here only for unreleased source), and serves it.
 - `lint`: the rules that keep this shape (see `lint/config.ts`).
 
 ## Checks

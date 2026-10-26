@@ -47,7 +47,7 @@ async function start(dev: boolean, outDir = built) {
 
 test('a build of this source is served: its entry, cached for good, and nothing else', async () => {
     const { origin, entry } = await start(false);
-    const manifest = JSON.parse(fs.readFileSync(path.join(built, '.vite/manifest.json'), 'utf8')) as Record<
+    const manifest = JSON.parse(fs.readFileSync(path.join(built, 'ui/.vite/manifest.json'), 'utf8')) as Record<
         string,
         { file: string }
     >;
@@ -59,6 +59,10 @@ test('a build of this source is served: its entry, cached for good, and nothing 
     expect(await response.text()).toMatch(/export\s*\{[^}]*\bstart\b/);
     expect(await (await fetch(`${origin}/ui/entry.js`)).text()).toBe(`export * from '${entry}';\n`);
     expect((await fetch(`${origin}/elsewhere.js`)).status).toBe(404);
+    // The libraries, at the root, from the build (not their source, which imports packages by name).
+    const lib = await (await fetch(`${origin}/lib.js`)).text();
+    expect(lib).not.toMatch(/from ['"]lodash['"]/);
+    expect(lib).toMatch(/initLibraryShims/);
 });
 
 test('a build of other source is replaced by the release for this one', async () => {
@@ -100,6 +104,15 @@ test("dev: a module is compiled when asked for, JSX by Solid's compiler", async 
     // The template is HTML; the JSX itself is gone.
     expect(code).not.toContain('<b>{');
     expect(await (await fetch(`${origin}/ui/entry.js`)).text()).toBe(`export * from '/ui/src/main.tsx';\n`);
+});
+
+test("the libraries are built beside the page, each alone, with upstream's exports", async () => {
+    const lib = fs.readFileSync(path.join(built, 'lib/lib.js'), 'utf8');
+    expect(lib).toMatch(/export\s*\{[^}]*\binitLibraryShims\b/);
+    const editor = fs.readFileSync(path.join(built, 'lib/live-editor-lib.js'), 'utf8');
+    expect(editor).toMatch(/export\s*\{[^}]*\bstate\b/);
+    // Nothing shared between them: each is the one file.
+    expect(fs.readdirSync(path.join(built, 'lib')).sort()).toEqual(['lib.js', 'live-editor-lib.js']);
 });
 
 test('the release a source is published as is named by its hash', async () => {
