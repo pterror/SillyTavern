@@ -5,6 +5,7 @@ import { expect, test } from 'vite-plus/test';
 import { settingsArea } from './settings.ts';
 import type { Ports } from './settings.ts';
 import type { ActionContext, User } from './index.ts';
+import type { ModelRecord } from './model-limits.ts';
 
 const user: User = { handle: 'u', directories: { root: '/u' } };
 
@@ -22,6 +23,7 @@ function world() {
         group: {},
         character: {},
     };
+    const models: Record<string, ModelRecord[]> = {};
     const writes: { owner: ChatOwner | null; range: LevelRange; path: string; value: unknown }[] = [];
     const nest = (flat: Record<string, unknown>) => {
         const out: Record<string, unknown> = {};
@@ -52,6 +54,7 @@ function world() {
             else levels[range.to][path] = value;
         },
         ownerOf: async (_user, chat) => ({ avatar: `${chat.tree}.png` }),
+        models: (_user, source) => models[source] ?? [],
     };
     const area = settingsArea(ports);
     const context = (session = 's1', chat: { tree: string } | null = { tree: 'cara' }): ActionContext => ({
@@ -62,7 +65,7 @@ function world() {
     });
     const view = (session?: string) => area.views['settings']!(context(session)) as Promise<SettingsView>;
     const act = (type: string, payload: unknown, session?: string) => area.actions[type]!(context(session), payload);
-    return { levels, writes, view, act };
+    return { levels, writes, models, view, act };
 }
 
 test("the view: each field's value over the range, the level it comes from, and the API that decides what shows", async () => {
@@ -141,6 +144,29 @@ test("unset takes a value away at the top level; the defaults can't be", async (
 test('a range goes from farther to closer', async () => {
     const w = world();
     expect(await w.act('settings.range', { from: 'character', to: 'user' })).toMatchObject({
+        refused: expect.any(String),
+    });
+});
+
+test("the chat completion source and model decide the context size's, temperature's and penalties' ranges", async () => {
+    const w = world();
+    w.levels.user['oai_settings.chat_completion_source'] = 'claude';
+    w.levels.user['oai_settings.claude_model'] = 'claude-3-haiku';
+    let view = await w.view();
+    expect(view.ranges['openai_max_context']?.max).toBe(200_000);
+    expect(view.ranges['temp_openai']?.max).toBe(1);
+    expect(await w.act('settings.set', { path: 'oai_settings.temp_openai', value: 1.5 })).toMatchObject({
+        refused: expect.stringMatching(/at most 1/),
+    });
+    w.levels.user['oai_settings.chat_completion_source'] = 'cohere';
+    expect((await w.view()).ranges['pres_pen_openai']).toMatchObject({ min: 0, max: 1 });
+    // A model list the source answered: its numbers win.
+    w.levels.user['oai_settings.chat_completion_source'] = 'openrouter';
+    w.levels.user['oai_settings.openrouter_model'] = 'x/y';
+    w.models['openrouter'] = [{ id: 'x/y', context_length: 32_000 }];
+    view = await w.view();
+    expect(view.ranges['openai_max_context']?.max).toBe(32_000);
+    expect(await w.act('settings.set', { path: 'oai_settings.openai_max_context', value: 40_000 })).toMatchObject({
         refused: expect.any(String),
     });
 });
