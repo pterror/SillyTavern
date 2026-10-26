@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
-import { randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 
 import { setConfigFilePath } from '../util.js';
 import { USER_DIRECTORY_TEMPLATE } from '../constants.js';
@@ -15,11 +15,13 @@ import { loadOneOffEngine, parseOneOffArgs, probeConfiguredServer } from './one-
  * Nothing is deleted or rewritten: the files stay, and the server goes on reading them until the model's switch
  * (its step 10). The dry run lists what would be made, every warning, and each value the model wouldn't give back
  * as it is now (past the documented losses, §2.4), and writes nothing. --apply writes the model in one commit (the
- * Extras key into secrets.json), refused when the user is converted already, then reads it back and checks that it
- * gives the same settings.
+ * Extras key into secrets.json), refused when the user is converted already (--again first deletes the model the
+ * last run made: only while nothing reads it, before the model's switch), then reads it back and checks that it gives
+ * the same settings. The keys it makes (connections, entries without an id of their own) are derived from the
+ * handle and the import's order, so a run again makes the same ones.
  *
  *   node src/migrations/convert-settings-to-model.js --dry-run [--data-root ./data] [--handle default-user] [--config ./config.yaml]
- *   node src/migrations/convert-settings-to-model.js --apply [the same]
+ *   node src/migrations/convert-settings-to-model.js --apply [--again] [the same]
  */
 
 const LOG_PREFIX = '[convert-settings-to-model]';
@@ -42,6 +44,7 @@ export function directoriesFor(dataRoot, handle) {
  * @param {string} options.dataRoot
  * @param {string} options.handle
  * @param {boolean} options.apply
+ * @param {boolean} [options.again] Delete the model a last run made, first.
  * @param {() => Promise<any>} options.engine Loads the engine binding.
  * @param {() => Promise<{ running: boolean, lines: string[] }>} [options.probeServer]
  * @param {() => string} [options.newKey] A new connection's or catalog entry's key (a uuid).
@@ -53,14 +56,18 @@ export async function runConvert(options) {
     const log = options.log ?? console.log;
     const warnLine = options.warn ?? console.warn;
     const probeServer = options.probeServer ?? probeConfiguredServer;
-    const newKey = options.newKey ?? randomUUID;
+    let made = 0;
+    const newKey = options.newKey ?? (() => {
+        const h = createHash('sha256').update(`${options.handle}\u0000${made++}`).digest('hex');
+        return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-8${h.slice(17, 20)}-${h.slice(20, 32)}`;
+    });
     // Their imports read config when they load: after the config path is set.
     const { setStoreEngine, userStore, closeUserStores, STORE_DIR } = await import('../user-stores.js');
     const { readAllSettings } = await import('../settings-store.js');
     const { bundleFilesOf } = await import('../bundle-files.js');
     const { assemble, importUpstream, lostLeaves } = await import('../settings-model/settings-compat.js');
     const { bundleDraftsFromFiles, statedBundleFiles } = await import('../settings-model/bundle-import.js');
-    const { readUserModel, writeUserModel } = await import('../settings-model/user-store.js');
+    const { deleteUserModel, readUserModel, writeUserModel } = await import('../settings-model/user-store.js');
     const { TYPE } = await import('../library-codes.js');
     const { SECRET_KEYS, writeSecret } = await import('../endpoints/secrets.js');
     const { canonicalStringify } = await import('../../public/scripts/hash-utils.js');
@@ -107,8 +114,11 @@ export async function runConvert(options) {
     const store = await userStore({ root: directories.root });
     try {
         if (await readUserModel(store.lib, options.handle)) {
-            warnLine(`${LOG_PREFIX} REFUSED: ${options.handle} is converted already`);
-            return 1;
+            if (!options.again) {
+                warnLine(`${LOG_PREFIX} REFUSED: ${options.handle} is converted already (--again deletes that model and converts anew; only before the model's switch)`);
+                return 1;
+            }
+            log(`${LOG_PREFIX} deleted the last run's model: ${await deleteUserModel(store.lib, options.handle)} entities (their history kept)`);
         }
         for (const { connection, value } of model.secrets) {
             const id = writeSecret(directories, SECRET_KEYS.EXTRAS, value);
@@ -146,6 +156,6 @@ if (isMain) {
         process.exitCode = 2;
     } else {
         setConfigFilePath(args.config);
-        process.exitCode = await runConvert({ dataRoot: args.dataRoot, handle: args.handle, apply: Boolean(args.apply), engine: loadOneOffEngine });
+        process.exitCode = await runConvert({ dataRoot: args.dataRoot, handle: args.handle, apply: Boolean(args.apply), again: args.again === true, engine: loadOneOffEngine });
     }
 }

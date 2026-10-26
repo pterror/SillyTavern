@@ -52,6 +52,13 @@ export const REF_VALUES = Object.freeze({
     [TYPE.persona]: Object.freeze({ lorebook: TYPE.book }),
 });
 
+/** Each type's values that are arrays of refs (in order): field → the type their items name. */
+export const REF_ARRAYS = Object.freeze({
+    [TYPE.user]: Object.freeze({
+        's:sources': TYPE.connection, 's:order.connectionProfile': TYPE.connectionProfile, 's:order.serverHistory': TYPE.serverHistory,
+    }),
+});
+
 /** Each type's text lists whose items are refs: list number → the type they name. */
 export const REF_LISTS = Object.freeze({
     [TYPE.user]: Object.freeze({

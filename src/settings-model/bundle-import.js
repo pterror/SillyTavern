@@ -6,6 +6,7 @@ import { TEMPLATE_KINDS, templateFromUpstream, templateToUpstream } from './temp
 import { themeFromUpstream, themeToUpstream } from './themes.js';
 import { quickReplySetFromUpstream, quickReplySetToUpstream } from './quick-replies.js';
 import { readDraft } from './model-store.js';
+import { userConnections } from './settings-compat.js';
 
 /**
  * The bundles' files as the settings model's entities (step 9), and back: every sampler preset, template, theme
@@ -112,7 +113,7 @@ export async function bundleFileFromStore(lib, group, name, connections) {
  * @returns {Promise<import('./settings-compat.js').BundleFiles>}
  */
 export async function statedBundleFiles(lib, model) {
-    const connections = model.entities.filter(e => e.type === TYPE.connection);
+    const connections = userConnections(model);
     /** @type {Map<string, Record<string, unknown> | undefined>} */
     const files = new Map();
     for (const [group, ref] of Object.entries(model.user.bundles)) {

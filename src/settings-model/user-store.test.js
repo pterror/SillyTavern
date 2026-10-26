@@ -95,14 +95,14 @@ test('a user\'s model comes back from the store as it went in: assembled, the sa
     assert.deepEqual(personas, [String((await lib.ids(TYPE.persona, ['a.png']))[0])]);
 });
 
-test('a statement at a character not in the library is left out, warned', async () => {
+test('a statement at a character not in the library is kept as it came, warned', async () => {
     const lib = await LibraryEngine.open(loadEngine().binding, path.join(root, 'missing'));
     opened.push(lib);
     const model = importUpstream(everything(), { bundles, newKey: keys() });
     const { warnings } = await writeUserModel(lib, 'default-user', model);
     assert.ok(warnings.some(w => w.includes('Bob.png')));
     const back = await readUserModel(lib, 'default-user');
-    assert.deepEqual(back?.statements.personasConnected, []);
+    assert.deepEqual(back?.statements.personasConnected, [{ holder: { type: 'character', id: 'Bob.png' }, personas: ['a.png'] }]);
 });
 
 /**

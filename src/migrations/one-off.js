@@ -47,14 +47,15 @@ export async function probeConfiguredServer() {
 
 /**
  * @param {string[]} argv
- * @returns {{ dryRun?: true, apply?: true, dataRoot: string, handle: string, config: string, unknown: string[] }}
+ * @returns {{ dryRun?: true, apply?: true, again?: true, dataRoot: string, handle: string, config: string, unknown: string[] }}
  */
 export function parseOneOffArgs(argv) {
-    /** @type {{ dryRun?: true, apply?: true, dataRoot: string, handle: string, config: string, unknown: string[] }} */
+    /** @type {{ dryRun?: true, apply?: true, again?: true, dataRoot: string, handle: string, config: string, unknown: string[] }} */
     const out = { dataRoot: './data', handle: 'default-user', config: './config.yaml', unknown: [] };
     for (let i = 0; i < argv.length; i++) {
         const arg = argv[i];
         if (arg === '--dry-run') out.dryRun = true;
+        else if (arg === '--again') out.again = true;
         else if (arg === '--apply') out.apply = true;
         else if ((arg === '--data-root' || arg === '--handle' || arg === '--config') && argv[i + 1] !== undefined) {
             out[/** @type {'dataRoot' | 'handle' | 'config'} */ ({ '--data-root': 'dataRoot', '--handle': 'handle', '--config': 'config' }[arg])] = argv[++i];

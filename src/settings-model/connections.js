@@ -119,6 +119,8 @@ const MAIN_API = Object.freeze({ openai: 'openai', textgenerationwebui: 'textgen
  * @property {string | undefined} textGeneration The key of the connection text generation uses.
  * @property {Record<string, string>} remembered The other families' selected connections, by family.
  * @property {Record<string, unknown>} preferences The chat completion preference keys there were.
+ * @property {string[]} sources The user's own connections: upstream's one per source and backend type (a preset's
+ *   connection that isn't one of these is the preset's alone).
  * @property {{ connection: string, value: string }[]} secrets Keys to put in secrets.json, the connection then
  *   referring to their entry (`secret`).
  */
@@ -241,7 +243,7 @@ export function connectionsFromUpstream(settings, newKey) {
     const family = Object.entries(MAIN_API).find(([, api]) => api === settings.main_api)?.[0];
     const textGeneration = family ? selected[family] : undefined;
     const remembered = Object.fromEntries(Object.entries(selected).filter(([f]) => f !== family && (f === 'openai' || f === 'textgenerationwebui')));
-    return { connections, textGeneration, remembered, preferences, secrets };
+    return { connections, textGeneration, remembered, preferences, secrets, sources: connections.map(c => c.key) };
 }
 
 /**
