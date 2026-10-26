@@ -26,6 +26,46 @@ export function draft(type, key, values, lists) {
 }
 
 /**
+ * A part keyed by its natural id under its holder, `<holder>:<id>`. The id isn't kept again among its values, which
+ * the key gives back; a missing, malformed or repeated id gets a fallback key by its place (`<holder>:#<index>`), the
+ * record kept whole, warned.
+ * @param {number} type
+ * @param {string} holder The holder's key.
+ * @param {Record<string, any>} record
+ * @param {object} options
+ * @param {string} options.idField
+ * @param {number} options.index
+ * @param {Set<string>} options.seen The ids taken so far under the holder.
+ * @param {string[]} options.warnings
+ * @param {string} options.what What the part is, for the warning.
+ * @param {(id: unknown) => boolean} [options.valid] Whether an id can be given back from the key.
+ * @returns {EntityDraft}
+ */
+export function keyedPart(type, holder, record, { idField, index, seen, warnings, what, valid = id => typeof id === 'string' && id !== '' }) {
+    const id = record?.[idField];
+    // An id of the fallback's form would read back as one.
+    if (valid(id) && !String(id).startsWith('#') && !seen.has(String(id))) {
+        seen.add(String(id));
+        return draft(type, `${holder}:${id}`, without(record, [idField]));
+    }
+    warnings.push(`${holder}: ${what} ${index + 1} has ${valid(id) ? 'a repeated' : 'no usable'} ${idField}; kept under its place`);
+    return draft(type, `${holder}:#${index}`, record && typeof record === 'object' ? { ...record } : { value: record });
+}
+
+/**
+ * A part's record, its id given back from its key unless its values hold it.
+ * @param {EntityDraft} part
+ * @param {string} holder
+ * @param {string} idField
+ * @param {(text: string) => unknown} [parse]
+ * @returns {Record<string, unknown>}
+ */
+export function partRecord(part, holder, idField, parse = text => text) {
+    if (Object.hasOwn(part.values, idField) || part.key.startsWith(`${holder}:#`)) return { ...part.values };
+    return { [idField]: parse(part.key.slice(holder.length + 1)), ...part.values };
+}
+
+/**
  * The values of an object, less some keys.
  * @param {Record<string, unknown>} object
  * @param {Iterable<string>} keys

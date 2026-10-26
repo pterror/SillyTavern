@@ -78,6 +78,7 @@ import { DictEntityStore } from './entity-store.js';
 import { DEFAULT_MACRO_COLORS, applyMacroColors, macroColorsOf } from './macro-colors.js';
 import { initHotkeyOverlay } from './hotkey-overlay.js';
 import { storyStringWithAnchors } from './story-string-anchors.js';
+import { THEME_FIELDS } from './theme-fields.js';
 
 export const toastPositionClasses = [
     'toast-top-left',
@@ -2951,54 +2952,7 @@ async function saveThemeRaw(name, theme) {
  * @param {string} name Name of the theme
  */
 export function getThemeObject(name) {
-    return {
-        name,
-        blur_strength: power_user.blur_strength,
-        main_text_color: power_user.main_text_color,
-        italics_text_color: power_user.italics_text_color,
-        underline_text_color: power_user.underline_text_color,
-        quote_text_color: power_user.quote_text_color,
-        macro_colors: power_user.macro_colors,
-        blur_tint_color: power_user.blur_tint_color,
-        chat_tint_color: power_user.chat_tint_color,
-        user_mes_blur_tint_color: power_user.user_mes_blur_tint_color,
-        bot_mes_blur_tint_color: power_user.bot_mes_blur_tint_color,
-        shadow_color: power_user.shadow_color,
-        shadow_width: power_user.shadow_width,
-        border_color: power_user.border_color,
-        font_scale: power_user.font_scale,
-        fast_ui_mode: power_user.fast_ui_mode,
-        waifuMode: power_user.waifuMode,
-        stacked_drawers: power_user.stacked_drawers,
-        forceMobileView: power_user.forceMobileView,
-        avatar_style: power_user.avatar_style,
-        chat_display: power_user.chat_display,
-        toastr_position: power_user.toastr_position,
-        drawer_bar_position: power_user.drawer_bar_position,
-        drawer_bar_position_mobile: power_user.drawer_bar_position_mobile,
-        noShadows: power_user.noShadows,
-        chat_width: power_user.chat_width,
-        chat_width_max: power_user.chat_width_max,
-        timer_enabled: power_user.timer_enabled,
-        timestamps_enabled: power_user.timestamps_enabled,
-        timestamp_model_icon: power_user.timestamp_model_icon,
-
-        mesIDDisplay_enabled: power_user.mesIDDisplay_enabled,
-        hideChatAvatars_enabled: power_user.hideChatAvatars_enabled,
-        message_token_count_enabled: power_user.message_token_count_enabled,
-        expand_message_actions: power_user.expand_message_actions,
-        enableZenSliders: power_user.enableZenSliders,
-        enableLabMode: power_user.enableLabMode,
-        hotswap_enabled: power_user.hotswap_enabled,
-        custom_css: power_user.custom_css,
-        bogus_folders: power_user.bogus_folders,
-        zoomed_avatar_magnification: power_user.zoomed_avatar_magnification,
-        reduced_motion: power_user.reduced_motion,
-        compact_input_area: power_user.compact_input_area,
-        show_swipe_num_all_messages: power_user.show_swipe_num_all_messages,
-        click_to_edit: power_user.click_to_edit,
-        media_display: power_user.media_display,
-    };
+    return { name, ...Object.fromEntries(THEME_FIELDS.map(field => [field, power_user[field]])) };
 }
 
 /**

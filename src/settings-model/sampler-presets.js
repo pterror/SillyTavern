@@ -1,6 +1,6 @@
 import { TYPE } from '../library-codes.js';
 import { CONNECTION_PRESET_KEYS } from '../../public/scripts/chat-completion-defaults.js';
-import { draft, only, without } from './entity-draft.js';
+import { draft, keyedPart, only, partRecord, without } from './entity-draft.js';
 
 /**
  * Sampler presets, their chat completion prompts and prompt orders, and logit bias lists, as the settings model holds
@@ -11,6 +11,7 @@ import { draft, only, without } from './entity-draft.js';
  * - A list of scalars (`sampler_order`, `samplers`, …) is one of its lists, each item the value as JSON text, so a
  *   number stays a number.
  * - Its logit bias entries (text completion, NovelAI) are parts (`TYPE.biasEntry`, key `<preset key>:<entry id>`).
+ *   A part's id is its key's (entity-draft.js keyedPart), not kept again among its values.
  * - A chat completion preset's prompts are parts (`TYPE.chatPrompt`, key `<preset key>:<identifier>`) in list 0, and
  *   its prompt orders parts (`TYPE.chatPromptOrder`, key `<preset key>:<character id>`) in list 1, each order's list 0
  *   its identifiers in order and list 1 those turned off.
@@ -45,28 +46,22 @@ export const CONNECTION_REF = 'connection';
  */
 
 /**
- * @param {Record<string, any>} entry A logit bias entry, `{ id, text, value }`.
- * @param {string} holder The key of what holds it.
- * @param {number} index
- * @param {Set<string>} seen
+ * @param {unknown[]} entries Logit bias entries, `{ id, text, value }`.
+ * @param {string} holder The key of what holds them.
  * @param {string[]} warnings
  */
-function biasEntry(entry, holder, index, seen, warnings) {
-    let id = typeof entry?.id === 'string' && entry.id !== '' ? entry.id : '';
-    if (!id || seen.has(id)) {
-        warnings.push(`${holder}: logit bias entry ${index + 1} has ${id ? 'a repeated' : 'no'} id; kept under its place`);
-        id = `#${index}`;
-    }
-    seen.add(id);
-    return draft(TYPE.biasEntry, `${holder}:${id}`, entry && typeof entry === 'object' ? entry : { value: entry });
+function biasParts(entries, holder, warnings) {
+    const seen = new Set();
+    return entries.map((entry, index) => keyedPart(TYPE.biasEntry, holder, /** @type {any} */ (entry), { idField: 'id', index, seen, warnings, what: 'logit bias entry' }));
 }
 
 /**
  * @param {EntityDraft[]} parts
+ * @param {string} holder
  * @returns {Record<string, unknown>[]}
  */
-function biasEntries(parts) {
-    return parts.map(part => part.values);
+function biasEntries(parts, holder) {
+    return parts.map(part => partRecord(part, holder, 'id'));
 }
 
 /**
@@ -100,15 +95,7 @@ export function presetFromUpstream(api, name, file) {
     if (isChat) {
         if (Array.isArray(file.prompts)) {
             const seen = new Set();
-            lists[PROMPTS] = file.prompts.map((prompt, index) => {
-                let identifier = typeof prompt?.identifier === 'string' ? prompt.identifier : '';
-                if (!identifier || seen.has(identifier)) {
-                    warnings.push(`${key}: prompt ${index + 1} has ${identifier ? 'a repeated' : 'no'} identifier; kept under its place`);
-                    identifier = `#${index}`;
-                }
-                seen.add(identifier);
-                return draft(TYPE.chatPrompt, `${key}:${identifier}`, prompt);
-            });
+            lists[PROMPTS] = file.prompts.map((prompt, index) => keyedPart(TYPE.chatPrompt, key, prompt, { idField: 'identifier', index, seen, warnings, what: 'prompt' }));
         }
         if (Array.isArray(file.prompt_order)) {
             lists[ORDERS] = file.prompt_order.map(order => draft(
@@ -121,8 +108,7 @@ export function presetFromUpstream(api, name, file) {
             ));
         }
     } else if (Array.isArray(file.logit_bias)) {
-        const seen = new Set();
-        lists[BIAS] = file.logit_bias.map((entry, index) => biasEntry(entry, key, index, seen, warnings));
+        lists[BIAS] = biasParts(file.logit_bias, key, warnings);
     }
     const connectionValues = only(file, connectionKeys);
     return {
@@ -149,7 +135,7 @@ export function presetToUpstream(preset, connection = null) {
     });
     if (isChat) {
         const prompts = preset.lists?.[PROMPTS];
-        if (prompts) file.prompts = prompts.map(part => /** @type {EntityDraft} */ (part).values);
+        if (prompts) file.prompts = prompts.map(part => partRecord(/** @type {EntityDraft} */ (part), preset.key, 'identifier'));
         const orders = preset.lists?.[ORDERS];
         if (orders) {
             file.prompt_order = orders.map((part) => {
@@ -162,7 +148,7 @@ export function presetToUpstream(preset, connection = null) {
             });
         }
     } else if (preset.lists?.[BIAS]) {
-        file.logit_bias = biasEntries(/** @type {EntityDraft[]} */ (preset.lists[BIAS]));
+        file.logit_bias = biasEntries(/** @type {EntityDraft[]} */ (preset.lists[BIAS]), preset.key);
     }
     return file;
 }
@@ -177,8 +163,7 @@ export function presetToUpstream(preset, connection = null) {
 export function biasListFromUpstream(name, entries) {
     /** @type {string[]} */
     const warnings = [];
-    const seen = new Set();
-    const parts = (Array.isArray(entries) ? entries : []).map((entry, index) => biasEntry(entry, name, index, seen, warnings));
+    const parts = biasParts(Array.isArray(entries) ? entries : [], name, warnings);
     return { list: draft(TYPE.biasList, name, {}, parts.length ? { 0: parts } : undefined), warnings };
 }
 
@@ -187,5 +172,5 @@ export function biasListFromUpstream(name, entries) {
  * @returns {Record<string, unknown>[]}
  */
 export function biasListToUpstream(list) {
-    return biasEntries(/** @type {EntityDraft[]} */ (list.lists?.[0] ?? []));
+    return biasEntries(/** @type {EntityDraft[]} */ (list.lists?.[0] ?? []), list.key);
 }
