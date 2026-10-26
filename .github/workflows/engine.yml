@@ -5,10 +5,10 @@
 name: Engine release
 
 on:
-  push:
-    paths:
-      - 'engine/**'
-      - '.github/workflows/engine.yml'
+  # A published release (and a run by hand): the build for its commit, so people running that release download it.
+  # Between releases, a checkout builds the engine itself with cargo (engine/fetch.js).
+  release:
+    types: [published]
   workflow_dispatch:
 
 # One run at a time, so a second run for the same hash sees the first one's release.
@@ -21,6 +21,10 @@ permissions:
 
 jobs:
   plan:
+    # Not for the build releases themselves (this one's engine-*, the page's ui-*).
+    if: >-
+      github.event_name != 'release' ||
+      !(startsWith(github.event.release.tag_name, 'ui-') || startsWith(github.event.release.tag_name, 'engine-'))
     runs-on: ubuntu-24.04
     outputs:
       key: ${{ steps.plan.outputs.key }}
