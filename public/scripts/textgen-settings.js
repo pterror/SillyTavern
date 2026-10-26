@@ -27,27 +27,9 @@ import { TOKENIZER_SUPPORTED_KEY, getEntryTokenIds, registerEntryTextSource, sho
 import { AbortReason } from './util/AbortReason.js';
 import { getSortableDelay, onlyUnique, arraysEqual, isObject } from './utils.js';
 import { setting_names } from './textgen-setting-names.js';
-import { textgen_connection_defaults } from './textgen-connection-defaults.js';
+import { textgen_connection_defaults, textgen_types } from './textgen-connection-defaults.js';
 import { showTokenizerWarnings } from './tokenizer-notices.js';
 import { reportStoredHeader } from './stored-report.js';
-
-export const textgen_types = {
-    OOBA: 'ooba',
-    MANCER: 'mancer',
-    VLLM: 'vllm',
-    APHRODITE: 'aphrodite',
-    TABBY: 'tabby',
-    KOBOLDCPP: 'koboldcpp',
-    TOGETHERAI: 'togetherai',
-    LLAMACPP: 'llamacpp',
-    OLLAMA: 'ollama',
-    INFERMATICAI: 'infermaticai',
-    DREAMGEN: 'dreamgen',
-    OPENROUTER: 'openrouter',
-    FEATHERLESS: 'featherless',
-    HUGGINGFACE: 'huggingface',
-    GENERIC: 'generic',
-};
 
 const {
     GENERIC,
@@ -231,7 +213,7 @@ export let textgenerationwebui_banned_in_macros = [];
 export let textgenerationwebui_presets = [];
 export let textgenerationwebui_preset_names = [];
 
-export { setting_names };
+export { setting_names, textgen_types };
 
 const DYNATEMP_BLOCK = document.getElementById('dynatemp_block_ooba');
 
