@@ -43,8 +43,16 @@ pub const VIEW_LIST: u64 = 7;
 pub const VIEW: u64 = 8;
 pub const CONDITION: u64 = 9;
 pub const RANGE: u64 = 10;
-/// The settings model's types run from 11 to this (src/library-codes.js's `TYPE`); no deriver here reads them.
+/// The settings model's types run from FIRST_SETTINGS_TYPE to LAST_TYPE (src/library-codes.js's `TYPE`); no
+/// deriver here reads their values.
+pub const FIRST_SETTINGS_TYPE: u64 = 11;
 pub const LAST_TYPE: u64 = 34;
+
+/// Whether an entity of `kind` is deleted with its history kept (`histEntityDelete`) and restored from it: a
+/// world-info entry, and every settings model type (each editable thing keeps its history, deletes included).
+pub fn history_kept(kind: u64) -> bool {
+    kind == super::books::ENTRY || (FIRST_SETTINGS_TYPE..=LAST_TYPE).contains(&kind)
+}
 
 /// Field codes the derivers read: an entity's name, a character's lorebook, a tag's folder type.
 pub const NAME: u64 = 1;
@@ -385,6 +393,49 @@ pub fn entity_by_key(view: &View, kind: u64, k: &[u8]) -> Result<Option<u64>, St
     view.get(&entity_key_key(kind, k))?
         .map(|b| parse_uvarint(&b))
         .transpose()
+}
+
+/// Entities of type `kind` in key order: those keyed after `after` (from the first when None), at most `limit`; and
+/// whether more follow. A deleted entity's key is gone with it, so none is listed.
+pub fn entities_of_type(
+    view: &View,
+    kind: u64,
+    after: Option<&[u8]>,
+    limit: usize,
+) -> Result<(Vec<(Vec<u8>, u64)>, bool), StoreError> {
+    let prefix = key::id(key::ENTITY_KEY, kind);
+    let end = key::prefix_end(&prefix);
+    // The least key above `after`'s: its encoding followed by a zero byte.
+    let mut start = match after {
+        Some(k) => {
+            let mut s = entity_key_key(kind, k);
+            s.push(0);
+            s
+        }
+        None => prefix.clone(),
+    };
+    let mut out = Vec::new();
+    loop {
+        let batch = view.scan(&start, &end, limit.saturating_add(1).max(16))?;
+        let done = batch.len() < limit.saturating_add(1).max(16);
+        for (k, b) in &batch {
+            let mut at = prefix.len();
+            let decoded =
+                get_bytes(k, &mut at).ok_or_else(|| entry_err("an entity key doesn't decode"))?;
+            let e = parse_uvarint(b)?;
+            if out.len() == limit {
+                return Ok((out, true));
+            }
+            out.push((decoded, e));
+        }
+        match batch.last() {
+            Some((k, _)) if !done => {
+                start = k.clone();
+                start.push(0);
+            }
+            _ => return Ok((out, false)),
+        }
+    }
 }
 
 /// The tags an entity carries as stored (merged tags not resolved), in id order.

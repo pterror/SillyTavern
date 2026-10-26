@@ -9,6 +9,7 @@ import { tagDerivedColumns } from './tag-order.js';
 import { LibraryTags } from './library-engine-tags.js';
 import { textEdit, wtf8Length } from './text-edit.js';
 import { itemField, pushAll, storedValues, valueRecords } from './entity-values.js';
+import { SPACE, actorIds } from './actor-ids.js';
 import { LINKS, linkListRecords, storedLinks } from './character-links.js';
 import { FIELD, NAME_HISTORY, TAG_KEY_PREFIX, TYPE, renameItem, renamesOf } from './library-codes.js';
 import { bookKey } from './world-info-keys.js';
@@ -513,6 +514,34 @@ export class LibraryEngine {
             if (this.writing.get(id) === settled) this.writing.delete(id);
         });
         return run;
+    }
+
+    /**
+     * Stamps for the changes of one write by `actor` (null: by no one known): each its own change id, the write's
+     * time, and the actor's user and session (their keys made in `records` when new).
+     * @param {import('./world-info-engine.js').Actor | null | undefined} actor
+     * @param {object[]} records
+     * @returns {Promise<() => import('./entity-values.js').Stamp>}
+     */
+    async stamper(actor, records) {
+        const next = await this.nextIds();
+        /** @type {{ user: bigint | null, session: bigint | null }} */
+        let ids = { user: null, session: null };
+        if (actor) {
+            let session = actor.session && actor.session !== 'none' ? actor.session : null;
+            if (session !== null) {
+                const [state] = await this.store.chatRead('keyStates', { space: SPACE.session, keys: [session] });
+                if (state === 'gone') session = null;
+            }
+            ids = await actorIds(this.store, next, { user: actor.user, session }, records);
+        }
+        const time = Date.now();
+        return () => ({
+            id: next.change++,
+            time,
+            ...(ids.user === null ? {} : { user: ids.user }),
+            ...(ids.session === null ? {} : { session: ids.session }),
+        });
     }
 
     /**

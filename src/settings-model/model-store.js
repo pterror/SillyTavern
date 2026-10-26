@@ -1,0 +1,245 @@
+import { POSITION_GAP, historyWrites, itemField, pushAll, valueRecords } from '../entity-values.js';
+import { PART_LISTS, REF_LISTS, REF_VALUES, refKey } from './refs.js';
+
+/**
+ * The settings model's entities in the engine (the settings model, step 9): an EntityDraft written as an entity
+ * with its history (every change a stamped change, §1.8), and read back as one.
+ *
+ * - A value that is text is a text value, any other JSON (`"text"` and `text` stay apart).
+ * - A list of texts is text items; a list of parts (refs.js PART_LISTS) holds each part's entity as its item. An
+ *   empty list, which has no items to be, is the value `list:<n>` (`[]`), so it reads back as one.
+ * - A ref (refs.js REF_VALUES, REF_LISTS) is stored as the named entity's id; a name naming nothing gets a
+ *   placeholder entity keyed by it (an unresolved ref, as a book link's), so it resolves once that entity exists.
+ */
+
+/** The value stating an empty list: `<prefix><list number>`. */
+const EMPTY_LIST = 'list:';
+
+/**
+ * @typedef {import('./entity-draft.js').EntityDraft} EntityDraft
+ * @typedef {import('../entity-values.js').StoredEntity} StoredEntity
+ * @typedef {import('../library-engine.js').LibraryEngine} LibraryEngine
+ */
+
+/**
+ * The drafts and every part under them, each with the id it has or gets.
+ * @param {EntityDraft[]} drafts
+ */
+function flatten(drafts) {
+    /** @type {EntityDraft[]} */
+    const all = [];
+    const visit = (/** @type {EntityDraft} */ d) => {
+        all.push(d);
+        for (const [list, items] of Object.entries(d.lists ?? {})) {
+            if (PART_LISTS[d.type]?.[list] === undefined) continue;
+            for (const part of items) visit(/** @type {EntityDraft} */ (part));
+        }
+    };
+    drafts.forEach(visit);
+    return all;
+}
+
+/**
+ * A stored entity less its part lists' items (entities, with no item texts), as valueRecords reads it.
+ * @param {StoredEntity} entity
+ */
+function withoutPartLists(entity) {
+    const parts = PART_LISTS[entity.type] ?? {};
+    return { ...entity, items: entity.items.filter(i => parts[i.list] === undefined) };
+}
+
+/**
+ * Writes drafts (new entities, or the stored ones they replace) with their parts, as one commit.
+ * @param {LibraryEngine} lib
+ * @param {EntityDraft[]} drafts
+ * @param {{ actor?: import('../world-info-engine.js').Actor | null }} [options]
+ * @returns {Promise<Map<string, bigint>>} Each draft's and part's id, by `<type>:<key>`.
+ */
+export async function writeDrafts(lib, drafts, { actor = null } = {}) {
+    const all = flatten(drafts);
+    const idKey = (/** @type {number} */ type, /** @type {string} */ key) => `${type}:${key}`;
+    /** @type {object[]} */
+    const records = [];
+    /** @type {Map<string, bigint>} */
+    const ids = new Map();
+    /** @type {Map<string, StoredEntity>} */
+    const stored = new Map();
+
+    // Ids: each draft's own, or a new one.
+    const found = await lib.store.libraryIds(all.map(d => [d.type, d.key]));
+    const existing = await lib.entities(found);
+    all.forEach((d, i) => {
+        const id = found[i] ?? lib.nextId++;
+        ids.set(idKey(d.type, d.key), id);
+        if (existing[i]) stored.set(idKey(d.type, d.key), existing[i]);
+        else records.push({ kind: 'entityCreate', entity: id, type: d.type, key: d.key, added: Date.now() });
+    });
+
+    // Refs: the entities they name, a placeholder for a name naming nothing.
+    /** @type {[number, string][]} */
+    const targets = [];
+    const noteRef = (/** @type {number} */ type, /** @type {unknown} */ name) => {
+        if (typeof name === 'string' && name !== '' && !ids.has(idKey(type, refKey(type, name)))) targets.push([type, refKey(type, name)]);
+    };
+    for (const d of all) {
+        for (const [field, type] of Object.entries(REF_VALUES[d.type] ?? {})) noteRef(type, d.values[field]);
+        for (const [list, type] of Object.entries(REF_LISTS[d.type] ?? {})) (d.lists?.[list] ?? []).forEach(item => noteRef(type, item));
+    }
+    if (targets.length) {
+        const targetIds = await lib.store.libraryIds(targets);
+        targets.forEach(([type, key], i) => {
+            if (ids.has(idKey(type, key))) return;
+            const id = targetIds[i] ?? lib.nextId++;
+            if (targetIds[i] === null) records.push({ kind: 'entityCreate', entity: id, type, key, added: Date.now() });
+            ids.set(idKey(type, key), id);
+        });
+    }
+    const refText = (/** @type {number} */ type, /** @type {unknown} */ name) => (
+        typeof name === 'string' && name !== '' ? String(ids.get(idKey(type, refKey(type, name)))) : name
+    );
+
+    const stamp = await lib.stamper(actor, records);
+    const writes = historyWrites(stamp);
+    for (const d of all) {
+        const id = /** @type {bigint} */ (ids.get(idKey(d.type, d.key)));
+        const was = stored.get(idKey(d.type, d.key)) ?? null;
+        /** @type {Map<number | string, { text?: string, json?: string }>} */
+        const values = new Map();
+        for (const [field, raw] of Object.entries(d.values)) {
+            const refType = REF_VALUES[d.type]?.[field];
+            const value = refType !== undefined ? refText(refType, raw) : raw;
+            if (value === undefined) continue;
+            values.set(field, typeof value === 'string' ? { text: value } : { json: JSON.stringify(value) });
+        }
+        /** @type {Map<number, string[]>} */
+        const lists = new Map();
+        for (const [list, items] of Object.entries(d.lists ?? {})) {
+            if (items.length === 0) values.set(`${EMPTY_LIST}${list}`, { json: '[]' });
+            if (PART_LISTS[d.type]?.[list] !== undefined) continue;
+            const refType = REF_LISTS[d.type]?.[list];
+            lists.set(Number(list), items.map(item => String(refType !== undefined ? refText(refType, item) : item)));
+        }
+        pushAll(records, valueRecords(id, was ? /** @type {StoredEntity} */ (withoutPartLists(was)) : null, { values, lists }, writes));
+
+        // Part lists: the parts in order; a part no longer listed goes.
+        for (const [list, partType] of Object.entries(PART_LISTS[d.type] ?? {})) {
+            const listNumber = Number(list);
+            const parts = /** @type {EntityDraft[]} */ (d.lists?.[list] ?? []);
+            const partIds = parts.map(p => /** @type {bigint} */ (ids.get(idKey(partType, p.key))));
+            const before = (was?.items ?? []).filter(i => i.list === listNumber);
+            const keep = new Set(partIds.map(String));
+            for (const item of before) {
+                if (keep.has(String(item.item))) continue;
+                records.push({ kind: 'histPlace', entity: id, list: listNumber, item: item.item, ...stamp() });
+                records.push({ kind: 'histEntityDelete', entity: BigInt(item.item), ...stamp() });
+            }
+            // In order already: nothing to place. Otherwise every part goes above every position held, so no place
+            // lands on one still taken.
+            const order = [...before].sort((a, b) => a.position - b.position).map(i => String(i.item));
+            if (order.length === partIds.length && order.every((item, i) => item === String(partIds[i]))) continue;
+            const top = before.reduce((m, i) => Math.max(m, i.position), 0);
+            partIds.forEach((partId, i) => records.push(writes.place(id, listNumber, /** @type {any} */ (partId), top + POSITION_GAP * (i + 1))));
+        }
+    }
+    await lib.store.commit(records);
+    return ids;
+}
+
+/**
+ * Reads an entity back as its draft, with its parts; refs by key.
+ * @param {LibraryEngine} lib
+ * @param {number} type
+ * @param {string} key
+ * @returns {Promise<EntityDraft | null>}
+ */
+export async function readDraft(lib, type, key) {
+    const [id] = await lib.ids(type, [key]);
+    if (id === null) return null;
+    const [entity] = await lib.entities([id]);
+    return entity ? draftOf(lib, entity) : null;
+}
+
+/**
+ * @param {LibraryEngine} lib
+ * @param {StoredEntity} entity
+ * @returns {Promise<EntityDraft>}
+ */
+async function draftOf(lib, entity) {
+    const parts = PART_LISTS[entity.type] ?? {};
+    const refValues = REF_VALUES[entity.type] ?? {};
+    const refLists = REF_LISTS[entity.type] ?? {};
+    /** @type {Map<number, string>} */
+    const itemTexts = new Map();
+    /** @type {Record<string, unknown>} */
+    const values = {};
+    /** @type {bigint[]} */
+    const refIds = [];
+    /** @type {number[]} */
+    const emptyLists = [];
+    for (const v of entity.values) {
+        if (typeof v.field === 'number' && v.field >= 1024) {
+            itemTexts.set(v.field, /** @type {string} */ (v.text));
+            continue;
+        }
+        const value = v.text !== undefined ? v.text : JSON.parse(/** @type {string} */ (v.json));
+        if (typeof v.field === 'string' && v.field.startsWith(EMPTY_LIST)) {
+            emptyLists.push(Number(v.field.slice(EMPTY_LIST.length)));
+            continue;
+        }
+        values[String(v.field)] = value;
+        if (refValues[v.field] !== undefined && typeof value === 'string' && value !== '') refIds.push(BigInt(value));
+    }
+    /** @type {Record<number, { item: number, position: number }[]>} */
+    const byList = {};
+    for (const item of entity.items) (byList[item.list] ??= []).push(item);
+    for (const list of Object.keys(byList)) byList[list].sort((a, b) => a.position - b.position);
+    for (const [list, items] of Object.entries(byList)) {
+        if (refLists[list] === undefined) continue;
+        for (const i of items) refIds.push(BigInt(itemTexts.get(itemField(Number(list), i.item)) ?? '0'));
+    }
+    const keyOf = await keysOf(lib, refIds);
+    for (const field of Object.keys(refValues)) {
+        if (typeof values[field] === 'string' && values[field] !== '') values[field] = keyOf.get(String(values[field]));
+    }
+    /** @type {Record<number, (string | EntityDraft)[]>} */
+    const lists = {};
+    for (const [list, items] of Object.entries(byList)) {
+        if (parts[list] !== undefined) {
+            const partEntities = await lib.entities(items.map(i => BigInt(i.item)));
+            lists[list] = await Promise.all(partEntities.filter(Boolean).map(e => draftOf(lib, /** @type {StoredEntity} */ (e))));
+            continue;
+        }
+        const texts = items.map(i => itemTexts.get(itemField(Number(list), i.item)) ?? '');
+        lists[list] = refLists[list] !== undefined ? texts.map(t => /** @type {string} */ (keyOf.get(t))) : texts;
+    }
+    for (const list of emptyLists) lists[list] ??= [];
+    return { type: entity.type, key: entity.key, values, ...(Object.keys(lists).length ? { lists } : {}) };
+}
+
+/**
+ * The key each id (as decimal text) is the entity of.
+ * @param {LibraryEngine} lib
+ * @param {bigint[]} ids
+ * @returns {Promise<Map<string, string>>}
+ */
+async function keysOf(lib, ids) {
+    if (ids.length === 0) return new Map();
+    const unique = [...new Map(ids.map(id => [String(id), id])).values()];
+    const keys = await lib.store.libraryKeys(unique);
+    return new Map(unique.map((id, i) => [String(id), keys[i]?.key]));
+}
+
+/**
+ * A page of a catalog: the entities of a type in key order after `after`, as drafts with their parts (the store
+ * side of catalog-page.js's pages).
+ * @param {LibraryEngine} lib
+ * @param {number} type
+ * @param {{ after?: string | null, limit: number }} page
+ * @returns {Promise<{ drafts: EntityDraft[], more: boolean }>}
+ */
+export async function readCatalog(lib, type, { after = null, limit }) {
+    const { entities, more } = await lib.store.libraryOfType(type, after, limit);
+    const stored = await lib.entities(entities.map(e => e.id));
+    const drafts = await Promise.all(stored.filter(Boolean).map(e => draftOf(lib, /** @type {StoredEntity} */ (e))));
+    return { drafts, more };
+}

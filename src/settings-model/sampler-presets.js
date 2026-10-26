@@ -12,8 +12,8 @@ import { draft, keyedPart, only, partRecord, without } from './entity-draft.js';
  *   number stays a number.
  * - Its logit bias entries (text completion, NovelAI) are parts (`TYPE.biasEntry`, key `<preset key>:<entry id>`).
  *   A part's id is its key's (entity-draft.js keyedPart), not kept again among its values.
- * - A chat completion preset's prompts are parts (`TYPE.chatPrompt`, key `<preset key>:<identifier>`) in list 0, and
- *   its prompt orders parts (`TYPE.chatPromptOrder`, key `<preset key>:<character id>`) in list 1, each order's list 0
+ * - A chat completion preset's prompts are parts (`TYPE.chatPrompt`, key `<preset key>:<identifier>`) in list 5, and
+ *   its prompt orders parts (`TYPE.chatPromptOrder`, key `<preset key>:<character id>`) in list 6, each order's list 0
  *   its identifiers in order and list 1 those turned off.
  * - The keys of a chat completion file that are its connection's (`CONNECTION_PRESET_KEYS`) aren't the preset's: the
  *   preset refers to a connection holding them, and they go back into the file on the way out.
@@ -31,11 +31,12 @@ const SCALAR_LISTS = Object.freeze({
     kobold: ['sampler_order'],
 });
 
-/** Lists of a chat completion preset. */
-const PROMPTS = 0;
-const ORDERS = 1;
-/** The list of a text completion or NovelAI preset that holds its logit bias entries, after its scalar lists. */
-const BIAS = 8;
+/**
+ * The lists of a preset holding parts, numbered after every family's scalar lists (0-3) so a list number means one
+ * thing for every sampler preset (the store reads a list's items as parts by its number); an entity has lists 0-7.
+ */
+export const PRESET_PART_LISTS = Object.freeze({ bias: 4, prompts: 5, orders: 6 });
+const { bias: BIAS, prompts: PROMPTS, orders: ORDERS } = PRESET_PART_LISTS;
 
 /** The value of a preset that refers to its connection (a ref). */
 export const CONNECTION_REF = 'connection';

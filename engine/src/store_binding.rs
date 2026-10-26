@@ -614,6 +614,25 @@ impl ToNapiValue for LibraryKeys {
     }
 }
 
+pub struct OfType(Vec<(Vec<u8>, u64)>, bool);
+
+impl ToNapiValue for OfType {
+    unsafe fn to_napi_value(raw_env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
+        let env = Env::from_raw(raw_env);
+        let mut entities = Vec::with_capacity(val.0.len());
+        for (k, e) in val.0 {
+            let mut o = Object::new(&env)?;
+            o.set("key", text_to_js(k)?)?;
+            o.set("id", e)?;
+            entities.push(o);
+        }
+        let mut out = Object::new(&env)?;
+        out.set("entities", entities)?;
+        out.set("more", val.1)?;
+        unsafe { Object::to_napi_value(raw_env, out) }
+    }
+}
+
 pub struct TagAssignments(Vec<(u64, Vec<u64>)>, Option<u64>);
 
 impl ToNapiValue for TagAssignments {
@@ -2132,6 +2151,26 @@ impl Store {
             .map(|v| string("name", v))
             .collect::<Result<Vec<_>>>()?;
         derived(env, &self.store, move |s| s.tag_gone_by_names(&names))
+    }
+
+    /// A page of the entities of a type in key order: `{ entities: { key, id }[], more }`, those keyed after `after`
+    /// (from the first when left out), at most `limit`, deleted ones left out; `more` when others follow.
+    #[napi(
+        ts_args_type = "type: number, after: string | null | undefined, limit: number",
+        ts_return_type = "Promise<{ entities: { key: string, id: bigint }[], more: boolean }>"
+    )]
+    pub fn library_of_type<'env>(
+        &self,
+        env: &'env Env,
+        kind: u32,
+        after: Option<String>,
+        limit: u32,
+    ) -> Result<Object<'env>> {
+        let after = after.map(String::into_bytes);
+        derived(env, &self.store, move |s| {
+            s.library_of_type(u64::from(kind), after, limit as usize)
+                .map(|(e, more)| OfType(e, more))
+        })
     }
 
     /// Each entity's `{ type, key }`, or null.
