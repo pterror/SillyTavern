@@ -632,6 +632,10 @@ export async function resolveTextCompletionGenerationInput(directories, {
         // comment for the accepted values and the 'koboldhorde' exclusion.
         mainApi,
         collapseNewlines: Boolean(powerUser.collapse_newlines ?? false),
+        // What starts the chat after the story string and examples (upstream's addChatsSeparator()), and NovelAI's
+        // preamble before the chat (addChatsPreamble()).
+        chatStart: context.chat_start ?? '',
+        naiPreamble: mainApi === 'novel' ? novelSettings.preamble ?? '' : '',
 
         // --- Stopping strings / token bans / logit bias ---
         namesAsStopStrings: Boolean(context.names_as_stop_strings ?? false),
