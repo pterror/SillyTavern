@@ -1147,8 +1147,8 @@ async function run() {
     {
         const nova = await writeCharacter('Nova.png', {
             name: 'Nova',
-            description: 'Nova is a stoic starship engineer.',
-            data: { name: 'Nova', description: 'Nova is a stoic starship engineer.', first_mes: 'Systems nominal.' },
+            description: 'Nova is a stoic starship engineer. Party: {{group}}; awake: {{groupNotMuted}}.',
+            data: { name: 'Nova', description: 'Nova is a stoic starship engineer. Party: {{group}}; awake: {{groupNotMuted}}.', first_mes: 'Systems nominal.' },
         });
         const zephyr = await writeCharacter('Zephyr.png', {
             name: 'Zephyr',
@@ -1167,7 +1167,8 @@ async function run() {
             allow_self_responses: false,
             activation_strategy: 0,
             generation_mode: 0,
-            disabled_members: [],
+            // Zephyr muted: {{groupNotMuted}} leaves Zephyr out, {{group}} doesn't.
+            disabled_members: [zephyr],
             fav: false,
             chat_id: groupChatId,
             chats: [groupChatId],
@@ -1209,6 +1210,7 @@ async function run() {
 
         assert.equal(builtGroup.name2, 'Nova', 'name2 resolves to the SPECIFIC RESPONDING MEMBER (characterAvatar), not the group\'s own name, even though groupId is also set');
         assert.ok(builtGroup.params.prompt.includes('Nova is a stoic starship engineer.'), 'the assembled prompt reflects the responding member\'s (Nova\'s) own character card');
+        assert.ok(builtGroup.params.prompt.includes('Party: Nova, Zephyr; awake: Nova.'), 'the group macros give the members\' names, the muted one only in {{group}}');
         assert.ok(!builtGroup.params.prompt.includes('Zephyr is a chaotic weather spirit.'), 'the assembled prompt does NOT pull in a DIFFERENT member\'s (Zephyr\'s) own character-card description - only Nova\'s, the one actually responding this turn');
         assert.ok(builtGroup.params.prompt.includes('Winds are shifting!'), 'the real group chat HISTORY (including the other member\'s prior turn) is still loaded from the group\'s own owner id');
 
@@ -1219,7 +1221,7 @@ async function run() {
         // already covered by its own `charString`/`userString` stop-string logic above), so Nova
         // (name2, the responding member) is correctly ABSENT here while Zephyr (a non-responding
         // member) is correctly PRESENT - proving groupMemberNames really carries the whole roster,
-        // not just the responding member, exactly as resolveName2AndGroupMemberNames()'s own doc
+        // not just the responding member, exactly as resolveSpeakers()'s own doc
         // comment describes.
         const stopStrings = builtGroup.params.stop ?? builtGroup.params.stopping_strings ?? [];
         assert.ok(Array.isArray(stopStrings) && stopStrings.length > 0, 'stop strings were assembled at all');

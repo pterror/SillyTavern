@@ -603,8 +603,7 @@ async function run() {
 
         // --- groupMemberNames covers the WHOLE roster (a plain string[], per this resolver's own real
         // consumer shape - see doc comment), including the responding member itself (no
-        // self-exclusion - resolveCharacterName2() mirrors text-completion's own
-        // resolveName2AndGroupMemberNames(), which applies none either). ---
+        // self-exclusion - resolveSpeakers() applies none). ---
         assert.deepEqual(groupInput.groupMemberNames.slice().sort(), ['Nova', 'Zephyr'], 'groupMemberNames covers the whole roster, as a plain string[]');
 
         // --- character fields reflect the COMBINED group cards (computeGroupCards()'s real

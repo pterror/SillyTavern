@@ -49,7 +49,7 @@ const MAX_USER_MESSAGE_EXTRA_ENTRIES = 50;
  * Only the following shape survives; everything else (unknown top-level keys, wrong-typed fields,
  * malformed array entries) is silently dropped rather than rejected outright, matching this
  * codebase's general "a bad/foreign field doesn't fail the whole request" stance (see e.g.
- * `resolveName2AndGroupMemberNames()`'s own "a missing/corrupt file is skipped, not fatal" doc
+ * src/macro-scope.js's `resolveSpeakers()`'s own "a missing/corrupt file is skipped, not fatal" doc
  * comment elsewhere in this codebase):
  * - `files`: array of `{url: string, size?: number, name?: string, created?: number}` - entries
  *   missing a non-empty string `url`, or with a wrong-typed optional field, are dropped whole rather

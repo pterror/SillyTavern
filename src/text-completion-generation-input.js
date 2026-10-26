@@ -1,8 +1,8 @@
 import { readSettingsAtPaths } from './settings-store.js';
 import { resolveTextGenBackend } from './textgen-backend-resolve.js';
 import { loadChatHistory } from './chat-request.js';
-import { readCardContent, readExtraBooks } from './endpoints/characters.js';
-import { getGroupsByIds } from './endpoints/groups.js';
+import { readExtraBooks } from './endpoints/characters.js';
+import { resolveSpeakers } from './macro-scope.js';
 import { extension_prompt_types, extension_prompt_roles } from './extension-prompt-table.js';
 import { resolveWorldInfoCandidates, world_info_insertion_strategy } from './world-info/candidate-resolution.js';
 import { variablesBefore, generationMacroFacts } from './macro-facts.js';
@@ -146,7 +146,7 @@ import { variablesBefore, generationMacroFacts } from './macro-facts.js';
  *   scope per the orchestrator's own gap list) - left at the orchestrator's own defaults unless a
  *   caller supplies an override via `macroExtras`.
  * - `name2`/group member display names: resolved for real below via a real character-card / group
- *   read (see `resolveName2AndGroupMemberNames`), NOT guessed - documented in that function.
+ *   read (src/macro-scope.js's `resolveSpeakers()`).
  *
  * ============================================================================================
  * UPDATE (this session): `worldInfoCandidates` IS NOW RESOLVED FOR REAL by default, via
@@ -162,7 +162,7 @@ import { variablesBefore, generationMacroFacts } from './macro-facts.js';
  *   "real lorebook names" list here (the client filters `globalSelect` against `world_names` at load
  *   time) - a stale/deleted lorebook name simply resolves to zero entries via `loadWorldEntries()`'s
  *   own `readWorldInfoFile(...) ?? {}` guard, so omitting the filter is behaviorally inert, not a gap.
- * - `character` <- the same parsed character-card object `resolveName2AndGroupMemberNames()` already
+ * - `character` <- the same parsed character-card object `resolveSpeakers()` already
  *   loads for `name2` (only `.data.extensions.world`/`.data.character_book` are read from it, per
  *   `getCharacterLore()`'s own contract) - reused, not re-read from disk a second time.
  * - `characterExtraBooks` <- the character's lorebook links after the first, read from its entity
@@ -345,74 +345,6 @@ const DEFAULT_STORY_STRING_ROLE = extension_prompt_roles.SYSTEM;
  */
 
 /**
- * Minimal shape this resolver reads off a group JSON file (src/endpoints/groups.js's
- * `getGroupsByIds()` returns `Record<string, object>` - untyped, since groups.js has no dedicated
- * `Group` type to import - so this is this resolver's own local, minimal view of the fields it
- * actually reads; a genuine cross-file boundary gap, not a guess about groups.js's real shape,
- * which is verified against public/scripts/group-chats.js's own group object).
- * @typedef {object} GroupLike
- * @property {string} [name]
- * @property {string[]} [members]
- */
-
-/**
- * Reads a character card's display name (`.name`), or a group's display name when no specific
- * member avatar is given. Real reads via already-committed, exported helpers
- * (src/endpoints/characters.js's `readCardContent`, src/endpoints/groups.js's `getGroupsByIds`) -
- * NOT a guess, and NOT a new export added to any of the ~20 read-only reference modules.
- *
- * Group member display names (for `groupMemberNames`, used by src/stopping-strings.js) are
- * resolved the same way: each member avatar's card is read for its `.name`. A member whose card
- * can't be read is silently skipped (mirrors this module's general "don't fail the whole
- * resolution over one bad member" stance - a missing/corrupt character file elsewhere in the
- * codebase is already treated as non-fatal, e.g. character-card-fields.js's `loadCharacter`).
- * `character` (the parsed character-card JSON, or `null`) is also returned - reused by the caller
- * for real world-info candidate resolution (`resolveWorldInfoCandidates()`'s `character` param)
- * instead of reading the same card file from disk a second time.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {object} params
- * @param {string} [params.avatar]
- * @param {string} [params.groupId]
- * @returns {Promise<{ name2: string, groupMemberNames: {name: string}[], character: object|null }>}
- */
-async function resolveName2AndGroupMemberNames(directories, { avatar, groupId }) {
-    let name2 = '';
-    let groupMemberNames = [];
-    let character = null;
-
-    if (avatar != null) {
-        try {
-            const raw = await readCardContent(directories, avatar);
-            if (raw !== undefined) {
-                character = JSON.parse(raw);
-                name2 = character?.name || character?.data?.name || '';
-            }
-        } catch { /* leave name2 as '' - matches character-card-fields.js's own no-character fallback */ }
-    }
-
-    if (groupId != null) {
-        const group = /** @type {GroupLike | undefined} */ ((await getGroupsByIds(directories, [groupId]))[groupId]);
-        if (group) {
-            if (avatar == null && group.name != null && group.name !== '') {
-                name2 = group.name;
-            }
-            const members = Array.isArray(group.members) ? group.members : [];
-            for (const memberAvatar of members) {
-                try {
-                    const raw = await readCardContent(directories, memberAvatar);
-                    if (raw === undefined) continue;
-                    const card = JSON.parse(raw);
-                    const memberName = card?.name || card?.data?.name;
-                    if (memberName) groupMemberNames.push({ name: memberName });
-                } catch { /* skip unreadable member card */ }
-            }
-        }
-    }
-
-    return { name2, groupMemberNames, character };
-}
-
-/**
  * The chat history a generation is built from (`loadChatHistory()`): the messages from the tree's root down to the
  * position it goes on from, in upstream's message shape, and the state there as `chat_metadata`.
  * @param {import('./chat-request.js').ChatContext | undefined} chat
@@ -542,7 +474,7 @@ export async function resolveTextCompletionGenerationInput(directories, {
     // What it holds before any macro runs, to tell what the macros changed.
     const stateBefore = variablesBefore(chatMetadata, extensionSettings.variables?.global ?? {});
 
-    const { name2, groupMemberNames, character } = await resolveName2AndGroupMemberNames(directories, { avatar, groupId });
+    const { name2, character, groupMembers: groupMemberNames, groupDisabledMembers } = await resolveSpeakers(directories, { avatar, groupId });
     const name1 = (username != null && username !== '') ? username : 'User';
 
     // Appends the actual raw user action for this turn onto the loaded history, in the exact shape
@@ -685,7 +617,7 @@ export async function resolveTextCompletionGenerationInput(directories, {
         singleLine: Boolean(powerUser.single_line ?? false),
         customStoppingStringsRaw: powerUser.custom_stopping_strings ?? '',
         customStoppingStringsMacro: Boolean(powerUser.custom_stopping_strings_macro ?? false),
-        groupMemberNames,
+        groupMemberNames, groupDisabledMembers,
         bannedTokensRaw: textgenSettings.banned_tokens ?? '',
         globalBannedTokensRaw: textgenSettings.global_banned_tokens ?? '',
         sendBannedTokens: Boolean(textgenSettings.send_banned_tokens ?? true),
