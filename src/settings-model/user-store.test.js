@@ -10,6 +10,7 @@ import { LibraryEngine } from '../library-engine.js';
 import { STATEMENT_PREFIX, TYPE } from '../library-codes.js';
 import { assemble, importUpstream } from './settings-compat.js';
 import { readUserModel, writeUserModel } from './user-store.js';
+import { bundleDraftsFromFiles, bundleFileFromStore, statedBundleFiles } from './bundle-import.js';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'user-store-test-'));
 const CONTENT = path.join(import.meta.dirname, '../../default/content');
@@ -115,3 +116,35 @@ function diff(a, b, at = '') {
     if (!a || !b || typeof a !== 'object' || typeof b !== 'object' || Array.isArray(a) !== Array.isArray(b)) return [`${at}: ${JSON.stringify(a)?.slice(0, 120)} → ${JSON.stringify(b)?.slice(0, 120)}`];
     return [...new Set([...Object.keys(a), ...Object.keys(b)])].flatMap(k => diff(a[k], b[k], `${at}.${k}`));
 }
+
+test('the bundles\' files go into the store with the model, and assemble from there the same', async () => {
+    const lib = await LibraryEngine.open(loadEngine().binding, path.join(root, 'bundles'));
+    opened.push(lib);
+    await lib.writeCard({}, 'Bob.png', card('Bob'));
+    const directories = /** @type {any} */ ({
+        openAI_Settings: path.join(CONTENT, 'presets/openai'), textGen_Settings: path.join(CONTENT, 'presets/textgen'),
+        novelAI_Settings: path.join(CONTENT, 'presets/novel'), koboldAI_Settings: path.join(CONTENT, 'presets/kobold'),
+        instruct: path.join(CONTENT, 'presets/instruct'), context: path.join(CONTENT, 'presets/context'),
+        sysprompt: path.join(CONTENT, 'presets/sysprompt'), reasoning: path.join(CONTENT, 'presets/reasoning'),
+        themes: path.join(CONTENT, 'themes'), quickreplies: path.join(CONTENT, 'presets/quick-replies'),
+    });
+    const newKey = keys();
+    const model = importUpstream(everything(), { bundles, newKey });
+    const imported = bundleDraftsFromFiles(directories, model.entities.filter(e => e.type === TYPE.connection), newKey);
+    model.entities.push(...imported.connections);
+    await writeUserModel(lib, 'default-user', model, { bundles: imported.bundles });
+    const back = /** @type {any} */ (await readUserModel(lib, 'default-user'));
+    const fromStore = await statedBundleFiles(lib, back);
+    const expected = assemble({ ...JSON.parse(JSON.stringify(model)), elsewhere: {} }, { bundles }).settings;
+    const actual = assemble(back, { bundles: fromStore }).settings;
+    assert.ok(isDeepStrictEqual(actual, expected), JSON.stringify(diff(expected, actual)).slice(0, 2000));
+    // Every shipped preset is there, and gives its file back (less a chat completion preset's connection keys of
+    // other sources, which are the user's connections', §2.4.9).
+    const textgen = await bundleFileFromStore(lib, 'preset.textgenerationwebui', 'Deterministic', []);
+    assert.ok(textgen);
+    assert.deepEqual(textgen, bundles('preset.textgenerationwebui', 'Deterministic'));
+    const azure = await bundleFileFromStore(lib, 'theme', 'Azure', []);
+    assert.ok(azure);
+    assert.deepEqual(azure, bundles('theme', 'Azure'));
+    assert.equal(await bundleFileFromStore(lib, 'theme', 'No such theme', []), undefined);
+});
