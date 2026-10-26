@@ -1071,11 +1071,6 @@ body.forceMobileView.waifuMode:where(.drawerBarMobileBottom) #sheld {
         object-fit: contain;
     }
 
-    .tag.excluded:after {
-        top: unset;
-        bottom: unset;
-    }
-
     body:not(.waifuMode) .zoomed_avatar {
         max-height: calc(60vh - 60px);
         max-height: calc(60dvh - 60px);
@@ -1120,11 +1115,6 @@ body.forceMobileView.waifuMode:where(.drawerBarMobileBottom) #sheld {
 
     .drawer33pWidth {
         flex-basis: max(calc(100% / 2 - 10px), 180px);
-    }
-
-    .tag.excluded:after {
-        top: unset;
-        bottom: unset;
     }
 
 
