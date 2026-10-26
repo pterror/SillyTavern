@@ -113,12 +113,23 @@ export function quietOf(body) {
 }
 
 /**
+ * The response length a generate request asks for in place of the setting's (a quiet or raw generation's own, sent
+ * as `response_length`), or undefined.
+ * @param {any} body The request body.
+ * @returns {number | undefined}
+ */
+export function responseLengthOf(body) {
+    const length = body?.response_length;
+    return Number.isInteger(length) && length > 0 ? length : undefined;
+}
+
+/**
  * What a raw-action generate request generates from: stores what it carries from the page (applyPageWrites()),
- * reads the user message it sends and its quiet prompt (quietOf()).
+ * reads the user message it sends, its quiet prompt (quietOf()) and its response length (responseLengthOf()).
  * @param {import('express').Response} response
  * @param {import('./chat-request.js').ChatContext} chat
  * @param {any} body The request body.
- * @returns {Promise<{ nodeId: string|null|undefined, userMessageText: string|undefined, userMessageExtra: object, userMessage: Record<string, any>|null, quiet: QuietPrompt, pageFacts: import('./macro-facts.js').PageMacroFacts, pageInjections: import('./extension-prompt-table.js').ExtensionPromptTable }|null>}
+ * @returns {Promise<{ nodeId: string|null|undefined, userMessageText: string|undefined, userMessageExtra: object, userMessage: Record<string, any>|null, quiet: QuietPrompt, responseLength: number|undefined, pageFacts: import('./macro-facts.js').PageMacroFacts, pageInjections: import('./extension-prompt-table.js').ExtensionPromptTable }|null>}
  * Null when the request has been answered with a failure.
  */
 export async function generateTurnOf(response, chat, body) {
@@ -131,6 +142,7 @@ export async function generateTurnOf(response, chat, body) {
         userMessageExtra: sent?.extra ?? {},
         userMessage: sent?.content ?? null,
         quiet: quietOf(body),
+        responseLength: responseLengthOf(body),
         pageFacts: readPageMacroFacts(body?.macro_facts),
         pageInjections: readPageInjections(body?.extension_prompts),
     };

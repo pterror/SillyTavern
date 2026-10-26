@@ -922,25 +922,24 @@ export const DEFAULT_SAVE_EDIT_TIMEOUT = debounce_timeout.relaxed;
 
 // The window's keys are already in pendingSettingsKeys.
 const _debouncedSaveImpl = debounce(() => {
-    const { full, count } = _settingsSaveWindow;
-    _settingsSaveWindow = { full: false, count: 0 };
-    return runSettingsSave({ full, count });
+    const { full } = _settingsSaveWindow;
+    _settingsSaveWindow = { full: false };
+    return runSettingsSave({ full });
 }, DEFAULT_SAVE_EDIT_TIMEOUT);
 
 /**
  * A full request anywhere in the window makes its run a full save, so it is never dropped.
- * The count is the last call's, as a plain debounce() of saveSettings(loopCounter) would pass it.
- * @param {{ full: boolean, count: any }} save The call's kind and count.
+ * @param {{ full: boolean }} save The call's kind.
  */
-function scheduleSettingsSave({ full, count }) {
-    _settingsSaveWindow = { full: _settingsSaveWindow.full || full, count };
+function scheduleSettingsSave({ full }) {
+    _settingsSaveWindow = { full: _settingsSaveWindow.full || full };
     _debouncedSaveImpl();
 }
 
 /**
  * Saves settings after the debounce window. A string first argument is a keyed partial save of the string arguments;
  * anything else (a number, or no argument) is a full save, which also includes any pending keys.
- * @param {number|string} [loopCounter] Retry count of a full save, or the first key of a keyed save.
+ * @param {number|string} [loopCounter] The first key of a keyed save (upstream's retry count, a number, is ignored).
  * @param {...string} keys Further settings keys to save.
  */
 export function saveSettingsDebounced(loopCounter, ...keys) {
@@ -1270,9 +1269,9 @@ function takeServerKeyHashes(keyHashes, tops) {
     Object.assign(serverKeyHashes, keyHashes);
     return true;
 }
-// Kind and count of the pending debounced save window (see scheduleSettingsSave()); reset when the window runs or is cancelled.
-/** @type {{ full: boolean, count: any }} */
-let _settingsSaveWindow = { full: false, count: 0 };
+// Kind of the pending debounced save window (see scheduleSettingsSave()); reset when the window runs or is cancelled.
+/** @type {{ full: boolean }} */
+let _settingsSaveWindow = { full: false };
 // Serializes saveSettings() so overlapping calls can't race on a stale serverKeyHashes snapshot.
 let _saveQueue = Promise.resolve();
 /** User preference for swipeable messages */
@@ -4353,22 +4352,22 @@ export async function generateRawData({ prompt = '', api = null, instructOverrid
             case 'kobold':
             case 'koboldhorde':
                 if (kai_settings.preset_settings === 'gui') {
-                    generateData = { prompt: prompt, gui_settings: true, max_length: amount_gen, max_context_length: max_context, api_server: kai_settings.api_server };
+                    generateData = { prompt: prompt, gui_settings: true, max_length: responseLengthFor(api), max_context_length: max_context, api_server: kai_settings.api_server };
                 } else {
                     const isHorde = api === 'koboldhorde';
                     const koboldSettings = koboldai_settings[koboldai_setting_names[kai_settings.preset_settings]];
-                    generateData = getKoboldGenerationData(prompt.toString(), koboldSettings, amount_gen, max_context, isHorde, 'quiet');
+                    generateData = getKoboldGenerationData(prompt.toString(), koboldSettings, responseLengthFor(api), max_context, isHorde, 'quiet');
                 }
                 TempResponseLength.restore(api);
                 break;
             case 'novel': {
                 const novelSettings = novelai_settings[novelai_setting_names[nai_settings.preset_settings_novel]];
-                generateData = getNovelGenerationData(prompt, novelSettings, amount_gen, false, false, null, 'quiet');
+                generateData = getNovelGenerationData(prompt, novelSettings, responseLengthFor(api), false, false, null, 'quiet');
                 TempResponseLength.restore(api);
                 break;
             }
             case 'textgenerationwebui':
-                generateData = await getTextGenGenerationData(prompt, amount_gen, false, false, null, 'quiet');
+                generateData = await getTextGenGenerationData(prompt, responseLengthFor(api), false, false, null, 'quiet');
                 TempResponseLength.restore(api);
                 break;
             case 'openai': {
@@ -4458,53 +4457,40 @@ export async function generateRaw({ prompt = '', api = null, instructOverride = 
     return message;
 }
 
+/**
+ * A response length a quiet or raw generation asks for in place of the setting's, for as long as it builds its
+ * request. The setting itself isn't changed (it's the server's): the request carries it (response_length), and the
+ * page's own request builders read it through responseLengthFor().
+ */
 class TempResponseLength {
-    static #originalResponseLength = -1;
-    static #lastApi = null;
+    /** @type {number | null} */
+    static #length = null;
 
     static isCustomized() {
-        return this.#originalResponseLength > -1;
+        return this.#length !== null;
     }
 
     /**
-     * Save the current response length for the specified API.
-     * @param {string} api API identifier
+     * Asks for this response length.
+     * @param {string} _api API identifier
      * @param {number} responseLength New response length
      */
-    static save(api, responseLength) {
-        if (api === 'openai') {
-            this.#originalResponseLength = oai_settings.openai_max_tokens;
-            oai_settings.openai_max_tokens = responseLength;
-        } else {
-            this.#originalResponseLength = amount_gen;
-            setAmountGen(responseLength);
-        }
-
-        this.#lastApi = api;
-        console.log('[TempResponseLength] Saved original response length:', TempResponseLength.#originalResponseLength);
+    static save(_api, responseLength) {
+        this.#length = responseLength;
     }
 
     /**
-     * Restore the original response length for the specified API.
-     * @param {string|null} api API identifier
+     * Back to the setting's.
+     * @param {string|null} [_api] API identifier
      * @returns {void}
      */
-    static restore(api) {
-        if (this.#originalResponseLength === -1) {
-            return;
-        }
-        if (!api && this.#lastApi) {
-            api = this.#lastApi;
-        }
-        if (api === 'openai') {
-            oai_settings.openai_max_tokens = this.#originalResponseLength;
-        } else {
-            setAmountGen(this.#originalResponseLength);
-        }
+    static restore(_api) {
+        this.#length = null;
+    }
 
-        console.log('[TempResponseLength] Restored original response length:', this.#originalResponseLength);
-        this.#originalResponseLength = -1;
-        this.#lastApi = null;
+    /** The response length asked for, or null. */
+    static get length() {
+        return this.#length;
     }
 
     /**
@@ -5010,13 +4996,28 @@ export function getMaxContextTokens() {
  * @returns {number} The maximum response token limit for the current API.
  */
 export function getMaxResponseTokens() {
-    if (main_api == 'kobold' || main_api == 'koboldhorde' || main_api == 'textgenerationwebui' || main_api == 'novel') {
+    return responseLengthFor(main_api);
+}
+
+/**
+ * The response length a request for an API asks for now: a quiet or raw generation's own, or the setting's.
+ * @param {string} api
+ * @returns {number}
+ */
+export function responseLengthFor(api) {
+    if (TempResponseLength.length !== null) return TempResponseLength.length;
+    if (api == 'kobold' || api == 'koboldhorde' || api == 'textgenerationwebui' || api == 'novel') {
         return amount_gen;
     }
-    if (main_api == 'openai') {
+    if (api == 'openai') {
         return oai_settings.openai_max_tokens;
     }
     return 0;
+}
+
+/** The response length a raw-action generate request carries: a quiet or raw generation's own, else none. */
+export function requestedResponseLength() {
+    return TempResponseLength.length ?? undefined;
 }
 
 /**
@@ -7763,7 +7764,7 @@ async function applySettings(data, initLoaderHandle = null, onStageChange = null
 /**
  * Saves settings now. A string first argument is a keyed partial save of the string arguments;
  * anything else (a number, or no argument) is a full save, which also includes any pending keys.
- * @param {number|string} [loopCounter] Retry count of a full save, or the first key of a keyed save.
+ * @param {number|string} [loopCounter] The first key of a keyed save (upstream's retry count, a number, is ignored).
  * @param {...string} keys Further settings keys to save.
  */
 export async function saveSettings(loopCounter, ...keys) {
@@ -7773,46 +7774,34 @@ export async function saveSettings(loopCounter, ...keys) {
     if (!save.full && !_settingsSaveWindow.full) {
         // debounce()'s returned function has no .cancel of its own; cancelDebounce() finds it via the WeakMap.
         cancelDebounce(_debouncedSaveImpl);
-        _settingsSaveWindow = { full: false, count: 0 };
+        _settingsSaveWindow = { full: false };
     }
     return runSettingsSave(save);
 }
 
 /**
- * Marks the string keys pending and returns the save's kind and count.
- * A non-string first argument is the count as passed, so the retry compares it exactly as saveSettings(loopCounter = 0) would.
+ * Marks the string keys pending and returns the save's kind.
  * @param {any} loopCounter The first argument.
  * @param {any[]} keys The remaining arguments.
- * @returns {{ full: boolean, count: any }}
+ * @returns {{ full: boolean }}
  */
 function readSettingsSaveArgs(loopCounter, keys) {
     const keyed = typeof loopCounter === 'string';
     for (const key of keyed ? [loopCounter, ...keys] : keys) {
         if (typeof key === 'string') pendingSettingsKeys.add(key);
     }
-    return { full: !keyed, count: keyed || loopCounter === undefined ? 0 : loopCounter };
+    return { full: !keyed };
 }
 
 /**
  * A rescheduled save keeps its kind, and a keyed save's keys stay pending for it.
- * @param {{ full: boolean, count: any }} save The save's kind and count.
+ * @param {{ full: boolean }} save The save's kind.
  */
-async function runSettingsSave({ full, count }) {
+async function runSettingsSave({ full }) {
     if (!settingsReady) {
         console.warn('Settings not ready, scheduling another save');
-        scheduleSettingsSave({ full, count: 0 });
+        scheduleSettingsSave({ full });
         return;
-    }
-
-    const MAX_RETRIES = 3;
-    if (TempResponseLength.isCustomized()) {
-        if (count < MAX_RETRIES) {
-            console.warn('Response length is currently being overridden, scheduling another save');
-            scheduleSettingsSave({ full, count: ++count });
-            return;
-        }
-        console.error('Response length is currently being overridden, but the save loop has reached the maximum number of retries');
-        TempResponseLength.restore(null);
     }
 
     // Upstream's settings save stores `tags`; here what an extension changed in it goes out as its own requests.

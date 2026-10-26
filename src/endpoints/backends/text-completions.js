@@ -555,7 +555,7 @@ export async function buildRawActionTextCompletionRequest(directories, {
     // `encodeLocal`/`encodeTextgenRemote`/`fetchImpl` options (see that function's JSDoc) - lets a
     // test exercise this function end-to-end without real tokenizer model files or a live backend
     // to tokenize against. Never set by the /generate route itself.
-    tokenizerOptions = {}, quiet = {},
+    tokenizerOptions = {}, quiet = {}, responseLength,
 } = {}) {
     if (!characterAvatar && !groupId) {
         throw new Error('character_avatar or group_id is required');
@@ -636,7 +636,7 @@ export async function buildRawActionTextCompletionRequest(directories, {
     const orchestratorInput = await resolveTextCompletionGenerationInput(directories, {
         avatar: characterAvatar, groupId, chatContext: chat, nodeId,
         type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra, pageFacts, pageInjections,
-        countTokens, encodeTokens, countPromptTokens, macroExtras: textCompletionQuietInput(quiet),
+        countTokens, encodeTokens, countPromptTokens, amountGen: responseLength, macroExtras: textCompletionQuietInput(quiet),
     });
 
     // `nodeId === null` goes on from the tree's root only when that is current (`loadChatHistory()`):
@@ -838,14 +838,14 @@ router.post('/generate', withGenerationStop(async function (request, response) {
             answerSessionOnHeaders(response, chat.session);
             const turn = await generateTurnOf(response, chat, request.body);
             if (!turn) return;
-            const { nodeId, userMessageText, userMessageExtra, quiet, pageFacts, pageInjections } = turn;
+            const { nodeId, userMessageText, userMessageExtra, quiet, responseLength, pageFacts, pageInjections } = turn;
 
             /** @type {Awaited<ReturnType<typeof buildRawActionTextCompletionRequest>>} */
             let built;
             try {
                 built = await buildRawActionTextCompletionRequest(directories, {
                     request, characterAvatar, groupId, chat, nodeId,
-                    type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra, quiet, pageFacts, pageInjections,
+                    type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra, quiet, responseLength, pageFacts, pageInjections,
                 });
             } catch (error) {
                 console.error('Failed to build raw-action text completion request:', error);

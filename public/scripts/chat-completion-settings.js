@@ -19,6 +19,7 @@ import {
     getMediaIndex,
     is_send_press,
     name2,
+    responseLengthFor,
     resultCheckStatus,
     saveSettingsDebounced,
     setOnlineStatus,
@@ -2916,7 +2917,9 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, ra
         generate_data = { ...rawAction, stream: stream };
     } else {
         const model = getChatCompletionModel(oai_settings);
-        ({ generate_data, stream, canMultiSwipe } = await createGenerationParameters(oai_settings, model, type, messages, { jsonSchema }));
+        // A quiet or raw generation's own response length, in place of the setting's.
+        const settings = { ...oai_settings, openai_max_tokens: responseLengthFor('openai') };
+        ({ generate_data, stream, canMultiSwipe } = await createGenerationParameters(settings, model, type, messages, { jsonSchema }));
     }
 
     await eventSource.emit(event_types.CHAT_COMPLETION_SETTINGS_READY, generate_data);

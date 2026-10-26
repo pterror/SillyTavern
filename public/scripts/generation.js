@@ -10,14 +10,14 @@ import {
     hideStopButton, hideSwipeButtons, isStreamingEnabled,
     menu_type, name2, online_status,
     parseAndSaveLogprobs, parseMesExamples, parseTokenCounts, pingServer, processCommands,
-    removeDepthPrompts, removeLastMessage, removeMacros, resolveClientToolHandoffLoop,
+    removeDepthPrompts, removeLastMessage, removeMacros, requestedResponseLength, resolveClientToolHandoffLoop, responseLengthFor,
     saveReply, sendGenerationRequest, sendMessageAsUser, sendStreamingRequest, storeSentMessage,
     setCharacterName, setExtensionPrompt, setGenerationProgress, setInContextMessages, setSendButtonState,
     showStopButton, storePageChatChanges, StreamingProcessor, substituteParams, swipe,
     triggerAutoContinue, unblockGeneration, unshallowCharacter, updateMessageBlock, updateMessageItemizedPromptButton,
 } from '../script.js';
 import { chat, chat_metadata } from './chat-state.js';
-import { amount_gen, main_api, max_context } from './generation-params.js';
+import { main_api, max_context } from './generation-params.js';
 import { name1 } from './app-selection-state.js';
 import { setCharacterId } from './character-store.js';
 import { changedMetadata, noteMetadataSent } from './metadata-store.js';
@@ -1441,6 +1441,7 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
                 user_message_ref: sentMessage !== undefined ? storeRefOf(sentUserMessage) : undefined,
                 // What only the page knows of what the macros read.
                 macro_facts: pageMacroFacts(),
+                response_length: requestedResponseLength(),
                 // What the page's extensions and scripts inject; the server builds the prompt.
                 extension_prompts: await pageInjections(),
                 // Kobold-only: mirrors the EXACT real condition getKoboldGenerationData() (public/
@@ -1752,6 +1753,7 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
                 user_message_ref: sentMessage !== undefined ? storeRefOf(sentUserMessage) : undefined,
                 // What only the page knows of what the macros read.
                 macro_facts: pageMacroFacts(),
+                response_length: requestedResponseLength(),
                 // What the page's extensions and scripts inject; the server builds the prompt.
                 extension_prompts: await pageInjections(),
                 // Chunk (c) - see this block's own comment on `clientToolsPayload` immediately above.
@@ -1842,7 +1844,7 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
         // Adjust token limit for Horde
         if (main_api == 'koboldhorde' && (horde_settings.auto_adjust_context_length || horde_settings.auto_adjust_response_length)) {
             try {
-                adjustedParams = await adjustHordeGenerationParams(max_context, amount_gen);
+                adjustedParams = await adjustHordeGenerationParams(max_context, responseLengthFor(main_api));
             } catch {
                 unblockGeneration(type);
                 return Promise.resolve();
@@ -2536,7 +2538,7 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
         await eventSource.emit(event_types.GENERATE_AFTER_COMBINE_PROMPTS, eventData);
         finalPrompt = eventData.prompt;
 
-        maxLength = Number(amount_gen); // how many tokens the AI will be requested to generate
+        maxLength = Number(responseLengthFor(main_api)); // how many tokens the AI will be requested to generate
         thisPromptBits = [];
     }
 
