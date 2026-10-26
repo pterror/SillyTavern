@@ -335,7 +335,8 @@ export function connectionsToUpstream(connections, slots) {
         extras: extras ? {
             ...(Object.hasOwn(extras.values, 'url') ? { apiUrl: /** @type {string} */ (extras.values.url) } : {}),
             ...(Object.hasOwn(extras.values, 'autoConnect') ? { autoConnect: /** @type {boolean} */ (extras.values.autoConnect) } : {}),
-            ...(slots.extrasApiKey !== undefined ? { apiKey: slots.extrasApiKey } : {}),
+            // No key is an empty one, as the page holds it.
+            apiKey: slots.extrasApiKey ?? '',
         } : {},
     };
 }

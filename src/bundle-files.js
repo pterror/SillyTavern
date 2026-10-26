@@ -138,11 +138,12 @@ export function renameBundleFile(directories, group, name, newName) {
  * left out, warned.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} group
- * @param {{ order?: 'locale' | 'code' }} [options] How the file names sort: by locale (the presets' order) or by
- *   code unit (the templates', themes' and quick reply sets').
+ * @param {{ order?: 'locale' | 'code', skipped?: (file: string) => void }} [options] How the file names sort: by
+ *   locale (the presets' order) or by code unit (the templates', themes' and quick reply sets'); `skipped` hears of
+ *   each file left out (instead of the warning).
  * @returns {{ name: string, text: string, file: any }[]}
  */
-export function listBundleFiles(directories, group, { order = 'code' } = {}) {
+export function listBundleFiles(directories, group, { order = 'code', skipped } = {}) {
     const folder = bundleFolder(directories, group);
     if (!folder) return [];
     const names = fs.readdirSync(folder).filter(item => path.parse(item).ext === EXTENSION);
@@ -154,7 +155,8 @@ export function listBundleFiles(directories, group, { order = 'code' } = {}) {
             const text = fs.readFileSync(path.join(folder, item), 'utf8');
             listed.push({ name: item.slice(0, -EXTENSION.length), text, file: JSON.parse(text) });
         } catch {
-            console.warn(`${item} is not a valid JSON`);
+            if (skipped) skipped(path.join(folder, item));
+            else console.warn(`${item} is not a valid JSON`);
         }
     }
     return listed;

@@ -102,19 +102,21 @@ export function userDraftOf(handle, model, holders) {
     slot('disabledElsewhere', statements.dataBank?.disabledElsewhere);
     for (const [key, value] of Object.entries(model.ext)) values[`ext:${key}`] = value;
     for (const [key, value] of Object.entries(model.unknown)) values[`key:${key}`] = value;
-    const proxies = model.entities.filter(e => e.type === TYPE.proxy).map(e => e.key);
-    const qr = statements.quickReplies?.user;
     const holderList = (/** @type {number} */ type) => [...holders.values()].filter(h => h.type === type).map(h => h.key);
-    return draft(TYPE.user, handle, values, {
-        [USER_LISTS.regexScripts]: statements.regexScripts ?? [],
-        [USER_LISTS.regexPresets]: statements.regexPresets ?? [],
-        [USER_LISTS.proxies]: proxies,
-        [USER_LISTS.dataBank]: statements.dataBank?.user ?? [],
-        [USER_LISTS.quickReplySets]: qr?.items ?? [],
-        [USER_LISTS.quickReplyHidden]: qr?.hidden ?? [],
+    // A list the model has, even empty, is written; one it hasn't isn't, so it reads back as not there.
+    /** @type {Record<number, string[] | undefined>} */
+    const lists = {
+        [USER_LISTS.regexScripts]: statements.regexScripts,
+        [USER_LISTS.regexPresets]: statements.regexPresets,
+        [USER_LISTS.proxies]: model.entities.filter(e => e.type === TYPE.proxy).map(e => e.key),
+        [USER_LISTS.dataBank]: statements.dataBank?.user,
+        [USER_LISTS.quickReplySets]: statements.quickReplies?.user.items,
+        [USER_LISTS.quickReplyHidden]: statements.quickReplies?.user.hidden,
         [USER_LISTS.characters]: holderList(TYPE.character),
         [USER_LISTS.groups]: holderList(TYPE.group),
-    });
+    };
+    if (statements.dataBank) values['s:dataBank'] = true;
+    return draft(TYPE.user, handle, values, /** @type {Record<number, string[]>} */ (Object.fromEntries(Object.entries(lists).filter(([, items]) => items !== undefined))));
 }
 
 /**
@@ -189,8 +191,8 @@ export async function readUserModel(lib, handle) {
         for (;;) {
             const page = await readCatalog(lib, type, { after, limit: PAGE });
             entities.push(...page.drafts);
-            if (!page.more || page.drafts.length === 0) break;
-            after = page.drafts[page.drafts.length - 1].key;
+            if (!page.more) break;
+            after = page.last;
         }
     }
     // The proxies in the user's order.
@@ -201,6 +203,8 @@ export async function readUserModel(lib, handle) {
     const level = { level: 'user', bundles: {}, overrides: {} };
     /** @type {Record<string, any>} */
     const statements = { remembered: {}, capabilities: {} };
+    /** @type {unknown} */
+    let disabledElsewhere;
     /** @type {Record<string, unknown>} */
     const ext = {};
     /** @type {Record<string, unknown>} */
@@ -213,20 +217,25 @@ export async function readUserModel(lib, handle) {
         else if (field.startsWith('key:')) unknown[name] = value;
         else if (name.startsWith('remembered.')) statements.remembered[name.slice('remembered.'.length)] = value;
         else if (name.startsWith('capability.')) statements.capabilities[name.slice('capability.'.length)] = capabilityOf(value);
-        else if (name === 'disabledElsewhere') (statements.dataBank ??= {}).disabledElsewhere = value;
-        else statements[name] = value;
+        else if (name === 'disabledElsewhere') disabledElsewhere = value;
+        else if (name !== 'dataBank') statements[name] = value;
     }
-    const list = (/** @type {number} */ n) => /** @type {string[]} */ (user.lists?.[n] ?? []);
-    statements.regexScripts = list(USER_LISTS.regexScripts);
-    statements.regexPresets = list(USER_LISTS.regexPresets);
-    statements.dataBank = { user: list(USER_LISTS.dataBank), characters: [], disabledElsewhere: statements.dataBank?.disabledElsewhere ?? [] };
-    statements.quickReplies = { user: { items: list(USER_LISTS.quickReplySets), hidden: list(USER_LISTS.quickReplyHidden) }, characters: [] };
+    /** The list as written; undefined for one the model hadn't. */
+    const list = (/** @type {number} */ n) => /** @type {string[] | undefined} */ (user.lists?.[n]);
+    if (list(USER_LISTS.regexScripts)) statements.regexScripts = list(USER_LISTS.regexScripts);
+    if (list(USER_LISTS.regexPresets)) statements.regexPresets = list(USER_LISTS.regexPresets);
+    if (user.values['s:dataBank'] === true) {
+        statements.dataBank = { user: list(USER_LISTS.dataBank) ?? [], characters: [], disabledElsewhere: disabledElsewhere ?? [] };
+    }
+    if (list(USER_LISTS.quickReplySets)) {
+        statements.quickReplies = { user: { items: list(USER_LISTS.quickReplySets), hidden: list(USER_LISTS.quickReplyHidden) ?? [] }, characters: [] };
+    }
     statements.personasConnected = [];
 
     // The statements at characters and groups, refs back to keys.
     const holders = [
-        ...list(USER_LISTS.characters).map(key => ({ type: TYPE.character, kind: 'character', key })),
-        ...list(USER_LISTS.groups).map(key => ({ type: TYPE.group, kind: 'group', key })),
+        ...(list(USER_LISTS.characters) ?? []).map(key => ({ type: TYPE.character, kind: 'character', key })),
+        ...(list(USER_LISTS.groups) ?? []).map(key => ({ type: TYPE.group, kind: 'group', key })),
     ];
     for (const holder of holders) {
         const entity = await lib.entity(holder.type, holder.key);
@@ -241,8 +250,8 @@ export async function readUserModel(lib, handle) {
         const keys = await keysOf(lib, [...(personas ?? []), ...(files ?? []), ...(qr?.items ?? []), ...(qr?.hidden ?? [])].map(id => BigInt(id)));
         const named = (/** @type {string[]} */ ids) => ids.map(id => keys.get(id)).filter(k => k !== undefined);
         if (personas) statements.personasConnected.push({ holder: { type: holder.kind, id: holder.key }, personas: named(personas) });
-        if (files) statements.dataBank.characters.push({ avatar: holder.key, files: named(files) });
-        if (qr) statements.quickReplies.characters.push({ avatar: holder.key, items: named(qr.items), hidden: named(qr.hidden) });
+        if (files) (statements.dataBank ??= { user: [], characters: [], disabledElsewhere: [] }).characters.push({ avatar: holder.key, files: named(files) });
+        if (qr) (statements.quickReplies ??= { user: { items: [], hidden: [] }, characters: [] }).characters.push({ avatar: holder.key, items: named(qr.items), hidden: named(qr.hidden) });
     }
     return { user: level, entities, ext, unknown, elsewhere: {}, statements, secrets: [], warnings: [] };
 }
