@@ -1,15 +1,80 @@
-import { getStringHash } from '../public/scripts/hash-utils.js';
-
-/** Settings keys the server owns now (the new page's): the page neither saves them nor counts them in its hash. */
-export const SERVER_OWNED_SETTINGS = new Set(['background']);
+import { FIELDS } from '@st/protocol/settings';
+import { getAtPath, getStringHash, setAtPath } from '../public/scripts/hash-utils.js';
 
 /**
- * The settings' hash as the page knows them: without the keys the server owns, which the page neither keeps current
- * nor saves, so a change to one of them is never a conflict for the page's save. Every route that answers the page a
- * settings hash answers this one.
+ * The AI response configuration panel's families whose fields the new page shows: their fields are the server's, and
+ * only settings.set writes them. A family joins when its old controls go.
+ * @type {ReadonlySet<string>}
+ */
+const SWITCHED_FAMILIES = new Set([]);
+
+/**
+ * Settings the server owns now (the new page's), as dotted paths: the background, and the switched families' fields
+ * (packages/protocol/src/settings.ts). The old page neither saves them nor counts them in its hash.
+ */
+export const SERVER_OWNED_PATHS = ['background', ...FIELDS.filter(field => SWITCHED_FAMILIES.has(field.family)).map(field => field.path)];
+
+/**
+ * Takes a path away from settings (nothing when it isn't there).
+ * @param {Record<string, any>} settings
+ * @param {string} path
+ */
+function deleteAtPath(settings, path) {
+    const keys = path.split('.');
+    const parents = [settings];
+    for (const key of keys.slice(0, -1)) {
+        const next = parents.at(-1)?.[key];
+        if (next === null || typeof next !== 'object') return;
+        parents.push(next);
+    }
+    delete parents.at(-1)[keys.at(-1)];
+}
+
+/**
+ * A page's write of `value` at `path` with what the server owns under it as the server has it (`current`, the
+ * settings it's written over), or null when the path itself is the server's.
+ * @param {string} path
+ * @param {unknown} value
+ * @param {Record<string, unknown>} current
+ * @returns {{ value: unknown } | null}
+ */
+export function pageWrite(path, value, current) {
+    if (SERVER_OWNED_PATHS.some(owned => path === owned || path.startsWith(`${owned}.`))) return null;
+    const under = SERVER_OWNED_PATHS.filter(owned => owned.startsWith(`${path}.`));
+    if (under.length === 0 || value === null || typeof value !== 'object') return { value };
+    const out = structuredClone(value);
+    for (const owned of under) {
+        const rest = owned.slice(path.length + 1);
+        const kept = getAtPath(current, owned);
+        if (kept === undefined) deleteAtPath(/** @type {Record<string, any>} */ (out), rest);
+        else setAtPath(out, rest, structuredClone(kept));
+    }
+    return { value: out };
+}
+
+/**
+ * A page's whole save with what the server owns as the server has it, whatever the page sent for it.
+ * @param {Record<string, unknown>} saved
+ * @param {Record<string, unknown>} current
+ */
+export function withServerOwned(saved, current) {
+    const out = structuredClone(saved);
+    for (const owned of SERVER_OWNED_PATHS) {
+        const kept = getAtPath(current, owned);
+        if (kept === undefined) deleteAtPath(out, owned);
+        else setAtPath(out, owned, structuredClone(kept));
+    }
+    return out;
+}
+
+/**
+ * The settings' hash as the page knows them: without what the server owns, which the page neither keeps current nor
+ * saves, so a change to it is never a conflict for the page's save. Every route that answers the page a settings hash
+ * answers this one.
  * @param {Record<string, unknown>} settings
  */
 export function pageSettingsHash(settings) {
-    const page = Object.fromEntries(Object.entries(settings).filter(([key]) => !SERVER_OWNED_SETTINGS.has(key)));
+    const page = structuredClone(settings);
+    for (const owned of SERVER_OWNED_PATHS) deleteAtPath(page, owned);
     return getStringHash(JSON.stringify(page, null, 4));
 }
