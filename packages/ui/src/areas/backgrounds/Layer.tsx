@@ -30,12 +30,12 @@ export function AnimationOption() {
         <label
             for="background_thumbnails_animation"
             class="checkbox_label"
-            title={() => t('Allow animations for WEBP backgrounds. This is only a change for the selection menu.')}
+            title={t('Allow animations for WEBP backgrounds. This is only a change for the selection menu.')}
         >
             <input
                 id="background_thumbnails_animation"
                 type="checkbox"
-                checked={() => view()?.options.animation ?? false}
+                checked={view()?.options.animation ?? false}
                 onChange={(event) => {
                     const box = event.currentTarget;
                     void client.send('backgrounds.options', { animation: box.checked }).then(
@@ -44,7 +44,7 @@ export function AnimationOption() {
                     );
                 }}
             />
-            <small>{() => t('Animated background thumbnails')}</small>
+            <small>{t('Animated background thumbnails')}</small>
         </label>
     );
 }

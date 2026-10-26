@@ -1,35 +1,18 @@
-import { createSignal } from 'solid-js';
-import type { JSX } from '@st/jsx/jsx-runtime';
+import { Show, createMemo, createSignal } from 'solid-js';
 
-const LABEL = 'count';
-
-function Show(props: { when: unknown; fallback: () => JSX.Element; children: () => JSX.Element }) {
-    return <b>{() => (props.when ? props.children() : props.fallback())}</b>;
-}
-
-function Child(props: { onPick: (file: string) => void }) {
-    return <i onClick={() => props.onPick('x')} />;
+function Child(props: { name: string; onPick: (name: string) => void }) {
+    const shout = createMemo(() => props.name.toUpperCase());
+    return <i onClick={() => props.onPick(props.name)}>{shout()}</i>;
 }
 
 export function Good(props: { label: string }) {
     const [count, setCount] = createSignal(0);
-    const elements: HTMLButtonElement[] = [];
     return (
-        <button
-            ref={(element: HTMLButtonElement) => elements.push(element)}
-            title={() => props.label}
-            aria-label={LABEL}
-            onClick={() => setCount(count() + 1)}
-        >
-            {count} {() => count() * 2} {'text'} {`plain`}
-            <Child onPick={(file) => setCount(file.length)} />
-            {<b>static</b>}
-            <Show when={count} fallback={() => <b />}>
-                {() => <p />}
+        <button title={props.label} onClick={() => setCount(count() + 1)}>
+            {count()} {count() * 2}
+            <Show when={count() > 0} fallback={<b />}>
+                <Child name={props.label} onPick={(name) => setCount(name.length)} />
             </Show>
-            <>
-                <i />
-            </>
         </button>
     );
 }

@@ -1,5 +1,5 @@
-import { createSignal, onMount } from 'solid-js';
-import { For, Show, render } from '../solid.ts';
+import { For, Show, createSignal, onMount } from 'solid-js';
+import { render } from 'solid-js/web';
 
 // A question to the user, answered in a modal <dialog> (the top layer: drawers and the chat are cut by it like by
 // any overlay, see the drawer stack). It looks like the old page's popups (their classes), and resolves with the
@@ -83,42 +83,42 @@ function dialog(
             >
                 <div class="popup-content">
                     <h3 class="popup-header">{message}</h3>
-                    <Show when={detail}>{(shown) => <p>{shown}</p>}</Show>
+                    <Show when={detail}>{(shown) => <p>{shown()}</p>}</Show>
                 </div>
                 <Show when={isInput}>
-                    {() => (
+                    {
                         <input
                             class="popup-input text_pole"
                             autofocus
-                            value={text}
+                            value={text()}
                             onInput={(event) => setText(event.currentTarget.value)}
                         />
-                    )}
+                    }
                 </Show>
                 <Show when={checkbox}>
                     {(box) => (
                         <label class="checkbox_label">
                             <input
                                 type="checkbox"
-                                checked={checked}
+                                checked={checked()}
                                 onChange={(event) => setChecked(event.currentTarget.checked)}
                             />
-                            <span>{() => box().label}</span>
+                            <span>{box().label}</span>
                         </label>
                     )}
                 </Show>
                 <Show when={options}>
                     {(list) => (
                         <div class="popup-inputs">
-                            <For each={list}>
+                            <For each={list()}>
                                 {(option) => (
                                     <label class="checkbox_label">
                                         <input
                                             type="checkbox"
-                                            checked={() => chosen().has(option.id)}
+                                            checked={chosen().has(option.id)}
                                             onChange={(event) => toggle(option.id, event.currentTarget.checked)}
                                         />
-                                        <span>{() => option.label}</span>
+                                        <span>{option.label}</span>
                                     </label>
                                 )}
                             </For>
@@ -127,10 +127,10 @@ function dialog(
                 </Show>
                 <div class="popup-controls">
                     <button type="submit" class="popup-button-ok menu_button">
-                        {() => t('OK')}
+                        {t('OK')}
                     </button>
                     <button type="button" class="popup-button-cancel menu_button" onClick={() => onAnswer(null)}>
-                        {() => t('Cancel')}
+                        {t('Cancel')}
                     </button>
                 </div>
             </form>

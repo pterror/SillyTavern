@@ -9,8 +9,8 @@ import { Backgrounds } from './areas/backgrounds/Backgrounds.tsx';
 import type { BackgroundsTab } from './areas/backgrounds/Backgrounds.tsx';
 import { AnimationOption, BackgroundLayer } from './areas/backgrounds/Layer.tsx';
 import { backgroundsCompat } from './areas/backgrounds/compat.ts';
-import { render } from './solid.ts';
-import type { Child } from './solid.ts';
+import { render } from 'solid-js/web';
+import type { JSX } from 'solid-js';
 
 // The new page, started by the old one (public/scripts/new-ui.js), which hands it what only the old page has yet,
 // and the containers its surfaces replace.
@@ -34,14 +34,14 @@ export type StartOptions = {
 export function start(options: StartOptions) {
     const client = createClient({ headers: options.headers });
     const ui: Ui = { client, t: options.t };
-    const mount = (container: HTMLElement, surface: () => Child) =>
-        render(() => <UiProvider value={ui}>{surface}</UiProvider>, container);
+    const mount = (container: HTMLElement, surface: () => JSX.Element) =>
+        render(() => <UiProvider value={ui}>{surface()}</UiProvider>, container);
 
     const [tab, setTab] = createSignal<BackgroundsTab>('system');
     const backgroundsOptions = { quietPrompt: options.quietPrompt };
     const { backgrounds, backgroundLayer, backgroundAnimation } = options.containers;
     mount(backgrounds, () => (
-        <Backgrounds options={backgroundsOptions} container={backgrounds} tab={tab} onTab={(next) => setTab(next)} />
+        <Backgrounds options={backgroundsOptions} container={backgrounds} tab={tab()} onTab={(next) => setTab(next)} />
     ));
     mount(backgroundLayer, () => <BackgroundLayer element={backgroundLayer} />);
     mount(backgroundAnimation, () => <AnimationOption />);

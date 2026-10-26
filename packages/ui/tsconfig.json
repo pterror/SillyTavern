@@ -4,8 +4,8 @@
         "module": "esnext",
         "moduleResolution": "bundler",
         "lib": ["es2023", "dom", "dom.iterable"],
-        "jsx": "react-jsx",
-        "jsxImportSource": "@st/jsx"
+        "jsx": "preserve",
+        "jsxImportSource": "solid-js"
     },
     "include": ["src/**/*.ts", "src/**/*.tsx", "test/**/*.ts", "test/**/*.tsx", "vite.config.ts"]
 }

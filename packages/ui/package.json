@@ -3,9 +3,9 @@
     "private": true,
     "type": "module",
     "dependencies": {
-        "@st/jsx": "*",
         "@st/protocol": "*",
-        "solid-js": "1.9.17"
+        "solid-js": "1.9.17",
+        "vite-plugin-solid": "2.11.14"
     },
     "devDependencies": {
         "happy-dom": "21.0.1",
