@@ -345,6 +345,26 @@ const DEFAULT_STORY_STRING_ROLE = extension_prompt_roles.SYSTEM;
  */
 
 /**
+ * How many tokens the prompt may take, as upstream's getMaxContextSize() works it out: the context less the reply's
+ * length, a NovelAI model's context capped first. (NovelAI's subscription limit is the page's to know; it isn't
+ * applied here.)
+ * @param {string} mainApi
+ * @param {number} maxContext The context size setting.
+ * @param {number} maxResponse The reply's length.
+ * @param {string} [novelModel] NovelAI's model.
+ * @returns {number}
+ */
+export function promptTokenBudget(mainApi, maxContext, maxResponse, novelModel = '') {
+    let context = Number(maxContext);
+    if (mainApi === 'novel') {
+        if (/clio|kayra|erato/.test(novelModel)) context = Math.min(context, 8192);
+        // Erato's special tokens.
+        if (novelModel.includes('erato')) context -= 10;
+    }
+    return context - maxResponse;
+}
+
+/**
  * The chat history a generation is built from (`loadChatHistory()`): the messages from the tree's root down to the
  * position it goes on from, in upstream's message shape, and the state there as `chat_metadata`.
  * @param {import('./chat-request.js').ChatContext | undefined} chat
@@ -553,7 +573,8 @@ export async function resolveTextCompletionGenerationInput(directories, {
         reasoningSuffix: reasoning.suffix ?? '</think>',
 
         // --- Context/token budget ---
-        thisMaxContext: settingsMaxContext ?? 8192,
+        thisMaxContext: promptTokenBudget(mainApi, settingsMaxContext ?? 8192, amountGen ?? settingsAmountGen ?? 0, novelSettings.model_novel),
+        maxContext: settingsMaxContext ?? 8192,
         tokenPadding: powerUser.token_padding ?? 0,
         countTokens, encodeTokens, countPromptTokens,
         amountGen: amountGen ?? settingsAmountGen ?? 0,

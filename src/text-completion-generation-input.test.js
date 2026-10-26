@@ -13,7 +13,7 @@ import { setConfigFilePath } from './util.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', 'config.yaml'));
 
-const { resolveTextCompletionGenerationInput } = await import('./text-completion-generation-input.js');
+const { resolveTextCompletionGenerationInput, promptTokenBudget } = await import('./text-completion-generation-input.js');
 const { importWorldInfoFromRaw } = await import('./endpoints/worldinfo.js');
 const { writeAllSettings } = await import('./settings-store.js');
 const { assembleTextCompletionPrompt } = await import('./text-completion-prompt-orchestrator.js');
@@ -256,7 +256,11 @@ async function run() {
     assert.equal(input.name1, 'Tester', 'name1 resolves from settings.json top-level username');
     assert.equal(input.name2, 'Rex', 'name2 resolves from the real character card, not guessed');
     assert.equal(input.mainApi, 'textgenerationwebui', 'mainApi is hardcoded for this text-completion-only resolver, regardless of the live main_api setting');
-    assert.equal(input.thisMaxContext, 4096, 'thisMaxContext resolves from top-level settings.max_context');
+    assert.equal(input.thisMaxContext, 4096 - 250, 'the prompt may take the context less the reply\'s length (upstream\'s getMaxContextSize())');
+    assert.equal(input.maxContext, 4096, 'maxContext is the context size setting, for a backend that takes it');
+    assert.equal(promptTokenBudget('kobold', 16384, 300), 16084, 'any text completion API: the context less the reply');
+    assert.equal(promptTokenBudget('novel', 16384, 300, 'kayra-v1'), 8192 - 300, 'a NovelAI model\'s context is capped first');
+    assert.equal(promptTokenBudget('novel', 16384, 300, 'llama-3-erato-v1'), 8192 - 10 - 300, 'Erato keeps room for its special tokens');
     assert.equal(input.amountGen, 250, 'amountGen falls back to settings.amount_gen when not overridden');
     assert.equal(input.tokenPadding, 8, 'tokenPadding resolves from power_user.token_padding');
     assert.equal(input.alwaysForceName2, true, 'alwaysForceName2 resolves from power_user.always_force_name2');
