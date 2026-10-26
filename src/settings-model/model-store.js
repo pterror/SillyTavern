@@ -1,5 +1,5 @@
 import { POSITION_GAP, historyWrites, itemField, pushAll, valueRecords } from '../entity-values.js';
-import { PART_LISTS, REF_LISTS, REF_VALUES, refKey } from './refs.js';
+import { NO_PLACEHOLDER, PART_LISTS, REF_LISTS, REF_VALUES, refKey } from './refs.js';
 
 /**
  * The settings model's entities in the engine (the settings model, step 9): an EntityDraft written as an entity
@@ -52,10 +52,12 @@ function withoutPartLists(entity) {
  * Writes drafts (new entities, or the stored ones they replace) with their parts, as one commit.
  * @param {LibraryEngine} lib
  * @param {EntityDraft[]} drafts
- * @param {{ actor?: import('../world-info-engine.js').Actor | null }} [options]
- * @returns {Promise<Map<string, bigint>>} Each draft's and part's id, by `<type>:<key>`.
+ * @param {{ actor?: import('../world-info-engine.js').Actor | null, warnings?: string[], refs?: [number, string][], extra?: (ids: Map<string, bigint>, stamp: () => import('../entity-values.js').Stamp) => Promise<object[]> }} [options]
+ *   `warnings` gets a ref dropped; `refs` are more refs (type, name) to resolve, for `extra`, which adds records of
+ *   the caller's to the commit, given the ids and the stamp.
+ * @returns {Promise<Map<string, bigint>>} Each draft's, part's and ref's id, by `<type>:<key>`.
  */
-export async function writeDrafts(lib, drafts, { actor = null } = {}) {
+export async function writeDrafts(lib, drafts, { actor = null, warnings = [], refs = [], extra } = {}) {
     const all = flatten(drafts);
     const idKey = (/** @type {number} */ type, /** @type {string} */ key) => `${type}:${key}`;
     /** @type {object[]} */
@@ -81,6 +83,7 @@ export async function writeDrafts(lib, drafts, { actor = null } = {}) {
     const noteRef = (/** @type {number} */ type, /** @type {unknown} */ name) => {
         if (typeof name === 'string' && name !== '' && !ids.has(idKey(type, refKey(type, name)))) targets.push([type, refKey(type, name)]);
     };
+    for (const [type, name] of refs) noteRef(type, name);
     for (const d of all) {
         for (const [field, type] of Object.entries(REF_VALUES[d.type] ?? {})) noteRef(type, d.values[field]);
         for (const [list, type] of Object.entries(REF_LISTS[d.type] ?? {})) (d.lists?.[list] ?? []).forEach(item => noteRef(type, item));
@@ -89,14 +92,21 @@ export async function writeDrafts(lib, drafts, { actor = null } = {}) {
         const targetIds = await lib.store.libraryIds(targets);
         targets.forEach(([type, key], i) => {
             if (ids.has(idKey(type, key))) return;
+            if (targetIds[i] === null && NO_PLACEHOLDER.has(type)) {
+                warnings.push(`a ref to ${key} (type ${type}) names nothing; dropped`);
+                return;
+            }
             const id = targetIds[i] ?? lib.nextId++;
             if (targetIds[i] === null) records.push({ kind: 'entityCreate', entity: id, type, key, added: Date.now() });
             ids.set(idKey(type, key), id);
         });
     }
-    const refText = (/** @type {number} */ type, /** @type {unknown} */ name) => (
-        typeof name === 'string' && name !== '' ? String(ids.get(idKey(type, refKey(type, name)))) : name
-    );
+    /** The ref's id as text; undefined for one dropped. */
+    const refText = (/** @type {number} */ type, /** @type {unknown} */ name) => {
+        if (typeof name !== 'string' || name === '') return name;
+        const id = ids.get(idKey(type, refKey(type, name)));
+        return id === undefined ? undefined : String(id);
+    };
 
     const stamp = await lib.stamper(actor, records);
     const writes = historyWrites(stamp);
@@ -117,7 +127,8 @@ export async function writeDrafts(lib, drafts, { actor = null } = {}) {
             if (items.length === 0) values.set(`${EMPTY_LIST}${list}`, { json: '[]' });
             if (PART_LISTS[d.type]?.[list] !== undefined) continue;
             const refType = REF_LISTS[d.type]?.[list];
-            lists.set(Number(list), items.map(item => String(refType !== undefined ? refText(refType, item) : item)));
+            const texts = items.map(item => (refType !== undefined ? refText(refType, item) : item));
+            lists.set(Number(list), /** @type {string[]} */ (texts.filter(text => text !== undefined)).map(String));
         }
         pushAll(records, valueRecords(id, was ? /** @type {StoredEntity} */ (withoutPartLists(was)) : null, { values, lists }, writes));
 
@@ -141,6 +152,7 @@ export async function writeDrafts(lib, drafts, { actor = null } = {}) {
             partIds.forEach((partId, i) => records.push(writes.place(id, listNumber, /** @type {any} */ (partId), top + POSITION_GAP * (i + 1))));
         }
     }
+    if (extra) pushAll(records, await extra(ids, stamp));
     await lib.store.commit(records);
     return ids;
 }
@@ -222,7 +234,7 @@ async function draftOf(lib, entity) {
  * @param {bigint[]} ids
  * @returns {Promise<Map<string, string>>}
  */
-async function keysOf(lib, ids) {
+export async function keysOf(lib, ids) {
     if (ids.length === 0) return new Map();
     const unique = [...new Map(ids.map(id => [String(id), id])).values()];
     const keys = await lib.store.libraryKeys(unique);
