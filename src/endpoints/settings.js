@@ -10,7 +10,7 @@ import { getConfigValue, generateTimestamp, removeOldBackups } from '../util.js'
 import { getAllUserHandles, getUserDirectories } from '../users.js';
 import { getFileNameValidationFunction } from '../middleware/validateFileName.js';
 import { CHAR_LORE_PATH, getStringHash, seedKeyHashes, setAtPath, settingsWithoutCharLore } from '../../public/scripts/hash-utils.js';
-import { SERVER_OWNED_SETTINGS, pageSettingsHash } from '../settings-hash.js';
+import { pageSettingsHash, pageWrite, withServerOwned } from '../settings-hash.js';
 import {
     readAllSettings,
     valuesAtPaths,
@@ -243,20 +243,6 @@ function settingsSavedOver(request, directories) {
     return at ? at.document.view(at.context, at.range).settings : readAllSettings(directories);
 }
 
-/**
- * A page's save with the keys the server owns as the server has them, whatever the page sent for them.
- * @param {Record<string, unknown>} saved
- * @param {Record<string, unknown>} current
- */
-function withServerOwned(saved, current) {
-    const out = { ...saved };
-    for (const key of SERVER_OWNED_SETTINGS) {
-        if (Object.hasOwn(current, key)) out[key] = current[key];
-        else delete out[key];
-    }
-    return out;
-}
-
 function checkSettingsConflict(request, directories) {
     const expectedHashHeader = request.get('X-Settings-Hash');
     if (expectedHashHeader === undefined) {
@@ -323,8 +309,12 @@ router.post('/save-partial', async function (request, response) {
                 error: 'Partial update body must include a "keys" object of top-level settings keys to merge.',
             });
         }
-        // The keys the server owns aren't the page's to write.
-        const keys = Object.fromEntries(Object.entries(sent).filter(([key]) => !SERVER_OWNED_SETTINGS.has(key.split('.')[0])));
+        // What the server owns isn't the page's to write.
+        const over = settingsSavedOver(request, directories);
+        const keys = Object.fromEntries(Object.entries(sent).flatMap(([key, value]) => {
+            const write = pageWrite(key, value, over);
+            return write ? [[key, write.value]] : [];
+        }));
 
         if (expectedHashes && typeof expectedHashes === 'object' && !Array.isArray(expectedHashes)) {
             const paths = Object.keys(expectedHashes);
