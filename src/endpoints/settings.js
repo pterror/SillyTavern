@@ -32,26 +32,36 @@ const REQUEST_COMPRESSION_TIMEOUT = Number(getConfigValue('performance.requestCo
 const AUTOSAVE_INTERVAL = 10 * 60 * 1000;
 
 /**
- * Map of functions to trigger settings autosave for a user.
- * @type {Map<string, function>}
+ * Per user: when their settings were last backed up by an autosave, the one waiting for the interval to pass, and
+ * their directories as the latest request had them.
+ * @type {Map<string, { last: number, timer: NodeJS.Timeout | null, directories: import('../users.js').UserDirectoryList }>}
  */
-const AUTOSAVE_FUNCTIONS = new Map();
+const AUTOSAVES = new Map();
 
 /**
- * Triggers autosave for a user every 10 minutes.
+ * Backs up a user's settings at most once every 10 minutes: now, if the last was longer ago, else once the 10 minutes
+ * are up. A waiting backup doesn't keep the process running.
  * @param {string} handle User handle
+ * @param {import('../users.js').UserDirectoryList} directories The user's directories (the request's)
  * @returns {void}
  */
-export function triggerAutoSave(handle) {
-    if (!AUTOSAVE_FUNCTIONS.has(handle)) {
-        const throttledAutoSave = _.throttle(() => backupUserSettings(handle, true).catch(err => console.error('Autosave failed', err)), AUTOSAVE_INTERVAL);
-        AUTOSAVE_FUNCTIONS.set(handle, throttledAutoSave);
+export function triggerAutoSave(handle, directories) {
+    const entry = AUTOSAVES.get(handle) ?? { last: -Infinity, timer: null, directories };
+    entry.directories = directories;
+    AUTOSAVES.set(handle, entry);
+    if (entry.timer !== null) return;
+    const run = () => {
+        entry.timer = null;
+        entry.last = Date.now();
+        backupUserSettings(handle, true, entry.directories).catch(err => console.error('Autosave failed', err));
+    };
+    const wait = entry.last + AUTOSAVE_INTERVAL - Date.now();
+    if (wait <= 0) {
+        run();
+        return;
     }
-
-    const functionToCall = AUTOSAVE_FUNCTIONS.get(handle);
-    if (functionToCall && typeof functionToCall === 'function') {
-        functionToCall();
-    }
+    entry.timer = setTimeout(run, wait);
+    entry.timer.unref();
 }
 
 /**
@@ -173,10 +183,11 @@ async function backupSettings() {
 /**
  * Snapshots the reconstructed flat settings object (from the sharded settings/ store), not a raw file copy.
  * Tag definitions/assignments are never included - they live in the metadata store, not settings.
+ * @param {string} handle
+ * @param {boolean} preventDuplicates
+ * @param {import('../users.js').UserDirectoryList} [userDirectories] The user's directories, when the caller has them.
  */
-async function backupUserSettings(handle, preventDuplicates) {
-    const userDirectories = getUserDirectories(handle);
-
+async function backupUserSettings(handle, preventDuplicates, userDirectories = getUserDirectories(handle)) {
     if (!fs.existsSync(userDirectories.root)) {
         return;
     }
@@ -194,7 +205,7 @@ async function backupUserSettings(handle, preventDuplicates) {
         return;
     }
 
-    if (preventDuplicates && isDuplicateBackup(handle, snapshotContent)) {
+    if (preventDuplicates && isDuplicateBackup(handle, snapshotContent, userDirectories)) {
         return;
     }
 
@@ -204,8 +215,8 @@ async function backupUserSettings(handle, preventDuplicates) {
 }
 
 /** Checks if the backup would be a duplicate of the latest existing one. */
-export function isDuplicateBackup(handle, content) {
-    const latestBackup = getLatestBackup(handle);
+export function isDuplicateBackup(handle, content, userDirectories = getUserDirectories(handle)) {
+    const latestBackup = getLatestBackup(handle, userDirectories);
     if (!latestBackup || !fs.existsSync(latestBackup)) {
         return false;
     }
@@ -217,10 +228,10 @@ export function isDuplicateBackup(handle, content) {
  * reliable for this (a copied or restored backups folder gets fresh ctimes in arbitrary order), so they are
  * only used for a name without a parseable timestamp.
  * @param {string} handle User handle
+ * @param {import('../users.js').UserDirectoryList} [userDirectories] The user's directories, when the caller has them.
  * @returns {string|null} Latest backup file. Null if no backup exists.
  */
-function getLatestBackup(handle) {
-    const userDirectories = getUserDirectories(handle);
+function getLatestBackup(handle, userDirectories = getUserDirectories(handle)) {
     const prefix = getSettingsBackupFilePrefix(handle);
     const backupFiles = fs.readdirSync(userDirectories.backups)
         .filter(x => x.startsWith(prefix))
@@ -284,7 +295,7 @@ router.post('/save', function (request, response) {
         // Its charLore isn't stored (writeNamedSettings() leaves it out).
         writeNamedSettings(directories, request.body);
         void reportIgnoredCharLore(request, settingsWithoutCharLore('', request.body).charLore);
-        triggerAutoSave(request.user.profile.handle);
+        triggerAutoSave(request.user.profile.handle, request.user.directories);
         // Key order in the reconstructed store may differ from the client's payload, so the client can't just
         // hash its own JSON locally - it must use this returned hash.
         response.send({ result: 'ok', settingsHash: getStringHash(readAllSettingsAsJson(directories)) });
@@ -335,7 +346,7 @@ router.post('/save-partial', function (request, response) {
         const carried = Object.entries(keys).map(([key, value]) => settingsWithoutCharLore(key, value).charLore).find(x => x !== undefined);
         void reportIgnoredCharLore(request, carried);
 
-        triggerAutoSave(request.user.profile.handle);
+        triggerAutoSave(request.user.profile.handle, request.user.directories);
         // Same reasoning as /save's response above: return the server's own canonical whole-store hash so the
         // client's knownServerSettingsHash stays correct without needing to know how the store reconstructs it.
         response.send({ result: 'ok', settingsHash: getStringHash(readAllSettingsAsJson(directories)) });
@@ -368,7 +379,7 @@ router.post('/toggle-extension', function (request, response) {
             : disabledExtensions.includes(name) ? disabledExtensions : [...disabledExtensions, name];
 
         writeSettingsKeys(directories, { [path]: nextDisabledExtensions });
-        triggerAutoSave(request.user.profile.handle);
+        triggerAutoSave(request.user.profile.handle, request.user.directories);
         response.send({
             result: 'ok',
             disabledExtensions: nextDisabledExtensions,
@@ -505,7 +516,7 @@ router.post('/load-snapshot', getFileNameValidationFunction('name'), async (requ
 
 router.post('/make-snapshot', async (request, response) => {
     try {
-        await backupUserSettings(request.user.profile.handle, false);
+        await backupUserSettings(request.user.profile.handle, false, request.user.directories);
         response.sendStatus(204);
     } catch (error) {
         console.error(error);

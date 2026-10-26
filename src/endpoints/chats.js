@@ -895,7 +895,7 @@ function recordLastOpened(request, opened) {
         return stored;
     }
     writeSettingsKeys(directories, stored);
-    triggerAutoSave(request.user.profile.handle);
+    triggerAutoSave(request.user.profile.handle, request.user.directories);
     return { ...stored, settings_hash: getStringHash(readAllSettingsAsJson(directories)) };
 }
 
