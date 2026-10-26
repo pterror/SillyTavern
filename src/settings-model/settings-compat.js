@@ -488,6 +488,8 @@ export function assemble(model, { bundles, extrasApiKey }) {
     for (const [group, path] of selections) {
         const ref = user.bundles[group];
         if (ref !== undefined) put(settings, path, bundleName(group, ref));
+        // KoboldAI with no preset states its own settings.
+        else if (group === 'preset.kobold') put(settings, path, KOBOLD_NO_PRESET);
     }
     for (const setting of Object.values(TEXT_PRESET_LENGTH_KEYS)) {
         const value = resolved(setting);
@@ -507,8 +509,8 @@ export function assemble(model, { bundles, extrasApiKey }) {
     if (selected_proxy) settings.selected_proxy = selected_proxy;
     const servers = byType(TYPE.serverHistory);
     if (servers.length) put(settings, 'power_user.servers', serverHistoryToUpstream(servers));
-    const bindingEntities = byType(TYPE.modelTemplateBinding);
-    if (bindingEntities.length) put(settings, 'power_user.model_templates_mappings', Object.fromEntries(bindingEntities.map(b => [b.key, bindingToUpstream(b)])));
+    // Empty when there are none, as the page holds it.
+    put(settings, 'power_user.model_templates_mappings', Object.fromEntries(byType(TYPE.modelTemplateBinding).map(b => [b.key, bindingToUpstream(b)])));
     const profileEntities = byType(TYPE.connectionProfile);
     if (profileEntities.length || statements.profile !== undefined) {
         settings.extension_settings.connectionManager = {
@@ -525,10 +527,7 @@ export function assemble(model, { bundles, extrasApiKey }) {
     if (persona.username !== undefined) settings.username = persona.username;
     if (statements.regexScripts) settings.extension_settings.regex = regexScriptsToUpstream(statements.regexScripts.map(key => entities.find(e => e.key === key)));
     if (statements.regexPresets) settings.extension_settings.regex_presets = regexPresetsToUpstream(statements.regexPresets.map(key => entities.find(e => e.key === key)), statements.regexPreset);
-    const variables = byType(TYPE.globalVariable);
-    if (variables.length || user.overrides['ext:variables']) {
-        settings.extension_settings.variables = { ...settings.extension_settings.variables, global: globalVariablesToUpstream(variables) };
-    }
+    settings.extension_settings.variables = { ...settings.extension_settings.variables, global: globalVariablesToUpstream(byType(TYPE.globalVariable)) };
     if (statements.dataBank) Object.assign(settings.extension_settings, dataBankToUpstream(byType(TYPE.dataBankFile), statements.dataBank));
     if (statements.quickReplies) {
         const qr = settings.extension_settings.quickReplyV2 ?? {};

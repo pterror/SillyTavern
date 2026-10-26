@@ -34,7 +34,7 @@ test('this fork\'s persona_data: a persona per avatar; connections become each c
     assert.deepEqual(back.persona_data, persona_data);
     assert.deepEqual(back.personas, { 'a.png': 'Ann', 'b.png': 'Bea', 'c.png': 'Cy' });
     assert.equal(back.persona_descriptions['a.png'].lorebook, 'Ann lore');
-    assert.equal(Object.hasOwn(back.persona_descriptions['a.png'], 'name'), false);
+    assert.deepEqual(back.persona_descriptions, back.persona_data);
     assert.deepEqual([back.default_persona, back.user_avatar, back.username], ['b.png', 'b.png', 'Bea']);
 });
 
