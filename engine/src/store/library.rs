@@ -43,6 +43,8 @@ pub const VIEW_LIST: u64 = 7;
 pub const VIEW: u64 = 8;
 pub const CONDITION: u64 = 9;
 pub const RANGE: u64 = 10;
+/// The settings model's types run from 11 to this (src/library-codes.js's `TYPE`); no deriver here reads them.
+pub const LAST_TYPE: u64 = 34;
 
 /// Field codes the derivers read: an entity's name, a character's lorebook, a tag's folder type.
 pub const NAME: u64 = 1;
@@ -709,7 +711,7 @@ impl Deriver for EntityCreate {
             Value::F64(t) => t,
             _ => unreachable!("checked by Record::new"),
         };
-        if kind > RANGE {
+        if kind > LAST_TYPE {
             return Err(StoreError::Refused(format!("no entity type {kind}")));
         }
         if view.get(&key::id(key::ENTITY, e))?.is_some() {

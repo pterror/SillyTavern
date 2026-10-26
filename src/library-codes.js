@@ -5,9 +5,18 @@
 /** Entity types: a world book (or a name a lorebook link holds that no book has), a book a character or a world
  * book owns (a card's `character_book`, a book's `originalData`), a book's entry, an unowned tree (messages whose
  * character or group is gone, keyed by the old owner key: an avatar's stem or a group's id), and a user's saved views
- * (src/saved-views.js): their list, a view, a view's condition and a view's range. */
+ * (src/saved-views.js): their list, a view, a view's condition and a view's range.
+ *
+ * From 11, the settings model's (docs/design/settings-scopes.md and the settings model, §1): a user's record, the
+ * bundles a level states (sampler presets, templates, themes, connection profiles) and the catalogs (connections,
+ * proxies, personas, quick replies, regex, variables, data bank files, movingUI layouts and presets, a user's
+ * devices), each keyed as the model says. 30 is unused. */
 export const TYPE = Object.freeze({
     character: 0, group: 1, tag: 2, book: 3, ownedBook: 4, entry: 5, tree: 6, viewList: 7, view: 8, condition: 9, range: 10,
+    user: 11, samplerPreset: 12, template: 13, chatPrompt: 14, chatPromptOrder: 15, biasList: 16, biasEntry: 17,
+    connection: 18, connectionProfile: 19, proxy: 20, persona: 21, theme: 22, quickReplySet: 23, quickReply: 24,
+    regexScript: 25, regexPreset: 26, globalVariable: 27, dataBankFile: 28, modelTemplateBinding: 29,
+    movingUiPreset: 31, serverHistory: 32, movingUiLayout: 33, device: 34,
 });
 
 /** Field codes; the engine reads NAME, WORLD, FOLDER_TYPE and DEFINED itself. */

@@ -924,7 +924,7 @@ fn a_world_book_reads_whole_from_one_view() {
 
 #[test]
 fn saved_view_types_are_created_and_deleted_and_a_type_above_them_is_refused() {
-    use super::library::{CONDITION, RANGE, VIEW, VIEW_LIST};
+    use super::library::{CONDITION, LAST_TYPE, RANGE, VIEW, VIEW_LIST};
     let dir = temp_dir("view-types");
     let s = Store::open_in(&dir, SMALL, pool()).unwrap();
     let version = |e: u64| {
@@ -974,7 +974,7 @@ fn saved_view_types_are_created_and_deleted_and_a_type_above_them_is_refused() {
             .all(Option::is_none)
     );
     assert!(matches!(
-        s.commit_wait(vec![create(5, RANGE + 1, "x")]),
+        s.commit_wait(vec![create(5, LAST_TYPE + 1, "x")]),
         Err(StoreError::Refused(_))
     ));
     drop(s);
