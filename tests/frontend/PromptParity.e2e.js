@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 import { startLlamaCpp, connectLlamaCpp, openCharacter } from './llamacpp-mock.js';
-import { PARITY_CASES, applyChatMetadata, applyPowerUser, createLorebook } from './prompt-parity-cases.js';
+import { PARITY_CASES, applyChatMetadata, applyPersona, applyPowerUser, createLorebook } from './prompt-parity-cases.js';
 
 // The prompt sent for a chat is the prompt upstream builds for it: upstream's page built each case's prompt
 // (tests/prompt-goldens.mjs, kept in prompt-goldens/), and both the server's (what a backend is sent) and this page's
@@ -128,6 +128,10 @@ test.describe('text completion', () => {
             }
             for (const step of parityCase.steps) await slash(page, step);
             if (parityCase.chatMetadata) await page.evaluate(applyChatMetadata, parityCase.chatMetadata);
+            if (parityCase.persona) {
+                await page.evaluate(applyPersona, parityCase.persona);
+                await saveSettings(page);
+            }
             const type = parityCase.type ?? 'normal';
             expect.soft(await pagePrompt(page, type), 'the page\'s own prompt').toBe(expected);
             expect.soft(await serverPrompt(page, type), 'the server\'s prompt').toBe(expected);

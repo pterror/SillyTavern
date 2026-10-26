@@ -9,6 +9,8 @@
  *   (`context.chat_start`).
  * @property {string[]} steps Slash commands run in the chat before the prompt is built.
  * @property {Record<string, unknown>} [chatMetadata] Chat metadata set after the steps (an author's note: `note_prompt`, …).
+ * @property {{ description: string, position: number, depth?: number, role?: number }} [persona] The user's persona's
+ *   description and where it goes (persona_description_positions), set as typed in the persona panel.
  * @property {{ name: string, entries: Record<string, unknown>[] }} [lorebook] A lorebook made before the chat opens, the
  *   chat's own (`chatMetadata.world_info` names it).
  * @property {string} [type] The generation's type.
@@ -117,6 +119,25 @@ export const PARITY_CASES = [
         chatMetadata: { world_info: 'Parity Forest Lore', note_prompt: 'Stay alert.', note_interval: 1, note_position: 1, note_depth: 1, note_role: 0 },
     },
     {
+        name: 'tc-persona-in-prompt',
+        card: { ch_name: 'Parity Tailor', first_mes: 'Measurements, please.', description: 'A tailor.' },
+        persona: { description: '{{user}} is a tall knight.', position: 0 },
+        steps: ['/send I need a cloak.'],
+    },
+    {
+        name: 'tc-persona-note-top',
+        card: { ch_name: 'Parity Cook', first_mes: 'Soup is ready.', description: 'A cook.' },
+        persona: { description: '{{user}} is very hungry.', position: 2 },
+        steps: ['/send Two bowls, please.', '/sendas name="Parity Cook" Coming up.', '/send Thanks.'],
+        chatMetadata: { note_prompt: 'The kitchen is busy.', note_interval: 1, note_position: 1, note_depth: 1, note_role: 0 },
+    },
+    {
+        name: 'tc-persona-at-depth',
+        card: { ch_name: 'Parity Smith', first_mes: 'Hammer ready.', description: 'A blacksmith.' },
+        persona: { description: '{{user}} carries a broken sword.', position: 4, depth: 1, role: 0 },
+        steps: ['/send Can you fix this?', '/sendas name="Parity Smith" Let me see.', '/send Here.'],
+    },
+    {
         name: 'tc-continue',
         card: { ch_name: 'Parity Bard', first_mes: 'A song for you.', description: 'A travelling bard.' },
         steps: ['/send Sing about the sea.', '/sendas name="Parity Bard" Oh, the waves they roll and'],
@@ -181,4 +202,22 @@ export async function createLorebook(book) {
     });
     const response = await fetch('/api/worldinfo/edit', { method: 'POST', headers: context.getRequestHeaders(), body: JSON.stringify({ name: book.name, data: { entries } }) });
     if (!response.ok) throw new Error(`lorebook not saved: ${response.status}`);
+}
+
+/**
+ * Sets the user's persona's description and its place, as typed in the persona panel, in the page. Run with
+ * page.evaluate().
+ * @param {{ description: string, position: number, depth?: number, role?: number }} persona
+ */
+export async function applyPersona(persona) {
+    // Native events: whichever jQuery the page bound its handlers with gets them.
+    const type = (/** @type {string} */ id, /** @type {string} */ value) => {
+        const element = /** @type {HTMLInputElement} */ (document.getElementById(id));
+        element.value = value;
+        element.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    type('persona_description', persona.description);
+    type('persona_description_position', String(persona.position));
+    if (persona.depth !== undefined) type('persona_depth_value', String(persona.depth));
+    if (persona.role !== undefined) type('persona_depth_role', String(persona.role));
 }

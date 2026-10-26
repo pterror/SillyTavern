@@ -22,7 +22,7 @@ import { createNovelGenerationData } from './novel-generation-data.js';
 import { baseChatReplace, substituteParams } from './macro-substitution.js';
 import { formatInstructModeExamples } from './instruct-mode-examples.js';
 import { createExtensionPromptTable, setExtensionPrompt, getExtensionPrompt, doChatInject, extension_prompt_types } from './extension-prompt-table.js';
-import { inject_ids } from '../public/scripts/constants.js';
+import { inject_ids, persona_description_defaults, persona_description_positions } from '../public/scripts/constants.js';
 
 /**
  * Server-side orchestrator that reproduces the TEXT-COMPLETION-FAMILY prompt-assembly pipeline of
@@ -375,7 +375,9 @@ function parseMesExamplesBlocks(examplesStr, isInstruct, exampleSeparator = '') 
  * @property {number} [storyStringRole]
  * @property {boolean} [sysPromptEnabled]
  * @property {string} [sysPromptContent]
- * @property {number} [personaDescriptionPosition]
+ * @property {number} [personaDescriptionPosition] One of persona_description_positions.
+ * @property {number} [personaDescriptionDepth] The persona description's depth in the chat (at AT_DEPTH).
+ * @property {number} [personaDescriptionRole] Its role there.
  * @property {boolean} [stripExamples]
  * @property {string} [beforeScenarioAnchor] Fallback/override only - default ''. Used only when the
  *   extension-prompt table's own BEFORE_PROMPT-position content (populated by the Author's Note when
@@ -483,6 +485,7 @@ export async function assembleTextCompletionPrompt(input) {
         noteSettings = {}, hasCharacterOrGroup = false,
         storyStringTemplate = '', storyStringPosition = 0, storyStringDepth = 1, storyStringRole = 0,
         sysPromptEnabled = false, sysPromptContent = '', personaDescriptionPosition = 0, stripExamples = false,
+        personaDescriptionDepth = persona_description_defaults.depth, personaDescriptionRole = persona_description_defaults.role,
         beforeScenarioAnchor = '', afterScenarioAnchor = '',
         isInstruct = false, instructPreset = {}, contextSettings = {}, instructUserAlignmentMessage,
         instructWrap = false, pinExamples = false,
@@ -730,6 +733,27 @@ export async function assembleTextCompletionPrompt(input) {
             extensionPromptTable, inject_ids.AUTHORS_NOTE, noteValue,
             authorsNote.position, authorsNote.depth, false, authorsNote.role,
         );
+    }
+
+    // The persona's description where its persona puts it, besides the story string (public/script.js's
+    // addPersonaDescriptionExtensionPrompt()): joined to the note when the note goes in this turn, or in the chat at its
+    // depth.
+    if (personaDescription && personaDescriptionPosition !== persona_description_positions.NONE) {
+        const aroundNote = personaDescriptionPosition === persona_description_positions.TOP_AN || personaDescriptionPosition === persona_description_positions.BOTTOM_AN;
+        if (aroundNote && authorsNote.disabled === false && authorsNote.shouldAddPrompt) {
+            const note = extensionPromptTable[inject_ids.AUTHORS_NOTE]?.value ?? '';
+            setExtensionPrompt(
+                extensionPromptTable, inject_ids.AUTHORS_NOTE,
+                personaDescriptionPosition === persona_description_positions.TOP_AN ? `${personaDescription}\n${note}` : `${note}\n${personaDescription}`,
+                authorsNote.position, authorsNote.depth, false, authorsNote.role,
+            );
+        }
+        if (personaDescriptionPosition === persona_description_positions.AT_DEPTH) {
+            setExtensionPrompt(
+                extensionPromptTable, inject_ids.PERSONA_DESCRIPTION, personaDescription,
+                extension_prompt_types.IN_CHAT, personaDescriptionDepth, true, personaDescriptionRole,
+            );
+        }
     }
 
     // beforeScenarioAnchor/afterScenarioAnchor: NOW resolved for real from the extension-prompt table
