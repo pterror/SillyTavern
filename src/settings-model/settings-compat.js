@@ -193,7 +193,7 @@ function bundleLayout(settings) {
  * @param {string} group
  * @param {string} name
  */
-function bundleRef(group, name) {
+export function bundleRef(group, name) {
     if (group.startsWith('preset.')) return `${group.slice('preset.'.length)}:${name}`;
     if (group.startsWith('template.')) return templateKey(group.slice('template.'.length), name);
     return name;
@@ -472,12 +472,19 @@ export function userConnections(model) {
 }
 
 /**
- * The model laid out as upstream's settings file, for a context of only the user's level.
+ * The statements one level makes of the bundle groups (a character's or group's, §1.1).
+ * @typedef {{ level: 'character', bundles?: Record<string, string>, overrides?: Record<string, unknown> }} ContextLevel
+ */
+
+/**
+ * The model laid out as upstream's settings file, for a context: the levels closer than the user's (a speaking
+ * character's, then its group's), the user's, the app's default.
  * @param {UserModel} model
- * @param {{ bundles: BundleFiles, extrasApiKey?: string }} options
+ * @param {{ bundles: BundleFiles, extrasApiKey?: string, levels?: ContextLevel[] }} options `bundles` holds every
+ *   bundle a level states.
  * @returns {{ settings: Record<string, any>, warnings: string[] }}
  */
-export function assemble(model, { bundles, extrasApiKey }) {
+export function assemble(model, { bundles, extrasApiKey, levels: closer = [] }) {
     /** @type {string[]} */
     const warnings = [];
     /** @type {Record<string, any>} */
@@ -494,25 +501,29 @@ export function assemble(model, { bundles, extrasApiKey }) {
     for (const object of ['oai_settings', 'textgenerationwebui_settings', 'kai_settings', 'nai_settings', 'horde_settings']) settings[object] = flat[object];
     settings.extension_settings = { ...flat.extras };
 
-    // Bundles through the cascade: the user's level, then nothing.
+    // Bundles through the cascade: the context's closer levels, the user's, then the default.
     const { fields, selections } = bundleLayout({});
     const family = lengthFamily(mainApi);
     /** @type {import('../settings-cascade.js').Catalog} */
     const catalog = {
         groupOf: field => (field.includes('/') ? field.slice(0, field.indexOf('/')) : Object.values(TEXT_PRESET_LENGTH_KEYS).includes(field) && family ? `preset.${family}` : null),
-        kindOf: () => 'generation',
-        bundle: ref => {
-            const group = Object.keys(user.bundles).find(g => user.bundles[g] === ref);
-            return group ? bundleFields(bundles, group, ref) : undefined;
-        },
+        // The theme is the reader's (a chat or character doesn't change it); the rest is generation's.
+        kindOf: field => (field.startsWith('theme/') ? 'reader' : 'generation'),
+        bundle: (ref, group) => bundleFields(bundles, group, ref),
         profile: () => undefined,
     };
-    const levels = [user, { level: 'default' }];
+    const levels = [...closer, user, { level: 'default' }];
+    const stating = [...closer, user];
+    /** The bundle a group resolves to: the closest level's that may state it. */
+    const statedFor = (/** @type {string} */ group) => stating
+        .filter(l => group !== 'theme' || l === user)
+        .map(l => l.bundles?.[group])
+        .find(ref => ref !== undefined);
     /** @param {string} id */
     const resolved = id => resolveField(levels, id, catalog).value;
     const layoutPaths = new Map(fields.map(([group, field, path]) => [`${group}/${field}`, path]));
     // A bundle's fields the settings object didn't list (the page's own keys of a text family are the file's).
-    for (const [group, ref] of Object.entries(user.bundles)) {
+    for (const [group, ref] of stating.flatMap(l => Object.entries(l.bundles ?? {}))) {
         for (const id of Object.keys(bundleFields(bundles, group, ref) ?? {})) {
             if (layoutPaths.has(id) || !id.includes('/')) continue;
             const field = id.slice(id.indexOf('/') + 1);
@@ -522,7 +533,7 @@ export function assemble(model, { bundles, extrasApiKey }) {
             else if (group.startsWith('template.')) layoutPaths.set(id, `power_user.${group.slice('template.'.length)}.${field}`);
         }
     }
-    for (const id of Object.keys(user.overrides)) {
+    for (const id of stating.flatMap(l => Object.keys(l.overrides ?? {}))) {
         if (!id.includes('/') || layoutPaths.has(id)) continue;
         const [group, field] = [id.slice(0, id.indexOf('/')), id.slice(id.indexOf('/') + 1)];
         if (group.startsWith('preset.') && FAMILIES[group.slice('preset.'.length)]) layoutPaths.set(id, `${FAMILIES[group.slice('preset.'.length)].object}.${field}`);
@@ -533,7 +544,7 @@ export function assemble(model, { bundles, extrasApiKey }) {
         if (value !== undefined && !isAppDefault(value)) put(settings, path, structuredClone(value));
     }
     for (const [group, path] of selections) {
-        const ref = user.bundles[group];
+        const ref = statedFor(group);
         if (ref !== undefined) put(settings, path, bundleName(group, ref));
     }
     for (const setting of Object.values(TEXT_PRESET_LENGTH_KEYS)) {

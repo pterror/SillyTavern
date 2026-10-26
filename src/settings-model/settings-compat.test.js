@@ -241,3 +241,18 @@ test('a field the settings lack stays the page\'s default, not the selected bund
     assert.equal(Object.hasOwn(back.power_user, 'bogus_folders'), false);
     assert.deepEqual(model.user.overrides['theme/bogus_folders'], { $default: true });
 });
+
+test('a context\'s closer levels: a character\'s preset and overrides win over the user\'s, the group\'s after its speaker\'s, the theme stays the reader\'s', () => {
+    const model = JSON.parse(JSON.stringify(importUpstream(structuredClone(SHIPPED), { bundles: shippedBundles, newKey: keys() })));
+    const userTemp = assemble(model, { bundles: shippedBundles }).settings.oai_settings.temp_openai;
+    // The speaker overrides one field; its group states a preset and overrides another. (A bundle stated closer would
+    // be a statement of every field it holds, over the group's override.)
+    const character = { level: 'character', bundles: { theme: 'Azure' }, overrides: { 'preset.openai/temperature': 1.25 } };
+    const group = { level: 'character', bundles: { 'preset.openai': 'openai:Default' }, overrides: { 'preset.openai/temperature': 0.1, 'preset.openai/top_p': 0.5 } };
+    const { settings } = assemble(model, { bundles: shippedBundles, levels: [character, group] });
+    assert.equal(settings.oai_settings.temp_openai, 1.25);
+    assert.equal(settings.oai_settings.top_p_openai, 0.5);
+    assert.equal(settings.oai_settings.preset_settings_openai, 'Default');
+    assert.equal(settings.power_user.theme, SHIPPED.power_user.theme);
+    assert.notEqual(userTemp, 1.25);
+});

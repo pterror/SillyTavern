@@ -2,7 +2,7 @@ import { STATEMENT_PREFIX, TYPE } from '../library-codes.js';
 import { historyWrites } from '../entity-values.js';
 import { canonicalStringify } from '../../public/scripts/hash-utils.js';
 import { draft } from './entity-draft.js';
-import { USER_LISTS } from './refs.js';
+import { BUNDLE_TYPES, USER_LISTS } from './refs.js';
 import { FOLLOWS_TEXT_GENERATION } from './capabilities.js';
 import { keysOf, readCatalog, readDraft, writeDrafts } from './model-store.js';
 
@@ -28,6 +28,7 @@ const PAGE = 500;
 
 /** A character's or group's statements, by what they state. */
 const STATEMENTS = Object.freeze({
+    settings: `${STATEMENT_PREFIX}settings`,
     personas: `${STATEMENT_PREFIX}personas`,
     dataBank: `${STATEMENT_PREFIX}dataBank`,
     quickReplies: `${STATEMENT_PREFIX}quickReplies`,
@@ -36,7 +37,9 @@ const STATEMENTS = Object.freeze({
 /**
  * @typedef {import('./entity-draft.js').EntityDraft} EntityDraft
  * @typedef {import('./settings-compat.js').UserModel} UserModel
- * @typedef {{ personas?: string[], dataBank?: string[], quickReplies?: { items: string[], hidden: string[] } }} HolderStatements
+ * @typedef {{ bundles?: Record<string, string>, overrides?: Record<string, unknown> }} LevelSettings A character's or
+ *   group's statements of the bundle groups: its bundles by group (keys) and its overrides by field.
+ * @typedef {{ personas?: string[], dataBank?: string[], quickReplies?: { items: string[], hidden: string[] }, settings?: LevelSettings }} HolderStatements
  */
 
 /**
@@ -82,6 +85,10 @@ function holdersOf(statements) {
     for (const { holder, personas } of statements.personasConnected ?? []) at(holder.type, holder.id).personas = personas;
     for (const { avatar, files } of statements.dataBank?.characters ?? []) at('character', avatar).dataBank = files;
     for (const { avatar, items, hidden } of statements.quickReplies?.characters ?? []) at('character', avatar).quickReplies = { items, hidden };
+    for (const [holder, settings] of Object.entries(statements.levels ?? {})) {
+        const colon = holder.indexOf(':');
+        at(/** @type {'character' | 'group'} */ (holder.slice(0, colon)), holder.slice(colon + 1)).settings = settings;
+    }
     return holders;
 }
 
@@ -164,6 +171,7 @@ export async function writeUserModel(lib, handle, model, { actor = null, bundles
         for (const avatar of says.personas ?? []) refs.push([TYPE.persona, avatar]);
         for (const url of says.dataBank ?? []) refs.push([TYPE.dataBankFile, url]);
         for (const name of [...(says.quickReplies?.items ?? []), ...(says.quickReplies?.hidden ?? [])]) refs.push([TYPE.quickReplySet, name]);
+        for (const [group, ref] of Object.entries(says.settings?.bundles ?? {})) refs.push([BUNDLE_TYPES[group], ref]);
     }
     const user = userDraftOf(handle, model, holders);
     if (orphans.length) user.values['s:orphans'] = orphans;
@@ -191,6 +199,13 @@ export async function writeUserModel(lib, handle, model, { actor = null, bundles
                     [STATEMENTS.personas, says.personas && ref(TYPE.persona, says.personas)],
                     [STATEMENTS.dataBank, says.dataBank && ref(TYPE.dataBankFile, says.dataBank)],
                     [STATEMENTS.quickReplies, says.quickReplies && { items: ref(TYPE.quickReplySet, says.quickReplies.items), hidden: ref(TYPE.quickReplySet, says.quickReplies.hidden) }],
+                    [STATEMENTS.settings, says.settings && {
+                        bundles: Object.fromEntries(Object.entries(says.settings.bundles ?? {})
+                            .map(([group, key]) => [group, idOf(BUNDLE_TYPES[group], key)])
+                            .filter(([, id]) => id !== undefined)
+                            .map(([group, id]) => [group, String(id)])),
+                        overrides: says.settings.overrides ?? {},
+                    }],
                 ];
                 for (const [field, value] of next) {
                     const was = stored?.values.find(v => v.field === field)?.json;
@@ -284,16 +299,24 @@ export async function readUserModel(lib, handle) {
         const personas = json(STATEMENTS.personas);
         const files = json(STATEMENTS.dataBank);
         const qr = json(STATEMENTS.quickReplies);
-        const keys = await keysOf(lib, [...(personas ?? []), ...(files ?? []), ...(qr?.items ?? []), ...(qr?.hidden ?? [])].map(id => BigInt(id)));
+        const settings = json(STATEMENTS.settings);
+        const keys = await keysOf(lib, [...(personas ?? []), ...(files ?? []), ...(qr?.items ?? []), ...(qr?.hidden ?? []), ...Object.values(settings?.bundles ?? {})].map(id => BigInt(/** @type {string} */ (id))));
         const named = (/** @type {string[]} */ ids) => ids.map(id => keys.get(id)).filter(k => k !== undefined);
         if (personas) statements.personasConnected.push({ holder: { type: holder.kind, id: holder.key }, personas: named(personas) });
         if (files) (statements.dataBank ??= { user: [], characters: [], disabledElsewhere: [] }).characters.push({ avatar: holder.key, files: named(files) });
         if (qr) (statements.quickReplies ??= { user: { items: [], hidden: [] }, characters: [] }).characters.push({ avatar: holder.key, items: named(qr.items), hidden: named(qr.hidden) });
+        if (settings) {
+            (statements.levels ??= {})[`${holder.kind}:${holder.key}`] = {
+                bundles: Object.fromEntries(Object.entries(settings.bundles ?? {}).map(([group, id]) => [group, keys.get(String(id))]).filter(([, key]) => key !== undefined)),
+                overrides: settings.overrides ?? {},
+            };
+        }
     }
     for (const { type, key, says } of orphans) {
         if (says.personas) statements.personasConnected.push({ holder: { type: type === TYPE.group ? 'group' : 'character', id: key }, personas: says.personas });
         if (says.dataBank) (statements.dataBank ??= { user: [], characters: [], disabledElsewhere: [] }).characters.push({ avatar: key, files: says.dataBank });
         if (says.quickReplies) (statements.quickReplies ??= { user: { items: [], hidden: [] }, characters: [] }).characters.push({ avatar: key, ...says.quickReplies });
+        if (says.settings) (statements.levels ??= {})[`${type === TYPE.group ? 'group' : 'character'}:${key}`] = says.settings;
     }
     return { user: level, entities, ext, unknown, elsewhere: {}, statements, secrets: [], warnings: [] };
 }

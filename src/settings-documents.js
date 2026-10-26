@@ -13,6 +13,11 @@ import path from 'node:path';
  *   when the promise settles.
  * @property {() => Promise<void>} reset Back to a new user's settings.
  * @property {() => import('./settings-model/settings-compat.js').UserModel} model The model as last written.
+ * @property {(context: { avatar?: string | null, groupId?: string | null }) => Record<string, any>} settingsFor The
+ *   settings in a context: the speaking character's and its group's statements over the user's.
+ * @property {(holder: string, change: { bundles?: Record<string, string | null>, set?: Record<string, unknown>, delete?: string[] }) => Promise<void>} writeLevel
+ *   Changes a character's (`character:<avatar>`) or group's (`group:<id>`) statements: bundles stated (null: none),
+ *   overrides set and deleted.
  */
 
 /** @type {Map<string, OpenSettingsDocument>} */

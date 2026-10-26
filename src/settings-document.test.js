@@ -126,3 +126,32 @@ test('a bundle file arriving later (new content) is imported on open; one the st
     assert.equal((await readBundle(directories, 'theme', 'Dark Lite'))?.main_text_color, 'rgb(1, 2, 3)');
     assert.deepEqual(fs.readdirSync(directories.themes), []);
 });
+
+test('a character\'s own preset and override: its context reads them, the user\'s doesn\'t, a user save and a reopen keep them', async () => {
+    const { userStore } = await import('./user-stores.js');
+    const { readSettingsFor, readUserSettings } = await import('./settings-reads.js');
+    const { settingsDocumentOf } = await import('./settings-documents.js');
+    const directories = seedUser('levels');
+    await openSettingsDocument(directories, 'levels');
+    const { lib } = await userStore(directories, 'levels');
+    const card = name => JSON.stringify({ name, description: '', personality: '', scenario: '', first_mes: 'Hi.', mes_example: '', spec: 'chara_card_v2', spec_version: '2.0', data: { name, description: '', personality: '', scenario: '', first_mes: 'Hi.', mes_example: '', creator_notes: '', system_prompt: '', post_history_instructions: '', alternate_greetings: [], tags: [], creator: '', character_version: '', extensions: {} } });
+    await lib.writeCard({}, 'Cara.png', card('Cara'));
+    const preset = await readBundle(directories, 'preset.openai', 'Default');
+    await writeBundle(directories, 'preset.openai', 'Hot', { ...preset, temperature: 1.9, top_p: 0.3 });
+    const document = settingsDocumentOf(directories);
+    await document.writeLevel('character:Cara.png', { bundles: { 'preset.openai': 'openai:Hot' }, set: { 'preset.openai/top_p': 0.6 } });
+
+    const read = context => readSettingsFor(directories, context, ['oai_settings.temp_openai', 'oai_settings.top_p_openai', 'oai_settings.preset_settings_openai']);
+    assert.deepEqual(Object.values(read({ avatar: 'Cara.png' })), [1.9, 0.6, 'Hot']);
+    assert.notEqual(read({ avatar: 'Other.png' })['oai_settings.temp_openai'], 1.9);
+    assert.notEqual(readUserSettings(directories, ['oai_settings.temp_openai'])['oai_settings.temp_openai'], 1.9);
+
+    // A save of the user's own settings leaves the character's.
+    await settingsStore.writeSettingsKeys(directories, { 'power_user.auto_swipe': true });
+    assert.equal(read({ avatar: 'Cara.png' })['oai_settings.temp_openai'], 1.9);
+    await reopen(directories, 'levels');
+    assert.deepEqual(Object.values(read({ avatar: 'Cara.png' })), [1.9, 0.6, 'Hot']);
+    // Unstated, the character reads the user's again.
+    await settingsDocumentOf(directories).writeLevel('character:Cara.png', { bundles: { 'preset.openai': null }, delete: ['preset.openai/top_p'] });
+    assert.deepEqual(read({ avatar: 'Cara.png' }), read({}));
+});

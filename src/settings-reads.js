@@ -1,10 +1,10 @@
-import { readSettingsAtPaths } from './settings-store.js';
+import { readSettingsAtPaths, valuesAtPaths } from './settings-store.js';
+import { settingsDocumentOf } from './settings-documents.js';
 
 /**
  * Where the server reads settings (the settings model, step 6). A reader asks for upstream-shaped values at dotted
  * paths and gets what the cascade resolves for its context: a generation for its chat and speaker, anything else
- * for the user alone. Until the model holds settings (its step 10) both read the settings file, where nothing is
- * stated at a chat or a character; then these two are what changes.
+ * for the user alone, both from the user's settings document (settings-document.js) once the model holds them.
  */
 
 /**
@@ -23,9 +23,10 @@ import { readSettingsAtPaths } from './settings-store.js';
  * @returns {Record<string, any>}
  */
 export function readSettingsFor(directories, context, paths) {
-    // The file states nothing at a chat or a character: every context reads the user's.
-    void context;
-    return readSettingsAtPaths(directories, paths);
+    const document = settingsDocumentOf(directories);
+    // The settings files state nothing at a chat or a character: there every context reads the user's.
+    if (!document) return readSettingsAtPaths(directories, paths);
+    return valuesAtPaths(document.settingsFor({ avatar: context.avatar, groupId: context.groupId }), paths);
 }
 
 /**

@@ -51,8 +51,8 @@ export const KIND_LEVELS = Object.freeze({
  * @property {(field: string) => string | null} groupOf The group (bundle kind) a field belongs to; null for a field
  *   no bundle holds.
  * @property {(field: string) => keyof typeof KIND_LEVELS} kindOf The field's kind, for the levels it may use.
- * @property {(ref: string) => Record<string, unknown> | undefined} bundle A bundle's fields, by ref; undefined when
- *   there's no such bundle.
+ * @property {(ref: string, group: string) => Record<string, unknown> | undefined} bundle A bundle's fields, by ref and
+ *   the group it's stated for; undefined when there's no such bundle.
  * @property {(ref: string) => Record<string, string> | undefined} profile A profile's bundle statements by group.
  */
 
@@ -92,7 +92,7 @@ function statedAt(level, field, catalog) {
     if (group === null) return null;
     const ref = statedBundle(level, group, catalog);
     if (ref === undefined) return null;
-    const fields = catalog.bundle(ref);
+    const fields = catalog.bundle(ref, group);
     if (!fields || !Object.hasOwn(fields, field)) return null;
     return { value: fields[field], from: 'bundle', bundle: ref };
 }
@@ -212,7 +212,7 @@ export function editField(levels, field, value, catalog, at) {
 export function foldIntoBundle(level, group, catalog) {
     const bundle = statedBundle(level, group, catalog);
     if (bundle === undefined) return null;
-    const held = catalog.bundle(bundle) ?? {};
+    const held = catalog.bundle(bundle, group) ?? {};
     /** @type {Record<string, unknown>} */
     const fields = {};
     const drop = [];
