@@ -2,7 +2,7 @@ import { CHAT_COMPLETION_SOURCES, TEXTGEN_TYPES } from './constants.js';
 import { substituteParams } from './macro-substitution.js';
 import { cleanUpReply } from './reply-cleanup.js';
 import { getRegexedString, regex_placement } from './regex-scripts-engine.js';
-import { readSettingsAtPaths } from './settings-store.js';
+import { readSettingsFor, settingsContextOf } from './settings-reads.js';
 
 /**
  * The finished form of a generated reply: what the server stores and sends the page. The page's own reasoning code
@@ -85,7 +85,7 @@ export async function readReplyFinishSettings(directories, { mainApi, source = n
     const paths = ['power_user', 'extension_settings', 'oai_settings.show_thoughts'];
     if (preset) paths.push(`${preset.key}.${preset.name}`, `${preset.key}.extensions`);
     /** @type {any} */
-    const settings = readSettingsAtPaths(directories, paths);
+    const settings = readSettingsFor(directories, settingsContextOf({ avatar, groupId }), paths);
     const powerUser = settings.power_user ?? {};
     const reasoning = powerUser.reasoning ?? {};
     const extensionSettings = settings.extension_settings ?? {};

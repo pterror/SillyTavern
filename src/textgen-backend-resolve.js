@@ -1,5 +1,5 @@
 import { TEXTGEN_TYPES } from './constants.js';
-import { readSettingsAtPaths } from './settings-store.js';
+import { readSettingsFor } from './settings-reads.js';
 
 // Fixed vendor endpoints - mirrors the *_SERVER constants in public/scripts/textgen-settings.js.
 // Known gap: that client also allows a per-browser Mancer server override via localStorage,
@@ -64,10 +64,11 @@ export function resolveServerUrl(settings) {
  * Resolves which text-generation backend to talk to (type, server URL, model) from the server's
  * own stored settings, instead of trusting whatever a client request claims.
  * @param {import('./users.js').UserDirectoryList} directories
+ * @param {import('./settings-reads.js').SettingsContext} [context] The generation's chat and speaker.
  * @returns {{ type: string, serverUrl: string, model: string|undefined }}
  */
-export function resolveTextGenBackend(directories) {
-    const { 'textgenerationwebui_settings': settings } = readSettingsAtPaths(directories, ['textgenerationwebui_settings']);
+export function resolveTextGenBackend(directories, context = {}) {
+    const { 'textgenerationwebui_settings': settings } = readSettingsFor(directories, context, ['textgenerationwebui_settings']);
     const type = settings?.type;
     if (!type) {
         throw new Error('No text completion backend is configured.');

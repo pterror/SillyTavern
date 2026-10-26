@@ -21,7 +21,7 @@ import { resolveConnectionProfile } from '../../connection-profile-resolve.js';
 import { mergeTextGenPreset } from '../../textgen-preset-merge.js';
 import { createTextGenGenerationData } from '../../textgen-generation-data.js';
 import { constructPrompt, getInstructStoppingSequences } from '../../instruct-template-format.js';
-import { readSettingsAtPaths } from '../../settings-store.js';
+import { readSettingsFor, settingsContextOf } from '../../settings-reads.js';
 import { readPresetByName } from '../presets.js';
 import { resolveTokenizer, encodeWithTokenizer, resolveProfileTokenizerSetting, createTokenizerOutcome, sendTokenizerWarnings, tokenizerIdentity } from '../../tokenizer-resolve.js';
 import { createLlamaCppPropsCheck, llamaCppPropsModelName } from '../../llamacpp-props.js';
@@ -570,7 +570,8 @@ export async function buildRawActionTextCompletionRequest(directories, {
     }
 
     // Step 1
-    const backend = resolveTextGenBackend(directories);
+    const settingsContext = settingsContextOf({ avatar: characterAvatar, groupId, chat, nodeId });
+    const backend = resolveTextGenBackend(directories, settingsContext);
 
     // Step 2 (existence checks) - readCardContent() throws (rather than returning undefined) for a
     // missing file (ENOENT); resolveSpeakers() in
@@ -609,7 +610,7 @@ export async function buildRawActionTextCompletionRequest(directories, {
     }
 
     // Step 3
-    const { power_user: powerUser = {} } = readSettingsAtPaths(directories, ['power_user']);
+    const { power_user: powerUser = {} } = readSettingsFor(directories, settingsContext, ['power_user']);
     const tokenizerState = {
         api: 'textgenerationwebui', type: backend.type, url: backend.serverUrl, model: backend.model ?? '',
         tokenizerSetting: powerUser.tokenizer,
@@ -765,7 +766,8 @@ router.post('/generate', withGenerationStop(async function (request, response) {
                 ? getInstructStoppingSequences(instructPreset, contextPreset ?? {}, { name1, name2 })
                 : [];
 
-            const { 'textgenerationwebui_settings': baseSettings, power_user: powerUser = {} } = readSettingsAtPaths(request.user.directories, ['textgenerationwebui_settings', 'power_user']);
+            // A generation in no chat: the user's own settings.
+            const { 'textgenerationwebui_settings': baseSettings, power_user: powerUser = {} } = readSettingsFor(request.user.directories, settingsContextOf({}), ['textgenerationwebui_settings', 'power_user']);
             const preset = profile.preset ? readPresetByName('textgenerationwebui', profile.preset, request.user.directories) : null;
             const settings = mergeTextGenPreset({ ...baseSettings, type: selectedApiMap.type }, preset);
 

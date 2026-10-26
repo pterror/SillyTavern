@@ -5,7 +5,7 @@ import express from 'express';
 
 import { readSecret, SECRET_KEYS } from './secrets.js';
 import { readAllChunks, extractFileFromZipBuffer } from '../util.js';
-import { readSettingsAtPaths } from '../settings-store.js';
+import { readSettingsFor, settingsContextOf } from '../settings-reads.js';
 import { resolveTokenizer, createTokenizerOutcome, sendTokenizerWarnings, tokenizerIdentity } from '../tokenizer-resolve.js';
 import { createStoredCounter, writeBack } from '../token-count-store.js';
 import { tokenizers } from '../tokenizer-ids.js';
@@ -266,7 +266,7 @@ export async function buildRawActionNovelRequest(directories, {
         anchorNodeId = nodeId;
     }
 
-    const { nai_settings: naiSettings = {}, power_user: powerUser = {} } = readSettingsAtPaths(directories, ['nai_settings', 'power_user']);
+    const { nai_settings: naiSettings = {}, power_user: powerUser = {} } = readSettingsFor(directories, settingsContextOf({ avatar: characterAvatar, groupId, chat, nodeId }), ['nai_settings', 'power_user']);
     const tokenizerState = { api: 'novel', model: naiSettings.model_novel ?? '', tokenizerSetting: powerUser.tokenizer };
     const resolvedTokenizer = await resolveTokenizer(tokenizerState, { directories });
     const identity = await tokenizerIdentity(resolvedTokenizer);

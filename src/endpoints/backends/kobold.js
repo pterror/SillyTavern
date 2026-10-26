@@ -5,7 +5,7 @@ import fetch from 'node-fetch';
 import { delay } from '../../util.js';
 import { getOverrideHeaders, setAdditionalHeaders, setAdditionalHeadersByType } from '../../additional-headers.js';
 import { TEXTGEN_TYPES } from '../../constants.js';
-import { readSettingsAtPaths } from '../../settings-store.js';
+import { readSettingsFor, settingsContextOf } from '../../settings-reads.js';
 import { resolveTokenizer, createTokenizerOutcome, sendTokenizerWarnings, tokenizerIdentity } from '../../tokenizer-resolve.js';
 import { createStoredCounter, writeBack } from '../../token-count-store.js';
 import { fetchKoboldStatus, koboldCanUseTokenization, lookupBackendModel, rememberRemoteTokenization } from '../../backend-status.js';
@@ -127,7 +127,7 @@ export async function buildRawActionKoboldRequest(directories, {
 
     const {
         power_user: powerUser = {}, kai_settings: koboldSettings = {}, horde_settings: hordeSettings = {},
-    } = readSettingsAtPaths(directories, ['power_user', 'kai_settings', 'horde_settings']);
+    } = readSettingsFor(directories, settingsContextOf({ avatar: characterAvatar, groupId, chat, nodeId }), ['power_user', 'kai_settings', 'horde_settings']);
     const url = koboldSettings.api_server ?? '';
     const tokenizerState = macroExtras.isHorde
         ? { api: 'koboldhorde', hordeModels: Array.isArray(hordeSettings.models) ? hordeSettings.models : [], tokenizerSetting: powerUser.tokenizer }

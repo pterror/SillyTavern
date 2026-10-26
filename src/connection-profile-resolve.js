@@ -1,5 +1,5 @@
 import { TEXTGEN_TYPES, CHAT_COMPLETION_SOURCES } from './constants.js';
-import { readSettingsAtPaths } from './settings-store.js';
+import { readUserSettings } from './settings-reads.js';
 import { buildConnectApiMap, getConnectApiMapAllowedSelected } from '../public/scripts/connect-api-map.js';
 
 const CONNECT_API_MAP = buildConnectApiMap(TEXTGEN_TYPES, CHAT_COMPLETION_SOURCES);
@@ -12,7 +12,7 @@ const CONNECT_API_MAP = buildConnectApiMap(TEXTGEN_TYPES, CHAT_COMPLETION_SOURCE
  * @returns {{profile: object, selectedApiMap: {selected: string, type?: string, source?: string}}}
  */
 export function resolveConnectionProfile(directories, profileId) {
-    const { 'extension_settings.connectionManager.profiles': profiles } = readSettingsAtPaths(directories, ['extension_settings.connectionManager.profiles']);
+    const { 'extension_settings.connectionManager.profiles': profiles } = readUserSettings(directories, ['extension_settings.connectionManager.profiles']);
     const profile = Array.isArray(profiles) ? profiles.find(p => p.id === profileId) : undefined;
     if (!profile) {
         throw new Error(`Profile not found (ID: ${profileId})`);

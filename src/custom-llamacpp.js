@@ -2,7 +2,7 @@ import fetch from 'node-fetch';
 
 import { TEXTGEN_TYPES } from './constants.js';
 import { mergeObjectWithYaml, trimV1 } from './util.js';
-import { readSettingsAtPaths } from './settings-store.js';
+import { readUserSettings } from './settings-reads.js';
 import { readSecret, SECRET_KEYS } from './endpoints/secrets.js';
 import { fetchTextgenStatus, knownModelName } from './backend-status.js';
 import { logBackendFailure } from './backend-unreachable.js';
@@ -131,7 +131,8 @@ export async function resolveCustomLlamaCppEndpoint(url, directories, includeHea
     let headerText = includeHeaders;
     if (headerText === undefined) {
         const saved = directories
-            ? readSettingsAtPaths(directories, ['oai_settings.custom_include_headers'])['oai_settings.custom_include_headers']
+            // Only a request carrying no chat falls back here (the token count route): the user's own.
+            ? readUserSettings(directories, ['oai_settings.custom_include_headers'])['oai_settings.custom_include_headers']
             : undefined;
         headerText = typeof saved === 'string' ? saved : '';
         if (headerText.includes('{{')) {

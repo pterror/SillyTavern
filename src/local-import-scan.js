@@ -8,7 +8,7 @@ import { getConfigValue, color, mapWithConcurrency } from './util.js';
 import { ProgressLog } from './progress-log.js';
 import { DEFAULT_USER, UPLOADS_DIRECTORY } from './constants.js';
 import { getUserDirectories } from './users.js';
-import { readSettingsAtPaths } from './settings-store.js';
+import { readUserSettings } from './settings-reads.js';
 import { copyCharacterFile } from './local-import-copy.js';
 import { importCharacterFileHeadless, buildPngImportData, buildJsonImportData, mintCharacterId } from './endpoints/characters.js';
 import { userStore } from './user-stores.js';
@@ -284,7 +284,7 @@ function withPerHashLock(state, hash, fn) {
 
 function readTagImportSetting(directories) {
     try {
-        const val = readSettingsAtPaths(directories, ['power_user.tag_import_setting'])['power_user.tag_import_setting'];
+        const val = readUserSettings(directories, ['power_user.tag_import_setting'])['power_user.tag_import_setting'];
         if (val === 2) return 2;
         if (val === 4) return 4;
     } catch { /* use default */ }

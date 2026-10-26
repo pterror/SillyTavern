@@ -15,7 +15,8 @@ import {
     formatBytes,
 } from '../util.js';
 import { triggerAutoSave } from './settings.js';
-import { readAllSettingsAsJson, readSettingsAtPaths, writeSettingsKeys } from '../settings-store.js';
+import { readAllSettingsAsJson, writeSettingsKeys } from '../settings-store.js';
+import { readUserSettings } from '../settings-reads.js';
 import { getStringHash } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel } from '../greeting-list.js';
 import { applyPageWrites } from '../page-writes.js';
@@ -889,7 +890,7 @@ router.post('/get', validateAvatarUrlMiddleware, async function (request, respon
  */
 function recordLastOpened(request, opened) {
     const directories = request.user.directories;
-    const current = readSettingsAtPaths(directories, ['active_character', 'active_group']);
+    const current = readUserSettings(directories, ['active_character', 'active_group']);
     const stored = { active_character: opened.character, active_group: opened.group };
     if ((current.active_character ?? null) === stored.active_character && (current.active_group ?? null) === stored.active_group) {
         return stored;
