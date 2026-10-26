@@ -45,6 +45,15 @@ if errorlevel 1 (
     )
 )
 
+rem The new page's build for this checkout (packages/serve-ui): the one there, else its release's; between releases
+rem it's built here, which needs the dev dependencies (installed only then).
+node scripts\build-ui.mjs --ensure
+if errorlevel 1 (
+    echo Installing the tools to build the new page...
+    call npm install --no-save --no-audit --no-fund --loglevel=error --no-progress --include=dev --ignore-scripts
+    node scripts\build-ui.mjs --ensure
+)
+
 node server.js %*
 pause
 popd
