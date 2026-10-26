@@ -10,6 +10,12 @@ declare module 'solid-js' {
             animated: string;
             'data-action': string;
             'data-folder-id': string;
+            'data-family': string;
+            'data-group': string;
+            'data-settings-level': string | undefined;
+            'data-field': string;
+            'data-for': string;
+            'data-level': string;
         }
     }
 }
