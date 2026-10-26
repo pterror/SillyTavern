@@ -323,9 +323,11 @@ async function run() {
     assert.equal(input.personaDescription, 'A curious {{user}}.', 'personaDescription resolves from power_user.persona_data[user_avatar].description');
     assert.equal(input.personaDescriptionPosition, 1);
     assert.equal(input.wiFormat, '{0}');
-    assert.deepEqual(input.prompts.map(p => p.identifier), buildSettingsFixture().oai_settings.prompts.map(p => p.identifier), 'prompts forwards the real oai_settings.prompts array');
-    assert.equal(input.promptOrder[0].character_id, 100000);
-    assert.equal(input.characterId, 100000, 'characterId defaults to the PromptManager dummy id');
+    const savedIds = buildSettingsFixture().oai_settings.prompts.map(p => p.identifier);
+    assert.deepEqual(input.prompts.map(p => p.identifier).slice(0, savedIds.length), savedIds, 'prompts are the saved ones first');
+    assert.ok(input.prompts.some(p => p.identifier === 'personaDescription'), 'and every default prompt they lack, as the prompt manager adds it');
+    assert.equal(input.characterId, 100001, 'characterId defaults to the chat completion prompt manager\'s global order id');
+    assert.ok(input.promptOrder.some(list => list.character_id === 100001 && list.order.some(entry => entry.identifier === 'personaDescription')), 'with the default order under it when none is saved there');
 
     // --- character-card-field resolution (getCharacterCardFields(), not a lower-level manual parse) ---
     assert.equal(input.charDescription, 'Rex is a Rex.', 'charDescription resolves via the real getCharacterCardFields(), including macro substitution');
@@ -347,11 +349,11 @@ async function run() {
 
     // --- world-info @Depth entries (real, via bucketActivatedEntries()'s worldInfoDepth output) are
     // now written into the real `injectionTable` (setExtensionPrompt()), the same key format
-    // (`wi_depth_${depth}_${role}`)/position(IN_CHAT)/depth/scan(false)/role
+    // (`customDepthWI_${depth}_${role}`, the page's inject_ids.CUSTOM_WI_DEPTH_ROLE)/position(IN_CHAT)/depth/scan(false)/role
     // src/text-completion-prompt-orchestrator.js's own reference Step 7.5 loop uses. wi2's key ('nice
     // to meet') only appears in the real chat history, so this only ends up populated if the real
     // keyword scan genuinely matched it. ---
-    const wiDepthKey = `wi_depth_${WI_DEPTH_TEST_DEPTH}_${WI_DEPTH_TEST_ROLE}`;
+    const wiDepthKey = `customDepthWI_${WI_DEPTH_TEST_DEPTH}_${WI_DEPTH_TEST_ROLE}`;
     assert.ok(input.injectionTable[wiDepthKey], `injectionTable has a real entry at the expected ${wiDepthKey} key`);
     assert.equal(input.injectionTable[wiDepthKey].value, WI_DEPTH_TEST_CONTENT, 'the injectionTable entry carries the real, genuinely-activated @Depth entry content');
     assert.equal(input.injectionTable[wiDepthKey].position, extension_prompt_types.IN_CHAT);

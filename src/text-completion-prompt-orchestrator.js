@@ -5,7 +5,7 @@ import { createReasoningFoldState, foldReasoningIntoMessage, isReasoningLimitRea
 import { getGuidanceScale, adjustMaxContextForCfg } from './cfg-prompt-resolve.js';
 import { parseDecorators } from './world-info/decorators.js';
 import { activateWorldInfoEntries } from './world-info/activation.js';
-import { bucketActivatedEntries, wi_anchor_position, world_info_position } from './world-info/result-bucketing.js';
+import { bucketActivatedEntries, world_info_position } from './world-info/result-bucketing.js';
 import { getRegexedString, regex_placement } from './regex-scripts-engine.js';
 import { appendFileAttachments } from './file-attachment-inline.js';
 import { resolveAuthorsNote } from './authors-note.js';
@@ -19,10 +19,12 @@ import { getCustomTokenBans, calculateLogitBias } from './token-bans-and-bias.js
 import { createTextGenGenerationData } from './textgen-generation-data.js';
 import { createKoboldGenerationData } from './kobold-generation-data.js';
 import { createNovelGenerationData } from './novel-generation-data.js';
-import { baseChatReplace, substituteParams } from './macro-substitution.js';
+import { substituteParams } from './macro-substitution.js';
 import { formatInstructModeExamples } from './instruct-mode-examples.js';
-import { createExtensionPromptTable, setExtensionPrompt, getExtensionPrompt, doChatInject, extension_prompt_types } from './extension-prompt-table.js';
-import { inject_ids, persona_description_defaults, persona_description_positions } from '../public/scripts/constants.js';
+import { createExtensionPromptTable, getExtensionPrompt, doChatInject, extension_prompt_types } from './extension-prompt-table.js';
+import { persona_description_defaults } from '../public/scripts/constants.js';
+import { addDepthInjections, addNoteAndPersona, addPageInjections } from './prompt-injections.js';
+import { exampleBlocks } from './example-blocks.js';
 
 /**
  * Server-side orchestrator that reproduces the TEXT-COMPLETION-FAMILY prompt-assembly pipeline of
@@ -183,10 +185,8 @@ import { inject_ids, persona_description_defaults, persona_description_positions
  *    `worldInfoCandidates` is a plain input array of already-resolved candidate entries, in
  *    priority order, exactly as activateWorldInfoEntries() itself expects.
  *
- * 7. `parseMesExamples()` (public/script.js) is still NOT among the 18 ported modules this task
- *    wires together - it remains a minimal, clearly-marked local adapter (`parseMesExamplesBlocks`
- *    below), used only to get assembleStoryString() a `mesExamplesArray`/raw array to consume at
- *    all. `formatInstructModeExamples()` (public/scripts/instruct-mode.js) IS NOW a real, separately
+ * 7. `parseMesExamples()` (public/script.js) and the lorebook's example-message entries folded into
+ *    its blocks are src/example-blocks.js's, shared with the chat completion builder. `formatInstructModeExamples()` (public/scripts/instruct-mode.js) IS NOW a real, separately
  *    ported module (see src/instruct-mode-examples.js) and IS wired in below: `mesExamplesRawArray`
  *    is captured (as `[...mesExamplesArray]`) AFTER the WI-EM fold-in loop, exactly matching
  *    public/script.js's own ordering (raw-capture at ~5733, immediately after its identical fold-in
@@ -215,30 +215,8 @@ import { inject_ids, persona_description_defaults, persona_description_positions
  * all go through the real ported module for that stage.
  */
 
-/**
- * Mirrors public/script.js's parseMesExamples() (~line 4556) exactly (that function itself never
- * calls formatInstructModeExamples() - see gap (7) above for where that separately-ported function
- * is actually applied, downstream of this adapter). A small local adapter, not one of the 18 ported
- * modules.
- * @param {string} examplesStr
- * @param {boolean} isInstruct
- * @param {string} [exampleSeparator] Equivalent of power_user.context.example_separator (already macro-substituted).
- * @returns {string[]}
- */
 // Mirrors public/scripts/constants.js's GENERATION_TYPE_TRIGGERS exactly.
 const GENERATION_TYPE_TRIGGERS = ['normal', 'continue', 'impersonate', 'swipe', 'regenerate'];
-
-function parseMesExamplesBlocks(examplesStr, isInstruct, exampleSeparator = '') {
-    if (!examplesStr || examplesStr.length === 0 || examplesStr === '<START>') {
-        return [];
-    }
-    if (!examplesStr.startsWith('<START>')) {
-        examplesStr = '<START>\n' + examplesStr.trim();
-    }
-    const separatorBlock = exampleSeparator ? `${exampleSeparator}\n` : '';
-    const blockHeading = isInstruct ? '<START>\n' : separatorBlock;
-    return examplesStr.split(/<START>/gi).slice(1).map(block => `${blockHeading}${block.trim()}\n`);
-}
 
 /**
  * @typedef {import('./macro-substitution.js').SubstituteParamsContext} SubstituteParamsContext
@@ -696,65 +674,13 @@ export async function assembleTextCompletionPrompt(input) {
     // ~5773-5776, which in turn happens before renderStoryString() is called - so a note positioned at
     // BEFORE_PROMPT/IN_PROMPT can only ever reach assembleStoryString() if it's written first.
     const extensionPromptTable = createExtensionPromptTable();
-    // What the page's extensions inject (`/inject`, an extension's setExtensionPrompt()), under the page's keys, as
-    // the page's own table holds them beside what the build adds.
-    for (const [key, entry] of Object.entries(input.pageInjections ?? {})) {
-        setExtensionPrompt(extensionPromptTable, key, entry.value, entry.position, entry.depth, entry.scan, entry.role);
-    }
-
-    // Author's note. JUDGMENT CALL (updated from the prior task): resolveAuthorsNote()'s own doc
-    // comment states `authorsNote.position` is "One of extension_prompt_types positions" - i.e. it is
-    // NOT an ambiguous value that needs guessing at, it already IS an extension_prompt_types member
-    // (public/scripts/authors-note.js stores whatever the client's AN position dropdown holds, which
-    // is an extension_prompt_types value). The note is now written into the table at whatever its
-    // REAL position is (no longer gated to IN_CHAT only) - a note whose position is IN_CHAT is
-    // consumed by doChatInject()'s per-depth chat splicing (below, unchanged); a note whose position
-    // is BEFORE_PROMPT or IN_PROMPT is instead consumed via the beforeScenarioAnchor/afterScenarioAnchor
-    // resolution immediately below. Re-confirmed by re-reading src/extension-prompt-table.js's
-    // `getOccupiedInChatDepths()` (only ever collects entries with `position === IN_CHAT`) and
-    // `doChatInject()` (only ever calls `getExtensionPrompt(table, { position: IN_CHAT, ... })`) that
-    // doChatInject() truly never reads/splices a BEFORE_PROMPT/IN_PROMPT-positioned entry - so a note
-    // positioned there is consumed exactly once, via the anchor read, never double-injected.
-    //
-    // WI ANTop/ANBottom combination (public/script.js ~5352-5356): when the note is actually due to
-    // be inserted this turn (`shouldWIAddPrompt`, i.e. resolveAuthorsNote()'s `shouldAddPrompt`), the
-    // client REPLACES the plain note value with `${ANTop}\n${note}\n${ANBottom}`, stripping at most
-    // ONE leading and ONE trailing newline (the client's regex `/(^\n)|(\n$)/g` only ever matches each
-    // anchor once, not every run of newlines - do not "fix" this into a stricter trim). This combination
-    // logic is UNCHANGED from the prior task - only WHEN the write happens (now before assembleStoryString)
-    // and WHICH position-gate it's written under (now the real `authorsNote.position`, not hardcoded
-    // IN_CHAT) have changed. `anBefore`/`anAfter` are already available here (bucketActivatedEntries
-    // ran above, in Step 6), so the combined value is already computable at this point.
-    if (authorsNote.disabled === false) {
-        const noteValue = authorsNote.shouldAddPrompt
-            ? `${anBefore.join('\n')}\n${authorsNote.value}\n${anAfter.join('\n')}`.replace(/(^\n)|(\n$)/g, '')
-            : authorsNote.value;
-        setExtensionPrompt(
-            extensionPromptTable, inject_ids.AUTHORS_NOTE, noteValue,
-            authorsNote.position, authorsNote.depth, false, authorsNote.role,
-        );
-    }
-
-    // The persona's description where its persona puts it, besides the story string (public/script.js's
-    // addPersonaDescriptionExtensionPrompt()): joined to the note when the note goes in this turn, or in the chat at its
-    // depth.
-    if (personaDescription && personaDescriptionPosition !== persona_description_positions.NONE) {
-        const aroundNote = personaDescriptionPosition === persona_description_positions.TOP_AN || personaDescriptionPosition === persona_description_positions.BOTTOM_AN;
-        if (aroundNote && authorsNote.disabled === false && authorsNote.shouldAddPrompt) {
-            const note = extensionPromptTable[inject_ids.AUTHORS_NOTE]?.value ?? '';
-            setExtensionPrompt(
-                extensionPromptTable, inject_ids.AUTHORS_NOTE,
-                personaDescriptionPosition === persona_description_positions.TOP_AN ? `${personaDescription}\n${note}` : `${note}\n${personaDescription}`,
-                authorsNote.position, authorsNote.depth, false, authorsNote.role,
-            );
-        }
-        if (personaDescriptionPosition === persona_description_positions.AT_DEPTH) {
-            setExtensionPrompt(
-                extensionPromptTable, inject_ids.PERSONA_DESCRIPTION, personaDescription,
-                extension_prompt_types.IN_CHAT, personaDescriptionDepth, true, personaDescriptionRole,
-            );
-        }
-    }
+    // What the page's extensions inject, then the author's note and the persona's description around it or in the
+    // chat (src/prompt-injections.js): before assembleStoryString(), which reads what goes before and after it.
+    addPageInjections(extensionPromptTable, input.pageInjections);
+    addNoteAndPersona(extensionPromptTable, {
+        authorsNote, anBefore, anAfter,
+        personaDescription, personaDescriptionPosition, personaDescriptionDepth, personaDescriptionRole,
+    });
 
     // beforeScenarioAnchor/afterScenarioAnchor: NOW resolved for real from the extension-prompt table
     // (see module doc comment gap 1) via the already-committed, SYNCHRONOUS getExtensionPrompt() export
@@ -778,20 +704,10 @@ export async function assembleTextCompletionPrompt(input) {
     // ---- Step 7: story-string assembly ----------------------------------------------------------
     // mesExamplesArray/mesExamplesRawArray: see module doc comment gap (7) - the instruct-mode
     // reformatting gap is now closed; see the comment at the formatInstructModeExamples() call below.
-    const exampleSeparator = contextSettings.example_separator || '';
-    let mesExamplesArray = parseMesExamplesBlocks(fields.mesExamples, isInstruct, exampleSeparator);
-
-    // Fold in message-example (EM) world-info entries, mirroring public/script.js ~5715-5729.
-    for (const example of worldInfoExamples) {
-        if (!example.content || example.content.length === 0) continue;
-        const formattedExample = baseChatReplace(example.content, macroContext);
-        const cleanedExample = parseMesExamplesBlocks(formattedExample, isInstruct, exampleSeparator);
-        if (example.position === wi_anchor_position.before) {
-            mesExamplesArray.unshift(...cleanedExample);
-        } else {
-            mesExamplesArray.push(...cleanedExample);
-        }
-    }
+    // The card's example blocks with the lorebook's example-message entries (src/example-blocks.js).
+    let mesExamplesArray = exampleBlocks(fields.mesExamples, worldInfoExamples, {
+        mainApi, isInstruct, exampleSeparator: contextSettings.example_separator, macroContext,
+    });
     const mesExamplesRawArray = [...mesExamplesArray];
 
     // Instruct-mode example-dialogue reformatting - NOW REAL (see module doc comment gap 7). The raw
@@ -817,79 +733,16 @@ export async function assembleTextCompletionPrompt(input) {
     const { system, combinedStoryString, storyStringInjection } = storyStringResult;
     mesExamplesArray = storyStringResult.mesExamplesArray;
 
-    // ---- Step 7.5: remaining extension-prompts table writes + depth-indexed chat injection ---------
-    // Continues populating the SAME table created in Step 6.5 above (the Author's Note was already
-    // written there, before assembleStoryString() ran) with the remaining depth-indexed injection
-    // sources this orchestrator wires up (see module doc comment gap 1 for what's still NOT included:
-    // anBefore/anAfter's outletEntries counterpart). These three still need to run AFTER
-    // assembleStoryString(), since `storyStringInjection` (source 2 below) is only available once
-    // assembleStoryString() has returned - so, unlike the Author's Note, they could not have moved
-    // earlier alongside it.
-
-    // 1. World-info @Depth entries (bucketActivatedEntries's worldInfoDepth output).
-    for (const depthEntry of worldInfoDepthEntries) {
-        setExtensionPrompt(
-            extensionPromptTable,
-            inject_ids.CUSTOM_WI_DEPTH_ROLE(depthEntry.depth, depthEntry.role),
-            depthEntry.entries.join('\n'),
-            extension_prompt_types.IN_CHAT,
-            depthEntry.depth,
-            false,
-            depthEntry.role,
-        );
-    }
-
-    // 2. Story-string-in-chat injection (assembleStoryString's storyStringInjection output, non-null
-    // only when power_user.context.story_string_position === IN_CHAT on the client).
-    if (storyStringInjection) {
-        setExtensionPrompt(
-            extensionPromptTable, inject_ids.STORY_STRING, storyStringInjection.content,
-            extension_prompt_types.IN_CHAT, storyStringInjection.depth, false, storyStringInjection.role,
-        );
-    }
-
-    // 3. Character card's own depth_prompt (public/script.js ~5545-5559), now with the REAL
-    // group/single branching (this task closes the previously-documented group-chat sub-gap - see
-    // module doc comment gap 1). The `scan` argument reuses `noteSettings.allowWIScan` in BOTH
-    // branches - the same input this orchestrator already threads through for the author's-note's OWN
-    // scan flag (see `additionalScanInjects` above) - matching the client's literal
-    // `extension_settings.note.allowWIScan` argument at both of its call sites (single-character
-    // ~5558 and per-group-member ~5548).
-    //
-    // Group branch: getGroupCharacterDepthPrompts() (src/character-card-fields.js, ported from
-    // public/scripts/group-chats.js's getGroupDepthPrompts()) resolves ONE entry per group member that
-    // has a non-empty depth_prompt, each already carrying its OWN depth/role (resolved through
-    // getExtensionPromptRoleByName() inside that function - not re-resolved here). Each entry gets its
-    // own table key, mirroring the client's per-index `inject_ids.DEPTH_PROMPT_INDEX(index)` keying
-    // (public/script.js ~5546-5550) - `depth_prompt_${index}` is used here since nothing else reads
-    // these keys by exact string.
-    //
-    // Single-character fallback: used whenever this ISN'T a group chat, OR it is a group chat but
-    // getGroupCharacterDepthPrompts() resolved zero entries (e.g. no member has a depth_prompt set) -
-    // matching the client's real structure (public/script.js ~5545-5559: the group branch is only
-    // taken `if (selected_group)`, and INSIDE it the per-member loop is what actually decides whether
-    // anything gets injected; falling through to the single-character branch when a group produces no
-    // entries is this orchestrator's own necessary adaptation of that same intent, since `hasCharacterOrGroup`
-    // is the only single boolean this orchestrator has for "is a character/group selected at all").
-    // Unchanged from before this task: only written when a character/group is actually selected and
-    // the resolved text is non-empty, matching the general "don't write empty entries" pattern the
-    // other three sources above already follow.
+    // ---- Step 7.5: what goes in the chat at a depth ------------------------------------------------
+    // After assembleStoryString(): the story string goes in the chat when its position says so.
     const groupCharacterDepthPrompts = isGroup && hasCharacterOrGroup
         ? await getGroupCharacterDepthPrompts(directories, groupId, avatar, baseMacroContext)
         : [];
-    if (groupCharacterDepthPrompts.length > 0) {
-        groupCharacterDepthPrompts.forEach((depthPrompt, index) => {
-            setExtensionPrompt(
-                extensionPromptTable, inject_ids.DEPTH_PROMPT_INDEX(index), depthPrompt.text,
-                extension_prompt_types.IN_CHAT, depthPrompt.depth, noteSettings.allowWIScan, depthPrompt.role,
-            );
-        });
-    } else if (hasCharacterOrGroup && fields.charDepthPrompt) {
-        setExtensionPrompt(
-            extensionPromptTable, inject_ids.DEPTH_PROMPT, fields.charDepthPrompt || '',
-            extension_prompt_types.IN_CHAT, fields.charDepthPromptDepth, noteSettings.allowWIScan, fields.charDepthPromptRole,
-        );
-    }
+    addDepthInjections(extensionPromptTable, {
+        worldInfoDepthEntries, storyStringInjection, groupDepthPrompts: groupCharacterDepthPrompts,
+        characterDepthPrompt: hasCharacterOrGroup ? { text: fields.charDepthPrompt || '', depth: fields.charDepthPromptDepth, role: fields.charDepthPromptRole } : null,
+        depthPromptScan: noteSettings.allowWIScan,
+    });
 
     // doChatInject runs BEFORE jailbreak injection in the real client (public/script.js ~5820 vs
     // ~5823) - `injectedIndices` it returns are already in the "reversed" (newest-first) index

@@ -27,6 +27,8 @@ test.beforeEach(async ({ page }) => {
 
 /** @type {Record<string, unknown> | null} The settings the case replaced. */
 let restore = null;
+/** Whether the case gave the persona a description, to clear once it's done. */
+let clearPersona = false;
 
 test.afterEach(async ({ page }) => {
     await llama.close();
@@ -34,6 +36,11 @@ test.afterEach(async ({ page }) => {
         await page.evaluate(applyPowerUser, restore);
         await saveSettings(page);
         restore = null;
+    }
+    if (clearPersona) {
+        await page.evaluate(applyPersona, { description: '', position: 0 });
+        await saveSettings(page);
+        clearPersona = false;
     }
 });
 
@@ -132,6 +139,7 @@ async function setUp(page, parityCase) {
     for (const step of parityCase.steps) await slash(page, step);
     if (parityCase.chatMetadata) await page.evaluate(applyChatMetadata, parityCase.chatMetadata);
     if (parityCase.persona) {
+        clearPersona = true;
         await page.evaluate(applyPersona, parityCase.persona);
         await saveSettings(page);
     }

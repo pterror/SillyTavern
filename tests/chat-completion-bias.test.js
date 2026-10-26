@@ -42,8 +42,9 @@ const overrides = {
     './horde.js': { horde_settings: { models: [] } },
 };
 
-// Every module the two real modules import is mocked, with stubs for the names they import.
-const realModules = ['chat-completion-settings.js', 'tokenizers.js'];
+// Every module the two real modules import is mocked, with stubs for the names they import; the settings' defaults are
+// plain data, used as they are.
+const realModules = ['chat-completion-settings.js', 'tokenizers.js', 'chat-completion-defaults.js', 'prompt-manager-defaults.js'];
 const scriptsUrl = new URL('../public/scripts/', import.meta.url);
 /** @type {Map<string, object>} */
 const mocks = new Map();
