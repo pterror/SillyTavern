@@ -17,7 +17,10 @@ const servers: { close(): void }[] = [];
 const releases = express();
 const published: { bundle: string | null } = { bundle: null };
 releases.get('/:release/:file', (request, response) => {
-    if (published.bundle && request.params.file === BUNDLE) return void response.type('json').send(published.bundle);
+    if (published.bundle !== null && request.params.file === BUNDLE) {
+        response.type('json').send(published.bundle);
+        return;
+    }
     response.sendStatus(404);
 });
 

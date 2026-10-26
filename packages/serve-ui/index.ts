@@ -125,7 +125,7 @@ export async function ensureUi({
     if ((await builtHash(outDir)) === source) return 'current';
     const url = `${releases}/ui-${uiReleaseKey(source)}/${BUNDLE}`;
     const response = await fetch(url).catch(() => null);
-    if (response?.ok) {
+    if (response?.ok === true) {
         await unpack((await response.json()) as Bundle, outDir);
         // The bundle's own record of its source is the one that counts.
         if ((await builtHash(outDir)) !== source) throw new Error(`${url} is not a build of this source`);

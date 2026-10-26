@@ -1,6 +1,7 @@
 import { For, Show, createEffect, createMemo, createSignal } from 'solid-js';
 import type { Accessor } from 'solid-js';
-import { VIEW, CHAT_VIEW, actions, COLUMNS, FITTINGS, SORT_ORDERS } from '@st/protocol/backgrounds';
+import { VIEW, CHAT_VIEW, COLUMNS, FITTINGS, SORT_ORDERS } from '@st/protocol/backgrounds';
+import type { actions } from '@st/protocol/backgrounds';
 import type { Background, BackgroundsView, ChatBackgroundsView, Folder, Ref } from '@st/protocol/backgrounds';
 import type { Payload } from '@st/protocol';
 import type { Client } from '../../client.ts';
@@ -69,7 +70,9 @@ export function Backgrounds(props: {
     const view = client.view<BackgroundsView>(VIEW);
     const chatView = client.view<ChatBackgroundsView>(CHAT_VIEW);
     const tab = () => props.tab;
-    const setTab = (next: BackgroundsTab) => props.onTab(next);
+    const setTab = (next: BackgroundsTab) => {
+        props.onTab(next);
+    };
     const [search, setSearch] = createSignal('');
     const [folder, setFolder] = createSignal<string | null>(null);
     const [ticking, setTicking] = createSignal(false);
@@ -117,7 +120,10 @@ export function Backgrounds(props: {
     };
 
     const pick = (background: Background, chat: boolean, event: MouseEvent) => {
-        if (ticking() && !chat) return setTick(background.file, !ticked().has(background.file));
+        if (ticking() && !chat) {
+            setTick(background.file, !ticked().has(background.file));
+            return;
+        }
         void act('backgrounds.select', { file: background.file, chat, forUser: event.shiftKey });
     };
 
@@ -234,7 +240,7 @@ export function Backgrounds(props: {
         setBusy(t('Choosing a background...'));
         try {
             const refused = await pickByModel(client, view, props.options.quietPrompt, t);
-            if (refused) setNotice(refused);
+            if (refused !== null) setNotice(refused);
         } finally {
             setBusy(null);
         }
@@ -242,8 +248,11 @@ export function Backgrounds(props: {
 
     // The user's column count, else the layout's own (the stylesheet's, by screen width).
     const chosenColumns = () => view()?.options.columns ?? null;
-    const columns = () =>
-        chosenColumns() ?? (Number(getComputedStyle(props.container).getPropertyValue('--bg-thumb-columns')) || 5);
+    const layoutColumns = () => {
+        const stated = Number(getComputedStyle(props.container).getPropertyValue('--bg-thumb-columns'));
+        return Number.isFinite(stated) && stated > 0 ? stated : 5;
+    };
+    const columns = () => chosenColumns() ?? layoutColumns();
     const setColumns = (count: number) => {
         const next = Math.min(COLUMNS.max, Math.max(COLUMNS.min, count));
         if (next !== columns()) void act('backgrounds.options', { columns: next });
@@ -634,7 +643,7 @@ function Thumbnail(props: {
             attr:bgfile={props.background.file}
             attr:custom={String(props.chat)}
             attr:animated={String(props.background.animated)}
-            style={props.background.aspect ? { 'aspect-ratio': String(props.background.aspect) } : {}}
+            style={props.background.aspect !== null ? { 'aspect-ratio': String(props.background.aspect) } : {}}
             onClick={(event) => props.onPick(event)}
             onFocusOut={(event) => {
                 if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setMenuOpen(false);
@@ -643,7 +652,7 @@ function Thumbnail(props: {
             <div
                 class="thumbnail-clipper"
                 style={{
-                    ...(props.background.color ? { 'background-color': props.background.color } : {}),
+                    ...(props.background.color !== null ? { 'background-color': props.background.color } : {}),
                     ...(still() || isVideo() ? {} : { 'background-image': `url("${props.background.thumbnail}")` }),
                 }}
             >
@@ -729,7 +738,7 @@ function FolderTile(props: {
         >
             <div
                 class="bg_folder_tile_cover"
-                style={props.folder.cover ? { 'background-image': `url("${props.folder.cover}")` } : {}}
+                style={props.folder.cover !== null ? { 'background-image': `url("${props.folder.cover}")` } : {}}
             />
             <div class="bg_folder_tile_overlay">
                 <i class="fa-solid fa-folder" />

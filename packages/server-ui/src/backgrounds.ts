@@ -74,6 +74,13 @@ export type Ports = {
 const ANIMATED = /\.(mp4|webp|gif|apng)$/i;
 const DEFAULT_FILE = '__transparent.png';
 
+/** The user's stored background, or the default where there's none (an empty name is none). */
+const fileOrDefault = (name: string | undefined) => (name === undefined || name === '' ? DEFAULT_FILE : name);
+
+/** Whether a chat has a background locked to it (an empty lock is none). */
+const isLocked = (chat: { locked: string | null } | null) =>
+    chat !== null && chat.locked !== null && chat.locked !== '';
+
 const systemUrl = (file: string) => `backgrounds/${encodeURIComponent(file)}`;
 const chatUrl = (path: string) => encodeURI(path);
 const css = (url: string) => `url("${url}")`;
@@ -95,9 +102,9 @@ const decoded = (text: string, decode: (text: string) => string) => {
 /** Upstream's stored CSS url back to what it names. */
 export function refOfCss(value: string | null | undefined): Ref | null {
     const url = /^url\(["']?(.*?)["']?\)$/.exec(value ?? '')?.[1];
-    if (!url) return null;
+    if (url === undefined || url === '') return null;
     const system = /^\/?backgrounds\/(.+)$/.exec(url)?.[1];
-    if (system) return { file: decoded(system, decodeURIComponent), chat: false };
+    if (system !== undefined) return { file: decoded(system, decodeURIComponent), chat: false };
     return { file: decoded(url, decodeURI), chat: true };
 }
 
@@ -153,7 +160,7 @@ export function backgroundsArea(ports: Ports) {
             file: f.file,
             title: titleOf(f.file),
             url: systemUrl(f.file),
-            thumbnail: `/thumbnail?type=bg&file=${encodeURIComponent(f.file)}${f.thumbnailVersion ? `&v=${encodeURIComponent(f.thumbnailVersion)}` : ''}${f.animated && options.animation ? '&animated=true' : ''}`,
+            thumbnail: `/thumbnail?type=bg&file=${encodeURIComponent(f.file)}${f.thumbnailVersion !== null && f.thumbnailVersion !== '' ? `&v=${encodeURIComponent(f.thumbnailVersion)}` : ''}${f.animated && options.animation ? '&animated=true' : ''}`,
             animated: f.animated,
             color: f.color,
             aspect: f.aspect,
@@ -166,10 +173,10 @@ export function backgroundsArea(ports: Ports) {
                 return {
                     id: f.id,
                     name: f.name,
-                    cover: cover ? `/thumbnail?type=bg&file=${encodeURIComponent(cover)}` : null,
+                    cover: cover !== undefined ? `/thumbnail?type=bg&file=${encodeURIComponent(cover)}` : null,
                 };
             }),
-            selected: { file: stored.name || DEFAULT_FILE, chat: false },
+            selected: { file: fileOrDefault(stored.name), chat: false },
             options,
         };
     };
@@ -180,7 +187,7 @@ export function backgroundsArea(ports: Ports) {
         const [stored, chat] = await Promise.all([ports.options.read(context.user), ports.chat.read(context)]);
         const { sortOrder } = optionsOf(stored);
         const locked = chat ? refOfCss(chat.locked) : null;
-        const shown = locked ?? { file: stored.name || DEFAULT_FILE, chat: false };
+        const shown = locked ?? { file: fileOrDefault(stored.name), chat: false };
         return {
             chat: chat
                 ? {
@@ -219,7 +226,7 @@ export function backgroundsArea(ports: Ports) {
     const lock = async (context: ActionContext, ref: Ref | null) => {
         const chat = await ports.chat.read(context);
         if (!chat) return noChat;
-        const target = ref ?? { file: (await ports.options.read(context.user)).name || DEFAULT_FILE, chat: false };
+        const target = ref ?? { file: fileOrDefault((await ports.options.read(context.user)).name), chat: false };
         await ports.chat.write(context, { locked: cssOfRef(target) });
         return changed;
     };
@@ -231,7 +238,7 @@ export function backgroundsArea(ports: Ports) {
         actions: {
             'backgrounds.select': async (context, { file, chat: isChat, forUser }) => {
                 const chat = await ports.chat.read(context);
-                if (isChat || (chat?.locked && !forUser)) return lock(context, { file, chat: isChat });
+                if (isChat || (isLocked(chat) && !forUser)) return lock(context, { file, chat: isChat });
                 await setUsers(context.user, file);
                 return changed;
             },
@@ -317,9 +324,9 @@ export function backgroundsArea(ports: Ports) {
                     files.map((f) => f.file),
                     reply,
                 );
-                if (!match) return { refused: 'No background matches that.' };
+                if (match === null) return { refused: 'No background matches that.' };
                 // As picking it by hand would: the open chat's lock, when it has one, else the user's.
-                if ((await ports.chat.read(context))?.locked) return lock(context, { file: match, chat: false });
+                if (isLocked(await ports.chat.read(context))) return lock(context, { file: match, chat: false });
                 await setUsers(context.user, match);
                 return changed;
             },
@@ -380,7 +387,7 @@ export function bestTitle(files: string[], reply: string): string | null {
     const words = new Set(said.split(/[^\p{L}\p{N}]+/u).filter(Boolean));
     let best: { file: string; shared: number } | null = null;
     for (const t of titled) {
-        const shared = t.title.split(/[^\p{L}\p{N}]+/u).filter((w) => w && words.has(w)).length;
+        const shared = t.title.split(/[^\p{L}\p{N}]+/u).filter((w) => w !== '' && words.has(w)).length;
         if (shared > 0 && (!best || shared > best.shared)) best = { file: t.file, shared };
     }
     return best?.file ?? null;

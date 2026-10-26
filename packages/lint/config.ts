@@ -30,6 +30,19 @@ export const lintConfig = {
     rules: {
         'st/declared-imports': 'error',
         'import/no-cycle': 'error',
+        // A condition is a boolean: `[] && x` and `count && x` are mistakes the types can see (after ~/git/enso's set).
+        'typescript/strict-boolean-expressions': [
+            'error',
+            { allowString: false, allowNumber: false, allowNullableObject: true },
+        ],
+        'typescript/no-unnecessary-condition': 'error',
+        'typescript/switch-exhaustiveness-check': 'error',
+        'typescript/restrict-template-expressions': 'error',
+        'typescript/no-floating-promises': 'error',
+        'typescript/no-misused-promises': 'error',
+        'typescript/no-confusing-void-expression': ['error', { ignoreVoidReturningFunctions: true }],
+        'typescript/consistent-type-imports': 'error',
+        eqeqeq: ['error', 'always', { null: 'ignore' }],
     },
     overrides: [
         {

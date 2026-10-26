@@ -436,7 +436,8 @@ export function limitRecord(record: ModelRecord): ModelRecord {
     ])
         if (name in record) kept[name] = record[name];
     if (Array.isArray(record['properties']))
-        kept['properties'] = (record['properties'] as { property_id?: unknown }[]).filter(
+        // A list from the source: an entry can be anything.
+        kept['properties'] = (record['properties'] as ({ property_id?: unknown } | null)[]).filter(
             (p) => p?.property_id === 'context_window',
         );
     const info = record['info'] as { contextLength?: unknown } | undefined;
@@ -453,7 +454,12 @@ export function limitsOfSettings(oai: Record<string, unknown>, models: ModelList
     };
     const source = text('chat_completion_source');
     const setting = MODEL_SETTING[source];
-    return limitsFor(source, setting ? text(setting) : '', oai['max_context_unlocked'] === true, models(source));
+    return limitsFor(
+        source,
+        setting !== undefined ? text(setting) : '',
+        oai['max_context_unlocked'] === true,
+        models(source),
+    );
 }
 
 /**
@@ -461,21 +467,23 @@ export function limitsOfSettings(oai: Record<string, unknown>, models: ModelList
  * stored values stay as they are: going back to a model that allows more gives them back.
  */
 export function withinLimits<T extends Record<string, unknown>>(settings: T, models: ModelLists): T {
-    const oai = settings['oai_settings'];
-    if (!oai || typeof oai !== 'object' || Array.isArray(oai)) return settings;
+    const oai: unknown = settings['oai_settings'];
+    if (typeof oai !== 'object' || oai === null || Array.isArray(oai)) return settings;
     const stored = oai as Record<string, unknown>;
     const limits = limitsOfSettings(stored, models);
-    const bounded: Record<string, unknown> = { ...stored };
-    let changed = false;
-    const bound = (key: string, min: number, max: number) => {
+    const bounds: [key: string, min: number, max: number][] = [
+        ['openai_max_context', -Infinity, limits.context],
+        ['temp_openai', -Infinity, limits.temperature],
+        ['freq_pen_openai', limits.penalties.min, limits.penalties.max],
+        ['pres_pen_openai', limits.penalties.min, limits.penalties.max],
+    ];
+    const bounded = bounds.flatMap(([key, min, max]) => {
         const value = stored[key];
-        if (typeof value !== 'number' || (value >= min && value <= max)) return;
-        bounded[key] = Math.min(max, Math.max(min, value));
-        changed = true;
-    };
-    bound('openai_max_context', -Infinity, limits.context);
-    bound('temp_openai', -Infinity, limits.temperature);
-    bound('freq_pen_openai', limits.penalties.min, limits.penalties.max);
-    bound('pres_pen_openai', limits.penalties.min, limits.penalties.max);
-    return changed ? { ...settings, oai_settings: bounded } : settings;
+        return typeof value === 'number' && (value < min || value > max)
+            ? [[key, Math.min(max, Math.max(min, value))] as const]
+            : [];
+    });
+    return bounded.length === 0
+        ? settings
+        : { ...settings, oai_settings: { ...stored, ...Object.fromEntries(bounded) } };
 }

@@ -154,14 +154,13 @@ export function createUi(areas: Area[], { userOf, chatOf }: UiOptions): Ui {
             if (tab.user.directories.root !== user.directories.root) continue;
             const frames = await framesOf(tab, keys);
             if (tab === actor) answer = frames;
-            else if (frames.length) for (const push of tab.streams) push({ type: 'views', views: frames });
+            else if (frames.length > 0) for (const push of tab.streams) push({ type: 'views', views: frames });
         }
         if (actor && !tabs.has(actor.session)) answer = await framesOf(actor, keys);
         return answer;
     };
 
-    const router = express.Router();
-    router.post('/', async (request: Request, response: Response) => {
+    const act = async (request: Request, response: Response) => {
         const answer = (result: ActionAnswer, status = 200) => void response.status(status).send(result);
         const file = (request as Request & { file?: MulterFile }).file;
         const upload = file ? { path: file.path, name: file.originalname, type: file.mimetype, size: file.size } : null;
@@ -173,8 +172,10 @@ export function createUi(areas: Area[], { userOf, chatOf }: UiOptions): Ui {
         try {
             const user = userOf(request);
             const session = request.get(SESSION_HEADER);
-            if (!user || !session || !SESSION.test(session))
-                return answer({ ok: false, error: 'no session', views: [] }, 400);
+            if (!user || session === undefined || !SESSION.test(session)) {
+                answer({ ok: false, error: 'no session', views: [] }, 400);
+                return;
+            }
             tab = tabOf(user, session);
             // Multipart (an action with a file) carries the payload as JSON text beside the file.
             let payload: unknown = body?.payload;
@@ -182,57 +183,80 @@ export function createUi(areas: Area[], { userOf, chatOf }: UiOptions): Ui {
                 try {
                     payload = JSON.parse(payload);
                 } catch {
-                    return answer({ ok: false, error: 'the payload is not JSON', views: [] }, 400);
+                    answer({ ok: false, error: 'the payload is not JSON', views: [] }, 400);
+                    return;
                 }
             }
             if (type === 'chat.show' || type === 'chat.close') {
                 const parsed = v.safeParse(viewActions[type], payload);
-                if (!parsed.success) return answer({ ok: false, error: 'not a chat', views: [] }, 400);
+                if (!parsed.success) {
+                    answer({ ok: false, error: 'not a chat', views: [] }, 400);
+                    return;
+                }
                 tab.chat = type === 'chat.show' ? await chatOf(user, parsed.output as ChatOwner) : null;
-                return answer({ ok: true, views: await framesOf(tab, followChat) });
+                answer({ ok: true, views: await framesOf(tab, followChat) });
+                return;
             }
             if (type === 'view.open' || type === 'view.close') {
                 const parsed = v.safeParse(viewActions[type], payload);
-                if (!parsed.success || !views.has(parsed.output.key))
-                    return answer({ ok: false, error: 'no such view', views: [] }, 400);
+                if (!parsed.success || !views.has(parsed.output.key)) {
+                    answer({ ok: false, error: 'no such view', views: [] }, 400);
+                    return;
+                }
                 if (type === 'view.close') {
                     tab.open.delete(parsed.output.key);
-                    return answer({ ok: true, views: [] });
+                    answer({ ok: true, views: [] });
+                    return;
                 }
                 tab.open.add(parsed.output.key);
-                return answer({ ok: true, views: [await frame(tab, parsed.output.key)] });
+                answer({ ok: true, views: [await frame(tab, parsed.output.key)] });
+                return;
             }
             const action = actions.get(type);
-            if (!action) return answer({ ok: false, error: `no action ${type}`, views: [] }, 400);
+            if (!action) {
+                answer({ ok: false, error: `no action ${type}`, views: [] }, 400);
+                return;
+            }
             const parsed = v.safeParse(action.schema, payload);
             if (!parsed.success) {
                 const issue = parsed.issues.map((i) => `${v.getDotPath(i) ?? type}: ${i.message}`).join('; ');
-                return answer({ ok: false, error: issue, views: [] }, 400);
+                answer({ ok: false, error: issue, views: [] }, 400);
+                return;
             }
             mayHaveChanged = action.views;
             const result = await action.run({ user, session, chat: tab.chat, upload }, parsed.output);
             const changed = await spread(user, result.changed ?? [], tab);
-            return answer(
+            answer(
                 'refused' in result
                     ? { ok: false, error: result.refused, views: changed }
                     : { ok: true, views: changed },
             );
+            return;
         } catch (error) {
             console.error(`[ui] ${type} failed:`, error);
             // It may have done part of what it does: the tab (and the user's others) get what's there now.
             let views: ViewFrame[] = [];
-            if (tab && mayHaveChanged.length) {
+            if (tab && mayHaveChanged.length > 0) {
                 try {
                     views = await spread(tab.user, mayHaveChanged, tab);
                 } catch (again) {
                     console.error(`[ui] after ${type} failed, its views couldn't be read:`, again);
                 }
             }
-            return answer({ ok: false, error: 'internal', views }, 500);
+            answer({ ok: false, error: 'internal', views }, 500);
+            return;
         } finally {
             // An action that keeps the upload moves it; whatever is left is the parser's temporary file.
             if (upload) await fs.rm(upload.path, { force: true });
         }
+    };
+    const router = express.Router();
+    // Express doesn't wait on a handler's promise: what escapes act() (its cleanup failing) is logged here.
+    router.post('/', (request: Request, response: Response) => {
+        act(request, response).catch((error: unknown) => {
+            console.error('[ui] action not finished:', error);
+            if (!response.headersSent) response.status(500).send({ ok: false, error: 'internal', views: [] });
+        });
     });
 
     return {
@@ -255,7 +279,7 @@ export function createUi(areas: Area[], { userOf, chatOf }: UiOptions): Ui {
             const tab = tabs.get(session);
             if (!tab || tab.user.directories.root !== user.directories.root || !tab.chat) return;
             const frames = await framesOf(tab, followChat);
-            if (frames.length) for (const push of tab.streams) push({ type: 'views', views: frames });
+            if (frames.length > 0) for (const push of tab.streams) push({ type: 'views', views: frames });
         },
         async changed(user, keys) {
             await spread(user, keys, null);
