@@ -304,7 +304,10 @@ function parseMesExamplesBlocks(examplesStr, isInstruct, exampleSeparator = '') 
  *   getRegexedString() call. Default `true`.
  *
  * --- Context/token budget -------------------------------------------------------------------------
- * @property {number} thisMaxContext Equivalent of getMaxPromptTokens() - the pre-CFG-adjustment max context.
+ * @property {number} thisMaxContext How many tokens the prompt may take, before CFG takes its share: upstream's
+ *   getMaxContextSize(), the context less the reply's length.
+ * @property {number} [maxContext] The context size setting, sent as is to a backend that takes it (KoboldAI's
+ *   max_context_length). Defaults to `thisMaxContext`.
  * @property {number} [tokenPadding] Equivalent of power_user.token_padding - added on top of every
  *   countTokens() result wherever the client bakes padding into getTokenCountAsync() calls. Default 0.
  * @property {(text: string) => Promise<number>} countTokens REQUIRED. Real tokenization needs
@@ -1013,7 +1016,7 @@ export async function assembleTextCompletionPrompt(input) {
             finalPrompt: combinedPrompt,
             settings,
             maxLength: amountGen,
-            maxContextLength: thisMaxContext,
+            maxContextLength: input.maxContext ?? input.thisMaxContext,
             isHorde,
             type,
             koboldSettings: settings,
